@@ -1,0 +1,352 @@
+name: Apply paged occluder cache v2
+
+on:
+  push:
+    branches:
+      - paged-occluder-cache-v2
+    paths:
+      - .github/workflows/apply-paged-cache-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.ref == 'refs/heads/paged-occluder-cache-v2'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: paged-occluder-cache-v2
+          fetch-depth: 0
+
+      - name: Verify known-good source and apply cache patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def read(path):
+              return Path(path).read_text(encoding='utf-8')
+
+          def write(path, text):
+              Path(path).write_text(text, encoding='utf-8')
+
+          def replace_once(path, old, new):
+              text = read(path)
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f'{path}: expected exactly one match, found {count}\n--- needle ---\n{old}')
+              write(path, text.replace(old, new, 1))
+
+          # Guard against the duplication bug from the first cache attempt.
+          op = read('apps/openmw/mwrender/objectpaging.cpp')
+          old_build_call = 'buildSimplifiedMesh(trans, adaptiveRes, occluderShrinkFactor)'
+          if op.count(old_build_call) != 1:
+              raise RuntimeError(
+                  f'objectpaging.cpp is not the known-good single-port source: expected one old paged build call, '
+                  f'found {op.count(old_build_call)}')
+          if 'mOcclusionStorage->get(cacheKey' in op or 'paged-v2|' in op:
+              raise RuntimeError('paged cache v2 appears to be partially applied already')
+
+          # objectpaging.hpp: pass the shared persistent storage into paged chunk generation.
+          replace_once(
+              'apps/openmw/mwrender/objectpaging.hpp',
+              '''namespace SceneUtil
+          {
+              class OcclusionCuller;
+          }
+
+          namespace MWRender
+          {''',
+              '''namespace SceneUtil
+          {
+              class OcclusionCuller;
+          }
+
+          namespace OcclusionCulling
+          {
+              class OcclusionStorage;
+          }
+
+          namespace MWRender
+          {''')
+
+          replace_once(
+              'apps/openmw/mwrender/objectpaging.hpp',
+              '        void setOcclusionCuller(SceneUtil::OcclusionCuller* culler, unsigned int maxTriangles);\n',
+              '''        void setOcclusionCuller(SceneUtil::OcclusionCuller* culler, unsigned int maxTriangles,
+              OcclusionCulling::OcclusionStorage* storage);
+          ''')
+
+          replace_once(
+              'apps/openmw/mwrender/objectpaging.hpp',
+              '''        osg::ref_ptr<SceneUtil::OcclusionCuller> mOcclusionCuller;
+              unsigned int mMaxTriangles = 30000;
+          ''',
+              '''        osg::ref_ptr<SceneUtil::OcclusionCuller> mOcclusionCuller;
+              unsigned int mMaxTriangles = 30000;
+              OcclusionCulling::OcclusionStorage* mOcclusionStorage = nullptr;
+          ''')
+
+          # objectpaging.cpp: cache a model-local proxy and transform it per reference.
+          replace_once(
+              'apps/openmw/mwrender/objectpaging.cpp',
+              '#include <limits>\n',
+              '#include <limits>\n#include <string>\n')
+
+          replace_once(
+              'apps/openmw/mwrender/objectpaging.cpp',
+              '''    void ObjectPaging::setOcclusionCuller(SceneUtil::OcclusionCuller* culler, unsigned int maxTriangles)
+              {
+                  mOcclusionCuller = culler;
+                  mMaxTriangles = maxTriangles;
+              }
+          ''',
+              '''    void ObjectPaging::setOcclusionCuller(SceneUtil::OcclusionCuller* culler, unsigned int maxTriangles,
+              OcclusionCulling::OcclusionStorage* storage)
+              {
+                  mOcclusionCuller = culler;
+                  mMaxTriangles = maxTriangles;
+                  mOcclusionStorage = storage;
+              }
+          ''')
+
+          replace_once(
+              'apps/openmw/mwrender/objectpaging.cpp',
+              '''        struct InstanceList
+              {
+                  std::vector<const PagedCellRef*> mInstances;
+                  AnalyzeVisitor::Result mAnalyzeResult;
+                  bool mNeedCompile = false;
+              };
+          ''',
+              '''        struct InstanceList
+              {
+                  std::vector<const PagedCellRef*> mInstances;
+                  AnalyzeVisitor::Result mAnalyzeResult;
+                  VFS::Path::Normalized mModel;
+                  bool mNeedCompile = false;
+              };
+          ''')
+
+          replace_once(
+              'apps/openmw/mwrender/objectpaging.cpp',
+              '''                emplaced.first->second.mAnalyzeResult = analyzeVisitor.retrieveResult();
+                  emplaced.first->second.mNeedCompile = compile && nodePtr->referenceCount() <= 2;
+          ''',
+              '''                emplaced.first->second.mAnalyzeResult = analyzeVisitor.retrieveResult();
+                  emplaced.first->second.mModel = model;
+                  emplaced.first->second.mNeedCompile = compile && nodePtr->referenceCount() <= 2;
+          ''')
+
+          old_block = '''                // Build occluder mesh for building-sized objects
+                          if (buildOccluders)
+                          {
+                              float scaledRadius = cnode->getBound().radius() * ref.mScale;
+                              if (scaledRadius >= occluderMinRadius)
+                              {
+                                  // Scale grid resolution with object size so grid cell size stays ~constant.
+                                  // A small building (radius 300) uses base resolution, a canton (radius 3000+)
+                                  // gets proportionally higher resolution to preserve shape detail.
+                                  int adaptiveRes = occluderMeshRes;
+                                  if (scaledRadius > occluderMinRadius)
+                                  {
+                                      float scale = scaledRadius / occluderMinRadius;
+                                      adaptiveRes = std::clamp(
+                                          static_cast<int>(occluderMeshRes * scale), occluderMeshRes, occluderMaxMeshRes);
+                                  }
+                                  auto occMesh = buildSimplifiedMesh(trans, adaptiveRes, occluderShrinkFactor);
+                                  if (!occMesh.indices.empty())
+                                  {
+                                      // Offset from chunk-relative to world-space
+                                      for (auto& v : occMesh.vertices)
+                                          v += worldCenter;
+                                      occMesh.aabb = osg::BoundingBox();
+                                      for (const auto& v : occMesh.vertices)
+                                          occMesh.aabb.expandBy(v);
+                                      pagedOccluderData->mOccluderMeshes.push_back(std::move(occMesh));
+                                  }
+                              }
+                          }
+          '''
+
+          new_block = '''                // Build one reusable local-space occluder proxy for each cache key, then
+                          // transform that proxy for this particular reference instance.
+                          if (buildOccluders)
+                          {
+                              const float scaledRadius = cnode->getBound().radius() * ref.mScale;
+                              if (scaledRadius >= occluderMinRadius)
+                              {
+                                  int adaptiveRes = occluderMeshRes;
+                                  if (scaledRadius > occluderMinRadius)
+                                  {
+                                      const float scale = scaledRadius / occluderMinRadius;
+                                      adaptiveRes = std::clamp(
+                                          static_cast<int>(occluderMeshRes * scale), occluderMeshRes, occluderMaxMeshRes);
+                                  }
+
+                                  const int shrinkKey = OcclusionStorage::makeShrinkKey(occluderShrinkFactor);
+                                  const int sizeKey = static_cast<int>(size * 1024.f + 0.5f);
+                                  const int scaleKey = static_cast<int>(
+                                      ref.mScale * 1000000.f + (ref.mScale >= 0.f ? 0.5f : -0.5f));
+
+                                  // Prefix isolates paged proxies from CellOcclusionCallback's cache entries.
+                                  // Include every input that can change CopyOp's selected geometry.
+                                  std::string cacheKey = "paged-v2|";
+                                  cacheKey += pair.second.mModel.value();
+                                  cacheKey += activeGrid ? "|active=1" : "|active=0";
+                                  cacheKey += "|lod=" + std::to_string(static_cast<unsigned int>(lod));
+                                  cacheKey += "|size=" + std::to_string(sizeKey);
+                                  cacheKey += "|scale=" + std::to_string(scaleKey);
+
+                                  OccluderMesh localMesh;
+                                  bool cacheHit = false;
+                                  if (mOcclusionStorage && mOcclusionStorage->isOpen())
+                                      cacheHit = mOcclusionStorage->get(cacheKey, adaptiveRes, shrinkKey, localMesh);
+
+                                  if (!cacheHit)
+                                  {
+                                      if (mOcclusionStorage && mOcclusionStorage->isOpen())
+                                          mOcclusionStorage->recordMiss();
+
+                                      // Re-run the same filtering/LOD selection used by the rendered paged object,
+                                      // but deliberately omit this reference's world transform so the result is reusable.
+                                      osg::ref_ptr<osg::Group> localProxySource = new osg::Group;
+                                      copyop.copy(cnode, localProxySource);
+                                      localMesh = buildSimplifiedMesh(localProxySource, adaptiveRes, occluderShrinkFactor);
+
+                                      if (mOcclusionStorage && mOcclusionStorage->isOpen())
+                                          mOcclusionStorage->put(cacheKey, adaptiveRes, shrinkKey, localMesh);
+                                  }
+
+                                  if (!localMesh.indices.empty())
+                                  {
+                                      osg::Matrixf localToChunk;
+                                      localToChunk.preMultTranslate(nodePos);
+                                      localToChunk.preMultRotate(nodeAttitude);
+                                      localToChunk.preMultScale(nodeScale);
+
+                                      OccluderMesh occMesh;
+                                      occMesh.indices = localMesh.indices;
+                                      occMesh.vertices.reserve(localMesh.vertices.size());
+                                      for (const auto& v : localMesh.vertices)
+                                      {
+                                          osg::Vec3f worldVertex = v * localToChunk;
+                                          worldVertex += worldCenter;
+                                          occMesh.vertices.push_back(worldVertex);
+                                          occMesh.aabb.expandBy(worldVertex);
+                                      }
+                                      pagedOccluderData->mOccluderMeshes.push_back(std::move(occMesh));
+                                  }
+                              }
+                          }
+          '''
+          replace_once('apps/openmw/mwrender/objectpaging.cpp', old_block, new_block)
+
+          # renderingmanager.cpp: give every ObjectPaging instance the same live storage pointer.
+          replace_once(
+              'apps/openmw/mwrender/renderingmanager.cpp',
+              '''            if (mObjectPaging)
+                          mObjectPaging->setOcclusionCuller(mOcclusionCuller, maxTriangles);
+          ''',
+              '''            if (mObjectPaging)
+                          mObjectPaging->setOcclusionCuller(mOcclusionCuller, maxTriangles, mOcclusionStorage.get());
+          ''')
+
+          replace_once(
+              'apps/openmw/mwrender/renderingmanager.cpp',
+              '''                newChunkMgr.mObjectPaging
+                              = std::make_unique<ObjectPaging>(mResourceSystem->getSceneManager(), worldspace);
+                          quadTreeWorld->addChunkManager(newChunkMgr.mObjectPaging.get());
+          ''',
+              '''                newChunkMgr.mObjectPaging
+                              = std::make_unique<ObjectPaging>(mResourceSystem->getSceneManager(), worldspace);
+                          if (mOcclusionCuller)
+                          {
+                              const unsigned int maxTriangles
+                                  = static_cast<unsigned int>(Settings::camera().mOcclusionMaxTriangles);
+                              newChunkMgr.mObjectPaging->setOcclusionCuller(
+                                  mOcclusionCuller, maxTriangles, mOcclusionStorage.get());
+                          }
+                          quadTreeWorld->addChunkManager(newChunkMgr.mObjectPaging.get());
+          ''')
+
+          replace_once(
+              'apps/openmw/mwrender/renderingmanager.cpp',
+              '''        mObjects->setOcclusionCuller(mOcclusionCuller, occluderMinRadius, occluderMaxRadius, occluderShrinkFactor,
+                      occluderMeshRes, occluderMaxMeshRes, occluderInsideThreshold, occluderMaxDistance, enableStatics,
+                      maxTriangles, mOcclusionStorage.get());
+                  if (mSceneOcclusionCallback)
+                      mSceneOcclusionCallback->setStorage(mOcclusionStorage.get());
+          ''',
+              '''        mObjects->setOcclusionCuller(mOcclusionCuller, occluderMinRadius, occluderMaxRadius, occluderShrinkFactor,
+                      occluderMeshRes, occluderMaxMeshRes, occluderInsideThreshold, occluderMaxDistance, enableStatics,
+                      maxTriangles, mOcclusionStorage.get());
+                  for (auto& entry : mWorldspaceChunks)
+                  {
+                      if (entry.second.mObjectPaging)
+                          entry.second.mObjectPaging->setOcclusionCuller(
+                              mOcclusionCuller, maxTriangles, mOcclusionStorage.get());
+                  }
+                  if (mSceneOcclusionCallback)
+                      mSceneOcclusionCallback->setStorage(mOcclusionStorage.get());
+          ''')
+
+          # worldimp.cpp: open a real, versioned SQLite cache before any cells/chunks are loaded.
+          replace_once(
+              'apps/openmw/mwworld/worldimp.cpp',
+              '''        mRendering = std::make_unique<MWRender::RenderingManager>(
+                      viewer, rootNode, mResourceSystem, workQueue, *mNavigator, mGroundcoverStore, unrefQueue);
+                  mProjectileManager = std::make_unique<ProjectileManager>(
+          ''',
+              '''        mRendering = std::make_unique<MWRender::RenderingManager>(
+                      viewer, rootNode, mResourceSystem, workQueue, *mNavigator, mGroundcoverStore, unrefQueue);
+                  mRendering->setOcclusionCachePath(
+                      Files::pathToUnicodeString(mUserDataPath / "occlusion-mesh-cache-v2.sqlite"));
+                  mProjectileManager = std::make_unique<ProjectileManager>(
+          ''')
+
+          # Post-patch structural verification. These checks specifically prevent the duplicated
+          # generation bug that slipped into the first build.
+          op = read('apps/openmw/mwrender/objectpaging.cpp')
+          oh = read('apps/openmw/mwrender/objectpaging.hpp')
+          rm = read('apps/openmw/mwrender/renderingmanager.cpp')
+          wi = read('apps/openmw/mwworld/worldimp.cpp')
+
+          checks = {
+              'old uncached paged build calls': op.count(old_build_call) == 0,
+              'paged cache lookup count': op.count('mOcclusionStorage->get(cacheKey') == 1,
+              'paged cache write count': op.count('mOcclusionStorage->put(cacheKey') == 1,
+              'paged-v2 key prefix count': op.count('paged-v2|') == 1,
+              'single paged occluder push': op.count('pagedOccluderData->mOccluderMeshes.push_back(std::move(occMesh))') == 1,
+              'storage member count': oh.count('OcclusionCulling::OcclusionStorage* mOcclusionStorage = nullptr;') == 1,
+              'storage setter declaration count': oh.count('OcclusionCulling::OcclusionStorage* storage);') == 1,
+              'constructor paging storage wiring': rm.count('mObjectPaging->setOcclusionCuller(mOcclusionCuller, maxTriangles, mOcclusionStorage.get());') == 1,
+              'new-worldspace storage wiring': rm.count('newChunkMgr.mObjectPaging->setOcclusionCuller(') == 1,
+              'storage refresh loop': rm.count('for (auto& entry : mWorldspaceChunks)') == 1,
+              'versioned DB path': wi.count('occlusion-mesh-cache-v2.sqlite') == 1,
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              raise RuntimeError('post-patch verification failed: ' + ', '.join(failed))
+
+          print('Paged cache v2 structural verification passed:')
+          for name in checks:
+              print('  OK -', name)
+          PY
+
+          git diff --check
+
+      - name: Commit verified source patch
+        shell: bash
+        run: |
+          git config user.name "OpenMW Paged Cache Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add apps/openmw/mwrender/objectpaging.hpp \
+                  apps/openmw/mwrender/objectpaging.cpp \
+                  apps/openmw/mwrender/renderingmanager.cpp \
+                  apps/openmw/mwworld/worldimp.cpp
+          git diff --cached --stat
+          git commit -m "Wire persistent cache into paged occluder generation v2"
+          git push origin HEAD:paged-occluder-cache-v2
