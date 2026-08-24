@@ -1,0 +1,55 @@
+name: Apply paged cache on PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'paged-occluder-cache'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: paged-occluder-cache
+          fetch-depth: 0
+
+      - name: Apply source patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if grep -q "mOcclusionStorage->get(cacheKey" apps/openmw/mwrender/objectpaging.cpp; then
+            echo "Paged cache patch is already present"
+          else
+            python tools/apply_paged_occluder_cache.py
+          fi
+
+      - name: Verify patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git diff --check
+          grep -n "occlusion-mesh-cache.sqlite" apps/openmw/mwworld/worldimp.cpp
+          grep -n "mOcclusionStorage->get(cacheKey" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "mOcclusionStorage->put(cacheKey" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "OcclusionStorage\* storage" apps/openmw/mwrender/objectpaging.hpp
+
+      - name: Commit patched source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if git diff --quiet; then
+            echo "Nothing to commit"
+            exit 0
+          fi
+          git config user.name "OpenMW Paged Cache Bot"
+          git config user.email "actions@github.com"
+          git add apps/openmw/mwrender/objectpaging.cpp \
+                  apps/openmw/mwrender/objectpaging.hpp \
+                  apps/openmw/mwrender/renderingmanager.cpp \
+                  apps/openmw/mwworld/worldimp.cpp
+          git commit -m "Cache paged occluder meshes persistently"
+          git push origin HEAD:paged-occluder-cache
