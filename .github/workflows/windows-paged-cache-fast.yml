@@ -1,0 +1,15 @@
+name: Fast Windows paged-cache build
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  Windows:
+    if: github.head_ref == 'paged-occluder-cache'
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: "2022"
+      msvc: "2022"
+      build-type: Release
+      package: true
