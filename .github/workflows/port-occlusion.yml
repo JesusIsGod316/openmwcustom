@@ -37,44 +37,63 @@ jobs:
           git remote add occlusion https://github.com/RebelSiren/openmwocclusion.git || true
           git fetch --no-tags occlusion eb153471a4149967f13aebdf496ef4e184d00fba
 
-      - name: Cherry-pick occlusion changes without committing
+      - name: Apply occlusion changes
         id: cherry
         continue-on-error: true
         shell: bash
         run: |
           git cherry-pick --no-commit eb153471a4149967f13aebdf496ef4e184d00fba
 
-      - name: Save conflict diagnostics
-        if: steps.cherry.outcome == 'failure'
+      - name: Adapt known current-master conflicts
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          def replace_conflict(path, replacement, expected=1):
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              pattern = re.compile(
+                  r"<<<<<<< HEAD\r?\n.*?=======\r?\n.*?>>>>>>> eb153471a4 \(Add MSOC occlusion culling, shadow improvements, and occluder mesh disk cache\)\r?\n",
+                  re.S,
+              )
+              new_text, count = pattern.subn(replacement, text, count=expected)
+              if count != expected:
+                  raise RuntimeError(f"{path}: expected {expected} known conflict block, found {count}")
+              p.write_text(new_text, encoding="utf-8", newline="\n")
+
+          replace_conflict(
+              "apps/openmw/mwrender/objectpaging.cpp",
+              '#include <limits>\n\n#include "occlusionculling.hpp"\n\n#include <components/sceneutil/occlusionculling.hpp>\n\n',
+          )
+
+          replace_conflict(
+              "apps/openmw/mwrender/renderingmanager.cpp",
+              '#include <components/sceneutil/material.hpp>\n#include <components/sceneutil/occlusionculling.hpp>\n#include <components/occlusionculling/occlusionstorage.hpp>\n',
+          )
+
+          replace_conflict(
+              "components/CMakeLists.txt",
+              '    screencapture depth color riggeometryosgaextension extradata unrefqueue lightcommon clearcolor\n'
+              '    cullsafeboundsvisitor keyframe nodecallback textkeymap glextensions fog texmat material occlusionculling\n',
+          )
+
+      - name: Verify merge is fully resolved
         shell: bash
         run: |
-          mkdir -p port-diagnostics
-          git status --short > port-diagnostics/status.txt
-          git diff --name-only --diff-filter=U > port-diagnostics/unmerged-files.txt
-          git diff --cc > port-diagnostics/conflicts.diff || true
-          while IFS= read -r f; do
-            if [ -f "$f" ]; then
-              mkdir -p "port-diagnostics/files/$(dirname "$f")"
-              cp "$f" "port-diagnostics/files/$f"
-            fi
-          done < port-diagnostics/unmerged-files.txt
+          git add apps/openmw/mwrender/objectpaging.cpp \
+                  apps/openmw/mwrender/renderingmanager.cpp \
+                  components/CMakeLists.txt
+          unresolved="$(git diff --name-only --diff-filter=U)"
+          if [ -n "$unresolved" ]; then
+            echo "Unresolved files remain:"
+            echo "$unresolved"
+            exit 1
+          fi
 
-      - name: Upload conflict diagnostics
-        if: steps.cherry.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: occlusion-port-conflicts
-          path: port-diagnostics
-
-      - name: Fail when merge needs manual adaptation
-        if: steps.cherry.outcome == 'failure'
-        shell: bash
-        run: exit 1
-
-      - name: Commit successful port
-        if: steps.cherry.outcome == 'success'
+      - name: Commit adapted port
         shell: bash
         run: |
           git add -A
-          git commit -m "Port occlusion culling to current 0.52 master [occlusion-port-result]"
+          git commit -m "Port MSOC occlusion culling to current master [occlusion-port-result]"
           git push origin HEAD:occlusion-0.52-custom
