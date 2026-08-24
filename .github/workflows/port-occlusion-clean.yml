@@ -9,13 +9,14 @@ on:
   pull_request:
     branches:
       - occlusion-0.52-clean
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   port:
-    runs-on: windows-2022
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout clean branch
         uses: actions/checkout@v6
@@ -78,8 +79,6 @@ jobs:
               '    cullsafeboundsvisitor keyframe nodecallback textkeymap glextensions fog texmat material occlusionculling\n',
           )
 
-          # The source commit also bundled experimental shadow features. Keep this first port
-          # occlusion-only so we can validate it independently.
           shadow_only_files = [
               "apps/openmw/mwgui/settingswindow.cpp",
               "apps/openmw/mwgui/settingswindow.hpp",
@@ -95,8 +94,6 @@ jobs:
           ]
           subprocess.run(["git", "checkout", "HEAD", "--", *shadow_only_files], check=True)
 
-          # Remove the live shadow-settings reconfiguration block from RenderingManager,
-          # while retaining the occlusion integration in the same file.
           p = Path("apps/openmw/mwrender/renderingmanager.cpp")
           text = p.read_text(encoding="utf-8")
           start_token = '            else if (it->first == "Shadows")\n'
@@ -107,7 +104,6 @@ jobs:
               text = text[:start] + text[end:]
               p.write_text(text, encoding="utf-8", newline="\n")
 
-          # Keep the occlusion defaults, remove only the bundled experimental shadow defaults.
           p = Path("files/settings-default.cfg")
           text = p.read_text(encoding="utf-8")
           start_token = "# Use soft shadow filtering"
