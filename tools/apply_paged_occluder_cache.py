@@ -162,8 +162,8 @@ replace_once(
 # When the placeholder storage is replaced by the real DB, refresh all paging managers.
 replace_once(
     "apps/openmw/mwrender/renderingmanager.cpp",
-    "        if (mObjectPaging)\n            mObjectPaging->setOcclusionCuller(mOcclusionCuller, maxTriangles);\n        if (mSceneOcclusionCallback)\n            mSceneOcclusionCallback->setStorage(mOcclusionStorage.get());\n",
-    "        for (auto& [worldspace, chunkMgr] : mWorldspaceChunks)\n        {\n            if (chunkMgr.mObjectPaging)\n                chunkMgr.mObjectPaging->setOcclusionCuller(\n                    mOcclusionCuller, maxTriangles, mOcclusionStorage.get());\n        }\n        if (mSceneOcclusionCallback)\n            mSceneOcclusionCallback->setStorage(mOcclusionStorage.get());\n",
+    "        mObjects->setOcclusionCuller(mOcclusionCuller, occluderMinRadius, occluderMaxRadius, occluderShrinkFactor,\n            occluderMeshRes, occluderMaxMeshRes, occluderInsideThreshold, occluderMaxDistance, enableStatics,\n            maxTriangles, mOcclusionStorage.get());\n        if (mSceneOcclusionCallback)\n            mSceneOcclusionCallback->setStorage(mOcclusionStorage.get());\n",
+    "        mObjects->setOcclusionCuller(mOcclusionCuller, occluderMinRadius, occluderMaxRadius, occluderShrinkFactor,\n            occluderMeshRes, occluderMaxMeshRes, occluderInsideThreshold, occluderMaxDistance, enableStatics,\n            maxTriangles, mOcclusionStorage.get());\n        for (auto& [worldspace, chunkMgr] : mWorldspaceChunks)\n        {\n            if (chunkMgr.mObjectPaging)\n                chunkMgr.mObjectPaging->setOcclusionCuller(\n                    mOcclusionCuller, maxTriangles, mOcclusionStorage.get());\n        }\n        if (mSceneOcclusionCallback)\n            mSceneOcclusionCallback->setStorage(mOcclusionStorage.get());\n",
 )
 
 # worldimp.cpp: actually open the persistent DB before cells/chunks begin loading.
