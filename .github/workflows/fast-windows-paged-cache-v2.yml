@@ -1,0 +1,15 @@
+name: Fast Windows paged-cache v2 build
+
+on:
+  push:
+    branches:
+      - paged-occluder-cache-v2-fixed
+    paths:
+      - .ci/paged-cache-v2-trigger
+  workflow_dispatch:
+
+jobs:
+  Windows:
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: "2022"
