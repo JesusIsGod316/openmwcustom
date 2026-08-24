@@ -127,7 +127,13 @@ jobs:
             echo "$unresolved"
             exit 1
           fi
-          git diff --cached --check
+          # The vendored MaskedOcclusionCulling sources contain upstream trailing
+          # whitespace. Only whitespace-check the files adapted by this port.
+          git diff --cached --check -- \
+            apps/openmw/mwrender/objectpaging.cpp \
+            apps/openmw/mwrender/renderingmanager.cpp \
+            components/CMakeLists.txt \
+            files/settings-default.cfg
 
       - name: Commit clean occlusion-only port
         shell: bash
