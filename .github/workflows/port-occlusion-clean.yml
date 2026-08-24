@@ -11,6 +11,10 @@ on:
       - occlusion-0.52-clean
   workflow_dispatch:
 
+concurrency:
+  group: occlusion-clean-port
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
