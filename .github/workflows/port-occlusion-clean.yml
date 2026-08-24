@@ -6,6 +6,9 @@ on:
       - occlusion-0.52-clean
     paths:
       - .github/workflows/port-occlusion-clean.yml
+  pull_request:
+    branches:
+      - occlusion-0.52-clean
 
 permissions:
   contents: write
