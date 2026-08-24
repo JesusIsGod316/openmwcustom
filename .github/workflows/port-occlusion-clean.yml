@@ -1,8 +1,5 @@
 name: Port occlusion cleanly
 
-# The occlusion port is already committed on occlusion-0.52-clean.
-# Keep this workflow manual-only so PRs and ordinary pushes cannot re-apply
-# the source port and duplicate the ObjectPaging occluder-generation block.
 on:
   workflow_dispatch:
 
