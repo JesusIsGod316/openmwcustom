@@ -1,8 +1,6 @@
 name: Build and test
 
 on:
-- push
-- pull_request
 - workflow_dispatch
 
 env:
@@ -49,23 +47,6 @@ jobs:
 
     - name: Run OpenMW-CS tests
       run: ./openmw-cs-tests
-
-    # - name: Install
-    #   shell: bash
-    #   run: cmake --install .
-
-    # - name: Create Artifact
-    #   shell: bash
-    #   working-directory: install
-    #   run: |
-    #     ls -laR
-    #     7z a ../build_artifact.7z .
-
-    # - name: Upload Artifact
-    #   uses: actions/upload-artifact@v1
-    #   with:
-    #     path: ./build_artifact.7z
-    #     name: build_artifact.7z
 
   MacOS:
     strategy:
