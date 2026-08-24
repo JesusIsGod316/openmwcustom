@@ -1,14 +1,9 @@
 name: Port occlusion cleanly
 
+# The occlusion port is already committed on occlusion-0.52-clean.
+# Keep this workflow manual-only so PRs and ordinary pushes cannot re-apply
+# the source port and duplicate the ObjectPaging occluder-generation block.
 on:
-  push:
-    branches:
-      - occlusion-0.52-clean
-    paths:
-      - .github/workflows/port-occlusion-clean.yml
-  pull_request:
-    branches:
-      - occlusion-0.52-clean
   workflow_dispatch:
 
 concurrency:
@@ -127,8 +122,6 @@ jobs:
             echo "$unresolved"
             exit 1
           fi
-          # The vendored MaskedOcclusionCulling sources contain upstream trailing
-          # whitespace. Only whitespace-check the files adapted by this port.
           git diff --cached --check -- \
             apps/openmw/mwrender/objectpaging.cpp \
             apps/openmw/mwrender/renderingmanager.cpp \
