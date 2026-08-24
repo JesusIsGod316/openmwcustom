@@ -355,7 +355,7 @@ namespace MWRender
                 occluderMeshRes, occluderMaxMeshRes, occluderInsideThreshold, occluderMaxDistance, enableStatics,
                 maxTriangles, mOcclusionStorage.get());
             if (mObjectPaging)
-                mObjectPaging->setOcclusionCuller(mOcclusionCuller, maxTriangles);
+                mObjectPaging->setOcclusionCuller(mOcclusionCuller, maxTriangles, mOcclusionStorage.get());
         }
 
         mStateUpdater = new SceneUtil::StateUpdater();
@@ -1352,6 +1352,13 @@ namespace MWRender
             {
                 newChunkMgr.mObjectPaging
                     = std::make_unique<ObjectPaging>(mResourceSystem->getSceneManager(), worldspace);
+                if (mOcclusionCuller)
+                {
+                    const unsigned int maxTriangles
+                        = static_cast<unsigned int>(Settings::camera().mOcclusionMaxTriangles);
+                    newChunkMgr.mObjectPaging->setOcclusionCuller(
+                        mOcclusionCuller, maxTriangles, mOcclusionStorage.get());
+                }
                 quadTreeWorld->addChunkManager(newChunkMgr.mObjectPaging.get());
                 mResourceSystem->addResourceManager(newChunkMgr.mObjectPaging.get());
             }
@@ -1738,6 +1745,12 @@ namespace MWRender
         mObjects->setOcclusionCuller(mOcclusionCuller, occluderMinRadius, occluderMaxRadius, occluderShrinkFactor,
             occluderMeshRes, occluderMaxMeshRes, occluderInsideThreshold, occluderMaxDistance, enableStatics,
             maxTriangles, mOcclusionStorage.get());
+        for (auto& [worldspace, chunkMgr] : mWorldspaceChunks)
+        {
+            if (chunkMgr.mObjectPaging)
+                chunkMgr.mObjectPaging->setOcclusionCuller(
+                    mOcclusionCuller, maxTriangles, mOcclusionStorage.get());
+        }
         if (mSceneOcclusionCallback)
             mSceneOcclusionCallback->setStorage(mOcclusionStorage.get());
     }
