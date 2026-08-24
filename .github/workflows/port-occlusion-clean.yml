@@ -1,0 +1,133 @@
+name: Port occlusion cleanly
+
+on:
+  push:
+    branches:
+      - occlusion-0.52-clean
+    paths:
+      - .github/workflows/port-occlusion-clean.yml
+
+permissions:
+  contents: write
+
+jobs:
+  port:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout clean branch
+        uses: actions/checkout@v6
+        with:
+          ref: occlusion-0.52-clean
+          fetch-depth: 0
+
+      - name: Configure Git
+        shell: bash
+        run: |
+          git config user.name "OpenMW Occlusion Port Bot"
+          git config user.email "actions@users.noreply.github.com"
+
+      - name: Fetch occlusion source commit
+        shell: bash
+        run: |
+          git remote add occlusion https://github.com/RebelSiren/openmwocclusion.git || true
+          git fetch --no-tags occlusion eb153471a4149967f13aebdf496ef4e184d00fba
+
+      - name: Apply occlusion source changes
+        continue-on-error: true
+        shell: bash
+        run: |
+          git cherry-pick --no-commit eb153471a4149967f13aebdf496ef4e184d00fba
+
+      - name: Resolve current-master conflicts and strip experimental shadow changes
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+          import subprocess
+
+          marker = "eb153471a4 (Add MSOC occlusion culling, shadow improvements, and occluder mesh disk cache)"
+
+          def replace_conflict(path, replacement):
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              pattern = re.compile(
+                  rf"<<<<<<< HEAD\r?\n.*?=======\r?\n.*?>>>>>>> {re.escape(marker)}\r?\n",
+                  re.S,
+              )
+              new_text, count = pattern.subn(replacement, text, count=1)
+              if count != 1:
+                  raise RuntimeError(f"{path}: expected one known conflict block, found {count}")
+              p.write_text(new_text, encoding="utf-8", newline="\n")
+
+          replace_conflict(
+              "apps/openmw/mwrender/objectpaging.cpp",
+              '#include <limits>\n\n#include "occlusionculling.hpp"\n\n#include <components/sceneutil/occlusionculling.hpp>\n\n',
+          )
+
+          replace_conflict(
+              "apps/openmw/mwrender/renderingmanager.cpp",
+              '#include <components/sceneutil/material.hpp>\n#include <components/sceneutil/occlusionculling.hpp>\n#include <components/occlusionculling/occlusionstorage.hpp>\n',
+          )
+
+          replace_conflict(
+              "components/CMakeLists.txt",
+              '    screencapture depth color riggeometryosgaextension extradata unrefqueue lightcommon clearcolor\n'
+              '    cullsafeboundsvisitor keyframe nodecallback textkeymap glextensions fog texmat material occlusionculling\n',
+          )
+
+          # The source commit also bundled experimental shadow features. Keep this first port
+          # occlusion-only so we can validate it independently.
+          shadow_only_files = [
+              "apps/openmw/mwgui/settingswindow.cpp",
+              "apps/openmw/mwgui/settingswindow.hpp",
+              "components/sceneutil/mwshadowtechnique.cpp",
+              "components/sceneutil/mwshadowtechnique.hpp",
+              "components/sceneutil/shadow.cpp",
+              "components/sceneutil/shadow.hpp",
+              "components/settings/categories/shadows.hpp",
+              "components/shader/shadermanager.cpp",
+              "files/data/l10n/OMWEngine/en.yaml",
+              "files/data/mygui/openmw_settings_window.layout",
+              "files/shaders/compatibility/shadows_fragment.glsl",
+          ]
+          subprocess.run(["git", "checkout", "HEAD", "--", *shadow_only_files], check=True)
+
+          # Remove the live shadow-settings reconfiguration block from RenderingManager,
+          # while retaining the occlusion integration in the same file.
+          p = Path("apps/openmw/mwrender/renderingmanager.cpp")
+          text = p.read_text(encoding="utf-8")
+          start_token = '            else if (it->first == "Shadows")\n'
+          if start_token in text:
+              start = text.index(start_token)
+              end_token = "        }\n\n        if (updateProjection)"
+              end = text.index(end_token, start)
+              text = text[:start] + text[end:]
+              p.write_text(text, encoding="utf-8", newline="\n")
+
+          # Keep the occlusion defaults, remove only the bundled experimental shadow defaults.
+          p = Path("files/settings-default.cfg")
+          text = p.read_text(encoding="utf-8")
+          start_token = "# Use soft shadow filtering"
+          if start_token in text:
+              start = text.index(start_token)
+              end = text.index("[Physics]", start)
+              text = text[:start] + text[end:]
+              p.write_text(text, encoding="utf-8", newline="\n")
+
+      - name: Verify clean merge
+        shell: bash
+        run: |
+          git add -A
+          unresolved="$(git diff --name-only --diff-filter=U)"
+          if [ -n "$unresolved" ]; then
+            echo "Unresolved files remain:"
+            echo "$unresolved"
+            exit 1
+          fi
+          git diff --cached --check
+
+      - name: Commit clean occlusion-only port
+        shell: bash
+        run: |
+          git commit -m "Port MSOC occlusion culling to current master (occlusion only)"
+          git push origin HEAD:occlusion-0.52-clean
