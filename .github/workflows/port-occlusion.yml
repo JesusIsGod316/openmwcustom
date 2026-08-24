@@ -6,6 +6,9 @@ on:
       - occlusion-0.52-custom
     paths:
       - .github/workflows/port-occlusion.yml
+  pull_request:
+    branches:
+      - occlusion-0.52-custom
   workflow_dispatch:
 
 permissions:
@@ -13,7 +16,7 @@ permissions:
 
 jobs:
   port:
-    if: ${{ !contains(github.event.head_commit.message || '', '[occlusion-port-result]') }}
+    if: ${{ github.event_name == 'pull_request' || !contains(github.event.head_commit.message || '', '[occlusion-port-result]') }}
     runs-on: windows-2022
     steps:
       - name: Checkout custom branch
