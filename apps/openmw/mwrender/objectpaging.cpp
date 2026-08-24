@@ -943,6 +943,36 @@ namespace MWRender
                     }
                 }
 
+                // Build occluder mesh for building-sized objects
+                if (buildOccluders)
+                {
+                    float scaledRadius = cnode->getBound().radius() * ref.mScale;
+                    if (scaledRadius >= occluderMinRadius)
+                    {
+                        // Scale grid resolution with object size so grid cell size stays ~constant.
+                        // A small building (radius 300) uses base resolution, a canton (radius 3000+)
+                        // gets proportionally higher resolution to preserve shape detail.
+                        int adaptiveRes = occluderMeshRes;
+                        if (scaledRadius > occluderMinRadius)
+                        {
+                            float scale = scaledRadius / occluderMinRadius;
+                            adaptiveRes = std::clamp(
+                                static_cast<int>(occluderMeshRes * scale), occluderMeshRes, occluderMaxMeshRes);
+                        }
+                        auto occMesh = buildSimplifiedMesh(trans, adaptiveRes, occluderShrinkFactor);
+                        if (!occMesh.indices.empty())
+                        {
+                            // Offset from chunk-relative to world-space
+                            for (auto& v : occMesh.vertices)
+                                v += worldCenter;
+                            occMesh.aabb = osg::BoundingBox();
+                            for (const auto& v : occMesh.vertices)
+                                occMesh.aabb.expandBy(v);
+                            pagedOccluderData->mOccluderMeshes.push_back(std::move(occMesh));
+                        }
+                    }
+                }
+
                 if (activeGrid)
                 {
                     if (merge)
