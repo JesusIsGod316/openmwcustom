@@ -1,24 +1,30 @@
 #include "scripttracker.hpp"
 
+#include <algorithm>
+#include <chrono>
+
 namespace LuaUtil
 {
     namespace
     {
-        constexpr unsigned sMinLoadedFrames = 50;
-        constexpr unsigned sMaxLoadedFrames = 600;
-        constexpr unsigned sUsageFrameGrowth = 10;
+        // Keep recently used local Lua containers hot long enough for short
+        // interior/exterior transitions. Real-time expiry avoids making the
+        // cache lifetime depend on frame rate.
+        constexpr auto sMinLoadedTime = std::chrono::seconds(30);
+        constexpr auto sMaxLoadedTime = std::chrono::seconds(120);
+        constexpr auto sUsageTimeGrowth = std::chrono::seconds(10);
         constexpr std::size_t sMinToProcess = 1;
         constexpr std::size_t sToProcessDiv = 20; // 5%
     }
 
     void ScriptTracker::onLoad(ScriptsContainer& container)
     {
-        mLoadedScripts.emplace(container.getWeakPointer(), sMinLoadedFrames + mFrame);
+        mLoadedScripts.emplace(container.getWeakPointer(), Clock::now() + sMinLoadedTime);
     }
 
     void ScriptTracker::unloadInactiveScripts(LuaView& lua)
     {
-        // This code is technically incorrect if mFrame overflows... but at 300fps that takes about half a year
+        const auto now = Clock::now();
         std::size_t toProcess = std::max(mLoadedScripts.size() / sToProcessDiv, sMinToProcess);
         while (toProcess && !mLoadedScripts.empty())
         {
@@ -29,18 +35,19 @@ namespace LuaUtil
             // Object no longer exists, cease tracking
             if (!container)
                 continue;
-            // Ignore activity of local scripts in the active grid
+            // Keep active local scripts hot. Once they become inactive they
+            // retain at least the minimum real-time grace period.
             if (container->isActive())
-                ttl = std::max(ttl, mFrame + sMinLoadedFrames);
+                ttl = std::max(ttl, now + sMinLoadedTime);
             else
             {
                 bool activeSinceLastPop = container->mRequiredLoading;
                 if (activeSinceLastPop)
                 {
                     container->mRequiredLoading = false;
-                    ttl = std::min(ttl + sUsageFrameGrowth, mFrame + sMaxLoadedFrames);
+                    ttl = std::min(ttl + sUsageTimeGrowth, now + sMaxLoadedTime);
                 }
-                else if (ttl < mFrame)
+                else if (ttl < now)
                 {
                     container->ensureUnloaded(lua);
                     continue;
@@ -48,6 +55,5 @@ namespace LuaUtil
             }
             mLoadedScripts.emplace(std::move(ptr), ttl);
         }
-        ++mFrame;
     }
 }

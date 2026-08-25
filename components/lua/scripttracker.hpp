@@ -1,6 +1,7 @@
 #ifndef COMPONENTS_LUA_SCRIPTTRACKER_H
 #define COMPONENTS_LUA_SCRIPTTRACKER_H
 
+#include <chrono>
 #include <memory>
 #include <queue>
 #include <utility>
@@ -11,10 +12,10 @@ namespace LuaUtil
 {
     class ScriptTracker
     {
-        using Frame = unsigned int;
-        using TrackedScriptContainer = std::pair<ScriptsContainerWeakPtr, Frame>;
+        using Clock = std::chrono::steady_clock;
+        using TimePoint = Clock::time_point;
+        using TrackedScriptContainer = std::pair<ScriptsContainerWeakPtr, TimePoint>;
         std::queue<TrackedScriptContainer> mLoadedScripts;
-        Frame mFrame = 0;
 
     public:
         void unloadInactiveScripts(LuaView& lua);
