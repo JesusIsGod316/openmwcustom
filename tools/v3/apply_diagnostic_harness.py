@@ -34,3 +34,6 @@ if old not in text:
     raise RuntimeError("Unable to apply V3 harness ordering fix")
 text = text.replace(old, new, 1)
 exec(compile(text, str(base), "exec"), {"__file__": str(base), "__name__": "__main__"})
+
+extra = Path(__file__).with_name("apply_diagnostic_harness_extra.py")
+exec(compile(extra.read_text(encoding="utf-8"), str(extra), "exec"), {"__file__": str(extra), "__name__": "__main__"})
