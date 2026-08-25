@@ -93,6 +93,10 @@ exec(compile(generated_cpp_safety.read_text(encoding="utf-8"), str(generated_cpp
 telemetry_safety = Path(__file__).with_name("apply_telemetry_safety.py")
 exec(compile(telemetry_safety.read_text(encoding="utf-8"), str(telemetry_safety), "exec"), {"__file__": str(telemetry_safety), "__name__": "__main__"})
 
+feature_retention = Path(__file__).with_name("apply_feature_retention_preflight.py")
+exec(compile(feature_retention.read_text(encoding="utf-8"), str(feature_retention), "exec"),
+    {"__file__": str(feature_retention), "__name__": "__main__"})
+
 launcher_safety = Path(__file__).with_name("apply_launcher_safety.py")
 exec(compile(launcher_safety.read_text(encoding="utf-8"), str(launcher_safety), "exec"), {"__file__": str(launcher_safety), "__name__": "__main__"})
 
