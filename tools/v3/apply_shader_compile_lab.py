@@ -92,9 +92,9 @@ replace_once(
         {
             const double v3Ms = Debug::V3Diagnostics::elapsedMs(v3Start);
             std::ostringstream row;
-            row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs()
-                << ",\"program_link_apply\"," << Debug::V3Diagnostics::csvQuote(getName()) << ','
-                << std::fixed << std::setprecision(3) << v3Ms;
+            row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
+                << Debug::V3Diagnostics::csvQuote("program_link_apply") << ','
+                << Debug::V3Diagnostics::csvQuote(getName()) << ',' << std::fixed << std::setprecision(3) << v3Ms;
             v3Writer.writeLine(row.str());
         }
 
