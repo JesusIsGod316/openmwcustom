@@ -1,6 +1,7 @@
 #ifndef OPENMW_COMPONENTS_DEBUG_V3DIAGNOSTICS_H
 #define OPENMW_COMPONENTS_DEBUG_V3DIAGNOSTICS_H
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -92,19 +93,23 @@ namespace Debug::V3Diagnostics
     private:
         void ensureOpen()
         {
-            std::lock_guard<std::mutex> lock(mMutex);
-            if (mAttempted)
+            if (mAttempted.load(std::memory_order_acquire))
                 return;
-            mAttempted = true;
+
+            std::lock_guard<std::mutex> lock(mMutex);
+            if (mAttempted.load(std::memory_order_relaxed))
+                return;
 
             const char* raw = std::getenv(mEnvironmentVariable.c_str());
-            if (!raw || !pathEnabled(raw))
-                return;
+            if (raw && pathEnabled(raw))
+            {
+                mPath = raw;
+                mStream.open(std::filesystem::u8path(mPath), std::ios::out | std::ios::trunc);
+                if (mStream.is_open())
+                    mStream << mHeader << '\n';
+            }
 
-            mPath = raw;
-            mStream.open(std::filesystem::u8path(mPath), std::ios::out | std::ios::trunc);
-            if (mStream.is_open())
-                mStream << mHeader << '\n';
+            mAttempted.store(true, std::memory_order_release);
         }
 
         std::string mEnvironmentVariable;
@@ -112,7 +117,7 @@ namespace Debug::V3Diagnostics
         std::string mPath;
         std::ofstream mStream;
         std::mutex mMutex;
-        bool mAttempted = false;
+        std::atomic<bool> mAttempted{ false };
         unsigned mLinesSinceFlush = 0;
     };
 
