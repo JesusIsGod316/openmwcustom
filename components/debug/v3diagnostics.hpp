@@ -136,6 +136,48 @@ namespace Debug::V3Diagnostics
         return result;
     }
 
+    // Generic opt-in scope timer used by the Optimization Lab. The destination
+    // writer decides which environment variable enables the stream. A minimum
+    // duration keeps hot-path diagnostic files manageable.
+    class ScopedCsvTimer
+    {
+    public:
+        ScopedCsvTimer(CsvWriter& writer, std::string_view phase, std::string_view detail = {}, double minimumMs = 0.0)
+            : mWriter(writer)
+            , mPhase(phase)
+            , mDetail(detail)
+            , mMinimumMs(minimumMs)
+            , mEnabled(writer.enabled())
+            , mStart(mEnabled ? Clock::now() : Clock::time_point{})
+        {
+        }
+
+        ~ScopedCsvTimer()
+        {
+            if (!mEnabled)
+                return;
+            const double durationMs = elapsedMs(mStart);
+            if (durationMs < mMinimumMs)
+                return;
+
+            std::ostringstream row;
+            row << V3HitchTelemetry::currentFrame() << ',' << epochMs() << ',' << csvQuote(mPhase) << ','
+                << csvQuote(mDetail) << ',' << std::fixed << std::setprecision(3) << durationMs;
+            mWriter.writeLine(row.str());
+        }
+
+        ScopedCsvTimer(const ScopedCsvTimer&) = delete;
+        ScopedCsvTimer& operator=(const ScopedCsvTimer&) = delete;
+
+    private:
+        CsvWriter& mWriter;
+        std::string mPhase;
+        std::string mDetail;
+        double mMinimumMs;
+        bool mEnabled;
+        Clock::time_point mStart;
+    };
+
     inline void writeEvent(std::string_view event, std::string_view detail = {})
     {
         static CsvWriter writer("OPENMW_V3_EVENT_FILE", "frame,epoch_ms,event,detail");
