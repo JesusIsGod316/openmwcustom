@@ -61,3 +61,6 @@ exec(compile(shader.read_text(encoding="utf-8"), str(shader), "exec"), {"__file_
 
 metrics = Path(__file__).with_name("apply_futureproof_metrics.py")
 exec(compile(metrics.read_text(encoding="utf-8"), str(metrics), "exec"), {"__file__": str(metrics), "__name__": "__main__"})
+
+packaging = Path(__file__).with_name("apply_lab_packaging.py")
+exec(compile(packaging.read_text(encoding="utf-8"), str(packaging), "exec"), {"__file__": str(packaging), "__name__": "__main__"})
