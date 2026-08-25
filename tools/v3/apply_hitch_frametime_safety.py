@@ -13,6 +13,20 @@ def replace_once(rel, old, new):
     print(f"hitch-frametime safety patched {rel}")
 
 
+def remove_between(rel, start, end):
+    path = ROOT / rel
+    text = path.read_text(encoding="utf-8")
+    start_pos = text.find(start)
+    if start_pos < 0:
+        raise RuntimeError(f"{rel}: safety start marker not found: {start!r}")
+    end_pos = text.find(end, start_pos)
+    if end_pos < 0:
+        raise RuntimeError(f"{rel}: safety end marker not found: {end!r}")
+    # Keep the end marker itself; only remove the unsafe block before it.
+    path.write_text(text[:start_pos] + text[end_pos:], encoding="utf-8", newline="\n")
+    print(f"hitch-frametime safety removed unsafe block from {rel}")
+
+
 # QuadTreeWorld stores a PositionAttitudeTransform even when a ChunkManager
 # returns nullptr. If the view is unchanged it then reuses that empty container,
 # so returning nullptr as a one-frame throttle can create missing pages. Keep
@@ -47,86 +61,21 @@ v3 streaming scheduler = off
 v3 streaming target frametime = 25''',
 )
 
-replace_once(
+remove_between(
     "apps/openmw/mwrender/objectpaging.cpp",
-    '''        const unsigned char lod = static_cast<unsigned char>(lodFlags >> (4 * 4));
-        if (!activeGrid && Settings::RamCache::adaptiveStreamingEnabled())
-        {
-            const double lastFrameMs = Debug::V3HitchTelemetry::lastFrameWallMs();
-            if (lastFrameMs > Settings::RamCache::streamingTargetFrameMs())
-            {
-                static thread_local unsigned v3Frame = std::numeric_limits<unsigned>::max();
-                static thread_local int v3Created = 0;
-                const unsigned frame = Debug::V3HitchTelemetry::currentFrame();
-                if (v3Frame != frame)
-                {
-                    v3Frame = frame;
-                    v3Created = 0;
-                }
-                const int limit = Settings::RamCache::streamingDistantObjectChunkLimit();
-                if (v3Created >= limit)
-                {
-                    if (Debug::V3Diagnostics::streamingWriter().enabled())
-                    {
-                        std::ostringstream row;
-                        row << frame << ',' << Debug::V3Diagnostics::epochMs()
-                            << ",\\\"defer\\\",\\\"object_chunk\\\",\\\"distant\\\"," << lastFrameMs << ',' << limit << ','
-                            << v3Created;
-                        Debug::V3Diagnostics::streamingWriter().writeLine(row.str());
-                    }
-                    return nullptr;
-                }
-                ++v3Created;
-            }
-        }
-        Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::pagingWriter(), "object_chunk_create",
-            activeGrid ? "active_grid" : "distant", 0.25);''',
-    '''        const unsigned char lod = static_cast<unsigned char>(lodFlags >> (4 * 4));
-        Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::pagingWriter(), "object_chunk_create",
-            activeGrid ? "active_grid" : "distant", 0.25);''',
+    '''        if (!activeGrid && Settings::RamCache::adaptiveStreamingEnabled())
+''',
+    '''        Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::pagingWriter(), "object_chunk_create",
+''',
 )
 
-replace_once(
+remove_between(
     "apps/openmw/mwrender/groundcover.cpp",
-    '''        else
-        {
-            if (Settings::RamCache::adaptiveStreamingEnabled())
-            {
-                const double lastFrameMs = Debug::V3HitchTelemetry::lastFrameWallMs();
-                if (lastFrameMs > Settings::RamCache::streamingTargetFrameMs())
-                {
-                    static thread_local unsigned v3Frame = std::numeric_limits<unsigned>::max();
-                    static thread_local int v3Created = 0;
-                    const unsigned frame = Debug::V3HitchTelemetry::currentFrame();
-                    if (v3Frame != frame)
-                    {
-                        v3Frame = frame;
-                        v3Created = 0;
-                    }
-                    const int limit = Settings::RamCache::streamingGroundcoverChunkLimit();
-                    if (v3Created >= limit)
-                    {
-                        if (Debug::V3Diagnostics::streamingWriter().enabled())
-                        {
-                            std::ostringstream row;
-                            row << frame << ',' << Debug::V3Diagnostics::epochMs()
-                                << ",\\\"defer\\\",\\\"groundcover_chunk\\\",\\\"distant\\\"," << lastFrameMs << ',' << limit
-                                << ',' << v3Created;
-                            Debug::V3Diagnostics::streamingWriter().writeLine(row.str());
-                        }
-                        return nullptr;
-                    }
-                    ++v3Created;
-                }
-            }
-            Debug::V3Diagnostics::ScopedCsvTimer timer(
+    '''            if (Settings::RamCache::adaptiveStreamingEnabled())
+''',
+    '''            Debug::V3Diagnostics::ScopedCsvTimer timer(
                 Debug::V3Diagnostics::pagingWriter(), "groundcover_chunk_create", "", 0.25);
-            InstanceMap instances;''',
-    '''        else
-        {
-            Debug::V3Diagnostics::ScopedCsvTimer timer(
-                Debug::V3Diagnostics::pagingWriter(), "groundcover_chunk_create", "", 0.25);
-            InstanceMap instances;''',
+''',
 )
 
 print("V3 Hitch + Frametime safety pass completed successfully.")
