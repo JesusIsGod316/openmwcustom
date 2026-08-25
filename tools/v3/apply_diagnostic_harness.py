@@ -62,6 +62,9 @@ exec(compile(prepared.read_text(encoding="utf-8"), str(prepared), "exec"), {"__f
 prepared_safety = Path(__file__).with_name("apply_prepared_instance_safety.py")
 exec(compile(prepared_safety.read_text(encoding="utf-8"), str(prepared_safety), "exec"), {"__file__": str(prepared_safety), "__name__": "__main__"})
 
+settings_access_safety = Path(__file__).with_name("apply_settings_access_safety.py")
+exec(compile(settings_access_safety.read_text(encoding="utf-8"), str(settings_access_safety), "exec"), {"__file__": str(settings_access_safety), "__name__": "__main__"})
+
 shader = Path(__file__).with_name("apply_shader_compile_lab.py")
 exec(compile(shader.read_text(encoding="utf-8"), str(shader), "exec"), {"__file__": str(shader), "__name__": "__main__"})
 
