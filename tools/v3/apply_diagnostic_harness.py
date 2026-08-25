@@ -68,6 +68,9 @@ exec(compile(shader.read_text(encoding="utf-8"), str(shader), "exec"), {"__file_
 metrics = Path(__file__).with_name("apply_futureproof_metrics.py")
 exec(compile(metrics.read_text(encoding="utf-8"), str(metrics), "exec"), {"__file__": str(metrics), "__name__": "__main__"})
 
+generated_cpp_safety = Path(__file__).with_name("apply_generated_cpp_string_safety.py")
+exec(compile(generated_cpp_safety.read_text(encoding="utf-8"), str(generated_cpp_safety), "exec"), {"__file__": str(generated_cpp_safety), "__name__": "__main__"})
+
 telemetry_safety = Path(__file__).with_name("apply_telemetry_safety.py")
 exec(compile(telemetry_safety.read_text(encoding="utf-8"), str(telemetry_safety), "exec"), {"__file__": str(telemetry_safety), "__name__": "__main__"})
 
