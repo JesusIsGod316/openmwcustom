@@ -61,7 +61,9 @@ replace_once(
             std::string shaderSource = templateIt->second;''',
 )
 
-# Give programs stable diagnostic names derived from their shader variants.
+# Give programs stable diagnostic names derived from the shader variants.
+# The low-level getProgram overload legitimately accepts vertex-only or
+# fragment-only programs, so never dereference either ref_ptr unconditionally.
 replace_once(
     "components/shader/shadermanager.cpp",
     '''            program->addShader(vertexShader);
@@ -69,7 +71,17 @@ replace_once(
             addLinkedShaders(vertexShader, program);''',
     '''            program->addShader(vertexShader);
             program->addShader(fragmentShader);
-            program->setName(vertexShader->getName() + " + " + fragmentShader->getName());
+            std::string v3ProgramName;
+            if (vertexShader)
+                v3ProgramName = vertexShader->getName();
+            if (fragmentShader)
+            {
+                if (!v3ProgramName.empty())
+                    v3ProgramName += " + ";
+                v3ProgramName += fragmentShader->getName();
+            }
+            if (!v3ProgramName.empty())
+                program->setName(v3ProgramName);
             addLinkedShaders(vertexShader, program);''',
 )
 
