@@ -13,15 +13,6 @@ def replace_once(rel, old, new):
     print(f"render-futureproof lab patched {rel}")
 
 
-# Groundcover's adaptive limiter uses numeric_limits; keep the dependency
-# explicit instead of relying on a transitive include.
-replace_once(
-    "apps/openmw/mwrender/groundcover.cpp",
-    '''#include <span>''',
-    '''#include <limits>
-#include <span>''',
-)
-
 # ---------------------------------------------------------------------------
 # Scene template/instance diagnostics. Template misses isolate actual asset
 # conversion/shader/optimizer work; instance timing isolates repeated runtime
@@ -244,11 +235,10 @@ replace_once(
 )
 
 # ---------------------------------------------------------------------------
-# Post-processing pass diagnostics. OpenMW's post chain is manually submitted
-# from PingPongCanvas rather than separate OSG cameras, so whole-camera GPU
-# stats cannot identify individual effects. This records each technique/pass's
-# CPU submission cost and target size now, and gives future GPU timer-query work
-# stable technique/pass labels without touching shader quality.
+# Post-processing pass diagnostics. The post chain is manually submitted from
+# PingPongCanvas rather than separate OSG cameras, so whole-camera GPU stats
+# cannot identify effects. Record CPU submission cost and target dimensions at
+# draw time. Do not mutate StateSets or programs during chain construction.
 # ---------------------------------------------------------------------------
 replace_once(
     "apps/openmw/mwrender/pingpongcanvas.cpp",
@@ -261,26 +251,6 @@ replace_once(
 
 #include <components/debug/v3diagnostics.hpp>
 #include <components/shader/shadermanager.hpp>''',
-)
-replace_once(
-    "apps/openmw/mwrender/pingpongcanvas.cpp",
-    '''    void PingPongCanvas::setPasses(Fx::DispatchArray&& passes)
-    {
-        mPasses = std::move(passes);
-    }''',
-    '''    void PingPongCanvas::setPasses(Fx::DispatchArray&& passes)
-    {
-        mPasses = std::move(passes);
-        for (auto& node : mPasses)
-        {
-            if (!node.mHandle)
-                continue;
-            const std::string techniqueName = node.mHandle->getName();
-            node.mRootStateSet->setName("V3 PostFX " + techniqueName);
-            for (std::size_t i = 0; i < node.mPasses.size(); ++i)
-                node.mPasses[i].mStateSet->setName("V3 PostFX " + techniqueName + " pass " + std::to_string(i));
-        }
-    }''',
 )
 replace_once(
     "apps/openmw/mwrender/pingpongcanvas.cpp",
