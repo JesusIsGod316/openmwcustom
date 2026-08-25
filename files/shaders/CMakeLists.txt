@@ -89,3 +89,65 @@ set(SHADER_FILES
 )
 
 copy_all_resource_files(${CMAKE_CURRENT_SOURCE_DIR} ${OPENMW_RESOURCES_ROOT} ${DDIRRELATIVE} "${SHADER_FILES}")
+
+# V3: apply the exact Rafael Enhanced PBR/OpenMW 0.52 shader overlay used by the
+# known-good CustomV2 installation. Keeping this as a deterministic archive lets
+# us verify that future builds receive the same resource payload byte-for-byte.
+set(V3_RAF_PBR_PARTS
+    part00.b64
+    part01.b64
+    part02.b64
+    part03.b64
+    part04.b64
+    part05.b64
+    part06.b64
+    part07.b64
+)
+
+set(_v3_raf_pbr_base64 "")
+foreach(_v3_raf_pbr_part IN LISTS V3_RAF_PBR_PARTS)
+    set(_v3_raf_pbr_part_path "${CMAKE_CURRENT_SOURCE_DIR}/v3overlay/${_v3_raf_pbr_part}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_v3_raf_pbr_part_path}")
+    file(READ "${_v3_raf_pbr_part_path}" _v3_raf_pbr_part_data)
+    string(APPEND _v3_raf_pbr_base64 "${_v3_raf_pbr_part_data}")
+endforeach()
+
+set(_v3_raf_pbr_b64 "${CMAKE_CURRENT_BINARY_DIR}/v3-rafael-pbr-0.52-overlay.b64")
+set(_v3_raf_pbr_zip "${CMAKE_CURRENT_BINARY_DIR}/v3-rafael-pbr-0.52-overlay.zip")
+file(WRITE "${_v3_raf_pbr_b64}" "${_v3_raf_pbr_base64}")
+
+if (WIN32)
+    find_program(V3_RAF_POWERSHELL NAMES pwsh powershell)
+    if (NOT V3_RAF_POWERSHELL)
+        message(FATAL_ERROR "V3 Rafael PBR overlay requires PowerShell to decode the embedded archive")
+    endif()
+
+    file(TO_NATIVE_PATH "${_v3_raf_pbr_b64}" _v3_raf_pbr_b64_native)
+    file(TO_NATIVE_PATH "${_v3_raf_pbr_zip}" _v3_raf_pbr_zip_native)
+    execute_process(
+        COMMAND "${V3_RAF_POWERSHELL}" -NoProfile -NonInteractive -Command
+            "[IO.File]::WriteAllBytes('${_v3_raf_pbr_zip_native}', [Convert]::FromBase64String([IO.File]::ReadAllText('${_v3_raf_pbr_b64_native}')))"
+        RESULT_VARIABLE _v3_raf_pbr_decode_result
+    )
+else()
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" -c
+            "import base64,pathlib; pathlib.Path(r'${_v3_raf_pbr_zip}').write_bytes(base64.b64decode(pathlib.Path(r'${_v3_raf_pbr_b64}').read_text()))"
+        RESULT_VARIABLE _v3_raf_pbr_decode_result
+    )
+endif()
+
+if (NOT _v3_raf_pbr_decode_result EQUAL 0)
+    message(FATAL_ERROR "Failed to decode the V3 Rafael PBR shader overlay")
+endif()
+
+file(SHA256 "${_v3_raf_pbr_zip}" _v3_raf_pbr_sha256)
+if (NOT _v3_raf_pbr_sha256 STREQUAL "6f42a686e2a6a9038bbd4a9e2d0d1be6d8812b9b3e681d8b569560c2fe110255")
+    message(FATAL_ERROR "V3 Rafael PBR shader overlay checksum mismatch: ${_v3_raf_pbr_sha256}")
+endif()
+
+file(ARCHIVE_EXTRACT
+    INPUT "${_v3_raf_pbr_zip}"
+    DESTINATION "${OPENMW_RESOURCES_ROOT}/${DDIRRELATIVE}"
+)
