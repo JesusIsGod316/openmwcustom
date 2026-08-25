@@ -1,7 +1,7 @@
 #ifndef COMPONENTS_LUA_SCRIPTTRACKER_H
 #define COMPONENTS_LUA_SCRIPTTRACKER_H
 
-#include <memory>
+#include <cstddef>
 #include <queue>
 
 #include "scriptscontainer.hpp"
