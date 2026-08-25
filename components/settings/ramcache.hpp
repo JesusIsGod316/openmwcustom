@@ -234,7 +234,8 @@ namespace Settings::RamCache
     // page, so enabling it cannot intentionally reduce visual coverage.
     inline bool adaptiveStreamingEnabled()
     {
-        return cells().mV3StreamingScheduler == "adaptive";
+        const std::string value = cells().mV3StreamingScheduler;
+        return value == "adaptive";
     }
 
     inline float streamingTargetFrameMs()
