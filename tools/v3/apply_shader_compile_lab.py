@@ -15,6 +15,15 @@ def replace_once(rel, old, new):
 
 replace_once(
     "components/shader/shadermanager.cpp",
+    '''#include <fstream>
+#include <regex>''',
+    '''#include <fstream>
+#include <iomanip>
+#include <regex>''',
+)
+
+replace_once(
+    "components/shader/shadermanager.cpp",
     '''#include <components/debug/debuglog.hpp>''',
     '''#include <components/debug/debuglog.hpp>
 #include <components/debug/v3diagnostics.hpp>''',
