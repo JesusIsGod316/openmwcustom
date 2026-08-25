@@ -178,6 +178,30 @@ namespace Debug::V3Diagnostics
         Clock::time_point mStart;
     };
 
+    inline CsvWriter& transitionWriter()
+    {
+        static CsvWriter writer("OPENMW_V3_TRANSITION_FILE", "frame,epoch_ms,phase,detail,duration_ms");
+        return writer;
+    }
+
+    inline CsvWriter& pagingWriter()
+    {
+        static CsvWriter writer("OPENMW_V3_PAGING_FILE", "frame,epoch_ms,phase,detail,duration_ms");
+        return writer;
+    }
+
+    inline CsvWriter& resourceWriter()
+    {
+        static CsvWriter writer("OPENMW_V3_RESOURCE_FILE", "frame,epoch_ms,phase,detail,duration_ms");
+        return writer;
+    }
+
+    inline CsvWriter& navWriter()
+    {
+        static CsvWriter writer("OPENMW_V3_NAV_FILE", "frame,epoch_ms,phase,detail,duration_ms");
+        return writer;
+    }
+
     inline void writeEvent(std::string_view event, std::string_view detail = {})
     {
         static CsvWriter writer("OPENMW_V3_EVENT_FILE", "frame,epoch_ms,event,detail");
