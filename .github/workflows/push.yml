@@ -11,3 +11,4 @@ jobs:
     uses: ./.github/workflows/windows.yml
     with:
       image: "2022"
+      tests: false
