@@ -43,3 +43,9 @@ exec(compile(lab.read_text(encoding="utf-8"), str(lab), "exec"), {"__file__": st
 
 fixups = Path(__file__).with_name("apply_optimization_lab_fixups.py")
 exec(compile(fixups.read_text(encoding="utf-8"), str(fixups), "exec"), {"__file__": str(fixups), "__name__": "__main__"})
+
+hitch = Path(__file__).with_name("apply_hitch_frametime_lab.py")
+exec(compile(hitch.read_text(encoding="utf-8"), str(hitch), "exec"), {"__file__": str(hitch), "__name__": "__main__"})
+
+render = Path(__file__).with_name("apply_render_futureproof_lab.py")
+exec(compile(render.read_text(encoding="utf-8"), str(render), "exec"), {"__file__": str(render), "__name__": "__main__"})
