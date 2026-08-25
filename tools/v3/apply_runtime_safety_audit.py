@@ -17,7 +17,8 @@ def replace_once(rel: str, old: str, new: str) -> None:
 # 1) PostFX labels were diagnostic-only object mutations. They are not needed
 # by the current CPU pass telemetry (which uses the technique handle directly),
 # so remove them completely. This restores upstream setPasses behaviour and
-# eliminates an entire startup-time pointer/lifetime surface.
+# eliminates an entire startup-time pointer/lifetime surface while retaining
+# per-technique/pass timing.
 # ---------------------------------------------------------------------------
 replace_once(
     "apps/openmw/mwrender/pingpongcanvas.cpp",
@@ -47,9 +48,10 @@ replace_once(
 
 
 # ---------------------------------------------------------------------------
-# 2) Program names only exist to make OPENMW_V3_RENDER_FILE useful. Do not
-# mutate osg::Program objects at all in normal gameplay. When profiling is
-# enabled, tolerate vertex-only, fragment-only, and two-stage programs.
+# 2) Preserve shader-link profiling without mutating osg::Program at creation.
+# Build a local diagnostic label from the shaders already attached to the
+# program only when a relink is actually being measured. Every shader pointer
+# is checked before dereference; linked shader stages are included naturally.
 # ---------------------------------------------------------------------------
 replace_once(
     "components/shader/shadermanager.cpp",
@@ -63,21 +65,42 @@ replace_once(
                 v3ProgramName += fragmentShader->getName();
             }
             if (!v3ProgramName.empty())
-                program->setName(v3ProgramName);''',
-    '''            if (Debug::V3Diagnostics::renderWriter().enabled())
+                program->setName(v3ProgramName);
+''',
+    '''''',
+)
+replace_once(
+    "components/shader/shadermanager.cpp",
+    '''        const bool v3Profile = relink && v3Writer.enabled();
+        const auto v3Start
+            = v3Profile ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
+        osg::Program::apply(state);''',
+    '''        const bool v3Profile = relink && v3Writer.enabled();
+        std::string v3ProgramDetail;
+        if (v3Profile)
+        {
+            for (unsigned int i = 0; i < getNumShaders(); ++i)
             {
-                std::string v3ProgramName;
-                if (vertexShader)
-                    v3ProgramName = vertexShader->getName();
-                if (fragmentShader)
+                if (const osg::Shader* shader = getShader(i))
                 {
-                    if (!v3ProgramName.empty())
-                        v3ProgramName += " + ";
-                    v3ProgramName += fragmentShader->getName();
+                    if (!v3ProgramDetail.empty())
+                        v3ProgramDetail += " + ";
+                    v3ProgramDetail += shader->getName();
                 }
-                if (!v3ProgramName.empty())
-                    program->setName(v3ProgramName);
-            }''',
+            }
+            if (v3ProgramDetail.empty())
+                v3ProgramDetail = "unnamed_program";
+        }
+        const auto v3Start
+            = v3Profile ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
+        osg::Program::apply(state);''',
+)
+replace_once(
+    "components/shader/shadermanager.cpp",
+    '''                << Debug::V3Diagnostics::csvQuote("program_link_apply") << ','
+                << Debug::V3Diagnostics::csvQuote(getName()) << ',' << std::fixed << std::setprecision(3) << v3Ms;''',
+    '''                << Debug::V3Diagnostics::csvQuote("program_link_apply") << ','
+                << Debug::V3Diagnostics::csvQuote(v3ProgramDetail) << ',' << std::fixed << std::setprecision(3) << v3Ms;''',
 )
 
 
@@ -138,12 +161,10 @@ replace_once(
 
 
 # ---------------------------------------------------------------------------
-# 4) V3 work-queue telemetry called getNumActiveThreads() from worker threads.
+# 4) V3 work-queue telemetry calls getNumActiveThreads() from worker threads.
 # Upstream implements that by walking mThreads, while stop() clears mThreads
-# outside the queue mutex in order to join workers safely. That makes a
-# profiling-time read race possible during shutdown. Maintain an atomic active
-# count instead; this is safe to read from main or worker threads and preserves
-# the public method's meaning.
+# outside the queue mutex in order to join workers safely. Maintain an atomic
+# count with identical meaning so profiling can safely query it during shutdown.
 # ---------------------------------------------------------------------------
 replace_once(
     "components/sceneutil/workqueue.hpp",
@@ -190,6 +211,25 @@ replace_once(
     }''',
 )
 
+# A trace-only capture should still know the work-item type even if the separate
+# workqueue CSV is disabled.
+replace_once(
+    "components/sceneutil/workqueue.cpp",
+    '''            auto& writer = Debug::V3Diagnostics::workQueueWriter();
+            const bool profile = writer.enabled();
+            const std::uintptr_t itemId = reinterpret_cast<std::uintptr_t>(item.get());
+            const std::string typeName = profile ? typeid(*item).name() : std::string();
+            const auto start = profile ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
+            Debug::V3Diagnostics::TraceScope trace("workqueue", typeName, std::to_string(itemId), 0.05);''',
+    '''            auto& writer = Debug::V3Diagnostics::workQueueWriter();
+            const bool profile = writer.enabled();
+            const bool traceProfile = Debug::V3Diagnostics::traceWriter().enabled();
+            const std::uintptr_t itemId = reinterpret_cast<std::uintptr_t>(item.get());
+            const std::string typeName = (profile || traceProfile) ? typeid(*item).name() : std::string();
+            const auto start = profile ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
+            Debug::V3Diagnostics::TraceScope trace("workqueue", typeName, std::to_string(itemId), 0.05);''',
+)
+
 
 # ---------------------------------------------------------------------------
 # 5) Prepared-instance cache is experimental/off by default. Be stricter than
@@ -221,16 +261,20 @@ replace_once(
 # ---------------------------------------------------------------------------
 checks = {
     "components/shader/shadermanager.cpp": [
-        ("program->setName(vertexShader->getName()", False,
-         "unguarded shader-program naming dereference returned"),
-        ("if (vertexShader)", True, "vertex shader null guard missing"),
-        ("if (fragmentShader)", True, "fragment shader null guard missing"),
+        ("program->setName(v3ProgramName)", False,
+         "diagnostic osg::Program mutation returned"),
+        ("if (const osg::Shader* shader = getShader(i))", True,
+         "null-safe relink shader enumeration missing"),
+        ("csvQuote(v3ProgramDetail)", True,
+         "shader relink detail output missing"),
     ],
     "apps/openmw/mwrender/pingpongcanvas.cpp": [
         ("mRootStateSet->setName(\"V3 PostFX", False,
          "diagnostic PostFX StateSet mutation returned"),
         ("mStateSet->setName(\"V3 PostFX", False,
          "diagnostic PostFX pass StateSet mutation returned"),
+        ("v3PostFxWriter.writeLine(row.str())", True,
+         "PostFX per-pass timing was lost"),
     ],
     "apps/openmw/mwworld/scene.cpp": [
         ("V3InsertionAccumulatorScope insertionScope", True,
@@ -243,6 +287,8 @@ checks = {
          "atomic work-queue active counter missing"),
         ("mThreads.begin(), mThreads.end()", False,
          "worker telemetry can still iterate the mutable thread vector"),
+        ("const bool traceProfile = Debug::V3Diagnostics::traceWriter().enabled();", True,
+         "trace-only work-item typing missing"),
     ],
     "components/resource/scenemanager.cpp": [
         ("!prepared || prepared->getNumChildrenRequiringUpdateTraversal() != 0", True,
