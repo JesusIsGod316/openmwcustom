@@ -61,34 +61,10 @@ replace_once(
             std::string shaderSource = templateIt->second;''',
 )
 
-# Give programs stable diagnostic names derived from the shader variants.
-# The low-level getProgram overload legitimately accepts vertex-only or
-# fragment-only programs, so never dereference either ref_ptr unconditionally.
-replace_once(
-    "components/shader/shadermanager.cpp",
-    '''            program->addShader(vertexShader);
-            program->addShader(fragmentShader);
-            addLinkedShaders(vertexShader, program);''',
-    '''            program->addShader(vertexShader);
-            program->addShader(fragmentShader);
-            std::string v3ProgramName;
-            if (vertexShader)
-                v3ProgramName = vertexShader->getName();
-            if (fragmentShader)
-            {
-                if (!v3ProgramName.empty())
-                    v3ProgramName += " + ";
-                v3ProgramName += fragmentShader->getName();
-            }
-            if (!v3ProgramName.empty())
-                program->setName(v3ProgramName);
-            addLinkedShaders(vertexShader, program);''',
-)
-
 # OSG performs GL shader compilation/program linking lazily in Program::apply.
-# Measure only relink events, so normal already-linked draws do not generate a
-# row. This catches real draw-thread shader/link stalls rather than just source
-# preprocessing time.
+# Measure only relink events. Build the diagnostic label locally from whatever
+# shader stages are actually attached; do not mutate osg::Program and do not
+# assume vertex/fragment pointers are present in the low-level creation path.
 replace_once(
     "components/shader/shadermanager.cpp",
     '''    void SamplerProgram::apply(osg::State& state) const
@@ -106,6 +82,22 @@ replace_once(
 
         auto& v3Writer = Debug::V3Diagnostics::renderWriter();
         const bool v3Profile = relink && v3Writer.enabled();
+        std::string v3ProgramDetail;
+        if (v3Profile)
+        {
+            for (unsigned int i = 0; i < getNumShaders(); ++i)
+            {
+                if (const osg::Shader* shader = getShader(i))
+                {
+                    if (!v3ProgramDetail.empty())
+                        v3ProgramDetail += " + ";
+                    v3ProgramDetail += shader->getName();
+                }
+            }
+            if (v3ProgramDetail.empty())
+                v3ProgramDetail = "unnamed_program";
+        }
+
         const auto v3Start
             = v3Profile ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         osg::Program::apply(state);
@@ -115,7 +107,7 @@ replace_once(
             std::ostringstream row;
             row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
                 << Debug::V3Diagnostics::csvQuote("program_link_apply") << ','
-                << Debug::V3Diagnostics::csvQuote(getName()) << ',' << std::fixed << std::setprecision(3) << v3Ms;
+                << Debug::V3Diagnostics::csvQuote(v3ProgramDetail) << ',' << std::fixed << std::setprecision(3) << v3Ms;
             v3Writer.writeLine(row.str());
         }
 
