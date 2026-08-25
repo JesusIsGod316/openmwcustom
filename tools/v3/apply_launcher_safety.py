@@ -14,19 +14,22 @@ def replace_once(rel, old, new):
 
 
 # Mark settings as needing restoration before the first temporary mutation.
-# If any later Set-IniValue call throws, the finally block still restores the
-# untouched backup instead of leaving a partially modified settings.cfg.
-replace_once(
-    "tools/v3/launchers/V3_Lab.ps1",
-    '''$changedSettings = $false
-try {
-    if ($Mode -ne 'Render') {
-        Set-IniValue $SettingsPath 'Cells' 'ram cache mode' 'overdrive' ''',
-    '''$changedSettings = $false
-try {
-    if ($Mode -ne 'Render') {
-        $changedSettings = $true
-        Set-IniValue $SettingsPath 'Cells' 'ram cache mode' 'overdrive' ''',
+# Use explicit newline strings here instead of a triple-quoted marker ending
+# immediately after a PowerShell single quote; the previous form accidentally
+# required a literal trailing space after 'overdrive' and failed in CI.
+old = (
+    "$changedSettings = $false\n"
+    "try {\n"
+    "    if ($Mode -ne 'Render') {\n"
+    "        Set-IniValue $SettingsPath 'Cells' 'ram cache mode' 'overdrive'"
 )
+new = (
+    "$changedSettings = $false\n"
+    "try {\n"
+    "    if ($Mode -ne 'Render') {\n"
+    "        $changedSettings = $true\n"
+    "        Set-IniValue $SettingsPath 'Cells' 'ram cache mode' 'overdrive'"
+)
+replace_once("tools/v3/launchers/V3_Lab.ps1", old, new)
 
 print("V3 profiling-launcher safety pass completed successfully.")
