@@ -6,11 +6,13 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #include "v3hitchtelemetry.hpp"
 
@@ -28,6 +30,11 @@ namespace Debug::V3Diagnostics
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch())
             .count();
+    }
+
+    inline std::size_t threadId()
+    {
+        return std::hash<std::thread::id>{}(std::this_thread::get_id());
     }
 
     class ScopedAccumulator
@@ -201,6 +208,101 @@ namespace Debug::V3Diagnostics
         static CsvWriter writer("OPENMW_V3_NAV_FILE", "frame,epoch_ms,phase,detail,duration_ms");
         return writer;
     }
+
+    inline CsvWriter& insertionWriter()
+    {
+        static CsvWriter writer("OPENMW_V3_INSERT_FILE",
+            "frame,epoch_ms,cell,total_refs,rendered_refs,physics_refs,actors,animated,doors,render_ms,mechanics_ms,"
+            "particles_ms,physics_ms,lua_added_ms,nav_ms");
+        return writer;
+    }
+
+    inline CsvWriter& workQueueWriter()
+    {
+        static CsvWriter writer("OPENMW_V3_WORKQUEUE_FILE",
+            "frame,epoch_ms,thread,event,item,type,queue_depth,active_threads,duration_ms");
+        return writer;
+    }
+
+    inline CsvWriter& renderWriter()
+    {
+        static CsvWriter writer("OPENMW_V3_RENDER_FILE", "frame,epoch_ms,phase,detail,duration_ms");
+        return writer;
+    }
+
+    inline CsvWriter& postFxWriter()
+    {
+        static CsvWriter writer("OPENMW_V3_POSTFX_FILE",
+            "frame,epoch_ms,thread,technique,pass,cpu_submit_ms,width,height,render_target,mipmap");
+        return writer;
+    }
+
+    inline CsvWriter& streamingWriter()
+    {
+        static CsvWriter writer("OPENMW_V3_STREAMING_FILE",
+            "frame,epoch_ms,event,category,detail,last_frame_ms,limit,count");
+        return writer;
+    }
+
+    inline CsvWriter& traceWriter()
+    {
+        static CsvWriter writer("OPENMW_V3_TRACE_FILE",
+            "frame,epoch_ms,thread,id,parent,category,name,detail,duration_ms");
+        return writer;
+    }
+
+    // Nested, cross-thread trace scope. IDs and parent IDs let an offline tool
+    // reconstruct the critical path instead of correlating unrelated CSV rows.
+    class TraceScope
+    {
+    public:
+        TraceScope(std::string_view category, std::string_view name, std::string_view detail = {}, double minimumMs = 0.0)
+            : mCategory(category)
+            , mName(name)
+            , mDetail(detail)
+            , mMinimumMs(minimumMs)
+            , mEnabled(traceWriter().enabled())
+        {
+            if (!mEnabled)
+                return;
+            mId = sNextId.fetch_add(1, std::memory_order_relaxed);
+            mParent = sCurrentParent;
+            sCurrentParent = mId;
+            mStart = Clock::now();
+        }
+
+        ~TraceScope()
+        {
+            if (!mEnabled)
+                return;
+            const double durationMs = elapsedMs(mStart);
+            sCurrentParent = mParent;
+            if (durationMs < mMinimumMs)
+                return;
+
+            std::ostringstream row;
+            row << V3HitchTelemetry::currentFrame() << ',' << epochMs() << ',' << threadId() << ',' << mId << ','
+                << mParent << ',' << csvQuote(mCategory) << ',' << csvQuote(mName) << ',' << csvQuote(mDetail) << ','
+                << std::fixed << std::setprecision(3) << durationMs;
+            traceWriter().writeLine(row.str());
+        }
+
+        TraceScope(const TraceScope&) = delete;
+        TraceScope& operator=(const TraceScope&) = delete;
+
+    private:
+        inline static std::atomic<unsigned long long> sNextId{ 1 };
+        inline static thread_local unsigned long long sCurrentParent = 0;
+
+        std::string mCategory;
+        std::string mName;
+        std::string mDetail;
+        double mMinimumMs = 0.0;
+        bool mEnabled = false;
+        unsigned long long mId = 0;
+        unsigned long long mParent = 0;
+        Clock::time_point mStart{};
+    };
 
     inline void writeEvent(std::string_view event, std::string_view detail = {})
     {
