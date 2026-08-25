@@ -29,6 +29,31 @@ namespace Debug::V3Diagnostics
             .count();
     }
 
+    class ScopedAccumulator
+    {
+    public:
+        ScopedAccumulator(bool enabled, double& accumulator)
+            : mEnabled(enabled)
+            , mAccumulator(accumulator)
+            , mStart(enabled ? Clock::now() : Clock::time_point{})
+        {
+        }
+
+        ~ScopedAccumulator()
+        {
+            if (mEnabled)
+                mAccumulator += elapsedMs(mStart);
+        }
+
+        ScopedAccumulator(const ScopedAccumulator&) = delete;
+        ScopedAccumulator& operator=(const ScopedAccumulator&) = delete;
+
+    private:
+        bool mEnabled;
+        double& mAccumulator;
+        Clock::time_point mStart;
+    };
+
     inline bool pathEnabled(std::string_view value)
     {
         return !value.empty() && value != "0" && value != "off" && value != "false";
