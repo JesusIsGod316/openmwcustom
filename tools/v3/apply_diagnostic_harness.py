@@ -49,3 +49,6 @@ exec(compile(hitch.read_text(encoding="utf-8"), str(hitch), "exec"), {"__file__"
 
 render = Path(__file__).with_name("apply_render_futureproof_lab.py")
 exec(compile(render.read_text(encoding="utf-8"), str(render), "exec"), {"__file__": str(render), "__name__": "__main__"})
+
+metrics = Path(__file__).with_name("apply_futureproof_metrics.py")
+exec(compile(metrics.read_text(encoding="utf-8"), str(metrics), "exec"), {"__file__": str(metrics), "__name__": "__main__"})
