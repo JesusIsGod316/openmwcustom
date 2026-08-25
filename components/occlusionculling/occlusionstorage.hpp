@@ -2,8 +2,8 @@
 #define OPENMW_COMPONENTS_OCCLUSIONCULLING_OCCLUSIONSTORAGE_H
 
 #include "occludermesh.hpp"
+#include "telemetry.hpp"
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -56,10 +56,12 @@ namespace OcclusionCulling
         mutable std::mutex mMutex;
         mutable std::unordered_map<std::string, std::shared_ptr<OccluderMesh>> mCache;
 
-        mutable std::atomic<int> mMemHits{ 0 };
-        mutable std::atomic<int> mDbHits{ 0 };
-        mutable std::atomic<int> mMisses{ 0 };
-        mutable std::atomic<int> mWrites{ 0 };
+        // Interval counters preserve V2's existing 300-frame debug statistics while
+        // Telemetry::CacheCounter also tracks lifetime totals for V3 telemetry.
+        mutable Telemetry::CacheCounter<Telemetry::CacheCounterId::MemHits> mMemHits;
+        mutable Telemetry::CacheCounter<Telemetry::CacheCounterId::DbHits> mDbHits;
+        mutable Telemetry::CacheCounter<Telemetry::CacheCounterId::Misses> mMisses;
+        mutable Telemetry::CacheCounter<Telemetry::CacheCounterId::Writes> mWrites;
     };
 }
 
