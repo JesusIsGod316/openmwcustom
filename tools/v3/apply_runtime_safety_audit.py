@@ -14,98 +14,7 @@ def replace_once(rel: str, old: str, new: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 1) PostFX labels were diagnostic-only object mutations. They are not needed
-# by the current CPU pass telemetry (which uses the technique handle directly),
-# so remove them completely. This restores upstream setPasses behaviour and
-# eliminates an entire startup-time pointer/lifetime surface while retaining
-# per-technique/pass timing.
-# ---------------------------------------------------------------------------
-replace_once(
-    "apps/openmw/mwrender/pingpongcanvas.cpp",
-    '''    void PingPongCanvas::setPasses(Fx::DispatchArray&& passes)
-    {
-        mPasses = std::move(passes);
-        for (auto& node : mPasses)
-        {
-            if (!node.mHandle)
-                continue;
-            const std::string techniqueName = node.mHandle->getName();
-            if (node.mRootStateSet)
-                node.mRootStateSet->setName("V3 PostFX " + techniqueName);
-            for (std::size_t i = 0; i < node.mPasses.size(); ++i)
-            {
-                if (node.mPasses[i].mStateSet)
-                    node.mPasses[i].mStateSet->setName(
-                        "V3 PostFX " + techniqueName + " pass " + std::to_string(i));
-            }
-        }
-    }''',
-    '''    void PingPongCanvas::setPasses(Fx::DispatchArray&& passes)
-    {
-        mPasses = std::move(passes);
-    }''',
-)
-
-
-# ---------------------------------------------------------------------------
-# 2) Preserve shader-link profiling without mutating osg::Program at creation.
-# Build a local diagnostic label from the shaders already attached to the
-# program only when a relink is actually being measured. Every shader pointer
-# is checked before dereference; linked shader stages are included naturally.
-# ---------------------------------------------------------------------------
-replace_once(
-    "components/shader/shadermanager.cpp",
-    '''            std::string v3ProgramName;
-            if (vertexShader)
-                v3ProgramName = vertexShader->getName();
-            if (fragmentShader)
-            {
-                if (!v3ProgramName.empty())
-                    v3ProgramName += " + ";
-                v3ProgramName += fragmentShader->getName();
-            }
-            if (!v3ProgramName.empty())
-                program->setName(v3ProgramName);
-''',
-    '''''',
-)
-replace_once(
-    "components/shader/shadermanager.cpp",
-    '''        const bool v3Profile = relink && v3Writer.enabled();
-        const auto v3Start
-            = v3Profile ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
-        osg::Program::apply(state);''',
-    '''        const bool v3Profile = relink && v3Writer.enabled();
-        std::string v3ProgramDetail;
-        if (v3Profile)
-        {
-            for (unsigned int i = 0; i < getNumShaders(); ++i)
-            {
-                if (const osg::Shader* shader = getShader(i))
-                {
-                    if (!v3ProgramDetail.empty())
-                        v3ProgramDetail += " + ";
-                    v3ProgramDetail += shader->getName();
-                }
-            }
-            if (v3ProgramDetail.empty())
-                v3ProgramDetail = "unnamed_program";
-        }
-        const auto v3Start
-            = v3Profile ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
-        osg::Program::apply(state);''',
-)
-replace_once(
-    "components/shader/shadermanager.cpp",
-    '''                << Debug::V3Diagnostics::csvQuote("program_link_apply") << ','
-                << Debug::V3Diagnostics::csvQuote(getName()) << ',' << std::fixed << std::setprecision(3) << v3Ms;''',
-    '''                << Debug::V3Diagnostics::csvQuote("program_link_apply") << ','
-                << Debug::V3Diagnostics::csvQuote(v3ProgramDetail) << ',' << std::fixed << std::setprecision(3) << v3Ms;''',
-)
-
-
-# ---------------------------------------------------------------------------
-# 3) The insertion profiler previously placed a pointer to stack-local stats in
+# The insertion profiler previously placed a pointer to stack-local stats in
 # thread_local storage and restored it manually. Any exception before the
 # restore would leave a dangling pointer. Use RAII so nested insertion and
 # exceptional exits always restore the previous pointer.
@@ -161,7 +70,7 @@ replace_once(
 
 
 # ---------------------------------------------------------------------------
-# 4) V3 work-queue telemetry calls getNumActiveThreads() from worker threads.
+# V3 work-queue telemetry calls getNumActiveThreads() from worker threads.
 # Upstream implements that by walking mThreads, while stop() clears mThreads
 # outside the queue mutex in order to join workers safely. Maintain an atomic
 # count with identical meaning so profiling can safely query it during shutdown.
@@ -232,9 +141,9 @@ replace_once(
 
 
 # ---------------------------------------------------------------------------
-# 5) Prepared-instance cache is experimental/off by default. Be stricter than
-# the template pre-check: if instancing unexpectedly introduces update
-# traversal, reject the clone instead of storing it for later activation.
+# Prepared-instance cache is experimental/off by default. Be stricter than the
+# template pre-check: if instancing unexpectedly introduces update traversal,
+# reject the clone instead of storing it for later activation.
 # ---------------------------------------------------------------------------
 replace_once(
     "components/resource/scenemanager.cpp",
@@ -257,24 +166,27 @@ replace_once(
 
 # ---------------------------------------------------------------------------
 # Semantic preflight for the exact classes of runtime bug found in smoke test
-# and this audit. These checks run on the fully generated C++ before CMake.
+# and this audit. The primary shader/render scripts now generate their safe
+# forms directly; these checks make sure they stay that way.
 # ---------------------------------------------------------------------------
 checks = {
     "components/shader/shadermanager.cpp": [
         ("program->setName(v3ProgramName)", False,
          "diagnostic osg::Program mutation returned"),
+        ("vertexShader->getName() + \" + \" + fragmentShader->getName()", False,
+         "unguarded shader-pair dereference returned"),
         ("if (const osg::Shader* shader = getShader(i))", True,
          "null-safe relink shader enumeration missing"),
         ("csvQuote(v3ProgramDetail)", True,
          "shader relink detail output missing"),
     ],
     "apps/openmw/mwrender/pingpongcanvas.cpp": [
-        ("mRootStateSet->setName(\"V3 PostFX", False,
+        ("setName(\"V3 PostFX", False,
          "diagnostic PostFX StateSet mutation returned"),
-        ("mStateSet->setName(\"V3 PostFX", False,
-         "diagnostic PostFX pass StateSet mutation returned"),
         ("v3PostFxWriter.writeLine(row.str())", True,
          "PostFX per-pass timing was lost"),
+        ("node.mHandle ? node.mHandle->getName()", True,
+         "PostFX technique label is no longer null-safe"),
     ],
     "apps/openmw/mwworld/scene.cpp": [
         ("V3InsertionAccumulatorScope insertionScope", True,
