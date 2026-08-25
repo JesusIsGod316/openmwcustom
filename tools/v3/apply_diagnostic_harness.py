@@ -53,6 +53,9 @@ exec(compile(safety.read_text(encoding="utf-8"), str(safety), "exec"), {"__file_
 render = Path(__file__).with_name("apply_render_futureproof_lab.py")
 exec(compile(render.read_text(encoding="utf-8"), str(render), "exec"), {"__file__": str(render), "__name__": "__main__"})
 
+prepared = Path(__file__).with_name("apply_prepared_instance_lab.py")
+exec(compile(prepared.read_text(encoding="utf-8"), str(prepared), "exec"), {"__file__": str(prepared), "__name__": "__main__"})
+
 shader = Path(__file__).with_name("apply_shader_compile_lab.py")
 exec(compile(shader.read_text(encoding="utf-8"), str(shader), "exec"), {"__file__": str(shader), "__name__": "__main__"})
 
