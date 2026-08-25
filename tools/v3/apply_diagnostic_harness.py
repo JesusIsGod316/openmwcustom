@@ -40,3 +40,6 @@ exec(compile(extra.read_text(encoding="utf-8"), str(extra), "exec"), {"__file__"
 
 lab = Path(__file__).with_name("apply_optimization_lab.py")
 exec(compile(lab.read_text(encoding="utf-8"), str(lab), "exec"), {"__file__": str(lab), "__name__": "__main__"})
+
+fixups = Path(__file__).with_name("apply_optimization_lab_fixups.py")
+exec(compile(fixups.read_text(encoding="utf-8"), str(fixups), "exec"), {"__file__": str(fixups), "__name__": "__main__"})
