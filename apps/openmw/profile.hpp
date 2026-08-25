@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <string>
 
+#include <components/debug/v3hitchtelemetry.hpp>
+
 namespace OMW
 {
     struct UserStats
@@ -41,6 +43,33 @@ namespace OMW
         Lua,
         Number,
     };
+
+    template <UserStatsType type>
+    constexpr int v3TelemetryStageIndex()
+    {
+        if constexpr (type == UserStatsType::Input)
+            return 0;
+        else if constexpr (type == UserStatsType::Sound)
+            return 1;
+        else if constexpr (type == UserStatsType::LuaSyncUpdate)
+            return 2;
+        else if constexpr (type == UserStatsType::State)
+            return 3;
+        else if constexpr (type == UserStatsType::Script)
+            return 4;
+        else if constexpr (type == UserStatsType::Mechanics)
+            return 5;
+        else if constexpr (type == UserStatsType::Physics)
+            return 6;
+        else if constexpr (type == UserStatsType::World)
+            return 7;
+        else if constexpr (type == UserStatsType::Gui)
+            return 8;
+        else if constexpr (type == UserStatsType::Focus)
+            return 9;
+        else
+            return -1;
+    }
 
     template <UserStatsType type>
     struct UserStatsValue
@@ -123,6 +152,8 @@ namespace OMW
             , mTimer(timer)
             , mStats(stats)
         {
+            if constexpr (type == UserStatsType::Input)
+                Debug::V3HitchTelemetry::beginFrame(frameNumber);
         }
 
         ScopedProfile(const ScopedProfile&) = delete;
@@ -130,10 +161,18 @@ namespace OMW
 
         ~ScopedProfile()
         {
+            const osg::Timer_t end = mTimer.tick();
+
+            constexpr int telemetryStage = v3TelemetryStageIndex<type>();
+            if constexpr (telemetryStage >= 0)
+            {
+                Debug::V3HitchTelemetry::recordStage(static_cast<std::size_t>(telemetryStage),
+                    mTimer.delta_s(mScopeStart, end) * 1000.0);
+            }
+
             if (!mStats.collectStats("engine"))
                 return;
 
-            const osg::Timer_t end = mTimer.tick();
             const UserStats& stats = UserStatsValue<type>::sValue;
 
             mStats.setAttribute(mFrameNumber, stats.mBegin, mTimer.delta_s(mFrameStart, mScopeStart));
