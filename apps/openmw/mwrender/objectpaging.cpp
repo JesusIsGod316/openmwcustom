@@ -1,6 +1,11 @@
 #include "objectpaging.hpp"
 
 #include <limits>
+
+#include "occlusionculling.hpp"
+
+#include <components/sceneutil/occlusionculling.hpp>
+
 #include <unordered_map>
 #include <vector>
 
@@ -474,6 +479,14 @@ namespace MWRender
     {
     }
 
+    void ObjectPaging::setOcclusionCuller(SceneUtil::OcclusionCuller* culler, unsigned int maxTriangles,
+        OcclusionCulling::OcclusionStorage* storage)
+    {
+        mOcclusionCuller = culler;
+        mMaxTriangles = maxTriangles;
+        mOcclusionStorage = storage;
+    }
+
     namespace
     {
         struct PagedCellRef
@@ -659,6 +672,7 @@ namespace MWRender
         {
             std::vector<const PagedCellRef*> mInstances;
             AnalyzeVisitor::Result mAnalyzeResult;
+            VFS::Path::Normalized mModel;
             bool mNeedCompile = false;
         };
         typedef std::map<osg::ref_ptr<const osg::Node>, InstanceList> NodeMap;
@@ -775,6 +789,7 @@ namespace MWRender
                 // const-trickery required because there is no const version of NodeVisitor
                 const_cast<osg::Node*>(nodePtr)->accept(analyzeVisitor);
                 emplaced.first->second.mAnalyzeResult = analyzeVisitor.retrieveResult();
+                emplaced.first->second.mModel = model;
                 emplaced.first->second.mNeedCompile = compile && nodePtr->referenceCount() <= 2;
             }
             else
@@ -789,6 +804,22 @@ namespace MWRender
         osg::ref_ptr<Resource::TemplateMultiRef> templateRefs = new Resource::TemplateMultiRef;
         osgUtil::StateToCompile stateToCompile(0, nullptr);
         CopyOp copyop(activeGrid, copyMask);
+
+        const bool buildOccluders = Settings::camera().mOcclusionCulling && Settings::camera().mOcclusionCullingStatics;
+        osg::ref_ptr<PagedOccluderData> pagedOccluderData;
+        float occluderMinRadius = 0;
+        int occluderMeshRes = 6;
+        int occluderMaxMeshRes = 24;
+        float occluderShrinkFactor = 0.9f;
+        if (buildOccluders)
+        {
+            pagedOccluderData = new PagedOccluderData;
+            occluderMinRadius = Settings::camera().mOcclusionOccluderMinRadius;
+            occluderMeshRes = Settings::camera().mOcclusionOccluderMeshResolution;
+            occluderMaxMeshRes = Settings::camera().mOcclusionOccluderMaxMeshResolution;
+            occluderShrinkFactor = Settings::camera().mOcclusionOccluderShrinkFactor;
+        }
+
         for (const auto& pair : nodes)
         {
             const osg::Node* cnode = pair.first;
@@ -851,6 +882,75 @@ namespace MWRender
                                           : osg::CopyOp::DEEP_COPY_NODES);
                 copyop.mDistances = lodDistances / ref.mScale;
                 copyop.copy(cnode, trans);
+
+                // Build occluder mesh for building-sized objects. Cache the simplified proxy
+                // in model-local space so repeated instances/chunks and future sessions can reuse it.
+                if (buildOccluders)
+                {
+                    float scaledRadius = cnode->getBound().radius() * ref.mScale;
+                    if (scaledRadius >= occluderMinRadius)
+                    {
+                        // Scale grid resolution with object size so grid cell size stays ~constant.
+                        // A small building uses base resolution; very large structures get more detail.
+                        int adaptiveRes = occluderMeshRes;
+                        if (scaledRadius > occluderMinRadius)
+                        {
+                            float scale = scaledRadius / occluderMinRadius;
+                            adaptiveRes = std::clamp(
+                                static_cast<int>(occluderMeshRes * scale), occluderMeshRes, occluderMaxMeshRes);
+                        }
+
+                        const int shrinkKey = OcclusionStorage::makeShrinkKey(occluderShrinkFactor);
+                        const int scaleKey = static_cast<int>(ref.mScale * 1000.f + (ref.mScale >= 0.f ? 0.5f : -0.5f));
+                        std::string cacheKey = pair.second.mModel.value();
+                        cacheKey += "|paged|";
+                        cacheKey += activeGrid ? "active" : "distant";
+                        cacheKey += "|lod=" + std::to_string(static_cast<unsigned int>(lod));
+                        cacheKey += "|scale=" + std::to_string(scaleKey);
+
+                        OccluderMesh localMesh;
+                        bool cacheHit = false;
+                        if (mOcclusionStorage && mOcclusionStorage->isOpen() && !cacheKey.empty())
+                            cacheHit = mOcclusionStorage->get(cacheKey, adaptiveRes, shrinkKey, localMesh);
+
+                        if (!cacheHit)
+                        {
+                            if (mOcclusionStorage && mOcclusionStorage->isOpen())
+                                mOcclusionStorage->recordMiss();
+
+                            // Reproduce the same CopyOp filtering/LOD selection as the rendered paged object,
+                            // but omit this particular instance transform so the result is reusable.
+                            osg::ref_ptr<osg::Group> localProxySource = new osg::Group;
+                            copyop.copy(cnode, localProxySource);
+                            localMesh = buildSimplifiedMesh(localProxySource, adaptiveRes, occluderShrinkFactor);
+
+                            if (mOcclusionStorage && mOcclusionStorage->isOpen() && !cacheKey.empty())
+                                mOcclusionStorage->put(cacheKey, adaptiveRes, shrinkKey, localMesh);
+                        }
+
+                        if (!localMesh.indices.empty())
+                        {
+                            // Apply this reference's transform to the cached local-space proxy, then
+                            // offset the chunk-relative position into world space.
+                            osg::Matrixf localToChunk = osg::Matrixf::identity();
+                            localToChunk.preMultTranslate(nodePos);
+                            localToChunk.preMultRotate(nodeAttitude);
+                            localToChunk.preMultScale(nodeScale);
+
+                            OccluderMesh occMesh;
+                            occMesh.indices = localMesh.indices;
+                            occMesh.vertices.reserve(localMesh.vertices.size());
+                            for (const auto& v : localMesh.vertices)
+                            {
+                                osg::Vec3f worldVertex = v * localToChunk;
+                                worldVertex += worldCenter;
+                                occMesh.vertices.push_back(worldVertex);
+                                occMesh.aabb.expandBy(worldVertex);
+                            }
+                            pagedOccluderData->mOccluderMeshes.push_back(std::move(occMesh));
+                        }
+                    }
+                }
 
                 if (activeGrid)
                 {
@@ -938,6 +1038,15 @@ namespace MWRender
             group->addCullCallback(new SceneUtil::LightListCallback);
         }
         udc->addUserObject(templateRefs);
+        if (pagedOccluderData && !pagedOccluderData->mOccluderMeshes.empty())
+        {
+            udc->addUserObject(pagedOccluderData);
+            if (mOcclusionCuller)
+            {
+                float maxDist = Settings::camera().mOcclusionOccluderMaxDistance;
+                group->addCullCallback(new PagedOccluderCallback(mOcclusionCuller, maxDist, mMaxTriangles));
+            }
+        }
 
         return group;
     }

@@ -247,6 +247,11 @@ namespace MWWorld
 
         mRendering = std::make_unique<MWRender::RenderingManager>(
             viewer, rootNode, mResourceSystem, workQueue, *mNavigator, mGroundcoverStore, unrefQueue);
+        if (Settings::camera().mOcclusionCulling)
+        {
+            const std::filesystem::path cachePath = mUserDataPath / "occlusion-mesh-cache.sqlite";
+            mRendering->setOcclusionCachePath(Files::pathToUnicodeString(cachePath));
+        }
         mProjectileManager = std::make_unique<ProjectileManager>(
             mRendering->getLightRoot()->asGroup(), mResourceSystem, mRendering.get(), mPhysics.get());
         mRendering->preloadCommonAssets();
