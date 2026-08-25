@@ -103,13 +103,38 @@ set(V3_RAF_PBR_PARTS
     part06.b64
     part07.b64
 )
+set(V3_RAF_PBR_PART_LENGTHS
+    8000
+    8000
+    8000
+    8000
+    8000
+    8000
+    8000
+    4992
+)
 
+# Each chunk has a fixed expected payload length. Truncate any accidental bytes
+# appended by transport, while still rejecting truncated chunks. The SHA-256 of
+# the decoded archive below remains the authoritative integrity check, so any
+# modification inside the real payload still fails configuration.
 set(_v3_raf_pbr_base64 "")
-foreach(_v3_raf_pbr_part IN LISTS V3_RAF_PBR_PARTS)
+list(LENGTH V3_RAF_PBR_PARTS _v3_raf_pbr_part_count)
+math(EXPR _v3_raf_pbr_last_part "${_v3_raf_pbr_part_count} - 1")
+foreach(_v3_raf_pbr_index RANGE 0 ${_v3_raf_pbr_last_part})
+    list(GET V3_RAF_PBR_PARTS ${_v3_raf_pbr_index} _v3_raf_pbr_part)
+    list(GET V3_RAF_PBR_PART_LENGTHS ${_v3_raf_pbr_index} _v3_raf_pbr_expected_length)
     set(_v3_raf_pbr_part_path "${CMAKE_CURRENT_SOURCE_DIR}/v3overlay/${_v3_raf_pbr_part}")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_v3_raf_pbr_part_path}")
     file(READ "${_v3_raf_pbr_part_path}" _v3_raf_pbr_part_data)
-    string(APPEND _v3_raf_pbr_base64 "${_v3_raf_pbr_part_data}")
+    string(LENGTH "${_v3_raf_pbr_part_data}" _v3_raf_pbr_actual_length)
+    if (_v3_raf_pbr_actual_length LESS _v3_raf_pbr_expected_length)
+        message(FATAL_ERROR
+            "V3 Rafael PBR overlay chunk ${_v3_raf_pbr_part} is truncated: "
+            "expected at least ${_v3_raf_pbr_expected_length} bytes, got ${_v3_raf_pbr_actual_length}")
+    endif()
+    string(SUBSTRING "${_v3_raf_pbr_part_data}" 0 ${_v3_raf_pbr_expected_length} _v3_raf_pbr_part_payload)
+    string(APPEND _v3_raf_pbr_base64 "${_v3_raf_pbr_part_payload}")
 endforeach()
 
 set(_v3_raf_pbr_b64 "${CMAKE_CURRENT_BINARY_DIR}/v3-rafael-pbr-0.52-overlay.b64")
