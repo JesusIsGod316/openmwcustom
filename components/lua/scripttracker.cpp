@@ -1,6 +1,8 @@
 #include "scripttracker.hpp"
 
 #include <algorithm>
+#include <cstddef>
+#include <utility>
 
 namespace LuaUtil
 {
