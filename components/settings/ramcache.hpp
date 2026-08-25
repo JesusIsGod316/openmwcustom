@@ -228,9 +228,10 @@ namespace Settings::RamCache
         return true;
     }
 
-    // Optional V3 walking-stutter experiment. It never changes required nearby
-    // cell loading. It only limits bursts of speculative distant object/grass
-    // page construction when the preceding frame was already over budget.
+    // Optional V3 walking-stutter experiment. It only paces predictive cell
+    // preload scheduling after an already-slow frame. Required cell/terrain/
+    // object/groundcover rendering is never skipped or replaced with an empty
+    // page, so enabling it cannot intentionally reduce visual coverage.
     inline bool adaptiveStreamingEnabled()
     {
         return cells().mV3StreamingScheduler == "adaptive";
@@ -239,16 +240,6 @@ namespace Settings::RamCache
     inline float streamingTargetFrameMs()
     {
         return static_cast<float>(cells().mV3StreamingTargetFrametime);
-    }
-
-    inline int streamingDistantObjectChunkLimit()
-    {
-        return static_cast<int>(cells().mV3StreamingDistantObjectChunkLimit);
-    }
-
-    inline int streamingGroundcoverChunkLimit()
-    {
-        return static_cast<int>(cells().mV3StreamingGroundcoverChunkLimit);
     }
 }
 
