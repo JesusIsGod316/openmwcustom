@@ -79,6 +79,10 @@ runtime_safety = Path(__file__).with_name("apply_runtime_safety_audit.py")
 exec(compile(runtime_safety.read_text(encoding="utf-8"), str(runtime_safety), "exec"),
     {"__file__": str(runtime_safety), "__name__": "__main__"})
 
+prepared_generation_safety = Path(__file__).with_name("apply_prepared_generation_safety.py")
+exec(compile(prepared_generation_safety.read_text(encoding="utf-8"), str(prepared_generation_safety), "exec"),
+    {"__file__": str(prepared_generation_safety), "__name__": "__main__"})
+
 generated_cpp_safety = Path(__file__).with_name("apply_generated_cpp_string_safety.py")
 exec(compile(generated_cpp_safety.read_text(encoding="utf-8"), str(generated_cpp_safety), "exec"), {"__file__": str(generated_cpp_safety), "__name__": "__main__"})
 
