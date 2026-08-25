@@ -68,5 +68,8 @@ exec(compile(metrics.read_text(encoding="utf-8"), str(metrics), "exec"), {"__fil
 telemetry_safety = Path(__file__).with_name("apply_telemetry_safety.py")
 exec(compile(telemetry_safety.read_text(encoding="utf-8"), str(telemetry_safety), "exec"), {"__file__": str(telemetry_safety), "__name__": "__main__"})
 
+launcher_safety = Path(__file__).with_name("apply_launcher_safety.py")
+exec(compile(launcher_safety.read_text(encoding="utf-8"), str(launcher_safety), "exec"), {"__file__": str(launcher_safety), "__name__": "__main__"})
+
 packaging = Path(__file__).with_name("apply_lab_packaging.py")
 exec(compile(packaging.read_text(encoding="utf-8"), str(packaging), "exec"), {"__file__": str(packaging), "__name__": "__main__"})
