@@ -14,16 +14,36 @@ namespace Settings::RamCache
         Normal,
         Aggressive,
         Extreme,
+        Overdrive,
+    };
+
+    enum class OverdrivePreload
+    {
+        Balanced,
+        Aggressive,
+        Maximum,
     };
 
     inline Mode mode()
     {
         const std::string value = cells().mRamCacheMode;
+        if (value == "overdrive")
+            return Mode::Overdrive;
         if (value == "extreme")
             return Mode::Extreme;
         if (value == "aggressive")
             return Mode::Aggressive;
         return Mode::Normal;
+    }
+
+    inline OverdrivePreload overdrivePreload()
+    {
+        const std::string value = cells().mRamCacheOverdrivePreload;
+        if (value == "maximum")
+            return OverdrivePreload::Maximum;
+        if (value == "aggressive")
+            return OverdrivePreload::Aggressive;
+        return OverdrivePreload::Balanced;
     }
 
     inline std::string_view name()
@@ -34,14 +54,29 @@ namespace Settings::RamCache
                 return "aggressive";
             case Mode::Extreme:
                 return "extreme";
+            case Mode::Overdrive:
+                return "overdrive";
             case Mode::Normal:
             default:
                 return "normal";
         }
     }
 
-    // Presets are implemented as floors, not hard overrides. Users who already
-    // specify even larger cache values keep those values. "normal" changes
+    inline std::string_view overdrivePreloadName()
+    {
+        switch (overdrivePreload())
+        {
+            case OverdrivePreload::Aggressive:
+                return "aggressive";
+            case OverdrivePreload::Maximum:
+                return "maximum";
+            case OverdrivePreload::Balanced:
+            default:
+                return "balanced";
+        }
+    }
+
+    // Presets are implemented as floors, not hard caps. "normal" changes
     // nothing and therefore preserves upstream OpenMW behavior exactly.
     inline int preloadCellCacheMin()
     {
@@ -52,6 +87,17 @@ namespace Settings::RamCache
                 return std::max(configured, 32);
             case Mode::Extreme:
                 return std::max(configured, 64);
+            case Mode::Overdrive:
+                switch (overdrivePreload())
+                {
+                    case OverdrivePreload::Aggressive:
+                        return std::max(configured, 128);
+                    case OverdrivePreload::Maximum:
+                        return std::max(configured, 160);
+                    case OverdrivePreload::Balanced:
+                    default:
+                        return std::max(configured, 96);
+                }
             default:
                 return configured;
         }
@@ -66,6 +112,17 @@ namespace Settings::RamCache
                 return std::max(configured, 64);
             case Mode::Extreme:
                 return std::max(configured, 128);
+            case Mode::Overdrive:
+                switch (overdrivePreload())
+                {
+                    case OverdrivePreload::Aggressive:
+                        return std::max(configured, 224);
+                    case OverdrivePreload::Maximum:
+                        return std::max(configured, 256);
+                    case OverdrivePreload::Balanced:
+                    default:
+                        return std::max(configured, 192);
+                }
             default:
                 return configured;
         }
@@ -80,6 +137,8 @@ namespace Settings::RamCache
                 return std::max(configured, 120.f);
             case Mode::Extreme:
                 return std::max(configured, 600.f);
+            case Mode::Overdrive:
+                return std::max(configured, 1800.f);
             default:
                 return configured;
         }
@@ -94,9 +153,25 @@ namespace Settings::RamCache
                 return std::max(configured, 120.f);
             case Mode::Extreme:
                 return std::max(configured, 600.f);
+            case Mode::Overdrive:
+                return std::max(configured, 1800.f);
             default:
                 return configured;
         }
+    }
+
+    // These managers bypass ResourceSystem's common expiry policy upstream, so
+    // expose explicit effective delays for the optimization lab.
+    inline float terrainExpiryDelay() { return cacheExpiryDelay(); }
+    inline float objectPagingExpiryDelay() { return cacheExpiryDelay(); }
+    inline float groundcoverExpiryDelay() { return cacheExpiryDelay(); }
+
+    inline bool retainNifFiles()
+    {
+        // Raw parsed NIFs normally expire immediately after converted scene/
+        // collision objects are cached. Overdrive intentionally trades RAM for
+        // avoiding reparsing when paging systems request the same source again.
+        return mode() == Mode::Overdrive;
     }
 
     inline float predictionTime()
@@ -105,9 +180,19 @@ namespace Settings::RamCache
         switch (mode())
         {
             case Mode::Aggressive:
-                return std::max(configured, 2.f);
             case Mode::Extreme:
                 return std::max(configured, 2.f);
+            case Mode::Overdrive:
+                switch (overdrivePreload())
+                {
+                    case OverdrivePreload::Aggressive:
+                        return std::max(configured, 3.f);
+                    case OverdrivePreload::Maximum:
+                        return std::max(configured, 4.f);
+                    case OverdrivePreload::Balanced:
+                    default:
+                        return std::max(configured, 2.f);
+                }
             default:
                 return configured;
         }
@@ -115,7 +200,15 @@ namespace Settings::RamCache
 
     inline bool preloadInstances()
     {
-        return mode() == Mode::Normal ? static_cast<bool>(cells().mPreloadInstances) : true;
+        if (mode() == Mode::Normal)
+            return static_cast<bool>(cells().mPreloadInstances);
+
+        // Preserve the existing aggressive/extreme behavior. Overdrive's
+        // balanced policy still respects an explicit user choice, while its
+        // higher preload policies force pre-instancing on.
+        if (mode() == Mode::Overdrive && overdrivePreload() == OverdrivePreload::Balanced)
+            return static_cast<bool>(cells().mPreloadInstances);
+        return true;
     }
 }
 
