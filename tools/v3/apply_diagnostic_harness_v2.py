@@ -1,0 +1,36 @@
+from pathlib import Path
+
+base = Path(__file__).with_name("apply_diagnostic_harness.py")
+text = base.read_text(encoding="utf-8")
+old = '''replace_once(
+    "components/sceneutil/occlusionculling.hpp",
+    \'\'\'            mFrameActive = false;
+        }
+
+        unsigned int getNumOccluded() const\'\'\',
+    \'\'\'            if (mDetailedTelemetryEnabled)
+                writeDetailedTelemetryRow();
+
+            mFrameActive = false;
+        }
+
+        unsigned int getNumOccluded() const\'\'\'
+)'''
+new = '''replace_once(
+    "components/sceneutil/occlusionculling.hpp",
+    \'\'\'            mFrameActive = false;
+        }
+
+        void setTelemetryFrameNumber\'\'\',
+    \'\'\'            if (mDetailedTelemetryEnabled)
+                writeDetailedTelemetryRow();
+
+            mFrameActive = false;
+        }
+
+        void setTelemetryFrameNumber\'\'\'
+)'''
+if old not in text:
+    raise RuntimeError("Unable to patch V3 harness ordering fix")
+text = text.replace(old, new, 1)
+exec(compile(text, str(base), "exec"), {"__file__": str(base), "__name__": "__main__"})
