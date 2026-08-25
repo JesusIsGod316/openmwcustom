@@ -20,8 +20,23 @@ replace_once(
 #include <components/debug/v3diagnostics.hpp>''',
 )
 
-# Source/template creation occurs on a shader-cache miss. Quick cache hits stay
-# effectively free because the timer is only installed after the miss is known.
+# File/include parsing is separate from define/variant generation, so a trace
+# can distinguish VFS/source preparation from the later GL compile/link stall.
+replace_once(
+    "components/shader/shadermanager.cpp",
+    '''        if (templateIt == mShaderTemplates.end())
+        {
+            std::filesystem::path path = mPath / templateName;''',
+    '''        if (templateIt == mShaderTemplates.end())
+        {
+            Debug::V3Diagnostics::TraceScope trace("render", "shader_template_load", templateName, 0.1);
+            Debug::V3Diagnostics::ScopedCsvTimer timer(
+                Debug::V3Diagnostics::renderWriter(), "shader_template_load", templateName, 0.1);
+            std::filesystem::path path = mPath / templateName;''',
+)
+
+# Shader-variant generation occurs only on a shader-cache miss. Quick cache
+# hits stay effectively free because the timer is only installed after the miss.
 replace_once(
     "components/shader/shadermanager.cpp",
     '''        ShaderMap::iterator shaderIt = mShaders.find(std::make_pair(templateName, defines));
