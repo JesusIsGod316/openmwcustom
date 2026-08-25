@@ -37,3 +37,6 @@ exec(compile(text, str(base), "exec"), {"__file__": str(base), "__name__": "__ma
 
 extra = Path(__file__).with_name("apply_diagnostic_harness_extra.py")
 exec(compile(extra.read_text(encoding="utf-8"), str(extra), "exec"), {"__file__": str(extra), "__name__": "__main__"})
+
+lab = Path(__file__).with_name("apply_optimization_lab.py")
+exec(compile(lab.read_text(encoding="utf-8"), str(lab), "exec"), {"__file__": str(lab), "__name__": "__main__"})
