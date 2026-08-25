@@ -53,5 +53,8 @@ exec(compile(safety.read_text(encoding="utf-8"), str(safety), "exec"), {"__file_
 render = Path(__file__).with_name("apply_render_futureproof_lab.py")
 exec(compile(render.read_text(encoding="utf-8"), str(render), "exec"), {"__file__": str(render), "__name__": "__main__"})
 
+shader = Path(__file__).with_name("apply_shader_compile_lab.py")
+exec(compile(shader.read_text(encoding="utf-8"), str(shader), "exec"), {"__file__": str(shader), "__name__": "__main__"})
+
 metrics = Path(__file__).with_name("apply_futureproof_metrics.py")
 exec(compile(metrics.read_text(encoding="utf-8"), str(metrics), "exec"), {"__file__": str(metrics), "__name__": "__main__"})
