@@ -50,6 +50,9 @@ exec(compile(hitch.read_text(encoding="utf-8"), str(hitch), "exec"), {"__file__"
 safety = Path(__file__).with_name("apply_hitch_frametime_safety.py")
 exec(compile(safety.read_text(encoding="utf-8"), str(safety), "exec"), {"__file__": str(safety), "__name__": "__main__"})
 
+workqueue_safety = Path(__file__).with_name("apply_workqueue_telemetry_safety.py")
+exec(compile(workqueue_safety.read_text(encoding="utf-8"), str(workqueue_safety), "exec"), {"__file__": str(workqueue_safety), "__name__": "__main__"})
+
 render = Path(__file__).with_name("apply_render_futureproof_lab.py")
 exec(compile(render.read_text(encoding="utf-8"), str(render), "exec"), {"__file__": str(render), "__name__": "__main__"})
 
