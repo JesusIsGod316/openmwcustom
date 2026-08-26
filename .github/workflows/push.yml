@@ -15,13 +15,13 @@ on:
     branches:
       - v3.2-performance
       - v3.3-framepacing-gpu
+      - v3.4-occlusion-shadows
 
 env:
   BUILD_TYPE: RelWithDebInfo
 
 jobs:
-  # This is intentionally only a fast source-generation/Python sanity gate.
-  # V3.2 is a Windows build; MSVC/Windows is the sole C++ compatibility target.
+  # Fast generated-source/Python gate. Windows/MSVC remains the actual compatibility target.
   Preflight:
     if: ${{ github.event_name == 'push' || inputs.mode == 'preflight' }}
     runs-on: ubuntu-latest
@@ -73,6 +73,11 @@ jobs:
           grep -n "FrameTailStage::UpdateTraversal" apps/openmw/engine.cpp
           grep -n "nvmlDeviceGetMemoryInfo" components/debug/v3gpumemory.hpp
           grep -n "OPENMW_V33_FRAME_SUMMARY_FILE" components/debug/v33framestats.hpp
+          echo '--- V3.4 occlusion/shadow markers ---'
+          grep -n "mV34BroadenOcclusion" components/settings/categories/camera.hpp
+          grep -n "v34RasterizedAsOccluder" apps/openmw/mwrender/occlusionculling.cpp
+          grep -n "std::clamp(divisor, 1u, 4u)" components/sceneutil/mwshadowtechnique.cpp
+          grep -n "Unified V3.4 benchmark" tools/v3/launchers/V3_Lab.ps1
 
       - name: Parse-check V3 PowerShell launcher
         shell: pwsh
