@@ -46,7 +46,13 @@ jobs:
           #include "components/debug/v3diagnostics.hpp"
           int main() { return 0; }
           EOF
-          g++ -std=c++20 -I. -Wall -Wextra -Werror -fsyntax-only /tmp/v3_diagnostics_check.cpp
+          # Keep real warnings fatal, but do not fail this lightweight Linux
+          # syntax check on libstdc++'s deprecation of std::filesystem::u8path.
+          # OpenMW already uses u8path in the proven Windows code path and this
+          # preflight is intended to catch V3 syntax/type mistakes, not force a
+          # cross-platform filesystem API refactor.
+          g++ -std=c++20 -I. -Wall -Wextra -Werror -Wno-error=deprecated-declarations \
+            -fsyntax-only /tmp/v3_diagnostics_check.cpp
 
       - name: Validate generated source diff
         shell: bash
