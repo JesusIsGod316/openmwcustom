@@ -70,10 +70,12 @@ replace_once(
 
 
 # ---------------------------------------------------------------------------
-# V3 work-queue telemetry calls getNumActiveThreads() from worker threads.
-# Upstream implements that by walking mThreads, while stop() clears mThreads
-# outside the queue mutex in order to join workers safely. Maintain an atomic
-# count with identical meaning so profiling can safely query it during shutdown.
+# Work-queue CSV telemetry used getNumActiveThreads() from worker threads.
+# Upstream implements that by iterating mThreads; stop() clears that vector while
+# workers are being joined, so worker-side reads are unsafe during shutdown.
+# Keep upstream getNumActiveThreads() completely unchanged and maintain a V3-only
+# atomic count only while OPENMW_V3_WORKQUEUE_FILE is enabled. Normal gameplay
+# therefore pays no per-job atomic bookkeeping and keeps upstream semantics.
 # ---------------------------------------------------------------------------
 replace_once(
     "components/sceneutil/workqueue.hpp",
@@ -85,43 +87,18 @@ replace_once(
         friend class WorkThread;
     };''',
 )
+
+# Add-work telemetry runs as a WorkQueue member, so it can read the private
+# atomic directly without walking mThreads.
 replace_once(
     "components/sceneutil/workqueue.cpp",
-    '''    size_t WorkQueue::getNumActiveThreads() const
-    {
-        return std::accumulate(
-            mThreads.begin(), mThreads.end(), 0u, [](auto r, const auto& t) { return r + t->isActive(); });
-    }''',
-    '''    size_t WorkQueue::getNumActiveThreads() const
-    {
-        return mV3ActiveThreads.load(std::memory_order_relaxed);
-    }''',
-)
-replace_once(
-    "components/sceneutil/workqueue.cpp",
-    '''            mActive = true;
-
-            auto& writer = Debug::V3Diagnostics::workQueueWriter();''',
-    '''            mActive = true;
-            mWorkQueue->mV3ActiveThreads.fetch_add(1, std::memory_order_relaxed);
-
-            auto& writer = Debug::V3Diagnostics::workQueueWriter();''',
-)
-replace_once(
-    "components/sceneutil/workqueue.cpp",
-    '''            }
-            mActive = false;
-        }
-    }''',
-    '''            }
-            mActive = false;
-            mWorkQueue->mV3ActiveThreads.fetch_sub(1, std::memory_order_relaxed);
-        }
-    }''',
+    '''                << Debug::V3Diagnostics::csvQuote(typeName) << ',' << queueDepth << ',' << getNumActiveThreads() << ",0";''',
+    '''                << Debug::V3Diagnostics::csvQuote(typeName) << ',' << queueDepth << ','
+                << mV3ActiveThreads.load(std::memory_order_relaxed) << ",0";''',
 )
 
-# A trace-only capture should still know the work-item type even if the separate
-# workqueue CSV is disabled.
+# A trace-only capture should still know the work-item type. Active-worker
+# bookkeeping is needed only for the separate workqueue CSV rows.
 replace_once(
     "components/sceneutil/workqueue.cpp",
     '''            auto& writer = Debug::V3Diagnostics::workQueueWriter();
@@ -133,10 +110,36 @@ replace_once(
     '''            auto& writer = Debug::V3Diagnostics::workQueueWriter();
             const bool profile = writer.enabled();
             const bool traceProfile = Debug::V3Diagnostics::traceWriter().enabled();
+            if (profile)
+                mWorkQueue->mV3ActiveThreads.fetch_add(1, std::memory_order_relaxed);
             const std::uintptr_t itemId = reinterpret_cast<std::uintptr_t>(item.get());
             const std::string typeName = (profile || traceProfile) ? typeid(*item).name() : std::string();
             const auto start = profile ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
             Debug::V3Diagnostics::TraceScope trace("workqueue", typeName, std::to_string(itemId), 0.05);''',
+)
+replace_once(
+    "components/sceneutil/workqueue.cpp",
+    '''                    << mWorkQueue->getNumActiveThreads() << ",0";''',
+    '''                    << mWorkQueue->mV3ActiveThreads.load(std::memory_order_relaxed) << ",0";''',
+)
+replace_once(
+    "components/sceneutil/workqueue.cpp",
+    '''                    << mWorkQueue->getNumActiveThreads() << ',' << std::fixed << std::setprecision(3) << durationMs;''',
+    '''                    << mWorkQueue->mV3ActiveThreads.load(std::memory_order_relaxed) << ',' << std::fixed
+                    << std::setprecision(3) << durationMs;''',
+)
+replace_once(
+    "components/sceneutil/workqueue.cpp",
+    '''            }
+            mActive = false;
+        }
+    }''',
+    '''            }
+            if (profile)
+                mWorkQueue->mV3ActiveThreads.fetch_sub(1, std::memory_order_relaxed);
+            mActive = false;
+        }
+    }''',
 )
 
 
@@ -195,16 +198,22 @@ checks = {
          "manual dangling-prone insertion accumulator restore returned"),
     ],
     "components/sceneutil/workqueue.cpp": [
-        ("return mV3ActiveThreads.load(std::memory_order_relaxed);", True,
-         "atomic work-queue active counter missing"),
-        ("mThreads.begin(), mThreads.end()", False,
-         "worker telemetry can still iterate the mutable thread vector"),
+        ("mThreads.begin(), mThreads.end()", True,
+         "upstream getNumActiveThreads implementation was unexpectedly replaced"),
+        ("mV3ActiveThreads.load(std::memory_order_relaxed)", True,
+         "V3 worker telemetry is missing its shutdown-safe active count"),
+        ("mWorkQueue->getNumActiveThreads()", False,
+         "worker telemetry still calls the shutdown-sensitive upstream counter"),
+        ("if (profile)\n                mWorkQueue->mV3ActiveThreads.fetch_add", True,
+         "V3 active-worker bookkeeping is not gated by workqueue profiling"),
         ("const bool traceProfile = Debug::V3Diagnostics::traceWriter().enabled();", True,
          "trace-only work-item typing missing"),
     ],
     "components/resource/scenemanager.cpp": [
         ("!prepared || prepared->getNumChildrenRequiringUpdateTraversal() != 0", True,
          "prepared clone post-validation missing"),
+        ("if (!sceneTemplate || sceneTemplate->getNumChildrenRequiringUpdateTraversal() != 0)", True,
+         "prepared template null/update guard missing"),
     ],
 }
 
