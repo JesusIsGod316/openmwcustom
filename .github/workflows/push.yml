@@ -11,13 +11,16 @@ on:
         options:
           - preflight
           - full
+  push:
+    branches:
+      - v3.2-performance
 
 env:
   BUILD_TYPE: RelWithDebInfo
 
 jobs:
   Preflight:
-    if: ${{ inputs.mode == 'preflight' }}
+    if: ${{ github.event_name == 'push' || inputs.mode == 'preflight' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout exact branch head
@@ -95,7 +98,7 @@ jobs:
           if-no-files-found: error
 
   Windows:
-    if: ${{ inputs.mode == 'full' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
     uses: ./.github/workflows/windows.yml
     with:
       image: "2022"
