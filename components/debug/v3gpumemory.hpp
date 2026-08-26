@@ -11,11 +11,24 @@
 #include "v3diagnostics.hpp"
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
 #include <dxgi1_4.h>
+
+// windows.h still exposes legacy near/far macros. OpenMW uses near/far as
+// ordinary C++ parameter names in stereo and post-processing headers, so never
+// allow those Win32 compatibility macros to escape this helper.
+#ifdef near
+#undef near
+#endif
+#ifdef far
+#undef far
+#endif
 #endif
 
 namespace Debug::V3GpuMemory
