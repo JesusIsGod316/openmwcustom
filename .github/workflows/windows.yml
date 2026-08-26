@@ -42,7 +42,7 @@ jobs:
     - uses: actions/checkout@v6
 
     - name: Apply V3 diagnostic harness source patch
-      if: ${{ github.ref_name == 'v3-performance' }}
+      if: ${{ github.ref_name == 'v3-performance' || startsWith(github.ref_name, 'v3.') }}
       run: python tools/v3/apply_diagnostic_harness.py
 
     - shell: bash
