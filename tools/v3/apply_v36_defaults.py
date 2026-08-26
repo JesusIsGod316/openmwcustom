@@ -125,9 +125,11 @@ replace_exact(
 
 replace_exact(
     "apps/openmw/mwrender/renderingmanager.cpp",
-    '''#include <components/settings/categories/water.hpp>''',
-    '''#include <components/settings/categories/water.hpp>
-#include <components/settings/v36profile.hpp>''',
+    '''#include <components/settings/ramcache.hpp>
+#include <components/settings/values.hpp>''',
+    '''#include <components/settings/ramcache.hpp>
+#include <components/settings/v36profile.hpp>
+#include <components/settings/values.hpp>''',
 )
 replace_exact(
     "apps/openmw/mwrender/renderingmanager.cpp",
