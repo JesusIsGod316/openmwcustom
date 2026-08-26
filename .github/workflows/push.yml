@@ -42,11 +42,12 @@ jobs:
         run: |
           python3 tools/v3/apply_diagnostic_harness.py
 
-      - name: Syntax-check standalone V3 diagnostics helper
+      - name: Syntax-check standalone V3 diagnostics helpers
         shell: bash
         run: |
           cat > /tmp/v3_diagnostics_check.cpp <<'EOF'
           #include "components/debug/v3diagnostics.hpp"
+          #include "components/debug/v3gpumemory.hpp"
           int main() { return 0; }
           EOF
           # Keep real warnings fatal, but do not fail this lightweight Linux
@@ -70,6 +71,11 @@ jobs:
           grep -n "mPreparedInstanceGeneration" components/resource/scenemanager.cpp
           grep -n "v3PostFxWriter.writeLine" apps/openmw/mwrender/pingpongcanvas.cpp
           grep -n "mPhase(mEnabled ? phase" components/debug/v3diagnostics.hpp
+          echo '--- V3.2 foundation markers ---'
+          grep -n "mV32GpuMemoryTelemetry" components/settings/categories/cells.hpp
+          grep -n "gpuMemoryWriter" components/debug/v3diagnostics.hpp
+          grep -n "v3gpumemory.hpp" apps/openmw/mwrender/renderingmanager.cpp
+          grep -n "adaptiveStreamingV2Enabled" components/settings/ramcache.hpp
 
       - name: Parse-check V3 PowerShell launcher
         shell: pwsh
