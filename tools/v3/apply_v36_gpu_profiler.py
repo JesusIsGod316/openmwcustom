@@ -31,12 +31,14 @@ write_new(
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <iomanip>
 #include <map>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <osg/Camera>
 #include <osg/GLExtensions>

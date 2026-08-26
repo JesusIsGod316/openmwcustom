@@ -66,6 +66,31 @@ endif()
     cmake.write_text(text, encoding="utf-8", newline="\n")
 
 # Validate the fully transformed source tree, then preserve exactly what the build will compile.
+# Intent-to-add makes generated new headers part of git diff without staging their contents. Without this, the
+# applied-source artifact would silently omit files that are nevertheless present during the CI compile.
+generated_new_files = [
+    "components/debug/v36controllertrace.hpp",
+    "components/debug/v36gpuprofiler.hpp",
+    "components/debug/v36luaaddscripttrace.hpp",
+    "components/debug/v36structuretrace.hpp",
+    "components/settings/v36profile.hpp",
+]
+subprocess.run(["git", "add", "--intent-to-add", "--", *generated_new_files], cwd=ROOT, check=True)
+
+required_markers = {
+    "components/settings/v36profile.hpp": "ramOverdriveEnabled",
+    "components/debug/v36gpuprofiler.hpp": "GL_QUERY_RESULT_AVAILABLE",
+    "components/debug/v36luaaddscripttrace.hpp": "OPENMW_V36_LUA_ADDSCRIPT_FILE",
+    "components/debug/v36controllertrace.hpp": "OPENMW_V36_CONTROLLER_FILE",
+    "components/debug/v36structuretrace.hpp": "OPENMW_V36_BATCHING_FILE",
+    "tools/v3/launchers/V3_Lab.ps1": "v36-true-custom-baseline",
+}
+for relative, marker_text in required_markers.items():
+    if marker_text not in (ROOT / relative).read_text(encoding="utf-8"):
+        raise RuntimeError(f"V3.6 generated-source marker missing: {relative}: {marker_text}")
+if "glFinish" in (ROOT / "components/debug/v36gpuprofiler.hpp").read_text(encoding="utf-8"):
+    raise RuntimeError("V3.6 asynchronous GPU profiler must not contain glFinish")
+
 subprocess.run(["git", "diff", "--check"], cwd=ROOT, check=True)
 
 patch = subprocess.run(

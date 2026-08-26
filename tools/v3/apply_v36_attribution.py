@@ -90,6 +90,10 @@ namespace Debug::V36LuaAddScriptTrace
             const double total = V3Diagnostics::elapsedMs(mStart);
             if (total < 0.25)
                 return;
+            // Module loads occur inside the top-level script call. Keep the CSV phases mutually exclusive.
+            const std::size_t moduleIndex = static_cast<std::size_t>(Phase::ModuleLoad);
+            const std::size_t bodyIndex = static_cast<std::size_t>(Phase::ScriptBody);
+            mPhases[bodyIndex] = std::max(0.0, mPhases[bodyIndex] - mPhases[moduleIndex]);
             double accounted = 0.0;
             for (double value : mPhases)
                 accounted += value;
@@ -591,15 +595,16 @@ replace_exact(
                 return;
             const unsigned int bytes = image->getTotalSizeInBytesIncludingMipmaps();
             totalBytes += bytes;
-            entries.push_back({ std::string(key.value()), bytes, image->s(), image->t(), image->getNumMipmapLevels(),
+            entries.push_back({ key, bytes, image->s(), image->t(), image->getNumMipmapLevels(),
                 image->isCompressed(), image->referenceCount(), lastUsage });
         });
         std::ranges::sort(entries, [](const Entry& left, const Entry& right) { return left.mBytes > right.mBytes; });
         constexpr double MiB = 1024.0 * 1024.0;
         const double totalMb = static_cast<double>(totalBytes) / MiB;
         std::ostringstream summary;
-        summary << frameNumber << ',' << Debug::V3Diagnostics::epochMs() << ",summary,\"\"," << std::fixed
-                << std::setprecision(3) << "0,0,0,0,0," << entries.size() << ",0," << totalMb;
+        summary << frameNumber << ',' << Debug::V3Diagnostics::epochMs() << ",summary,"
+                << Debug::V3Diagnostics::csvQuote("") << ',' << std::fixed << std::setprecision(3)
+                << "0,0,0,0,0," << entries.size() << ",0," << totalMb;
         v36Writer.writeLine(summary.str());
         const std::size_t limit = std::min<std::size_t>(entries.size(), 32);
         for (std::size_t i = 0; i < limit; ++i)

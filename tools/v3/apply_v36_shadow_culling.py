@@ -17,6 +17,14 @@ def replace_exact(rel, old, new, expected=1):
 
 replace_exact(
     "components/sceneutil/mwshadowtechnique.hpp",
+    '''#include <array>
+#include <mutex>''',
+    '''#include <algorithm>
+#include <array>
+#include <mutex>''',
+)
+replace_exact(
+    "components/sceneutil/mwshadowtechnique.hpp",
     '''        void setV36AsyncGpuProfiler(bool enabled) { _v36AsyncGpuProfiler = enabled; }''',
     '''        void setV36AsyncGpuProfiler(bool enabled) { _v36AsyncGpuProfiler = enabled; }
         void setV36FarCasterMinimumPixels(float pixels) { _v36FarCasterMinimumPixels = std::max(0.f, pixels); }
