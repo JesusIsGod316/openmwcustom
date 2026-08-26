@@ -92,7 +92,7 @@ jobs:
           grep -n "mV36PerformanceProfile" components/settings/categories/cells.hpp
           grep -n "ramOverdriveEnabled" components/settings/v36profile.hpp
           grep -n "GL_QUERY_RESULT_AVAILABLE" components/debug/v36gpuprofiler.hpp
-          grep -n "mV36FarCasterMinimumPixels" components/sceneutil/mwshadowtechnique.cpp
+          grep -n "getV36FarCasterMinimumPixels" components/sceneutil/mwshadowtechnique.cpp
           grep -n "mPagedEstimatedChildrenSkipped" components/sceneutil/occlusionculling.hpp
           grep -n "OPENMW_V36_LUA_ADDSCRIPT_FILE" components/debug/v36luaaddscripttrace.hpp
           grep -n "OPENMW_V36_CONTROLLER_FILE" components/debug/v36controllertrace.hpp
