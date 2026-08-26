@@ -836,9 +836,9 @@ Write-Host '  5 = Legacy Prepared Static Instances v1'
 Write-Host '  6 = Legacy Adaptive Scheduler v1'
 Write-Host '  7 = Legacy Prepared v1 + Adaptive v1'
 Write-Host '  8 = Hibernation + Adaptive v2 + Prepared v1'
-Write-Host '  9 = V3.3 predictive preload budget (2 new speculative cells/frame)'
-Write-Host ' 10 = V3.3 far-shadow reuse (every other eligible frame)'
-Write-Host ' 11 = V3.3 frame-pacing + GPU combined'
+Write-Host '  9 = V3.3 predictive preload budget (diagnostic; budget 2 rarely binds)'
+Write-Host ' 10 = V3.3 far-shadow reuse (requires actor and player shadows off)'
+Write-Host ' 11 = V3.3 combined legacy experiments (same limitations as 9 and 10)'
 do { $choice = Read-Host 'Enter 1 through 11' } until ($choice -in @('1','2','3','4','5','6','7','8','9','10','11'))
 switch ($choice) {
     '1' { $Experiment = 'baseline'; $Hibernation = 'false'; $Prepared = 'false'; $Scheduler = 'off' }
@@ -892,6 +892,9 @@ replace_once(
 }''',
     '''if ($Mode -eq 'City') {
     $env:OPENMW_V3_EVENT_FILE = Join-Path $ProfileDir 'v3-events.csv'
+    $env:OPENMW_V3_LUASYNC_FILE = Join-Path $ProfileDir 'v3-luasync.csv'
+    $env:OPENMW_V3_LUA_ACTION_FILE = Join-Path $ProfileDir 'v3-lua-actions.csv'
+    $env:OPENMW_V3_LUA_UPDATE_FILE = Join-Path $ProfileDir 'v3-lua-update.csv'
     $env:OPENMW_V3_PAGING_FILE = Join-Path $ProfileDir 'v3-paging.csv'
     $env:OPENMW_V3_RESOURCE_FILE = Join-Path $ProfileDir 'v3-resource.csv'
     $env:OPENMW_V3_INSERT_FILE = Join-Path $ProfileDir 'v3-insertion.csv'
