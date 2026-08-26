@@ -29,13 +29,18 @@ required = {
         ("setPreparedInstanceCacheLimit", "prepared-instance cache"),
         ("mPreparedInstanceEnabled.load(std::memory_order_acquire)", "disabled prepared-cache fast path"),
         ("mPreparedInstanceGeneration", "prepared-cache stale-work invalidation"),
+        ("if (!sceneTemplate || sceneTemplate->getNumChildrenRequiringUpdateTraversal() != 0)",
+         "prepared-template null/update guard"),
+        ("!prepared || prepared->getNumChildrenRequiringUpdateTraversal() != 0",
+         "prepared-clone post-validation"),
         ("scene_clone", "scene clone timing"),
         ("Prepared Instance Hit", "prepared-instance telemetry"),
     ],
     "components/sceneutil/workqueue.cpp": [
         ("workQueueWriter()", "work-queue CSV telemetry"),
         ("TraceScope trace(\"workqueue\"", "cross-thread work trace"),
-        ("mV3ActiveThreads", "shutdown-safe active-worker count"),
+        ("mV3ActiveThreads", "shutdown-safe profiler active-worker count"),
+        ("mThreads.begin(), mThreads.end()", "upstream normal active-thread stats path"),
     ],
     "apps/openmw/mwrender/objectpaging.cpp": [
         ("object_chunk_collect_refs", "object-page reference collection timing"),
@@ -59,10 +64,15 @@ required = {
         ("shader_source_create", "shader variant timing"),
         ("program_link_apply", "actual lazy GL link timing"),
         ("v3ProgramDetail", "local null-safe shader link detail"),
+        ("if (const osg::Shader* shader = getShader(i))", "null-safe attached-shader enumeration"),
     ],
     "components/debug/v3hitchtelemetry.hpp": [
         ("OPENMW_V3_FRAME_FILE", "every-frame telemetry"),
         ("AllFrameFlushInterval = 600", "low-perturbation frame buffering"),
+    ],
+    "components/debug/v3diagnostics.hpp": [
+        ("mPhase(mEnabled ? phase : std::string_view{})", "allocation-light disabled CSV scopes"),
+        ("mCategory(mEnabled ? category : std::string_view{})", "allocation-light disabled trace scopes"),
     ],
     "components/sceneutil/mwshadowtechnique.cpp": [
         ("OPENMW_V3_SHADOW_FILE", "shadow profiler"),
@@ -91,8 +101,20 @@ if 'setName("V3 PostFX' in postfx:
     problems.append("UNSAFE diagnostic PostFX StateSet mutation returned")
 
 shader = read("components/shader/shadermanager.cpp")
-if "program->setName(v3ProgramName)" in shader or "vertexShader->getName() + \" + \" + fragmentShader->getName()" in shader:
-    problems.append("UNSAFE shader-program diagnostic mutation/dereference returned")
+unsafe_shader_patterns = [
+    "program->setName(v3ProgramName)",
+    "vertexShader->getName()",
+    "fragmentShader->getName()",
+]
+for pattern in unsafe_shader_patterns:
+    if pattern in shader:
+        problems.append(f"UNSAFE shader diagnostic dereference/mutation returned: {pattern!r}")
+
+workqueue = read("components/sceneutil/workqueue.cpp")
+if "mWorkQueue->getNumActiveThreads()" in workqueue:
+    problems.append("UNSAFE worker-side traversal of WorkQueue::mThreads returned")
+if "if (profile)\n                mWorkQueue->mV3ActiveThreads.fetch_add" not in workqueue:
+    problems.append("V3 workqueue active count is no longer gated by workqueue profiling")
 
 if problems:
     raise RuntimeError("V3 feature-retention/safety preflight failed:\n" + "\n".join(problems))
