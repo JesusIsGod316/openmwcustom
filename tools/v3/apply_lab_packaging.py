@@ -67,6 +67,10 @@ v3.3 speculative preload budget = 0
 [Shadows]
 v3.3 far cascade update interval = 1
 v3.3 far cascade max texel drift = 0.75
+v3.3 far cascade resolution divisor = 1
+
+[Lua]
+v3.3 idle timer fast path = false
 
 Double-click launchers:
 - V3_City_Frametime.bat   : lightweight walking/cell-boundary frametime test
@@ -77,9 +81,9 @@ The City and Transition launchers temporarily standardize Overdrive settings,
 restore settings.cfg after OpenMW exits, create a hardware/build/settings
 manifest, and automatically ZIP the completed profile.
 
-City profiles include the three Lua detail streams so cell-grid hitch frames can
-be correlated with synchronous Lua work, delayed actions, and asynchronous Lua
-update phases without changing Lua scheduling or synchronization.
+City profiles include the existing Lua phase streams, thresholded callback
+attribution, and transition/navigation/trace streams so cell-grid hitch frames
+can be correlated without changing Lua scheduling or synchronization.
 
 Diagnostic streams supported by this build include:
 OPENMW_V3_FRAME_FILE
@@ -103,6 +107,7 @@ OPENMW_V3_SHADOW_FILE
 OPENMW_V3_TELEMETRY_FILE
 OPENMW_V32_GPU_MEMORY_FILE
 OPENMW_V33_FRAME_SUMMARY_FILE
+OPENMW_V33_LUA_CALLBACK_FILE
 OPENMW_OSG_STATS_FILE
 
 V3-applied-source.patch is the exact patch produced by the V3 harness before
