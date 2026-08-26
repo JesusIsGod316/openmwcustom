@@ -62,8 +62,8 @@ v3.5 allow dynamic far cascade reuse = false''',
 # static/dynamic split that does not yet exist.
 replace_exact(
     "tools/v3/launchers/V3_Lab.ps1",
-    '''Write-Host ' 20 = V3.5 dynamic far reuse + divisor 4 (far cascade interval 2)' ''',
-    '''Write-Host ' 20 = V3.5 bounded one-frame far reuse + divisor 4 (actor/player shadows stay enabled)' ''',
+    "Write-Host ' 20 = V3.5 dynamic far reuse + divisor 4 (far cascade interval 2)'",
+    "Write-Host ' 20 = V3.5 bounded one-frame far reuse + divisor 4 (actor/player shadows stay enabled)'",
 )
 replace_exact(
     "tools/v3/launchers/V3_Lab.ps1",
