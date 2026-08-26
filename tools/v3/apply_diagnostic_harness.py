@@ -107,5 +107,9 @@ v32_foundation = Path(__file__).with_name("apply_v32_foundation.py")
 exec(compile(v32_foundation.read_text(encoding="utf-8"), str(v32_foundation), "exec"),
     {"__file__": str(v32_foundation), "__name__": "__main__"})
 
+v32_hibernation = Path(__file__).with_name("apply_v32_hibernation.py")
+exec(compile(v32_hibernation.read_text(encoding="utf-8"), str(v32_hibernation), "exec"),
+    {"__file__": str(v32_hibernation), "__name__": "__main__"})
+
 packaging = Path(__file__).with_name("apply_lab_packaging.py")
 exec(compile(packaging.read_text(encoding="utf-8"), str(packaging), "exec"), {"__file__": str(packaging), "__name__": "__main__"})
