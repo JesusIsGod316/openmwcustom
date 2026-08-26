@@ -189,7 +189,7 @@ namespace Debug::V3GpuMemory
             return;
         }
 
-        constexpr std::uint64_t MiB = 1024ull * 1024ull;
+        constexpr std::uint64_t MiB = std::uint64_t{ 1024 } * std::uint64_t{ 1024 };
         const std::uint64_t configuredSoftBytes
             = static_cast<std::uint64_t>(std::max(configuredSoftBudgetMb, 1)) * MiB;
         const std::uint64_t configuredHardBytes
@@ -203,7 +203,7 @@ namespace Debug::V3GpuMemory
         std::uint64_t hardBytes
             = std::min(configuredHardBytes, static_cast<std::uint64_t>(sample.mBudgetBytes * 0.97));
         if (hardBytes <= softBytes)
-            hardBytes = std::min(sample.mBudgetBytes, softBytes + 128ull * MiB);
+            hardBytes = std::min<std::uint64_t>(sample.mBudgetBytes, softBytes + std::uint64_t{ 128 } * MiB);
 
         PressureState state = PressureState::Comfortable;
         if (sample.mUsageBytes >= hardBytes)
