@@ -113,9 +113,9 @@ replace_exact(
 
 replace_exact(
     "apps/openmw/mwlua/luamanagerimp.cpp",
-    '''#include <components/settings/categories/lua.hpp>''',
-    '''#include <components/settings/categories/lua.hpp>
-#include <components/settings/v36profile.hpp>''',
+    '''#include <components/settings/values.hpp>''',
+    '''#include <components/settings/v36profile.hpp>
+#include <components/settings/values.hpp>''',
 )
 replace_exact(
     "apps/openmw/mwlua/luamanagerimp.cpp",
