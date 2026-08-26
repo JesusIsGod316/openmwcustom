@@ -89,6 +89,10 @@ exec(compile(generated_cpp_safety.read_text(encoding="utf-8"), str(generated_cpp
 telemetry_safety = Path(__file__).with_name("apply_telemetry_safety.py")
 exec(compile(telemetry_safety.read_text(encoding="utf-8"), str(telemetry_safety), "exec"), {"__file__": str(telemetry_safety), "__name__": "__main__"})
 
+diagnostics_hotpath = Path(__file__).with_name("apply_diagnostics_hotpath_safety.py")
+exec(compile(diagnostics_hotpath.read_text(encoding="utf-8"), str(diagnostics_hotpath), "exec"),
+    {"__file__": str(diagnostics_hotpath), "__name__": "__main__"})
+
 feature_retention = Path(__file__).with_name("apply_feature_retention_preflight.py")
 exec(compile(feature_retention.read_text(encoding="utf-8"), str(feature_retention), "exec"),
     {"__file__": str(feature_retention), "__name__": "__main__"})
