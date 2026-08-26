@@ -135,7 +135,7 @@ replace_exact(
     "apps/openmw/mwrender/renderingmanager.cpp",
     '''Settings::camera().mV35CoarseChunkOcclusion''',
     '''Settings::V36Profile::coarseChunkOcclusionEnabled()''',
-    expected=4,
+    expected=5,
 )
 
 replace_exact(
