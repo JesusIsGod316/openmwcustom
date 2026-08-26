@@ -93,16 +93,19 @@ diagnostics_hotpath = Path(__file__).with_name("apply_diagnostics_hotpath_safety
 exec(compile(diagnostics_hotpath.read_text(encoding="utf-8"), str(diagnostics_hotpath), "exec"),
     {"__file__": str(diagnostics_hotpath), "__name__": "__main__"})
 
-v32_foundation = Path(__file__).with_name("apply_v32_foundation.py")
-exec(compile(v32_foundation.read_text(encoding="utf-8"), str(v32_foundation), "exec"),
-    {"__file__": str(v32_foundation), "__name__": "__main__"})
-
 feature_retention = Path(__file__).with_name("apply_feature_retention_preflight.py")
 exec(compile(feature_retention.read_text(encoding="utf-8"), str(feature_retention), "exec"),
     {"__file__": str(feature_retention), "__name__": "__main__"})
 
 launcher_safety = Path(__file__).with_name("apply_launcher_safety.py")
 exec(compile(launcher_safety.read_text(encoding="utf-8"), str(launcher_safety), "exec"), {"__file__": str(launcher_safety), "__name__": "__main__"})
+
+# V3.2 layers on top of all existing V3 runtime and launcher safety passes.
+# Keeping this late in the chain prevents new versioned features from changing
+# the matching context expected by the already-proven V3 safety patches.
+v32_foundation = Path(__file__).with_name("apply_v32_foundation.py")
+exec(compile(v32_foundation.read_text(encoding="utf-8"), str(v32_foundation), "exec"),
+    {"__file__": str(v32_foundation), "__name__": "__main__"})
 
 packaging = Path(__file__).with_name("apply_lab_packaging.py")
 exec(compile(packaging.read_text(encoding="utf-8"), str(packaging), "exec"), {"__file__": str(packaging), "__name__": "__main__"})
