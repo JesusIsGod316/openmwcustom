@@ -127,5 +127,12 @@ v33_framepacing_gpu = Path(__file__).with_name("apply_v33_framepacing_gpu.py")
 exec(compile(v33_framepacing_gpu.read_text(encoding="utf-8"), str(v33_framepacing_gpu), "exec"),
     {"__file__": str(v33_framepacing_gpu), "__name__": "__main__"})
 
+# The second V3.3 pass operates on the fully generated V3.3 tree. It adds two
+# independent, default-off experiments plus thresholded attribution for the
+# already-observed Lua tail and existing world-path diagnostic streams.
+v33_tail_gpu = Path(__file__).with_name("apply_v33_tail_gpu_experiments.py")
+exec(compile(v33_tail_gpu.read_text(encoding="utf-8"), str(v33_tail_gpu), "exec"),
+    {"__file__": str(v33_tail_gpu), "__name__": "__main__"})
+
 packaging = Path(__file__).with_name("apply_lab_packaging.py")
 exec(compile(packaging.read_text(encoding="utf-8"), str(packaging), "exec"), {"__file__": str(packaging), "__name__": "__main__"})
