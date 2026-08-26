@@ -174,6 +174,9 @@ replace_once(
     inline float streamingTargetFrameMs()''',
 )
 
+# Launcher edits intentionally run after the existing V3 launcher-safety patch.
+# That patch first establishes the restoration guard; V3.2 then layers GPU
+# sampling on top without weakening the original safety invariant.
 replace_once(
     "tools/v3/launchers/V3_Lab.ps1",
     '''    'OPENMW_V3_TRACE_FILE','OPENMW_V3_MSOC_DETAIL_FILE','OPENMW_V3_SHADOW_FILE','OPENMW_OSG_STATS_FILE','OPENMW_OSG_STATS_LIST'
@@ -200,6 +203,7 @@ replace_once(
     "tools/v3/launchers/V3_Lab.ps1",
     '''try {
     if ($Mode -ne 'Render') {
+        $changedSettings = $true
         Set-IniValue $SettingsPath 'Cells' 'ram cache mode' 'overdrive'
         Set-IniValue $SettingsPath 'Cells' 'ram cache overdrive preload' 'balanced'
         Set-IniValue $SettingsPath 'Cells' 'v3 streaming scheduler' $Scheduler''',
