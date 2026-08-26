@@ -19,6 +19,12 @@ v35 = Path(__file__).with_name("apply_v35_coarse_occlusion_shadow_lab.py")
 exec(compile(v35.read_text(encoding="utf-8"), str(v35), "exec"),
     {"__file__": str(v35), "__name__": "__main__"})
 
+# Final V3.5 safety pass: complete OcclusionCuller type in groundcover.cpp and clamp actor/player
+# far-cascade reuse to interval 2 (at most one rendered frame of stale dynamic far-shadow data).
+v35_safety = Path(__file__).with_name("apply_v35_safety.py")
+exec(compile(v35_safety.read_text(encoding="utf-8"), str(v35_safety), "exec"),
+    {"__file__": str(v35_safety), "__name__": "__main__"})
+
 # Install the V3 helper launchers and exact applied-source snapshot beside the
 # runtime executable. This script only runs through the V3 harness, so upstream/default builds are unaffected.
 cmake = ROOT / "CMakeLists.txt"
@@ -81,10 +87,10 @@ v3.5 coarse chunk occlusion = false
 
 V3.5 experiments are disabled by default. The unified launcher adds:
 - 19: coarse chunk MSOC. Uses tight AABBs to reject whole paged-object chunks and groundcover chunks while retaining the baseline 400/6144/30000 individual-occluder policy.
-- 20: bounded dynamic far-cascade reuse + divisor 4. Far cascade may reuse one prior frame when the existing camera/texel-drift guard permits it; actor/player shadows remain enabled.
+- 20: bounded one-frame far-cascade reuse + divisor 4. Far cascade may reuse exactly one prior rendered frame when the existing camera/texel-drift guard permits it; actor/player shadow settings stay enabled.
 - 21: coarse chunk MSOC + proven divisor-4 far cascade.
 - 22: coarse chunk MSOC + proven Lua idle-timer fast path.
-- 23: full V3.5 combined experiment: coarse chunk MSOC + Lua fast path + divisor-4 far cascade + bounded dynamic far reuse.
+- 23: full V3.5 combined experiment: coarse chunk MSOC + Lua fast path + divisor-4 far cascade + bounded one-frame far reuse.
 
 V3.4 option 15 remains available for comparison but is not part of V3.5 combinations because testing showed that simply doubling individual occluder work produced little GPU benefit.
 
