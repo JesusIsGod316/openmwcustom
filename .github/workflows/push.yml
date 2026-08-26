@@ -17,6 +17,7 @@ on:
       - v3.3-framepacing-gpu
       - v3.4-occlusion-shadows
       - v3.5-coarse-occlusion-shadow-cache
+      - v3.6-multipath-optimization
 
 env:
   BUILD_TYPE: RelWithDebInfo
@@ -87,6 +88,17 @@ jobs:
           grep -n "mV35AllowDynamicFarCascadeReuse" components/sceneutil/shadow.cpp
           grep -n "V35LuaLoadTrace::LoadScope" components/lua/scriptscontainer.cpp
           grep -n "benchmark_groundcover_density=1.0" tools/v3/launchers/V3_Lab.ps1
+          echo '--- V3.6 profile/profiler/attribution markers ---'
+          grep -n "mV36PerformanceProfile" components/settings/categories/cells.hpp
+          grep -n "ramOverdriveEnabled" components/settings/v36profile.hpp
+          grep -n "GL_QUERY_RESULT_AVAILABLE" components/debug/v36gpuprofiler.hpp
+          grep -n "mV36FarCasterMinimumPixels" components/sceneutil/mwshadowtechnique.cpp
+          grep -n "mPagedEstimatedChildrenSkipped" components/sceneutil/occlusionculling.hpp
+          grep -n "OPENMW_V36_LUA_ADDSCRIPT_FILE" components/debug/v36luaaddscripttrace.hpp
+          grep -n "OPENMW_V36_CONTROLLER_FILE" components/debug/v36controllertrace.hpp
+          grep -n "OPENMW_V36_RESIDENCY_FILE" components/resource/imagemanager.cpp
+          grep -n "OPENMW_V36_BATCHING_FILE" components/debug/v36structuretrace.hpp
+          grep -n "v36-true-custom-baseline" tools/v3/launchers/V3_Lab.ps1
 
       - name: Parse-check V3 PowerShell launcher
         shell: pwsh
