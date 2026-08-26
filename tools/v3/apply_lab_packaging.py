@@ -62,6 +62,11 @@ v3 streaming scheduler = off
 v3 streaming target frametime = 25
 v3 prepared instance cache = false
 v3 prepared instance cache max = 8192
+v3.3 speculative preload budget = 0
+
+[Shadows]
+v3.3 far cascade update interval = 1
+v3.3 far cascade max texel drift = 0.75
 
 Double-click launchers:
 - V3_City_Frametime.bat   : lightweight walking/cell-boundary frametime test
@@ -92,6 +97,8 @@ OPENMW_V3_LUA_ACTION_FILE
 OPENMW_V3_MSOC_DETAIL_FILE
 OPENMW_V3_SHADOW_FILE
 OPENMW_V3_TELEMETRY_FILE
+OPENMW_V32_GPU_MEMORY_FILE
+OPENMW_V33_FRAME_SUMMARY_FILE
 OPENMW_OSG_STATS_FILE
 
 V3-applied-source.patch is the exact patch produced by the V3 harness before

@@ -121,5 +121,11 @@ v32_renderer_profiling = Path(__file__).with_name("apply_v32_renderer_profiling.
 exec(compile(v32_renderer_profiling.read_text(encoding="utf-8"), str(v32_renderer_profiling), "exec"),
     {"__file__": str(v32_renderer_profiling), "__name__": "__main__"})
 
+# V3.3 stays a final, independently switchable layer. It consumes the complete
+# generated V3/V3.2 tree and leaves every new runtime behavior disabled by default.
+v33_framepacing_gpu = Path(__file__).with_name("apply_v33_framepacing_gpu.py")
+exec(compile(v33_framepacing_gpu.read_text(encoding="utf-8"), str(v33_framepacing_gpu), "exec"),
+    {"__file__": str(v33_framepacing_gpu), "__name__": "__main__"})
+
 packaging = Path(__file__).with_name("apply_lab_packaging.py")
 exec(compile(packaging.read_text(encoding="utf-8"), str(packaging), "exec"), {"__file__": str(packaging), "__name__": "__main__"})

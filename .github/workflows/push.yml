@@ -66,6 +66,12 @@ jobs:
           grep -n "v32RendererInsertionWriter" apps/openmw/mwworld/scene.cpp
           grep -n "beginExteriorHibernation" apps/openmw/mwrender/renderingmanager.cpp
           grep -n "consumeRestoredExteriorObject" apps/openmw/mwworld/scene.cpp
+          echo '--- V3.3 frame-pacing/GPU markers ---'
+          grep -n "v33_speculative_preload" apps/openmw/mwworld/scene.cpp
+          grep -n "v33ReuseFarCascade" components/sceneutil/mwshadowtechnique.cpp
+          grep -n "FrameTailStage::UpdateTraversal" apps/openmw/engine.cpp
+          grep -n "nvmlDeviceGetMemoryInfo" components/debug/v3gpumemory.hpp
+          grep -n "OPENMW_V33_FRAME_SUMMARY_FILE" components/debug/v33framestats.hpp
 
       - name: Parse-check V3 PowerShell launcher
         shell: pwsh

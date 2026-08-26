@@ -49,6 +49,13 @@ namespace Debug::V3GpuMemory
         std::uint64_t mCurrentReservationBytes = 0;
     };
 
+    struct AdapterSample
+    {
+        std::uint64_t mUsedBytes = 0;
+        std::uint64_t mFreeBytes = 0;
+        std::uint64_t mTotalBytes = 0;
+    };
+
 #ifdef _WIN32
     class DxgiSampler
     {
@@ -144,11 +151,120 @@ namespace Debug::V3GpuMemory
         HMODULE mDxgi = nullptr;
         IDXGIAdapter3* mAdapter = nullptr;
     };
+
+    // NVML is deliberately discovered at runtime. OpenMW neither links against
+    // it nor requires NVIDIA's SDK or driver DLL to be present.
+    class NvmlSampler
+    {
+    public:
+        ~NvmlSampler()
+        {
+            if (mInitialized && mShutdown)
+                mShutdown();
+            if (mNvml)
+                FreeLibrary(mNvml);
+        }
+
+        bool query(AdapterSample& sample)
+        {
+            if (!initialize() || !mMemoryInfo)
+                return false;
+
+            NvmlMemory memory{};
+            if (mMemoryInfo(mDevice, &memory) != NvmlSuccess)
+                return false;
+
+            sample.mUsedBytes = memory.mUsed;
+            sample.mFreeBytes = memory.mFree;
+            sample.mTotalBytes = memory.mTotal;
+            return sample.mTotalBytes != 0;
+        }
+
+    private:
+        static constexpr int NvmlSuccess = 0;
+        struct NvmlDevice;
+        using DeviceHandle = NvmlDevice*;
+        struct NvmlMemory
+        {
+            unsigned long long mTotal;
+            unsigned long long mFree;
+            unsigned long long mUsed;
+        };
+
+        using Init = int (*)();
+        using Shutdown = int (*)();
+        using DeviceGetCount = int (*)(unsigned int*);
+        using DeviceGetHandleByIndex = int (*)(unsigned int, DeviceHandle*);
+        using DeviceGetMemoryInfo = int (*)(DeviceHandle, NvmlMemory*);
+
+        template <class T>
+        T load(const char* name)
+        {
+            return reinterpret_cast<T>(GetProcAddress(mNvml, name));
+        }
+
+        bool initialize()
+        {
+            if (mAttempted)
+                return mInitialized && mDevice != nullptr;
+            mAttempted = true;
+
+            mNvml = LoadLibraryW(L"nvml.dll");
+            if (!mNvml)
+                return false;
+
+            const Init init = load<Init>("nvmlInit_v2");
+            mShutdown = load<Shutdown>("nvmlShutdown");
+            const DeviceGetCount getCount = load<DeviceGetCount>("nvmlDeviceGetCount_v2");
+            const DeviceGetHandleByIndex getHandle
+                = load<DeviceGetHandleByIndex>("nvmlDeviceGetHandleByIndex_v2");
+            mMemoryInfo = load<DeviceGetMemoryInfo>("nvmlDeviceGetMemoryInfo");
+            if (!init || !mShutdown || !getCount || !getHandle || !mMemoryInfo || init() != NvmlSuccess)
+                return false;
+
+            mInitialized = true;
+            unsigned int count = 0;
+            if (getCount(&count) != NvmlSuccess || count == 0)
+                return false;
+
+            // The target system has one NVIDIA display adapter. Selecting the
+            // device with the most local memory also behaves sensibly on hybrid
+            // systems without introducing PCI/DXGI matching dependencies.
+            for (unsigned int index = 0; index < count; ++index)
+            {
+                DeviceHandle candidate = nullptr;
+                NvmlMemory memory{};
+                if (getHandle(index, &candidate) != NvmlSuccess || !candidate
+                    || mMemoryInfo(candidate, &memory) != NvmlSuccess)
+                    continue;
+                if (!mDevice || memory.mTotal > mSelectedTotalBytes)
+                {
+                    mDevice = candidate;
+                    mSelectedTotalBytes = memory.mTotal;
+                }
+            }
+            return mDevice != nullptr;
+        }
+
+        bool mAttempted = false;
+        bool mInitialized = false;
+        HMODULE mNvml = nullptr;
+        Shutdown mShutdown = nullptr;
+        DeviceGetMemoryInfo mMemoryInfo = nullptr;
+        DeviceHandle mDevice = nullptr;
+        std::uint64_t mSelectedTotalBytes = 0;
+    };
 #else
     class DxgiSampler
     {
     public:
         bool query(Sample&) { return false; }
+    };
+
+    class NvmlSampler
+    {
+    public:
+        bool query(AdapterSample&) { return false; }
     };
 #endif
 
@@ -196,11 +312,10 @@ namespace Debug::V3GpuMemory
 
         static DxgiSampler sampler;
         Sample sample;
-        if (!sampler.query(sample) || sample.mBudgetBytes == 0)
-        {
-            sPressureState.store(static_cast<int>(PressureState::Unavailable), std::memory_order_relaxed);
-            return;
-        }
+        const bool dxgiAvailable = sampler.query(sample) && sample.mBudgetBytes != 0;
+        static NvmlSampler nvmlSampler;
+        AdapterSample adapterSample;
+        const bool nvmlAvailable = nvmlSampler.query(adapterSample);
 
         constexpr std::uint64_t MiB = std::uint64_t{ 1024 } * std::uint64_t{ 1024 };
         const std::uint64_t configuredSoftBytes
@@ -208,21 +323,26 @@ namespace Debug::V3GpuMemory
         const std::uint64_t configuredHardBytes
             = static_cast<std::uint64_t>(std::max(configuredHardBudgetMb, configuredSoftBudgetMb + 128)) * MiB;
 
-        // Respect both the user's configured 8-GB-class limits and WDDM's actual
-        // process budget. This preserves headroom when Windows temporarily grants
-        // less than the adapter's physical capacity.
-        std::uint64_t softBytes
-            = std::min(configuredSoftBytes, static_cast<std::uint64_t>(sample.mBudgetBytes * 0.90));
-        std::uint64_t hardBytes
-            = std::min(configuredHardBytes, static_cast<std::uint64_t>(sample.mBudgetBytes * 0.97));
-        if (hardBytes <= softBytes)
-            hardBytes = std::min<std::uint64_t>(sample.mBudgetBytes, softBytes + std::uint64_t{ 128 } * MiB);
+        std::uint64_t softBytes = configuredSoftBytes;
+        std::uint64_t hardBytes = configuredHardBytes;
+        PressureState state = PressureState::Unavailable;
+        if (dxgiAvailable)
+        {
+            // Respect both the user's configured 8-GB-class limits and WDDM's actual
+            // process budget. This preserves headroom when Windows temporarily grants
+            // less than the adapter's physical capacity.
+            softBytes = std::min(configuredSoftBytes, static_cast<std::uint64_t>(sample.mBudgetBytes * 0.90));
+            hardBytes = std::min(configuredHardBytes, static_cast<std::uint64_t>(sample.mBudgetBytes * 0.97));
+            if (hardBytes <= softBytes)
+                hardBytes
+                    = std::min<std::uint64_t>(sample.mBudgetBytes, softBytes + std::uint64_t{ 128 } * MiB);
 
-        PressureState state = PressureState::Comfortable;
-        if (sample.mUsageBytes >= hardBytes)
-            state = PressureState::Hard;
-        else if (sample.mUsageBytes >= softBytes)
-            state = PressureState::Soft;
+            state = PressureState::Comfortable;
+            if (sample.mUsageBytes >= hardBytes)
+                state = PressureState::Hard;
+            else if (sample.mUsageBytes >= softBytes)
+                state = PressureState::Soft;
+        }
         sPressureState.store(static_cast<int>(state), std::memory_order_relaxed);
 
         if (!telemetryEnabled)
@@ -240,13 +360,17 @@ namespace Debug::V3GpuMemory
             = static_cast<double>(sample.mCurrentReservationBytes) / static_cast<double>(MiB);
         const double pressurePercent
             = sample.mBudgetBytes != 0 ? 100.0 * static_cast<double>(sample.mUsageBytes) / sample.mBudgetBytes : 0.0;
+        const double adapterUsedMb = static_cast<double>(adapterSample.mUsedBytes) / static_cast<double>(MiB);
+        const double adapterFreeMb = static_cast<double>(adapterSample.mFreeBytes) / static_cast<double>(MiB);
+        const double adapterTotalMb = static_cast<double>(adapterSample.mTotalBytes) / static_cast<double>(MiB);
 
         std::ostringstream row;
         row << V3HitchTelemetry::currentFrame() << ',' << V3Diagnostics::epochMs() << ',' << std::fixed
             << std::setprecision(1) << usageMb << ',' << budgetMb << ',' << availableMb << ',' << reservationMb << ','
             << pressurePercent << ',' << (static_cast<double>(softBytes) / static_cast<double>(MiB)) << ','
             << (static_cast<double>(hardBytes) / static_cast<double>(MiB)) << ','
-            << V3Diagnostics::csvQuote(pressureName(state));
+            << V3Diagnostics::csvQuote(pressureName(state)) << ',' << (nvmlAvailable ? 1 : 0) << ','
+            << adapterUsedMb << ',' << adapterFreeMb << ',' << adapterTotalMb;
         writer.writeLine(row.str());
     }
 }
