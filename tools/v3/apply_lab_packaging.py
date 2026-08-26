@@ -8,6 +8,11 @@ ROOT = Path(__file__).resolve().parents[2]
 v34 = Path(__file__).with_name("apply_v34_occlusion_shadow_lab.py")
 exec(compile(v34.read_text(encoding="utf-8"), str(v34), "exec"), {"__file__": str(v34), "__name__": "__main__"})
 
+# Keep the cache-path rebinding call in sync with the V3.4 Objects::setOcclusionCuller signature.
+v34_compile_fix = Path(__file__).with_name("apply_v34_compile_fix.py")
+exec(compile(v34_compile_fix.read_text(encoding="utf-8"), str(v34_compile_fix), "exec"),
+    {"__file__": str(v34_compile_fix), "__name__": "__main__"})
+
 # Install the V3 helper launchers and exact applied-source snapshot beside the
 # runtime executable. This script only runs through the V3 harness, so upstream/default builds are unaffected.
 cmake = ROOT / "CMakeLists.txt"
