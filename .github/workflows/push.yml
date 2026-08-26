@@ -16,6 +16,7 @@ on:
       - v3.2-performance
       - v3.3-framepacing-gpu
       - v3.4-occlusion-shadows
+      - v3.5-coarse-occlusion-shadow-cache
 
 env:
   BUILD_TYPE: RelWithDebInfo
@@ -78,6 +79,14 @@ jobs:
           grep -n "v34RasterizedAsOccluder" apps/openmw/mwrender/occlusionculling.cpp
           grep -n "std::clamp(divisor, 1u, 4u)" components/sceneutil/mwshadowtechnique.cpp
           grep -n "Unified V3.4 benchmark" tools/v3/launchers/V3_Lab.ps1
+          echo '--- V3.5 coarse occlusion/shadow/Lua markers ---'
+          grep -n "mV35CoarseChunkOcclusion" components/settings/categories/camera.hpp
+          grep -n "testVisibleCoarseAABB" components/sceneutil/occlusionculling.cpp
+          grep -n "mChunkBounds" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "CoarseOcclusionCallback" apps/openmw/mwrender/groundcover.cpp
+          grep -n "mV35AllowDynamicFarCascadeReuse" components/sceneutil/shadow.cpp
+          grep -n "V35LuaLoadTrace::LoadScope" components/lua/scriptscontainer.cpp
+          grep -n "benchmark_groundcover_density=1.0" tools/v3/launchers/V3_Lab.ps1
 
       - name: Parse-check V3 PowerShell launcher
         shell: pwsh
