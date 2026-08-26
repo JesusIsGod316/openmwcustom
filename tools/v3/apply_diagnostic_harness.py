@@ -108,7 +108,44 @@ exec(compile(v32_foundation.read_text(encoding="utf-8"), str(v32_foundation), "e
     {"__file__": str(v32_foundation), "__name__": "__main__"})
 
 v32_hibernation = Path(__file__).with_name("apply_v32_hibernation.py")
-exec(compile(v32_hibernation.read_text(encoding="utf-8"), str(v32_hibernation), "exec"),
+v32_hibernation_text = v32_hibernation.read_text(encoding="utf-8")
+# The existing V3 transition lab already instruments RenderingManager::removeCell,
+# so V3.2 must preserve that known-good body rather than matching/replacing the
+# pristine upstream function. Adapt only this one patch operation at execution
+# time: insert the new methods at the unique enableTerrain boundary.
+original_replace = '''def replace_once(rel, old, new):
+    path = ROOT / rel
+    text = path.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count != 1:
+        raise RuntimeError(f"{rel}: expected exactly one V3.2 hibernation match, found {count}")
+    path.write_text(text.replace(old, new, 1), encoding="utf-8", newline="\\n")
+    print(f"V3.2 hibernation patched {rel}")'''
+compatible_replace = '''def replace_once(rel, old, new):
+    path = ROOT / rel
+    text = path.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count == 0 and rel == "apps/openmw/mwrender/renderingmanager.cpp" \\
+            and "void RenderingManager::removeCell" in old and "beginExteriorHibernation" in new:
+        anchor = "    void RenderingManager::enableTerrain"
+        if text.count(anchor) != 1:
+            raise RuntimeError(f"{rel}: V3.2 compatibility anchor count was {text.count(anchor)}")
+        start = new.find("    bool RenderingManager::beginExteriorHibernation()")
+        if start < 0:
+            raise RuntimeError(f"{rel}: V3.2 compatibility insertion start not found")
+        insertion = new[start:]
+        text = text.replace(anchor, insertion, 1)
+        path.write_text(text, encoding="utf-8", newline="\\n")
+        print(f"V3.2 hibernation inserted methods into instrumented {rel}")
+        return
+    if count != 1:
+        raise RuntimeError(f"{rel}: expected exactly one V3.2 hibernation match, found {count}")
+    path.write_text(text.replace(old, new, 1), encoding="utf-8", newline="\\n")
+    print(f"V3.2 hibernation patched {rel}")'''
+if original_replace not in v32_hibernation_text:
+    raise RuntimeError("Unable to install V3.2 hibernation compatibility wrapper")
+v32_hibernation_text = v32_hibernation_text.replace(original_replace, compatible_replace, 1)
+exec(compile(v32_hibernation_text, str(v32_hibernation), "exec"),
     {"__file__": str(v32_hibernation), "__name__": "__main__"})
 
 packaging = Path(__file__).with_name("apply_lab_packaging.py")
