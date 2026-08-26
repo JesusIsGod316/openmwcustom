@@ -54,7 +54,7 @@ namespace Debug::V36GpuProfiler
     inline V3Diagnostics::CsvWriter& writer()
     {
         static V3Diagnostics::CsvWriter writer("OPENMW_V36_GPU_PASS_FILE",
-            "source_frame,report_frame,epoch_ms,pass,gpu_ms,latency_frames,context");
+            "source_frame,report_frame,epoch_ms,pass,gpu_ms,latency_frames,context,dropped_total");
         return writer;
     }
 
@@ -178,7 +178,8 @@ namespace Debug::V36GpuProfiler
                 row << slot.mFrame << ',' << reportFrame << ',' << V3Diagnostics::epochMs() << ','
                     << V3Diagnostics::csvQuote(mName) << ',' << std::fixed << std::setprecision(4)
                     << (static_cast<double>(endTimestamp - beginTimestamp) / 1000000.0) << ','
-                    << (reportFrame >= slot.mFrame ? reportFrame - slot.mFrame : 0) << ',' << contextId;
+                    << (reportFrame >= slot.mFrame ? reportFrame - slot.mFrame : 0) << ',' << contextId << ','
+                    << data.mDropped;
                 writer().writeLine(row.str());
             }
         }

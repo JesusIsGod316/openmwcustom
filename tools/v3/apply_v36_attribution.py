@@ -572,7 +572,7 @@ replace_exact(
 
         static Debug::V3Diagnostics::CsvWriter v36Writer("OPENMW_V36_RESIDENCY_FILE",
             "frame,epoch_ms,event,path,estimated_source_mb,width,height,mip_levels,compressed,ref_count,"
-            "last_usage,total_estimated_source_mb");
+            "cache_entries,last_usage,total_estimated_source_mb");
         if (!v36Writer.enabled() || frameNumber % 300 != 0)
             return;
 
@@ -604,7 +604,7 @@ replace_exact(
         std::ostringstream summary;
         summary << frameNumber << ',' << Debug::V3Diagnostics::epochMs() << ",summary,"
                 << Debug::V3Diagnostics::csvQuote("") << ',' << std::fixed << std::setprecision(3)
-                << "0,0,0,0,0," << entries.size() << ",0," << totalMb;
+                << "0,0,0,0,0,0," << entries.size() << ",0," << totalMb;
         v36Writer.writeLine(summary.str());
         const std::size_t limit = std::min<std::size_t>(entries.size(), 32);
         for (std::size_t i = 0; i < limit; ++i)
@@ -615,7 +615,7 @@ replace_exact(
                 << Debug::V3Diagnostics::csvQuote(entry.mPath) << ',' << std::fixed << std::setprecision(3)
                 << (static_cast<double>(entry.mBytes) / MiB) << ',' << entry.mWidth << ',' << entry.mHeight << ','
                 << entry.mMipLevels << ',' << (entry.mCompressed ? 1 : 0) << ',' << entry.mRefCount << ','
-                << entry.mLastUsage << ',' << totalMb;
+                << entries.size() << ',' << entry.mLastUsage << ',' << totalMb;
             v36Writer.writeLine(row.str());
         }
     }''',
