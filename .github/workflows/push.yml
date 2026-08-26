@@ -62,6 +62,8 @@ jobs:
           grep -n "gpuMemoryWriter" components/debug/v3diagnostics.hpp
           grep -n "v3gpumemory.hpp" apps/openmw/mwrender/renderingmanager.cpp
           grep -n "adaptiveStreamingV2Enabled" components/settings/ramcache.hpp
+          grep -n "v2_forced_progress" apps/openmw/mwworld/scene.cpp
+          grep -n "v32RendererInsertionWriter" apps/openmw/mwworld/scene.cpp
           grep -n "beginExteriorHibernation" apps/openmw/mwrender/renderingmanager.cpp
           grep -n "consumeRestoredExteriorObject" apps/openmw/mwworld/scene.cpp
 

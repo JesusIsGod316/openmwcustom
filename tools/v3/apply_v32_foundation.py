@@ -33,8 +33,6 @@ replace_once(
         SettingValue<int> mV3PreparedInstanceCacheMax{ mIndex, "Cells", "v3 prepared instance cache max",
             makeClampSanitizerInt(256, 65536) };
         SettingValue<bool> mV32ExteriorHibernation{ mIndex, "Cells", "v3.2 exterior hibernation" };
-        SettingValue<int> mV32HibernatedExteriorGrids{ mIndex, "Cells", "v3.2 hibernated exterior grids",
-            makeClampSanitizerInt(1, 4) };
         SettingValue<bool> mV32RendererInsertionProfiling{ mIndex, "Cells", "v3.2 renderer insertion profiling" };
         SettingValue<bool> mV32GpuMemoryTelemetry{ mIndex, "Cells", "v3.2 gpu memory telemetry" };
         SettingValue<bool> mV32GpuMemoryManagement{ mIndex, "Cells", "v3.2 gpu memory management" };
@@ -61,7 +59,6 @@ v3 prepared instance cache max = 8192
 
 # V3.2 transition/memory experiments. All are OFF by default.
 v3.2 exterior hibernation = false
-v3.2 hibernated exterior grids = 1
 v3.2 renderer insertion profiling = false
 v3.2 gpu memory telemetry = false
 v3.2 gpu memory management = false
@@ -82,7 +79,6 @@ replace_once(
                      << "/" << static_cast<int>(Settings::cells().mV3PreparedInstanceCacheMax)
                      << " v3.2 hibernation="
                      << (static_cast<bool>(Settings::cells().mV32ExteriorHibernation) ? "on" : "off")
-                     << "/" << static_cast<int>(Settings::cells().mV32HibernatedExteriorGrids)
                      << " gpu telemetry="
                      << (static_cast<bool>(Settings::cells().mV32GpuMemoryTelemetry) ? "on" : "off")
                      << " gpu management="
@@ -179,6 +175,56 @@ replace_once(
 # sampling on top without weakening the original safety invariant.
 replace_once(
     "tools/v3/launchers/V3_Lab.ps1",
+    '''$Experiment = 'current-settings'
+$Prepared = $null
+$Scheduler = $null
+if ($Mode -ne 'Render') {
+    Write-Host ''
+    Write-Host 'Choose the runtime experiment for this test:' -ForegroundColor Cyan
+    Write-Host '  1 = Baseline Overdrive (new diagnostics, experiments off)'
+    Write-Host '  2 = Prepared static instances'
+    Write-Host '  3 = Adaptive predictive preload'
+    Write-Host '  4 = Prepared instances + adaptive preload'
+    do { $choice = Read-Host 'Enter 1, 2, 3, or 4' } until ($choice -in @('1','2','3','4'))
+    switch ($choice) {
+        '1' { $Experiment = 'baseline'; $Prepared = 'false'; $Scheduler = 'off' }
+        '2' { $Experiment = 'prepared'; $Prepared = 'true'; $Scheduler = 'off' }
+        '3' { $Experiment = 'adaptive'; $Prepared = 'false'; $Scheduler = 'adaptive' }
+        '4' { $Experiment = 'combined'; $Prepared = 'true'; $Scheduler = 'adaptive' }
+    }
+}''',
+    '''$Experiment = 'render-baseline'
+$Hibernation = 'false'
+$Prepared = 'false'
+$Scheduler = 'off'
+$RendererProfiling = if ($Mode -eq 'Transition') { 'true' } else { 'false' }
+if ($Mode -ne 'Render') {
+    Write-Host ''
+    Write-Host 'Choose the runtime experiment for this test:' -ForegroundColor Cyan
+    Write-Host '  1 = Baseline Overdrive (all runtime experiments off)'
+    Write-Host '  2 = V3.2 recent-exterior hibernation'
+    Write-Host '  3 = V3.2 Adaptive Scheduler v2'
+    Write-Host '  4 = Hibernation + Adaptive v2'
+    Write-Host '  5 = Legacy Prepared Static Instances v1'
+    Write-Host '  6 = Legacy Adaptive Scheduler v1'
+    Write-Host '  7 = Legacy Prepared v1 + Adaptive v1'
+    Write-Host '  8 = Hibernation + Adaptive v2 + Prepared v1'
+    do { $choice = Read-Host 'Enter 1 through 8' } until ($choice -in @('1','2','3','4','5','6','7','8'))
+    switch ($choice) {
+        '1' { $Experiment = 'baseline'; $Hibernation = 'false'; $Prepared = 'false'; $Scheduler = 'off' }
+        '2' { $Experiment = 'hibernation'; $Hibernation = 'true'; $Prepared = 'false'; $Scheduler = 'off' }
+        '3' { $Experiment = 'adaptive-v2'; $Hibernation = 'false'; $Prepared = 'false'; $Scheduler = 'adaptive-v2' }
+        '4' { $Experiment = 'hibernation-adaptive-v2'; $Hibernation = 'true'; $Prepared = 'false'; $Scheduler = 'adaptive-v2' }
+        '5' { $Experiment = 'prepared-v1'; $Hibernation = 'false'; $Prepared = 'true'; $Scheduler = 'off' }
+        '6' { $Experiment = 'adaptive-v1'; $Hibernation = 'false'; $Prepared = 'false'; $Scheduler = 'adaptive' }
+        '7' { $Experiment = 'legacy-combined'; $Hibernation = 'false'; $Prepared = 'true'; $Scheduler = 'adaptive' }
+        '8' { $Experiment = 'all-experimental'; $Hibernation = 'true'; $Prepared = 'true'; $Scheduler = 'adaptive-v2' }
+    }
+}''',
+)
+
+replace_once(
+    "tools/v3/launchers/V3_Lab.ps1",
     '''    'OPENMW_V3_TRACE_FILE','OPENMW_V3_MSOC_DETAIL_FILE','OPENMW_V3_SHADOW_FILE','OPENMW_OSG_STATS_FILE','OPENMW_OSG_STATS_LIST'
 )''',
     '''    'OPENMW_V3_TRACE_FILE','OPENMW_V3_MSOC_DETAIL_FILE','OPENMW_V3_SHADOW_FILE','OPENMW_V32_GPU_MEMORY_FILE',
@@ -206,17 +252,29 @@ replace_once(
         $changedSettings = $true
         Set-IniValue $SettingsPath 'Cells' 'ram cache mode' 'overdrive'
         Set-IniValue $SettingsPath 'Cells' 'ram cache overdrive preload' 'balanced'
-        Set-IniValue $SettingsPath 'Cells' 'v3 streaming scheduler' $Scheduler''',
+        Set-IniValue $SettingsPath 'Cells' 'v3 streaming scheduler' $Scheduler
+        Set-IniValue $SettingsPath 'Cells' 'v3 streaming target frametime' '25'
+        Set-IniValue $SettingsPath 'Cells' 'v3 prepared instance cache' $Prepared
+        Set-IniValue $SettingsPath 'Cells' 'v3 prepared instance cache max' '8192'
+        $changedSettings = $true
+    }''',
     '''try {
+    $changedSettings = $true
     Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu memory telemetry' 'true'
     Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu memory management' 'false'
     Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu soft budget mb' '6800'
     Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu hard budget mb' '7400'
-    $changedSettings = $true
+    Set-IniValue $SettingsPath 'Cells' 'v3.2 exterior hibernation' $Hibernation
+    Set-IniValue $SettingsPath 'Cells' 'v3.2 renderer insertion profiling' $RendererProfiling
+    Set-IniValue $SettingsPath 'Cells' 'v3.2 streaming max defers' '2'
+    Set-IniValue $SettingsPath 'Cells' 'v3 streaming scheduler' $Scheduler
+    Set-IniValue $SettingsPath 'Cells' 'v3 streaming target frametime' '25'
+    Set-IniValue $SettingsPath 'Cells' 'v3 prepared instance cache' $Prepared
+    Set-IniValue $SettingsPath 'Cells' 'v3 prepared instance cache max' '8192'
     if ($Mode -ne 'Render') {
         Set-IniValue $SettingsPath 'Cells' 'ram cache mode' 'overdrive'
         Set-IniValue $SettingsPath 'Cells' 'ram cache overdrive preload' 'balanced'
-        Set-IniValue $SettingsPath 'Cells' 'v3 streaming scheduler' $Scheduler''',
+    }''',
 )
 
 print("V3.2 foundation source patch completed successfully.")

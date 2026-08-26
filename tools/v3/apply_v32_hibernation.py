@@ -273,6 +273,10 @@ replace_once(
             }
         }
         mHibernatedCells.clear();
+        // Restored refs are normally consumed by Scene::addObject. Clear any
+        // remainder at the restore boundary so an exception or a skipped ref
+        // cannot make a later unrelated insertion look restored.
+        mRestoredObjects.clear();
     }
 
     void Objects::updatePtr(const MWWorld::Ptr& old, const MWWorld::Ptr& cur)

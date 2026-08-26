@@ -111,5 +111,15 @@ v32_hibernation = Path(__file__).with_name("apply_v32_hibernation_compat.py")
 exec(compile(v32_hibernation.read_text(encoding="utf-8"), str(v32_hibernation), "exec"),
     {"__file__": str(v32_hibernation), "__name__": "__main__"})
 
+# Adaptive v2 is layered only after the proven foundation and hibernation
+# transformations. Legacy adaptive remains independently selectable.
+v32_adaptive_v2 = Path(__file__).with_name("apply_v32_adaptive_v2.py")
+exec(compile(v32_adaptive_v2.read_text(encoding="utf-8"), str(v32_adaptive_v2), "exec"),
+    {"__file__": str(v32_adaptive_v2), "__name__": "__main__"})
+
+v32_renderer_profiling = Path(__file__).with_name("apply_v32_renderer_profiling.py")
+exec(compile(v32_renderer_profiling.read_text(encoding="utf-8"), str(v32_renderer_profiling), "exec"),
+    {"__file__": str(v32_renderer_profiling), "__name__": "__main__"})
+
 packaging = Path(__file__).with_name("apply_lab_packaging.py")
 exec(compile(packaging.read_text(encoding="utf-8"), str(packaging), "exec"), {"__file__": str(packaging), "__name__": "__main__"})

@@ -37,9 +37,30 @@ new_block = '''            const double lastFrameMs = Debug::V3HitchTelemetry::l
             const bool adaptiveV1 = Settings::RamCache::adaptiveStreamingEnabled();
             const bool adaptiveV2 = Settings::RamCache::adaptiveStreamingV2Enabled();
             bool defer = false;
-            const char* deferDetail = "pressure";
+            bool forcedProgress = false;
+            const char* eventDetail = "pressure";
             int deferLimit = 1;
             int deferCount = 1;
+
+            // This state is main-thread-only: Scene::update owns predictive
+            // preload scheduling. Reset it when v2 is not selected so changing
+            // scheduler modes cannot inherit stale pressure or job age.
+            static double v32SmoothedFrameMs = 0.0;
+            static unsigned v32BadFrameStreak = 0;
+            static unsigned v32RecoveryFrameStreak = 0;
+            static unsigned v32ConsecutiveDefers = 0;
+            static bool v32PressureMode = false;
+            static bool v32WasActive = false;
+
+            if (!adaptiveV2 && v32WasActive)
+            {
+                v32SmoothedFrameMs = 0.0;
+                v32BadFrameStreak = 0;
+                v32RecoveryFrameStreak = 0;
+                v32ConsecutiveDefers = 0;
+                v32PressureMode = false;
+                v32WasActive = false;
+            }
 
             if (adaptiveV1)
             {
@@ -49,11 +70,7 @@ new_block = '''            const double lastFrameMs = Debug::V3HitchTelemetry::l
             }
             else if (adaptiveV2)
             {
-                // V2 uses a smoothed pressure signal and hysteresis so one slow
-                // frame cannot repeatedly starve predictive preload work.
-                static double v32SmoothedFrameMs = 0.0;
-                static unsigned v32ConsecutiveDefers = 0;
-                static bool v32PressureMode = false;
+                v32WasActive = true;
 
                 if (lastFrameMs > 0.0)
                 {
@@ -65,43 +82,72 @@ new_block = '''            const double lastFrameMs = Debug::V3HitchTelemetry::l
 
                 const double enterPressureMs = static_cast<double>(targetMs) * 1.05;
                 const double leavePressureMs = static_cast<double>(targetMs) * 0.92;
-                if (!v32PressureMode && v32SmoothedFrameMs > enterPressureMs)
-                    v32PressureMode = true;
-                else if (v32PressureMode && v32SmoothedFrameMs < leavePressureMs)
+                constexpr unsigned enterPressureFrames = 3;
+                constexpr unsigned leavePressureFrames = 6;
+
+                if (!v32PressureMode)
                 {
-                    v32PressureMode = false;
-                    v32ConsecutiveDefers = 0;
+                    v32RecoveryFrameStreak = 0;
+                    if (v32SmoothedFrameMs > enterPressureMs)
+                        ++v32BadFrameStreak;
+                    else
+                        v32BadFrameStreak = 0;
+
+                    if (v32BadFrameStreak >= enterPressureFrames)
+                    {
+                        v32PressureMode = true;
+                        v32BadFrameStreak = 0;
+                    }
+                }
+                else
+                {
+                    if (v32SmoothedFrameMs < leavePressureMs)
+                        ++v32RecoveryFrameStreak;
+                    else
+                        v32RecoveryFrameStreak = 0;
+
+                    if (v32RecoveryFrameStreak >= leavePressureFrames)
+                    {
+                        v32PressureMode = false;
+                        v32RecoveryFrameStreak = 0;
+                        v32ConsecutiveDefers = 0;
+                    }
                 }
 
                 const unsigned maxDefers = static_cast<unsigned>(
                     std::max(Settings::RamCache::streamingMaxDefers(), 0));
-                const bool alternatingOpportunity = (frame & 1u) != 0u;
 
                 // Forced progress: after maxDefers consecutive skips, the next
                 // opportunity always runs preloadCells even while under pressure.
-                defer = v32PressureMode && maxDefers != 0u && alternatingOpportunity
-                    && v32ConsecutiveDefers < maxDefers;
-                if (defer)
-                    ++v32ConsecutiveDefers;
-                else if (v32PressureMode && v32ConsecutiveDefers >= maxDefers)
-                    v32ConsecutiveDefers = 0;
-                else if (!v32PressureMode)
+                if (v32PressureMode && maxDefers != 0u)
+                {
+                    if (v32ConsecutiveDefers < maxDefers)
+                    {
+                        defer = true;
+                        ++v32ConsecutiveDefers;
+                    }
+                    else
+                    {
+                        forcedProgress = true;
+                        v32ConsecutiveDefers = 0;
+                    }
+                }
+                else
                     v32ConsecutiveDefers = 0;
 
-                deferDetail = "v2_smoothed_pressure";
+                eventDetail = forcedProgress ? "v2_forced_progress" : "v2_smoothed_pressure";
                 deferLimit = static_cast<int>(maxDefers);
                 deferCount = static_cast<int>(v32ConsecutiveDefers);
             }
-
             if (!defer)
                 preloadCells(duration);
-            else if (Debug::V3Diagnostics::streamingWriter().enabled())
+            if ((defer || forcedProgress) && Debug::V3Diagnostics::streamingWriter().enabled())
             {
                 std::ostringstream row;
                 row << frame << ',' << Debug::V3Diagnostics::epochMs()
-                    << ',' << Debug::V3Diagnostics::csvQuote("defer") << ','
+                    << ',' << Debug::V3Diagnostics::csvQuote(defer ? "defer" : "force") << ','
                     << Debug::V3Diagnostics::csvQuote("cell_preload") << ','
-                    << Debug::V3Diagnostics::csvQuote(deferDetail) << ',' << lastFrameMs << ','
+                    << Debug::V3Diagnostics::csvQuote(eventDetail) << ',' << lastFrameMs << ','
                     << deferLimit << ',' << deferCount;
                 Debug::V3Diagnostics::streamingWriter().writeLine(row.str());
             }'''
