@@ -26,6 +26,15 @@ jobs:
         run: |
           python3 tools/v3/apply_diagnostic_harness.py
 
+      - name: Syntax-check standalone V3 diagnostics helper
+        shell: bash
+        run: |
+          cat > /tmp/v3_diagnostics_check.cpp <<'EOF'
+          #include "components/debug/v3diagnostics.hpp"
+          int main() { return 0; }
+          EOF
+          g++ -std=c++20 -I. -Wall -Wextra -Werror -fsyntax-only /tmp/v3_diagnostics_check.cpp
+
       - name: Validate generated source diff
         shell: bash
         run: |
@@ -38,6 +47,7 @@ jobs:
           grep -n "mV3ActiveThreads" components/sceneutil/workqueue.cpp
           grep -n "mPreparedInstanceGeneration" components/resource/scenemanager.cpp
           grep -n "v3PostFxWriter.writeLine" apps/openmw/mwrender/pingpongcanvas.cpp
+          grep -n "mPhase(mEnabled ? phase" components/debug/v3diagnostics.hpp
 
       - name: Parse-check V3 PowerShell launcher
         shell: pwsh
