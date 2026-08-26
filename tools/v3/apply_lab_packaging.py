@@ -3,9 +3,13 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# V3.4 is the final generated layer: broadened MSOC, aggressive far-shadow option,
+# persistent cell-occluder storage wiring, and unified one-run telemetry.
+v34 = Path(__file__).with_name("apply_v34_occlusion_shadow_lab.py")
+exec(compile(v34.read_text(encoding="utf-8"), str(v34), "exec"), {"__file__": str(v34), "__name__": "__main__"})
+
 # Install the V3 helper launchers and exact applied-source snapshot beside the
-# runtime executable. This script only runs on v3-performance through the V3
-# harness, so upstream/default builds are unaffected.
+# runtime executable. This script only runs through the V3 harness, so upstream/default builds are unaffected.
 cmake = ROOT / "CMakeLists.txt"
 text = cmake.read_text(encoding="utf-8")
 marker = "# V3 OPTIMIZATION LAB PACKAGING"
@@ -15,6 +19,7 @@ if marker not in text:
 # V3 OPTIMIZATION LAB PACKAGING
 if(WIN32)
     install(FILES
+        "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Unified_Test.bat"
         "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_City_Frametime.bat"
         "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Transition_Deep.bat"
         "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Render_Deep.bat"
@@ -29,15 +34,11 @@ endif()
 '''
     cmake.write_text(text, encoding="utf-8", newline="\n")
 
-# Validate the fully transformed source tree, then preserve exactly what the
-# build will compile. --check catches whitespace errors and conflict markers.
+# Validate the fully transformed source tree, then preserve exactly what the build will compile.
 subprocess.run(["git", "diff", "--check"], cwd=ROOT, check=True)
 
 patch = subprocess.run(
-    ["git", "diff", "--no-ext-diff", "--binary"],
-    cwd=ROOT,
-    check=True,
-    stdout=subprocess.PIPE,
+    ["git", "diff", "--no-ext-diff", "--binary"], cwd=ROOT, check=True, stdout=subprocess.PIPE
 ).stdout
 (ROOT / "V3-applied-source.patch").write_bytes(patch)
 
@@ -46,74 +47,48 @@ stat = subprocess.run(
 ).stdout
 (ROOT / "V3-applied-source-stat.txt").write_text(stat, encoding="utf-8", newline="\n")
 
-readme = r'''OpenMW Custom V3 - Hitch / Frametime / Render Lab
-==================================================
+readme = r'''OpenMW Custom V3.4 - Unified Performance Lab
+==========================================
 
-This build contains opt-in diagnostics and experiments. Normal OpenMW behavior
-is preserved unless a V3 experiment/profile stream is explicitly enabled.
+This build contains opt-in diagnostics and experiments. Normal OpenMW behavior is preserved unless an experiment is selected.
 
 Recommended 32 GB baseline:
 [Cells]
 ram cache mode = overdrive
 ram cache overdrive preload = balanced
 
-New experiments (off by default):
-v3 streaming scheduler = off
-v3 streaming target frametime = 25
-v3 prepared instance cache = false
-v3 prepared instance cache max = 8192
-v3.3 speculative preload budget = 0
-
-[Shadows]
-v3.3 far cascade update interval = 1
-v3.3 far cascade max texel drift = 0.75
-v3.3 far cascade resolution divisor = 1
-
 [Lua]
 v3.3 idle timer fast path = false
 
+[Shadows]
+v3.3 far cascade resolution divisor = 1
+
+[Camera]
+v3.4 broaden occlusion = false
+
+V3.4 experiments are disabled by default. The unified launcher exposes:
+- 15: broadened MSOC (250 min-radius, 8192 max occluder distance, 45000 triangle budget, safe large-object full-buffer rejection)
+- 16: aggressive far-shadow divisor 4 (far cascade quarter width/height; near/middle unchanged)
+- 17: broadened MSOC + proven Lua idle-timer fast path
+- 18: full combined V3.4 experiment
+
 Double-click launchers:
-- V3_City_Frametime.bat   : lightweight walking/cell-boundary frametime test
-- V3_Transition_Deep.bat  : deep door/cell transition trace
-- V3_Render_Deep.bat      : steady rendering/shadow/MSOC/post-FX diagnostic
+- V3_Unified_Test.bat     : NORMAL benchmark. One game run captures traversal/Lua + render/GPU/MSOC/shadow telemetry.
+- V3_City_Frametime.bat   : compatibility alias for the same unified City-mode dataset.
+- V3_Transition_Deep.bat  : special door/interior transition trace.
+- V3_Render_Deep.bat      : special steady rendering-only diagnostic.
 
-The City and Transition launchers temporarily standardize Overdrive settings,
-restore settings.cfg after OpenMW exits, create a hardware/build/settings
-manifest, and automatically ZIP the completed profile.
+For the unified run: use the same outdoor save, hold the usual heavy outdoor view for about 45 seconds, then walk the same
+2-3 minute route across several exterior cell boundaries and quit. The launcher restores settings.cfg and creates one ZIP.
 
-City profiles include the existing Lua phase streams, thresholded callback
-attribution, and transition/navigation/trace streams so cell-grid hitch frames
-can be correlated without changing Lua scheduling or synchronization.
+V3.4 also wires the existing persistent occlusion storage pointer into CellOcclusionCallback creation, allowing unpaged
+cell occluder proxies to use the same persistent cache path rather than rebuilding them without storage access.
 
-Diagnostic streams supported by this build include:
-OPENMW_V3_FRAME_FILE
-OPENMW_V3_HITCH_FILE
-OPENMW_V3_EVENT_FILE
-OPENMW_V3_TRANSITION_FILE
-OPENMW_V3_PAGING_FILE
-OPENMW_V3_RESOURCE_FILE
-OPENMW_V3_NAV_FILE
-OPENMW_V3_INSERT_FILE
-OPENMW_V3_WORKQUEUE_FILE
-OPENMW_V3_RENDER_FILE
-OPENMW_V3_POSTFX_FILE
-OPENMW_V3_STREAMING_FILE
-OPENMW_V3_TRACE_FILE
-OPENMW_V3_LUA_UPDATE_FILE
-OPENMW_V3_LUASYNC_FILE
-OPENMW_V3_LUA_ACTION_FILE
-OPENMW_V3_MSOC_DETAIL_FILE
-OPENMW_V3_SHADOW_FILE
-OPENMW_V3_TELEMETRY_FILE
-OPENMW_V32_GPU_MEMORY_FILE
-OPENMW_V33_FRAME_SUMMARY_FILE
-OPENMW_V33_LUA_CALLBACK_FILE
-OPENMW_OSG_STATS_FILE
+Diagnostic streams include frame/hitch, Lua update/async/callback attribution, paging/resource/workqueue, transition/nav,
+render/post-FX, MSOC detail, shadow timing, GPU memory, OSG times/resource, and frame summaries.
 
-V3-applied-source.patch is the exact patch produced by the V3 harness before
-this executable was compiled. v3_trace_to_chrome.py converts v3-trace.csv to a
-Chrome/Perfetto-compatible trace JSON.
+V3-applied-source.patch is the exact generated patch compiled by CI.
 '''
 (ROOT / "V3-LAB-README.txt").write_text(readme, encoding="utf-8", newline="\n")
 
-print("V3 Lab packaging/preflight completed successfully.")
+print("V3.4 Lab packaging/preflight completed successfully.")
