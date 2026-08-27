@@ -13,6 +13,13 @@ v310 = Path(__file__).with_name("apply_v310_posttransform_preload.py")
 exec(compile(v310.read_text(encoding="utf-8"), str(v310), "exec"),
     {"__file__": str(v310), "__name__": "__main__"})
 
+# QC correction: compile=true also covers later predictive/background preload.
+# Gate the expensive locality pass to V3.9's one-time synchronous startup
+# frontload so normal traversal cannot regain the V3.8 worker-contention problem.
+v310_gate = Path(__file__).with_name("apply_v310_initial_frontload_gate.py")
+exec(compile(v310_gate.read_text(encoding="utf-8"), str(v310_gate), "exec"),
+    {"__file__": str(v310_gate), "__name__": "__main__"})
+
 readme_path = Path(__file__).resolve().parents[2] / "V3-LAB-README.txt"
 with readme_path.open("a", encoding="utf-8", newline="\n") as readme:
     readme.write(r'''
@@ -32,8 +39,11 @@ Runtime evidence driving this build:
 
 Core V3.10 mechanism:
 - Adds `v3.10 preload post-transform` (default false).
-- When enabled, batching mode >=2 receives VERTEX_POSTTRANSFORM only when ObjectPaging is being built with compile=true.
-- The same preload-only path also receives shared-state compaction, matching the useful V3.8 Mode-47 locality recipe.
+- When enabled, batching mode >=2 receives VERTEX_POSTTRANSFORM + shared-state compaction ONLY while V3.9 is running its
+  one-time synchronous initial multi-view frontload. A dedicated atomic gate is enabled before the preload positions can
+  dispatch worker tasks and is cleared by RAII when the synchronous preload scope exits.
+- `compile=true` by itself is deliberately NOT sufficient because later predictive/background preload also uses that path;
+  those later background chunks keep strong V3.9 merge admission but skip V3.10's expensive post-transform pass.
 - V3.9's compile=false emergency fallback remains authoritative: an on-demand miss still uses conservative mode-1
   merge admission and merge-only cleanup, so the expensive locality pass cannot migrate back into traversal frames.
 - V3.10 never enables VERTEX_PRETRANSFORM through this override.
@@ -49,14 +59,15 @@ Lua QC decision:
 
 V3.10 launcher choices:
 - 59: exact V3.9 Mode-56 configuration reference.
-- 60: Mode59 + preload-only VERTEX_POSTTRANSFORM/shared-state. FIRST TEST and cleanest causal A/B.
+- 60: Mode59 + startup-frontload-only VERTEX_POSTTRANSFORM/shared-state. FIRST TEST and cleanest causal A/B.
 - 61: Mode60 + already visually-clean 5px far-shadow pruning; intended combined candidate after Mode60 passes.
 - 62: Mode61 with 5x5 startup frontload instead of 3x3; intentionally expensive coverage experiment.
 
 Acceptance/QC:
-- Mode60 should recover a substantial share of Mode47's ~11-12ms draw / ~18-19ms GPU behavior while keeping V3.9's
-  warm-route merge optimization near sub-second total rather than V3.8 Mode47's ~9.8s.
+- Mode60 should recover a substantial share of Mode47's ~11-12ms draw / ~18-19ms GPU behavior while keeping later
+  warm-route merge optimization near V3.9 Mode56's sub-second family rather than V3.8 Mode47's ~9.8s.
 - Cold startup duration is not a rejection criterion by itself.
+- Later compile=true predictive/background preload must NOT run the V3.10 post-transform pass.
 - Any compile=false miss must remain conservative and must not run VERTEX_POSTTRANSFORM.
 - No V3.10 normal profile enables V3.9 proactive residency expiry.
 - No visual-quality setting is reduced; canonical groundcover remains 1.0 and the comparison shadow distance remains 4096.
@@ -84,6 +95,8 @@ patch_text = patch.decode("utf-8", errors="replace")
 for marker in (
     "v3.10 preload post-transform",
     "v310PreloadPostTransform",
+    "mV310InitialFrontloadActive",
+    "V310InitialFrontloadScope",
     "v310-posttransform-3x3",
     "v310-combined-candidate",
 ):
