@@ -1,0 +1,43 @@
+OpenMW Custom Build V3.10 - post-transform preload promotion
+
+Primary runtime question
+------------------------
+Can the V3.8 Mode-47 steady rendering benefit (roughly 33% lower OSG draw traversal and 18% lower GPU draw)
+be recovered while V3.9 keeps strong ObjectPaging optimization out of ordinary traversal frames?
+
+Clean A/B
+---------
+Mode 59: exact V3.9 Mode-56 configuration reference.
+Mode 60: Mode 59 plus v3.10 preload post-transform=true.
+
+Mode 60 is the first and highest-value test. It keeps:
+- world batching mode 2
+- GPU residency mode 1
+- far-shadow mode 1
+- compile pacing mode 3
+- V3.9 frontload mode 2 (3x3)
+- V3.9 batch optimizer mode 1
+- V3.9 proactive residency mode 0
+and changes only the V3.10 preload-only post-transform override.
+
+Safety invariants
+-----------------
+- V3.10 post-transform runs only when compile=true and world batching>=2.
+- V3.9 compile=false on-demand fallback remains mode-1 merge-only.
+- V3.10 does not request VERTEX_PRETRANSFORM.
+- Existing animation/update-traversal exclusion, material/PBR/alpha compatibility, refnum, LOD, occlusion and shadow rules remain authoritative.
+- V3.10 normal profiles do not enable V3.9 proactive whole-render-graph expiry.
+- No visual-quality reduction is introduced.
+- Canonical benchmark groundcover density remains 1.0; comparison shadow distance is 4096.
+
+Lua audit decision
+------------------
+Mode56/57 exposed first-cell Lua worker waits, especially timer/event phases. The obvious serialized-idle-timer shortcut is
+not promoted in this build because active local containers are subsequently passed through local update handling and may
+need sandbox materialization/onLoad semantics. V3.10 intentionally leaves Lua behavior unchanged until a stronger proof
+allows a semantics-preserving optimization.
+
+Cold-start policy
+-----------------
+A larger one-time startup/exterior load is acceptable if it materially reduces normal traversal hitching. Startup time is
+tracked for engineering visibility but is not itself a rejection condition.
