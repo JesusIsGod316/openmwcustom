@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 
 # Apply the complete, already-runtime-validated V3.9 stack first, then layer the
@@ -60,3 +61,33 @@ Acceptance/QC:
 - No V3.10 normal profile enables V3.9 proactive residency expiry.
 - No visual-quality setting is reduced; canonical groundcover remains 1.0 and the comparison shadow distance remains 4096.
 ''')
+
+# The inherited V3.6 packager captures V3-applied-source.patch before the V3.9
+# and V3.10 layers are applied. Refresh the snapshot here, after the FINAL layer,
+# so the artifact installed beside the executable and uploaded by preflight is an
+# exact representation of the source tree that CI actually compiles.
+ROOT = Path(__file__).resolve().parents[2]
+subprocess.run(["git", "diff", "--check"], cwd=ROOT, check=True)
+patch = subprocess.run(
+    ["git", "diff", "--no-ext-diff", "--binary"], cwd=ROOT, check=True, stdout=subprocess.PIPE
+).stdout
+(ROOT / "V3-applied-source.patch").write_bytes(patch)
+stat = subprocess.run(
+    ["git", "diff", "--stat"], cwd=ROOT, check=True, text=True, stdout=subprocess.PIPE
+).stdout
+(ROOT / "V3-applied-source-stat.txt").write_text(stat, encoding="utf-8", newline="\n")
+
+# Self-check the exact-source artifact rather than trusting the live generated
+# tree alone. This catches ordering regressions where a future layering change
+# accidentally snapshots V3.8/V3.9 before V3.10 is applied.
+patch_text = patch.decode("utf-8", errors="replace")
+for marker in (
+    "v3.10 preload post-transform",
+    "v310PreloadPostTransform",
+    "v310-posttransform-3x3",
+    "v310-combined-candidate",
+):
+    if marker not in patch_text:
+        raise RuntimeError(f"V3.10 exact generated-source snapshot missing marker: {marker}")
+
+print("V3.10 exact generated-source snapshot refreshed after final layer.")
