@@ -21,10 +21,11 @@ exec(compile(v37_hitch.read_text(encoding="utf-8"), str(v37_hitch), "exec"),
 v37_residency = Path(__file__).with_name("apply_v37_residency.py")
 v37_residency_text = v37_residency.read_text(encoding="utf-8")
 v37_quote3 = "'" * 3
+v37_dquote3 = chr(34) * 3
 v37_bad_false = v37_quote3 + "    Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu memory management' 'false' " + v37_quote3
-v37_good_false = "\"\"\"    Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu memory management' 'false'\"\"\""
+v37_good_false = v37_dquote3 + "    Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu memory management' 'false'" + v37_dquote3
 v37_bad_value = v37_quote3 + "    Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu memory management' $V37GpuMemoryManagement " + v37_quote3
-v37_good_value = "\"\"\"    Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu memory management' $V37GpuMemoryManagement\"\"\""
+v37_good_value = v37_dquote3 + "    Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu memory management' $V37GpuMemoryManagement" + v37_dquote3
 if v37_residency_text.count(v37_bad_false) != 1 or v37_residency_text.count(v37_bad_value) != 1:
     raise RuntimeError("V3.7 residency launcher-literal normalization no longer matches exactly once")
 v37_residency_text = v37_residency_text.replace(v37_bad_false, v37_good_false, 1)
