@@ -41,3 +41,9 @@ Cold-start policy
 -----------------
 A larger one-time startup/exterior load is acceptable if it materially reduces normal traversal hitching. Startup time is
 tracked for engineering visibility but is not itself a rejection condition.
+
+QC checkpoint
+-------------
+Dedicated V3.10 preflight run 33115417681 passed: all Python patch tools compiled, the complete generated stack applied,
+git diff --check passed, inherited V3.2-V3.9 safety markers passed, V3.10 policy invariants passed, and the generated
+PowerShell launcher parsed successfully. Full Windows/MSVC validation is now authorized from this exact branch lineage.
