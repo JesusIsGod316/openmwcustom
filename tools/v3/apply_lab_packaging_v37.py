@@ -15,8 +15,21 @@ v37_hitch = Path(__file__).with_name("apply_v37_hitch_paths.py")
 exec(compile(v37_hitch.read_text(encoding="utf-8"), str(v37_hitch), "exec"),
     {"__file__": str(v37_hitch), "__name__": "__main__"})
 
+# V3.7 residency originally used an exact-match launcher literal with one
+# accidental trailing space. Normalize only those two source literals in memory
+# before executing the generator so generated PowerShell remains whitespace-clean.
 v37_residency = Path(__file__).with_name("apply_v37_residency.py")
-exec(compile(v37_residency.read_text(encoding="utf-8"), str(v37_residency), "exec"),
+v37_residency_text = v37_residency.read_text(encoding="utf-8")
+v37_quote3 = "'" * 3
+v37_bad_false = v37_quote3 + "    Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu memory management' 'false' " + v37_quote3
+v37_good_false = "\"\"\"    Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu memory management' 'false'\"\"\""
+v37_bad_value = v37_quote3 + "    Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu memory management' $V37GpuMemoryManagement " + v37_quote3
+v37_good_value = "\"\"\"    Set-IniValue $SettingsPath 'Cells' 'v3.2 gpu memory management' $V37GpuMemoryManagement\"\"\""
+if v37_residency_text.count(v37_bad_false) != 1 or v37_residency_text.count(v37_bad_value) != 1:
+    raise RuntimeError("V3.7 residency launcher-literal normalization no longer matches exactly once")
+v37_residency_text = v37_residency_text.replace(v37_bad_false, v37_good_false, 1)
+v37_residency_text = v37_residency_text.replace(v37_bad_value, v37_good_value, 1)
+exec(compile(v37_residency_text, str(v37_residency), "exec"),
     {"__file__": str(v37_residency), "__name__": "__main__"})
 
 v37_shadow = Path(__file__).with_name("apply_v37_shadow_stabilization.py")
