@@ -15,6 +15,14 @@ v37_hitch = Path(__file__).with_name("apply_v37_hitch_paths.py")
 exec(compile(v37_hitch.read_text(encoding="utf-8"), str(v37_hitch), "exec"),
     {"__file__": str(v37_hitch), "__name__": "__main__"})
 
+v37_residency = Path(__file__).with_name("apply_v37_residency.py")
+exec(compile(v37_residency.read_text(encoding="utf-8"), str(v37_residency), "exec"),
+    {"__file__": str(v37_residency), "__name__": "__main__"})
+
+v37_shadow = Path(__file__).with_name("apply_v37_shadow_stabilization.py")
+exec(compile(v37_shadow.read_text(encoding="utf-8"), str(v37_shadow), "exec"),
+    {"__file__": str(v37_shadow), "__name__": "__main__"})
+
 ''' + marker
 if text.count(marker) != 1:
     raise RuntimeError("Unable to locate V3 packaging insertion marker")
@@ -38,12 +46,19 @@ New V3.7 experiments (default off unless a V3.7 launcher choice selects them):
 - Loaded-container empty-handler fast path: unconditional semantics-preserving shortcut; unloaded containers still materialize at the original semantic point.
 - v3.7 companion keyframe preload: broadens preload-worker .kf warm-up from legacy x-prefixed NIFs to any preloaded NIF with a same-name .kf, deduplicated per preload item.
 - v3.7 relaxed resource cache sweep: changes only ResourceSystem sweep cadence (default experiment value 5 seconds); cache expiry values and normal one-second behavior remain unchanged when disabled.
+- Adapter-aware residency admission: combines process-local DXGI pressure with adapter-wide NVML pressure. Soft pressure caps NEW predictive outer-ring cell preloads to one per frame; hard pressure admits none. Required/current cells and already-preloaded refreshes are untouched. No GL objects are destructively evicted.
+- v3.7 stabilize far shadow cascade: default-off orthographic far-cascade texel-grid snap, limited to at most half a texel per axis. It is not whole-map reuse and does not freeze actor/player shadows.
 
 V3.7 unified launcher choices:
-- 33: normal V3.7 candidate = V3.6 profile + active-event fast path + companion-keyframe preload + relaxed resource sweep.
+- 33: normal V3.7 candidate = V3.6 profile + active-event fast path + companion-keyframe preload + relaxed resource sweep + adapter-aware non-destructive preload admission.
 - 34: active-event fast path isolated.
 - 35: companion-keyframe preload isolated + hitch attribution.
-- 36: V3.7 hitch combined + deep attribution.
+- 36: V3.7 hitch combined + deep attribution + adapter-aware preload admission.
+- 37: adapter-aware speculative preload admission isolated against the normal V3.6 profile.
+- 38: far-cascade texel stabilization isolated at 6144 shadow distance.
 
 The historical V3.6 choices 24-32 intentionally leave every new V3.7 experimental switch off so they remain valid same-executable comparison points.
+
+Shadow architecture note:
+- A true static/dynamic far-shadow split is still deferred. The current receiver shader has one sampler/transform per cascade, while the installed Rafael PBR overlay can replace compatibility shader resources after the normal resource copy. Adding a second static depth layer therefore requires an explicitly audited overlay/shader composition path; V3.7 does not fake this with stale whole-map reuse.
 ''')
