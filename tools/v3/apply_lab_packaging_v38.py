@@ -3,6 +3,8 @@ from pathlib import Path
 
 base = Path(__file__).with_name("apply_lab_packaging_v37.py")
 text = base.read_text(encoding="utf-8")
+marker = '''# Install the V3 helper launchers and exact applied-source snapshot beside the
+# runtime executable. This script only runs through the V3 harness, so upstream/default builds are unaffected.'''
 old = '''v37_shadow = Path(__file__).with_name("apply_v37_shadow_stabilization.py")
 exec(compile(v37_shadow.read_text(encoding="utf-8"), str(v37_shadow), "exec"),
     {"__file__": str(v37_shadow), "__name__": "__main__"})
