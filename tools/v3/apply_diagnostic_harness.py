@@ -134,5 +134,11 @@ v33_tail_gpu = Path(__file__).with_name("apply_v33_tail_gpu_experiments.py")
 exec(compile(v33_tail_gpu.read_text(encoding="utf-8"), str(v33_tail_gpu), "exec"),
     {"__file__": str(v33_tail_gpu), "__name__": "__main__"})
 
+# V3.7 is applied after the complete V3.6 generated stack but before packaging
+# captures V3-applied-source.patch. This keeps the exact-source artifact honest.
+v37_core = Path(__file__).with_name("apply_v37_core.py")
+exec(compile(v37_core.read_text(encoding="utf-8"), str(v37_core), "exec"),
+    {"__file__": str(v37_core), "__name__": "__main__"})
+
 packaging = Path(__file__).with_name("apply_lab_packaging.py")
 exec(compile(packaging.read_text(encoding="utf-8"), str(packaging), "exec"), {"__file__": str(packaging), "__name__": "__main__"})
