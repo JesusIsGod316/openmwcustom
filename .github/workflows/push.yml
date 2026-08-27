@@ -19,6 +19,7 @@ on:
       - v3.5-coarse-occlusion-shadow-cache
       - v3.6-multipath-optimization
       - v3.7-hitch-shadow-residency
+      - v3.8-traversal-smoothness-gpu-efficiency
 
 env:
   BUILD_TYPE: RelWithDebInfo
@@ -46,7 +47,7 @@ jobs:
       - name: Apply complete V3 harness and safety preflights
         shell: bash
         run: |
-          python3 tools/v3/apply_diagnostic_harness_v37.py
+          python3 tools/v3/apply_diagnostic_harness_v38.py
 
       - name: Validate generated source diff
         shell: bash
@@ -71,9 +72,6 @@ jobs:
           grep -n "beginExteriorHibernation" apps/openmw/mwrender/renderingmanager.cpp
           grep -n "consumeRestoredExteriorObject" apps/openmw/mwworld/scene.cpp
           echo '--- V3.3 frame-pacing/GPU markers ---'
-          # V3.7 keeps the V3.3 speculative-preload path but upgrades its telemetry event
-          # to the pressure-aware admission marker. Accept either so older V3 branches
-          # retain this shared preflight while V3.7 validates the evolved path.
           grep -nE "v33_speculative_preload|v37_pressure_aware_preload" apps/openmw/mwworld/scene.cpp
           grep -n "v33ReuseFarCascade" components/sceneutil/mwshadowtechnique.cpp
           grep -n "FrameTailStage::UpdateTraversal" apps/openmw/engine.cpp
@@ -113,6 +111,13 @@ jobs:
           grep -n "v37_pressure_aware_preload" apps/openmw/mwworld/scene.cpp
           grep -n "_v37StabilizeFarCascade" components/sceneutil/mwshadowtechnique.hpp
           grep -n "v37-far-stabilization-6144" tools/v3/launchers/V3_Lab.ps1
+          echo '--- V3.8 traversal/GPU markers ---'
+          grep -n "mV38WorldBatchingMode" components/settings/categories/cells.hpp
+          grep -n "v38ForceMerge" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "VERTEX_POSTTRANSFORM" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "updateCacheWithExpiry" components/resource/resourcemanager.hpp
+          grep -n "v38ResidencyMode" apps/openmw/mwrender/renderingmanager.cpp
+          grep -n "v38-combined-aggressive" tools/v3/launchers/V3_Lab.ps1
 
       - name: Parse-check V3 PowerShell launcher
         shell: pwsh
