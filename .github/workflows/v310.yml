@@ -82,9 +82,13 @@ jobs:
           grep -n "v39ConfiguredBatchOptimizerMode" apps/openmw/mwrender/objectpaging.cpp
           grep -n "mV39ProactiveResidencyMode" apps/openmw/mwrender/renderingmanager.cpp
 
-          echo '--- V3.10 post-transform preload markers ---'
+          echo '--- V3.10 post-transform startup-gate markers ---'
           grep -n "mV310PreloadPostTransform" components/settings/categories/cells.hpp
           grep -n "v310PreloadPostTransform" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "mV310InitialFrontloadActive" apps/openmw/mwrender/objectpaging.hpp
+          grep -n "mV310InitialFrontloadActive.load" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "V310InitialFrontloadScope" apps/openmw/mwworld/scene.cpp
+          grep -n "setV310InitialFrontloadActive" apps/openmw/mwrender/renderingmanager.cpp
           grep -n "V3.10 override never requests VERTEX_PRETRANSFORM" apps/openmw/mwrender/objectpaging.cpp
           grep -n "v310-v39-mode56-reference" tools/v3/launchers/V3_Lab.ps1
           grep -n "v310-posttransform-3x3" tools/v3/launchers/V3_Lab.ps1
@@ -98,13 +102,21 @@ jobs:
           from pathlib import Path
 
           obj = Path('apps/openmw/mwrender/objectpaging.cpp').read_text(encoding='utf-8')
+          obj_hpp = Path('apps/openmw/mwrender/objectpaging.hpp').read_text(encoding='utf-8')
+          scene = Path('apps/openmw/mwworld/scene.cpp').read_text(encoding='utf-8')
+          rendering = Path('apps/openmw/mwrender/renderingmanager.cpp').read_text(encoding='utf-8')
           launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
           defaults = Path('files/settings-default.cfg').read_text(encoding='utf-8')
 
           assert 'v3.10 preload post-transform = false' in defaults
-          assert '&& compile && v38BatchingMode >= 2' in obj
+          assert 'std::atomic_bool mV310InitialFrontloadActive{ false };' in obj_hpp
+          assert '&& compile && mV310InitialFrontloadActive.load(std::memory_order_acquire)' in obj
           assert '(v39BatchOptimizerMode >= 3 || v310PreloadPostTransform)' in obj
           assert 'v39BatchOptimizerMode >= 2 || v310PreloadPostTransform' in obj
+          assert scene.count('setV310InitialFrontloadActive(true)') == 1
+          assert scene.count('setV310InitialFrontloadActive(false)') == 1
+          assert 'V310InitialFrontloadScope v310InitialFrontloadScope(mRendering, v39DoFrontload);' in scene
+          assert 'mObjectPaging->setV310InitialFrontloadActive(active);' in rendering
 
           lines = {n: next(line for line in launcher.splitlines() if line.lstrip().startswith(f"'{n}'"))
                    for n in (59, 60, 61, 62)}
@@ -126,7 +138,7 @@ jobs:
               assert '$V39ProactiveResidencyMode' not in lines[n], lines[n]
           assert "$V38FarShadowMode = '3'" in lines[61]
           assert "$V39FrontloadMode = '3'" in lines[62]
-          print('V3.10 policy invariants passed.')
+          print('V3.10 startup-gated policy invariants passed.')
           PY
 
       - name: Parse-check generated PowerShell launcher
