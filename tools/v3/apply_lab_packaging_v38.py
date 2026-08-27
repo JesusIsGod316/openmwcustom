@@ -3,25 +3,24 @@ from pathlib import Path
 
 base = Path(__file__).with_name("apply_lab_packaging_v37.py")
 text = base.read_text(encoding="utf-8")
-marker = '''# Install the V3 helper launchers and exact applied-source snapshot beside the
-# runtime executable. This script only runs through the V3 harness, so upstream/default builds are unaffected.'''
-old = '''v37_shadow = Path(__file__).with_name("apply_v37_shadow_stabilization.py")
-exec(compile(v37_shadow.read_text(encoding="utf-8"), str(v37_shadow), "exec"),
-    {"__file__": str(v37_shadow), "__name__": "__main__"})
-
-''' + marker
-new = '''v37_shadow = Path(__file__).with_name("apply_v37_shadow_stabilization.py")
-exec(compile(v37_shadow.read_text(encoding="utf-8"), str(v37_shadow), "exec"),
-    {"__file__": str(v37_shadow), "__name__": "__main__"})
-
-v38_traversal = Path(__file__).with_name("apply_v38_traversal_gpu.py")
-exec(compile(v38_traversal.read_text(encoding="utf-8"), str(v38_traversal), "exec"),
-    {"__file__": str(v38_traversal), "__name__": "__main__"})
-
-''' + marker
-if text.count(old) != 1:
+needle = (
+    'v37_shadow = Path(__file__).with_name("apply_v37_shadow_stabilization.py")\n'
+    'exec(compile(v37_shadow.read_text(encoding="utf-8"), str(v37_shadow), "exec"),\n'
+    '    {"__file__": str(v37_shadow), "__name__": "__main__"})\n\n'
+    "''' + marker"
+)
+replacement = (
+    'v37_shadow = Path(__file__).with_name("apply_v37_shadow_stabilization.py")\n'
+    'exec(compile(v37_shadow.read_text(encoding="utf-8"), str(v37_shadow), "exec"),\n'
+    '    {"__file__": str(v37_shadow), "__name__": "__main__"})\n\n'
+    'v38_traversal = Path(__file__).with_name("apply_v38_traversal_gpu.py")\n'
+    'exec(compile(v38_traversal.read_text(encoding="utf-8"), str(v38_traversal), "exec"),\n'
+    '    {"__file__": str(v38_traversal), "__name__": "__main__"})\n\n'
+    "''' + marker"
+)
+if text.count(needle) != 1:
     raise RuntimeError("Unable to insert V3.8 traversal layer after complete V3.7 stack")
-text = text.replace(old, new, 1)
+text = text.replace(needle, replacement, 1)
 exec(compile(text, str(base), "exec"), {"__file__": str(base), "__name__": "__main__"})
 
 readme_path = Path(__file__).resolve().parents[2] / "V3-LAB-README.txt"
