@@ -10,6 +10,10 @@ v39 = Path(__file__).with_name("apply_v39_frontloaded_batching.py")
 exec(compile(v39.read_text(encoding="utf-8"), str(v39), "exec"),
     {"__file__": str(v39), "__name__": "__main__"})
 
+v39_priority = Path(__file__).with_name("apply_v39_preload_priority.py")
+exec(compile(v39_priority.read_text(encoding="utf-8"), str(v39_priority), "exec"),
+    {"__file__": str(v39_priority), "__name__": "__main__"})
+
 readme_path = Path(__file__).resolve().parents[2] / "V3-LAB-README.txt"
 with readme_path.open("a", encoding="utf-8", newline="\n") as readme:
     readme.write(r'''
@@ -30,8 +34,17 @@ Core implementation:
 - Frontload 3: 5x5 future-view block; intentionally aggressive/slow startup.
 - Frontloading runs only once per Scene lifetime. Normal cell-grid changes continue using the existing prediction path.
 
+Preload-priority batching:
+- QuadTree normal rendering asks ChunkManagers for chunks with compile=false, while explicit terrain/background preload
+  uses compile=true. V3.9 uses that existing signal as a safety valve.
+- Requested mode-2/3 strong batching is allowed on compile=true preload work.
+- If prediction loses the race and a chunk is demanded synchronously with compile=false, V3.9 falls back to conservative
+  mode-1 merge admission and merge-only cleanup for that miss. This bounds traversal-frame construction cost.
+- ObjectPaging's ChunkId cache does not include the compile flag, so a strong batch successfully built by preload is reused
+  unchanged by later rendering; the fallback is only for genuine on-demand misses.
+
 Cheap strong batching:
-- V3.8 mode-2/3 merge admission is retained so MERGE_GEOMETRY can preserve the measured draw/submission reduction.
+- V3.8 mode-2/3 merge admission is retained on preload work so MERGE_GEOMETRY can preserve the measured draw/submission reduction.
 - V3.9 separates expensive post-merge mesh ordering from merge admission.
 - batch optimizer 0: exact V3.8 post-transform/pre-transform/shared-state behavior.
 - batch optimizer 1: merge only.
@@ -54,6 +67,8 @@ V3.9 launcher choices:
 Quality-control contract:
 - Mode 55 must remain a rollback-equivalent reference.
 - V3.9 startup work must execute only once per Scene lifetime and never become a recurring grid-change frontload.
+- Any synchronous on-demand chunk miss while frontloading is enabled must use the conservative fallback rather than the
+  strong forced-merge path.
 - Existing ObjectPaging eligibility, animation/update-traversal exclusion, alpha/material/PBR compatibility, refnum semantics,
   LOD selection, occlusion data and shadow semantics remain authoritative.
 - Do not promote hardware object instancing until the Rafael PBR main + shadow shader overlay is changed atomically and
