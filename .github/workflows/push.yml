@@ -111,7 +111,7 @@ jobs:
           grep -n "void apply(osg::Drawable& drawable)" components/debug/v36structuretrace.hpp
           grep -n "AdapterSoftFreeBytes" components/debug/v3gpumemory.hpp
           grep -n "v37_pressure_aware_preload" apps/openmw/mwworld/scene.cpp
-          grep -n "mV37StabilizeFarCascade" components/sceneutil/mwshadowtechnique.cpp
+          grep -n "mV37StabilizeFarCascade" components/sceneutil/mwshadowtechnique.hpp
           grep -n "v37-far-stabilization-6144" tools/v3/launchers/V3_Lab.ps1
 
       - name: Parse-check V3 PowerShell launcher
