@@ -44,7 +44,9 @@ jobs:
     - name: Apply V3 diagnostic harness source patch
       if: ${{ github.ref_name == 'v3-performance' || startsWith(github.ref_name, 'v3.') }}
       run: |
-        if ($env:GITHUB_REF_NAME -like 'v3.8-*') {
+        if ($env:GITHUB_REF_NAME -like 'v3.9-*') {
+          python tools/v3/apply_diagnostic_harness_v39.py
+        } elseif ($env:GITHUB_REF_NAME -like 'v3.8-*') {
           python tools/v3/apply_diagnostic_harness_v38.py
         } elseif ($env:GITHUB_REF_NAME -like 'v3.7-*') {
           python tools/v3/apply_diagnostic_harness_v37.py
