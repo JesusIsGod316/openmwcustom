@@ -1,0 +1,12 @@
+V3.10 Windows validation target
+
+This marker triggers the first full Windows/MSVC build after the startup-only post-transform gate passed all source/policy/launcher preflights.
+
+Runtime target:
+- Mode 59: exact V3.9 Mode-56 reference.
+- Mode 60: Mode 59 + VERTEX_POSTTRANSFORM/shared-state only during the one-time synchronous initial multi-view frontload.
+- Later predictive/background compile=true preload does not receive V3.10 post-transform.
+- Gameplay-demand compile=false misses retain the V3.9 conservative mode-1 merge-only fallback.
+- No V3.10 normal mode enables V3.9 proactive whole-render-graph expiry.
+
+Canonical test: groundcover density 1.0, shadow distance 4096. Run Mode 60 first.
