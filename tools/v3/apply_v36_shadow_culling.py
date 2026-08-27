@@ -15,6 +15,18 @@ def replace_exact(rel, old, new, expected=1):
     print(f"V3.6 shadow patched {rel} ({count} match(es))")
 
 
+# Settings::cells() is declared in values.hpp, not in the category definition itself.
+# The GPU-profiler layer adds the category include to shadow.cpp; complete the accessor include
+# here before the shadow experiment consumes the V3.6 Cells settings.
+replace_exact(
+    "components/sceneutil/shadow.cpp",
+    '''#include <components/settings/categories/cells.hpp>
+#include <components/settings/categories/shadows.hpp>''',
+    '''#include <components/settings/categories/cells.hpp>
+#include <components/settings/categories/shadows.hpp>
+#include <components/settings/values.hpp>''',
+)
+
 replace_exact(
     "components/sceneutil/mwshadowtechnique.hpp",
     '''#include <array>
