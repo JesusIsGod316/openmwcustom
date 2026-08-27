@@ -46,7 +46,7 @@ jobs:
       - name: Apply complete V3 harness and safety preflights
         shell: bash
         run: |
-          python3 tools/v3/apply_diagnostic_harness.py
+          python3 tools/v3/apply_diagnostic_harness_v37.py
 
       - name: Validate generated source diff
         shell: bash
