@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-base = Path(__file__).with_name("apply_diagnostic_harness.py")
+base = Path(__file__).with_name("apply_diagnostic_harness_legacy.py")
 text = base.read_text(encoding="utf-8")
 old = '''# V3.7 is applied after the complete V3.6 generated stack but before packaging
 # captures V3-applied-source.patch. This keeps the exact-source artifact honest.
