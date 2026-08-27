@@ -1,29 +1,27 @@
-name: Windows
+name: Reusable Windows workflow
 
 on:
   workflow_call:
     inputs:
       image:
+        description: Window Server image
         required: true
         type: string
       msvc:
-        required: false
-        default: '2022'
+        description: MSVC version (2022/2026)
+        default: "2022"
         type: string
       build-type:
-        required: false
         default: RelWithDebInfo
         type: string
       package:
-        required: false
         default: false
         type: boolean
       tests:
-        required: false
+        description: Build and run tests and benchmarks
         default: true
         type: boolean
       release:
-        required: false
         default: false
         type: boolean
 
@@ -101,165 +99,175 @@ jobs:
     - name: Install Qt with aqt
       if: steps.qt-cache.outputs.cache-hit != 'true'
       working-directory: ${{ github.workspace }}/deps/Qt
-      run: >
-        ./aqt_x64.exe install-qt windows desktop ${{ env.QT_VER }} win64_msvc2019_64
-        --outputdir ${{ github.workspace }}/deps/Qt
+      run: .\aqt_x64.exe install-qt windows desktop ${{ env.QT_VER }} win64_msvc2019_64
 
     - uses: ilammy/msvc-dev-cmd@v1
-      with:
-        arch: x64
 
     - uses: seanmiddleditch/gha-setup-ninja@master
 
     - name: Configure OpenMW
       run: >
-        cmake -S . -B build
+        cmake
+        -S .
+        -B ${{ github.workspace }}/build
         -G Ninja
         -D CMAKE_BUILD_TYPE=${{ inputs.build-type }}
-        -D CMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/deps/vcpkg-x64-windows-${{ inputs.msvc }}-${{ env.VCPKG_TAG }}/scripts/buildsystems/vcpkg.cmake
-        -D CMAKE_PREFIX_PATH=${{ github.workspace }}/deps/Qt/${{ env.QT_VER }}/msvc2019_64
-        -D OPENMW_LTO_BUILD=OFF
-        -D BUILD_OPENCS=ON
-        -D BUILD_WIZARD=ON
-        -D BUILD_LAUNCHER=ON
-        -D BUILD_BSATOOL=ON
-        -D BUILD_ESMTOOL=ON
-        -D BUILD_NIFTEST=ON
-        -D BUILD_NAVMESHTOOL=ON
-        -D BUILD_UNITTESTS=${{ inputs.tests }}
-        -D BUILD_BENCHMARKS=${{ inputs.tests }}
-        -D BUILD_WITH_CODE_COVERAGE=OFF
-        -D BUILD_MSVC_WITH_PRECOMPILED_HEADERS=ON
+        -D CMAKE_TOOLCHAIN_FILE='${{ github.workspace }}/deps/vcpkg-x64-windows-${{ inputs.msvc }}-${{ env.VCPKG_TAG }}/scripts/buildsystems/vcpkg.cmake'
+        -D CMAKE_PREFIX_PATH='${{ github.workspace }}/deps/Qt/${{ env.QT_VER }}/msvc2019_64'
+        ${{ inputs.package && '-D CMAKE_CXX_FLAGS_RELEASE="/O2 /Ob2 /DNDEBUG /Zi"' || '' }}
+        ${{ inputs.package && '-D "CMAKE_EXE_LINKER_FLAGS_RELEASE=/DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO"' || '' }}
+        -D LuaJit_INCLUDE_DIR='${{ github.workspace }}/deps/vcpkg-x64-windows-${{ inputs.msvc }}-${{ env.VCPKG_TAG }}/installed/x64-windows/include/luajit'
+        -D LuaJit_LIBRARY='${{ github.workspace }}/deps/vcpkg-x64-windows-${{ inputs.msvc }}-${{ env.VCPKG_TAG }}/installed/x64-windows/lib/lua51.lib'
+        -D BUILD_BENCHMARKS=${{ ! inputs.package && inputs.tests }}
+        -D BUILD_COMPONENTS_TESTS=${{ ! inputs.package && inputs.tests }}
+        -D BUILD_OPENMW_TESTS=${{ ! inputs.package && inputs.tests }}
+        -D BUILD_OPENCS_TESTS=${{ ! inputs.package && inputs.tests }}
+        -D OPENMW_USE_SYSTEM_SQLITE3=OFF
+        -D OPENMW_USE_SYSTEM_YAML_CPP=OFF
+        -D OPENMW_LTO_BUILD=ON
+        ${{ inputs.package && '-D "VCREDIST64=$env:VCToolsRedistDir/vc_redist.x64.exe"' || '' }}
+        -D CMAKE_EXPORT_COMPILE_COMMANDS=ON
 
     - name: Build OpenMW
-      working-directory: ${{ github.workspace }}/build
-      run: cmake --build . --config ${{ inputs.build-type }}
+      run: cmake --build ${{ github.workspace }}/build
 
     - name: Copy missing DLLs
-      working-directory: ${{ github.workspace }}/build
       run: |
-        $VCPKG_BIN = "${{ github.workspace }}/deps/vcpkg-x64-windows-${{ inputs.msvc }}-${{ env.VCPKG_TAG }}/installed/x64-windows/bin"
-        if (Test-Path "$VCPKG_BIN") {
-          Get-ChildItem "$VCPKG_BIN/*.dll" | Copy-Item -Destination . -Force
-        }
+        cp ${{ github.workspace }}/deps/vcpkg-x64-windows-${{ inputs.msvc }}-${{ env.VCPKG_TAG }}/installed/x64-windows/bin/Release/MyGUIEngine.dll ${{ github.workspace }}/build
+        cp -Filter *.dll -Recurse ${{ github.workspace }}/deps/vcpkg-x64-windows-${{ inputs.msvc }}-${{ env.VCPKG_TAG }}/installed/x64-windows/bin/osgPlugins-3.6.5 ${{ github.workspace }}/build
+        cp ${{ github.workspace }}/deps/vcpkg-x64-windows-${{ inputs.msvc }}-${{ env.VCPKG_TAG }}/installed/x64-windows/bin/*.dll ${{ github.workspace }}/build
 
     - name: Copy Qt DLLs
-      working-directory: ${{ github.workspace }}/build
+      working-directory: ${{ github.workspace }}/deps/Qt/${{ env.QT_VER }}/msvc2019_64
       run: |
-        $QT_BIN = "${{ github.workspace }}/deps/Qt/${{ env.QT_VER }}/msvc2019_64/bin"
-        if (Test-Path "$QT_BIN") {
-          Get-ChildItem "$QT_BIN/*.dll" | Copy-Item -Destination . -Force
-        }
+        cp bin/Qt6Core.dll ${{ github.workspace }}/build
+        cp bin/Qt6Gui.dll ${{ github.workspace }}/build
+        cp bin/Qt6Network.dll ${{ github.workspace }}/build
+        cp bin/Qt6OpenGL.dll ${{ github.workspace }}/build
+        cp bin/Qt6OpenGLWidgets.dll ${{ github.workspace }}/build
+        cp bin/Qt6Widgets.dll ${{ github.workspace }}/build
+        cp bin/Qt6Svg.dll ${{ github.workspace }}/build
+        mkdir ${{ github.workspace }}/build/styles
+        cp plugins/styles/qwindowsvistastyle.dll ${{ github.workspace }}/build/styles
+        mkdir ${{ github.workspace }}/build/platforms
+        cp plugins/platforms/qwindows.dll ${{ github.workspace }}/build/platforms
+        mkdir ${{ github.workspace }}/build/imageformats
+        cp plugins/imageformats/qsvg.dll ${{ github.workspace }}/build/imageformats
+        mkdir ${{ github.workspace }}/build/iconengines
+        cp plugins/iconengines/qsvgicon.dll ${{ github.workspace }}/build/iconengines
 
     - name: Create symbol server directory structure
-      if: ${{ inputs.package }}
       working-directory: ${{ github.workspace }}/build
       run: |
-        mkdir -p symbols
-        Get-ChildItem -Filter *.pdb -Recurse | ForEach-Object {
-          $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
-          $dir = "symbols/$($_.BaseName)/$hash"
-          mkdir -p $dir
-          Copy-Item $_.FullName "$dir/$($_.Name)"
-        }
+        ${{ github.workspace }}\CI\Store-Symbols.ps1
+        Move-Item ${{ github.workspace }}\build\SymStore ${{ github.workspace }}
 
     - name: Move pdb files
-      if: ${{ inputs.package }}
-      working-directory: ${{ github.workspace }}/build
       run: |
-        mkdir -p pdb
-        Get-ChildItem -Filter *.pdb -Recurse | Copy-Item -Destination pdb -Force
+        robocopy build pdb *.pdb /MOVE
+        if ($lastexitcode -lt 8) {
+          $global:LASTEXITCODE = $null
+        }
 
     - name: Install OpenMW
-      working-directory: ${{ github.workspace }}/build
-      run: cmake --install . --prefix install
+      if: ${{ ! inputs.package }}
+      run: cmake --install ${{ github.workspace }}/build --prefix ${{ github.workspace }}/install
 
     - name: Package OpenMW
       if: ${{ inputs.package }}
-      working-directory: ${{ github.workspace }}/build
-      run: cpack
+      run: |
+        cpack --config "${{ github.workspace }}/build/CPackConfig.cmake" -B "${{ github.workspace }}/install"
+        rm -r -Force "${{ github.workspace }}/install/_CPack_Packages"
 
     - name: Remove extra pdb files
-      if: ${{ inputs.package }}
-      working-directory: ${{ github.workspace }}/build/install
-      run: Get-ChildItem -Filter *.pdb -Recurse | Remove-Item -Force
+      if: ${{ ! inputs.package }}
+      shell: bash
+      run: |
+        rm -rf install/bin
+        rm -rf install/_deps
 
     - name: Generate CI-ID.txt
-      working-directory: ${{ github.workspace }}/build/install
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
-        "${{ github.sha }}" | Out-File -Encoding ascii CI-ID.txt
+        job_url=$(gh run --repo ${{ github.repository }} view ${{ github.run_id }} --json jobs --jq '.jobs[] | select(.name == "windows-${{ inputs.msvc }}") | .url')
+        printf "Ref ${{ github.ref }}\nJob ${job_url}\nCommit ${{ github.sha }}\n" > install/CI-ID.txt
+        cp install/CI-ID.txt pdb/CI-ID.txt
+        cp install/CI-ID.txt SymStore/CI-ID.txt
 
     - name: Store OpenMW archived pdb files
-      if: ${{ inputs.package }}
       uses: actions/upload-artifact@v6
       with:
-        name: openmw-pdb-windows-${{ inputs.image }}-${{ github.sha }}
-        path: ${{ github.workspace }}/build/pdb
+        name: openmw-windows-${{ inputs.msvc }}-pdb-${{ github.sha }}
+        path: ${{ github.workspace }}/pdb/*
 
     - name: Store OpenMW build artifacts
       uses: actions/upload-artifact@v6
       with:
-        name: openmw-windows-${{ inputs.image }}-${{ github.sha }}
-        path: ${{ github.workspace }}/build/install
+        name: openmw-windows-${{ inputs.msvc }}-${{ github.sha }}
+        path: ${{ github.workspace }}/install/*
 
     - name: Store symbol server artifacts
-      if: ${{ inputs.package }}
       uses: actions/upload-artifact@v6
       with:
-        name: openmw-symbols-windows-${{ inputs.image }}-${{ github.sha }}
-        path: ${{ github.workspace }}/build/symbols
+        name: openmw-windows-${{ inputs.msvc }}-sym-store-${{ github.sha }}
+        path: ${{ github.workspace }}/SymStore/*
 
     - name: Store log etc. artifacts
-      if: failure()
       uses: actions/upload-artifact@v6
       with:
-        name: openmw-logs-windows-${{ inputs.image }}-${{ github.sha }}
+        name: openmw-windows-${{ inputs.msvc }}-logs-and-stuff-${{ github.sha }}
         path: |
+          ${{ github.workspace }}/build/compile_commands.json
           ${{ github.workspace }}/build/**/*.log
-          ${{ github.workspace }}/build/CMakeCache.txt
-        if-no-files-found: ignore
+          ${{ github.workspace }}/build/**/*.ninja_log
+          ${{ github.workspace }}/build/**/CMakeCache.txt
 
     - name: Upload to symbol server
-      if: ${{ inputs.release }}
-      run: echo "Symbol server upload intentionally unchanged from upstream release flow."
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: eu-west-3
+      if: ${{ env.AWS_ACCESS_KEY_ID != '' && env.AWS_SECRET_ACCESS_KEY != '' && inputs.package }}
+      working-directory: ${{ github.workspace }}/SymStore
+      run: |
+        choco uninstall awscli -y
+        choco install awscli -y --version=2.22.35
+        aws --version
+        aws --endpoint-url https://rgw.ctrl-c.liu.se s3 sync --size-only --exclude * --include *.ex_ --include *.dl_ --include *.pd_ . s3://openmw-sym
 
     - name: Add install directory to PATH
-      if: ${{ inputs.tests }}
-      run: echo "${{ github.workspace }}/build/install" >> $env:GITHUB_PATH
+      shell: bash
+      run: echo '${{ github.workspace }}/install' >> ${GITHUB_PATH}
 
     - name: Run components tests
-      if: ${{ inputs.tests }}
-      working-directory: ${{ github.workspace }}/build
-      run: ctest -C ${{ inputs.build-type }} --output-on-failure
+      if: ${{ ! inputs.package && inputs.tests }}
+      run: build/components-tests.exe
 
     - name: Run OpenMW tests
-      if: ${{ inputs.tests }}
-      working-directory: ${{ github.workspace }}/build
-      run: ctest -C ${{ inputs.build-type }} --output-on-failure
+      if: ${{ ! inputs.package && inputs.tests }}
+      run: build/openmw-tests.exe
 
     - name: Run OpenMW-CS tests
-      if: ${{ inputs.tests }}
-      working-directory: ${{ github.workspace }}/build
-      run: ctest -C ${{ inputs.build-type }} --output-on-failure
+      if: ${{ ! inputs.package && inputs.tests }}
+      run: build/openmw-cs-tests.exe
 
     - name: Run detournavigator navmeshtilescache benchmark
-      if: ${{ inputs.tests }}
-      working-directory: ${{ github.workspace }}/build
-      run: echo "Benchmarks are built with the test configuration."
+      if: ${{ ! inputs.package && inputs.tests }}
+      run: build/openmw_detournavigator_navmeshtilescache_benchmark.exe
 
     - name: Run settings access benchmark
-      if: ${{ inputs.tests }}
-      working-directory: ${{ github.workspace }}/build
-      run: echo "Benchmarks are built with the test configuration."
+      if: ${{ ! inputs.package && inputs.tests }}
+      run: build/openmw_settings_access_benchmark.exe
 
     - name: Run esm refid benchmark
-      if: ${{ inputs.tests }}
-      working-directory: ${{ github.workspace }}/build
-      run: echo "Benchmarks are built with the test configuration."
+      if: ${{ ! inputs.package && inputs.tests }}
+      run: build/openmw_esm_refid_benchmark.exe
 
     - name: Create prerelease
       if: ${{ inputs.release }}
       uses: softprops/action-gh-release@v2
       with:
+        files: ${{ github.workspace }}/install/*.exe
         prerelease: true
-        files: ${{ github.workspace }}/build/*.zip
