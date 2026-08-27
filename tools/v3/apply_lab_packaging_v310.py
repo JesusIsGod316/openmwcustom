@@ -40,8 +40,16 @@ Runtime evidence driving this build:
 Core V3.10 mechanism:
 - Adds `v3.10 preload post-transform` (default false).
 - When enabled, batching mode >=2 receives VERTEX_POSTTRANSFORM + shared-state compaction ONLY while V3.9 is running its
-  one-time synchronous initial multi-view frontload. A dedicated atomic gate is enabled before the preload positions can
-  dispatch worker tasks and is cleared by RAII when the synchronous preload scope exits.
+  one-time synchronous initial multi-view frontload.
+- Ordering is explicit: any older TerrainPreloadItem is aborted and waitTillDone() completes first; only then does V3.10
+  clear the ObjectPaging CHUNK cache and enable its atomic startup gate. This prevents a previous prediction worker from
+  inheriting the startup-only policy.
+- The ObjectPaging cache rebuild is deliberate. An earlier prediction can populate the same ChunkId with merge-only
+  geometry; accepting that cache hit during startup would silently bypass post-transform optimization. Clearing only this
+  chunk cache forces Mode60's initial frontload to build the intended optimized geometry. Externally referenced OSG nodes
+  remain alive by reference counting, and scene-template/image/keyframe caches are not cleared.
+- The atomic gate is active before the new preload positions dispatch worker tasks and is cleared by RAII when the
+  synchronous startup preload scope exits.
 - `compile=true` by itself is deliberately NOT sufficient because later predictive/background preload also uses that path;
   those later background chunks keep strong V3.9 merge admission but skip V3.10's expensive post-transform pass.
 - V3.9's compile=false emergency fallback remains authoritative: an on-demand miss still uses conservative mode-1
@@ -58,8 +66,8 @@ Lua QC decision:
   than risking script-order or save-state correctness.
 
 V3.10 launcher choices:
-- 59: exact V3.9 Mode-56 configuration reference.
-- 60: Mode59 + startup-frontload-only VERTEX_POSTTRANSFORM/shared-state. FIRST TEST and cleanest causal A/B.
+- 59: exact V3.9 Mode-56 configuration reference. V3.10 startup gate/cache rebuild remains inactive.
+- 60: Mode59 + startup-frontload-only VERTEX_POSTTRANSFORM/shared-state and fresh ObjectPaging chunk rebuild. FIRST TEST.
 - 61: Mode60 + already visually-clean 5px far-shadow pruning; intended combined candidate after Mode60 passes.
 - 62: Mode61 with 5x5 startup frontload instead of 3x3; intentionally expensive coverage experiment.
 
@@ -97,6 +105,8 @@ for marker in (
     "v310PreloadPostTransform",
     "mV310InitialFrontloadActive",
     "V310InitialFrontloadScope",
+    "v310InitialFrontloadScope.activate",
+    "mObjectPaging->clearCache",
     "v310-posttransform-3x3",
     "v310-combined-candidate",
 ):
