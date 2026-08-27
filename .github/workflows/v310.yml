@@ -1,0 +1,163 @@
+name: V3.10 post-transform preload build and QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - full
+  push:
+    branches:
+      - v3.10-posttransform-preload-lua-audit
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    if: ${{ github.event_name == 'push' || inputs.mode == 'preflight' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Show exact source revision
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git status --short
+
+      - name: Compile-check all V3 Python patch tools
+        shell: bash
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Apply complete V3.10 generated source stack
+        shell: bash
+        run: python3 tools/v3/apply_diagnostic_harness_v310.py
+
+      - name: Validate generated diff and inherited safety foundations
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          echo '--- generated V3.10 diff stat ---'
+          cat V3-applied-source-stat.txt
+
+          echo '--- core diagnostic/harness foundations ---'
+          grep -n "program_link_apply" components/shader/shadermanager.cpp
+          grep -n "V3InsertionAccumulatorScope insertionScope" apps/openmw/mwworld/scene.cpp
+          grep -n "mV3ActiveThreads" components/sceneutil/workqueue.cpp
+          grep -n "mPreparedInstanceGeneration" components/resource/scenemanager.cpp
+
+          echo '--- V3.2/V3.3 foundations ---'
+          grep -n "mV32GpuMemoryTelemetry" components/settings/categories/cells.hpp
+          grep -n "nvmlDeviceGetMemoryInfo" components/debug/v3gpumemory.hpp
+          grep -n "mV33IdleTimerFastPath" components/settings/categories/lua.hpp
+          grep -n "FrameTailStage::UpdateTraversal" apps/openmw/engine.cpp
+
+          echo '--- V3.5/V3.6 foundations ---'
+          grep -n "mV35CoarseChunkOcclusion" components/settings/categories/camera.hpp
+          grep -n "CoarseOcclusionCallback" apps/openmw/mwrender/groundcover.cpp
+          grep -n "mV36PerformanceProfile" components/settings/categories/cells.hpp
+          grep -n "farCasterMinimumPixels" components/settings/v36profile.hpp
+
+          echo '--- V3.7/V3.8 foundations ---'
+          grep -n "mV37ActiveEventFastPath" apps/openmw/mwlua/engineevents.cpp
+          grep -n "AdapterSoftFreeBytes" components/debug/v3gpumemory.hpp
+          grep -n "mV38WorldBatchingMode" components/settings/categories/cells.hpp
+          grep -n "v38ForceMerge" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "VERTEX_POSTTRANSFORM" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "updateCacheWithExpiry" components/resource/resourcemanager.hpp
+
+          echo '--- V3.9 frontload safety foundations ---'
+          grep -n "mV39FrontloadMode" components/settings/categories/cells.hpp
+          grep -n "mV39InitialFrontloadDone" apps/openmw/mwworld/scene.hpp
+          grep -n "v39NeedsInitialFrontload" apps/openmw/mwworld/scene.cpp
+          grep -n "v39OnDemandFallback" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "v39ConfiguredBatchOptimizerMode" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "mV39ProactiveResidencyMode" apps/openmw/mwrender/renderingmanager.cpp
+
+          echo '--- V3.10 post-transform preload markers ---'
+          grep -n "mV310PreloadPostTransform" components/settings/categories/cells.hpp
+          grep -n "v310PreloadPostTransform" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "V3.10 override never requests VERTEX_PRETRANSFORM" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "v310-v39-mode56-reference" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v310-posttransform-3x3" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v310-combined-candidate" tools/v3/launchers/V3_Lab.ps1
+          grep -n "benchmark_groundcover_density=1.0" tools/v3/launchers/V3_Lab.ps1
+
+      - name: Validate V3.10 policy invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          obj = Path('apps/openmw/mwrender/objectpaging.cpp').read_text(encoding='utf-8')
+          launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
+          defaults = Path('files/settings-default.cfg').read_text(encoding='utf-8')
+
+          assert 'v3.10 preload post-transform = false' in defaults
+          assert '&& compile && v38BatchingMode >= 2' in obj
+          assert '(v39BatchOptimizerMode >= 3 || v310PreloadPostTransform)' in obj
+          assert 'v39BatchOptimizerMode >= 2 || v310PreloadPostTransform' in obj
+
+          lines = {n: next(line for line in launcher.splitlines() if line.lstrip().startswith(f"'{n}'"))
+                   for n in (59, 60, 61, 62)}
+          # 59 is the exact V3.9 Mode-56 configuration reference.
+          for token in ("$V38WorldBatchingMode = '2'", "$V38GpuResidencyMode = '1'",
+                        "$V38FarShadowMode = '1'", "$V38CompilePacingMode = '3'",
+                        "$V39FrontloadMode = '2'", "$V39BatchOptimizerMode = '1'"):
+              assert token in lines[59], (token, lines[59])
+          assert '$V310PreloadPostTransform' not in lines[59]
+
+          # 60 changes the post-transform switch while preserving the clean Mode-56 baseline knobs.
+          for token in ("$V38WorldBatchingMode = '2'", "$V38GpuResidencyMode = '1'",
+                        "$V38FarShadowMode = '1'", "$V39FrontloadMode = '2'",
+                        "$V39BatchOptimizerMode = '1'", "$V310PreloadPostTransform = 'true'"):
+              assert token in lines[60], (token, lines[60])
+
+          # No normal V3.10 profile may opt into the rejected V3.9 proactive graph expiry path.
+          for n in (59, 60, 61, 62):
+              assert '$V39ProactiveResidencyMode' not in lines[n], lines[n]
+          assert "$V38FarShadowMode = '3'" in lines[61]
+          assert "$V39FrontloadMode = '3'" in lines[62]
+          print('V3.10 policy invariants passed.')
+          PY
+
+      - name: Parse-check generated PowerShell launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Host 'V3_Lab.ps1 parse check passed.'
+
+      - name: Upload exact generated V3.10 patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: v310-preflight-applied-source-${{ github.sha }}
+          path: |
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+          if-no-files-found: error
+
+  Windows:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: "2022"
+      tests: false
