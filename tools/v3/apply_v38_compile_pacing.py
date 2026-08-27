@@ -32,6 +32,17 @@ def replace_exact(rel, old, new, expected=1):
 #     more of measured spare time available to compilation.
 # -----------------------------------------------------------------------------
 replace_exact(
+    "apps/openmw/mwrender/renderingmanager.cpp",
+    '''#include "renderingmanager.hpp"
+
+#include <cstdlib>''',
+    '''#include "renderingmanager.hpp"
+
+#include <algorithm>
+#include <cstdlib>''',
+)
+
+replace_exact(
     "components/settings/categories/cells.hpp",
     '''        SettingValue<int> mV38FarShadowMode{ mIndex, "V3", "v3.8 far shadow mode",
             makeClampSanitizerInt(0, 3) };''',
