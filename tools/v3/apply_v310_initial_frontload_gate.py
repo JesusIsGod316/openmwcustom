@@ -37,8 +37,8 @@ replace_exact(
 
 replace_exact(
     "apps/openmw/mwrender/objectpaging.hpp",
-    '''        void setOcclusionCuller(SceneUtil::OcclusionCuller* culler, unsigned int maxTriangles,\n            OcclusionCulling::OcclusionStorage* storage);\n\n    private:''',
-    '''        void setOcclusionCuller(SceneUtil::OcclusionCuller* culler, unsigned int maxTriangles,\n            OcclusionCulling::OcclusionStorage* storage);\n\n        // V3.10: true only while Scene is synchronously waiting for the one-time\n        // initial multi-view frontload. Worker ObjectPaging construction reads this\n        // flag, so it must be atomic. Later predictive/background preload remains\n        // deliberately outside this gate.\n        void setV310InitialFrontloadActive(bool active)\n        {\n            mV310InitialFrontloadActive.store(active, std::memory_order_release);\n        }\n\n    private:''',
+    '''        void setOcclusionCuller(SceneUtil::OcclusionCuller* culler, unsigned int maxTriangles,\n            OcclusionCulling::OcclusionStorage* storage, bool coarseChunkOcclusion = false);\n\n    private:''',
+    '''        void setOcclusionCuller(SceneUtil::OcclusionCuller* culler, unsigned int maxTriangles,\n            OcclusionCulling::OcclusionStorage* storage, bool coarseChunkOcclusion = false);\n\n        // V3.10: true only while Scene is synchronously waiting for the one-time\n        // initial multi-view frontload. Worker ObjectPaging construction reads this\n        // flag, so it must be atomic. Later predictive/background preload remains\n        // deliberately outside this gate.\n        void setV310InitialFrontloadActive(bool active)\n        {\n            mV310InitialFrontloadActive.store(active, std::memory_order_release);\n        }\n\n    private:''',
 )
 
 replace_exact(
