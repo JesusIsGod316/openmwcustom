@@ -1,0 +1,15 @@
+V3.9 full Windows/MSVC compilation trigger.
+
+Preflight checkpoint before this trigger: 748ebc1ac52f948be9cefa1164f6feb2bfc5a593
+GitHub Actions preflight run: 33103372280
+
+QC passed before full compile:
+- V3.9 harness/packaging applies cleanly after the complete V3.8 stack.
+- Python tools compile-check passed.
+- generated-source git diff --check passed.
+- V3.1-V3.8 safety/feature retention markers remain present.
+- V3.9 one-time frontload, batch-optimizer, proactive-residency and launcher markers are present.
+- preload-priority patch applied exactly once to both ObjectPaging admission and post-merge policy.
+- V3_Lab.ps1 PowerShell parser passed.
+
+V3.9 design priority: tolerate expensive initial exterior loading when it moves strong ObjectPaging batch construction off ordinary traversal. compile=true preload work may use strong batching; compile=false on-demand misses fall back to conservative batching/merge-only cleanup.
