@@ -6,7 +6,7 @@ v311 = Path(__file__).with_name("apply_lab_packaging_v311.py")
 exec(compile(v311.read_text(encoding="utf-8"), str(v311), "exec"),
     {"__file__": str(v311), "__name__": "__main__"})
 
-v312 = Path(__file__).with_name("apply_v312_hitch_scheduler.py")
+v312 = Path(__file__).with_name("apply_v312_hitch_scheduler_fixed.py")
 exec(compile(v312.read_text(encoding="utf-8"), str(v312), "exec"),
     {"__file__": str(v312), "__name__": "__main__"})
 
