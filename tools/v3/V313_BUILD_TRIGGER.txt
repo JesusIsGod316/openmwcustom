@@ -1,0 +1,8 @@
+V3.13 Windows full-build trigger
+
+Validated implementation preflight:
+run 33186808205
+head 122644302310195db6f7137ef7a6d352f1694d9b
+result: success
+
+This file exists only to trigger the full Windows/MSVC build after the complete V3.13 generated-source, quality-policy, launcher, and PowerShell checks passed.
