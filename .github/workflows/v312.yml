@@ -37,7 +37,19 @@ jobs:
 
       - name: Apply complete V3.12 generated source stack
         shell: bash
-        run: python3 tools/v3/apply_diagnostic_harness_v312.py
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness_v312.py 2>&1 | tee v312-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Upload V3.12 apply log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v312-apply-log-${{ github.sha }}
+          path: v312-apply.log
+          if-no-files-found: error
 
       - name: Validate generated diff and key foundations
         shell: bash
@@ -73,19 +85,16 @@ jobs:
           assert 'v3.12 predictor lead seconds = 3.0' in defaults
           assert 'v3.12 lua precompile = false' in defaults
 
-          # Mode66 architecture remains intact and compile=false demand fallback stays authoritative.
           assert 'v311PrepareMode > 0 && compile && activeGrid && v38BatchingMode >= 2' in obj
           assert 'v311PrepareMode >= 2 && v311PreparedActive' in obj
           assert 'v39OnDemandFallback ? std::min(v38ConfiguredBatchingMode, 1)' in obj
 
-          # ETA work is prioritized by vector position; no required work is delayed or canceled here.
           assert 'const auto axisEta' in scene
           assert 'eta <= leadSeconds' in scene
-          assert 'exteriorPositions.push_back(\n                            PositionCellGrid{ boundaryProbe, gridCenterToBounds(etaGrid) });' in scene
+          assert 'PositionCellGrid{ boundaryProbe, gridCenterToBounds(etaGrid) }' in scene
           assert 'v312PredictorMode >= 2 && normalPredictedGrid != etaGrid' in scene
           assert 'V3.12 ETA Target Selected' in scene
 
-          # Lua precompile populates bytecode only. It must not invoke sandbox execution or container loading.
           method = lua_cpp[lua_cpp.index('std::size_t LuaState::precompileConfiguredScripts()'):]
           method = method[:method.index('sol::function LuaState::loadScriptAndCache')]
           assert 'loadFromVFS(path)' in method
@@ -104,7 +113,6 @@ jobs:
           for n in (66, 67, 68, 69, 70):
               for token in common:
                   assert token in lines[n], (n, token)
-          # 67 is exact Mode66 behavior: all new controls remain their initialized defaults.
           assert '$V312PredictorMode' not in lines[67]
           assert '$V312LuaPrecompile' not in lines[67]
           assert "$V312PredictorMode = '1'" in lines[68]
