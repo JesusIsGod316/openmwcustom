@@ -1,1 +1,1 @@
-V3.14 source preflight trigger after Lua attribution compatibility fix.
+V3.14 source preflight trigger after compatibility-wrapper syntax fix.
