@@ -91,4 +91,15 @@ replacement = """replace_exact(
 """
 
 text = text[:a] + replacement + text[b:]
+
+# V3.14 OSG compatibility: GLObjectsVisitor performs immediate GL operations and does
+# not expose the collection/empty interface expected by IncrementalCompileOperation.
+# StateToCompile is the collector type consumed by CompileSet::buildCompileMap and
+# preserves the intended asynchronous ICO warmup for both groundcover and PostFX.
+osg_old = "osgUtil::GLObjectsVisitor stateToCompile("
+osg_new = "osgUtil::StateToCompile stateToCompile("
+if text.count(osg_old) != 2:
+    raise RuntimeError(f"V3.14 compat: expected 2 GLObjectsVisitor collector sites, found {text.count(osg_old)}")
+text = text.replace(osg_old, osg_new)
+
 exec(compile(text, str(base), "exec"), {"__file__": str(base), "__name__": "__main__"})
