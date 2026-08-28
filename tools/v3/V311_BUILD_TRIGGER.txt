@@ -1,0 +1,25 @@
+V3.11 full Windows build trigger
+===============================
+
+Preflight authority:
+- workflow run 33136967234
+- exact preflight head 5d0ffa663e14b3cdd04acc6f2386a46ae89fa71b
+- generated-source application: PASS
+- generated diff --check: PASS
+- V3.11 policy invariants: PASS
+- PowerShell launcher parse: PASS
+- preflight artifact: 9672396855
+- preflight artifact digest: sha256:24a479ee27915f231704a4dba13d6f211d611ce3ae8fc9c44311b298732d7ec5
+
+Build target:
+- adjacent +/-1 startup grid-center coverage
+- rolling exact predicted active-grid preparation
+- latest-pending target retention without aggressive task cancellation
+- compile=false Mode1 emergency fallback retained
+- mode63 strong active-grid merge+shared-state first test
+- mode64 identical active-grid population + POSTTRANSFORM A/B
+- modes65/66 corresponding 5px far-shadow combined candidates
+- V3.9 proactive whole-render-graph expiry disabled in V3.11 modes
+- canonical groundcover density 1.0
+
+First runtime test after a successful build: Mode63 on the identical canonical route.
