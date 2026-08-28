@@ -1,0 +1,170 @@
+name: V3.15 render submission tail build and QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - full
+  push:
+    branches:
+      - v3.15-render-submission-tail
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Show exact source revision
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git status --short
+
+      - name: Compile-check all V3 Python patch tools
+        shell: bash
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Apply complete V3.15 generated source stack
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness_v315.py 2>&1 | tee v315-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Upload V3.15 apply log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v315-apply-log-${{ github.sha }}
+          path: v315-apply.log
+          if-no-files-found: error
+
+      - name: Validate generated diff and V3.15 markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          cat V3-applied-source-stat.txt
+          grep -n "mV315PremergeStateCanonicalization" components/settings/categories/cells.hpp
+          grep -n "mV315PacketizedPremergeMode" components/settings/categories/cells.hpp
+          grep -n "mV315AdaptiveCompileGovernor" components/settings/categories/cells.hpp
+          grep -n "v315_packet_premerge" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "v315CanonicalizeBeforeMerge" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "sV315CompileBucket" apps/openmw/mwrender/renderingmanager.cpp
+          grep -n "v315-mode79-control" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v315-state-canonical" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v315-packet4" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v315-ico-governor" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v315-balanced-full" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v315-aggressive-full" tools/v3/launchers/V3_Lab.ps1
+
+      - name: Validate V3.15 policy invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          cells = Path('components/settings/categories/cells.hpp').read_text(encoding='utf-8')
+          defaults = Path('files/settings-default.cfg').read_text(encoding='utf-8')
+          obj = Path('apps/openmw/mwrender/objectpaging.cpp').read_text(encoding='utf-8')
+          rendering = Path('apps/openmw/mwrender/renderingmanager.cpp').read_text(encoding='utf-8')
+          launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
+
+          for token in ('mV313ChunkQualityMode', 'mV314LuaDependencyPrecompileMode',
+                        'mV314GroundcoverCompileMode', 'mV314PostfxCompileWarmup'):
+              assert token in cells, token
+          assert 'object_chunk_quality_upgrade' in obj
+
+          assert 'v3.15 premerge state canonicalization = false' in defaults
+          assert 'v3.15 packetized premerge mode = 0' in defaults
+          assert 'v3.15 adaptive compile governor = 0' in defaults
+
+          p_packet = obj.index('"v315_packet_premerge"')
+          p_recombine = obj.index('v312MergeGroups.emplace_back(recombined)')
+          p_final_timer = obj.index('"object_chunk_merge_optimize"', p_recombine)
+          p_final_opt = obj.index('optimizer.optimize(mergeGroup, options);', p_final_timer)
+          assert p_packet < p_recombine < p_final_timer < p_final_opt
+          assert 'v315PacketizedPrepared = !v312SpatialPrepared' in obj
+          assert 'VERTEX_POSTTRANSFORM' not in obj[p_packet:p_recombine]
+
+          p_canon = obj.index('if (v315CanonicalizeBeforeMerge)')
+          p_share = obj.index('mSceneManager->shareState(mergeGroup);', p_canon)
+          p_opt = obj.index('optimizer.optimize(mergeGroup, options);', p_share)
+          assert p_canon < p_share < p_opt
+          assert 'SceneUtil::Optimizer::MERGE_GEOMETRY' in obj
+
+          gov_start = rendering.index('const int v315CompileGovernor')
+          gov_end = rendering.index('reportStats();', gov_start)
+          gov = rendering[gov_start:gov_end]
+          for token in ('setTargetFrameRate', 'setMaximumNumOfObjectsToCompilePerFrame',
+                        'setConservativeTimeRatio'):
+              assert token in gov, token
+          for forbidden in ('getChunk(', 'createChunk(', 'mV313ChunkQualityMode', 'waitTillDone'):
+              assert forbidden not in gov, forbidden
+
+          lines = {n: next(line for line in launcher.splitlines()
+                           if line.lstrip().startswith(f"'{n}'"))
+                   for n in range(79, 86)}
+          def assignments(line):
+              body = line[line.index('{') + 1:line.rindex('}')]
+              return [x.strip() for x in body.split(';') if x.strip() and '$Experiment' not in x]
+          assert assignments(lines[80]) == assignments(lines[79])
+          for token in ('$V315PremergeStateCanonicalization', '$V315PacketizedPremergeMode',
+                        '$V315AdaptiveCompileGovernor'):
+              assert token not in lines[80], token
+          assert "$V315PremergeStateCanonicalization = 'true'" in lines[81]
+          assert "$V315PacketizedPremergeMode = '1'" in lines[82]
+          assert "$V315AdaptiveCompileGovernor = '1'" in lines[83]
+          assert "$V315PacketizedPremergeMode = '1'" in lines[84]
+          assert "$V315AdaptiveCompileGovernor = '1'" in lines[84]
+          assert "$V315PacketizedPremergeMode = '2'" in lines[85]
+          assert "$V315AdaptiveCompileGovernor = '2'" in lines[85]
+
+          print('V3.15 renderer/tail policy invariants passed.')
+          PY
+
+      - name: Parse-check generated PowerShell launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Host 'V3_Lab.ps1 parse check passed.'
+
+      - name: Upload exact generated V3.15 patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: v315-preflight-applied-source-${{ github.sha }}
+          path: |
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+          if-no-files-found: error
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: "2022"
+      tests: false
