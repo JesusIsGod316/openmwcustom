@@ -1,0 +1,184 @@
+name: V3.14 Lua GPU efficiency build and QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - full
+  push:
+    branches:
+      - v3.14-lua-gpu-render-efficiency
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Show exact source revision
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git status --short
+
+      - name: Compile-check all V3 Python patch tools
+        shell: bash
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Apply complete V3.14 generated source stack
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness_v314.py 2>&1 | tee v314-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Upload V3.14 apply log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v314-apply-log-${{ github.sha }}
+          path: v314-apply.log
+          if-no-files-found: error
+
+      - name: Validate generated diff and V3.14 markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          cat V3-applied-source-stat.txt
+          grep -n "mV313ChunkQualityMode" components/settings/categories/cells.hpp
+          grep -n "mV314LuaDependencyPrecompileMode" components/settings/categories/cells.hpp
+          grep -n "mV314LuaPackagePrototypeReuse" components/settings/categories/cells.hpp
+          grep -n "mV314GroundcoverCompileMode" components/settings/categories/cells.hpp
+          grep -n "mV314PostfxCompileWarmup" components/settings/categories/cells.hpp
+          grep -n "precompileConfiguredDependencies" components/lua/luastate.cpp
+          grep -n "mV314PackagePrototype" components/lua/scriptscontainer.hpp components/lua/scriptscontainer.cpp
+          grep -n "V3.14 Groundcover Compile Queued" apps/openmw/mwrender/groundcover.cpp
+          grep -n "V3.14 queued active PostFX chain for ICO compile warmup" apps/openmw/mwrender/postprocessor.cpp
+          grep -n "v314-mode75-control" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v314-balanced" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v314-aggressive-prep" tools/v3/launchers/V3_Lab.ps1
+          grep -n "benchmark_groundcover_density=1.0" tools/v3/launchers/V3_Lab.ps1
+
+      - name: Validate V3.14 policy invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          cells = Path('components/settings/categories/cells.hpp').read_text(encoding='utf-8')
+          defaults = Path('files/settings-default.cfg').read_text(encoding='utf-8')
+          lua_h = Path('components/lua/luastate.hpp').read_text(encoding='utf-8')
+          lua_cpp = Path('components/lua/luastate.cpp').read_text(encoding='utf-8')
+          scripts_h = Path('components/lua/scriptscontainer.hpp').read_text(encoding='utf-8')
+          scripts_cpp = Path('components/lua/scriptscontainer.cpp').read_text(encoding='utf-8')
+          ground = Path('apps/openmw/mwrender/groundcover.cpp').read_text(encoding='utf-8')
+          postfx = Path('apps/openmw/mwrender/postprocessor.cpp').read_text(encoding='utf-8')
+          obj = Path('apps/openmw/mwrender/objectpaging.cpp').read_text(encoding='utf-8')
+          launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
+
+          # V3.13 deterministic foundation remains present and default-off settings preserve history.
+          assert 'mV313ChunkQualityMode' in cells
+          assert 'object_chunk_quality_upgrade' in obj
+          assert 'v3.14 lua dependency precompile mode = 0' in defaults
+          assert 'v3.14 lua package prototype reuse = false' in defaults
+          assert 'v3.14 groundcover compile mode = 0' in defaults
+          assert 'v3.14 postfx compile warmup = false' in defaults
+
+          # Dependency prewarm may parse/compile/dump only; it must not start a sandbox or callbacks.
+          method = lua_cpp[lua_cpp.index('std::size_t LuaState::precompileConfiguredDependencies'):
+                           lua_cpp.index('sol::main_table LuaState::makePackagePrototype')]
+          assert 'loadFromVFS(dependency)' in method
+          assert 'function.dump()' in method
+          for forbidden in ('runInNewSandbox', 'ensureLoaded', 'onLoad', 'onInit'):
+              assert forbidden not in method, forbidden
+
+          # Package prototype is inherited by sandbox-local loaded tables. VFS modules remain local writes.
+          assert 'const sol::main_table* packagePrototype' in lua_h
+          assert 'meta[sol::meta_method::index] = *packagePrototype' in lua_cpp
+          assert 'mV314PackagePrototype' in scripts_h
+          assert 'mV314PackagePrototype.reset()' in scripts_cpp
+          assert 'mLua.runInNewSandbox(path, debugName, mAPI, script.mHiddenData, packagePrototype)' in scripts_cpp
+
+          # Groundcover keeps existing hardware instancing and only adds ICO compile preparation.
+          assert 'setNumInstances' in ground
+          assert 'v314CompileMode == 1 && compile' in ground
+          assert 'IncrementalCompileOperation::CompileSet(node)' in ground
+          assert 'ico->add(compileSet, false)' in ground
+
+          # PostFX warmup compiles active StateSets through ICO; no Rafael algorithm edits exist here.
+          assert 'mV314PostfxCompileWarmup' in postfx
+          assert 'IncrementalCompileOperation::CompileSet(compileRoot)' in postfx
+          assert 'COMPILE_STATE_ATTRIBUTES' in postfx
+
+          lines = {n: next(line for line in launcher.splitlines() if line.lstrip().startswith(f"'{n}'"))
+                   for n in (77, 78, 79)}
+          foundation = ("$V38WorldBatchingMode = '2'", "$V38GpuResidencyMode = '1'",
+                        "$V38FarShadowMode = '3'", "$V38CompilePacingMode = '3'",
+                        "$V39FrontloadMode = '2'", "$V39BatchOptimizerMode = '1'",
+                        "$V310FreshInitialObjectPaging = 'true'", "$V311ActiveGridPrepareMode = '2'",
+                        "$V312LuaPrecompile = 'true'", "$V313ChunkQualityMode = '1'")
+          for n in lines:
+              for token in foundation:
+                  assert token in lines[n], (n, token)
+
+          # 77 is exact promoted Mode75 behavior: no V3.14 override.
+          for token in ('$V314LuaDependencyPrecompileMode', '$V314LuaPackagePrototypeReuse',
+                        '$V314GroundcoverCompileMode', '$V314PostfxCompileWarmup'):
+              assert token not in lines[77], (77, token)
+
+          assert "$V314LuaDependencyPrecompileMode = '1'" in lines[78]
+          assert "$V314LuaPackagePrototypeReuse = 'true'" in lines[78]
+          assert "$V314GroundcoverCompileMode = '1'" in lines[78]
+          assert "$V314PostfxCompileWarmup = 'true'" in lines[78]
+
+          assert "$V314LuaDependencyPrecompileMode = '2'" in lines[79]
+          assert "$V314GroundcoverCompileMode = '2'" in lines[79]
+
+          print('V3.14 Lua/GPU efficiency policy invariants passed.')
+          PY
+
+      - name: Parse-check generated PowerShell launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Host 'V3_Lab.ps1 parse check passed.'
+
+      - name: Upload exact generated V3.14 patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: v314-preflight-applied-source-${{ github.sha }}
+          path: |
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+          if-no-files-found: error
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: "2022"
+      tests: false
