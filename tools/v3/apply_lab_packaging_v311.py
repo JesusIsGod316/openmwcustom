@@ -7,7 +7,9 @@ v310 = Path(__file__).with_name("apply_lab_packaging_v310.py")
 exec(compile(v310.read_text(encoding="utf-8"), str(v310), "exec"),
     {"__file__": str(v310), "__name__": "__main__"})
 
-v311 = Path(__file__).with_name("apply_v311_adjacent_active_grid.py")
+# The fixed wrapper removes one redundant pristine-source include edit because the
+# inherited V3.7+ generated CellPreloader already has Settings access.
+v311 = Path(__file__).with_name("apply_v311_adjacent_active_grid_fixed.py")
 exec(compile(v311.read_text(encoding="utf-8"), str(v311), "exec"),
     {"__file__": str(v311), "__name__": "__main__"})
 
