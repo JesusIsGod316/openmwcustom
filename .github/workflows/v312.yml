@@ -1,0 +1,150 @@
+name: V3.12 hitch scheduler build and QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - full
+  push:
+    branches:
+      - v3.12-lua-deadline-scheduling
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Show exact source revision
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git status --short
+
+      - name: Compile-check all V3 Python patch tools
+        shell: bash
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Apply complete V3.12 generated source stack
+        shell: bash
+        run: python3 tools/v3/apply_diagnostic_harness_v312.py
+
+      - name: Validate generated diff and key foundations
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          cat V3-applied-source-stat.txt
+          grep -n "mV311ActiveGridPrepareMode" components/settings/categories/cells.hpp
+          grep -n "v311PreparedActive" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "mV312PredictorMode" components/settings/categories/cells.hpp
+          grep -n "mV312LuaPrecompile" components/settings/categories/cells.hpp
+          grep -n "precompileConfiguredScripts" components/lua/luastate.hpp components/lua/luastate.cpp apps/openmw/mwlua/luamanagerimp.cpp
+          grep -n "V3.12 ETA Target Selected" apps/openmw/mwworld/scene.cpp
+          grep -n "v312-mode66-control" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v312-combined-safe" tools/v3/launchers/V3_Lab.ps1
+          grep -n "benchmark_groundcover_density=1.0" tools/v3/launchers/V3_Lab.ps1
+
+      - name: Validate V3.12 policy invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          scene = Path('apps/openmw/mwworld/scene.cpp').read_text(encoding='utf-8')
+          lua_cpp = Path('components/lua/luastate.cpp').read_text(encoding='utf-8')
+          lua_h = Path('components/lua/luastate.hpp').read_text(encoding='utf-8')
+          manager = Path('apps/openmw/mwlua/luamanagerimp.cpp').read_text(encoding='utf-8')
+          obj = Path('apps/openmw/mwrender/objectpaging.cpp').read_text(encoding='utf-8')
+          launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
+          defaults = Path('files/settings-default.cfg').read_text(encoding='utf-8')
+
+          assert 'v3.12 predictor mode = 0' in defaults
+          assert 'v3.12 predictor lead seconds = 3.0' in defaults
+          assert 'v3.12 lua precompile = false' in defaults
+
+          # Mode66 architecture remains intact and compile=false demand fallback stays authoritative.
+          assert 'v311PrepareMode > 0 && compile && activeGrid && v38BatchingMode >= 2' in obj
+          assert 'v311PrepareMode >= 2 && v311PreparedActive' in obj
+          assert 'v39OnDemandFallback ? std::min(v38ConfiguredBatchingMode, 1)' in obj
+
+          # ETA work is prioritized by vector position; no required work is delayed or canceled here.
+          assert 'const auto axisEta' in scene
+          assert 'eta <= leadSeconds' in scene
+          assert 'exteriorPositions.push_back(\n                            PositionCellGrid{ boundaryProbe, gridCenterToBounds(etaGrid) });' in scene
+          assert 'v312PredictorMode >= 2 && normalPredictedGrid != etaGrid' in scene
+          assert 'V3.12 ETA Target Selected' in scene
+
+          # Lua precompile populates bytecode only. It must not invoke sandbox execution or container loading.
+          method = lua_cpp[lua_cpp.index('std::size_t LuaState::precompileConfiguredScripts()'):]
+          method = method[:method.index('sol::function LuaState::loadScriptAndCache')]
+          assert 'loadFromVFS(path)' in method
+          assert 'function.dump()' in method
+          for forbidden in ('runInNewSandbox', 'ensureLoaded', 'onLoad', 'onInit'):
+              assert forbidden not in method, forbidden
+          assert 'precompileConfiguredScripts' in lua_h
+          assert 'Settings::cells().mV312LuaPrecompile' in manager
+
+          lines = {n: next(line for line in launcher.splitlines() if line.lstrip().startswith(f"'{n}'"))
+                   for n in (66, 67, 68, 69, 70)}
+          common = ("$V38WorldBatchingMode = '2'", "$V38GpuResidencyMode = '1'",
+                    "$V38FarShadowMode = '3'", "$V38CompilePacingMode = '3'",
+                    "$V39FrontloadMode = '2'", "$V39BatchOptimizerMode = '1'",
+                    "$V310FreshInitialObjectPaging = 'true'", "$V311ActiveGridPrepareMode = '2'")
+          for n in (66, 67, 68, 69, 70):
+              for token in common:
+                  assert token in lines[n], (n, token)
+          # 67 is exact Mode66 behavior: all new controls remain their initialized defaults.
+          assert '$V312PredictorMode' not in lines[67]
+          assert '$V312LuaPrecompile' not in lines[67]
+          assert "$V312PredictorMode = '1'" in lines[68]
+          assert "$V312LuaPrecompile = 'true'" in lines[69]
+          assert "$V312PredictorMode = '1'" in lines[70]
+          assert "$V312LuaPrecompile = 'true'" in lines[70]
+
+          print('V3.12 first-layer policy invariants passed.')
+          PY
+
+      - name: Parse-check generated PowerShell launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Host 'V3_Lab.ps1 parse check passed.'
+
+      - name: Upload exact generated V3.12 patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: v312-preflight-applied-source-${{ github.sha }}
+          path: |
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+          if-no-files-found: error
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: "2022"
+      tests: false
