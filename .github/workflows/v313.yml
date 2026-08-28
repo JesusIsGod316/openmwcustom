@@ -1,0 +1,189 @@
+name: V3.13 deterministic ObjectPaging quality build and QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - full
+  push:
+    branches:
+      - v3.13-deterministic-objectpaging-quality
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Show exact source revision
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git status --short
+
+      - name: Compile-check all V3 Python patch tools
+        shell: bash
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Apply complete V3.13 generated source stack
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness_v313.py 2>&1 | tee v313-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Upload V3.13 apply log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v313-apply-log-${{ github.sha }}
+          path: v313-apply.log
+          if-no-files-found: error
+
+      - name: Validate generated diff and key foundations
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          cat V3-applied-source-stat.txt
+          grep -n "mV311ActiveGridPrepareMode" components/settings/categories/cells.hpp
+          grep -n "mV312LuaPrecompile" components/settings/categories/cells.hpp
+          grep -n "mV313ChunkQualityMode" components/settings/categories/cells.hpp
+          grep -n "mV313ChunkQualities" apps/openmw/mwrender/objectpaging.hpp
+          grep -n "mV313StrongUpgradeInFlight" apps/openmw/mwrender/objectpaging.hpp apps/openmw/mwrender/objectpaging.cpp
+          grep -n "object_chunk_quality_upgrade" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "V3.13 Weak Cache Hit On Strong Prepare" apps/openmw/mwrender/objectpaging.cpp
+          grep -n "v313-mode66-control" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v313-quality-repair" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v313-quality-lua" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v313-strict-spatial" tools/v3/launchers/V3_Lab.ps1
+          grep -n "benchmark_groundcover_density=1.0" tools/v3/launchers/V3_Lab.ps1
+
+      - name: Validate V3.13 policy invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          obj = Path('apps/openmw/mwrender/objectpaging.cpp').read_text(encoding='utf-8')
+          obj_h = Path('apps/openmw/mwrender/objectpaging.hpp').read_text(encoding='utf-8')
+          cache_h = Path('components/resource/objectcache.hpp').read_text(encoding='utf-8')
+          launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
+          defaults = Path('files/settings-default.cfg').read_text(encoding='utf-8')
+          lua_cpp = Path('components/lua/luastate.cpp').read_text(encoding='utf-8')
+
+          assert 'v3.13 chunk quality mode = 0' in defaults
+          assert 'SettingValue<int> mV313ChunkQualityMode' in Path('components/settings/categories/cells.hpp').read_text(encoding='utf-8')
+
+          # Historical V3.12 modes remain behind an exact inherited mode0 path.
+          assert 'if (v313QualityMode == 0)' in obj
+          inherited = obj[obj.index('if (v313QualityMode == 0)'):obj.index('const unsigned char v313RequestedPrepareMode')]
+          assert 'mCache->getRefFromObjectCache(id)' in inherited
+          assert 'mCache->addEntryToObjectCache(id, node.get())' in inherited
+          assert 'object_chunk_create' in inherited
+
+          # Real repair path: detect insufficient quality, coalesce duplicate repairs,
+          # build off demand path, and install through the existing ref_ptr cache.
+          assert 'v313QualitySatisfies' in obj
+          assert 'mV313StrongUpgradeInFlight.insert(id)' in obj
+          assert 'mV313UpgradeCoalesced.fetch_add' in obj
+          assert 'object_chunk_quality_upgrade' in obj
+          assert 'current && v313QualitySatisfies(currentQuality, v313BuiltQuality)' in obj
+          assert 'mCache->addEntryToObjectCache(id, node.get())' in obj
+          assert 'mV313ChunkQualities[id] = v313BuiltQuality' in obj
+          assert 'mV313UpgradeInstalled.fetch_add' in obj
+
+          # Full cache reset cleans side metadata only when V3.13 is enabled; mode0
+          # retains inherited V3.12 behavior for causal comparison.
+          assert 'void ObjectPaging::clearCache()' in obj
+          assert 'mV313ChunkQualities.clear()' in obj
+          assert 'mV313StrongUpgradeInFlight.clear()' in obj
+          assert 'mV311PreparedActiveChunks.clear()' in obj
+
+          # Existing cache primitive is replacement-safe: mutex + ref_ptr Item.
+          assert 'std::lock_guard<std::mutex> lock(mMutex);' in cache_h
+          assert 'it->second = Item{ object, timestamp };' in cache_h
+          assert 'osg::ref_ptr<osg::Object> mValue;' in cache_h
+
+          # Lua precompile remains bytecode-only and is merely promoted by Mode75.
+          method = lua_cpp[lua_cpp.index('std::size_t LuaState::precompileConfiguredScripts()'):]
+          method = method[:method.index('sol::function LuaState::loadScriptAndCache')]
+          assert 'loadFromVFS(path)' in method and 'function.dump()' in method
+          for forbidden in ('runInNewSandbox', 'ensureLoaded', 'onLoad', 'onInit'):
+              assert forbidden not in method, forbidden
+
+          lines = {n: next(line for line in launcher.splitlines() if line.lstrip().startswith(f"'{n}'"))
+                   for n in (73, 74, 75, 76)}
+          common = ("$V38WorldBatchingMode = '2'", "$V38GpuResidencyMode = '1'",
+                    "$V38FarShadowMode = '3'", "$V38CompilePacingMode = '3'",
+                    "$V39FrontloadMode = '2'", "$V39BatchOptimizerMode = '1'",
+                    "$V310FreshInitialObjectPaging = 'true'", "$V311ActiveGridPrepareMode = '2'")
+          for n in lines:
+              for token in common:
+                  assert token in lines[n], (n, token)
+
+          # 73 is a true Mode66-family control: no V3.12/V3.13 feature override.
+          for token in ('$V312PredictorMode', '$V312LuaPrecompile', '$V312SpatialBatchMode', '$V313ChunkQualityMode'):
+              assert token not in lines[73], (73, token)
+
+          assert "$V313ChunkQualityMode = '1'" in lines[74]
+          for token in ('$V312PredictorMode', '$V312LuaPrecompile', '$V312SpatialBatchMode'):
+              assert token not in lines[74], (74, token)
+
+          assert "$V313ChunkQualityMode = '1'" in lines[75]
+          assert "$V312LuaPrecompile = 'true'" in lines[75]
+          assert '$V312PredictorMode' not in lines[75]
+          assert '$V312SpatialBatchMode' not in lines[75]
+
+          assert "$V313ChunkQualityMode = '2'" in lines[76]
+          assert "$V312LuaPrecompile = 'true'" in lines[76]
+          assert "$V312SpatialBatchMode = '1'" in lines[76]
+          assert '$V312PredictorMode' not in lines[76]
+
+          print('V3.13 deterministic-quality policy invariants passed.')
+          PY
+
+      - name: Parse-check generated PowerShell launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Host 'V3_Lab.ps1 parse check passed.'
+
+      - name: Upload exact generated V3.13 patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: v313-preflight-applied-source-${{ github.sha }}
+          path: |
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+          if-no-files-found: error
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: "2022"
+      tests: false
