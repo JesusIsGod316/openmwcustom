@@ -92,14 +92,48 @@ replacement = """replace_exact(
 
 text = text[:a] + replacement + text[b:]
 
-# V3.14 OSG compatibility: GLObjectsVisitor performs immediate GL operations and does
-# not expose the collection/empty interface expected by IncrementalCompileOperation.
-# StateToCompile is the collector type consumed by CompileSet::buildCompileMap and
-# preserves the intended asynchronous ICO warmup for both groundcover and PostFX.
-osg_old = "osgUtil::GLObjectsVisitor stateToCompile("
-osg_new = "osgUtil::StateToCompile stateToCompile("
-if text.count(osg_old) != 2:
-    raise RuntimeError(f"V3.14 compat: expected 2 GLObjectsVisitor collector sites, found {text.count(osg_old)}")
-text = text.replace(osg_old, osg_new)
+# V3.14 OSG compatibility: do not construct StateToCompile directly. The OSG build
+# used by the Windows toolchain exposes CompileSet::buildCompileMap(ContextSet&, Mode)
+# as the stable collector entrypoint. Build the map through that overload and then
+# queue the already-built CompileSet through ICO.
+ground_old = '''                osgUtil::GLObjectsVisitor stateToCompile(osgUtil::GLObjectsVisitor::COMPILE_STATE_ATTRIBUTES
+                    | osgUtil::GLObjectsVisitor::COMPILE_DISPLAY_LISTS);
+                node->accept(stateToCompile);
+                if (!stateToCompile.empty())
+                {
+                    auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(node);
+                    compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
+                    ico->add(compileSet, false);
+                    mV314CompileQueued.fetch_add(1, std::memory_order_relaxed);
+                }'''
+ground_new = '''                auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(node);
+                const auto compileMode = static_cast<osgUtil::GLObjectsVisitor::Mode>(
+                    osgUtil::GLObjectsVisitor::COMPILE_STATE_ATTRIBUTES
+                    | osgUtil::GLObjectsVisitor::COMPILE_DISPLAY_LISTS);
+                compileSet->buildCompileMap(ico->getContextSet(), compileMode);
+                ico->add(compileSet, false);
+                mV314CompileQueued.fetch_add(1, std::memory_order_relaxed);'''
+if text.count(ground_old) != 1:
+    raise RuntimeError(f"V3.14 compat: expected 1 groundcover ICO collector block, found {text.count(ground_old)}")
+text = text.replace(ground_old, ground_new, 1)
+
+postfx_old = '''                osgUtil::GLObjectsVisitor stateToCompile(osgUtil::GLObjectsVisitor::COMPILE_STATE_ATTRIBUTES);
+                compileRoot->accept(stateToCompile);
+                if (!stateToCompile.empty())
+                {
+                    auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(compileRoot);
+                    compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
+                    ico->add(compileSet, false);
+                    Log(Debug::Info) << "V3.14 queued active PostFX chain for ICO compile warmup";
+                }'''
+postfx_new = '''                auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(compileRoot);
+                const auto compileMode = static_cast<osgUtil::GLObjectsVisitor::Mode>(
+                    osgUtil::GLObjectsVisitor::COMPILE_STATE_ATTRIBUTES);
+                compileSet->buildCompileMap(ico->getContextSet(), compileMode);
+                ico->add(compileSet, false);
+                Log(Debug::Info) << "V3.14 queued active PostFX chain for ICO compile warmup";'''
+if text.count(postfx_old) != 1:
+    raise RuntimeError(f"V3.14 compat: expected 1 PostFX ICO collector block, found {text.count(postfx_old)}")
+text = text.replace(postfx_old, postfx_new, 1)
 
 exec(compile(text, str(base), "exec"), {"__file__": str(base), "__name__": "__main__"})
