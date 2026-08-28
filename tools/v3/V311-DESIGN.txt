@@ -1,0 +1,89 @@
+V3.11 — Adjacent / Rolling Exact Active-Grid Preparation
+========================================================
+
+Base
+----
+Exact V3.10 final branch head:
+14261377c90bc0a4ce8734969fedcb05833b1d1c
+
+Primary objective
+-----------------
+Recover the V3.8 Mode47/48 steady ObjectPaging rendering win without allowing
+Mode47-scale strong batch construction to recur in ordinary gameplay frames.
+
+Source-level correction that drives V3.11
+------------------------------------------
+V3.9's startup frontload used stepCells=max(1,mHalfGridSize+1). Normal exterior
+grid movement uses Scene::getNewGridCenter(), which ordinarily advances the grid
+center by one cell as the player crosses the threshold. The old 3x3 frontload
+therefore skipped the immediate next grid-center states.
+
+OpenMW already provides the correct mechanism:
+- Scene::preloadCells predicts player motion and computes exact future grid bounds.
+- QuadTreeWorld::preload receives those bounds and calls chunk managers with
+  compile=true.
+- ObjectPaging receives activeGrid=true for chunks inside those future bounds.
+- ObjectPaging ChunkId includes center,size,activeGrid but not compile, so a strong
+  preload chunk can later satisfy normal rendering unchanged.
+
+V3.11 mechanisms
+----------------
+1. Adjacent startup coverage
+   When V3.11 is enabled, V3.9 Mode2 startup means current grid center plus eight
+   immediate +/-1 neighboring centers. Historical modes keep their old wider step.
+
+2. Latest-pending rolling target
+   CellPreloader no longer silently discards a newer different-grid target while a
+   strong TerrainPreloadItem is running. It retains one newest target and promotes
+   it when current work completes. Same-grid predicted-position jitter is ignored.
+   The old task is not aggressively canceled.
+
+3. Active-grid-only strong cleanup
+   v3.11 active grid prepare mode:
+   0 = inherited behavior
+   1 = compile=true activeGrid strong chunks + shared-state compaction
+   2 = same exact population + VERTEX_POSTTRANSFORM
+   Strong merge admission remains V3.8 world batching mode2.
+   compile=false demand misses remain V3.9 Mode1 fallback.
+   VERTEX_PRETRANSFORM is never promoted.
+
+4. Minimal proof counters
+   ObjectPaging:
+   - Prepared Active Built
+   - Prepared Active Hit
+   - Prepared Active Resident
+   - Demand Fallback
+   CellPreloader:
+   - Terrain Target Completed
+   - Terrain Target Replaced
+   - Terrain Target Promoted
+   - Terrain Target Pending
+
+Launcher matrix
+---------------
+56 = inherited V3.9 Mode56 reference
+59 = inherited V3.10 fresh-frontload control
+63 = exact active-grid + shared state, no post-transform (FIRST TEST)
+64 = identical target population + POSTTRANSFORM
+65 = Mode63 + 5px far shadow
+66 = Mode64 + 5px far shadow
+
+Testing order
+-------------
+Run Mode63 first on the canonical route. If it restores the Mode47 draw/GPU family,
+Mode64 is unnecessary and Mode65 can be used as the combined follow-up. If Mode63
+has a high prepared-hit rate but does not restore the rendering win, run Mode64
+before changing code. Do not run old Modes61/62 as next-step evidence.
+
+VRAM policy
+-----------
+8 GB adapter headroom remains a hard constraint. V3.11 does not enable V3.9
+proactive whole-render-graph expiry because Mode57 proved it discards valuable
+prepared chunks without promptly releasing meaningful adapter memory. Exact
+adjacent coverage should improve usefulness per retained chunk through overlap.
+
+Lua policy
+----------
+No Lua semantic changes in V3.11. A timer-only unloaded-container shortcut is
+rejected because later active-local update in the same Lua worker iteration also
+forces ensureLoaded(). First materialization remains a later independent target.
