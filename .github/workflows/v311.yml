@@ -89,12 +89,16 @@ jobs:
           assert 'getNewGridCenter(predictedPos, &mCurrentGridCenter)' in scene
 
           # New predicted grid targets are retained, not used to cancel a running
-          # strong task. Same-grid jitter is explicitly ignored.
+          # strong task. Same-grid jitter is explicitly ignored. Scope this check
+          # specifically to setTerrainPreloadPositions because other CellPreloader
+          # methods legitimately abort terrain work during world/terrain changes.
           assert 'mV311PendingTerrainPreloadPositions.assign(positions.begin(), positions.end());' in preload
           assert 'if (firstBoundsEqual(mTerrainPreloadPositions, positions))' in preload
-          pending_block = preload[preload.index('if (mTerrainPreloadItem && !mTerrainPreloadItem->isDone())'):]
-          pending_block = pending_block[:pending_block.index('else\n        {')]
-          assert 'mTerrainPreloadItem->abort()' not in pending_block
+          setter = preload[preload.index('void CellPreloader::setTerrainPreloadPositions'):]
+          setter = setter[:setter.index('bool CellPreloader::isTerrainLoaded')]
+          running = setter[setter.index('if (mTerrainPreloadItem && !mTerrainPreloadItem->isDone())'):]
+          running = running[:running.index('else\n        {')]
+          assert 'mTerrainPreloadItem->abort()' not in running
           assert 'mV311TerrainTargetPromoted' in preload
           assert 'mV311PendingTerrainPreloadPositions' in preload_h
 
