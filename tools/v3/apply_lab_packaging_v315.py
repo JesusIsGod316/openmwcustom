@@ -10,6 +10,20 @@ v315 = Path(__file__).with_name("apply_v315_render_submission_tail.py")
 exec(compile(v315.read_text(encoding="utf-8"), str(v315), "exec"),
     {"__file__": str(v315), "__name__": "__main__"})
 
+# MSVC/OSG exposes both removeChild(Node*) and removeChild(unsigned int, unsigned int).
+# The literal 0 in the V3.15 packet recombination path is therefore ambiguous on
+# Windows. Make the indexed-removal overload explicit before snapshotting/building.
+objectpaging_path = Path(__file__).resolve().parents[2] / "apps/openmw/mwrender/objectpaging.cpp"
+objectpaging_text = objectpaging_path.read_text(encoding="utf-8")
+old_remove = "                    packet->removeChild(0);"
+new_remove = "                    packet->removeChild(0u, 1u);"
+if objectpaging_text.count(old_remove) != 1:
+    raise RuntimeError(
+        f"V3.15 packet removeChild hotfix expected 1 match, found {objectpaging_text.count(old_remove)}"
+    )
+objectpaging_path.write_text(objectpaging_text.replace(old_remove, new_remove, 1), encoding="utf-8", newline="\n")
+print("V3.15 fixed ambiguous osg::Group::removeChild packet recombination call for MSVC.")
+
 readme_path = Path(__file__).resolve().parents[2] / "V3-LAB-README.txt"
 with readme_path.open("a", encoding="utf-8", newline="\n") as readme:
     readme.write(r'''
