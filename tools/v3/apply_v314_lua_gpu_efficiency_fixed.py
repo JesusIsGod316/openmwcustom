@@ -7,11 +7,8 @@ from pathlib import Path
 base = Path(__file__).with_name("apply_v314_lua_gpu_efficiency.py")
 text = base.read_text(encoding="utf-8")
 
-start_marker = '''replace_exact(
-    "components/lua/luastate.cpp",
-    ''' + "'''        sol::table loaded(mSol, sol::create);"
-end_marker = '''replace_exact(
-    "components/lua/scriptscontainer.hpp",'''
+start_marker = "replace_exact(\n    \"components/lua/luastate.cpp\",\n    '''        sol::table loaded(mSol, sol::create);"
+end_marker = "replace_exact(\n    \"components/lua/scriptscontainer.hpp\","
 
 a = text.find(start_marker)
 if a < 0:
@@ -20,8 +17,8 @@ b = text.find(end_marker, a)
 if b < 0:
     raise RuntimeError("V3.14 compat: package-setup replacement end not found")
 
-replacement = r'''replace_exact(
-    "components/lua/luastate.cpp",
+replacement = """replace_exact(
+    \"components/lua/luastate.cpp\",
     '''        sol::table loaded(mSol, sol::create);
         {
             Debug::V36LuaAddScriptTrace::PhaseScope v36CommonPackages(
@@ -38,7 +35,7 @@ replacement = r'''replace_exact(
         {
             Debug::V36LuaAddScriptTrace::PhaseScope v36RequireSetup(
                 Debug::V36LuaAddScriptTrace::Phase::RequireSetup);
-            env["require"] = mSol["requireGen"](env, loaded, mSol["loadFromVFS"]);
+            env[\"require\"] = mSol[\"requireGen\"](env, loaded, mSol[\"loadFromVFS\"]);
             sol::set_environment(env, script);
         }
         Debug::V36LuaAddScriptTrace::PhaseScope v36ScriptBody(
@@ -83,7 +80,7 @@ replacement = r'''replace_exact(
         {
             Debug::V36LuaAddScriptTrace::PhaseScope v36RequireSetup(
                 Debug::V36LuaAddScriptTrace::Phase::RequireSetup);
-            env["require"] = mSol["requireGen"](env, loaded, mSol["loadFromVFS"]);
+            env[\"require\"] = mSol[\"requireGen\"](env, loaded, mSol[\"loadFromVFS\"]);
             sol::set_environment(env, script);
         }
         Debug::V36LuaAddScriptTrace::PhaseScope v36ScriptBody(
@@ -91,7 +88,7 @@ replacement = r'''replace_exact(
         return call(scriptId, script);''',
 )
 
-'''
+"""
 
 text = text[:a] + replacement + text[b:]
 exec(compile(text, str(base), "exec"), {"__file__": str(base), "__name__": "__main__"})
