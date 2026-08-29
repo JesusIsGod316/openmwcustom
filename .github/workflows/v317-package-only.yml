@@ -1,0 +1,109 @@
+name: V3.17 package-only test bundle
+
+on:
+  push:
+    branches:
+      - v3.17-lua-runtime-hitch-consolidation
+    paths:
+      - tools/v3/V317_PACKAGE_TRIGGER.txt
+      - .github/workflows/v317-package-only.yml
+  workflow_dispatch:
+
+env:
+  SOURCE_RUN_ID: 33266037455
+  SOURCE_COMMIT: 5795d0e915b7c1735fa1323e8cd28f7413244088
+  SOURCE_ARTIFACT: openmw-v317-windows-2022-5795d0e915b7c1735fa1323e8cd28f7413244088
+
+jobs:
+  Package:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout packaging source
+        uses: actions/checkout@v4
+
+      - name: Generate exact V3.17 launcher and lab docs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tools/v3/apply_diagnostic_harness_v317.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Parse-check generated launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          $launcher = Get-Content -Raw 'tools/v3/launchers/V3_Lab.ps1'
+          foreach ($marker in @('90 = V3.17 control','v317-rubicon-only','v317-engine-lua-only','v317-combined-balanced','v317-combined-aggressive-sfx','Enter 1 through 94','OPENMW_V317_LUA_OPT','v317-runtime')) {
+            if (-not $launcher.Contains($marker)) { throw "Generated V3.17 launcher missing marker: $marker" }
+          }
+
+      - name: Download verified runtime-complete Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_ARTIFACT }}
+          path: v317-test-package
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Complete and verify test package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packageRoot = (Resolve-Path 'v317-test-package').Path
+          if (-not (Test-Path (Join-Path $packageRoot 'openmw.exe'))) { throw 'Downloaded package is missing openmw.exe' }
+          Copy-Item 'tools/v3/launchers/V3_Lab.ps1' (Join-Path $packageRoot 'V3_Lab.ps1') -Force
+          Copy-Item 'V3-LAB-README.txt' (Join-Path $packageRoot 'V3-LAB-README.txt') -Force
+          Copy-Item 'V3.17-RUNTIME-LAYER.txt' (Join-Path $packageRoot 'V3.17-RUNTIME-LAYER.txt') -Force
+
+          python -c "from pathlib import Path; d=Path(r'v317-test-package/openmw.exe').read_bytes(); assert b'openmw-custom-v3.17' in d"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $rootLua = Join-Path $packageRoot 'lua51.dll'
+          $stockLua = Join-Path $packageRoot 'v317-runtime\stock\lua51.dll'
+          $rubiconLua = Join-Path $packageRoot 'v317-runtime\rubicon\lua51.dll'
+          foreach ($required in @($rootLua,$stockLua,$rubiconLua,(Join-Path $packageRoot 'v317-runtime\V317-LUAJIT-RUNTIME.txt'),(Join-Path $packageRoot 'V3_Lab.ps1'))) {
+            if (-not (Test-Path $required)) { throw "Missing V3.17 package file: $required" }
+          }
+          $rootHash = (Get-FileHash $rootLua -Algorithm SHA256).Hash.ToLowerInvariant()
+          $stockHash = (Get-FileHash $stockLua -Algorithm SHA256).Hash.ToLowerInvariant()
+          $rubiconHash = (Get-FileHash $rubiconLua -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($rootHash -ne $stockHash) { throw 'Root LuaJIT must remain stock before lab launch' }
+          if ($rubiconHash -eq $stockHash) { throw 'Rubic0n runtime unexpectedly matches stock LuaJIT' }
+          $ci = Get-Content -Raw (Join-Path $packageRoot 'CI-ID.txt')
+          if (-not $ci.Contains("Commit $env:SOURCE_COMMIT")) { throw 'CI-ID does not match source Windows build commit' }
+          $manifest = Get-Content -Raw (Join-Path $packageRoot 'v317-runtime\V317-LUAJIT-RUNTIME.txt')
+          if (-not $manifest.Contains("openmw_commit=$env:SOURCE_COMMIT")) { throw 'Runtime manifest commit mismatch' }
+          if (-not $manifest.Contains("stock_lua51_sha256=$stockHash")) { throw 'Runtime manifest stock hash mismatch' }
+          if (-not $manifest.Contains("rubicon_lua51_sha256=$rubiconHash")) { throw 'Runtime manifest Rubic0n hash mismatch' }
+
+          $exeHash = (Get-FileHash (Join-Path $packageRoot 'openmw.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            'V3.17 TEST PACKAGE QC',
+            "source_run=$env:SOURCE_RUN_ID",
+            "source_commit=$env:SOURCE_COMMIT",
+            "openmw_exe_sha256=$exeHash",
+            "stock_lua51_sha256=$stockHash",
+            "rubicon_lua51_sha256=$rubiconHash",
+            'launcher_generated_and_parse_checked=true',
+            'binary_v3.17_identity_checked=true',
+            'root_runtime_stock=true',
+            ''
+          ) | Set-Content -LiteralPath (Join-Path $packageRoot 'V317-PACKAGE-QC.txt') -Encoding Ascii
+          Get-Content (Join-Path $packageRoot 'V317-PACKAGE-QC.txt')
+
+      - name: Upload complete V3.17 test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmw-v317-TEST-PACKAGE-${{ env.SOURCE_COMMIT }}
+          path: v317-test-package/**
+          if-no-files-found: error
