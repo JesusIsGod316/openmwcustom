@@ -1,0 +1,144 @@
+name: V3.17 Lua/runtime hitch consolidation build and QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - full
+  push:
+    branches:
+      - v3.17-lua-runtime-hitch-consolidation
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Show exact source revision
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git status --short
+
+      - name: Compile-check all V3 Python patch tools
+        shell: bash
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Apply complete V3.17 generated source stack
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness_v317.py 2>&1 | tee v317-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Upload V3.17 apply log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v317-apply-log-${{ github.sha }}
+          path: v317-apply.log
+          if-no-files-found: error
+
+      - name: Validate generated diff and V3.17 markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          cat V3-applied-source-stat.txt
+          grep -n "class DiagnosticWriterHub" components/debug/v3diagnostics.hpp
+          grep -n "sMaxQueuedItems = 16384" components/debug/v3diagnostics.hpp
+          grep -n "mQueue.push_back({ channel, {}, true })" components/debug/v3diagnostics.hpp
+          grep -n "std::try_to_lock" components/debug/v3diagnostics.hpp
+          grep -n "No gameplay-cadence flushes" components/debug/v3diagnostics.hpp
+          grep -n "V3.17 Lua/runtime hitch consolidation" V3-LAB-README.txt
+          grep -n "class HeadCache" apps/openmw/mwsound/headcache.hpp
+          grep -n "class SfxPredecodeCache" apps/openmw/mwsound/sfxpredecodecache.hpp
+          grep -n "mV316IdleResourceSweep" components/settings/categories/cells.hpp
+
+      - name: Validate V3.17 diagnostic transport invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          diag = Path('components/debug/v3diagnostics.hpp').read_text(encoding='utf-8')
+          readme = Path('V3-LAB-README.txt').read_text(encoding='utf-8')
+          launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
+          cells = Path('components/settings/categories/cells.hpp').read_text(encoding='utf-8')
+
+          # One shared writer hub for every V3 CsvWriter. Producer enqueue remains
+          # nonblocking and bounded; file open/header work belongs to the writer.
+          assert diag.count('class DiagnosticWriterHub') == 1
+          assert 'sMaxQueuedItems = 16384' in diag
+          assert 'std::try_to_lock' in diag
+          assert 'mQueue.push_back({ channel, {}, true })' in diag
+          assert 'DiagnosticWriterHub::instance().enqueue(mChannel, line)' in diag
+          assert 'DiagnosticWriterHub::instance().registerChannel(mPath, mHeader)' in diag
+
+          # V3.16 per-stream writer threads and periodic 240-row flushes must not
+          # survive the V3.17 layer. Only the hub owns a writer thread.
+          assert diag.count('std::thread mWriterThread;') == 1
+          assert 'linesSinceFlush >= 240' not in diag
+          assert 'sMaxQueuedLines = 4096' not in diag
+          assert diag.count('mStream.flush();') == 1
+          assert '# v3_async_diagnostics_dropped_lines=' in diag
+
+          # Preserve V3.16/V3.15 gameplay foundation while V3.17 changes the
+          # runtime/hitch lane only.
+          for token in ('mV313ChunkQualityMode', 'mV315PremergeStateCanonicalization',
+                        'mV315PacketizedPremergeMode', 'mV315AdaptiveCompileGovernor',
+                        'mV316IdleResourceSweep'):
+              assert token in cells, token
+          assert 'v316-balanced-hitch' in launcher
+          assert 'V3.17 Lua/runtime hitch consolidation' in readme
+          assert 'Consolidated diagnostic writer' in readme
+
+          print('V3.17 diagnostic transport and inherited foundation invariants passed.')
+          PY
+
+      - name: Parse-check generated PowerShell launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Host 'V3_Lab.ps1 parse check passed.'
+
+      - name: Upload exact generated V3.17 patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: v317-preflight-applied-source-${{ github.sha }}
+          path: |
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+            V3.16-HITCH-LAYER.txt
+          if-no-files-found: error
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: "2022"
+      tests: false
