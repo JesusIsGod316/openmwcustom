@@ -1,0 +1,129 @@
+name: V3.19 CPU critical path build/QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - full
+  push:
+    branches:
+      - v3.19-donor-cpu-pack
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Show exact source revision
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git status --short
+
+      - name: Compile-check all V3 Python patch tools
+        shell: bash
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Apply complete V3.19 generated source stack
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness_v319.py 2>&1 | tee v319-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Upload V3.19 apply log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v319-apply-log-${{ github.sha }}
+          path: v319-apply.log
+          if-no-files-found: error
+
+      - name: Validate generated V3.19 markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          cat V3-applied-source-stat.txt
+          grep -n 'OPENMW_V319_FOCUS_CADENCE' apps/openmw/engine.cpp
+          grep -n 'frameNumber % v319FocusCadence' apps/openmw/engine.cpp
+          grep -n 'openmw-custom-v3.19-cpu-p0' apps/openmw/engine.cpp
+          grep -n '102 = V3.19 CPU control' tools/v3/launchers/V3_Lab.ps1
+          grep -n '108 = V3.19 per-camera cull/draw' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'Enter 1 through 108' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'CullDrawThreadPerContext' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'CullThreadPerCameraDrawThreadPerContext' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'mNisScaler->dispatch' apps/openmw/mwrender/pingpongcanvas.cpp
+          grep -n 'mV35CoarseChunkOcclusion' apps/openmw/mwrender/occlusionculling.cpp
+
+      - name: Validate V3.19 CPU policy invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          engine = Path('apps/openmw/engine.cpp').read_text(encoding='utf-8')
+          launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
+          patch = Path('V3-applied-source.patch').read_text(encoding='utf-8', errors='replace')
+          readme = Path('V3-LAB-README.txt').read_text(encoding='utf-8')
+          assert engine.count('OPENMW_V319_FOCUS_CADENCE') == 1
+          assert 'mWindowManager->isGuiMode()' in engine
+          assert 'Activation/input queries remain untouched.' in engine
+          assert 'openmw-custom-v3.19-cpu-p0' in engine
+          for token in ('v319-cpu-control','v319-focus2','v319-focus3',
+                        'v319-osg-culldraw','v319-osg-percamera',
+                        'v319-osg-culldraw-focus2','v319-osg-percamera-focus2',
+                        'Enter 1 through 108'):
+              assert token in launcher, token
+          assert 'mNisScaler->dispatch' in patch
+          assert 'mV35CoarseChunkOcclusion' in patch
+          assert 'V3.19 CPU critical path P0' in readme
+          print('V3.19 CPU policy invariants passed.')
+          PY
+
+      - name: Parse-check generated PowerShell launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Host 'V3_Lab.ps1 parse check passed.'
+
+      - name: Upload exact generated V3.19 patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: v319-preflight-applied-source-${{ github.sha }}
+          path: |
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+            V3.18-RENDER-LAYER.txt
+            V3.18-NIS-PROVENANCE.txt
+          if-no-files-found: error
+
+  Windows:
+    needs: Preflight
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: false
