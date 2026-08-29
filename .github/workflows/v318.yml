@@ -1,4 +1,4 @@
-name: V3.18 renderer efficiency and internal scaling build/QC
+name: V3.18 renderer efficiency, render scaling and NIS build/QC
 
 on:
   workflow_dispatch:
@@ -51,26 +51,33 @@ jobs:
           path: v318-apply.log
           if-no-files-found: error
 
-      - name: Validate generated V3.18 render-scale markers
+      - name: Validate generated V3.18 render-scale and NIS markers
         shell: bash
         run: |
           set -euo pipefail
           git diff --check
           cat V3-applied-source-stat.txt
+          cat V3.18-NIS-PROVENANCE.txt
           grep -n 'mRenderScale' components/settings/categories/video.hpp
+          grep -n 'bilinear.*nis' components/settings/categories/video.hpp
           grep -n 'render scale = 1.0' files/settings-default.cfg
           grep -n 'renderScalingActive' apps/openmw/mwrender/postprocessor.hpp
           grep -n 'Settings::video().mRenderScale' apps/openmw/mwrender/postprocessor.cpp
           grep -n 'V3.18 uses this state' apps/openmw/mwrender/pingpongcull.cpp
           grep -n 'const bool scaledOutput' apps/openmw/mwrender/pingpongcanvas.cpp
-          grep -n 'Present exactly once at native resolution' apps/openmw/mwrender/pingpongcanvas.cpp
+          grep -n 'mNisScaler->dispatch' apps/openmw/mwrender/pingpongcanvas.cpp
+          grep -n 'NVScalerUpdateConfig' apps/openmw/mwrender/nisscaler.cpp
+          grep -n 'glDispatchCompute' apps/openmw/mwrender/nisscaler.cpp
+          grep -n 'glMemoryBarrier' apps/openmw/mwrender/nisscaler.cpp
+          grep -n '#version 430 core' apps/openmw/mwrender/v318_nis_shader.hpp
+          grep -n 'NVScaler(gl_WorkGroupID.xy' apps/openmw/mwrender/v318_nis_shader.hpp
           grep -n '95 = V3.18 native-resolution control' tools/v3/launchers/V3_Lab.ps1
-          grep -n 'v318-bilinear-77' tools/v3/launchers/V3_Lab.ps1
-          grep -n 'Enter 1 through 98' tools/v3/launchers/V3_Lab.ps1
+          grep -n '100 = V3.18 internal render scale 77% + NVIDIA Image Scaling' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'Enter 1 through 101' tools/v3/launchers/V3_Lab.ps1
           grep -n 'V3.18 renderer efficiency' V3-LAB-README.txt
           grep -n 'openmw-custom-v3.18-render-scale-p0' apps/openmw/engine.cpp
 
-      - name: Validate V3.18 P0 policy invariants
+      - name: Validate V3.18 renderer/NIS policy invariants
         shell: bash
         run: |
           python3 - <<'PY'
@@ -81,13 +88,16 @@ jobs:
           post = Path('apps/openmw/mwrender/postprocessor.cpp').read_text(encoding='utf-8')
           cull = Path('apps/openmw/mwrender/pingpongcull.cpp').read_text(encoding='utf-8')
           canvas = Path('apps/openmw/mwrender/pingpongcanvas.cpp').read_text(encoding='utf-8')
+          nis = Path('apps/openmw/mwrender/nisscaler.cpp').read_text(encoding='utf-8')
+          shader = Path('apps/openmw/mwrender/v318_nis_shader.hpp').read_text(encoding='utf-8')
+          provenance = Path('V3.18-NIS-PROVENANCE.txt').read_text(encoding='utf-8')
           launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
           readme = Path('V3-LAB-README.txt').read_text(encoding='utf-8')
 
-          # Render resolution is independently bounded. P0 cannot select an
-          # unimplemented provider.
+          # Internal scale is independently bounded and both implemented providers
+          # are explicitly selectable.
           assert 'makeClampSanitizerFloat(0.5f, 1.0f)' in video
-          assert 'makeEnumSanitizerString({ "bilinear" })' in video
+          assert 'makeEnumSanitizerString({ "bilinear", "nis" })' in video
           assert '"Video", "upscaler sharpness"' in video
 
           # Native output/HUD is preserved while renderWidth/Height shrink only
@@ -101,23 +111,46 @@ jobs:
           assert 'mPostProcessor->renderWidth()' in cull
           assert 'mPostProcessor->renderHeight()' in cull
 
-          # Entire PostFX chain stays internal; only one final presentation pass
-          # reaches the native viewport when scaling is active.
+          # Entire PostFX chain stays internal. NIS is invoked only in the final
+          # scaled-output presentation paths; the ordinary bilinear presentation
+          # remains the explicit fallback.
           assert 'const bool scaledOutput' in canvas
           assert 'pass.mResolve && index == filtered.back() && !scaledOutput' in canvas
           assert 'if (scaledOutput)' in canvas
-          assert 'Present exactly once at native resolution' in canvas
-          assert 'state.applyTextureAttribute(0, finalTexture);' in canvas
+          assert canvas.count('mNisScaler->dispatch') == 2
+          assert 'presentationTexture = nisTexture' in canvas
+          assert 'state.applyTextureAttribute(0, presentationTexture);' in canvas
+          assert 'falling back to bilinear upscale' in nis
+          assert 'GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT' in nis
 
-          # Causal matrix is stock-Lua V3.17 control + only render scale changes.
+          # The provider is actual NVIDIA SDK algorithm source through an OpenGL
+          # compute wrapper, not a renamed generic sharpen/bilinear shader.
+          assert '#version 430 core' in shader
+          assert '#define NIS_SCALER 1' in shader
+          assert '#define NIS_USE_HALF_PRECISION 0' in shader
+          assert '#define NIS_BLOCK_WIDTH 32' in shader
+          assert '#define NIS_BLOCK_HEIGHT 24' in shader
+          assert '#define NIS_THREAD_GROUP_SIZE 128' in shader
+          assert 'NVScaler(gl_WorkGroupID.xy, gl_LocalInvocationID.x);' in shader
+          assert 'sampler2D(x, samplerLinearClamp)' not in shader
+          assert 'NVIDIA Image Scaling SDK  - v1.0.3' in shader
+
+          # Exact upstream source identity is pinned/fail-closed.
+          assert 'source_commit=35e13ba316c98eeecf16f37eae70ce88019911f6' in provenance
+          assert 'NIS_Scaler.h_git_blob=02f645c2c01b0235d340d25c6cfc913000f7cc1b' in provenance
+          assert 'NIS_Config.h_git_blob=b8982217d7c4ad99a4725af54336d7a5b24de443' in provenance
+
+          # Causal matrix keeps bilinear and NIS pairs at the same scales.
           for token in ('v318-native-control', 'v318-bilinear-85', 'v318-bilinear-77',
-                        'v318-bilinear-667', 'Enter 1 through 98'):
+                        'v318-bilinear-667', 'v318-nis-85', 'v318-nis-77',
+                        'v318-nis-667', 'Enter 1 through 101'):
               assert token in launcher, token
           assert "Set-IniValue $SettingsPath 'Video' 'render scale' $V318RenderScale" in launcher
-          assert 'V3.18 renderer efficiency' in readme
-          assert 'NIS is not silently emulated' in readme
+          assert "Set-IniValue $SettingsPath 'Video' 'upscaler' $V318Upscaler" in launcher
+          assert "Set-IniValue $SettingsPath 'Video' 'upscaler sharpness' $V318UpscalerSharpness" in launcher
+          assert '97 -> 100' in readme
 
-          print('V3.18 P0 policy invariants passed.')
+          print('V3.18 renderer/NIS policy invariants passed.')
           PY
 
       - name: Parse-check generated PowerShell launcher
@@ -145,6 +178,7 @@ jobs:
             V3-applied-source-stat.txt
             V3-LAB-README.txt
             V3.18-RENDER-LAYER.txt
+            V3.18-NIS-PROVENANCE.txt
           if-no-files-found: error
 
   Windows:
