@@ -14,6 +14,15 @@ exec(
     {"__file__": str(v316), "__name__": "__main__"},
 )
 
+# Buffered ambient SFX are a different path from streamed voice/music. Keep
+# already-decoded OpenAL Soft buffers resident much more aggressively in the
+# balanced/aggressive V3.16 modes to reduce repeat decode/I/O churn.
+v316_sfx = Path(__file__).with_name("apply_v316_sfx_retention.py")
+exec(
+    compile(v316_sfx.read_text(encoding="utf-8"), str(v316_sfx), "exec"),
+    {"__file__": str(v316_sfx), "__name__": "__main__"},
+)
+
 # V3.15 lab evidence showed synchronous CSV output can contaminate the same
 # frametime tails we are trying to measure. Move diagnostic file I/O off producer
 # threads before taking the generated-source snapshot.
@@ -38,8 +47,8 @@ or approaching actors. V3.15 logs showed repeated sound/script stalls plus
 actor-local Lua bursts, smaller periodic resource cleanup pulses, and a separate
 render-traversal synchronization lane.
 
-First integrated engine mechanism
----------------------------------
+Streamed sound head cache
+-------------------------
 V3.16 backports official OpenMW upstream commit
 9ec49cfb4709cbfd8f14e97f5b9a558b71b8184f (sound-file head cache). Streamed
 music/voice initialization can reuse the exact prefix/suffix bytes FFmpeg needed
@@ -48,12 +57,21 @@ configured through [Sound] 'head cache size'. V3.16 keeps the engine default at
 0 MB so the control remains exact; experiment modes explicitly select 64/128 MB.
 The upstream per-file safety ceiling remains 256 KiB.
 
-Important scope note
---------------------
-OpenMW Lua ambient playSound/playSoundFile calls use buffered SFX, not the
-streamed decoder path. Therefore the head cache is useful for music/voice stream
-starts but is not treated as the complete Dynamic Sounds fix. V3.16 separately
-audits buffered SFX loading/decoding for safe background prewarm/retention.
+Buffered SFX retention
+----------------------
+OpenMW Lua ambient playSound/playSoundFile calls use SoundBufferPool and
+OpenALOutput::loadSound: the complete file is synchronously decoded and uploaded
+the first time a nonresident SFX is requested. The stock decoded-buffer cache is
+only 56/64 MB, which can churn in a large audio/mod setup and force later sounds
+to repeat this work. Mode88 raises the decoded SFX cache to 256/384 MB and Mode89
+to 512/768 MB. These are system/OpenAL Soft memory budgets, not texture/geometry
+VRAM budgets. Mode87 deliberately leaves the user's existing buffer-cache limits
+untouched so it remains a clean streamed-head-cache isolation run.
+
+This retention mechanism prevents repeat-load thrash; it does not pretend to
+eliminate the first decode of a never-seen SFX. A separate safe first-use predecode
+path remains under source audit rather than moving OpenAL calls onto an unsafe
+worker context.
 
 Asynchronous lab diagnostics
 ----------------------------
@@ -69,19 +87,19 @@ spikes. No writer thread exists for disabled diagnostic streams.
 Runtime matrix
 --------------
 86 = exact V3.15 Mode84 gameplay settings control, sound head cache 0 MB
-87 = Mode86 + 64 MB streamed-audio head cache
-88 = balanced V3.16 hitch candidate, currently Mode84 + 64 MB audio cache and
-     reserved for additional validated hitch suppressors in this build line
-89 = aggressive V3.16 hitch candidate, currently Mode84 + 128 MB audio cache and
-     reserved for aggressive validated hitch suppressors
+87 = Mode86 + 64 MB streamed-audio head cache; existing decoded-SFX cache unchanged
+88 = balanced V3.16 hitch candidate: Mode84 + audio head 64 MB + decoded SFX
+     cache 256/384 MB + common asynchronous diagnostics transport
+89 = aggressive V3.16 hitch candidate: Mode84 + audio head 128 MB + decoded SFX
+     cache 512/768 MB + common asynchronous diagnostics transport
 
 Development policy
 ------------------
 Do not weaken Lua/script semantics to hide expensive mods. Do not defer required
 scene construction or V3.13 strong-wins cache installation. Any resource cleanup,
-buffered-SFX, or render-thread changes added later in V3.16 must be bounded and
-independently switchable. Diagnostic I/O must not become a gameplay-thread hitch
-source.
+first-use buffered-SFX, or render-thread changes added later in V3.16 must be
+bounded and independently switchable. Diagnostic I/O must not become a gameplay-
+thread hitch source.
 ''')
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -107,6 +125,8 @@ for marker in (
     "v316-audio64",
     "v316-balanced-hitch",
     "v316-aggressive-hitch",
+    "V316BufferCacheMin",
+    "V316BufferCacheMax",
     "sMaxQueuedLines",
     "v3_async_diagnostics_dropped_lines",
 ):
@@ -117,5 +137,7 @@ if "V3.16 general-play hitch suppression" not in readme_text:
     raise RuntimeError("V3.16 README identity marker missing")
 if "Asynchronous lab diagnostics" not in readme_text:
     raise RuntimeError("V3.16 asynchronous diagnostics README marker missing")
+if "Buffered SFX retention" not in readme_text:
+    raise RuntimeError("V3.16 buffered SFX retention README marker missing")
 
 print("V3.16 exact generated-source snapshot refreshed after complete V3.16 layer.")
