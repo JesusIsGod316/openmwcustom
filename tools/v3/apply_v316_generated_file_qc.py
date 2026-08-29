@@ -27,7 +27,9 @@ GENERATED_NEW_FILES = {
     "apps/openmw/mwsound/sfxpredecodecache.cpp": (
         "sMaxPredecodedEntryBytes = 16 * 1024 * 1024",
         "Misc::setCurrentThreadIdlePriority()",
-        "FFmpegDecoder>(&mVfs, nullptr)",
+        "std::unique_ptr<SoundDecoder> decoder = std::make_unique<FFmpegDecoder>(&mVfs);",
+        "decoder->open(Misc::ResourceHelpers::correctSoundPath(name, mVfs));",
+        "mQueued.erase(queuedIt);",
         "SfxPredecodeCache::workerLoop",
     ),
 }
@@ -40,6 +42,18 @@ for rel, markers in GENERATED_NEW_FILES.items():
     for marker in markers:
         if marker not in text:
             raise RuntimeError(f"V3.16 generated-file QC {rel} missing marker: {marker}")
+
+# These exact patterns caused the first V3.16 Windows MSVC failure. Keep the
+# generated-source QC aligned with the corrected API so a later generator change
+# cannot silently reintroduce them.
+predecode_text = (ROOT / "apps/openmw/mwsound/sfxpredecodecache.cpp").read_text(encoding="utf-8")
+for forbidden in (
+    "FFmpegDecoder>(&mVfs, nullptr)",
+    "DecoderPtr decoder = std::make_shared<FFmpegDecoder>",
+    "mQueued.erase(name);",
+):
+    if forbidden in predecode_text:
+        raise RuntimeError(f"V3.16 generated-file QC found forbidden predecode API pattern: {forbidden}")
 
 subprocess.run(
     ["git", "add", "-N", "--", *GENERATED_NEW_FILES.keys()], cwd=ROOT, check=True
