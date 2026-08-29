@@ -11,7 +11,9 @@ exec(
 # Substantive engine-side V3.17 lane. This is deliberately applied only after
 # the complete V3.16/V3.7 generated stack exists because it upgrades the mature
 # loaded-container handler fast path and the final Lua/sound binding source.
-v317_engine_lua = Path(__file__).with_name("apply_v317_engine_lua_fastpaths.py")
+# The fixed wrapper changes only two engineevents.cpp anchors so all pre-existing
+# V3.3 event attribution remains intact.
+v317_engine_lua = Path(__file__).with_name("apply_v317_engine_lua_fastpaths_fixed.py")
 exec(
     compile(v317_engine_lua.read_text(encoding="utf-8"), str(v317_engine_lua), "exec"),
     {"__file__": str(v317_engine_lua), "__name__": "__main__"},
