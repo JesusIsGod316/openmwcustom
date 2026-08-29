@@ -140,8 +140,11 @@ replace_exact(
 
 launcher = ROOT / "tools/v3/launchers/V3_Lab.ps1"
 text = launcher.read_text(encoding="utf-8")
-old_default = "$V316SfxPredecodeWorkers = '0'\n$RendererProfiling"
-new_default = "$V316SfxPredecodeWorkers = '0'\n$V316IdleResourceSweep = 'false'\n$RendererProfiling"
+# The SFX metadata-frontload layer is applied before this one. Anchor on that
+# exact composed state so changes in patch ordering fail closed instead of
+# silently dropping one of the V3.16 controls.
+old_default = "$V316SfxPredecodeWorkers = '0'\n$V316SfxMetadataFrontload = 'false'\n$RendererProfiling"
+new_default = "$V316SfxPredecodeWorkers = '0'\n$V316SfxMetadataFrontload = 'false'\n$V316IdleResourceSweep = 'false'\n$RendererProfiling"
 if text.count(old_default) != 1:
     raise RuntimeError("V3.16 idle resource sweep launcher default anchor mismatch")
 text = text.replace(old_default, new_default, 1)
