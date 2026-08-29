@@ -64,6 +64,8 @@ jobs:
           grep -n "sMaxQueuedLines = 4096" components/debug/v3diagnostics.hpp
           grep -n "v3_async_diagnostics_dropped_lines" components/debug/v3diagnostics.hpp
           grep -n "mWriterThread" components/debug/v3diagnostics.hpp
+          grep -n "V316BufferCacheMin" tools/v3/launchers/V3_Lab.ps1
+          grep -n "V316BufferCacheMax" tools/v3/launchers/V3_Lab.ps1
           grep -n "v316-mode84-control" tools/v3/launchers/V3_Lab.ps1
           grep -n "v316-audio64" tools/v3/launchers/V3_Lab.ps1
           grep -n "v316-balanced-hitch" tools/v3/launchers/V3_Lab.ps1
@@ -114,10 +116,20 @@ jobs:
           # infrastructure common to all V3.16 modes, not an experiment variable.
           assert assignments(lines[86]) == assignments(lines[84])
           assert "$V316HeadCacheSize = '64'" in lines[87]
+          assert '$V316BufferCacheMin' not in lines[87]
+          assert '$V316BufferCacheMax' not in lines[87]
           assert "$V316HeadCacheSize = '64'" in lines[88]
+          assert "$V316BufferCacheMin = '256'" in lines[88]
+          assert "$V316BufferCacheMax = '384'" in lines[88]
           assert "$V316HeadCacheSize = '128'" in lines[89]
+          assert "$V316BufferCacheMin = '512'" in lines[89]
+          assert "$V316BufferCacheMax = '768'" in lines[89]
           assert "$V316HeadCacheSize = '0'" in launcher
+          assert "$V316BufferCacheMin = ''" in launcher
+          assert "$V316BufferCacheMax = ''" in launcher
           assert "Set-IniValue $SettingsPath 'Sound' 'head cache size' $V316HeadCacheSize" in launcher
+          assert "Set-IniValue $SettingsPath 'Sound' 'buffer cache min' $V316BufferCacheMin" in launcher
+          assert "Set-IniValue $SettingsPath 'Sound' 'buffer cache max' $V316BufferCacheMax" in launcher
 
           # Preserve promoted renderer/paging foundation.
           for token in ('mV313ChunkQualityMode', 'mV315PremergeStateCanonicalization',
