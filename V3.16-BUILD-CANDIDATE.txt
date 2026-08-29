@@ -1,0 +1,13 @@
+V3.16 general-play hitch suppression Windows build candidate
+
+Foundation: promoted V3.15 Mode84 renderer/paging architecture.
+
+Modes:
+86 = V3.15 Mode84 gameplay-settings control
+87 = 86 + 64 MB streamed sound-head cache
+88 = balanced: 64 MB head cache + 256/384 MB decoded SFX retention + dedicated idle-priority resource maintenance
+89 = aggressive: 128 MB head cache + 512/768 MB decoded SFX retention + 384 MB one-worker idle-priority first-use SFX predecode + dedicated idle resource maintenance
+
+Common V3.16 lab infrastructure: asynchronous bounded diagnostic CSV transport.
+
+Mandatory pre-delivery checks remain: exact CI-ID, V3.16 launcher/modes, V3.16 generated patch markers, actual openmw.exe V3.16 marker, local ZIP SHA-256.
