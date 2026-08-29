@@ -1,0 +1,149 @@
+name: V3.16 general-play hitch suppression build and QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - full
+  push:
+    branches:
+      - v3.16-general-play-hitch-suppression
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Show exact source revision
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git status --short
+
+      - name: Compile-check all V3 Python patch tools
+        shell: bash
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Apply complete V3.16 generated source stack
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness_v316.py 2>&1 | tee v316-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Upload V3.16 apply log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v316-apply-log-${{ github.sha }}
+          path: v316-apply.log
+          if-no-files-found: error
+
+      - name: Validate generated diff and V3.16 markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          cat V3-applied-source-stat.txt
+          grep -n "class HeadCache" apps/openmw/mwsound/headcache.hpp
+          grep -n "mHeadCacheSize" components/settings/categories/sound.hpp
+          grep -n "getStreamDecoder" apps/openmw/mwsound/soundmanagerimp.cpp
+          grep -n "head cache size = 0" files/settings-default.cfg
+          grep -n "v316-mode84-control" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v316-audio64" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v316-balanced-hitch" tools/v3/launchers/V3_Lab.ps1
+          grep -n "v316-aggressive-hitch" tools/v3/launchers/V3_Lab.ps1
+          grep -n "Enter 1 through 89" tools/v3/launchers/V3_Lab.ps1
+
+      - name: Validate V3.16 policy invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
+          defaults = Path('files/settings-default.cfg').read_text(encoding='utf-8')
+          sound_h = Path('components/settings/categories/sound.hpp').read_text(encoding='utf-8')
+          sound_cpp = Path('apps/openmw/mwsound/soundmanagerimp.cpp').read_text(encoding='utf-8')
+          decoder = Path('apps/openmw/mwsound/ffmpegdecoder.cpp').read_text(encoding='utf-8')
+          head = Path('apps/openmw/mwsound/headcache.cpp').read_text(encoding='utf-8')
+
+          assert 'head cache size = 0' in defaults
+          assert 'mHeadCacheSize' in sound_h
+          assert 'makeHeadCache' in sound_cpp
+          assert 'getStreamDecoder' in sound_cpp
+          assert 'mHeadCache->lookup' in decoder
+          assert 'mHeadCache->insert' in decoder
+          assert 'sMaxHeadBytes = 256 * 1024' in head
+
+          lines = {n: next(line for line in launcher.splitlines()
+                           if line.lstrip().startswith(f"'{n}'"))
+                   for n in range(84, 90)}
+          def assignments(line):
+              body = line[line.index('{') + 1:line.rindex('}')]
+              return [x.strip() for x in body.split(';') if x.strip() and '$Experiment' not in x]
+
+          # Mode86 must keep Mode84's V3.15 runtime assignments; the only V3.16
+          # default is a 0 MB sound cache applied outside the switch.
+          assert assignments(lines[86]) == assignments(lines[84])
+          assert "$V316HeadCacheSize = '64'" in lines[87]
+          assert "$V316HeadCacheSize = '64'" in lines[88]
+          assert "$V316HeadCacheSize = '128'" in lines[89]
+          assert "$V316HeadCacheSize = '0'" in launcher
+          assert "Set-IniValue $SettingsPath 'Sound' 'head cache size' $V316HeadCacheSize" in launcher
+
+          # Preserve promoted renderer/paging foundation.
+          for token in ('mV313ChunkQualityMode', 'mV315PremergeStateCanonicalization',
+                        'mV315PacketizedPremergeMode', 'mV315AdaptiveCompileGovernor'):
+              assert token in Path('components/settings/categories/cells.hpp').read_text(encoding='utf-8'), token
+          assert 'object_chunk_quality_upgrade' in Path('apps/openmw/mwrender/objectpaging.cpp').read_text(encoding='utf-8')
+
+          print('V3.16 general-play hitch policy invariants passed.')
+          PY
+
+      - name: Parse-check generated PowerShell launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Host 'V3_Lab.ps1 parse check passed.'
+
+      - name: Upload exact generated V3.16 patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: v316-preflight-applied-source-${{ github.sha }}
+          path: |
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+            V3.16-HITCH-LAYER.txt
+          if-no-files-found: error
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: "2022"
+      tests: false
