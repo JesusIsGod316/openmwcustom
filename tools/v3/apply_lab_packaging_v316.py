@@ -23,6 +23,20 @@ exec(
     {"__file__": str(v316_sfx), "__name__": "__main__"},
 )
 
+# Aggressive Mode89 also predecodes likely ESM-backed SFX on one idle-priority
+# worker into a bounded PCM reservoir. No OpenAL calls happen on the worker;
+# requested sounds that are not ready fall through to the original sync path.
+v316_sfx_predecode = Path(__file__).with_name("apply_v316_sfx_predecode.py")
+exec(
+    compile(v316_sfx_predecode.read_text(encoding="utf-8"), str(v316_sfx_predecode), "exec"),
+    {"__file__": str(v316_sfx_predecode), "__name__": "__main__"},
+)
+v316_sfx_predecode_fix = Path(__file__).with_name("apply_v316_sfx_predecode_compilefix.py")
+exec(
+    compile(v316_sfx_predecode_fix.read_text(encoding="utf-8"), str(v316_sfx_predecode_fix), "exec"),
+    {"__file__": str(v316_sfx_predecode_fix), "__name__": "__main__"},
+)
+
 # V3.15 lab evidence showed synchronous CSV output can contaminate the same
 # frametime tails we are trying to measure. Move diagnostic file I/O off producer
 # threads before taking the generated-source snapshot.
@@ -68,10 +82,19 @@ to 512/768 MB. These are system/OpenAL Soft memory budgets, not texture/geometry
 VRAM budgets. Mode87 deliberately leaves the user's existing buffer-cache limits
 untouched so it remains a clean streamed-head-cache isolation run.
 
-This retention mechanism prevents repeat-load thrash; it does not pretend to
-eliminate the first decode of a never-seen SFX. A separate safe first-use predecode
-path remains under source audit rather than moving OpenAL calls onto an unsafe
-worker context.
+Aggressive first-use SFX predecode
+----------------------------------
+Mode89 additionally enables a 384 MB PCM predecode reservoir with one
+idle-priority worker. Once a game is active, the main thread enumerates known ESM
+sound resource names and queues them. The worker performs only VFS/FFmpeg decode;
+it never calls OpenAL. OpenAL buffer creation/upload remains on the gameplay
+thread. If a requested sound is already predecoded, the synchronous storage and
+FFmpeg decode are skipped. If it is not ready, the exact original synchronous
+load path runs immediately, so playback semantics and correctness are preserved.
+Individual speculative decoded entries are capped at 16 MB, the total ready
+reservoir is bounded, and the worker waits for reservoir space rather than growing
+memory without limit. Direct arbitrary playSoundFile paths that are not represented
+by ESM sound records still use the original first-load path unless already known.
 
 Asynchronous lab diagnostics
 ----------------------------
@@ -91,15 +114,15 @@ Runtime matrix
 88 = balanced V3.16 hitch candidate: Mode84 + audio head 64 MB + decoded SFX
      cache 256/384 MB + common asynchronous diagnostics transport
 89 = aggressive V3.16 hitch candidate: Mode84 + audio head 128 MB + decoded SFX
-     cache 512/768 MB + common asynchronous diagnostics transport
+     cache 512/768 MB + 384 MB/1-worker first-use SFX predecode + common async diagnostics
 
 Development policy
 ------------------
 Do not weaken Lua/script semantics to hide expensive mods. Do not defer required
-scene construction or V3.13 strong-wins cache installation. Any resource cleanup,
-first-use buffered-SFX, or render-thread changes added later in V3.16 must be
-bounded and independently switchable. Diagnostic I/O must not become a gameplay-
-thread hitch source.
+scene construction or V3.13 strong-wins cache installation. OpenAL operations stay
+on their existing thread/context. Any resource cleanup or render-thread changes
+added later in V3.16 must be bounded and independently switchable. Diagnostic I/O
+must not become a gameplay-thread hitch source.
 ''')
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -127,6 +150,10 @@ for marker in (
     "v316-aggressive-hitch",
     "V316BufferCacheMin",
     "V316BufferCacheMax",
+    "SfxPredecodeCache",
+    "sfx predecode cache size",
+    "V316SfxPredecodeCacheSize",
+    "getResourceNamesForPredecode",
     "sMaxQueuedLines",
     "v3_async_diagnostics_dropped_lines",
 ):
@@ -139,5 +166,7 @@ if "Asynchronous lab diagnostics" not in readme_text:
     raise RuntimeError("V3.16 asynchronous diagnostics README marker missing")
 if "Buffered SFX retention" not in readme_text:
     raise RuntimeError("V3.16 buffered SFX retention README marker missing")
+if "Aggressive first-use SFX predecode" not in readme_text:
+    raise RuntimeError("V3.16 SFX predecode README marker missing")
 
 print("V3.16 exact generated-source snapshot refreshed after complete V3.16 layer.")
