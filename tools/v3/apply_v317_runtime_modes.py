@@ -11,15 +11,22 @@ for marker in ("v316-balanced-hitch", "v316-aggressive-hitch", "Enter 1 through 
     if marker not in text:
         raise RuntimeError(f"V3.17 runtime-mode layer expected V3.16 launcher marker: {marker}")
 
-old_menu = "Write-Host ' 89 = V3.16 aggressive general-play hitch candidate'"
-new_menu = """Write-Host ' 89 = V3.16 aggressive general-play hitch candidate'
-Write-Host ' 90 = V3.17 control: V3.16 Mode88 + stock LuaJIT'
-Write-Host ' 91 = V3.17 Rubic0n runtime attribution'
-Write-Host ' 92 = V3.17 engine Lua/materialization attribution + stock LuaJIT'
-Write-Host ' 93 = V3.17 combined balanced candidate'
-Write-Host ' 94 = V3.17 combined + aggressive SFX predecode'"""
-if text.count(old_menu) != 1:
-    raise RuntimeError("V3.17 launcher menu anchor mismatch")
+# Later V3.16 layers may extend the human-readable Mode89 label while leaving
+# its semantic experiment ID stable. Anchor the menu on the unique Mode89 label
+# instead of requiring the original V3.16 wording byte-for-byte.
+menu_lines = [line for line in text.splitlines() if line.startswith("Write-Host ' 89 = V3.16")]
+if len(menu_lines) != 1:
+    raise RuntimeError(f"V3.17 launcher menu anchor mismatch: found {len(menu_lines)} Mode89 label(s)")
+old_menu = menu_lines[0]
+new_menu = old_menu + "\n" + "\n".join(
+    [
+        "Write-Host ' 90 = V3.17 control: V3.16 Mode88 + stock LuaJIT'",
+        "Write-Host ' 91 = V3.17 Rubic0n runtime attribution'",
+        "Write-Host ' 92 = V3.17 engine Lua/materialization attribution + stock LuaJIT'",
+        "Write-Host ' 93 = V3.17 combined balanced candidate'",
+        "Write-Host ' 94 = V3.17 combined + aggressive SFX predecode'",
+    ]
+)
 text = text.replace(old_menu, new_menu, 1)
 
 text, n = re.subn(
@@ -32,8 +39,14 @@ text, n = re.subn(
 if n != 1:
     raise RuntimeError("V3.17 launcher choice-range anchor mismatch")
 
-mode88 = next(line for line in text.splitlines() if line.lstrip().startswith("'88'"))
-mode89 = next(line for line in text.splitlines() if line.lstrip().startswith("'89'"))
+mode88_candidates = [line for line in text.splitlines() if line.lstrip().startswith("'88'")]
+mode89_candidates = [line for line in text.splitlines() if line.lstrip().startswith("'89'")]
+if len(mode88_candidates) != 1 or len(mode89_candidates) != 1:
+    raise RuntimeError(
+        f"V3.17 launcher mode anchor mismatch: mode88={len(mode88_candidates)} mode89={len(mode89_candidates)}"
+    )
+mode88 = mode88_candidates[0]
+mode89 = mode89_candidates[0]
 body88 = mode88[mode88.index("{") + 1 : mode88.rindex("}")].strip()
 body89 = mode89[mode89.index("{") + 1 : mode89.rindex("}")].strip()
 
