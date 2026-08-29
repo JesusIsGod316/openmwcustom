@@ -81,6 +81,18 @@ is 95 -> 97 to measure the raw resolution-dependent GPU ceiling, followed by
 97 -> 100 to isolate NIS cost/quality at identical 77% internal resolution.
 ''')
 
+# The NIS provider is generated from pinned upstream SDK sources during patch
+# application. Mark those new files intent-to-add so `git diff` includes their
+# exact bytes in V3-applied-source.patch. Without this, Git omits untracked files
+# and artifact QC could falsely claim the final source snapshot was complete.
+generated_nis_files = [
+    "apps/openmw/mwrender/nisscaler.hpp",
+    "apps/openmw/mwrender/nisscaler.cpp",
+    "apps/openmw/mwrender/v318_nis_config.hpp",
+    "apps/openmw/mwrender/v318_nis_shader.hpp",
+]
+subprocess.run(["git", "add", "-N", "--", *generated_nis_files], cwd=ROOT, check=True)
+
 # Final snapshot must represent the source that Windows will compile, not an
 # intermediate V3.17/P0 patch.
 subprocess.run(["git", "diff", "--check"], cwd=ROOT, check=True)
@@ -114,6 +126,12 @@ for marker in (
 ):
     if marker not in patch_text:
         raise RuntimeError(f"V3.18 generated source snapshot missing marker: {marker}")
+
+# Verify every generated NIS source is represented as a newly-added file in the
+# exact patch, not just present transiently in the CI worktree.
+for path in generated_nis_files:
+    if f"diff --git a/{path} b/{path}" not in patch_text or f"+++ b/{path}" not in patch_text:
+        raise RuntimeError(f"V3.18 exact patch omitted generated NIS source: {path}")
 
 for marker in (
     "95 = V3.18 native-resolution control",
