@@ -1,0 +1,4 @@
+V3.17 package-only trigger after successful Windows build.
+Source full-build run: 33266037455
+Source executable commit: 5795d0e915b7c1735fa1323e8cd28f7413244088
+Purpose: attach generated Modes90-94 lab launcher/docs to the already-verified runtime-complete Windows artifact without recompiling OpenMW.
