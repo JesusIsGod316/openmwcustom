@@ -61,11 +61,18 @@ jobs:
           grep -n "mHeadCacheSize" components/settings/categories/sound.hpp
           grep -n "getStreamDecoder" apps/openmw/mwsound/soundmanagerimp.cpp
           grep -n "head cache size = 0" files/settings-default.cfg
+          grep -n "class SfxPredecodeCache" apps/openmw/mwsound/sfxpredecodecache.hpp
+          grep -n "sfx predecode cache size = 0" files/settings-default.cfg
+          grep -n "sMaxPredecodedEntryBytes = 16 \* 1024 \* 1024" apps/openmw/mwsound/sfxpredecodecache.cpp
+          grep -n "getResourceNamesForPredecode" apps/openmw/mwsound/soundbuffer.cpp
+          grep -n "queueSoundPredecode" apps/openmw/mwsound/soundmanagerimp.cpp
           grep -n "sMaxQueuedLines = 4096" components/debug/v3diagnostics.hpp
           grep -n "v3_async_diagnostics_dropped_lines" components/debug/v3diagnostics.hpp
           grep -n "mWriterThread" components/debug/v3diagnostics.hpp
           grep -n "V316BufferCacheMin" tools/v3/launchers/V3_Lab.ps1
           grep -n "V316BufferCacheMax" tools/v3/launchers/V3_Lab.ps1
+          grep -n "V316SfxPredecodeCacheSize" tools/v3/launchers/V3_Lab.ps1
+          grep -n "V316SfxPredecodeWorkers" tools/v3/launchers/V3_Lab.ps1
           grep -n "v316-mode84-control" tools/v3/launchers/V3_Lab.ps1
           grep -n "v316-audio64" tools/v3/launchers/V3_Lab.ps1
           grep -n "v316-balanced-hitch" tools/v3/launchers/V3_Lab.ps1
@@ -85,7 +92,12 @@ jobs:
           decoder = Path('apps/openmw/mwsound/ffmpegdecoder.cpp').read_text(encoding='utf-8')
           head = Path('apps/openmw/mwsound/headcache.cpp').read_text(encoding='utf-8')
           diagnostics = Path('components/debug/v3diagnostics.hpp').read_text(encoding='utf-8')
+          predecode_h = Path('apps/openmw/mwsound/sfxpredecodecache.hpp').read_text(encoding='utf-8')
+          predecode_cpp = Path('apps/openmw/mwsound/sfxpredecodecache.cpp').read_text(encoding='utf-8')
+          openal_cpp = Path('apps/openmw/mwsound/openaloutput.cpp').read_text(encoding='utf-8')
+          soundbuffer_cpp = Path('apps/openmw/mwsound/soundbuffer.cpp').read_text(encoding='utf-8')
 
+          # Official upstream streamed-head cache backport.
           assert 'head cache size = 0' in defaults
           assert 'mHeadCacheSize' in sound_h
           assert 'makeHeadCache' in sound_cpp
@@ -93,6 +105,24 @@ jobs:
           assert 'mHeadCache->lookup' in decoder
           assert 'mHeadCache->insert' in decoder
           assert 'sMaxHeadBytes = 256 * 1024' in head
+
+          # Aggressive buffered-SFX predecode is bounded, opt-in, and contains no
+          # OpenAL API usage. Only VFS/FFmpeg decode may run on its idle worker.
+          assert 'sfx predecode cache size = 0' in defaults
+          assert 'sfx predecode workers = 0' in defaults
+          assert 'class SfxPredecodeCache' in predecode_h
+          assert 'sMaxPredecodedEntryBytes = 16 * 1024 * 1024' in predecode_cpp
+          assert 'Misc::setCurrentThreadIdlePriority()' in predecode_cpp
+          assert 'name.value().empty()' in predecode_cpp
+          assert 'std::clamp(workers, 1u, 2u)' in predecode_cpp
+          for forbidden in ('alGenBuffers', 'alBufferData', 'alDeleteBuffers', 'alSource', 'alc'):
+              assert forbidden not in predecode_cpp, forbidden
+          assert 'getResourceNamesForPredecode' in soundbuffer_cpp
+          assert 'queueSoundPredecode' in sound_cpp
+          assert 'mSfxPredecodeCache->take(fname)' in openal_cpp
+          assert 'if (!usedPredecoded)' in openal_cpp
+          assert 'DecoderPtr decoder = mManager.getDecoder();' in openal_cpp
+          assert 'decoder->readAll(data);' in openal_cpp
 
           # Diagnostic producers enqueue complete rows; disk writes/flushes live
           # only in writerLoop. Overload drops diagnostics instead of stalling.
@@ -112,24 +142,41 @@ jobs:
               body = line[line.index('{') + 1:line.rindex('}')]
               return [x.strip() for x in body.split(';') if x.strip() and '$Experiment' not in x]
 
-          # Mode86 keeps Mode84's gameplay settings; asynchronous diagnostics is
-          # infrastructure common to all V3.16 modes, not an experiment variable.
+          # Mode86 keeps Mode84 gameplay settings. Common async diagnostics is
+          # infrastructure, not an experiment variable.
           assert assignments(lines[86]) == assignments(lines[84])
+
+          # Mode87 isolates the streamed head cache only.
           assert "$V316HeadCacheSize = '64'" in lines[87]
           assert '$V316BufferCacheMin' not in lines[87]
           assert '$V316BufferCacheMax' not in lines[87]
+          assert '$V316SfxPredecodeCacheSize' not in lines[87]
+          assert '$V316SfxPredecodeWorkers' not in lines[87]
+
+          # Mode88 is the balanced candidate: retention, no first-use predecode.
           assert "$V316HeadCacheSize = '64'" in lines[88]
           assert "$V316BufferCacheMin = '256'" in lines[88]
           assert "$V316BufferCacheMax = '384'" in lines[88]
+          assert '$V316SfxPredecodeCacheSize' not in lines[88]
+          assert '$V316SfxPredecodeWorkers' not in lines[88]
+
+          # Mode89 is aggressive and explicitly bounded.
           assert "$V316HeadCacheSize = '128'" in lines[89]
           assert "$V316BufferCacheMin = '512'" in lines[89]
           assert "$V316BufferCacheMax = '768'" in lines[89]
+          assert "$V316SfxPredecodeCacheSize = '384'" in lines[89]
+          assert "$V316SfxPredecodeWorkers = '1'" in lines[89]
+
           assert "$V316HeadCacheSize = '0'" in launcher
           assert "$V316BufferCacheMin = ''" in launcher
           assert "$V316BufferCacheMax = ''" in launcher
+          assert "$V316SfxPredecodeCacheSize = '0'" in launcher
+          assert "$V316SfxPredecodeWorkers = '0'" in launcher
           assert "Set-IniValue $SettingsPath 'Sound' 'head cache size' $V316HeadCacheSize" in launcher
           assert "Set-IniValue $SettingsPath 'Sound' 'buffer cache min' $V316BufferCacheMin" in launcher
           assert "Set-IniValue $SettingsPath 'Sound' 'buffer cache max' $V316BufferCacheMax" in launcher
+          assert "Set-IniValue $SettingsPath 'Sound' 'sfx predecode cache size' $V316SfxPredecodeCacheSize" in launcher
+          assert "Set-IniValue $SettingsPath 'Sound' 'sfx predecode workers' $V316SfxPredecodeWorkers" in launcher
 
           # Preserve promoted renderer/paging foundation.
           for token in ('mV313ChunkQualityMode', 'mV315PremergeStateCanonicalization',
