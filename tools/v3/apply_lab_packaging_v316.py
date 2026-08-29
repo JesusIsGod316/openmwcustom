@@ -37,6 +37,15 @@ exec(
     {"__file__": str(v316_sfx_predecode_fix), "__name__": "__main__"},
 )
 
+# The first ESM-backed SFX lookup otherwise builds the complete sound-id/resource
+# metadata maps on the gameplay thread. Modes88/89 frontload that immutable map
+# construction while the startup loading screen is still active.
+v316_sfx_metadata = Path(__file__).with_name("apply_v316_sfx_metadata_frontload.py")
+exec(
+    compile(v316_sfx_metadata.read_text(encoding="utf-8"), str(v316_sfx_metadata), "exec"),
+    {"__file__": str(v316_sfx_metadata), "__name__": "__main__"},
+)
+
 # Periodic ResourceSystem maintenance already runs off the gameplay thread, but
 # V3.15 evidence suggests its shared-queue CPU/memory contention can still show
 # up as a regular small frametime pulse. Balanced/aggressive modes move it to a
@@ -92,6 +101,16 @@ to 512/768 MB. These are system/OpenAL Soft memory budgets, not texture/geometry
 VRAM budgets. Mode87 deliberately leaves the user's existing buffer-cache limits
 untouched so it remains a clean streamed-head-cache isolation run.
 
+Loading-screen SFX metadata frontload
+-------------------------------------
+The stock SoundBufferPool lazily constructs its complete ESM sound-id/resource
+maps on the first sound-id load. In a large content setup that one-time allocation
+and insertion burst can therefore land on an ordinary gameplay frame. Modes88/89
+opt into a default-off V3.16 frontload that performs only this immutable metadata
+construction after content loading completes but before the startup loading screen
+is dismissed. It does not read/decode sound files and does not create OpenAL
+buffers. Modes86/87 leave the original lazy behavior untouched for clean control.
+
 Aggressive first-use SFX predecode
 ----------------------------------
 Mode89 additionally enables a 384 MB PCM predecode reservoir with one
@@ -122,20 +141,22 @@ V3.16 removes synchronous CSV writes and periodic flushes from diagnostic
 producer/gameplay threads. Each enabled CsvWriter queues complete rows into a
 bounded in-memory queue and a dedicated writer thread performs disk output.
 The queue is capped at 4096 rows; if diagnostic storage cannot keep up, V3.16
-drops diagnostic rows instead of blocking gameplay. The writer records the drop
-count at shutdown. This transport applies to all V3.16 modes so A/B measurement
-is fair and the lab itself is less likely to manufacture periodic frametime
-spikes. No writer thread exists for disabled diagnostic streams.
+drops diagnostic rows instead of blocking gameplay. The producer uses a nonblocking
+try-lock, so it drops a row rather than waiting behind the writer even on queue-lock
+contention. The writer records the drop count at shutdown. This transport applies
+to all V3.16 modes so A/B measurement is fair and the lab itself is less likely to
+manufacture periodic frametime spikes. No writer thread exists for disabled streams.
 
 Runtime matrix
 --------------
 86 = exact V3.15 Mode84 gameplay settings control, sound head cache 0 MB
 87 = Mode86 + 64 MB streamed-audio head cache; existing decoded-SFX cache unchanged
 88 = balanced V3.16 hitch candidate: Mode84 + audio head 64 MB + decoded SFX
-     cache 256/384 MB + dedicated idle resource maintenance + common async diagnostics
+     cache 256/384 MB + loading-screen SFX metadata frontload + dedicated idle
+     resource maintenance + common nonblocking async diagnostics
 89 = aggressive V3.16 hitch candidate: Mode84 + audio head 128 MB + decoded SFX
-     cache 512/768 MB + 384 MB/1-worker first-use SFX predecode + dedicated idle
-     resource maintenance + common async diagnostics
+     cache 512/768 MB + loading-screen SFX metadata frontload + 384 MB/1-worker
+     first-use SFX predecode + dedicated idle resource maintenance + common async diagnostics
 
 Development policy
 ------------------
@@ -176,11 +197,15 @@ for marker in (
     "sfx predecode cache size",
     "V316SfxPredecodeCacheSize",
     "getResourceNamesForPredecode",
+    "mV316SfxMetadataFrontload",
+    "v3.16 sfx metadata frontload",
+    "prepareSfxMetadata",
     "mV316IdleResourceSweep",
     "v3.16 idle resource sweep",
     "mV316ResourceSweepQueue",
     "sMaxQueuedLines",
     "v3_async_diagnostics_dropped_lines",
+    "try_to_lock",
 ):
     if marker not in patch_text and marker not in launcher_text:
         raise RuntimeError(f"V3.16 generated source snapshot missing marker: {marker}")
@@ -191,6 +216,8 @@ if "Asynchronous lab diagnostics" not in readme_text:
     raise RuntimeError("V3.16 asynchronous diagnostics README marker missing")
 if "Buffered SFX retention" not in readme_text:
     raise RuntimeError("V3.16 buffered SFX retention README marker missing")
+if "Loading-screen SFX metadata frontload" not in readme_text:
+    raise RuntimeError("V3.16 SFX metadata frontload README marker missing")
 if "Aggressive first-use SFX predecode" not in readme_text:
     raise RuntimeError("V3.16 SFX predecode README marker missing")
 if "Idle-priority resource maintenance" not in readme_text:
