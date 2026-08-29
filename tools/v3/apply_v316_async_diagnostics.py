@@ -217,3 +217,13 @@ replace_exact(
 )
 
 print("V3.16 asynchronous diagnostic CSV transport applied")
+
+# This is deliberately last in the V3.16 source stack. The audio-head and SFX
+# predecode implementations are generated as new files, and plain `git diff`
+# would otherwise omit untracked files from the authoritative source snapshot.
+# Mark/validate those files before apply_lab_packaging_v316 captures the diff.
+snapshot_qc = Path(__file__).with_name("apply_v316_generated_file_qc.py")
+exec(
+    compile(snapshot_qc.read_text(encoding="utf-8"), str(snapshot_qc), "exec"),
+    {"__file__": str(snapshot_qc), "__name__": "__main__"},
+)
