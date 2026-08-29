@@ -16,6 +16,8 @@ exec(
 for layer_name in (
     "apply_v318_render_scale.py",
     "apply_v318_runtime_modes.py",
+    "apply_v318_nis.py",
+    "apply_v318_nis_modes.py",
 ):
     layer = HERE / layer_name
     exec(
@@ -27,17 +29,16 @@ readme_path = ROOT / "V3-LAB-README.txt"
 with readme_path.open("a", encoding="utf-8", newline="\n") as readme:
     readme.write(r'''
 
-V3.18 renderer efficiency — internal render resolution P0
-=========================================================
+V3.18 renderer efficiency — internal resolution + NVIDIA Image Scaling
+======================================================================
 
 Purpose
 -------
 V3.18 begins the GPU-efficiency phase without disturbing the validated V3.17
-runtime/audio work. P0 separates native display/UI resolution from the internal
-3D scene resolution and adds a single bilinear presentation stage. This measures
-how much of the current GPU/PostFX cost is resolution-dependent before NIS is
-introduced, and establishes the provider-neutral insertion point needed by NIS,
-FSR-style spatial scalers, and later DLSS Super Resolution work.
+runtime/audio work. The first layer separates native display/UI resolution from
+the internal 3D scene resolution and provides a single bilinear presentation
+stage. The second layer replaces only that final presentation stage with NVIDIA
+Image Scaling (NIS) when selected.
 
 Resolution architecture
 -----------------------
@@ -46,30 +47,42 @@ also stays at native output resolution. Scene color/depth/normals/distortion and
 PostFX render targets use Video/render scale. PingPongCull pushes the internal
 viewport only while the 3D scene is rendered. PingPongCanvas then executes the
 entire PostFX chain at internal resolution and performs exactly one final native-
-resolution bilinear presentation draw.
+resolution presentation before the HUD/UI.
 
-P0 safety boundaries
---------------------
-Stereo/multiview remains native-resolution in P0. NIS is not silently emulated:
-Video/upscaler accepts only "bilinear" until the dedicated OpenGL compute layer is
-present and validated. Existing PBR/material/shadow/ObjectPaging behavior is not
-changed by this layer. Scale is clamped to 0.5..1.0.
+NIS provider
+------------
+NIS is pinned to NVIDIA Image Scaling SDK 1.0.3 source commit
+35e13ba316c98eeecf16f37eae70ce88019911f6. The NVIDIA NVScaler algorithm and
+coefficient tables are retained. NVIDIA's GLSL example uses Vulkan-style separate
+texture/sampler objects; the V3.18 wrapper adapts only those texture-access macros
+to ordinary OpenGL combined sampler2D objects and dispatches through OpenGL 4.3
+compute/image-load-store using OSG GLExtensions.
 
-P0 causal modes
----------------
-95 = stock-Lua V3.17 control + 100% render scale.
-96 = identical foundation + 85% internal scale + bilinear upscale.
-97 = identical foundation + 77% internal scale + bilinear upscale.
-98 = identical foundation + 66.7% internal scale + bilinear upscale.
+NIS runs after the low-resolution PostFX chain and before native-resolution UI.
+It writes a dedicated RGBA8 native-resolution output texture, then the existing
+fullscreen presentation path samples that texture. A shader/extension/config
+failure logs a warning and explicitly falls back to bilinear. NIS is never silently
+emulated. Current implementation is FP32, 32x24 output blocks, 128 threads/group,
+with adjustable Video/upscaler sharpness. Stereo/multiview remains native-only in
+this first V3.18 implementation.
 
-Do not run all four automatically. First useful causal comparison is 95 -> 97.
-If the GPU/PostFX reduction is meaningful and visual behavior is correct, the next
-V3.18 layer replaces the final bilinear resolve with NVIDIA Image Scaling while
-keeping these exact resolution and native-UI semantics.
+Causal modes
+------------
+95  = stock-Lua V3.17 control + 100% render scale.
+96  = 85% internal scale + bilinear upscale.
+97  = 77% internal scale + bilinear upscale.
+98  = 66.7% internal scale + bilinear upscale.
+99  = 85% internal scale + NIS, sharpness 0.20.
+100 = 77% internal scale + NIS, sharpness 0.20. FIRST NIS TEST.
+101 = 66.7% internal scale + NIS, sharpness 0.20.
+
+Do not run the whole matrix automatically. The first useful rendering comparison
+is 95 -> 97 to measure the raw resolution-dependent GPU ceiling, followed by
+97 -> 100 to isolate NIS cost/quality at identical 77% internal resolution.
 ''')
 
-# Final snapshot must represent the source that Windows will compile, not the
-# earlier V3.17 intermediate patch.
+# Final snapshot must represent the source that Windows will compile, not an
+# intermediate V3.17/P0 patch.
 subprocess.run(["git", "diff", "--check"], cwd=ROOT, check=True)
 patch = subprocess.run(
     ["git", "diff", "--no-ext-diff", "--binary"], cwd=ROOT, check=True, stdout=subprocess.PIPE
@@ -92,6 +105,12 @@ for marker in (
     'const bool scaledOutput',
     'Present exactly once at native resolution',
     'openmw-custom-v3.18-render-scale-p0',
+    'class NisScaler',
+    'NVScalerUpdateConfig',
+    'glDispatchCompute',
+    'glMemoryBarrier',
+    'mNisScaler->dispatch',
+    '"bilinear", "nis"',
 ):
     if marker not in patch_text:
         raise RuntimeError(f"V3.18 generated source snapshot missing marker: {marker}")
@@ -101,8 +120,12 @@ for marker in (
     "v318-bilinear-85",
     "v318-bilinear-77",
     "v318-bilinear-667",
-    "Enter 1 through 98",
+    "v318-nis-85",
+    "v318-nis-77",
+    "v318-nis-667",
+    "Enter 1 through 101",
     "v318_render_scale=$V318RenderScale",
+    "v318_upscaler_sharpness=$V318UpscalerSharpness",
 ):
     if marker not in launcher_text:
         raise RuntimeError(f"V3.18 generated launcher missing marker: {marker}")
@@ -110,23 +133,48 @@ for marker in (
 for marker in (
     "V3.18 renderer efficiency",
     "Resolution architecture",
-    "P0 safety boundaries",
-    "P0 causal modes",
+    "NIS provider",
+    "35e13ba316c98eeecf16f37eae70ce88019911f6",
+    "97 -> 100",
 ):
     if marker not in readme_text:
         raise RuntimeError(f"V3.18 README marker missing: {marker}")
 
-# Fail closed against the two most dangerous regressions: scaling the HUD itself,
-# or allowing NIS selection before an actual NIS path exists.
+provenance = (ROOT / "V3.18-NIS-PROVENANCE.txt").read_text(encoding="utf-8")
+for marker in (
+    "NVIDIA Image Scaling SDK 1.0.3",
+    "source_commit=35e13ba316c98eeecf16f37eae70ce88019911f6",
+    "NIS_Scaler.h_git_blob=02f645c2c01b0235d340d25c6cfc913000f7cc1b",
+    "NIS_Config.h_git_blob=b8982217d7c4ad99a4725af54336d7a5b24de443",
+    "fallback=explicit bilinear",
+):
+    if marker not in provenance:
+        raise RuntimeError(f"V3.18 NIS provenance missing marker: {marker}")
+
+# Fail closed against the dangerous integration regressions: scaling the HUD,
+# applying NIS before the low-res PostFX chain, losing bilinear fallback, or
+# allowing an unpinned/unknown NIS source.
 post_hpp = (ROOT / "apps/openmw/mwrender/postprocessor.hpp").read_text(encoding="utf-8")
 post_cpp = (ROOT / "apps/openmw/mwrender/postprocessor.cpp").read_text(encoding="utf-8")
 video = (ROOT / "components/settings/categories/video.hpp").read_text(encoding="utf-8")
 canvas = (ROOT / "apps/openmw/mwrender/pingpongcanvas.cpp").read_text(encoding="utf-8")
+nis_cpp = (ROOT / "apps/openmw/mwrender/nisscaler.cpp").read_text(encoding="utf-8")
+nis_shader = (ROOT / "apps/openmw/mwrender/v318_nis_shader.hpp").read_text(encoding="utf-8")
 assert 'mHUDCamera->resize(mWidth, mHeight);' in post_cpp
 assert 'mViewer->getCamera()->resize(mWidth, mHeight);' in post_cpp
-assert 'makeEnumSanitizerString({ "bilinear" })' in video
+assert 'makeEnumSanitizerString({ "bilinear", "nis" })' in video
 assert 'pass.mResolve && index == filtered.back() && !scaledOutput' in canvas
-assert 'resolveViewport->apply(state);' in canvas
+assert 'if (scaledOutput)' in canvas
+assert 'mNisScaler->dispatch' in canvas
+assert 'presentationTexture = nisTexture' in canvas
+assert 'state.applyTextureAttribute(0, presentationTexture);' in canvas
 assert 'outputWidth() const { return mWidth; }' in post_hpp
+assert 'GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT' in nis_cpp
+assert 'falling back to bilinear upscale' in nis_cpp
+assert '#version 430 core' in nis_shader
+assert '#define NIS_USE_HALF_PRECISION 0' in nis_shader
+assert '#define NIS_THREAD_GROUP_SIZE 128' in nis_shader
+assert 'NVScaler(gl_WorkGroupID.xy, gl_LocalInvocationID.x);' in nis_shader
+assert 'sampler2D(x, samplerLinearClamp)' not in nis_shader
 
-print("V3.18 P0 generated-source policy invariants passed")
+print("V3.18 internal-resolution + pinned NIS generated-source policy invariants passed")
