@@ -1,0 +1,156 @@
+name: V3.18 renderer efficiency and internal scaling build/QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - full
+  push:
+    branches:
+      - v3.18-render-scaling-nis
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Show exact source revision
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git status --short
+
+      - name: Compile-check all V3 Python patch tools
+        shell: bash
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Apply complete V3.18 generated source stack
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness_v318.py 2>&1 | tee v318-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Upload V3.18 apply log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v318-apply-log-${{ github.sha }}
+          path: v318-apply.log
+          if-no-files-found: error
+
+      - name: Validate generated V3.18 render-scale markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          cat V3-applied-source-stat.txt
+          grep -n 'mRenderScale' components/settings/categories/video.hpp
+          grep -n 'render scale = 1.0' files/settings-default.cfg
+          grep -n 'renderScalingActive' apps/openmw/mwrender/postprocessor.hpp
+          grep -n 'Settings::video().mRenderScale' apps/openmw/mwrender/postprocessor.cpp
+          grep -n 'V3.18 uses this state' apps/openmw/mwrender/pingpongcull.cpp
+          grep -n 'const bool scaledOutput' apps/openmw/mwrender/pingpongcanvas.cpp
+          grep -n 'Present exactly once at native resolution' apps/openmw/mwrender/pingpongcanvas.cpp
+          grep -n '95 = V3.18 native-resolution control' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'v318-bilinear-77' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'Enter 1 through 98' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'V3.18 renderer efficiency' V3-LAB-README.txt
+          grep -n 'openmw-custom-v3.18-render-scale-p0' apps/openmw/engine.cpp
+
+      - name: Validate V3.18 P0 policy invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          video = Path('components/settings/categories/video.hpp').read_text(encoding='utf-8')
+          post_h = Path('apps/openmw/mwrender/postprocessor.hpp').read_text(encoding='utf-8')
+          post = Path('apps/openmw/mwrender/postprocessor.cpp').read_text(encoding='utf-8')
+          cull = Path('apps/openmw/mwrender/pingpongcull.cpp').read_text(encoding='utf-8')
+          canvas = Path('apps/openmw/mwrender/pingpongcanvas.cpp').read_text(encoding='utf-8')
+          launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
+          readme = Path('V3-LAB-README.txt').read_text(encoding='utf-8')
+
+          # Render resolution is independently bounded. P0 cannot select an
+          # unimplemented provider.
+          assert 'makeClampSanitizerFloat(0.5f, 1.0f)' in video
+          assert 'makeEnumSanitizerString({ "bilinear" })' in video
+          assert '"Video", "upscaler sharpness"' in video
+
+          # Native output/HUD is preserved while renderWidth/Height shrink only
+          # the 3D/PostFX target family.
+          assert 'outputWidth() const { return mWidth; }' in post_h
+          assert 'mHUDCamera->resize(mWidth, mHeight);' in post
+          assert 'mViewer->getCamera()->resize(mWidth, mHeight);' in post
+          assert 'Settings::video().mRenderScale' in post
+          assert 'setResolution(' in post and 'renderWidth()' in post and 'renderHeight()' in post
+          assert 'mViewportStateset(new osg::StateSet())' in cull
+          assert 'mPostProcessor->renderWidth()' in cull
+          assert 'mPostProcessor->renderHeight()' in cull
+
+          # Entire PostFX chain stays internal; only one final presentation pass
+          # reaches the native viewport when scaling is active.
+          assert 'const bool scaledOutput' in canvas
+          assert 'pass.mResolve && index == filtered.back() && !scaledOutput' in canvas
+          assert 'if (scaledOutput)' in canvas
+          assert 'Present exactly once at native resolution' in canvas
+          assert 'state.applyTextureAttribute(0, finalTexture);' in canvas
+
+          # Causal matrix is stock-Lua V3.17 control + only render scale changes.
+          for token in ('v318-native-control', 'v318-bilinear-85', 'v318-bilinear-77',
+                        'v318-bilinear-667', 'Enter 1 through 98'):
+              assert token in launcher, token
+          assert "Set-IniValue $SettingsPath 'Video' 'render scale' $V318RenderScale" in launcher
+          assert 'V3.18 renderer efficiency' in readme
+          assert 'NIS is not silently emulated' in readme
+
+          print('V3.18 P0 policy invariants passed.')
+          PY
+
+      - name: Parse-check generated PowerShell launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Host 'V3_Lab.ps1 parse check passed.'
+
+      - name: Upload exact generated V3.18 patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: v318-preflight-applied-source-${{ github.sha }}
+          path: |
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+            V3.18-RENDER-LAYER.txt
+          if-no-files-found: error
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: "2022"
+      tests: false
