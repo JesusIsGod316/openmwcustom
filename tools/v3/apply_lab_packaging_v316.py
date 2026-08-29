@@ -14,6 +14,15 @@ exec(
     {"__file__": str(v316), "__name__": "__main__"},
 )
 
+# V3.15 lab evidence showed synchronous CSV output can contaminate the same
+# frametime tails we are trying to measure. Move diagnostic file I/O off producer
+# threads before taking the generated-source snapshot.
+v316_async = Path(__file__).with_name("apply_v316_async_diagnostics.py")
+exec(
+    compile(v316_async.read_text(encoding="utf-8"), str(v316_async), "exec"),
+    {"__file__": str(v316_async), "__name__": "__main__"},
+)
+
 readme_path = Path(__file__).resolve().parents[2] / "V3-LAB-README.txt"
 with readme_path.open("a", encoding="utf-8", newline="\n") as readme:
     readme.write(r'''
@@ -25,12 +34,12 @@ Primary objective
 -----------------
 V3.16 freezes the promoted V3.15 Mode84 renderer/paging architecture and attacks
 ordinary gameplay frametime spikes that occur while standing still, traversing,
-or approaching actors. V3.15 logs showed repeated Dynamic Sounds / streamed
-sound initialization stalls plus actor-local Lua bursts, smaller periodic resource
-cleanup pulses, and a separate render-traversal synchronization lane.
+or approaching actors. V3.15 logs showed repeated sound/script stalls plus
+actor-local Lua bursts, smaller periodic resource cleanup pulses, and a separate
+render-traversal synchronization lane.
 
-First integrated mechanism
---------------------------
+First integrated engine mechanism
+---------------------------------
 V3.16 backports official OpenMW upstream commit
 9ec49cfb4709cbfd8f14e97f5b9a558b71b8184f (sound-file head cache). Streamed
 music/voice initialization can reuse the exact prefix/suffix bytes FFmpeg needed
@@ -39,9 +48,27 @@ configured through [Sound] 'head cache size'. V3.16 keeps the engine default at
 0 MB so the control remains exact; experiment modes explicitly select 64/128 MB.
 The upstream per-file safety ceiling remains 256 KiB.
 
+Important scope note
+--------------------
+OpenMW Lua ambient playSound/playSoundFile calls use buffered SFX, not the
+streamed decoder path. Therefore the head cache is useful for music/voice stream
+starts but is not treated as the complete Dynamic Sounds fix. V3.16 separately
+audits buffered SFX loading/decoding for safe background prewarm/retention.
+
+Asynchronous lab diagnostics
+----------------------------
+V3.16 removes synchronous CSV writes and periodic flushes from diagnostic
+producer/gameplay threads. Each enabled CsvWriter queues complete rows into a
+bounded in-memory queue and a dedicated writer thread performs disk output.
+The queue is capped at 4096 rows; if diagnostic storage cannot keep up, V3.16
+drops diagnostic rows instead of blocking gameplay. The writer records the drop
+count at shutdown. This transport applies to all V3.16 modes so A/B measurement
+is fair and the lab itself is less likely to manufacture periodic frametime
+spikes. No writer thread exists for disabled diagnostic streams.
+
 Runtime matrix
 --------------
-86 = exact V3.15 Mode84 control, sound head cache 0 MB
+86 = exact V3.15 Mode84 gameplay settings control, sound head cache 0 MB
 87 = Mode86 + 64 MB streamed-audio head cache
 88 = balanced V3.16 hitch candidate, currently Mode84 + 64 MB audio cache and
      reserved for additional validated hitch suppressors in this build line
@@ -51,9 +78,9 @@ Runtime matrix
 Development policy
 ------------------
 Do not weaken Lua/script semantics to hide expensive mods. Do not defer required
-scene construction or V3.13 strong-wins cache installation. Any resource cleanup
-or render-thread changes added later in V3.16 must be bounded and independently
-switchable. Diagnostic I/O must not be allowed to become a gameplay-thread hitch
+scene construction or V3.13 strong-wins cache installation. Any resource cleanup,
+buffered-SFX, or render-thread changes added later in V3.16 must be bounded and
+independently switchable. Diagnostic I/O must not become a gameplay-thread hitch
 source.
 ''')
 
@@ -80,11 +107,15 @@ for marker in (
     "v316-audio64",
     "v316-balanced-hitch",
     "v316-aggressive-hitch",
+    "sMaxQueuedLines",
+    "v3_async_diagnostics_dropped_lines",
 ):
     if marker not in patch_text and marker not in launcher_text:
         raise RuntimeError(f"V3.16 generated source snapshot missing marker: {marker}")
 
 if "V3.16 general-play hitch suppression" not in readme_text:
     raise RuntimeError("V3.16 README identity marker missing")
+if "Asynchronous lab diagnostics" not in readme_text:
+    raise RuntimeError("V3.16 asynchronous diagnostics README marker missing")
 
 print("V3.16 exact generated-source snapshot refreshed after complete V3.16 layer.")
