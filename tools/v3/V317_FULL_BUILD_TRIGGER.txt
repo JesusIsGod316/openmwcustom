@@ -1,0 +1,15 @@
+V3.17 full Windows build trigger
+
+Validated preflight run: 33264405915
+Validated source head: 70fcba5332143ed680bc1479ebdca84bb2e23057
+Validated preflight artifact: v317-preflight-applied-source-70fcba5332143ed680bc1479ebdca84bb2e23057
+Artifact digest: sha256:d1939b97e1964409598cceb5e090b3d72e0518d8d08a6f408fa2942d82b5871a
+
+Substantive tranche included before full build:
+- V3.16 balanced hitch/audio foundation and async diagnostics.
+- V3.17 one-hub bounded diagnostic writer; no gameplay-cadence flushes.
+- V3.17 conservative loaded-handler event fast paths; unloaded containers remain may-have-handlers.
+- V3.17 bounded thread-local Lua sound-ID/path conversion cache.
+- Modes 90-94 runtime attribution matrix with pinned sandboxed Rubic0n source option.
+
+This commit intentionally changes only the full-build trigger record. The source that passed preflight is the immediate parent.
