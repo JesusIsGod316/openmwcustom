@@ -1,0 +1,3 @@
+V3.17 work started from validated V3.16 full-build source f31ea980fbf0b03278fc427ccb9c987fc70dde00.
+Branch: v3.17-lua-runtime-hitch-consolidation
+First implementation tranche: deterministic Rubic0n integration scaffolding + V3.17 mode/QC plumbing, followed by engine-side Lua/materialization and diagnostic writer consolidation.
