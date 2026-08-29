@@ -1,0 +1,4 @@
+V3.18 full Windows build trigger.
+Validated source/QC parent: 5a1c57b09a0e4807b67c8747a7439a2d05dd633c
+Contains internal render scaling + pinned NVIDIA NIS OpenGL compute integration.
+No runtime behavior is introduced by this trigger file.
