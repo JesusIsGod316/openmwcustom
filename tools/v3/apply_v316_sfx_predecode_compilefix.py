@@ -53,28 +53,30 @@ if erase_count != 6:
     )
 cpp_text = cpp_text.replace(old_erase, new_erase)
 
-# DecoderPtr is a SoundManager-private alias and FFmpegDecoder only has the
-# one-argument VFS constructor. Hold the concrete decoder through the public
-# SoundDecoder interface so its virtual open/getInfo/readAll methods remain
-# accessible while dispatching to FFmpegDecoder.
+# DecoderPtr is a SoundManager-private alias. At this point in the generated
+# V3.16 stack the upstream head-cache backport has already changed FFmpegDecoder
+# to the two-argument (VFS, HeadCache*) constructor. SFX predecode deliberately
+# passes nullptr so speculative buffered-SFX decoding does not pollute the
+# streamed music/voice head cache.
 old_decoder = """            DecoderPtr decoder = std::make_shared<FFmpegDecoder>(&mVfs, nullptr);\n            decoder->open(Misc::ResourceHelpers::correctSoundPath(name, *decoder->mResourceMgr));\n"""
-new_decoder = """            std::unique_ptr<SoundDecoder> decoder = std::make_unique<FFmpegDecoder>(&mVfs);\n            decoder->open(Misc::ResourceHelpers::correctSoundPath(name, mVfs));\n"""
+new_decoder = """            std::unique_ptr<SoundDecoder> decoder = std::make_unique<FFmpegDecoder>(&mVfs, nullptr);\n            decoder->open(Misc::ResourceHelpers::correctSoundPath(name, mVfs));\n"""
 if cpp_text.count(old_decoder) != 1:
     raise RuntimeError(
         f"V3.16 SFX-predecode decoder API fix expected one match, found {cpp_text.count(old_decoder)}"
     )
 cpp_text = cpp_text.replace(old_decoder, new_decoder, 1)
 
-# Fail closed on the exact API mistakes that caused the Windows compiler failure.
+# Fail closed on the exact API mistakes that caused the first Windows compiler
+# failure and on accidentally regressing to the pre-head-cache one-arg ctor.
 for forbidden in (
     "mQueued.erase(name);",
     "DecoderPtr decoder = std::make_shared<FFmpegDecoder>",
-    "FFmpegDecoder>(&mVfs, nullptr)",
+    "std::make_unique<FFmpegDecoder>(&mVfs);",
 ):
     if forbidden in cpp_text:
         raise RuntimeError(f"V3.16 SFX-predecode compile fix left forbidden source pattern: {forbidden}")
 for required in (
-    "std::unique_ptr<SoundDecoder> decoder = std::make_unique<FFmpegDecoder>(&mVfs);",
+    "std::unique_ptr<SoundDecoder> decoder = std::make_unique<FFmpegDecoder>(&mVfs, nullptr);",
     "decoder->open(Misc::ResourceHelpers::correctSoundPath(name, mVfs));",
     "mQueued.erase(queuedIt);",
 ):
