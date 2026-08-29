@@ -16,6 +16,14 @@ exec(
     {"__file__": str(v317_diag), "__name__": "__main__"},
 )
 
+# Add the full V3.17 attribution matrix only after all V3.16 launcher layers have
+# settled so Mode90 can copy the final Mode88 body and Mode94 the final Mode89 body.
+v317_modes = Path(__file__).with_name("apply_v317_runtime_modes.py")
+exec(
+    compile(v317_modes.read_text(encoding="utf-8"), str(v317_modes), "exec"),
+    {"__file__": str(v317_modes), "__name__": "__main__"},
+)
+
 readme_path = Path(__file__).resolve().parents[2] / "V3-LAB-README.txt"
 with readme_path.open("a", encoding="utf-8", newline="\n") as readme:
     readme.write(r'''
@@ -26,9 +34,9 @@ V3.17 Lua/runtime hitch consolidation
 Primary objective
 -----------------
 V3.17 keeps the V3.16 balanced hitch architecture as its gameplay foundation and
-attacks recurring Lua/runtime/event tails. The planned runtime matrix separates a
-stock-LuaJIT control, Rubic0n runtime attribution, engine-side Lua/materialization
-work, a combined candidate, and an aggressive SFX-predecode variant.
+attacks recurring Lua/runtime/event tails. The runtime matrix separates a stock-
+LuaJIT control, Rubic0n runtime attribution, engine-side Lua/materialization work,
+a combined candidate, and an aggressive SFX-predecode variant.
 
 Consolidated diagnostic writer
 ------------------------------
@@ -40,6 +48,19 @@ waiting. File open/header work is also queued to the writer so enabled diagnosti
 do not open files on a gameplay thread. There are no periodic CSV flushes during
 ordinary gameplay; streams drain and flush once at orderly shutdown. The shared
 queue is bounded at 16384 items and dropped-row accounting remains per stream.
+
+Runtime attribution matrix
+--------------------------
+90 = exact final V3.16 Mode88 gameplay settings + stock packaged LuaJIT.
+91 = Mode90 + pinned sandboxed Rubic0n runtime only.
+92 = Mode90 + V3.17 engine-side Lua/materialization optimizations, stock LuaJIT.
+93 = Mode90 + Rubic0n + V3.17 engine-side Lua/materialization optimizations.
+94 = Mode93 but inherits V3.16 Mode89 aggressive SFX retention/predecode budgets.
+
+The launcher selects lua51.dll before OpenMW starts and restores the staged stock
+runtime after the process exits. Direct/non-lab launches therefore stay stock by
+default. Every profile records the selected DLL SHA256 and the packaged runtime
+identity manifest.
 
 Runtime safety policy
 ---------------------
@@ -61,6 +82,7 @@ stat = subprocess.run(
 (ROOT / "V3-applied-source-stat.txt").write_text(stat, encoding="utf-8", newline="\n")
 
 patch_text = patch.decode("utf-8", errors="replace")
+launcher_text = (ROOT / "tools/v3/launchers/V3_Lab.ps1").read_text(encoding="utf-8")
 readme_text = readme_path.read_text(encoding="utf-8")
 for marker in (
     "class DiagnosticWriterHub",
@@ -70,6 +92,19 @@ for marker in (
 ):
     if marker not in patch_text:
         raise RuntimeError(f"V3.17 generated source snapshot missing marker: {marker}")
+
+for marker in (
+    "90 = V3.17 control",
+    "v317-rubicon-only",
+    "v317-engine-lua-only",
+    "v317-combined-balanced",
+    "v317-combined-aggressive-sfx",
+    "OPENMW_V317_LUA_OPT",
+    "v317-runtime",
+    "Enter 1 through 94",
+):
+    if marker not in launcher_text:
+        raise RuntimeError(f"V3.17 generated launcher missing marker: {marker}")
 
 for forbidden in (
     "linesSinceFlush >= 240",
@@ -82,5 +117,7 @@ if "V3.17 Lua/runtime hitch consolidation" not in readme_text:
     raise RuntimeError("V3.17 README identity marker missing")
 if "Consolidated diagnostic writer" not in readme_text:
     raise RuntimeError("V3.17 diagnostics README marker missing")
+if "Runtime attribution matrix" not in readme_text:
+    raise RuntimeError("V3.17 runtime matrix README marker missing")
 
 print("V3.17 generated-source snapshot refreshed after V3.17 additive layers.")
