@@ -1,6 +1,10 @@
-V3.18 replacement full Windows build trigger.
-Corrected generated-source/QC parent: 02c8cb3bed72a960f0b406c53d7cc8525add8522
+V3.18 replacement full Windows build trigger after second MSVC compile-fix pass.
+Corrected generated-source/QC parent: 4df412a5636635011e01f41e90d9522f84c2a728
 Contains internal render scaling + pinned NVIDIA NIS OpenGL compute integration.
-Includes the out-of-line NisScaler destructor completeness fix for osg::BindImageTexture.
-Do not use failed full-build run 33272682913.
+Includes all known Windows compile corrections:
+- out-of-line NisScaler destructor for osg::BindImageTexture completeness;
+- NVIDIA compute shader split into <=12 KiB MSVC-safe raw-string chunks and reconstructed once at runtime;
+- OpenSceneGraph-compatible GL_RGBA32F_ARB coefficient texture internal-format token.
+Strict preflight run 33274068101 passed all generated-source, policy, GLSL, launcher, and compile-regression guards.
+Do not use failed full-build runs 33272682913 or 33273421094.
 No runtime behavior is introduced by this trigger file.
