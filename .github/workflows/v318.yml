@@ -153,6 +153,27 @@ jobs:
           print('V3.18 renderer/NIS policy invariants passed.')
           PY
 
+      - name: Offline-compile generated NIS GLSL compute shader
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq glslang-tools
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('apps/openmw/mwrender/v318_nis_shader.hpp').read_text(encoding='utf-8')
+          begin_token = 'R"V318NIS('
+          end_token = ')V318NIS";'
+          begin = source.index(begin_token) + len(begin_token)
+          end = source.index(end_token, begin)
+          shader = source[begin:end]
+          out = Path('v318_nis.comp')
+          out.write_text(shader, encoding='utf-8', newline='\n')
+          print(f'extracted {len(shader)} bytes to {out}')
+          PY
+          glslangValidator -S comp v318_nis.comp
+
       - name: Parse-check generated PowerShell launcher
         shell: pwsh
         run: |
