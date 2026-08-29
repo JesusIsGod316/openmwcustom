@@ -86,15 +86,16 @@ text = text.replace(
     1,
 )
 
-# Add runtime identity to every test manifest. The actual DLL hash is calculated
-# after selecting the staged runtime and appended immediately before launch.
-manifest_anchor = '    "openmw_exe_sha256=$exeHash",\n    "game_dir=$GameDir"'
+# Add runtime identity to every test manifest. Later V3 layers can legitimately
+# add their own fields between the executable hash and game_dir, so anchor only
+# on the unique executable-hash row rather than assuming adjacency.
+manifest_anchor = '    "openmw_exe_sha256=$exeHash",'
 if text.count(manifest_anchor) != 1:
-    raise RuntimeError("V3.17 TEST_MODE manifest anchor mismatch")
+    raise RuntimeError(f"V3.17 TEST_MODE manifest anchor mismatch: found {text.count(manifest_anchor)} executable-hash row(s)")
 text = text.replace(
     manifest_anchor,
-    '    "openmw_exe_sha256=$exeHash",\n    "v317_lua_runtime=$V317LuaRuntime",\n'
-    '    "v317_engine_lua_optimizations=$V317EngineLuaOptimizations",\n    "game_dir=$GameDir"',
+    manifest_anchor + '\n    "v317_lua_runtime=$V317LuaRuntime",\n'
+    '    "v317_engine_lua_optimizations=$V317EngineLuaOptimizations",',
     1,
 )
 
