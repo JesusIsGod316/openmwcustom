@@ -63,7 +63,18 @@ jobs:
           grep -n "mQueue.push_back({ channel, {}, true })" components/debug/v3diagnostics.hpp
           grep -n "std::try_to_lock" components/debug/v3diagnostics.hpp
           grep -n "No gameplay-cadence flushes" components/debug/v3diagnostics.hpp
+          grep -n "mightHaveEngineHandlers" components/lua/scriptscontainer.hpp
+          grep -n "hasOnUseItemHandlers" apps/openmw/mwlua/globalscripts.hpp
+          grep -n "hasOnConsumeHandlers" apps/openmw/mwlua/localscripts.hpp
+          grep -n "v317EngineFastPathEnabled" apps/openmw/mwlua/engineevents.cpp
+          grep -n "class V317SoundBindingCache" apps/openmw/mwlua/soundbindings.cpp
+          grep -n "sMaxEntries = 4096" apps/openmw/mwlua/soundbindings.cpp
+          grep -n "sMaxKeyBytes = 512" apps/openmw/mwlua/soundbindings.cpp
+          grep -n "v317SoundBindingCache().soundId(soundId)" apps/openmw/mwlua/soundbindings.cpp
+          grep -n "v317SoundBindingCache().path(fileName)" apps/openmw/mwlua/soundbindings.cpp
           grep -n "V3.17 Lua/runtime hitch consolidation" V3-LAB-README.txt
+          grep -n "Engine Lua/event fast paths" V3-LAB-README.txt
+          grep -n "Lua -> sound conversion cache" V3-LAB-README.txt
           grep -n "90 = V3.17 control" tools/v3/launchers/V3_Lab.ps1
           grep -n "v317-rubicon-only" tools/v3/launchers/V3_Lab.ps1
           grep -n "v317-combined-balanced" tools/v3/launchers/V3_Lab.ps1
@@ -84,6 +95,11 @@ jobs:
           readme = Path('V3-LAB-README.txt').read_text(encoding='utf-8')
           launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
           cells = Path('components/settings/categories/cells.hpp').read_text(encoding='utf-8')
+          scripts = Path('components/lua/scriptscontainer.hpp').read_text(encoding='utf-8')
+          globalscripts = Path('apps/openmw/mwlua/globalscripts.hpp').read_text(encoding='utf-8')
+          localscripts = Path('apps/openmw/mwlua/localscripts.hpp').read_text(encoding='utf-8')
+          engineevents = Path('apps/openmw/mwlua/engineevents.cpp').read_text(encoding='utf-8')
+          soundbindings = Path('apps/openmw/mwlua/soundbindings.cpp').read_text(encoding='utf-8')
           changed = set(__import__('subprocess').check_output(['git','diff','--name-only'], text=True).splitlines())
 
           # One shared writer hub for every V3 CsvWriter. Producer enqueue remains
@@ -102,6 +118,36 @@ jobs:
           assert 'sMaxQueuedLines = 4096' not in diag
           assert diag.count('mStream.flush();') == 1
           assert '# v3_async_diagnostics_dropped_lines=' in diag
+
+          # Engine-side fast paths are opt-in for Modes92-94 only. Crucially, an
+          # unloaded container is never treated as a known-negative handler set;
+          # materialization can legally change top-level handler registration.
+          assert 'bool mightHaveEngineHandlers(const EngineHandlerList& handlers) const' in scripts
+          assert 'return !handlers.mList.empty() || std::holds_alternative<UnloadedData>(mData);' in scripts
+          for token in ('hasOnActivateHandlers', 'hasOnUseItemHandlers', 'hasOnDroppedHandlers',
+                        'hasOnPlacedHandlers', 'hasOnNewExteriorHandlers'):
+              assert token in globalscripts, token
+          for token in ('hasOnConsumeHandlers', 'hasOnActivatedHandlers'):
+              assert token in localscripts, token
+          assert 'v317EngineFastPathEnabled()' in engineevents
+          assert 'std::getenv("OPENMW_V317_LUA_OPT") != nullptr' in engineevents
+          assert 'if (v317EngineFastPathEnabled() && !mGlobalScripts.hasOnUseItemHandlers())' in engineevents
+          assert 'if (Settings::lua().mLuaDebug)' in engineevents
+
+          # Lua->sound optimization caches only immutable conversion results. It is
+          # bounded, per-thread, and uses the same V3.17 opt-in gate; it never owns
+          # a decoder, SoundBuffer, OpenAL handle, or wait/predecode path.
+          assert 'class V317SoundBindingCache' in soundbindings
+          assert 'thread_local V317SoundBindingCache cache;' in soundbindings
+          assert 'sMaxEntries = 4096' in soundbindings
+          assert 'sMaxKeyBytes = 512' in soundbindings
+          assert 'std::getenv("OPENMW_V317_LUA_OPT") != nullptr' in soundbindings
+          assert soundbindings.count('v317SoundBindingCache().soundId(soundId)') == 6
+          assert soundbindings.count('v317SoundBindingCache().path(fileName)') == 9
+          for forbidden in ('SoundBuffer* m', 'DecoderPtr m', 'wait(', 'condition_variable'):
+              cache_begin = soundbindings.index('class V317SoundBindingCache')
+              cache_end = soundbindings.index('MWWorld::Ptr getMutablePtrOrThrow', cache_begin)
+              assert forbidden not in soundbindings[cache_begin:cache_end], forbidden
 
           # Runtime selection is deterministic and restores stock after each lab
           # run. Current OpenMW content.lua stays untouched by V3.17.
@@ -122,9 +168,10 @@ jobs:
                         'mV316IdleResourceSweep'):
               assert token in cells, token
           assert 'v316-balanced-hitch' in launcher
-          assert 'V3.17 Lua/runtime hitch consolidation' in readme
-          assert 'Consolidated diagnostic writer' in readme
-          assert 'Runtime attribution matrix' in readme
+          for token in ('V3.17 Lua/runtime hitch consolidation', 'Engine Lua/event fast paths',
+                        'Lua -> sound conversion cache', 'Consolidated diagnostic writer',
+                        'Runtime attribution matrix'):
+              assert token in readme, token
 
           print('V3.17 generated-source policy invariants passed.')
           PY
