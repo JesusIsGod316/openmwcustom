@@ -37,6 +37,16 @@ exec(
     {"__file__": str(v316_sfx_predecode_fix), "__name__": "__main__"},
 )
 
+# Periodic ResourceSystem maintenance already runs off the gameplay thread, but
+# V3.15 evidence suggests its shared-queue CPU/memory contention can still show
+# up as a regular small frametime pulse. Balanced/aggressive modes move it to a
+# dedicated idle-priority worker without changing expiry semantics or cadence.
+v316_resource = Path(__file__).with_name("apply_v316_idle_resource_sweep.py")
+exec(
+    compile(v316_resource.read_text(encoding="utf-8"), str(v316_resource), "exec"),
+    {"__file__": str(v316_resource), "__name__": "__main__"},
+)
+
 # V3.15 lab evidence showed synchronous CSV output can contaminate the same
 # frametime tails we are trying to measure. Move diagnostic file I/O off producer
 # threads before taking the generated-source snapshot.
@@ -96,6 +106,16 @@ reservoir is bounded, and the worker waits for reservoir space rather than growi
 memory without limit. Direct arbitrary playSoundFile paths that are not represented
 by ESM sound records still use the original first-load path unless already known.
 
+Idle-priority resource maintenance
+----------------------------------
+V3.7 already made ResourceSystem cache sweeps pressure-aware and moved deletion
+work off the main thread, but those jobs still ran at the front of the same normal-
+priority WorkQueue used by paging/preloading. Modes88/89 create one dedicated
+resource-maintenance WorkQueue and permanently lower only that worker to idle
+priority before ResourceSystem::updateCache. The V3.7 sweep cadence, cache expiry
+rules, adapter-pressure policy, and emergency behavior are unchanged. Paging and
+other gameplay-critical preload workers never inherit the lowered thread priority.
+
 Asynchronous lab diagnostics
 ----------------------------
 V3.16 removes synchronous CSV writes and periodic flushes from diagnostic
@@ -112,17 +132,19 @@ Runtime matrix
 86 = exact V3.15 Mode84 gameplay settings control, sound head cache 0 MB
 87 = Mode86 + 64 MB streamed-audio head cache; existing decoded-SFX cache unchanged
 88 = balanced V3.16 hitch candidate: Mode84 + audio head 64 MB + decoded SFX
-     cache 256/384 MB + common asynchronous diagnostics transport
+     cache 256/384 MB + dedicated idle resource maintenance + common async diagnostics
 89 = aggressive V3.16 hitch candidate: Mode84 + audio head 128 MB + decoded SFX
-     cache 512/768 MB + 384 MB/1-worker first-use SFX predecode + common async diagnostics
+     cache 512/768 MB + 384 MB/1-worker first-use SFX predecode + dedicated idle
+     resource maintenance + common async diagnostics
 
 Development policy
 ------------------
 Do not weaken Lua/script semantics to hide expensive mods. Do not defer required
 scene construction or V3.13 strong-wins cache installation. OpenAL operations stay
-on their existing thread/context. Any resource cleanup or render-thread changes
-added later in V3.16 must be bounded and independently switchable. Diagnostic I/O
-must not become a gameplay-thread hitch source.
+on their existing thread/context. Resource expiry semantics remain unchanged.
+Further render-thread changes must identify an actual synchronization point rather
+than applying generic deferral. Diagnostic I/O must not become a gameplay-thread
+hitch source.
 ''')
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -154,6 +176,9 @@ for marker in (
     "sfx predecode cache size",
     "V316SfxPredecodeCacheSize",
     "getResourceNamesForPredecode",
+    "mV316IdleResourceSweep",
+    "v3.16 idle resource sweep",
+    "mV316ResourceSweepQueue",
     "sMaxQueuedLines",
     "v3_async_diagnostics_dropped_lines",
 ):
@@ -168,5 +193,7 @@ if "Buffered SFX retention" not in readme_text:
     raise RuntimeError("V3.16 buffered SFX retention README marker missing")
 if "Aggressive first-use SFX predecode" not in readme_text:
     raise RuntimeError("V3.16 SFX predecode README marker missing")
+if "Idle-priority resource maintenance" not in readme_text:
+    raise RuntimeError("V3.16 idle resource maintenance README marker missing")
 
 print("V3.16 exact generated-source snapshot refreshed after complete V3.16 layer.")
