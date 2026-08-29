@@ -96,6 +96,17 @@ replace_once(
     "destructor declaration",
 )
 
+# osg::buffered_value<T> stores values in std::vector<T> and returns T&. T=bool
+# selects std::vector<bool>'s proxy-reference specialization, which cannot satisfy
+# that API under MSVC (C2440 in run 33274105585). Preserve boolean semantics with
+# ordinary byte storage so operator[] returns a real unsigned-char reference.
+replace_once(
+    hpp,
+    "        mutable osg::buffered_value<bool> mLoggedActive;\n",
+    "        mutable osg::buffered_value<unsigned char> mLoggedActive;\n",
+    "buffered active-log storage",
+)
+
 cpp = ROOT / "apps/openmw/mwrender/nisscaler.cpp"
 replace_once(
     cpp,
@@ -123,12 +134,14 @@ replace_once(
 )
 
 # Fail closed if a future generator edit accidentally removes any known Windows
-# compile correction.
+# compile correction or reintroduces osg::buffered_value<bool>.
 hpp_text = hpp.read_text(encoding="utf-8")
 cpp_text = cpp.read_text(encoding="utf-8")
 shader_text = shader_hpp.read_text(encoding="utf-8")
 assert "class BindImageTexture;" in hpp_text
 assert "~NisScaler();" in hpp_text
+assert "osg::buffered_value<bool>" not in hpp_text
+assert "osg::buffered_value<unsigned char> mLoggedActive;" in hpp_text
 assert "#include <osg/BindImageTexture>" in cpp_text
 assert "NisScaler::~NisScaler() = default;" in cpp_text
 assert "GL_RGBA32F_ARB" in cpp_text and "GL_RGBA32F);" not in cpp_text
@@ -138,4 +151,4 @@ assert "static constexpr std::string_view parts[]" in shader_text
 assert 'kComputeShader = R"V318NIS(' not in shader_text
 assert "NVScaler(gl_WorkGroupID.xy, gl_LocalInvocationID.x);" in shader_text
 
-print("V3.18 NIS Windows compile fixes applied: OSG completeness, ARB float format, chunked shader literals")
+print("V3.18 NIS Windows compile fixes applied: OSG completeness, buffered<bool> avoidance, ARB float format, chunked shader literals")
