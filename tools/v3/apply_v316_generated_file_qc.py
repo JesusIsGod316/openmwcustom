@@ -27,7 +27,7 @@ GENERATED_NEW_FILES = {
     "apps/openmw/mwsound/sfxpredecodecache.cpp": (
         "sMaxPredecodedEntryBytes = 16 * 1024 * 1024",
         "Misc::setCurrentThreadIdlePriority()",
-        "std::unique_ptr<SoundDecoder> decoder = std::make_unique<FFmpegDecoder>(&mVfs);",
+        "std::unique_ptr<SoundDecoder> decoder = std::make_unique<FFmpegDecoder>(&mVfs, nullptr);",
         "decoder->open(Misc::ResourceHelpers::correctSoundPath(name, mVfs));",
         "mQueued.erase(queuedIt);",
         "SfxPredecodeCache::workerLoop",
@@ -43,12 +43,19 @@ for rel, markers in GENERATED_NEW_FILES.items():
         if marker not in text:
             raise RuntimeError(f"V3.16 generated-file QC {rel} missing marker: {marker}")
 
-# These exact patterns caused the first V3.16 Windows MSVC failure. Keep the
-# generated-source QC aligned with the corrected API so a later generator change
-# cannot silently reintroduce them.
+# The head-cache layer rewrites FFmpegDecoder before the SFX-predecode layer is
+# applied. Verify the generated constructor contract itself, then verify the
+# predecode worker uses that exact contract with a null HeadCache.
+ffmpeg_hpp = (ROOT / "apps/openmw/mwsound/ffmpegdecoder.hpp").read_text(encoding="utf-8")
+required_ctor = "explicit FFmpegDecoder(const VFS::Manager* vfs, HeadCache* headCache);"
+if required_ctor not in ffmpeg_hpp:
+    raise RuntimeError("V3.16 generated-file QC missing two-argument FFmpegDecoder head-cache constructor")
+if "explicit FFmpegDecoder(const VFS::Manager* vfs);" in ffmpeg_hpp:
+    raise RuntimeError("V3.16 generated-file QC found stale one-argument FFmpegDecoder constructor")
+
 predecode_text = (ROOT / "apps/openmw/mwsound/sfxpredecodecache.cpp").read_text(encoding="utf-8")
 for forbidden in (
-    "FFmpegDecoder>(&mVfs, nullptr)",
+    "std::make_unique<FFmpegDecoder>(&mVfs);",
     "DecoderPtr decoder = std::make_shared<FFmpegDecoder>",
     "mQueued.erase(name);",
 ):
