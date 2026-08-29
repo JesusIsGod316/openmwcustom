@@ -46,6 +46,16 @@ exec(
     {"__file__": str(v316_sfx_metadata), "__name__": "__main__"},
 )
 
+# Mode89 originally built the unique ESM sound-resource vector and queued the
+# idle decoder on the first gameplay update. Move that main-thread enumeration
+# under the same startup loading screen as metadata construction; only the actual
+# VFS/FFmpeg decode continues in the idle background worker.
+v316_sfx_predecode_frontload = Path(__file__).with_name("apply_v316_sfx_predecode_frontload.py")
+exec(
+    compile(v316_sfx_predecode_frontload.read_text(encoding="utf-8"), str(v316_sfx_predecode_frontload), "exec"),
+    {"__file__": str(v316_sfx_predecode_frontload), "__name__": "__main__"},
+)
+
 # Periodic ResourceSystem maintenance already runs off the gameplay thread, but
 # V3.15 evidence suggests its shared-queue CPU/memory contention can still show
 # up as a regular small frametime pulse. Balanced/aggressive modes move it to a
@@ -114,16 +124,18 @@ buffers. Modes86/87 leave the original lazy behavior untouched for clean control
 Aggressive first-use SFX predecode
 ----------------------------------
 Mode89 additionally enables a 384 MB PCM predecode reservoir with one
-idle-priority worker. Once a game is active, the main thread enumerates known ESM
-sound resource names and queues them. The worker performs only VFS/FFmpeg decode;
-it never calls OpenAL. OpenAL buffer creation/upload remains on the gameplay
-thread. If a requested sound is already predecoded, the synchronous storage and
-FFmpeg decode are skipped. If it is not ready, the exact original synchronous
-load path runs immediately, so playback semantics and correctness are preserved.
-Individual speculative decoded entries are capped at 16 MB, the total ready
-reservoir is bounded, and the worker waits for reservoir space rather than growing
-memory without limit. Direct arbitrary playSoundFile paths that are not represented
-by ESM sound records still use the original first-load path unless already known.
+idle-priority worker. While the startup loading screen is still active, the main
+thread enumerates the known ESM sound resource names and hands the queue to that
+worker. The worker performs only VFS/FFmpeg decode; it never calls OpenAL. This
+keeps both ESM/resource enumeration and queue construction off the first ordinary
+gameplay frame. OpenAL buffer creation/upload remains on the gameplay thread. If
+a requested sound is already predecoded, synchronous storage and FFmpeg decode are
+skipped. If it is not ready, the exact original synchronous load path runs
+immediately, so playback semantics and correctness are preserved. Individual
+speculative decoded entries are capped at 16 MB, the total ready reservoir is
+bounded, and the worker waits for reservoir space rather than growing memory
+without limit. Direct arbitrary playSoundFile paths that are not represented by
+ESM sound records still use the original first-load path unless already known.
 
 Idle-priority resource maintenance
 ----------------------------------
@@ -155,7 +167,7 @@ Runtime matrix
      cache 256/384 MB + loading-screen SFX metadata frontload + dedicated idle
      resource maintenance + common nonblocking async diagnostics
 89 = aggressive V3.16 hitch candidate: Mode84 + audio head 128 MB + decoded SFX
-     cache 512/768 MB + loading-screen SFX metadata frontload + 384 MB/1-worker
+     cache 512/768 MB + loading-screen SFX metadata/queue frontload + 384 MB/1-worker
      first-use SFX predecode + dedicated idle resource maintenance + common async diagnostics
 
 Development policy
@@ -200,6 +212,7 @@ for marker in (
     "mV316SfxMetadataFrontload",
     "v3.16 sfx metadata frontload",
     "prepareSfxMetadata",
+    "queueSfxPredecode",
     "mV316IdleResourceSweep",
     "v3.16 idle resource sweep",
     "mV316ResourceSweepQueue",
