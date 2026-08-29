@@ -59,6 +59,22 @@ replace_exact(
 
 replace_exact(
     "components/debug/v3diagnostics.hpp",
+    '''        bool enabled()
+        {
+            ensureOpen();
+            return mStream.is_open();
+        }''',
+    '''        bool enabled()
+        {
+            ensureOpen();
+            // Only the writer thread owns the stream after initialization. Avoid
+            // reading std::ofstream state concurrently from gameplay threads.
+            return mEnabled.load(std::memory_order_acquire);
+        }''',
+)
+
+replace_exact(
+    "components/debug/v3diagnostics.hpp",
     '''        void writeLine(const std::string& line)
         {
             ensureOpen();
@@ -81,18 +97,22 @@ replace_exact(
             if (!mEnabled.load(std::memory_order_acquire))
                 return;
 
+            // Never wait behind the diagnostic writer on a gameplay thread. A
+            // lost diagnostic row is preferable to manufacturing a frametime
+            // spike in the instrumentation used to measure frametime spikes.
+            std::unique_lock<std::mutex> lock(mQueueMutex, std::try_to_lock);
+            if (!lock.owns_lock())
             {
-                std::lock_guard<std::mutex> lock(mQueueMutex);
-                // Diagnostics must never become a gameplay hitch source. If disk
-                // I/O cannot keep up, drop diagnostic rows instead of blocking
-                // the producer thread or allowing unbounded memory growth.
-                if (mQueue.size() >= sMaxQueuedLines)
-                {
-                    ++mDroppedLines;
-                    return;
-                }
-                mQueue.push_back(line);
+                mDroppedLines.fetch_add(1, std::memory_order_relaxed);
+                return;
             }
+            if (mQueue.size() >= sMaxQueuedLines)
+            {
+                mDroppedLines.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            mQueue.push_back(line);
+            lock.unlock();
             mQueueCondition.notify_one();
         }
 
@@ -171,8 +191,9 @@ replace_exact(
                 }
             }
 
-            if (mDroppedLines > 0)
-                mStream << "# v3_async_diagnostics_dropped_lines=" << mDroppedLines << '\\n';
+            const std::size_t dropped = mDroppedLines.load(std::memory_order_relaxed);
+            if (dropped > 0)
+                mStream << "# v3_async_diagnostics_dropped_lines=" << dropped << '\\n';
             mStream.flush();
             mEnabled.store(false, std::memory_order_release);
         }
@@ -190,8 +211,8 @@ replace_exact(
         std::thread mWriterThread;
         std::atomic<bool> mAttempted{ false };
         std::atomic<bool> mEnabled{ false };
+        std::atomic<std::size_t> mDroppedLines{ 0 };
         bool mStopping = false;
-        std::size_t mDroppedLines = 0;
     };''',
 )
 
