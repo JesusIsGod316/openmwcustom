@@ -1,9 +1,9 @@
 V3.17 full Windows build trigger
 
-Validated preflight run: 33264405915
-Validated source head: 70fcba5332143ed680bc1479ebdca84bb2e23057
-Validated preflight artifact: v317-preflight-applied-source-70fcba5332143ed680bc1479ebdca84bb2e23057
-Artifact digest: sha256:d1939b97e1964409598cceb5e090b3d72e0518d8d08a6f408fa2942d82b5871a
+Validated preflight run: 33266000162
+Validated source head: e9c3b06a3cc411ffefc6f563ece4249efc8abd04
+Validated preflight artifact: v317-preflight-applied-source-e9c3b06a3cc411ffefc6f563ece4249efc8abd04
+Artifact digest: sha256:401d3e99d59f87db743a23becf8703724b8963886e4e26fc82ca710ce654dce3
 
 Substantive tranche included before full build:
 - V3.16 balanced hitch/audio foundation and async diagnostics.
@@ -11,5 +11,8 @@ Substantive tranche included before full build:
 - V3.17 conservative loaded-handler event fast paths; unloaded containers remain may-have-handlers.
 - V3.17 bounded thread-local Lua sound-ID/path conversion cache.
 - Modes 90-94 runtime attribution matrix with pinned sandboxed Rubic0n source option.
+- Executable-bound lowercase identity literal: openmw-custom-v3.17.
+
+Previous full build 33264454008 compiled and linked successfully but was correctly rejected by the PE identity gate because V3.17 had no lowercase runtime string guaranteed to survive LTO. The final V3.17 harness now injects an executable-bound startup identity log marker and refreshes the exact generated patch snapshot afterward.
 
 This commit intentionally changes only the full-build trigger record. The source that passed preflight is the immediate parent.
