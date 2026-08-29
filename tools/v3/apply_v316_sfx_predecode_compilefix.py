@@ -38,6 +38,49 @@ if cpp_text.count(old_empty) != 1:
     raise RuntimeError(
         f"V3.16 SFX-predecode path-empty fix expected one match, found {cpp_text.count(old_empty)}"
     )
-cpp.write_text(cpp_text.replace(old_empty, new_empty, 1), encoding="utf-8", newline="\n")
+cpp_text = cpp_text.replace(old_empty, new_empty, 1)
 
-print("V3.16 SFX predecode compile portability/header/path fixes applied")
+# C++20 unordered_set supports transparent heterogeneous lookup here, but not
+# heterogeneous erase-by-key. MSVC therefore cannot erase a NormalizedView
+# directly. Use transparent find() followed by iterator erase; this is valid for
+# both NormalizedView and Normalized call sites and keeps allocation off the path.
+old_erase = "mQueued.erase(name);"
+new_erase = "if (const auto queuedIt = mQueued.find(name); queuedIt != mQueued.end())\n                    mQueued.erase(queuedIt);"
+erase_count = cpp_text.count(old_erase)
+if erase_count != 6:
+    raise RuntimeError(
+        f"V3.16 SFX-predecode heterogeneous erase fix expected six matches, found {erase_count}"
+    )
+cpp_text = cpp_text.replace(old_erase, new_erase)
+
+# DecoderPtr is a SoundManager-private alias and FFmpegDecoder only has the
+# one-argument VFS constructor. Hold the concrete decoder through the public
+# SoundDecoder interface so its virtual open/getInfo/readAll methods remain
+# accessible while dispatching to FFmpegDecoder.
+old_decoder = """            DecoderPtr decoder = std::make_shared<FFmpegDecoder>(&mVfs, nullptr);\n            decoder->open(Misc::ResourceHelpers::correctSoundPath(name, *decoder->mResourceMgr));\n"""
+new_decoder = """            std::unique_ptr<SoundDecoder> decoder = std::make_unique<FFmpegDecoder>(&mVfs);\n            decoder->open(Misc::ResourceHelpers::correctSoundPath(name, mVfs));\n"""
+if cpp_text.count(old_decoder) != 1:
+    raise RuntimeError(
+        f"V3.16 SFX-predecode decoder API fix expected one match, found {cpp_text.count(old_decoder)}"
+    )
+cpp_text = cpp_text.replace(old_decoder, new_decoder, 1)
+
+# Fail closed on the exact API mistakes that caused the Windows compiler failure.
+for forbidden in (
+    "mQueued.erase(name);",
+    "DecoderPtr decoder = std::make_shared<FFmpegDecoder>",
+    "FFmpegDecoder>(&mVfs, nullptr)",
+):
+    if forbidden in cpp_text:
+        raise RuntimeError(f"V3.16 SFX-predecode compile fix left forbidden source pattern: {forbidden}")
+for required in (
+    "std::unique_ptr<SoundDecoder> decoder = std::make_unique<FFmpegDecoder>(&mVfs);",
+    "decoder->open(Misc::ResourceHelpers::correctSoundPath(name, mVfs));",
+    "mQueued.erase(queuedIt);",
+):
+    if required not in cpp_text:
+        raise RuntimeError(f"V3.16 SFX-predecode compile fix missing required source pattern: {required}")
+
+cpp.write_text(cpp_text, encoding="utf-8", newline="\n")
+
+print("V3.16 SFX predecode MSVC/API portability fixes applied")
