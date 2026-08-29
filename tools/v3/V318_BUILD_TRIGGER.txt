@@ -1,4 +1,6 @@
-V3.18 full Windows build trigger.
-Validated source/QC parent: 5a1c57b09a0e4807b67c8747a7439a2d05dd633c
+V3.18 replacement full Windows build trigger.
+Corrected generated-source/QC parent: 02c8cb3bed72a960f0b406c53d7cc8525add8522
 Contains internal render scaling + pinned NVIDIA NIS OpenGL compute integration.
+Includes the out-of-line NisScaler destructor completeness fix for osg::BindImageTexture.
+Do not use failed full-build run 33272682913.
 No runtime behavior is introduced by this trigger file.
