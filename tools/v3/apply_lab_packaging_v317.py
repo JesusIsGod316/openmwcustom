@@ -8,15 +8,24 @@ exec(
     {"__file__": str(v316), "__name__": "__main__"},
 )
 
-# First substantive V3.17 change: consolidate all V3 diagnostic CSV transport
-# behind one bounded writer thread and eliminate periodic gameplay-cadence flushes.
+# Substantive engine-side V3.17 lane. This is deliberately applied only after
+# the complete V3.16/V3.7 generated stack exists because it upgrades the mature
+# loaded-container handler fast path and the final Lua/sound binding source.
+v317_engine_lua = Path(__file__).with_name("apply_v317_engine_lua_fastpaths.py")
+exec(
+    compile(v317_engine_lua.read_text(encoding="utf-8"), str(v317_engine_lua), "exec"),
+    {"__file__": str(v317_engine_lua), "__name__": "__main__"},
+)
+
+# Consolidate all V3 diagnostic CSV transport behind one bounded writer thread
+# and eliminate periodic gameplay-cadence flushes.
 v317_diag = Path(__file__).with_name("apply_v317_diagnostic_hub.py")
 exec(
     compile(v317_diag.read_text(encoding="utf-8"), str(v317_diag), "exec"),
     {"__file__": str(v317_diag), "__name__": "__main__"},
 )
 
-# Add the full V3.17 attribution matrix only after all V3.16 launcher layers have
+# Add the full V3.17 attribution matrix only after all gameplay layers have
 # settled so Mode90 can copy the final Mode88 body and Mode94 the final Mode89 body.
 v317_modes = Path(__file__).with_name("apply_v317_runtime_modes.py")
 exec(
@@ -37,6 +46,26 @@ V3.17 keeps the V3.16 balanced hitch architecture as its gameplay foundation and
 attacks recurring Lua/runtime/event tails. The runtime matrix separates a stock-
 LuaJIT control, Rubic0n runtime attribution, engine-side Lua/materialization work,
 a combined candidate, and an aggressive SFX-predecode variant.
+
+Engine Lua/event fast paths
+---------------------------
+Mode92+ adds conservative handler-presence checks before engine events construct
+Lua wrapper arguments or resolve secondary RefNums that no callback can consume.
+A loaded container whose current handler list is empty is a known negative and can
+be skipped. An unloaded container is ALWAYS treated as "may have handlers" because
+its top-level Lua code may legally choose a different handler table when it is
+materialized again. V3.17 therefore does not persist negative handler-interest
+state across unload/reload and does not suppress legitimate first materialization.
+Lua-debug missing-object lookups are retained on otherwise-skipped event paths.
+
+Lua -> sound conversion cache
+-----------------------------
+Mode92+ also keeps a small per-thread cache for the immutable conversions performed
+at the Lua sound API boundary: textual sound IDs to ESM::RefId and file-name text
+to normalized VFS paths. Each cache is capped at 4096 entries and keys larger than
+512 bytes bypass it. Once full, new keys are parsed normally rather than clearing
+the cache in gameplay. No SoundBuffer, OpenAL handle, decoded PCM, or mutable sound
+state is cached here, and the normal play path never waits on predecode work.
 
 Consolidated diagnostic writer
 ------------------------------
@@ -89,6 +118,11 @@ for marker in (
     "sMaxQueuedItems = 16384",
     "mQueue.push_back({ channel, {}, true })",
     "No gameplay-cadence flushes",
+    "mightHaveEngineHandlers",
+    "v317EngineFastPathEnabled",
+    "class V317SoundBindingCache",
+    "v317SoundBindingCache().soundId(soundId)",
+    "v317SoundBindingCache().path(fileName)",
 ):
     if marker not in patch_text:
         raise RuntimeError(f"V3.17 generated source snapshot missing marker: {marker}")
@@ -113,11 +147,14 @@ for forbidden in (
     if forbidden in patch_text:
         raise RuntimeError(f"V3.17 generated source still contains superseded diagnostic path: {forbidden}")
 
-if "V3.17 Lua/runtime hitch consolidation" not in readme_text:
-    raise RuntimeError("V3.17 README identity marker missing")
-if "Consolidated diagnostic writer" not in readme_text:
-    raise RuntimeError("V3.17 diagnostics README marker missing")
-if "Runtime attribution matrix" not in readme_text:
-    raise RuntimeError("V3.17 runtime matrix README marker missing")
+for marker in (
+    "V3.17 Lua/runtime hitch consolidation",
+    "Engine Lua/event fast paths",
+    "Lua -> sound conversion cache",
+    "Consolidated diagnostic writer",
+    "Runtime attribution matrix",
+):
+    if marker not in readme_text:
+        raise RuntimeError(f"V3.17 README marker missing: {marker}")
 
-print("V3.17 generated-source snapshot refreshed after V3.17 additive layers.")
+print("V3.17 generated-source snapshot refreshed after substantive V3.17 layers.")
