@@ -66,6 +66,10 @@ jobs:
           grep -n "sMaxPredecodedEntryBytes = 16 \* 1024 \* 1024" apps/openmw/mwsound/sfxpredecodecache.cpp
           grep -n "getResourceNamesForPredecode" apps/openmw/mwsound/soundbuffer.cpp
           grep -n "queueSoundPredecode" apps/openmw/mwsound/soundmanagerimp.cpp
+          grep -n "mV316IdleResourceSweep" components/settings/categories/cells.hpp
+          grep -n "v3.16 idle resource sweep = false" files/settings-default.cfg
+          grep -n "mV316ResourceSweepQueue" apps/openmw/mwworld/cellpreloader.hpp
+          grep -n "setCurrentThreadIdlePriority" apps/openmw/mwworld/cellpreloader.cpp
           grep -n "sMaxQueuedLines = 4096" components/debug/v3diagnostics.hpp
           grep -n "v3_async_diagnostics_dropped_lines" components/debug/v3diagnostics.hpp
           grep -n "mWriterThread" components/debug/v3diagnostics.hpp
@@ -73,6 +77,7 @@ jobs:
           grep -n "V316BufferCacheMax" tools/v3/launchers/V3_Lab.ps1
           grep -n "V316SfxPredecodeCacheSize" tools/v3/launchers/V3_Lab.ps1
           grep -n "V316SfxPredecodeWorkers" tools/v3/launchers/V3_Lab.ps1
+          grep -n "V316IdleResourceSweep" tools/v3/launchers/V3_Lab.ps1
           grep -n "v316-mode84-control" tools/v3/launchers/V3_Lab.ps1
           grep -n "v316-audio64" tools/v3/launchers/V3_Lab.ps1
           grep -n "v316-balanced-hitch" tools/v3/launchers/V3_Lab.ps1
@@ -87,6 +92,7 @@ jobs:
 
           launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
           defaults = Path('files/settings-default.cfg').read_text(encoding='utf-8')
+          cells_h = Path('components/settings/categories/cells.hpp').read_text(encoding='utf-8')
           sound_h = Path('components/settings/categories/sound.hpp').read_text(encoding='utf-8')
           sound_cpp = Path('apps/openmw/mwsound/soundmanagerimp.cpp').read_text(encoding='utf-8')
           decoder = Path('apps/openmw/mwsound/ffmpegdecoder.cpp').read_text(encoding='utf-8')
@@ -96,6 +102,8 @@ jobs:
           predecode_cpp = Path('apps/openmw/mwsound/sfxpredecodecache.cpp').read_text(encoding='utf-8')
           openal_cpp = Path('apps/openmw/mwsound/openaloutput.cpp').read_text(encoding='utf-8')
           soundbuffer_cpp = Path('apps/openmw/mwsound/soundbuffer.cpp').read_text(encoding='utf-8')
+          cellpre_h = Path('apps/openmw/mwworld/cellpreloader.hpp').read_text(encoding='utf-8')
+          cellpre_cpp = Path('apps/openmw/mwworld/cellpreloader.cpp').read_text(encoding='utf-8')
 
           # Official upstream streamed-head cache backport.
           assert 'head cache size = 0' in defaults
@@ -123,6 +131,17 @@ jobs:
           assert 'if (!usedPredecoded)' in openal_cpp
           assert 'DecoderPtr decoder = mManager.getDecoder();' in openal_cpp
           assert 'decoder->readAll(data);' in openal_cpp
+
+          # Periodic ResourceSystem maintenance gets a dedicated one-thread queue
+          # only when enabled. Do not lower shared paging/preload thread priority.
+          assert 'mV316IdleResourceSweep' in cells_h
+          assert 'v3.16 idle resource sweep = false' in defaults
+          assert 'mV316ResourceSweepQueue' in cellpre_h
+          assert 'mV316ResourceSweepQueue = new SceneUtil::WorkQueue(1)' in cellpre_cpp
+          assert 'Misc::setCurrentThreadIdlePriority()' in cellpre_cpp
+          assert 'mV316ResourceSweepQueue->addWorkItem(mUpdateCacheItem)' in cellpre_cpp
+          assert 'mWorkQueue->addWorkItem(mUpdateCacheItem, true)' in cellpre_cpp
+          assert 'v37ResourceSweepSeconds' in cellpre_cpp
 
           # Diagnostic producers enqueue complete rows; disk writes/flushes live
           # only in writerLoop. Overload drops diagnostics instead of stalling.
@@ -152,13 +171,16 @@ jobs:
           assert '$V316BufferCacheMax' not in lines[87]
           assert '$V316SfxPredecodeCacheSize' not in lines[87]
           assert '$V316SfxPredecodeWorkers' not in lines[87]
+          assert '$V316IdleResourceSweep' not in lines[87]
 
-          # Mode88 is the balanced candidate: retention, no first-use predecode.
+          # Mode88 is the balanced candidate: retention + isolated maintenance,
+          # but no speculative first-use predecode.
           assert "$V316HeadCacheSize = '64'" in lines[88]
           assert "$V316BufferCacheMin = '256'" in lines[88]
           assert "$V316BufferCacheMax = '384'" in lines[88]
           assert '$V316SfxPredecodeCacheSize' not in lines[88]
           assert '$V316SfxPredecodeWorkers' not in lines[88]
+          assert "$V316IdleResourceSweep = 'true'" in lines[88]
 
           # Mode89 is aggressive and explicitly bounded.
           assert "$V316HeadCacheSize = '128'" in lines[89]
@@ -166,22 +188,25 @@ jobs:
           assert "$V316BufferCacheMax = '768'" in lines[89]
           assert "$V316SfxPredecodeCacheSize = '384'" in lines[89]
           assert "$V316SfxPredecodeWorkers = '1'" in lines[89]
+          assert "$V316IdleResourceSweep = 'true'" in lines[89]
 
           assert "$V316HeadCacheSize = '0'" in launcher
           assert "$V316BufferCacheMin = ''" in launcher
           assert "$V316BufferCacheMax = ''" in launcher
           assert "$V316SfxPredecodeCacheSize = '0'" in launcher
           assert "$V316SfxPredecodeWorkers = '0'" in launcher
+          assert "$V316IdleResourceSweep = 'false'" in launcher
           assert "Set-IniValue $SettingsPath 'Sound' 'head cache size' $V316HeadCacheSize" in launcher
           assert "Set-IniValue $SettingsPath 'Sound' 'buffer cache min' $V316BufferCacheMin" in launcher
           assert "Set-IniValue $SettingsPath 'Sound' 'buffer cache max' $V316BufferCacheMax" in launcher
           assert "Set-IniValue $SettingsPath 'Sound' 'sfx predecode cache size' $V316SfxPredecodeCacheSize" in launcher
           assert "Set-IniValue $SettingsPath 'Sound' 'sfx predecode workers' $V316SfxPredecodeWorkers" in launcher
+          assert "Set-IniValue $SettingsPath 'V3' 'v3.16 idle resource sweep' $V316IdleResourceSweep" in launcher
 
           # Preserve promoted renderer/paging foundation.
           for token in ('mV313ChunkQualityMode', 'mV315PremergeStateCanonicalization',
                         'mV315PacketizedPremergeMode', 'mV315AdaptiveCompileGovernor'):
-              assert token in Path('components/settings/categories/cells.hpp').read_text(encoding='utf-8'), token
+              assert token in cells_h, token
           assert 'object_chunk_quality_upgrade' in Path('apps/openmw/mwrender/objectpaging.cpp').read_text(encoding='utf-8')
 
           print('V3.16 general-play hitch policy invariants passed.')
