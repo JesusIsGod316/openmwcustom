@@ -17,6 +17,7 @@ for layer_name in (
     "apply_v318_render_scale.py",
     "apply_v318_runtime_modes.py",
     "apply_v318_nis.py",
+    "apply_v318_nis_whitespace_fix.py",
     "apply_v318_nis_modes.py",
 ):
     layer = HERE / layer_name
