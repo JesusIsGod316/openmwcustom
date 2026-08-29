@@ -1,10 +1,12 @@
-V3.18 replacement full Windows build trigger after second MSVC compile-fix pass.
-Corrected generated-source/QC parent: 4df412a5636635011e01f41e90d9522f84c2a728
+V3.18 replacement full Windows build trigger after third MSVC compile-fix pass.
+Corrected generator/QC parent: 2157c75753947a82b26fb0b5852b7bba396dd1ea
 Contains internal render scaling + pinned NVIDIA NIS OpenGL compute integration.
 Includes all known Windows compile corrections:
 - out-of-line NisScaler destructor for osg::BindImageTexture completeness;
 - NVIDIA compute shader split into <=12 KiB MSVC-safe raw-string chunks and reconstructed once at runtime;
-- OpenSceneGraph-compatible GL_RGBA32F_ARB coefficient texture internal-format token.
-Strict preflight run 33274068101 passed all generated-source, policy, GLSL, launcher, and compile-regression guards.
-Do not use failed full-build runs 33272682913 or 33273421094.
+- OpenSceneGraph-compatible GL_RGBA32F_ARB coefficient texture internal-format token;
+- osg::buffered_value<bool> removed from mLoggedActive and replaced with byte storage to avoid std::vector<bool> proxy-reference C2440 under MSVC.
+Strict preflight run 33275281708 passed the complete generated-source stack, policy invariants, offline GLSL compile, launcher parse, and exact patch upload.
+Exact generated patch artifact v318-preflight-applied-source-2157c75753947a82b26fb0b5852b7bba396dd1ea was independently checked: byte-backed mLoggedActive present; bool-backed form absent; GL_RGBA32F_ARB and chunked computeShader() retained.
+Do not use failed full-build runs 33272682913, 33273421094, or 33274105585.
 No runtime behavior is introduced by this trigger file.
