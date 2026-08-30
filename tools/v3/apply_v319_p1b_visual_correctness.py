@@ -13,18 +13,17 @@ def replace_once(path: Path, old: str, new: str, label: str) -> None:
 
 
 # P1b correctness repair: make non-instanced shared-shader state deterministic.
+# V3.12/V3.15 rewrite everything after this unique group creation, so anchor only
+# on the stable line that survives the complete generated-source lineage.
 objectpaging = ROOT / "apps/openmw/mwrender/objectpaging.cpp"
 replace_once(
     objectpaging,
-    """        osg::ref_ptr<osg::Group> group = new osg::Group;
-        osg::ref_ptr<osg::Group> mergeGroup = new osg::Group;
-""",
+    "        osg::ref_ptr<osg::Group> group = new osg::Group;\n",
     """        osg::ref_ptr<osg::Group> group = new osg::Group;
         // V3.19 P1b: shared shader programs must always see an explicit legacy
         // zero-state outside an instanced batch. Child batch StateSets override
         // this value with their positive instance count.
         group->getOrCreateStateSet()->addUniform(new osg::Uniform("v319StaticInstanceCount", 0));
-        osg::ref_ptr<osg::Group> mergeGroup = new osg::Group;
 """,
     "V3.19 P1b ObjectPaging zero-state",
 )
