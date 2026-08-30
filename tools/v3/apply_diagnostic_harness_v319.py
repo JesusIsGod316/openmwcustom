@@ -115,7 +115,8 @@ for text, label in ((objects_shader, "objects"), (bs_shader, "bs/default"), (sha
 
 for marker in (
     "V3.19 CPU critical path P1",
-    "global OSG duplicate-state sharing",
+    "global OSG duplicate-state",
+    "sharing after shaders are created",
     "103 -> 109 -> 110",
 ):
     if marker not in readme_text:
