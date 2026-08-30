@@ -51,7 +51,7 @@ jobs:
           path: v319-apply.log
           if-no-files-found: error
 
-      - name: Validate generated V3.19 markers
+      - name: Validate generated V3.19 P1 markers
         shell: bash
         run: |
           set -euo pipefail
@@ -59,37 +59,50 @@ jobs:
           cat V3-applied-source-stat.txt
           grep -n 'OPENMW_V319_FOCUS_CADENCE' apps/openmw/engine.cpp
           grep -n 'frameNumber % v319FocusCadence' apps/openmw/engine.cpp
-          grep -n 'openmw-custom-v3.19-cpu-p0' apps/openmw/engine.cpp
-          grep -n '102 = V3.19 CPU control' tools/v3/launchers/V3_Lab.ps1
-          grep -n '108 = V3.19 per-camera cull/draw' tools/v3/launchers/V3_Lab.ps1
-          grep -n 'Enter 1 through 108' tools/v3/launchers/V3_Lab.ps1
-          grep -n 'CullDrawThreadPerContext' tools/v3/launchers/V3_Lab.ps1
-          grep -n 'CullThreadPerCameraDrawThreadPerContext' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'openmw-custom-v3.19-cpu-p1' apps/openmw/engine.cpp
+          grep -n 'OPENMW_V319_STATIC_INSTANCING' apps/openmw/mwrender/objectpaging.cpp
+          grep -n 'setNumInstances' apps/openmw/mwrender/objectpaging.cpp
+          grep -n 'GL_ARB_draw_instanced' files/shaders/compatibility/objects.vert
+          grep -n 'v319StaticInstanceMatrix' files/shaders/compatibility/bs/default.vert
+          grep -n 'v319StaticInstanceMatrix' files/shaders/compatibility/shadowcasting.vert
+          grep -n '109 = V3.19 P1 conservative static instancing' tools/v3/launchers/V3_Lab.ps1
+          grep -n '110 = V3.19 P1 aggressive static instancing' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'Enter 1 through 110' tools/v3/launchers/V3_Lab.ps1
           grep -n 'mNisScaler->dispatch' apps/openmw/mwrender/pingpongcanvas.cpp
           grep -n 'mV35CoarseChunkOcclusion' components/settings/categories/camera.hpp
 
-      - name: Validate V3.19 CPU policy invariants
+      - name: Validate V3.19 P1 policy invariants
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
           engine = Path('apps/openmw/engine.cpp').read_text(encoding='utf-8')
+          objectpaging = Path('apps/openmw/mwrender/objectpaging.cpp').read_text(encoding='utf-8')
           launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
           patch = Path('V3-applied-source.patch').read_text(encoding='utf-8', errors='replace')
           readme = Path('V3-LAB-README.txt').read_text(encoding='utf-8')
           assert engine.count('OPENMW_V319_FOCUS_CADENCE') == 1
           assert 'mWindowManager->isGuiMode()' in engine
           assert 'Activation/input queries remain untouched.' in engine
-          assert 'openmw-custom-v3.19-cpu-p0' in engine
-          for token in ('v319-cpu-control','v319-focus2','v319-focus3',
-                        'v319-osg-culldraw','v319-osg-percamera',
-                        'v319-osg-culldraw-focus2','v319-osg-percamera-focus2',
-                        'Enter 1 through 108'):
+          assert 'openmw-custom-v3.19-cpu-p1' in engine
+          assert objectpaging.count('OPENMW_V319_STATIC_INSTANCING') == 1
+          assert 'setNumInstances' in objectpaging
+          assert 'v319CandidatePair' in objectpaging
+          for token in ('v319-cpu-control','v319-focus2',
+                        'v319-p1-instancing-conservative','v319-p1-instancing-aggressive',
+                        'Enter 1 through 110','OPENMW_V319_STATIC_INSTANCING'):
               assert token in launcher, token
+          for shader in ('files/shaders/compatibility/objects.vert',
+                         'files/shaders/compatibility/bs/default.vert',
+                         'files/shaders/compatibility/bs/nolighting.vert',
+                         'files/shaders/compatibility/shadowcasting.vert'):
+              text = Path(shader).read_text(encoding='utf-8')
+              assert 'GL_ARB_draw_instanced' in text, shader
+              assert 'v319StaticInstanceMatrix' in text, shader
           assert 'mNisScaler->dispatch' in patch
           assert 'mV35CoarseChunkOcclusion' in patch
-          assert 'V3.19 CPU critical path P0' in readme
-          print('V3.19 CPU policy invariants passed.')
+          assert 'V3.19 CPU critical path P1' in readme
+          print('V3.19 P1 CPU policy invariants passed.')
           PY
 
       - name: Parse-check generated PowerShell launcher
