@@ -12,6 +12,7 @@ for layer_name in (
     "apply_v319_runtime_modes.py",
     "apply_v319_binary_identity.py",
     "apply_v319_static_instancing_generated_compat.py",
+    "apply_v319_p1b_visual_correctness.py",
 ):
     layer = HERE / layer_name
     exec(compile(layer.read_text(encoding="utf-8"), str(layer), "exec"), {"__file__": str(layer), "__name__": "__main__"})
@@ -20,44 +21,40 @@ readme_path = ROOT / "V3-LAB-README.txt"
 with readme_path.open("a", encoding="utf-8", newline="\n") as readme:
     readme.write(r'''
 
-V3.19 CPU critical path P1 — promoted focus cadence2 + static hardware instancing
-================================================================================
+V3.19 CPU critical path P1b — P1 visual-correctness isolation
+==============================================================
 
 Purpose
 -------
-V3.19 P1 keeps the validated focus-cadence2 improvement and OSG Automatic
-threading, then attacks the dominant CPU cull/draw submission path structurally.
-The live source audit showed SceneManager already runs global OSG duplicate-state
-sharing after shaders are created, so another StateSet/material canonicalization
-pass would mostly duplicate existing work. ObjectPaging also already groups
-references by template and has a legacy geometry-merge path that can duplicate
-vertex data per reference. P1 therefore adds true hardware instancing for
-repeated distant static templates while preserving the legacy path as control
-and fallback.
+P1b keeps the promoted V3.19 focus-cadence2 improvement, OSG Automatic, and
+P1 static-instancing mechanism, but repairs shader-state/correctness hazards
+found after P1 visual testing. The P1 executable modified the shared object,
+BS, and shadow vertex shaders even when static instancing was disabled.
 
-Safety / semantics
-------------------
-OPENMW_V319_STATIC_INSTANCING defaults to 0, which is exact legacy ObjectPaging
-behavior. Instancing is restricted to the distant grid: active-grid objects keep
-their existing refnum/picking semantics. Candidate templates are deep-copied
-once per small batch, static transforms are flattened, and any residual transform
-or live LOD fails closed to the legacy path. Existing material/texture StateSets
-are not rewritten, so standard OpenMW and BS/PBR material paths retain their
-current states. Main object, BS default/nolighting, and shadow-casting vertex
-paths all apply the same per-instance matrix. Batch size is capped at 8 to keep
-GLSL 1.20 uniform pressure conservative and limit loss of per-object culling.
+Corrections
+-----------
+Every ObjectPaging chunk now provides an explicit v319StaticInstanceCount=0
+uniform, while an actual instanced batch overrides that value with its positive
+instance count. This prevents a shared GL program from carrying an instanced
+uniform value into an ordinary draw.
+
+The object and BS shader paths now begin from the literal P0 vertex and
+gl_NormalMatrix and enter the instance transform only when the count is
+positive. P1 had also reused tangent-composed normalToViewMatrix for viewNormal
+on normal-mapped materials; P1b separates the base object normal transform from
+the tangent-space matrix so non-instanced shadow/environment normal behavior is
+the original P0 behavior. The object particle-occlusion coordinate path now uses
+the instance-corrected vertex as well.
 
 Modes
 -----
-103 = promoted V3.19 control: focus cadence2, OSG Automatic, legacy ObjectPaging.
-109 = conservative P1: instance repeated distant templates only when legacy
-      geometry merging would not have fired.
-110 = aggressive P1: prefer instancing for eligible repeated distant templates,
-      including candidates the old merge heuristic would otherwise duplicate.
+103 remains the visual/control smoke test: focus cadence2 + OSG Automatic +
+legacy ObjectPaging. 109 and 110 retain the conservative/aggressive P1 static
+instancing policies, now through the P1b-corrected shader path.
 
-Test 103 -> 109 -> 110 on the same canonical City route. The key acceptance
-criteria are lower cull/draw CPU time and improved frame-time distribution with
-no PBR/alpha/shadow/LOD visual regressions and no material VRAM-residency rise.
+Test 103 first. If the P1 visual regression is gone in 103, test 109 then 110 on
+the same canonical City route. If 103 still shows the regression, compare
+against the exact promoted P0 artifact before further instancing work.
 ''')
 
 subprocess.run(["git", "diff", "--check"], cwd=ROOT, check=True)
@@ -73,10 +70,12 @@ engine_text = (ROOT / "apps/openmw/engine.cpp").read_text(encoding="utf-8")
 objectpaging_text = (ROOT / "apps/openmw/mwrender/objectpaging.cpp").read_text(encoding="utf-8")
 objects_shader = (ROOT / "files/shaders/compatibility/objects.vert").read_text(encoding="utf-8")
 bs_shader = (ROOT / "files/shaders/compatibility/bs/default.vert").read_text(encoding="utf-8")
+nolighting_shader = (ROOT / "files/shaders/compatibility/bs/nolighting.vert").read_text(encoding="utf-8")
 shadow_shader = (ROOT / "files/shaders/compatibility/shadowcasting.vert").read_text(encoding="utf-8")
 
 for marker in (
     "openmw-custom-v3.19-cpu-p1",
+    "openmw-custom-v3.19-cpu-p1b",
     "OPENMW_V319_FOCUS_CADENCE",
     "frameNumber % v319FocusCadence == 0",
     "mWindowManager->isGuiMode()",
@@ -85,9 +84,10 @@ for marker in (
     "mV35CoarseChunkOcclusion",
     "OPENMW_V319_STATIC_INSTANCING",
     "setNumInstances",
+    'new osg::Uniform("v319StaticInstanceCount", 0)',
 ):
     if marker not in patch_text:
-        raise RuntimeError(f"V3.19 P1 final source snapshot missing marker: {marker}")
+        raise RuntimeError(f"V3.19 P1b final source snapshot missing marker: {marker}")
 
 for marker in (
     "102 = V3.19 CPU control",
@@ -101,25 +101,52 @@ for marker in (
     "OPENMW_V319_STATIC_INSTANCING",
 ):
     if marker not in launcher_text:
-        raise RuntimeError(f"V3.19 P1 launcher missing marker: {marker}")
+        raise RuntimeError(f"V3.19 P1b launcher missing marker: {marker}")
 
 if engine_text.count("OPENMW_V319_FOCUS_CADENCE") != 1:
     raise RuntimeError("V3.19 focus cadence source marker count is not exactly one")
 if "Activation/input queries remain untouched." not in engine_text:
     raise RuntimeError("V3.19 focus safety marker missing")
+if engine_text.count("openmw-custom-v3.19-cpu-p1b") != 1:
+    raise RuntimeError("V3.19 P1b executable identity marker count is not exactly one")
 if objectpaging_text.count("OPENMW_V319_STATIC_INSTANCING") != 1:
     raise RuntimeError("V3.19 P1 instancing environment marker count is not exactly one")
-for text, label in ((objects_shader, "objects"), (bs_shader, "bs/default"), (shadow_shader, "shadowcasting")):
+if objectpaging_text.count('new osg::Uniform("v319StaticInstanceCount", 0)') != 1:
+    raise RuntimeError("V3.19 P1b deterministic zero-state marker count is not exactly one")
+
+for text, label in (
+    (objects_shader, "objects"),
+    (bs_shader, "bs/default"),
+    (nolighting_shader, "bs/nolighting"),
+    (shadow_shader, "shadowcasting"),
+):
     if "v319StaticInstanceMatrix" not in text or "GL_ARB_draw_instanced" not in text:
-        raise RuntimeError(f"V3.19 P1 {label} shader instancing marker missing")
+        raise RuntimeError(f"V3.19 P1b {label} shader instancing marker missing")
+    if "v319StaticInstanceVertex(" in text or "v319StaticInstanceNormal(" in text:
+        raise RuntimeError(f"V3.19 P1b {label} still contains P1 shared helper path")
+    if "vec4 v319Vertex = gl_Vertex;" not in text:
+        raise RuntimeError(f"V3.19 P1b {label} literal P0 vertex path missing")
+    if "if (v319StaticInstanceCount > 0)" not in text:
+        raise RuntimeError(f"V3.19 P1b {label} opt-in instance branch missing")
+
+for text, label in ((objects_shader, "objects"), (bs_shader, "bs/default")):
+    if "normalToViewMatrix = v319BaseNormalToView;" not in text:
+        raise RuntimeError(f"V3.19 P1b {label} base normal path missing")
+    if "normalize(v319BaseNormalToView * passNormal)" not in text:
+        raise RuntimeError(f"V3.19 P1b {label} view-normal path missing")
+    if "normalize(normalToViewMatrix * passNormal)" in text:
+        raise RuntimeError(f"V3.19 P1b {label} tangent-space view-normal regression remains")
+
+if "orthoDepthMapCoord = ((depthSpaceMatrix * model) * v319Vertex).xyz;" not in objects_shader:
+    raise RuntimeError("V3.19 P1b objects particle-occlusion instance vertex missing")
 
 for marker in (
-    "V3.19 CPU critical path P1",
-    "global OSG duplicate-state",
-    "sharing after shaders are created",
-    "103 -> 109 -> 110",
+    "V3.19 CPU critical path P1b",
+    "P1 visual-correctness isolation",
+    "explicit v319StaticInstanceCount=0",
+    "103 remains the visual/control smoke test",
 ):
     if marker not in readme_text:
-        raise RuntimeError(f"V3.19 P1 README missing marker: {marker}")
+        raise RuntimeError(f"V3.19 P1b README missing marker: {marker}")
 
-print("V3.19 CPU P1 generated-source policy invariants passed")
+print("V3.19 CPU P1b generated-source policy invariants passed")
