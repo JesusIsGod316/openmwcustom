@@ -23,34 +23,29 @@ def replace_exact(rel: str, old: str, new: str, expected: int = 1) -> None:
 # the normal/default policy from the historical causal-control value (1) to the
 # promoted gaming value (2). OPENMW_V319_FOCUS_CADENCE remains a lab override.
 # -----------------------------------------------------------------------------
+focus_setting_anchor = '''        SettingValue<float> mV36FarCasterMinimumPixels{ mIndex, "V3", "v3.6 far caster minimum pixels",
+            makeClampSanitizerFloat(0, 32) };'''
 replace_exact(
     "components/settings/categories/cells.hpp",
-    '''        SettingValue<float> mV36FarCasterMinimumPixels{ mIndex, "V3", "v3.6 far caster minimum pixels",
-            makeClampSanitizerFloat(0, 32) };
-
-        SettingValue<std::string> mRamCacheMode{ mIndex, "Cells", "ram cache mode",''',
-    '''        SettingValue<float> mV36FarCasterMinimumPixels{ mIndex, "V3", "v3.6 far caster minimum pixels",
-            makeClampSanitizerFloat(0, 32) };
+    focus_setting_anchor,
+    focus_setting_anchor
+    + '''
         // V3.19 stable gaming: promoted focus temporal-coherence cadence.
         SettingValue<int> mV319FocusCadence{
-            mIndex, "V3", "v3.19 focus cadence", makeClampSanitizerInt(1, 3) };
-
-        SettingValue<std::string> mRamCacheMode{ mIndex, "Cells", "ram cache mode",''',
+            mIndex, "V3", "v3.19 focus cadence", makeClampSanitizerInt(1, 3) };''',
 )
 
+focus_default_anchor = "v3.6 disable coarse chunk occlusion = false"
 replace_exact(
     "files/settings-default.cfg",
-    '''v3.6 disable coarse chunk occlusion = false
-
-# Diagnostics/experiments remain off unless explicitly selected.''',
-    '''v3.6 disable coarse chunk occlusion = false
+    focus_default_anchor,
+    focus_default_anchor
+    + '''
 
 # V3.19 promoted normal-play focus refresh cadence. 1 reproduces the V3.18/P0
 # control behavior; 2 is the validated stable gaming default; 3 remains available
 # for manual experimentation. GUI mode still refreshes focus every frame.
-v3.19 focus cadence = 2
-
-# Diagnostics/experiments remain off unless explicitly selected.''',
+v3.19 focus cadence = 2''',
 )
 
 old_focus = '''        static const unsigned v319FocusCadence = [] {
