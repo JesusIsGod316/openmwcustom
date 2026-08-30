@@ -66,7 +66,7 @@ jobs:
           grep -n 'CullDrawThreadPerContext' tools/v3/launchers/V3_Lab.ps1
           grep -n 'CullThreadPerCameraDrawThreadPerContext' tools/v3/launchers/V3_Lab.ps1
           grep -n 'mNisScaler->dispatch' apps/openmw/mwrender/pingpongcanvas.cpp
-          grep -n 'mV35CoarseChunkOcclusion' apps/openmw/mwrender/occlusionculling.cpp
+          grep -n 'mV35CoarseChunkOcclusion' components/settings/categories/camera.hpp
 
       - name: Validate V3.19 CPU policy invariants
         shell: bash
