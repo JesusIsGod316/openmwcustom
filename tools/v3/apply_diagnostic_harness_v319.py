@@ -11,7 +11,7 @@ for layer_name in (
     "apply_v319_focus_cadence.py",
     "apply_v319_runtime_modes.py",
     "apply_v319_binary_identity.py",
-    "apply_v319_static_instancing.py",
+    "apply_v319_static_instancing_generated_compat.py",
 ):
     layer = HERE / layer_name
     exec(compile(layer.read_text(encoding="utf-8"), str(layer), "exec"), {"__file__": str(layer), "__name__": "__main__"})
