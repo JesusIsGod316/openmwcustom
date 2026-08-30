@@ -23,12 +23,12 @@ if source.count(old_anchor) != 1:
     raise RuntimeError(f"V3.19 P1 compat attach-anchor source mismatch: {source.count(old_anchor)}")
 source = source.replace(old_anchor, new_anchor, 1)
 
-old_replacement = '''        r\'''                osg::Group* const attachTo = merge ? mergeGroup : group;
+old_replacement = '''    r\'''                osg::Group* const attachTo = merge ? mergeGroup : group;
                 attachTo->addChild(trans);
 
                 if (v319CandidatePair && ref.mScale > 0.f)
 '''
-new_replacement = '''        r\'''                attachTo->addChild(trans);
+new_replacement = '''    r\'''                attachTo->addChild(trans);
 
                 if (v319CandidatePair && ref.mScale > 0.f)
 '''
