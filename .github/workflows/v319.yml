@@ -35,11 +35,11 @@ jobs:
         shell: bash
         run: python3 -m py_compile tools/v3/*.py
 
-      - name: Apply complete V3.19 generated source stack
+      - name: Apply complete V3.19 generated source stack through production router
         shell: bash
         run: |
           set +e
-          python3 tools/v3/apply_diagnostic_harness_v319.py 2>&1 | tee v319-apply.log
+          python3 tools/v3/apply_diagnostic_harness.py 2>&1 | tee v319-apply.log
           status=${PIPESTATUS[0]}
           exit $status
 
@@ -51,12 +51,18 @@ jobs:
           path: v319-apply.log
           if-no-files-found: error
 
-      - name: Validate generated V3.19 P1 markers
+      - name: Validate generated V3.19 P1 markers and build identity
         shell: bash
         run: |
           set -euo pipefail
           git diff --check
           cat V3-applied-source-stat.txt
+          cat V3-BUILD-IDENTITY.txt
+          grep -Fx 'branch=v3.19-donor-cpu-pack' V3-BUILD-IDENTITY.txt
+          grep -Fx 'version=V3.19' V3-BUILD-IDENTITY.txt
+          grep -Fx 'harness=apply_diagnostic_harness_v319.py' V3-BUILD-IDENTITY.txt
+          grep -Fx 'routing=exact-fail-closed' V3-BUILD-IDENTITY.txt
+          grep -Fx 'generated_source_identity=passed' V3-BUILD-IDENTITY.txt
           grep -n 'OPENMW_V319_FOCUS_CADENCE' apps/openmw/engine.cpp
           grep -n 'frameNumber % v319FocusCadence' apps/openmw/engine.cpp
           grep -n 'openmw-custom-v3.19-cpu-p1' apps/openmw/engine.cpp
@@ -81,6 +87,7 @@ jobs:
           launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
           patch = Path('V3-applied-source.patch').read_text(encoding='utf-8', errors='replace')
           readme = Path('V3-LAB-README.txt').read_text(encoding='utf-8')
+          identity = Path('V3-BUILD-IDENTITY.txt').read_text(encoding='utf-8')
           assert engine.count('OPENMW_V319_FOCUS_CADENCE') == 1
           assert 'mWindowManager->isGuiMode()' in engine
           assert 'Activation/input queries remain untouched.' in engine
@@ -102,7 +109,11 @@ jobs:
           assert 'mNisScaler->dispatch' in patch
           assert 'mV35CoarseChunkOcclusion' in patch
           assert 'V3.19 CPU critical path P1' in readme
-          print('V3.19 P1 CPU policy invariants passed.')
+          for token in ('branch=v3.19-donor-cpu-pack', 'version=V3.19',
+                        'harness=apply_diagnostic_harness_v319.py',
+                        'routing=exact-fail-closed', 'generated_source_identity=passed'):
+              assert token in identity, token
+          print('V3.19 P1 CPU and artifact-identity policy invariants passed.')
           PY
 
       - name: Parse-check generated PowerShell launcher
@@ -121,13 +132,14 @@ jobs:
           }
           Write-Host 'V3_Lab.ps1 parse check passed.'
 
-      - name: Upload exact generated V3.19 patch
+      - name: Upload exact generated V3.19 patch and identity
         uses: actions/upload-artifact@v4
         with:
           name: v319-preflight-applied-source-${{ github.sha }}
           path: |
             V3-applied-source.patch
             V3-applied-source-stat.txt
+            V3-BUILD-IDENTITY.txt
             V3-LAB-README.txt
             V3.18-RENDER-LAYER.txt
             V3.18-NIS-PROVENANCE.txt
