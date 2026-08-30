@@ -57,4 +57,4 @@ source = source.replace(old_defaults, new_defaults, 1)
 # Exact-count guards above are the compatibility invariant. Execute the
 # corrected P1 layer only after all generated-source rewrites have succeeded.
 exec(compile(source, str(base), "exec"), {"__file__": str(base), "__name__": "__main__"})
-print("V3.19 P1 generated ObjectPaging/launcher compatibility applied")
+print("V3.19 P1 generated ObjectPaging/launcher compatibility applied; full-build gate ready")
