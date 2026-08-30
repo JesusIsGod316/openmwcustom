@@ -74,6 +74,31 @@ text = text.replace(manifest_anchor, manifest_anchor
     + '\n    "v319_focus_cadence=$V319FocusCadence",'
     + '\n    "v319_osg_threading=$V319OsgThreading",', 1)
 
+# V3.17's stock runtime stash is generated packaging state rather than an engine
+# dependency.  Some later Windows artifacts retain the verified stock lua51.dll
+# at the build root but omit v317-runtime/stock/lua51.dll.  Reconstruct that
+# stash only for stock-Lua modes and only when the root DLL has the exact known
+# V3.17 stock hash.  Rubicon remains fail-closed if its separate runtime is absent.
+bootstrap_anchor = "    $selectedLua = if ($V317LuaRuntime -eq 'rubicon') { $rubiconLua } else { $stockLua }"
+if text.count(bootstrap_anchor) != 1:
+    raise RuntimeError("V3.19 stock Lua bootstrap anchor mismatch")
+bootstrap_block = r'''
+    $V319StockLuaSha256 = 'A8636655927F70BAD350ED60E0F369992B32259EC8D2FD5D350E1A9A9811AE8B'
+    if ($V317LuaRuntime -eq 'stock' -and -not (Test-Path -LiteralPath $stockLua)) {
+        if (-not (Test-Path -LiteralPath $rootLua)) {
+            throw "V3.19 stock Lua bootstrap failure: missing both $stockLua and $rootLua"
+        }
+        $rootLuaHash = (Get-FileHash -LiteralPath $rootLua -Algorithm SHA256).Hash
+        if ($rootLuaHash -ne $V319StockLuaSha256) {
+            throw "V3.19 stock Lua bootstrap failure: root lua51.dll hash mismatch ($rootLuaHash)"
+        }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $stockLua) -Force | Out-Null
+        Copy-Item -LiteralPath $rootLua -Destination $stockLua -Force
+        Write-Host 'V3.19: bootstrapped verified stock LuaJIT runtime from packaged root lua51.dll.' -ForegroundColor DarkGray
+    }
+'''
+text = text.replace(bootstrap_anchor, bootstrap_anchor + bootstrap_block, 1)
+
 launch_anchor = "    $process = Start-Process -FilePath $Exe -WorkingDirectory $GameDir -PassThru"
 if text.count(launch_anchor) != 1:
     raise RuntimeError("V3.19 Start-Process anchor mismatch")
@@ -96,9 +121,19 @@ for required in (
     "CullThreadPerCameraDrawThreadPerContext",
     "v319_focus_cadence=$V319FocusCadence",
     "OPENMW_V319_FOCUS_CADENCE",
+    "A8636655927F70BAD350ED60E0F369992B32259EC8D2FD5D350E1A9A9811AE8B",
+    "V3.19 stock Lua bootstrap failure",
+    "bootstrapped verified stock LuaJIT runtime",
 ):
     if required not in text:
         raise RuntimeError(f"V3.19 launcher missing marker: {required}")
 
+# Ordering is a safety property: verification/bootstrap must occur before the
+# inherited V3.17 missing-runtime loop and before any root DLL replacement.
+if text.index("$V319StockLuaSha256") > text.index("foreach ($requiredLua in @($stockLua, $selectedLua))"):
+    raise RuntimeError("V3.19 stock Lua bootstrap occurs after runtime identity check")
+if text.index("$rootLuaHash = (Get-FileHash") > text.index("Copy-Item -LiteralPath $rootLua -Destination $stockLua -Force"):
+    raise RuntimeError("V3.19 stock Lua copy occurs before root hash verification")
+
 launcher.write_text(text, encoding="utf-8", newline="\n")
-print("V3.19 CPU causal modes 102-108 added")
+print("V3.19 CPU causal modes 102-108 and verified stock-Lua bootstrap added")
