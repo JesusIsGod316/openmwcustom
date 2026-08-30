@@ -14,6 +14,7 @@ on:
   push:
     branches:
       - v3.19-donor-cpu-pack
+      - v3.19-p0-stable-gaming
 
 env:
   BUILD_TYPE: RelWithDebInfo
@@ -59,7 +60,10 @@ jobs:
           cat V3-applied-source-stat.txt
           grep -n 'OPENMW_V319_FOCUS_CADENCE' apps/openmw/engine.cpp
           grep -n 'frameNumber % v319FocusCadence' apps/openmw/engine.cpp
+          grep -n 'Settings::cells().mV319FocusCadence' apps/openmw/engine.cpp
           grep -n 'openmw-custom-v3.19-cpu-p0' apps/openmw/engine.cpp
+          grep -n 'openmw-custom-v3.19-p0-stable-gaming' apps/openmw/engine.cpp
+          grep -n 'v3.19 focus cadence = 2' files/settings-default.cfg
           grep -n '102 = V3.19 CPU control' tools/v3/launchers/V3_Lab.ps1
           grep -n '108 = V3.19 per-camera cull/draw' tools/v3/launchers/V3_Lab.ps1
           grep -n 'Enter 1 through 108' tools/v3/launchers/V3_Lab.ps1
@@ -77,10 +81,16 @@ jobs:
           launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
           patch = Path('V3-applied-source.patch').read_text(encoding='utf-8', errors='replace')
           readme = Path('V3-LAB-README.txt').read_text(encoding='utf-8')
+          settings = Path('files/settings-default.cfg').read_text(encoding='utf-8')
+          cells = Path('components/settings/categories/cells.hpp').read_text(encoding='utf-8')
           assert engine.count('OPENMW_V319_FOCUS_CADENCE') == 1
           assert 'mWindowManager->isGuiMode()' in engine
           assert 'Activation/input queries remain untouched.' in engine
-          assert 'openmw-custom-v3.19-cpu-p0' in engine
+          assert 'Settings::cells().mV319FocusCadence' in engine
+          assert 'openmw-custom-v3.19-p0-stable-gaming' in engine
+          assert 'mV319FocusCadence' in cells
+          assert 'makeClampSanitizerInt(1, 3)' in cells
+          assert 'v3.19 focus cadence = 2' in settings
           for token in ('v319-cpu-control','v319-focus2','v319-focus3',
                         'v319-osg-culldraw','v319-osg-percamera',
                         'v319-osg-culldraw-focus2','v319-osg-percamera-focus2',
@@ -89,7 +99,9 @@ jobs:
           assert 'mNisScaler->dispatch' in patch
           assert 'mV35CoarseChunkOcclusion' in patch
           assert 'V3.19 CPU critical path P0' in readme
-          print('V3.19 CPU policy invariants passed.')
+          for forbidden in ('v319StaticInstance', 'OPENMW_V319_STATIC_INSTANCING'):
+              assert forbidden not in patch, forbidden
+          print('V3.19 clean-P0 stable gaming policy invariants passed.')
           PY
 
       - name: Parse-check generated PowerShell launcher
