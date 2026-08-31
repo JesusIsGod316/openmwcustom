@@ -83,13 +83,15 @@ text = text.replace(
     1,
 )
 
-finally_anchor = "finally {\n    Remove-Item Env:OPENMW_V320_FOCUS_ADAPTIVE -ErrorAction SilentlyContinue"
-if text.count(finally_anchor) != 1:
-    raise RuntimeError("V3.21 finally anchor mismatch")
+# Final V3.20 cleanup contains several V3.20 env removals before the focus line.
+# Anchor to the unique focus cleanup itself rather than assuming it is first in
+# the finally block.
+cleanup_anchor = "    Remove-Item Env:OPENMW_V320_FOCUS_ADAPTIVE -ErrorAction SilentlyContinue"
+if text.count(cleanup_anchor) != 1:
+    raise RuntimeError(f"V3.21 cleanup anchor mismatch: {text.count(cleanup_anchor)}")
 text = text.replace(
-    finally_anchor,
-    "finally {\n    Remove-Item Env:OPENMW_V321_COMPLETION_GOVERNOR -ErrorAction SilentlyContinue\n"
-    "    Remove-Item Env:OPENMW_V320_FOCUS_ADAPTIVE -ErrorAction SilentlyContinue",
+    cleanup_anchor,
+    "    Remove-Item Env:OPENMW_V321_COMPLETION_GOVERNOR -ErrorAction SilentlyContinue\n" + cleanup_anchor,
     1,
 )
 
@@ -101,6 +103,7 @@ for marker in (
     "v321-cp1-fixed-completion-governor",
     "v321_completion_governor=$V321CompletionGovernor",
     "OPENMW_V321_COMPLETION_GOVERNOR",
+    "Remove-Item Env:OPENMW_V321_COMPLETION_GOVERNOR -ErrorAction SilentlyContinue",
 ):
     if marker not in text:
         raise RuntimeError(f"V3.21 launcher missing marker: {marker}")
