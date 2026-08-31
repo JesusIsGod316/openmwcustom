@@ -12,6 +12,7 @@ exec(
 
 for layer_name in (
     "apply_v321_completion_governor.py",
+    "apply_v321_compile_header_fix.py",
     "apply_v321_runtime_modes.py",
 ):
     layer = HERE / layer_name
@@ -86,6 +87,7 @@ for marker in (
     "V321 Completion OldestAge",
     "getCompiledMutex",
     "getCompiled()",
+    "#include <osgUtil/IncrementalCompileOperation>",
 ):
     if marker not in engine_text:
         raise RuntimeError(f"V3.21 CP1 engine source missing marker: {marker}")
