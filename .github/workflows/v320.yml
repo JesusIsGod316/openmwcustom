@@ -69,7 +69,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          python3 tools/v3/apply_diagnostic_harness_v320.py 2>&1 | tee v320-apply.log
+          python3 tools/v3/apply_diagnostic_harness.py 2>&1 | tee v320-apply.log
           status=${PIPESTATUS[0]}
           exit $status
 
@@ -80,6 +80,17 @@ jobs:
           name: v320-apply-log-${{ github.sha }}
           path: v320-apply.log
           if-no-files-found: warn
+
+      - name: Validate V3.20 build identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f V3-BUILD-IDENTITY.txt
+          grep -Fx "branch=$GITHUB_REF_NAME" V3-BUILD-IDENTITY.txt
+          grep -Fx 'version=V3.20' V3-BUILD-IDENTITY.txt
+          grep -Fx 'harness=apply_diagnostic_harness_v320.py' V3-BUILD-IDENTITY.txt
+          grep -Fx 'routing=exact-fail-closed' V3-BUILD-IDENTITY.txt
+          grep -Fx 'generated_source_identity=passed' V3-BUILD-IDENTITY.txt
 
       - name: Validate generated CP1 markers
         shell: bash
@@ -140,6 +151,7 @@ jobs:
             V3-LAB-README.txt
             V3.18-RENDER-LAYER.txt
             V3.18-NIS-PROVENANCE.txt
+            V3-BUILD-IDENTITY.txt
           if-no-files-found: error
 
   Windows:
