@@ -172,7 +172,7 @@ if any("safejit" in line.lower() for line in (line125, line126, line127)):
     raise RuntimeError("V3.21 CP1 causal modes unexpectedly selected experimental Safe-JIT")
 
 for marker in (
-    "does not throttle WorkQueue",
+    "do not throttle WorkQueue",
     "previously completed frame",
     "nonzero minimum service rate",
     "bounded",
