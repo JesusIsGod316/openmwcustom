@@ -14,16 +14,8 @@ def replace_exact(rel: str, old: str, new: str, expected: int = 1) -> None:
     print(f"V3.21 CP1 patched {rel} ({count} match(es))")
 
 
-# -----------------------------------------------------------------------------
-# V3.21 CP1 fixed completed-work admission governor.
-#
-# Mode 0 is an exact V3.20 control. Mode 1 does NOT throttle async workers or
-# terrain/object preparation. It only:
-#   1. bounds GL objects drained by OSG's IncrementalCompileOperation per frame;
-#   2. bounds completed CompileSets admitted to Viewer::updateTraversal() for
-#      main-thread merge/install, with FIFO ordering and bounded-age extra
-#      progress to prevent indefinite starvation.
-# -----------------------------------------------------------------------------
+# V3.21 CP1: keep async preparation unthrottled and govern only downstream
+# IncrementalCompileOperation GL work plus completed CompileSet merge admission.
 setting_anchor = '''        // V3.20: optionally force a focus refresh when the main camera contract changes.
         // Disabled by default so the promoted fixed-cadence P0 path remains exact.
         SettingValue<bool> mV320AdaptiveFocusCadence{
@@ -33,8 +25,8 @@ replace_exact(
     setting_anchor,
     setting_anchor
     + '''
-        // V3.21 CP1: downstream completed-work admission only. Worker preparation
-        // remains unthrottled. Mode 0=off/exact V3.20, 1=fixed bounded governor.
+        // V3.21 CP1 downstream completed-work admission. Mode 0 preserves the
+        // V3.20 behavior; mode 1 enables the fixed governor.
         SettingValue<int> mV321CompletionGovernorMode{
             mIndex, "V3", "v3.21 completion governor mode", makeClampSanitizerInt(0, 1) };
         SettingValue<int> mV321CompileObjectsPerFrame{
@@ -58,9 +50,8 @@ replace_exact(
     default_anchor
     + '''
 
-# V3.21 CP1 completed-work admission governor. Default off preserves the exact
-# V3.20 foundation. Fixed mode keeps async preload/paging workers running and
-# bounds only ICO GL compile drain plus completed CompileSet main-thread merges.
+# V3.21 CP1 completed-work admission governor. Default off preserves the V3.20
+# foundation. Fixed mode does not throttle WorkQueue/preload producers.
 v3.21 completion governor mode = 0
 v3.21 compile objects per frame = 4
 v3.21 merge sets per frame = 2
@@ -88,9 +79,9 @@ ico_replacement = '''            const int v321CompletionGovernorMode = [] {
 
             if (v321CompletionGovernorMode == 1)
             {
-                // V3.21 CP1 deliberately undoes V3.8's aggressive 36 Hz spare-time
-                // target for this mode. At an already-bound frame, ICO therefore
-                // falls back to its bounded minimum instead of consuming several ms.
+                // V3.8's lab compile-pacing mode uses a deliberately aggressive
+                // 36 Hz spare-time target. CP1 instead follows the configured game
+                // target and relies on a small minimum + hard object cap.
                 compileTarget = configuredTarget;
                 maxObjectsPerFrame
                     = static_cast<unsigned int>(Settings::cells().mV321CompileObjectsPerFrame);
@@ -116,108 +107,116 @@ replace_exact(
     include_anchor + "#include <deque>\n#include <mutex>\n",
 )
 
-traversal_anchor = '''    mViewer->eventTraversal();
-    mViewer->updateTraversal();'''
-traversal_replacement = r'''    mViewer->eventTraversal();
+# The final V3.20 generated source wraps updateTraversal in the established V3
+# frame-tail telemetry scope. Insert inside that exact scope so admission cost is
+# still attributed to UpdateTraversal rather than bypassing existing telemetry.
+traversal_anchor = '''    {
+        Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(
+            Debug::V3HitchTelemetry::FrameTailStage::UpdateTraversal);
+        mViewer->updateTraversal();
+    }'''
+traversal_replacement = r'''    {
+        Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(
+            Debug::V3HitchTelemetry::FrameTailStage::UpdateTraversal);
 
-    // V3.21 CP1: OSG normally merges every fully compiled CompileSet during
-    // Viewer::updateTraversal(). Keep the producer and GL compile paths active,
-    // but hold completed sets in a FIFO and expose only a bounded slice to the
-    // main-thread merge each frame. This is downstream admission, not WorkQueue
-    // throttling. A small bounded-age supplement prevents indefinite starvation.
-    static const int v321CompletionGovernorMode = [] {
-        const int configured = static_cast<int>(Settings::cells().mV321CompletionGovernorMode);
-        const char* value = std::getenv("OPENMW_V321_COMPLETION_GOVERNOR");
-        if (value == nullptr || *value == '\0')
-            return configured;
-        const int parsed = std::atoi(value);
-        return parsed >= 0 && parsed <= 1 ? parsed : configured;
-    }();
+        // V3.21 CP1: OSG normally merges every fully compiled CompileSet here.
+        // Producers and GL preparation remain active; only completed-set admission
+        // to the main-thread merge is bounded. FIFO plus bounded-age extra service
+        // prevents indefinite starvation while smoothing completion bursts.
+        static const int v321CompletionGovernorMode = [] {
+            const int configured = static_cast<int>(Settings::cells().mV321CompletionGovernorMode);
+            const char* value = std::getenv("OPENMW_V321_COMPLETION_GOVERNOR");
+            if (value == nullptr || *value == '\0')
+                return configured;
+            const int parsed = std::atoi(value);
+            return parsed >= 0 && parsed <= 1 ? parsed : configured;
+        }();
 
-    if (v321CompletionGovernorMode == 1)
-    {
-        osgUtil::IncrementalCompileOperation* const ico = mViewer->getIncrementalCompileOperation();
-        if (ico != nullptr)
+        if (v321CompletionGovernorMode == 1)
         {
-            struct V321DeferredCompileSet
+            osgUtil::IncrementalCompileOperation* const ico = mViewer->getIncrementalCompileOperation();
+            if (ico != nullptr)
             {
-                osg::ref_ptr<osgUtil::IncrementalCompileOperation::CompileSet> mSet;
-                unsigned int mFirstDeferredFrame = 0;
-            };
-            struct V321CompletionCounters
-            {
-                std::uint64_t mCompletedSeen = 0;
-                std::uint64_t mAdmitted = 0;
-                std::uint64_t mForced = 0;
-                std::uint64_t mPeakDeferred = 0;
-            };
-
-            static std::deque<V321DeferredCompileSet> deferred;
-            static V321CompletionCounters counters;
-
-            const unsigned int baseBudget
-                = static_cast<unsigned int>(Settings::cells().mV321MergeSetsPerFrame);
-            const unsigned int maxDeferredFrames
-                = static_cast<unsigned int>(Settings::cells().mV321MaxDeferredFrames);
-            const unsigned int forcedBudget
-                = static_cast<unsigned int>(Settings::cells().mV321ForcedMergeSets);
-
-            unsigned int completedThisFrame = 0;
-            unsigned int admittedThisFrame = 0;
-            unsigned int forcedThisFrame = 0;
-            unsigned int oldestAge = 0;
-
-            {
-                std::lock_guard<OpenThreads::Mutex> lock(*ico->getCompiledMutex());
-                osgUtil::IncrementalCompileOperation::CompileSets& completed = ico->getCompiled();
-
-                while (!completed.empty())
+                struct V321DeferredCompileSet
                 {
-                    deferred.push_back(V321DeferredCompileSet{ completed.front(), frameNumber });
-                    completed.pop_front();
-                    ++completedThisFrame;
-                    ++counters.mCompletedSeen;
+                    osg::ref_ptr<osgUtil::IncrementalCompileOperation::CompileSet> mSet;
+                    unsigned int mFirstDeferredFrame = 0;
+                };
+                struct V321CompletionCounters
+                {
+                    std::uint64_t mCompletedSeen = 0;
+                    std::uint64_t mAdmitted = 0;
+                    std::uint64_t mForced = 0;
+                    std::uint64_t mPeakDeferred = 0;
+                };
+
+                static std::deque<V321DeferredCompileSet> deferred;
+                static V321CompletionCounters counters;
+
+                const unsigned int baseBudget
+                    = static_cast<unsigned int>(Settings::cells().mV321MergeSetsPerFrame);
+                const unsigned int maxDeferredFrames
+                    = static_cast<unsigned int>(Settings::cells().mV321MaxDeferredFrames);
+                const unsigned int forcedBudget
+                    = static_cast<unsigned int>(Settings::cells().mV321ForcedMergeSets);
+
+                unsigned int completedThisFrame = 0;
+                unsigned int admittedThisFrame = 0;
+                unsigned int forcedThisFrame = 0;
+                unsigned int oldestAge = 0;
+
+                {
+                    std::lock_guard<OpenThreads::Mutex> lock(*ico->getCompiledMutex());
+                    osgUtil::IncrementalCompileOperation::CompileSets& completed = ico->getCompiled();
+
+                    while (!completed.empty())
+                    {
+                        deferred.push_back(V321DeferredCompileSet{ completed.front(), frameNumber });
+                        completed.pop_front();
+                        ++completedThisFrame;
+                        ++counters.mCompletedSeen;
+                    }
+
+                    if (!deferred.empty())
+                        oldestAge = frameNumber - deferred.front().mFirstDeferredFrame;
+
+                    unsigned int admissionBudget = baseBudget;
+                    if (deferred.size() > baseBudget && oldestAge >= maxDeferredFrames)
+                        admissionBudget += forcedBudget;
+
+                    while (admittedThisFrame < admissionBudget && !deferred.empty())
+                    {
+                        completed.push_back(deferred.front().mSet);
+                        deferred.pop_front();
+                        ++admittedThisFrame;
+                    }
+
+                    if (admittedThisFrame > baseBudget)
+                        forcedThisFrame = admittedThisFrame - baseBudget;
+
+                    counters.mAdmitted += admittedThisFrame;
+                    counters.mForced += forcedThisFrame;
+                    if (deferred.size() > counters.mPeakDeferred)
+                        counters.mPeakDeferred = deferred.size();
                 }
 
-                if (!deferred.empty())
-                    oldestAge = frameNumber - deferred.front().mFirstDeferredFrame;
-
-                unsigned int admissionBudget = baseBudget;
-                if (deferred.size() > baseBudget && oldestAge >= maxDeferredFrames)
-                    admissionBudget += forcedBudget;
-
-                while (admittedThisFrame < admissionBudget && !deferred.empty())
+                if (reportResource)
                 {
-                    completed.push_back(deferred.front().mSet);
-                    deferred.pop_front();
-                    ++admittedThisFrame;
+                    stats->setAttribute(frameNumber, "V321 Completion Seen", counters.mCompletedSeen);
+                    stats->setAttribute(frameNumber, "V321 Completion Admitted", counters.mAdmitted);
+                    stats->setAttribute(frameNumber, "V321 Completion Forced", counters.mForced);
+                    stats->setAttribute(frameNumber, "V321 Completion PeakDeferred", counters.mPeakDeferred);
+                    stats->setAttribute(frameNumber, "V321 Completion CompletedThisFrame", completedThisFrame);
+                    stats->setAttribute(frameNumber, "V321 Completion AdmittedThisFrame", admittedThisFrame);
+                    stats->setAttribute(
+                        frameNumber, "V321 Completion Deferred", static_cast<double>(deferred.size()));
+                    stats->setAttribute(frameNumber, "V321 Completion OldestAge", oldestAge);
                 }
-
-                if (admittedThisFrame > baseBudget)
-                    forcedThisFrame = admittedThisFrame - baseBudget;
-
-                counters.mAdmitted += admittedThisFrame;
-                counters.mForced += forcedThisFrame;
-                if (deferred.size() > counters.mPeakDeferred)
-                    counters.mPeakDeferred = deferred.size();
-            }
-
-            if (reportResource)
-            {
-                stats->setAttribute(frameNumber, "V321 Completion Seen", counters.mCompletedSeen);
-                stats->setAttribute(frameNumber, "V321 Completion Admitted", counters.mAdmitted);
-                stats->setAttribute(frameNumber, "V321 Completion Forced", counters.mForced);
-                stats->setAttribute(frameNumber, "V321 Completion PeakDeferred", counters.mPeakDeferred);
-                stats->setAttribute(frameNumber, "V321 Completion CompletedThisFrame", completedThisFrame);
-                stats->setAttribute(frameNumber, "V321 Completion AdmittedThisFrame", admittedThisFrame);
-                stats->setAttribute(frameNumber, "V321 Completion Deferred",
-                    static_cast<double>(deferred.size()));
-                stats->setAttribute(frameNumber, "V321 Completion OldestAge", oldestAge);
             }
         }
-    }
 
-    mViewer->updateTraversal();'''
+        mViewer->updateTraversal();
+    }'''
 replace_exact("apps/openmw/engine.cpp", traversal_anchor, traversal_replacement)
 
 identity_anchor = "openmw-custom-v3.20-cp1-focus"
@@ -248,6 +247,7 @@ for rel, required in {
         "openmw-custom-v3.21-cp1-completion-governor",
         "V321 Completion Deferred",
         "getCompiledMutex",
+        "FrameTailStage::UpdateTraversal",
         "mV321ForcedMergeSets",
     ),
 }.items():
