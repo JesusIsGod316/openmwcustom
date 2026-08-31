@@ -42,6 +42,8 @@ jobs:
           set -euo pipefail
           git clone https://github.com/LuaJIT/LuaJIT.git v320-safe-luajit
           git -C v320-safe-luajit checkout --detach "$V320_LUAJIT_SOURCE"
+          git -C v320-safe-luajit config user.name "OpenMW V3.20 CI"
+          git -C v320-safe-luajit config user.email "v320-ci@users.noreply.github.com"
           while IFS= read -r patch; do
             git -C v320-safe-luajit am "$GITHUB_WORKSPACE/tools/v3/luajit-safe-patches/$patch"
           done < tools/v3/luajit-safe-patches/SERIES
@@ -77,7 +79,7 @@ jobs:
         with:
           name: v320-apply-log-${{ github.sha }}
           path: v320-apply.log
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Validate generated CP1 markers
         shell: bash
@@ -172,6 +174,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           git clone https://github.com/LuaJIT/LuaJIT.git v320-safe-luajit
           git -C v320-safe-luajit checkout --detach $env:V320_LUAJIT_SOURCE
+          git -C v320-safe-luajit config user.name "OpenMW V3.20 CI"
+          git -C v320-safe-luajit config user.email "v320-ci@users.noreply.github.com"
           foreach ($patch in Get-Content tools/v3/luajit-safe-patches/SERIES) {
             git -C v320-safe-luajit am (Join-Path $env:GITHUB_WORKSPACE "tools/v3/luajit-safe-patches/$patch")
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
