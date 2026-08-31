@@ -14,6 +14,7 @@ on:
   push:
     branches:
       - v3.21-exterior-pacing
+      - v3.21-exterior-pacing-adaptive
 
 env:
   BUILD_TYPE: RelWithDebInfo
@@ -76,7 +77,14 @@ jobs:
           grep -n 'v3.21 completion governor mode = 0' files/settings-default.cfg
           grep -n '125 = V3.21 CP1 exact final V3.20 foundation control' tools/v3/launchers/V3_Lab.ps1
           grep -n '126 = V3.21 CP1 fixed completed-work admission governor' tools/v3/launchers/V3_Lab.ps1
-          grep -n 'Enter 1 through 126' tools/v3/launchers/V3_Lab.ps1
+          if grep -q '127 = V3.21 CP1 adaptive slack/debt completed-work governor' tools/v3/launchers/V3_Lab.ps1; then
+            grep -n 'openmw-custom-v3.21-cp1-adaptive-governor' apps/openmw/engine.cpp
+            grep -n 'V321 Adaptive MergeBudget' apps/openmw/engine.cpp
+            grep -n 'mV321AdaptiveTargetMilliseconds' components/settings/categories/cells.hpp
+            grep -n 'Enter 1 through 127' tools/v3/launchers/V3_Lab.ps1
+          else
+            grep -n 'Enter 1 through 126' tools/v3/launchers/V3_Lab.ps1
+          fi
 
       - name: Parse-check generated PowerShell launcher
         shell: pwsh
