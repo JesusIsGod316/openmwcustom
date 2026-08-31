@@ -1,0 +1,116 @@
+name: V3.21 exterior pacing CP1 build/QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - full
+  push:
+    branches:
+      - v3.21-exterior-pacing
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Show exact source revision
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git status --short
+
+      - name: Compile-check all V3 Python patch tools
+        shell: bash
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Apply complete V3.21 generated source stack
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness.py 2>&1 | tee v321-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Upload V3.21 apply log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v321-apply-log-${{ github.sha }}
+          path: v321-apply.log
+          if-no-files-found: warn
+
+      - name: Validate V3.21 build identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f V3-BUILD-IDENTITY.txt
+          grep -Fx "branch=$GITHUB_REF_NAME" V3-BUILD-IDENTITY.txt
+          grep -Fx 'version=V3.21' V3-BUILD-IDENTITY.txt
+          grep -Fx 'harness=apply_diagnostic_harness_v321.py' V3-BUILD-IDENTITY.txt
+          grep -Fx 'routing=exact-fail-closed' V3-BUILD-IDENTITY.txt
+          grep -Fx 'generated_source_identity=passed' V3-BUILD-IDENTITY.txt
+
+      - name: Validate generated V3.21 CP1 markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -n 'openmw-custom-v3.21-cp1-completion-governor' apps/openmw/engine.cpp
+          grep -n 'V321 Completion Deferred' apps/openmw/engine.cpp
+          grep -n 'V321 Completion OldestAge' apps/openmw/engine.cpp
+          grep -n 'getCompiledMutex' apps/openmw/engine.cpp
+          grep -n 'OPENMW_V321_COMPLETION_GOVERNOR' apps/openmw/mwrender/renderingmanager.cpp
+          grep -n 'mV321CompletionGovernorMode' components/settings/categories/cells.hpp
+          grep -n 'v3.21 completion governor mode = 0' files/settings-default.cfg
+          grep -n '125 = V3.21 CP1 exact final V3.20 foundation control' tools/v3/launchers/V3_Lab.ps1
+          grep -n '126 = V3.21 CP1 fixed completed-work admission governor' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'Enter 1 through 126' tools/v3/launchers/V3_Lab.ps1
+
+      - name: Parse-check generated PowerShell launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Host 'V3_Lab.ps1 parse check passed.'
+
+      - name: Upload exact generated V3.21 source
+        uses: actions/upload-artifact@v4
+        with:
+          name: v321-preflight-applied-source-${{ github.sha }}
+          path: |
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+            V3.18-RENDER-LAYER.txt
+            V3.18-NIS-PROVENANCE.txt
+            V3-BUILD-IDENTITY.txt
+          if-no-files-found: error
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: false
