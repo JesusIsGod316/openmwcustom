@@ -45,7 +45,7 @@ jobs:
       if: ${{ github.ref_name == 'v3-performance' || startsWith(github.ref_name, 'v3.') }}
       run: |
         if ($env:GITHUB_REF_NAME -like 'v3.20-*') {
-          python tools/v3/apply_diagnostic_harness_v320.py
+          python tools/v3/apply_diagnostic_harness.py
         } elseif ($env:GITHUB_REF_NAME -like 'v3.9-*') {
           python tools/v3/apply_diagnostic_harness_v39.py
         } elseif ($env:GITHUB_REF_NAME -like 'v3.8-*') {
