@@ -2,6 +2,7 @@ SCHEMA=V321_CP2_SOURCE_AUDIT/1
 STATUS=PREPARED_CONDITIONAL_NOT_ENABLED
 BASE_BRANCH=v3.21-exterior-pacing-adaptive
 CONDITION=ONLY_IF_CP1_125_127_LEAVES_COMPLETION_STORMS
+MODE127_PREFLIGHT=SUCCESS@2365b54bf625e8ac7f277b1ba4b1574a111c2056
 
 LOCKS:
 - DO_NOT_THROTTLE_ASYNC_PREPARATION
@@ -27,5 +28,5 @@ CP2_IMPLEMENTATION_BOUNDARY:
 CURRENT_PARALLEL_WORK:
 - MODE125=exact V3.20 control
 - MODE126=fixed downstream compile+completed-set governor
-- MODE127=adaptive previous-frame slack/debt merge governor; fixed ICO compile cap retained
+- MODE127=adaptive previous-frame slack/debt merge governor; fixed ICO compile cap retained; source preflight green
 - MODE128=NOT_IMPLEMENTED_UNLESS_126_127_RESULTS_JUSTIFY_AN_ORTHOGONAL_COMBINATION
