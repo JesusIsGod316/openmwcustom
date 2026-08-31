@@ -27,10 +27,22 @@ text, count = re.subn(
 if count != 1:
     raise RuntimeError("V3.21 choice-range anchor mismatch")
 
-default_anchor = "$V320FocusAdaptive = '0'"
+# Match the final V3.20 launcher defaults as a multiline block. The single
+# V320FocusAdaptive assignment also appears inside many mode bodies, so it is
+# intentionally not used as a global one-line anchor.
+default_anchor = """$V319OsgThreading = ''
+$V320FocusAdaptive = '0'
+$V320EngineLuaFastPaths = '0'"""
 if text.count(default_anchor) != 1:
-    raise RuntimeError("V3.21 default governor anchor mismatch")
-text = text.replace(default_anchor, default_anchor + "\n$V321CompletionGovernor = '0'", 1)
+    raise RuntimeError(f"V3.21 default governor anchor mismatch: {text.count(default_anchor)}")
+text = text.replace(
+    default_anchor,
+    """$V319OsgThreading = ''
+$V320FocusAdaptive = '0'
+$V321CompletionGovernor = '0'
+$V320EngineLuaFastPaths = '0'""",
+    1,
+)
 
 line123 = next((line for line in text.splitlines() if line.lstrip().startswith("'123'")), None)
 line124 = next((line for line in text.splitlines() if line.lstrip().startswith("'124'")), None)
