@@ -1,0 +1,168 @@
+From 82a1c9b535c5993db6b9d0e6c0cbd06951babd80 Mon Sep 17 00:00:00 2001
+From: Dave Corley <corleycomputerrepair@protonmail.ch>
+Date: Sun, 7 Jun 2026 22:29:17 -0500
+Subject: [PATCH 02/11] Add mtspec regression tests
+
+---
+ t/mtspec.t | 152 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 152 insertions(+)
+ create mode 100644 t/mtspec.t
+
+diff --git a/t/mtspec.t b/t/mtspec.t
+new file mode 100644
+index 0000000..93ca53a
+--- /dev/null
++++ b/t/mtspec.t
+@@ -0,0 +1,152 @@
++# vim:ft=
++
++use lib '.';
++use t::TestLJ;
++
++plan tests => 3 * blocks();
++
++run_tests();
++
++__DATA__
++
++=== TEST 1: __index table metatable replacement after recording
++--- lua
++jit.on()
++require "jit.opt".start("hotloop=1")
++
++local t = setmetatable({}, { __index = { x = 1 } })
++local sum = 0
++
++for i = 1, 20 do
++  sum = sum + t.x
++end
++
++setmetatable(t, { __index = { x = 2 } })
++
++for i = 1, 20 do
++  sum = sum + t.x
++end
++
++assert(sum == 60, sum)
++print("ok")
++--- out
++ok
++--- err
++
++
++
++=== TEST 2: __index function mutation after recording
++--- lua
++jit.on()
++require "jit.opt".start("hotloop=1")
++
++local mt = { __index = function() return 1 end }
++local t = setmetatable({}, mt)
++local sum = 0
++
++for i = 1, 20 do
++  sum = sum + t.x
++end
++
++mt.__index = function() return 2 end
++
++for i = 1, 20 do
++  sum = sum + t.x
++end
++
++assert(sum == 60, sum)
++print("ok")
++--- out
++ok
++--- err
++
++
++
++=== TEST 3: __newindex missing and existing key behavior
++--- lua
++jit.on()
++require "jit.opt".start("hotloop=1")
++
++local sink1, sink2 = {}, {}
++local t = setmetatable({ existing = 0 }, { __newindex = sink1 })
++
++for i = 1, 20 do
++  t.existing = i
++end
++
++for i = 1, 20 do
++  t.missing = i
++end
++
++setmetatable(t, { __newindex = sink2 })
++
++for i = 21, 40 do
++  t.existing = i
++  t.missing = i
++end
++
++assert(t.existing == 40, t.existing)
++assert(t.missing == nil)
++assert(sink1.missing == 20, sink1.missing)
++assert(sink2.missing == 40, sink2.missing)
++print("ok")
++--- out
++ok
++--- err
++
++
++
++=== TEST 4: rawget rawset and unpack stay raw
++--- lua
++jit.on()
++require "jit.opt".start("hotloop=1")
++
++local calls = 0
++local t = setmetatable({ 1, nil, 3 }, {
++  __index = function()
++    calls = calls + 1
++    return 99
++  end
++})
++
++for i = 1, 20 do
++  assert(rawget(t, "missing") == nil or rawget(t, "missing") == i - 1)
++  rawset(t, "missing", i)
++  local a, b, c = unpack(t, 1, 3)
++  assert(a == 1)
++  assert(b == nil)
++  assert(c == 3)
++end
++
++assert(calls == 0, calls)
++assert(t.missing == 20, t.missing)
++print("ok")
++--- out
++ok
++--- err
++
++
++
++=== TEST 5: __call metatable replacement after recording
++--- lua
++jit.on()
++require "jit.opt".start("hotloop=1")
++
++local f = setmetatable({}, { __call = function() return 1 end })
++local sum = 0
++
++for i = 1, 20 do
++  sum = sum + f()
++end
++
++setmetatable(f, { __call = function() return 2 end })
++
++for i = 1, 20 do
++  sum = sum + f()
++end
++
++assert(sum == 60, sum)
++print("ok")
++--- out
++ok
++--- err

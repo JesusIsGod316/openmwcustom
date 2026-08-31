@@ -1,0 +1,22 @@
+From 37e5de32eb8376c7e1e1ec35f809118208712654 Mon Sep 17 00:00:00 2001
+From: Dave Corley <corleycomputerrepair@protonmail.ch>
+Date: Sun, 7 Jun 2026 23:28:18 -0500
+Subject: [PATCH 08/11] Conservatively avoid self-referential heavy sinks
+
+---
+ src/lj_opt_sink.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/lj_opt_sink.c b/src/lj_opt_sink.c
+index 1107f4b..260e692 100644
+--- a/src/lj_opt_sink.c
++++ b/src/lj_opt_sink.c
+@@ -130,7 +130,7 @@ static int sink_mark_ins(jit_State *J, int lightsink)
+ 	  irt_ismarked(ira->t)) {
+ 	irt_setmark(IR(ir->op1)->t);  /* Mark ineligible ref. */
+ 	irt_setmark(irv->t);  /* Mark stored value. */
+-      } else if (lightsink || !valalloc || ir->o == IR_XSTORE) {
++      } else if (lightsink || !valalloc || ira == irv || ir->o == IR_XSTORE) {
+ 	irt_setmark(irv->t);
+       } else {
+ 	ira->prev |= SINK_ASSUMED;

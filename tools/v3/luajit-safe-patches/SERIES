@@ -1,0 +1,11 @@
+0001-JIT-port-guarded-metatable-specialization.patch
+0002-Add-mtspec-regression-tests.patch
+0003-Specialize-to-the-global-environment.patch
+0004-Add-globalspec-regression-tests.patch
+0005-Cover-globalspec-env-guard-side-exits.patch
+0006-Port-improved-sinking-optimization.patch
+0007-Harden-improved-sinking-restore-invariants.patch
+0008-Conservatively-avoid-self-referential-heavy-sinks.patch
+0009-Add-improved-sinking-regression-tests.patch
+0010-Bound-heavy-sink-restore-scan-cost.patch
+0011-Assert-improved-sinking-optimizer-coverage.patch

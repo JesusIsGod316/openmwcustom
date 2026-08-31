@@ -1,0 +1,78 @@
+From d8d61e079876321e43ed4b37c1e14b833d9315b1 Mon Sep 17 00:00:00 2001
+From: Dave Corley <corleycomputerrepair@protonmail.ch>
+Date: Sun, 7 Jun 2026 23:20:27 -0500
+Subject: [PATCH 07/11] Harden improved sinking restore invariants
+
+---
+ src/lj_opt_sink.c | 27 +++++++++++++++++++++------
+ 1 file changed, 21 insertions(+), 6 deletions(-)
+
+diff --git a/src/lj_opt_sink.c b/src/lj_opt_sink.c
+index cfe8555..1107f4b 100644
+--- a/src/lj_opt_sink.c
++++ b/src/lj_opt_sink.c
+@@ -22,6 +22,13 @@
+ #define SINK_ASSUMED	0x2000
+ #define SINK_NEEDSIDX	0x4000
+ #define SINK_HASIDX	0x8000
++#define SINK_MAX_HEAVY	0xfe
++
++static LJ_AINLINE int sink_isallocop(IROp op)
++{
++  return op == IR_TNEW || op == IR_TDUP ||
++	 (LJ_HASFFI && (op == IR_CNEW || op == IR_CNEWI));
++}
+ 
+ /* Check whether the store ref points to an eligible allocation. */
+ static IRIns *sink_checkalloc(jit_State *J, IRIns *irs)
+@@ -118,12 +125,12 @@ static int sink_mark_ins(jit_State *J, int lightsink)
+     case IR_ASTORE: case IR_HSTORE: case IR_FSTORE: case IR_XSTORE: {
+       IRIns *ira = sink_checkalloc(J, ir);
+       IRIns *irv = IR(ir->op2);
++      int valalloc = sink_isallocop((IROp)irv->o);
+       if (!ira || (irt_isphi(ira->t) && !sink_checkphi(J, ira, ir->op2)) ||
+ 	  irt_ismarked(ira->t)) {
+ 	irt_setmark(IR(ir->op1)->t);  /* Mark ineligible ref. */
+ 	irt_setmark(irv->t);  /* Mark stored value. */
+-      } else if (lightsink ||
+-		 (irv->o != IR_TNEW && irv->o != IR_TDUP && irv->o != IR_CNEW)) {
++      } else if (lightsink || !valalloc || ir->o == IR_XSTORE) {
+ 	irt_setmark(irv->t);
+       } else {
+ 	ira->prev |= SINK_ASSUMED;
+@@ -258,10 +265,12 @@ static void sink_sweep_ins(jit_State *J)
+     case IR_TNEW: case IR_TDUP:
+       if (!irt_ismarked(ir->t)) {
+ 	ir->t.irt &= ~IRT_GUARD;
+-	if (ir->prev & SINK_HASIDX)
++	if (ir->prev & SINK_HASIDX) {
++	  lj_assertJ(index < SINK_MAX_HEAVY, "too many heavy sunk allocations");
+ 	  ir->prev = REGSP(RID_SINK, ++index);
+-	else
++	} else {
+ 	  ir->prev = REGSP(RID_SINK, 0);
++	}
+ 	J->cur.sinktags = 1;  /* Signal present SINK tags to assembler. */
+       } else {
+ 	irt_clearmark(ir->t);
+@@ -313,12 +322,18 @@ void lj_opt_sink(jit_State *J)
+       sink_mark_snap(J, &J->cur.snap[J->cur.nsnap-1]);
+     do {
+       heavysinks = sink_mark_ins(J, dolightsink);
+-      dolightsink |= heavysinks >= 0xff;
+-    } while ((J->loopref && sink_remark_phi(J)) || heavysinks >= 0xff);
++      /* Heavy sink identity indexes live in the 8-bit RegSP spill field.
++      ** Index 0 means no identity cache and 255 is reserved for long store
++      ** deltas, so traces exceeding the 1..254 budget fall back to light
++      ** sinking on a second analysis pass instead of relying on assertions.
++      */
++      dolightsink |= heavysinks > SINK_MAX_HEAVY;
++    } while ((J->loopref && sink_remark_phi(J)) || heavysinks > SINK_MAX_HEAVY);
+     sink_sweep_ins(J);
+   }
+ }
+ 
++#undef SINK_MAX_HEAVY
+ #undef SINK_HASIDX
+ #undef SINK_NEEDSIDX
+ #undef SINK_ASSUMED

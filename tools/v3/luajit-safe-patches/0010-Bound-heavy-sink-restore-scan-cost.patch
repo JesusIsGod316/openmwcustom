@@ -1,0 +1,100 @@
+From 6b3f65f2aef1c9c504fe73e1162a60c59878ea26 Mon Sep 17 00:00:00 2001
+From: Dave Corley <corleycomputerrepair@protonmail.ch>
+Date: Sun, 7 Jun 2026 23:45:50 -0500
+Subject: [PATCH 10/11] Bound heavy sink restore scan cost
+
+---
+ src/lj_opt_sink.c | 33 +++++++++++++++++++++++++++------
+ 1 file changed, 27 insertions(+), 6 deletions(-)
+
+diff --git a/src/lj_opt_sink.c b/src/lj_opt_sink.c
+index 260e692..0a53ca7 100644
+--- a/src/lj_opt_sink.c
++++ b/src/lj_opt_sink.c
+@@ -24,6 +24,13 @@
+ #define SINK_HASIDX	0x8000
+ #define SINK_MAX_HEAVY	0xfe
+ 
++/* Heavy nested sinking recursively scans sunk stores during snapshot replay
++** and restore. Bound the generated protocol by the trace recorder budget: if
++** a conservative heavy-allocation x sunk-store estimate exceeds maxrecord,
++** retry with light sinking so nested allocations are not sunk into stores.
++*/
++#define SINK_MAX_HEAVY_SCAN(J)	((J)->param[JIT_P_maxrecord])
++
+ static LJ_AINLINE int sink_isallocop(IROp op)
+ {
+   return op == IR_TNEW || op == IR_TDUP ||
+@@ -101,19 +108,23 @@ static void sink_prepare(jit_State *J)
+ ** - Stores with non-constant keys.
+ ** - All stored values.
+ */
+-static int sink_mark_ins(jit_State *J, int lightsink)
++static int sink_mark_ins(jit_State *J, int lightsink, uint32_t *scancost)
+ {
+   int remark = 0;
+   int heavysinks = 0;
++  int sunkstores = 0;
+   IRIns *ir, *irlast = IR(J->cur.nins-1);
+   for (ir = irlast ; ; ir--) {
+     switch (ir->o) {
+     case IR_BASE:
+-      if (!remark)
+-	return heavysinks;  /* Finished. */
++	if (!remark) {
++	  *scancost = (uint32_t)heavysinks * (uint32_t)sunkstores;
++	  return heavysinks;  /* Finished. */
++	}
+       ir = irlast + 1;
+       remark = 0;
+       heavysinks = 0;
++      sunkstores = 0;
+       break;
+     case IR_ALOAD: case IR_HLOAD: case IR_XLOAD: case IR_TBAR: case IR_ALEN:
+       irt_setmark(IR(ir->op1)->t);  /* Mark ref for remaining loads. */
+@@ -131,8 +142,10 @@ static int sink_mark_ins(jit_State *J, int lightsink)
+ 	irt_setmark(IR(ir->op1)->t);  /* Mark ineligible ref. */
+ 	irt_setmark(irv->t);  /* Mark stored value. */
+       } else if (lightsink || !valalloc || ira == irv || ir->o == IR_XSTORE) {
++	sunkstores++;
+ 	irt_setmark(irv->t);
+       } else {
++	sunkstores++;
+ 	ira->prev |= SINK_ASSUMED;
+ 	irv->prev |= SINK_NEEDSIDX;
+       }
+@@ -316,23 +329,31 @@ void lj_opt_sink(jit_State *J)
+       (J->chain[IR_TNEW] || J->chain[IR_TDUP] ||
+        (LJ_HASFFI && (J->chain[IR_CNEW] || J->chain[IR_CNEWI])))) {
+     int heavysinks;
++    uint32_t heavycost;
+     int dolightsink = 0;
++    int overbudget;
+     sink_prepare(J);
+     if (!J->loopref)
+       sink_mark_snap(J, &J->cur.snap[J->cur.nsnap-1]);
+     do {
+-      heavysinks = sink_mark_ins(J, dolightsink);
++      heavysinks = sink_mark_ins(J, dolightsink, &heavycost);
+       /* Heavy sink identity indexes live in the 8-bit RegSP spill field.
+       ** Index 0 means no identity cache and 255 is reserved for long store
+       ** deltas, so traces exceeding the 1..254 budget fall back to light
+       ** sinking on a second analysis pass instead of relying on assertions.
++      ** Independently, heavy snapshot replay/restore recursively scans sunk
++      ** stores. Keep that scan-cost protocol within the recorder's maxrecord
++      ** scale, or disable heavy nested sinking for this trace.
+       */
+-      dolightsink |= heavysinks > SINK_MAX_HEAVY;
+-    } while ((J->loopref && sink_remark_phi(J)) || heavysinks > SINK_MAX_HEAVY);
++      overbudget = !dolightsink &&
++	(heavysinks > SINK_MAX_HEAVY || heavycost > SINK_MAX_HEAVY_SCAN(J));
++      dolightsink |= overbudget;
++    } while ((J->loopref && sink_remark_phi(J)) || overbudget);
+     sink_sweep_ins(J);
+   }
+ }
+ 
++#undef SINK_MAX_HEAVY_SCAN
+ #undef SINK_MAX_HEAVY
+ #undef SINK_HASIDX
+ #undef SINK_NEEDSIDX

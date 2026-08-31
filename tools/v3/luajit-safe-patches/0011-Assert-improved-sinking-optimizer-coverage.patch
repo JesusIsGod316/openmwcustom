@@ -1,0 +1,173 @@
+From d017a699ed54cfb681963743b2d9d21129f447dd Mon Sep 17 00:00:00 2001
+From: Dave Corley <corleycomputerrepair@protonmail.ch>
+Date: Sun, 7 Jun 2026 23:45:54 -0500
+Subject: [PATCH 11/11] Assert improved sinking optimizer coverage
+
+---
+ t/sink.t | 116 ++++++++++++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 111 insertions(+), 5 deletions(-)
+
+diff --git a/t/sink.t b/t/sink.t
+index 9a16291..0eebb3a 100644
+--- a/t/sink.t
++++ b/t/sink.t
+@@ -14,6 +14,38 @@ __DATA__
+ jit.on()
+ require "jit.opt".start("hotloop=1")
+ 
++local bit = require "bit"
++local jutil = require "jit.util"
++local OPC_ASTORE, OPC_XSTORE = 74, 78
++local OPC_TNEW, OPC_TDUP = 81, 82
++local RID_SINK, RID_SUNK = 254, 253
++
++local function sink_stats()
++  local traces, allocs, stores, heavy, maxidx = 0, 0, 0, 0, 0
++  for tr = 1, 100 do
++    local info = jutil.traceinfo(tr)
++    if info then
++      traces = traces + 1
++      for ref = 1, info.nins do
++        local _, ot, _, _, ridsp = jutil.traceir(tr, ref)
++        local op = bit.rshift(ot, 8)
++        local rid = bit.band(ridsp, 255)
++        local slot = bit.rshift(ridsp, 8)
++        if rid == RID_SUNK and (op == OPC_TNEW or op == OPC_TDUP) then
++          allocs = allocs + 1
++          if slot > 0 then
++            heavy = heavy + 1
++            if slot > maxidx then maxidx = slot end
++          end
++        elseif rid == RID_SINK and op >= OPC_ASTORE and op <= OPC_XSTORE then
++          stores = stores + 1
++        end
++      end
++    end
++  end
++  return traces, allocs, stores, heavy, maxidx
++end
++
+ local function f(i)
+   local child = { v = i }
+   local parent = { a = child, b = child }
+@@ -29,6 +61,12 @@ end
+ 
+ assert(p.a == p.b)
+ assert(p.a.v == 20, p.a.v)
++local traces, allocs, stores, heavy, maxidx = sink_stats()
++assert(traces > 0)
++assert(allocs > 0)
++assert(stores >= 2)
++assert(heavy >= 2)
++assert(maxidx >= 2)
+ print("ok")
+ --- out
+ ok
+@@ -68,6 +106,35 @@ ok
+ jit.on()
+ require "jit.opt".start("hotloop=1")
+ 
++local bit = require "bit"
++local jutil = require "jit.util"
++local OPC_ASTORE, OPC_XSTORE = 74, 78
++local OPC_TNEW, OPC_TDUP = 81, 82
++local RID_SINK, RID_SUNK = 254, 253
++
++local function sink_stats()
++  local traces, allocs, stores, heavy = 0, 0, 0, 0
++  for tr = 1, 100 do
++    local info = jutil.traceinfo(tr)
++    if info then
++      traces = traces + 1
++      for ref = 1, info.nins do
++        local _, ot, _, _, ridsp = jutil.traceir(tr, ref)
++        local op = bit.rshift(ot, 8)
++        local rid = bit.band(ridsp, 255)
++        local slot = bit.rshift(ridsp, 8)
++        if rid == RID_SUNK and (op == OPC_TNEW or op == OPC_TDUP) then
++          allocs = allocs + 1
++          if slot > 0 then heavy = heavy + 1 end
++        elseif rid == RID_SINK and op >= OPC_ASTORE and op <= OPC_XSTORE then
++          stores = stores + 1
++        end
++      end
++    end
++  end
++  return traces, allocs, stores, heavy
++end
++
+ local function f(i)
+   local leaf = { 1, 2, tag = i }
+   local parent = { leaf = leaf, fresh = { n = i + 1 } }
+@@ -85,6 +152,11 @@ assert(p.leaf[1] == 1)
+ assert(p.leaf[2] == 2)
+ assert(p.leaf.tag == 20, p.leaf.tag)
+ assert(p.fresh.n == 21, p.fresh.n)
++local traces, allocs, stores, heavy = sink_stats()
++assert(traces > 0)
++assert(allocs > 0)
++assert(stores > 0)
++assert(heavy > 0)
+ print("ok")
+ --- out
+ ok
+@@ -158,11 +230,40 @@ ok
+ === TEST 6: many nested allocations exercise heavy sink budget fallback
+ --- lua
+ jit.on()
+-require "jit.opt".start("hotloop=1")
++require "jit.opt".start("hotloop=1", "maxrecord=800")
++
++local bit = require "bit"
++local jutil = require "jit.util"
++local OPC_ASTORE, OPC_XSTORE = 74, 78
++local OPC_TNEW, OPC_TDUP = 81, 82
++local RID_SINK, RID_SUNK = 254, 253
++
++local function sink_stats()
++  local traces, allocs, stores, heavy = 0, 0, 0, 0
++  for tr = 1, 100 do
++    local info = jutil.traceinfo(tr)
++    if info then
++      traces = traces + 1
++      for ref = 1, info.nins do
++        local _, ot, _, _, ridsp = jutil.traceir(tr, ref)
++        local op = bit.rshift(ot, 8)
++        local rid = bit.band(ridsp, 255)
++        local slot = bit.rshift(ridsp, 8)
++        if rid == RID_SUNK and (op == OPC_TNEW or op == OPC_TDUP) then
++          allocs = allocs + 1
++          if slot > 0 then heavy = heavy + 1 end
++        elseif rid == RID_SINK and op >= OPC_ASTORE and op <= OPC_XSTORE then
++          stores = stores + 1
++        end
++      end
++    end
++  end
++  return traces, allocs, stores, heavy
++end
+ 
+ local parts = { "return function(i) local r = {}" }
+-for n = 1, 270 do
+-  parts[#parts + 1] = " r.k"..n.." = { v = "..n.." }"
++for n = 1, 40 do
++  parts[#parts + 1] = " local c"..n.." = { v = "..n.." }; r.k"..n.." = c"..n
+ end
+ parts[#parts + 1] = " if i > 10 then return r end end"
+ 
+@@ -173,8 +274,13 @@ for i = 1, 20 do
+ end
+ 
+ assert(r.k1.v == 1, r.k1.v)
+-assert(r.k254.v == 254, r.k254.v)
+-assert(r.k270.v == 270, r.k270.v)
++assert(r.k20.v == 20, r.k20.v)
++assert(r.k40.v == 40, r.k40.v)
++local traces, allocs, stores, heavy = sink_stats()
++assert(traces > 0)
++assert(allocs > 0)
++assert(stores > 0)
++assert(heavy == 0, heavy)
+ print("ok")
+ --- out
+ ok

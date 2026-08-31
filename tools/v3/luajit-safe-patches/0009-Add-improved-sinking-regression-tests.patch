@@ -1,0 +1,197 @@
+From df025409d21b85cb3ae5b6aaf33a8d62a4978b55 Mon Sep 17 00:00:00 2001
+From: Dave Corley <corleycomputerrepair@protonmail.ch>
+Date: Sun, 7 Jun 2026 23:28:22 -0500
+Subject: [PATCH 09/11] Add improved sinking regression tests
+
+---
+ t/sink.t | 181 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 181 insertions(+)
+ create mode 100644 t/sink.t
+
+diff --git a/t/sink.t b/t/sink.t
+new file mode 100644
+index 0000000..9a16291
+--- /dev/null
++++ b/t/sink.t
+@@ -0,0 +1,181 @@
++# vim:ft=
++
++use lib '.';
++use t::TestLJ;
++
++plan tests => 3 * blocks();
++
++run_tests();
++
++__DATA__
++
++=== TEST 1: nested table alias survives side exit
++--- lua
++jit.on()
++require "jit.opt".start("hotloop=1")
++
++local function f(i)
++  local child = { v = i }
++  local parent = { a = child, b = child }
++  if i > 10 then
++    return parent
++  end
++end
++
++local p
++for i = 1, 20 do
++  p = f(i)
++end
++
++assert(p.a == p.b)
++assert(p.a.v == 20, p.a.v)
++print("ok")
++--- out
++ok
++--- err
++
++
++
++=== TEST 2: self-cycle survives side exit
++--- lua
++jit.on()
++require "jit.opt".start("hotloop=1")
++
++local function f(i)
++  local t = { v = i }
++  t.self = t
++  if i > 10 then
++    return t
++  end
++end
++
++local t
++for i = 1, 20 do
++  t = f(i)
++end
++
++assert(t.self == t)
++assert(t.v == 20, t.v)
++print("ok")
++--- out
++ok
++--- err
++
++
++
++=== TEST 3: nested TDUP and TNEW survive side exit
++--- lua
++jit.on()
++require "jit.opt".start("hotloop=1")
++
++local function f(i)
++  local leaf = { 1, 2, tag = i }
++  local parent = { leaf = leaf, fresh = { n = i + 1 } }
++  if i > 10 then
++    return parent
++  end
++end
++
++local p
++for i = 1, 20 do
++  p = f(i)
++end
++
++assert(p.leaf[1] == 1)
++assert(p.leaf[2] == 2)
++assert(p.leaf.tag == 20, p.leaf.tag)
++assert(p.fresh.n == 21, p.fresh.n)
++print("ok")
++--- out
++ok
++--- err
++
++
++
++=== TEST 4: metatable restore survives side exit
++--- lua
++jit.on()
++require "jit.opt".start("hotloop=1")
++
++local mt = { marker = true }
++
++local function f(i)
++  local t = setmetatable({ v = i }, mt)
++  if i > 10 then
++    return t
++  end
++end
++
++local t
++for i = 1, 20 do
++  t = f(i)
++end
++
++assert(getmetatable(t) == mt)
++assert(t.v == 20, t.v)
++print("ok")
++--- out
++ok
++--- err
++
++
++
++=== TEST 5: FFI cdata stored in sunk table survives side exit
++--- lua
++jit.on()
++require "jit.opt".start("hotloop=1")
++
++local ok, ffi = pcall(require, "ffi")
++if not ok then
++  print("ok")
++  return
++end
++
++ffi.cdef[[typedef struct { int x; } sink_point_t;]]
++
++local function f(i)
++  local p = ffi.new("sink_point_t")
++  p.x = i
++  local t = { p = p }
++  if i > 10 then
++    return t
++  end
++end
++
++local t
++for i = 1, 20 do
++  t = f(i)
++end
++
++assert(t.p.x == 20, t.p.x)
++print("ok")
++--- out
++ok
++--- err
++
++
++
++=== TEST 6: many nested allocations exercise heavy sink budget fallback
++--- lua
++jit.on()
++require "jit.opt".start("hotloop=1")
++
++local parts = { "return function(i) local r = {}" }
++for n = 1, 270 do
++  parts[#parts + 1] = " r.k"..n.." = { v = "..n.." }"
++end
++parts[#parts + 1] = " if i > 10 then return r end end"
++
++local f = assert(loadstring(table.concat(parts)))()
++local r
++for i = 1, 20 do
++  r = f(i)
++end
++
++assert(r.k1.v == 1, r.k1.v)
++assert(r.k254.v == 254, r.k254.v)
++assert(r.k270.v == 270, r.k270.v)
++print("ok")
++--- out
++ok
++--- err

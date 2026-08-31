@@ -1,0 +1,27 @@
+From d452e5519940c43b459d98cc8f457744a117d2e5 Mon Sep 17 00:00:00 2001
+From: Jude Melton-Houghton <jwmhjwmh@gmail.com>
+Date: Mon, 14 Nov 2022 08:43:34 -0500
+Subject: [PATCH 03/11] Specialize to the global environment
+
+(cherry picked from commit 0c70d3d34f592a5804e31f895fb13f1adc70ab10)
+---
+ src/lj_record.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/lj_record.c b/src/lj_record.c
+index 8d045f2..093f83a 100644
+--- a/src/lj_record.c
++++ b/src/lj_record.c
+@@ -2575,6 +2575,12 @@ void lj_record_ins(jit_State *J)
+   case BC_GGET: case BC_GSET:
+     settabV(J->L, &ix.tabv, tabref(J->fn->l.env));
+     ix.tab = emitir(IRT(IR_FLOAD, IRT_TAB), getcurrf(J), IRFL_FUNC_ENV);
++    if (gcrefeq(J->fn->l.env, J->L->env)) {
++      /* Specialize to the global environment. */
++      TRef ktab = lj_ir_ktab(J, tabref(J->fn->l.env));
++      emitir(IRTG(IR_EQ, IRT_TAB), ix.tab, ktab);
++      ix.tab = ktab;
++    }
+     ix.idxchain = LJ_MAX_IDXCHAIN;
+     ix.mtspec = 0;
+     rc = lj_record_idx(J, &ix);

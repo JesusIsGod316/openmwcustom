@@ -1,0 +1,63 @@
+From e4727d782c27be3dc89a21ac535258d77e7fc870 Mon Sep 17 00:00:00 2001
+From: Dave Corley <corleycomputerrepair@protonmail.ch>
+Date: Sun, 7 Jun 2026 22:58:08 -0500
+Subject: [PATCH 05/11] Cover globalspec env guard side exits
+
+---
+ t/globalspec.t | 46 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 46 insertions(+)
+
+diff --git a/t/globalspec.t b/t/globalspec.t
+index 0156424..bbb3baa 100644
+--- a/t/globalspec.t
++++ b/t/globalspec.t
+@@ -255,3 +255,49 @@ print("ok")
+ --- out
+ ok
+ --- err
++
++
++
++=== TEST 8: setfenv after default environment recording exits to new environment
++--- lua
++jit.on()
++require "jit.opt".start("hotloop=1")
++
++globalspec_default_read = 1
++rawset(_G, "globalspec_default_store", nil)
++
++local env2 = { globalspec_default_read = 2 }
++
++local function f_read()
++  return globalspec_default_read
++end
++
++local function f_store(v)
++  globalspec_default_store = v
++end
++
++local sum = 0
++for i = 1, 20 do
++  sum = sum + f_read()
++  f_store(i)
++end
++
++setfenv(f_read, env2)
++setfenv(f_store, env2)
++
++for i = 21, 40 do
++  sum = sum + f_read()
++  f_store(i)
++end
++
++assert(sum == 60, sum)
++assert(_G.globalspec_default_read == 1, _G.globalspec_default_read)
++assert(_G.globalspec_default_store == 20, _G.globalspec_default_store)
++assert(env2.globalspec_default_store == 40, env2.globalspec_default_store)
++
++globalspec_default_read = nil
++globalspec_default_store = nil
++print("ok")
++--- out
++ok
++--- err

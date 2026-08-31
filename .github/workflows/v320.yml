@@ -1,0 +1,230 @@
+name: V3.20 CPU gameplay pack build/QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - full
+  push:
+    branches:
+      - v3.20-cpu-gameplay-pack
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+  V320_LUAJIT_SOURCE: 707c12bf00dafdfd3899b1a6c36435dbbf6c7022
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Show exact source revision
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git status --short
+
+      - name: Compile-check all V3 Python patch tools
+        shell: bash
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Build and test exact safe LuaJIT optimizer series
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/LuaJIT/LuaJIT.git v320-safe-luajit
+          git -C v320-safe-luajit checkout --detach "$V320_LUAJIT_SOURCE"
+          while IFS= read -r patch; do
+            git -C v320-safe-luajit am "$GITHUB_WORKSPACE/tools/v3/luajit-safe-patches/$patch"
+          done < tools/v3/luajit-safe-patches/SERIES
+          make -C v320-safe-luajit -j2
+          for suite in t/mtspec.t t/globalspec.t t/sink.t; do
+            tests=$(grep -c '^=== TEST' "v320-safe-luajit/$suite")
+            for n in $(seq 1 "$tests"); do
+              awk -v wanted="$n" '
+                /^=== TEST/ { test += 1; in_lua = 0 }
+                test == wanted && /^--- lua$/ { in_lua = 1; next }
+                test == wanted && /^--- (out|err|exit|jv|jdump)$/ { in_lua = 0 }
+                in_lua { print }
+              ' "v320-safe-luajit/$suite" | v320-safe-luajit/src/luajit -
+            done
+          done
+          if git -C v320-safe-luajit diff --name-only "$V320_LUAJIT_SOURCE"..HEAD |
+              grep -E '(^|/)(lj_gc|lj_alloc)\.c$|content\.lua$'; then
+            echo 'Unsafe allocator/GC/content file entered the safe-JIT series' >&2
+            exit 1
+          fi
+
+      - name: Apply complete V3.20 generated source stack
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness_v320.py 2>&1 | tee v320-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Upload V3.20 apply log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v320-apply-log-${{ github.sha }}
+          path: v320-apply.log
+          if-no-files-found: error
+
+      - name: Validate generated CP1 markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -n 'openmw-custom-v3.20-cp1-focus' apps/openmw/engine.cpp
+          grep -n 'OPENMW_V320_FOCUS_ADAPTIVE' apps/openmw/engine.cpp
+          grep -n 'V320 Focus DirtyForced' apps/openmw/engine.cpp
+          grep -n 'v3.19 focus cadence = 2' files/settings-default.cfg
+          grep -n 'v3.20 adaptive focus cadence = false' files/settings-default.cfg
+          grep -n 'mV320AdaptiveFocusCadence' components/settings/categories/cells.hpp
+          grep -n '109 = V3.20 CP1 exact P0' tools/v3/launchers/V3_Lab.ps1
+          grep -n '113 = V3.20 CP1 adaptive' tools/v3/launchers/V3_Lab.ps1
+          grep -n '117 = V3.20 CP2 combined' tools/v3/launchers/V3_Lab.ps1
+          grep -n '120 = V3.20 CP3 CP2-combined' tools/v3/launchers/V3_Lab.ps1
+          grep -n '124 = V3.20 CP6 combined stack with safe LuaJIT' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'Enter 1 through 124' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'OPENMW_V320_ENGINE_LUA_FASTPATHS' apps/openmw/mwlua/engineevents.cpp
+          grep -n 'OPENMW_V320_SOUND_CONVERSION_CACHE' apps/openmw/mwlua/soundbindings.cpp
+          grep -n 'V320 Lua SoundConversionEvictions' apps/openmw/mwlua/luamanagerimp.cpp
+          grep -n 'OPENMW_V320_SOUND_QUERY_COALESCING' apps/openmw/mwlua/soundbindings.cpp
+          grep -n 'V320 Lua SoundQueryCoalesced' apps/openmw/mwlua/luamanagerimp.cpp
+          grep -n 'class V320LuaProfilerRecorder' apps/openmw/mwlua/luamanagerimp.cpp
+          grep -n 'luaProfilerRecord start|stop|status' apps/openmw/mwlua/luamanagerimp.cpp
+          grep -n 'mFrameInstructionCount' components/lua/scriptscontainer.hpp
+          grep -n 'setInstructionProfilerEnabled' components/lua/luastate.hpp
+          grep -n 'OPENMW_V320_LUA_PROFILE_DIR' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'mV320LuaProfilerRecorderCapable' components/settings/categories/lua.hpp
+          grep -n 'v3.20 lua profiler recorder capability = true' files/settings-default.cfg
+          grep -n 'OPENMW_V320_LUA_PROFILER_CAPABLE' tools/v3/launchers/V3_Lab.ps1
+          grep -n "choice -notin @('114','118','121')" tools/v3/launchers/V3_Lab.ps1
+          grep -n 'safejit\\lua51.dll' tools/v3/launchers/V3_Lab.ps1
+
+      - name: Parse-check generated PowerShell launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Host 'V3_Lab.ps1 parse check passed.'
+
+      - name: Upload exact generated V3.20 source
+        uses: actions/upload-artifact@v4
+        with:
+          name: v320-preflight-applied-source-${{ github.sha }}
+          path: |
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+            V3.18-RENDER-LAYER.txt
+            V3.18-NIS-PROVENANCE.txt
+          if-no-files-found: error
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: false
+
+  V320RuntimePackage:
+    name: stage-safe-luajit-runtime
+    needs: Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout exact source and patch series
+        uses: actions/checkout@v4
+
+      - name: Download exact OpenMW Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: openmw-windows-2022-${{ github.sha }}
+          path: v320-package
+
+      - uses: TheMrMilchmann/setup-msvc-dev@79dac248aac9d0059f86eae9d8b5bfab4e95e97c
+        with:
+          arch: x64
+
+      - name: Build exact stock-semantic safe LuaJIT
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone https://github.com/LuaJIT/LuaJIT.git v320-safe-luajit
+          git -C v320-safe-luajit checkout --detach $env:V320_LUAJIT_SOURCE
+          foreach ($patch in Get-Content tools/v3/luajit-safe-patches/SERIES) {
+            git -C v320-safe-luajit am (Join-Path $env:GITHUB_WORKSPACE "tools/v3/luajit-safe-patches/$patch")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Push-Location v320-safe-luajit\src
+          try {
+            cmd /c msvcbuild.bat lua52compat
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally { Pop-Location }
+          .\v320-safe-luajit\src\luajit.exe -e "assert(jit.version_num >= 20100); assert(jit.os == 'Windows'); assert(jit.arch == 'x64'); print(jit.version,jit.os,jit.arch)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Stage stock and safe-JIT runtimes beside OpenMW
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stockCandidate = Get-ChildItem -LiteralPath v320-package -Recurse -File -Filter lua51.dll | Select-Object -First 1
+          if ($null -eq $stockCandidate) { throw 'Stock lua51.dll not found in OpenMW artifact' }
+          $packageRoot = $stockCandidate.Directory.FullName
+          if (-not (Test-Path -LiteralPath (Join-Path $packageRoot 'openmw.exe'))) {
+            throw "lua51.dll was not beside openmw.exe: $packageRoot"
+          }
+          $runtimeRoot = Join-Path $packageRoot 'v317-runtime'
+          $stockDir = Join-Path $runtimeRoot 'stock'
+          $safeDir = Join-Path $runtimeRoot 'safejit'
+          New-Item -ItemType Directory -Force -Path $stockDir,$safeDir | Out-Null
+          Copy-Item -LiteralPath $stockCandidate.FullName -Destination (Join-Path $stockDir 'lua51.dll') -Force
+          Copy-Item -LiteralPath 'v320-safe-luajit\src\lua51.dll' -Destination (Join-Path $safeDir 'lua51.dll') -Force
+          $stockHash = (Get-FileHash -LiteralPath (Join-Path $stockDir 'lua51.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
+          $safeHash = (Get-FileHash -LiteralPath (Join-Path $safeDir 'lua51.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($stockHash -eq $safeHash) { throw 'Safe-JIT runtime unexpectedly matches stock DLL' }
+          $manifest = @(
+            'V3.20 safe LuaJIT runtime manifest',
+            "openmw_commit=${{ github.sha }}",
+            "stock_source=$env:V320_LUAJIT_SOURCE",
+            'safe_series=metatable-specialization+global-environment-specialization+improved-sinking',
+            'allocator=stock',
+            'gc_finalizers_abi=stock',
+            'content_lua=current-openmw-retained',
+            "stock_lua51_sha256=$stockHash",
+            "safejit_lua51_sha256=$safeHash",
+            'root_runtime=stock',
+            'promotion_status=experimental-pending-same-build-ab-and-long-gameplay-qa',
+            ''
+          )
+          [System.IO.File]::WriteAllLines((Join-Path $runtimeRoot 'V320-SAFE-LUAJIT-RUNTIME.txt'), $manifest, [System.Text.UTF8Encoding]::new($false))
+          $rootHash = (Get-FileHash -LiteralPath $stockCandidate.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($rootHash -ne $stockHash) { throw 'Root lua51.dll no longer matches staged stock runtime' }
+          Get-Content -LiteralPath (Join-Path $runtimeRoot 'V320-SAFE-LUAJIT-RUNTIME.txt')
+
+      - name: Upload V3.20 runtime-complete Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmw-v320-windows-2022-${{ github.sha }}
+          path: v320-package/**
+          if-no-files-found: error
