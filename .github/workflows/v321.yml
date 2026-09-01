@@ -16,6 +16,7 @@ on:
       - v3.21-exterior-pacing
       - v3.21-exterior-pacing-adaptive
       - v3.21-cp2-classification-prep
+      - v3.21-cp2-fairness
 
 env:
   BUILD_TYPE: RelWithDebInfo
@@ -65,6 +66,8 @@ jobs:
           grep -Fx 'generated_source_identity=passed' V3-BUILD-IDENTITY.txt
           if [ "$GITHUB_REF_NAME" = 'v3.21-cp2-classification-prep' ]; then
             grep -Fx 'variant=V3.21_CP2_CLASSIFICATION_PREP' V3-BUILD-IDENTITY.txt
+          elif [ "$GITHUB_REF_NAME" = 'v3.21-cp2-fairness' ]; then
+            grep -Fx 'variant=V3.21_CP2_FAIRNESS' V3-BUILD-IDENTITY.txt
           fi
 
       - name: Validate generated V3.21 markers
@@ -85,18 +88,38 @@ jobs:
             grep -n 'openmw-custom-v3.21-cp1-adaptive-governor' apps/openmw/engine.cpp
             grep -n 'V321 Adaptive MergeBudget' apps/openmw/engine.cpp
             grep -n 'mV321AdaptiveTargetMilliseconds' components/settings/categories/cells.hpp
-            grep -n 'Enter 1 through 127' tools/v3/launchers/V3_Lab.ps1
+            if [ "$GITHUB_REF_NAME" = 'v3.21-cp2-fairness' ]; then
+              grep -n 'Enter a listed mode (1-127 or 129)' tools/v3/launchers/V3_Lab.ps1
+            else
+              grep -n 'Enter 1 through 127' tools/v3/launchers/V3_Lab.ps1
+            fi
           else
             grep -n 'Enter 1 through 126' tools/v3/launchers/V3_Lab.ps1
           fi
-          if [ "$GITHUB_REF_NAME" = 'v3.21-cp2-classification-prep' ]; then
+          if [ "$GITHUB_REF_NAME" = 'v3.21-cp2-classification-prep' ] || [ "$GITHUB_REF_NAME" = 'v3.21-cp2-fairness' ]; then
             test -f components/resource/v321compileclass.hpp
             grep -n 'OpenMW.V321CompileClass.ObjectPaging' components/resource/v321compileclass.hpp
             grep -n 'OpenMW.V321CompileClass.Terrain' components/resource/v321compileclass.hpp
+            grep -n 'OpenMW.V321CompileClass.GenericModel' components/resource/v321compileclass.hpp
             grep -n 'getV321CompileClass' components/resource/v321compileclass.hpp
             grep -n 'V321CompileClass::ObjectPaging' apps/openmw/mwrender/objectpaging.cpp
             grep -n 'V321CompileClass::Terrain' components/terrain/chunkmanager.cpp
+          fi
+          if [ "$GITHUB_REF_NAME" = 'v3.21-cp2-classification-prep' ]; then
             grep -n 'No fairness scheduler is enabled yet' V3-LAB-README.txt
+          elif [ "$GITHUB_REF_NAME" = 'v3.21-cp2-fairness' ]; then
+            grep -n 'V321CompileClass::GenericModel' apps/openmw/mwworld/cellpreloader.cpp
+            grep -n 'markV321CompileClass(\*loaded, compileClass)' components/resource/scenemanager.cpp
+            grep -n 'openmw-custom-v3.21-cp2-fairness-dephasing' apps/openmw/engine.cpp
+            grep -n 'OPENMW_V321_CP2_FAIRNESS' apps/openmw/engine.cpp
+            grep -n 'V321 CP2 ObjectPaging Deferred' apps/openmw/engine.cpp
+            grep -n 'V321 CP2 GenericModel Deferred' apps/openmw/engine.cpp
+            grep -n 'mV321CP2FairnessMode' components/settings/categories/cells.hpp
+            grep -n 'v3.21 CP2 fairness mode = 0' files/settings-default.cfg
+            grep -n '129 = V3.21 CP2 class-aware completion fairness/dephasing' tools/v3/launchers/V3_Lab.ps1
+            grep -n "'129'.*V321CompletionGovernor = '0'.*V321CP2Fairness = '1'" tools/v3/launchers/V3_Lab.ps1
+            ! grep -q "^[[:space:]]*'128'[[:space:]]*{" tools/v3/launchers/V3_Lab.ps1
+            grep -n 'Mode 128 remains unimplemented' V3-LAB-README.txt
           fi
 
       - name: Parse-check generated PowerShell launcher
