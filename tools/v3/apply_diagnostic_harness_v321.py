@@ -22,6 +22,34 @@ for layer_name in (
         {"__file__": str(layer), "__name__": "__main__"},
     )
 
+# The final V3.20 generated engine rewrites traversal into a helper scope where
+# stats/frameNumber remain available but frame()'s cached reportResource local
+# does not. Preserve the same resource-stat gating by querying viewer stats at
+# the V3.21 insertion point. Repair both the fixed and adaptive blocks and fail
+# closed if either expected generated-source anchor has drifted.
+engine_path = ROOT / "apps/openmw/engine.cpp"
+engine_text = engine_path.read_text(encoding="utf-8")
+old_fixed_guard = '''                if (reportResource)
+                {
+                    stats->setAttribute(frameNumber, "V321 Completion Seen", counters.mCompletedSeen);'''
+new_fixed_guard = '''                if (stats->collectStats("resource"))
+                {
+                    stats->setAttribute(frameNumber, "V321 Completion Seen", counters.mCompletedSeen);'''
+old_adaptive_guard = "                    if (reportResource && v321CompletionGovernorMode == 2)"
+new_adaptive_guard = '                    if (stats->collectStats("resource") && v321CompletionGovernorMode == 2)'
+if engine_text.count(old_fixed_guard) != 1:
+    raise RuntimeError(
+        "V3.21 CP1 adaptive generated engine scope repair expected exactly one fixed completion block"
+    )
+if engine_text.count(old_adaptive_guard) != 1:
+    raise RuntimeError(
+        "V3.21 CP1 adaptive generated engine scope repair expected exactly one adaptive stats block"
+    )
+engine_text = engine_text.replace(old_fixed_guard, new_fixed_guard, 1)
+engine_text = engine_text.replace(old_adaptive_guard, new_adaptive_guard, 1)
+engine_path.write_text(engine_text, encoding="utf-8", newline="\n")
+print("V3.21 CP1 repaired generated resource-stats scope for fixed + adaptive governors")
+
 readme_path = ROOT / "V3-LAB-README.txt"
 with readme_path.open("a", encoding="utf-8", newline="\n") as readme:
     readme.write(
@@ -101,6 +129,7 @@ for marker in (
     "getCompiledMutex",
     "getCompiled()",
     "#include <osgUtil/IncrementalCompileOperation>",
+    'stats->collectStats("resource")',
 ):
     if marker not in engine_text:
         raise RuntimeError(f"V3.21 CP1 engine source missing marker: {marker}")
