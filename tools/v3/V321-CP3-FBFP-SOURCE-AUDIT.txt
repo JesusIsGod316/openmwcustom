@@ -1,5 +1,5 @@
-SCHEMA=V321_CP3_FBFP_SOURCE_AUDIT/1
-STATUS=GROUNDWORK_ONLY_NO_ENGINE_BEHAVIOR_CHANGE
+SCHEMA=V321_CP3_FBFP_SOURCE_AUDIT/2
+STATUS=GROUNDWORK_SOURCE_DESIGN_READY_NO_ENGINE_BEHAVIOR_CHANGE
 BASE_CP2_HEAD=4095277e2687d828c0aeb5125bc98af16d4f831e
 BASE_BRANCH=v3.21-cp2-fairness
 RULE=DO_NOT_MIX_FBFP_WITH_CP2_PERFORMANCE_CAUSAL_BUILD
@@ -24,39 +24,48 @@ VERIFIED_CURRENT_SOURCE_BEHAVIOR:
 6|NATIVE_FP_BODY_PARTS|apps/openmw/mwrender/npcanimation.cpp|updateParts/getBodyParts and equipment lookup use first-person identity; equipment lookup appends .1st with restricted fallback.
 7|NATIVE_FP_RENDERING|apps/openmw/mwrender/npcanimation.cpp|native first person sets Mask_FirstPerson, installs OverrideFieldOfViewCallback, and setRenderBin selects RenderBin_FirstPerson/DepthClear.
 8|PLAYER_PARENT_MASK|apps/openmw/mwrender/renderingmanager.cpp|Player Root uses Mask_Player; player shadows are gated by Mask_Player.
-9|MAIN_CAMERA_MASK|apps/openmw/mwrender/renderingmanager.cpp|main scene cull mask is initialized as ~(Mask_UpdateVisitor|Mask_SimpleWater), leaving room for a dedicated camera-hidden mask.
-10|LUA_API|apps/openmw/mwlua/camerabindings.cpp|camera.MODE exposes public Camera::Mode; adding isFullBodyFirstPerson can be additive without changing MODE.
-11|CURRENT_MOD_STACK|file-library runtime logs|ReAnimation v2 Rogue 2.7 is active in the user's gameplay cohort. Mod source is not present in the engine repository; compatibility implementation remains isolated to CP4 unless separately supplied/retrieved.
+9|MAIN_CAMERA_MASK|apps/openmw/mwrender/renderingmanager.cpp|main scene cull mask is initialized as ~(Mask_UpdateVisitor|Mask_SimpleWater). A new hide-only bit can be excluded here without altering public camera mode.
+10|SHADOW_MASK_SEAM|apps/openmw/mwrender/renderingmanager.cpp|shadowCastingTraversalMask is assembled before ShadowManager construction and conditionally includes Mask_Player for player shadows. The hide-only bit can be ORed only with the player-shadow path so masked head geometry remains a shadow caster.
+11|LUA_API|apps/openmw/mwlua/camerabindings.cpp|camera.MODE exposes public Camera::Mode; adding isFullBodyFirstPerson can be additive without changing MODE.
+12|HELMET_GROUP_SEAM|apps/openmw/mwrender/npcanimation.cpp|updateParts passes InventoryStore::Slot_Helmet as the part-group id into addPartGroup; addPartGroup forwards that group to addOrReplaceIndividualPart for each referenced body part. The insertion helper can therefore hide every geometry part belonging to a helmet, including multi-part helmets, without matching cuirass/robe parts.
+13|VIEW_REBUILD|apps/openmw/mwrender/npcanimation.cpp|setViewMode rebuilds the NPC on view changes. FBFP-only node masks therefore do not require persistent original-mask bookkeeping; normal/native-FP rebuild recreates ordinary visibility state.
+14|CURRENT_MOD_STACK|file-library runtime logs|ReAnimation v2 Rogue 2.7 is active in the user's gameplay cohort. Mod source is not present in the engine repository; compatibility implementation remains isolated to CP4 unless separately supplied/retrieved.
 
 P0_IMPLEMENTATION_SEAMS:
 A|SETTING|components/settings/categories/camera.hpp + files/settings-default.cfg|Add boolean "full body first person" default false.
-B|INTERNAL_MODE|apps/openmw/mwrender/npcanimation.hpp|Add VM_FirstPersonFullBody and a const view-mode query/helper.
+B|INTERNAL_MODE|apps/openmw/mwrender/npcanimation.hpp|Add VM_FirstPersonFullBody plus getViewMode()/isFullBodyFirstPerson helper.
 C|CAMERA_SELECTOR|apps/openmw/mwrender/camera.cpp|When public Mode::FirstPerson is active, choose VM_FirstPersonFullBody only when setting enabled; otherwise preserve exact VM_FirstPerson path. Keep Camera/Head tracking contract.
-D|FULLBODY_SKELETON|apps/openmw/mwrender/npcanimation.cpp|Define nativeFirstPerson=(VM_FirstPerson) separately from cameraFirstPerson=(VM_FirstPerson||VM_FirstPersonFullBody). Only nativeFirstPerson may select first-person skeleton/base animation/.1st parts/first-person neck controller.
-E|WORLD_DEPTH|apps/openmw/mwrender/npcanimation.cpp|Only VM_FirstPerson may set Mask_FirstPerson, OverrideFieldOfViewCallback, and DepthClear render bin. VM_FirstPersonFullBody inherits normal player/world rendering and world FOV/depth.
-F|OWN_VIEW_HEAD_HIDE|apps/openmw/mwrender/vismask.hpp + renderingmanager.cpp + npcanimation.cpp|Preferred P0 design: reserve Mask_FirstPersonHidden. Main scene camera excludes it; player-shadow traversal includes it when player shadows are enabled. During VM_FirstPersonFullBody, mark head/hair parts and every part inserted from Slot_Helmet with this mask. View-mode rebuild restores ordinary masks outside FBFP. This hides clipping geometry from the own camera without amputating it from player shadows.
-G|LUA_QUERY|apps/openmw/mwrender/camera.hpp/camera.cpp + apps/openmw/mwlua/camerabindings.cpp|Expose camera.isFullBodyFirstPerson() based on actual internal animation view mode, not merely the setting value.
+D|LIVE_SETTING_SYNC|apps/openmw/mwrender/camera.cpp|At update, if public mode is FirstPerson and desired internal view from the setting differs from NpcAnimation::getViewMode(), request processViewChange. This makes the switch effective without changing public camera mode or requiring a restart.
+E|FULLBODY_SKELETON|apps/openmw/mwrender/npcanimation.cpp|Define nativeFirstPerson=(VM_FirstPerson) separately from fullBodyFirstPerson=(VM_FirstPersonFullBody). Only nativeFirstPerson may select first-person skeleton/base animation/.1st parts/first-person neck controller. FBFP uses getActorSkeleton(false,...), normal xbase_anim lineage, and normal body/equipment records.
+F|WORLD_DEPTH|apps/openmw/mwrender/npcanimation.cpp|Only VM_FirstPerson may set Mask_FirstPerson, OverrideFieldOfViewCallback, and DepthClear render bin. VM_FirstPersonFullBody inherits normal player/world rendering and world FOV/depth.
+G|OWN_VIEW_HEAD_HIDE|apps/openmw/mwrender/vismask.hpp + renderingmanager.cpp + npcanimation.cpp|Reserve Mask_FirstPersonHidden. Main scene camera cull mask excludes it. When player shadows are enabled, shadowCastingTraversalMask includes it. In addOrReplaceIndividualPart, when mode is VM_FirstPersonFullBody, assign this mask to type Head/Hair or any part whose group is InventoryStore::Slot_Helmet. This catches base head/hair plus every multi-part helmet component while leaving non-helmet torso/equipment visible. View rebuild restores normal visibility outside FBFP.
+H|LUA_QUERY|apps/openmw/mwrender/camera.hpp/camera.cpp + apps/openmw/mwlua/camerabindings.cpp|Expose camera.isFullBodyFirstPerson() from actual NpcAnimation internal view state, not merely the setting value.
 
 SAFETY/COMPATIBILITY_INVARIANTS:
 - Default false must generate behavior-identical native first person.
 - Do not reinterpret Camera::Mode integer values or Lua camera.MODE.FirstPerson.
 - Do not use first-person .1st body parts or first-person skeletons in VM_FirstPersonFullBody.
-- Do not apply DepthClear/first-person overlay depth semantics to the full body.
+- Do not apply DepthClear/first-person overlay depth semantics or first-person FOV override to the full body.
 - Do not remove player-shadow participation for hidden own-view head/hair/helmet geometry.
 - Do not change WorkQueue/ICO/CP2 scheduler behavior in CP3 groundwork or implementation.
 - Werewolf/beast/female skeleton selection remains delegated to the existing normal getActorSkeleton(false,...) path in FBFP.
 - Keep native first-person neck/accurate-aiming controller semantics native-only until explicit CP4 compatibility evidence justifies sharing them.
+- Do not add FBFP source to the CP2 fairness branch/run. CP3 implementation starts only from a clean promoted/checkpointed performance head.
 
 IMPLEMENTATION_ORDER_AFTER_CP2_PROMOTION_GATE:
 1. Add setting + internal VM_FirstPersonFullBody + additive Lua query skeleton; default-off identity test.
 2. Split nativeFirstPerson vs fullBodyFirstPerson predicates in NpcAnimation; route FBFP through normal skeleton/body/equipment selection.
 3. Keep FBFP out of Mask_FirstPerson/DepthClear/first-person FOV path.
-4. Add own-view-only head/hair/helmet visibility mask with player-shadow preservation.
+4. Add Mask_FirstPersonHidden camera/shadow masks and insertion-time head/hair/helmet tagging.
 5. Build/QC with setting OFF first, then a switchable FBFP P0 artifact.
 6. Runtime visual QA: idle/walk/run/sneak/jump/swim, melee 1H/2H, bow, spell/cast, sheathing, helmets, beast race, interiors/exteriors, shadows, camera pitch extremes.
 7. Only after P0 engine behavior is stable, CP4 handles ReAnimation selection/camera/head/weapon/shadow polish.
 
-OPEN_GROUNDWORK_ITEMS:
-- Confirm exact shadow traversal mask insertion point for Mask_FirstPersonHidden on the final CP2-generated source before writing CP3 patcher.
-- Inspect full updateParts/addPartGroup insertion flow to ensure Slot_Helmet tagging catches multi-part helmets without hiding unrelated cuirass/robe geometry.
-- Inspect current ReAnimation v2 Rogue Lua source before CP4; runtime logs prove active version but not script contents.
+GROUNDWORK_STATUS:
+- Public/private camera mode boundary: CLOSED.
+- Normal-vs-first-person skeleton/body/equipment routing seam: CLOSED.
+- World-depth vs DepthClear seam: CLOSED.
+- Shadow-preserving own-view head/hair/helmet mask design: CLOSED_AT_SOURCE_LEVEL.
+- Multi-part helmet identification seam: CLOSED_AT_SOURCE_LEVEL via Slot_Helmet group propagation.
+- Additive Lua detection seam: CLOSED.
+- ReAnimation v2 Rogue exact Lua compatibility source: DEFERRED_TO_CP4; runtime version identified but source content still required before mod-side patching.
