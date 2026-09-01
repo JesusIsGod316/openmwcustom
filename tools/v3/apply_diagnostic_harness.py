@@ -28,14 +28,24 @@ if match:
     )
 
     variant = ""
+    variant_layers = []
     if branch == "v3.21-cp2-classification-prep":
         variant = "V3.21_CP2_CLASSIFICATION_PREP"
-        layer_name = "apply_v321_cp2_classification.py"
+        variant_layers = ["apply_v321_cp2_classification.py"]
+    elif branch == "v3.21-cp2-fairness":
+        variant = "V3.21_CP2_FAIRNESS"
+        variant_layers = [
+            "apply_v321_cp2_classification.py",
+            "apply_v321_cp2_generic_classification.py",
+            "apply_v321_cp2_fairness.py",
+        ]
+
+    for layer_name in variant_layers:
         layer = HERE / layer_name
         if not layer.is_file():
             raise RuntimeError(
                 f"V3 build identity failure: branch {branch!r} requires {layer_name}, "
-                "but the CP2 classification layer does not exist."
+                "but that exact CP2 layer does not exist."
             )
         print(f"[V3.21] exact branch variant -> {layer_name}")
         exec(
@@ -71,7 +81,7 @@ if match:
         raise RuntimeError(
             f"V3 build identity failure: generated README does not identify {version_label}."
         )
-    if variant and variant not in patch_text and "V3.21 CP2 preparation" not in readme_text:
+    if variant and variant not in patch_text and "V3.21 CP2" not in readme_text:
         raise RuntimeError(
             f"V3 build identity failure: branch variant {variant} left no generated-source/README identity."
         )
