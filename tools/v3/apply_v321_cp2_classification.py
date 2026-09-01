@@ -15,6 +15,15 @@ def replace_exact(rel: str, old: str, new: str, expected: int = 1) -> None:
     print(f"V3.21 CP2 classification patched {rel} ({count} match(es))")
 
 
+def require_exact(rel: str, marker: str, expected: int = 1) -> None:
+    text = (ROOT / rel).read_text(encoding="utf-8")
+    count = text.count(marker)
+    if count != expected:
+        raise RuntimeError(
+            f"{rel}: expected {expected} V3.21 CP2 semantic anchor(s) {marker!r}, found {count}"
+        )
+
+
 # CP2 preparation deliberately does not change queue service policy. It only
 # attaches an OpenMW-owned class marker to the subgraph already held by OSG's
 # CompileSet. OSG 3.6.5 overwrites CompileSet::_markerObject in ico->add(), so
@@ -103,36 +112,40 @@ replace_exact(
     "#include <components/resource/scenemanager.hpp>\n#include <components/resource/v321compileclass.hpp>\n",
 )
 
-object_compile_anchor = '''        osgUtil::IncrementalCompileOperation* const ico = mSceneManager->getIncrementalCompileOperation();
-        if (!stateToCompile.empty() && ico)
-        {
-            auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(group);
-            compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
-            ico->add(compileSet, false);
-        }'''
-object_compile_replacement = '''        osgUtil::IncrementalCompileOperation* const ico = mSceneManager->getIncrementalCompileOperation();
-        if (!stateToCompile.empty() && ico)
-        {
-            // CP2 classification only: preserve the exact CompileSet/buildCompileMap/add path.
-            // The marker lives on the subgraph because ICO owns CompileSet::_markerObject.
+# Earlier generated V3 layers may legitimately change statements adjacent to
+# these submissions. Validate the complete semantic path with independent exact
+# anchors, but mutate only the stable unique submission statement. This remains
+# fail-closed without coupling CP2 to unrelated formatting/adjacent changes.
+object_rel = "apps/openmw/mwrender/objectpaging.cpp"
+object_compile_line = "            auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(group);"
+require_exact(
+    object_rel,
+    "        osgUtil::IncrementalCompileOperation* const ico = mSceneManager->getIncrementalCompileOperation();",
+)
+require_exact(object_rel, object_compile_line)
+require_exact(object_rel, "            compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);")
+require_exact(object_rel, "            ico->add(compileSet, false);")
+replace_exact(
+    object_rel,
+    object_compile_line,
+    '''            // CP2 classification only: preserve the existing CompileSet/buildCompileMap/add path.
+            // The class marker lives on the subgraph because ICO owns CompileSet::_markerObject.
             Resource::markV321CompileClass(*group, Resource::V321CompileClass::ObjectPaging);
-            auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(group);
-            compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
-            ico->add(compileSet, false);
-        }'''
-replace_exact("apps/openmw/mwrender/objectpaging.cpp", object_compile_anchor, object_compile_replacement)
+            auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(group);''',
+)
 
-terrain_compile_anchor = '''        if (!templateGeometry && compile && mSceneManager->getIncrementalCompileOperation())
-        {
-            mSceneManager->getIncrementalCompileOperation()->add(geometry);
-        }'''
-terrain_compile_replacement = '''        if (!templateGeometry && compile && mSceneManager->getIncrementalCompileOperation())
-        {
-            // CP2 classification only: keep SceneManager/ICO submission semantics unchanged.
+terrain_rel = "components/terrain/chunkmanager.cpp"
+terrain_guard = "        if (!templateGeometry && compile && mSceneManager->getIncrementalCompileOperation())"
+terrain_submit_line = "            mSceneManager->getIncrementalCompileOperation()->add(geometry);"
+require_exact(terrain_rel, terrain_guard)
+require_exact(terrain_rel, terrain_submit_line)
+replace_exact(
+    terrain_rel,
+    terrain_submit_line,
+    '''            // CP2 classification only: preserve SceneManager/ICO submission semantics.
             Resource::markV321CompileClass(*geometry, Resource::V321CompileClass::Terrain);
-            mSceneManager->getIncrementalCompileOperation()->add(geometry);
-        }'''
-replace_exact("components/terrain/chunkmanager.cpp", terrain_compile_anchor, terrain_compile_replacement)
+            mSceneManager->getIncrementalCompileOperation()->add(geometry);''',
+)
 
 readme_path = ROOT / "V3-LAB-README.txt"
 with readme_path.open("a", encoding="utf-8", newline="\n") as readme:
@@ -173,8 +186,8 @@ stat = subprocess.run(
 (ROOT / "V3-applied-source-stat.txt").write_text(stat, encoding="utf-8", newline="\n")
 
 helper_text = helper_path.read_text(encoding="utf-8")
-object_text = (ROOT / "apps/openmw/mwrender/objectpaging.cpp").read_text(encoding="utf-8")
-terrain_text = (ROOT / "components/terrain/chunkmanager.cpp").read_text(encoding="utf-8")
+object_text = (ROOT / object_rel).read_text(encoding="utf-8")
+terrain_text = (ROOT / terrain_rel).read_text(encoding="utf-8")
 readme_text = readme_path.read_text(encoding="utf-8")
 patch_text = patch.decode("utf-8", errors="replace")
 
@@ -186,10 +199,18 @@ for marker in (
 ):
     if marker not in helper_text:
         raise RuntimeError(f"V3.21 CP2 helper missing marker: {marker}")
-if "Resource::markV321CompileClass(*group, Resource::V321CompileClass::ObjectPaging)" not in object_text:
-    raise RuntimeError("V3.21 CP2 object-paging classification marker missing")
-if "Resource::markV321CompileClass(*geometry, Resource::V321CompileClass::Terrain)" not in terrain_text:
-    raise RuntimeError("V3.21 CP2 terrain classification marker missing")
+if object_text.count("Resource::markV321CompileClass(*group, Resource::V321CompileClass::ObjectPaging)") != 1:
+    raise RuntimeError("V3.21 CP2 object-paging classification marker missing or duplicated")
+if object_text.count("auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(group);") != 1:
+    raise RuntimeError("V3.21 CP2 object-paging CompileSet path changed unexpectedly")
+if object_text.count("compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);") != 1:
+    raise RuntimeError("V3.21 CP2 object-paging buildCompileMap path changed unexpectedly")
+if object_text.count("ico->add(compileSet, false);") != 1:
+    raise RuntimeError("V3.21 CP2 object-paging ICO add path changed unexpectedly")
+if terrain_text.count("Resource::markV321CompileClass(*geometry, Resource::V321CompileClass::Terrain)") != 1:
+    raise RuntimeError("V3.21 CP2 terrain classification marker missing or duplicated")
+if terrain_text.count("mSceneManager->getIncrementalCompileOperation()->add(geometry);") != 1:
+    raise RuntimeError("V3.21 CP2 terrain ICO submission path changed unexpectedly")
 for marker in (
     "classification metadata only",
     "does not change WorkQueue cadence",
