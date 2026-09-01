@@ -1,32 +1,59 @@
-SCHEMA=V321_CP2_SOURCE_AUDIT/1
-STATUS=PREPARED_CONDITIONAL_NOT_ENABLED
+SCHEMA=V321_CP2_SOURCE_AUDIT/4
+STATUS=FAIRNESS_REPAIR_LOCAL_GENERATED_SOURCE_PREFLIGHT_PASSED_WINDOWS_CI_PENDING
 BASE_BRANCH=v3.21-exterior-pacing-adaptive
-CONDITION=ONLY_IF_CP1_125_127_LEAVES_COMPLETION_STORMS
-MODE127_PREFLIGHT=SUCCESS@2365b54bf625e8ac7f277b1ba4b1574a111c2056
+BASE_CP1_GREEN=c521d915e64ab1370b565b26fcf378fd820f69e0
+REJECTED_CP2_HEAD=4095277e2687d828c0aeb5125bc98af16d4f831e
+REPAIR_BRANCH=v3.21-cp2-fairness-repair
 
-LOCKS:
+ROOT_CAUSE_BOUNDARY:
+- Rejected CP2 attached UserDataContainer/DummyObject class markers to ObjectPaging, Terrain, and cached GenericModel scene graphs even when fairness was disabled.
+- GenericModel templates are cloned with DEEP_COPY_USERDATA, so persistent class metadata could propagate into ordinary scene instances.
+- CP2 Mode125 therefore was not the CP1 runtime path and lost roughly 10 FPS in late exterior testing.
+- Mode129 still reduced severe compile/render tails inside the regressed binary, so the scheduler is retained for clean reproduction.
+
+REPAIR_LOCKS:
+- START_FROM_CP1_c521d915_NOT_REJECTED_CP2_HEAD
+- ZERO_CP2_SCENEGRAPH_CLASS_USERDATA
+- DO_NOT_USE_CompileSet_markerObject
+- DO_NOT_USE_EXTERNAL_POINTER_CLASS_MAP
+- RESOLVE_FAIRNESS_ONCE_AT_ICO_SETUP
+- MODE125_ALLOCATES_NO_CLASSIFIED_JOB_AND_EXECUTES_ORIGINAL_CP1_SUBMISSION_STATEMENTS
+- MODE129_KEEPS_CP1_COMPLETION_GOVERNOR_OFF
+- KEEP_INITIAL_6_3_6_2_12_AND_QUANTA_2_2_1_1_TUNING
 - DO_NOT_THROTTLE_ASYNC_PREPARATION
-- KEEP_CP2_SEPARATE_FROM_PERIODIC_OTHER_MS_ATTRIBUTION
-- DO_NOT_ENABLE_CP2_IN_CP1_CAUSAL_MODES
-- PRESERVE_FIFO_MAX_AGE_ESCAPE_AND_NONZERO_SERVICE
+- MODE128_REMAINS_UNIMPLEMENTED
 
-VERIFIED_SOURCE_SEAMS:
-1|OBJECT_PAGING|apps/openmw/mwrender/objectpaging.cpp|createChunk|explicit osgUtil::IncrementalCompileOperation::CompileSet(group); buildCompileMap(...); ico->add(compileSet,false)|CLASSIFIABLE_WITH_MARKER_OBJECT
-2|TERRAIN|components/terrain/chunkmanager.cpp|createChunk|ico->add(geometry)|CLASSIFIABLE_BY_SWITCHING_TO_EXPLICIT_COMPILESET_WITH_SEMANTIC_EQUIVALENCE
-3|GENERIC_MODEL_PRELOAD|apps/openmw/mwworld/cellpreloader.cpp:PreloadItem::doWork -> Resource::SceneManager::getTemplate(mesh)|components/resource/scenemanager.cpp:getTemplate|default compile=true; SceneManager calls ico->add(loaded)|REQUIRES_CATEGORY_PROPAGATION_OR_SAFE_MARKER_API
-4|GROUNDCOVER|apps/openmw/mwrender/groundcover.cpp|getChunk/createChunk|compile parameter currently does not submit through IncrementalCompileOperation|NOT_IN_ICO_COMPLETION_QUEUE; CANNOT_CLAIM_ICO_FAIRNESS_FOR_GROUNDCOVER
-5|TERRAIN_PRELOAD|apps/openmw/mwworld/cellpreloader.cpp:TerrainPreloadItem|worker-side Terrain::World::preload|producer remains unthrottled; setTerrainPreloadPositions refuses replacement while active|CP2_MAY_DEPHASE_COMPLETION_ONLY_IF_RUNTIME_CP1_EVIDENCE_REQUIRES
+REPAIRED_ARCHITECTURE:
+1|HELPER|components/resource/v321classifiedcompileset.hpp|V321CompileClass plus V321ClassifiedCompileSet derived from OSG CompileSet; class exists only on transient ICO job
+2|MODE_FLAG|RenderingManager resolves setting plus OPENMW_V321_CP2_FAIRNESS once during ICO setup and initializes immutable shared flag
+3|OBJECT_PAGING|Mode129 constructs classified CompileSet and preserves specialized buildCompileMap/add(false); Mode125 executes original ordinary CompileSet/buildCompileMap/add(false)
+4|TERRAIN|Mode129 submits classified CompileSet through ICO add(CompileSet*); Mode125 executes original ico->add(geometry)
+5|GENERIC_MODEL|CellPreloader passes GenericModel only when shared fairness flag is enabled; SceneManager Mode125 executes original ico->add(loaded); all nonclassified jobs read Unknown
+6|ENGINE|Mode129 reads class by dynamic_cast from completed CompileSet job; no subgraph inspection or mutation
+7|GROUNDCOVER|unchanged and outside ICO completion classification
 
-CP2_IMPLEMENTATION_BOUNDARY:
-- First candidate is source tagging/classification only, dormant unless CP2 mode is selected.
-- Do not fake terrain/object/groundcover/program fairness using an undifferentiated CompileSet FIFO.
-- If CP1 runtime logs show one class monopolizes completion bursts, add explicit class markers at object-paging and terrain submission and a safe category-propagation API for generic SceneManager loads.
-- Groundcover requires its own preparation/admission seam or evidence that its work is not a material completion-storm source; do not route it through ICO merely to make the scheduler architecture look uniform.
-- Fair admission should use weighted/deficit round-robin with player-near required work priority, per-class nonzero minimum service, bounded deficit/debt, and global max-age escape.
-- Producer retarget/dephasing (including stale TerrainPreloadItem behavior) remains a separate CP2 submechanism and must not be enabled in the same first fairness A/B.
+FAIRNESS_POLICY_UNCHANGED:
+- service budget=6 completed sets/frame
+- mixed-class burst cap=3 sets/frame
+- global max-age escape=6 frames
+- bounded forced service=2 sets
+- deficit cap=12
+- quanta ObjectPaging=2 Terrain=2 GenericModel=1 Unknown=1
+- one active class may use full service budget
 
-CURRENT_PARALLEL_WORK:
-- MODE125=exact V3.20 control
-- MODE126=fixed downstream compile+completed-set governor
-- MODE127=adaptive previous-frame slack/debt merge governor; fixed ICO compile cap retained; source preflight green
-- MODE128=NOT_IMPLEMENTED_UNLESS_126_127_RESULTS_JUSTIFY_AN_ORTHOGONAL_COMBINATION
+PREFLIGHT_GATES:
+- old components/resource/v321compileclass.hpp absent
+- generated source contains no markV321CompileClass, OpenMW.V321CompileClass.* marker string, or osg::DummyObject classification
+- Mode125 ObjectPaging, Terrain, SceneManager, and CellPreloader original CP1 statements each remain present exactly once
+- Mode129 classified paths and shared-mode initialization are present
+- launcher Mode129 enables CP2 and disables CP1 governor; Mode128 absent
+- generated Python, C++, PowerShell, identity, and Windows build/QC gates must pass
+
+LOCAL_PREFLIGHT_RESULT=PASS|complete_generator_stack;python_compile;git_diff_check;generated_identity;transient_job_markers;old_marker_absence;Mode125_original_statement_counts
+LOCAL_LIMITATION=pwsh_unavailable;PowerShell_parser_and_MSVC_compile_remain_CI_authority
+
+RUNTIME_ORDER:
+1|MODE125_ONLY|require return to CP1 performance family; target medians within about 5 percent and no systematic 1-3 ms floor penalty
+2|MODE129_ONLY_AFTER_CONTROL_PARITY|require steady median within about 3 percent of repaired Mode125 and reproduce meaningful severe-tail/render-p99 reduction
+
+DISPOSITION=BUILD_QC_DOES_NOT_PROMOTE;RUNTIME_CONTROL_PARITY_FIRST;CP3_FBFP_REMAINS_SEPARATE
