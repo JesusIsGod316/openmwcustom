@@ -1,47 +1,58 @@
-SCHEMA=V321_CP2_SOURCE_AUDIT/2
-STATUS=CLASSIFICATION_PREP_IMPLEMENTED_SCHEDULER_DISABLED
+SCHEMA=V321_CP2_SOURCE_AUDIT/3
+STATUS=FAIRNESS_DEPHASING_IMPLEMENTED_BUILD_PENDING
 BASE_BRANCH=v3.21-exterior-pacing-adaptive
 BASE_CP1_GREEN=c521d915e64ab1370b565b26fcf378fd820f69e0
-CONDITION=ONLY_ENABLE_FAIRNESS_IF_CP1_125_127_LEAVES_COMPLETION_STORMS
-PREFLIGHT=SUCCESS|run=33460374650|commit=df718266d110d786c0973df381da1579346d128b|next_gate=WINDOWS_FULL_BUILD
+CLASSIFICATION_CHECKPOINT=6d55edb6a12141bb5b18538be4e33ae73b54805e
+FAIRNESS_BRANCH=v3.21-cp2-fairness
+CONDITION=CP1_LEFT_TARGET_STUTTER_AND_COMPLETION_STORMS;SATISFIED
+CP1_CLOSEOUT=MODE125_CONTROL;MODE126_NOT_PROMOTED;MODE127_MECHANICALLY_USEFUL_BUT_PERCEPTUALLY_INSUFFICIENT;USER_REPORTS_VISUALS_CLEAN_ALL_MODES_AND_NO_NOTICEABLE_STUTTER_IMPROVEMENT;NO_REPEAT_REQUIRED
 
 LOCKS:
 - DO_NOT_THROTTLE_ASYNC_PREPARATION
 - KEEP_CP2_SEPARATE_FROM_PERIODIC_OTHER_MS_ATTRIBUTION
 - DO_NOT_ENABLE_CP2_FAIRNESS_IN_CP1_CAUSAL_MODES
-- PRESERVE_FIFO_MAX_AGE_ESCAPE_AND_NONZERO_SERVICE
+- PRESERVE_GLOBAL_MAX_AGE_ESCAPE_AND_NONZERO_CLASS_SERVICE
 - DO_NOT_USE_OSG_COMPILESET_MARKEROBJECT_FOR_CLASS_IDENTITY
+- MODE128_REMAINS_UNIMPLEMENTED
+- MODE129_MUST_KEEP_CP1_COMPLETION_GOVERNOR_OFF
 
 VERIFIED_OSG_SEMANTICS:
 - OSG_3.6.5 CompileSet::_markerObject is overwritten by IncrementalCompileOperation::add(CompileSet*,...). It belongs to StateToCompile visited-object semantics and is not safe CP2 class storage.
-- CP2 class identity therefore attaches an OpenMW-owned user object to CompileSet::_subgraphToCompile.
+- CP2 class identity attaches an OpenMW-owned user object to CompileSet::_subgraphToCompile.
 - Existing ICO add/buildCompileMap paths remain unchanged.
 
 VERIFIED_SOURCE_SEAMS:
-1|OBJECT_PAGING|apps/openmw/mwrender/objectpaging.cpp|createChunk|explicit osgUtil::IncrementalCompileOperation::CompileSet(group); buildCompileMap(...); ico->add(compileSet,false)|NOW_TAGGED_AS_OBJECT_PAGING_ON_CP2_PREP_BRANCH
-2|TERRAIN|components/terrain/chunkmanager.cpp|createChunk|ico->add(geometry)|NOW_TAGGED_AS_TERRAIN_WITH_ORIGINAL_ICO_ADD_PATH_PRESERVED
-3|GENERIC_MODEL_PRELOAD|apps/openmw/mwworld/cellpreloader.cpp:PreloadItem::doWork -> Resource::SceneManager::getTemplate(mesh)|components/resource/scenemanager.cpp:getTemplate|default compile=true; SceneManager calls ico->add(loaded)|REQUIRES_CATEGORY_PROPAGATION_OR_SAFE_MARKER_API;NOT_YET_TAGGED
-4|GROUNDCOVER|apps/openmw/mwrender/groundcover.cpp|getChunk/createChunk|compile parameter currently does not submit through IncrementalCompileOperation|NOT_IN_ICO_COMPLETION_QUEUE;DO_NOT_ROUTE_THROUGH_ICO_FOR_SYMMETRY
-5|TERRAIN_PRELOAD|apps/openmw/mwworld/cellpreloader.cpp:TerrainPreloadItem|worker-side Terrain::World::preload|producer remains unthrottled; setTerrainPreloadPositions refuses replacement while active|RETARGET_DEPHASING_REMAINS_SEPARATE_CONDITIONAL_SUBMECHANISM
+1|OBJECT_PAGING|apps/openmw/mwrender/objectpaging.cpp|createChunk|explicit CompileSet(group);buildCompileMap;ico->add(false)|CLASS=ObjectPaging
+2|TERRAIN|components/terrain/chunkmanager.cpp|createChunk|ico->add(geometry)|CLASS=Terrain
+3|GENERIC_MODEL_PRELOAD|apps/openmw/mwworld/cellpreloader.cpp:PreloadItem::doWork -> Resource::SceneManager::getTemplate(mesh)|SceneManager owns ico->add(loaded)|CLASS=GenericModel via explicit getTemplate compileClass propagation;all_other_callers_default_Unknown
+4|GROUNDCOVER|apps/openmw/mwrender/groundcover.cpp|getChunk/createChunk|current compile path does not submit through ICO|NOT_IN_ICO_COMPLETION_QUEUE;DO_NOT_ROUTE_FOR_SYMMETRY
+5|TERRAIN_PRELOAD|apps/openmw/mwworld/cellpreloader.cpp:TerrainPreloadItem|worker-side Terrain::World::preload|producer remains unthrottled;retarget/dephasing remains separate future mechanism
 
-IMPLEMENTED_PREP:
-- tools/v3/apply_v321_cp2_classification.py generates components/resource/v321compileclass.hpp.
-- Object-paging compile subgraphs receive OpenMW.V321CompileClass.ObjectPaging.
-- Terrain compile subgraphs receive OpenMW.V321CompileClass.Terrain.
-- GenericModel enum/marker identity is reserved but not emitted until source category propagation is implemented.
-- The helper exposes getV321CompileClass() for a future completed-set fairness scheduler.
-- Generic router applies this layer only on branch v3.21-cp2-classification-prep and records variant=V3.21_CP2_CLASSIFICATION_PREP.
+CP2_MODE129:
+- FOUNDATION=exact Mode125 V3.20 behavior; stock Lua; focus cadence2; OSG Automatic.
+- CP1_COMPLETION_GOVERNOR=0.
+- CP2_FAIRNESS=1 via OPENMW_V321_CP2_FAIRNESS.
+- Stages only fully completed ICO CompileSets after worker/GL preparation.
+- Logical queues: ObjectPaging, Terrain, GenericModel, Unknown.
+- Weighted deficit quanta: ObjectPaging2, Terrain2, GenericModel1, Unknown1.
+- Default service budget=6 completed sets/frame.
+- Mixed-class per-class burst cap=3 sets/frame.
+- If exactly one class is active it may consume the full service budget; fairness does not artificially throttle a lone producer class.
+- Deficit cap=12.
+- Global max-age=6 frames with up to2 bounded forced admissions beyond ordinary class policy.
+- Groundcover remains untouched/outside ICO.
+- Resource stats expose per-class deferred, seen, admitted, per-frame admitted, active classes, total deferred, oldest age, and forced service.
 
-CP2_IMPLEMENTATION_BOUNDARY:
-- Current branch adds classification metadata only; no fairness scheduler is enabled.
-- Do not fake terrain/object/groundcover/program fairness using an undifferentiated CompileSet FIFO.
-- Next source-design task is safe category propagation for generic SceneManager preload submissions.
-- If CP1 runtime logs show one class monopolizes completion bursts, implement weighted/deficit round-robin using real class tags, player-near required work priority, per-class nonzero minimum service, bounded deficit/debt, and global max-age escape.
-- Producer retarget/dephasing remains separate and must not be enabled in the same first fairness A/B.
-- Groundcover requires its own seam or evidence that it is not a material completion-storm source.
+IMPLEMENTATION_FILES:
+- tools/v3/apply_v321_cp2_classification.py : ObjectPaging/Terrain class markers and helper.
+- tools/v3/apply_v321_cp2_generic_classification.py : GenericModel category propagation through SceneManager::getTemplate without changing existing ICO path.
+- tools/v3/apply_v321_cp2_fairness.py : Mode129 settings, class-aware staging/service, max-age escape, stats, launcher mode.
+- tools/v3/apply_diagnostic_harness.py : exact branch routing, fail closed.
 
-CURRENT_MODES:
-- MODE125=exact V3.20 control
-- MODE126=fixed downstream compile+completed-set governor
-- MODE127=adaptive previous-frame slack/debt merge governor; fixed ICO compile cap retained
-- MODE128=NOT_IMPLEMENTED_UNLESS_126_127_RESULTS_JUSTIFY_AN_ORTHOGONAL_COMBINATION
+VALIDATION_PLAN:
+- First gate: generated-source preflight plus PowerShell parse and exact marker/identity checks.
+- Second gate: Windows 2022/MSVC full build/QC from same generated stack.
+- Runtime A/B after build: Mode125 exact control versus Mode129 CP2 fairness on same save/mod/settings/route, Framepacer OFF/nonbinding.
+- Mode127 remains selectable for later orthogonality testing only if Mode129 itself earns a perceptible/quantitative win; do not combine mechanisms before that.
+- Primary acceptance: fewer ordinary-exterior severe tails/render traversal spikes/compile-associated hitch clusters with no visible pop-in, no persistent class backlog/age growth, no steady center regression, and no VRAM expansion.
+- Do not require another CP1 125-vs127 repeat.
