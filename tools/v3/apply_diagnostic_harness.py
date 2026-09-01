@@ -27,6 +27,22 @@ if match:
         {"__file__": str(harness), "__name__": "__main__"},
     )
 
+    variant = ""
+    if branch == "v3.21-cp2-classification-prep":
+        variant = "V3.21_CP2_CLASSIFICATION_PREP"
+        layer_name = "apply_v321_cp2_classification.py"
+        layer = HERE / layer_name
+        if not layer.is_file():
+            raise RuntimeError(
+                f"V3 build identity failure: branch {branch!r} requires {layer_name}, "
+                "but the CP2 classification layer does not exist."
+            )
+        print(f"[V3.21] exact branch variant -> {layer_name}")
+        exec(
+            compile(layer.read_text(encoding="utf-8"), str(layer), "exec"),
+            {"__file__": str(layer), "__name__": "__main__"},
+        )
+
     # Generated-source identity gates. These run in the same clean checkout that
     # will actually be compiled, not only in the separate preflight job.
     launcher = ROOT / "tools/v3/launchers/V3_Lab.ps1"
@@ -55,19 +71,25 @@ if match:
         raise RuntimeError(
             f"V3 build identity failure: generated README does not identify {version_label}."
         )
+    if variant and variant not in patch_text and "V3.21 CP2 preparation" not in readme_text:
+        raise RuntimeError(
+            f"V3 build identity failure: branch variant {variant} left no generated-source/README identity."
+        )
+
+    manifest_lines = [
+        f"branch={branch}",
+        f"version={version_label}",
+        f"harness={harness_name}",
+        "routing=exact-fail-closed",
+        "generated_source_identity=passed",
+    ]
+    if variant:
+        manifest_lines.append(f"variant={variant}")
+    manifest_lines.append("")
 
     manifest = ROOT / "V3-BUILD-IDENTITY.txt"
     manifest.write_text(
-        "\n".join(
-            (
-                f"branch={branch}",
-                f"version={version_label}",
-                f"harness={harness_name}",
-                "routing=exact-fail-closed",
-                "generated_source_identity=passed",
-                "",
-            )
-        ),
+        "\n".join(manifest_lines),
         encoding="utf-8",
         newline="\n",
     )
