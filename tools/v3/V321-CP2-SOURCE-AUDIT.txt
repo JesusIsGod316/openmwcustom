@@ -1,32 +1,46 @@
-SCHEMA=V321_CP2_SOURCE_AUDIT/1
-STATUS=PREPARED_CONDITIONAL_NOT_ENABLED
+SCHEMA=V321_CP2_SOURCE_AUDIT/2
+STATUS=CLASSIFICATION_PREP_IMPLEMENTED_SCHEDULER_DISABLED
 BASE_BRANCH=v3.21-exterior-pacing-adaptive
-CONDITION=ONLY_IF_CP1_125_127_LEAVES_COMPLETION_STORMS
-MODE127_PREFLIGHT=SUCCESS@2365b54bf625e8ac7f277b1ba4b1574a111c2056
+BASE_CP1_GREEN=c521d915e64ab1370b565b26fcf378fd820f69e0
+CONDITION=ONLY_ENABLE_FAIRNESS_IF_CP1_125_127_LEAVES_COMPLETION_STORMS
 
 LOCKS:
 - DO_NOT_THROTTLE_ASYNC_PREPARATION
 - KEEP_CP2_SEPARATE_FROM_PERIODIC_OTHER_MS_ATTRIBUTION
-- DO_NOT_ENABLE_CP2_IN_CP1_CAUSAL_MODES
+- DO_NOT_ENABLE_CP2_FAIRNESS_IN_CP1_CAUSAL_MODES
 - PRESERVE_FIFO_MAX_AGE_ESCAPE_AND_NONZERO_SERVICE
+- DO_NOT_USE_OSG_COMPILESET_MARKEROBJECT_FOR_CLASS_IDENTITY
+
+VERIFIED_OSG_SEMANTICS:
+- OSG_3.6.5 CompileSet::_markerObject is overwritten by IncrementalCompileOperation::add(CompileSet*,...). It belongs to StateToCompile visited-object semantics and is not safe CP2 class storage.
+- CP2 class identity therefore attaches an OpenMW-owned user object to CompileSet::_subgraphToCompile.
+- Existing ICO add/buildCompileMap paths remain unchanged.
 
 VERIFIED_SOURCE_SEAMS:
-1|OBJECT_PAGING|apps/openmw/mwrender/objectpaging.cpp|createChunk|explicit osgUtil::IncrementalCompileOperation::CompileSet(group); buildCompileMap(...); ico->add(compileSet,false)|CLASSIFIABLE_WITH_MARKER_OBJECT
-2|TERRAIN|components/terrain/chunkmanager.cpp|createChunk|ico->add(geometry)|CLASSIFIABLE_BY_SWITCHING_TO_EXPLICIT_COMPILESET_WITH_SEMANTIC_EQUIVALENCE
-3|GENERIC_MODEL_PRELOAD|apps/openmw/mwworld/cellpreloader.cpp:PreloadItem::doWork -> Resource::SceneManager::getTemplate(mesh)|components/resource/scenemanager.cpp:getTemplate|default compile=true; SceneManager calls ico->add(loaded)|REQUIRES_CATEGORY_PROPAGATION_OR_SAFE_MARKER_API
-4|GROUNDCOVER|apps/openmw/mwrender/groundcover.cpp|getChunk/createChunk|compile parameter currently does not submit through IncrementalCompileOperation|NOT_IN_ICO_COMPLETION_QUEUE; CANNOT_CLAIM_ICO_FAIRNESS_FOR_GROUNDCOVER
-5|TERRAIN_PRELOAD|apps/openmw/mwworld/cellpreloader.cpp:TerrainPreloadItem|worker-side Terrain::World::preload|producer remains unthrottled; setTerrainPreloadPositions refuses replacement while active|CP2_MAY_DEPHASE_COMPLETION_ONLY_IF_RUNTIME_CP1_EVIDENCE_REQUIRES
+1|OBJECT_PAGING|apps/openmw/mwrender/objectpaging.cpp|createChunk|explicit osgUtil::IncrementalCompileOperation::CompileSet(group); buildCompileMap(...); ico->add(compileSet,false)|NOW_TAGGED_AS_OBJECT_PAGING_ON_CP2_PREP_BRANCH
+2|TERRAIN|components/terrain/chunkmanager.cpp|createChunk|ico->add(geometry)|NOW_TAGGED_AS_TERRAIN_WITH_ORIGINAL_ICO_ADD_PATH_PRESERVED
+3|GENERIC_MODEL_PRELOAD|apps/openmw/mwworld/cellpreloader.cpp:PreloadItem::doWork -> Resource::SceneManager::getTemplate(mesh)|components/resource/scenemanager.cpp:getTemplate|default compile=true; SceneManager calls ico->add(loaded)|REQUIRES_CATEGORY_PROPAGATION_OR_SAFE_MARKER_API;NOT_YET_TAGGED
+4|GROUNDCOVER|apps/openmw/mwrender/groundcover.cpp|getChunk/createChunk|compile parameter currently does not submit through IncrementalCompileOperation|NOT_IN_ICO_COMPLETION_QUEUE;DO_NOT_ROUTE_THROUGH_ICO_FOR_SYMMETRY
+5|TERRAIN_PRELOAD|apps/openmw/mwworld/cellpreloader.cpp:TerrainPreloadItem|worker-side Terrain::World::preload|producer remains unthrottled; setTerrainPreloadPositions refuses replacement while active|RETARGET_DEPHASING_REMAINS_SEPARATE_CONDITIONAL_SUBMECHANISM
+
+IMPLEMENTED_PREP:
+- tools/v3/apply_v321_cp2_classification.py generates components/resource/v321compileclass.hpp.
+- Object-paging compile subgraphs receive OpenMW.V321CompileClass.ObjectPaging.
+- Terrain compile subgraphs receive OpenMW.V321CompileClass.Terrain.
+- GenericModel enum/marker identity is reserved but not emitted until source category propagation is implemented.
+- The helper exposes getV321CompileClass() for a future completed-set fairness scheduler.
+- Generic router applies this layer only on branch v3.21-cp2-classification-prep and records variant=V3.21_CP2_CLASSIFICATION_PREP.
 
 CP2_IMPLEMENTATION_BOUNDARY:
-- First candidate is source tagging/classification only, dormant unless CP2 mode is selected.
+- Current branch adds classification metadata only; no fairness scheduler is enabled.
 - Do not fake terrain/object/groundcover/program fairness using an undifferentiated CompileSet FIFO.
-- If CP1 runtime logs show one class monopolizes completion bursts, add explicit class markers at object-paging and terrain submission and a safe category-propagation API for generic SceneManager loads.
-- Groundcover requires its own preparation/admission seam or evidence that its work is not a material completion-storm source; do not route it through ICO merely to make the scheduler architecture look uniform.
-- Fair admission should use weighted/deficit round-robin with player-near required work priority, per-class nonzero minimum service, bounded deficit/debt, and global max-age escape.
-- Producer retarget/dephasing (including stale TerrainPreloadItem behavior) remains a separate CP2 submechanism and must not be enabled in the same first fairness A/B.
+- Next source-design task is safe category propagation for generic SceneManager preload submissions.
+- If CP1 runtime logs show one class monopolizes completion bursts, implement weighted/deficit round-robin using real class tags, player-near required work priority, per-class nonzero minimum service, bounded deficit/debt, and global max-age escape.
+- Producer retarget/dephasing remains separate and must not be enabled in the same first fairness A/B.
+- Groundcover requires its own seam or evidence that it is not a material completion-storm source.
 
-CURRENT_PARALLEL_WORK:
+CURRENT_MODES:
 - MODE125=exact V3.20 control
 - MODE126=fixed downstream compile+completed-set governor
-- MODE127=adaptive previous-frame slack/debt merge governor; fixed ICO compile cap retained; source preflight green
+- MODE127=adaptive previous-frame slack/debt merge governor; fixed ICO compile cap retained
 - MODE128=NOT_IMPLEMENTED_UNLESS_126_127_RESULTS_JUSTIFY_AN_ORTHOGONAL_COMBINATION
