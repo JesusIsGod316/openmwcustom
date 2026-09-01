@@ -21,6 +21,30 @@ for layer_name in (
         {"__file__": str(layer), "__name__": "__main__"},
     )
 
+# The final V3.20 generated engine rewrites traversal into a helper scope where
+# stats/frameNumber remain available but frame()'s cached reportResource local
+# does not. Keep resource-stat emission semantically equivalent by querying the
+# same viewer-stats collection flag at the V3.21 insertion point. Fail closed if
+# the expected CP1 block is not present so preflight cannot hide source drift.
+engine_path = ROOT / "apps/openmw/engine.cpp"
+engine_text = engine_path.read_text(encoding="utf-8")
+old_resource_guard = '''                if (reportResource)
+                {
+                    stats->setAttribute(frameNumber, "V321 Completion Seen", counters.mCompletedSeen);'''
+new_resource_guard = '''                if (stats->collectStats("resource"))
+                {
+                    stats->setAttribute(frameNumber, "V321 Completion Seen", counters.mCompletedSeen);'''
+if engine_text.count(old_resource_guard) != 1:
+    raise RuntimeError(
+        "V3.21 CP1 generated engine resource-stats scope repair expected exactly one completion block"
+    )
+engine_path.write_text(
+    engine_text.replace(old_resource_guard, new_resource_guard, 1),
+    encoding="utf-8",
+    newline="\n",
+)
+print("V3.21 CP1 repaired generated resource-stats scope")
+
 readme_path = ROOT / "V3-LAB-README.txt"
 with readme_path.open("a", encoding="utf-8", newline="\n") as readme:
     readme.write(
@@ -88,6 +112,7 @@ for marker in (
     "getCompiledMutex",
     "getCompiled()",
     "#include <osgUtil/IncrementalCompileOperation>",
+    'stats->collectStats("resource")',
 ):
     if marker not in engine_text:
         raise RuntimeError(f"V3.21 CP1 engine source missing marker: {marker}")
