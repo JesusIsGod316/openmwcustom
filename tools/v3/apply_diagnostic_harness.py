@@ -38,6 +38,13 @@ if match:
             "apply_v321_cp2_fairness_repair.py",
             "apply_v321_cp3_fullbody_first_person.py",
         ]
+    elif branch == "v3.21-cp4-shadow-compat":
+        variant = "V3.21_CP4_SHADOW_COMPAT"
+        variant_layers = [
+            "apply_v321_cp2_fairness_repair.py",
+            "apply_v321_cp3_fullbody_first_person.py",
+            "apply_v321_cp4_shadow_compat.py",
+        ]
 
     for layer_name in variant_layers:
         layer = HERE / layer_name

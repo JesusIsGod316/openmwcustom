@@ -17,6 +17,7 @@ on:
       - v3.21-exterior-pacing-adaptive
       - v3.21-cp2-fairness-repair
       - v3.21-cp3-fullbody-first-person
+      - v3.21-cp4-shadow-compat
 
 env:
   BUILD_TYPE: RelWithDebInfo
@@ -68,6 +69,8 @@ jobs:
             grep -Fx 'variant=V3.21_CP2_FAIRNESS_REPAIR' V3-BUILD-IDENTITY.txt
           elif [ "$GITHUB_REF_NAME" = 'v3.21-cp3-fullbody-first-person' ]; then
             grep -Fx 'variant=V3.21_CP3_FULL_BODY_FIRST_PERSON' V3-BUILD-IDENTITY.txt
+          elif [ "$GITHUB_REF_NAME" = 'v3.21-cp4-shadow-compat' ]; then
+            grep -Fx 'variant=V3.21_CP4_SHADOW_COMPAT' V3-BUILD-IDENTITY.txt
           fi
 
       - name: Validate generated V3.21 markers
@@ -88,7 +91,9 @@ jobs:
             grep -n 'openmw-custom-v3.21-cp1-adaptive-governor' apps/openmw/engine.cpp
             grep -n 'V321 Adaptive MergeBudget' apps/openmw/engine.cpp
             grep -n 'mV321AdaptiveTargetMilliseconds' components/settings/categories/cells.hpp
-            if [ "$GITHUB_REF_NAME" = 'v3.21-cp3-fullbody-first-person' ]; then
+            if [ "$GITHUB_REF_NAME" = 'v3.21-cp4-shadow-compat' ]; then
+              grep -n 'Enter a listed mode (1-127 or 129-131)' tools/v3/launchers/V3_Lab.ps1
+            elif [ "$GITHUB_REF_NAME" = 'v3.21-cp3-fullbody-first-person' ]; then
               grep -n 'Enter a listed mode (1-127 or 129-130)' tools/v3/launchers/V3_Lab.ps1
             elif [ "$GITHUB_REF_NAME" = 'v3.21-cp2-fairness-repair' ]; then
               grep -n 'Enter a listed mode (1-127 or 129)' tools/v3/launchers/V3_Lab.ps1
@@ -98,7 +103,7 @@ jobs:
           else
             grep -n 'Enter 1 through 126' tools/v3/launchers/V3_Lab.ps1
           fi
-          if [ "$GITHUB_REF_NAME" = 'v3.21-cp2-fairness-repair' ] || [ "$GITHUB_REF_NAME" = 'v3.21-cp3-fullbody-first-person' ]; then
+          if [ "$GITHUB_REF_NAME" = 'v3.21-cp2-fairness-repair' ] || [ "$GITHUB_REF_NAME" = 'v3.21-cp3-fullbody-first-person' ] || [ "$GITHUB_REF_NAME" = 'v3.21-cp4-shadow-compat' ]; then
             test -f components/resource/v321classifiedcompileset.hpp
             grep -n 'class V321ClassifiedCompileSet' components/resource/v321classifiedcompileset.hpp
             grep -n 'initializeV321CP2Fairness' apps/openmw/mwrender/renderingmanager.cpp
@@ -122,7 +127,7 @@ jobs:
               components/terrain/chunkmanager.cpp components/resource/scenemanager.cpp \
               apps/openmw/mwworld/cellpreloader.cpp apps/openmw/engine.cpp
           fi
-          if [ "$GITHUB_REF_NAME" = 'v3.21-cp3-fullbody-first-person' ]; then
+          if [ "$GITHUB_REF_NAME" = 'v3.21-cp3-fullbody-first-person' ] || [ "$GITHUB_REF_NAME" = 'v3.21-cp4-shadow-compat' ]; then
             grep -n 'VM_FirstPersonFullBody' apps/openmw/mwrender/npcanimation.hpp
             grep -n 'mViewMode == VM_FirstPersonFullBody' apps/openmw/mwrender/npcanimation.cpp
             grep -n 'PRT_Neck is a' apps/openmw/mwrender/npcanimation.cpp
@@ -139,6 +144,20 @@ jobs:
             grep -n '130 = V3.21 CP3 true full-body first person' tools/v3/launchers/V3_Lab.ps1
             grep -n "'130'.*V321CP2Fairness = '1'.*V321CP3FullBodyFirstPerson = '1'" tools/v3/launchers/V3_Lab.ps1
             grep -n 'V3_Unified_Test.bat for normal CP3 validation' V3-LAB-README.txt
+          fi
+          if [ "$GITHUB_REF_NAME" = 'v3.21-cp4-shadow-compat' ]; then
+            grep -n 'Mask_PlayerSecondaryView = (1 << 21)' apps/openmw/mwrender/vismask.hpp
+            grep -n 'Mask_Player | Mask_PlayerSecondaryView' apps/openmw/mwrender/renderingmanager.cpp
+            grep -n 'Mask_SimpleWater | Mask_PlayerSecondaryView' apps/openmw/mwrender/renderingmanager.cpp
+            grep -n 'setNodeMask(Mask_PlayerSecondaryView)' apps/openmw/mwrender/npcanimation.cpp
+            grep -n 'OPENMW_V321_CP4_SHADOW_COMPAT' apps/openmw/mwrender/camera.cpp
+            grep -n 'getAnimationMode' apps/openmw/mwrender/camera.hpp
+            grep -n 'getAnimationMode' apps/openmw/mwlua/camerabindings.cpp
+            grep -n 'getAnimationMode' files/lua_api/openmw/camera.lua
+            grep -n 'v3.21 full body first person shadow compatibility = false' files/settings-default.cfg
+            grep -n '131 = V3.21 CP4 full-body shadow and animation compatibility' tools/v3/launchers/V3_Lab.ps1
+            grep -n "'131'.*V321CP3FullBodyFirstPerson = '1'.*V321CP4ShadowCompat = '1'" tools/v3/launchers/V3_Lab.ps1
+            grep -n 'openmw-custom-v3.21-cp4-shadow-compat' apps/openmw/engine.cpp
           fi
 
       - name: Parse-check generated PowerShell launcher
@@ -169,6 +188,7 @@ jobs:
             V3.18-NIS-PROVENANCE.txt
             V3-BUILD-IDENTITY.txt
             tools/v3/V321-CP3-SOURCE-AUDIT.txt
+            tools/v3/V321-CP4-SOURCE-AUDIT.txt
           if-no-files-found: error
 
   Windows:
