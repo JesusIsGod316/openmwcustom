@@ -228,8 +228,9 @@ replace_exact(
         {
             // CP4: retain the animated head/hair and every part supplied by a
             // helmet for secondary views without exposing them to the owner
-            // camera. Checking part ownership also covers modded helmets that
-            // use neck or other nonstandard body-part records.
+            // camera. PRT_Neck is a separate normal body part and remains
+            // attached. Checking part ownership also covers modded helmets
+            // that use neck or other nonstandard body-part records.
             for (size_t i = 0; i < ESM::PRT_Count; ++i)
             {
                 const bool ownerHidden = i == ESM::PRT_Head || i == ESM::PRT_Hair
