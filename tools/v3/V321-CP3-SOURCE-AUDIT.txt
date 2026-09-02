@@ -16,28 +16,30 @@ LOCKED ARCHITECTURE
 4. Full-body view uses normal world depth and ordinary world field of view.
 5. Native first person retains Dot1st parts, first-person skeleton/FOV,
    DepthClear render bin, and first-person neck controller.
-6. Full-body view retains the base head to seal the neck opening; the camera is
-   inside its outward-facing geometry, while hair and helmet remain suppressed.
+6. Full-body view suppresses head, hair, and helmet while retaining the separate
+   normal PRT_Neck body part. The camera sits forward of its open upper boundary.
 7. Lua adds read-only camera.isFullBodyFirstPerson().
 8. Feature is switchable and default-off; Mode129 must remain disabled.
 
 SOURCE SEAMS
 - Camera::processViewChange is the single selection point between
   VM_FirstPerson and VM_FirstPersonFullBody.
-- Camera construction resolves the typed setting plus launcher environment
-  override once. No per-frame getenv or settings access is added.
+- Camera construction resolves the typed feature setting plus launcher
+  environment override once and caches the bounded forward-offset setting. No
+  per-frame getenv or settings access is added.
 - NpcAnimation::updateNpcBase already selects normal skeleton/animation sources
   for every view other than VM_FirstPerson, so the new view inherits the normal
   body without duplicating the animation pipeline.
 - NpcAnimation::updateParts uses normal body and equipment records because only
   VM_FirstPerson requests Dot1st body parts. CP3 removes equipment-provided head,
-  hair, and helmet geometry, then restores only the base head as neck closure.
+  hair, and helmet geometry while retaining the separate PRT_Neck body part.
 - NpcAnimation::setRenderBin already gives every non-VM_FirstPerson view normal
   world depth. CP3 does not touch DepthClear.
 - NpcAnimation::addControllers must treat VM_FirstPersonFullBody like VM_Normal
   so normal weapon controllers remain active.
 - Camera tracking continues to prefer the skeleton Camera node and fall back to
-  Head. The public first-person camera position/update path remains unchanged.
+  Head. Mode130 adds a 10-unit yaw-relative forward offset in the established
+  first-person position calculation; it deliberately does not follow pitch.
 
 CAUSAL MODES
 - Mode129: repaired class-aware fairness/dephasing; CP3 disabled.
@@ -65,11 +67,17 @@ KNOWN FIRST-CYCLE LIMIT
   consume camera.isFullBodyFirstPerson() before they can automatically select
   their third-person animation branch. CP3 does not silently rewrite mod code.
 
-P0 VISUAL CORRECTION
+REJECTED P0 VISUAL CORRECTION
 - First Mode130 runtime QA exposed a large black neck/collar cavity because the
   first implementation removed the base head entirely.
-- Corrected design restores only mHeadModel after equipment processing. The
-  lower head/neck closes the collar; hair and every helmet path stay suppressed.
-- If a third-party head replacer is authored double-sided and becomes visible
-  from inside, use a small full-body camera-forward offset as a compatibility
-  fallback rather than reintroducing the universal open-neck defect.
+- Restoring only mHeadModel after equipment processing made the failure worse:
+  runtime QA showed the camera inside/behind a large opaque head surface.
+
+P1 OWNER-VIEW CAMERA CORRECTION
+- Keep head/hair/helmet suppressed; normal PRT_Neck is already independent and
+  remains part of the full body.
+- Shift only Mode130's camera 10 units forward relative to character yaw. This
+  places the viewpoint at/ahead of the eyes and moves the neck opening behind it.
+- Do not rotate the positional offset with pitch; looking down must not translate
+  the camera into the chest. The distance is a clamped 0-20 setting so later
+  compatibility tuning does not require another architecture change.

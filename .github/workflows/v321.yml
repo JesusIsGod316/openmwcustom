@@ -125,7 +125,8 @@ jobs:
           if [ "$GITHUB_REF_NAME" = 'v3.21-cp3-fullbody-first-person' ]; then
             grep -n 'VM_FirstPersonFullBody' apps/openmw/mwrender/npcanimation.hpp
             grep -n 'mViewMode == VM_FirstPersonFullBody' apps/openmw/mwrender/npcanimation.cpp
-            grep -n 'addOrReplaceIndividualPart(ESM::PRT_Head, -1, 1, mHeadModel)' apps/openmw/mwrender/npcanimation.cpp
+            grep -n 'PRT_Neck is a' apps/openmw/mwrender/npcanimation.cpp
+            grep -n 'localOffset.y() += mV321FullBodyFirstPersonForwardOffset' apps/openmw/mwrender/camera.cpp
             grep -n 'return mode == VM_FirstPerson || mode == VM_FirstPersonFullBody' apps/openmw/mwrender/npcanimation.cpp
             grep -n 'mViewMode == VM_Normal || mViewMode == VM_FirstPersonFullBody' apps/openmw/mwrender/npcanimation.cpp
             grep -n 'openmw-custom-v3.21-cp3-fullbody-first-person' apps/openmw/engine.cpp
@@ -134,6 +135,7 @@ jobs:
             grep -n 'isFullBodyFirstPerson' apps/openmw/mwlua/camerabindings.cpp
             grep -n 'mV321FullBodyFirstPerson' components/settings/categories/camera.hpp
             grep -n 'v3.21 full body first person = false' files/settings-default.cfg
+            grep -n 'v3.21 full body first person forward offset = 10.0' files/settings-default.cfg
             grep -n '130 = V3.21 CP3 true full-body first person' tools/v3/launchers/V3_Lab.ps1
             grep -n "'130'.*V321CP2Fairness = '1'.*V321CP3FullBodyFirstPerson = '1'" tools/v3/launchers/V3_Lab.ps1
             grep -n 'V3_Unified_Test.bat for normal CP3 validation' V3-LAB-README.txt

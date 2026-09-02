@@ -16,9 +16,9 @@ def replace_exact(rel: str, old: str, new: str, expected: int = 1) -> None:
     print(f"V3.21 CP3 patched {rel} ({count} match(es))")
 
 
-# Register one default-off setting. The launcher environment override is resolved
-# once by Camera construction; ordinary first person does not pay a per-frame
-# settings or environment lookup.
+# Register the default-off feature and a bounded camera-forward distance. The
+# launcher environment override is resolved once by Camera construction;
+# ordinary first person does not pay a per-frame settings or environment lookup.
 replace_exact(
     "components/settings/categories/camera.hpp",
     '''        SettingValue<float> mFirstPersonFieldOfView{ mIndex, "Camera", "first person field of view",
@@ -27,6 +27,8 @@ replace_exact(
     '''        SettingValue<float> mFirstPersonFieldOfView{ mIndex, "Camera", "first person field of view",
             makeClampSanitizerFloat(1, 179) };
         SettingValue<bool> mV321FullBodyFirstPerson{ mIndex, "Camera", "v3.21 full body first person" };
+        SettingValue<float> mV321FullBodyFirstPersonForwardOffset{ mIndex, "Camera",
+            "v3.21 full body first person forward offset", makeClampSanitizerFloat(0, 20) };
         SettingValue<bool> mReverseZ{ mIndex, "Camera", "reverse z" };''',
 )
 replace_exact(
@@ -37,9 +39,10 @@ replace_exact(
     '''first person field of view = 60.0
 
 # V3.21 CP3: render the normal player body and equipment from the native first-person camera.
-# Hair and helmets are hidden in this view. The base head stays attached so its
-# lower neck seals open collars; outward face geometry is culled from inside.
+# The separate head and hair parts remain hidden. A small yaw-relative forward
+# offset places the camera at the eyes/in front of the open top of the neck.
 v3.21 full body first person = false
+v3.21 full body first person forward offset = 10.0
 
 # Reverse the depth range, reduces z-fighting of distant objects and terrain''',
 )
@@ -90,6 +93,7 @@ replace_exact(
             // the normal third-person body-part path for every other slot.
             if (isFullBodyFirstPerson && slotlist[i].mSlot == MWWorld::InventoryStore::Slot_Helmet)
             {
+                removeIndividualPart(ESM::PRT_Head);
                 removeIndividualPart(ESM::PRT_Hair);
                 continue;
             }
@@ -109,13 +113,10 @@ replace_exact(
     '''        if (isFullBodyFirstPerson)
         {
             // Equipment groups can reference head or hair from slots other than
-            // Helmet. Restore only the base head: its lower neck seals open
-            // collars while outward face geometry remains back-face culled from
-            // the camera inside the head. Hair and helmets remain suppressed.
+            // Helmet. Keep both absent from the owner view. PRT_Neck is a
+            // separate normal body part and remains attached below.
             removeIndividualPart(ESM::PRT_Head);
             removeIndividualPart(ESM::PRT_Hair);
-            if (!mHeadModel.empty())
-                addOrReplaceIndividualPart(ESM::PRT_Head, -1, 1, mHeadModel);
         }
         else if (mViewMode != VM_FirstPerson)
         {
@@ -194,6 +195,7 @@ replace_exact(
         Mode mMode;''',
     '''        bool mFirstPersonView;
         const bool mV321FullBodyFirstPerson;
+        const float mV321FullBodyFirstPersonForwardOffset;
 
         Mode mMode;''',
 )
@@ -203,7 +205,23 @@ replace_exact(
         , mMode(Mode::FirstPerson)''',
     '''        , mFirstPersonView(true)
         , mV321FullBodyFirstPerson(v321FullBodyFirstPersonEnabled())
+        , mV321FullBodyFirstPersonForwardOffset(Settings::camera().mV321FullBodyFirstPersonForwardOffset)
         , mMode(Mode::FirstPerson)''',
+)
+replace_exact(
+    "apps/openmw/mwrender/camera.cpp",
+    '''        osg::Vec3d res = trackedPosition;
+        osg::Vec2f horizontalOffset
+            = Misc::rotateVec2f(osg::Vec2f(mFirstPersonOffset.x(), mFirstPersonOffset.y()), mYaw);
+        res.x() += horizontalOffset.x();''',
+    '''        osg::Vec3d res = trackedPosition;
+        osg::Vec2f localOffset(mFirstPersonOffset.x(), mFirstPersonOffset.y());
+        // Keep this offset horizontal/yaw-relative. Applying pitch would drive
+        // the camera back into the torso precisely when the player looks down.
+        if (mV321FullBodyFirstPerson)
+            localOffset.y() += mV321FullBodyFirstPersonForwardOffset;
+        osg::Vec2f horizontalOffset = Misc::rotateVec2f(localOffset, mYaw);
+        res.x() += horizontalOffset.x();''',
 )
 replace_exact(
     "apps/openmw/mwrender/camera.cpp",
@@ -314,9 +332,11 @@ The full-body view uses the normal player skeleton, normal third-person body and
 equipment parts, weapon controllers, the ordinary world field of view, and the
 ordinary world-depth render path. It does not use Dot1st body parts, the native
 first-person skeleton, the first-person-only FOV callback, the DepthClear render
-bin, or the native first-person neck controller. The base head remains attached
-only to seal the neck opening; normal outward face geometry is back-face culled
-from the camera inside it. Hair and helmet parts remain suppressed. Switching
+bin, or the native first-person neck controller. Head, hair, and helmet parts are
+suppressed in the owner view while the separate normal PRT_Neck part remains.
+The camera is shifted 10 units forward relative to character yaw, placing the
+viewpoint ahead of both the hidden head and the neck opening. The offset does not
+follow pitch, so looking down cannot drive the camera into the torso. Switching
 back to third person rebuilds the complete normal player normally.
 
 The additive Lua API camera.isFullBodyFirstPerson() returns true only when the
@@ -357,6 +377,7 @@ for marker in (
     "VM_FirstPersonFullBody",
     "isFullBodyFirstPerson",
     "mV321FullBodyFirstPerson",
+    "mV321FullBodyFirstPersonForwardOffset",
     "OPENMW_V321_CP3_FULL_BODY_FIRST_PERSON",
     "openmw-custom-v3.21-cp3-fullbody-first-person",
 ):
@@ -364,8 +385,12 @@ for marker in (
         raise RuntimeError(f"V3.21 CP3 generated source missing marker: {marker}")
 if "mV321FullBodyFirstPerson" not in camera_settings:
     raise RuntimeError("V3.21 CP3 setting is not registered")
+if "mV321FullBodyFirstPersonForwardOffset" not in camera_settings:
+    raise RuntimeError("V3.21 CP3 forward-offset setting is not registered")
 if "v3.21 full body first person = false" not in defaults:
     raise RuntimeError("V3.21 CP3 setting is not default-off")
+if "v3.21 full body first person forward offset = 10.0" not in defaults:
+    raise RuntimeError("V3.21 CP3 forward-offset default drifted")
 for marker in (
     "130 = V3.21 CP3 true full-body first person",
     "v321-cp3-fullbody-first-person",
@@ -382,8 +407,10 @@ if "$V321CP2Fairness = '1'" not in line130 or "$V321CP3FullBodyFirstPerson = '1'
     raise RuntimeError("V3.21 Mode130 did not preserve CP2 and enable CP3")
 if "mViewMode == VM_FirstPersonFullBody" not in npc_cpp:
     raise RuntimeError("V3.21 CP3 body-part isolation is missing")
-if "addOrReplaceIndividualPart(ESM::PRT_Head, -1, 1, mHeadModel);" not in npc_cpp:
-    raise RuntimeError("V3.21 CP3 base-head neck closure is missing")
+if "localOffset.y() += mV321FullBodyFirstPersonForwardOffset;" not in camera_cpp:
+    raise RuntimeError("V3.21 CP3 yaw-relative camera-forward offset is missing")
+if "PRT_Neck is a" not in npc_cpp:
+    raise RuntimeError("V3.21 CP3 headless owner-view isolation is missing")
 if "return mode == VM_FirstPerson || mode == VM_FirstPersonFullBody;" not in npc_cpp:
     raise RuntimeError("V3.21 CP3 first-person transition handling is incomplete")
 if "mViewMode == VM_Normal || mViewMode == VM_FirstPersonFullBody" not in npc_cpp:
