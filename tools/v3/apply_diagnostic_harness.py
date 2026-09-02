@@ -32,13 +32,19 @@ if match:
     if branch == "v3.21-cp2-fairness-repair":
         variant = "V3.21_CP2_FAIRNESS_REPAIR"
         variant_layers = ["apply_v321_cp2_fairness_repair.py"]
+    elif branch == "v3.21-cp3-fullbody-first-person":
+        variant = "V3.21_CP3_FULL_BODY_FIRST_PERSON"
+        variant_layers = [
+            "apply_v321_cp2_fairness_repair.py",
+            "apply_v321_cp3_fullbody_first_person.py",
+        ]
 
     for layer_name in variant_layers:
         layer = HERE / layer_name
         if not layer.is_file():
             raise RuntimeError(
                 f"V3 build identity failure: branch {branch!r} requires {layer_name}, "
-                "but that exact CP2 layer does not exist."
+                "but that exact variant layer does not exist."
             )
         print(f"[V3.21] exact branch variant -> {layer_name}")
         exec(

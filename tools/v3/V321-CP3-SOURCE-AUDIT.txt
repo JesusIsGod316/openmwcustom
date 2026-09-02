@@ -1,0 +1,65 @@
+V3.21 CP3 — TRUE FULL-BODY FIRST-PERSON SOURCE AUDIT
+=====================================================
+
+FOUNDATION
+- Branch: v3.21-cp3-fullbody-first-person
+- Parent: ac1ec218f35bc14c2f44ffddfa5013891c2ec752
+- Parent role: accepted CP2 fairness repair; Mode129 remains unchanged control
+- CP3 candidate: Mode130 = Mode129 + full-body first person
+- Normal benchmark entry: V3_Unified_Test.bat
+- Compatibility alias: V3_City_Frametime.bat
+
+LOCKED ARCHITECTURE
+1. Public MWRender::Camera::Mode::FirstPerson remains unchanged.
+2. Internal NpcAnimation view adds VM_FirstPersonFullBody.
+3. Full-body view uses the normal skeleton and normal body/equipment parts.
+4. Full-body view uses normal world depth and ordinary world field of view.
+5. Native first person retains Dot1st parts, first-person skeleton/FOV,
+   DepthClear render bin, and first-person neck controller.
+6. Full-body view suppresses head, hair, and helmet parts while active.
+7. Lua adds read-only camera.isFullBodyFirstPerson().
+8. Feature is switchable and default-off; Mode129 must remain disabled.
+
+SOURCE SEAMS
+- Camera::processViewChange is the single selection point between
+  VM_FirstPerson and VM_FirstPersonFullBody.
+- Camera construction resolves the typed setting plus launcher environment
+  override once. No per-frame getenv or settings access is added.
+- NpcAnimation::updateNpcBase already selects normal skeleton/animation sources
+  for every view other than VM_FirstPerson, so the new view inherits the normal
+  body without duplicating the animation pipeline.
+- NpcAnimation::updateParts uses normal body and equipment records because only
+  VM_FirstPerson requests Dot1st body parts. CP3 adds explicit head/hair/helmet
+  suppression after equipment groups are processed.
+- NpcAnimation::setRenderBin already gives every non-VM_FirstPerson view normal
+  world depth. CP3 does not touch DepthClear.
+- NpcAnimation::addControllers must treat VM_FirstPersonFullBody like VM_Normal
+  so normal weapon controllers remain active.
+- Camera tracking continues to prefer the skeleton Camera node and fall back to
+  Head. The public first-person camera position/update path remains unchanged.
+
+CAUSAL MODES
+- Mode129: repaired class-aware fairness/dephasing; CP3 disabled.
+- Mode130: exact Mode129 settings and fairness tuning; CP3 enabled.
+- Mode128 remains unimplemented.
+
+VALIDATION GATES
+- Generated source must contain VM_FirstPersonFullBody only as an internal NPC
+  animation view; no new public Camera::Mode value is allowed.
+- Mode129 must not set OPENMW_V321_CP3_FULL_BODY_FIRST_PERSON.
+- Mode130 must enable both CP2 fairness and CP3 full-body first person.
+- Default setting must remain false.
+- Native VM_FirstPerson DepthClear and Dot1st paths must remain present.
+- Visual QA: body/equipment visible when looking down; no head/hair/helmet in
+  camera; weapons, shields, spellcasting, attacks, movement, sneak, swimming,
+  jumping, werewolf/vampire changes, and first/third-person switching remain
+  functional; no world-depth clipping exception or first-person overlay render.
+- Lua QA: camera.getMode() remains FirstPerson while
+  camera.isFullBodyFirstPerson() is true in Mode130 and false in Mode129.
+- Performance/log QA uses V3_Unified_Test.bat on the canonical route; compare
+  Mode129 versus Mode130 and retain CP2 queue/tail checks plus VRAM headroom.
+
+KNOWN FIRST-CYCLE LIMIT
+- The engine exposes the new Lua distinction, but external reanimation mods must
+  consume camera.isFullBodyFirstPerson() before they can automatically select
+  their third-person animation branch. CP3 does not silently rewrite mod code.
