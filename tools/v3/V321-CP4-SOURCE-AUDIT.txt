@@ -30,6 +30,7 @@ COMPATIBILITY CONTRACT
 VALIDATION
 - Local complete generated-source preflight: PASS (2026-09-02).
 - Local YAML, Python, diff-check and CP4 static identity gates: PASS.
+- Remote full-build publication trigger: PUSHED (2026-09-02).
 - Build identity must name CP4 and the exact branch.
 - Mode130 must not enable OPENMW_V321_CP4_SHADOW_COMPAT.
 - Mode131 must enable CP2 fairness, CP3 full body and CP4 shadow compatibility.
