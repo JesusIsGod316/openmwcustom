@@ -16,7 +16,8 @@ LOCKED ARCHITECTURE
 4. Full-body view uses normal world depth and ordinary world field of view.
 5. Native first person retains Dot1st parts, first-person skeleton/FOV,
    DepthClear render bin, and first-person neck controller.
-6. Full-body view suppresses head, hair, and helmet parts while active.
+6. Full-body view retains the base head to seal the neck opening; the camera is
+   inside its outward-facing geometry, while hair and helmet remain suppressed.
 7. Lua adds read-only camera.isFullBodyFirstPerson().
 8. Feature is switchable and default-off; Mode129 must remain disabled.
 
@@ -29,8 +30,8 @@ SOURCE SEAMS
   for every view other than VM_FirstPerson, so the new view inherits the normal
   body without duplicating the animation pipeline.
 - NpcAnimation::updateParts uses normal body and equipment records because only
-  VM_FirstPerson requests Dot1st body parts. CP3 adds explicit head/hair/helmet
-  suppression after equipment groups are processed.
+  VM_FirstPerson requests Dot1st body parts. CP3 removes equipment-provided head,
+  hair, and helmet geometry, then restores only the base head as neck closure.
 - NpcAnimation::setRenderBin already gives every non-VM_FirstPerson view normal
   world depth. CP3 does not touch DepthClear.
 - NpcAnimation::addControllers must treat VM_FirstPersonFullBody like VM_Normal
@@ -50,8 +51,8 @@ VALIDATION GATES
 - Mode130 must enable both CP2 fairness and CP3 full-body first person.
 - Default setting must remain false.
 - Native VM_FirstPerson DepthClear and Dot1st paths must remain present.
-- Visual QA: body/equipment visible when looking down; no head/hair/helmet in
-  camera; weapons, shields, spellcasting, attacks, movement, sneak, swimming,
+- Visual QA: body/equipment visible when looking down; no open neck cavity and
+  no face/hair/helmet in camera; weapons, shields, spellcasting, attacks, movement, sneak, swimming,
   jumping, werewolf/vampire changes, and first/third-person switching remain
   functional; no world-depth clipping exception or first-person overlay render.
 - Lua QA: camera.getMode() remains FirstPerson while
@@ -63,3 +64,12 @@ KNOWN FIRST-CYCLE LIMIT
 - The engine exposes the new Lua distinction, but external reanimation mods must
   consume camera.isFullBodyFirstPerson() before they can automatically select
   their third-person animation branch. CP3 does not silently rewrite mod code.
+
+P0 VISUAL CORRECTION
+- First Mode130 runtime QA exposed a large black neck/collar cavity because the
+  first implementation removed the base head entirely.
+- Corrected design restores only mHeadModel after equipment processing. The
+  lower head/neck closes the collar; hair and every helmet path stay suppressed.
+- If a third-party head replacer is authored double-sided and becomes visible
+  from inside, use a small full-body camera-forward offset as a compatibility
+  fallback rather than reintroducing the universal open-neck defect.

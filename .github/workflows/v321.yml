@@ -125,7 +125,10 @@ jobs:
           if [ "$GITHUB_REF_NAME" = 'v3.21-cp3-fullbody-first-person' ]; then
             grep -n 'VM_FirstPersonFullBody' apps/openmw/mwrender/npcanimation.hpp
             grep -n 'mViewMode == VM_FirstPersonFullBody' apps/openmw/mwrender/npcanimation.cpp
+            grep -n 'addOrReplaceIndividualPart(ESM::PRT_Head, -1, 1, mHeadModel)' apps/openmw/mwrender/npcanimation.cpp
+            grep -n 'return mode == VM_FirstPerson || mode == VM_FirstPersonFullBody' apps/openmw/mwrender/npcanimation.cpp
             grep -n 'mViewMode == VM_Normal || mViewMode == VM_FirstPersonFullBody' apps/openmw/mwrender/npcanimation.cpp
+            grep -n 'openmw-custom-v3.21-cp3-fullbody-first-person' apps/openmw/engine.cpp
             grep -n 'openmw-custom-v3.21-cp3-fullbody-first-person' apps/openmw/mwrender/camera.cpp
             grep -n 'isFullBodyFirstPerson' apps/openmw/mwrender/camera.hpp
             grep -n 'isFullBodyFirstPerson' apps/openmw/mwlua/camerabindings.cpp

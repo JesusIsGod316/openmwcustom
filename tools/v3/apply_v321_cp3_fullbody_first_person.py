@@ -37,7 +37,8 @@ replace_exact(
     '''first person field of view = 60.0
 
 # V3.21 CP3: render the normal player body and equipment from the native first-person camera.
-# The head, hair, and helmet are hidden in this view. Disabled by default.
+# Hair and helmets are hidden in this view. The base head stays attached so its
+# lower neck seals open collars; outward face geometry is culled from inside.
 v3.21 full body first person = false
 
 # Reverse the depth range, reduces z-fighting of distant objects and terrain''',
@@ -55,6 +56,15 @@ replace_exact(
             VM_FirstPerson,
             VM_FirstPersonFullBody,
             VM_HeadOnly''',
+)
+
+replace_exact(
+    "apps/openmw/mwrender/npcanimation.cpp",
+    '''        bool viewChange = mViewMode == VM_FirstPerson || viewMode == VM_FirstPerson;''',
+    '''        const auto isFirstPersonView = [](ViewMode mode) {
+            return mode == VM_FirstPerson || mode == VM_FirstPersonFullBody;
+        };
+        bool viewChange = isFirstPersonView(mViewMode) || isFirstPersonView(viewMode);''',
 )
 
 replace_exact(
@@ -80,7 +90,6 @@ replace_exact(
             // the normal third-person body-part path for every other slot.
             if (isFullBodyFirstPerson && slotlist[i].mSlot == MWWorld::InventoryStore::Slot_Helmet)
             {
-                removeIndividualPart(ESM::PRT_Head);
                 removeIndividualPart(ESM::PRT_Hair);
                 continue;
             }
@@ -99,10 +108,14 @@ replace_exact(
         }''',
     '''        if (isFullBodyFirstPerson)
         {
-            // Equipment groups can reference head or hair from slots other
-            // than Helmet, so enforce the camera-safe result after all groups.
+            // Equipment groups can reference head or hair from slots other than
+            // Helmet. Restore only the base head: its lower neck seals open
+            // collars while outward face geometry remains back-face culled from
+            // the camera inside the head. Hair and helmets remain suppressed.
             removeIndividualPart(ESM::PRT_Head);
             removeIndividualPart(ESM::PRT_Hair);
+            if (!mHeadModel.empty())
+                addOrReplaceIndividualPart(ESM::PRT_Head, -1, 1, mHeadModel);
         }
         else if (mViewMode != VM_FirstPerson)
         {
@@ -205,6 +218,14 @@ replace_exact(
             mTrackingNode = mAnimation->getNode("Camera");''',
 )
 
+# Keep the runtime log identity complete. The build manifest already carries
+# the CP3 variant, but the engine identity line must identify it too.
+replace_exact(
+    "apps/openmw/engine.cpp",
+    'openmw-custom-v3.21-cp2-fairness-dephasing',
+    'openmw-custom-v3.21-cp2-fairness-dephasing / openmw-custom-v3.21-cp3-fullbody-first-person',
+)
+
 # Reanimation Lua can select the third-person animation path while the public
 # camera remains FirstPerson. This is an additive read-only API.
 replace_exact(
@@ -293,9 +314,10 @@ The full-body view uses the normal player skeleton, normal third-person body and
 equipment parts, weapon controllers, the ordinary world field of view, and the
 ordinary world-depth render path. It does not use Dot1st body parts, the native
 first-person skeleton, the first-person-only FOV callback, the DepthClear render
-bin, or the native first-person neck controller. Head, hair, and helmet parts are
-removed while the full-body view is active to keep geometry out of the camera.
-Switching back to third person rebuilds the complete normal player normally.
+bin, or the native first-person neck controller. The base head remains attached
+only to seal the neck opening; normal outward face geometry is back-face culled
+from the camera inside it. Hair and helmet parts remain suppressed. Switching
+back to third person rebuilds the complete normal player normally.
 
 The additive Lua API camera.isFullBodyFirstPerson() returns true only when the
 public camera is FirstPerson and CP3 is active. Reanimation scripts can therefore
@@ -323,6 +345,7 @@ stat = subprocess.run(
 # Fail closed on architecture, launcher, and disabled-path drift.
 camera_hpp = (ROOT / "apps/openmw/mwrender/camera.hpp").read_text(encoding="utf-8")
 camera_cpp = (ROOT / "apps/openmw/mwrender/camera.cpp").read_text(encoding="utf-8")
+engine_cpp = (ROOT / "apps/openmw/engine.cpp").read_text(encoding="utf-8")
 npc_hpp = (ROOT / "apps/openmw/mwrender/npcanimation.hpp").read_text(encoding="utf-8")
 npc_cpp = (ROOT / "apps/openmw/mwrender/npcanimation.cpp").read_text(encoding="utf-8")
 lua_camera = (ROOT / "apps/openmw/mwlua/camerabindings.cpp").read_text(encoding="utf-8")
@@ -337,7 +360,7 @@ for marker in (
     "OPENMW_V321_CP3_FULL_BODY_FIRST_PERSON",
     "openmw-custom-v3.21-cp3-fullbody-first-person",
 ):
-    if marker not in camera_hpp + camera_cpp + npc_hpp + npc_cpp + lua_camera:
+    if marker not in camera_hpp + camera_cpp + engine_cpp + npc_hpp + npc_cpp + lua_camera:
         raise RuntimeError(f"V3.21 CP3 generated source missing marker: {marker}")
 if "mV321FullBodyFirstPerson" not in camera_settings:
     raise RuntimeError("V3.21 CP3 setting is not registered")
@@ -359,6 +382,10 @@ if "$V321CP2Fairness = '1'" not in line130 or "$V321CP3FullBodyFirstPerson = '1'
     raise RuntimeError("V3.21 Mode130 did not preserve CP2 and enable CP3")
 if "mViewMode == VM_FirstPersonFullBody" not in npc_cpp:
     raise RuntimeError("V3.21 CP3 body-part isolation is missing")
+if "addOrReplaceIndividualPart(ESM::PRT_Head, -1, 1, mHeadModel);" not in npc_cpp:
+    raise RuntimeError("V3.21 CP3 base-head neck closure is missing")
+if "return mode == VM_FirstPerson || mode == VM_FirstPersonFullBody;" not in npc_cpp:
+    raise RuntimeError("V3.21 CP3 first-person transition handling is incomplete")
 if "mViewMode == VM_Normal || mViewMode == VM_FirstPersonFullBody" not in npc_cpp:
     raise RuntimeError("V3.21 CP3 normal weapon-controller path is missing")
 if "if (mViewMode == VM_FirstPerson)" not in npc_cpp or '"DepthClear"' not in npc_cpp:
