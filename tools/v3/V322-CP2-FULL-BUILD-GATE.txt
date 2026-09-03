@@ -1,0 +1,36 @@
+V3.22 CP2 FULL WINDOWS BUILD GATE
+=================================
+
+Status: AUDIT PASSED — WINDOWS/MSVC BUILD AUTHORIZED
+Date: 2026-09-02 America/Chicago / 2026-09-03 UTC
+Repository: JesusIsGod316/openmwcustom
+Branch: v3.22-cp2-occluder-efficiency
+Audited source head: 59fbc9b154024987997faf3c8fffabe557b8bfdb
+Foundation: V3.22 CP1 full-build trigger 9883838282dbb23b253e98c5a6183cf95652449b
+Underlying runtime-accepted foundation: V3.21 CP4 df032efd894174d601ea75fe7fcd5448ee67a500
+Final CP2 preflight run: 33713997695 — SUCCESS
+Final generated-source artifact: 9877860207
+
+Authorization basis
+-------------------
+- Complete V3.21 final stack + CP1 + CP2 generated from a clean checkout.
+- Python patch tools compile successfully.
+- Exact V3.22 branch/harness/build identity passes.
+- CP1 inheritance and final V3.21 CP2/CP3/CP4 invariants pass.
+- Generated source is NUL-free/text-only; binary patch markers are rejected automatically.
+- CP2 innovation ladder 136-140 is present and control-preserving.
+- 400 remains the established large-vs-small visibility classification boundary.
+- Modes139-140 extend only occluder eligibility to 300-399; proxy detail stays referenced to 400.
+- 300-399 owner visibility is recorded before its own proxy can be rasterized, preventing self-occlusion.
+- Actual Pass2 owner traversal remains in original child order.
+- Mode140 may suppress redundant proxy rasterization only; it never suppresses owner traversal.
+- Ranking uses in-place std::sort.
+- Global triangle cap remains 30000 and distance remains 6144.
+- Historical rejected 250/8192/45000 broad-MSOC configuration is not revived.
+- No ObjectPaging topology, PBR/material, shadow, FBFP, render-bin/state, or compile-scheduler changes are introduced by CP2.
+- No new scenegraph UserDataContainer/DummyObject classification metadata is introduced.
+- git diff --check and generated PowerShell parser checks pass.
+
+Disposition
+-----------
+This commit records the completed source/generated-source QC and exists only to trigger the Windows 2022/MSVC build. It does not change generated engine behavior.
