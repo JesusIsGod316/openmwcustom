@@ -48,8 +48,19 @@ jobs:
           grep -n 'v324RenderOccluderTo' components/sceneutil/occlusionculling.cpp
           grep -n 'FrameJobService::Lane::Opportunistic' components/sceneutil/occlusionculling.cpp
           grep -n 'fail-open only' components/sceneutil/occlusionculling.cpp
+          grep -n 'OPENMW_V324_DEEP_TELEMETRY' components/debug/v3deeptelemetry.hpp
+          grep -n 'prev_lock_wait_ms' components/debug/v3deeptelemetry.hpp
+          grep -n 'mechanics", "actors_update' apps/openmw/mwmechanics/mechanicsmanagerimp.cpp
+          grep -n 'physics", "apply_queued_movements' apps/openmw/mwphysics/physicssystem.cpp
+          grep -n 'animation", "run_animation' apps/openmw/mwrender/animation.cpp
+          grep -n 'animation", "npc_rebuild' apps/openmw/mwrender/npcanimation.cpp
+          grep -n 'render_update", "manager_update' apps/openmw/mwrender/renderingmanager.cpp
+          grep -n 'framejob", "execute' components/sceneutil/framejobservice.hpp
+          grep -n 'msoc", "async_input_copy' components/sceneutil/occlusionculling.cpp
           grep -n '145 = V3.24 frame-job QoS infrastructure' tools/v3/launchers/V3_Lab.ps1
           grep -n '146 = V3.24 zero-wait async terrain MSOC' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'V3.24 deep optimization telemetry' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'v324-profiler-overhead-summary.txt' tools/v3/launchers/V3_Lab.ps1
           grep -n "'145'.*V324FrameJobQos = '1'" tools/v3/launchers/V3_Lab.ps1
           grep -n "'146'.*V324FrameJobQos = '1'.*V324AsyncMsoc = '1'" tools/v3/launchers/V3_Lab.ps1
           ! grep -E "^[[:space:]]*'14[56]'.*V323ParallelMsocMode = '[1-3]'" tools/v3/launchers/V3_Lab.ps1
@@ -68,6 +79,7 @@ jobs:
           for name in (
               'components/sceneutil/occlusionculling.cpp',
               'components/sceneutil/framejobservice.hpp',
+              'components/debug/v3deeptelemetry.hpp',
               'apps/openmw/mwrender/occlusionculling.cpp',
               'V3-applied-source.patch',
           ):
