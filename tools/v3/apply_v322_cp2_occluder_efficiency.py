@@ -5,6 +5,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def replace_exact(rel, old, new, expected=1):
+    if chr(0) in new:
+        raise RuntimeError(f"{rel}: V3.22 CP2 replacement contains an embedded NUL")
     path = ROOT / rel
     text = path.read_text(encoding="utf-8")
     count = text.count(old)
@@ -50,7 +52,7 @@ replace_exact(
         int v322Cp2OccluderMode()
         {
             const char* value = std::getenv("OPENMW_V322_CP2_OCCLUDER_EFFICIENCY_MODE");
-            if (!value || value[1] != '\0' || value[0] < '1' || value[0] > '4')
+            if (!value || value[0] < '1' || value[0] > '4' || value[1] != '\\0')
                 return 0;
             return value[0] - '0';
         }
