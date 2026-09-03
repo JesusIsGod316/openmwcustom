@@ -149,16 +149,19 @@ namespace Debug::V324DeepTelemetry
     {
     public:
         Scope(std::string_view category, std::string_view name, std::string_view detail = {})
+            : mEnabled(enabled())
         {
+            // Keep telemetry-OFF useful as an identical-binary observer-effect
+            // control: do not touch the high-resolution clock or allocate/copy
+            // strings unless the deep profiler is actually enabled.
+            if (!mEnabled)
+                return;
+
             const auto setupStart = Clock::now();
-            mEnabled = enabled();
-            if (mEnabled)
-            {
-                mCategory.assign(category);
-                mName.assign(name);
-                mDetail.assign(detail);
-                mStart = Clock::now();
-            }
+            mCategory.assign(category);
+            mName.assign(name);
+            mDetail.assign(detail);
+            mStart = Clock::now();
             mSetupMs = elapsedMs(setupStart);
         }
 
