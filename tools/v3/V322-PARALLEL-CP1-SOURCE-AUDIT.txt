@@ -1,0 +1,51 @@
+SCHEMA=V322_PARALLEL_CP1_SOURCE_AUDIT/1
+EVENT=evt.v3.22.parallel_architecture.audit.004
+BRANCH=v3.22-parallel-architecture-cp1
+CONTROL_MODE=135
+EXPERIMENT_MODE=141
+
+AUDITED ATTRIBUTION
+- Ordinary pre-transition frames show Mechanics at roughly 1.37 ms median and
+  1.96 ms p95 in the retained current-family run.
+- LuaSync is larger in aggregate, but its input/player callbacks are latency
+  sensitive and its delayed actions mutate arbitrary world state. LuaWait after
+  render is effectively zero, so multiworker Lua is not the first target.
+- UpdateTraversal is also material, but it is OSG-owned. Automatic threading
+  remains locked and no global OSG mode is changed.
+- Broad Actor::update and CharacterController::update contain AI, inventory,
+  animation, world, sound, physics, Lua, and gameplay-event mutations. They are
+  not admitted to workers.
+
+CP1 BOUNDARY
+- Main thread captures immutable actor collision-prediction inputs.
+- Existing engine WorkQueue performs pairwise numeric candidate preparation.
+- Workers never dereference Ptr, Movement, AI, OSG, physics, Lua, or world APIs.
+- Main thread performs LOS/awareness validation and deterministic actor-order
+  commit, including all steering writes and zTurn calls.
+- Fewer than 12 actors, zero configured background threads, a missing queue, or
+  a disabled switch falls through to the exact legacy serial implementation.
+
+KNOWN SEMANTIC DELTA
+- The legacy loop lets a later actor observe an earlier actor's corrected
+  desired movement in the same frame. Mode141 freezes all desired movement at
+  batch start. This is deterministic but requires explicit traffic/pathing
+  validation and is not promotable on timing alone.
+
+FORBIDDEN / UNCHANGED
+- No OSG threading-mode change.
+- No scenegraph, physics-world, Lua-state, AI-sequence, inventory, or gameplay
+  event mutation from workers.
+- No DatabasePager ready-queue change and no ICO policy change.
+- No V3.19 instancing, V3.20 broad update skip, state sorter, PBR, shadow,
+  view-distance, full-body first-person, or VRAM policy change.
+- Dormant V3.22 CP1/CP2 renderer switches remain off in Mode141.
+
+RUNTIME GATES
+1. Mode135 versus Mode141 with the frozen save/mod/settings route.
+2. Verify actor traffic, door approaches, follow/wander/combat pursuit, crowd
+   crossings, dead-body avoidance, and repeated cell transitions.
+3. Require a credible >=1 ms win, preferably >=2 ms on the targeted workload,
+   without worse p99 wall time, transition tails, correctness, or VRAM.
+4. Inspect OPENMW_V3_WORKQUEUE_FILE and OPENMW_V3_RENDER_FILE alongside
+   v3-frames.csv; a queue-wait regression is a rejection even if mean Mechanics
+   improves.
