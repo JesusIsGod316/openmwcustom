@@ -221,7 +221,7 @@ parallel_prefix = r'''    void Actors::predictAndAvoidCollisions(float duration)
                     continue;
                 const MWWorld::Ptr& ptr = actor.getPtr();
                 const MWWorld::Class& cls = ptr.getClass();
-                const Movement& movement = cls.getMovementSettings(ptr);
+                Movement& movement = cls.getMovementSettings(ptr);
                 snapshots.push_back({ ptr, ptr.mRef, ptr.getRefData().getPosition().asVec3(), movement.asVec3(),
                     world->getHalfExtents(ptr), ptr.getRefData().getPosition().rot[2], cls.getMaxSpeed(ptr),
                     cls.getCreatureStats(ptr).isDead() });
