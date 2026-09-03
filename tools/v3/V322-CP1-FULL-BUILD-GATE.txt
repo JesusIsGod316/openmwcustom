@@ -1,0 +1,52 @@
+V3.22 CP1 FULL WINDOWS BUILD GATE
+=================================
+
+Status: AUDIT PASSED — WINDOWS/MSVC BUILD AUTHORIZED
+Date: 2026-09-02 America/Chicago / 2026-09-03 UTC
+Repository: JesusIsGod316/openmwcustom
+Branch: v3.22-cp1-msoc-hotpath
+Audited source commit: a3354f51d1f572185ce908463d3cdc85b58d988c
+Foundation: final runtime-accepted V3.21 CP4 df032efd894174d601ea75fe7fcd5448ee67a500
+Preflight run: 33711949887 — SUCCESS
+V3.22 generated-source artifact: 9877209521
+Final V3.21 generated-source comparison artifact: 9874068300
+
+Manual generated-source audit
+-----------------------------
+- Compared the exact V3.22 preflight V3-applied-source.patch against the exact final V3.21 CP4 preflight patch.
+- The V3.22 generated delta is isolated to:
+  * apps/openmw/engine.cpp
+  * apps/openmw/mwrender/occlusionculling.cpp
+  * apps/openmw/mwrender/occlusionculling.hpp
+  * components/sceneutil/occlusionculling.cpp
+  * components/sceneutil/occlusionculling.hpp
+  * tools/v3/launchers/V3_Lab.ps1
+- No V3.22 ObjectPaging source delta exists. Exact-active Mode2 batching/shareState/posttransform topology is therefore inherited unchanged.
+- No V3.22 delta contains shareState, VERTEX_POSTTRANSFORM, gl_InstanceID, DummyObject classification, markV321CompileClass, the rejected 250/8192/45000 broadened-MS​​OC configuration, or IncrementalCompileOperation scheduling changes.
+- Mode135 matches final V3.21 Mode131 settings exactly except its experiment identity and keeps the CP1 switch off.
+- Mode136 matches Mode135 exactly except its experiment identity and OPENMW_V322_CP1_MSOC_HOT_PATH=1.
+
+API / lifetime audit
+--------------------
+- std::getenv is paired with <cstdlib>.
+- The camera cache uses osg::Matrixd::invert and matrix element access already used by the accepted V3.21 path.
+- mV322ViewInverseValid is cleared every beginFrame; cached eye data is read only when inversion succeeded.
+- CP1-off and inversion-failure paths retain the original callback-local inversion path.
+- MSOC frame activity still bounds use to the active main-camera traversal; endFrame disables subsequent secondary-camera use.
+- PagedOccluderData caching uses osg::ref_ptr and a node-identity guard. A callback invoked or cloned onto a different node misses the cache and performs the original UserDataContainer/dynamic_cast lookup again.
+- The cache adds no scenegraph user data, tags, classification objects, render bins, node masks, PBR/material state, shadow behavior, FBFP behavior, or occlusion decision changes.
+
+Preflight gates already passed
+------------------------------
+- All tools/v3 Python generators compile.
+- Complete V3.22 generated stack applies from a clean checkout.
+- Exact V3.22 branch/harness/generated-source identity passes.
+- Inherited V3.21 CP2 transient classification invariants pass.
+- Inherited V3.21 CP3/CP4 FBFP/shadow/animation compatibility invariants pass.
+- CP1 allowed-target and forbidden-marker gates pass.
+- git diff --check passes.
+- Generated V3_Lab.ps1 PowerShell parser check passes.
+
+Disposition
+-----------
+Stages A-C of the V3.22 CP1 build gate passed. This commit exists only to record Stage C manual approval and trigger the Stage D Windows 2022/MSVC build. No generated engine source is changed by this gate file.
