@@ -10,7 +10,7 @@ Control for CP2 runtime attribution: Mode136 (CP1 hot-path cache, CP2 off)
 
 Design objective
 ----------------
-CP2 is intentionally innovative rather than conservative, but every mechanism is runtime-switchable in one executable and the known control remains available. CP2 targets occluder efficiency: make the fixed MSOC raster budget buy more useful depth coverage without changing ObjectPaging topology, child draw traversal order, PBR/shadow/FBFP semantics, or the established large-vs-small visibility classification boundary.
+CP2 is intentionally innovative rather than conservative, but every mechanism is runtime-switchable in one executable and the known control remains available. CP2 targets occluder efficiency: make the fixed MSOC raster budget buy more useful depth coverage without changing ObjectPaging topology, PBR/shadow/FBFP semantics, or the established 400-unit large-vs-small visibility boundary.
 
 Innovation ladder
 -----------------
@@ -26,38 +26,41 @@ A manual generated-source audit caught that simply setting the shared occluder m
 
 The corrected modes 139-140 keep the shared min radius at 400. A separate [300,400) mid-occluder phase does the following:
 1. Waits until all ranked 400+ candidate proxies have been rasterized.
-2. Tests each 300-399 owner against the same full buffer it would see in the control path, before its own proxy can exist in depth.
-3. Traverses only owners that pass that established visibility decision; explicit skipOcclusion objects such as doors still traverse and are never admitted as CP2 occluders.
-4. Collects proxies only from already-visible owners, ranks them by utility, and rasterizes them afterward within the same 30000-triangle global budget.
-5. Uses those extra mid-size proxies only to improve rejection of objects below 300.
+2. Records each 300-399 owner's visibility against the same terrain + 400+ proxy buffer it would see in the control path, before its own proxy can exist in depth.
+3. Explicit skipOcclusion owners such as doors are recorded visible and are never admitted as CP2 occluders.
+4. Collects proxies only from owners already recorded visible, ranks those proxies by utility, and rasterizes them afterward within the same 30000-triangle global budget.
+5. Pass2 still walks children in the original order. For 300-399 owners it consumes the recorded visibility bit instead of issuing a second full-buffer query, so the owner's own proxy cannot self-occlude it and its draw traversal position is preserved.
+6. The new mid-size depth therefore only changes rejection opportunities for objects below 300.
 
-This prevents self-occlusion and keeps 300-radius experimentation an occluder-eligibility change rather than a visibility-classification change.
+This prevents self-occlusion, preserves original small-object render traversal ordering, and keeps 300-radius experimentation an occluder-eligibility change rather than a visibility-classification change.
 
 Hot-path quality refinements
 ----------------------------
 - Candidate ranking uses in-place std::sort, not std::stable_sort, avoiding optional stable-sort scratch allocation in the cull path.
 - Generated replacement helpers reject embedded NUL characters before writing source.
-- CI also byte-scans generated C++ and V3-applied-source.patch and rejects any NUL or GIT binary patch marker.
+- CI byte-scans generated C++ and V3-applied-source.patch and rejects any NUL or GIT binary patch marker.
 - Candidate mesh pointers refer to values stored in the callback's std::unordered_map mesh cache; unordered_map rehash invalidates iterators but does not invalidate references/pointers to elements.
+- The 300-399 visibility sidecar is a local byte vector scoped to the callback invocation; it does not attach metadata to the scene graph or survive across traversals.
 
 Semantic invariants
 -------------------
 - Mode136 remains the uncontaminated CP1 control.
-- Pass-1 owner draw traversal remains in original scenegraph order.
-- CP2 does not reorder draw traversal or modify render bins/state.
+- Pass1 400+ owner traversal remains in original scenegraph order.
+- Pass2 <400 owner traversal remains in original child order; 300-399 decisions are precomputed but traversal is not moved.
+- CP2 does not modify render bins/state or ObjectPaging.
 - Cell terrain-only rejection remains unchanged.
 - Door skipOcclusion handling remains unchanged.
 - Camera-inside occluder exclusion remains unchanged.
 - Large/paged-object path remains unchanged.
 - 400 remains the large-vs-small visibility classification boundary in all CP2 modes.
-- Candidate admission still requires the existing range/inside/terrain visibility conditions.
+- Candidate admission retains the existing distance/inside/terrain-visibility conditions.
 - Global building triangle cap remains authoritative at 30000.
 - Mode140 full-buffer tests suppress only redundant proxy raster work, never owner traversal.
-- CP2 adds no scenegraph UserDataContainer/DummyObject metadata and does not touch ObjectPaging.
+- CP2 adds no scenegraph UserDataContainer/DummyObject metadata.
 
 Rejected-history boundary
 -------------------------
-The historical broad 250-radius / 8192-distance / 45000-triangle MSOC configuration remains rejected and is not revived. The aggressive branch is instead a clean 300-radius eligibility extension with the existing 6144 distance and 30000 cap, combined with ranking, decoupled owner visibility, and redundant-work suppression.
+The historical broad 250-radius / 8192-distance / 45000-triangle MSOC configuration remains rejected and is not revived. The aggressive branch is instead a clean 300-radius eligibility extension with the existing 6144 distance and 30000 cap, combined with ranking, decoupled owner visibility, preserved Pass2 traversal order, and redundant-work suppression.
 
 Build discipline
 ----------------

@@ -18,8 +18,9 @@ def replace_exact(rel, old, new, expected=1):
 
 # Decouple the experimental 300-unit occluder eligibility floor from the proven
 # 400-unit visibility-classification boundary. Objects in [300, 400) retain the
-# control path's full-buffer visibility test. Only after all such owner visibility
-# decisions are complete may their visible proxies enrich depth for <300 objects.
+# control path's full-buffer visibility decision and original Pass-2 traversal
+# order. Only after all such owner visibility decisions are recorded may their
+# visible proxies enrich depth for <300 objects.
 
 launcher_path = ROOT / "tools/v3/launchers/V3_Lab.ps1"
 launcher = launcher_path.read_text(encoding="utf-8")
@@ -39,13 +40,15 @@ launcher_path.write_text(launcher, encoding="utf-8", newline="\n")
 anchor = '''        // Pass 2: Small objects — test against enriched depth buffer (terrain + buildings)
         for (unsigned int i = 0; i < numChildren; ++i)'''
 mid_phase = '''        // Modes 3-4 decouple 300-unit occluder eligibility from the proven
-        // 400-unit visibility-classification boundary. First decide visibility for
+        // 400-unit visibility-classification boundary. First record visibility for
         // every [300, 400) owner against the same terrain + 400+ proxy buffer that
-        // the control path would use. Only after those owner decisions are complete
-        // may visible mid-size proxies enrich depth for truly small objects.
+        // the control path would use. No owner is traversed here: Pass 2 retains the
+        // original child traversal order and consumes the recorded result later.
+        std::vector<unsigned char> v322MidVisibility;
         if (mV322Cp2OccluderMode >= 3)
         {
             constexpr float v322EligibilityRadius = 300.0f;
+            v322MidVisibility.assign(numChildren, 0);
             std::vector<V322OccluderCandidate> v322MidCandidates;
             v322MidCandidates.reserve(numChildren);
 
@@ -64,10 +67,10 @@ mid_phase = '''        // Modes 3-4 decouple 300-unit occluder eligibility from 
                 if (!skipOcclusion && !mCuller->testVisibleAABB(childBB))
                     continue;
 
-                // Preserve the control owner's traversal result before this object can
-                // contribute any depth itself. Doors and other explicit exclusions are
-                // traversed but never admitted as CP2 occluders.
-                child->accept(*cv);
+                // Store the control-equivalent owner result before this object can
+                // contribute any depth itself. Doors and other explicit exclusions
+                // remain visible but are never admitted as CP2 occluders.
+                v322MidVisibility[i] = 1;
                 if (skipOcclusion || !mEnableStaticOccluders)
                     continue;
 
@@ -114,7 +117,8 @@ mid_phase = '''        // Modes 3-4 decouple 300-unit occluder eligibility from 
                     continue;
 
                 // Mode 4 may suppress only redundant proxy raster work. Owner visibility
-                // and traversal were already resolved above without this proxy in depth.
+                // was already resolved above without this proxy in depth, and actual owner
+                // traversal remains deferred to Pass 2 in original child order.
                 if (mV322Cp2OccluderMode >= 4 && !mCuller->testVisibleAABB(candidate.mesh->aabb))
                     continue;
 
@@ -132,9 +136,18 @@ replace_exact(
     "apps/openmw/mwrender/occlusionculling.cpp",
     '''            if (bs.radius() >= mOccluderMinRadius)
                 continue; // Already handled in pass 1''',
-    '''            if (bs.radius() >= mOccluderMinRadius
-                || (mV322Cp2OccluderMode >= 3 && bs.radius() >= 300.0f))
-                continue; // Already handled in pass 1 or the CP2 decoupled mid-occluder phase''',
+    '''            if (bs.radius() >= mOccluderMinRadius)
+                continue; // Already handled in pass 1
+
+            if (mV322Cp2OccluderMode >= 3 && bs.radius() >= 300.0f)
+            {
+                // The visibility decision was recorded before any [300,400) proxy
+                // entered the buffer, preventing self-occlusion while preserving
+                // this original Pass-2 traversal position.
+                if (i < v322MidVisibility.size() && v322MidVisibility[i] != 0)
+                    child->accept(*cv);
+                continue;
+            }''',
 )
 
 readme_path = ROOT / "V3-LAB-README.txt"
@@ -146,12 +159,13 @@ CP2 eligibility-decoupling correction
 Modes 139-140 do NOT lower the shared Camera/occlusion occluder min radius
 setting. The established 400-unit boundary still decides which objects use the
 large-owner path versus the normal full-buffer small-object visibility path.
-CP2 separately considers visible 300-399-radius objects as potential occluders:
-their owner visibility is decided first against terrain + 400+ proxies, exactly
-without their own proxy in depth; only afterward are visible mid-size proxies
-ranked/rasterized to help cull objects below 300. This prevents self-occlusion
-and avoids turning the 300-radius experiment into a visibility-classification
-change.
+CP2 separately considers 300-399-radius objects as potential occluders. Their
+visibility result is recorded first against terrain + 400+ proxies, with their
+own proxy absent. Visible mid-size proxies are then ranked/rasterized, but owner
+traversal remains in the original Pass2 child order and consumes the recorded
+visibility result without a second full-buffer test. This prevents self-
+occlusion, preserves render traversal ordering, and avoids turning the 300-radius
+experiment into a visibility-classification change.
 '''
 readme_path.write_text(readme, encoding="utf-8", newline="\n")
 
@@ -168,4 +182,4 @@ subprocess.run(
     check=True,
     stdout=(ROOT / "V3-applied-source-stat.txt").open("w", encoding="utf-8", newline="\n"),
 )
-print("V3.22 CP2 eligibility decoupling applied: 300 occluder floor / 400 visibility boundary")
+print("V3.22 CP2 eligibility decoupling applied: 300 occluder floor / 400 visibility boundary / Pass2 order preserved")
