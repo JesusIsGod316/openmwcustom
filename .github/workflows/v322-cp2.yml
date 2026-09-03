@@ -51,6 +51,26 @@ jobs:
           path: v322-cp2-apply.log
           if-no-files-found: warn
 
+      - name: Reject embedded NUL or binary generated source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          targets = [
+              Path('apps/openmw/mwrender/occlusionculling.cpp'),
+              Path('apps/openmw/mwrender/occlusionculling.hpp'),
+              Path('V3-applied-source.patch'),
+          ]
+          for path in targets:
+              data = path.read_bytes()
+              if b'\x00' in data:
+                  raise SystemExit(f'embedded NUL detected in {path}')
+          patch = Path('V3-applied-source.patch').read_bytes()
+          if b'GIT binary patch' in patch:
+              raise SystemExit('generated V3 patch contains a binary patch; text source expected')
+          print('Generated CP2 source is text-only and NUL-free.')
+          PY
+
       - name: Validate exact build identity
         shell: bash
         run: |
