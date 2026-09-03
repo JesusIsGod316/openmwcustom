@@ -1,0 +1,63 @@
+V3.22 CP1 SOURCE / BUILD QUALITY AUDIT
+======================================
+
+Foundation
+----------
+Repository: JesusIsGod316/openmwcustom
+Parent: v3.21-cp4-shadow-compat @ df032efd894174d601ea75fe7fcd5448ee67a500
+Accepted inherited runtime: V3.21 Mode131, with CP2 fairness + CP3 full-body first person + CP4 shadow/animation compatibility.
+
+Why this audit exists
+---------------------
+The project has previously lost build cycles to generated-source/API assumptions that were not valid on the Windows/MSVC dependency set. V3.21 CP2 also demonstrated that metadata which looked cheap in source could mutate copied scenegraph state and materially regress the control path. V3.22 therefore uses a preflight-first gate and a deliberately small first implementation surface.
+
+Important correction caught before implementation
+-------------------------------------------------
+A raw-tree read initially made the unpaged CellOcclusionCallback storage path look unwired. That conclusion was wrong for the built executable: apply_v34_occlusion_shadow_lab.py explicitly patches both cell-root construction sites to pass mOcclusionStorage into CellOcclusionCallback. V3.22 CP1 does NOT "fix" that already-generated wiring. This is exactly why V3.22 audits the complete generated stack instead of treating the committed generator base as the Windows source.
+
+CP1 implementation admitted after audit
+---------------------------------------
+1. Main-camera inverse/eye cache:
+   - OcclusionCuller optionally inverts the already-supplied main view matrix once at beginFrame.
+   - PagedOccluderCallback and CoarseOcclusionCallback reuse it while the active MSOC frame is live.
+   - CP1 off or inversion failure falls back to the original per-callback Matrixd::invert path.
+   - Uses only osg::Matrixd::invert, Matrixd access and Vec3f already used by the accepted code.
+
+2. Per-node PagedOccluderData lookup cache:
+   - The existing callback still performs the original UserDataContainer/dynamic_cast lookup on first use.
+   - In CP1 mode it retains the resolved PagedOccluderData and the node address.
+   - Reuse occurs only when the callback is invoked again for that same node.
+   - If a callback is ever shared with a different node, it performs the original lookup again.
+   - No new scenegraph user objects, tags, DummyObject metadata or copied classification state.
+
+Explicitly excluded from this first build
+-----------------------------------------
+- OSG frustum-rejection API changes: deferred until exact installed CullVisitor/CullStack contract is proven.
+- MaskedOcclusionCulling buffer merging: deferred until the pinned MOC API and depth semantics are proven.
+- Off-thread simplified-proxy construction: deferred until node traversal/lifetime/thread-safety is proven.
+- Occluder threshold/radius/budget changes: CP2 scope, not CP1.
+- ObjectPaging batching/shareState/VERTEX_POSTTRANSFORM changes: forbidden in CP1.
+- New compile scheduling, shadow behavior, FBFP behavior, PBR/material behavior, or scenegraph classification metadata.
+
+Causal modes
+------------
+Modes 132-134 remain unused because those IDs were involved in canceled/audit-only V3.21 work.
+Mode 135: final accepted V3.21 Mode131 behavior control; V3.22 CP1 switch off.
+Mode 136: Mode135 foundation plus V3.22 CP1 MSOC hot-path cache.
+
+Build gate
+----------
+Stage A: create V3.22 source/tooling without [full-build].
+Stage B: GitHub Ubuntu preflight only:
+- compile every tools/v3 Python patch generator;
+- apply the complete generated V3.22 stack from a clean checkout;
+- fail-closed exact-anchor checks;
+- inherited CP2/CP3/CP4 checks;
+- CP1 marker and audited-target checks;
+- git diff --check;
+- PowerShell parser validation;
+- upload exact V3-applied-source.patch for manual inspection.
+Stage C: manually inspect generated CP1 diff and preflight output.
+Stage D: only after A-C pass, create one [full-build] trigger commit for Windows 2022/MSVC.
+
+No Windows build is authorized by the initial CP1 implementation commit.
