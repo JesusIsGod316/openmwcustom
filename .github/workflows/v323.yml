@@ -1,0 +1,94 @@
+name: V3.23 parallel MSOC build/QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options: [preflight, full]
+  push:
+    branches: [v3.23-parallel-msoc]
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+      - name: Compile-check patch tools
+        run: python3 -m py_compile tools/v3/*.py
+      - name: Apply exact generated stack
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness.py 2>&1 | tee v323-parallel-msoc-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+      - name: Validate identity and generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -Fx "branch=$GITHUB_REF_NAME" V3-BUILD-IDENTITY.txt
+          grep -Fx 'version=V3.23' V3-BUILD-IDENTITY.txt
+          grep -Fx 'harness=apply_diagnostic_harness_v323.py' V3-BUILD-IDENTITY.txt
+          grep -n 'openmw-custom-v3.23-parallel-msoc' apps/openmw/engine.cpp
+          grep -n 'V323ParallelWorker' components/sceneutil/occlusionculling.cpp
+          grep -n 'rasterizeOccluderBatch' components/sceneutil/occlusionculling.cpp
+          grep -n 'MergeBuffer(mV323WorkerMOC)' components/sceneutil/occlusionculling.cpp
+          grep -n 'OPENMW_V323_PARALLEL_MSOC_MODE' components/sceneutil/occlusionculling.hpp
+          grep -n '142 = V3.23 parallel MSOC parity' tools/v3/launchers/V3_Lab.ps1
+          grep -n '143 = V3.23 strong parallel paged MSOC' tools/v3/launchers/V3_Lab.ps1
+          grep -n '144 = V3.23 aggressive parallel paged MSOC' tools/v3/launchers/V3_Lab.ps1
+          grep -n "'142'.*V323ParallelMsocMode = '1'" tools/v3/launchers/V3_Lab.ps1
+          grep -n "'143'.*V323ParallelMsocMode = '2'" tools/v3/launchers/V3_Lab.ps1
+          grep -n "'144'.*V323ParallelMsocMode = '3'" tools/v3/launchers/V3_Lab.ps1
+          ! grep -E "^[[:space:]]*'14[234]'.*V322ParallelActorAvoidance = '1'" tools/v3/launchers/V3_Lab.ps1
+          ! grep -E "^[[:space:]]*'14[234]'.*V322CP2OccluderMode = '[1-4]'" tools/v3/launchers/V3_Lab.ps1
+          python3 - <<'PY'
+          from pathlib import Path
+          for name in (
+              'components/sceneutil/occlusionculling.cpp',
+              'apps/openmw/mwrender/occlusionculling.cpp',
+              'V3-applied-source.patch',
+          ):
+              data = Path(name).read_bytes()
+              if b'\x00' in data or b'GIT binary patch' in data:
+                  raise SystemExit(f'non-text generated source: {name}')
+          PY
+      - name: Parse-check launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.ToString() }; exit 1 }
+      - name: Upload generated source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v323-parallel-msoc-preflight-${{ github.sha }}
+          path: |
+            v323-parallel-msoc-apply.log
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+            V3-BUILD-IDENTITY.txt
+            tools/v3/V323-PARALLEL-MS0C-SOURCE-AUDIT.txt
+          if-no-files-found: warn
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: false

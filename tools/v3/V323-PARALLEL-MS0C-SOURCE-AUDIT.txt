@@ -1,0 +1,77 @@
+V3.23 PARALLEL MSOC — SOURCE / OWNERSHIP AUDIT
+===============================================
+Event: evt.v3.23.parallel_msoc.implementation.002
+Branch: v3.23-parallel-msoc
+Parent: be84b60ed5c6fe91959f0ca4b095c51988e3d809
+
+AUDIT CONCLUSION
+----------------
+V3.23 is admitted as a substantive switchable parallel-MSOC build. It does not
+parallelize live OSG CullVisitor traversal and does not use the shared preload
+WorkQueue for same-frame occlusion jobs.
+
+Mode142 — parity/QoS
+- Existing terrain is already rasterized twice each active exterior frame: once
+  into the full MOC and once into the terrain-only MOC.
+- Those buffers are independent. V3.23 assigns the terrain-only copy to one
+  persistent dedicated worker while the cull thread writes the full buffer.
+- The method joins before any terrain-only query can execute, preserving the
+  existing same-frame visibility contract.
+- If the dedicated worker is unavailable, work runs inline/serial; it is never
+  queued behind DatabasePager/preload jobs.
+
+Mode143 — strong exact-active paged MSOC
+- Retains Mode142.
+- PagedOccluderData is already prebuilt immutable cull-time input attached to
+  exact-active ObjectPaging chunks.
+- Eligible paged meshes are split between the live full MOC and a worker-private
+  same-resolution MOC. No two threads write the same MOC.
+- Worker-private results are merged only after the bounded batch completes.
+- Paged occluder max distance and triangle budget are multiplied by 1.5x.
+- CellOcclusion individual-building eligibility remains unchanged.
+
+Mode144 — aggressive exact-active paged MSOC
+- Retains Mode143 architecture.
+- Paged occluder max distance and triangle budget are multiplied by 2x.
+- Default OFF. Included in the first V3.23 executable for aggressive testing.
+- Does not revive V3.22 Mode139/140 300-radius CellOcclusion eligibility.
+
+MODE141 LESSON APPLIED
+----------------------
+The existing SceneUtil::WorkQueue is a FIFO-ish shared background queue. A
+front insertion can reprioritize queued items but cannot preempt workers already
+inside long preload jobs. Mode141 demonstrated 54 ms moving-route and ~199 ms
+full-route waits from exactly that topology. V3.23 therefore uses a dedicated
+persistent worker for bounded same-frame MSOC and an inline fallback. There is
+no same-frame wait on an unprioritized background queue.
+
+OFF-PATH CONTRACT
+-----------------
+OPENMW_V323_PARALLEL_MSOC_MODE unset/0 must:
+- construct no V3.23 worker;
+- allocate no worker-private MOC;
+- form no V3.23 paged batches;
+- alter no paged range/triangle budget;
+- emit no V3.23 diagnostic stream;
+- leave Mode135 visibility and V3.21 behavior unchanged.
+
+MOC SAFETY
+----------
+- Mode142 writes mMOC and mMOCTerrainOnly concurrently; these are independent
+  MaskedOcclusionCulling objects.
+- Mode143/144 worker raster writes only mV323WorkerMOC while the main thread
+  writes mMOC.
+- MergeBuffer occurs after the worker completion barrier.
+- No live MOC is concurrently queried while it is being mutated by another
+  thread.
+- Inputs are immutable vectors owned by the active cull callback and remain
+  alive through the bounded join.
+
+RUNTIME GATE
+------------
+Compare Mode135 vs 142 first for parity/correctness and queue behavior. Then
+Mode143 and Mode144 on the same frozen route. Promotion requires a credible
+>=1 ms net win, preferably >=2 ms, attributable to downstream cull/draw or
+MSOC work, with no worse p99/severe tails, no visibility popping/false
+occlusion, and no meaningful VRAM increase. Mode144 may remain dormant even if
+it is not promoted.
