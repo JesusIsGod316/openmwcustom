@@ -22,7 +22,7 @@ layer_names = [
     "apply_v322_cp2_rank_hotpath_refinement.py",
     "apply_v322_cp2_eligibility_decoupling.py",
     "apply_v322_parallel_architecture_cp1.py",
-    "apply_v323_parallel_msoc.py",
+    "apply_v323_parallel_msoc_v2.py",
 ]
 
 for layer_name in layer_names:
