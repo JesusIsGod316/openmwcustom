@@ -41,11 +41,12 @@ jobs:
           grep -n 'openmw-custom-v3.24-frame-job-qos' apps/openmw/engine.cpp
           grep -n 'class FrameJobService' components/sceneutil/framejobservice.hpp
           grep -n 'Lane::Critical' components/sceneutil/framejobservice.hpp
-          grep -n 'Lane::Opportunistic' components/sceneutil/framejobservice.hpp
+          grep -n 'mOpportunistic' components/sceneutil/framejobservice.hpp
           grep -n 'OPENMW_V324_FRAME_JOB_QOS' components/sceneutil/occlusionculling.hpp
           grep -n 'OPENMW_V324_ASYNC_MSOC' components/sceneutil/occlusionculling.hpp
           grep -n 'mV324TerrainReadyGeneration' components/sceneutil/occlusionculling.hpp
           grep -n 'v324RenderOccluderTo' components/sceneutil/occlusionculling.cpp
+          grep -n 'FrameJobService::Lane::Opportunistic' components/sceneutil/occlusionculling.cpp
           grep -n 'fail-open only' components/sceneutil/occlusionculling.cpp
           grep -n '145 = V3.24 frame-job QoS infrastructure' tools/v3/launchers/V3_Lab.ps1
           grep -n '146 = V3.24 zero-wait async terrain MSOC' tools/v3/launchers/V3_Lab.ps1
@@ -61,8 +62,6 @@ jobs:
           # The V3.24 raster path must not introduce a synchronous join before or
           # after its opportunistic submission. Inherited V3.23 waits remain only
           # in dormant V3.23 modes and are intentionally not enabled by 145/146.
-          fn_start = cpp.rfind('void OcclusionCuller::rasterizeTerrainOccluder', 0, start)
-          fn_end = cpp.index('void OcclusionCuller::rasterizeOccluder(', start)
           v324_prefix = cpp[start:end]
           if 'wait(' in v324_prefix:
               raise SystemExit('V3.24 async MSOC prefix contains a wait')
