@@ -67,6 +67,42 @@ unpublished preparations or identify another measured ownership-clean kernel of
 >=1 ms, preferably >=2 ms. Live OSG attachment, Ptr/world/mechanics access, shared
 model-cache mutation, and gameplay ordering remain main-thread only.
 
+DEEP SELF-ACCOUNTING TELEMETRY
+------------------------------
+The user explicitly permits invasive profiling when its observer cost can be
+quantified. V3.24 therefore includes an opt-in deep telemetry layer rather than
+artificially limiting diagnostic resolution.
+
+Deep telemetry instruments:
+- MechanicsManager update plus actor/object sub-envelopes.
+- Physics preparation, scheduled movement/collision work, and world-position commit.
+- Animation::runAnimation, animation-source setup, NPC rebuild/update-base paths.
+- RenderingManager update, navmesh/recast/camera update envelopes.
+- FrameJobService admission, execution, skips, caller-runs, and waits.
+- V3.24 async MSOC input-copy and worker raster work.
+
+The writer self-accounts scope setup plus formatting, writer-lock wait, file open,
+write, flush, and emitted bytes. Writer costs are carried on the following trace
+row so measuring the writer does not recursively invoke itself. The launcher emits
+v324-profiler-overhead-summary.txt after an instrumented run.
+
+Direct self-time alone is not considered sufficient to characterize observer
+impact. Every mode can be run with deep telemetry OFF or ON in the identical
+binary. Same-mode OFF -> ON comparison is the authoritative observer-effect bound
+for cache pollution, allocations, scheduling perturbation, contention, and the
+final writer operation that cannot be carried forward into another row.
+
+Recommended diagnostic sequence:
+1. Mode135 telemetry OFF -- clean historical behavior control.
+2. Mode145 telemetry OFF -- isolate V3.24 QoS infrastructure overhead.
+3. Mode145 telemetry ON  -- rank larger serial/threading targets and measure profiler cost.
+4. Mode146 telemetry ON  -- attribute the zero-wait async MSOC consumer itself.
+
+The diagnostic build is not itself a promotion benchmark when telemetry is ON.
+Performance promotion still requires uninstrumented or explicitly overhead-bounded
+causal validation on a frozen mod/save/settings cohort with framepacer off or
+non-binding.
+
 SAFETY / ACCEPTANCE
 -------------------
 - Mode135 remains exact final-V3.21 behavior control.
