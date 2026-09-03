@@ -1,0 +1,172 @@
+name: V3.22 CP2 occluder-efficiency build/QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+          - full
+  push:
+    branches:
+      - v3.22-cp2-occluder-efficiency
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Show exact source revision
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git status --short
+
+      - name: Compile-check all V3 Python patch tools
+        shell: bash
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Apply complete V3.22 CP2 generated stack
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness.py 2>&1 | tee v322-cp2-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Upload CP2 apply log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v322-cp2-apply-log-${{ github.sha }}
+          path: v322-cp2-apply.log
+          if-no-files-found: warn
+
+      - name: Validate exact build identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f V3-BUILD-IDENTITY.txt
+          grep -Fx "branch=$GITHUB_REF_NAME" V3-BUILD-IDENTITY.txt
+          grep -Fx 'version=V3.22' V3-BUILD-IDENTITY.txt
+          grep -Fx 'harness=apply_diagnostic_harness_v322.py' V3-BUILD-IDENTITY.txt
+          grep -Fx 'routing=exact-fail-closed' V3-BUILD-IDENTITY.txt
+          grep -Fx 'generated_source_identity=passed' V3-BUILD-IDENTITY.txt
+
+      - name: Validate inherited CP1 and final V3.21 foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -n 'openmw-custom-v3.22-cp1-msoc-hotpath' apps/openmw/engine.cpp
+          grep -n 'OPENMW_V322_CP1_MSOC_HOT_PATH' apps/openmw/mwrender/occlusionculling.cpp
+          grep -n 'mV322ViewInverse' components/sceneutil/occlusionculling.hpp
+          grep -n 'mV322PagedDataNode' apps/openmw/mwrender/occlusionculling.hpp
+          grep -n 'V321ClassifiedCompileSet' components/resource/v321classifiedcompileset.hpp
+          grep -n 'VM_FirstPersonFullBody' apps/openmw/mwrender/npcanimation.hpp
+          grep -n 'V321OwnerViewHiddenCullCallback' apps/openmw/mwrender/npcanimation.cpp
+          grep -n 'openmw_v321_animation_consumer' components/lua/luastate.cpp
+          ! grep -R -n -E 'markV321CompileClass|OpenMW\.V321CompileClass\.|osg::DummyObject' \
+            components/resource/v321classifiedcompileset.hpp apps/openmw/mwrender/objectpaging.cpp \
+            components/terrain/chunkmanager.cpp components/resource/scenemanager.cpp \
+            apps/openmw/mwworld/cellpreloader.cpp
+
+      - name: Validate CP2 innovation ladder
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -n 'openmw-custom-v3.22-cp2-occluder-efficiency' apps/openmw/engine.cpp
+          grep -n 'OPENMW_V322_CP2_OCCLUDER_EFFICIENCY_MODE' apps/openmw/mwrender/occlusionculling.cpp
+          grep -n 'mV322Cp2OccluderMode' apps/openmw/mwrender/occlusionculling.hpp
+          grep -n 'V322OccluderCandidate' apps/openmw/mwrender/occlusionculling.cpp
+          grep -n 'projectedUtility' apps/openmw/mwrender/occlusionculling.cpp
+          grep -n 'detailReferenceRadius' apps/openmw/mwrender/occlusionculling.cpp
+          grep -n '400.0f' apps/openmw/mwrender/occlusionculling.cpp
+          grep -n 'mV322Cp2OccluderMode >= 4.*testVisibleAABB' apps/openmw/mwrender/occlusionculling.cpp
+
+          grep -n '136 = V3.22 CP1 MSOC hot-path cache' tools/v3/launchers/V3_Lab.ps1
+          grep -n '137 = V3.22 CP2 front-to-back occluder budget' tools/v3/launchers/V3_Lab.ps1
+          grep -n '138 = V3.22 CP2 utility-ranked occluder budget' tools/v3/launchers/V3_Lab.ps1
+          grep -n '139 = V3.22 CP2 utility-ranked clean 300-radius eligibility' tools/v3/launchers/V3_Lab.ps1
+          grep -n '140 = V3.22 CP2 aggressive 300-radius + redundant-raster suppression' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'Enter a listed mode (1-127, 129-131, or 135-140)' tools/v3/launchers/V3_Lab.ps1
+          grep -n "'136'.*V322CP1MsocHotPath = '1'" tools/v3/launchers/V3_Lab.ps1
+          grep -n "'137'.*V322CP2OccluderMode = '1'" tools/v3/launchers/V3_Lab.ps1
+          grep -n "'138'.*V322CP2OccluderMode = '2'" tools/v3/launchers/V3_Lab.ps1
+          grep -n "'139'.*V322CP2OccluderMode = '3'.*OccluderMinRadius = '300'" tools/v3/launchers/V3_Lab.ps1
+          grep -n "'140'.*V322CP2OccluderMode = '4'.*OccluderMinRadius = '300'" tools/v3/launchers/V3_Lab.ps1
+
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+          path = Path('tools/v3/apply_v322_cp2_occluder_efficiency.py')
+          tree = ast.parse(path.read_text(encoding='utf-8'))
+          targets = set()
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'replace_exact':
+                  if not node.args or not isinstance(node.args[0], ast.Constant) or not isinstance(node.args[0].value, str):
+                      raise SystemExit('CP2 has a non-literal replace_exact target')
+                  targets.add(node.args[0].value)
+          allowed = {
+              'apps/openmw/mwrender/occlusionculling.hpp',
+              'apps/openmw/mwrender/occlusionculling.cpp',
+              'apps/openmw/engine.cpp',
+          }
+          if not targets or not targets <= allowed:
+              raise SystemExit(f'CP2 target drift: {sorted(targets - allowed)}')
+          print('CP2 audited replace_exact targets:', sorted(targets))
+          PY
+
+          # CP2 modes must not revive the historical rejected 250/8192/45000 expansion.
+          for mode in 137 138 139 140; do
+            line=$(grep -E "^[[:space:]]*'$mode'[[:space:]]*\{" tools/v3/launchers/V3_Lab.ps1)
+            if [[ "$line" == *"250"* || "$line" == *"8192"* || "$line" == *"45000"* ]]; then
+              echo "Rejected broad-MS​​OC value leaked into CP2 mode $mode" >&2
+              exit 1
+            fi
+          done
+
+      - name: Parse-check generated PowerShell launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Host 'V3_Lab.ps1 parse check passed.'
+
+      - name: Upload exact generated CP2 source
+        uses: actions/upload-artifact@v4
+        with:
+          name: v322-cp2-preflight-applied-source-${{ github.sha }}
+          path: |
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+            V3-BUILD-IDENTITY.txt
+            tools/v3/V322-CP2-SOURCE-AUDIT.txt
+          if-no-files-found: error
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: false
