@@ -11,7 +11,7 @@ end = source.find(end_marker, start)
 if start < 0 or end < 0:
     raise RuntimeError("V3.23 repair shim could not locate the original component-raster replacement block")
 
-replacement = r'''# Robust V3.23 component-raster patch.
+replacement = r"""# Robust V3.23 component-raster patch.
 # Preserve inherited V3 instrumentation by editing the existing terrain function
 # in place and inserting new helper/batch functions instead of replacing the
 # complete inherited raster function bodies.
@@ -121,7 +121,7 @@ component = component[:aabb_start] + helper_and_batch + component[aabb_start:]
 component_path.write_text(component, encoding="utf-8", newline="\n")
 print("V3.23 patched inherited terrain raster in-place + inserted parallel paged batch")
 
-'''
+"""
 
 source = source[:start] + replacement + source[end:]
 exec(
