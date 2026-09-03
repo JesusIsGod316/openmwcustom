@@ -39,6 +39,9 @@ PATCH-FREE ANIMATION COMPATIBILITY AUDIT
 6. Mode130 keeps getMode()==FirstPerson in every script.
 
 VALIDATION GATES
+- Clean full-stack generated-source preflight: PASS (2026-09-03).
+- Python compilation, YAML parsing, diff-check, CP4 identity and static gates: PASS.
+- PowerShell parser remains a required remote Preflight gate (pwsh unavailable locally).
 - Full generated V3.21 stack must apply from a fresh checkout.
 - Python compilation, diff-check, static gates and PowerShell parsing pass.
 - Mode130 must not enable OPENMW_V321_CP4_SHADOW_COMPAT.
