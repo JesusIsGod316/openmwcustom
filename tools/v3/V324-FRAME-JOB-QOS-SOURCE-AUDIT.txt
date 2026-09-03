@@ -1,0 +1,81 @@
+V3.24 FRAME-JOB QOS / ASYNC MSOC SOURCE AUDIT
+===============================================
+Date: 2026-09-03
+Parent: v3.23-parallel-msoc@94c4fca8ffe3bfd5529021824ab0d2aa9d9df401
+Branch: v3.24-frame-job-qos
+
+AUTHORITATIVE FINDINGS
+----------------------
+1. The inherited SceneUtil::WorkQueue is FIFO. addWorkItem(..., true) only pushes
+   a job to the front; it does not reserve a worker. Mode141 proved that a tiny
+   same-frame job can therefore sit behind already-running preload work for tens
+   or hundreds of milliseconds.
+2. V3.23 avoided that shared queue with a dedicated MSOC worker, but still called
+   wait() in the terrain and paged MSOC paths. Runtime testing showed stronger
+   same-frame MSOC work increased cull/render cost more than rejection savings.
+3. SceneManager::cloneNode(const osg::Node*) is a comparatively clean private
+   operation: clone plus CopyOp::remapControllerTargets on an already-resolved
+   template. SceneManager::getInstance(path), however, can load/cache resources.
+4. NPC updateNpcBase/setObjectRoot cannot be workerized as a unit. The path reads
+   world/mechanics/race/model state, mutates animation state, attaches to the live
+   graph, and the base-only model helper owns a static cache. New NPC construction
+   also provides essentially no independent main-thread work between one private
+   clone submission and the point at which that clone is required.
+
+AUDIT DECISION
+--------------
+The broad V3.24 plan remains correct, but the first implementation is narrowed at
+its actor boundary rather than forcing a thread hop that cannot credibly reduce
+wall time.
+
+IMPLEMENT NOW
+-------------
+A. Reusable frame-job QoS primitive
+   - components/sceneutil/framejobservice.hpp
+   - queue-less immediate admission only
+   - separate Critical and Opportunistic reserved lanes
+   - Critical policy: if the lane is not immediately available, the future actor
+     caller must run the work inline instead of queueing and then waiting
+   - Opportunistic policy: if the lane is not immediately available, skip work
+   - generation/completion/failure state and counters are built in
+   - no interaction with the shared preload WorkQueue
+
+B. V3.24 Mode145
+   - exact Mode135 behavior plus V3.24 QoS identity/infrastructure enabled
+   - no experimental workload
+   - purpose: same-build overhead/isolation control
+
+C. V3.24 Mode146
+   - exact Mode135 behavior plus V3.24 QoS
+   - terrain-only MSOC duplicate raster runs on the Opportunistic lane
+   - worker owns copied positions, indices, and current-frame VP matrix
+   - worker-private MOC is never queried while the worker is busy
+   - only same-generation completed results may be queried
+   - late, busy, stale, or failed work is fail-open: terrain-only tests return
+     visible rather than incorrectly occluding anything
+   - the full current-frame MSOC buffer remains serial and authoritative
+   - there is no same-frame wait in the cull path
+   - no V3.23 1.5x/2x range or triangle-budget escalation
+
+DEFER / FAIL CLOSED
+-------------------
+Actor/controller worker execution is not enabled in this checkpoint. The safe
+single-clone boundary is too narrow to provide useful overlap for new actor
+construction, while the broader preparation path crosses unsafe shared/live state.
+The next actor attempt must first expose batching across multiple independent,
+unpublished preparations or identify another measured ownership-clean kernel of
+>=1 ms, preferably >=2 ms. Live OSG attachment, Ptr/world/mechanics access, shared
+model-cache mutation, and gameplay ordering remain main-thread only.
+
+SAFETY / ACCEPTANCE
+-------------------
+- Mode135 remains exact final-V3.21 behavior control.
+- OSG Automatic remains locked.
+- No shared preload queue is used by frame-critical V3.24 work.
+- No worker writes the live scene graph.
+- No stale MSOC result may hide geometry.
+- Missing/late parallel visibility information is always fail-open.
+- No increase to static occlusion range/budget in V3.24.
+- 8 GB VRAM constraint remains in force.
+- Runtime promotion requires a credible >=1 ms net gain, preferably >=2 ms, or a
+  material tail improvement with neutral center and no correctness/memory regression.
