@@ -1,0 +1,108 @@
+name: V3.24 frame-job QoS build/QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options: [preflight, full]
+  push:
+    branches: [v3.24-frame-job-qos]
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+      - name: Compile-check patch tools
+        run: python3 -m py_compile tools/v3/*.py
+      - name: Apply exact generated stack
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness.py 2>&1 | tee v324-frame-job-qos-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+      - name: Validate identity and generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -Fx "branch=$GITHUB_REF_NAME" V3-BUILD-IDENTITY.txt
+          grep -Fx 'version=V3.24' V3-BUILD-IDENTITY.txt
+          grep -Fx 'harness=apply_diagnostic_harness_v324.py' V3-BUILD-IDENTITY.txt
+          grep -n 'openmw-custom-v3.24-frame-job-qos' apps/openmw/engine.cpp
+          grep -n 'class FrameJobService' components/sceneutil/framejobservice.hpp
+          grep -n 'Lane::Critical' components/sceneutil/framejobservice.hpp
+          grep -n 'Lane::Opportunistic' components/sceneutil/framejobservice.hpp
+          grep -n 'OPENMW_V324_FRAME_JOB_QOS' components/sceneutil/occlusionculling.hpp
+          grep -n 'OPENMW_V324_ASYNC_MSOC' components/sceneutil/occlusionculling.hpp
+          grep -n 'mV324TerrainReadyGeneration' components/sceneutil/occlusionculling.hpp
+          grep -n 'v324RenderOccluderTo' components/sceneutil/occlusionculling.cpp
+          grep -n 'fail-open only' components/sceneutil/occlusionculling.cpp
+          grep -n '145 = V3.24 frame-job QoS infrastructure' tools/v3/launchers/V3_Lab.ps1
+          grep -n '146 = V3.24 zero-wait async terrain MSOC' tools/v3/launchers/V3_Lab.ps1
+          grep -n "'145'.*V324FrameJobQos = '1'" tools/v3/launchers/V3_Lab.ps1
+          grep -n "'146'.*V324FrameJobQos = '1'.*V324AsyncMsoc = '1'" tools/v3/launchers/V3_Lab.ps1
+          ! grep -E "^[[:space:]]*'14[56]'.*V323ParallelMsocMode = '[1-3]'" tools/v3/launchers/V3_Lab.ps1
+          ! grep -E "^[[:space:]]*'14[56]'.*V322ParallelActorAvoidance = '1'" tools/v3/launchers/V3_Lab.ps1
+          python3 - <<'PY'
+          from pathlib import Path
+          cpp = Path('components/sceneutil/occlusionculling.cpp').read_text(encoding='utf-8')
+          start = cpp.index('if (mV324FrameJobQos && mV324AsyncMsoc && mV324WorkerMOC)')
+          end = cpp.index('FrameJobService& jobs = FrameJobService::instance();', start)
+          # The V3.24 raster path must not introduce a synchronous join before or
+          # after its opportunistic submission. Inherited V3.23 waits remain only
+          # in dormant V3.23 modes and are intentionally not enabled by 145/146.
+          fn_start = cpp.rfind('void OcclusionCuller::rasterizeTerrainOccluder', 0, start)
+          fn_end = cpp.index('void OcclusionCuller::rasterizeOccluder(', start)
+          v324_prefix = cpp[start:end]
+          if 'wait(' in v324_prefix:
+              raise SystemExit('V3.24 async MSOC prefix contains a wait')
+          for name in (
+              'components/sceneutil/occlusionculling.cpp',
+              'components/sceneutil/framejobservice.hpp',
+              'apps/openmw/mwrender/occlusionculling.cpp',
+              'V3-applied-source.patch',
+          ):
+              data = Path(name).read_bytes()
+              if b'\x00' in data or b'GIT binary patch' in data:
+                  raise SystemExit(f'non-text generated source: {name}')
+          PY
+      - name: Parse-check launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.ToString() }; exit 1 }
+      - name: Upload generated source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v324-frame-job-qos-preflight-${{ github.sha }}
+          path: |
+            v324-frame-job-qos-apply.log
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+            V3-BUILD-IDENTITY.txt
+            tools/v3/V324-FRAME-JOB-QOS-SOURCE-AUDIT.txt
+          if-no-files-found: warn
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: false
