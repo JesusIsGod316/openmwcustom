@@ -24,10 +24,10 @@ exec(
     {"__file__": str(layer), "__name__": "__main__"},
 )
 
-telemetry = HERE / "apply_v324_deep_telemetry.py"
+telemetry = HERE / "apply_v324_deep_telemetry_v2.py"
 if not telemetry.is_file():
-    raise RuntimeError("V3.24 exact-stack failure: apply_v324_deep_telemetry.py is missing")
-print("[V3.24] QoS/async layer -> apply_v324_deep_telemetry.py")
+    raise RuntimeError("V3.24 exact-stack failure: apply_v324_deep_telemetry_v2.py is missing")
+print("[V3.24] QoS/async layer -> apply_v324_deep_telemetry_v2.py")
 exec(
     compile(telemetry.read_text(encoding="utf-8"), str(telemetry), "exec"),
     {"__file__": str(telemetry), "__name__": "__main__"},
