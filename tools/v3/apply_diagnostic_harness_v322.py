@@ -27,6 +27,7 @@ elif branch == "v3.22-cp2-occluder-efficiency":
     layer_names = base_layers + [
         "apply_v322_cp2_occluder_efficiency.py",
         "apply_v322_cp2_rank_hotpath_refinement.py",
+        "apply_v322_cp2_eligibility_decoupling.py",
     ]
 else:
     raise RuntimeError(

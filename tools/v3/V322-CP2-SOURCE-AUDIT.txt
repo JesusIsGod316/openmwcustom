@@ -10,33 +10,55 @@ Control for CP2 runtime attribution: Mode136 (CP1 hot-path cache, CP2 off)
 
 Design objective
 ----------------
-CP2 is intentionally innovative rather than conservative, but every mechanism is runtime-switchable in one executable and the known control remains available. CP2 targets occluder efficiency: make the fixed MSOC raster budget buy more useful depth coverage without changing ObjectPaging topology, child traversal order, PBR/shadow/FBFP semantics, or actual building visibility.
+CP2 is intentionally innovative rather than conservative, but every mechanism is runtime-switchable in one executable and the known control remains available. CP2 targets occluder efficiency: make the fixed MSOC raster budget buy more useful depth coverage without changing ObjectPaging topology, child draw traversal order, PBR/shadow/FBFP semantics, or the established large-vs-small visibility classification boundary.
 
 Innovation ladder
 -----------------
 Mode136: exact CP1 candidate/control; CP2 off.
 Mode137: same 400-radius occluder population, but eligible unpaged building proxies consume the existing triangle budget front-to-back rather than arbitrary child order.
 Mode138: same 400-radius population, utility-ranked by approximate projected coverage per raster triangle; near-distance tie break.
-Mode139: Mode138 plus clean 300-radius eligibility. Proxy detail remains referenced to 400 radius, so lowering eligibility does not increase mesh resolution/triangle complexity for the already-eligible 400+ population. Distance remains 6144; triangle cap remains 30000.
-Mode140: Mode139 plus redundant-raster suppression. A candidate that is already fully hidden by terrain or a previously rasterized ranked occluder can skip only its rasterization. The building itself has already traversed and is never culled by this optimization.
+Mode139: Mode138 plus clean 300-radius occluder eligibility while the visibility classification boundary remains 400. Proxy detail remains referenced to 400 radius, so the 400+ population does not gain extra mesh complexity. Distance remains 6144; triangle cap remains 30000.
+Mode140: Mode139 plus redundant-raster suppression. A candidate already fully hidden by terrain or a previously rasterized ranked proxy can skip only its proxy rasterization. Owner visibility/traversal is never suppressed by this optimization.
+
+Eligibility-decoupling correction
+---------------------------------
+A manual generated-source audit caught that simply setting the shared occluder min radius to 300 would also move 300-399-radius objects from the existing full-buffer small-object visibility path into the always-traversed large-owner path. That would confound the experiment and potentially reduce culling.
+
+The corrected modes 139-140 keep the shared min radius at 400. A separate [300,400) mid-occluder phase does the following:
+1. Waits until all ranked 400+ candidate proxies have been rasterized.
+2. Tests each 300-399 owner against the same full buffer it would see in the control path, before its own proxy can exist in depth.
+3. Traverses only owners that pass that established visibility decision; explicit skipOcclusion objects such as doors still traverse and are never admitted as CP2 occluders.
+4. Collects proxies only from already-visible owners, ranks them by utility, and rasterizes them afterward within the same 30000-triangle global budget.
+5. Uses those extra mid-size proxies only to improve rejection of objects below 300.
+
+This prevents self-occlusion and keeps 300-radius experimentation an occluder-eligibility change rather than a visibility-classification change.
+
+Hot-path quality refinements
+----------------------------
+- Candidate ranking uses in-place std::sort, not std::stable_sort, avoiding optional stable-sort scratch allocation in the cull path.
+- Generated replacement helpers reject embedded NUL characters before writing source.
+- CI also byte-scans generated C++ and V3-applied-source.patch and rejects any NUL or GIT binary patch marker.
+- Candidate mesh pointers refer to values stored in the callback's std::unordered_map mesh cache; unordered_map rehash invalidates iterators but does not invalidate references/pointers to elements.
 
 Semantic invariants
 -------------------
-- Pass-1 child traversal remains in original scenegraph order.
+- Mode136 remains the uncontaminated CP1 control.
+- Pass-1 owner draw traversal remains in original scenegraph order.
 - CP2 does not reorder draw traversal or modify render bins/state.
 - Cell terrain-only rejection remains unchanged.
 - Door skipOcclusion handling remains unchanged.
 - Camera-inside occluder exclusion remains unchanged.
 - Large/paged-object path remains unchanged.
-- Candidate visibility admission still requires terrain-only visibility before ranking.
-- Global building triangle cap remains authoritative.
-- Mode140 full-buffer test is used only to suppress redundant proxy raster work, never to suppress child traversal.
+- 400 remains the large-vs-small visibility classification boundary in all CP2 modes.
+- Candidate admission still requires the existing range/inside/terrain visibility conditions.
+- Global building triangle cap remains authoritative at 30000.
+- Mode140 full-buffer tests suppress only redundant proxy raster work, never owner traversal.
 - CP2 adds no scenegraph UserDataContainer/DummyObject metadata and does not touch ObjectPaging.
 
 Rejected-history boundary
 -------------------------
-The historical broad 250-radius / 8192-distance / 45000-triangle MSOC configuration remains rejected and is not revived. The aggressive branch is instead a clean 300-radius test with the existing 6144 distance and 30000 cap, combined with ranking and redundant-work suppression.
+The historical broad 250-radius / 8192-distance / 45000-triangle MSOC configuration remains rejected and is not revived. The aggressive branch is instead a clean 300-radius eligibility extension with the existing 6144 distance and 30000 cap, combined with ranking, decoupled owner visibility, and redundant-work suppression.
 
 Build discipline
 ----------------
-CP2 source/tooling is committed without [full-build]. The CP2 workflow first applies the complete generated V3.21 final stack + CP1 + CP2 from a clean checkout, compile-checks all Python generators, validates CP1 inheritance and CP2 mode/control markers, forbids ObjectPaging targets, runs git diff --check, parses the generated PowerShell launcher, and uploads the exact generated source patch for manual inspection. Windows/MSVC is authorized only by a later explicit [full-build] commit after that preflight and manual generated-source audit pass.
+CP2 source/tooling is committed without [full-build]. The CP2 workflow applies the complete generated V3.21 final stack + CP1 + CP2 from a clean checkout, compile-checks all Python generators, validates CP1 inheritance and CP2 mode/control markers, verifies 300/400 eligibility decoupling, forbids ObjectPaging/ref-topology leakage, rejects binary/NUL generated source, runs git diff --check, parses the generated PowerShell launcher, and uploads the exact generated source patch for manual inspection. Windows/MSVC is authorized only by a later explicit [full-build] commit after that preflight and manual generated-source audit pass.

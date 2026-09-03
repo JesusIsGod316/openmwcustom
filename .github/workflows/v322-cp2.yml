@@ -100,7 +100,7 @@ jobs:
             components/terrain/chunkmanager.cpp components/resource/scenemanager.cpp \
             apps/openmw/mwworld/cellpreloader.cpp
 
-      - name: Validate CP2 innovation ladder
+      - name: Validate CP2 innovation ladder and eligibility decoupling
         shell: bash
         run: |
           set -euo pipefail
@@ -111,7 +111,11 @@ jobs:
           grep -n 'projectedUtility' apps/openmw/mwrender/occlusionculling.cpp
           grep -n 'detailReferenceRadius' apps/openmw/mwrender/occlusionculling.cpp
           grep -n '400.0f' apps/openmw/mwrender/occlusionculling.cpp
+          grep -n 'constexpr float v322EligibilityRadius = 300.0f' apps/openmw/mwrender/occlusionculling.cpp
+          grep -n 'mV322Cp2OccluderMode >= 3 && bs.radius() >= 300.0f' apps/openmw/mwrender/occlusionculling.cpp
           grep -n 'mV322Cp2OccluderMode >= 4.*testVisibleAABB' apps/openmw/mwrender/occlusionculling.cpp
+          test "$(grep -c 'std::sort(v322Candidates.begin()' apps/openmw/mwrender/occlusionculling.cpp)" -eq 2
+          ! grep -q 'std::stable_sort(v322Candidates' apps/openmw/mwrender/occlusionculling.cpp
 
           grep -n '136 = V3.22 CP1 MSOC hot-path cache' tools/v3/launchers/V3_Lab.ps1
           grep -n '137 = V3.22 CP2 front-to-back occluder budget' tools/v3/launchers/V3_Lab.ps1
@@ -122,8 +126,10 @@ jobs:
           grep -n "'136'.*V322CP1MsocHotPath = '1'" tools/v3/launchers/V3_Lab.ps1
           grep -n "'137'.*V322CP2OccluderMode = '1'" tools/v3/launchers/V3_Lab.ps1
           grep -n "'138'.*V322CP2OccluderMode = '2'" tools/v3/launchers/V3_Lab.ps1
-          grep -n "'139'.*V322CP2OccluderMode = '3'.*OccluderMinRadius = '300'" tools/v3/launchers/V3_Lab.ps1
-          grep -n "'140'.*V322CP2OccluderMode = '4'.*OccluderMinRadius = '300'" tools/v3/launchers/V3_Lab.ps1
+          grep -n "'139'.*V322CP2OccluderMode = '3'" tools/v3/launchers/V3_Lab.ps1
+          grep -n "'140'.*V322CP2OccluderMode = '4'" tools/v3/launchers/V3_Lab.ps1
+          ! grep -E "^[[:space:]]*'139'.*OccluderMinRadius = '300'" tools/v3/launchers/V3_Lab.ps1
+          ! grep -E "^[[:space:]]*'140'.*OccluderMinRadius = '300'" tools/v3/launchers/V3_Lab.ps1
 
           python3 - <<'PY'
           import ast
@@ -144,6 +150,14 @@ jobs:
           if not targets or not targets <= allowed:
               raise SystemExit(f'CP2 target drift: {sorted(targets - allowed)}')
           print('CP2 audited replace_exact targets:', sorted(targets))
+
+          for extra in (
+              Path('tools/v3/apply_v322_cp2_rank_hotpath_refinement.py'),
+              Path('tools/v3/apply_v322_cp2_eligibility_decoupling.py'),
+          ):
+              text = extra.read_text(encoding='utf-8')
+              if 'objectpaging.cpp' in text.lower() or 'VERTEX_POSTTRANSFORM' in text or 'shareState' in text:
+                  raise SystemExit(f'CP2 refinement escaped audited occlusion/launcher scope: {extra}')
           PY
 
           # CP2 modes must not revive the historical rejected 250/8192/45000 expansion.
