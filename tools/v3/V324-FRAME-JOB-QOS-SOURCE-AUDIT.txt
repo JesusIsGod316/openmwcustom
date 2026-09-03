@@ -93,10 +93,14 @@ for cache pollution, allocations, scheduling perturbation, contention, and the
 final writer operation that cannot be carried forward into another row.
 
 The disabled path was specifically audited after initial implementation. Telemetry
-OFF now returns immediately after the cached enable check and does not call the
-high-resolution clock or allocate/copy category/name/detail strings. This preserves
-Mode135/145 telemetry-OFF runs as practical identical-binary controls; the residual
-cost is limited to the cached boolean check and trivial scope-object construction.
+OFF returns immediately after the cached enable check and does not call the
+high-resolution clock or allocate/copy category/name/detail strings. A second audit
+also removed dynamic std::string/std::to_string scope-detail argument construction
+from hot paths, because C++ evaluates those arguments before entering the Scope
+constructor. Dynamic FrameJobService submit details remain only behind an explicit
+enabled() branch. This preserves Mode135/145 telemetry-OFF runs as practical
+identical-binary controls; residual cost is limited to the cached boolean check and
+trivial scope-object construction.
 
 Recommended diagnostic sequence:
 1. Mode135 telemetry OFF -- clean historical behavior control.
