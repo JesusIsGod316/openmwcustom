@@ -24,7 +24,10 @@ base_layers = [
 if branch == "v3.22-cp1-msoc-hotpath":
     layer_names = base_layers
 elif branch == "v3.22-cp2-occluder-efficiency":
-    layer_names = base_layers + ["apply_v322_cp2_occluder_efficiency.py"]
+    layer_names = base_layers + [
+        "apply_v322_cp2_occluder_efficiency.py",
+        "apply_v322_cp2_rank_hotpath_refinement.py",
+    ]
 else:
     raise RuntimeError(
         f"V3.22 exact-stack failure: branch {branch!r} is not an admitted V3.22 branch. "
