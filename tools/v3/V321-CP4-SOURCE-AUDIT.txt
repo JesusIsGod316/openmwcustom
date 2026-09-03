@@ -1,41 +1,54 @@
-V3.21 CP4 — SHADOW AND ANIMATION COMPATIBILITY SOURCE AUDIT
-============================================================
+V3.21 CP4 — SHADOW AND ANIMATION COMPATIBILITY REPAIR AUDIT
+==============================================================
 
 FOUNDATION
-- Branch: v3.21-cp4-shadow-compat
-- Parent: e9209a0bc5e06af3b463af2c6cb6f88fd512e04f
+- Implementation base: f27bd4bf60c2819685c2aec2e54f6bbe580bb018
 - Mode130: accepted CP3 owner-view control, unchanged
-- Mode131: exact Mode130 plus CP4 shadow compatibility
+- Mode131: exact Mode130 plus CP4 compatibility
+- Canceled locomotion branch 086eefbb is not merged.
+- Main-save immobility was isolated to Dynamic Actors and patched externally;
+  no engine root-motion fallback is included.
 
-SHADOW ARCHITECTURE
-1. Keep the real animated head, hair and helmet parts on the existing player
-   skeleton; do not create a second actor or duplicate animation pipeline.
-2. Mark only those owner-hidden parts with Mask_PlayerSecondaryView.
-3. The primary scene camera and gameplay intersection visitor exclude that mask.
-4. Player-shadow traversal includes the mask only when player shadows are on.
-5. Water reflection and refraction traversals include the mask when they include
-   the player, preserving a complete equipped secondary-view silhouette.
-6. Mode130 retains CP3's complete removal path for causal comparison.
-7. Normal third person never receives the secondary-view mask.
+SHADOW AUDIT AND REPAIR
+1. The rejected Mask_PlayerSecondaryView design could not work reliably:
+   shadow traversal ANDed its caster mask with SceneCam's starting traversal
+   mask, after SceneCam had already removed the secondary bit.
+2. Replacing a body-part node mask also removed ordinary traversal semantics.
+3. Mode131 now keeps the real animated head, hair and helmet-provided parts on
+   their normal player/update masks.
+4. Marked parts receive a cull callback that suppresses only Constants::SceneCamera.
+5. Shadow, reflection and refraction cameras therefore traverse the live parts.
+6. Gameplay intersection exclusion reads the marker separately and covers Node,
+   Group, Transform and Geode attachment roots.
+7. Mode130 retains CP3's complete-removal path for causal comparison.
 
-COMPATIBILITY CONTRACT
-1. camera.getMode() remains MODE.FirstPerson in full-body first person.
-2. camera.isFullBodyFirstPerson() remains the exact feature-state query.
-3. camera.getAnimationMode() returns MODE.ThirdPerson in full-body first person
-   and otherwise matches getMode().
-4. Lua API documentation describes all three semantics so animation replacement
-   mods can use their existing third-person branch without a custom mode enum.
-5. Older OpenMW compatibility remains possible with a feature-presence fallback.
+PATCH-FREE ANIMATION COMPATIBILITY AUDIT
+1. Legacy animation frameworks classify armature type by camera.getMode() and
+   discard third-person overrides in Lua before calling the engine.
+2. No downstream player or skeleton fix can recover an override that an
+   unmodified framework never submitted.
+3. The central sandbox loader marks scripts that actually require
+   openmw.animation; no mod name, path or version is recognized specially.
+4. In Mode131 only, marked animation scripts receive ThirdPerson from
+   camera.getMode() during full-body first person. Camera/UI-only scripts keep
+   the physical FirstPerson result, limiting compatibility behavior to the
+   consumers that need animation perspective.
+5. C++ Camera::getMode() remains physical FirstPerson. Lua getPhysicalMode()
+   exposes that exact state, isFullBodyFirstPerson() remains the feature query,
+   and getAnimationMode() remains the explicit modern animation query.
+6. Mode130 keeps getMode()==FirstPerson in every script.
 
-VALIDATION
-- Local complete generated-source preflight: PASS (2026-09-02).
-- Local YAML, Python, diff-check and CP4 static identity gates: PASS.
-- Remote full-build publication trigger: PUSHED (2026-09-02).
-- Build identity must name CP4 and the exact branch.
+VALIDATION GATES
+- Full generated V3.21 stack must apply from a fresh checkout.
+- Python compilation, diff-check, static gates and PowerShell parsing pass.
 - Mode130 must not enable OPENMW_V321_CP4_SHADOW_COMPAT.
-- Mode131 must enable CP2 fairness, CP3 full body and CP4 shadow compatibility.
-- Owner view must remain identical to accepted CP3: no face, hair or helmet.
-- Sunlit player shadow should include the head and equipped helmet/hair profile.
-- First/third/first switching must restore ordinary third-person rendering.
-- Lua QA: getMode()==FirstPerson, isFullBodyFirstPerson()==true, and
-  getAnimationMode()==ThirdPerson in Mode131.
+- Mode131 must enable CP2 fairness, CP3 full body and CP4 compatibility.
+- No Mask_PlayerSecondaryView or setNodeMask owner-hide path may survive.
+- Owner view: no head, hair or helmet geometry.
+- Sun shadow and water RTT: animated head and equipped profile present.
+- Lua Mode131 animation script: getMode()==ThirdPerson;
+  camera/UI-only script: getMode()==FirstPerson; all scripts:
+  getPhysicalMode()==FirstPerson, isFullBodyFirstPerson()==true, and
+  getAnimationMode()==ThirdPerson.
+- Unpatched animation-mod QA: save load; sheathed/drawn locomotion; first/third/
+  first transitions; alternating attacks; melee, bow, two-handed and casting.

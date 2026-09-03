@@ -16,52 +16,8 @@ def replace_exact(rel: str, old: str, new: str, expected: int = 1) -> None:
     print(f"V3.21 CP4 patched {rel} ({count} match(es))")
 
 
-# Geometry on this mask is absent from the primary owner camera and gameplay
-# ray tests, but remains available to shadow and secondary-view cameras.
-replace_exact(
-    "apps/openmw/mwrender/vismask.hpp",
-    '''        Mask_Groundcover = (1 << 20),''',
-    '''        Mask_Groundcover = (1 << 20),
-
-        // Player geometry hidden only from the primary owner camera. Shadow,
-        // reflection and refraction traversals may explicitly include it.
-        Mask_PlayerSecondaryView = (1 << 21),''',
-)
-
-replace_exact(
-    "apps/openmw/mwrender/renderingmanager.cpp",
-    '''        if (Settings::shadows().mPlayerShadows)
-            shadowCastingTraversalMask |= Mask_Player;''',
-    '''        if (Settings::shadows().mPlayerShadows)
-            shadowCastingTraversalMask |= Mask_Player | Mask_PlayerSecondaryView;''',
-)
-replace_exact(
-    "apps/openmw/mwrender/renderingmanager.cpp",
-    '''        auto mask = ~(Mask_UpdateVisitor | Mask_SimpleWater);''',
-    '''        auto mask = ~(Mask_UpdateVisitor | Mask_SimpleWater | Mask_PlayerSecondaryView);''',
-)
-replace_exact(
-    "apps/openmw/mwrender/renderingmanager.cpp",
-    '''        mask &= ~(Mask_RenderToTexture | Mask_Sky | Mask_Debug | Mask_Effect | Mask_Water | Mask_SimpleWater
-            | Mask_Groundcover);''',
-    '''        mask &= ~(Mask_RenderToTexture | Mask_Sky | Mask_Debug | Mask_Effect | Mask_Water | Mask_SimpleWater
-            | Mask_Groundcover | Mask_PlayerSecondaryView);''',
-)
-replace_exact(
-    "apps/openmw/mwrender/water.cpp",
-    '''            | Mask_Terrain | Mask_Actor | Mask_ParticleSystem | Mask_Sky | Mask_Sun | Mask_Player | Mask_Lighting
-            | Mask_Groundcover;''',
-    '''            | Mask_Terrain | Mask_Actor | Mask_ParticleSystem | Mask_Sky | Mask_Sun | Mask_Player
-            | Mask_PlayerSecondaryView | Mask_Lighting | Mask_Groundcover;''',
-)
-replace_exact(
-    "apps/openmw/mwrender/water.cpp",
-    '''                extraMask |= Mask_Player | Mask_Actor;''',
-    '''                extraMask |= Mask_Player | Mask_PlayerSecondaryView | Mask_Actor;''',
-)
-
 # Mode130 remains the accepted CP3 behavior. Mode131 asks NpcAnimation to retain
-# head-provided equipment solely on the secondary-view mask.
+# head-provided equipment while hiding it only from the owner scene camera.
 replace_exact(
     "components/settings/categories/camera.hpp",
     '''        SettingValue<bool> mV321FullBodyFirstPerson{ mIndex, "Camera", "v3.21 full body first person" };
@@ -115,6 +71,7 @@ replace_exact(
         {
             return isFullBodyFirstPerson() ? Mode::ThirdPerson : mMode;
         }
+        bool isAnimationCompatibilityEnabled() const { return mV321FullBodyFirstPersonShadowCompat; }
         std::optional<Mode> getQueuedMode() const { return mQueuedMode; }''',
 )
 replace_exact(
@@ -140,6 +97,105 @@ replace_exact(
     '''            mAnimation->setViewMode(mV321FullBodyFirstPerson ? NpcAnimation::VM_FirstPersonFullBody
                                                             : NpcAnimation::VM_FirstPerson,
                 mV321FullBodyFirstPerson && mV321FullBodyFirstPersonShadowCompat);''',
+)
+
+# Keep owner-hidden geometry on its ordinary player/update masks. Cull only the
+# primary owner scene camera so shadow and water RTT cameras see the same live
+# animated parts without relying on a traversal bit the primary camera removed.
+replace_exact(
+    "apps/openmw/mwrender/npcanimation.cpp",
+    '''#include <osg/MatrixTransform>
+#include <osg/UserDataContainer>''',
+    '''#include <osg/MatrixTransform>
+#include <osg/NodeCallback>
+#include <osg/UserDataContainer>''',
+)
+replace_exact(
+    "apps/openmw/mwrender/npcanimation.cpp",
+    '''#include <components/misc/rng.hpp>''',
+    '''#include <components/misc/constants.hpp>
+#include <components/misc/rng.hpp>''',
+)
+replace_exact(
+    "apps/openmw/mwrender/npcanimation.cpp",
+    '''namespace
+{
+
+    VFS::Path::Normalized getVampireHead''',
+    '''namespace
+{
+    constexpr std::string_view sV321OwnerViewHidden = "openmw.v321.ownerViewHidden";
+
+    class V321OwnerViewHiddenCullCallback : public osg::NodeCallback
+    {
+    public:
+        void operator()(osg::Node* node, osg::NodeVisitor* nv) override
+        {
+            auto* cullVisitor = dynamic_cast<osgUtil::CullVisitor*>(nv);
+            if (cullVisitor && cullVisitor->getCurrentCamera()
+                && cullVisitor->getCurrentCamera()->getName() == Constants::SceneCamera)
+                return;
+            traverse(node, nv);
+        }
+    };
+
+    VFS::Path::Normalized getVampireHead''',
+)
+
+# Gameplay ray tests must ignore owner-hidden parts independently of render
+# visibility. Cover every possible root node type returned by part attachment.
+replace_exact(
+    "apps/openmw/mwrender/renderingmanager.cpp",
+    '''    class IntersectionVisitorWithIgnoreList : public osgUtil::IntersectionVisitor
+    {
+    public:
+        bool skipTransform(osg::Transform& transform)''',
+    '''    class IntersectionVisitorWithIgnoreList : public osgUtil::IntersectionVisitor
+    {
+    public:
+        using osgUtil::IntersectionVisitor::apply;
+
+        bool isOwnerViewHidden(osg::Node& node) const
+        {
+            bool hidden = false;
+            return node.getUserValue("openmw.v321.ownerViewHidden", hidden) && hidden;
+        }
+
+        void apply(osg::Node& node) override
+        {
+            if (!isOwnerViewHidden(node))
+                osgUtil::IntersectionVisitor::apply(node);
+        }
+
+        void apply(osg::Group& group) override
+        {
+            if (!isOwnerViewHidden(group))
+                osgUtil::IntersectionVisitor::apply(group);
+        }
+
+        void apply(osg::Geode& geode) override
+        {
+            if (!isOwnerViewHidden(geode))
+                osgUtil::IntersectionVisitor::apply(geode);
+        }
+
+        bool skipTransform(osg::Transform& transform)''',
+)
+replace_exact(
+    "apps/openmw/mwrender/renderingmanager.cpp",
+    '''        void apply(osg::Transform& transform) override
+        {
+            if (skipTransform(transform))
+            {
+                return;
+            }
+            osgUtil::IntersectionVisitor::apply(transform);
+        }''',
+    '''        void apply(osg::Transform& transform) override
+        {
+            if (!isOwnerViewHidden(transform) && !skipTransform(transform))
+                osgUtil::IntersectionVisitor::apply(transform);
+        }''',
 )
 
 replace_exact(
@@ -236,14 +292,74 @@ replace_exact(
                 const bool ownerHidden = i == ESM::PRT_Head || i == ESM::PRT_Hair
                     || mPartslots[i] == MWWorld::InventoryStore::Slot_Helmet;
                 if (ownerHidden && mObjectParts[i])
-                    mObjectParts[i]->getNode()->setNodeMask(Mask_PlayerSecondaryView);
+                {
+                    osg::Node* node = mObjectParts[i]->getNode();
+                    node->setUserValue(std::string(sV321OwnerViewHidden), true);
+                    node->addCullCallback(new V321OwnerViewHiddenCullCallback);
+                }
             }
         }''',
 )
 
-# Add a compatibility-oriented mode query while preserving the established
-# public camera mode. Reanimation-style scripts can use their normal third-
-# person branch without interpreting the CP3-specific boolean themselves.
+# Track openmw.animation requirements per sandbox. Mode131 can then give only
+# animation-consuming scripts the full-body animation perspective, leaving
+# camera/UI-only scripts on the physical FirstPerson mode.
+replace_exact(
+    "components/lua/luastate.cpp",
+    '''                function requireGen(env, loaded, loadFn)
+                    return function(packageName)
+                        local p = loaded[packageName]''',
+    '''                function requireGen(env, loaded, loadFn, hiddenData)
+                    return function(packageName)
+                        if packageName == 'openmw.animation' and hiddenData ~= nil then
+                            hiddenData.openmw_v321_animation_consumer = true
+                        end
+                        local p = loaded[packageName]''',
+)
+replace_exact(
+    "components/lua/luastate.cpp",
+    '''            env["require"] = mSol["requireGen"](env, loaded, mSol["loadFromVFS"]);''',
+    '''            env["require"] = mSol["requireGen"](env, loaded, mSol["loadFromVFS"], hiddenData);''',
+)
+replace_exact(
+    "apps/openmw/mwlua/camerabindings.hpp",
+    '''    sol::table initCameraPackage(sol::state_view lua);''',
+    '''    sol::function initCameraPackage(sol::state_view lua);''',
+)
+replace_exact(
+    "apps/openmw/mwlua/camerabindings.cpp",
+    '''    sol::table initCameraPackage(sol::state_view lua)
+    {
+        using Misc::FiniteFloat;''',
+    '''    sol::function initCameraPackage(sol::state_view lua)
+    {
+        auto initializer = [](sol::table hiddenData) {
+        sol::state_view lua(hiddenData.lua_state());
+        using Misc::FiniteFloat;''',
+)
+replace_exact(
+    "apps/openmw/mwlua/camerabindings.cpp",
+    '''        return LuaUtil::makeReadOnly(api);
+    }
+
+}''',
+    '''        return LuaUtil::makeReadOnly(api);
+        };
+        return sol::make_object(lua, initializer);
+    }
+
+}''',
+)
+replace_exact(
+    "apps/openmw/mwlua/camerabindings.cpp",
+    '''        api["getMode"] = [camera]() -> int { return static_cast<int>(camera->getMode()); };''',
+    '''        api["getMode"] = [camera, hiddenData = sol::main_table(hiddenData)]() -> int {
+            const bool animationConsumer = hiddenData.get_or("openmw_v321_animation_consumer", false);
+            const bool useAnimationMode = animationConsumer && camera->isAnimationCompatibilityEnabled();
+            return static_cast<int>(useAnimationMode ? camera->getAnimationMode() : camera->getMode());
+        };
+        api["getPhysicalMode"] = [camera]() -> int { return static_cast<int>(camera->getMode()); };''',
+)
 replace_exact(
     "apps/openmw/mwlua/camerabindings.cpp",
     '''        api["isFullBodyFirstPerson"] = [camera]() { return camera->isFullBodyFirstPerson(); };
@@ -260,8 +376,16 @@ replace_exact(
 
 ---
 -- Return the mode the camera will switch to after the end of the current animation. Can be nil.''',
-    '''-- Return the current @{openmw.camera#MODE}. Full-body first person remains FirstPerson.
+    '''-- Return the current camera context. In CP4 compatibility mode, a script
+-- that requires `openmw.animation` receives ThirdPerson during full-body first
+-- person so legacy animation frameworks select their full-body branch. Other
+-- scripts continue receiving the physical camera mode.
 -- @function [parent=#camera] getMode
+-- @return #Mode
+
+---
+-- Return the physical camera mode. Full-body first person returns FirstPerson.
+-- @function [parent=#camera] getPhysicalMode
 -- @return #Mode
 
 ---
@@ -346,18 +470,20 @@ V3.21 CP4 — full-body shadow and animation compatibility
 =========================================================
 
 Mode 130 remains the accepted CP3 owner-view control. Mode 131 is exact Mode130
-plus CP4 shadow compatibility. CP4 retains the real animated head, hair and
-helmet parts on Mask_PlayerSecondaryView. The primary owner camera and gameplay
-ray tests omit this mask, so the accepted head-free view is unchanged. Player
-shadow maps and water reflection/refraction cameras explicitly include it,
+plus CP4 shadow and animation compatibility. CP4 retains the real animated
+head, hair and helmet parts on their normal player/update masks. A cull callback
+hides marked parts only from SceneCam; shadow and water RTT cameras traverse
+them normally. Gameplay intersection exclusion uses the same marker separately,
 allowing a complete equipped silhouette without a second actor or skeleton.
 
-Lua keeps camera.getMode() backward compatible: full-body first person remains
-MODE.FirstPerson. camera.isFullBodyFirstPerson() remains the exact feature test.
-The new camera.getAnimationMode() compatibility helper returns MODE.ThirdPerson
-for full-body first person and otherwise matches getMode(). Reanimation-style
-mods can therefore select their existing third-person/full-body branch with a
-single mode query while retaining a simple fallback on older OpenMW builds.
+The Lua sandbox loader records when a script requires openmw.animation. In
+Mode131, camera.getMode() reports MODE.ThirdPerson during full-body first person
+only to those animation-consuming sandboxes, so legacy animation frameworks
+select their full-body overrides without a mod patch. Camera/UI-only scripts
+continue seeing the physical FirstPerson mode. camera.getPhysicalMode() exposes
+that exact physical mode explicitly, camera.isFullBodyFirstPerson() remains the
+feature-state test, and camera.getAnimationMode() remains the modern explicit
+animation-perspective query. Mode130 retains the prior behavior everywhere.
 '''
 readme_path.write_text(readme, encoding="utf-8", newline="\n")
 
@@ -371,10 +497,8 @@ stat = subprocess.run(
 ).stdout
 (ROOT / "V3-applied-source-stat.txt").write_text(stat, encoding="utf-8", newline="\n")
 
-# Fail closed on owner-view isolation, secondary-view coverage and API drift.
-vismask = (ROOT / "apps/openmw/mwrender/vismask.hpp").read_text(encoding="utf-8")
+# Fail closed on camera-specific owner-view isolation and API drift.
 rendering = (ROOT / "apps/openmw/mwrender/renderingmanager.cpp").read_text(encoding="utf-8")
-water = (ROOT / "apps/openmw/mwrender/water.cpp").read_text(encoding="utf-8")
 npc_hpp = (ROOT / "apps/openmw/mwrender/npcanimation.hpp").read_text(encoding="utf-8")
 npc_cpp = (ROOT / "apps/openmw/mwrender/npcanimation.cpp").read_text(encoding="utf-8")
 camera_hpp = (ROOT / "apps/openmw/mwrender/camera.hpp").read_text(encoding="utf-8")
@@ -384,25 +508,28 @@ lua_docs = (ROOT / "files/lua_api/openmw/camera.lua").read_text(encoding="utf-8"
 defaults = (ROOT / "files/settings-default.cfg").read_text(encoding="utf-8")
 launcher = launcher_path.read_text(encoding="utf-8")
 
-if "Mask_PlayerSecondaryView = (1 << 21)" not in vismask:
-    raise RuntimeError("V3.21 CP4 secondary-view mask missing")
-for marker in (
-    "Mask_Player | Mask_PlayerSecondaryView",
-    "Mask_SimpleWater | Mask_PlayerSecondaryView",
-    "Mask_Groundcover | Mask_PlayerSecondaryView",
-):
-    if marker not in rendering:
-        raise RuntimeError(f"V3.21 CP4 renderer mask missing: {marker}")
-if water.count("Mask_PlayerSecondaryView") != 2:
-    raise RuntimeError("V3.21 CP4 water secondary-view coverage drifted")
 for marker in (
     "mV321FullBodyShadowCompat",
     "!mV321FullBodyShadowCompat",
-    "setNodeMask(Mask_PlayerSecondaryView)",
+    "V321OwnerViewHiddenCullCallback",
+    "Constants::SceneCamera",
+    "openmw.v321.ownerViewHidden",
 ):
-    if marker not in npc_hpp + npc_cpp:
+    if marker not in npc_hpp + npc_cpp + rendering:
         raise RuntimeError(f"V3.21 CP4 NPC shadow isolation missing: {marker}")
-if "getAnimationMode()" not in camera_hpp or "getAnimationMode" not in lua_bindings or "getAnimationMode" not in lua_docs:
+if "Mask_PlayerSecondaryView" in npc_cpp + rendering:
+    raise RuntimeError("V3.21 CP4 obsolete secondary-view mask path survived")
+if "setNodeMask(Mask_PlayerSecondaryView)" in npc_cpp:
+    raise RuntimeError("V3.21 CP4 still replaces owner-hidden part masks")
+if "getAnimationMode()" not in camera_hpp:
+    raise RuntimeError("V3.21 CP4 camera animation mode method missing")
+for marker in ("getPhysicalMode", "getAnimationMode"):
+    if marker not in lua_bindings + lua_docs + camera_hpp:
+        raise RuntimeError(f"V3.21 CP4 animation compatibility API incomplete: {marker}")
+lua_state = (ROOT / "components/lua/luastate.cpp").read_text(encoding="utf-8")
+if "openmw_v321_animation_consumer" not in lua_state + lua_bindings:
+    raise RuntimeError("V3.21 CP4 script-scoped animation compatibility marker missing")
+if "animationConsumer && camera->isAnimationCompatibilityEnabled()" not in lua_bindings:
     raise RuntimeError("V3.21 CP4 animation compatibility API incomplete")
 if "OPENMW_V321_CP4_SHADOW_COMPAT" not in camera_cpp + launcher:
     raise RuntimeError("V3.21 CP4 runtime switch missing")

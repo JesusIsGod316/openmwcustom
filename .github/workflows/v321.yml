@@ -146,11 +146,19 @@ jobs:
             grep -n 'V3_Unified_Test.bat for normal CP3 validation' V3-LAB-README.txt
           fi
           if [ "$GITHUB_REF_NAME" = 'v3.21-cp4-shadow-compat' ]; then
-            grep -n 'Mask_PlayerSecondaryView = (1 << 21)' apps/openmw/mwrender/vismask.hpp
-            grep -n 'Mask_Player | Mask_PlayerSecondaryView' apps/openmw/mwrender/renderingmanager.cpp
-            grep -n 'Mask_SimpleWater | Mask_PlayerSecondaryView' apps/openmw/mwrender/renderingmanager.cpp
-            grep -n 'setNodeMask(Mask_PlayerSecondaryView)' apps/openmw/mwrender/npcanimation.cpp
+            grep -n 'V321OwnerViewHiddenCullCallback' apps/openmw/mwrender/npcanimation.cpp
+            grep -n 'Constants::SceneCamera' apps/openmw/mwrender/npcanimation.cpp
+            grep -n 'openmw.v321.ownerViewHidden' apps/openmw/mwrender/npcanimation.cpp
+            grep -n 'openmw.v321.ownerViewHidden' apps/openmw/mwrender/renderingmanager.cpp
+            grep -n 'isOwnerViewHidden' apps/openmw/mwrender/renderingmanager.cpp
+            ! grep -R -n 'Mask_PlayerSecondaryView' apps/openmw/mwrender
+            ! grep -n 'setNodeMask(Mask_PlayerSecondaryView)' apps/openmw/mwrender/npcanimation.cpp
             grep -n 'OPENMW_V321_CP4_SHADOW_COMPAT' apps/openmw/mwrender/camera.cpp
+            grep -n 'openmw_v321_animation_consumer' components/lua/luastate.cpp
+            grep -n 'openmw_v321_animation_consumer' apps/openmw/mwlua/camerabindings.cpp
+            grep -n 'animationConsumer && camera->isAnimationCompatibilityEnabled()' apps/openmw/mwlua/camerabindings.cpp
+            grep -n 'getPhysicalMode' apps/openmw/mwlua/camerabindings.cpp
+            grep -n 'getPhysicalMode' files/lua_api/openmw/camera.lua
             grep -n 'getAnimationMode' apps/openmw/mwrender/camera.hpp
             grep -n 'getAnimationMode' apps/openmw/mwlua/camerabindings.cpp
             grep -n 'getAnimationMode' files/lua_api/openmw/camera.lua
