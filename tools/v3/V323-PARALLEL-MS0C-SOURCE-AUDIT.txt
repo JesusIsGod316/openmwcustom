@@ -75,3 +75,11 @@ Mode143 and Mode144 on the same frozen route. Promotion requires a credible
 MSOC work, with no worse p99/severe tails, no visibility popping/false
 occlusion, and no meaningful VRAM increase. Mode144 may remain dormant even if
 it is not promoted.
+
+BUILD/QC
+--------
+Preflight run 33788255392 passed generated-source application, exact V3.23
+identity checks, Mode142-144 isolation guards, and PowerShell launcher parsing
+on commit be00fc18bca4c4ac05f434a52ca6ebe29a98be86. The following build-marker
+commit changes no generated engine implementation and exists only to request
+the full Windows RelWithDebInfo compile through the branch workflow.
