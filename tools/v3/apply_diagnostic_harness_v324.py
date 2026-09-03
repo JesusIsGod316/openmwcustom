@@ -24,14 +24,24 @@ exec(
     {"__file__": str(layer), "__name__": "__main__"},
 )
 
+telemetry = HERE / "apply_v324_deep_telemetry.py"
+if not telemetry.is_file():
+    raise RuntimeError("V3.24 exact-stack failure: apply_v324_deep_telemetry.py is missing")
+print("[V3.24] QoS/async layer -> apply_v324_deep_telemetry.py")
+exec(
+    compile(telemetry.read_text(encoding="utf-8"), str(telemetry), "exec"),
+    {"__file__": str(telemetry), "__name__": "__main__"},
+)
+
 for required in (
     "V3-applied-source.patch",
     "V3-applied-source-stat.txt",
     "V3-LAB-README.txt",
     "components/sceneutil/framejobservice.hpp",
+    "components/debug/v3deeptelemetry.hpp",
 ):
     if not (ROOT / required).is_file():
         raise RuntimeError(f"V3.24 exact-stack failure: {required} is missing")
 
 subprocess.run(["git", "diff", "--check"], cwd=ROOT, check=True)
-print("V3.24 exact V3.23 inheritance + frame-job QoS + zero-wait async MSOC layer passed")
+print("V3.24 exact V3.23 inheritance + frame-job QoS + zero-wait async MSOC + deep telemetry layer passed")
