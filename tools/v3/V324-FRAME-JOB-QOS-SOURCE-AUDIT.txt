@@ -92,6 +92,12 @@ binary. Same-mode OFF -> ON comparison is the authoritative observer-effect boun
 for cache pollution, allocations, scheduling perturbation, contention, and the
 final writer operation that cannot be carried forward into another row.
 
+The disabled path was specifically audited after initial implementation. Telemetry
+OFF now returns immediately after the cached enable check and does not call the
+high-resolution clock or allocate/copy category/name/detail strings. This preserves
+Mode135/145 telemetry-OFF runs as practical identical-binary controls; the residual
+cost is limited to the cached boolean check and trivial scope-object construction.
+
 Recommended diagnostic sequence:
 1. Mode135 telemetry OFF -- clean historical behavior control.
 2. Mode145 telemetry OFF -- isolate V3.24 QoS infrastructure overhead.
