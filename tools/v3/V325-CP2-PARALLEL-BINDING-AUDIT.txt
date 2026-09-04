@@ -1,0 +1,99 @@
+V3.25 CP2 — MODE151 PARALLEL ACTOR BINDING AUDIT
+=================================================
+Date: 2026-09-03
+Branch: v3.25-engine-ownership-bridge-cp2
+Parent CP1 head: 89c2f29a26d62b0f96f0f830210505c611acfdbb
+Role: second V3.25 checkpoint; CP1 batching + bounded parallel controller-clone preparation
+
+WHY CP2 EXISTS
+--------------
+V3.24 reproduced a hot actor return with controller_setup=281.030 ms,
+addAnimSource=281.057 ms / 334 calls, addSingleAnimSource=237.409 ms / 8,183 calls,
+and npc_update_base=305.643 ms / 60 actors. CP1 removes repeated actor-wide
+AssignControllerSourcesVisitor traversal. CP2 targets residual controller-clone work without
+threading all of updateNpcBase or allowing workers to mutate the live actor/scene graph.
+
+SOURCE SAFETY FINDINGS
+----------------------
+1. Resource::KeyframeManager has two controller families relevant to this path:
+   - .kf input is parsed through NifOsg::Loader::loadKf and produces NifOsg::KeyframeController.
+   - non-KF osgAnimation input can produce SceneUtil::OsgAnimationController.
+2. NifOsg::Loader::loadKf creates a fresh NifOsg::KeyframeController for each accepted KF
+   controller and stores it in the immutable KeyframeHolder controller map.
+3. NifOsg::KeyframeController's copy constructor copies controller state/interpolator members
+   and callback/object base state; it does not attach to a scene node or mutate the source
+   KeyframeHolder.
+4. The live-node-dependent work in Animation::addSingleAnimSource is kept on the main thread:
+   NodeMap creation/lookup, missing-bone logging, detectBlendMask parent traversal and all final
+   publication remain serial.
+5. Worker input is therefore reduced to an unpublished immutable record containing bone name,
+   precomputed blend mask and a raw pointer to a source controller whose KeyframeHolder remains
+   strongly owned by the unpublished AnimSource for the full job lifetime.
+6. Mode151 only admits parallel cloning if EVERY valid controller for that source dynamically
+   identifies as NifOsg::KeyframeController. Any OsgAnimationController or unknown subclass
+   forces the entire source through the historical main-thread osg::clone path.
+7. Worker results are indexed by the main-thread input vector. Completion order cannot affect
+   controller-map or animation-source publication order.
+8. Worker failure cannot partially publish: all results remain in a local vector. A failed group
+   discards/overwrites partial results by rerunning the full clone set serially before publish.
+
+FRAME-CRITICAL JOB GROUP
+------------------------
+CP2 adds components/sceneutil/framecriticaljobgroup.hpp as a reusable V4-facing primitive.
+It intentionally does NOT modify the semantics of V3.24 FrameJobService.
+
+Properties:
+- lazy worker creation; Mode149/150 create zero CP2 worker threads;
+- no FIFO and no background/preload queue;
+- one synchronous group is admitted immediately under a try-lock;
+- concurrent/nested admission runs caller-only instead of queueing;
+- workers and caller claim coarse ranges from one atomic cursor;
+- caller waits only for workers reserved to that same group;
+- exceptions set a group failure flag and stop further range claims;
+- one shutdown summary file, no per-job runtime file I/O.
+
+MODE151 FIXED TUNING
+--------------------
+- inherits Mode150 actor-source batching;
+- OPENMW_V325_PARALLEL_ACTOR_BINDING=1;
+- minimum valid controllers before group use: 16;
+- coarse clone chunk: 8 controllers;
+- reserved workers: 2 plus caller participation;
+- non-NIF source: serial fallback;
+- group failure: full serial clone fallback;
+- live scene/node publication: main thread only.
+
+MODE151 DOES NOT PARALLELIZE
+---------------------------
+- VFS exists/enumeration;
+- KeyframeManager cache lookup/load;
+- NodeMap construction;
+- live node association mutation;
+- detectBlendMask parent traversal;
+- supported-animation publication;
+- mAnimSources publication/order;
+- accumulation-root discovery/mutation;
+- AnimBlendRulesManager lookup;
+- AssignControllerSourcesVisitor;
+- MWWorld/gameplay/Lua/physics/inventory state.
+
+RUNTIME VALIDATION
+------------------
+Performance A/B uses deep telemetry OFF. Compare Mode150 -> Mode151 in one CP2 binary.
+Require the shutdown v325-jobgroup-summary.csv to show real worker_items > 0 on the hot-return
+route before interpreting timing deltas as a parallel result. Repeated hot returns are required.
+Ordinary exterior movement median/p95/p99 must remain neutral and no new mechanics/preload
+priority inversion is acceptable.
+
+Correctness regression gates include first/third person, full-body first person, weapon draw and
+sheath, one/two-handed melee, bow, casting, swimming, custom actors, additional animation
+sources, Dynamic Animations, Alternate Third Person Attacks, save/load and interior/exterior
+transitions.
+
+PROMOTION / REJECTION
+---------------------
+Mode151 is not promoted by source or build QC. If CP1 batching leaves too little residual clone
+work, if jobgroup worker_items remain negligible, or if net runtime gain is below the existing
+>=1 ms credible / preferably >=2 ms practical gate, keep the reusable job-group architecture
+but reject forced actor-binding jobification. Mode152 remains unimplemented until Mode151 is
+correct and beneficial.
