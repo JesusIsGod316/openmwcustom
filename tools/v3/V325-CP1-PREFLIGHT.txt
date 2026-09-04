@@ -1,0 +1,18 @@
+V3.25 CP1 PREFLIGHT GATE
+========================
+Branch: v3.25-engine-ownership-bridge
+Validated source head before build trigger: 9e9dfe3017b2deb50816b057fbee5f5677abb983
+Workflow run: 33821866599
+Preflight result: PASS
+
+Validated gates:
+- exact inherited V3.24 generated stack applies successfully;
+- V3.25 actor-source batching is scoped to Animation::addSingleAnimSource and explicit NpcAnimation source batches;
+- generated-source structural invariants pass;
+- Mode149 remains V3.24-behavior control with V3.25 batching OFF;
+- Mode150 enables only V3.25 actor-source batching;
+- V3.24 deep-trace full Import-Csv materialization is absent;
+- PowerShell launcher parse check passes;
+- git diff --check passes.
+
+This record triggers the full Windows/MSVC build gate. Runtime promotion remains blocked until Mode149 vs Mode150 frozen-cohort testing.
