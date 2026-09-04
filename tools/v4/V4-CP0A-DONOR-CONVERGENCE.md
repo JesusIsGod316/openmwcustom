@@ -1,6 +1,6 @@
 # V4.0 CP0A — Donor Convergence Audit
 
-Status: ACTIVE SOURCE AUDIT  
+Status: **SOURCE AUDIT COMPLETE — CP1 CONTRACT LOCKED; CP1 IMPLEMENTATION WAITING ON CP0 VISUAL CORPUS**  
 Base branch: `v4.0-cp0-freeze` @ `40794e34c6e392bb0400bc2dd11bfe6cfae4b14a`  
 Final V3.25 raw source identity: `f7557829bcb14e339410cefb32b6612e5009e46d`  
 Final V3.25 executable SHA-256: `34d7a715e25d92dcad6b20f807e8b44a272fd3382e2d2f0a22e03bedac3e25c2`
@@ -46,7 +46,15 @@ The first CP0A materialization run regenerated the same 103-file source delta an
 
 The materializer now pins `core.abbrev=7` for byte-for-byte archival reproduction and independently verifies the canonical patch hash, source-stat hash and 103-file inventory. This is a provenance-format difference, not a source-semantic divergence.
 
-**CP1 gate:** the V4 development lineage must materialize or otherwise exactly preserve this generated source before renderer ownership refactoring starts. V4 must not silently depend on the old V3 runtime patch harness as an undocumented semantic layer.
+### Materialization gate — SATISFIED
+
+The exact 103-file generated source was successfully materialized and committed into the V4 lineage at:
+
+`b024c179ed5cffb68fd2c7e6e03952c1744b2f3d` — `V4.0 CP0A: materialize frozen V3.25 generated source`
+
+The materialized tree visibly contains final Mode150/151 actor-source batching and actor-batched controller-clone preparation, so V4 no longer depends on the V3 patch harness as a hidden source layer.
+
+**Locked rule:** the V3 harness remains provenance/reproduction tooling only. CP1 and later V4 builds operate on the materialized source committed to the V4 lineage.
 
 ## 3. V3.25 renderer-facing preservation surface
 
@@ -67,7 +75,7 @@ These are first-class semantic contracts for the donor reconciliation:
 | Water | Current water/reflection/refraction behavior | `PORT_SEMANTICS` |
 | Frame-critical jobs | Immutable/pre-resolved worker inputs, worker-owned unpublished output, deterministic main publish, no frame-critical FIFO-then-wait | `ARCHITECTURE_RULE` |
 
-The generated patch also changes world streaming, SceneManager/resource caches, Lua, sound, mechanics, physics, settings, shader management, and diagnostics. Those changes must be classified before broad GLM or renderer-boundary edits touch the same files.
+The generated patch also changes world streaming, SceneManager/resource caches, Lua, sound, mechanics, physics, settings, shader management, and diagnostics. Those changes are now classified in `V4-CP0A-GENERATED-OVERLAP-MATRIX.md` before broad GLM or renderer-boundary work begins.
 
 ## 4. David P donor map
 
@@ -127,6 +135,14 @@ David's current NIFVSG loader skips meshes whenever the node itself is `RC_RootC
 
 Final V3.25 already contains compute-clustered point lighting (`LightManagerCullCallback`, cluster-grid compute, light-cull compute, SSBO cluster/light-grid/index buffers). David's renderer cannot be accepted as lighting authority where it predates or differs from this behavior. Vulkan lighting must reproduce current V3.25 semantics first, then optimize.
 
+### Deeper David crosswalk — COMPLETE
+
+The subsystem-level implementation crosswalk is locked in:
+
+`tools/v4/V4-CP0A-DAVID-SUBSYSTEM-CROSSWALK.md`
+
+It covers backend bootstrap, RenderingManagerVsg, ObjectsVsg/VsgWorldBridge, NifVsg, NPC/animation, terrain/statics/groundcover, lighting/shadows, water, sky/weather, postprocessing/HBAO, GUI/maps/previews/debug and Hi-Z. David remains the primary implementation donor, but V3.25 semantics and the neutral V4 ownership contract win every conflict.
+
 ## 5. Clockwork donor map
 
 Audited donor archive identity:
@@ -164,9 +180,25 @@ The V4 equivalent must be fed by `RenderWorld` update packets. VSG can be a tran
 
 Clockwork's occlusion architecture remains useful, but V4 promotion keeps the project rule: **zero visible false occlusion**. David's known-bad Hi-Z and any Clockwork-derived occlusion path stay switchable/default-off until that gate is met.
 
-## 6. CP1 contract extracted from CP0A
+### Deeper Clockwork data contract — COMPLETE
 
-CP1 should begin with a targeted renderer-boundary neutral layer, not a whole-engine math migration.
+The exact architecture translation is locked in:
+
+`tools/v4/V4-CP0A-CLOCKWORK-DATA-CONTRACT.md`
+
+Important refinements from the source audit:
+
+- `ChunkHandle` with generation is a CP1 requirement, not a late CP8 invention;
+- `LightHandle` is a distinct logical identity;
+- Clockwork GPU fields such as first-instance offsets, batch counts and indirect command slots remain backend derived;
+- the common frame contract uses a variable explicit view list rather than freezing Clockwork's 32-bit view mask;
+- the logical material surface preserves Diffuse/Dark/Detail/Decal/Emissive/Normal/Environment/Specular/Bump/Gloss/Blend roles, while bindless/array/legacy is backend policy;
+- logical resource lifetime is separate from backend residency, allowing eviction/reupload without handle invalidation;
+- current/previous pose/morph identity is reserved so GPU skinning and temporal motion vectors can be added later without changing animation ownership.
+
+## 6. CP1 contract extracted from CP0A — LOCKED
+
+CP1 begins with a targeted renderer-boundary neutral layer, not a whole-engine math migration.
 
 Required stable handle families:
 
@@ -175,40 +207,64 @@ Required stable handle families:
 - `TextureHandle`
 - `SkeletonHandle`
 - `InstanceHandle`
+- `ChunkHandle`
+- `LightHandle`
 
-Required identity model:
+Required identity/publication model:
 
-- index/slot + generation or equivalent stale-handle protection
-- deterministic publish ordering
-- explicit resource creation/update/retire operations
+- typed 32-bit slot + 32-bit generation handles;
+- generation 0 invalid/reserved;
+- separate resource revision from handle generation;
+- 64-bit world epoch for destructive world resets;
+- immutable ordered update batches with monotonic sequence;
+- deterministic single-owner publish initially;
+- stale epoch/generation/revision results rejected before mutation.
 
 Required persistent state:
 
-- `RenderWorld`: flat mesh/material/texture/skeleton/instance tables designed to map naturally to future GPU buffers
-- `FrameRenderState`: immutable/versioned per-frame camera, previous-camera, environment, water/weather, dynamic transforms, skeletal state, visibility/pass masks, temporal identity/history validity
+- `RenderWorld`: flat logical mesh/material/texture/skeleton/instance/chunk/light tables designed to map naturally to future GPU buffers;
+- `FrameRenderState`: immutable/versioned per-frame state with current/previous cameras, explicit multi-view descriptors, render/output extents, jitter/unjittered state, environment/water/weather, dynamic transforms, current/previous skeletal pose + morph history, semantic visibility/pass policy and temporal history identity.
 
-The high-level renderer boundary must not expose OSG or VSG types. A legacy OSG adapter may translate neutral commands/state into the existing V3.25 renderer while Vulkan comes online.
+Required lifetime split:
+
+1. content/source lifetime;
+2. logical RenderWorld lifetime;
+3. backend residency lifetime.
+
+The high-level renderer boundary exposes semantic render operations, not a giant low-level `RenderDevice`. It contains no OSG, VSG or Vulkan types. A legacy OSG adapter translates neutral state while Vulkan is brought online.
+
+The complete implementation-ready handoff is:
+
+`tools/v4/V4-CP1-NEUTRAL-RENDER-CONTRACT.md`
 
 ### GLM refinement
 
-David's GLM migration is valuable donor work, but CP1 should use a **targeted GLM-neutral renderer envelope first**. Broad whole-project GLM conversion overlaps hundreds of files and can collide with V3.25's generated custom layers. Convert renderer-facing values at well-defined seams, then expand GLM migration incrementally after semantic parity is protected.
+David's GLM migration is valuable donor work, but CP1 uses a **targeted GLM renderer envelope first**. World/camera translation is represented at the neutral seam with double precision; backend GPU packing may remain float/camera-relative. Quaternion identity is explicit, and existing OpenMW coordinate/sign/order semantics are preserved exactly. Broad whole-project GLM conversion proceeds incrementally later.
 
-## 7. CP0A exit gates
+## 7. CP0A exit gates — ALL SATISFIED
 
-CP0A is complete only when:
+1. **103-file generated V3.25 delta inventoried and renderer-overlap files classified — PASS.**
+2. **Exact final built-source materialization strategy locked and executed — PASS**, materialized source commit `b024c179...`.
+3. **All David VSG subsystems have a donor disposition — PASS**, detailed subsystem crosswalk committed.
+4. **Clockwork GPU-scene subsystems have an algorithm/data disposition — PASS**, detailed data contract committed.
+5. **Known V3.25-vs-donor semantic conflicts have explicit winners — PASS**, V3.25 semantics win.
+6. **CP1 types/update/frame/ownership rules are implementation-specific enough to code without inventing backend semantics — PASS**, `V4-CP1-NEUTRAL-RENDER-CONTRACT.md` locked.
+7. **No CP1 behavior depends on hidden V3 patch-harness source — PASS**, final generated source is materialized into the V4 branch.
 
-1. the 103-file generated V3.25 delta is inventoried and renderer-overlap files are classified;
-2. the exact final built-source materialization strategy is locked;
-3. all David VSG subsystems have a donor disposition;
-4. all Clockwork GPU-scene subsystems have an algorithm disposition;
-5. known V3.25-vs-donor semantic conflicts have explicit winners;
-6. CP1 types and update ownership rules are specific enough to implement without inventing backend semantics during coding;
-7. no CP1 change requires preserving hidden behavior only inside the V3 patch harness.
+**CP0A source audit is closed.**
 
-## 8. Immediate next audit work
+## 8. Next project gate
 
-- complete the verified materialized-source commit on the CP0A branch;
-- classify generated V3.25 renderer/world/resource overlaps against David subsystem files;
-- audit David NIF/material/actor/terrain/water/postfx subsystem boundaries against those overlaps;
-- audit Clockwork record ownership, retirement, texture-budget and multi-view data contracts for the exact fields CP1 must reserve;
-- then lock the CP1 implementation handoff.
+CP0A completion does **not** authorize CP1 implementation by itself.
+
+The numerical V3.25 comparison baseline is already frozen, but CP0 still requires the **visual reference corpus**. That corpus is the remaining parity oracle needed before changing ownership/math/render seams.
+
+Therefore:
+
+- CP0A: **CLOSED / HANDOFF LOCKED**;
+- CP0 numerical baseline: **FROZEN**;
+- CP0 visual corpus: **PENDING**;
+- CP1 source implementation: **BLOCKED ONLY BY CP0 VISUAL CORPUS FREEZE**;
+- CP1 design/contract: **READY**.
+
+Once the CP0 visual corpus is frozen, CP1A begins in the order defined by `V4-CP1-NEUTRAL-RENDER-CONTRACT.md`: handle/math/epoch types → RenderWorld tables → immutable update batches → FrameRenderState/multi-view history → semantic renderer service → incremental legacy OSG producer adapter. SDL3 remains CP1B, and Vulkan remains CP2.
