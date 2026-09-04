@@ -1,0 +1,41 @@
+name: V4.0 CP1A RenderCore foundation QC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp1a-rendercore-foundation]
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Enforce neutral rendercore header boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '#include[[:space:]]*[<"](osg|osgViewer|osgUtil|vsg|vulkan|apps/openmw|components/mwworld)|\b(osg|osgViewer|osgUtil|vsg)::|\bVk[A-Z]|\bMWWorld::' components/rendercore; then
+            echo 'rendercore common boundary contains a forbidden backend/game type' >&2
+            exit 1
+          fi
+
+      - name: Verify CP1A foundation files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f components/rendercore/handles.hpp
+          test -f components/rendercore/resources.hpp
+          test -f components/rendercore/math.hpp
+          test -f apps/components_tests/rendercore/foundation.cpp
+          grep -F 'GIT_TAG 0af55ccecd98d4e5a8d1fad7de25ba429d60e863' apps/components_tests/CMakeLists.txt
+          git diff --check HEAD^
+
+  Windows:
+    needs: Preflight
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
