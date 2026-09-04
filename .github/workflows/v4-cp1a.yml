@@ -41,6 +41,7 @@ jobs:
 
   Windows:
     needs: Preflight
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-build]') }}
     uses: ./.github/workflows/windows.yml
     with:
       image: '2022'
