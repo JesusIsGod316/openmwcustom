@@ -60,15 +60,29 @@ jobs:
           npc = Path('apps/openmw/mwrender/npcanimation.cpp').read_text(encoding='utf-8')
           launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
 
-          marker = 'SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);'
-          if animation.count(marker) != 2:
-              raise SystemExit(f'V3.25 expected two default-source visitor sites, found {animation.count(marker)}')
+          add_start = animation.index('    std::shared_ptr<Animation::AnimSource> Animation::addSingleAnimSource(')
+          add_end = animation.index('    void Animation::clearAnimSources()', add_start)
+          add_single = animation[add_start:add_end]
+          for required in (
+              'if (mAnimSourceBatchDepth != 0)',
+              'mAnimSourceBatchNeedsControllerAssignment = true;',
+              'SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);',
+              'mObjectRoot->accept(assignVisitor);',
+          ):
+              if required not in add_single:
+                  raise SystemExit(f'V3.25 addSingleAnimSource missing {required}')
 
-          batch_start = npc.index('const bool v325BatchSources = v325ActorSourceBatchEnabled();')
-          batch_end = npc.index('if (is1stPerson)', batch_start)
-          batch = npc[batch_start:batch_end]
+          batch_start = animation.index('    void Animation::endAnimSourceBatch()')
+          batch_end = animation.index('    void Animation::addAnimSource(', batch_start)
+          end_batch = animation[batch_start:batch_end]
+          if end_batch.count('SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);') != 1:
+              raise SystemExit('V3.25 endAnimSourceBatch must contain exactly one final controller assignment')
+
+          npc_start = npc.index('const bool v325BatchSources = v325ActorSourceBatchEnabled();')
+          npc_end = npc.index('if (is1stPerson)', npc_start)
+          npc_batch = npc[npc_start:npc_end]
           for required in ('beginAnimSourceBatch();', 'endAnimSourceBatch();', 'catch (...)'):
-              if required not in batch:
+              if required not in npc_batch:
                   raise SystemExit(f'V3.25 NPC batch missing {required}')
 
           line149 = next(line for line in launcher.splitlines() if line.lstrip().startswith("'149'"))
