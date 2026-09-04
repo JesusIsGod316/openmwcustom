@@ -40,10 +40,10 @@ exec(
 # controller clones for one explicit NPC source batch are gathered first, then
 # one bounded job group runs at batch close before deterministic publication.
 if BRANCH == "v3.25-engine-ownership-bridge-cp2-actorbatch":
-    actorbatch = HERE / "apply_v325_engine_ownership_bridge_cp2_actorbatch.py"
+    actorbatch = HERE / "apply_v325_engine_ownership_bridge_cp2_actorbatch_v2.py"
     if not actorbatch.is_file():
-        raise RuntimeError("V3.25 actor-batch exact-stack failure: actor-batch layer is missing")
-    print("[V3.25] CP2 runtime refinement -> apply_v325_engine_ownership_bridge_cp2_actorbatch.py")
+        raise RuntimeError("V3.25 actor-batch exact-stack failure: actor-batch v2 layer is missing")
+    print("[V3.25] CP2 runtime refinement -> apply_v325_engine_ownership_bridge_cp2_actorbatch_v2.py")
     exec(
         compile(actorbatch.read_text(encoding="utf-8"), str(actorbatch), "exec"),
         {"__file__": str(actorbatch), "__name__": "__main__"},
