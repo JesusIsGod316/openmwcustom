@@ -34,6 +34,20 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def patch_changed_files(path: Path) -> list[str]:
+    prefix = "diff --git a/"
+    files: list[str] = []
+    for line in path.read_text(encoding="utf-8", errors="strict").splitlines():
+        if not line.startswith(prefix):
+            continue
+        rest = line[len(prefix) :]
+        marker = " b/"
+        if marker not in rest:
+            raise RuntimeError(f"malformed diff header: {line}")
+        files.append(rest.split(marker, 1)[0])
+    return files
+
+
 def main() -> int:
     if not ROUTER.is_file():
         raise RuntimeError(f"missing frozen V3 router: {ROUTER}")
@@ -69,14 +83,11 @@ def main() -> int:
             f"generated stat mismatch: expected {EXPECTED_STAT_SHA256}, got {stat_hash}"
         )
 
-    changed = subprocess.run(
-        ["git", "diff", "--name-only"], cwd=ROOT, check=True, text=True, capture_output=True
-    ).stdout.splitlines()
-    # Generated provenance files may be untracked and therefore are not counted
-    # here. The authoritative source-stat says 103 changed tracked files.
-    if len(changed) != EXPECTED_CHANGED_FILES:
+    changed = patch_changed_files(PATCH)
+    if len(changed) != EXPECTED_CHANGED_FILES or len(set(changed)) != EXPECTED_CHANGED_FILES:
         raise RuntimeError(
-            f"tracked generated-file count mismatch: expected {EXPECTED_CHANGED_FILES}, got {len(changed)}"
+            f"generated patch file-count mismatch: expected {EXPECTED_CHANGED_FILES} unique files, "
+            f"got {len(changed)} headers / {len(set(changed))} unique"
         )
 
     subprocess.run(["git", "diff", "--check"], cwd=ROOT, check=True)
@@ -84,7 +95,7 @@ def main() -> int:
     print("Final V3.25 Mode151 generated source materialized and verified.")
     print(f"patch_sha256={patch_hash}")
     print(f"stat_sha256={stat_hash}")
-    print(f"changed_tracked_files={len(changed)}")
+    print(f"changed_source_files={len(changed)}")
     print("Next: inspect/reconcile this source and commit it explicitly on the V4 lineage; do not rerun the V3 harness at V4 runtime/build time.")
     return 0
 
