@@ -5,7 +5,8 @@ param(
 
     [string]$UserConfigDir = (Join-Path $env:USERPROFILE 'Documents\My Games\OpenMW'),
 
-    [string]$OpenMwCfg,
+    [string]$BaseOpenMwCfg,
+    [string]$UserOpenMwCfg,
     [string]$EffectiveSettings,
     [string]$FrozenGamingSettings,
     [string]$GamingWrapper,
@@ -62,9 +63,36 @@ function Normalize-ConfigValue {
     return $v
 }
 
+function Read-OpenMwConfigManifest {
+    param(
+        [string]$Path,
+        [string]$Label
+    )
+
+    $resolved = Resolve-OptionalPath $Path
+    if ($null -eq $resolved) { return @() }
+
+    $records = @()
+    foreach ($rawLine in Get-Content -LiteralPath $resolved) {
+        $line = $rawLine.Trim()
+        if ($line.Length -eq 0 -or $line.StartsWith('#')) { continue }
+        if ($line -match '^(data|content|fallback-archive)\s*=\s*(.*)$') {
+            $records += [ordered]@{
+                source = $Label
+                kind = $Matches[1]
+                value = (Normalize-ConfigValue $Matches[2])
+            }
+        }
+    }
+    return $records
+}
+
 $BuildRoot = (Resolve-Path -LiteralPath $BuildRoot).Path
-if ([string]::IsNullOrWhiteSpace($OpenMwCfg)) {
-    $OpenMwCfg = Join-Path $UserConfigDir 'openmw.cfg'
+if ([string]::IsNullOrWhiteSpace($BaseOpenMwCfg)) {
+    $BaseOpenMwCfg = Join-Path $BuildRoot 'openmw.cfg'
+}
+if ([string]::IsNullOrWhiteSpace($UserOpenMwCfg)) {
+    $UserOpenMwCfg = Join-Path $UserConfigDir 'openmw.cfg'
 }
 if ([string]::IsNullOrWhiteSpace($EffectiveSettings)) {
     $EffectiveSettings = Join-Path $UserConfigDir 'settings.cfg'
@@ -83,54 +111,45 @@ $OutputDir = (Resolve-Path -LiteralPath $OutputDir).Path
 
 $expectedCommit = 'f7557829bcb14e339410cefb32b6612e5009e46d'
 $expectedExeHash = '34d7a715e25d92dcad6b20f807e8b44a272fd3382e2d2f0a22e03bedac3e25c2'
-$expectedOpenMwCfgHash = 'de4048a4f8766e23f13a9c81eb1960924bec285894f1939a3c91ae184bef63b9'
-$expectedBenchmarkSettingsHash = '461d64eab6f5d7b97d6bf008d2c41444c242d1b41d4a93861f6b4089b8f7c304'
+$expectedAcceptedUserOpenMwCfgHash = 'de4048a4f8766e23f13a9c81eb1960924bec285894f1939a3c91ae184bef63b9'
+$expectedAcceptedBenchmarkSettingsHash = '461d64eab6f5d7b97d6bf008d2c41444c242d1b41d4a93861f6b4089b8f7c304'
 
 $files = @(
     Get-HashRecord -Name 'openmw.exe' -Path (Join-Path $BuildRoot 'openmw.exe') -Required $true
     Get-HashRecord -Name 'V3.25_Mode151_Gaming.bat' -Path $GamingWrapper -Required $true
     Get-HashRecord -Name 'effective settings.cfg' -Path $EffectiveSettings -Required $true
     Get-HashRecord -Name 'frozen gaming settings profile' -Path $FrozenGamingSettings -Required $true
-    Get-HashRecord -Name 'openmw.cfg' -Path $OpenMwCfg -Required $true
+    Get-HashRecord -Name 'build-root openmw.cfg' -Path $BaseOpenMwCfg -Required $true
+    Get-HashRecord -Name 'user openmw.cfg' -Path $UserOpenMwCfg -Required $true
     Get-HashRecord -Name 'canonical test save' -Path $SaveFile -Required $true
 )
 
-$configLines = @()
-$dataDirs = @()
-$contentEntries = @()
-$fallbackArchives = @()
-$openMwCfgResolved = Resolve-OptionalPath $OpenMwCfg
-if ($null -ne $openMwCfgResolved) {
-    foreach ($rawLine in Get-Content -LiteralPath $openMwCfgResolved) {
-        $line = $rawLine.Trim()
-        if ($line.Length -eq 0 -or $line.StartsWith('#')) { continue }
-        if ($line -match '^(data|content|fallback-archive)\s*=\s*(.*)$') {
-            $kind = $Matches[1]
-            $value = Normalize-ConfigValue $Matches[2]
-            $configLines += ('{0}={1}' -f $kind, $value)
-            switch ($kind) {
-                'data' { $dataDirs += $value }
-                'content' { $contentEntries += $value }
-                'fallback-archive' { $fallbackArchives += $value }
-            }
-        }
-    }
-}
+# OpenMW loads the build/global config before the user config. Preserve both sources and their order.
+$configRecords = @()
+$configRecords += @(Read-OpenMwConfigManifest -Path $BaseOpenMwCfg -Label 'build-root')
+$configRecords += @(Read-OpenMwConfigManifest -Path $UserOpenMwCfg -Label 'user')
+
+$dataDirs = @($configRecords | Where-Object { $_.kind -eq 'data' } | ForEach-Object { $_.value })
+$contentEntries = @($configRecords | Where-Object { $_.kind -eq 'content' } | ForEach-Object { $_.value })
+$fallbackArchives = @($configRecords | Where-Object { $_.kind -eq 'fallback-archive' } | ForEach-Object { $_.value })
 
 $manifestPath = Join-Path $OutputDir 'cp0-content-manifest.txt'
-@(
+$manifestLines = @(
     '# OpenMW Custom Build V4 CP0 content/load-order manifest'
-    '# Generated from the effective openmw.cfg; order is preserved.'
+    '# Generated from build-root then user openmw.cfg; source and order are preserved.'
     ('# Generated: ' + (Get-Date).ToString('o'))
     ''
-    $configLines
-) | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+)
+foreach ($record in $configRecords) {
+    $manifestLines += ('[{0}] {1}={2}' -f $record.source, $record.kind, $record.value)
+}
+$manifestLines | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
 $resolvedContent = @()
 foreach ($content in $contentEntries) {
     $found = $null
-    # OpenMW later data directories have higher VFS priority, so search in reverse order.
+    # OpenMW later data directories have higher VFS priority; resolve active content from the end of the data list.
     for ($i = $dataDirs.Count - 1; $i -ge 0; --$i) {
         $candidateRoot = [Environment]::ExpandEnvironmentVariables($dataDirs[$i])
         if (-not [System.IO.Path]::IsPathRooted($candidateRoot)) { continue }
@@ -192,19 +211,19 @@ try { $os = Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Versi
 try { $computer = Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory, Manufacturer, Model } catch {}
 
 $exeRecord = $files | Where-Object { $_.name -eq 'openmw.exe' }
-$cfgRecord = $files | Where-Object { $_.name -eq 'openmw.cfg' }
+$userCfgRecord = $files | Where-Object { $_.name -eq 'user openmw.cfg' }
 $effectiveSettingsRecord = $files | Where-Object { $_.name -eq 'effective settings.cfg' }
 
 $checks = [ordered]@{
     expected_final_commit = $expectedCommit
     openmw_exe_matches_final_build = ($exeRecord.exists -and $exeRecord.sha256 -eq $expectedExeHash)
-    openmw_cfg_matches_mode151_ab = ($cfgRecord.exists -and $cfgRecord.sha256 -eq $expectedOpenMwCfgHash)
-    effective_settings_matches_mode151_ab = ($effectiveSettingsRecord.exists -and $effectiveSettingsRecord.sha256 -eq $expectedBenchmarkSettingsHash)
+    user_openmw_cfg_matches_accepted_mode151_ab = ($userCfgRecord.exists -and $userCfgRecord.sha256 -eq $expectedAcceptedUserOpenMwCfgHash)
+    effective_settings_matches_accepted_mode151_ab = ($effectiveSettingsRecord.exists -and $effectiveSettingsRecord.sha256 -eq $expectedAcceptedBenchmarkSettingsHash)
     all_required_files_present = (($files | Where-Object { $_.required -and -not $_.exists }).Count -eq 0)
 }
 
 $capture = [ordered]@{
-    schema = 'OMW_V4_CP0_CAPTURE_1'
+    schema = 'OMW_V4_CP0_CAPTURE_2'
     generated_utc = (Get-Date).ToUniversalTime().ToString('o')
     event = 'evt.v4.0.cp0.freeze_source_lock.002'
     final_v325_commit = $expectedCommit
@@ -216,6 +235,7 @@ $capture = [ordered]@{
     openmw_cfg_manifest = [ordered]@{
         path = $manifestPath
         sha256 = $manifestHash
+        records = $configRecords
         data_directories = $dataDirs
         fallback_archives = $fallbackArchives
         content = $resolvedContent
@@ -243,8 +263,8 @@ $summary = @(
     ('Content manifest SHA256: ' + $manifestHash)
     ''
     ('openmw.exe expected hash match: ' + $checks.openmw_exe_matches_final_build)
-    ('openmw.cfg matches accepted Mode151 A/B: ' + $checks.openmw_cfg_matches_mode151_ab)
-    ('effective settings matches accepted Mode151 A/B: ' + $checks.effective_settings_matches_mode151_ab)
+    ('user openmw.cfg matches accepted Mode151 A/B: ' + $checks.user_openmw_cfg_matches_accepted_mode151_ab)
+    ('effective settings matches accepted Mode151 A/B: ' + $checks.effective_settings_matches_accepted_mode151_ab)
     ('all required files present: ' + $checks.all_required_files_present)
     ''
     'Files:'
@@ -264,6 +284,6 @@ Write-Host ('Content manifest: ' + $manifestPath)
 Write-Host ('Summary: ' + $summaryPath)
 Write-Host ''
 Write-Host ('openmw.exe matches final V3.25 build: ' + $checks.openmw_exe_matches_final_build)
-Write-Host ('openmw.cfg matches accepted Mode151 A/B: ' + $checks.openmw_cfg_matches_mode151_ab)
-Write-Host ('effective settings matches accepted Mode151 A/B: ' + $checks.effective_settings_matches_mode151_ab)
+Write-Host ('user openmw.cfg matches accepted Mode151 A/B: ' + $checks.user_openmw_cfg_matches_accepted_mode151_ab)
+Write-Host ('effective settings matches accepted Mode151 A/B: ' + $checks.effective_settings_matches_accepted_mode151_ab)
 Write-Host ('all required files present: ' + $checks.all_required_files_present)
