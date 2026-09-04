@@ -3,6 +3,8 @@
 
 #include <compare>
 #include <cstdint>
+#include <limits>
+#include <optional>
 
 namespace RenderCore
 {
@@ -28,6 +30,14 @@ namespace RenderCore
     private:
         Value mValue = 0;
     };
+
+    template <class Id>
+    [[nodiscard]] constexpr std::optional<Id> advanceMonotonic(Id current) noexcept
+    {
+        if (!current.valid() || current.value() == std::numeric_limits<typename Id::Value>::max())
+            return std::nullopt;
+        return Id{ current.value() + 1 };
+    }
 
     struct WorldEpochTag final
     {
