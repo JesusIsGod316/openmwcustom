@@ -1,0 +1,165 @@
+name: V4.0 CP0A capture frozen V3 packaging provenance
+
+on:
+  push:
+    branches: [v4.0-cp0a-generated-provenance-audit]
+
+permissions:
+  contents: write
+
+jobs:
+  CapturePackagingProvenance:
+    if: ${{ contains(github.event.head_commit.message, '[capture-v325-packaging]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout provenance audit branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reproduce frozen V3.25 generated worktree
+        run: python3 tools/v4/V4-CP0A-Materialize-Final-V325.py
+
+      - name: Preserve exact packaging provenance outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import shutil
+
+          root = Path.cwd()
+          out = Path('/tmp/v4-cp0a-packaging-payload')
+          outputs = (
+              'V3-applied-source.patch',
+              'V3-applied-source-stat.txt',
+              'V3-BUILD-IDENTITY.txt',
+              'V3-LAB-README.txt',
+          )
+
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open('rb') as stream:
+                  for block in iter(lambda: stream.read(1024 * 1024), b''):
+                      h.update(block)
+              return h.hexdigest()
+
+          hashes = {}
+          for rel in outputs:
+              src = root / rel
+              if not src.is_file():
+                  raise SystemExit(f'missing frozen generated packaging output: {rel}')
+              hashes[rel] = sha256(src)
+              dst = out / rel
+              dst.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(src, dst)
+
+          manifest = out / 'tools/v4/V4-CP0A-GENERATED-PACKAGING-MANIFEST.txt'
+          manifest.parent.mkdir(parents=True, exist_ok=True)
+          lines = [
+              'V4_CP0A_GENERATED_PACKAGING_MANIFEST/1',
+              'BASE=0c47f593c9c464ef158bade8604bfda536a6d628',
+              'FROZEN_V325_SOURCE=f7557829bcb14e339410cefb32b6612e5009e46d',
+              'PACKAGING_OUTPUT_COUNT=4',
+              '',
+          ]
+          for rel in outputs:
+              lines.append(f'{rel}|sha256={hashes[rel]}')
+          manifest.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+          verifier = out / 'tools/v4/V4-CP0A-Verify-Generated-Packaging-Outputs.py'
+          verifier.write_text(r'''#!/usr/bin/env python3
+from __future__ import annotations
+
+import hashlib
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+MANIFEST = ROOT / "tools/v4/V4-CP0A-GENERATED-PACKAGING-MANIFEST.txt"
+EXPECTED = {
+    "V3-applied-source.patch",
+    "V3-applied-source-stat.txt",
+    "V3-BUILD-IDENTITY.txt",
+    "V3-LAB-README.txt",
+}
+
+
+def sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def main() -> None:
+    if not MANIFEST.is_file():
+        raise SystemExit(f"missing packaging manifest: {MANIFEST.relative_to(ROOT)}")
+    entries: dict[str, str] = {}
+    for raw in MANIFEST.read_text(encoding="utf-8").splitlines():
+        if "|sha256=" not in raw:
+            continue
+        rel, digest = raw.split("|sha256=", 1)
+        entries[rel] = digest
+    if set(entries) != EXPECTED:
+        raise SystemExit(f"packaging manifest paths mismatch: expected {sorted(EXPECTED)}, got {sorted(entries)}")
+    for rel, digest in entries.items():
+        path = ROOT / rel
+        if not path.is_file():
+            raise SystemExit(f"missing frozen packaging input: {rel}")
+        actual = sha256(path)
+        if actual != digest:
+            raise SystemExit(f"packaging hash mismatch for {rel}: expected {digest}, got {actual}")
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", rel],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if tracked.returncode != 0:
+            raise SystemExit(f"frozen packaging input is not tracked: {rel}")
+    print("V4 CP0A frozen V3 packaging provenance: PASS")
+
+
+if __name__ == "__main__":
+    main()
+''', encoding='utf-8')
+          PY
+
+      - name: Commit packaging payload onto active CP1A lineage
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard HEAD
+          git clean -fdx
+          git fetch origin v4.0-cp1a-rendercore-foundation
+          git checkout -B v4.0-cp1a-rendercore-foundation origin/v4.0-cp1a-rendercore-foundation
+          cp -a /tmp/v4-cp0a-packaging-payload/. .
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/v4-cp1a.yml')
+          text = path.read_text(encoding='utf-8')
+          needle = "      - name: Verify complete CP0A generated materialization\n        run: python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py\n"
+          addition = needle + "\n      - name: Verify frozen V3 packaging provenance inputs\n        run: python3 tools/v4/V4-CP0A-Verify-Generated-Packaging-Outputs.py\n"
+          if "V4-CP0A-Verify-Generated-Packaging-Outputs.py" not in text:
+              if needle not in text:
+                  raise SystemExit('could not locate CP1A preflight insertion point')
+              text = text.replace(needle, addition, 1)
+              path.write_text(text, encoding='utf-8')
+          PY
+          git add -- \
+            V3-applied-source.patch \
+            V3-applied-source-stat.txt \
+            V3-BUILD-IDENTITY.txt \
+            V3-LAB-README.txt \
+            tools/v4/V4-CP0A-GENERATED-PACKAGING-MANIFEST.txt \
+            tools/v4/V4-CP0A-Verify-Generated-Packaging-Outputs.py \
+            .github/workflows/v4-cp1a.yml
+          test "$(git diff --cached --name-only | wc -l)" -eq 7
+          git diff --cached --check
+          git config user.name "OpenMW Custom Build CI"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "V4.0 CP0A: materialize frozen V3 packaging outputs [full-build]"
+          git push origin HEAD:v4.0-cp1a-rendercore-foundation
