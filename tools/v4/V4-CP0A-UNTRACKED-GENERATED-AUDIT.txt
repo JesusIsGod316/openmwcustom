@@ -1,0 +1,150 @@
+V4_CP0A_UNTRACKED_GENERATED_AUDIT/1
+BASE=0c47f593c9c464ef158bade8604bfda536a6d628
+FROZEN_V325_SOURCE=f7557829bcb14e339410cefb32b6612e5009e46d
+PATCH_PATH_COUNT=103
+UNTRACKED_COUNT=10
+GENERATED_NON_PROVENANCE_COUNT=6
+OMITTED_FROM_PATCH_COUNT=6
+
+[UNTRACKED_ALL]
+V3-BUILD-IDENTITY.txt|sha256=3fd1e9c9410bba493bdb9e30f6bfc92382d9c579a911a277565abc8bd73f0bfc
+V3-LAB-README.txt|sha256=47c6cd8bf004cd6551efd59788fe84a668fb5fa8ed978c4d54e2ca46612472e5
+V3-applied-source-stat.txt|sha256=c01f35f1a047b624b14daec279580805722fe4dbacdd5bb2b178e071ca28f045
+V3-applied-source.patch|sha256=ac15332aeff34a5ce6a442e169704aab6f5eb0f1600b914d863b4561452d4c35
+V3.16-HITCH-LAYER.txt|sha256=8dadeae8c25896e6c42f615f2e1eceffda8587e9b10863c34fbf520dfa9d3b0a
+V3.17-RUNTIME-LAYER.txt|sha256=100ee2b424d8bdc9053b0e35d5ed00b2add420270e11d7e9f7c0c211713a305e
+V3.18-NIS-PROVENANCE.txt|sha256=eef4f8aefe16b89b671334df7b952b9ddbd35696976d0a8477afb669c83c70e6
+V3.18-RENDER-LAYER.txt|sha256=60fc90c44914db5178b9c334d0106b037568b44f7656ff15fc68a36209704d10
+components/debug/v320luafastpath.hpp|sha256=33a2a4c3b29939ec235ade23acf75cbbe7f098413715860db1d5095e04513d99
+components/resource/v321classifiedcompileset.hpp|sha256=a0959b688f283286c46e44fc28e1bc20dec5b5ff7c0d5443728217fffa390a2a
+
+[GENERATED_NON_PROVENANCE]
+V3.16-HITCH-LAYER.txt|sha256=8dadeae8c25896e6c42f615f2e1eceffda8587e9b10863c34fbf520dfa9d3b0a|in_patch=0
+V3.17-RUNTIME-LAYER.txt|sha256=100ee2b424d8bdc9053b0e35d5ed00b2add420270e11d7e9f7c0c211713a305e|in_patch=0
+V3.18-NIS-PROVENANCE.txt|sha256=eef4f8aefe16b89b671334df7b952b9ddbd35696976d0a8477afb669c83c70e6|in_patch=0
+V3.18-RENDER-LAYER.txt|sha256=60fc90c44914db5178b9c334d0106b037568b44f7656ff15fc68a36209704d10|in_patch=0
+components/debug/v320luafastpath.hpp|sha256=33a2a4c3b29939ec235ade23acf75cbbe7f098413715860db1d5095e04513d99|in_patch=0
+components/resource/v321classifiedcompileset.hpp|sha256=a0959b688f283286c46e44fc28e1bc20dec5b5ff7c0d5443728217fffa390a2a|in_patch=0
+
+[OMITTED_FROM_103_FILE_PATCH]
+V3.16-HITCH-LAYER.txt|sha256=8dadeae8c25896e6c42f615f2e1eceffda8587e9b10863c34fbf520dfa9d3b0a
+V3.17-RUNTIME-LAYER.txt|sha256=100ee2b424d8bdc9053b0e35d5ed00b2add420270e11d7e9f7c0c211713a305e
+V3.18-NIS-PROVENANCE.txt|sha256=eef4f8aefe16b89b671334df7b952b9ddbd35696976d0a8477afb669c83c70e6
+V3.18-RENDER-LAYER.txt|sha256=60fc90c44914db5178b9c334d0106b037568b44f7656ff15fc68a36209704d10
+components/debug/v320luafastpath.hpp|sha256=33a2a4c3b29939ec235ade23acf75cbbe7f098413715860db1d5095e04513d99
+components/resource/v321classifiedcompileset.hpp|sha256=a0959b688f283286c46e44fc28e1bc20dec5b5ff7c0d5443728217fffa390a2a
+
+[PORCELAIN_STATUS]
+ M CMakeLists.txt
+ M apps/openmw/CMakeLists.txt
+ M apps/openmw/engine.cpp
+ M apps/openmw/mwlua/camerabindings.cpp
+ M apps/openmw/mwlua/camerabindings.hpp
+ M apps/openmw/mwlua/engineevents.cpp
+ M apps/openmw/mwlua/globalscripts.hpp
+ M apps/openmw/mwlua/localscripts.hpp
+ M apps/openmw/mwlua/luamanagerimp.cpp
+ M apps/openmw/mwlua/luamanagerimp.hpp
+ M apps/openmw/mwlua/soundbindings.cpp
+ M apps/openmw/mwmechanics/actors.cpp
+ M apps/openmw/mwmechanics/mechanicsmanagerimp.cpp
+ M apps/openmw/mwphysics/physicssystem.cpp
+ M apps/openmw/mwrender/animation.cpp
+ M apps/openmw/mwrender/animation.hpp
+ M apps/openmw/mwrender/camera.cpp
+ M apps/openmw/mwrender/camera.hpp
+ M apps/openmw/mwrender/groundcover.cpp
+ M apps/openmw/mwrender/groundcover.hpp
+ A apps/openmw/mwrender/nisscaler.cpp
+ A apps/openmw/mwrender/nisscaler.hpp
+ M apps/openmw/mwrender/npcanimation.cpp
+ M apps/openmw/mwrender/npcanimation.hpp
+ M apps/openmw/mwrender/objectpaging.cpp
+ M apps/openmw/mwrender/objectpaging.hpp
+ M apps/openmw/mwrender/objects.cpp
+ M apps/openmw/mwrender/objects.hpp
+ M apps/openmw/mwrender/occlusionculling.cpp
+ M apps/openmw/mwrender/occlusionculling.hpp
+ M apps/openmw/mwrender/pingpongcanvas.cpp
+ M apps/openmw/mwrender/pingpongcanvas.hpp
+ M apps/openmw/mwrender/pingpongcull.cpp
+ M apps/openmw/mwrender/postprocessor.cpp
+ M apps/openmw/mwrender/postprocessor.hpp
+ M apps/openmw/mwrender/renderingmanager.cpp
+ M apps/openmw/mwrender/renderingmanager.hpp
+ A apps/openmw/mwrender/v318_nis_config.hpp
+ A apps/openmw/mwrender/v318_nis_shader.hpp
+ M apps/openmw/mwrender/water.cpp
+ M apps/openmw/mwsound/ffmpegdecoder.cpp
+ M apps/openmw/mwsound/ffmpegdecoder.hpp
+ A apps/openmw/mwsound/headcache.cpp
+ A apps/openmw/mwsound/headcache.hpp
+ M apps/openmw/mwsound/openaloutput.cpp
+ M apps/openmw/mwsound/openaloutput.hpp
+ A apps/openmw/mwsound/sfxpredecodecache.cpp
+ A apps/openmw/mwsound/sfxpredecodecache.hpp
+ M apps/openmw/mwsound/soundbuffer.cpp
+ M apps/openmw/mwsound/soundbuffer.hpp
+ M apps/openmw/mwsound/soundmanagerimp.cpp
+ M apps/openmw/mwsound/soundmanagerimp.hpp
+ M apps/openmw/mwsound/soundoutput.hpp
+ M apps/openmw/mwworld/cellpreloader.cpp
+ M apps/openmw/mwworld/cellpreloader.hpp
+ M apps/openmw/mwworld/scene.cpp
+ M apps/openmw/mwworld/scene.hpp
+ A components/debug/v36controllertrace.hpp
+ A components/debug/v36gpuprofiler.hpp
+ A components/debug/v36luaaddscripttrace.hpp
+ A components/debug/v36structuretrace.hpp
+ M components/debug/v3diagnostics.hpp
+ M components/debug/v3gpumemory.hpp
+ M components/debug/v3hitchtelemetry.hpp
+ M components/detournavigator/navigatorimpl.cpp
+ M components/lua/luastate.cpp
+ M components/lua/luastate.hpp
+ M components/lua/scriptscontainer.cpp
+ M components/lua/scriptscontainer.hpp
+ M components/resource/bulletshapemanager.cpp
+ M components/resource/bulletshapemanager.hpp
+ M components/resource/imagemanager.cpp
+ M components/resource/multiobjectcache.cpp
+ M components/resource/multiobjectcache.hpp
+ M components/resource/objectcache.hpp
+ M components/resource/resourcemanager.hpp
+ M components/resource/resourcesystem.cpp
+ M components/resource/resourcesystem.hpp
+ M components/resource/scenemanager.cpp
+ M components/resource/scenemanager.hpp
+ M components/sceneutil/framejobservice.hpp
+ M components/sceneutil/mwshadowtechnique.cpp
+ M components/sceneutil/mwshadowtechnique.hpp
+ M components/sceneutil/occlusionculling.cpp
+ M components/sceneutil/occlusionculling.hpp
+ M components/sceneutil/shadow.cpp
+ M components/sceneutil/workqueue.cpp
+ M components/sceneutil/workqueue.hpp
+ M components/settings/categories/camera.hpp
+ M components/settings/categories/cells.hpp
+ M components/settings/categories/lua.hpp
+ M components/settings/categories/shadows.hpp
+ M components/settings/categories/sound.hpp
+ M components/settings/categories/video.hpp
+ M components/settings/ramcache.hpp
+ M components/settings/sanitizerimpl.cpp
+ M components/settings/sanitizerimpl.hpp
+ A components/settings/v36profile.hpp
+ M components/shader/shadermanager.cpp
+ M components/terrain/chunkmanager.cpp
+ M files/lua_api/openmw/camera.lua
+ M files/settings-default.cfg
+ M tools/v3/launchers/V3_Lab.ps1
+?? V3-BUILD-IDENTITY.txt
+?? V3-LAB-README.txt
+?? V3-applied-source-stat.txt
+?? V3-applied-source.patch
+?? V3.16-HITCH-LAYER.txt
+?? V3.17-RUNTIME-LAYER.txt
+?? V3.18-NIS-PROVENANCE.txt
+?? V3.18-RENDER-LAYER.txt
+?? components/debug/v320luafastpath.hpp
+?? components/resource/v321classifiedcompileset.hpp
