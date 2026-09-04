@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <set>
 #include <utility>
@@ -85,7 +86,7 @@ namespace RenderCore
 
         [[nodiscard]] bool contains(Handle handle) const noexcept { return resolve(handle) != nullptr; }
 
-        bool retire(Handle handle) noexcept
+        bool retire(Handle handle)
         {
             Slot* slot = resolve(handle);
             if (!slot)
@@ -108,7 +109,7 @@ namespace RenderCore
             return true;
         }
 
-        void retireAll() noexcept
+        void retireAll()
         {
             for (SlotIndex slotIndex = 0; slotIndex < mSlots.size(); ++slotIndex)
             {
