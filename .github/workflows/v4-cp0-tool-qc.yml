@@ -1,0 +1,66 @@
+name: V4.0 CP0 capture-tool QC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp0a-donor-convergence]
+    paths:
+      - 'tools/v4/*.ps1'
+      - 'tools/v4/*.bat'
+      - '.github/workflows/v4-cp0-tool-qc.yml'
+
+jobs:
+  WindowsPowerShellCompatibility:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse V4 PowerShell tools with Windows PowerShell
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-ChildItem tools/v4 -Filter '*.ps1' | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error ("{0}: {1}" -f $_.Extent.File, $_.Message) }
+              exit 1
+            }
+          }
+
+      - name: Parse V4 PowerShell tools with PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-ChildItem tools/v4 -Filter '*.ps1' | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error ("{0}: {1}" -f $_.Extent.File, $_.Message) }
+              exit 1
+            }
+          }
+
+      - name: Validate native first-person wrapper contract
+        shell: powershell
+        run: |
+          $text = Get-Content tools/v4/V4-CP0-NativeFP-Reference.bat -Raw
+          $required = @(
+            'OPENMW_V319_FOCUS_CADENCE=2',
+            'OPENMW_V321_CP3_FULL_BODY_FIRST_PERSON=0',
+            'OPENMW_V321_CP4_SHADOW_COMPAT=1',
+            'OPENMW_V324_FRAME_JOB_QOS=1',
+            'OPENMW_V325_ACTOR_SOURCE_BATCH=1',
+            'OPENMW_V325_PARALLEL_ACTOR_BINDING=1',
+            'OPENMW_V324_DEEP_TELEMETRY=0'
+          )
+          foreach ($needle in $required) {
+            if (-not $text.Contains($needle)) { throw "Native-FP wrapper missing $needle" }
+          }
+          if ($text.Contains('OPENMW_V319_FOCUS_CADENCE=3')) {
+            throw 'Native-FP reference wrapper must not use aggressive cadence 3.'
+          }
