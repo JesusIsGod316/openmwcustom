@@ -1,0 +1,27 @@
+V3.25 CP2 PREFLIGHT QC
+======================
+Date: 2026-09-03
+Branch: v3.25-engine-ownership-bridge-cp2
+Preflight source head: ee66b12a746419db9c0ea9a8d751e550f5a6e478
+Run: 33823245874
+Job: 100870282794
+Result: SUCCESS
+
+Validated before Windows build:
+- Python patch-tool compile: PASS
+- FrameCriticalJobGroup standalone C++ compile/runtime smoke: PASS
+- exact-once 64-item execution: PASS
+- two reserved workers created: PASS
+- actual worker participation: PASS
+- caller participation: PASS
+- exact V3.24 -> V3.25 CP1 -> V3.25 CP2 generated stack: PASS
+- CP2 profiled addSingleAnimSource structural transformation: PASS
+- Mode149 V3.24-behavior control isolation: PASS
+- Mode150 batching-only isolation: PASS
+- Mode151 batching + parallel actor binding composition: PASS
+- worker clone range forbidden-live-state audit: PASS
+- bounded-memory V3.25 packaging repair retained: PASS
+- PowerShell launcher parse: PASS
+- git diff --check / text source invariants: PASS
+
+Mode151 remains runtime-unpromoted. This record triggers the Windows/MSVC build gate only.
