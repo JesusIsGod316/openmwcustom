@@ -1,0 +1,125 @@
+name: V3.25 engine ownership bridge build/QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options: [preflight, full]
+  push:
+    branches: [v3.25-engine-ownership-bridge]
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Compile-check patch tools
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Apply exact generated stack
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness.py 2>&1 | tee v325-engine-ownership-bridge-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Validate identity and generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -Fx "branch=$GITHUB_REF_NAME" V3-BUILD-IDENTITY.txt
+          grep -Fx 'version=V3.25' V3-BUILD-IDENTITY.txt
+          grep -Fx 'harness=apply_diagnostic_harness_v325.py' V3-BUILD-IDENTITY.txt
+          grep -n 'openmw-custom-v3.25-engine-ownership-bridge' apps/openmw/engine.cpp
+          grep -n 'beginAnimSourceBatch' apps/openmw/mwrender/animation.hpp
+          grep -n 'mAnimSourceBatchDepth' apps/openmw/mwrender/animation.hpp
+          grep -n 'void Animation::beginAnimSourceBatch' apps/openmw/mwrender/animation.cpp
+          grep -n 'mAnimSourceBatchNeedsControllerAssignment = true' apps/openmw/mwrender/animation.cpp
+          grep -n 'OPENMW_V325_ACTOR_SOURCE_BATCH' apps/openmw/mwrender/npcanimation.cpp
+          grep -n '149 = V3.25 V3.24-behavior control' tools/v3/launchers/V3_Lab.ps1
+          grep -n '150 = V3.25 batched NPC animation-source finalization' tools/v3/launchers/V3_Lab.ps1
+          grep -n "'150'.*V325ActorSourceBatch = '1'" tools/v3/launchers/V3_Lab.ps1
+          ! grep -F 'Import-Csv -LiteralPath $deepPath' tools/v3/launchers/V3_Lab.ps1
+          grep -n 'V3.25 packaging repair' tools/v3/launchers/V3_Lab.ps1
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          animation = Path('apps/openmw/mwrender/animation.cpp').read_text(encoding='utf-8')
+          npc = Path('apps/openmw/mwrender/npcanimation.cpp').read_text(encoding='utf-8')
+          launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
+
+          marker = 'SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);'
+          if animation.count(marker) != 2:
+              raise SystemExit(f'V3.25 expected two default-source visitor sites, found {animation.count(marker)}')
+
+          batch_start = npc.index('const bool v325BatchSources = v325ActorSourceBatchEnabled();')
+          batch_end = npc.index('if (is1stPerson)', batch_start)
+          batch = npc[batch_start:batch_end]
+          for required in ('beginAnimSourceBatch();', 'endAnimSourceBatch();', 'catch (...)'):
+              if required not in batch:
+                  raise SystemExit(f'V3.25 NPC batch missing {required}')
+
+          line149 = next(line for line in launcher.splitlines() if line.lstrip().startswith("'149'"))
+          if "V325ActorSourceBatch = '1'" in line149 or "V324AsyncMsoc = '1'" in line149:
+              raise SystemExit('Mode149 is not a clean V3.24-behavior control')
+
+          line150 = next(line for line in launcher.splitlines() if line.lstrip().startswith("'150'"))
+          if "V325ActorSourceBatch = '1'" not in line150:
+              raise SystemExit('Mode150 does not enable actor-source batching')
+          if "V324AsyncMsoc = '1'" in line150:
+              raise SystemExit('Mode150 unexpectedly enables V3.24 async MSOC')
+
+          for name in (
+              'apps/openmw/mwrender/animation.cpp',
+              'apps/openmw/mwrender/animation.hpp',
+              'apps/openmw/mwrender/npcanimation.cpp',
+              'V3-applied-source.patch',
+          ):
+              data = Path(name).read_bytes()
+              if b'\x00' in data or b'GIT binary patch' in data:
+                  raise SystemExit(f'non-text generated source: {name}')
+          PY
+
+      - name: Parse-check launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.ToString() }; exit 1 }
+
+      - name: Upload generated source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v325-engine-ownership-bridge-preflight-${{ github.sha }}
+          path: |
+            v325-engine-ownership-bridge-apply.log
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+            V3-BUILD-IDENTITY.txt
+            tools/v3/V325-ENGINE-OWNERSHIP-BRIDGE-SOURCE-AUDIT.txt
+          if-no-files-found: warn
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: false
