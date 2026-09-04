@@ -18,26 +18,25 @@ replace_exact(
 start = source.find(start_marker)
 end = source.find(end_marker, start if start >= 0 else 0)
 if start < 0 or end < 0:
-    raise RuntimeError("V3.25 CP1 v2 failure: could not locate inherited controller-trace visitor replacement")
+    raise RuntimeError("V3.25 CP1 v2 failure: could not locate original visitor replacement")
 end += len(")\n")
 
+# The inherited V3.6 controller profiler wraps the visitor in its own PhaseScope,
+# which changes only indentation around the two mutation lines. Patch those lines
+# inside the existing scope instead of matching the whole profiled block. This
+# preserves historical diagnostics while making only the expensive visitor itself
+# conditional on the explicit V3.25 batch.
 replacement = r'''replace_exact(
     animation_cpp,
-    "        {\\n"
-    "            Debug::V36ControllerTrace::PhaseScope v36SourceAssign(\\n"
-    "                v36ControllerTrace, Debug::V36ControllerTrace::Phase::SourceAssign);\\n"
     "            SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);\\n"
-    "            mObjectRoot->accept(assignVisitor);\\n"
-    "        }\\n",
-    "        if (mAnimSourceBatchDepth != 0)\\n"
-    "            mAnimSourceBatchNeedsControllerAssignment = true;\\n"
-    "        else\\n"
-    "        {\\n"
-    "            Debug::V36ControllerTrace::PhaseScope v36SourceAssign(\\n"
-    "                v36ControllerTrace, Debug::V36ControllerTrace::Phase::SourceAssign);\\n"
-    "            SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);\\n"
-    "            mObjectRoot->accept(assignVisitor);\\n"
-    "        }\\n",
+    "            mObjectRoot->accept(assignVisitor);\\n",
+    "            if (mAnimSourceBatchDepth != 0)\\n"
+    "                mAnimSourceBatchNeedsControllerAssignment = true;\\n"
+    "            else\\n"
+    "            {\\n"
+    "                SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);\\n"
+    "                mObjectRoot->accept(assignVisitor);\\n"
+    "            }\\n",
 )
 '''
 source = source[:start] + replacement + source[end:]
