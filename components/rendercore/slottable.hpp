@@ -8,7 +8,6 @@
 #include <limits>
 #include <memory>
 #include <optional>
-#include <set>
 #include <utility>
 #include <vector>
 
@@ -52,13 +51,12 @@ namespace RenderCore
 
         [[nodiscard]] std::optional<Handle> reserve()
         {
-            if (!mReusable.empty())
+            if (mLowestVacant != InvalidHandleSlot)
             {
-                const SlotIndex slotIndex = *mReusable.begin();
-                mReusable.erase(mReusable.begin());
-
+                const SlotIndex slotIndex = mLowestVacant;
                 Slot& slot = mSlots[slotIndex];
                 slot.state = State::Reserved;
+                refreshLowestVacant(static_cast<std::size_t>(slotIndex) + 1);
                 return Handle::fromParts(slotIndex, slot.generation);
             }
 
@@ -85,7 +83,7 @@ namespace RenderCore
             return true;
         }
 
-        bool cancel(Handle handle)
+        bool cancel(Handle handle) noexcept
         {
             Slot* slot = resolveState(handle, State::Reserved);
             if (!slot)
@@ -103,7 +101,10 @@ namespace RenderCore
             try
             {
                 if (!commit(*handle, std::move(payload)))
+                {
+                    cancel(*handle);
                     return std::nullopt;
+                }
             }
             catch (...)
             {
@@ -131,7 +132,7 @@ namespace RenderCore
             return resolveState(handle, State::Reserved) != nullptr;
         }
 
-        bool retire(Handle handle)
+        bool retire(Handle handle) noexcept
         {
             Slot* slot = resolveState(handle, State::Live);
             if (!slot || !slot->payload)
@@ -143,7 +144,7 @@ namespace RenderCore
             return true;
         }
 
-        void retireAll()
+        void retireAll() noexcept
         {
             for (SlotIndex slotIndex = 0; slotIndex < mSlots.size(); ++slotIndex)
             {
@@ -183,7 +184,7 @@ namespace RenderCore
             std::optional<Payload> payload;
         };
 
-        void release(SlotIndex slotIndex, Slot& slot)
+        void release(SlotIndex slotIndex, Slot& slot) noexcept
         {
             const auto retired = detail::retireGeneration(slot.generation);
             if (retired.tombstone)
@@ -195,7 +196,21 @@ namespace RenderCore
 
             slot.generation = retired.next;
             slot.state = State::Vacant;
-            mReusable.insert(slotIndex);
+            if (mLowestVacant == InvalidHandleSlot || slotIndex < mLowestVacant)
+                mLowestVacant = slotIndex;
+        }
+
+        void refreshLowestVacant(std::size_t start) noexcept
+        {
+            mLowestVacant = InvalidHandleSlot;
+            for (std::size_t i = start; i < mSlots.size(); ++i)
+            {
+                if (mSlots[i].state == State::Vacant)
+                {
+                    mLowestVacant = static_cast<SlotIndex>(i);
+                    return;
+                }
+            }
         }
 
         [[nodiscard]] Slot* resolveState(Handle handle, State state) noexcept
@@ -219,7 +234,7 @@ namespace RenderCore
         }
 
         std::vector<Slot> mSlots;
-        std::set<SlotIndex> mReusable;
+        SlotIndex mLowestVacant = InvalidHandleSlot;
         std::size_t mLiveCount = 0;
     };
 }
