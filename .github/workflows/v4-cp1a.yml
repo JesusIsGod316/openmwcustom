@@ -35,8 +35,11 @@ jobs:
           test -f components/rendercore/resources.hpp
           test -f components/rendercore/math.hpp
           test -f components/rendercore/slottable.hpp
+          test -f components/rendercore/renderworld.hpp
           test -f apps/components_tests/rendercore/foundation.cpp
+          test -f apps/components_tests/rendercore/renderworld.cpp
           grep -F 'GIT_TAG 0af55ccecd98d4e5a8d1fad7de25ba429d60e863' apps/components_tests/CMakeLists.txt
+          grep -F 'rendercore/renderworld.cpp' apps/components_tests/CMakeLists.txt
           git diff --check 8b5f989480903c4aeef028bd95177f44fddd00b8 HEAD
 
   Windows:
