@@ -29,6 +29,7 @@ The V3.25 actor-batch workflow first runs `tools/v3/apply_diagnostic_harness.py`
 
 - artifact: `9921224442`
 - `V3-applied-source.patch` SHA-256: `ac15332aeff34a5ce6a442e169704aab6f5eb0f1600b914d863b4561452d4c35`
+- canonical patch SHA-256 with presentation-only Git `index` lines removed: `a72c6456f2fd575f9c47db296e7bdf8befee016d10ec44c5829028cd15ba1502`
 - `V3-applied-source-stat.txt` SHA-256: `c01f35f1a047b624b14daec279580805722fe4dbacdd5bb2b178e071ca28f045`
 - changed files: **103**
 - patch size: **+11,021 / -515 lines**
@@ -38,6 +39,12 @@ Therefore the semantic authority for V4 is:
 `raw f7557829 source + exact applied-source patch ac15332a...`
 
 Raw `f7557829` alone is insufficient. For example, raw `animation.cpp` still shows serial per-source controller cloning and immediate `AssignControllerSourcesVisitor`, while the generated build contains Mode150 actor-source batching plus Mode151 actor-batched parallel controller-clone preparation and deterministic main-thread publication.
+
+### Materialization reproducibility finding
+
+The first CP0A materialization run regenerated the same 103-file source delta and an identical source-stat file, but newer Git emitted ten-character object abbreviations on patch `index` lines instead of the seven-character abbreviations present in the accepted V3.25 artifact. A direct diff confirmed **zero changed patch lines outside those `index` lines**; after removing only those presentation-only lines, both patches hash to the same canonical SHA-256 `a72c6456...`.
+
+The materializer now pins `core.abbrev=7` for byte-for-byte archival reproduction and independently verifies the canonical patch hash, source-stat hash and 103-file inventory. This is a provenance-format difference, not a source-semantic divergence.
 
 **CP1 gate:** the V4 development lineage must materialize or otherwise exactly preserve this generated source before renderer ownership refactoring starts. V4 must not silently depend on the old V3 runtime patch harness as an undocumented semantic layer.
 
@@ -200,8 +207,8 @@ CP0A is complete only when:
 
 ## 8. Immediate next audit work
 
-- classify all generated V3.25 renderer/world/resource overlaps from `V3-applied-source.patch`;
-- produce the materialized-source manifest;
+- complete the verified materialized-source commit on the CP0A branch;
+- classify generated V3.25 renderer/world/resource overlaps against David subsystem files;
 - audit David NIF/material/actor/terrain/water/postfx subsystem boundaries against those overlaps;
 - audit Clockwork record ownership, retirement, texture-budget and multi-view data contracts for the exact fields CP1 must reserve;
 - then lock the CP1 implementation handoff.
