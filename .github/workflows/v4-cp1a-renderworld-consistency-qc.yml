@@ -1,0 +1,75 @@
+name: V4.0 CP1A RenderWorld consistency staging QC
+
+on:
+  push:
+    branches: [v4.0-cp1a-renderworld-consistency-staging]
+
+jobs:
+  StandaloneRenderWorldQC:
+    if: ${{ contains(github.event.head_commit.message, '[renderworld-qc]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout staging head
+        uses: actions/checkout@v4
+
+      - name: Fetch pinned GLM
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/g-truc/glm.git /tmp/glm
+          git -C /tmp/glm checkout 0af55ccecd98d4e5a8d1fad7de25ba429d60e863
+
+      - name: Compile and run standalone relationship smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >/tmp/renderworld_qc.cpp <<'CPP'
+          #include <components/rendercore/renderworld.hpp>
+          #include <cassert>
+
+          int main()
+          {
+              RenderCore::RenderWorld world;
+              auto mesh = world.reserveMesh();
+              auto firstChunk = world.reserveChunk();
+              auto secondChunk = world.reserveChunk();
+              auto instance = world.reserveInstance();
+              assert(mesh && firstChunk && secondChunk && instance);
+              assert(world.commit(*mesh, RenderCore::MeshRecord{ .sourceIdentity = "mesh" }));
+              assert(world.commit(*firstChunk, RenderCore::ChunkRecord{ .producerIdentity = "a" }));
+              assert(world.commit(*secondChunk, RenderCore::ChunkRecord{ .producerIdentity = "b" }));
+
+              RenderCore::InstanceRecord record;
+              record.mesh = *mesh;
+              record.chunk = *firstChunk;
+              assert(world.commit(*instance, record));
+              assert(world.get(*firstChunk)->members.size() == 1);
+              assert(world.get(*firstChunk)->members.front() == *instance);
+              assert(!world.retire(*mesh));
+              assert(!world.retire(*firstChunk));
+
+              assert(world.reparentInstance(*instance, *secondChunk));
+              assert(world.get(*firstChunk)->members.empty());
+              assert(world.get(*secondChunk)->members.size() == 1);
+              assert(world.get(*secondChunk)->members.front() == *instance);
+
+              assert(world.retire(*instance));
+              assert(world.get(*secondChunk)->members.empty());
+              assert(world.retire(*firstChunk));
+              assert(world.retire(*secondChunk));
+              assert(world.retire(*mesh));
+              return 0;
+          }
+          CPP
+          c++ -std=c++20 -Wall -Wextra -Wpedantic -Werror -I. -I/tmp/glm /tmp/renderworld_qc.cpp -o /tmp/renderworld_qc
+          /tmp/renderworld_qc
+
+      - name: Boundary and whitespace checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '#include[[:space:]]*[<"](osg|osgViewer|osgUtil|vsg|vulkan|apps/openmw|components/mwworld)|\b(osg|osgViewer|osgUtil|vsg)::|\bVk[A-Z]|\bMWWorld::' components/rendercore; then
+            echo 'rendercore common boundary contains a forbidden backend/game type' >&2
+            exit 1
+          fi
+          git diff --check 864c8c629c6b620f451e3c339cc20ad08265332c HEAD
