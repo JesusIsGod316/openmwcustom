@@ -1,0 +1,123 @@
+V3.25 ENGINE OWNERSHIP BRIDGE — SOURCE AUDIT / IMPLEMENTATION CONTRACT
+======================================================================
+Date: 2026-09-03
+Branch: v3.25-engine-ownership-bridge
+Parent: bd00f1ae0370520f015ab6edc828b48492d8f9a3 (closed V3.24 frame-job QoS)
+Role: final V3.x bridge build before V4.0 renderer rearchitecture
+
+PROJECT CONTRACT
+----------------
+Mod-facing compatibility is the contract. Internal OpenMW/OSG/OpenGL architecture is not.
+V3.25 must produce a substantive optimization while creating ownership/snapshot/job-publish
+primitives that can survive into V4.0. It must not begin the renderer rewrite itself.
+
+KNOWN HOTSPOT
+-------------
+Canonical deep-telemetry hot return:
+- controller_setup: 281.030 ms
+- addAnimSource: 281.057 ms / 334 calls
+- addSingleAnimSource: 237.409 ms / 8,183 calls
+- npc_update_base: 305.643 ms / 60 actors
+
+SOURCE FINDINGS
+---------------
+1. NpcAnimation::updateNpcBase clears/rebuilds the actor root and parts, then adds multiple
+   animation-source families sequentially in deterministic order.
+2. Animation::addSingleAnimSource resolves the keyframe holder, maps controllers to live
+   actor nodes, determines blend masks, shallow-clones keyframe controllers, publishes the
+   AnimSource, updates supported groups, then performs a full mObjectRoot traversal through
+   AssignControllerSourcesVisitor after every successful source.
+3. AssignControllerSourcesVisitor only calls Controller::setSource when getSource() is null.
+4. No operation between the sequential NPC source additions was found that depends on the
+   just-completed AssignControllerSourcesVisitor traversal. The subsequent source assembly,
+   blend-mask detection, accumulation-root lookup and blend-rule loading do not consume the
+   generic live-controller source assignment performed by that visitor.
+5. Therefore the repeated actor-wide visitor is a valid first structural-removal candidate:
+   within an explicit NPC source batch, defer it and execute one final pass after all ordered
+   source additions. Outside the explicit batch, retain historical immediate semantics.
+6. Animation-source order is semantically meaningful. Later sources have higher lookup
+   priority. Worker completion order must never become publication order in future CPs.
+7. V3.24 FrameJobService is queue-less and QoS-safe, but each lane owns only one immediate
+   worker. It is not sufficient by itself for V3.25 inter-actor parallelism. V3.25 CP2 will
+   require a bounded frame-critical job-group/fork-join primitive with multiple immediately
+   reserved workers plus caller participation, or jobification will be rejected if batching
+   leaves too little safe residual work.
+8. The V3.24 unified deep-telemetry launcher materializes the entire deep CSV through
+   @(... Import-Csv ...). A measured run produced roughly 1.608 GB / 11.57M rows and could
+   stall automatic packaging. V3.25 removes that post-run materialization; offline analysis
+   owns deep-trace aggregation.
+
+CP1 MODES
+---------
+Mode149 — V3.24-behavior control
+- Inherits V3.24 frame-job QoS identity.
+- Async terrain MSOC OFF.
+- V3.25 actor source batching OFF.
+- Serves as same-binary causal control for Mode150.
+
+Mode150 — batched NPC animation-source finalization
+- Exact Mode149 foundation.
+- OPENMW_V325_ACTOR_SOURCE_BATCH=1.
+- NpcAnimation::updateNpcBase opens an explicit animation-source batch only around the
+  sequential source-add section.
+- addSingleAnimSource keeps all source-local work and exact source publication order.
+- Repeated AssignControllerSourcesVisitor traversals are deferred during the batch.
+- One final visitor runs when the outermost batch closes if at least one successful source
+  requested controller assignment.
+- Exception path closes the batch before rethrowing.
+- Generic addAnimSource/addSingleAnimSource callers outside the batch remain immediate.
+
+CP1 PACKAGING REPAIR
+--------------------
+- Deep trace collection is unchanged.
+- Post-exit full-file PowerShell Import-Csv materialization is disabled.
+- Automatic ZIP packaging therefore does not allocate an object graph for a multi-GB trace.
+- Deep telemetry remains diagnostic-only and OFF for performance A/B.
+
+CP2 / MODE151 GATE
+------------------
+Do not expose Mode151 until Mode150 compiles and its residual cost is measured/attributed.
+If enough safe work remains, introduce:
+- immutable actor binding/preparation input;
+- worker-owned unpublished output;
+- deterministic source-index publication;
+- bounded multi-worker frame-critical job group with caller participation;
+- actor-sized/coarse jobs only; no controller-level task flood;
+- no worker mutation of live MWWorld state/resource caches/live OSG graph.
+
+If batching collapses the residual worker-eligible kernel below approximately 1 ms (preferably
+2 ms for a stronger practical margin), keep the batching win and reject forced jobification.
+
+CP3 / MODE152 GATE
+------------------
+Only expose an aggressive worker-width/source-safe boundary after Mode151 is correct and
+beneficial. It may remain default-off research mode. Never move OSG shallow clone or live
+scene traversal to workers without an explicit ownership/thread-safety proof.
+
+V4.0 HANDOFF
+------------
+After V3.25 runtime closeout there is no V3.26. V4.0 begins the renderer rewrite.
+V3.25 should leave reusable concepts, not renderer-specific dead ends:
+- generation/version identity;
+- immutable prepared inputs;
+- worker-owned results;
+- deterministic publish;
+- bounded frame-critical job execution;
+- explicit prepare/publish ownership separation.
+
+V4.0 will own RenderSnapshot/RenderDevice/render-graph/resource-lifetime architecture,
+Vulkan-class backend work, temporal depth/motion-vector/jitter/exposure/UI contracts,
+DLSS Super Resolution, then Reflex and Frame Generation after presentation stability.
+Legacy OSG/OpenGL remains the compatibility/parity backend during migration.
+
+VALIDATION RULES
+----------------
+- Frozen same-mod/save/settings/route cohort.
+- Deep telemetry OFF for performance comparisons.
+- Compare Mode149 -> Mode150 first.
+- Repeated actor-transition returns are required; do not promote from one sample.
+- Ordinary exterior movement p95/p99 must remain neutral; no transition win purchased with
+  new general-play hitching.
+- Animation/source ordering, first/third person, weapons, casting, swimming, custom actors,
+  additional animation sources, save/load and transition behavior are regression gates.
+- No V4 renderer mechanism is to be bundled into V3.25 performance causality.
