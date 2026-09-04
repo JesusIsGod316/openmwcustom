@@ -1,0 +1,11 @@
+V3.18 renderer efficiency / internal resolution foundation
+p0=display-resolution-separated-from-3d-render-resolution
+hud_ui=native-output-resolution
+postfx=internal-resolution-before-single-upscale
+upscaler_p0=bilinear
+mode95=100-percent-native-control
+mode96=85-percent-bilinear
+mode97=77-percent-bilinear
+mode98=66.7-percent-bilinear
+nis_status=next-layer-not-silently-emulated
+stereo_status=p0-native-only

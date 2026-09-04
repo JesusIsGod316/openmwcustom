@@ -1,0 +1,8 @@
+V3.17 Lua/runtime hitch consolidation
+mode90=v3.16-mode88-stock-luajit-control
+mode91=rubicon-runtime-only
+mode92=engine-lua-only-stock-runtime
+mode93=combined-balanced
+mode94=combined-plus-v3.16-mode89-sfx-predecode
+rubicon_source=f3ee18afcc8c029dc7e13c8c69fe119dbcbc4c50
+content_lua=current-openmw-retained
