@@ -35,11 +35,19 @@ jobs:
               auto secondChunk = world.reserveChunk();
               auto instance = world.reserveInstance();
               assert(mesh && firstChunk && secondChunk && instance);
-              assert(world.commit(*mesh, RenderCore::MeshRecord{ .sourceIdentity = "mesh" }));
-              assert(world.commit(*firstChunk, RenderCore::ChunkRecord{ .producerIdentity = "a" }));
-              assert(world.commit(*secondChunk, RenderCore::ChunkRecord{ .producerIdentity = "b" }));
 
-              RenderCore::InstanceRecord record;
+              RenderCore::MeshRecord meshRecord{};
+              meshRecord.sourceIdentity = "mesh";
+              assert(world.commit(*mesh, std::move(meshRecord)));
+
+              RenderCore::ChunkRecord firstChunkRecord{};
+              firstChunkRecord.producerIdentity = "a";
+              assert(world.commit(*firstChunk, std::move(firstChunkRecord)));
+              RenderCore::ChunkRecord secondChunkRecord{};
+              secondChunkRecord.producerIdentity = "b";
+              assert(world.commit(*secondChunk, std::move(secondChunkRecord)));
+
+              RenderCore::InstanceRecord record{};
               record.mesh = *mesh;
               record.chunk = *firstChunk;
               assert(world.commit(*instance, record));
