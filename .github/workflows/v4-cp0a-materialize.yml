@@ -18,7 +18,20 @@ jobs:
           fetch-depth: 0
 
       - name: Materialize and verify frozen V3.25 generated source
+        id: materialize
         run: python3 tools/v4/V4-CP0A-Materialize-Final-V325.py
+
+      - name: Upload generated provenance for audit
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-cp0a-materialization-provenance-${{ github.sha }}
+          path: |
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-BUILD-IDENTITY.txt
+            V3-LAB-README.txt
+          if-no-files-found: warn
 
       - name: Stage exactly the 103 source files named by the frozen patch
         shell: bash
