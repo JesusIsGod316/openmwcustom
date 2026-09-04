@@ -1,0 +1,96 @@
+name: V4.0 CP0A capture audited generated outputs
+
+on:
+  push:
+    branches: [v4.0-cp0a-generated-provenance-audit]
+
+permissions:
+  contents: write
+
+jobs:
+  CaptureGeneratedOutputs:
+    if: ${{ contains(github.event.head_commit.message, '[capture-generated-v325]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout provenance audit branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reproduce frozen V3.25 generated worktree
+        run: python3 tools/v4/V4-CP0A-Materialize-Final-V325.py
+
+      - name: Verify and preserve exactly the six audited omissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import shutil
+
+          root = Path.cwd()
+          out = Path('/tmp/v4-cp0a-generated-payload')
+          expected = {
+              'V3.16-HITCH-LAYER.txt': '8dadeae8c25896e6c42f615f2e1eceffda8587e9b10863c34fbf520dfa9d3b0a',
+              'V3.17-RUNTIME-LAYER.txt': '100ee2b424d8bdc9053b0e35d5ed00b2add420270e11d7e9f7c0c211713a305e',
+              'V3.18-NIS-PROVENANCE.txt': 'eef4f8aefe16b89b671334df7b952b9ddbd35696976d0a8477afb669c83c70e6',
+              'V3.18-RENDER-LAYER.txt': '60fc90c44914db5178b9c334d0106b037568b44f7656ff15fc68a36209704d10',
+              'components/debug/v320luafastpath.hpp': '33a2a4c3b29939ec235ade23acf75cbbe7f098413715860db1d5095e04513d99',
+              'components/resource/v321classifiedcompileset.hpp': 'a0959b688f283286c46e44fc28e1bc20dec5b5ff7c0d5443728217fffa390a2a',
+          }
+
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open('rb') as stream:
+                  for block in iter(lambda: stream.read(1024 * 1024), b''):
+                      h.update(block)
+              return h.hexdigest()
+
+          for rel, digest in expected.items():
+              src = root / rel
+              if not src.is_file():
+                  raise SystemExit(f'missing audited generated output: {rel}')
+              actual = sha256(src)
+              if actual != digest:
+                  raise SystemExit(f'hash mismatch for {rel}: expected {digest}, got {actual}')
+              dst = out / rel
+              dst.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(src, dst)
+
+          manifest = out / 'tools/v4/V4-CP0A-GENERATED-OUTPUT-MANIFEST.txt'
+          manifest.parent.mkdir(parents=True, exist_ok=True)
+          lines = [
+              'V4_CP0A_GENERATED_OUTPUT_MANIFEST/1',
+              'BASE=0c47f593c9c464ef158bade8604bfda536a6d628',
+              'FROZEN_V325_SOURCE=f7557829bcb14e339410cefb32b6612e5009e46d',
+              'PATCH_PATH_COUNT=103',
+              'AUDITED_OMISSION_COUNT=6',
+              '',
+          ]
+          for rel, digest in expected.items():
+              lines.append(f'{rel}|sha256={digest}')
+          manifest.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+
+      - name: Commit exact audited payload and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard HEAD
+          git clean -fdx
+          cp -a /tmp/v4-cp0a-generated-payload/. .
+          git add -- \
+            V3.16-HITCH-LAYER.txt \
+            V3.17-RUNTIME-LAYER.txt \
+            V3.18-NIS-PROVENANCE.txt \
+            V3.18-RENDER-LAYER.txt \
+            components/debug/v320luafastpath.hpp \
+            components/resource/v321classifiedcompileset.hpp \
+            tools/v4/V4-CP0A-GENERATED-OUTPUT-MANIFEST.txt
+          test "$(git diff --cached --name-only | wc -l)" -eq 7
+          git diff --cached --check
+          git config user.name "OpenMW Custom Build CI"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "V4.0 CP0A: materialize six audited omitted generated outputs"
+          git push origin HEAD:v4.0-cp0a-generated-provenance-audit
