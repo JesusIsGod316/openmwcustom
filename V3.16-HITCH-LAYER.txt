@@ -1,0 +1,23 @@
+V3.16 general-play hitch suppression
+upstream_audio_head_cache=9ec49cfb4709cbfd8f14e97f5b9a558b71b8184f
+mode86=v3.15-mode84-control
+mode87=audio-head-cache-64mb
+mode88=balanced-hitch-foundation
+mode89=aggressive-hitch-foundation
+mode88_buffered_sfx_cache_mb=256/384
+mode89_buffered_sfx_cache_mb=512/768
+buffered_sfx_retention_scope=repeat-load-thrash-not-first-decode
+mode89_sfx_predecode_cache_mb=384
+mode89_sfx_predecode_workers=1_idle_priority
+sfx_predecode_openal_calls_on_worker=0
+sfx_predecode_sync_fallback=original_semantics
+mode88_sfx_metadata_frontload=1_loading_screen
+mode89_sfx_metadata_frontload=1_loading_screen
+sfx_metadata_frontload_decode_audio=0
+sfx_metadata_frontload_openal_calls=0
+mode89_sfx_predecode_queue=loading_screen
+sfx_predecode_first_gameplay_enumeration=eliminated_when_frontload_enabled
+mode88_idle_resource_sweep=1
+mode89_idle_resource_sweep=1
+resource_sweep_dedicated_workers=1_idle_priority
+resource_sweep_expiry_semantics=unchanged
