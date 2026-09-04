@@ -1,0 +1,61 @@
+name: V4.0 CP0A materialize final V3.25 source
+
+on:
+  push:
+    branches: [v4.0-cp0a-donor-convergence]
+
+permissions:
+  contents: write
+
+jobs:
+  MaterializeFinalV325:
+    if: ${{ contains(github.event.head_commit.message, '[materialize-v325]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact CP0A head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize and verify frozen V3.25 generated source
+        run: python3 tools/v4/V4-CP0A-Materialize-Final-V325.py
+
+      - name: Stage exactly the 103 source files named by the frozen patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          patch = Path('V3-applied-source.patch').read_text(encoding='utf-8')
+          paths = []
+          for line in patch.splitlines():
+              prefix = 'diff --git a/'
+              if not line.startswith(prefix):
+                  continue
+              rest = line[len(prefix):]
+              path, marker, rhs = rest.partition(' b/')
+              if not marker or rhs != path:
+                  raise SystemExit(f'unexpected diff header: {line}')
+              paths.append(path)
+
+          if len(paths) != 103 or len(set(paths)) != 103:
+              raise SystemExit(f'expected 103 unique generated source paths, got {len(paths)} / {len(set(paths))}')
+
+          for path in paths:
+              subprocess.run(['git', 'add', '--', path], check=True)
+          PY
+
+          test "$(git diff --cached --name-only | wc -l)" -eq 103
+          git diff --cached --check
+          git diff --cached --stat
+
+      - name: Commit materialized source to CP0A branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "OpenMW Custom Build CI"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "V4.0 CP0A: materialize frozen V3.25 generated source"
+          git push origin HEAD:v4.0-cp0a-donor-convergence
