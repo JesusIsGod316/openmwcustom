@@ -1,0 +1,6 @@
+V3.25 CP2 actor-batched Mode151 full-build trigger.
+
+Reason: first Mode151 runtime validated the safe worker boundary but produced 26,214 per-source groups for 899,269 controller items (34.3 items/group average), with only a small mixed cross-build controller-setup gain. The actor-batched refinement gathers eligible NIF controller clones across each explicit NPC source batch and performs one bounded fork/join at batch close before deterministic publication.
+
+Preflight: run 33828518286 SUCCESS at 89c950add3c98509d86c420606318806ee375229.
+Runtime after build: Mode150 control then Mode151 actor-batched candidate from the same binary, deep telemetry off.
