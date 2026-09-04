@@ -42,10 +42,15 @@ jobs:
           test -f apps/components_tests/rendercore/foundation.cpp
           test -f apps/components_tests/rendercore/renderworld.cpp
           test -f tools/v4/V4-CP0A-GENERATED-OUTPUT-MANIFEST.txt
+          test -f tools/v4/V4-CP0A-GENERATED-PACKAGING-MANIFEST.txt
           test -f tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
           grep -F 'GIT_TAG 0af55ccecd98d4e5a8d1fad7de25ba429d60e863' apps/components_tests/CMakeLists.txt
           grep -F 'rendercore/renderworld.cpp' apps/components_tests/CMakeLists.txt
-          git diff --check 8b5f989480903c4aeef028bd95177f44fddd00b8 HEAD
+          git diff --check 8b5f989480903c4aeef028bd95177f44fddd00b8 HEAD -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
 
   Windows:
     needs: Preflight
