@@ -59,6 +59,15 @@ print("V3.25 patched addSingleAnimSource controller assignment in function scope
 '''
 source = source[:start] + replacement + source[end:]
 
+# The inherited CP4 owner-view helper occupies the first anonymous namespace
+# immediately after its opening brace, so the historical "namespace { + blank"
+# token no longer survives generation. Target the stable first opening instead.
+old_namespace_anchor = 'namespace_anchor = "namespace\\n{\\n\\n"'
+new_namespace_anchor = 'namespace_anchor = "namespace\\n{\\n"'
+if source.count(old_namespace_anchor) != 1:
+    raise RuntimeError("V3.25 CP1 v2 failure: could not locate NPC namespace anchor definition")
+source = source.replace(old_namespace_anchor, new_namespace_anchor, 1)
+
 # NpcAnimation has multiple anonymous namespaces in the full inherited generated
 # translation unit. The intended injection site is the first one after the include
 # block, and the original generator already replaces only the first occurrence.
