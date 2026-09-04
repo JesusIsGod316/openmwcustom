@@ -23,10 +23,10 @@ exec(
     {"__file__": str(cp1), "__name__": "__main__"},
 )
 
-cp2 = HERE / "apply_v325_engine_ownership_bridge_cp2.py"
+cp2 = HERE / "apply_v325_engine_ownership_bridge_cp2_v2.py"
 if not cp2.is_file():
-    raise RuntimeError("V3.25 exact-stack failure: apply_v325_engine_ownership_bridge_cp2.py is missing")
-print("[V3.25] CP1 batching foundation -> apply_v325_engine_ownership_bridge_cp2.py")
+    raise RuntimeError("V3.25 exact-stack failure: apply_v325_engine_ownership_bridge_cp2_v2.py is missing")
+print("[V3.25] CP1 batching foundation -> apply_v325_engine_ownership_bridge_cp2_v2.py")
 exec(
     compile(cp2.read_text(encoding="utf-8"), str(cp2), "exec"),
     {"__file__": str(cp2), "__name__": "__main__"},
@@ -40,6 +40,7 @@ for required in (
     "components/sceneutil/framecriticaljobgroup.hpp",
     "components/debug/v3deeptelemetry.hpp",
     "tools/v3/V325-ENGINE-OWNERSHIP-BRIDGE-SOURCE-AUDIT.txt",
+    "tools/v3/V325-CP2-PARALLEL-BINDING-AUDIT.txt",
 ):
     if not (ROOT / required).is_file():
         raise RuntimeError(f"V3.25 exact-stack failure: {required} is missing")
