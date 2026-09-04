@@ -37,6 +37,11 @@ namespace RenderCore
     // depends only on the ordered semantic operation stream, never pointer or
     // hash iteration order. A generation that would wrap to zero permanently
     // tombstones its slot instead of allowing stale identity to alias.
+    //
+    // A slot may be reserved before its semantic create operation is published.
+    // Reserved identities are not visible to readers until commit(). This lets
+    // a single producer establish stable handles while still preserving an
+    // immutable RenderWorld read surface for the active render phase.
     template <class HandleT, class Payload>
     class SlotTable
     {
@@ -45,7 +50,7 @@ namespace RenderCore
         using SlotIndex = typename Handle::Slot;
         using Generation = typename Handle::Generation;
 
-        [[nodiscard]] std::optional<Handle> insert(Payload payload)
+        [[nodiscard]] std::optional<Handle> reserve()
         {
             if (!mReusable.empty())
             {
@@ -53,9 +58,7 @@ namespace RenderCore
                 mReusable.erase(mReusable.begin());
 
                 Slot& slot = mSlots[slotIndex];
-                slot.live = true;
-                slot.payload.emplace(std::move(payload));
-                ++mLiveCount;
+                slot.state = State::Reserved;
                 return Handle::fromParts(slotIndex, slot.generation);
             }
 
@@ -65,47 +68,78 @@ namespace RenderCore
             const SlotIndex slotIndex = static_cast<SlotIndex>(mSlots.size());
             Slot slot;
             slot.generation = 1;
-            slot.live = true;
-            slot.payload.emplace(std::move(payload));
+            slot.state = State::Reserved;
             mSlots.push_back(std::move(slot));
-            ++mLiveCount;
             return Handle::fromParts(slotIndex, 1);
+        }
+
+        bool commit(Handle handle, Payload payload)
+        {
+            Slot* slot = resolveState(handle, State::Reserved);
+            if (!slot)
+                return false;
+
+            slot->payload.emplace(std::move(payload));
+            slot->state = State::Live;
+            ++mLiveCount;
+            return true;
+        }
+
+        bool cancel(Handle handle)
+        {
+            Slot* slot = resolveState(handle, State::Reserved);
+            if (!slot)
+                return false;
+            release(handle.slot(), *slot);
+            return true;
+        }
+
+        [[nodiscard]] std::optional<Handle> insert(Payload payload)
+        {
+            const auto handle = reserve();
+            if (!handle)
+                return std::nullopt;
+
+            try
+            {
+                if (!commit(*handle, std::move(payload)))
+                    return std::nullopt;
+            }
+            catch (...)
+            {
+                cancel(*handle);
+                throw;
+            }
+            return handle;
         }
 
         [[nodiscard]] Payload* get(Handle handle) noexcept
         {
-            Slot* slot = resolve(handle);
-            return slot ? std::addressof(*slot->payload) : nullptr;
+            Slot* slot = resolveState(handle, State::Live);
+            return slot && slot->payload ? std::addressof(*slot->payload) : nullptr;
         }
 
         [[nodiscard]] const Payload* get(Handle handle) const noexcept
         {
-            const Slot* slot = resolve(handle);
-            return slot ? std::addressof(*slot->payload) : nullptr;
+            const Slot* slot = resolveState(handle, State::Live);
+            return slot && slot->payload ? std::addressof(*slot->payload) : nullptr;
         }
 
-        [[nodiscard]] bool contains(Handle handle) const noexcept { return resolve(handle) != nullptr; }
+        [[nodiscard]] bool contains(Handle handle) const noexcept { return get(handle) != nullptr; }
+        [[nodiscard]] bool isReserved(Handle handle) const noexcept
+        {
+            return resolveState(handle, State::Reserved) != nullptr;
+        }
 
         bool retire(Handle handle)
         {
-            Slot* slot = resolve(handle);
-            if (!slot)
+            Slot* slot = resolveState(handle, State::Live);
+            if (!slot || !slot->payload)
                 return false;
 
             slot->payload.reset();
-            slot->live = false;
             --mLiveCount;
-
-            const auto retired = detail::retireGeneration(slot->generation);
-            if (retired.tombstone)
-            {
-                slot->tombstone = true;
-                slot->generation = 0;
-                return true;
-            }
-
-            slot->generation = retired.next;
-            mReusable.insert(handle.slot());
+            release(handle.slot(), *slot);
             return true;
         }
 
@@ -114,9 +148,14 @@ namespace RenderCore
             for (SlotIndex slotIndex = 0; slotIndex < mSlots.size(); ++slotIndex)
             {
                 Slot& slot = mSlots[slotIndex];
-                if (!slot.live)
-                    continue;
-                retire(Handle::fromParts(slotIndex, slot.generation));
+                if (slot.state == State::Live)
+                {
+                    slot.payload.reset();
+                    --mLiveCount;
+                    release(slotIndex, slot);
+                }
+                else if (slot.state == State::Reserved)
+                    release(slotIndex, slot);
             }
         }
 
@@ -125,34 +164,56 @@ namespace RenderCore
 
         [[nodiscard]] bool isTombstonedSlot(SlotIndex slotIndex) const noexcept
         {
-            return slotIndex < mSlots.size() && mSlots[slotIndex].tombstone;
+            return slotIndex < mSlots.size() && mSlots[slotIndex].state == State::Tombstone;
         }
 
     private:
+        enum class State : std::uint8_t
+        {
+            Vacant,
+            Reserved,
+            Live,
+            Tombstone,
+        };
+
         struct Slot
         {
             Generation generation = 0;
-            bool live = false;
-            bool tombstone = false;
+            State state = State::Vacant;
             std::optional<Payload> payload;
         };
 
-        [[nodiscard]] Slot* resolve(Handle handle) noexcept
+        void release(SlotIndex slotIndex, Slot& slot)
+        {
+            const auto retired = detail::retireGeneration(slot.generation);
+            if (retired.tombstone)
+            {
+                slot.generation = 0;
+                slot.state = State::Tombstone;
+                return;
+            }
+
+            slot.generation = retired.next;
+            slot.state = State::Vacant;
+            mReusable.insert(slotIndex);
+        }
+
+        [[nodiscard]] Slot* resolveState(Handle handle, State state) noexcept
         {
             if (!handle.valid() || handle.slot() >= mSlots.size())
                 return nullptr;
             Slot& slot = mSlots[handle.slot()];
-            if (!slot.live || slot.tombstone || slot.generation != handle.generation() || !slot.payload)
+            if (slot.state != state || slot.generation != handle.generation())
                 return nullptr;
             return &slot;
         }
 
-        [[nodiscard]] const Slot* resolve(Handle handle) const noexcept
+        [[nodiscard]] const Slot* resolveState(Handle handle, State state) const noexcept
         {
             if (!handle.valid() || handle.slot() >= mSlots.size())
                 return nullptr;
             const Slot& slot = mSlots[handle.slot()];
-            if (!slot.live || slot.tombstone || slot.generation != handle.generation() || !slot.payload)
+            if (slot.state != state || slot.generation != handle.generation())
                 return nullptr;
             return &slot;
         }
