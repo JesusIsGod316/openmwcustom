@@ -1,6 +1,7 @@
 #ifndef OPENMW_COMPONENTS_RENDERCORE_RESOURCES_H
 #define OPENMW_COMPONENTS_RENDERCORE_RESOURCES_H
 
+#include <compare>
 #include <cstdint>
 
 namespace RenderCore
