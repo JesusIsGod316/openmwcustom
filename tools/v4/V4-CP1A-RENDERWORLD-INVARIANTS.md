@@ -13,6 +13,8 @@ The initial foundation represents both directions of individual object/chunk ass
 
 If both are exposed as independently writable persistent state, they can diverge. A committed instance can point at a chunk without entering `ChunkRecord::members`; retiring an instance can leave a stale member; retiring a chunk can leave a live instance pointing at a retired handle.
 
+The same general issue exists for resource references: an instance may hold a live `MeshHandle`, `MaterialHandle`, or `SkeletonHandle`, so retiring one of those resources independently can leave a dangling logical reference even though the instance itself remains live.
+
 That state shape is acceptable only as temporary scaffolding. It must not become the public batch/publisher contract.
 
 ## 2. Single semantic ownership rule
@@ -57,20 +59,37 @@ Therefore:
 - first-slice non-paged objects: canonical `InstanceRecord::chunk`, derived chunk membership index;
 - future paged/static compact population: chunk-owned compact items or handles, but never simultaneously represented as the same individual logical instance unless a deliberate migration operation changes representation.
 
-## 5. API direction before Increment C
+## 5. Resource referential integrity
+
+A published RenderWorld revision must not contain a live logical record that refers to a retired or wrong-generation logical resource.
+
+For the current foundation this means at minimum:
+
+- every live `InstanceRecord::mesh` resolves to a live matching-generation `MeshHandle`;
+- every `InstanceRecord::materials` entry resolves to a live matching-generation `MaterialHandle`;
+- every present `InstanceRecord::skeleton` resolves to a live matching-generation `SkeletonHandle`;
+- every present `InstanceRecord::chunk` resolves as specified above.
+
+Resource retirement is therefore an ordered semantic operation, not an unconstrained table erase. A mesh/material/skeleton/chunk that is still referenced by a live instance cannot retire by itself. The batch must first retire or rebind every dependent logical record, then retire the resource in deterministic operation order.
+
+Later relationships follow the same rule when they become explicit: materials to textures, instances to pose/morph state, chunks to compact static resources, and light/environment records to any referenced logical resources.
+
+Backend residency remains independent. Evicting a Vulkan/VSG/OpenGL resident object does **not** retire the logical resource handle and therefore does not participate in this dependency rule.
+
+## 6. API direction before Increment C
 
 Before `RenderWorldUpdateBatch` becomes authoritative, narrow the foundation API so callers cannot bypass relationship invariants.
 
 Preferred direction:
 
 - low-level slot reservation/commit remains implementation-private or test-support only;
-- batch/publisher operations own create/reparent/retire semantics;
+- batch/publisher operations own create/reparent/rebind/retire semantics;
 - read access remains const/versioned;
-- resource-table creation may retain simpler internal helpers because it does not have the same bidirectional membership invariant.
+- resource-table creation may retain simpler internal helpers, but resource retirement must still obey dependency validation once live references exist.
 
-Do not carry the current direct `commit(InstanceHandle, InstanceRecord)` / `retire(ChunkHandle)` freedom into the public semantic renderer service.
+Do not carry the current direct `commit(InstanceHandle, InstanceRecord)` / unconstrained resource-retire freedom into the public semantic renderer service.
 
-## 6. Required tests added to the Increment C gate
+## 7. Required tests added to the Increment C gate
 
 In addition to the existing handle/generation/epoch tests, update-batch publication must prove:
 
@@ -80,7 +99,10 @@ In addition to the existing handle/generation/epoch tests, update-batch publicat
 4. chunk retire with live member rejects without partial mutation;
 5. same batch `reparent-or-retire members -> retire old chunk` succeeds deterministically;
 6. stale instance/chunk generations cannot alter membership;
-7. failed relationship validation leaves the previously published world/revision unchanged;
-8. two identical ordered relationship batches produce identical handles, membership order and published revision sequence.
+7. referenced mesh/material/skeleton retirement rejects without partial mutation;
+8. same ordered batch can rebind/retire dependents and then retire the old resource;
+9. stale resource generations cannot satisfy dependency validation;
+10. failed relationship or dependency validation leaves the previously published world/revision unchanged;
+11. two identical ordered relationship batches produce identical handles, membership order and published revision sequence.
 
 These are correctness gates, not performance mechanisms.
