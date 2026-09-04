@@ -113,6 +113,7 @@ file(GLOB UNITTEST_SRC_FILES
     nif/testphysics.cpp
 
     rendercore/foundation.cpp
+    rendercore/renderworld.cpp
 )
 
 source_group(apps\\components-tests FILES ${UNITTEST_SRC_FILES})
