@@ -86,6 +86,39 @@ namespace
         EXPECT_FLOAT_EQ(transform.scale.z, 1.0f);
     }
 
+    TEST(RenderCoreSlotTable, ReservedIdentityIsInvisibleUntilCommit)
+    {
+        RenderCore::SlotTable<RenderCore::InstanceHandle, int> table;
+        const auto handle = table.reserve();
+        ASSERT_TRUE(handle);
+
+        EXPECT_TRUE(table.isReserved(*handle));
+        EXPECT_FALSE(table.contains(*handle));
+        EXPECT_EQ(table.get(*handle), nullptr);
+        EXPECT_EQ(table.liveCount(), 0u);
+
+        ASSERT_TRUE(table.commit(*handle, 42));
+        EXPECT_FALSE(table.isReserved(*handle));
+        EXPECT_TRUE(table.contains(*handle));
+        ASSERT_NE(table.get(*handle), nullptr);
+        EXPECT_EQ(*table.get(*handle), 42);
+        EXPECT_EQ(table.liveCount(), 1u);
+    }
+
+    TEST(RenderCoreSlotTable, CancelledReservationAdvancesGeneration)
+    {
+        RenderCore::SlotTable<RenderCore::MeshHandle, int> table;
+        const auto reservation = table.reserve();
+        ASSERT_TRUE(reservation);
+        ASSERT_TRUE(table.cancel(*reservation));
+        EXPECT_FALSE(table.isReserved(*reservation));
+
+        const auto next = table.reserve();
+        ASSERT_TRUE(next);
+        EXPECT_EQ(next->slot(), reservation->slot());
+        EXPECT_EQ(next->generation(), reservation->generation() + 1u);
+    }
+
     TEST(RenderCoreSlotTable, RetireAndReuseRejectsStaleHandle)
     {
         RenderCore::SlotTable<RenderCore::InstanceHandle, int> table;
