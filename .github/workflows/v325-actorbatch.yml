@@ -1,0 +1,183 @@
+name: V3.25 CP2 actor-batched Mode151 build/QC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run source preflight or full Windows build'
+        required: true
+        default: preflight
+        type: choice
+        options: [preflight, full]
+  push:
+    branches: [v3.25-engine-ownership-bridge-cp2-actorbatch]
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+
+      - name: Compile-check patch tools
+        run: python3 -m py_compile tools/v3/*.py
+
+      - name: Smoke-test frame-critical job group
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/v325-jobgroup-smoke.cpp <<'CPP'
+          #include <components/sceneutil/framecriticaljobgroup.hpp>
+          #include <atomic>
+          #include <chrono>
+          #include <thread>
+          #include <vector>
+          int main()
+          {
+              constexpr std::size_t count = 192;
+              std::vector<std::atomic<int>> hits(count);
+              for (auto& hit : hits) hit.store(0, std::memory_order_relaxed);
+              const bool ok = SceneUtil::FrameCriticalJobGroup::instance().parallelFor(
+                  count, 2, 8, [&](std::size_t begin, std::size_t end) {
+                      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                      for (std::size_t i = begin; i < end; ++i)
+                          hits[i].fetch_add(1, std::memory_order_relaxed);
+                  });
+              if (!ok) return 10;
+              for (const auto& hit : hits)
+                  if (hit.load(std::memory_order_relaxed) != 1) return 11;
+              const auto stats = SceneUtil::FrameCriticalJobGroup::instance().stats();
+              if (stats.groups != 1 || stats.items != count || stats.workerItems == 0
+                  || stats.callerItems == 0 || stats.peakWorkers < 2) return 12;
+              return 0;
+          }
+          CPP
+          g++ -std=c++20 -pthread -I. /tmp/v325-jobgroup-smoke.cpp -o /tmp/v325-jobgroup-smoke
+          OPENMW_V325_JOBGROUP_STATS_FILE=/tmp/v325-jobgroup-summary.csv /tmp/v325-jobgroup-smoke
+          cat /tmp/v325-jobgroup-summary.csv
+
+      - name: Apply exact generated stack including actor batching
+        shell: bash
+        run: |
+          set +e
+          python3 tools/v3/apply_diagnostic_harness.py 2>&1 | tee v325-actorbatch-apply.log
+          status=${PIPESTATUS[0]}
+          exit $status
+
+      - name: Validate actor-batched Mode151 ownership and isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -Fx "branch=$GITHUB_REF_NAME" V3-BUILD-IDENTITY.txt
+          grep -Fx 'version=V3.25' V3-BUILD-IDENTITY.txt
+          grep -n 'struct V325PendingControllerClone' apps/openmw/mwrender/animation.hpp
+          grep -n 'flushV325PendingControllerClones' apps/openmw/mwrender/animation.cpp
+          grep -n 'mV325PendingControllerClones.push_back' apps/openmw/mwrender/animation.cpp
+          grep -n 'FrameCriticalJobGroup::instance().parallelFor' apps/openmw/mwrender/animation.cpp
+          grep -n "'150'.*V325ActorSourceBatch = '1'" tools/v3/launchers/V3_Lab.ps1
+          grep -n "'151'.*V325ActorSourceBatch = '1'.*V325ParallelActorBinding = '1'" tools/v3/launchers/V3_Lab.ps1
+          ! grep -F 'Import-Csv -LiteralPath $deepPath' tools/v3/launchers/V3_Lab.ps1
+
+          python3 - <<'PY'
+          from pathlib import Path
+          animation = Path('apps/openmw/mwrender/animation.cpp').read_text(encoding='utf-8')
+          launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
+          group = Path('components/sceneutil/framecriticaljobgroup.hpp').read_text(encoding='utf-8')
+
+          add_start = animation.index('    std::shared_ptr<Animation::AnimSource> Animation::addSingleAnimSource(')
+          add_end = animation.index('    void Animation::clearAnimSources()', add_start)
+          add = animation[add_start:add_end]
+          for required in (
+              'OPENMW_V325_PARALLEL_ACTOR_BINDING',
+              'dynamic_cast<const NifOsg::KeyframeController*>',
+              'mV325PendingControllerClones.push_back',
+              'osg::clone(input.mController, osg::CopyOp::SHALLOW_COPY)',
+          ):
+              if required not in add:
+                  raise SystemExit(f'actor-batch addSingleAnimSource missing {required}')
+          if 'FrameCriticalJobGroup::instance().parallelFor' in add:
+              raise SystemExit('actor-batch still fork/joins per animation source')
+
+          flush_start = animation.index('    void Animation::flushV325PendingControllerClones()')
+          flush_end = animation.index('    void Animation::beginAnimSourceBatch()', flush_start)
+          flush = animation[flush_start:flush_end]
+          for required in (
+              'pending = std::move(mV325PendingControllerClones)',
+              'pending.size() >= minParallelControllers',
+              'reservedWorkers = 2',
+              'cloneChunkSize = 8',
+              'FrameCriticalJobGroup::instance().parallelFor',
+              'Main-thread deterministic publication',
+          ):
+              if required not in flush:
+                  raise SystemExit(f'actor-batch flush missing {required}')
+          clone_start = flush.index('auto cloneRange =')
+          clone_end = flush.index('parallelPrepared = SceneUtil::FrameCriticalJobGroup', clone_start)
+          clone_range = flush[clone_start:clone_end]
+          for forbidden in ('nodeMap', 'detectBlendMask', 'mObjectRoot', 'getKeyframeManager', 'mAnimSources'):
+              if forbidden in clone_range:
+                  raise SystemExit(f'actor-batch worker clone illegally touches {forbidden}')
+
+          end_start = animation.index('    void Animation::endAnimSourceBatch()')
+          end_end = animation.index('    void Animation::addAnimSource(', end_start)
+          end_batch = animation[end_start:end_end]
+          if end_batch.index('flushV325PendingControllerClones();') > end_batch.index('AssignControllerSourcesVisitor'):
+              raise SystemExit('controller clone publication occurs after actor-wide assignment')
+          if end_batch.count('AssignControllerSourcesVisitor assignVisitor') != 1:
+              raise SystemExit('actor batch must have exactly one final controller assignment')
+
+          clear_start = animation.index('    void Animation::clearAnimSources()')
+          clear_end = animation.index('    bool Animation::hasAnimation', clear_start)
+          clear = animation[clear_start:clear_end]
+          for required in ('mV325PendingControllerClones.clear();', 'mAnimSourceBatchDepth = 0;'):
+              if required not in clear:
+                  raise SystemExit(f'clearAnimSources missing defensive reset {required}')
+
+          line150 = next(line for line in launcher.splitlines() if line.lstrip().startswith("'150'"))
+          line151 = next(line for line in launcher.splitlines() if line.lstrip().startswith("'151'"))
+          if "V325ParallelActorBinding = '1'" in line150:
+              raise SystemExit('Mode150 contaminated by Mode151')
+          if "V325ActorSourceBatch = '1'" not in line151 or "V325ParallelActorBinding = '1'" not in line151:
+              raise SystemExit('Mode151 does not compose batching + parallel binding')
+
+          for required in ('std::try_to_lock', 'fallbackSerialGroups', 'workerItems'):
+              if required not in group:
+                  raise SystemExit(f'job group missing {required}')
+          PY
+
+      - name: Parse-check launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/v3/launchers/V3_Lab.ps1'),
+            [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.ToString() }; exit 1 }
+
+      - name: Upload generated source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v325-cp2-actorbatch-preflight-${{ github.sha }}
+          path: |
+            v325-actorbatch-apply.log
+            V3-applied-source.patch
+            V3-applied-source-stat.txt
+            V3-LAB-README.txt
+            V3-BUILD-IDENTITY.txt
+            components/sceneutil/framecriticaljobgroup.hpp
+            tools/v3/apply_v325_engine_ownership_bridge_cp2_actorbatch.py
+          if-no-files-found: warn
+
+  Windows:
+    needs: Preflight
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full-build]')) }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: false
