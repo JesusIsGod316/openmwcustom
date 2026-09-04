@@ -1,0 +1,11 @@
+NVIDIA Image Scaling SDK 1.0.3
+source_commit=35e13ba316c98eeecf16f37eae70ce88019911f6
+NIS_Scaler.h_git_blob=02f645c2c01b0235d340d25c6cfc913000f7cc1b
+NIS_Config.h_git_blob=b8982217d7c4ad99a4725af54336d7a5b24de443
+integration=custom OpenGL 4.3/OSG compute wrapper
+algorithm_changes=OpenGL combined-sampler macro adaptation only
+precision=fp32
+block=32x24
+threads=128
+output=RGBA8
+fallback=explicit bilinear
