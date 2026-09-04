@@ -5,6 +5,10 @@ on:
   push:
     branches: [v4.0-cp1a-rendercore-foundation]
 
+concurrency:
+  group: v4-cp1a-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   Preflight:
     runs-on: ubuntu-latest
@@ -30,6 +34,7 @@ jobs:
           test -f components/rendercore/handles.hpp
           test -f components/rendercore/resources.hpp
           test -f components/rendercore/math.hpp
+          test -f components/rendercore/slottable.hpp
           test -f apps/components_tests/rendercore/foundation.cpp
           grep -F 'GIT_TAG 0af55ccecd98d4e5a8d1fad7de25ba429d60e863' apps/components_tests/CMakeLists.txt
           git diff --check 8b5f989480903c4aeef028bd95177f44fddd00b8 HEAD
