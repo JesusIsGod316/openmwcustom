@@ -18,7 +18,11 @@ jobs:
           fetch-depth: 0
 
       - name: Reproduce frozen V3.25 generated worktree
-        run: python3 tools/v4/V4-CP0A-Materialize-Final-V325.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach 1d64b33068d8322843361dd0e348b6e46b9666c0
+          python3 tools/v4/V4-CP0A-Materialize-Final-V325.py
 
       - name: Preserve exact packaging provenance outputs
         shell: bash
