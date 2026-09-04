@@ -10,7 +10,7 @@ on:
         type: choice
         options: [preflight, full]
   push:
-    branches: [v3.25-engine-ownership-bridge]
+    branches: [v3.25-engine-ownership-bridge, v3.25-engine-ownership-bridge-cp2]
 
 env:
   BUILD_TYPE: RelWithDebInfo
@@ -24,6 +24,46 @@ jobs:
 
       - name: Compile-check patch tools
         run: python3 -m py_compile tools/v3/*.py
+
+      - name: Smoke-test frame-critical job group
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/v325-jobgroup-smoke.cpp <<'CPP'
+          #include <components/sceneutil/framecriticaljobgroup.hpp>
+          #include <atomic>
+          #include <chrono>
+          #include <thread>
+          #include <vector>
+
+          int main()
+          {
+              constexpr std::size_t count = 64;
+              std::vector<std::atomic<int>> hits(count);
+              for (auto& hit : hits)
+                  hit.store(0, std::memory_order_relaxed);
+
+              const bool ok = SceneUtil::FrameCriticalJobGroup::instance().parallelFor(
+                  count, 2, 8, [&](std::size_t begin, std::size_t end) {
+                      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                      for (std::size_t i = begin; i < end; ++i)
+                          hits[i].fetch_add(1, std::memory_order_relaxed);
+                  });
+              if (!ok)
+                  return 10;
+              for (const auto& hit : hits)
+                  if (hit.load(std::memory_order_relaxed) != 1)
+                      return 11;
+
+              const auto stats = SceneUtil::FrameCriticalJobGroup::instance().stats();
+              if (stats.workerItems == 0 || stats.callerItems == 0 || stats.peakWorkers < 2)
+                  return 12;
+              return 0;
+          }
+          CPP
+          g++ -std=c++20 -pthread -I. /tmp/v325-jobgroup-smoke.cpp -o /tmp/v325-jobgroup-smoke
+          OPENMW_V325_JOBGROUP_STATS_FILE=/tmp/v325-jobgroup-summary.csv /tmp/v325-jobgroup-smoke
+          grep -Fx 'groups,items,worker_chunks,worker_items,caller_chunks,caller_items,fallback_serial_groups,failed_groups,peak_workers' /tmp/v325-jobgroup-summary.csv
 
       - name: Apply exact generated stack
         shell: bash
@@ -47,9 +87,14 @@ jobs:
           grep -n 'void Animation::beginAnimSourceBatch' apps/openmw/mwrender/animation.cpp
           grep -n 'mAnimSourceBatchNeedsControllerAssignment = true' apps/openmw/mwrender/animation.cpp
           grep -n 'OPENMW_V325_ACTOR_SOURCE_BATCH' apps/openmw/mwrender/npcanimation.cpp
+          grep -n 'OPENMW_V325_PARALLEL_ACTOR_BINDING' apps/openmw/mwrender/animation.cpp
+          grep -n 'FrameCriticalJobGroup::instance().parallelFor' apps/openmw/mwrender/animation.cpp
+          grep -n 'class FrameCriticalJobGroup' components/sceneutil/framecriticaljobgroup.hpp
           grep -n '149 = V3.25 V3.24-behavior control' tools/v3/launchers/V3_Lab.ps1
           grep -n '150 = V3.25 batched NPC animation-source finalization' tools/v3/launchers/V3_Lab.ps1
+          grep -n '151 = V3.25 CP2 batched + parallel NIF controller-clone preparation' tools/v3/launchers/V3_Lab.ps1
           grep -n "'150'.*V325ActorSourceBatch = '1'" tools/v3/launchers/V3_Lab.ps1
+          grep -n "'151'.*V325ActorSourceBatch = '1'.*V325ParallelActorBinding = '1'" tools/v3/launchers/V3_Lab.ps1
           ! grep -F 'Import-Csv -LiteralPath $deepPath' tools/v3/launchers/V3_Lab.ps1
           grep -n 'V3.25 packaging repair' tools/v3/launchers/V3_Lab.ps1
 
@@ -59,6 +104,7 @@ jobs:
           animation = Path('apps/openmw/mwrender/animation.cpp').read_text(encoding='utf-8')
           npc = Path('apps/openmw/mwrender/npcanimation.cpp').read_text(encoding='utf-8')
           launcher = Path('tools/v3/launchers/V3_Lab.ps1').read_text(encoding='utf-8')
+          group = Path('components/sceneutil/framecriticaljobgroup.hpp').read_text(encoding='utf-8')
 
           add_start = animation.index('    std::shared_ptr<Animation::AnimSource> Animation::addSingleAnimSource(')
           add_end = animation.index('    void Animation::clearAnimSources()', add_start)
@@ -68,9 +114,23 @@ jobs:
               'mAnimSourceBatchNeedsControllerAssignment = true;',
               'SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);',
               'mObjectRoot->accept(assignVisitor);',
+              'OPENMW_V325_PARALLEL_ACTOR_BINDING',
+              'dynamic_cast<const NifOsg::KeyframeController*>',
+              'FrameCriticalJobGroup::instance().parallelFor',
+              'minParallelControllers = 16',
+              'cloneChunkSize = 8',
+              'reservedWorkers = 2',
+              'Deterministic main-thread publication',
           ):
               if required not in add_single:
-                  raise SystemExit(f'V3.25 addSingleAnimSource missing {required}')
+                  raise SystemExit(f'V3.25 CP2 addSingleAnimSource missing {required}')
+
+          clone_start = add_single.index('auto cloneRange =')
+          clone_end = add_single.index('parallelPrepared = SceneUtil::FrameCriticalJobGroup', clone_start)
+          clone_range = add_single[clone_start:clone_end]
+          for forbidden in ('nodeMap', 'detectBlendMask', 'mAnimSources', 'mObjectRoot', 'getKeyframeManager'):
+              if forbidden in clone_range:
+                  raise SystemExit(f'V3.25 CP2 worker clone range illegally touches {forbidden}')
 
           batch_start = animation.index('    void Animation::endAnimSourceBatch()')
           batch_end = animation.index('    void Animation::addAnimSource(', batch_start)
@@ -86,19 +146,30 @@ jobs:
                   raise SystemExit(f'V3.25 NPC batch missing {required}')
 
           line149 = next(line for line in launcher.splitlines() if line.lstrip().startswith("'149'"))
-          if "V325ActorSourceBatch = '1'" in line149 or "V324AsyncMsoc = '1'" in line149:
+          if "V325ActorSourceBatch = '1'" in line149 or "V325ParallelActorBinding = '1'" in line149 or "V324AsyncMsoc = '1'" in line149:
               raise SystemExit('Mode149 is not a clean V3.24-behavior control')
 
           line150 = next(line for line in launcher.splitlines() if line.lstrip().startswith("'150'"))
-          if "V325ActorSourceBatch = '1'" not in line150:
-              raise SystemExit('Mode150 does not enable actor-source batching')
+          if "V325ActorSourceBatch = '1'" not in line150 or "V325ParallelActorBinding = '1'" in line150:
+              raise SystemExit('Mode150 is not batching-only')
           if "V324AsyncMsoc = '1'" in line150:
               raise SystemExit('Mode150 unexpectedly enables V3.24 async MSOC')
+
+          line151 = next(line for line in launcher.splitlines() if line.lstrip().startswith("'151'"))
+          if "V325ActorSourceBatch = '1'" not in line151 or "V325ParallelActorBinding = '1'" not in line151:
+              raise SystemExit('Mode151 does not compose batching + parallel binding')
+          if "V324AsyncMsoc = '1'" in line151:
+              raise SystemExit('Mode151 unexpectedly enables V3.24 async MSOC')
+
+          for required in ('std::try_to_lock', 'mWork.notify_all()', 'fallbackSerialGroups', 'workerItems'):
+              if required not in group:
+                  raise SystemExit(f'V3.25 CP2 job group missing {required}')
 
           for name in (
               'apps/openmw/mwrender/animation.cpp',
               'apps/openmw/mwrender/animation.hpp',
               'apps/openmw/mwrender/npcanimation.cpp',
+              'components/sceneutil/framecriticaljobgroup.hpp',
               'V3-applied-source.patch',
           ):
               data = Path(name).read_bytes()
@@ -127,7 +198,9 @@ jobs:
             V3-applied-source-stat.txt
             V3-LAB-README.txt
             V3-BUILD-IDENTITY.txt
+            components/sceneutil/framecriticaljobgroup.hpp
             tools/v3/V325-ENGINE-OWNERSHIP-BRIDGE-SOURCE-AUDIT.txt
+            tools/v3/V325-CP2-PARALLEL-BINDING-AUDIT.txt
           if-no-files-found: warn
 
   Windows:
