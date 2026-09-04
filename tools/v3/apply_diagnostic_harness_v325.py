@@ -14,10 +14,10 @@ exec(
     {"__file__": str(v324), "__name__": "__main__"},
 )
 
-layer = HERE / "apply_v325_engine_ownership_bridge.py"
+layer = HERE / "apply_v325_engine_ownership_bridge_v2.py"
 if not layer.is_file():
-    raise RuntimeError("V3.25 exact-stack failure: apply_v325_engine_ownership_bridge.py is missing")
-print("[V3.25] exact inherited V3.24 stack -> apply_v325_engine_ownership_bridge.py")
+    raise RuntimeError("V3.25 exact-stack failure: apply_v325_engine_ownership_bridge_v2.py is missing")
+print("[V3.25] exact inherited V3.24 stack -> apply_v325_engine_ownership_bridge_v2.py")
 exec(
     compile(layer.read_text(encoding="utf-8"), str(layer), "exec"),
     {"__file__": str(layer), "__name__": "__main__"},
