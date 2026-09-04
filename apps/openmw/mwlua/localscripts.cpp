@@ -15,6 +15,8 @@
 #include "../mwworld/class.hpp"
 #include "../mwworld/ptr.hpp"
 
+#include <components/lua/scripttracker.hpp>
+
 #include "context.hpp"
 #include "luamanagerimp.hpp"
 
@@ -236,6 +238,9 @@ namespace MWLua
         : LuaUtil::ScriptsContainer(lua, "L" + obj.id().toString(), tracker, false)
         , mData(obj)
     {
+        if (tracker)
+            tracker->setKeepResident(true);
+
         lua->protectedCall(
             [&](LuaUtil::LuaView& view) { addPackage("openmw.self", sol::make_object(view.sol(), &mData)); });
         registerEngineHandlers({ &mOnActiveHandlers, &mOnInactiveHandlers, &mOnConsumeHandlers, &mOnActivatedHandlers,
