@@ -1,6 +1,22 @@
 include_directories(SYSTEM ${GTEST_INCLUDE_DIRS})
 include_directories(SYSTEM ${GMOCK_INCLUDE_DIRS})
 
+# V4 CP1A introduces GLM only at the neutral render boundary. Keep the
+# dependency pinned and local to the foundation until rendercore gains its
+# first production translation unit.
+if (NOT TARGET glm::glm)
+    include(FetchContent)
+    set(GLM_BUILD_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(GLM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(GLM_BUILD_INSTALL OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(glm
+        GIT_REPOSITORY https://github.com/g-truc/glm.git
+        GIT_TAG 0af55ccecd98d4e5a8d1fad7de25ba429d60e863
+        SOURCE_DIR fetched/glm
+    )
+    FetchContent_MakeAvailable(glm)
+endif()
+
 file(GLOB UNITTEST_SRC_FILES
     main.cpp
 
@@ -95,6 +111,8 @@ file(GLOB UNITTEST_SRC_FILES
 
     nif/node.hpp
     nif/testphysics.cpp
+
+    rendercore/foundation.cpp
 )
 
 source_group(apps\\components-tests FILES ${UNITTEST_SRC_FILES})
@@ -105,6 +123,7 @@ target_link_libraries(components-tests
     GTest::GTest
     GMock::GMock
     components
+    glm::glm
 )
 
 if (WIN32)
