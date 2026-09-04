@@ -89,7 +89,13 @@ jobs:
             V3-LAB-README.txt \
             tools/v4/V4-CP0A-GENERATED-PACKAGING-MANIFEST.txt
           test "$(git diff --cached --name-only | wc -l)" -eq 5
-          git diff --cached --check
+          # V3-applied-source.patch is frozen provenance. Its payload preserves
+          # historical whitespace verbatim, so do not normalize or reject it.
+          git diff --cached --check -- \
+            V3-applied-source-stat.txt \
+            V3-BUILD-IDENTITY.txt \
+            V3-LAB-README.txt \
+            tools/v4/V4-CP0A-GENERATED-PACKAGING-MANIFEST.txt
           git config user.name "OpenMW Custom Build CI"
           git config user.email "actions@users.noreply.github.com"
           git commit -m "V4.0 CP0A: materialize frozen V3 packaging outputs [full-build]"
