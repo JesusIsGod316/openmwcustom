@@ -21,6 +21,13 @@ namespace Settings
         SettingValue<bool> mLuaDebug{ mIndex, "Lua", "lua debug" };
         SettingValue<int> mLuaNumThreads{ mIndex, "Lua", "lua num threads", makeEnumSanitizerInt({ 0, 1 }) };
         SettingValue<bool> mLuaProfiler{ mIndex, "Lua", "lua profiler" };
+        SettingValue<bool> mV33IdleTimerFastPath{ mIndex, "Lua", "v3.3 idle timer fast path" };
+        // V3.20 stock-semantic handler and pure-conversion fast paths.
+        SettingValue<bool> mV320EngineLuaFastPaths{ mIndex, "Lua", "v3.20 engine event fast paths" };
+        SettingValue<bool> mV320SoundConversionCache{ mIndex, "Lua", "v3.20 sound conversion cache" };
+        SettingValue<bool> mV320SoundQueryCoalescing{ mIndex, "Lua", "v3.20 sound query coalescing" };
+        SettingValue<bool> mV320LuaProfilerRecorderCapable{ mIndex, "Lua",
+            "v3.20 lua profiler recorder capability" };
         SettingValue<std::uint64_t> mSmallAllocMaxSize{ mIndex, "Lua", "small alloc max size" };
         SettingValue<std::uint64_t> mMemoryLimit{ mIndex, "Lua", "memory limit" };
         SettingValue<bool> mLogMemoryUsage{ mIndex, "Lua", "log memory usage" };

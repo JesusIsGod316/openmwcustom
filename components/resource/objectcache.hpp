@@ -183,6 +183,14 @@ namespace Resource
                 f(k, v.mValue.get());
         }
 
+        template <class Functor>
+        void callWithUsage(Functor&& f) const
+        {
+            std::lock_guard<std::mutex> lock(mMutex);
+            for (const auto& [k, v] : mItems)
+                f(k, v.mValue.get(), v.mLastUsage);
+        }
+
         template <class K>
         std::optional<std::pair<KeyType, osg::ref_ptr<osg::Object>>> lowerBound(K&& key)
         {

@@ -99,6 +99,15 @@ namespace MWRender
 
         bool isVanityOrPreviewModeEnabled() const { return mMode == Mode::Vanity || mMode == Mode::Preview; }
         Mode getMode() const { return mMode; }
+        bool isFullBodyFirstPerson() const
+        {
+            return mMode == Mode::FirstPerson && mV321FullBodyFirstPerson;
+        }
+        Mode getAnimationMode() const
+        {
+            return isFullBodyFirstPerson() ? Mode::ThirdPerson : mMode;
+        }
+        bool isAnimationCompatibilityEnabled() const { return mV321FullBodyFirstPersonShadowCompat; }
         std::optional<Mode> getQueuedMode() const { return mQueuedMode; }
         void setMode(Mode mode, bool force = true);
 
@@ -127,6 +136,9 @@ namespace MWRender
         // Always 'true' if mMode == `FirstPerson`. Also it is 'true' in `Vanity` or `Preview` modes if
         // the camera should return to `FirstPerson` view after it.
         bool mFirstPersonView;
+        const bool mV321FullBodyFirstPerson;
+        const bool mV321FullBodyFirstPersonShadowCompat;
+        const float mV321FullBodyFirstPersonForwardOffset;
 
         Mode mMode;
         std::optional<Mode> mQueuedMode;

@@ -1,5 +1,6 @@
 #include "scene.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <limits>
@@ -7,6 +8,9 @@
 #include <BulletCollision/CollisionDispatch/btCollisionObject.h>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/v3diagnostics.hpp>
+#include <components/debug/v32rendererprofiling.hpp>
+#include <components/debug/v3gpumemory.hpp>
 #include <components/detournavigator/agentbounds.hpp>
 #include <components/detournavigator/debug.hpp>
 #include <components/detournavigator/heightfieldshape.hpp>
@@ -21,6 +25,7 @@
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/sceneutil/positionattitudetransform.hpp>
+#include <components/settings/ramcache.hpp>
 #include <components/settings/values.hpp>
 #include <components/terrain/terraingrid.hpp>
 #include <components/vfs/pathutil.hpp>
@@ -107,44 +112,138 @@ namespace
     // TODO: find a more clever way to make paging exclusion more reliable?
     static osg::ref_ptr<SceneUtil::PositionAttitudeTransform> pagedNode = new SceneUtil::PositionAttitudeTransform;
 
+    struct V3InsertionAccumulator
+    {
+        std::size_t mTotalRefs = 0;
+        std::size_t mRenderedRefs = 0;
+        std::size_t mPhysicsRefs = 0;
+        std::size_t mActors = 0;
+        std::size_t mAnimated = 0;
+        std::size_t mDoors = 0;
+        double mRenderMs = 0.0;
+        double mMechanicsMs = 0.0;
+        double mParticlesMs = 0.0;
+        double mPhysicsMs = 0.0;
+        double mLuaAddedMs = 0.0;
+        double mNavMs = 0.0;
+    };
+
+    thread_local V3InsertionAccumulator* sV3InsertionAccumulator = nullptr;
+
+    class V3InsertionAccumulatorScope
+    {
+    public:
+        explicit V3InsertionAccumulatorScope(V3InsertionAccumulator* current)
+            : mPrevious(sV3InsertionAccumulator)
+        {
+            sV3InsertionAccumulator = current;
+        }
+
+        ~V3InsertionAccumulatorScope() { sV3InsertionAccumulator = mPrevious; }
+
+        V3InsertionAccumulatorScope(const V3InsertionAccumulatorScope&) = delete;
+        V3InsertionAccumulatorScope& operator=(const V3InsertionAccumulatorScope&) = delete;
+
+    private:
+        V3InsertionAccumulator* mPrevious = nullptr;
+    };
+
     void addObject(const MWWorld::Ptr& ptr, const MWWorld::World& world, const std::vector<ESM::RefNum>& pagedRefs,
         MWPhysics::PhysicsSystem& physics, MWRender::RenderingManager& rendering)
     {
-        if (ptr.getRefData().getBaseNode() || physics.getActor(ptr))
+        bool restoredRendering = false;
+        if (ptr.getRefData().getBaseNode())
+            restoredRendering = rendering.consumeRestoredExteriorObject(ptr);
+        if ((ptr.getRefData().getBaseNode() && !restoredRendering) || physics.getActor(ptr))
         {
             Log(Debug::Warning) << "Warning: Tried to add " << ptr.getCellRef().getRefId() << " to the scene twice";
             return;
+        }
+
+        V3InsertionAccumulator* const stats = sV3InsertionAccumulator;
+        if (stats)
+        {
+            ++stats->mTotalRefs;
+            if (ptr.getClass().isActor())
+                ++stats->mActors;
+            if (ptr.getClass().useAnim())
+                ++stats->mAnimated;
+            if (ptr.getClass().isDoor())
+                ++stats->mDoors;
         }
 
         const VFS::Path::Normalized model = getModel(ptr);
         const auto rotation = makeDirectNodeRotation(ptr);
 
         ESM::RefNum refnum = ptr.getCellRef().getRefNum();
-        if (!refnum.hasContentFile() || !std::binary_search(pagedRefs.begin(), pagedRefs.end(), refnum))
-            ptr.getClass().insertObjectRendering(ptr, model, rendering);
-        else
-            ptr.getRefData().setBaseNode(pagedNode);
+        const bool paged = refnum.hasContentFile() && std::binary_search(pagedRefs.begin(), pagedRefs.end(), refnum);
+        if (restoredRendering && paged)
+        {
+            // Paging policy may change while indoors. Never keep both forms.
+            rendering.removeObject(ptr);
+            restoredRendering = false;
+        }
+        auto phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
+        const auto v32ObjectStart = Debug::V32RendererProfiling::beginObject();
+        if (!restoredRendering)
+        {
+            if (!paged)
+            {
+                ptr.getClass().insertObjectRendering(ptr, model, rendering);
+                if (stats)
+                    ++stats->mRenderedRefs;
+            }
+            else
+                ptr.getRefData().setBaseNode(pagedNode);
+        }
+        else if (stats)
+            ++stats->mRenderedRefs;
         setNodeRotation(ptr, rendering, rotation);
+        Debug::V32RendererProfiling::finishObject(v32ObjectStart, !restoredRendering && !paged, restoredRendering,
+            paged, ptr.getClass().isActor(), ptr.getClass().useAnim(),
+            ptr.getType() == ESM::Light::sRecordId || ptr.getType() == ESM4::Light::sRecordId,
+            ptr.getCellRef().getRefId().toDebugString(), model.value());
+        if (stats)
+            stats->mRenderMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
 
+        phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         if (ptr.getClass().useAnim())
             MWBase::Environment::get().getMechanicsManager()->add(ptr);
+        if (stats)
+            stats->mMechanicsMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
 
+        phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         if (ptr.getClass().isActor())
             rendering.addWaterRippleEmitter(ptr);
+        // A retained ObjectAnimation already owns its particle/render
+        // state. Re-applying looping particles would duplicate it.
+        if (!restoredRendering)
+            world.applyLoopingParticles(ptr);
+        if (stats)
+            stats->mParticlesMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
 
-        // Restore effect particles
-        world.applyLoopingParticles(ptr);
-
+        phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         if (!model.empty())
+        {
             ptr.getClass().insertObject(ptr, model, rotation, physics);
+            if (stats)
+                ++stats->mPhysicsRefs;
+        }
+        if (stats)
+            stats->mPhysicsMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
 
+        phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         MWBase::Environment::get().getLuaManager()->objectAddedToScene(ptr);
+        if (stats)
+            stats->mLuaAddedMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
     }
 
     void addObject(const MWWorld::Ptr& ptr, const MWWorld::World& world, const MWPhysics::PhysicsSystem& physics,
         float& lowestPoint, bool isInterior, DetourNavigator::Navigator& navigator,
         const DetourNavigator::UpdateGuard* navigatorUpdateGuard = nullptr)
     {
+        V3InsertionAccumulator* const stats = sV3InsertionAccumulator;
+        const auto navStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         if (const auto object = physics.getObject(ptr))
         {
             // Find the lowest point of this collision object in world space from its AABB if interior
@@ -209,6 +308,8 @@ namespace
                 Log(Debug::Warning) << "Agent bounds are not supported by navigator for " << ptr.toString() << ": "
                                     << agentBounds;
         }
+        if (stats)
+            stats->mNavMs += Debug::V3Diagnostics::elapsedMs(navStart);
     }
 
     struct InsertVisitor
@@ -356,15 +457,153 @@ namespace MWWorld
             mChangeCellGridRequest.reset();
         }
 
-        mPreloader->updateCache(mRendering.getReferenceTime());
-        preloadCells(duration);
+        {
+            Debug::V3Diagnostics::ScopedCsvTimer timer(
+                Debug::V3Diagnostics::pagingWriter(), "cell_preloader_cache_update", "", 0.5);
+            mPreloader->updateCache(mRendering.getReferenceTime());
+        }
+        {
+            Debug::V3Diagnostics::ScopedCsvTimer timer(
+                Debug::V3Diagnostics::pagingWriter(), "cell_preload_schedule", "", 0.5);
+            const double lastFrameMs = Debug::V3HitchTelemetry::lastFrameWallMs();
+            const unsigned frame = Debug::V3HitchTelemetry::currentFrame();
+            const float targetMs = Settings::RamCache::streamingTargetFrameMs();
+
+            const bool adaptiveV1 = Settings::RamCache::adaptiveStreamingEnabled();
+            const bool adaptiveV2 = Settings::RamCache::adaptiveStreamingV2Enabled();
+            bool defer = false;
+            bool forcedProgress = false;
+            const char* eventDetail = "pressure";
+            int deferLimit = 1;
+            int deferCount = 1;
+
+            // This state is main-thread-only: Scene::update owns predictive
+            // preload scheduling. Reset it when v2 is not selected so changing
+            // scheduler modes cannot inherit stale pressure or job age.
+            static double v32SmoothedFrameMs = 0.0;
+            static unsigned v32BadFrameStreak = 0;
+            static unsigned v32RecoveryFrameStreak = 0;
+            static unsigned v32ConsecutiveDefers = 0;
+            static bool v32PressureMode = false;
+            static bool v32WasActive = false;
+
+            if (!adaptiveV2 && v32WasActive)
+            {
+                v32SmoothedFrameMs = 0.0;
+                v32BadFrameStreak = 0;
+                v32RecoveryFrameStreak = 0;
+                v32ConsecutiveDefers = 0;
+                v32PressureMode = false;
+                v32WasActive = false;
+            }
+
+            if (adaptiveV1)
+            {
+                // Preserve the exact V1 experiment for historical A/B testing.
+                const bool pressure = lastFrameMs > targetMs;
+                defer = pressure && (frame & 1u);
+            }
+            else if (adaptiveV2)
+            {
+                v32WasActive = true;
+
+                if (lastFrameMs > 0.0)
+                {
+                    constexpr double alpha = 0.20;
+                    v32SmoothedFrameMs = v32SmoothedFrameMs <= 0.0
+                        ? lastFrameMs
+                        : (v32SmoothedFrameMs * (1.0 - alpha) + lastFrameMs * alpha);
+                }
+
+                const double enterPressureMs = static_cast<double>(targetMs) * 1.05;
+                const double leavePressureMs = static_cast<double>(targetMs) * 0.92;
+                constexpr unsigned enterPressureFrames = 3;
+                constexpr unsigned leavePressureFrames = 6;
+
+                if (!v32PressureMode)
+                {
+                    v32RecoveryFrameStreak = 0;
+                    if (v32SmoothedFrameMs > enterPressureMs)
+                        ++v32BadFrameStreak;
+                    else
+                        v32BadFrameStreak = 0;
+
+                    if (v32BadFrameStreak >= enterPressureFrames)
+                    {
+                        v32PressureMode = true;
+                        v32BadFrameStreak = 0;
+                    }
+                }
+                else
+                {
+                    if (v32SmoothedFrameMs < leavePressureMs)
+                        ++v32RecoveryFrameStreak;
+                    else
+                        v32RecoveryFrameStreak = 0;
+
+                    if (v32RecoveryFrameStreak >= leavePressureFrames)
+                    {
+                        v32PressureMode = false;
+                        v32RecoveryFrameStreak = 0;
+                        v32ConsecutiveDefers = 0;
+                    }
+                }
+
+                const unsigned maxDefers = static_cast<unsigned>(
+                    std::max(Settings::RamCache::streamingMaxDefers(), 0));
+
+                // Forced progress: after maxDefers consecutive skips, the next
+                // opportunity always runs preloadCells even while under pressure.
+                if (v32PressureMode && maxDefers != 0u)
+                {
+                    if (v32ConsecutiveDefers < maxDefers)
+                    {
+                        defer = true;
+                        ++v32ConsecutiveDefers;
+                    }
+                    else
+                    {
+                        forcedProgress = true;
+                        v32ConsecutiveDefers = 0;
+                    }
+                }
+                else
+                    v32ConsecutiveDefers = 0;
+
+                eventDetail = forcedProgress ? "v2_forced_progress" : "v2_smoothed_pressure";
+                deferLimit = static_cast<int>(maxDefers);
+                deferCount = static_cast<int>(v32ConsecutiveDefers);
+            }
+            if (!defer)
+                preloadCells(duration);
+            if ((defer || forcedProgress) && Debug::V3Diagnostics::streamingWriter().enabled())
+            {
+                std::ostringstream row;
+                row << frame << ',' << Debug::V3Diagnostics::epochMs()
+                    << ',' << Debug::V3Diagnostics::csvQuote(defer ? "defer" : "force") << ','
+                    << Debug::V3Diagnostics::csvQuote("cell_preload") << ','
+                    << Debug::V3Diagnostics::csvQuote(eventDetail) << ',' << lastFrameMs << ','
+                    << deferLimit << ',' << deferCount;
+                Debug::V3Diagnostics::streamingWriter().writeLine(row.str());
+            }
+        }
     }
 
-    void Scene::unloadCell(CellStore* cell, const DetourNavigator::UpdateGuard* navigatorUpdateGuard)
+    void Scene::unloadCell(CellStore* cell, const DetourNavigator::UpdateGuard* navigatorUpdateGuard,
+        bool hibernateRenderState)
     {
         if (mActiveCells.find(cell) == mActiveCells.end())
             return;
+        Debug::V3Diagnostics::writeEvent("unload_cell", cell->getCell()->getDescription());
+        Debug::V3Diagnostics::ScopedCsvTimer v3UnloadTimer(
+            Debug::V3Diagnostics::transitionWriter(), "unload_cell", cell->getCell()->getDescription());
         Log(Debug::Info) << "Unloading cell " << cell->getCell()->getDescription();
+
+        // Render state must be captured before ListAndResetObjectsVisitor
+        // clears RefData::baseNode for every object in the cell.
+        std::size_t v32HibernatedObjects = 0;
+        if (hibernateRenderState)
+            v32HibernatedObjects = mRendering.hibernateExteriorCell(cell);
 
         ListAndResetObjectsVisitor visitor;
 
@@ -411,7 +650,11 @@ namespace MWWorld
 
         MWBase::Environment::get().getMechanicsManager()->drop(cell);
 
-        mRendering.removeCell(cell);
+        if (!hibernateRenderState)
+            mRendering.removeCell(cell);
+        else if (v32HibernatedObjects != 0)
+            Log(Debug::Info) << "V3.2 hibernated " << v32HibernatedObjects << " static render objects from "
+                             << cell->getCell()->getDescription();
         MWBase::Environment::get().getWindowManager()->removeCell(cell);
 
         mWorld.getLocalScripts().clearCell(cell);
@@ -426,6 +669,8 @@ namespace MWWorld
     void Scene::loadCell(CellStore& cell, Loading::Listener* loadingListener, bool respawn, const osg::Vec3f& position,
         const DetourNavigator::UpdateGuard* navigatorUpdateGuard)
     {
+        Debug::V3Diagnostics::ScopedCsvTimer v3LoadTimer(
+            Debug::V3Diagnostics::transitionWriter(), "load_cell", cell.getCell()->getDescription());
         using DetourNavigator::HeightfieldShape;
 
         assert(mActiveCells.find(&cell) == mActiveCells.end());
@@ -494,6 +739,13 @@ namespace MWWorld
 
         if (respawn)
             cell.respawn();
+
+        std::size_t v32RestoredObjects = 0;
+        if (cellVariant.isExterior())
+            v32RestoredObjects = mRendering.restoreHibernatedExteriorCell(&cell);
+        if (v32RestoredObjects != 0)
+            Log(Debug::Info) << "V3.2 restored " << v32RestoredObjects << " static render objects into "
+                             << cell.getCell()->getDescription();
 
         insertCell(cell, loadingListener, navigatorUpdateGuard);
 
@@ -614,6 +866,10 @@ namespace MWWorld
 
     void Scene::changeCellGrid(const osg::Vec3f& pos, ESM::ExteriorCellLocation playerCellIndex, bool changeEvent)
     {
+        Debug::V3Diagnostics::writeEvent("change_cell_grid", "exterior_grid");
+        Debug::V3Diagnostics::TraceScope v3Trace("transition", "change_cell_grid", "exterior_grid", 0.1);
+        Debug::V3Diagnostics::ScopedCsvTimer v3TransitionTimer(
+            Debug::V3Diagnostics::transitionWriter(), "change_cell_grid", "exterior_grid");
         const int halfGridSize
             = isEsm4Ext(playerCellIndex.mWorldspace) ? Constants::ESM4CellGridRadius : Constants::CellGridRadius;
         auto navigatorUpdateGuard = mNavigator.makeUpdateGuard();
@@ -652,7 +908,10 @@ namespace MWWorld
         mPreloader->setTerrain(mRendering.getTerrain());
         if (mRendering.pagingUnlockCache())
             mPreloader->abortTerrainPreloadExcept(nullptr);
-        if (!mPreloader->isTerrainLoaded(PositionCellGrid{ pos, newGrid }, mRendering.getReferenceTime()))
+        const bool v39NeedsInitialFrontload
+            = static_cast<int>(Settings::cells().mV39FrontloadMode) > 0 && !mV39InitialFrontloadDone;
+        if (v39NeedsInitialFrontload
+            || !mPreloader->isTerrainLoaded(PositionCellGrid{ pos, newGrid }, mRendering.getReferenceTime()))
             preloadTerrain(pos, playerCellIndex.mWorldspace, true);
         mPagedRefs.clear();
         mRendering.getPagedRefnums(newGrid, mPagedRefs);
@@ -686,6 +945,7 @@ namespace MWWorld
             }
         }
 
+        mRendering.finishExteriorRestore();
         mNavigator.update(pos, navigatorUpdateGuard.get());
 
         navigatorUpdateGuard.reset();
@@ -785,7 +1045,7 @@ namespace MWWorld
 
         mRendering.getResourceSystem()->getSceneManager()->setIncrementalCompileOperation(
             mRendering.getIncrementalCompileOperation());
-        mRendering.getResourceSystem()->setExpiryDelay(Settings::cells().mCacheExpiryDelay);
+        mRendering.getResourceSystem()->setExpiryDelay(Settings::RamCache::cacheExpiryDelay());
     }
 
     void Scene::testInteriorCells()
@@ -843,7 +1103,7 @@ namespace MWWorld
 
         mRendering.getResourceSystem()->getSceneManager()->setIncrementalCompileOperation(
             mRendering.getIncrementalCompileOperation());
-        mRendering.getResourceSystem()->setExpiryDelay(Settings::cells().mCacheExpiryDelay);
+        mRendering.getResourceSystem()->setExpiryDelay(Settings::RamCache::cacheExpiryDelay());
     }
 
     void Scene::changePlayerCell(CellStore& cell, const ESM::Position& pos, bool adjustPlayerPos)
@@ -896,16 +1156,17 @@ namespace MWWorld
         , mPreloadExteriorGrid(Settings::cells().mPreloadExteriorGrid)
         , mPreloadDoors(Settings::cells().mPreloadDoors)
         , mPreloadFastTravel(Settings::cells().mPreloadFastTravel)
-        , mPredictionTime(Settings::cells().mPredictionTime)
+        , mV33SpeculativePreloadBudget(Settings::cells().mV33SpeculativePreloadBudget)
+        , mPredictionTime(Settings::RamCache::predictionTime())
         , mLowestPoint(std::numeric_limits<float>::max())
     {
         mPreloader = std::make_unique<CellPreloader>(rendering.getResourceSystem(), physics->getShapeManager(),
             rendering.getTerrain(), rendering.getLandManager());
         mPreloader->setWorkQueue(mRendering.getWorkQueue());
-        mPreloader->setExpiryDelay(Settings::cells().mPreloadCellExpiryDelay);
-        mPreloader->setMinCacheSize(Settings::cells().mPreloadCellCacheMin);
-        mPreloader->setMaxCacheSize(Settings::cells().mPreloadCellCacheMax);
-        mPreloader->setPreloadInstances(Settings::cells().mPreloadInstances);
+        mPreloader->setExpiryDelay(Settings::RamCache::preloadCellExpiryDelay());
+        mPreloader->setMinCacheSize(Settings::RamCache::preloadCellCacheMin());
+        mPreloader->setMaxCacheSize(Settings::RamCache::preloadCellCacheMax());
+        mPreloader->setPreloadInstances(Settings::RamCache::preloadInstances());
     }
 
     Scene::~Scene()
@@ -930,6 +1191,10 @@ namespace MWWorld
     void Scene::changeToInteriorCell(
         std::string_view cellName, const ESM::Position& position, bool adjustPlayerPos, bool changeEvent)
     {
+        Debug::V3Diagnostics::writeEvent("change_to_interior", cellName);
+        Debug::V3Diagnostics::TraceScope v3Trace("transition", "change_to_interior", cellName, 0.1);
+        Debug::V3Diagnostics::ScopedCsvTimer v3TransitionTimer(
+            Debug::V3Diagnostics::transitionWriter(), "change_to_interior", cellName);
         CellStore& cell = mWorld.getWorldModel().getInterior(cellName);
         bool useFading = (mCurrentCell != nullptr);
         if (useFading)
@@ -954,11 +1219,14 @@ namespace MWWorld
 
         auto navigatorUpdateGuard = mNavigator.makeUpdateGuard();
 
+        const bool hibernateExterior = mCurrentCell != nullptr && mCurrentCell->isExterior()
+            && mRendering.beginExteriorHibernation();
+
         // unload
         for (auto iter = mActiveCells.begin(); iter != mActiveCells.end();)
         {
             auto* cellToUnload = *iter++;
-            unloadCell(cellToUnload, navigatorUpdateGuard.get());
+            unloadCell(cellToUnload, navigatorUpdateGuard.get(), hibernateExterior && cellToUnload->isExterior());
         }
         assert(mActiveCells.empty());
 
@@ -997,6 +1265,10 @@ namespace MWWorld
     void Scene::changeToExteriorCell(
         const ESM::RefId& extCellId, const ESM::Position& position, bool adjustPlayerPos, bool changeEvent)
     {
+        Debug::V3Diagnostics::writeEvent("change_to_exterior");
+        Debug::V3Diagnostics::TraceScope v3Trace("transition", "change_to_exterior", "exterior", 0.1);
+        Debug::V3Diagnostics::ScopedCsvTimer v3TransitionTimer(
+            Debug::V3Diagnostics::transitionWriter(), "change_to_exterior", "exterior");
 
         if (changeEvent)
             MWBase::Environment::get().getWindowManager()->fadeScreenOut(0.5);
@@ -1028,14 +1300,84 @@ namespace MWWorld
     void Scene::insertCell(
         CellStore& cell, Loading::Listener* loadingListener, const DetourNavigator::UpdateGuard* navigatorUpdateGuard)
     {
+        Debug::V3Diagnostics::TraceScope trace("transition", "insert_cell", cell.getCell()->getDescription(), 0.1);
+        Debug::V3Diagnostics::ScopedCsvTimer v3InsertTimer(
+            Debug::V3Diagnostics::transitionWriter(), "insert_cell_total", cell.getCell()->getDescription());
         const bool isInterior = !cell.isExterior();
         InsertVisitor insertVisitor(cell, loadingListener);
-        cell.forEach(insertVisitor);
-        insertVisitor.insert(
-            [&](const MWWorld::Ptr& ptr) { addObject(ptr, mWorld, mPagedRefs, *mPhysics, mRendering); });
-        insertVisitor.insert([&](const MWWorld::Ptr& ptr) {
-            addObject(ptr, mWorld, *mPhysics, mLowestPoint, isInterior, mNavigator, navigatorUpdateGuard);
-        });
+        {
+            Debug::V3Diagnostics::ScopedCsvTimer timer(
+                Debug::V3Diagnostics::transitionWriter(), "insert_collect_refs", cell.getCell()->getDescription());
+            cell.forEach(insertVisitor);
+        }
+
+        auto& insertionWriter = Debug::V3Diagnostics::insertionWriter();
+        V3InsertionAccumulator insertionStats;
+        V3InsertionAccumulatorScope insertionScope(insertionWriter.enabled() ? &insertionStats : nullptr);
+
+        auto& v32RendererWriter = Debug::V3Diagnostics::v32RendererInsertionWriter();
+        const bool v32RendererProfileEnabled
+            = Settings::cells().mV32RendererInsertionProfiling && v32RendererWriter.enabled();
+        Debug::V32RendererProfiling::Stats v32RendererStats;
+        Debug::V32RendererProfiling::Scope v32RendererScope(
+            v32RendererProfileEnabled ? &v32RendererStats : nullptr);
+
+        {
+            Debug::V3Diagnostics::ScopedCsvTimer timer(
+                Debug::V3Diagnostics::transitionWriter(), "insert_render_physics", cell.getCell()->getDescription());
+            insertVisitor.insert(
+                [&](const MWWorld::Ptr& ptr) { addObject(ptr, mWorld, mPagedRefs, *mPhysics, mRendering); });
+        }
+        {
+            Debug::V3Diagnostics::ScopedCsvTimer timer(
+                Debug::V3Diagnostics::transitionWriter(), "insert_nav", cell.getCell()->getDescription());
+            insertVisitor.insert([&](const MWWorld::Ptr& ptr) {
+                addObject(ptr, mWorld, *mPhysics, mLowestPoint, isInterior, mNavigator, navigatorUpdateGuard);
+            });
+        }
+
+        if (insertionWriter.enabled())
+        {
+            std::ostringstream row;
+            row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
+                << Debug::V3Diagnostics::csvQuote(cell.getCell()->getDescription()) << ',' << insertionStats.mTotalRefs
+                << ',' << insertionStats.mRenderedRefs << ',' << insertionStats.mPhysicsRefs << ','
+                << insertionStats.mActors << ',' << insertionStats.mAnimated << ',' << insertionStats.mDoors << ','
+                << std::fixed << std::setprecision(3) << insertionStats.mRenderMs << ',' << insertionStats.mMechanicsMs
+                << ',' << insertionStats.mParticlesMs << ',' << insertionStats.mPhysicsMs << ','
+                << insertionStats.mLuaAddedMs << ',' << insertionStats.mNavMs;
+            insertionWriter.writeLine(row.str());
+        }
+
+        if (v32RendererProfileEnabled)
+        {
+            const double objectRootExclusiveMs = v32RendererStats.mObjectRootMs > v32RendererStats.mSceneInstanceMs
+                ? v32RendererStats.mObjectRootMs - v32RendererStats.mSceneInstanceMs
+                : 0.0;
+            const double accountedMs = v32RendererStats.mSceneInstanceMs + objectRootExclusiveMs
+                + v32RendererStats.mControllerSetupMs + v32RendererStats.mTransformAttachMs;
+            const double miscMs = v32RendererStats.mRendererTotalMs > accountedMs
+                ? v32RendererStats.mRendererTotalMs - accountedMs
+                : 0.0;
+            const double meanObjectMs = v32RendererStats.mObjects != 0
+                ? v32RendererStats.mRendererTotalMs / static_cast<double>(v32RendererStats.mObjects)
+                : 0.0;
+
+            std::ostringstream row;
+            row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
+                << Debug::V3Diagnostics::csvQuote(cell.getCell()->getDescription()) << ','
+                << v32RendererStats.mObjects << ',' << v32RendererStats.mConstructed << ','
+                << v32RendererStats.mRestored << ',' << v32RendererStats.mPaged << ','
+                << v32RendererStats.mStatic << ',' << v32RendererStats.mAnimated << ','
+                << v32RendererStats.mActors << ',' << v32RendererStats.mLights << ',' << std::fixed
+                << std::setprecision(3) << v32RendererStats.mRendererTotalMs << ',' << meanObjectMs << ','
+                << v32RendererStats.mSceneInstanceMs << ',' << objectRootExclusiveMs << ','
+                << v32RendererStats.mControllerSetupMs << ',' << v32RendererStats.mTransformAttachMs << ','
+                << miscMs << ',' << v32RendererStats.mMaxObjectMs << ','
+                << Debug::V3Diagnostics::csvQuote(v32RendererStats.mMaxRef) << ','
+                << Debug::V3Diagnostics::csvQuote(v32RendererStats.mMaxModel);
+            v32RendererWriter.writeLine(row.str());
+        }
     }
 
     void Scene::addObjectToScene(const Ptr& ptr)
@@ -1145,8 +1487,71 @@ namespace MWWorld
         osg::Vec3f predictedPos = playerPos + moved / dt * mPredictionTime;
 
         if (mCurrentCell->isExterior())
-            exteriorPositions.push_back(PositionCellGrid{
-                predictedPos, gridCenterToBounds(getNewGridCenter(predictedPos, &mCurrentGridCenter)) });
+        {
+            const int v312PredictorMode = static_cast<int>(Settings::cells().mV312PredictorMode);
+            const osg::Vec2i normalPredictedGrid = getNewGridCenter(predictedPos, &mCurrentGridCenter);
+            bool etaTargetAdded = false;
+
+            if (v312PredictorMode > 0)
+            {
+                const osg::Vec3f velocity = moved / dt;
+                const ESM::RefId worldspace = mCurrentCell->getCell()->getWorldSpace();
+                const osg::Vec2f gridCenter = ESM::indexToPosition(ESM::ExteriorCellLocation(
+                    mCurrentGridCenter.x(), mCurrentGridCenter.y(), worldspace), true);
+                const float threshold = ESM::getCellSize(worldspace) / 2.f + mCellLoadingThreshold;
+                const float leadSeconds = static_cast<float>(Settings::cells().mV312PredictorLeadSeconds);
+                constexpr float MinVelocity = 1.f;
+                float eta = std::numeric_limits<float>::infinity();
+
+                const auto axisEta = [&](float position, float center, float speed) {
+                    if (speed > MinVelocity)
+                        return (center + threshold - position) / speed;
+                    if (speed < -MinVelocity)
+                        return (center - threshold - position) / speed;
+                    return std::numeric_limits<float>::infinity();
+                };
+
+                const float etaX = axisEta(playerPos.x(), gridCenter.x(), velocity.x());
+                const float etaY = axisEta(playerPos.y(), gridCenter.y(), velocity.y());
+                if (etaX >= 0.f)
+                    eta = std::min(eta, etaX);
+                if (etaY >= 0.f)
+                    eta = std::min(eta, etaY);
+
+                if (eta <= leadSeconds)
+                {
+                    osg::Vec3f boundaryProbe = playerPos + velocity * eta;
+                    osg::Vec2f horizontalVelocity(velocity.x(), velocity.y());
+                    if (horizontalVelocity.length2() > 1.f)
+                    {
+                        horizontalVelocity.normalize();
+                        boundaryProbe.x() += horizontalVelocity.x() * 64.f;
+                        boundaryProbe.y() += horizontalVelocity.y() * 64.f;
+                    }
+
+                    const osg::Vec2i etaGrid = getNewGridCenter(boundaryProbe, &mCurrentGridCenter);
+                    if (etaGrid != mCurrentGridCenter)
+                    {
+                        exteriorPositions.push_back(
+                            PositionCellGrid{ boundaryProbe, gridCenterToBounds(etaGrid) });
+                        etaTargetAdded = true;
+                        ++mV312EtaTargets;
+
+                        if (v312PredictorMode >= 2 && normalPredictedGrid != etaGrid
+                            && normalPredictedGrid != mCurrentGridCenter)
+                        {
+                            exteriorPositions.push_back(
+                                PositionCellGrid{ predictedPos, gridCenterToBounds(normalPredictedGrid) });
+                            ++mV312SecondHorizonTargets;
+                        }
+                    }
+                }
+            }
+
+            if (!etaTargetAdded)
+                exteriorPositions.push_back(
+                    PositionCellGrid{ predictedPos, gridCenterToBounds(normalPredictedGrid) });
+        }
 
         mLastPlayerPos = playerPos;
 
@@ -1206,14 +1611,20 @@ namespace MWWorld
         if (!mWorld.isCellExterior())
             return;
 
-        int halfGridSizePlusOne = mHalfGridSize + 1;
+        struct Candidate
+        {
+            CellStore* mCell = nullptr;
+            float mPriority = 0.0f;
+        };
 
-        int cellX, cellY;
-        cellX = mCurrentGridCenter.x();
-        cellY = mCurrentGridCenter.y();
-        ESM::RefId extWorldspace = mWorld.getCurrentWorldspace();
-
-        int cellSize = ESM::getCellSize(extWorldspace);
+        const int halfGridSizePlusOne = mHalfGridSize + 1;
+        const int cellX = mCurrentGridCenter.x();
+        const int cellY = mCurrentGridCenter.y();
+        const ESM::RefId extWorldspace = mWorld.getCurrentWorldspace();
+        const int cellSize = ESM::getCellSize(extWorldspace);
+        const float loadDist = cellSize / 2 + cellSize - mCellLoadingThreshold + mPreloadDistance;
+        std::vector<Candidate> candidates;
+        candidates.reserve(static_cast<std::size_t>(halfGridSizePlusOne * 8));
 
         for (int dx = -halfGridSizePlusOne; dx <= halfGridSizePlusOne; ++dx)
         {
@@ -1222,19 +1633,71 @@ namespace MWWorld
                 if (dy != halfGridSizePlusOne && dy != -halfGridSizePlusOne && dx != halfGridSizePlusOne
                     && dx != -halfGridSizePlusOne)
                     continue; // only care about the outer (not yet loaded) part of the grid
-                ESM::ExteriorCellLocation cellIndex(cellX + dx, cellY + dy, extWorldspace);
+
+                const ESM::ExteriorCellLocation cellIndex(cellX + dx, cellY + dy, extWorldspace);
                 const osg::Vec2f thisCellCenter = ESM::indexToPosition(cellIndex, true);
-
-                float dist = std::max(
+                const float playerDist = std::max(
                     std::abs(thisCellCenter.x() - playerPos.x()), std::abs(thisCellCenter.y() - playerPos.y()));
-                dist = std::min(dist,
-                    std::max(std::abs(thisCellCenter.x() - predictedPos.x()),
-                        std::abs(thisCellCenter.y() - predictedPos.y())));
-                float loadDist = cellSize / 2 + cellSize - mCellLoadingThreshold + mPreloadDistance;
-
-                if (dist < loadDist)
-                    preloadCell(mWorld.getWorldModel().getExterior(cellIndex));
+                const float predictedDist = std::max(std::abs(thisCellCenter.x() - predictedPos.x()),
+                    std::abs(thisCellCenter.y() - predictedPos.y()));
+                if (std::min(playerDist, predictedDist) < loadDist)
+                {
+                    candidates.push_back(Candidate{ &mWorld.getWorldModel().getExterior(cellIndex),
+                        predictedDist + playerDist * 0.25f });
+                }
             }
+        }
+
+        std::stable_sort(candidates.begin(), candidates.end(),
+            [](const Candidate& left, const Candidate& right) { return left.mPriority < right.mPriority; });
+
+        unsigned attemptedNew = 0;
+        unsigned refreshed = 0;
+        unsigned deferred = 0;
+        const unsigned configuredBudget = static_cast<unsigned>(mV33SpeculativePreloadBudget);
+        unsigned effectiveBudget = configuredBudget;
+        bool blockNewPreloads = false;
+        const bool v37PressureManagement = static_cast<bool>(Settings::cells().mV32GpuMemoryManagement);
+        const Debug::V3GpuMemory::PressureState v37Pressure = v37PressureManagement
+            ? Debug::V3GpuMemory::pressureState()
+            : Debug::V3GpuMemory::PressureState::Unavailable;
+        if (v37Pressure == Debug::V3GpuMemory::PressureState::Hard)
+            blockNewPreloads = true;
+        else if (v37Pressure == Debug::V3GpuMemory::PressureState::Soft
+            && (effectiveBudget == 0 || effectiveBudget > 1))
+            effectiveBudget = 1;
+
+        for (const Candidate& candidate : candidates)
+        {
+            if (mPreloader->isPreloaded(*candidate.mCell))
+            {
+                preloadCell(*candidate.mCell);
+                ++refreshed;
+            }
+            else if (!blockNewPreloads && (effectiveBudget == 0 || attemptedNew < effectiveBudget))
+            {
+                preloadCell(*candidate.mCell);
+                ++attemptedNew;
+            }
+            else
+                ++deferred;
+        }
+
+        if ((configuredBudget != 0 || (v37PressureManagement
+                && v37Pressure != Debug::V3GpuMemory::PressureState::Unavailable))
+            && Debug::V3Diagnostics::streamingWriter().enabled())
+        {
+            std::ostringstream detail;
+            detail << "attempted_new=" << attemptedNew << ";refreshed=" << refreshed << ";deferred=" << deferred
+                   << ";configured_budget=" << configuredBudget << ";effective_budget=" << effectiveBudget
+                   << ";block_new=" << (blockNewPreloads ? 1 : 0)
+                   << ";pressure=" << Debug::V3GpuMemory::pressureName(v37Pressure);
+            std::ostringstream row;
+            row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs()
+                << ",budget,v37_pressure_aware_preload," << Debug::V3Diagnostics::csvQuote(detail.str()) << ','
+                << std::fixed << std::setprecision(3) << Debug::V3HitchTelemetry::lastFrameWallMs() << ','
+                << effectiveBudget << ',' << candidates.size();
+            Debug::V3Diagnostics::streamingWriter().writeLine(row.str());
         }
     }
 
@@ -1285,10 +1748,113 @@ namespace MWWorld
         if (mRendering.getTerrain()->getWorldspace() != worldspace)
             throw std::runtime_error("preloadTerrain can only work with the current exterior worldspace");
 
-        ESM::ExteriorCellLocation cellPos = ESM::positionToExteriorCellLocation(pos.x(), pos.y(), worldspace);
-        const PositionCellGrid position{ pos, gridCenterToBounds({ cellPos.mX, cellPos.mY }) };
-        mPreloader->abortTerrainPreloadExcept(&position);
-        mPreloader->setTerrainPreloadPositions(std::span(&position, 1));
+        const int v39FrontloadMode = static_cast<int>(Settings::cells().mV39FrontloadMode);
+        const bool v39DoFrontload = sync && v39FrontloadMode > 0 && !mV39InitialFrontloadDone;
+        const bool v310DoPostTransformFrontload
+            = v39DoFrontload && static_cast<bool>(Settings::cells().mV310PreloadPostTransform);
+        const bool v310DoFreshFrontload
+            = v39DoFrontload
+            && (static_cast<bool>(Settings::cells().mV310FreshInitialObjectPaging)
+                || v310DoPostTransformFrontload);
+
+        class V310InitialFrontloadScope
+        {
+        public:
+            explicit V310InitialFrontloadScope(MWRender::RenderingManager& rendering)
+                : mRendering(rendering)
+            {
+            }
+
+            void activate()
+            {
+                if (mActive)
+                    return;
+                mRendering.setV310InitialFrontloadActive(true);
+                mActive = true;
+            }
+
+            ~V310InitialFrontloadScope()
+            {
+                if (mActive)
+                    mRendering.setV310InitialFrontloadActive(false);
+            }
+
+            V310InitialFrontloadScope(const V310InitialFrontloadScope&) = delete;
+            V310InitialFrontloadScope& operator=(const V310InitialFrontloadScope&) = delete;
+
+        private:
+            MWRender::RenderingManager& mRendering;
+            bool mActive = false;
+        };
+
+        V310InitialFrontloadScope v310InitialFrontloadScope(mRendering);
+
+        std::vector<PositionCellGrid> positions;
+        if (v39DoFrontload)
+        {
+            // Cancel a potentially smaller prediction task so the startup task is
+            // guaranteed to contain the full requested future-view set. This call
+            // waits for the old TerrainPreloadItem to finish before returning.
+            mPreloader->abortTerrainPreloadExcept(nullptr);
+
+            // Fresh-cache control is intentionally independent from the optimizer
+            // gate so Modes59 and 60 rebuild the same chunk set. Post-transform
+            // implicitly requests freshness as a safety net for manual settings.
+            if (v310DoFreshFrontload)
+                mRendering.clearV310InitialObjectPagingCache();
+            if (v310DoPostTransformFrontload)
+                v310InitialFrontloadScope.activate();
+
+            const int cellSize = ESM::getCellSize(worldspace);
+            // V3.11 prepares the exact neighboring grid-center states normal
+            // traversal is most likely to enter next. Older modes retain the
+            // historical wider jump for strict backward comparison.
+            const bool v311ExactActiveGrid
+                = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode) > 0;
+            const int stepCells = v311ExactActiveGrid ? 1 : std::max(1, mHalfGridSize + 1);
+
+            const auto addView = [&](int dxCells, int dyCells) {
+                osg::Vec3f preloadPos = pos;
+                preloadPos.x() += static_cast<float>(dxCells * cellSize);
+                preloadPos.y() += static_cast<float>(dyCells * cellSize);
+                const ESM::ExteriorCellLocation preloadCell = ESM::positionToExteriorCellLocation(
+                    preloadPos.x(), preloadPos.y(), worldspace);
+                positions.push_back(PositionCellGrid{
+                    preloadPos, gridCenterToBounds(osg::Vec2i(preloadCell.mX, preloadCell.mY)) });
+            };
+
+            addView(0, 0);
+            if (v39FrontloadMode == 1)
+            {
+                addView(stepCells, 0);
+                addView(-stepCells, 0);
+                addView(0, stepCells);
+                addView(0, -stepCells);
+            }
+            else
+            {
+                const int radius = v39FrontloadMode >= 3 ? 2 : 1;
+                for (int y = -radius; y <= radius; ++y)
+                {
+                    for (int x = -radius; x <= radius; ++x)
+                    {
+                        if (x == 0 && y == 0)
+                            continue;
+                        addView(x * stepCells, y * stepCells);
+                    }
+                }
+            }
+
+            mPreloader->setTerrainPreloadPositions(positions);
+        }
+        else
+        {
+            ESM::ExteriorCellLocation cellPos = ESM::positionToExteriorCellLocation(pos.x(), pos.y(), worldspace);
+            const PositionCellGrid position{ pos, gridCenterToBounds({ cellPos.mX, cellPos.mY }) };
+            mPreloader->abortTerrainPreloadExcept(&position);
+            mPreloader->setTerrainPreloadPositions(std::span(&position, 1));
+        }
+
         if (!sync)
             return;
 
@@ -1296,8 +1862,10 @@ namespace MWWorld
         Loading::ScopedLoad load(loadingListener);
 
         loadingListener->setLabel("#{OMWEngine:InitializingData}");
-
         mPreloader->syncTerrainLoad(*loadingListener);
+
+        if (v39DoFrontload)
+            mV39InitialFrontloadDone = true;
     }
 
     void Scene::reloadTerrain()
@@ -1364,5 +1932,8 @@ namespace MWWorld
     void Scene::reportStats(unsigned int frameNumber, osg::Stats& stats) const
     {
         mPreloader->reportStats(frameNumber, stats);
+        stats.setAttribute(frameNumber, "V3.12 ETA Target Selected", static_cast<double>(mV312EtaTargets));
+        stats.setAttribute(frameNumber, "V3.12 Second Horizon Target",
+            static_cast<double>(mV312SecondHorizonTargets));
     }
 }

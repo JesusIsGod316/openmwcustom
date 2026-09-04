@@ -31,6 +31,14 @@ namespace Settings
         SettingValue<std::string> mComputeSceneBounds{ mIndex, "Shadows", "compute scene bounds",
             makeEnumSanitizerString({ "primitives", "bounds", "none" }) };
         SettingValue<int> mShadowMapResolution{ mIndex, "Shadows", "shadow map resolution" };
+        SettingValue<int> mV33FarCascadeUpdateInterval{ mIndex, "Shadows", "v3.3 far cascade update interval",
+            makeClampSanitizerInt(1, 8) };
+        SettingValue<float> mV33FarCascadeMaxTexelDrift{ mIndex, "Shadows", "v3.3 far cascade max texel drift",
+            makeClampSanitizerFloat(0, 8) };
+        SettingValue<int> mV33FarCascadeResolutionDivisor{ mIndex, "Shadows",
+            "v3.3 far cascade resolution divisor", makeClampSanitizerInt(1, 4) };
+        SettingValue<bool> mV35AllowDynamicFarCascadeReuse{ mIndex, "Shadows",
+            "v3.5 allow dynamic far cascade reuse" };
         SettingValue<float> mMinimumLispsmNearFarRatio{ mIndex, "Shadows", "minimum lispsm near far ratio",
             makeMaxStrictSanitizerFloat(0) };
         SettingValue<float> mPolygonOffsetFactor{ mIndex, "Shadows", "polygon offset factor" };

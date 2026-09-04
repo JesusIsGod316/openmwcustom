@@ -40,6 +40,7 @@ namespace MWRender
         {
             VM_Normal,
             VM_FirstPerson,
+            VM_FirstPersonFullBody,
             VM_HeadOnly
         };
 
@@ -54,6 +55,7 @@ namespace MWRender
         VFS::Path::Normalized mHeadModel;
         VFS::Path::Normalized mHairModel;
         ViewMode mViewMode;
+        bool mV321FullBodyShadowCompat = false;
         bool mShowWeapons;
         bool mShowCarriedLeft;
 
@@ -156,7 +158,7 @@ namespace MWRender
         // WeaponAnimation
         void showWeapon(bool show) override { showWeapons(show); }
 
-        void setViewMode(ViewMode viewMode);
+        void setViewMode(ViewMode viewMode, bool fullBodyShadowCompat = false);
 
         void updateParts();
 

@@ -6,18 +6,26 @@
 
 namespace Resource
 {
-    void MultiObjectCache::removeUnreferencedObjectsInCache()
+    void MultiObjectCache::removeUnreferencedObjectsInCache(std::size_t keepUnreferenced)
     {
         std::vector<osg::ref_ptr<osg::Object>> objectsToRemove;
         {
             std::lock_guard<std::mutex> lock(mObjectCacheMutex);
 
-            // Remove unreferenced entries from object cache
+            // Keep a bounded pool of unused instances for reuse. This preserves
+            // upstream behavior when keepUnreferenced == 0.
+            std::size_t kept = 0;
             ObjectCacheMap::iterator oitr = mObjectCache.begin();
             while (oitr != mObjectCache.end())
             {
                 if (oitr->second->referenceCount() <= 1)
                 {
+                    if (kept < keepUnreferenced)
+                    {
+                        ++kept;
+                        ++oitr;
+                        continue;
+                    }
                     objectsToRemove.push_back(oitr->second);
                     mObjectCache.erase(oitr++);
                     ++mExpired;

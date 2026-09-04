@@ -35,6 +35,7 @@ namespace LuaUtil
         uint64_t mMemoryLimit = 0; // 0 is unlimited
         uint64_t mSmallAllocMaxSize = 1024 * 1024; // big default value efficiently disables memory tracking
         bool mLogMemoryUsage = false;
+        bool mInstructionProfilerEnabled = false;
     };
 
     class LuaState;
@@ -157,9 +158,23 @@ namespace LuaUtil
         //         (once per sandbox) with the argument 'hiddenData' the first time when requested.
         sol::protected_function_result runInNewSandbox(const VFS::Path::Normalized& path,
             const std::string& envName = "unnamed", const std::map<std::string, sol::main_object>& packages = {},
-            const sol::main_object& hiddenData = sol::nil);
+            const sol::main_object& hiddenData = sol::nil, const sol::main_table* packagePrototype = nullptr);
 
         void dropScriptCache() { mCompiledScripts.clear(); }
+
+        // V3.12: compile configured top-level scripts into the existing bytecode
+        // cache without creating a sandbox or executing script code.
+        std::size_t precompileConfiguredScripts();
+
+        // V3.14: populate the same bytecode cache for literal require() dependencies.
+        // Mode1 scans configured scripts, mode2 recursively scans discovered modules.
+        std::size_t precompileConfiguredDependencies(int mode);
+
+        // V3.14: static packages are immutable read-only objects. A container can reuse
+        // one prototype table rather than inserting the same package objects for every sandbox.
+        sol::main_table makePackagePrototype(const std::map<std::string, sol::main_object>& packages);
+        void setPackagePrototypeReuse(bool enabled) { mPackagePrototypeReuse = enabled; }
+        bool getPackagePrototypeReuse() const { return mPackagePrototypeReuse; }
 
         const ScriptsConfiguration& getConfiguration() const { return *mConf; }
 
@@ -179,9 +194,12 @@ namespace LuaUtil
 
         const LuaStateSettings& getSettings() const { return mSettings; }
 
-        // Note: Lua profiler can not be re-enabled after disabling.
+        // The tracking allocator is fixed when the Lua state is created, but
+        // the count hook can be changed safely by the Lua owner thread.
         static void disableProfiler() { sProfilerEnabled = false; }
         static bool isProfilerEnabled() { return sProfilerEnabled; }
+        void setInstructionProfilerEnabled(bool enabled);
+        bool isInstructionProfilerEnabled() const { return mInstructionProfilerEnabled; }
 
         static sol::protected_function_result throwIfError(sol::protected_function_result&&);
 
@@ -209,6 +227,7 @@ namespace LuaUtil
         // Needed to track resource usage per script, must be initialized before mLuaHolder.
         std::vector<ScriptId> mActiveScriptIdStack;
         uint64_t mWatchdogInstructionCounter = 0;
+        bool mInstructionProfilerEnabled = false;
         std::map<void*, AllocOwner> mBigAllocOwners;
         uint64_t mTotalMemoryUsage = 0;
         uint64_t mSmallAllocMemoryUsage = 0;
@@ -223,6 +242,7 @@ namespace LuaUtil
         std::map<VFS::Path::Normalized, sol::bytecode> mCompiledScripts;
         std::map<std::string, sol::object> mCommonPackages;
         const VFS::Manager* mVFS;
+        bool mPackagePrototypeReuse = false;
         std::vector<std::filesystem::path> mLibSearchPaths;
 
         static bool sProfilerEnabled;

@@ -20,6 +20,7 @@
 #include <LinearMath/btVector3.h>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/v3deeptelemetry.hpp>
 #include <components/esm3/loadgmst.hpp>
 #include <components/esm3/loadmgef.hpp>
 #include <components/misc/convert.hpp>
@@ -27,6 +28,7 @@
 #include <components/misc/strings/conversion.hpp>
 #include <components/resource/bulletshapemanager.hpp>
 #include <components/resource/resourcesystem.hpp>
+#include <components/settings/ramcache.hpp>
 #include <components/settings/values.hpp>
 
 #include "../mwbase/environment.hpp"
@@ -96,7 +98,7 @@ namespace MWPhysics
         : mPhysicsDt(1.f / 60.f)
         , mShapeManager(std::make_unique<Resource::BulletShapeManager>(resourceSystem->getVFS(),
               resourceSystem->getSceneManager(), resourceSystem->getNifFileManager(),
-              Settings::cells().mCacheExpiryDelay))
+              Settings::RamCache::cacheExpiryDelay(), Settings::RamCache::shapeInstancePoolSize()))
         , mResourceSystem(resourceSystem)
         , mDebugDrawEnabled(false)
         , mTimeAccum(0.0f)
@@ -643,6 +645,8 @@ namespace MWPhysics
 
     void PhysicsSystem::prepareSimulation(bool willSimulate, std::vector<Simulation>& simulations)
     {
+        Debug::V324DeepTelemetry::Scope v324DeepScope("physics", "prepare_simulation");
+
         assert(simulations.empty());
         simulations.reserve(mActors.size() + mProjectiles.size());
         const MWBase::World* world = MWBase::Environment::get().getWorld();
@@ -695,6 +699,8 @@ namespace MWPhysics
     void PhysicsSystem::stepSimulation(
         float dt, bool skipSimulation, osg::Timer_t frameStart, unsigned int frameNumber, osg::Stats& stats)
     {
+        Debug::V324DeepTelemetry::Scope v324DeepScope("physics", "step_simulation");
+
         for (auto& [animatedObject, changed] : mAnimatedObjects)
         {
             if (animatedObject->animateCollisionShapes())
@@ -726,12 +732,17 @@ namespace MWPhysics
             std::vector<Simulation>& simulations = mSimulations[mSimulationsCounter++ % mSimulations.size()];
             prepareSimulation(mTimeAccum >= mPhysicsDt, simulations);
             // modifies mTimeAccum
-            mTaskScheduler->applyQueuedMovements(mTimeAccum, simulations, frameStart, frameNumber, stats);
+            {
+                Debug::V324DeepTelemetry::Scope scope("physics", "apply_queued_movements");
+                mTaskScheduler->applyQueuedMovements(mTimeAccum, simulations, frameStart, frameNumber, stats);
+            }
         }
     }
 
     void PhysicsSystem::moveActors()
     {
+        Debug::V324DeepTelemetry::Scope v324DeepScope("physics", "move_actors_commit");
+
         auto* player = getActor(MWMechanics::getPlayer());
         const auto world = MWBase::Environment::get().getWorld();
 

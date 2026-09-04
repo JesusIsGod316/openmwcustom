@@ -26,6 +26,11 @@ namespace Settings
         SettingValue<float> mFieldOfView{ mIndex, "Camera", "field of view", makeClampSanitizerFloat(1, 179) };
         SettingValue<float> mFirstPersonFieldOfView{ mIndex, "Camera", "first person field of view",
             makeClampSanitizerFloat(1, 179) };
+        SettingValue<bool> mV321FullBodyFirstPerson{ mIndex, "Camera", "v3.21 full body first person" };
+        SettingValue<bool> mV321FullBodyFirstPersonShadowCompat{ mIndex, "Camera",
+            "v3.21 full body first person shadow compatibility" };
+        SettingValue<float> mV321FullBodyFirstPersonForwardOffset{ mIndex, "Camera",
+            "v3.21 full body first person forward offset", makeClampSanitizerFloat(0, 20) };
         SettingValue<bool> mReverseZ{ mIndex, "Camera", "reverse z" };
         SettingValue<bool> mOcclusionCulling{ mIndex, "Camera", "occlusion culling" };
         SettingValue<bool> mOcclusionCullingTerrain{ mIndex, "Camera", "occlusion culling terrain" };
@@ -57,6 +62,8 @@ namespace Settings
         SettingValue<bool> mOcclusionCullingInteriors{ mIndex, "Camera", "occlusion culling interiors" };
         SettingValue<int> mOcclusionMaxTriangles{ mIndex, "Camera", "occlusion max triangles",
             makeClampSanitizerInt(0, 500000) };
+        SettingValue<bool> mV34BroadenOcclusion{ mIndex, "Camera", "v3.4 broaden occlusion" };
+        SettingValue<bool> mV35CoarseChunkOcclusion{ mIndex, "Camera", "v3.5 coarse chunk occlusion" };
     };
 }
 

@@ -21,6 +21,7 @@ namespace MWSound
     class SoundBase;
     class Sound;
     class Stream;
+    class SfxPredecodeCache;
 
     class OpenALOutput : public SoundOutput
     {
@@ -64,6 +65,8 @@ namespace MWSound
         class DefaultDeviceThread;
         std::unique_ptr<DefaultDeviceThread> mDefaultDeviceThread;
 
+        std::unique_ptr<SfxPredecodeCache> mSfxPredecodeCache;
+
         void initCommon2D(ALuint source, const osg::Vec3f& pos, ALfloat gain, ALfloat pitch, bool loop, bool useenv);
         void initCommon3D(ALuint source, const osg::Vec3f& pos, const osg::Vec3f& vel, ALfloat mindist, ALfloat maxdist,
             ALfloat gain, ALfloat pitch, bool loop, bool useenv);
@@ -90,6 +93,7 @@ namespace MWSound
 
         std::pair<Sound_Handle, size_t> loadSound(VFS::Path::NormalizedView fname) override;
         size_t unloadSound(Sound_Handle data) override;
+        void queueSoundPredecode(std::vector<VFS::Path::Normalized>&& names) override;
 
         bool playSound(Sound* sound, Sound_Handle data, float offset) override;
         bool playSound3D(Sound* sound, Sound_Handle data, float offset) override;

@@ -29,6 +29,9 @@ namespace Settings
         SettingValue<int> mAntialiasing{ mIndex, "Video", "antialiasing", makeMaxSanitizerInt(0) };
         SettingValue<SDLUtil::VSyncMode> mVsyncMode{ mIndex, "Video", "vsync mode" };
         SettingValue<float> mFramerateLimit{ mIndex, "Video", "framerate limit", makeMaxSanitizerFloat(0) };
+        SettingValue<float> mRenderScale{ mIndex, "Video", "render scale", makeClampSanitizerFloat(0.5f, 1.0f) };
+        SettingValue<std::string> mUpscaler{ mIndex, "Video", "upscaler", makeEnumSanitizerString({ "bilinear", "nis" }) };
+        SettingValue<float> mUpscalerSharpness{ mIndex, "Video", "upscaler sharpness", makeClampSanitizerFloat(0.0f, 1.0f) };
         SettingValue<float> mContrast{ mIndex, "Video", "contrast", makeMaxStrictSanitizerFloat(0) };
         SettingValue<float> mGamma{ mIndex, "Video", "gamma", makeMaxStrictSanitizerFloat(0) };
     };

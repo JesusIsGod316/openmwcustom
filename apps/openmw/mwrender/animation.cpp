@@ -1,7 +1,9 @@
 #include "animation.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <limits>
+#include <vector>
 
 #include <osg/BlendFunc>
 #include <osg/Matrix>
@@ -16,6 +18,12 @@
 #include <osgAnimation/UpdateBone>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/v3deeptelemetry.hpp>
+
+#include <components/nifosg/controller.hpp>
+#include <components/sceneutil/framecriticaljobgroup.hpp>
+#include <components/debug/v32rendererprofiling.hpp>
+#include <components/debug/v36controllertrace.hpp>
 
 #include <components/resource/animblendrulesmanager.hpp>
 #include <components/resource/keyframemanager.hpp>
@@ -643,8 +651,95 @@ namespace MWRender
                 addSingleAnimSource(name, baseModel);
     }
 
+    void Animation::flushV325PendingControllerClones()
+    {
+        if (mV325PendingControllerClones.empty())
+            return;
+
+        // Move the complete actor-local batch out before execution so no worker can
+        // observe a vector that is subsequently appended to by source discovery.
+        std::vector<V325PendingControllerClone> pending = std::move(mV325PendingControllerClones);
+        mV325PendingControllerClones.clear();
+
+        std::vector<osg::ref_ptr<SceneUtil::KeyframeController>> prepared(pending.size());
+        constexpr std::size_t minParallelControllers = 16;
+        constexpr std::size_t cloneChunkSize = 8;
+        constexpr std::size_t reservedWorkers = 2;
+
+        bool parallelPrepared = false;
+        if (pending.size() >= minParallelControllers)
+        {
+            auto cloneRange = [&](std::size_t begin, std::size_t end) {
+                for (std::size_t i = begin; i < end; ++i)
+                {
+                    osg::ref_ptr<SceneUtil::KeyframeController> cloned
+                        = new NifOsg::KeyframeController(*pending[i].mController, osg::CopyOp::SHALLOW_COPY);
+                    cloned->setSource(pending[i].mSource);
+                    prepared[i] = std::move(cloned);
+                }
+            };
+            parallelPrepared = SceneUtil::FrameCriticalJobGroup::instance().parallelFor(
+                pending.size(), reservedWorkers, cloneChunkSize, cloneRange);
+        }
+
+        if (!parallelPrepared)
+        {
+            // Nothing from this actor batch has been published yet. Reconstruct the
+            // complete pending set with the historical clone operation on main.
+            for (std::size_t i = 0; i < pending.size(); ++i)
+            {
+                osg::ref_ptr<SceneUtil::KeyframeController> cloned
+                    = osg::clone(pending[i].mController, osg::CopyOp::SHALLOW_COPY);
+                cloned->setSource(pending[i].mSource);
+                prepared[i] = std::move(cloned);
+            }
+        }
+
+        // Main-thread deterministic publication in exact discovery/source order.
+        for (std::size_t i = 0; i < pending.size(); ++i)
+            pending[i].mAnimSource->mControllerMap[pending[i].mBlendMask].insert(
+                std::make_pair(pending[i].mBoneName, prepared[i]));
+    }
+
+    void Animation::beginAnimSourceBatch()
+    {
+        if (mAnimSourceBatchDepth++ == 0)
+        {
+            mAnimSourceBatchNeedsControllerAssignment = false;
+            mV325PendingControllerClones.clear();
+        }
+    }
+
+    void Animation::endAnimSourceBatch()
+    {
+        if (mAnimSourceBatchDepth == 0)
+            return;
+
+        --mAnimSourceBatchDepth;
+        if (mAnimSourceBatchDepth != 0)
+            return;
+
+        // Publish all deferred controller clones before the final actor-wide source
+        // assignment visitor. This preserves the historical fully-built state at batch exit.
+        flushV325PendingControllerClones();
+
+        if (!mAnimSourceBatchNeedsControllerAssignment)
+            return;
+
+        mAnimSourceBatchNeedsControllerAssignment = false;
+        if (mObjectRoot)
+        {
+            SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);
+            mObjectRoot->accept(assignVisitor);
+        }
+    }
+
     void Animation::addAnimSource(std::string_view model, const std::string& baseModel)
     {
+        Debug::V324DeepTelemetry::Scope v324DeepScope("animation", "add_anim_source");
+
+        Debug::V32RendererProfiling::ScopedPhase v32ControllerTimer(
+            Debug::V32RendererProfiling::Phase::ControllerSetup);
         constexpr VFS::Path::ExtensionView kf("kf");
         constexpr VFS::Path::ExtensionView nif("nif");
 
@@ -662,10 +757,18 @@ namespace MWRender
     std::shared_ptr<Animation::AnimSource> Animation::addSingleAnimSource(
         VFS::Path::NormalizedView kfname, const std::string& baseModel)
     {
+        Debug::V324DeepTelemetry::Scope v324DeepScope("animation", "add_single_anim_source");
+
+        Debug::V36ControllerTrace::Scope v36ControllerTrace(kfname.value(), baseModel);
         if (!mResourceSystem->getVFS()->exists(kfname))
             return nullptr;
 
-        osg::ref_ptr<const SceneUtil::KeyframeHolder> keyframes = mResourceSystem->getKeyframeManager()->get(kfname);
+        osg::ref_ptr<const SceneUtil::KeyframeHolder> keyframes;
+        {
+            Debug::V36ControllerTrace::PhaseScope v36Keyframes(
+                v36ControllerTrace, Debug::V36ControllerTrace::Phase::KeyframeLookup);
+            keyframes = mResourceSystem->getKeyframeManager()->get(kfname);
+        }
 
         if (keyframes == nullptr || keyframes->mTextKeys.empty() || keyframes->mKeyframeControllers.empty())
             return nullptr;
@@ -674,30 +777,112 @@ namespace MWRender
 
         animsrc->mKeyframes = std::move(keyframes);
 
-        const NodeMap& nodeMap = getNodeMap();
-        const auto& controllerMap = animsrc->mKeyframes->mKeyframeControllers;
-        for (SceneUtil::KeyframeHolder::KeyframeControllerMap::const_iterator it = controllerMap.begin();
-             it != controllerMap.end(); ++it)
+        const NodeMap* nodeMapPtr = nullptr;
         {
-            std::string bonename = Misc::StringUtils::lowerCase(it->first);
-            NodeMap::const_iterator found = nodeMap.find(bonename);
-            if (found == nodeMap.end())
+            Debug::V36ControllerTrace::PhaseScope v36NodeMap(
+                v36ControllerTrace, Debug::V36ControllerTrace::Phase::NodeMap);
+            nodeMapPtr = &getNodeMap();
+        }
+        const NodeMap& nodeMap = *nodeMapPtr;
+        const auto& controllerMap = animsrc->mKeyframes->mKeyframeControllers;
+        {
+            Debug::V36ControllerTrace::PhaseScope v36ControllerClone(
+                v36ControllerTrace, Debug::V36ControllerTrace::Phase::ControllerClone);
+
+            static const bool v325ParallelActorBinding = [] {
+                const char* value = std::getenv("OPENMW_V325_PARALLEL_ACTOR_BINDING");
+                return value && value[0] == '1' && value[1] == '\0';
+            }();
+
+            if (!v325ParallelActorBinding)
             {
-                Log(Debug::Warning) << "Warning: addAnimSource: can't find bone '" + bonename << "' in " << baseModel
-                                    << " (referenced by " << kfname << ")";
-                continue;
+                for (SceneUtil::KeyframeHolder::KeyframeControllerMap::const_iterator it = controllerMap.begin();
+                     it != controllerMap.end(); ++it)
+                {
+                    std::string bonename = Misc::StringUtils::lowerCase(it->first);
+                    NodeMap::const_iterator found = nodeMap.find(bonename);
+                    if (found == nodeMap.end())
+                    {
+                        Log(Debug::Warning) << "Warning: addAnimSource: can't find bone '" + bonename << "' in " << baseModel
+                                            << " (referenced by " << kfname << ")";
+                        continue;
+                    }
+
+                    osg::Node* node = found->second;
+                    const size_t blendMask = detectBlendMask(node, it->second->getName());
+
+                    osg::ref_ptr<SceneUtil::KeyframeController> cloned
+                        = osg::clone(it->second.get(), osg::CopyOp::SHALLOW_COPY);
+                    cloned->setSource(mAnimationTimePtr[blendMask]);
+                    animsrc->mControllerMap[blendMask].insert(std::make_pair(bonename, cloned));
+                    v36ControllerTrace.controller(it->second->className());
+                }
             }
+            else
+            {
+                struct V325BindingInput
+                {
+                    std::string mBoneName;
+                    size_t mBlendMask = 0;
+                    const SceneUtil::KeyframeController* mController = nullptr;
+                    std::shared_ptr<AnimationTime> mSource;
+                };
 
-            osg::Node* node = found->second;
+                std::vector<V325BindingInput> inputs;
+                inputs.reserve(controllerMap.size());
+                bool workerCloneSafe = true;
+                for (SceneUtil::KeyframeHolder::KeyframeControllerMap::const_iterator it = controllerMap.begin();
+                     it != controllerMap.end(); ++it)
+                {
+                    std::string bonename = Misc::StringUtils::lowerCase(it->first);
+                    NodeMap::const_iterator found = nodeMap.find(bonename);
+                    if (found == nodeMap.end())
+                    {
+                        Log(Debug::Warning) << "Warning: addAnimSource: can't find bone '" + bonename << "' in " << baseModel
+                                            << " (referenced by " << kfname << ")";
+                        continue;
+                    }
 
-            size_t blendMask = detectBlendMask(node, it->second->getName());
+                    osg::Node* node = found->second;
+                    const size_t blendMask = detectBlendMask(node, it->second->getName());
+                    const SceneUtil::KeyframeController* controller = it->second.get();
+                    if (dynamic_cast<const NifOsg::KeyframeController*>(controller) == nullptr)
+                        workerCloneSafe = false;
+                    inputs.push_back(
+                        V325BindingInput{ std::move(bonename), blendMask, controller, mAnimationTimePtr[blendMask] });
+                }
 
-            // clone the controller, because each Animation needs its own ControllerSource
-            osg::ref_ptr<SceneUtil::KeyframeController> cloned
-                = osg::clone(it->second.get(), osg::CopyOp::SHALLOW_COPY);
-            cloned->setSource(mAnimationTimePtr[blendMask]);
-
-            animsrc->mControllerMap[blendMask].insert(std::make_pair(bonename, cloned));
+                if (workerCloneSafe && mAnimSourceBatchDepth != 0)
+                {
+                    // Actor-sized scheduling: gather all eligible source controllers and
+                    // fork/join once when the outer NPC source batch closes.
+                    for (V325BindingInput& input : inputs)
+                    {
+                        mV325PendingControllerClones.push_back(V325PendingControllerClone{
+                            animsrc,
+                            std::move(input.mBoneName),
+                            input.mBlendMask,
+                            static_cast<const NifOsg::KeyframeController*>(input.mController),
+                            std::move(input.mSource),
+                        });
+                        v36ControllerTrace.controller(input.mController->className());
+                    }
+                }
+                else
+                {
+                    // Generic callers and non-NIF animation formats remain on the exact
+                    // historical serial clone/publish path.
+                    for (const V325BindingInput& input : inputs)
+                    {
+                        osg::ref_ptr<SceneUtil::KeyframeController> cloned
+                            = osg::clone(input.mController, osg::CopyOp::SHALLOW_COPY);
+                        cloned->setSource(input.mSource);
+                        animsrc->mControllerMap[input.mBlendMask].insert(
+                            std::make_pair(input.mBoneName, cloned));
+                        v36ControllerTrace.controller(input.mController->className());
+                    }
+                }
+            }
         }
 
         mAnimSources.push_back(animsrc);
@@ -706,8 +891,17 @@ namespace MWRender
         for (const std::string& group : mAnimSources.back()->getTextKeys().getGroups())
             mSupportedAnimations.insert(group);
 
-        SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);
-        mObjectRoot->accept(assignVisitor);
+        {
+            Debug::V36ControllerTrace::PhaseScope v36SourceAssign(
+                v36ControllerTrace, Debug::V36ControllerTrace::Phase::SourceAssign);
+            if (mAnimSourceBatchDepth != 0)
+                mAnimSourceBatchNeedsControllerAssignment = true;
+            else
+            {
+                SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);
+                mObjectRoot->accept(assignVisitor);
+            }
+        }
 
         // Determine the movement accumulation bone if necessary
         if (!mAccumRoot)
@@ -770,6 +964,9 @@ namespace MWRender
 
     void Animation::clearAnimSources()
     {
+        mV325PendingControllerClones.clear();
+        mAnimSourceBatchDepth = 0;
+        mAnimSourceBatchNeedsControllerAssignment = false;
         mStates.clear();
 
         for (size_t i = 0; i < sNumBlendMasks; i++)
@@ -1334,6 +1531,8 @@ namespace MWRender
 
     osg::Vec3f Animation::runAnimation(float duration)
     {
+        Debug::V324DeepTelemetry::Scope v324DeepScope("animation", "run_animation");
+
         osg::Vec3f movement(0.f, 0.f, 0.f);
         AnimStateMap::iterator stateiter = mStates.begin();
         while (stateiter != mStates.end())
@@ -1502,6 +1701,8 @@ namespace MWRender
     osg::ref_ptr<osg::Node> getModelInstance(Resource::ResourceSystem* resourceSystem, const std::string& model,
         bool baseonly, bool inject, const std::string& defaultSkeleton)
     {
+        Debug::V32RendererProfiling::ScopedPhase v32InstanceTimer(
+            Debug::V32RendererProfiling::Phase::SceneInstance);
         Resource::SceneManager* sceneMgr = resourceSystem->getSceneManager();
         if (baseonly)
         {
@@ -1545,6 +1746,8 @@ namespace MWRender
 
     void Animation::setObjectRoot(const std::string& model, bool forceskeleton, bool baseonly, bool isCreature)
     {
+        Debug::V32RendererProfiling::ScopedPhase v32ObjectRootTimer(
+            Debug::V32RendererProfiling::Phase::ObjectRoot);
         osg::ref_ptr<osg::StateSet> previousStateset;
         if (mObjectRoot)
         {

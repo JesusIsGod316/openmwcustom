@@ -2,11 +2,19 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cstdint>
+#include <array>
+#include <deque>
+#include <mutex>
+#include <components/resource/v321classifiedcompileset.hpp>
+#include <cstdlib>
 #include <future>
 #include <system_error>
 
 #include <osgDB/ReaderWriter>
 #include <osgDB/Registry>
+#include <osgUtil/IncrementalCompileOperation>
+
 #include <osgViewer/Renderer>
 #include <osgViewer/ViewerEventHandlers>
 
@@ -52,6 +60,8 @@
 #include <components/sceneutil/unrefqueue.hpp>
 #include <components/sceneutil/util.hpp>
 
+#include <components/settings/ramcache.hpp>
+#include <components/settings/v36profile.hpp>
 #include <components/settings/shadermanager.hpp>
 #include <components/settings/values.hpp>
 
@@ -148,6 +158,7 @@ namespace
 
         void operator()(osg::GraphicsContext* graphicsContext) override
         {
+            Log(Debug::Info) << "Build identity: openmw-custom-v3.17 / openmw-custom-v3.18-render-scale-p0 / openmw-custom-v3.19-cpu-p0 / openmw-custom-v3.19-p0-stable-gaming / openmw-custom-v3.20-cp1-focus / openmw-custom-v3.21-cp1-completion-governor / openmw-custom-v3.21-cp1-adaptive-governor / openmw-custom-v3.21-cp2-fairness-dephasing / openmw-custom-v3.21-cp3-fullbody-first-person / openmw-custom-v3.21-cp4-shadow-compat / openmw-custom-v3.22-cp1-msoc-hotpath / openmw-custom-v3.22-cp2-occluder-efficiency / openmw-custom-v3.22-parallel-architecture-cp1 / openmw-custom-v3.23-parallel-msoc / openmw-custom-v3.24-frame-job-qos / openmw-custom-v3.25-engine-ownership-bridge / openmw-custom-v3.20-cp2-lua / openmw-custom-v3.20-cp3-sound-query";
             Log(Debug::Info) << "OpenGL Vendor: " << glGetString(GL_VENDOR);
             Log(Debug::Info) << "OpenGL Renderer: " << glGetString(GL_RENDERER);
             Log(Debug::Info) << "OpenGL Version: " << glGetString(GL_VERSION);
@@ -320,46 +331,494 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         Log(Debug::Error) << "Error in frame: " << e.what();
     }
 
-    const bool reportResource = stats->collectStats("resource");
-
-    if (reportResource)
-        stats->setAttribute(frameNumber, "UnrefQueue", static_cast<double>(mUnrefQueue->getSize()));
-
-    mUnrefQueue->flush(*mWorkQueue);
-
-    if (reportResource)
     {
-        stats->setAttribute(frameNumber, "FrameNumber", frameNumber);
+        Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(Debug::V3HitchTelemetry::FrameTailStage::PreViewer);
+        const bool reportResource = stats->collectStats("resource");
 
-        mResourceSystem->reportStats(frameNumber, stats);
+        if (reportResource)
+            stats->setAttribute(frameNumber, "UnrefQueue", static_cast<double>(mUnrefQueue->getSize()));
 
-        stats->setAttribute(frameNumber, "WorkQueue", static_cast<double>(mWorkQueue->getNumItems()));
-        stats->setAttribute(frameNumber, "WorkThread", static_cast<double>(mWorkQueue->getNumActiveThreads()));
+        mUnrefQueue->flush(*mWorkQueue);
 
-        mMechanicsManager->reportStats(frameNumber, *stats);
-        mWorld->reportStats(frameNumber, *stats);
-        mLuaManager->reportStats(frameNumber, *stats);
+        if (reportResource)
+        {
+            stats->setAttribute(frameNumber, "FrameNumber", frameNumber);
 
-        stats->setAttribute(frameNumber, "StringRefId Count", static_cast<double>(ESM::StringRefId::totalCount()));
+            mResourceSystem->reportStats(frameNumber, stats);
+
+            stats->setAttribute(frameNumber, "WorkQueue", static_cast<double>(mWorkQueue->getNumItems()));
+            stats->setAttribute(frameNumber, "WorkThread", static_cast<double>(mWorkQueue->getNumActiveThreads()));
+
+            mMechanicsManager->reportStats(frameNumber, *stats);
+            mWorld->reportStats(frameNumber, *stats);
+            mLuaManager->reportStats(frameNumber, *stats);
+
+            stats->setAttribute(frameNumber, "StringRefId Count", static_cast<double>(ESM::StringRefId::totalCount()));
+        }
+
+        mStereoManager->updateSettings(Settings::camera().mNearClip, Settings::camera().mViewingDistance);
     }
 
-    mStereoManager->updateSettings(Settings::camera().mNearClip, Settings::camera().mViewingDistance);
+    {
+        Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(
+            Debug::V3HitchTelemetry::FrameTailStage::EventTraversal);
+        mViewer->eventTraversal();
+    }
+    {
+        Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(
+            Debug::V3HitchTelemetry::FrameTailStage::UpdateTraversal);
 
-    mViewer->eventTraversal();
-    mViewer->updateTraversal();
+        // V3.21 CP1: OSG normally merges every fully compiled CompileSet here.
+        // Producers and GL preparation remain active; only completed-set admission
+        // to the main-thread merge is bounded. FIFO plus bounded-age extra service
+        // prevents indefinite starvation while smoothing completion bursts.
+        static const int v321CompletionGovernorMode = [] {
+            const int configured = static_cast<int>(Settings::cells().mV321CompletionGovernorMode);
+            const char* value = std::getenv("OPENMW_V321_COMPLETION_GOVERNOR");
+            if (value == nullptr || *value == '\0')
+                return configured;
+            const int parsed = std::atoi(value);
+            return parsed >= 0 && parsed <= 2 ? parsed : configured;
+        }();
+
+        const bool v321CP2FairnessMode = Resource::v321CP2FairnessEnabled();
+
+        if (v321CompletionGovernorMode > 0 || v321CP2FairnessMode)
+        {
+            osgUtil::IncrementalCompileOperation* const ico = mViewer->getIncrementalCompileOperation();
+            if (ico != nullptr)
+            {
+                struct V321DeferredCompileSet
+                {
+                    osg::ref_ptr<osgUtil::IncrementalCompileOperation::CompileSet> mSet;
+                    unsigned int mFirstDeferredFrame = 0;
+                };
+                struct V321CompletionCounters
+                {
+                    std::uint64_t mCompletedSeen = 0;
+                    std::uint64_t mAdmitted = 0;
+                    std::uint64_t mForced = 0;
+                    std::uint64_t mPeakDeferred = 0;
+                };
+
+                static std::deque<V321DeferredCompileSet> deferred;
+                static V321CompletionCounters counters;
+
+                // Separate queues are used only by CP2 Mode129. CP1 modes keep
+                // their original single FIFO and admission behavior unchanged.
+                static std::array<std::deque<V321DeferredCompileSet>, 4> cp2Deferred;
+                static std::array<unsigned int, 4> cp2Deficit = { 0, 0, 0, 0 };
+                static std::array<std::uint64_t, 4> cp2Seen = { 0, 0, 0, 0 };
+                static std::array<std::uint64_t, 4> cp2Admitted = { 0, 0, 0, 0 };
+                static unsigned int cp2Cursor = 0;
+
+                const unsigned int baseBudget
+                    = static_cast<unsigned int>(Settings::cells().mV321MergeSetsPerFrame);
+                const unsigned int maxDeferredFrames
+                    = static_cast<unsigned int>(Settings::cells().mV321MaxDeferredFrames);
+                const unsigned int forcedBudget
+                    = static_cast<unsigned int>(Settings::cells().mV321ForcedMergeSets);
+
+                unsigned int completedThisFrame = 0;
+                unsigned int admittedThisFrame = 0;
+                unsigned int forcedThisFrame = 0;
+                unsigned int oldestAge = 0;
+                unsigned int v321DeferredDepthForStats = 0;
+                unsigned int cp2ActiveClasses = 0;
+                std::array<unsigned int, 4> cp2AdmittedThisFrame = { 0, 0, 0, 0 };
+
+                {
+                    std::lock_guard<OpenThreads::Mutex> lock(*ico->getCompiledMutex());
+                    osgUtil::IncrementalCompileOperation::CompileSets& completed = ico->getCompiled();
+
+                    auto cp2ClassIndex = [](Resource::V321CompileClass value) -> unsigned int {
+                        switch (value)
+                        {
+                            case Resource::V321CompileClass::ObjectPaging: return 0;
+                            case Resource::V321CompileClass::Terrain: return 1;
+                            case Resource::V321CompileClass::GenericModel: return 2;
+                            case Resource::V321CompileClass::Unknown:
+                            default: return 3;
+                        }
+                    };
+
+                    while (!completed.empty())
+                    {
+                        osg::ref_ptr<osgUtil::IncrementalCompileOperation::CompileSet> set = completed.front();
+                        completed.pop_front();
+                        if (v321CP2FairnessMode)
+                        {
+                            const unsigned int index
+                                = cp2ClassIndex(Resource::getV321CompileClass(set.get()));
+                            cp2Deferred[index].push_back(V321DeferredCompileSet{ set, frameNumber });
+                            ++cp2Seen[index];
+                        }
+                        else
+                            deferred.push_back(V321DeferredCompileSet{ set, frameNumber });
+                        ++completedThisFrame;
+                        ++counters.mCompletedSeen;
+                    }
+
+                    if (v321CP2FairnessMode)
+                    {
+                        const unsigned int serviceBudget
+                            = static_cast<unsigned int>(Settings::cells().mV321CP2ServiceSetsPerFrame);
+                        const unsigned int configuredClassBurst
+                            = static_cast<unsigned int>(Settings::cells().mV321CP2ClassBurstSetsPerFrame);
+                        const unsigned int maxDeferredFrames
+                            = static_cast<unsigned int>(Settings::cells().mV321CP2MaxDeferredFrames);
+                        const unsigned int forcedBudget
+                            = static_cast<unsigned int>(Settings::cells().mV321CP2ForcedSets);
+                        const unsigned int deficitCap
+                            = static_cast<unsigned int>(Settings::cells().mV321CP2DeficitCap);
+                        constexpr std::array<unsigned int, 4> quantum = { 2, 2, 1, 1 };
+
+                        auto totalDeferred = [&]() -> unsigned int {
+                            unsigned int total = 0;
+                            for (const auto& queue : cp2Deferred)
+                                total += static_cast<unsigned int>(queue.size());
+                            return total;
+                        };
+                        auto recomputeOldestAge = [&]() -> unsigned int {
+                            unsigned int age = 0;
+                            for (const auto& queue : cp2Deferred)
+                                if (!queue.empty())
+                                    age = std::max(age, frameNumber - queue.front().mFirstDeferredFrame);
+                            return age;
+                        };
+                        auto admitClass = [&](unsigned int index, bool forced) {
+                            completed.push_back(cp2Deferred[index].front().mSet);
+                            cp2Deferred[index].pop_front();
+                            ++admittedThisFrame;
+                            ++cp2AdmittedThisFrame[index];
+                            ++cp2Admitted[index];
+                            if (forced)
+                                ++forcedThisFrame;
+                        };
+
+                        for (unsigned int i = 0; i < 4; ++i)
+                        {
+                            if (!cp2Deferred[i].empty())
+                                ++cp2ActiveClasses;
+                            cp2Deficit[i] = std::min(deficitCap, cp2Deficit[i] + quantum[i]);
+                        }
+
+                        if (cp2ActiveClasses == 1)
+                        {
+                            // A single active class gets the full budget: fairness
+                            // must not become an artificial producer throttle.
+                            for (unsigned int i = 0; i < 4; ++i)
+                            {
+                                if (cp2Deferred[i].empty())
+                                    continue;
+                                const unsigned int count
+                                    = std::min(serviceBudget, static_cast<unsigned int>(cp2Deferred[i].size()));
+                                for (unsigned int n = 0; n < count; ++n)
+                                    admitClass(i, false);
+                                cp2Deficit[i] = cp2Deficit[i] > count ? cp2Deficit[i] - count : 0;
+                                cp2Cursor = (i + 1) % 4;
+                                break;
+                            }
+                        }
+                        else if (cp2ActiveClasses > 1)
+                        {
+                            const unsigned int classBurst = std::min(configuredClassBurst, serviceBudget);
+                            unsigned int refills = 0;
+                            while (admittedThisFrame < serviceBudget && totalDeferred() > 0)
+                            {
+                                int selected = -1;
+                                for (unsigned int offset = 0; offset < 4; ++offset)
+                                {
+                                    const unsigned int index = (cp2Cursor + offset) % 4;
+                                    if (!cp2Deferred[index].empty()
+                                        && cp2AdmittedThisFrame[index] < classBurst
+                                        && cp2Deficit[index] > 0)
+                                    {
+                                        selected = static_cast<int>(index);
+                                        break;
+                                    }
+                                }
+                                if (selected < 0)
+                                {
+                                    bool classCapBlocksAll = true;
+                                    for (unsigned int i = 0; i < 4; ++i)
+                                        if (!cp2Deferred[i].empty() && cp2AdmittedThisFrame[i] < classBurst)
+                                        {
+                                            classCapBlocksAll = false;
+                                            break;
+                                        }
+                                    if (classCapBlocksAll || refills >= 4)
+                                        break;
+                                    for (unsigned int i = 0; i < 4; ++i)
+                                        cp2Deficit[i] = std::min(deficitCap, cp2Deficit[i] + quantum[i]);
+                                    ++refills;
+                                    continue;
+                                }
+                                const unsigned int index = static_cast<unsigned int>(selected);
+                                admitClass(index, false);
+                                --cp2Deficit[index];
+                                cp2Cursor = (index + 1) % 4;
+                            }
+                        }
+
+                        // Global age escape ignores class cap/deficit so no class
+                        // can starve indefinitely. Extra service itself is bounded.
+                        for (unsigned int forced = 0; forced < forcedBudget; ++forced)
+                        {
+                            int oldestClass = -1;
+                            unsigned int oldestClassAge = 0;
+                            for (unsigned int i = 0; i < 4; ++i)
+                            {
+                                if (cp2Deferred[i].empty())
+                                    continue;
+                                const unsigned int age = frameNumber - cp2Deferred[i].front().mFirstDeferredFrame;
+                                if (age >= maxDeferredFrames && (oldestClass < 0 || age > oldestClassAge))
+                                {
+                                    oldestClass = static_cast<int>(i);
+                                    oldestClassAge = age;
+                                }
+                            }
+                            if (oldestClass < 0)
+                                break;
+                            admitClass(static_cast<unsigned int>(oldestClass), true);
+                        }
+
+                        oldestAge = recomputeOldestAge();
+                        v321DeferredDepthForStats = totalDeferred();
+                        counters.mAdmitted += admittedThisFrame;
+                        counters.mForced += forcedThisFrame;
+                        counters.mPeakDeferred = std::max<std::uint64_t>(
+                            counters.mPeakDeferred, v321DeferredDepthForStats);
+                    }
+                    else
+                    {
+                        if (!deferred.empty())
+                            oldestAge = frameNumber - deferred.front().mFirstDeferredFrame;
+
+                        unsigned int admissionBudget = baseBudget;
+                        unsigned int adaptiveDebtRepaid = 0;
+                        static double adaptiveFrameEmaMs = 0.0;
+                        static unsigned int adaptiveDebt = 0;
+                        const double previousFrameMs = Debug::V3HitchTelemetry::lastFrameWallMs();
+
+                        if (v321CompletionGovernorMode == 2)
+                        {
+                            const double targetMs
+                                = static_cast<double>(Settings::cells().mV321AdaptiveTargetMilliseconds);
+                            const double alpha
+                                = static_cast<double>(Settings::cells().mV321AdaptiveFrameEmaAlpha);
+                            const unsigned int minBudget
+                                = static_cast<unsigned int>(Settings::cells().mV321AdaptiveMergeMin);
+                            const unsigned int configuredMax
+                                = static_cast<unsigned int>(Settings::cells().mV321AdaptiveMergeMax);
+                            const unsigned int maxBudget = std::max(minBudget, configuredMax);
+                            const unsigned int debtCap
+                                = static_cast<unsigned int>(Settings::cells().mV321AdaptiveDebtCap);
+                            const unsigned int repayCap
+                                = static_cast<unsigned int>(Settings::cells().mV321AdaptiveDebtRepayPerFrame);
+                            if (previousFrameMs > 0.0)
+                                adaptiveFrameEmaMs = adaptiveFrameEmaMs <= 0.0
+                                    ? previousFrameMs
+                                    : adaptiveFrameEmaMs * (1.0 - alpha) + previousFrameMs * alpha;
+                            if (previousFrameMs >= targetMs + 6.0)
+                                admissionBudget = minBudget;
+                            else if (previousFrameMs >= targetMs + 2.0)
+                                admissionBudget = std::max(minBudget, baseBudget > 1 ? baseBudget - 1 : 1u);
+                            else if (previousFrameMs > 0.0 && previousFrameMs <= targetMs - 3.0
+                                && (adaptiveFrameEmaMs <= 0.0 || adaptiveFrameEmaMs <= targetMs))
+                                admissionBudget = maxBudget;
+                            else
+                                admissionBudget = std::min(maxBudget, std::max(minBudget, baseBudget));
+                            if (!deferred.empty() && admissionBudget < baseBudget && adaptiveDebt < debtCap)
+                            {
+                                const unsigned int withheld = baseBudget - admissionBudget;
+                                adaptiveDebt += std::min(withheld, debtCap - adaptiveDebt);
+                            }
+                            if (!deferred.empty() && adaptiveDebt > 0 && previousFrameMs > 0.0
+                                && previousFrameMs <= targetMs - 2.0
+                                && (adaptiveFrameEmaMs <= 0.0 || adaptiveFrameEmaMs <= targetMs))
+                            {
+                                const unsigned int room
+                                    = maxBudget > admissionBudget ? maxBudget - admissionBudget : 0;
+                                adaptiveDebtRepaid = std::min(repayCap, std::min(adaptiveDebt, room));
+                                admissionBudget += adaptiveDebtRepaid;
+                                adaptiveDebt -= adaptiveDebtRepaid;
+                            }
+                        }
+
+                        const unsigned int adaptiveBudgetBeforeForced = admissionBudget;
+                        const unsigned int maxDeferredFrames
+                            = static_cast<unsigned int>(Settings::cells().mV321MaxDeferredFrames);
+                        const unsigned int forcedBudget
+                            = static_cast<unsigned int>(Settings::cells().mV321ForcedMergeSets);
+                        if (deferred.size() > admissionBudget && oldestAge >= maxDeferredFrames)
+                            admissionBudget += forcedBudget;
+                        while (admittedThisFrame < admissionBudget && !deferred.empty())
+                        {
+                            completed.push_back(deferred.front().mSet);
+                            deferred.pop_front();
+                            ++admittedThisFrame;
+                        }
+                        if (admittedThisFrame > adaptiveBudgetBeforeForced)
+                            forcedThisFrame = admittedThisFrame - adaptiveBudgetBeforeForced;
+                        counters.mAdmitted += admittedThisFrame;
+                        counters.mForced += forcedThisFrame;
+                        if (deferred.size() > counters.mPeakDeferred)
+                            counters.mPeakDeferred = deferred.size();
+                        v321DeferredDepthForStats = static_cast<unsigned int>(deferred.size());
+
+                        if (stats->collectStats("resource") && v321CompletionGovernorMode == 2)
+                        {
+                            stats->setAttribute(frameNumber, "V321 Adaptive PreviousFrameMs", previousFrameMs);
+                            stats->setAttribute(frameNumber, "V321 Adaptive FrameEmaMs", adaptiveFrameEmaMs);
+                            stats->setAttribute(frameNumber, "V321 Adaptive MergeBudget", adaptiveBudgetBeforeForced);
+                            stats->setAttribute(frameNumber, "V321 Adaptive Debt", adaptiveDebt);
+                            stats->setAttribute(frameNumber, "V321 Adaptive DebtRepaid", adaptiveDebtRepaid);
+                        }
+                    }
+                }
+
+                if (stats->collectStats("resource"))
+                {
+                    stats->setAttribute(frameNumber, "V321 Completion Seen", counters.mCompletedSeen);
+                    stats->setAttribute(frameNumber, "V321 Completion Admitted", counters.mAdmitted);
+                    stats->setAttribute(frameNumber, "V321 Completion Forced", counters.mForced);
+                    stats->setAttribute(frameNumber, "V321 Completion PeakDeferred", counters.mPeakDeferred);
+                    stats->setAttribute(frameNumber, "V321 Completion CompletedThisFrame", completedThisFrame);
+                    stats->setAttribute(frameNumber, "V321 Completion AdmittedThisFrame", admittedThisFrame);
+                    stats->setAttribute(
+                        frameNumber, "V321 Completion Deferred", static_cast<double>(v321DeferredDepthForStats));
+                    stats->setAttribute(frameNumber, "V321 Completion OldestAge", oldestAge);
+                    if (v321CP2FairnessMode)
+                    {
+                        stats->setAttribute(frameNumber, "V321 CP2 ActiveClasses", cp2ActiveClasses);
+                        stats->setAttribute(frameNumber, "V321 CP2 ObjectPaging Deferred", cp2Deferred[0].size());
+                        stats->setAttribute(frameNumber, "V321 CP2 Terrain Deferred", cp2Deferred[1].size());
+                        stats->setAttribute(frameNumber, "V321 CP2 GenericModel Deferred", cp2Deferred[2].size());
+                        stats->setAttribute(frameNumber, "V321 CP2 Unknown Deferred", cp2Deferred[3].size());
+                        stats->setAttribute(frameNumber, "V321 CP2 ObjectPaging AdmittedFrame", cp2AdmittedThisFrame[0]);
+                        stats->setAttribute(frameNumber, "V321 CP2 Terrain AdmittedFrame", cp2AdmittedThisFrame[1]);
+                        stats->setAttribute(frameNumber, "V321 CP2 GenericModel AdmittedFrame", cp2AdmittedThisFrame[2]);
+                        stats->setAttribute(frameNumber, "V321 CP2 Unknown AdmittedFrame", cp2AdmittedThisFrame[3]);
+                        stats->setAttribute(frameNumber, "V321 CP2 ObjectPaging Seen", cp2Seen[0]);
+                        stats->setAttribute(frameNumber, "V321 CP2 Terrain Seen", cp2Seen[1]);
+                        stats->setAttribute(frameNumber, "V321 CP2 GenericModel Seen", cp2Seen[2]);
+                        stats->setAttribute(frameNumber, "V321 CP2 Unknown Seen", cp2Seen[3]);
+                        stats->setAttribute(frameNumber, "V321 CP2 ObjectPaging Admitted", cp2Admitted[0]);
+                        stats->setAttribute(frameNumber, "V321 CP2 Terrain Admitted", cp2Admitted[1]);
+                        stats->setAttribute(frameNumber, "V321 CP2 GenericModel Admitted", cp2Admitted[2]);
+                        stats->setAttribute(frameNumber, "V321 CP2 Unknown Admitted", cp2Admitted[3]);
+                    }
+                }
+            }
+        }
+
+        mViewer->updateTraversal();
+    }
 
     // update focus object for GUI
     {
         ScopedProfile<UserStatsType::Focus> profile(frameStart, frameNumber, *timer, *stats);
-        mWorld->updateFocusObject();
+        // V3.20 preserves the exact V3.19 fixed-cadence path by default. Optional
+        // adaptive mode only adds an immediate refresh when the main camera's view or
+        // projection contract changes. The configured cadence remains a hard maximum
+        // staleness bound for moving world objects while the camera is stationary.
+        // GUI mode always refreshes. Activation/input queries remain untouched.
+        static const unsigned v319FocusCadence = [] {
+            const unsigned configured = static_cast<unsigned>(Settings::cells().mV319FocusCadence);
+            const char* value = std::getenv("OPENMW_V319_FOCUS_CADENCE");
+            if (value == nullptr || *value == '\0')
+                return configured;
+            const int parsed = std::atoi(value);
+            return parsed >= 1 && parsed <= 3 ? static_cast<unsigned>(parsed) : configured;
+        }();
+        static const bool v320AdaptiveFocusCadence = [] {
+            const bool configured = Settings::cells().mV320AdaptiveFocusCadence;
+            const char* value = std::getenv("OPENMW_V320_FOCUS_ADAPTIVE");
+            return value == nullptr || *value == '\0' ? configured : std::atoi(value) != 0;
+        }();
+
+        struct V320FocusCounters
+        {
+            std::uint64_t mAttempted = 0;
+            std::uint64_t mExecuted = 0;
+            std::uint64_t mCadenceSkipped = 0;
+            std::uint64_t mDirtyForced = 0;
+            std::uint64_t mFixedAttempted = 0;
+            std::uint64_t mFixedExecuted = 0;
+            std::uint64_t mAdaptiveAttempted = 0;
+            std::uint64_t mAdaptiveExecuted = 0;
+        };
+        static V320FocusCounters v320FocusCounters;
+
+        bool cameraDirty = false;
+        if (v320AdaptiveFocusCadence)
+        {
+            static bool initialized = false;
+            static osg::Matrixd previousView;
+            static osg::Matrixd previousProjection;
+            const osg::Camera* const camera = mViewer->getCamera();
+            const osg::Matrixd currentView = camera->getViewMatrix();
+            const osg::Matrixd currentProjection = camera->getProjectionMatrix();
+            cameraDirty = !initialized || currentView != previousView || currentProjection != previousProjection;
+            previousView = currentView;
+            previousProjection = currentProjection;
+            initialized = true;
+        }
+
+        const bool guiForced = mWindowManager->isGuiMode();
+        const bool cadenceDue = v319FocusCadence <= 1 || frameNumber % v319FocusCadence == 0;
+        const bool dirtyForced = v320AdaptiveFocusCadence && cameraDirty && !guiForced && !cadenceDue;
+        const bool execute = cadenceDue || guiForced || (v320AdaptiveFocusCadence && cameraDirty);
+
+        ++v320FocusCounters.mAttempted;
+        if (v320AdaptiveFocusCadence)
+            ++v320FocusCounters.mAdaptiveAttempted;
+        else
+            ++v320FocusCounters.mFixedAttempted;
+
+        if (execute)
+        {
+            mWorld->updateFocusObject();
+            ++v320FocusCounters.mExecuted;
+            if (v320AdaptiveFocusCadence)
+                ++v320FocusCounters.mAdaptiveExecuted;
+            else
+                ++v320FocusCounters.mFixedExecuted;
+            if (dirtyForced)
+                ++v320FocusCounters.mDirtyForced;
+        }
+        else
+            ++v320FocusCounters.mCadenceSkipped;
+
+        // Aggregate-only attribution. No per-frame file logging is added; values are
+        // published only when the existing resource-stat collector is enabled.
+        if (stats->collectStats("resource"))
+        {
+            stats->setAttribute(frameNumber, "V320 Focus Attempted", v320FocusCounters.mAttempted);
+            stats->setAttribute(frameNumber, "V320 Focus Executed", v320FocusCounters.mExecuted);
+            stats->setAttribute(frameNumber, "V320 Focus CadenceSkipped", v320FocusCounters.mCadenceSkipped);
+            stats->setAttribute(frameNumber, "V320 Focus DirtyForced", v320FocusCounters.mDirtyForced);
+            stats->setAttribute(frameNumber, "V320 Focus FixedAttempted", v320FocusCounters.mFixedAttempted);
+            stats->setAttribute(frameNumber, "V320 Focus FixedExecuted", v320FocusCounters.mFixedExecuted);
+            stats->setAttribute(frameNumber, "V320 Focus AdaptiveAttempted", v320FocusCounters.mAdaptiveAttempted);
+            stats->setAttribute(frameNumber, "V320 Focus AdaptiveExecuted", v320FocusCounters.mAdaptiveExecuted);
+        }
     }
 
     // if there is a separate Lua thread, it starts the update now
     mLuaWorker->allowUpdate(frameStart, frameNumber, *stats);
 
-    mViewer->renderingTraversals();
+    {
+        Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(
+            Debug::V3HitchTelemetry::FrameTailStage::RenderingTraversal);
+        mViewer->renderingTraversals();
+    }
 
-    mLuaWorker->finishUpdate(frameStart, frameNumber, *stats);
+    {
+        Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(Debug::V3HitchTelemetry::FrameTailStage::LuaWait);
+        mLuaWorker->finishUpdate(frameStart, frameNumber, *stats);
+    }
 
     // The Lua state is unused until the next frame starts: the worker collects
     // garbage through the frame tail and the framerate-limiter sleep.
@@ -748,8 +1207,36 @@ void OMW::Engine::prepareEngine()
 
     VFS::registerArchives(mVFS.get(), mFileCollections, mArchives, true, &mEncoder.get()->getStatelessEncoder());
 
-    mResourceSystem = std::make_unique<Resource::ResourceSystem>(
-        mVFS.get(), Settings::cells().mCacheExpiryDelay, &mEncoder.get()->getStatelessEncoder());
+    const float effectiveResourceCacheExpiry = Settings::RamCache::cacheExpiryDelay();
+    Log(Debug::Info) << "V3 RAM cache mode: " << Settings::RamCache::name()
+                     << " resource expiry=" << effectiveResourceCacheExpiry << "s"
+                     << " preload min/max=" << Settings::RamCache::preloadCellCacheMin() << "/"
+                     << Settings::RamCache::preloadCellCacheMax()
+                     << " preload expiry=" << Settings::RamCache::preloadCellExpiryDelay() << "s"
+                     << " overdrive preload=" << Settings::RamCache::overdrivePreloadName()
+                     << " v3.6 profile=" << (Settings::V36Profile::enabled() ? "on" : "off")
+                     << " lua-fast=" << (Settings::V36Profile::luaFastPathEnabled() ? "on" : "off")
+                     << " coarse-msoc="
+                     << (Settings::V36Profile::coarseChunkOcclusionEnabled() ? "on" : "off")
+                     << " shape-instance pool=" << Settings::RamCache::shapeInstancePoolSize()
+                     << " streaming=" << std::string(Settings::cells().mV3StreamingScheduler)
+                     << " prepared instances="
+                     << (static_cast<bool>(Settings::cells().mV3PreparedInstanceCache) ? "on" : "off")
+                     << "/" << static_cast<int>(Settings::cells().mV3PreparedInstanceCacheMax)
+                     << " v3.2 hibernation="
+                     << (static_cast<bool>(Settings::cells().mV32ExteriorHibernation) ? "on" : "off")
+                     << " gpu telemetry="
+                     << (static_cast<bool>(Settings::cells().mV32GpuMemoryTelemetry) ? "on" : "off")
+                     << " gpu management="
+                     << (static_cast<bool>(Settings::cells().mV32GpuMemoryManagement) ? "on" : "off")
+                     << " gpu budget=" << static_cast<int>(Settings::cells().mV32GpuSoftBudgetMb) << "/"
+                     << static_cast<int>(Settings::cells().mV32GpuHardBudgetMb) << " MiB";
+    mResourceSystem = std::make_unique<Resource::ResourceSystem>(mVFS.get(), effectiveResourceCacheExpiry,
+        &mEncoder.get()->getStatelessEncoder(), Settings::RamCache::retainNifFiles());
+    mResourceSystem->getSceneManager()->setPreparedInstanceCacheLimit(
+        Settings::cells().mV3PreparedInstanceCache
+            ? static_cast<std::size_t>(Settings::cells().mV3PreparedInstanceCacheMax)
+            : 0u);
     mResourceSystem->getSceneManager()->getShaderManager().setMaxTextureUnits(mGlMaxTextureImageUnits);
     mResourceSystem->getSceneManager()->setUnRefImageDataAfterApply(
         false); // keep to Off for now to allow better state sharing
@@ -910,6 +1397,15 @@ void OMW::Engine::prepareEngine()
             asyncListener.update();
         dataLoading.get();
     }
+    if (static_cast<bool>(Settings::cells().mV316SfxMetadataFrontload))
+    {
+        mSoundManager->prepareSfxMetadata();
+        // Mode89 has the PCM predecode reservoir enabled. Queue its ESM-backed
+        // resource list now so neither enumeration nor queue construction lands
+        // on the first ordinary gameplay frame. Modes without predecode return
+        // immediately from this call.
+        mSoundManager->queueSfxPredecode();
+    }
     listener->loadingOff();
 
     mWorld->init(mMaxRecastLogLevel, mViewer, std::move(rootNode), mWorkQueue.get(), *mUnrefQueue);
@@ -1046,7 +1542,11 @@ void OMW::Engine::go()
                               .count()
             * timeManager.getSimulationTimeScale();
 
-        mViewer->advance(timeManager.getRenderingSimulationTime());
+        {
+            Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(
+                Debug::V3HitchTelemetry::FrameTailStage::ViewerAdvance);
+            mViewer->advance(timeManager.getRenderingSimulationTime());
+        }
 
         const unsigned frameNumber = mViewer->getFrameStamp()->getFrameNumber();
 
@@ -1077,7 +1577,11 @@ void OMW::Engine::go()
             }
         }
 
-        frameRateLimiter.limit();
+        {
+            Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(
+                Debug::V3HitchTelemetry::FrameTailStage::FrameLimiter);
+            frameRateLimiter.limit();
+        }
     }
 
     mLuaWorker->join();

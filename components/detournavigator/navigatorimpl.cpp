@@ -3,6 +3,7 @@
 #include "settingsutils.hpp"
 #include "stats.hpp"
 
+#include <components/debug/v3diagnostics.hpp>
 #include <components/esm3/loadpgrd.hpp>
 #include <components/misc/convert.hpp>
 #include <components/misc/coordinateconverter.hpp>
@@ -146,12 +147,17 @@ namespace DetourNavigator
 
     void NavigatorImpl::update(const osg::Vec3f& playerPosition, const UpdateGuard* guard)
     {
+        Debug::V3Diagnostics::ScopedCsvTimer timer(
+            Debug::V3Diagnostics::navWriter(), "navigator_update", "", 0.5);
         removeUnusedNavMeshes();
         mNavMeshManager.update(playerPosition, guard);
     }
 
     void NavigatorImpl::wait(WaitConditionType waitConditionType, Loading::Listener* listener)
     {
+        Debug::V3Diagnostics::TraceScope trace("nav", "navigator_wait", "", 0.1);
+        Debug::V3Diagnostics::ScopedCsvTimer timer(
+            Debug::V3Diagnostics::navWriter(), "navigator_wait", "", 0.1);
         mNavMeshManager.wait(waitConditionType, listener);
     }
 

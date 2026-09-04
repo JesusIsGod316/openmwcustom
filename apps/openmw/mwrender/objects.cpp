@@ -5,6 +5,7 @@
 
 #include <components/esm3/loaddoor.hpp>
 #include <components/esm4/loaddoor.hpp>
+#include <components/debug/v32rendererprofiling.hpp>
 #include <components/misc/resourcehelpers.hpp>
 #include <components/misc/strings/algorithm.hpp>
 #include <components/sceneutil/positionattitudetransform.hpp>
@@ -33,15 +34,22 @@ namespace MWRender
 
     Objects::~Objects()
     {
+        mRestoredObjects.clear();
+        mHibernatedCells.clear();
         mObjects.clear();
 
         for (CellMap::iterator iter = mCellSceneNodes.begin(); iter != mCellSceneNodes.end(); ++iter)
-            iter->second->getParent(0)->removeChild(iter->second);
+        {
+            if (iter->second->getNumParents() != 0)
+                iter->second->getParent(0)->removeChild(iter->second);
+        }
         mCellSceneNodes.clear();
     }
 
     void Objects::insertBegin(const MWWorld::Ptr& ptr)
     {
+        Debug::V32RendererProfiling::ScopedPhase v32AttachTimer(
+            Debug::V32RendererProfiling::Phase::TransformAttach);
         assert(mObjects.find(ptr.mRef) == mObjects.end());
 
         osg::ref_ptr<osg::Group> cellnode;
@@ -54,7 +62,8 @@ namespace MWRender
             if (mOcclusionCuller)
                 cellnode->addCullCallback(new CellOcclusionCallback(mOcclusionCuller, mOccluderMinRadius,
                     mOccluderMaxRadius, mOccluderShrinkFactor, mOccluderMeshResolution, mOccluderMaxMeshResolution,
-                    mOccluderInsideThreshold, mOccluderMaxDistance, mEnableStaticOccluders, mMaxTriangles));
+                    mOccluderInsideThreshold, mOccluderMaxDistance, mEnableStaticOccluders,
+                    mV34BroadenOcclusion, mMaxTriangles, mOcclusionStorage));
             mRootNode->addChild(cellnode);
             mCellSceneNodes[ptr.getCell()] = cellnode;
         }
@@ -206,6 +215,165 @@ namespace MWRender
         }
     }
 
+    std::size_t Objects::hibernateCell(const MWWorld::CellStore* store)
+    {
+        auto cellNode = mCellSceneNodes.find(store);
+        if (cellNode == mCellSceneNodes.end())
+            return 0;
+
+        // A store can only exist in one retained generation. Drop a stale entry
+        // defensively rather than allowing two owners for the same scene nodes.
+        auto stale = mHibernatedCells.find(store);
+        if (stale != mHibernatedCells.end())
+        {
+            for (auto& [ref, object] : stale->second.mObjects)
+            {
+                (void)ref;
+                if (object.mAnimation)
+                {
+                    object.mAnimation->removeFromScene();
+                    mUnrefQueue.push(std::move(object.mAnimation));
+                }
+            }
+            mHibernatedCells.erase(stale);
+        }
+
+        HibernatedCell retained;
+        retained.mRoot = cellNode->second;
+
+        for (PtrAnimationMap::iterator iter = mObjects.begin(); iter != mObjects.end();)
+        {
+            MWWorld::Ptr ptr = iter->second->getPtr();
+            if (ptr.getCell() != store)
+            {
+                ++iter;
+                continue;
+            }
+
+            const bool safeStatic = !ptr.getClass().isActor() && !ptr.getClass().useAnim()
+                && ptr.getType() != ESM::REC_DOOR && ptr.getType() != ESM::REC_DOOR4
+                && ptr.getRefData().getBaseNode() != nullptr;
+
+            if (safeStatic)
+            {
+                HibernatedObject object;
+                object.mAnimation = std::move(iter->second);
+                object.mBaseNode = ptr.getRefData().getBaseNode();
+                retained.mObjects.emplace(ptr.mRef, std::move(object));
+                iter = mObjects.erase(iter);
+                continue;
+            }
+
+            // Everything not covered by the deliberately narrow static safety
+            // predicate follows the normal destruction path.
+            if (ptr.getClass().isActor() && ptr.getRefData().getCustomData())
+            {
+                if (ptr.getClass().hasInventoryStore(ptr))
+                    ptr.getClass().getInventoryStore(ptr).setInvListener(nullptr);
+                ptr.getClass().getContainerStore(ptr).setContListener(nullptr);
+            }
+
+            osg::ref_ptr<SceneUtil::PositionAttitudeTransform> baseNode = ptr.getRefData().getBaseNode();
+            iter->second->removeFromScene();
+            mUnrefQueue.push(std::move(iter->second));
+            iter = mObjects.erase(iter);
+            if (baseNode && baseNode->getNumParents() != 0)
+                baseNode->getParent(0)->removeChild(baseNode);
+        }
+
+        if (retained.mRoot && retained.mRoot->getNumParents() != 0)
+            retained.mRoot->getParent(0)->removeChild(retained.mRoot);
+        mCellSceneNodes.erase(cellNode);
+
+        const std::size_t retainedCount = retained.mObjects.size();
+        if (retainedCount != 0)
+            mHibernatedCells.emplace(store, std::move(retained));
+        return retainedCount;
+    }
+
+    std::size_t Objects::restoreHibernatedCell(const MWWorld::CellStore* store)
+    {
+        auto found = mHibernatedCells.find(store);
+        if (found == mHibernatedCells.end())
+            return 0;
+
+        HibernatedCell retained = std::move(found->second);
+        mHibernatedCells.erase(found);
+
+        if (!retained.mRoot)
+            return 0;
+
+        mRootNode->addChild(retained.mRoot);
+        mCellSceneNodes[store] = retained.mRoot;
+
+        std::size_t restoredCount = 0;
+        for (auto& [ref, object] : retained.mObjects)
+        {
+            if (!object.mAnimation || !object.mBaseNode)
+                continue;
+
+            MWWorld::Ptr ptr = object.mAnimation->getPtr();
+            const bool valid = ptr.getCell() == store && ptr.mRef == ref && !ptr.mRef->isDeleted()
+                && ptr.getRefData().isEnabled() && !ptr.getClass().isActor() && !ptr.getClass().useAnim()
+                && ptr.getType() != ESM::REC_DOOR && ptr.getType() != ESM::REC_DOOR4
+                && mObjects.find(ref) == mObjects.end();
+
+            if (!valid)
+            {
+                if (object.mBaseNode->getNumParents() != 0)
+                    object.mBaseNode->getParent(0)->removeChild(object.mBaseNode);
+                object.mAnimation->removeFromScene();
+                mUnrefQueue.push(std::move(object.mAnimation));
+                continue;
+            }
+
+            const float* position = ptr.getRefData().getPosition().pos;
+            object.mBaseNode->setPosition(osg::Vec3f(position[0], position[1], position[2]));
+            float scale = ptr.getCellRef().getScale();
+            osg::Vec3f scaleVec(scale, scale, scale);
+            ptr.getClass().adjustScale(ptr, scaleVec, true);
+            object.mBaseNode->setScale(scaleVec);
+
+            ptr.getRefData().setBaseNode(object.mBaseNode);
+            mObjects.emplace(ref, std::move(object.mAnimation));
+            mRestoredObjects.insert(ref);
+            ++restoredCount;
+        }
+
+        return restoredCount;
+    }
+
+    bool Objects::consumeRestoredObject(const MWWorld::Ptr& ptr)
+    {
+        const auto found = mRestoredObjects.find(ptr.mRef);
+        if (found == mRestoredObjects.end())
+            return false;
+        mRestoredObjects.erase(found);
+        return true;
+    }
+
+    void Objects::clearHibernatedCells()
+    {
+        for (auto& [store, cell] : mHibernatedCells)
+        {
+            (void)store;
+            for (auto& [ref, object] : cell.mObjects)
+            {
+                (void)ref;
+                if (object.mAnimation)
+                {
+                    object.mAnimation->removeFromScene();
+                    mUnrefQueue.push(std::move(object.mAnimation));
+                }
+            }
+        }
+        mHibernatedCells.clear();
+        // Restored refs are normally consumed by Scene::addObject. Clear any
+        // remainder at the restore boundary so an exception or a skipped ref
+        // cannot make a later unrelated insertion look restored.
+        mRestoredObjects.clear();
+    }
+
     void Objects::updatePtr(const MWWorld::Ptr& old, const MWWorld::Ptr& cur)
     {
         osg::ref_ptr<osg::Node> objectNode = cur.getRefData().getBaseNode();
@@ -221,7 +389,8 @@ namespace MWRender
             if (mOcclusionCuller)
                 cellnode->addCullCallback(new CellOcclusionCallback(mOcclusionCuller, mOccluderMinRadius,
                     mOccluderMaxRadius, mOccluderShrinkFactor, mOccluderMeshResolution, mOccluderMaxMeshResolution,
-                    mOccluderInsideThreshold, mOccluderMaxDistance, mEnableStaticOccluders, mMaxTriangles));
+                    mOccluderInsideThreshold, mOccluderMaxDistance, mEnableStaticOccluders,
+                    mV34BroadenOcclusion, mMaxTriangles, mOcclusionStorage));
             mRootNode->addChild(cellnode);
             mCellSceneNodes[newCell] = cellnode;
         }
@@ -268,7 +437,7 @@ namespace MWRender
     void Objects::setOcclusionCuller(SceneUtil::OcclusionCuller* culler, float occluderMinRadius,
         float occluderMaxRadius, float occluderShrinkFactor, int occluderMeshResolution, int occluderMaxMeshResolution,
         float occluderInsideThreshold, float occluderMaxDistance, bool enableStaticOccluders,
-        unsigned int maxTriangles, OcclusionStorage* storage)
+        bool v34BroadenOcclusion, unsigned int maxTriangles, OcclusionStorage* storage)
     {
         mOcclusionCuller = culler;
         mOccluderMinRadius = occluderMinRadius;
@@ -279,6 +448,7 @@ namespace MWRender
         mOccluderInsideThreshold = occluderInsideThreshold;
         mOccluderMaxDistance = occluderMaxDistance;
         mEnableStaticOccluders = enableStaticOccluders;
+        mV34BroadenOcclusion = v34BroadenOcclusion;
         mMaxTriangles = maxTriangles;
         mOcclusionStorage = storage;
     }

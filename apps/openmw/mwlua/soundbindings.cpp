@@ -10,9 +10,17 @@
 #include "../mwworld/esmstore.hpp"
 
 #include <components/esm3/loadsoun.hpp>
+#include <components/debug/v320luafastpath.hpp>
+#include <components/debug/v3hitchtelemetry.hpp>
 #include <components/misc/resourcehelpers.hpp>
 #include <components/settings/values.hpp>
 #include <components/vfs/pathutil.hpp>
+
+#include <cstdlib>
+#include <limits>
+#include <map>
+#include <string>
+#include <tuple>
 
 #include "luamanagerimp.hpp"
 #include "objectvariant.hpp"
@@ -32,6 +40,169 @@ namespace
     {
         float mFade = 1.f;
     };
+
+    bool v317SoundBindingCacheEnabled()
+    {
+        static const bool enabled = [] {
+            const bool configured = Settings::lua().mV320SoundConversionCache;
+            if (const char* value = std::getenv("OPENMW_V320_SOUND_CONVERSION_CACHE"))
+                return *value != 0 ? std::atoi(value) != 0 : configured;
+            return std::getenv("OPENMW_V317_LUA_OPT") != nullptr || configured;
+        }();
+        return enabled;
+    }
+
+    class V317SoundBindingCache
+    {
+    public:
+        ESM::RefId soundId(std::string_view value)
+        {
+            if (!v317SoundBindingCacheEnabled() || value.size() > sMaxKeyBytes)
+                return ESM::RefId::deserializeText(value);
+            if (const auto it = mSoundIds.find(value); it != mSoundIds.end())
+            {
+                Debug::V320LuaFastPath::recordSoundHit();
+                return it->second;
+            }
+            Debug::V320LuaFastPath::recordSoundMiss();
+            ESM::RefId parsed = ESM::RefId::deserializeText(value);
+            if (mSoundIds.size() >= sMaxEntries)
+            {
+                mSoundIds.erase(mSoundIds.begin());
+                Debug::V320LuaFastPath::recordSoundEviction();
+            }
+            mSoundIds.emplace(std::string(value), parsed);
+            return parsed;
+        }
+
+        VFS::Path::Normalized path(std::string_view value)
+        {
+            if (!v317SoundBindingCacheEnabled() || value.size() > sMaxKeyBytes)
+                return VFS::Path::Normalized(value);
+            if (const auto it = mPaths.find(value); it != mPaths.end())
+            {
+                Debug::V320LuaFastPath::recordSoundHit();
+                return it->second;
+            }
+            Debug::V320LuaFastPath::recordSoundMiss();
+            VFS::Path::Normalized parsed(value);
+            if (mPaths.size() >= sMaxEntries)
+            {
+                mPaths.erase(mPaths.begin());
+                Debug::V320LuaFastPath::recordSoundEviction();
+            }
+            mPaths.emplace(std::string(value), parsed);
+            return parsed;
+        }
+
+    private:
+        static constexpr std::size_t sMaxEntries = 4096;
+        static constexpr std::size_t sMaxKeyBytes = 512;
+        std::map<std::string, ESM::RefId, std::less<>> mSoundIds;
+        std::map<std::string, VFS::Path::Normalized, std::less<>> mPaths;
+    };
+
+    V317SoundBindingCache& v317SoundBindingCache()
+    {
+        thread_local V317SoundBindingCache cache;
+        return cache;
+    }
+
+    bool v320SoundQueryCoalescingEnabled()
+    {
+        static const bool enabled = [] {
+            const bool configured = Settings::lua().mV320SoundQueryCoalescing;
+            if (const char* value = std::getenv("OPENMW_V320_SOUND_QUERY_COALESCING"))
+                return *value != 0 ? std::atoi(value) != 0 : configured;
+            return configured;
+        }();
+        return enabled;
+    }
+
+    struct V320SoundQueryKey
+    {
+        ESM::RefNum mObject;
+        bool mFile = false;
+        std::string mValue;
+
+        friend bool operator<(const V320SoundQueryKey& left, const V320SoundQueryKey& right)
+        {
+            return std::tie(left.mObject, left.mFile, left.mValue)
+                < std::tie(right.mObject, right.mFile, right.mValue);
+        }
+    };
+
+    class V320SoundQueryCache
+    {
+    public:
+        void invalidate()
+        {
+            if (!v320SoundQueryCoalescingEnabled())
+                return;
+            if (!mResults.empty())
+                Debug::V320LuaFastPath::counters().mSoundQueryDirtyInvalidations.fetch_add(
+                    1, std::memory_order_relaxed);
+            mResults.clear();
+        }
+
+        bool soundId(const MWWorld::Ptr& ptr, std::string_view key, ESM::RefId sound)
+        {
+            return query(ptr, false, key, [&] {
+                return MWBase::Environment::get().getSoundManager()->getSoundPlaying(ptr, sound);
+            });
+        }
+
+        bool path(const MWWorld::Ptr& ptr, std::string_view key, const VFS::Path::Normalized& path)
+        {
+            return query(ptr, true, key, [&] {
+                return MWBase::Environment::get().getSoundManager()->getSoundPlaying(ptr, path);
+            });
+        }
+
+    private:
+        template <class Query>
+        bool query(const MWWorld::Ptr& ptr, bool file, std::string_view value, Query&& execute)
+        {
+            Debug::V320LuaFastPath::Counters& counters = Debug::V320LuaFastPath::counters();
+            counters.mSoundQueryCalls.fetch_add(1, std::memory_order_relaxed);
+            if (!v320SoundQueryCoalescingEnabled())
+            {
+                counters.mSoundQueryExecuted.fetch_add(1, std::memory_order_relaxed);
+                return execute();
+            }
+
+            const unsigned frame = Debug::V3HitchTelemetry::currentFrame();
+            if (frame != mFrame)
+            {
+                mResults.clear();
+                mFrame = frame;
+            }
+            const ESM::RefNum object = ptr.isEmpty() ? ESM::RefNum{} : ptr.getCellRef().getRefNum();
+            V320SoundQueryKey key{ object, file, std::string(value) };
+            if (const auto it = mResults.find(key); it != mResults.end())
+            {
+                counters.mSoundQueryCoalesced.fetch_add(1, std::memory_order_relaxed);
+                return it->second;
+            }
+
+            counters.mSoundQueryExecuted.fetch_add(1, std::memory_order_relaxed);
+            const bool result = execute();
+            if (mResults.size() >= sMaxEntries)
+                mResults.erase(mResults.begin());
+            mResults.emplace(std::move(key), result);
+            return result;
+        }
+
+        static constexpr std::size_t sMaxEntries = 4096;
+        unsigned mFrame = std::numeric_limits<unsigned>::max();
+        std::map<V320SoundQueryKey, bool> mResults;
+    };
+
+    V320SoundQueryCache& v320SoundQueryCache()
+    {
+        thread_local V320SoundQueryCache cache;
+        return cache;
+    }
 
     MWWorld::Ptr getMutablePtrOrThrow(const MWLua::ObjectVariant& variant)
     {
@@ -147,8 +318,9 @@ namespace MWLua
         api["playSound"] = [](std::string_view soundId, const sol::optional<sol::table>& options) {
             auto args = getPlaySoundArgs(options);
             auto playMode = getPlayMode(args, false);
-            ESM::RefId sound = ESM::RefId::deserializeText(soundId);
+            ESM::RefId sound = v317SoundBindingCache().soundId(soundId);
 
+            v320SoundQueryCache().invalidate();
             MWBase::Environment::get().getSoundManager()->playSound(
                 sound, args.mVolume, args.mPitch, MWSound::Type::Sfx, playMode, args.mTimeOffset);
         };
@@ -156,36 +328,39 @@ namespace MWLua
             auto args = getPlaySoundArgs(options);
             auto playMode = getPlayMode(args, false);
 
-            MWBase::Environment::get().getSoundManager()->playSound(VFS::Path::Normalized(fileName), args.mVolume,
+            v320SoundQueryCache().invalidate();
+            MWBase::Environment::get().getSoundManager()->playSound(v317SoundBindingCache().path(fileName), args.mVolume,
                 args.mPitch, MWSound::Type::Sfx, playMode, args.mTimeOffset);
         };
 
         api["stopSound"] = [](std::string_view soundId) {
-            ESM::RefId sound = ESM::RefId::deserializeText(soundId);
+            ESM::RefId sound = v317SoundBindingCache().soundId(soundId);
+            v320SoundQueryCache().invalidate();
             MWBase::Environment::get().getSoundManager()->stopSound3D(MWWorld::Ptr(), sound);
         };
         api["stopSoundFile"] = [](std::string_view fileName) {
-            MWBase::Environment::get().getSoundManager()->stopSound3D(MWWorld::Ptr(), VFS::Path::Normalized(fileName));
+            v320SoundQueryCache().invalidate();
+            MWBase::Environment::get().getSoundManager()->stopSound3D(MWWorld::Ptr(), v317SoundBindingCache().path(fileName));
         };
 
         api["isSoundPlaying"] = [](std::string_view soundId) {
-            ESM::RefId sound = ESM::RefId::deserializeText(soundId);
-            return MWBase::Environment::get().getSoundManager()->getSoundPlaying(MWWorld::Ptr(), sound);
+            ESM::RefId sound = v317SoundBindingCache().soundId(soundId);
+            return v320SoundQueryCache().soundId(MWWorld::Ptr(), soundId, sound);
         };
         api["isSoundFilePlaying"] = [](std::string_view fileName) {
-            return MWBase::Environment::get().getSoundManager()->getSoundPlaying(
-                MWWorld::Ptr(), VFS::Path::Normalized(fileName));
+            const VFS::Path::Normalized path = v317SoundBindingCache().path(fileName);
+            return v320SoundQueryCache().path(MWWorld::Ptr(), fileName, path);
         };
 
         api["streamMusic"] = [](std::string_view fileName, const sol::optional<sol::table>& options) {
             auto args = getStreamMusicArgs(options);
             MWBase::SoundManager* sndMgr = MWBase::Environment::get().getSoundManager();
-            sndMgr->streamMusic(VFS::Path::Normalized(fileName), MWSound::MusicType::Normal, args.mFade);
+            sndMgr->streamMusic(v317SoundBindingCache().path(fileName), MWSound::MusicType::Normal, args.mFade);
         };
 
         api["say"]
             = [luaManager = context.mLuaManager](std::string_view fileName, sol::optional<std::string_view> text) {
-                  MWBase::Environment::get().getSoundManager()->say(VFS::Path::Normalized(fileName));
+                  MWBase::Environment::get().getSoundManager()->say(v317SoundBindingCache().path(fileName));
                   if (text && Settings::gui().mSubtitles)
                       luaManager->addUIMessage(*text);
               };
@@ -220,9 +395,10 @@ namespace MWLua
                   auto args = getPlaySoundArgs(options);
                   auto playMode = getPlayMode(args, true);
 
-                  ESM::RefId sound = ESM::RefId::deserializeText(soundId);
+                  ESM::RefId sound = v317SoundBindingCache().soundId(soundId);
                   MWWorld::Ptr ptr = getMutablePtrOrThrow(ObjectVariant(object));
 
+                  v320SoundQueryCache().invalidate();
                   MWBase::Environment::get().getSoundManager()->playSound3D(
                       ptr, sound, args.mVolume, args.mPitch, MWSound::Type::Sfx, playMode, args.mTimeOffset);
               };
@@ -232,34 +408,38 @@ namespace MWLua
                   auto playMode = getPlayMode(args, true);
                   MWWorld::Ptr ptr = getMutablePtrOrThrow(ObjectVariant(object));
 
-                  MWBase::Environment::get().getSoundManager()->playSound3D(ptr, VFS::Path::Normalized(fileName),
+                  v320SoundQueryCache().invalidate();
+                  MWBase::Environment::get().getSoundManager()->playSound3D(ptr, v317SoundBindingCache().path(fileName),
                       args.mVolume, args.mPitch, MWSound::Type::Sfx, playMode, args.mTimeOffset);
               };
 
         api["stopSound3d"] = [](std::string_view soundId, const sol::object& object) {
-            ESM::RefId sound = ESM::RefId::deserializeText(soundId);
+            ESM::RefId sound = v317SoundBindingCache().soundId(soundId);
             MWWorld::Ptr ptr = getMutablePtrOrThrow(ObjectVariant(object));
+            v320SoundQueryCache().invalidate();
             MWBase::Environment::get().getSoundManager()->stopSound3D(ptr, sound);
         };
         api["stopSoundFile3d"] = [](std::string_view fileName, const sol::object& object) {
             MWWorld::Ptr ptr = getMutablePtrOrThrow(ObjectVariant(object));
-            MWBase::Environment::get().getSoundManager()->stopSound3D(ptr, VFS::Path::Normalized(fileName));
+            v320SoundQueryCache().invalidate();
+            MWBase::Environment::get().getSoundManager()->stopSound3D(ptr, v317SoundBindingCache().path(fileName));
         };
 
         api["isSoundPlaying"] = [](std::string_view soundId, const sol::object& object) {
-            ESM::RefId sound = ESM::RefId::deserializeText(soundId);
+            ESM::RefId sound = v317SoundBindingCache().soundId(soundId);
             const MWWorld::Ptr& ptr = getPtrOrThrow(ObjectVariant(object));
-            return MWBase::Environment::get().getSoundManager()->getSoundPlaying(ptr, sound);
+            return v320SoundQueryCache().soundId(ptr, soundId, sound);
         };
         api["isSoundFilePlaying"] = [](std::string_view fileName, const sol::object& object) {
             const MWWorld::Ptr& ptr = getPtrOrThrow(ObjectVariant(object));
-            return MWBase::Environment::get().getSoundManager()->getSoundPlaying(ptr, VFS::Path::Normalized(fileName));
+            const VFS::Path::Normalized path = v317SoundBindingCache().path(fileName);
+            return v320SoundQueryCache().path(ptr, fileName, path);
         };
 
         api["say"] = [luaManager = context.mLuaManager](
                          std::string_view fileName, const sol::object& object, sol::optional<std::string_view> text) {
             MWWorld::Ptr ptr = getMutablePtrOrThrow(ObjectVariant(object));
-            MWBase::Environment::get().getSoundManager()->say(ptr, VFS::Path::Normalized(fileName));
+            MWBase::Environment::get().getSoundManager()->say(ptr, v317SoundBindingCache().path(fileName));
             if (text && Settings::gui().mSubtitles)
                 luaManager->addUIMessage(*text);
         };

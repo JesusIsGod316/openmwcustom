@@ -160,6 +160,13 @@ namespace MWRender
         void addCell(const MWWorld::CellStore* store);
         void removeCell(const MWWorld::CellStore* store);
 
+        // V3.2 bounded recent-exterior render-state retention.
+        bool beginExteriorHibernation();
+        std::size_t hibernateExteriorCell(const MWWorld::CellStore* store);
+        std::size_t restoreHibernatedExteriorCell(const MWWorld::CellStore* store);
+        bool consumeRestoredExteriorObject(const MWWorld::Ptr& ptr);
+        void finishExteriorRestore();
+
         // Set the path to the occluder mesh cache DB. Must be called before any cells load.
         void setOcclusionCachePath(const std::string& path);
 
@@ -283,6 +290,8 @@ namespace MWRender
         void pagingBlacklistObject(int type, const MWWorld::ConstPtr& ptr);
         bool pagingUnlockCache();
         void getPagedRefnums(const osg::Vec4i& activeGrid, std::vector<ESM::RefNum>& out);
+        void clearV310InitialObjectPagingCache();
+        void setV310InitialFrontloadActive(bool active);
 
         void updateProjectionMatrix();
 

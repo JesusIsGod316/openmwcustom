@@ -280,6 +280,12 @@ namespace Debug::V3GpuMemory
         return pressureState() == PressureState::Hard;
     }
 
+    inline bool softPressure()
+    {
+        const PressureState state = pressureState();
+        return state == PressureState::Soft || state == PressureState::Hard;
+    }
+
     inline const char* pressureName(PressureState state)
     {
         switch (state)
@@ -343,6 +349,27 @@ namespace Debug::V3GpuMemory
             else if (sample.mUsageBytes >= softBytes)
                 state = PressureState::Soft;
         }
+
+        if (nvmlAvailable && adapterSample.mTotalBytes != 0)
+        {
+            // Adapter-wide guard for shared pressure that DXGI's process-local
+            // accounting cannot see. Because V3.7 uses this only for admission
+            // control (never destructive eviction), it is intentionally early.
+            const double adapterUsedRatio = static_cast<double>(adapterSample.mUsedBytes)
+                / static_cast<double>(adapterSample.mTotalBytes);
+            constexpr std::uint64_t AdapterSoftFreeBytes = std::uint64_t{ 900 } * MiB;
+            constexpr std::uint64_t AdapterHardFreeBytes = std::uint64_t{ 450 } * MiB;
+
+            PressureState adapterState = PressureState::Comfortable;
+            if (adapterUsedRatio >= 0.94 || adapterSample.mFreeBytes <= AdapterHardFreeBytes)
+                adapterState = PressureState::Hard;
+            else if (adapterUsedRatio >= 0.88 || adapterSample.mFreeBytes <= AdapterSoftFreeBytes)
+                adapterState = PressureState::Soft;
+
+            if (state == PressureState::Unavailable || static_cast<int>(adapterState) > static_cast<int>(state))
+                state = adapterState;
+        }
+
         sPressureState.store(static_cast<int>(state), std::memory_order_relaxed);
 
         if (!telemetryEnabled)

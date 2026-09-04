@@ -15,15 +15,13 @@ namespace MWRender
 {
 
     PingPongCull::PingPongCull(PostProcessor* pp)
-        : mViewportStateset(nullptr)
+        : mViewportStateset(new osg::StateSet())
+        , mViewport(new osg::Viewport)
         , mPostProcessor(pp)
     {
-        if (Stereo::getStereo())
-        {
-            mViewportStateset = new osg::StateSet();
-            mViewport = new osg::Viewport;
-            mViewportStateset->setAttribute(mViewport);
-        }
+        // V3.18 uses this state for both stereo and low-resolution 3D rendering.
+        // HUD/final presentation is a separate native-resolution camera/pass.
+        mViewportStateset->setAttribute(mViewport);
     }
 
     PingPongCull::~PingPongCull()

@@ -1,8 +1,13 @@
 #include "pingpongcanvas.hpp"
 
 #include <cassert>
+#include <iomanip>
+#include <sstream>
 
+#include <components/debug/v3diagnostics.hpp>
+#include <components/debug/v36gpuprofiler.hpp>
 #include <components/shader/shadermanager.hpp>
+#include <components/settings/values.hpp>
 #include <components/stereo/multiview.hpp>
 #include <components/stereo/stereomanager.hpp>
 
@@ -17,6 +22,7 @@ namespace MWRender
         : mFallbackStateSet(new osg::StateSet)
         , mMultiviewResolveStateSet(new osg::StateSet)
         , mLuminanceCalculator(luminanceCalculator)
+        , mNisScaler(std::make_shared<NisScaler>())
     {
         setUseDisplayList(false);
         setUseVertexBufferObjects(true);
@@ -67,6 +73,7 @@ namespace MWRender
     {
         osg::Geometry::resizeGLObjectBuffers(maxSize);
         mEmptyUniformStacks.resize(maxSize);
+        mNisScaler->resizeGLObjectBuffers(maxSize);
     }
 
     static void attachCloneOfTemplate(
@@ -116,6 +123,9 @@ namespace MWRender
         }
 
         auto* resolveViewport = state.getCurrentViewport();
+        const bool scaledOutput = !Stereo::getStereo() && resolveViewport
+            && (mTextureScene->getTextureWidth() != static_cast<int>(resolveViewport->width())
+                || mTextureScene->getTextureHeight() != static_cast<int>(resolveViewport->height()));
 
         if (filtered.empty() || !mPostprocessing)
         {
@@ -128,7 +138,16 @@ namespace MWRender
                 state.apply();
             }
 
-            state.applyTextureAttribute(0, mTextureScene);
+            osg::Texture* presentationTexture = mTextureScene;
+            if (scaledOutput && Settings::video().mUpscaler.get() == "nis")
+            {
+                if (osg::Texture* nisTexture = mNisScaler->dispatch(renderInfo, mTextureScene,
+                        mTextureScene->getTextureWidth(), mTextureScene->getTextureHeight(),
+                        static_cast<int>(resolveViewport->width()), static_cast<int>(resolveViewport->height()),
+                        Settings::video().mUpscalerSharpness))
+                    presentationTexture = nisTexture;
+            }
+            state.applyTextureAttribute(0, presentationTexture);
             resolveViewport->apply(state);
 
             drawGeometry(renderInfo);
@@ -172,11 +191,11 @@ namespace MWRender
 
             mLuminanceCalculator->dirty(mTextureScene->getTextureWidth(), mTextureScene->getTextureHeight());
 
-            if (Stereo::getStereo())
-                mRenderViewport
-                    = new osg::Viewport(0, 0, mTextureScene->getTextureWidth(), mTextureScene->getTextureHeight());
-            else
-                mRenderViewport = nullptr;
+            // V3.18: every scene/PostFX intermediate pass uses the internal
+            // render-target size. The final presentation pass restores the
+            // native output viewport.
+            mRenderViewport
+                = new osg::Viewport(0, 0, mTextureScene->getTextureWidth(), mTextureScene->getTextureHeight());
 
             mDirty = false;
         }
@@ -307,7 +326,7 @@ namespace MWRender
 
                     lastApplied = pass.mRenderTarget->getHandle(state.getContextID());
                 }
-                else if (pass.mResolve && index == filtered.back())
+                else if (pass.mResolve && index == filtered.back() && !scaledOutput)
                 {
                     bindDestinationFbo();
                     if (!destinationFbo && !Stereo::getMultiview())
@@ -339,7 +358,29 @@ namespace MWRender
                 if (!state.getLastAppliedProgramObject())
                     mFallbackProgram->apply(state);
 
-                drawGeometry(renderInfo);
+                const std::string v36GpuPassName = std::string("postfx/")
+                    + (node.mHandle ? node.mHandle->getName() : std::string("unknown")) + "/"
+                    + std::to_string(passIndex);
+                Debug::V36GpuProfiler::ScopedPass v36GpuPass(renderInfo, v36GpuPassName);
+                auto& v3PostFxWriter = Debug::V3Diagnostics::postFxWriter();
+                if (v3PostFxWriter.enabled())
+                {
+                    const auto v3Start = Debug::V3Diagnostics::Clock::now();
+                    drawGeometry(renderInfo);
+                    const double v3CpuMs = Debug::V3Diagnostics::elapsedMs(v3Start);
+                    const osg::Viewport* v3Viewport = state.getCurrentViewport();
+                    const int v3Width = v3Viewport ? static_cast<int>(v3Viewport->width()) : 0;
+                    const int v3Height = v3Viewport ? static_cast<int>(v3Viewport->height()) : 0;
+                    std::ostringstream row;
+                    row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
+                        << Debug::V3Diagnostics::threadId() << ','
+                        << Debug::V3Diagnostics::csvQuote(node.mHandle ? node.mHandle->getName() : std::string("unknown"))
+                        << ',' << passIndex << ',' << std::fixed << std::setprecision(4) << v3CpuMs << ',' << v3Width
+                        << ',' << v3Height << ',' << (pass.mRenderTarget ? 1 : 0) << ',' << (pass.mMipMap ? 1 : 0);
+                    v3PostFxWriter.writeLine(row.str());
+                }
+                else
+                    drawGeometry(renderInfo);
 
                 if (pass.mRenderTarget && pass.mRenderTexture->getNumMipmapLevels() > 0)
                 {
@@ -355,6 +396,36 @@ namespace MWRender
             }
 
             state.popStateSet();
+        }
+
+        if (scaledOutput)
+        {
+            // All user/internal PostFX has completed at internal resolution.
+            // Present exactly once at native resolution using the existing
+            // linear-clamp fullscreen path. NIS replaces only this stage.
+            bindDestinationFbo();
+            resolveViewport->apply(state);
+            state.pushStateSet(mFallbackStateSet);
+            state.apply();
+            osg::Texture* finalTexture = mTextureScene;
+            if (lastShader != 0)
+                finalTexture = (osg::Texture*)mFbos[lastShader - GL_COLOR_ATTACHMENT0_EXT]
+                                   ->getAttachment(osg::Camera::COLOR_BUFFER0)
+                                   .getTexture();
+            osg::Texture* presentationTexture = finalTexture;
+            if (Settings::video().mUpscaler.get() == "nis")
+            {
+                if (osg::Texture* nisTexture = mNisScaler->dispatch(renderInfo, finalTexture,
+                        finalTexture->getTextureWidth(), finalTexture->getTextureHeight(),
+                        static_cast<int>(resolveViewport->width()), static_cast<int>(resolveViewport->height()),
+                        Settings::video().mUpscalerSharpness))
+                    presentationTexture = nisTexture;
+            }
+            state.applyTextureAttribute(0, presentationTexture);
+            drawGeometry(renderInfo);
+            state.popStateSet();
+            state.apply();
+            lastApplied = destinationHandle;
         }
 
         if (Stereo::getMultiview())

@@ -1,6 +1,8 @@
 #ifndef OPENMW_MWRENDER_GROUNDCOVER_H
 #define OPENMW_MWRENDER_GROUNDCOVER_H
 
+#include <atomic>
+
 #include <components/esm3/loadcell.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/terrain/quadtreeworld.hpp>
@@ -14,6 +16,11 @@ namespace MWWorld
 namespace osg
 {
     class Program;
+}
+
+namespace SceneUtil
+{
+    class OcclusionCuller;
 }
 
 namespace MWRender
@@ -34,6 +41,8 @@ namespace MWRender
 
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
 
+        void setOcclusionCuller(SceneUtil::OcclusionCuller* culler, bool coarseChunkOcclusion);
+
         struct GroundcoverEntry
         {
             ESM::Position mPos;
@@ -50,10 +59,13 @@ namespace MWRender
         using InstanceMap = std::map<VFS::Path::Normalized, std::vector<GroundcoverEntry>, std::less<>>;
 
         Resource::SceneManager* mSceneManager;
+        osg::ref_ptr<SceneUtil::OcclusionCuller> mOcclusionCuller;
+        bool mV35CoarseChunkOcclusion = false;
         float mDensity;
         osg::ref_ptr<osg::StateSet> mStateset;
         osg::ref_ptr<osg::Program> mProgramTemplate;
         const MWWorld::GroundcoverStore& mGroundcoverStore;
+        std::atomic_uint64_t mV314CompileQueued{ 0 };
 
         osg::ref_ptr<osg::Node> createChunk(InstanceMap& instances, const osg::Vec2f& center);
         void collectInstances(InstanceMap& instances, float size, const osg::Vec2f& center);

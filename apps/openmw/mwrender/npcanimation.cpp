@@ -1,14 +1,18 @@
 #include "npcanimation.hpp"
 
+#include <cstdlib>
 #include <osg/Depth>
 #include <osg/MatrixTransform>
+#include <osg/NodeCallback>
 #include <osg/UserDataContainer>
 
 #include <osgUtil/CullVisitor>
 #include <osgUtil/RenderBin>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/v3deeptelemetry.hpp>
 
+#include <components/misc/constants.hpp>
 #include <components/misc/rng.hpp>
 
 #include <components/misc/resourcehelpers.hpp>
@@ -48,6 +52,29 @@
 
 namespace
 {
+    bool v325ActorSourceBatchEnabled()
+    {
+        static const bool enabled = [] {
+            const char* value = std::getenv("OPENMW_V325_ACTOR_SOURCE_BATCH");
+            return value && value[0] == '1' && value[1] == '\0';
+        }();
+        return enabled;
+    }
+
+    constexpr std::string_view sV321OwnerViewHidden = "openmw.v321.ownerViewHidden";
+
+    class V321OwnerViewHiddenCullCallback : public osg::NodeCallback
+    {
+    public:
+        void operator()(osg::Node* node, osg::NodeVisitor* nv) override
+        {
+            auto* cullVisitor = dynamic_cast<osgUtil::CullVisitor*>(nv);
+            if (cullVisitor && cullVisitor->getCurrentCamera()
+                && cullVisitor->getCurrentCamera()->getName() == Constants::SceneCamera)
+                return;
+            traverse(node, nv);
+        }
+    };
 
     VFS::Path::Normalized getVampireHead(ESM::RefId race, bool female)
     {
@@ -292,15 +319,20 @@ namespace MWRender
         updateNpcBase();
     }
 
-    void NpcAnimation::setViewMode(NpcAnimation::ViewMode viewMode)
+    void NpcAnimation::setViewMode(NpcAnimation::ViewMode viewMode, bool fullBodyShadowCompat)
     {
         assert(viewMode != VM_HeadOnly);
-        if (mViewMode == viewMode)
+        fullBodyShadowCompat = viewMode == VM_FirstPersonFullBody && fullBodyShadowCompat;
+        if (mViewMode == viewMode && mV321FullBodyShadowCompat == fullBodyShadowCompat)
             return;
         // FIXME: sheathing state must be consistent if the third person skeleton doesn't have the necessary node, but
         // third person skeleton is unavailable in first person view. This is a hack to avoid cosmetic issues.
-        bool viewChange = mViewMode == VM_FirstPerson || viewMode == VM_FirstPerson;
+        const auto isFirstPersonView = [](ViewMode mode) {
+            return mode == VM_FirstPerson || mode == VM_FirstPersonFullBody;
+        };
+        bool viewChange = isFirstPersonView(mViewMode) || isFirstPersonView(viewMode);
         mViewMode = viewMode;
+        mV321FullBodyShadowCompat = fullBodyShadowCompat;
         MWBase::Environment::get().getWorld()->scaleObject(
             mPtr, mPtr.getCellRef().getScale(), true); // apply race height after view change
 
@@ -434,6 +466,8 @@ namespace MWRender
 
     void NpcAnimation::rebuild()
     {
+        Debug::V324DeepTelemetry::Scope v324DeepScope("animation", "npc_rebuild");
+
         mScabbard.reset();
         mHolsteredShield.reset();
         updateNpcBase();
@@ -458,6 +492,8 @@ namespace MWRender
 
     void NpcAnimation::updateNpcBase()
     {
+        Debug::V324DeepTelemetry::Scope v324DeepScope("animation", "npc_update_base");
+
         clearAnimSources();
         for (size_t i = 0; i < ESM::PRT_Count; i++)
             removeIndividualPart((ESM::PartReferenceType)i);
@@ -526,18 +562,35 @@ namespace MWRender
 
         updateParts();
 
-        if (!base.empty())
-            addAnimSource(base, smodel);
+        const bool v325BatchSources = v325ActorSourceBatchEnabled();
+        if (v325BatchSources)
+            beginAnimSourceBatch();
 
-        if (defaultSkeleton != base)
-            addAnimSource(defaultSkeleton, smodel);
+        try
+        {
+            if (!base.empty())
+                addAnimSource(base, smodel);
 
-        if (isCustomModel)
-            addAnimSource(smodel, smodel);
+            if (defaultSkeleton != base)
+                addAnimSource(defaultSkeleton, smodel);
 
-        const bool customArgonianSwim = !is1stPerson && !isWerewolf && isBeast && mNpc->mRace.contains("argonian");
-        if (customArgonianSwim)
-            addAnimSource(Settings::models().mXargonianswimkna.get().value(), smodel);
+            if (isCustomModel)
+                addAnimSource(smodel, smodel);
+
+            const bool customArgonianSwim
+                = !is1stPerson && !isWerewolf && isBeast && mNpc->mRace.contains("argonian");
+            if (customArgonianSwim)
+                addAnimSource(Settings::models().mXargonianswimkna.get().value(), smodel);
+        }
+        catch (...)
+        {
+            if (v325BatchSources)
+                endAnimSourceBatch();
+            throw;
+        }
+
+        if (v325BatchSources)
+            endAnimSourceBatch();
 
         if (is1stPerson)
         {
@@ -601,12 +654,23 @@ namespace MWRender
         bool wasArrowAttached = isArrowAttached();
         mAmmunition.reset();
 
+        const bool isFullBodyFirstPerson = mViewMode == VM_FirstPersonFullBody;
         const MWWorld::InventoryStore& inv = mPtr.getClass().getInventoryStore(mPtr);
         for (size_t i = 0; i < slotlistsize && mViewMode != VM_HeadOnly; i++)
         {
             MWWorld::ConstContainerStoreIterator store = inv.getSlot(slotlist[i].mSlot);
 
             removePartGroup(slotlist[i].mSlot);
+
+            // Keep face-obscuring equipment out of the camera while retaining
+            // the normal third-person body-part path for every other slot.
+            if (isFullBodyFirstPerson && !mV321FullBodyShadowCompat
+                && slotlist[i].mSlot == MWWorld::InventoryStore::Slot_Helmet)
+            {
+                removeIndividualPart(ESM::PRT_Head);
+                removeIndividualPart(ESM::PRT_Hair);
+                continue;
+            }
 
             if (store == inv.end())
                 continue;
@@ -647,12 +711,38 @@ namespace MWRender
             }
         }
 
-        if (mViewMode != VM_FirstPerson)
+        if (isFullBodyFirstPerson && !mV321FullBodyShadowCompat)
+        {
+            // CP3 control: head-provided geometry is absent from every traversal.
+            removeIndividualPart(ESM::PRT_Head);
+            removeIndividualPart(ESM::PRT_Hair);
+        }
+        else if (mViewMode != VM_FirstPerson)
         {
             if (mPartPriorities[ESM::PRT_Head] < 1 && !mHeadModel.empty())
                 addOrReplaceIndividualPart(ESM::PRT_Head, -1, 1, mHeadModel);
             if (mPartPriorities[ESM::PRT_Hair] < 1 && mPartPriorities[ESM::PRT_Head] <= 1 && !mHairModel.empty())
                 addOrReplaceIndividualPart(ESM::PRT_Hair, -1, 1, mHairModel);
+        }
+
+        if (isFullBodyFirstPerson && mV321FullBodyShadowCompat)
+        {
+            // CP4: retain the animated head/hair and every part supplied by a
+            // helmet for secondary views without exposing them to the owner
+            // camera. PRT_Neck is a separate normal body part and remains
+            // attached. Checking part ownership also covers modded helmets
+            // that use neck or other nonstandard body-part records.
+            for (size_t i = 0; i < ESM::PRT_Count; ++i)
+            {
+                const bool ownerHidden = i == ESM::PRT_Head || i == ESM::PRT_Hair
+                    || mPartslots[i] == MWWorld::InventoryStore::Slot_Helmet;
+                if (ownerHidden && mObjectParts[i])
+                {
+                    osg::Node* node = mObjectParts[i]->getNode();
+                    node->setUserValue(std::string(sV321OwnerViewHidden), true);
+                    node->addCullCallback(new V321OwnerViewHiddenCullCallback);
+                }
+            }
         }
         if (mViewMode == VM_HeadOnly)
             return;
@@ -705,6 +795,8 @@ namespace MWRender
 
     osg::Vec3f NpcAnimation::runAnimation(float timepassed)
     {
+        Debug::V324DeepTelemetry::Scope v324DeepScope("animation", "npc_run_animation");
+
         osg::Vec3f ret = Animation::runAnimation(timepassed);
 
         mHeadAnimationTime->update(timepassed);
@@ -944,7 +1036,7 @@ namespace MWRender
                 }
             }
         }
-        else if (mViewMode == VM_Normal)
+        else if (mViewMode == VM_Normal || mViewMode == VM_FirstPersonFullBody)
         {
             WeaponAnimation::addControllers(mNodeMap, mActiveControllers, mObjectRoot.get());
         }

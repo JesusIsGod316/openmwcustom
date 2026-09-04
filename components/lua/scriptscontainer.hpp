@@ -7,6 +7,7 @@
 #include <variant>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/v33luatrace.hpp>
 #include <components/esm/luascripts.hpp>
 
 #include "luastate.hpp"
@@ -136,7 +137,7 @@ namespace LuaUtil
         bool hasScript(int scriptId) const;
         void removeScript(int scriptId);
 
-        void processTimers(double simulationTime, double gameTime);
+        void processTimers(double simulationTime, double gameTime, bool idleTimerFastPath = false);
 
         // Calls `onUpdate` (if present) for every script in the container.
         // Handlers are called in the same order as scripts were added.
@@ -192,6 +193,7 @@ namespace LuaUtil
         struct ScriptStats
         {
             float mAvgInstructionCount = 0; // averaged number of Lua instructions per frame
+            int64_t mFrameInstructionCount = 0; // exact current-frame hook increments
             int64_t mMemoryUsage = 0; // bytes
         };
         void collectStats(std::vector<ScriptStats>& stats) const;
@@ -243,15 +245,30 @@ namespace LuaUtil
             }
         };
 
+        // V3.17: callers that would otherwise construct Lua wrapper arguments can
+        // cheaply test a handler list first. Unloaded containers deliberately return
+        // true because materialization may legally produce a different handler table.
+        bool mightHaveEngineHandlers(const EngineHandlerList& handlers) const
+        {
+            return !handlers.mList.empty() || std::holds_alternative<UnloadedData>(mData);
+        }
+
         // Calls given handlers in direct order.
         template <typename... Args>
         void callEngineHandlers(EngineHandlerList& handlers, const Args&... args)
         {
+            if (handlers.mList.empty() && std::holds_alternative<LoadedData>(mData))
+                return;
             ensureLoaded();
             for (Handler& handler : handlers.mList)
             {
                 try
                 {
+                    const std::string_view v33ScriptPath = Debug::V33LuaTrace::enabled()
+                        ? std::string_view(scriptPath(handler.mScriptId).value())
+                        : std::string_view{};
+                    Debug::V33LuaTrace::CallbackScope v33Trace("engine_handler", handlers.mName, mNamePrefix,
+                        handler.mScriptId, v33ScriptPath, handlers.mName);
                     LuaUtil::call({ this, handler.mScriptId }, handler.mFn, args...);
                 }
                 catch (std::exception& e)
@@ -317,7 +334,7 @@ namespace LuaUtil
 
         void callOnInit(LuaView& view, int scriptId, const sol::function& onInit, std::string_view data);
         void callTimer(const Timer& t);
-        void updateTimerQueue(std::vector<Timer>& timerQueue, double time);
+        unsigned updateTimerQueue(std::vector<Timer>& timerQueue, double time, TimerType type);
         static void insertTimer(std::vector<Timer>& timerQueue, Timer&& t);
         static void insertHandler(std::vector<Handler>& list, int scriptId, sol::function fn);
         static void removeHandler(std::vector<Handler>& list, int scriptId);
@@ -330,6 +347,7 @@ namespace LuaUtil
         const UserdataSerializer* mSavedDataDeserializer = nullptr;
 
         std::map<std::string, sol::main_object> mAPI;
+        std::optional<sol::main_table> mV314PackagePrototype;
         struct LoadedData
         {
             std::map<int, Script> mScripts;

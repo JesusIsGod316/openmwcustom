@@ -27,6 +27,7 @@
 
 #include "constants.hpp"
 #include "ffmpegdecoder.hpp"
+#include "headcache.hpp"
 #include "openaloutput.hpp"
 #include "sound.hpp"
 #include "soundbuffer.hpp"
@@ -101,6 +102,14 @@ namespace MWSound
 
             return volume;
         }
+
+        std::unique_ptr<HeadCache> makeHeadCache(const VFS::Manager& vfs)
+        {
+            const std::size_t sizeMb = Settings::sound().mHeadCacheSize;
+            if (sizeMb == 0)
+                return nullptr;
+            return std::make_unique<HeadCache>(vfs, sizeMb * 1024 * 1024);
+        }
     }
 
     // For combining PlayMode and Type flags
@@ -111,6 +120,7 @@ namespace MWSound
 
     SoundManager::SoundManager(const VFS::Manager* vfs, bool useSound)
         : mVFS(vfs)
+        , mHeadCache(makeHeadCache(*vfs))
         , mOutput(std::make_unique<OpenALOutput>(*this))
         , mWaterSoundUpdater(makeWaterSoundUpdaterSettings())
         , mSoundBuffers(*mOutput)
@@ -170,14 +180,19 @@ namespace MWSound
     // Return a new decoder instance, used as needed by the output implementations
     DecoderPtr SoundManager::getDecoder()
     {
-        return std::make_shared<FFmpegDecoder>(mVFS);
+        return std::make_shared<FFmpegDecoder>(mVFS, nullptr);
+    }
+
+    DecoderPtr SoundManager::getStreamDecoder()
+    {
+        return std::make_shared<FFmpegDecoder>(mVFS, mHeadCache.get());
     }
 
     DecoderPtr SoundManager::loadVoice(VFS::Path::NormalizedView voicefile)
     {
         try
         {
-            DecoderPtr decoder = getDecoder();
+            DecoderPtr decoder = getStreamDecoder();
             decoder->open(Misc::ResourceHelpers::correctSoundPath(voicefile, *decoder->mResourceMgr));
             return decoder;
         }
@@ -264,7 +279,7 @@ namespace MWSound
 
         Log(Debug::Info) << "Playing \"" << filename << "\"";
 
-        DecoderPtr decoder = getDecoder();
+        DecoderPtr decoder = getStreamDecoder();
         try
         {
             decoder->open(filename);
@@ -1084,6 +1099,19 @@ namespace MWSound
         }
     }
 
+    void SoundManager::queueSfxPredecode()
+    {
+        if (mV316SfxPrewarmQueued || Settings::sound().mSfxPredecodeCacheSize == 0
+            || Settings::sound().mSfxPredecodeWorkers == 0)
+            return;
+
+        // getResourceNamesForPredecode() performs only main-thread metadata/map
+        // traversal. The actual VFS + FFmpeg work starts on the cache's idle
+        // worker after this vector is handed off.
+        mOutput->queueSoundPredecode(mSoundBuffers.getResourceNamesForPredecode());
+        mV316SfxPrewarmQueued = true;
+    }
+
     void SoundManager::update(float duration)
     {
         if (!mOutput->isInitialized() || mPlaybackPaused)
@@ -1098,6 +1126,11 @@ namespace MWSound
             if (mVFS->exists(MWSound::titleMusic))
                 streamMusic(MWSound::titleMusic, MWSound::MusicType::Normal);
         }
+
+        // Fallback for custom profiles that enable predecode without the
+        // V3.16 loading-screen frontload. Mode89 normally queues this earlier.
+        if (state != MWBase::StateManager::State_NoGame)
+            queueSfxPredecode();
 
         updateSounds(duration);
         if (state != MWBase::StateManager::State_NoGame)

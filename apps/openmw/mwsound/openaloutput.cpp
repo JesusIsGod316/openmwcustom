@@ -24,6 +24,7 @@
 #include "sound.hpp"
 #include "sounddecoder.hpp"
 #include "soundmanagerimp.hpp"
+#include "sfxpredecodecache.hpp"
 
 #ifndef ALC_ALL_DEVICES_SPECIFIER
 #define ALC_ALL_DEVICES_SPECIFIER 0x1013
@@ -1036,22 +1037,42 @@ namespace MWSound
         std::vector<char> data;
         ALenum format = AL_NONE;
         int srate = 0;
+        bool usedPredecoded = false;
 
-        try
+        if (mSfxPredecodeCache)
         {
-            DecoderPtr decoder = mManager.getDecoder();
-            decoder->open(Misc::ResourceHelpers::correctSoundPath(fname, *decoder->mResourceMgr));
-
-            ChannelConfig chans;
-            SampleType type;
-            decoder->getInfo(&srate, &chans, &type);
-            format = getALFormat(chans, type);
-            if (format)
-                decoder->readAll(data);
+            if (std::optional<PredecodedSound> decoded = mSfxPredecodeCache->take(fname))
+            {
+                srate = decoded->mSampleRate;
+                format = getALFormat(decoded->mChannels, decoded->mType);
+                if (format != AL_NONE)
+                {
+                    data = std::move(decoded->mData);
+                    usedPredecoded = true;
+                }
+            }
         }
-        catch (std::exception& e)
+
+        if (!usedPredecoded)
         {
-            Log(Debug::Error) << "Failed to load audio from " << fname << ": " << e.what();
+            if (mSfxPredecodeCache)
+                mSfxPredecodeCache->discard(fname);
+            try
+            {
+                DecoderPtr decoder = mManager.getDecoder();
+                decoder->open(Misc::ResourceHelpers::correctSoundPath(fname, *decoder->mResourceMgr));
+
+                ChannelConfig chans;
+                SampleType type;
+                decoder->getInfo(&srate, &chans, &type);
+                format = getALFormat(chans, type);
+                if (format)
+                    decoder->readAll(data);
+            }
+            catch (std::exception& e)
+            {
+                Log(Debug::Error) << "Failed to load audio from " << fname << ": " << e.what();
+            }
         }
 
         if (data.empty())
@@ -1075,6 +1096,12 @@ namespace MWSound
             return std::make_pair(nullptr, 0);
         }
         return std::make_pair(MAKE_PTRID(buf), size);
+    }
+
+    void OpenALOutput::queueSoundPredecode(std::vector<VFS::Path::Normalized>&& names)
+    {
+        if (mSfxPredecodeCache)
+            mSfxPredecodeCache->queue(std::move(names));
     }
 
     size_t OpenALOutput::unloadSound(Sound_Handle data)
@@ -1594,6 +1621,11 @@ namespace MWSound
         , mEffectSlot(0)
         , mStreamThread(std::make_unique<StreamThread>())
     {
+        const std::size_t predecodeMb = Settings::sound().mSfxPredecodeCacheSize;
+        const unsigned predecodeWorkers = static_cast<unsigned>(Settings::sound().mSfxPredecodeWorkers);
+        if (predecodeMb != 0 && predecodeWorkers != 0)
+            mSfxPredecodeCache = std::make_unique<SfxPredecodeCache>(
+                *mgr.mVFS, predecodeMb * 1024 * 1024, predecodeWorkers);
     }
 
     OpenALOutput::~OpenALOutput()

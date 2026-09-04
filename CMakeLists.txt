@@ -1208,3 +1208,20 @@ if (USE_QT)
             COMMENT "Copy *.qm files to resources folder")
     endif ()
 endif()
+
+
+# V3 OPTIMIZATION LAB PACKAGING
+if(WIN32)
+    install(FILES
+        "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Unified_Test.bat"
+        "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_City_Frametime.bat"
+        "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Transition_Deep.bat"
+        "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Render_Deep.bat"
+        "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Lab.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/v3/v3_trace_to_chrome.py"
+        "${CMAKE_SOURCE_DIR}/V3-applied-source.patch"
+        "${CMAKE_SOURCE_DIR}/V3-applied-source-stat.txt"
+        "${CMAKE_SOURCE_DIR}/V3-LAB-README.txt"
+        DESTINATION "."
+    )
+endif()

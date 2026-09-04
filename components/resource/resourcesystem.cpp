@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include <components/debug/v3diagnostics.hpp>
+
 #include "animblendrulesmanager.hpp"
 #include "bgsmfilemanager.hpp"
 #include "imagemanager.hpp"
@@ -12,11 +14,14 @@
 namespace Resource
 {
 
-    ResourceSystem::ResourceSystem(
-        const VFS::Manager* vfs, double expiryDelay, const ToUTF8::StatelessUtf8Encoder* encoder)
+    ResourceSystem::ResourceSystem(const VFS::Manager* vfs, double expiryDelay,
+        const ToUTF8::StatelessUtf8Encoder* encoder, bool retainNifFiles)
         : mVFS(vfs)
+        , mRetainNifFiles(retainNifFiles)
     {
         mNifFileManager = std::make_unique<NifFileManager>(vfs, encoder);
+        if (mRetainNifFiles)
+            mNifFileManager->setExpiryDelay(expiryDelay);
         mBgsmFileManager = std::make_unique<BgsmFileManager>(vfs, expiryDelay);
         mImageManager = std::make_unique<ImageManager>(vfs, expiryDelay);
         mSceneManager = std::make_unique<SceneManager>(
@@ -76,13 +81,16 @@ namespace Resource
              ++it)
             (*it)->setExpiryDelay(expiryDelay);
 
-        // NIF files aren't needed any more once the converted objects are cached in SceneManager / BulletShapeManager,
-        // so no point in using an expiry delay
-        mNifFileManager->setExpiryDelay(0.0);
+        // Upstream drops parsed NIFs immediately. Overdrive intentionally retains them so paging and
+        // collision paths can reuse already-parsed source data during long sessions.
+        mNifFileManager->setExpiryDelay(mRetainNifFiles ? expiryDelay : 0.0);
     }
 
     void ResourceSystem::updateCache(double referenceTime)
     {
+        Debug::V3Diagnostics::TraceScope trace("resource", "resource_cache_update", "all_managers", 0.5);
+        Debug::V3Diagnostics::ScopedCsvTimer timer(
+            Debug::V3Diagnostics::resourceWriter(), "resource_cache_update", "all_managers", 0.5);
         for (std::vector<BaseResourceManager*>::iterator it = mResourceManagers.begin(); it != mResourceManagers.end();
              ++it)
             (*it)->updateCache(referenceTime);

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 #include <osg/BoundingBox>
 #include <osg/BoundingSphere>
@@ -12,6 +13,7 @@
 #include <osgUtil/CullVisitor>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/v3diagnostics.hpp>
 #include <components/misc/constants.hpp>
 #include <components/occlusionculling/occludermesh.hpp>
 #include <components/sceneutil/occlusionculling.hpp>
@@ -22,6 +24,28 @@ namespace MWRender
 {
     namespace
     {
+        bool v322MsocHotPathEnabled()
+        {
+            const char* value = std::getenv("OPENMW_V322_CP1_MSOC_HOT_PATH");
+            return value && value[0] == '1';
+        }
+
+        int v322Cp2OccluderMode()
+        {
+            const char* value = std::getenv("OPENMW_V322_CP2_OCCLUDER_EFFICIENCY_MODE");
+            if (!value || value[0] < '1' || value[0] > '4' || value[1] != '\0')
+                return 0;
+            return value[0] - '0';
+        }
+
+        int v323ParallelMsocMode()
+        {
+            const char* value = std::getenv("OPENMW_V323_PARALLEL_MSOC_MODE");
+            if (!value || value[0] < '1' || value[0] > '3' || value[1] != '\0')
+                return 0;
+            return value[0] - '0';
+        }
+
         std::string_view getModelPathForNode(osg::Node* node)
         {
             if (!node)
@@ -57,6 +81,16 @@ namespace MWRender
             }
             return worldMesh;
         }
+
+        osg::BoundingBox transformLocalBounds(const osg::BoundingBox& localBounds, const osg::Matrixd& modelToWorld)
+        {
+            osg::BoundingBox worldBounds;
+            if (!localBounds.valid())
+                return worldBounds;
+            for (unsigned int i = 0; i < 8; ++i)
+                worldBounds.expandBy(localBounds.corner(i) * modelToWorld);
+            return worldBounds;
+        }
     }
 
     SceneOcclusionCallback::SceneOcclusionCallback(SceneUtil::OcclusionCuller* culler,
@@ -69,6 +103,7 @@ namespace MWRender
         , mEnableDebugOverlay(enableDebugOverlay)
         , mEnableDebugMessages(enableDebugMessages)
         , mEnableInteriors(enableInteriors)
+        , mV322MsocHotPath(v322MsocHotPathEnabled())
         , mStorage(storage)
     {
     }
@@ -188,14 +223,20 @@ namespace MWRender
         }
 
         // Begin occlusion frame with camera matrices
-        mCuller->beginFrame(cam->getViewMatrix(), cam->getProjectionMatrix());
+        mCuller->setTelemetryFrameNumber(frameNumber);
+        mCuller->beginFrame(cam->getViewMatrix(), cam->getProjectionMatrix(), mV322MsocHotPath);
 
         // Build and rasterize terrain occluder mesh (skip for quasi-exteriors and interiors — no real terrain)
         if (mEnableTerrainOccluder && !mIsQuasiExterior && !mIsInterior && mTerrainOccluder->hasTerrainData())
         {
             mPositions.clear();
             mIndices.clear();
+            const auto terrainBuildStart = mCuller->detailedTelemetryEnabled()
+                ? Debug::V3Diagnostics::Clock::now()
+                : Debug::V3Diagnostics::Clock::time_point{};
             mTerrainOccluder->build(cv->getEyePoint(), mRadiusCells, mPositions, mIndices);
+            if (mCuller->detailedTelemetryEnabled())
+                mCuller->addTerrainBuildTime(Debug::V3Diagnostics::elapsedMs(terrainBuildStart));
 
             if (!mPositions.empty())
                 mCuller->rasterizeTerrainOccluder(mPositions, mIndices);
@@ -250,7 +291,20 @@ namespace MWRender
         : mCuller(culler)
         , mMaxDistanceSq(maxDistance * maxDistance)
         , mMaxTriangles(maxTriangles)
+        , mV322MsocHotPath(v322MsocHotPathEnabled())
+        , mV323ParallelMsocMode(v323ParallelMsocMode())
     {
+        if (mV323ParallelMsocMode >= 2)
+        {
+            const float distanceScale = mV323ParallelMsocMode >= 3 ? 2.0f : 1.5f;
+            mMaxDistanceSq *= distanceScale * distanceScale;
+            if (mMaxTriangles > 0)
+            {
+                const unsigned int numerator = mV323ParallelMsocMode >= 3 ? 2u : 3u;
+                const unsigned int denominator = mV323ParallelMsocMode >= 3 ? 1u : 2u;
+                mMaxTriangles = (mMaxTriangles * numerator) / denominator;
+            }
+        }
     }
 
     void PagedOccluderCallback::operator()(osg::Node* node, osgUtil::CullVisitor* cv)
@@ -261,63 +315,130 @@ namespace MWRender
             return;
         }
 
-        // Transform chunk bounding sphere from local to world space.
-        // The chunk sits under a PAT, so node->getBound() is in chunk-local space.
-        const osg::BoundingSphere& bs = node->getBound();
-        if (bs.valid())
+        const bool useCachedView = mV322MsocHotPath && mCuller->hasCachedViewInverse();
+        osg::Matrixd localViewInverse;
+        const osg::Matrixd* viewInverse = nullptr;
+        if (useCachedView)
+            viewInverse = &mCuller->getCachedViewInverse();
+        else
         {
-            osg::Matrixd viewInverse;
-            viewInverse.invert(cv->getCurrentCamera()->getViewMatrix());
-            const osg::Matrixd modelToWorld = *cv->getModelViewMatrix() * viewInverse;
-            const osg::Vec3f worldCenter = bs.center() * modelToWorld;
-            const float r = bs.radius();
+            localViewInverse.invert(cv->getCurrentCamera()->getViewMatrix());
+            viewInverse = &localViewInverse;
+        }
+        const osg::Matrixd modelToWorld = *cv->getModelViewMatrix() * (*viewInverse);
 
-            osg::BoundingBox worldBB(worldCenter.x() - r, worldCenter.y() - r, worldCenter.z() - r, worldCenter.x() + r,
-                worldCenter.y() + r, worldCenter.z() + r);
-
-            // If entire chunk is occluded, skip rasterization AND traversal
-            if (!mCuller->testVisibleAABB(worldBB))
-                return;
-
-            // Rasterize nearby building occluder meshes for visible chunks
-            const osg::Vec3f eyeWorld(viewInverse(3, 0), viewInverse(3, 1), viewInverse(3, 2));
-
-            if (auto* udc = node->getUserDataContainer())
+        std::vector<SceneUtil::OcclusionCuller::V323OccluderBatchView> v323Batch;
+        PagedOccluderData* pagedData = nullptr;
+        if (mV322MsocHotPath && mV322PagedDataNode == node && mV322PagedData)
+            pagedData = mV322PagedData.get();
+        else if (auto* udc = node->getUserDataContainer())
+        {
+            for (unsigned int i = 0; i < udc->getNumUserObjects(); ++i)
             {
-                for (unsigned int i = 0; i < udc->getNumUserObjects(); ++i)
+                if (auto* candidate = dynamic_cast<PagedOccluderData*>(udc->getUserObject(i)))
                 {
-                    if (auto* pod = dynamic_cast<PagedOccluderData*>(udc->getUserObject(i)))
+                    pagedData = candidate;
+                    if (mV322MsocHotPath)
                     {
-                        for (const auto& occMesh : pod->mOccluderMeshes)
-                        {
-                            if (occMesh.indices.empty())
-                                continue;
-
-                            const osg::Vec3f center = occMesh.aabb.center();
-                            if ((center - eyeWorld).length2() > mMaxDistanceSq)
-                                continue;
-
-                            unsigned int newTris = static_cast<unsigned int>(occMesh.indices.size() / 3);
-                            if (mMaxTriangles > 0 && mCuller->getNumBuildingTris() + newTris > mMaxTriangles)
-                                continue;
-
-                            mCuller->rasterizeOccluder(occMesh.vertices, occMesh.indices);
-                            mCuller->incrementBuildingOccluders(newTris,
-                                static_cast<unsigned int>(occMesh.vertices.size()));
-                        }
-                        break;
+                        mV322PagedDataNode = node;
+                        mV322PagedData = candidate;
                     }
+                    break;
                 }
             }
         }
 
+        bool visible = true;
+        if (pagedData && pagedData->mChunkBounds.valid())
+        {
+            const osg::BoundingBox worldBounds = transformLocalBounds(pagedData->mChunkBounds, modelToWorld);
+            visible = mCuller->testVisibleCoarseAABB(worldBounds,
+                SceneUtil::OcclusionTestCategory::PagedChunk, pagedData->mEstimatedChildren);
+        }
+        else
+        {
+            const osg::BoundingSphere& bs = node->getBound();
+            if (bs.valid())
+            {
+                const osg::Vec3f worldCenter = bs.center() * modelToWorld;
+                const float r = bs.radius();
+                const osg::BoundingBox worldBounds(worldCenter.x() - r, worldCenter.y() - r, worldCenter.z() - r,
+                    worldCenter.x() + r, worldCenter.y() + r, worldCenter.z() + r);
+                visible = mCuller->testVisibleAABB(worldBounds);
+            }
+        }
+        if (!visible)
+            return;
+
+        if (pagedData)
+        {
+            const osg::Vec3f eyeWorld = useCachedView
+                ? mCuller->getCachedEyeWorld()
+                : osg::Vec3f(static_cast<float>((*viewInverse)(3, 0)),
+                    static_cast<float>((*viewInverse)(3, 1)), static_cast<float>((*viewInverse)(3, 2)));
+            for (const auto& occMesh : pagedData->mOccluderMeshes)
+            {
+                if (occMesh.indices.empty())
+                    continue;
+                const osg::Vec3f center = occMesh.aabb.center();
+                if ((center - eyeWorld).length2() > mMaxDistanceSq)
+                    continue;
+                const unsigned int newTris = static_cast<unsigned int>(occMesh.indices.size() / 3);
+                if (mMaxTriangles > 0 && mCuller->getNumBuildingTris() + newTris > mMaxTriangles)
+                    continue;
+                if (mV323ParallelMsocMode >= 2)
+                    v323Batch.push_back({ &occMesh.vertices, &occMesh.indices });
+                else
+                    mCuller->rasterizeOccluder(occMesh.vertices, occMesh.indices);
+                mCuller->incrementBuildingOccluders(
+                    newTris, static_cast<unsigned int>(occMesh.vertices.size()));
+            }
+        }
+
+        if (!v323Batch.empty())
+            mCuller->rasterizeOccluderBatch(v323Batch);
+
         traverse(node, cv);
+    }
+
+    CoarseOcclusionCallback::CoarseOcclusionCallback(SceneUtil::OcclusionCuller* culler,
+        const osg::BoundingBox& localBounds, bool groundcover, std::uint64_t estimatedChildren)
+        : mCuller(culler)
+        , mLocalBounds(localBounds)
+        , mGroundcover(groundcover)
+        , mEstimatedChildren(estimatedChildren)
+    {
+    }
+
+    void CoarseOcclusionCallback::operator()(osg::Node* node, osgUtil::CullVisitor* cv)
+    {
+        if (!mCuller->isFrameActive() || !mLocalBounds.valid())
+        {
+            traverse(node, cv);
+            return;
+        }
+
+        osg::Matrixd localViewInverse;
+        const osg::Matrixd* viewInverse = nullptr;
+        if (mCuller->hasCachedViewInverse())
+            viewInverse = &mCuller->getCachedViewInverse();
+        else
+        {
+            localViewInverse.invert(cv->getCurrentCamera()->getViewMatrix());
+            viewInverse = &localViewInverse;
+        }
+        const osg::Matrixd modelToWorld = *cv->getModelViewMatrix() * (*viewInverse);
+        const osg::BoundingBox worldBounds = transformLocalBounds(mLocalBounds, modelToWorld);
+        const auto category = mGroundcover ? SceneUtil::OcclusionTestCategory::GroundcoverChunk
+                                           : SceneUtil::OcclusionTestCategory::PagedChunk;
+        if (mCuller->testVisibleCoarseAABB(worldBounds, category, mEstimatedChildren))
+            traverse(node, cv);
     }
 
     CellOcclusionCallback::CellOcclusionCallback(SceneUtil::OcclusionCuller* culler, float occluderMinRadius,
         float occluderMaxRadius, float occluderShrinkFactor, int occluderMeshResolution, int occluderMaxMeshResolution,
         float occluderInsideThreshold, float occluderMaxDistance, bool enableStaticOccluders,
-        unsigned int maxTriangles, OcclusionStorage* storage)
+        bool v34BroadenOcclusion, unsigned int maxTriangles, OcclusionStorage* storage)
         : mCuller(culler)
         , mOccluderMinRadius(occluderMinRadius)
         , mOccluderMaxRadius(occluderMaxRadius)
@@ -327,6 +448,8 @@ namespace MWRender
         , mOccluderInsideThreshold(occluderInsideThreshold)
         , mOccluderMaxDistanceSq(occluderMaxDistance * occluderMaxDistance)
         , mEnableStaticOccluders(enableStaticOccluders)
+        , mV34BroadenOcclusion(v34BroadenOcclusion)
+        , mV322Cp2OccluderMode(v322Cp2OccluderMode())
         , mMaxTriangles(maxTriangles)
         , mStorage(storage)
     {
@@ -340,9 +463,14 @@ namespace MWRender
 
         int meshRes = mOccluderMeshResolution;
         float radius = node->getBound().radius();
-        if (radius > mOccluderMinRadius && mOccluderMinRadius > 0)
+        // Modes 3-4 lower eligibility to 300 but deliberately keep the final V3.21
+        // 400-unit radius as the proxy-detail reference. This adds smaller useful
+        // occluders without making the existing 400+ population more expensive.
+        const float detailReferenceRadius
+            = mV322Cp2OccluderMode >= 3 ? 400.0f : mOccluderMinRadius;
+        if (radius > detailReferenceRadius && detailReferenceRadius > 0)
         {
-            float scale = radius / mOccluderMinRadius;
+            float scale = radius / detailReferenceRadius;
             meshRes = std::clamp(
                 static_cast<int>(mOccluderMeshResolution * scale), mOccluderMeshResolution, mOccluderMaxMeshResolution);
         }
@@ -398,6 +526,17 @@ namespace MWRender
         }
 
         const unsigned int numChildren = node->getNumChildren();
+
+        struct V322OccluderCandidate
+        {
+            const OccluderMesh* mesh = nullptr;
+            float distanceSq = 0.0f;
+            float utility = 0.0f;
+            unsigned int triangles = 0;
+        };
+        std::vector<V322OccluderCandidate> v322Candidates;
+        if (mV322Cp2OccluderMode > 0)
+            v322Candidates.reserve(numChildren);
 
         // Pass 1: Large objects — test against terrain depth, optionally rasterize as occluders
         for (unsigned int i = 0; i < numChildren; ++i)
@@ -455,10 +594,11 @@ namespace MWRender
             // Rasterize as occluder if in range and camera is not inside the building.
             // Test against terrain-only buffer so other buildings don't prevent rasterization
             // of adjacent buildings (which would reduce culling coverage for Pass 2).
+            bool v34RasterizedAsOccluder = false;
             if (mesh.aabb.valid() && mEnableStaticOccluders && !mesh.indices.empty()
                 && mCuller->testVisibleAABBTerrainOnly(mesh.aabb))
             {
-                float distSq = (bs.center() - cv->getEyePoint()).length2();
+                const float distSq = (bs.center() - cv->getEyePoint()).length2();
                 if (distSq < mOccluderMaxDistanceSq)
                 {
                     osg::Vec3f center = mesh.aabb.center();
@@ -470,25 +610,175 @@ namespace MWRender
                     scaledBB.expandBy(center + halfExtent);
                     if (!scaledBB.contains(cv->getEyePoint()))
                     {
-                        unsigned int newTris = static_cast<unsigned int>(mesh.indices.size() / 3);
-                        if (mMaxTriangles == 0
+                        const unsigned int newTris = static_cast<unsigned int>(mesh.indices.size() / 3);
+                        if (mV322Cp2OccluderMode > 0)
+                        {
+                            const float radius = bs.radius();
+                            const float radiusSq = std::max(radius * radius, 1.0f);
+                            const float projectedUtility = radiusSq / std::max(distSq, radiusSq);
+                            const float trianglePenalty = 1.0f + static_cast<float>(newTris) / 256.0f;
+                            v322Candidates.push_back(
+                                V322OccluderCandidate{ &mesh, distSq, projectedUtility / trianglePenalty, newTris });
+                            // Treat a queued candidate as self-occlusion-sensitive even if the
+                            // later ranked budget cannot fit it. CP2 never culls the building itself.
+                            v34RasterizedAsOccluder = true;
+                        }
+                        else if (mMaxTriangles == 0
                             || mCuller->getNumBuildingTris() + newTris <= mMaxTriangles)
                         {
                             mCuller->rasterizeOccluder(mesh.vertices, mesh.indices);
                             mCuller->incrementBuildingOccluders(
                                 newTris, static_cast<unsigned int>(mesh.vertices.size()));
+                            v34RasterizedAsOccluder = true;
                         }
                     }
                 }
             }
 
-            // Always traverse large buildings. Do NOT gate traversal on testVisibleAABB —
-            // buildings testing against a buffer that includes previously rasterized
-            // buildings causes false culling (flickering) when child ordering happens to
-            // place one building in front of another in the depth buffer. Large buildings
-            // are correctly culled by PVS and the cell-level AABB test above; MSOC
-            // is reserved for culling small objects in Pass 2.
+            // Keep the V3.3 anti-self-occlusion rule for admitted building proxies. V3.4 only expands full-buffer
+            // testing to large objects that did NOT insert their own proxy this frame (out of range, over budget,
+            // unsuitable mesh, or camera-inside exclusion), so no object is tested against itself.
+            if (mV34BroadenOcclusion && !v34RasterizedAsOccluder)
+            {
+                osg::BoundingBox largeBB;
+                largeBB.expandBy(bs);
+                if (!mCuller->testVisibleAABB(largeBB))
+                    continue;
+            }
             child->accept(*cv);
+        }
+
+        if (mV322Cp2OccluderMode > 0 && !v322Candidates.empty())
+        {
+            if (mV322Cp2OccluderMode == 1)
+            {
+                // Mode 1: pure front-to-back budget consumption. This improves depth
+                // usefulness without changing the eligibility population.
+                std::sort(v322Candidates.begin(), v322Candidates.end(),
+                    [](const V322OccluderCandidate& lhs, const V322OccluderCandidate& rhs) {
+                        return lhs.distanceSq < rhs.distanceSq;
+                    });
+            }
+            else
+            {
+                // Modes 2-4: approximate projected coverage per raster triangle.
+                // Ties favor the nearer proxy so useful near depth arrives first.
+                std::sort(v322Candidates.begin(), v322Candidates.end(),
+                    [](const V322OccluderCandidate& lhs, const V322OccluderCandidate& rhs) {
+                        if (lhs.utility != rhs.utility)
+                            return lhs.utility > rhs.utility;
+                        return lhs.distanceSq < rhs.distanceSq;
+                    });
+            }
+
+            for (const auto& candidate : v322Candidates)
+            {
+                if (!candidate.mesh)
+                    continue;
+                if (mMaxTriangles > 0
+                    && mCuller->getNumBuildingTris() + candidate.triangles > mMaxTriangles)
+                    continue;
+
+                // Mode 4 is intentionally aggressive but visibility-safe: if terrain or
+                // an earlier ranked proxy already fully hides this candidate AABB, omit
+                // only its redundant raster work. The building's scene traversal already
+                // happened above and is never culled by this decision.
+                if (mV322Cp2OccluderMode >= 4 && !mCuller->testVisibleAABB(candidate.mesh->aabb))
+                    continue;
+
+                mCuller->rasterizeOccluder(candidate.mesh->vertices, candidate.mesh->indices);
+                mCuller->incrementBuildingOccluders(
+                    candidate.triangles, static_cast<unsigned int>(candidate.mesh->vertices.size()));
+            }
+        }
+
+        // Modes 3-4 decouple 300-unit occluder eligibility from the proven
+        // 400-unit visibility-classification boundary. First record visibility for
+        // every [300, 400) owner against the same terrain + 400+ proxy buffer that
+        // the control path would use. No owner is traversed here: Pass 2 retains the
+        // original child traversal order and consumes the recorded result later.
+        std::vector<unsigned char> v322MidVisibility;
+        if (mV322Cp2OccluderMode >= 3)
+        {
+            constexpr float v322EligibilityRadius = 300.0f;
+            v322MidVisibility.assign(numChildren, 0);
+            std::vector<V322OccluderCandidate> v322MidCandidates;
+            v322MidCandidates.reserve(numChildren);
+
+            for (unsigned int i = 0; i < numChildren; ++i)
+            {
+                osg::Node* child = node->getChild(i);
+                const osg::BoundingSphere& bs = child->getBound();
+                if (!bs.valid() || bs.radius() < v322EligibilityRadius || bs.radius() >= mOccluderMinRadius)
+                    continue;
+
+                bool skipOcclusion = false;
+                child->getUserValue("skipOcclusion", skipOcclusion);
+
+                osg::BoundingBox childBB;
+                childBB.expandBy(bs);
+                if (!skipOcclusion && !mCuller->testVisibleAABB(childBB))
+                    continue;
+
+                // Store the control-equivalent owner result before this object can
+                // contribute any depth itself. Doors and other explicit exclusions
+                // remain visible but are never admitted as CP2 occluders.
+                v322MidVisibility[i] = 1;
+                if (skipOcclusion || !mEnableStaticOccluders)
+                    continue;
+
+                const OccluderMesh& mesh = getOccluderMesh(child);
+                if (!mesh.aabb.valid() || mesh.indices.empty() || !mCuller->testVisibleAABBTerrainOnly(mesh.aabb))
+                    continue;
+
+                const float distSq = (bs.center() - cv->getEyePoint()).length2();
+                if (distSq >= mOccluderMaxDistanceSq)
+                    continue;
+
+                osg::Vec3f center = mesh.aabb.center();
+                osg::Vec3f halfExtent
+                    = (osg::Vec3f(mesh.aabb.xMax(), mesh.aabb.yMax(), mesh.aabb.zMax()) - center)
+                    * mOccluderInsideThreshold;
+                osg::BoundingBox scaledBB;
+                scaledBB.expandBy(center - halfExtent);
+                scaledBB.expandBy(center + halfExtent);
+                if (scaledBB.contains(cv->getEyePoint()))
+                    continue;
+
+                const unsigned int newTris = static_cast<unsigned int>(mesh.indices.size() / 3);
+                const float radius = bs.radius();
+                const float radiusSq = std::max(radius * radius, 1.0f);
+                const float projectedUtility = radiusSq / std::max(distSq, radiusSq);
+                const float trianglePenalty = 1.0f + static_cast<float>(newTris) / 256.0f;
+                v322MidCandidates.push_back(
+                    V322OccluderCandidate{ &mesh, distSq, projectedUtility / trianglePenalty, newTris });
+            }
+
+            std::sort(v322MidCandidates.begin(), v322MidCandidates.end(),
+                [](const V322OccluderCandidate& lhs, const V322OccluderCandidate& rhs) {
+                    if (lhs.utility != rhs.utility)
+                        return lhs.utility > rhs.utility;
+                    return lhs.distanceSq < rhs.distanceSq;
+                });
+
+            for (const auto& candidate : v322MidCandidates)
+            {
+                if (!candidate.mesh)
+                    continue;
+                if (mMaxTriangles > 0
+                    && mCuller->getNumBuildingTris() + candidate.triangles > mMaxTriangles)
+                    continue;
+
+                // Mode 4 may suppress only redundant proxy raster work. Owner visibility
+                // was already resolved above without this proxy in depth, and actual owner
+                // traversal remains deferred to Pass 2 in original child order.
+                if (mV322Cp2OccluderMode >= 4 && !mCuller->testVisibleAABB(candidate.mesh->aabb))
+                    continue;
+
+                mCuller->rasterizeOccluder(candidate.mesh->vertices, candidate.mesh->indices);
+                mCuller->incrementBuildingOccluders(
+                    candidate.triangles, static_cast<unsigned int>(candidate.mesh->vertices.size()));
+            }
         }
 
         // Pass 2: Small objects — test against enriched depth buffer (terrain + buildings)
@@ -505,6 +795,16 @@ namespace MWRender
 
             if (bs.radius() >= mOccluderMinRadius)
                 continue; // Already handled in pass 1
+
+            if (mV322Cp2OccluderMode >= 3 && bs.radius() >= 300.0f)
+            {
+                // The visibility decision was recorded before any [300,400) proxy
+                // entered the buffer, preventing self-occlusion while preserving
+                // this original Pass-2 traversal position.
+                if (i < v322MidVisibility.size() && v322MidVisibility[i] != 0)
+                    child->accept(*cv);
+                continue;
+            }
 
             // Never occlude doors — they sit flush against building surfaces
             // and are easily falsely hidden by the parent building's AABB occluder

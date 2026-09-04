@@ -4,7 +4,10 @@
 #include <osgShadow/ShadowedScene>
 
 #include <components/misc/strings/algorithm.hpp>
+#include <components/settings/categories/cells.hpp>
 #include <components/settings/categories/shadows.hpp>
+#include <components/settings/v36profile.hpp>
+#include <components/settings/values.hpp>
 #include <components/stereo/stereomanager.hpp>
 
 #include "mwshadowtechnique.hpp"
@@ -74,6 +77,20 @@ namespace SceneUtil
             mShadowTechnique->disableFrontFaceCulling();
 
         mShadowSettings->setMultipleShadowMapHint(osgShadow::ShadowSettings::CASCADED);
+
+        const unsigned int v35ConfiguredFarInterval
+            = static_cast<unsigned int>(settings.mV33FarCascadeUpdateInterval);
+        const unsigned int v35EffectiveFarInterval
+            = settings.mV35AllowDynamicFarCascadeReuse && v35ConfiguredFarInterval > 2u
+            ? 2u
+            : v35ConfiguredFarInterval;
+        mShadowTechnique->setV33FarCascadeReuse(v35EffectiveFarInterval, settings.mV33FarCascadeMaxTexelDrift,
+            (settings.mActorShadows || settings.mPlayerShadows) && !settings.mV35AllowDynamicFarCascadeReuse);
+        mShadowTechnique->setV33FarCascadeResolutionDivisor(
+            static_cast<unsigned>(settings.mV33FarCascadeResolutionDivisor));
+        mShadowTechnique->setV36AsyncGpuProfiler(Settings::cells().mV36AsyncGpuProfiler);
+        mShadowTechnique->setV36FarCasterMinimumPixels(Settings::V36Profile::farCasterMinimumPixels());
+        mShadowTechnique->setV37StabilizeFarCascade(Settings::cells().mV37StabilizeFarCascade);
 
         if (settings.mEnableDebugHud)
             mShadowTechnique->enableDebugHUD();

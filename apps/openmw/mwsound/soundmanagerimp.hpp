@@ -42,6 +42,7 @@ namespace MWSound
     class SoundBase;
     class Sound;
     class Stream;
+    class HeadCache;
 
     using SoundPtr = Misc::ObjectPtr<Sound>;
     using StreamPtr = Misc::ObjectPtr<Stream>;
@@ -49,6 +50,8 @@ namespace MWSound
     class SoundManager : public MWBase::SoundManager
     {
         const VFS::Manager* mVFS;
+
+        std::unique_ptr<HeadCache> mHeadCache;
 
         std::unique_ptr<SoundOutput> mOutput;
 
@@ -109,6 +112,7 @@ namespace MWSound
         const MWWorld::Cell* mLastCell;
 
         Sound* mCurrentRegionSound;
+        bool mV316SfxPrewarmQueued = false;
 
         SoundBuffer* insertSound(const std::string& soundId, const ESM::Sound* sound);
 
@@ -153,6 +157,7 @@ namespace MWSound
 
     protected:
         DecoderPtr getDecoder();
+        DecoderPtr getStreamDecoder();
         friend class OpenALOutput;
 
         void stopSound(SoundBuffer* sfx, const MWWorld::ConstPtr& ptr);
@@ -279,7 +284,12 @@ namespace MWSound
         void pausePlayback() override;
         void resumePlayback() override;
 
+        void queueSfxPredecode();
         void update(float duration);
+
+        // V3.16: move one-time ESM sound-record map construction under the
+        // loading screen for profiles that opt in. Safe to call repeatedly.
+        void prepareSfxMetadata() { mSoundBuffers.prepareSoundRecordsForGameplay(); }
 
         void setListenerPosDir(
             const osg::Vec3f& pos, const osg::Vec3f& dir, const osg::Vec3f& up, bool underwater) override;

@@ -1,5 +1,9 @@
 #include "groundcover.hpp"
 
+#include "occlusionculling.hpp"
+
+#include <components/sceneutil/occlusionculling.hpp>
+
 #include <span>
 
 #include <osg/AlphaFunc>
@@ -9,6 +13,8 @@
 #include <osg/Program>
 #include <osg/VertexAttribDivisor>
 #include <osgUtil/CullVisitor>
+#include <osgUtil/GLObjectsVisitor>
+#include <osgUtil/IncrementalCompileOperation>
 
 #include <components/esm3/esmreader.hpp>
 #include <components/esm3/loadland.hpp>
@@ -16,6 +22,8 @@
 #include <components/misc/convert.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/nodecallback.hpp>
+#include <components/debug/v3diagnostics.hpp>
+#include <components/settings/ramcache.hpp>
 #include <components/settings/values.hpp>
 #include <components/shader/shadermanager.hpp>
 #include <components/terrain/quadtreenode.hpp>
@@ -335,9 +343,39 @@ namespace MWRender
             return static_cast<osg::Node*>(obj.get());
         else
         {
+            Debug::V3Diagnostics::ScopedCsvTimer timer(
+                Debug::V3Diagnostics::pagingWriter(), "groundcover_chunk_create", "", 0.25);
             InstanceMap instances;
             collectInstances(instances, size, center);
+            if (Debug::V3Diagnostics::renderWriter().enabled())
+            {
+                std::size_t instanceCount = 0;
+                for (const auto& [_, entries] : instances)
+                    instanceCount += entries.size();
+                std::ostringstream row;
+                row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs()
+                    << ',' << Debug::V3Diagnostics::csvQuote("groundcover_chunk_summary") << ',' << Debug::V3Diagnostics::csvQuote(
+                        std::string("models=") + std::to_string(instances.size()) + " instances="
+                        + std::to_string(instanceCount))
+                    << ",0";
+                Debug::V3Diagnostics::renderWriter().writeLine(row.str());
+            }
             osg::ref_ptr<osg::Node> node = createChunk(instances, center);
+
+            const int v314CompileMode = static_cast<int>(Settings::cells().mV314GroundcoverCompileMode);
+            const bool v314ShouldCompile = v314CompileMode >= 2 || (v314CompileMode == 1 && compile);
+            osgUtil::IncrementalCompileOperation* const ico = mSceneManager->getIncrementalCompileOperation();
+            if (v314ShouldCompile && ico)
+            {
+                auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(node);
+                const auto compileMode = static_cast<osgUtil::GLObjectsVisitor::Mode>(
+                    osgUtil::GLObjectsVisitor::COMPILE_STATE_ATTRIBUTES
+                    | osgUtil::GLObjectsVisitor::COMPILE_DISPLAY_LISTS);
+                compileSet->buildCompileMap(ico->getContextSet(), compileMode);
+                ico->add(compileSet, false);
+                mV314CompileQueued.fetch_add(1, std::memory_order_relaxed);
+            }
+
             mCache->addEntryToObjectCache(id, node.get());
             return node;
         }
@@ -345,7 +383,7 @@ namespace MWRender
 
     Groundcover::Groundcover(
         Resource::SceneManager* sceneManager, float density, float viewDistance, const MWWorld::GroundcoverStore& store)
-        : GenericResourceManager<GroundcoverChunkId>(nullptr, Settings::cells().mCacheExpiryDelay)
+        : GenericResourceManager<GroundcoverChunkId>(nullptr, Settings::RamCache::groundcoverExpiryDelay())
         , mSceneManager(sceneManager)
         , mDensity(density)
         , mStateset(new osg::StateSet)
@@ -369,6 +407,12 @@ namespace MWRender
     }
 
     Groundcover::~Groundcover() = default;
+
+    void Groundcover::setOcclusionCuller(SceneUtil::OcclusionCuller* culler, bool coarseChunkOcclusion)
+    {
+        mOcclusionCuller = culler;
+        mV35CoarseChunkOcclusion = coarseChunkOcclusion;
+    }
 
     void Groundcover::collectInstances(InstanceMap& instances, float size, const osg::Vec2f& center)
     {
@@ -448,10 +492,17 @@ namespace MWRender
             group->addChild(node);
         }
 
+        std::uint64_t v36InstanceCount = 0;
+        for (const auto& [_, entries] : instances)
+            v36InstanceCount += entries.size();
+
         osg::ComputeBoundsVisitor cbv;
         group->accept(cbv);
         osg::BoundingBox box = cbv.getBoundingBox();
         group->addCullCallback(new ViewDistanceCallback(getViewDistance(), box));
+        if (mV35CoarseChunkOcclusion && mOcclusionCuller && box.valid())
+            group->addCullCallback(
+                new CoarseOcclusionCallback(mOcclusionCuller, box, true, v36InstanceCount));
 
         group->setStateSet(mStateset);
         group->setNodeMask(Mask_Groundcover);
@@ -471,5 +522,7 @@ namespace MWRender
     void Groundcover::reportStats(unsigned int frameNumber, osg::Stats* stats) const
     {
         Resource::reportStats("Groundcover Chunk", frameNumber, mCache->getStats(), *stats);
+        stats->setAttribute(frameNumber, "V3.14 Groundcover Compile Queued",
+            static_cast<double>(mV314CompileQueued.load(std::memory_order_relaxed)));
     }
 }

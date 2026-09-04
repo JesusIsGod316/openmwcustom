@@ -37,8 +37,8 @@ namespace Resource
     class ResourceSystem
     {
     public:
-        explicit ResourceSystem(
-            const VFS::Manager* vfs, double expiryDelay, const ToUTF8::StatelessUtf8Encoder* encoder);
+        explicit ResourceSystem(const VFS::Manager* vfs, double expiryDelay,
+            const ToUTF8::StatelessUtf8Encoder* encoder, bool retainNifFiles = false);
         ~ResourceSystem();
 
         SceneManager* getSceneManager();
@@ -88,6 +88,7 @@ namespace Resource
         std::vector<BaseResourceManager*> mResourceManagers;
 
         const VFS::Manager* mVFS;
+        bool mRetainNifFiles = false;
 
         ResourceSystem(const ResourceSystem&);
         void operator=(const ResourceSystem&);

@@ -84,6 +84,8 @@ namespace MWLua
 
         void setActive(bool active, bool callHandlers = true);
         bool isActive() const override { return mData.mIsActive; }
+        bool hasOnConsumeHandlers() const { return mightHaveEngineHandlers(mOnConsumeHandlers); }
+        bool hasOnActivatedHandlers() const { return mightHaveEngineHandlers(mOnActivatedHandlers); }
         void onConsume(const LObject& consumable) { callEngineHandlers(mOnConsumeHandlers, consumable); }
         void onActivated(const LObject& actor) { callEngineHandlers(mOnActivatedHandlers, actor); }
         void onTeleported() { callEngineHandlers(mOnTeleportedHandlers); }

@@ -1,5 +1,6 @@
 #include "renderingmanager.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 
 #include <osg/ClipControl>
@@ -15,6 +16,10 @@
 #include <components/nifosg/nifloader.hpp>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/v3deeptelemetry.hpp>
+#include <components/debug/v3diagnostics.hpp>
+#include <components/debug/v3gpumemory.hpp>
+#include <components/debug/v36gpuprofiler.hpp>
 
 #include <components/stereo/multiview.hpp>
 #include <components/stereo/stereomanager.hpp>
@@ -22,10 +27,13 @@
 #include <components/resource/imagemanager.hpp>
 #include <components/resource/keyframemanager.hpp>
 #include <components/resource/resourcesystem.hpp>
+#include <components/resource/v321classifiedcompileset.hpp>
 
 #include <components/shader/removedalphafunc.hpp>
 #include <components/shader/shadermanager.hpp>
 
+#include <components/settings/ramcache.hpp>
+#include <components/settings/v36profile.hpp>
 #include <components/settings/values.hpp>
 
 #include <components/sceneutil/cullsafeboundsvisitor.hpp>
@@ -287,10 +295,80 @@ namespace MWRender
 
         mObjects = std::make_unique<Objects>(mResourceSystem, sceneRoot, unrefQueue);
 
+        const int v321CP2FairnessMode = [] {
+            const int configured = static_cast<int>(Settings::cells().mV321CP2FairnessMode);
+            const char* value = std::getenv("OPENMW_V321_CP2_FAIRNESS");
+            if (value == nullptr || *value == '\0')
+                return configured;
+            const int parsed = std::atoi(value);
+            return parsed >= 0 && parsed <= 1 ? parsed : configured;
+        }();
+        Resource::initializeV321CP2Fairness(v321CP2FairnessMode == 1);
+
         if (getenv("OPENMW_DONT_PRECOMPILE") == nullptr)
         {
-            mViewer->setIncrementalCompileOperation(new osgUtil::IncrementalCompileOperation);
-            mViewer->getIncrementalCompileOperation()->setTargetFrameRate(Settings::cells().mTargetFramerate);
+            osg::ref_ptr<osgUtil::IncrementalCompileOperation> ico = new osgUtil::IncrementalCompileOperation;
+
+            const double configuredTarget = static_cast<double>(Settings::cells().mTargetFramerate);
+            double compileTarget = configuredTarget;
+            unsigned int maxObjectsPerFrame = ico->getMaximumNumOfObjectsToCompilePerFrame();
+            double conservativeRatio = 0.5;
+
+            switch (static_cast<int>(Settings::cells().mV38CompilePacingMode))
+            {
+                case 1:
+                    // Keep the user's target-frame-time policy, but limit how many
+                    // potentially expensive GL objects may be attempted in one frame.
+                    maxObjectsPerFrame = 6;
+                    conservativeRatio = 0.35;
+                    break;
+                case 2:
+                    // Allow modest spare-time preparation on a mid-40fps workload.
+                    compileTarget = std::min(configuredTarget, 45.0);
+                    maxObjectsPerFrame = 8;
+                    conservativeRatio = 0.5;
+                    break;
+                case 3:
+                    // Spend more otherwise-unused headroom preparing paged VBO/state
+                    // before first visibility. The time budget remains bounded by ICO.
+                    compileTarget = std::min(configuredTarget, 36.0);
+                    maxObjectsPerFrame = 12;
+                    conservativeRatio = 0.6;
+                    break;
+                default:
+                    break;
+            }
+
+            const int v321CompletionGovernorMode = [] {
+                const int configured = static_cast<int>(Settings::cells().mV321CompletionGovernorMode);
+                const char* value = std::getenv("OPENMW_V321_COMPLETION_GOVERNOR");
+                if (value == nullptr || *value == '\0')
+                    return configured;
+                const int parsed = std::atoi(value);
+                return parsed >= 0 && parsed <= 2 ? parsed : configured;
+            }();
+
+            if (v321CompletionGovernorMode > 0)
+            {
+                // V3.8's lab compile-pacing mode uses a deliberately aggressive
+                // 36 Hz spare-time target. CP1 instead follows the configured game
+                // target and relies on a small minimum + hard object cap.
+                compileTarget = configuredTarget;
+                maxObjectsPerFrame
+                    = static_cast<unsigned int>(Settings::cells().mV321CompileObjectsPerFrame);
+                conservativeRatio
+                    = static_cast<double>(Settings::cells().mV321CompileConservativeRatio);
+                ico->setMinimumTimeAvailableForGLCompileAndDeletePerFrame(
+                    static_cast<double>(Settings::cells().mV321CompileMinimumMilliseconds) / 1000.0);
+            }
+
+            ico->setTargetFrameRate(compileTarget);
+            if (static_cast<int>(Settings::cells().mV38CompilePacingMode) > 0 || v321CompletionGovernorMode > 0)
+            {
+                ico->setMaximumNumOfObjectsToCompilePerFrame(maxObjectsPerFrame);
+                ico->setConservativeTimeRatio(conservativeRatio);
+            }
+            mViewer->setIncrementalCompileOperation(ico);
         }
 
         mDebugDraw = new Debug::DebugDrawer(mResourceSystem->getSceneManager()->getShaderManager());
@@ -351,9 +429,12 @@ namespace MWRender
             const bool enableStatics = Settings::camera().mOcclusionCullingStatics;
             mObjects->setOcclusionCuller(mOcclusionCuller, occluderMinRadius, occluderMaxRadius, occluderShrinkFactor,
                 occluderMeshRes, occluderMaxMeshRes, occluderInsideThreshold, occluderMaxDistance, enableStatics,
-                maxTriangles, mOcclusionStorage.get());
+                Settings::camera().mV34BroadenOcclusion, maxTriangles, mOcclusionStorage.get());
             if (mObjectPaging)
-                mObjectPaging->setOcclusionCuller(mOcclusionCuller, maxTriangles, mOcclusionStorage.get());
+                mObjectPaging->setOcclusionCuller(mOcclusionCuller, maxTriangles, mOcclusionStorage.get(),
+                    Settings::V36Profile::coarseChunkOcclusionEnabled());
+            if (mGroundcover)
+                mGroundcover->setOcclusionCuller(mOcclusionCuller, Settings::V36Profile::coarseChunkOcclusionEnabled());
         }
 
         mStateUpdater = new SceneUtil::StateUpdater();
@@ -426,6 +507,8 @@ namespace MWRender
         mViewer->getCamera()->setComputeNearFarMode(osg::Camera::DO_NOT_COMPUTE_NEAR_FAR);
         mViewer->getCamera()->setCullingMode(cullingMode);
         mViewer->getCamera()->setName(Constants::SceneCamera);
+        if (Settings::cells().mV36AsyncGpuProfiler)
+            Debug::V36GpuProfiler::attachCamera(*mViewer->getCamera(), "main_world");
 
         auto mask = ~(Mask_UpdateVisitor | Mask_SimpleWater);
         MWBase::Environment::get().getWindowManager()->setCullMask(mask);
@@ -630,6 +713,8 @@ namespace MWRender
 
     void RenderingManager::addCell(const MWWorld::CellStore* store)
     {
+        Debug::V3Diagnostics::ScopedCsvTimer v3Timer(
+            Debug::V3Diagnostics::transitionWriter(), "rendering_add_cell", store->getCell()->getDescription());
         mPathgrid->addCell(store);
 
         mWater->changeCell(store);
@@ -649,6 +734,8 @@ namespace MWRender
     }
     void RenderingManager::removeCell(const MWWorld::CellStore* store)
     {
+        Debug::V3Diagnostics::ScopedCsvTimer v3Timer(
+            Debug::V3Diagnostics::transitionWriter(), "rendering_remove_cell", store->getCell()->getDescription());
         mPathgrid->removeCell(store);
         mActorsPaths->removeCell(store);
         mObjects->removeCell(store);
@@ -660,6 +747,58 @@ namespace MWRender
         }
 
         mWater->removeCell(store);
+    }
+
+    bool RenderingManager::beginExteriorHibernation()
+    {
+        // V1 intentionally retains one recent exterior grid only. Starting a
+        // new exterior->interior transition always evicts the previous grid.
+        mObjects->clearHibernatedCells();
+
+        if (!Settings::cells().mV32ExteriorHibernation)
+            return false;
+        if (Settings::cells().mV32GpuMemoryManagement && Debug::V3GpuMemory::hardPressure())
+            return false;
+        return true;
+    }
+
+    std::size_t RenderingManager::hibernateExteriorCell(const MWWorld::CellStore* store)
+    {
+        mPathgrid->removeCell(store);
+        mActorsPaths->removeCell(store);
+        const std::size_t retained = mObjects->hibernateCell(store);
+
+        if (store->getCell()->isExterior())
+        {
+            getWorldspaceChunkMgr(store->getCell()->getWorldSpace())
+                .mTerrain->unloadCell(store->getCell()->getGridX(), store->getCell()->getGridY());
+        }
+        mWater->removeCell(store);
+        return retained;
+    }
+
+    std::size_t RenderingManager::restoreHibernatedExteriorCell(const MWWorld::CellStore* store)
+    {
+        if (!Settings::cells().mV32ExteriorHibernation)
+            return 0;
+        if (Settings::cells().mV32GpuMemoryManagement && Debug::V3GpuMemory::hardPressure())
+        {
+            mObjects->clearHibernatedCells();
+            return 0;
+        }
+        return mObjects->restoreHibernatedCell(store);
+    }
+
+    bool RenderingManager::consumeRestoredExteriorObject(const MWWorld::Ptr& ptr)
+    {
+        return mObjects->consumeRestoredObject(ptr);
+    }
+
+    void RenderingManager::finishExteriorRestore()
+    {
+        // Any cells not consumed by the destination grid are stale. This is the
+        // hard bound that prevents V1 from accumulating grids across travel.
+        mObjects->clearHibernatedCells();
     }
 
     void RenderingManager::enableTerrain(bool enable, ESM::RefId worldspace)
@@ -757,6 +896,203 @@ namespace MWRender
 
     void RenderingManager::update(float dt, bool paused)
     {
+        Debug::V324DeepTelemetry::Scope v324DeepScope("render_update", "manager_update");
+
+        const int v38ResidencyMode = static_cast<int>(Settings::cells().mV38GpuResidencyMode);
+        const bool v38ResidencyEnabled = v38ResidencyMode > 0;
+        if (Settings::cells().mV32GpuMemoryTelemetry || Settings::cells().mV32GpuMemoryManagement
+            || v38ResidencyEnabled)
+        {
+            Debug::V3GpuMemory::sampleIfDue(static_cast<bool>(Settings::cells().mV32GpuMemoryTelemetry),
+                static_cast<bool>(Settings::cells().mV32GpuMemoryManagement) || v38ResidencyEnabled,
+                static_cast<int>(Settings::cells().mV32GpuSoftBudgetMb),
+                static_cast<int>(Settings::cells().mV32GpuHardBudgetMb));
+        }
+
+        if (v38ResidencyEnabled && mViewer->getFrameStamp())
+        {
+            const Debug::V3GpuMemory::PressureState pressure = Debug::V3GpuMemory::pressureState();
+            if (pressure == Debug::V3GpuMemory::PressureState::Soft
+                || pressure == Debug::V3GpuMemory::PressureState::Hard)
+            {
+                const double now = mViewer->getFrameStamp()->getReferenceTime();
+                static double sV38LastResidencyTrim = -1000.0;
+
+                double interval = 2.0;
+                double sceneAge = 90.0;
+                double pagingAge = 120.0;
+                if (v38ResidencyMode == 1)
+                {
+                    // Conservative mode waits for hard pressure and only trims
+                    // very stale render templates.
+                    if (pressure == Debug::V3GpuMemory::PressureState::Soft)
+                        interval = -1.0;
+                    sceneAge = 90.0;
+                    pagingAge = 180.0;
+                }
+                else if (v38ResidencyMode == 2)
+                {
+                    interval = pressure == Debug::V3GpuMemory::PressureState::Hard ? 0.75 : 1.5;
+                    sceneAge = pressure == Debug::V3GpuMemory::PressureState::Hard ? 20.0 : 45.0;
+                    pagingAge = pressure == Debug::V3GpuMemory::PressureState::Hard ? 30.0 : 60.0;
+                }
+                else
+                {
+                    interval = pressure == Debug::V3GpuMemory::PressureState::Hard ? 0.35 : 0.75;
+                    sceneAge = pressure == Debug::V3GpuMemory::PressureState::Hard ? 5.0 : 15.0;
+                    pagingAge = pressure == Debug::V3GpuMemory::PressureState::Hard ? 8.0 : 20.0;
+                }
+
+                const int v39ProactiveResidencyMode
+                    = static_cast<int>(Settings::cells().mV39ProactiveResidencyMode);
+                if (v39ProactiveResidencyMode > 0
+                    && pressure == Debug::V3GpuMemory::PressureState::Soft)
+                {
+                    if (v39ProactiveResidencyMode == 1)
+                    {
+                        interval = 1.25;
+                        sceneAge = 45.0;
+                        pagingAge = 60.0;
+                    }
+                    else if (v39ProactiveResidencyMode == 2)
+                    {
+                        interval = 0.75;
+                        sceneAge = 20.0;
+                        pagingAge = 30.0;
+                    }
+                    else
+                    {
+                        interval = 0.5;
+                        sceneAge = 8.0;
+                        pagingAge = 12.0;
+                    }
+                }
+
+                if (interval > 0.0 && now - sV38LastResidencyTrim >= interval)
+                {
+                    // Scene templates are the primary GPU-backed cache. Source
+                    // NIF/image/keyframe managers retain their long Overdrive
+                    // expiry, so re-materialization remains RAM-heavy rather than
+                    // disk-heavy if an evicted render template is needed again.
+                    mResourceSystem->getSceneManager()->updateCacheWithExpiry(now, sceneAge);
+
+                    // Paged chunks are already immutable prepared render graphs.
+                    // Mode 1 leaves their long cache untouched; moderate/aggressive
+                    // can release stale cache-only chunks under pressure.
+                    if (v38ResidencyMode >= 2 && mObjectPaging)
+                        mObjectPaging->updateCacheWithExpiry(now, pagingAge);
+                    if (v38ResidencyMode >= 3 && mGroundcover)
+                        mGroundcover->updateCacheWithExpiry(now, pagingAge);
+
+                    sV38LastResidencyTrim = now;
+                }
+            }
+        }
+
+        const int v315CompileGovernor
+            = static_cast<int>(Settings::cells().mV315AdaptiveCompileGovernor);
+        if (v315CompileGovernor > 0)
+        {
+            if (osgUtil::IncrementalCompileOperation* const ico = mViewer->getIncrementalCompileOperation())
+            {
+                const double frameMs = std::max(0.0, static_cast<double>(dt) * 1000.0);
+                int bucket = 0;
+                if (paused)
+                    bucket = 3;
+                else if (v315CompileGovernor == 1)
+                {
+                    if (frameMs >= 27.0)
+                        bucket = 0;
+                    else if (frameMs >= 23.0)
+                        bucket = 1;
+                    else if (frameMs >= 19.0)
+                        bucket = 2;
+                    else
+                        bucket = 3;
+                }
+                else
+                {
+                    if (frameMs >= 25.0)
+                        bucket = 0;
+                    else if (frameMs >= 21.0)
+                        bucket = 1;
+                    else if (frameMs >= 18.0)
+                        bucket = 2;
+                    else
+                        bucket = 3;
+                }
+
+                static int sV315CompileBucket = -1;
+                static int sV315CompileMode = -1;
+                if (bucket != sV315CompileBucket || v315CompileGovernor != sV315CompileMode)
+                {
+                    const double configuredTarget = static_cast<double>(Settings::cells().mTargetFramerate);
+                    double targetFrameRate = configuredTarget;
+                    unsigned int maxObjects = 1;
+                    double conservativeRatio = 0.1;
+
+                    if (v315CompileGovernor == 1)
+                    {
+                        switch (bucket)
+                        {
+                            case 0:
+                                targetFrameRate = configuredTarget;
+                                maxObjects = 1;
+                                conservativeRatio = 0.10;
+                                break;
+                            case 1:
+                                targetFrameRate = std::min(configuredTarget, 50.0);
+                                maxObjects = 2;
+                                conservativeRatio = 0.20;
+                                break;
+                            case 2:
+                                targetFrameRate = std::min(configuredTarget, 42.0);
+                                maxObjects = 4;
+                                conservativeRatio = 0.35;
+                                break;
+                            default:
+                                targetFrameRate = std::min(configuredTarget, 36.0);
+                                maxObjects = 8;
+                                conservativeRatio = 0.50;
+                                break;
+                        }
+                    }
+                    else
+                    {
+                        switch (bucket)
+                        {
+                            case 0:
+                                targetFrameRate = configuredTarget;
+                                maxObjects = 1;
+                                conservativeRatio = 0.05;
+                                break;
+                            case 1:
+                                targetFrameRate = std::min(configuredTarget, 55.0);
+                                maxObjects = 1;
+                                conservativeRatio = 0.15;
+                                break;
+                            case 2:
+                                targetFrameRate = std::min(configuredTarget, 45.0);
+                                maxObjects = 3;
+                                conservativeRatio = 0.30;
+                                break;
+                            default:
+                                targetFrameRate = std::min(configuredTarget, 33.0);
+                                maxObjects = 12;
+                                conservativeRatio = 0.60;
+                                break;
+                        }
+                    }
+
+                    ico->setTargetFrameRate(targetFrameRate);
+                    ico->setMaximumNumOfObjectsToCompilePerFrame(maxObjects);
+                    ico->setConservativeTimeRatio(conservativeRatio);
+                    sV315CompileBucket = bucket;
+                    sV315CompileMode = v315CompileGovernor;
+                }
+            }
+        }
+
         reportStats();
 
         mResourceSystem->getSceneManager()->getShaderManager().update(*mViewer);
@@ -777,15 +1113,24 @@ namespace MWRender
             mSharedUniformStateUpdater->setPlayerPos(playerPos);
         }
 
-        updateNavMesh();
-        updateRecastMesh();
+        {
+            Debug::V324DeepTelemetry::Scope scope("render_update", "navmesh_update");
+            updateNavMesh();
+        }
+        {
+            Debug::V324DeepTelemetry::Scope scope("render_update", "recast_update");
+            updateRecastMesh();
+        }
 
         if (mUpdateProjectionMatrix)
         {
             mUpdateProjectionMatrix = false;
             updateProjectionMatrix();
         }
-        mCamera->update(dt, paused);
+        {
+            Debug::V324DeepTelemetry::Scope scope("render_update", "camera_update");
+            mCamera->update(dt, paused);
+        }
 
         bool isUnderwater = mWater->isUnderwater(mCamera->getPosition());
 
@@ -998,6 +1343,32 @@ namespace MWRender
     class IntersectionVisitorWithIgnoreList : public osgUtil::IntersectionVisitor
     {
     public:
+        using osgUtil::IntersectionVisitor::apply;
+
+        bool isOwnerViewHidden(osg::Node& node) const
+        {
+            bool hidden = false;
+            return node.getUserValue("openmw.v321.ownerViewHidden", hidden) && hidden;
+        }
+
+        void apply(osg::Node& node) override
+        {
+            if (!isOwnerViewHidden(node))
+                osgUtil::IntersectionVisitor::apply(node);
+        }
+
+        void apply(osg::Group& group) override
+        {
+            if (!isOwnerViewHidden(group))
+                osgUtil::IntersectionVisitor::apply(group);
+        }
+
+        void apply(osg::Geode& geode) override
+        {
+            if (!isOwnerViewHidden(geode))
+                osgUtil::IntersectionVisitor::apply(geode);
+        }
+
         bool skipTransform(osg::Transform& transform)
         {
             if (mContainsPagedRefs)
@@ -1023,11 +1394,8 @@ namespace MWRender
 
         void apply(osg::Transform& transform) override
         {
-            if (skipTransform(transform))
-            {
-                return;
-            }
-            osgUtil::IntersectionVisitor::apply(transform);
+            if (!isOwnerViewHidden(transform) && !skipTransform(transform))
+                osgUtil::IntersectionVisitor::apply(transform);
         }
 
         void setIgnoreList(std::span<const MWWorld::Ptr> ignoreList) { mIgnoreList = ignoreList; }
@@ -1136,6 +1504,7 @@ namespace MWRender
     void RenderingManager::clear()
     {
         mSky->setMoonColour(false);
+        mObjects->clearHibernatedCells();
 
         notifyWorldSpaceChanged();
         if (mObjectPaging)
@@ -1270,7 +1639,10 @@ namespace MWRender
         }
         else
         {
-            setScreenRes(width, height);
+            if (mPostProcessor)
+                setScreenRes(mPostProcessor->renderWidth(), mPostProcessor->renderHeight());
+            else
+                setScreenRes(width, height);
         }
 
         // Since our fog is not radial yet, we should take FOV in account, otherwise terrain near viewing distance may
@@ -1334,7 +1706,7 @@ namespace MWRender
         const float lodFactor = Settings::terrain().mLodFactor;
         const bool groundcover = Settings::groundcover().mEnabled && worldspace == ESM::Cell::sDefaultWorldspaceId;
         const bool distantTerrain = Settings::terrain().mDistantTerrain;
-        const double expiryDelay = Settings::cells().mCacheExpiryDelay;
+        const double expiryDelay = Settings::RamCache::terrainExpiryDelay();
         if (distantTerrain || groundcover)
         {
             const int compMapResolution = Settings::terrain().mCompositeMapResolution;
@@ -1354,8 +1726,8 @@ namespace MWRender
                 {
                     const unsigned int maxTriangles
                         = static_cast<unsigned int>(Settings::camera().mOcclusionMaxTriangles);
-                    newChunkMgr.mObjectPaging->setOcclusionCuller(
-                        mOcclusionCuller, maxTriangles, mOcclusionStorage.get());
+                    newChunkMgr.mObjectPaging->setOcclusionCuller(mOcclusionCuller, maxTriangles,
+                        mOcclusionStorage.get(), Settings::V36Profile::coarseChunkOcclusionEnabled());
                 }
                 quadTreeWorld->addChunkManager(newChunkMgr.mObjectPaging.get());
                 mResourceSystem->addResourceManager(newChunkMgr.mObjectPaging.get());
@@ -1367,6 +1739,9 @@ namespace MWRender
 
                 newChunkMgr.mGroundcover = std::make_unique<Groundcover>(
                     mResourceSystem->getSceneManager(), density, groundcoverDistance, mGroundCoverStore);
+                if (mOcclusionCuller)
+                    newChunkMgr.mGroundcover->setOcclusionCuller(
+                        mOcclusionCuller, Settings::V36Profile::coarseChunkOcclusionEnabled());
                 quadTreeWorld->addChunkManager(newChunkMgr.mGroundcover.get());
                 mResourceSystem->addResourceManager(newChunkMgr.mGroundcover.get());
             }
@@ -1721,6 +2096,23 @@ namespace MWRender
             mObjectPaging->getPagedRefnums(activeGrid, out);
     }
 
+    void RenderingManager::clearV310InitialObjectPagingCache()
+    {
+        if (mObjectPaging)
+        {
+            // A completed prediction may already have populated identical ChunkIds.
+            // clearCache() only drops the cache refs; externally referenced live
+            // nodes remain alive and source scene/image/keyframe caches are untouched.
+            mObjectPaging->clearCache();
+        }
+    }
+
+    void RenderingManager::setV310InitialFrontloadActive(bool active)
+    {
+        if (mObjectPaging)
+            mObjectPaging->setV310InitialFrontloadActive(active);
+    }
+
     void RenderingManager::setNavMeshMode(Settings::NavMeshRenderMode value)
     {
         mNavMesh->setMode(value);
@@ -1742,12 +2134,12 @@ namespace MWRender
         const unsigned int maxTriangles = static_cast<unsigned int>(Settings::camera().mOcclusionMaxTriangles);
         mObjects->setOcclusionCuller(mOcclusionCuller, occluderMinRadius, occluderMaxRadius, occluderShrinkFactor,
             occluderMeshRes, occluderMaxMeshRes, occluderInsideThreshold, occluderMaxDistance, enableStatics,
-            maxTriangles, mOcclusionStorage.get());
+            Settings::camera().mV34BroadenOcclusion, maxTriangles, mOcclusionStorage.get());
         for (auto& [worldspace, chunkMgr] : mWorldspaceChunks)
         {
             if (chunkMgr.mObjectPaging)
-                chunkMgr.mObjectPaging->setOcclusionCuller(
-                    mOcclusionCuller, maxTriangles, mOcclusionStorage.get());
+                chunkMgr.mObjectPaging->setOcclusionCuller(mOcclusionCuller, maxTriangles,
+                    mOcclusionStorage.get(), Settings::V36Profile::coarseChunkOcclusionEnabled());
         }
         if (mSceneOcclusionCallback)
             mSceneOcclusionCallback->setStorage(mOcclusionStorage.get());

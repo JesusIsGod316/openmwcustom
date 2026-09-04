@@ -1,7 +1,11 @@
 #ifndef OPENMW_COMPONENTS_RESOURCE_SCENEMANAGER_H
 #define OPENMW_COMPONENTS_RESOURCE_SCENEMANAGER_H
 
+#include <atomic>
 #include <array>
+#include <cstddef>
+#include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -10,6 +14,7 @@
 #include <osg/ref_ptr>
 
 #include "resourcemanager.hpp"
+#include "v321classifiedcompileset.hpp"
 
 #include <components/sceneutil/lightmanager.hpp>
 #include <filesystem>
@@ -150,7 +155,8 @@ namespace Resource
         /// @note If the given filename does not exist or fails to load, an error marker mesh will be used instead.
         ///  If even the error marker mesh can not be found, an exception is thrown.
         /// @note Thread safe.
-        osg::ref_ptr<const osg::Node> getTemplate(VFS::Path::NormalizedView path, bool compile = true);
+        osg::ref_ptr<const osg::Node> getTemplate(VFS::Path::NormalizedView path, bool compile = true,
+            V321CompileClass compileClass = V321CompileClass::Unknown);
 
         /// Clone osg::Node safely.
         /// @note Thread safe.
@@ -166,6 +172,14 @@ namespace Resource
         /// @see getTemplate
         /// @note Thread safe.
         osg::ref_ptr<osg::Node> getInstance(VFS::Path::NormalizedView path);
+
+        /// Configure a bounded pool of scene instances prepared by preload workers.
+        /// A limit of zero disables the experiment and clears all prepared instances.
+        void setPreparedInstanceCacheLimit(std::size_t limit);
+
+        /// Prepare one reusable instance for a future getInstance(path) call.
+        /// Only templates with no update traversal are accepted. Thread safe.
+        bool prepareInstance(VFS::Path::NormalizedView path);
 
         /// Instance the given scene template and immediately attach it to a parent node
         /// @see getTemplate
@@ -227,6 +241,17 @@ namespace Resource
         osg::ref_ptr<osg::Node> cloneErrorMarker();
 
         mutable std::mutex mSharedStateMutex;
+
+        std::atomic_bool mPreparedInstanceEnabled{ false };
+        mutable std::mutex mPreparedInstanceMutex;
+        std::map<VFS::Path::Normalized, std::deque<osg::ref_ptr<osg::Node>>, std::less<>> mPreparedInstances;
+        std::size_t mPreparedInstanceLimit = 0;
+        std::size_t mPreparedInstanceCount = 0;
+        std::size_t mPreparedInstanceGeneration = 0;
+        std::size_t mPreparedInstanceAdded = 0;
+        std::size_t mPreparedInstanceHits = 0;
+        std::size_t mPreparedInstanceMisses = 0;
+        std::size_t mPreparedInstanceRejected = 0;
 
         std::unique_ptr<Shader::ShaderManager> mShaderManager;
         std::string mNormalMapPattern;

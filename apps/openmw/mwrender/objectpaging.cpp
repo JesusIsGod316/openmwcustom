@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <osg/ComputeBoundsVisitor>
 #include <osg/LOD>
 #include <osg/MatrixTransform>
 #include <osg/Sequence>
@@ -37,6 +38,7 @@
 #include <components/misc/rng.hpp>
 #include <components/nifosg/autotransform.hpp>
 #include <components/resource/scenemanager.hpp>
+#include <components/resource/v321classifiedcompileset.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
 #include <components/sceneutil/morphgeometry.hpp>
@@ -45,6 +47,9 @@
 #include <components/sceneutil/riggeometry.hpp>
 #include <components/sceneutil/riggeometryosgaextension.hpp>
 #include <components/sceneutil/util.hpp>
+#include <components/debug/v3diagnostics.hpp>
+#include <components/debug/v36structuretrace.hpp>
+#include <components/settings/ramcache.hpp>
 #include <components/settings/values.hpp>
 #include <components/vfs/manager.hpp>
 
@@ -127,13 +132,163 @@ namespace MWRender
             return nullptr;
 
         const ChunkId id = std::make_tuple(center, size, activeGrid);
+        const int v311PrepareMode = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode);
+        const int v313QualityMode = static_cast<int>(Settings::cells().mV313ChunkQualityMode);
 
-        if (const osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(id))
-            return static_cast<osg::Node*>(obj.get());
+        // Mode0 is the inherited V3.12/V3.11 first-writer path. Keep it isolated
+        // so all historical modes remain a valid behavioral/performance control.
+        if (v313QualityMode == 0)
+        {
+            if (const osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(id))
+            {
+                if (v311PrepareMode > 0 && activeGrid && !compile)
+                {
+                    std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
+                    if (mV311PreparedActiveChunks.contains(id))
+                        mV311PreparedActiveHits.fetch_add(1, std::memory_order_relaxed);
+                }
+                return static_cast<osg::Node*>(obj.get());
+            }
+
+            if (v311PrepareMode > 0 && activeGrid && !compile)
+            {
+                mV311DemandFallbacks.fetch_add(1, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
+                mV311PreparedActiveChunks.erase(id);
+            }
+
+            const unsigned char lod = static_cast<unsigned char>(lodFlags >> (4 * 4));
+            Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::pagingWriter(), "object_chunk_create",
+                activeGrid ? "active_grid" : "distant", 0.25);
+            osg::ref_ptr<osg::Node> node = createChunk(size, center, activeGrid, viewPoint, compile, lod);
+            mCache->addEntryToObjectCache(id, node.get());
+
+            if (v311PrepareMode > 0 && activeGrid && compile)
+            {
+                std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
+                mV311PreparedActiveChunks.insert(id);
+                mV311PreparedActiveBuilt.fetch_add(1, std::memory_order_relaxed);
+            }
+            return node;
+        }
+
+        const unsigned char v313RequestedPrepareMode
+            = activeGrid && compile && v311PrepareMode > 0 ? static_cast<unsigned char>(v311PrepareMode) : 0;
+        const unsigned char v313RequestedSpatialMode
+            = activeGrid && compile && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0 ? 1 : 0;
+        const V313ChunkQuality v313RequestedQuality{ v313RequestedPrepareMode, v313RequestedSpatialMode };
+
+        const auto v313QualitySatisfies = [&](const V313ChunkQuality& have, const V313ChunkQuality& need) {
+            if (have.mPrepareMode < need.mPrepareMode)
+                return false;
+            if (v313QualityMode >= 2 && need.mPrepareMode > 0 && have.mSpatialMode != need.mSpatialMode)
+                return false;
+            return true;
+        };
+
+        osg::ref_ptr<osg::Object> cached = mCache->getRefFromObjectCache(id);
+        bool v313RepairBuild = false;
+        if (cached)
+        {
+            bool v313CachedSatisfies = true;
+            if (v313QualityMode > 0 && v313RequestedPrepareMode > 0)
+            {
+                std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
+                const auto it = mV313ChunkQualities.find(id);
+                const V313ChunkQuality have = it != mV313ChunkQualities.end() ? it->second : V313ChunkQuality{};
+                v313CachedSatisfies = v313QualitySatisfies(have, v313RequestedQuality);
+                if (!v313CachedSatisfies)
+                {
+                    mV313WeakCacheHitOnStrongPrepare.fetch_add(1, std::memory_order_relaxed);
+                    if (!mV313StrongUpgradeInFlight.insert(id).second)
+                    {
+                        mV313UpgradeCoalesced.fetch_add(1, std::memory_order_relaxed);
+                        return static_cast<osg::Node*>(cached.get());
+                    }
+                    v313RepairBuild = true;
+                }
+            }
+
+            if (v313CachedSatisfies)
+            {
+                if (v311PrepareMode > 0 && activeGrid && !compile)
+                {
+                    std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
+                    if (mV311PreparedActiveChunks.contains(id))
+                        mV311PreparedActiveHits.fetch_add(1, std::memory_order_relaxed);
+                }
+                return static_cast<osg::Node*>(cached.get());
+            }
+        }
+        else if (v313QualityMode > 0)
+        {
+            // Generic cache expiry/removal does not know about V3.13's side table.
+            // A real cache miss is authoritative and makes any old quality record stale.
+            std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
+            mV313ChunkQualities.erase(id);
+            mV313StrongUpgradeInFlight.erase(id);
+        }
+
+        if (v311PrepareMode > 0 && activeGrid && !compile)
+        {
+            mV311DemandFallbacks.fetch_add(1, std::memory_order_relaxed);
+            std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
+            mV311PreparedActiveChunks.erase(id);
+        }
 
         const unsigned char lod = static_cast<unsigned char>(lodFlags >> (4 * 4));
+        Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::pagingWriter(),
+            v313RepairBuild ? "object_chunk_quality_upgrade" : "object_chunk_create",
+            activeGrid ? "active_grid" : "distant", 0.25);
         osg::ref_ptr<osg::Node> node = createChunk(size, center, activeGrid, viewPoint, compile, lod);
-        mCache->addEntryToObjectCache(id, node.get());
+
+        const V313ChunkQuality v313BuiltQuality{
+            activeGrid && compile && v311PrepareMode > 0 ? static_cast<unsigned char>(v311PrepareMode) : 0,
+            activeGrid && compile && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0 ? 1 : 0 };
+        if (v313RepairBuild)
+            mV313UpgradeBuilt.fetch_add(1, std::memory_order_relaxed);
+
+        if (v313QualityMode > 0)
+        {
+            // Strong-wins installation. A cheap demand miss may have started before a
+            // strong worker finished; it must never overwrite the stronger live node.
+            std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
+            const osg::ref_ptr<osg::Object> current = mCache->getRefFromObjectCache(id);
+            const auto currentIt = mV313ChunkQualities.find(id);
+            const V313ChunkQuality currentQuality
+                = current && currentIt != mV313ChunkQualities.end() ? currentIt->second : V313ChunkQuality{};
+
+            if (current && v313QualitySatisfies(currentQuality, v313BuiltQuality)
+                && (currentQuality.mPrepareMode > v313BuiltQuality.mPrepareMode
+                    || (currentQuality.mPrepareMode == v313BuiltQuality.mPrepareMode
+                        && (v313QualityMode < 2 || currentQuality.mSpatialMode == v313BuiltQuality.mSpatialMode))))
+            {
+                // Preserve the already-installed equal-or-stronger node. This is the
+                // race that prevents a late compile=false build from downgrading cache quality.
+                if (currentQuality.mPrepareMode > 0 && activeGrid)
+                {
+                    std::lock_guard<std::mutex> preparedLock(mV311PreparedActiveMutex);
+                    mV311PreparedActiveChunks.insert(id);
+                }
+                mV313StrongUpgradeInFlight.erase(id);
+                return static_cast<osg::Node*>(current.get());
+            }
+
+            mCache->addEntryToObjectCache(id, node.get());
+            mV313ChunkQualities[id] = v313BuiltQuality;
+            mV313StrongUpgradeInFlight.erase(id);
+            if (v313RepairBuild)
+                mV313UpgradeInstalled.fetch_add(1, std::memory_order_relaxed);
+        }
+        else
+            mCache->addEntryToObjectCache(id, node.get());
+
+        if (v311PrepareMode > 0 && activeGrid && compile)
+        {
+            std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
+            mV311PreparedActiveChunks.insert(id);
+            mV311PreparedActiveBuilt.fetch_add(1, std::memory_order_relaxed);
+        }
         return node;
     }
 
@@ -466,7 +621,7 @@ namespace MWRender
     }
 
     ObjectPaging::ObjectPaging(Resource::SceneManager* sceneManager, ESM::RefId worldspace)
-        : GenericResourceManager<ChunkId>(nullptr, Settings::cells().mCacheExpiryDelay)
+        : GenericResourceManager<ChunkId>(nullptr, Settings::RamCache::objectPagingExpiryDelay())
         , Terrain::QuadTreeWorld::ChunkManager(worldspace)
         , mSceneManager(sceneManager)
         , mActiveGrid(Settings::terrain().mObjectPagingActiveGrid)
@@ -480,11 +635,12 @@ namespace MWRender
     }
 
     void ObjectPaging::setOcclusionCuller(SceneUtil::OcclusionCuller* culler, unsigned int maxTriangles,
-        OcclusionCulling::OcclusionStorage* storage)
+        OcclusionCulling::OcclusionStorage* storage, bool coarseChunkOcclusion)
     {
         mOcclusionCuller = culler;
         mMaxTriangles = maxTriangles;
         mOcclusionStorage = storage;
+        mV35CoarseChunkOcclusion = coarseChunkOcclusion;
     }
 
     namespace
@@ -631,6 +787,11 @@ namespace MWRender
     osg::ref_ptr<osg::Node> ObjectPaging::createChunk(float size, const osg::Vec2f& center, bool activeGrid,
         const osg::Vec3f& viewPoint, bool compile, unsigned char lod)
     {
+        Debug::V3Diagnostics::TraceScope trace(
+            "paging", "object_chunk_create", activeGrid ? "active_grid" : "distant", 0.1);
+        const bool v36StructureEnabled = Debug::V36StructureTrace::writer().enabled();
+        const auto v36StructureStart
+            = v36StructureEnabled ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         const osg::Vec2i startCell(static_cast<int>(std::floor(center.x() - size / 2.f)),
             static_cast<int>(std::floor(center.y() - size / 2.f)));
         const MWBase::World& world = *MWBase::Environment::get().getWorld();
@@ -638,13 +799,17 @@ namespace MWRender
 
         std::map<ESM::RefNum, PagedCellRef> refs;
 
-        if (mWorldspace == ESM::Cell::sDefaultWorldspaceId)
         {
-            refs = collectESM3References(size, startCell, store);
-        }
-        else
-        {
-            refs = collectESM4References(size, startCell, mWorldspace);
+            Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
+                "object_chunk_collect_refs", activeGrid ? "active_grid" : "distant", 0.1);
+            if (mWorldspace == ESM::Cell::sDefaultWorldspaceId)
+            {
+                refs = collectESM3References(size, startCell, store);
+            }
+            else
+            {
+                refs = collectESM4References(size, startCell, mWorldspace);
+            }
         }
 
         if (activeGrid && !refs.empty())
@@ -694,8 +859,11 @@ namespace MWRender
 
         AnalyzeVisitor analyzeVisitor(copyMask);
         const float minSize = mMinSizeMergeFactor ? mMinSize * mMinSizeMergeFactor : mMinSize;
-        for (const auto& [refNum, ref] : refs)
         {
+            Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
+                "object_chunk_template_analysis", activeGrid ? "active_grid" : "distant", 0.1);
+            for (const auto& [refNum, ref] : refs)
+            {
             if (size < 1.f)
             {
                 const osg::Vec3f cellPos = ref.mPosition / static_cast<float>(cellSize);
@@ -794,13 +962,30 @@ namespace MWRender
             }
             else
                 analyzeVisitor.addInstance(emplaced.first->second.mAnalyzeResult);
-            emplaced.first->second.mInstances.push_back(&ref);
+                emplaced.first->second.mInstances.push_back(&ref);
+            }
         }
 
         const osg::Vec3f worldCenter
             = osg::Vec3f(center.x(), center.y(), 0) * static_cast<float>(getCellSize(mWorldspace));
         osg::ref_ptr<osg::Group> group = new osg::Group;
-        osg::ref_ptr<osg::Group> mergeGroup = new osg::Group;
+        const int v312SpatialBatchMode = static_cast<int>(Settings::cells().mV312SpatialBatchMode);
+        const bool v312SpatialPrepared = v312SpatialBatchMode > 0 && activeGrid && compile
+            && static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode) >= 2;
+        const int v315PacketizedPremergeMode = static_cast<int>(Settings::cells().mV315PacketizedPremergeMode);
+        const bool v315PacketizedPrepared = !v312SpatialPrepared && v315PacketizedPremergeMode > 0
+            && activeGrid && compile
+            && static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode) >= 2
+            && static_cast<int>(Settings::cells().mV38WorldBatchingMode) >= 2;
+
+        std::vector<osg::ref_ptr<osg::Group>> v312MergeGroups;
+        const unsigned int v315PacketCount
+            = v315PacketizedPrepared ? (v315PacketizedPremergeMode >= 2 ? 16u : 4u)
+                                     : (v312SpatialPrepared ? 4u : 1u);
+        v312MergeGroups.reserve(v315PacketCount);
+        for (unsigned int i = 0; i < v315PacketCount; ++i)
+            v312MergeGroups.emplace_back(new osg::Group);
+        osg::Group* mergeGroup = v312MergeGroups.front().get();
         osg::ref_ptr<Resource::TemplateMultiRef> templateRefs = new Resource::TemplateMultiRef;
         osgUtil::StateToCompile stateToCompile(0, nullptr);
         CopyOp copyop(activeGrid, copyMask);
@@ -811,24 +996,59 @@ namespace MWRender
         int occluderMeshRes = 6;
         int occluderMaxMeshRes = 24;
         float occluderShrinkFactor = 0.9f;
+        if (buildOccluders || mV35CoarseChunkOcclusion)
+            pagedOccluderData = new PagedOccluderData;
         if (buildOccluders)
         {
-            pagedOccluderData = new PagedOccluderData;
             occluderMinRadius = Settings::camera().mOcclusionOccluderMinRadius;
             occluderMeshRes = Settings::camera().mOcclusionOccluderMeshResolution;
             occluderMaxMeshRes = Settings::camera().mOcclusionOccluderMaxMeshResolution;
             occluderShrinkFactor = Settings::camera().mOcclusionOccluderShrinkFactor;
         }
 
-        for (const auto& pair : nodes)
+        std::size_t v36RepeatedGroups = 0;
+        std::size_t v36RepeatedInstances = 0;
+        std::size_t v36TotalInstances = 0;
+        std::size_t v36MergeCandidateGroups = 0;
         {
-            const osg::Node* cnode = pair.first;
+            Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
+                "object_chunk_build_instances", activeGrid ? "active_grid" : "distant", 0.1);
+            for (const auto& pair : nodes)
+            {
+                const osg::Node* cnode = pair.first;
 
             const AnalyzeVisitor::Result& analyzeResult = pair.second.mAnalyzeResult;
 
+            const int v38ConfiguredBatchingMode
+                = static_cast<int>(Settings::cells().mV38WorldBatchingMode);
+            const bool v39OnDemandFallback
+                = static_cast<int>(Settings::cells().mV39FrontloadMode) > 0 && !compile;
+            const int v38BatchingMode
+                = v39OnDemandFallback ? std::min(v38ConfiguredBatchingMode, 1) : v38ConfiguredBatchingMode;
+            const unsigned int v38InstanceCount = static_cast<unsigned int>(pair.second.mInstances.size());
+            float v38MergeMultiplier = 1.f;
+            if (v38BatchingMode > 0)
+            {
+                const float configuredMultiplier
+                    = static_cast<float>(Settings::cells().mV38WorldBatchingMergeMultiplier);
+                // Distant chunks are the highest-payoff population and are immutable.
+                // Keep active-grid pressure lower because those chunks also carry refnum
+                // interaction bookkeeping.
+                if (!activeGrid)
+                    v38MergeMultiplier = configuredMultiplier
+                        * (v38BatchingMode == 1 ? 1.f : (v38BatchingMode == 2 ? 1.75f : 3.f));
+                else if (v38BatchingMode >= 2)
+                    v38MergeMultiplier = v38BatchingMode == 2 ? 1.15f : 1.5f;
+            }
+
             const float mergeCost = analyzeResult.mNumVerts * size;
-            const float mergeBenefit = analyzeVisitor.getMergeBenefit(analyzeResult) * mMergeFactor;
-            const bool merge = mergeBenefit > mergeCost;
+            const float mergeBenefit
+                = analyzeVisitor.getMergeBenefit(analyzeResult) * mMergeFactor * v38MergeMultiplier;
+            const bool v38RepeatedCandidate = v38BatchingMode >= 2
+                && v38InstanceCount >= static_cast<unsigned int>(Settings::cells().mV38WorldBatchingMinInstances);
+            const bool v38ForceMerge = (v38BatchingMode >= 3 && !activeGrid)
+                || (v38RepeatedCandidate && (!activeGrid || v38BatchingMode >= 3));
+            const bool merge = mergeBenefit > mergeCost || v38ForceMerge;
 
             const float factor2
                 = mergeBenefit > 0 ? std::min(1.f, mergeCost * mMinSizeCostMultiplier / mergeBenefit) : 1;
@@ -967,12 +1187,55 @@ namespace MWRender
                     }
                 }
 
-                osg::Group* const attachTo = merge ? mergeGroup : group;
+                osg::Group* attachTo = group;
+                if (merge)
+                {
+                    if (v312SpatialPrepared)
+                    {
+                        const unsigned int cluster = (nodePos.x() >= 0.f ? 1u : 0u)
+                            | (nodePos.y() >= 0.f ? 2u : 0u);
+                        attachTo = v312MergeGroups[cluster].get();
+                    }
+                    else if (v315PacketizedPrepared)
+                    {
+                        unsigned int cluster = 0;
+                        if (v315PacketizedPremergeMode <= 1)
+                        {
+                            cluster = (nodePos.x() >= 0.f ? 1u : 0u)
+                                | (nodePos.y() >= 0.f ? 2u : 0u);
+                        }
+                        else
+                        {
+                            const float chunkWorldSize = size * static_cast<float>(cellSize);
+                            const float halfChunkWorldSize = chunkWorldSize * 0.5f;
+                            const float normalizedX = chunkWorldSize > 0.f
+                                ? std::clamp((nodePos.x() + halfChunkWorldSize) / chunkWorldSize, 0.f, 0.999999f)
+                                : 0.f;
+                            const float normalizedY = chunkWorldSize > 0.f
+                                ? std::clamp((nodePos.y() + halfChunkWorldSize) / chunkWorldSize, 0.f, 0.999999f)
+                                : 0.f;
+                            const unsigned int x = static_cast<unsigned int>(normalizedX * 4.f);
+                            const unsigned int y = static_cast<unsigned int>(normalizedY * 4.f);
+                            cluster = x | (y << 2u);
+                        }
+                        attachTo = v312MergeGroups[cluster].get();
+                    }
+                    else
+                        attachTo = mergeGroup;
+                }
                 attachTo->addChild(trans);
                 ++numinstances;
             }
             if (numinstances > 0)
             {
+                v36TotalInstances += numinstances;
+                if (numinstances > 1)
+                {
+                    ++v36RepeatedGroups;
+                    v36RepeatedInstances += numinstances;
+                }
+                if (merge)
+                    ++v36MergeCandidateGroups;
                 // add a ref to the original template to help verify the safety of shallow cloning operations
                 // in addition, we hint to the cache that it's still being used and should be kept in cache
                 templateRefs->addRef(cnode);
@@ -985,13 +1248,75 @@ namespace MWRender
                     stateToCompile._mode = mode;
                     const_cast<osg::Node*>(cnode)->accept(stateToCompile);
                 }
+                }
             }
+        }
+
+        if (v315PacketizedPrepared)
+        {
+            Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
+                "v315_packet_premerge", activeGrid ? "active_grid" : "distant", 0.1);
+            const osg::Vec3f v315RelativeViewPoint = viewPoint - worldCenter;
+            const bool v315CanonicalizePackets
+                = static_cast<bool>(Settings::cells().mV315PremergeStateCanonicalization);
+
+            for (const osg::ref_ptr<osg::Group>& packetRef : v312MergeGroups)
+            {
+                osg::Group* const packet = packetRef.get();
+                if (!packet->getNumChildren())
+                    continue;
+
+                if (v315CanonicalizePackets)
+                    mSceneManager->shareState(packet);
+
+                SceneUtil::Optimizer packetOptimizer;
+                if (size > 1 / 8.f)
+                {
+                    packetOptimizer.setViewPoint(v315RelativeViewPoint);
+                    packetOptimizer.setMergeAlphaBlending(true);
+                }
+                packetOptimizer.setIsOperationPermissibleForObjectCallback(new CanOptimizeCallback);
+                constexpr unsigned int v315PacketOptions = SceneUtil::Optimizer::FLATTEN_STATIC_TRANSFORMS
+                    | SceneUtil::Optimizer::REMOVE_REDUNDANT_NODES | SceneUtil::Optimizer::MERGE_GEOMETRY;
+                packetOptimizer.optimize(packet, v315PacketOptions);
+            }
+
+            // Recombine every temporary packet before the final Mode79-quality
+            // optimizer. No packet survives as final render topology.
+            osg::ref_ptr<osg::Group> recombined = new osg::Group;
+            for (const osg::ref_ptr<osg::Group>& packetRef : v312MergeGroups)
+            {
+                osg::Group* const packet = packetRef.get();
+                while (packet->getNumChildren() > 0)
+                {
+                    osg::ref_ptr<osg::Node> child = packet->getChild(0);
+                    packet->removeChild(0u, 1u);
+                    recombined->addChild(child);
+                }
+            }
+            v312MergeGroups.clear();
+            v312MergeGroups.emplace_back(recombined);
+            mergeGroup = recombined.get();
+        }
+
+        Debug::V36StructureTrace::StructureStats v36BeforeStats;
+        if (v36StructureEnabled)
+        {
+            v36BeforeStats += Debug::V36StructureTrace::inspect(*group);
+            for (const osg::ref_ptr<osg::Group>& v312MergeGroupRef : v312MergeGroups)
+                v36BeforeStats += Debug::V36StructureTrace::inspect(*v312MergeGroupRef);
         }
 
         const osg::Vec3f relativeViewPoint = viewPoint - worldCenter;
 
-        if (mergeGroup->getNumChildren())
+        for (const osg::ref_ptr<osg::Group>& v312MergeGroupRef : v312MergeGroups)
         {
+            osg::Group* const mergeGroup = v312MergeGroupRef.get();
+            if (!mergeGroup->getNumChildren())
+                continue;
+        {
+            Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
+                "object_chunk_merge_optimize", activeGrid ? "active_grid" : "distant", 0.1);
             SceneUtil::Optimizer optimizer;
             if (size > 1 / 8.f)
             {
@@ -999,10 +1324,53 @@ namespace MWRender
                 optimizer.setMergeAlphaBlending(true);
             }
             optimizer.setIsOperationPermissibleForObjectCallback(new CanOptimizeCallback);
-            const unsigned int options = SceneUtil::Optimizer::FLATTEN_STATIC_TRANSFORMS
+            unsigned int options = SceneUtil::Optimizer::FLATTEN_STATIC_TRANSFORMS
                 | SceneUtil::Optimizer::REMOVE_REDUNDANT_NODES | SceneUtil::Optimizer::MERGE_GEOMETRY;
 
+            const int v38BatchingMode = static_cast<int>(Settings::cells().mV38WorldBatchingMode);
+            const int v39ConfiguredBatchOptimizerMode
+                = static_cast<int>(Settings::cells().mV39BatchOptimizerMode);
+            const int v39BatchOptimizerMode
+                = (static_cast<int>(Settings::cells().mV39FrontloadMode) > 0 && !compile)
+                ? 1
+                : v39ConfiguredBatchOptimizerMode;
+            const bool v310PreloadPostTransform
+                = static_cast<bool>(Settings::cells().mV310PreloadPostTransform)
+                && compile && mV310InitialFrontloadActive.load(std::memory_order_acquire)
+                && v38BatchingMode >= 2;
+            const int v311PrepareMode = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode);
+            const bool v311PreparedActive = v311PrepareMode > 0 && compile && activeGrid && v38BatchingMode >= 2;
+            const bool v311PreparedPostTransform = v311PrepareMode >= 2 && v311PreparedActive;
+
+            if (v39BatchOptimizerMode == 0 && !v310PreloadPostTransform && !v311PreparedActive)
+            {
+                // Exact V3.8 behavior for rollback/A-B comparison.
+                if (v38BatchingMode >= 2)
+                    options |= SceneUtil::Optimizer::VERTEX_POSTTRANSFORM;
+                if (v38BatchingMode >= 3)
+                    options |= SceneUtil::Optimizer::VERTEX_PRETRANSFORM;
+            }
+            else if ((v39BatchOptimizerMode >= 3 || v310PreloadPostTransform || v311PreparedPostTransform)
+                && v38BatchingMode >= 2)
+            {
+                // V3.10 may promote startup work; V3.11 may promote only exact
+                // compile=true active-grid preparation. Neither path requests
+                // VERTEX_PRETRANSFORM.
+                options |= SceneUtil::Optimizer::VERTEX_POSTTRANSFORM;
+            }
+
+            const bool v315CanonicalizeBeforeMerge
+                = static_cast<bool>(Settings::cells().mV315PremergeStateCanonicalization)
+                && compile && v38BatchingMode >= 2;
+            if (v315CanonicalizeBeforeMerge)
+                mSceneManager->shareState(mergeGroup);
+
             optimizer.optimize(mergeGroup, options);
+
+            const bool v39ShareState
+                = v39BatchOptimizerMode >= 2 || v310PreloadPostTransform || v311PreparedActive;
+            if ((v39BatchOptimizerMode == 0 && v38BatchingMode >= 2) || v39ShareState)
+                mSceneManager->shareState(mergeGroup);
 
             group->addChild(mergeGroup);
 
@@ -1017,16 +1385,56 @@ namespace MWRender
                 mergeGroup->accept(stateToCompile);
             }
         }
+        }
 
         osgUtil::IncrementalCompileOperation* const ico = mSceneManager->getIncrementalCompileOperation();
         if (!stateToCompile.empty() && ico)
         {
-            auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(group);
-            compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
-            ico->add(compileSet, false);
+            Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
+                "object_chunk_compile_map", activeGrid ? "active_grid" : "distant", 0.1);
+            if (Resource::v321CP2FairnessEnabled())
+            {
+                auto compileSet = new Resource::V321ClassifiedCompileSet(
+                    group, Resource::V321CompileClass::ObjectPaging);
+                compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
+                ico->add(compileSet, false);
+            }
+            else
+            {
+                auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(group);
+                compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
+                ico->add(compileSet, false);
+            }
+        }
+
+        if (Debug::V3Diagnostics::renderWriter().enabled())
+        {
+            std::ostringstream row;
+            row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs()
+                << ',' << Debug::V3Diagnostics::csvQuote("object_chunk_summary") << ',' << Debug::V3Diagnostics::csvQuote(
+                    std::string(activeGrid ? "active" : "distant") + " refs=" + std::to_string(refs.size())
+                    + " templates=" + std::to_string(nodes.size()))
+                << ",0";
+            Debug::V3Diagnostics::renderWriter().writeLine(row.str());
+        }
+
+        if (v36StructureEnabled)
+        {
+            const Debug::V36StructureTrace::StructureStats v36AfterStats
+                = Debug::V36StructureTrace::inspect(*group);
+            Debug::V36StructureTrace::writeChunk(activeGrid, size, lod, refs.size(), nodes.size(),
+                v36RepeatedGroups, v36RepeatedInstances, v36TotalInstances, v36MergeCandidateGroups,
+                v36BeforeStats, v36AfterStats, Debug::V3Diagnostics::elapsedMs(v36StructureStart));
         }
 
         group->getBound();
+        if (mV35CoarseChunkOcclusion && pagedOccluderData)
+        {
+            osg::ComputeBoundsVisitor v35BoundsVisitor;
+            group->accept(v35BoundsVisitor);
+            pagedOccluderData->mChunkBounds = v35BoundsVisitor.getBoundingBox();
+            pagedOccluderData->mEstimatedChildren = v36TotalInstances;
+        }
         group->setNodeMask(Mask_Static);
         osg::UserDataContainer* udc = group->getOrCreateUserDataContainer();
         if (activeGrid)
@@ -1038,12 +1446,14 @@ namespace MWRender
             group->addCullCallback(new SceneUtil::LightListCallback);
         }
         udc->addUserObject(templateRefs);
-        if (pagedOccluderData && !pagedOccluderData->mOccluderMeshes.empty())
+        if (pagedOccluderData
+            && (!pagedOccluderData->mOccluderMeshes.empty()
+                || (mV35CoarseChunkOcclusion && pagedOccluderData->mChunkBounds.valid())))
         {
             udc->addUserObject(pagedOccluderData);
             if (mOcclusionCuller)
             {
-                float maxDist = Settings::camera().mOcclusionOccluderMaxDistance;
+                const float maxDist = Settings::camera().mOcclusionOccluderMaxDistance;
                 group->addCullCallback(new PagedOccluderCallback(mOcclusionCuller, maxDist, mMaxTriangles));
             }
         }
@@ -1154,6 +1564,23 @@ namespace MWRender
         mRefTrackerLocked = true;
     }
 
+    void ObjectPaging::clearCache()
+    {
+        mCache->clear();
+        if (static_cast<int>(Settings::cells().mV313ChunkQualityMode) > 0)
+        {
+            {
+                std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
+                mV313ChunkQualities.clear();
+                mV313StrongUpgradeInFlight.clear();
+            }
+            {
+                std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
+                mV311PreparedActiveChunks.clear();
+            }
+        }
+    }
+
     bool ObjectPaging::unlockCache()
     {
         if (!mRefTrackerLocked)
@@ -1166,7 +1593,7 @@ namespace MWRender
             else
                 mRefTracker = mRefTrackerNew;
         }
-        mCache->clear();
+        clearCache();
         return true;
     }
 
@@ -1214,6 +1641,32 @@ namespace MWRender
     void ObjectPaging::reportStats(unsigned int frameNumber, osg::Stats* stats) const
     {
         Resource::reportStats("Object Chunk", frameNumber, mCache->getStats(), *stats);
+        stats->setAttribute(frameNumber, "V3.11 Prepared Active Built",
+            static_cast<double>(mV311PreparedActiveBuilt.load(std::memory_order_relaxed)));
+        stats->setAttribute(frameNumber, "V3.11 Prepared Active Hit",
+            static_cast<double>(mV311PreparedActiveHits.load(std::memory_order_relaxed)));
+        stats->setAttribute(frameNumber, "V3.11 Demand Fallback",
+            static_cast<double>(mV311DemandFallbacks.load(std::memory_order_relaxed)));
+        {
+            std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
+            stats->setAttribute(frameNumber, "V3.11 Prepared Active Resident",
+                static_cast<double>(mV311PreparedActiveChunks.size()));
+        }
+        stats->setAttribute(frameNumber, "V3.13 Weak Cache Hit On Strong Prepare",
+            static_cast<double>(mV313WeakCacheHitOnStrongPrepare.load(std::memory_order_relaxed)));
+        stats->setAttribute(frameNumber, "V3.13 Upgrade Built",
+            static_cast<double>(mV313UpgradeBuilt.load(std::memory_order_relaxed)));
+        stats->setAttribute(frameNumber, "V3.13 Upgrade Installed",
+            static_cast<double>(mV313UpgradeInstalled.load(std::memory_order_relaxed)));
+        stats->setAttribute(frameNumber, "V3.13 Upgrade Coalesced",
+            static_cast<double>(mV313UpgradeCoalesced.load(std::memory_order_relaxed)));
+        {
+            std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
+            stats->setAttribute(frameNumber, "V3.13 Quality Entries",
+                static_cast<double>(mV313ChunkQualities.size()));
+            stats->setAttribute(frameNumber, "V3.13 Upgrade In Flight",
+                static_cast<double>(mV313StrongUpgradeInFlight.size()));
+        }
     }
 
 }

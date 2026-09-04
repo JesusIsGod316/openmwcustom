@@ -3,6 +3,7 @@
 #include <SDL_opengl_glext.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <thread>
 
 #include <osg/Texture1D>
@@ -11,6 +12,10 @@
 #include <osg/Texture2DMultisample>
 #include <osg/Texture3D>
 
+#include <osgUtil/GLObjectsVisitor>
+#include <osgUtil/IncrementalCompileOperation>
+
+#include <components/debug/v36gpuprofiler.hpp>
 #include <components/files/conversion.hpp>
 #include <components/misc/pathhelpers.hpp>
 #include <components/misc/strings/algorithm.hpp>
@@ -145,6 +150,8 @@ namespace MWRender
         mHUDCamera->addChild(mCanvases[0]);
         mHUDCamera->addChild(mCanvases[1]);
         mHUDCamera->setCullCallback(new HUDCullCallback);
+        if (Settings::cells().mV36AsyncGpuProfiler)
+            Debug::V36GpuProfiler::attachCamera(*mHUDCamera, "postprocess_hud_composite");
         mViewer->getCamera()->addCullCallback(mPingPongCull);
 
         // resolves the multisampled depth buffer and optionally draws an additional depth postpass
@@ -311,8 +318,10 @@ namespace MWRender
 
         size_t frame = cv->getTraversalNumber();
 
-        mStateUpdater->setResolution(osg::Vec2f(
-            static_cast<float>(cv->getViewport()->width()), static_cast<float>(cv->getViewport()->height())));
+        // V3.18: PostFX/shader resolution follows the internal 3D render target,
+        // while the HUD camera and final presentation stay at native output size.
+        mStateUpdater->setResolution(
+            osg::Vec2f(static_cast<float>(renderWidth()), static_cast<float>(renderHeight())));
 
         // per-frame data
         if (frame != mLastFrameNumber)
@@ -712,6 +721,34 @@ namespace MWRender
 
         mCanvases[frameId]->setPasses(Fx::DispatchArray(mTemplateData));
 
+        if (static_cast<bool>(Settings::cells().mV314PostfxCompileWarmup))
+        {
+            osgUtil::IncrementalCompileOperation* const ico = mRendering.getIncrementalCompileOperation();
+            if (ico)
+            {
+                osg::ref_ptr<osg::Group> compileRoot = new osg::Group;
+                for (const auto& dispatch : mTemplateData)
+                {
+                    osg::ref_ptr<osg::Group> techniqueRoot = new osg::Group;
+                    techniqueRoot->setStateSet(dispatch.mRootStateSet);
+                    compileRoot->addChild(techniqueRoot);
+                    for (const auto& subPass : dispatch.mPasses)
+                    {
+                        osg::ref_ptr<osg::Group> passNode = new osg::Group;
+                        passNode->setStateSet(subPass.mStateSet);
+                        techniqueRoot->addChild(passNode);
+                    }
+                }
+
+                auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(compileRoot);
+                const auto compileMode = static_cast<osgUtil::GLObjectsVisitor::Mode>(
+                    osgUtil::GLObjectsVisitor::COMPILE_STATE_ATTRIBUTES);
+                compileSet->buildCompileMap(ico->getContextSet(), compileMode);
+                ico->add(compileSet, false);
+                Log(Debug::Info) << "V3.14 queued active PostFX chain for ICO compile warmup";
+            }
+        }
+
         if (auto hud = MWBase::Environment::get().getWindowManager()->getPostProcessorHud())
             hud->updateTechniques();
 
@@ -866,14 +903,21 @@ namespace MWRender
     {
         if (Stereo::getStereo())
             return Stereo::Manager::instance().eyeResolution().x();
-        return mWidth;
+        const float scale = Settings::video().mRenderScale;
+        return std::max(1, static_cast<int>(std::lround(static_cast<double>(mWidth) * scale)));
     }
 
     int PostProcessor::renderHeight() const
     {
         if (Stereo::getStereo())
             return Stereo::Manager::instance().eyeResolution().y();
-        return mHeight;
+        const float scale = Settings::video().mRenderScale;
+        return std::max(1, static_cast<int>(std::lround(static_cast<double>(mHeight) * scale)));
+    }
+
+    bool PostProcessor::renderScalingActive() const
+    {
+        return !Stereo::getStereo() && renderWidth() != outputWidth() && renderHeight() != outputHeight();
     }
 
     void PostProcessor::triggerShaderReload()

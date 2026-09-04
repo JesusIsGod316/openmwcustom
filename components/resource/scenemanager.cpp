@@ -26,6 +26,7 @@
 #include <osgDB/SharedStateManager>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/v3diagnostics.hpp>
 
 #include <components/nifosg/controller.hpp>
 #include <components/nifosg/nifloader.hpp>
@@ -992,13 +993,17 @@ namespace Resource
         return static_cast<osg::Node*>(mErrorMarker->clone(osg::CopyOp::DEEP_COPY_ALL));
     }
 
-    osg::ref_ptr<const osg::Node> SceneManager::getTemplate(VFS::Path::NormalizedView path, bool compile)
+    osg::ref_ptr<const osg::Node> SceneManager::getTemplate(
+        VFS::Path::NormalizedView path, bool compile, V321CompileClass compileClass)
     {
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(path);
         if (obj)
             return osg::ref_ptr<const osg::Node>(static_cast<osg::Node*>(obj.get()));
         else
         {
+            Debug::V3Diagnostics::TraceScope trace("render", "scene_template_miss", path.value(), 0.1);
+            Debug::V3Diagnostics::ScopedCsvTimer timer(
+                Debug::V3Diagnostics::renderWriter(), "scene_template_miss", path.value(), 0.25);
             osg::ref_ptr<osg::Node> loaded;
             try
             {
@@ -1035,7 +1040,15 @@ namespace Resource
                 shareState(loaded);
 
             if (compile && mIncrementalCompileOperation)
-                mIncrementalCompileOperation->add(loaded);
+            {
+                if (v321CP2FairnessEnabled() && compileClass != V321CompileClass::Unknown)
+                {
+                    auto compileSet = new V321ClassifiedCompileSet(loaded, compileClass);
+                    mIncrementalCompileOperation->add(compileSet);
+                }
+                else
+                    mIncrementalCompileOperation->add(loaded);
+            }
             else
                 loaded->getBound();
 
@@ -1046,11 +1059,101 @@ namespace Resource
 
     osg::ref_ptr<osg::Node> SceneManager::getInstance(VFS::Path::NormalizedView path)
     {
+        Debug::V3Diagnostics::TraceScope trace("render", "scene_instance", path.value(), 0.1);
+        Debug::V3Diagnostics::ScopedCsvTimer timer(
+            Debug::V3Diagnostics::renderWriter(), "scene_instance", path.value(), 0.25);
+        if (mPreparedInstanceEnabled.load(std::memory_order_acquire))
+        {
+            std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);
+            if (mPreparedInstanceLimit != 0)
+            {
+                const auto found = mPreparedInstances.find(path);
+                if (found != mPreparedInstances.end() && !found->second.empty())
+                {
+                    osg::ref_ptr<osg::Node> prepared = std::move(found->second.front());
+                    found->second.pop_front();
+                    --mPreparedInstanceCount;
+                    ++mPreparedInstanceHits;
+                    if (found->second.empty())
+                        mPreparedInstances.erase(found);
+                    return prepared;
+                }
+                ++mPreparedInstanceMisses;
+            }
+        }
         return getInstance(getTemplate(path));
+    }
+
+    void SceneManager::setPreparedInstanceCacheLimit(std::size_t limit)
+    {
+        std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);
+        if (mPreparedInstanceLimit != limit)
+            ++mPreparedInstanceGeneration;
+        mPreparedInstanceLimit = limit;
+        mPreparedInstanceEnabled.store(limit != 0, std::memory_order_release);
+        while (mPreparedInstanceCount > mPreparedInstanceLimit && !mPreparedInstances.empty())
+        {
+            auto it = mPreparedInstances.begin();
+            while (it != mPreparedInstances.end() && mPreparedInstanceCount > mPreparedInstanceLimit)
+            {
+                while (!it->second.empty() && mPreparedInstanceCount > mPreparedInstanceLimit)
+                {
+                    it->second.pop_front();
+                    --mPreparedInstanceCount;
+                }
+                if (it->second.empty())
+                    it = mPreparedInstances.erase(it);
+                else
+                    ++it;
+            }
+        }
+    }
+
+    bool SceneManager::prepareInstance(VFS::Path::NormalizedView path)
+    {
+        if (!mPreparedInstanceEnabled.load(std::memory_order_acquire))
+            return false;
+
+        std::size_t generation = 0;
+        {
+            std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);
+            if (mPreparedInstanceLimit == 0 || mPreparedInstanceCount >= mPreparedInstanceLimit)
+                return false;
+            generation = mPreparedInstanceGeneration;
+        }
+
+        osg::ref_ptr<const osg::Node> sceneTemplate = getTemplate(path);
+        if (!sceneTemplate || sceneTemplate->getNumChildrenRequiringUpdateTraversal() != 0)
+        {
+            std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);
+            ++mPreparedInstanceRejected;
+            return false;
+        }
+
+        // cloneNode/getInstance(const Node*) is explicitly thread safe in SceneManager.
+        // No update-traversal templates are accepted, avoiding actors/particle-heavy nodes.
+        osg::ref_ptr<osg::Node> prepared = getInstance(sceneTemplate.get());
+        if (!prepared || prepared->getNumChildrenRequiringUpdateTraversal() != 0)
+        {
+            std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);
+            ++mPreparedInstanceRejected;
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);
+        if (generation != mPreparedInstanceGeneration || mPreparedInstanceLimit == 0
+            || mPreparedInstanceCount >= mPreparedInstanceLimit)
+            return false;
+        mPreparedInstances[VFS::Path::Normalized(path)].push_back(std::move(prepared));
+        ++mPreparedInstanceCount;
+        ++mPreparedInstanceAdded;
+        return true;
     }
 
     osg::ref_ptr<osg::Node> SceneManager::cloneNode(const osg::Node* base)
     {
+        Debug::V3Diagnostics::ScopedCsvTimer timer(
+            Debug::V3Diagnostics::renderWriter(), "scene_clone", base ? base->getName() : std::string(), 0.25);
         SceneUtil::CopyOp copyop;
         if (const osg::Drawable* drawable = base->asDrawable())
         {
@@ -1215,6 +1318,12 @@ namespace Resource
 
     void SceneManager::clearCache()
     {
+        {
+            std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);
+            ++mPreparedInstanceGeneration;
+            mPreparedInstances.clear();
+            mPreparedInstanceCount = 0;
+        }
         ResourceManager::clearCache();
 
         std::lock_guard<std::mutex> lock(mSharedStateMutex);
@@ -1239,6 +1348,14 @@ namespace Resource
         }
 
         Resource::reportStats("Node", frameNumber, mCache->getStats(), *stats);
+        {
+            std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);
+            stats->setAttribute(frameNumber, "Prepared Instance Count", static_cast<double>(mPreparedInstanceCount));
+            stats->setAttribute(frameNumber, "Prepared Instance Added", static_cast<double>(mPreparedInstanceAdded));
+            stats->setAttribute(frameNumber, "Prepared Instance Hit", static_cast<double>(mPreparedInstanceHits));
+            stats->setAttribute(frameNumber, "Prepared Instance Miss", static_cast<double>(mPreparedInstanceMisses));
+            stats->setAttribute(frameNumber, "Prepared Instance Rejected", static_cast<double>(mPreparedInstanceRejected));
+        }
     }
 
     osg::ref_ptr<Shader::ShaderVisitor> SceneManager::createShaderVisitor(const std::string& shaderPrefix)

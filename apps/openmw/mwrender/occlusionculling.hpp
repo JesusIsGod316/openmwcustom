@@ -9,6 +9,7 @@
 #include <osg/Vec3f>
 #include <osg/ref_ptr>
 
+#include <cstdint>
 #include <unordered_map>
 #include <vector>
 
@@ -32,11 +33,15 @@ namespace MWRender
         PagedOccluderData(const PagedOccluderData& copy, const osg::CopyOp& = {})
             : osg::Object(copy)
             , mOccluderMeshes(copy.mOccluderMeshes)
+            , mChunkBounds(copy.mChunkBounds)
+            , mEstimatedChildren(copy.mEstimatedChildren)
         {
         }
         META_Object(MWRender, PagedOccluderData)
 
         std::vector<OccluderMesh> mOccluderMeshes;
+        osg::BoundingBox mChunkBounds;
+        std::uint64_t mEstimatedChildren = 0;
     };
 }
 
@@ -92,6 +97,7 @@ namespace MWRender
         bool mEnableDebugOverlay;
         bool mEnableDebugMessages;
         bool mEnableInteriors;
+        bool mV322MsocHotPath = false;
         bool mIsInterior = false;
         bool mIsQuasiExterior = false;
         unsigned int mLastFrameNumber = 0;
@@ -123,6 +129,27 @@ namespace MWRender
         osg::ref_ptr<SceneUtil::OcclusionCuller> mCuller;
         float mMaxDistanceSq;
         unsigned int mMaxTriangles;
+        bool mV322MsocHotPath = false;
+        int mV323ParallelMsocMode = 0;
+        osg::Node* mV322PagedDataNode = nullptr;
+        osg::ref_ptr<PagedOccluderData> mV322PagedData;
+    };
+
+    /// Lightweight whole-group rejection for render groups that never rasterize themselves as occluders.
+    class CoarseOcclusionCallback
+        : public SceneUtil::NodeCallback<CoarseOcclusionCallback, osg::Node*, osgUtil::CullVisitor*>
+    {
+    public:
+        CoarseOcclusionCallback(SceneUtil::OcclusionCuller* culler, const osg::BoundingBox& localBounds,
+            bool groundcover, std::uint64_t estimatedChildren);
+
+        void operator()(osg::Node* node, osgUtil::CullVisitor* cv);
+
+    private:
+        osg::ref_ptr<SceneUtil::OcclusionCuller> mCuller;
+        osg::BoundingBox mLocalBounds;
+        bool mGroundcover;
+        std::uint64_t mEstimatedChildren;
     };
 
     /// Installed on each Cell Root group. Two-pass approach:
@@ -136,7 +163,7 @@ namespace MWRender
         CellOcclusionCallback(SceneUtil::OcclusionCuller* culler, float occluderMinRadius, float occluderMaxRadius,
             float occluderShrinkFactor, int occluderMeshResolution, int occluderMaxMeshResolution,
             float occluderInsideThreshold, float occluderMaxDistance, bool enableStaticOccluders,
-            unsigned int maxTriangles, OcclusionStorage* storage = nullptr);
+            bool v34BroadenOcclusion, unsigned int maxTriangles, OcclusionStorage* storage = nullptr);
 
         void operator()(osg::Group* node, osgUtil::CullVisitor* cv);
 
@@ -153,6 +180,8 @@ namespace MWRender
         float mOccluderInsideThreshold;
         float mOccluderMaxDistanceSq;
         bool mEnableStaticOccluders;
+        bool mV34BroadenOcclusion;
+        int mV322Cp2OccluderMode = 0;
         unsigned int mMaxTriangles;
 
         std::unordered_map<osg::Node*, OccluderMesh> mMeshCache;

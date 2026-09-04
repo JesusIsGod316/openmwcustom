@@ -197,6 +197,9 @@ namespace MWRender
 
         int renderWidth() const;
         int renderHeight() const;
+        int outputWidth() const { return mWidth; }
+        int outputHeight() const { return mHeight; }
+        bool renderScalingActive() const;
 
         void triggerShaderReload();
 

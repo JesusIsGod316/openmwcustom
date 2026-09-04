@@ -1,9 +1,16 @@
 #include "imagemanager.hpp"
 
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <iomanip>
+#include <ranges>
+#include <sstream>
+#include <vector>
 #include <osgDB/Registry>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/v3diagnostics.hpp>
 #include <components/misc/pathhelpers.hpp>
 #include <components/sceneutil/glextensions.hpp>
 #include <components/vfs/manager.hpp>
@@ -223,6 +230,55 @@ namespace Resource
     void ImageManager::reportStats(unsigned int frameNumber, osg::Stats* stats) const
     {
         Resource::reportStats("Image", frameNumber, mCache->getStats(), *stats);
+
+        static Debug::V3Diagnostics::CsvWriter v36Writer("OPENMW_V36_RESIDENCY_FILE",
+            "frame,epoch_ms,event,path,estimated_source_mb,width,height,mip_levels,compressed,ref_count,"
+            "cache_entries,last_usage,total_estimated_source_mb");
+        if (!v36Writer.enabled() || frameNumber % 300 != 0)
+            return;
+
+        struct Entry
+        {
+            std::string mPath;
+            unsigned int mBytes = 0;
+            int mWidth = 0;
+            int mHeight = 0;
+            unsigned int mMipLevels = 0;
+            bool mCompressed = false;
+            int mRefCount = 0;
+            double mLastUsage = 0.0;
+        };
+        std::vector<Entry> entries;
+        std::uint64_t totalBytes = 0;
+        mCache->callWithUsage([&](const auto& key, osg::Object* object, double lastUsage) {
+            const osg::Image* image = dynamic_cast<const osg::Image*>(object);
+            if (!image)
+                return;
+            const unsigned int bytes = image->getTotalSizeInBytesIncludingMipmaps();
+            totalBytes += bytes;
+            entries.push_back({ key, bytes, image->s(), image->t(), image->getNumMipmapLevels(),
+                image->isCompressed(), image->referenceCount(), lastUsage });
+        });
+        std::ranges::sort(entries, [](const Entry& left, const Entry& right) { return left.mBytes > right.mBytes; });
+        constexpr double MiB = 1024.0 * 1024.0;
+        const double totalMb = static_cast<double>(totalBytes) / MiB;
+        std::ostringstream summary;
+        summary << frameNumber << ',' << Debug::V3Diagnostics::epochMs() << ",summary,"
+                << Debug::V3Diagnostics::csvQuote("") << ',' << std::fixed << std::setprecision(3)
+                << "0,0,0,0,0,0," << entries.size() << ",0," << totalMb;
+        v36Writer.writeLine(summary.str());
+        const std::size_t limit = std::min<std::size_t>(entries.size(), 32);
+        for (std::size_t i = 0; i < limit; ++i)
+        {
+            const Entry& entry = entries[i];
+            std::ostringstream row;
+            row << frameNumber << ',' << Debug::V3Diagnostics::epochMs() << ",largest,"
+                << Debug::V3Diagnostics::csvQuote(entry.mPath) << ',' << std::fixed << std::setprecision(3)
+                << (static_cast<double>(entry.mBytes) / MiB) << ',' << entry.mWidth << ',' << entry.mHeight << ','
+                << entry.mMipLevels << ',' << (entry.mCompressed ? 1 : 0) << ',' << entry.mRefCount << ','
+                << entries.size() << ',' << entry.mLastUsage << ',' << totalMb;
+            v36Writer.writeLine(row.str());
+        }
     }
 
 }

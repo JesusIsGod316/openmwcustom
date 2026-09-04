@@ -26,8 +26,14 @@
 #include <osg/Depth>
 #include <osg/ClipControl>
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <sstream>
 #include <vector>
+
+#include <components/debug/v3diagnostics.hpp>
+#include <components/debug/v36gpuprofiler.hpp>
 
 #include "glextensions.hpp"
 #include "shadowsbin.hpp"
@@ -533,7 +539,8 @@ void MWShadowTechnique::LightData::setLightData(osg::RefMatrix* lm, const Light*
 //
 // ShadowData
 //
-MWShadowTechnique::ShadowData::ShadowData(MWShadowTechnique::ViewDependentData* vdd):
+MWShadowTechnique::ShadowData::ShadowData(
+    MWShadowTechnique::ViewDependentData* vdd, unsigned int shadowMapIndex, unsigned int shadowMapCount):
     _viewDependentData(vdd),
     _textureUnit(0),
     _sm_i(0)
@@ -547,6 +554,15 @@ MWShadowTechnique::ShadowData::ShadowData(MWShadowTechnique::ViewDependentData* 
     _texture = new osg::Texture2D;
 
     osg::Vec2s textureSize = debug ? osg::Vec2s(512,512) : settings->getTextureSize();
+    const unsigned int v33ResolutionDivisor
+        = vdd->getViewDependentShadowMap()->getV33FarCascadeResolutionDivisor();
+    if (!debug && v33ResolutionDivisor > 1 && shadowMapCount > 1 && shadowMapIndex + 1 == shadowMapCount)
+    {
+        textureSize.set(static_cast<short>(std::max(1, static_cast<int>(textureSize.x())
+                                                        / static_cast<int>(v33ResolutionDivisor))),
+            static_cast<short>(std::max(1, static_cast<int>(textureSize.y())
+                                            / static_cast<int>(v33ResolutionDivisor))));
+    }
     _texture->setTextureSize(textureSize.x(), textureSize.y());
 
     if (debug)
@@ -587,8 +603,17 @@ MWShadowTechnique::ShadowData::ShadowData(MWShadowTechnique::ViewDependentData* 
     // TODO: Find a better solution. E.g. detect when there are no casters outside the view frustum, write a new cull visitor that does all the wacky things we'd need it to.
     _camera->setComputeNearFarMode(osg::Camera::DO_NOT_COMPUTE_NEAR_FAR);
 
-    // switch off small feature culling as this can cull out geometry that will still be large enough once perspective correction takes effect.
-    _camera->setCullingMode(_camera->getCullingMode() & ~osg::CullSettings::SMALL_FEATURE_CULLING);
+    // Preserve upstream behavior unless the independently selected V3.6 far-caster experiment is active.
+    // The threshold applies only to the farthest cascade; near and middle shadow quality is untouched.
+    const float v36FarCasterMinimumPixels
+        = vdd->getViewDependentShadowMap()->getV36FarCasterMinimumPixels();
+    if (!debug && shadowMapCount > 1 && shadowMapIndex + 1 == shadowMapCount && v36FarCasterMinimumPixels > 0.f)
+    {
+        _camera->setCullingMode(_camera->getCullingMode() | osg::CullSettings::SMALL_FEATURE_CULLING);
+        _camera->setSmallFeatureCullingPixelSize(v36FarCasterMinimumPixels);
+    }
+    else
+        _camera->setCullingMode(_camera->getCullingMode() & ~osg::CullSettings::SMALL_FEATURE_CULLING);
 
     // set viewport
     _camera->setViewport(0,0,textureSize.x(),textureSize.y());
@@ -900,6 +925,18 @@ void SceneUtil::MWShadowTechnique::setShadowFadeStart(float shadowFadeStart)
     _shadowFadeStart = shadowFadeStart;
 }
 
+void SceneUtil::MWShadowTechnique::setV33FarCascadeReuse(
+    unsigned int interval, double maxTexelDrift, bool dynamicActorCasters)
+{
+    _v33FarCascadeUpdateInterval = dynamicActorCasters ? 1u : std::max(1u, interval);
+    _v33FarCascadeMaxTexelDrift = std::max(0.0, maxTexelDrift);
+}
+
+void SceneUtil::MWShadowTechnique::setV33FarCascadeResolutionDivisor(unsigned int divisor)
+{
+    _v33FarCascadeResolutionDivisor = std::clamp(divisor, 1u, 4u);
+}
+
 void SceneUtil::MWShadowTechnique::enableFrontFaceCulling()
 {
     _useFrontFaceCulling = true;
@@ -1054,6 +1091,24 @@ void MWShadowTechnique::cull(osgUtil::CullVisitor& cv)
 
     OSG_INFO<<std::endl<<std::endl<<"MWShadowTechnique::cull(osg::CullVisitor&"<<&cv<<")"<<std::endl;
 
+    static Debug::V3Diagnostics::CsvWriter v3ShadowWriter("OPENMW_V3_SHADOW_FILE",
+        "frame,epoch_ms,total_ms,receiver_ms,caster_total_ms,cascade0_ms,cascade1_ms,cascade2_ms,cascade3_ms,"
+        "cascade4_ms,cascade5_ms,cascade6_ms,cascade7_ms,num_cascades,updated_cascades,reused_cascades,"
+        "max_reuse_texel_drift,far_width,far_height,far_resolution_divisor,shadow_distance,"
+        "far_caster_min_pixels");
+    const bool v3ShadowProfile = v3ShadowWriter.enabled();
+    const auto v3ShadowTotalStart = v3ShadowProfile ? Debug::V3Diagnostics::Clock::now()
+                                                    : Debug::V3Diagnostics::Clock::time_point{};
+    double v3ReceiverMs = 0.0;
+    double v3CasterTotalMs = 0.0;
+    std::array<double, 8> v3CascadeMs{};
+    unsigned int v3CascadeCount = 0;
+    unsigned int v33UpdatedCascades = 0;
+    unsigned int v33ReusedCascades = 0;
+    double v33MaxReuseTexelDrift = 0.0;
+    unsigned int v33FarWidth = 0;
+    unsigned int v33FarHeight = 0;
+
     if (!_shadowCastingStateSet)
     {
         OSG_INFO<<"Warning, init() has not yet been called so ShadowCastingStateSet has not been setup yet, unable to create shadows."<<std::endl;
@@ -1113,7 +1168,11 @@ void MWShadowTechnique::cull(osgUtil::CullVisitor& cv)
     shadowReceiverStateSet->clear();
     cv.pushStateSet(shadowReceiverStateSet);
 
+    const auto v3ReceiverStart = v3ShadowProfile ? Debug::V3Diagnostics::Clock::now()
+                                                       : Debug::V3Diagnostics::Clock::time_point{};
     cullShadowReceivingScene(&cv);
+    if (v3ShadowProfile)
+        v3ReceiverMs = Debug::V3Diagnostics::elapsedMs(v3ReceiverStart);
 
     cv.popStateSet();
 
@@ -1357,7 +1416,10 @@ void MWShadowTechnique::cull(osgUtil::CullVisitor& cv)
             if (previous_sdl.empty())
             {
                 OSG_INFO<<"Create new ShadowData"<<std::endl;
-                sd = new ShadowData(vdd);
+                sd = new ShadowData(vdd, sm_i, numShadowMapsPerLight);
+                if (_v36AsyncGpuProfiler)
+                    Debug::V36GpuProfiler::attachCamera(
+                        *sd->_camera, "shadow_cascade_" + std::to_string(sm_i));
             }
             else
             {
@@ -1367,6 +1429,11 @@ void MWShadowTechnique::cull(osgUtil::CullVisitor& cv)
             }
 
             osg::ref_ptr<osg::Camera> camera = sd->_camera;
+            if (sm_i + 1 == numShadowMapsPerLight && camera->getViewport())
+            {
+                v33FarWidth = static_cast<unsigned int>(camera->getViewport()->width());
+                v33FarHeight = static_cast<unsigned int>(camera->getViewport()->height());
+            }
 
             camera->setProjectionMatrix(projectionMatrix);
             camera->setViewMatrix(viewMatrix);
@@ -1509,30 +1576,114 @@ void MWShadowTechnique::cull(osgUtil::CullVisitor& cv)
             else
                 cropShadowCameraToMainFrustum(frustum, camera, reducedNear, reducedFar, extraPlanes);
 
-            osg::ref_ptr<VDSMCameraCullCallback> vdsmCallback = new VDSMCameraCullCallback(this, local_polytope);
-            camera->setCullCallback(vdsmCallback.get());
+            if (_v37StabilizeFarCascade && sm_i + 1 == numShadowMapsPerLight && camera->getViewport())
+            {
+                const osg::Matrixd v37Projection = camera->getProjectionMatrix();
+                const bool v37Orthographic = v37Projection(0, 3) == 0.0 && v37Projection(1, 3) == 0.0
+                    && v37Projection(2, 3) == 0.0;
+                if (v37Orthographic)
+                {
+                    const osg::Matrixd v37ViewProjection = camera->getViewMatrix() * v37Projection;
+                    const osg::Vec3d v37Origin = osg::Vec3d(0.0, 0.0, 0.0) * v37ViewProjection;
+                    const double v37HalfWidth = static_cast<double>(camera->getViewport()->width()) * 0.5;
+                    const double v37HalfHeight = static_cast<double>(camera->getViewport()->height()) * 0.5;
+                    if (v37HalfWidth > 0.0 && v37HalfHeight > 0.0)
+                    {
+                        const double v37SnappedX = std::round(v37Origin.x() * v37HalfWidth) / v37HalfWidth;
+                        const double v37SnappedY = std::round(v37Origin.y() * v37HalfHeight) / v37HalfHeight;
+                        const double v37OffsetX = v37SnappedX - v37Origin.x();
+                        const double v37OffsetY = v37SnappedY - v37Origin.y();
+                        camera->setProjectionMatrix(v37Projection
+                            * osg::Matrixd::translate(osg::Vec3d(v37OffsetX, v37OffsetY, 0.0)));
+                    }
+                }
+            }
 
-            // 4.3 traverse RTT camera
-            //
+            bool v33ReuseFarCascade = false;
+            double v33ReuseTexelDrift = 0.0;
+            const unsigned int traversalNumber = cv.getTraversalNumber();
+            const osg::Matrixd v33CandidateProjection = camera->getProjectionMatrix();
+            const osg::Matrixd v33CandidateView = camera->getViewMatrix();
+            if (_v33FarCascadeUpdateInterval > 1 && sm_i + 1 == numShadowMapsPerLight
+                && sd->_v33HasCachedShadow
+                && sd->_sm_i == sm_i && sd->_textureUnit == textureUnit
+                && traversalNumber - sd->_v33LastUpdateTraversal < _v33FarCascadeUpdateInterval)
+            {
+                const osg::Matrixd candidateViewProjection
+                    = v33CandidateView * v33CandidateProjection;
+                const osg::Matrixd cachedViewProjection
+                    = sd->_v33CachedDriftView * sd->_v33CachedDriftProjection;
+                const double texelScale = (camera->getViewport()
+                        ? static_cast<double>(camera->getViewport()->width())
+                        : static_cast<double>(settings->getTextureSize().x()))
+                    * 0.5;
+                for (const osg::Vec3d& corner : frustum.corners)
+                {
+                    const osg::Vec3d candidate = corner * candidateViewProjection;
+                    const osg::Vec3d cached = corner * cachedViewProjection;
+                    v33ReuseTexelDrift = std::max(v33ReuseTexelDrift,
+                        std::max(std::abs(candidate.x() - cached.x()), std::abs(candidate.y() - cached.y()))
+                            * texelScale);
+                }
+                v33ReuseFarCascade = v33ReuseTexelDrift <= _v33FarCascadeMaxTexelDrift;
+            }
 
-            cv.pushStateSet(_shadowCastingStateSet.get());
+            osg::ref_ptr<VDSMCameraCullCallback> vdsmCallback;
+            if (v33ReuseFarCascade)
+            {
+                camera->setProjectionMatrix(sd->_v33CachedProjection);
+                camera->setViewMatrix(sd->_v33CachedView);
+                ++v33ReusedCascades;
+                v33MaxReuseTexelDrift = std::max(v33MaxReuseTexelDrift, v33ReuseTexelDrift);
+            }
+            else
+            {
+                vdsmCallback = new VDSMCameraCullCallback(this, local_polytope);
+                camera->setCullCallback(vdsmCallback.get());
 
-            cullShadowCastingScene(&cv, camera.get());
-
-            cv.popStateSet();
+                // 4.3 traverse RTT camera
+                cv.pushStateSet(_shadowCastingStateSet.get());
+                const auto v3CasterStart = v3ShadowProfile ? Debug::V3Diagnostics::Clock::now()
+                                                           : Debug::V3Diagnostics::Clock::time_point{};
+                cullShadowCastingScene(&cv, camera.get());
+                if (v3ShadowProfile)
+                {
+                    const double cascadeMs = Debug::V3Diagnostics::elapsedMs(v3CasterStart);
+                    v3CasterTotalMs += cascadeMs;
+                    if (v3CascadeCount < v3CascadeMs.size())
+                        v3CascadeMs[v3CascadeCount] = cascadeMs;
+                }
+                cv.popStateSet();
+                ++v33UpdatedCascades;
+            }
+            if (v3ShadowProfile)
+                ++v3CascadeCount;
 
             if (!orthographicViewFrustum && settings->getShadowMapProjectionHint()==ShadowSettings::PERSPECTIVE_SHADOW_MAP)
             {
                 assignValidRegionSettings(cv, camera, sm_i, vddUniforms);
 
-                if (settings->getMultipleShadowMapHint() == ShadowSettings::CASCADED)
-                    adjustPerspectiveShadowMapCameraSettings(vdsmCallback->getRenderStage(), frustum, pl, camera.get(), cascaseNear, cascadeFar);
-                else
-                    adjustPerspectiveShadowMapCameraSettings(vdsmCallback->getRenderStage(), frustum, pl, camera.get(), reducedNear, reducedFar);
-                if (vdsmCallback->getProjectionMatrix())
+                if (!v33ReuseFarCascade)
                 {
-                    vdsmCallback->getProjectionMatrix()->set(camera->getProjectionMatrix());
+                    if (settings->getMultipleShadowMapHint() == ShadowSettings::CASCADED)
+                        adjustPerspectiveShadowMapCameraSettings(vdsmCallback->getRenderStage(), frustum, pl,
+                            camera.get(), cascaseNear, cascadeFar);
+                    else
+                        adjustPerspectiveShadowMapCameraSettings(vdsmCallback->getRenderStage(), frustum, pl,
+                            camera.get(), reducedNear, reducedFar);
+                    if (vdsmCallback->getProjectionMatrix())
+                        vdsmCallback->getProjectionMatrix()->set(camera->getProjectionMatrix());
                 }
+            }
+
+            if (!v33ReuseFarCascade)
+            {
+                sd->_v33CachedProjection = camera->getProjectionMatrix();
+                sd->_v33CachedView = camera->getViewMatrix();
+                sd->_v33CachedDriftProjection = v33CandidateProjection;
+                sd->_v33CachedDriftView = v33CandidateView;
+                sd->_v33LastUpdateTraversal = traversalNumber;
+                sd->_v33HasCachedShadow = true;
             }
  
             // 4.4 compute main scene graph TexGen + uniform settings + setup state
@@ -1564,6 +1715,21 @@ void MWShadowTechnique::cull(osgUtil::CullVisitor& cv)
     if (numValidShadows>0)
     {
         prepareStateSetForRenderingShadow(*vdd, cv.getTraversalNumber());
+    }
+
+    if (v3ShadowProfile)
+    {
+        std::ostringstream row;
+        row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
+            << std::fixed << std::setprecision(3) << Debug::V3Diagnostics::elapsedMs(v3ShadowTotalStart) << ','
+            << v3ReceiverMs << ',' << v3CasterTotalMs;
+        for (double value : v3CascadeMs)
+            row << ',' << value;
+        row << ',' << v3CascadeCount << ',' << v33UpdatedCascades << ',' << v33ReusedCascades << ','
+            << v33MaxReuseTexelDrift << ',' << v33FarWidth << ',' << v33FarHeight << ','
+            << _v33FarCascadeResolutionDivisor << ',' << settings->getMaximumShadowMapDistance() << ','
+            << _v36FarCasterMinimumPixels;
+        v3ShadowWriter.writeLine(row.str());
     }
 
     // OSG_NOTICE<<"End of shadow setup Projection matrix "<<*cv.getProjectionMatrix()<<std::endl;

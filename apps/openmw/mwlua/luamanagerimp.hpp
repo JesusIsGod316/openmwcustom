@@ -28,6 +28,8 @@
 
 namespace MWLua
 {
+    class V320LuaProfilerRecorder;
+
     // \brief LuaManager is the central interface through which the engine invokes lua scripts.
     //
     // This class implements the interface defined in MWBase::LuaManager.
@@ -204,6 +206,8 @@ namespace MWLua
             std::optional<LuaUtil::ScriptIdsWithInitializationData> autoStartConf = std::nullopt);
         void reloadAllScriptsImpl();
         void synchronizedUpdateUnsafe();
+        void processV320LuaProfilerBoundary();
+        void recordV320LuaProfilerFrame();
 
         bool mInitialized = false;
         bool mGlobalScriptsStarted = false;
@@ -214,6 +218,7 @@ namespace MWLua
         bool mRunningSynchronizedUpdates = false;
         LuaUtil::ScriptsConfiguration mConfiguration;
         LuaUtil::LuaState mLua;
+        std::unique_ptr<V320LuaProfilerRecorder> mV320LuaProfilerRecorder;
         LuaUi::ResourceManager mUiResourceManager;
         std::map<std::string, sol::object> mLocalPackages;
         std::map<std::string, sol::object> mPlayerPackages;
@@ -252,6 +257,7 @@ namespace MWLua
         public:
             DelayedAction(LuaUtil::LuaState* state, std::function<void()> fn, std::string_view name);
             void apply() const;
+            std::string_view name() const { return mName; }
 
         private:
             std::string mCallerTraceback;

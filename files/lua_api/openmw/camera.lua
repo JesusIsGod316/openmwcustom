@@ -21,8 +21,27 @@
 -- @field [parent=#camera] #MODE MODE
 
 ---
--- Return the current @{openmw.camera#MODE}.
+-- Return the current camera context. In CP4 compatibility mode, a script
+-- that requires `openmw.animation` receives ThirdPerson during full-body first
+-- person so legacy animation frameworks select their full-body branch. Other
+-- scripts continue receiving the physical camera mode.
 -- @function [parent=#camera] getMode
+-- @return #Mode
+
+---
+-- Return the physical camera mode. Full-body first person returns FirstPerson.
+-- @function [parent=#camera] getPhysicalMode
+-- @return #Mode
+
+---
+-- Return true when the engine is using the full-body first-person owner view.
+-- @function [parent=#camera] isFullBodyFirstPerson
+-- @return #boolean
+
+---
+-- Return the recommended animation branch mode. This returns ThirdPerson for
+-- full-body first person and otherwise matches `getMode()`.
+-- @function [parent=#camera] getAnimationMode
 -- @return #Mode
 
 ---

@@ -1,8 +1,13 @@
 #include "workqueue.hpp"
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/v3diagnostics.hpp>
 
+#include <cstdint>
+#include <iomanip>
 #include <numeric>
+#include <sstream>
+#include <typeinfo>
 
 namespace SceneUtil
 {
@@ -75,12 +80,29 @@ namespace SceneUtil
             return;
         }
 
-        std::unique_lock<std::mutex> lock(mMutex);
-        if (front)
-            mQueue.push_front(std::move(item));
-        else
-            mQueue.push_back(std::move(item));
-        mCondition.notify_one();
+        auto& writer = Debug::V3Diagnostics::workQueueWriter();
+        const bool profile = writer.enabled();
+        const std::uintptr_t itemId = reinterpret_cast<std::uintptr_t>(item.get());
+        const std::string typeName = profile ? typeid(*item).name() : std::string();
+        std::size_t queueDepth = 0;
+        {
+            std::unique_lock<std::mutex> lock(mMutex);
+            if (front)
+                mQueue.push_front(std::move(item));
+            else
+                mQueue.push_back(std::move(item));
+            queueDepth = mQueue.size();
+            mCondition.notify_one();
+        }
+        if (profile)
+        {
+            std::ostringstream row;
+            row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
+                << Debug::V3Diagnostics::threadId() << ',' << Debug::V3Diagnostics::csvQuote("enqueue") << ',' << itemId << ','
+                << Debug::V3Diagnostics::csvQuote(typeName) << ',' << queueDepth << ','
+                << mV3ActiveThreads.load(std::memory_order_relaxed) << ",0";
+            writer.writeLine(row.str());
+        }
     }
 
     osg::ref_ptr<WorkItem> WorkQueue::removeWorkItem()
@@ -131,8 +153,43 @@ namespace SceneUtil
             if (!item)
                 return;
             mActive = true;
+
+            auto& writer = Debug::V3Diagnostics::workQueueWriter();
+            const bool profile = writer.enabled();
+            const bool traceProfile = Debug::V3Diagnostics::traceWriter().enabled();
+            if (profile)
+                mWorkQueue->mV3ActiveThreads.fetch_add(1, std::memory_order_relaxed);
+            const std::uintptr_t itemId = reinterpret_cast<std::uintptr_t>(item.get());
+            const std::string typeName = (profile || traceProfile) ? typeid(*item).name() : std::string();
+            const auto start = profile ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
+            Debug::V3Diagnostics::TraceScope trace("workqueue", typeName, std::to_string(itemId), 0.05);
+
+            if (profile)
+            {
+                std::ostringstream row;
+                row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
+                    << Debug::V3Diagnostics::threadId() << ',' << Debug::V3Diagnostics::csvQuote("start") << ',' << itemId << ','
+                    << Debug::V3Diagnostics::csvQuote(typeName) << ',' << mWorkQueue->getNumItems() << ','
+                    << mWorkQueue->mV3ActiveThreads.load(std::memory_order_relaxed) << ",0";
+                writer.writeLine(row.str());
+            }
+
             item->doWork();
             item->signalDone();
+
+            if (profile)
+            {
+                const double durationMs = Debug::V3Diagnostics::elapsedMs(start);
+                std::ostringstream row;
+                row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
+                    << Debug::V3Diagnostics::threadId() << ',' << Debug::V3Diagnostics::csvQuote("end") << ',' << itemId << ','
+                    << Debug::V3Diagnostics::csvQuote(typeName) << ',' << mWorkQueue->getNumItems() << ','
+                    << mWorkQueue->mV3ActiveThreads.load(std::memory_order_relaxed) << ',' << std::fixed
+                    << std::setprecision(3) << durationMs;
+                writer.writeLine(row.str());
+            }
+            if (profile)
+                mWorkQueue->mV3ActiveThreads.fetch_sub(1, std::memory_order_relaxed);
             mActive = false;
         }
     }

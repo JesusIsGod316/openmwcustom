@@ -6,8 +6,11 @@
 
 #include <filesystem>
 #include <fstream>
+#include <regex>
+#include <set>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/v36luaaddscripttrace.hpp>
 #include <components/files/conversion.hpp>
 #include <components/vfs/manager.hpp>
 
@@ -80,6 +83,17 @@ namespace LuaUtil
                 "To change the limit set \"[Lua] instruction limit per call\" in settings.cfg");
             lua_error(state);
         }
+    }
+
+    void LuaState::setInstructionProfilerEnabled(bool enabled)
+    {
+        if (!sProfilerEnabled)
+            enabled = false;
+        if (enabled == mInstructionProfilerEnabled)
+            return;
+        lua_sethook(mLuaState.get(), enabled ? &countHook : nullptr, enabled ? LUA_MASKCOUNT : 0,
+            enabled ? countHookStep : 0);
+        mInstructionProfilerEnabled = enabled;
     }
 
     void* LuaState::trackingAllocator(void* ud, void* ptr, size_t osize, size_t nsize)
@@ -185,8 +199,8 @@ namespace LuaUtil
         , mConf(conf)
         , mVFS(vfs)
     {
-        if (sProfilerEnabled)
-            lua_sethook(mLuaState.get(), &countHook, LUA_MASKCOUNT, countHookStep);
+        if (sProfilerEnabled && mSettings.mInstructionProfilerEnabled)
+            setInstructionProfilerEnabled(true);
 
         protectedCall([&](LuaView& view) {
             auto& sol = view.sol();
@@ -207,6 +221,8 @@ namespace LuaUtil
             sol["setEnvironment"]
                 = [](const sol::environment& env, const sol::function& fn) { sol::set_environment(env, fn); };
             sol["loadFromVFS"] = [this](std::string_view packageName) {
+                Debug::V36LuaAddScriptTrace::PhaseScope v36ModuleLoad(
+                    Debug::V36LuaAddScriptTrace::Phase::ModuleLoad);
                 return loadScriptAndCache(packageNameToVfsPath(packageName, *mVFS));
             };
             sol["loadInternalLib"] = [this](std::string_view packageName) { return loadInternalLib(packageName); };
@@ -246,8 +262,11 @@ namespace LuaUtil
                 end
                 printGen = function(name) return function(...) return printToLog(name, ...) end end
 
-                function requireGen(env, loaded, loadFn)
+                function requireGen(env, loaded, loadFn, hiddenData)
                     return function(packageName)
+                        if packageName == 'openmw.animation' and hiddenData ~= nil then
+                            hiddenData.openmw_v321_animation_consumer = true
+                        end
                         local p = loaded[packageName]
                         if p == nil then
                             local loader = loadFn(packageName)
@@ -359,15 +378,22 @@ namespace LuaUtil
 
     sol::protected_function_result LuaState::runInNewSandbox(const VFS::Path::Normalized& path,
         const std::string& envName, const std::map<std::string, sol::main_object>& packages,
-        const sol::main_object& hiddenData)
+        const sol::main_object& hiddenData, const sol::main_table* packagePrototype)
     {
-        // TODO
-        sol::protected_function script = loadScriptAndCache(path);
+        sol::protected_function script;
+        {
+            Debug::V36LuaAddScriptTrace::PhaseScope v36CachedChunk(
+                Debug::V36LuaAddScriptTrace::Phase::CachedChunkLoad);
+            script = loadScriptAndCache(path);
+        }
 
+        const auto v36EnvironmentStart = Debug::V3Diagnostics::Clock::now();
         sol::environment env(mSol, sol::create, mSandboxEnv);
         env["print"] = mSol["printGen"](envName + ":");
         env["_G"] = env;
         env[sol::metatable_key]["__metatable"] = false;
+        Debug::V36LuaAddScriptTrace::add(
+            Debug::V36LuaAddScriptTrace::Phase::Environment, v36EnvironmentStart);
 
         ScriptId scriptId;
         if (hiddenData.is<sol::table>())
@@ -382,13 +408,49 @@ namespace LuaUtil
                 return package;
         };
         sol::table loaded(mSol, sol::create);
-        for (const auto& [key, value] : mCommonPackages)
-            loaded[key] = maybeRunLoader(value);
-        for (const auto& [key, value] : packages)
-            loaded[key] = maybeRunLoader(value);
-        env["require"] = mSol["requireGen"](env, loaded, mSol["loadFromVFS"]);
-
-        sol::set_environment(env, script);
+        if (packagePrototype)
+        {
+            sol::table meta(mSol, sol::create);
+            meta[sol::meta_method::index] = *packagePrototype;
+            loaded[sol::metatable_key] = meta;
+            {
+                Debug::V36LuaAddScriptTrace::PhaseScope v36CommonPackages(
+                    Debug::V36LuaAddScriptTrace::Phase::CommonPackages);
+                for (const auto& [key, value] : mCommonPackages)
+                    if (value.is<sol::function>())
+                        loaded[key] = maybeRunLoader(value);
+            }
+            {
+                Debug::V36LuaAddScriptTrace::PhaseScope v36ContainerPackages(
+                    Debug::V36LuaAddScriptTrace::Phase::ContainerPackages);
+                for (const auto& [key, value] : packages)
+                    if (value.is<sol::function>())
+                        loaded[key] = maybeRunLoader(value);
+            }
+        }
+        else
+        {
+            {
+                Debug::V36LuaAddScriptTrace::PhaseScope v36CommonPackages(
+                    Debug::V36LuaAddScriptTrace::Phase::CommonPackages);
+                for (const auto& [key, value] : mCommonPackages)
+                    loaded[key] = maybeRunLoader(value);
+            }
+            {
+                Debug::V36LuaAddScriptTrace::PhaseScope v36ContainerPackages(
+                    Debug::V36LuaAddScriptTrace::Phase::ContainerPackages);
+                for (const auto& [key, value] : packages)
+                    loaded[key] = maybeRunLoader(value);
+            }
+        }
+        {
+            Debug::V36LuaAddScriptTrace::PhaseScope v36RequireSetup(
+                Debug::V36LuaAddScriptTrace::Phase::RequireSetup);
+            env["require"] = mSol["requireGen"](env, loaded, mSol["loadFromVFS"], hiddenData);
+            sol::set_environment(env, script);
+        }
+        Debug::V36LuaAddScriptTrace::PhaseScope v36ScriptBody(
+            Debug::V36LuaAddScriptTrace::Phase::ScriptBody);
         return call(scriptId, script);
     }
 
@@ -409,6 +471,105 @@ namespace LuaUtil
             throw std::runtime_error(std::string("Lua error: ") += res.get<sol::error>().what());
         else
             return std::move(res);
+    }
+
+    std::size_t LuaState::precompileConfiguredScripts()
+    {
+        std::size_t compiled = 0;
+        protectedCall([&](LuaView&) {
+            for (std::size_t i = 0; i < mConf->size(); ++i)
+            {
+                const VFS::Path::Normalized& path = (*mConf)[i].mScriptPath;
+                if (mCompiledScripts.contains(path))
+                    continue;
+                try
+                {
+                    sol::function function = loadFromVFS(path);
+                    mCompiledScripts[path] = function.dump();
+                    ++compiled;
+                }
+                catch (const std::exception& e)
+                {
+                    // Prewarming must not make an otherwise-unused bad script a
+                    // startup-fatal error. Normal execution keeps upstream behavior.
+                    Log(Debug::Warning) << "V3.12 Lua precompile skipped " << path << ": " << e.what();
+                }
+            }
+        });
+        return compiled;
+    }
+
+    std::size_t LuaState::precompileConfiguredDependencies(int mode)
+    {
+        if (mode <= 0)
+            return 0;
+
+        std::size_t compiled = 0;
+        protectedCall([&](LuaView&) {
+            static const std::regex requirePattern(
+                R"v314(\brequire\s*(?:\(\s*)?[\"']([^\"']+)[\"']\s*\)?)v314");
+
+            std::vector<VFS::Path::Normalized> scanQueue;
+            std::set<VFS::Path::Normalized> queued;
+            for (std::size_t i = 0; i < mConf->size(); ++i)
+            {
+                const VFS::Path::Normalized& path = (*mConf)[i].mScriptPath;
+                if (queued.insert(path).second)
+                    scanQueue.push_back(path);
+            }
+
+            constexpr std::size_t MaxScannedModules = 4096;
+            for (std::size_t index = 0; index < scanQueue.size() && index < MaxScannedModules; ++index)
+            {
+                const VFS::Path::Normalized path = scanQueue[index];
+                try
+                {
+                    std::string source(std::istreambuf_iterator<char>(*mVFS->get(path)), {});
+                    for (std::sregex_iterator it(source.begin(), source.end(), requirePattern), end; it != end; ++it)
+                    {
+                        const std::string packageName = (*it)[1].str();
+                        try
+                        {
+                            const VFS::Path::Normalized dependency = packageNameToVfsPath(packageName, *mVFS);
+                            const bool newlyQueued = queued.insert(dependency).second;
+                            if (!mCompiledScripts.contains(dependency))
+                            {
+                                sol::function function = loadFromVFS(dependency);
+                                mCompiledScripts[dependency] = function.dump();
+                                ++compiled;
+                            }
+                            if (mode >= 2 && newlyQueued && scanQueue.size() < MaxScannedModules)
+                                scanQueue.push_back(dependency);
+                        }
+                        catch (const std::exception&)
+                        {
+                            // Comments/dead branches/optional package text are intentionally nonfatal.
+                        }
+                    }
+                }
+                catch (const std::exception& e)
+                {
+                    Log(Debug::Warning) << "V3.14 Lua dependency scan skipped " << path << ": " << e.what();
+                }
+            }
+        });
+        return compiled;
+    }
+
+    sol::main_table LuaState::makePackagePrototype(const std::map<std::string, sol::main_object>& packages)
+    {
+        sol::table prototype(mSol, sol::create);
+        for (const auto& [key, value] : mCommonPackages)
+        {
+            if (!value.is<sol::function>())
+                prototype[key] = value;
+        }
+        for (const auto& [key, value] : packages)
+        {
+            if (!value.is<sol::function>())
+                prototype[key] = value;
+        }
+        return sol::main_table(prototype);
     }
 
     sol::function LuaState::loadScriptAndCache(const VFS::Path::Normalized& path)

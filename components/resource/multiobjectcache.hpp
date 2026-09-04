@@ -1,6 +1,7 @@
 #ifndef OPENMW_COMPONENTS_MULTIOBJECTCACHE_H
 #define OPENMW_COMPONENTS_MULTIOBJECTCACHE_H
 
+#include <cstddef>
 #include <map>
 #include <mutex>
 
@@ -24,7 +25,7 @@ namespace Resource
     class MultiObjectCache : public osg::Referenced
     {
     public:
-        void removeUnreferencedObjectsInCache();
+        void removeUnreferencedObjectsInCache(std::size_t keepUnreferenced = 0);
 
         /** Remove all objects from the cache. */
         void clear();

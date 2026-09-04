@@ -7,6 +7,7 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <components/debug/v3deeptelemetry.hpp>
 #include <utility>
 
 namespace SceneUtil
@@ -45,7 +46,19 @@ namespace SceneUtil
 
         bool trySubmit(Lane lane, std::uint64_t generation, std::function<void()> task)
         {
-            return worker(lane).trySubmit(generation, std::move(task));
+            if (!Debug::V324DeepTelemetry::enabled())
+                return worker(lane).trySubmit(generation, std::move(task));
+
+            const std::string laneName = lane == Lane::Critical ? "critical" : "opportunistic";
+            auto wrapped = [laneName, generation, task = std::move(task)]() mutable {
+                Debug::V324DeepTelemetry::Scope scope("framejob", "execute",
+                    laneName + ":" + std::to_string(generation));
+                task();
+            };
+            const bool accepted = worker(lane).trySubmit(generation, std::move(wrapped));
+            Debug::V324DeepTelemetry::event("framejob", accepted ? "submit_accepted" : "submit_rejected",
+                laneName + ":" + std::to_string(generation));
+            return accepted;
         }
 
         bool isIdle(Lane lane) const { return worker(lane).isIdle(); }
@@ -64,10 +77,24 @@ namespace SceneUtil
         // reserved lane. This service never queues a task and then waits for it to
         // reach a worker. Opportunistic frame paths should normally use isComplete
         // and fail open instead of calling wait.
-        void wait(Lane lane, std::uint64_t generation) { worker(lane).wait(generation); }
+        void wait(Lane lane, std::uint64_t generation)
+        {
+            Debug::V324DeepTelemetry::Scope scope("framejob", "wait");
+            worker(lane).wait(generation);
+        }
 
-        void noteCallerRuns(Lane lane) { worker(lane).noteCallerRuns(); }
-        void noteSkipped(Lane lane) { worker(lane).noteSkipped(); }
+        void noteCallerRuns(Lane lane)
+        {
+            worker(lane).noteCallerRuns();
+            Debug::V324DeepTelemetry::event("framejob", "caller_runs",
+                lane == Lane::Critical ? "critical" : "opportunistic");
+        }
+        void noteSkipped(Lane lane)
+        {
+            worker(lane).noteSkipped();
+            Debug::V324DeepTelemetry::event("framejob", "skipped",
+                lane == Lane::Critical ? "critical" : "opportunistic");
+        }
         Stats stats(Lane lane) const { return worker(lane).stats(); }
 
     private:

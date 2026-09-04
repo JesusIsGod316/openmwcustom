@@ -76,6 +76,8 @@ namespace MWWorld
 
         std::size_t getCacheSize() const { return mPreloadCells.size(); }
 
+        bool isPreloaded(const CellStore& cell) const { return mPreloadCells.find(&cell) != mPreloadCells.end(); }
+
         void setWorkQueue(osg::ref_ptr<SceneUtil::WorkQueue> workQueue);
 
         void setTerrainPreloadPositions(std::span<const PositionCellGrid> positions);
@@ -95,6 +97,7 @@ namespace MWWorld
         Terrain::World* mTerrain;
         MWRender::LandManager* mLandManager;
         osg::ref_ptr<SceneUtil::WorkQueue> mWorkQueue;
+        osg::ref_ptr<SceneUtil::WorkQueue> mV316ResourceSweepQueue;
         double mExpiryDelay;
         std::size_t mMinCacheSize = 0;
         std::size_t mMaxCacheSize = 0;
@@ -124,6 +127,7 @@ namespace MWWorld
 
         std::vector<osg::ref_ptr<Terrain::View>> mTerrainViews;
         std::vector<PositionCellGrid> mTerrainPreloadPositions;
+        std::vector<PositionCellGrid> mV311PendingTerrainPreloadPositions;
         osg::ref_ptr<TerrainPreloadItem> mTerrainPreloadItem;
         osg::ref_ptr<SceneUtil::WorkItem> mUpdateCacheItem;
 
@@ -133,6 +137,10 @@ namespace MWWorld
         std::size_t mAdded = 0;
         std::size_t mExpired = 0;
         std::size_t mLoaded = 0;
+
+        std::size_t mV311TerrainTargetCompleted = 0;
+        std::size_t mV311TerrainTargetReplaced = 0;
+        std::size_t mV311TerrainTargetPromoted = 0;
     };
 
 }

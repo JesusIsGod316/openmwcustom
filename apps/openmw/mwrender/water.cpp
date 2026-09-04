@@ -14,6 +14,7 @@
 #include <osgUtil/CullVisitor>
 #include <osgUtil/IncrementalCompileOperation>
 
+#include <components/debug/v36gpuprofiler.hpp>
 #include <components/resource/imagemanager.hpp>
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/scenemanager.hpp>
@@ -251,6 +252,8 @@ namespace MWRender
             camera->setReferenceFrame(osg::Camera::RELATIVE_RF);
             camera->setSmallFeatureCullingPixelSize(Settings::water().mSmallFeatureCullingPixelSize);
             camera->setName("RefractionCamera");
+            if (Settings::cells().mV36AsyncGpuProfiler)
+                Debug::V36GpuProfiler::attachCamera(*camera, "water_refraction");
             camera->addCullCallback(new InheritViewPointCallback);
             camera->setComputeNearFarMode(osg::CullSettings::DO_NOT_COMPUTE_NEAR_FAR);
 
@@ -324,6 +327,8 @@ namespace MWRender
             camera->setReferenceFrame(osg::Camera::RELATIVE_RF);
             camera->setSmallFeatureCullingPixelSize(Settings::water().mSmallFeatureCullingPixelSize);
             camera->setName("ReflectionCamera");
+            if (Settings::cells().mV36AsyncGpuProfiler)
+                Debug::V36GpuProfiler::attachCamera(*camera, "water_reflection");
             camera->addCullCallback(new InheritViewPointCallback);
 
             // Inform the shader that we're in a reflection

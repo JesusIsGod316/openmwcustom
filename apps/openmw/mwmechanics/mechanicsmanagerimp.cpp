@@ -5,6 +5,7 @@
 #include <osg/Stats>
 
 #include <components/misc/rng.hpp>
+#include <components/debug/v3deeptelemetry.hpp>
 
 #include <components/esm/records.hpp>
 #include <components/esm/refid.hpp>
@@ -286,6 +287,8 @@ namespace MWMechanics
 
     void MechanicsManager::update(float duration, bool paused)
     {
+        Debug::V324DeepTelemetry::Scope v324DeepScope("mechanics", "manager_update");
+
         // Note: we should do it here since game mechanics and world updates use these values
         MWWorld::Ptr ptr = getPlayer();
         MWBase::WindowManager* winMgr = MWBase::Environment::get().getWindowManager();
@@ -322,8 +325,14 @@ namespace MWMechanics
             mActors.addActor(ptr, true);
         }
 
-        mActors.update(duration, paused);
-        mObjects.update(duration, paused);
+        {
+            Debug::V324DeepTelemetry::Scope scope("mechanics", "actors_update");
+            mActors.update(duration, paused);
+        }
+        {
+            Debug::V324DeepTelemetry::Scope scope("mechanics", "objects_update");
+            mObjects.update(duration, paused);
+        }
     }
 
     void MechanicsManager::processChangedSettings(const Settings::CategorySettingVector& changed)

@@ -21,6 +21,11 @@ namespace Settings
         SettingValue<float> mVoiceVolume{ mIndex, "Sound", "voice volume", makeClampSanitizerFloat(0, 1) };
         SettingValue<int> mBufferCacheMin{ mIndex, "Sound", "buffer cache min", makeMaxSanitizerInt(1) };
         SettingValue<int> mBufferCacheMax{ mIndex, "Sound", "buffer cache max", makeMaxSanitizerInt(1) };
+        SettingValue<std::size_t> mHeadCacheSize{ mIndex, "Sound", "head cache size", makeClampSanitizerSize(0, 4095) };
+        SettingValue<std::size_t> mSfxPredecodeCacheSize{
+            mIndex, "Sound", "sfx predecode cache size", makeClampSanitizerSize(0, 4095) };
+        SettingValue<int> mSfxPredecodeWorkers{
+            mIndex, "Sound", "sfx predecode workers", makeClampSanitizerInt(0, 2) };
         SettingValue<HrtfMode> mHrtfEnable{ mIndex, "Sound", "hrtf enable" };
         SettingValue<std::string> mHrtf{ mIndex, "Sound", "hrtf" };
         SettingValue<bool> mCameraListener{ mIndex, "Sound", "camera listener" };

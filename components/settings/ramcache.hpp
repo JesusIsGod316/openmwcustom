@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 
+#include "v36profile.hpp"
 #include "values.hpp"
 
 namespace Settings::RamCache
@@ -27,6 +28,8 @@ namespace Settings::RamCache
 
     inline Mode mode()
     {
+        if (V36Profile::enabled())
+            return V36Profile::ramOverdriveEnabled() ? Mode::Overdrive : Mode::Normal;
         const std::string value = cells().mRamCacheMode;
         if (value == "overdrive")
             return Mode::Overdrive;
@@ -39,6 +42,8 @@ namespace Settings::RamCache
 
     inline OverdrivePreload overdrivePreload()
     {
+        if (V36Profile::enabled())
+            return OverdrivePreload::Balanced;
         const std::string value = cells().mRamCacheOverdrivePreload;
         if (value == "maximum")
             return OverdrivePreload::Maximum;
@@ -236,6 +241,17 @@ namespace Settings::RamCache
     {
         const std::string value = cells().mV3StreamingScheduler;
         return value == "adaptive";
+    }
+
+    inline bool adaptiveStreamingV2Enabled()
+    {
+        const std::string value = cells().mV3StreamingScheduler;
+        return value == "adaptive-v2";
+    }
+
+    inline int streamingMaxDefers()
+    {
+        return static_cast<int>(cells().mV32StreamingMaxDefers);
     }
 
     inline float streamingTargetFrameMs()

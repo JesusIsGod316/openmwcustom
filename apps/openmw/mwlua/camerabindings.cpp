@@ -14,8 +14,10 @@ namespace MWLua
 {
     using CameraMode = MWRender::Camera::Mode;
 
-    sol::table initCameraPackage(sol::state_view lua)
+    sol::function initCameraPackage(sol::state_view lua)
     {
+        auto initializer = [](sol::table hiddenData) {
+        sol::state_view lua(hiddenData.lua_state());
         using Misc::FiniteFloat;
 
         MWRender::Camera* camera = MWBase::Environment::get().getWorld()->getCamera();
@@ -26,7 +28,14 @@ namespace MWLua
             lua.create_table_with("Static", CameraMode::Static, "FirstPerson", CameraMode::FirstPerson, "ThirdPerson",
                 CameraMode::ThirdPerson, "Vanity", CameraMode::Vanity, "Preview", CameraMode::Preview));
 
-        api["getMode"] = [camera]() -> int { return static_cast<int>(camera->getMode()); };
+        api["getMode"] = [camera, hiddenData = sol::main_table(hiddenData)]() -> int {
+            const bool animationConsumer = hiddenData.get_or("openmw_v321_animation_consumer", false);
+            const bool useAnimationMode = animationConsumer && camera->isAnimationCompatibilityEnabled();
+            return static_cast<int>(useAnimationMode ? camera->getAnimationMode() : camera->getMode());
+        };
+        api["getPhysicalMode"] = [camera]() -> int { return static_cast<int>(camera->getMode()); };
+        api["isFullBodyFirstPerson"] = [camera]() { return camera->isFullBodyFirstPerson(); };
+        api["getAnimationMode"] = [camera]() -> int { return static_cast<int>(camera->getAnimationMode()); };
         api["getQueuedMode"] = [camera]() -> sol::optional<int> {
             std::optional<CameraMode> mode = camera->getQueuedMode();
             if (mode)
@@ -131,6 +140,8 @@ namespace MWLua
         };
 
         return LuaUtil::makeReadOnly(api);
+        };
+        return sol::make_object(lua, initializer);
     }
 
 }

@@ -13,6 +13,7 @@
 #include <components/fx/technique.hpp>
 
 #include "luminancecalculator.hpp"
+#include "nisscaler.hpp"
 
 namespace Shader
 {
@@ -84,6 +85,7 @@ namespace MWRender
         mutable osg::ref_ptr<osg::FrameBufferObject> mDestinationFBO;
         mutable std::array<osg::ref_ptr<osg::FrameBufferObject>, 3> mFbos;
         mutable std::shared_ptr<LuminanceCalculator> mLuminanceCalculator;
+        mutable std::shared_ptr<NisScaler> mNisScaler;
         mutable osg::buffered_object<osg::State::UniformMap> mEmptyUniformStacks;
     };
 }

@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
 
 namespace MWSound
 {
@@ -101,18 +102,37 @@ namespace MWSound
         return sfx;
     }
 
+    void SoundBufferPool::prepareSoundRecords()
+    {
+        if (mSoundRecordsPrepared)
+            return;
+        const MWWorld::ESMStore* esmstore = MWBase::Environment::get().getESMStore();
+        for (const ESM::Sound& sound : esmstore->get<ESM::Sound>())
+            insertSound(sound.mId, sound);
+        for (const ESM4::Sound& sound : esmstore->get<ESM4::Sound>())
+            insertSound(sound.mId, sound);
+        for (const ESM4::SoundReference& sound : esmstore->get<ESM4::SoundReference>())
+            insertSound(sound.mId, sound);
+        mSoundRecordsPrepared = true;
+    }
+
+    std::vector<VFS::Path::Normalized> SoundBufferPool::getResourceNamesForPredecode()
+    {
+        prepareSoundRecords();
+        std::vector<VFS::Path::Normalized> result;
+        result.reserve(mSoundBuffers.size());
+        std::unordered_set<VFS::Path::Normalized, VFS::Path::Hash, std::equal_to<>> seen;
+        for (const SoundBuffer& sfx : mSoundBuffers)
+        {
+            if (seen.emplace(sfx.getResourceName()).second)
+                result.emplace_back(sfx.getResourceName());
+        }
+        return result;
+    }
+
     SoundBuffer* SoundBufferPool::load(const ESM::RefId& soundId)
     {
-        if (mBufferNameMap.empty())
-        {
-            const MWWorld::ESMStore* esmstore = MWBase::Environment::get().getESMStore();
-            for (const ESM::Sound& sound : esmstore->get<ESM::Sound>())
-                insertSound(sound.mId, sound);
-            for (const ESM4::Sound& sound : esmstore->get<ESM4::Sound>())
-                insertSound(sound.mId, sound);
-            for (const ESM4::SoundReference& sound : esmstore->get<ESM4::SoundReference>())
-                insertSound(sound.mId, sound);
-        }
+        prepareSoundRecords();
 
         SoundBuffer* sfx;
         const auto it = mBufferNameMap.find(soundId);

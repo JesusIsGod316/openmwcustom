@@ -8,6 +8,7 @@
 #include "positioncellgrid.hpp"
 #include "ptr.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <set>
@@ -101,12 +102,21 @@ namespace MWWorld
         bool mPreloadExteriorGrid;
         bool mPreloadDoors;
         bool mPreloadFastTravel;
+        int mV33SpeculativePreloadBudget;
         float mPredictionTime;
         float mLowestPoint;
 
         int mHalfGridSize = Constants::CellGridRadius;
 
         osg::Vec3f mLastPlayerPos;
+
+        // V3.9: perform the intentionally expensive multi-view exterior preload
+        // only once per Scene lifetime. Subsequent cell-grid changes use normal
+        // predictive/background preload and must not repeat startup frontloading.
+        bool mV39InitialFrontloadDone = false;
+
+        std::uint64_t mV312EtaTargets = 0;
+        std::uint64_t mV312SecondHorizonTargets = 0;
 
         std::vector<ESM::RefNum> mPagedRefs;
 
@@ -136,7 +146,8 @@ namespace MWWorld
         osg::Vec4i gridCenterToBounds(const osg::Vec2i& centerCell) const;
         osg::Vec2i getNewGridCenter(const osg::Vec3f& pos, const osg::Vec2i* currentGridCenter = nullptr) const;
 
-        void unloadCell(CellStore* cell, const DetourNavigator::UpdateGuard* navigatorUpdateGuard);
+        void unloadCell(CellStore* cell, const DetourNavigator::UpdateGuard* navigatorUpdateGuard,
+            bool hibernateRenderState = false);
         void loadCell(CellStore& cell, Loading::Listener* loadingListener, bool respawn, const osg::Vec3f& position,
             const DetourNavigator::UpdateGuard* navigatorUpdateGuard);
 

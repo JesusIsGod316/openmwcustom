@@ -20,6 +20,7 @@
 #ifndef COMPONENTS_SCENEUTIL_MWSHADOWTECHNIQUE_H
 #define COMPONENTS_SCENEUTIL_MWSHADOWTECHNIQUE_H 1
 
+#include <algorithm>
 #include <array>
 #include <mutex>
 #include <string>
@@ -188,7 +189,7 @@ namespace SceneUtil {
 
         struct ShadowData : public osg::Referenced
         {
-            ShadowData(ViewDependentData* vdd);
+            ShadowData(ViewDependentData* vdd, unsigned int shadowMapIndex = 0, unsigned int shadowMapCount = 1);
 
             virtual void releaseGLObjects(osg::State* = 0) const;
 
@@ -198,6 +199,12 @@ namespace SceneUtil {
             unsigned int                        _sm_i;
             osg::ref_ptr<osg::Texture2D>        _texture;
             osg::ref_ptr<osg::Camera>           _camera;
+            bool                                _v33HasCachedShadow = false;
+            unsigned int                        _v33LastUpdateTraversal = 0;
+            osg::Matrixd                        _v33CachedProjection;
+            osg::Matrixd                        _v33CachedView;
+            osg::Matrixd                        _v33CachedDriftProjection;
+            osg::Matrixd                        _v33CachedDriftView;
         };
 
         typedef std::list< osg::ref_ptr<ShadowData> > ShadowDataList;
@@ -271,6 +278,14 @@ namespace SceneUtil {
 
         void setWorldMask(unsigned int worldMask) { _worldMask = worldMask; }
 
+        void setV33FarCascadeReuse(unsigned int interval, double maxTexelDrift, bool dynamicActorCasters);
+        void setV33FarCascadeResolutionDivisor(unsigned int divisor);
+        unsigned int getV33FarCascadeResolutionDivisor() const { return _v33FarCascadeResolutionDivisor; }
+        void setV36AsyncGpuProfiler(bool enabled) { _v36AsyncGpuProfiler = enabled; }
+        void setV36FarCasterMinimumPixels(float pixels) { _v36FarCasterMinimumPixels = std::max(0.f, pixels); }
+        float getV36FarCasterMinimumPixels() const { return _v36FarCasterMinimumPixels; }
+        void setV37StabilizeFarCascade(bool enabled) { _v37StabilizeFarCascade = enabled; }
+
         osg::ref_ptr<osg::StateSet> getOrCreateShadowsBinStateSet();
 
     protected:
@@ -308,6 +323,12 @@ namespace SceneUtil {
         float                                   _shadowFadeStart = 0.0f;
 
         unsigned int                            _worldMask = ~0u;
+        unsigned int                            _v33FarCascadeUpdateInterval = 1;
+        double                                  _v33FarCascadeMaxTexelDrift = 0.75;
+        unsigned int                            _v33FarCascadeResolutionDivisor = 1;
+        bool                                    _v36AsyncGpuProfiler = false;
+        float                                   _v36FarCasterMinimumPixels = 0.f;
+        bool                                    _v37StabilizeFarCascade = false;
 
         class DebugHUD final : public osg::Referenced
         {

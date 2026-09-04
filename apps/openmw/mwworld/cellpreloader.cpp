@@ -13,12 +13,15 @@
 #include <components/misc/constants.hpp>
 #include <components/misc/pathhelpers.hpp>
 #include <components/misc/resourcehelpers.hpp>
+#include <components/misc/thread.hpp>
 #include <components/misc/strings/algorithm.hpp>
 #include <components/misc/strings/lower.hpp>
 #include <components/resource/bulletshapemanager.hpp>
 #include <components/resource/keyframemanager.hpp>
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/scenemanager.hpp>
+#include <components/debug/v3gpumemory.hpp>
+#include <components/settings/values.hpp>
 #include <components/terrain/view.hpp>
 #include <components/terrain/world.hpp>
 #include <components/vfs/manager.hpp>
@@ -108,6 +111,9 @@ namespace MWWorld
 
             VFS::Path::Normalized mesh;
             VFS::Path::Normalized kfname;
+            std::set<VFS::Path::Normalized> v37PreloadedKeyframes;
+            const bool v37CompanionKeyframePreload
+                = static_cast<bool>(Settings::cells().mV37CompanionKeyframePreload);
             for (VFS::Path::NormalizedView path : mMeshes)
             {
                 if (mAbort)
@@ -123,20 +129,28 @@ namespace MWWorld
                         continue;
 
                     constexpr VFS::Path::ExtensionView nif("nif");
-                    if (Misc::getFileName(mesh).starts_with('x') && mesh.extension() == nif)
+                    const bool v37CheckKeyframe = mesh.extension() == nif
+                        && (Misc::getFileName(mesh).starts_with('x') || v37CompanionKeyframePreload);
+                    if (v37CheckKeyframe)
                     {
                         kfname = mesh;
                         constexpr VFS::Path::ExtensionView kf("kf");
                         kfname.changeExtension(kf);
-                        if (vfs.exists(kfname))
+                        if (vfs.exists(kfname) && v37PreloadedKeyframes.insert(kfname).second)
                             mPreloadedObjects.insert(mKeyframeManager->get(kfname));
                     }
 
-                    mPreloadedObjects.insert(mSceneManager->getTemplate(mesh));
+                    if (Resource::v321CP2FairnessEnabled())
+                        mPreloadedObjects.insert(mSceneManager->getTemplate(
+                            mesh, true, Resource::V321CompileClass::GenericModel));
+                    else
+                        mPreloadedObjects.insert(mSceneManager->getTemplate(mesh));
                     if (mPreloadInstances)
                         mPreloadedObjects.insert(mBulletShapeManager->cacheInstance(mesh));
                     else
                         mPreloadedObjects.insert(mBulletShapeManager->getShape(mesh));
+                    if (!mAbort)
+                        mSceneManager->prepareInstance(mesh);
                 }
                 catch (const std::exception& e)
                 {
@@ -205,17 +219,24 @@ namespace MWWorld
     class UpdateCacheItem : public SceneUtil::WorkItem
     {
     public:
-        UpdateCacheItem(Resource::ResourceSystem* resourceSystem, double referenceTime)
+        UpdateCacheItem(Resource::ResourceSystem* resourceSystem, double referenceTime, bool idlePriority)
             : mReferenceTime(referenceTime)
             , mResourceSystem(resourceSystem)
+            , mIdlePriority(idlePriority)
         {
         }
 
-        void doWork() override { mResourceSystem->updateCache(mReferenceTime); }
+        void doWork() override
+        {
+            if (mIdlePriority)
+                Misc::setCurrentThreadIdlePriority();
+            mResourceSystem->updateCache(mReferenceTime);
+        }
 
     private:
         double mReferenceTime;
         Resource::ResourceSystem* mResourceSystem;
+        bool mIdlePriority;
     };
 
     CellPreloader::CellPreloader(Resource::ResourceSystem* resourceSystem,
@@ -229,6 +250,8 @@ namespace MWWorld
         , mLastResourceCacheUpdate(0.0)
         , mLoadedTerrainTimestamp(0.0)
     {
+        if (static_cast<bool>(Settings::cells().mV316IdleResourceSweep))
+            mV316ResourceSweepQueue = new SceneUtil::WorkQueue(1);
     }
 
     CellPreloader::~CellPreloader()
@@ -338,12 +361,25 @@ namespace MWWorld
                 ++it;
         }
 
-        if (timestamp - mLastResourceCacheUpdate > 1.0 && (!mUpdateCacheItem || mUpdateCacheItem->isDone()))
+        const bool v37AdapterPressure = static_cast<bool>(Settings::cells().mV32GpuMemoryManagement)
+            && Debug::V3GpuMemory::softPressure();
+        const double v37ResourceSweepSeconds
+            = static_cast<bool>(Settings::cells().mV37RelaxedResourceSweep) && !v37AdapterPressure
+            ? static_cast<double>(Settings::cells().mV37ResourceSweepSeconds)
+            : 1.0;
+        if (timestamp - mLastResourceCacheUpdate > v37ResourceSweepSeconds
+            && (!mUpdateCacheItem || mUpdateCacheItem->isDone()))
         {
-            // the resource cache is cleared from the worker thread so that we're not holding up the main thread with
-            // delete operations
-            mUpdateCacheItem = new UpdateCacheItem(mResourceSystem, timestamp);
-            mWorkQueue->addWorkItem(mUpdateCacheItem, true);
+            // V3.16 balanced/aggressive modes isolate periodic cache maintenance
+            // from the shared preload queue. The dedicated thread is permanently
+            // idle-priority and handles no paging-critical work.
+            const bool v316IdleSweep = static_cast<bool>(Settings::cells().mV316IdleResourceSweep)
+                && mV316ResourceSweepQueue;
+            mUpdateCacheItem = new UpdateCacheItem(mResourceSystem, timestamp, v316IdleSweep);
+            if (v316IdleSweep)
+                mV316ResourceSweepQueue->addWorkItem(mUpdateCacheItem);
+            else
+                mWorkQueue->addWorkItem(mUpdateCacheItem, true);
             mLastResourceCacheUpdate = timestamp;
         }
 
@@ -351,6 +387,18 @@ namespace MWWorld
         {
             mLoadedTerrainPositions = mTerrainPreloadPositions;
             mLoadedTerrainTimestamp = timestamp;
+
+            if (static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode) > 0)
+            {
+                ++mV311TerrainTargetCompleted;
+                if (!mV311PendingTerrainPreloadPositions.empty())
+                {
+                    std::vector<PositionCellGrid> pending = std::move(mV311PendingTerrainPreloadPositions);
+                    mV311PendingTerrainPreloadPositions.clear();
+                    ++mV311TerrainTargetPromoted;
+                    setTerrainPreloadPositions(pending);
+                }
+            }
         }
     }
 
@@ -389,15 +437,42 @@ namespace MWWorld
 
     void CellPreloader::setTerrainPreloadPositions(std::span<const PositionCellGrid> positions)
     {
+        const bool v311RollingExactActive
+            = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode) > 0;
+
         if (positions.empty())
         {
             mTerrainPreloadPositions.clear();
             mLoadedTerrainPositions.clear();
+            mV311PendingTerrainPreloadPositions.clear();
         }
         else if (contains(mTerrainPreloadPositions, positions, 128.f))
             return;
+
         if (mTerrainPreloadItem && !mTerrainPreloadItem->isDone())
+        {
+            if (!v311RollingExactActive || positions.empty())
+                return;
+
+            const auto firstBoundsEqual = [](std::span<const PositionCellGrid> a,
+                                              std::span<const PositionCellGrid> b) {
+                return !a.empty() && !b.empty() && a.front().mCellBounds == b.front().mCellBounds;
+            };
+
+            // The running item already targets this exact future grid. Ignore
+            // predicted-position jitter until the grid bounds themselves change.
+            if (firstBoundsEqual(mTerrainPreloadPositions, positions))
+                return;
+
+            // Keep exactly one newest future-grid target. If prediction changes
+            // again before the old worker finishes, replace the pending target.
+            if (!mV311PendingTerrainPreloadPositions.empty()
+                && !firstBoundsEqual(mV311PendingTerrainPreloadPositions, positions))
+                ++mV311TerrainTargetReplaced;
+
+            mV311PendingTerrainPreloadPositions.assign(positions.begin(), positions.end());
             return;
+        }
         else
         {
             if (mTerrainViews.size() > positions.size())
@@ -440,6 +515,7 @@ namespace MWWorld
             mTerrainPreloadItem->waitTillDone();
             mTerrainPreloadItem = nullptr;
         }
+        mV311PendingTerrainPreloadPositions.clear();
 
         if (mUpdateCacheItem)
         {
@@ -463,5 +539,13 @@ namespace MWWorld
         stats.setAttribute(frameNumber, "CellPreloader Evicted", static_cast<double>(mEvicted));
         stats.setAttribute(frameNumber, "CellPreloader Loaded", static_cast<double>(mLoaded));
         stats.setAttribute(frameNumber, "CellPreloader Expired", static_cast<double>(mExpired));
+        stats.setAttribute(frameNumber, "V3.11 Terrain Target Completed",
+            static_cast<double>(mV311TerrainTargetCompleted));
+        stats.setAttribute(frameNumber, "V3.11 Terrain Target Replaced",
+            static_cast<double>(mV311TerrainTargetReplaced));
+        stats.setAttribute(frameNumber, "V3.11 Terrain Target Promoted",
+            static_cast<double>(mV311TerrainTargetPromoted));
+        stats.setAttribute(frameNumber, "V3.11 Terrain Target Pending",
+            mV311PendingTerrainPreloadPositions.empty() ? 0.0 : 1.0);
     }
 }

@@ -4,6 +4,10 @@
 
 #include <components/misc/mathutil.hpp>
 #include <components/sceneutil/nodecallback.hpp>
+#include <components/settings/values.hpp>
+
+#include <cstdlib>
+#include <string_view>
 #include <components/sceneutil/positionattitudetransform.hpp>
 
 #include "../mwbase/environment.hpp"
@@ -22,6 +26,35 @@
 
 namespace
 {
+
+    // openmw-custom-v3.21-cp3-fullbody-first-person
+    bool v321FullBodyFirstPersonEnabled()
+    {
+        const bool configured = Settings::camera().mV321FullBodyFirstPerson;
+        const char* value = std::getenv("OPENMW_V321_CP3_FULL_BODY_FIRST_PERSON");
+        if (value == nullptr || *value == '\0')
+            return configured;
+        const std::string_view parsed(value);
+        if (parsed == "1" || parsed == "true")
+            return true;
+        if (parsed == "0" || parsed == "false")
+            return false;
+        return configured;
+    }
+
+    bool v321FullBodyFirstPersonShadowCompatEnabled()
+    {
+        const bool configured = Settings::camera().mV321FullBodyFirstPersonShadowCompat;
+        const char* value = std::getenv("OPENMW_V321_CP4_SHADOW_COMPAT");
+        if (value == nullptr || *value == '\0')
+            return configured;
+        const std::string_view parsed(value);
+        if (parsed == "1" || parsed == "true")
+            return true;
+        if (parsed == "0" || parsed == "false")
+            return false;
+        return configured;
+    }
 
     class UpdateRenderCameraCallback : public SceneUtil::NodeCallback<UpdateRenderCameraCallback, osg::Camera*>
     {
@@ -56,6 +89,9 @@ namespace MWRender
         , mCamera(camera)
         , mAnimation(nullptr)
         , mFirstPersonView(true)
+        , mV321FullBodyFirstPerson(v321FullBodyFirstPersonEnabled())
+        , mV321FullBodyFirstPersonShadowCompat(v321FullBodyFirstPersonShadowCompatEnabled())
+        , mV321FullBodyFirstPersonForwardOffset(Settings::camera().mV321FullBodyFirstPersonForwardOffset)
         , mMode(Mode::FirstPerson)
         , mVanityAllowed(true)
         , mDeferredRotationAllowed(true)
@@ -149,8 +185,12 @@ namespace MWRender
     osg::Vec3d Camera::calculateFirstPersonPosition(const osg::Vec3d& trackedPosition) const
     {
         osg::Vec3d res = trackedPosition;
-        osg::Vec2f horizontalOffset
-            = Misc::rotateVec2f(osg::Vec2f(mFirstPersonOffset.x(), mFirstPersonOffset.y()), mYaw);
+        osg::Vec2f localOffset(mFirstPersonOffset.x(), mFirstPersonOffset.y());
+        // Keep this offset horizontal/yaw-relative. Applying pitch would drive
+        // the camera back into the torso precisely when the player looks down.
+        if (mV321FullBodyFirstPerson)
+            localOffset.y() += mV321FullBodyFirstPersonForwardOffset;
+        osg::Vec2f horizontalOffset = Misc::rotateVec2f(localOffset, mYaw);
         res.x() += horizontalOffset.x();
         res.y() += horizontalOffset.y();
         res.z() += mFirstPersonOffset.z();
@@ -349,7 +389,9 @@ namespace MWRender
             return;
         if (mMode == Mode::FirstPerson)
         {
-            mAnimation->setViewMode(NpcAnimation::VM_FirstPerson);
+            mAnimation->setViewMode(mV321FullBodyFirstPerson ? NpcAnimation::VM_FirstPersonFullBody
+                                                            : NpcAnimation::VM_FirstPerson,
+                mV321FullBodyFirstPerson && mV321FullBodyFirstPersonShadowCompat);
             mTrackingNode = mAnimation->getNode("Camera");
             if (!mTrackingNode)
                 mTrackingNode = mAnimation->getNode("Head");

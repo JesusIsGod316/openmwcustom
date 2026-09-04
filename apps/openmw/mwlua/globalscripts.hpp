@@ -28,6 +28,16 @@ namespace MWLua
         void actorActive(const GObject& obj) { callEngineHandlers(mActorActiveHandlers, obj); }
         void itemActive(const GObject& obj) { callEngineHandlers(mItemActiveHandlers, obj); }
         void playerAdded(const GObject& obj) { callEngineHandlers(mPlayerAddedHandlers, obj); }
+
+        bool hasObjectActiveHandlers() const { return mightHaveEngineHandlers(mObjectActiveHandlers); }
+        bool hasActorActiveHandlers() const { return mightHaveEngineHandlers(mActorActiveHandlers); }
+        bool hasItemActiveHandlers() const { return mightHaveEngineHandlers(mItemActiveHandlers); }
+        bool hasPlayerAddedHandlers() const { return mightHaveEngineHandlers(mPlayerAddedHandlers); }
+        bool hasOnActivateHandlers() const { return mightHaveEngineHandlers(mOnActivateHandlers); }
+        bool hasOnUseItemHandlers() const { return mightHaveEngineHandlers(mOnUseItemHandlers); }
+        bool hasOnDroppedHandlers() const { return mightHaveEngineHandlers(mOnDroppedHandlers); }
+        bool hasOnPlacedHandlers() const { return mightHaveEngineHandlers(mOnPlacedHandlers); }
+        bool hasOnNewExteriorHandlers() const { return mightHaveEngineHandlers(mOnNewExteriorHandlers); }
         void onActivate(const GObject& obj, const GObject& actor)
         {
             callEngineHandlers(mOnActivateHandlers, obj, actor);

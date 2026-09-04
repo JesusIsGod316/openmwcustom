@@ -53,6 +53,15 @@ namespace Resource
         /// Clear cache entries that have not been referenced for longer than expiryDelay.
         void updateCache(double referenceTime) override { mCache->update(referenceTime, mExpiryDelay); }
 
+        /// Pressure-only override used by V3.8. This deliberately reuses the
+        /// normal object-cache reference-count safety: live/external objects are
+        /// refreshed and cannot be erased, while stale cache-only objects may be
+        /// released earlier than the normal long host-residency expiry.
+        void updateCacheWithExpiry(double referenceTime, double expiryDelay)
+        {
+            mCache->update(referenceTime, expiryDelay);
+        }
+
         /// Clear all cache entries.
         void clearCache() override { mCache->clear(); }
 

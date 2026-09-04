@@ -7,7 +7,11 @@
 
 #include <osg/ref_ptr>
 
+#include <atomic>
+#include <atomic>
+#include <map>
 #include <mutex>
+#include <set>
 
 namespace Resource
 {
@@ -50,6 +54,7 @@ namespace MWRender
         bool blacklistObject(int type, ESM::RefNum refnum, const osg::Vec3f& pos, const osg::Vec2i& cell);
 
         void clear();
+        void clearCache() override;
 
         /// Must be called after clear() before rendering starts.
         /// @return true if view needs rebuild
@@ -60,19 +65,50 @@ namespace MWRender
         void getPagedRefnums(const osg::Vec4i& activeGrid, std::vector<ESM::RefNum>& out);
 
         void setOcclusionCuller(SceneUtil::OcclusionCuller* culler, unsigned int maxTriangles,
-            OcclusionCulling::OcclusionStorage* storage);
+            OcclusionCulling::OcclusionStorage* storage, bool coarseChunkOcclusion = false);
+
+        // V3.10: true only while Scene is synchronously waiting for the one-time
+        // initial multi-view frontload. Worker ObjectPaging construction reads this
+        // flag, so it must be atomic. Later predictive/background preload remains
+        // deliberately outside this gate.
+        void setV310InitialFrontloadActive(bool active)
+        {
+            mV310InitialFrontloadActive.store(active, std::memory_order_release);
+        }
 
     private:
         Resource::SceneManager* mSceneManager;
         osg::ref_ptr<SceneUtil::OcclusionCuller> mOcclusionCuller;
         unsigned int mMaxTriangles = 30000;
         OcclusionCulling::OcclusionStorage* mOcclusionStorage = nullptr;
+        bool mV35CoarseChunkOcclusion = false;
         bool mActiveGrid;
         bool mDebugBatches;
         float mMergeFactor;
         float mMinSize;
         float mMinSizeMergeFactor;
         float mMinSizeCostMultiplier;
+
+        std::atomic_bool mV310InitialFrontloadActive{ false };
+
+        mutable std::mutex mV311PreparedActiveMutex;
+        std::set<ChunkId> mV311PreparedActiveChunks;
+        std::atomic_uint64_t mV311PreparedActiveBuilt{ 0 };
+        std::atomic_uint64_t mV311PreparedActiveHits{ 0 };
+        std::atomic_uint64_t mV311DemandFallbacks{ 0 };
+
+        struct V313ChunkQuality
+        {
+            unsigned char mPrepareMode = 0;
+            unsigned char mSpatialMode = 0;
+        };
+        mutable std::mutex mV313ChunkQualityMutex;
+        std::map<ChunkId, V313ChunkQuality> mV313ChunkQualities;
+        std::set<ChunkId> mV313StrongUpgradeInFlight;
+        std::atomic_uint64_t mV313WeakCacheHitOnStrongPrepare{ 0 };
+        std::atomic_uint64_t mV313UpgradeBuilt{ 0 };
+        std::atomic_uint64_t mV313UpgradeInstalled{ 0 };
+        std::atomic_uint64_t mV313UpgradeCoalesced{ 0 };
 
         std::mutex mRefTrackerMutex;
         struct RefTracker

@@ -1,6 +1,8 @@
 #ifndef OPENMW_COMPONENTS_BULLETSHAPEMANAGER_H
 #define OPENMW_COMPONENTS_BULLETSHAPEMANAGER_H
 
+#include <cstddef>
+
 #include <osg/ref_ptr>
 
 #include <components/vfs/pathutil.hpp>
@@ -24,8 +26,8 @@ namespace Resource
     class BulletShapeManager : public ResourceManager
     {
     public:
-        BulletShapeManager(
-            const VFS::Manager* vfs, SceneManager* sceneMgr, NifFileManager* nifFileManager, double expiryDelay);
+        BulletShapeManager(const VFS::Manager* vfs, SceneManager* sceneMgr, NifFileManager* nifFileManager,
+            double expiryDelay, std::size_t instanceCacheKeep = 0);
         ~BulletShapeManager();
 
         /// @note May return a null pointer if the object has no shape.
@@ -51,6 +53,7 @@ namespace Resource
         osg::ref_ptr<BulletShapeInstance> createInstance(VFS::Path::NormalizedView name);
 
         osg::ref_ptr<MultiObjectCache> mInstanceCache;
+        std::size_t mInstanceCacheKeep = 0;
         SceneManager* mSceneManager;
         NifFileManager* mNifFileManager;
     };

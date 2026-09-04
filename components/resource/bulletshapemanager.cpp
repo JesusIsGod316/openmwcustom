@@ -96,10 +96,11 @@ namespace Resource
         std::unique_ptr<btTriangleMesh> mTriangleMesh;
     };
 
-    BulletShapeManager::BulletShapeManager(
-        const VFS::Manager* vfs, SceneManager* sceneMgr, NifFileManager* nifFileManager, double expiryDelay)
+    BulletShapeManager::BulletShapeManager(const VFS::Manager* vfs, SceneManager* sceneMgr,
+        NifFileManager* nifFileManager, double expiryDelay, std::size_t instanceCacheKeep)
         : ResourceManager(vfs, expiryDelay)
         , mInstanceCache(new MultiObjectCache)
+        , mInstanceCacheKeep(instanceCacheKeep)
         , mSceneManager(sceneMgr)
         , mNifFileManager(nifFileManager)
     {
@@ -190,7 +191,7 @@ namespace Resource
     {
         ResourceManager::updateCache(referenceTime);
 
-        mInstanceCache->removeUnreferencedObjectsInCache();
+        mInstanceCache->removeUnreferencedObjectsInCache(mInstanceCacheKeep);
     }
 
     void BulletShapeManager::clearCache()

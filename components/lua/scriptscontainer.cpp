@@ -2,6 +2,11 @@
 
 #include "scripttracker.hpp"
 
+#include <iomanip>
+#include <sstream>
+
+#include <components/debug/v35lualoadtrace.hpp>
+#include <components/debug/v36luaaddscripttrace.hpp>
 #include <components/esm/luascripts.hpp>
 
 namespace
@@ -57,6 +62,7 @@ namespace LuaUtil
         if (!package.is<sol::userdata>())
             throw std::logic_error("Expected package to be read-only: " + packageName);
         mAPI.insert_or_assign(std::move(packageName), std::move(package));
+        mV314PackagePrototype.reset();
     }
 
     bool ScriptsContainer::addCustomScript(int scriptId, std::string_view initData)
@@ -102,6 +108,8 @@ namespace LuaUtil
         debugName.append(path);
         debugName.push_back(']');
 
+        Debug::V36LuaAddScriptTrace::ScriptScope v36ScriptTrace(mNamePrefix, path.value());
+        const auto v36HiddenStart = Debug::V3Diagnostics::Clock::now();
         Script& script = data.mScripts[scriptId];
         script.mHiddenData = view.newTable();
         script.mHiddenData[sScriptIdKey] = ScriptId{ this, scriptId };
@@ -117,12 +125,22 @@ namespace LuaUtil
         }
         else
             script.mStats.mMemoryUsage = 0;
+        Debug::V36LuaAddScriptTrace::add(Debug::V36LuaAddScriptTrace::Phase::HiddenSetup, v36HiddenStart);
 
         try
         {
-            sol::object scriptOutput = mLua.runInNewSandbox(path, debugName, mAPI, script.mHiddenData);
+            const sol::main_table* packagePrototype = nullptr;
+            if (mLua.getPackagePrototypeReuse())
+            {
+                if (!mV314PackagePrototype)
+                    mV314PackagePrototype.emplace(mLua.makePackagePrototype(mAPI));
+                packagePrototype = &*mV314PackagePrototype;
+            }
+            sol::object scriptOutput
+                = mLua.runInNewSandbox(path, debugName, mAPI, script.mHiddenData, packagePrototype);
             if (scriptOutput == sol::nil)
                 return true;
+            const auto v36HandlersStart = Debug::V3Diagnostics::Clock::now();
             sol::object engineHandlers = sol::nil, eventHandlers = sol::nil;
             for (const auto& [key, value] : cast<sol::table>(scriptOutput))
             {
@@ -174,6 +192,9 @@ namespace LuaUtil
                 }
             }
 
+            Debug::V36LuaAddScriptTrace::add(
+                Debug::V36LuaAddScriptTrace::Phase::HandlerExtraction, v36HandlersStart);
+            const auto v36InterfaceStart = Debug::V3Diagnostics::Clock::now();
             if (script.mInterfaceName.empty() == script.mInterface.has_value())
             {
                 Log(Debug::Error) << debugName << ": 'interfaceName' should always be used together with 'interface'";
@@ -185,6 +206,8 @@ namespace LuaUtil
                 script.mInterface = makeReadOnly(*script.mInterface);
                 insertInterface(scriptId, script);
             }
+            Debug::V36LuaAddScriptTrace::add(
+                Debug::V36LuaAddScriptTrace::Phase::InterfaceRegistration, v36InterfaceStart);
 
             return true;
         }
@@ -349,6 +372,8 @@ namespace LuaUtil
 
     void ScriptsContainer::receiveEvent(std::string_view eventName, std::string_view eventData)
     {
+        Debug::V33LuaTrace::CallbackScope v33DispatchTrace(
+            "lua_event_dispatch", eventName, mNamePrefix, -1, "", eventName);
         LoadedData& data = ensureLoaded();
         auto it = data.mEventHandlers.find(eventName);
         if (it == data.mEventHandlers.end())
@@ -370,6 +395,11 @@ namespace LuaUtil
                 const Handler& h = list[i - 1];
                 try
                 {
+                    const std::string_view v33ScriptPath = Debug::V33LuaTrace::enabled()
+                        ? std::string_view(scriptPath(h.mScriptId).value())
+                        : std::string_view{};
+                    Debug::V33LuaTrace::CallbackScope v33HandlerTrace(
+                        "lua_event_handler", eventName, mNamePrefix, h.mScriptId, v33ScriptPath, eventName);
                     sol::object res = LuaUtil::call({ this, h.mScriptId }, h.mFn, object);
                     if (res.is<bool>() && !res.as<bool>())
                         break; // Skip other handlers if 'false' was returned.
@@ -532,41 +562,60 @@ namespace LuaUtil
         mRequiredLoading = true;
         if (LoadedData* data = std::get_if<LoadedData>(&mData))
             return *data;
-        UnloadedData& unloadedData = std::get<UnloadedData>(mData);
-        std::vector<ESM::LuaScript> savedScripts = std::move(unloadedData.mScripts);
-        LoadedData& data = mData.emplace<LoadedData>();
-
-        const ScriptsConfiguration& cfg = mLua.getConfiguration();
-
+        Debug::V35LuaLoadTrace::LoadScope v35LoadTrace(mNamePrefix);
+        std::vector<ESM::LuaScript> savedScripts;
+        LoadedData* dataPtr = nullptr;
         std::map<int, ScriptInfo> scripts;
-        for (const auto& [scriptId, initData] : mAutoStartScripts)
-            scripts[scriptId] = { initData, nullptr };
-        for (const ESM::LuaScript& s : savedScripts)
         {
-            auto it = scripts.find(s.mScriptId);
-            if (it != scripts.end())
-                it->second.mSavedData = &s;
-            else if (cfg.isCustomScript(s.mScriptId))
-                scripts[s.mScriptId] = { cfg[s.mScriptId].mInitializationData, &s };
+            Debug::V35LuaLoadTrace::PhaseScope v35Prepare(Debug::V35LuaLoadTrace::Phase::Prepare);
+            UnloadedData& unloadedData = std::get<UnloadedData>(mData);
+            savedScripts = std::move(unloadedData.mScripts);
+            dataPtr = &mData.emplace<LoadedData>();
+
+            const ScriptsConfiguration& cfg = mLua.getConfiguration();
+            for (const auto& [scriptId, initData] : mAutoStartScripts)
+                scripts[scriptId] = { initData, nullptr };
+            for (const ESM::LuaScript& s : savedScripts)
+            {
+                auto it = scripts.find(s.mScriptId);
+                if (it != scripts.end())
+                    it->second.mSavedData = &s;
+                else if (cfg.isCustomScript(s.mScriptId))
+                    scripts[s.mScriptId] = { cfg[s.mScriptId].mInitializationData, &s };
+            }
         }
+        LoadedData& data = *dataPtr;
+        Debug::V35LuaLoadTrace::setScriptCounts(
+            static_cast<unsigned>(scripts.size()), static_cast<unsigned>(savedScripts.size()));
 
         mLua.protectedCall([&](LuaView& view) {
-            data.mPublicInterfaces = sol::table(view.sol(), sol::create);
-            addPackage("openmw.interfaces", makeReadOnly(data.mPublicInterfaces));
+            {
+                Debug::V35LuaLoadTrace::PhaseScope v35Interfaces(Debug::V35LuaLoadTrace::Phase::Interfaces);
+                data.mPublicInterfaces = sol::table(view.sol(), sol::create);
+                addPackage("openmw.interfaces", makeReadOnly(data.mPublicInterfaces));
+            }
 
             for (const auto& [scriptId, scriptInfo] : scripts)
             {
+                Debug::V35LuaLoadTrace::ScriptScope v35Script(scriptPath(scriptId).value());
                 std::optional<sol::function> onInit, onLoad;
-                if (!addScript(view, scriptId, onInit, onLoad))
+                bool added = false;
+                {
+                    Debug::V35LuaLoadTrace::PhaseScope v35Add(Debug::V35LuaLoadTrace::Phase::AddScripts);
+                    added = addScript(view, scriptId, onInit, onLoad);
+                }
+                if (!added)
                     continue;
                 if (scriptInfo.mSavedData == nullptr)
                 {
+                    Debug::V35LuaLoadTrace::PhaseScope v35Init(Debug::V35LuaLoadTrace::Phase::InitLoad);
                     if (onInit)
                         callOnInit(view, scriptId, *onInit, scriptInfo.mInitData);
                     continue;
                 }
                 if (onLoad)
                 {
+                    Debug::V35LuaLoadTrace::PhaseScope v35Load(Debug::V35LuaLoadTrace::Phase::InitLoad);
                     try
                     {
                         sol::object state = deserialize(view.sol(), scriptInfo.mSavedData->mData, mSerializer);
@@ -578,41 +627,48 @@ namespace LuaUtil
                         printError(scriptId, "onLoad failed", e);
                     }
                 }
-                for (const ESM::LuaTimer& savedTimer : scriptInfo.mSavedData->mTimers)
                 {
-                    Timer timer;
-                    timer.mCallback = savedTimer.mCallbackName;
-                    timer.mSerializable = true;
-                    timer.mScriptId = scriptId;
-                    timer.mTime = savedTimer.mTime;
-
-                    try
+                    Debug::V35LuaLoadTrace::PhaseScope v35Timers(Debug::V35LuaLoadTrace::Phase::Timers);
+                    for (const ESM::LuaTimer& savedTimer : scriptInfo.mSavedData->mTimers)
                     {
-                        timer.mArg
-                            = sol::main_object(deserialize(view.sol(), savedTimer.mCallbackArgument, mSerializer));
-                        // It is important if the order of content files was changed. The deserialize-serialize
-                        // procedure updates refnums, so timer.mSerializedArg may be not equal to
-                        // savedTimer.mCallbackArgument.
-                        timer.mSerializedArg = serialize(timer.mArg, mSerializer);
+                        Debug::V35LuaLoadTrace::addTimerCount();
+                        Timer timer;
+                        timer.mCallback = savedTimer.mCallbackName;
+                        timer.mSerializable = true;
+                        timer.mScriptId = scriptId;
+                        timer.mTime = savedTimer.mTime;
 
-                        if (savedTimer.mType == TimerType::GAME_TIME)
-                            data.mGameTimersQueue.push_back(std::move(timer));
-                        else
-                            data.mSimulationTimersQueue.push_back(std::move(timer));
-                    }
-                    catch (std::exception& e)
-                    {
-                        printError(scriptId, "can not load timer", e);
+                        try
+                        {
+                            timer.mArg
+                                = sol::main_object(deserialize(view.sol(), savedTimer.mCallbackArgument, mSerializer));
+                            timer.mSerializedArg = serialize(timer.mArg, mSerializer);
+
+                            if (savedTimer.mType == TimerType::GAME_TIME)
+                                data.mGameTimersQueue.push_back(std::move(timer));
+                            else
+                                data.mSimulationTimersQueue.push_back(std::move(timer));
+                        }
+                        catch (std::exception& e)
+                        {
+                            printError(scriptId, "can not load timer", e);
+                        }
                     }
                 }
             }
         });
 
-        std::make_heap(data.mSimulationTimersQueue.begin(), data.mSimulationTimersQueue.end());
-        std::make_heap(data.mGameTimersQueue.begin(), data.mGameTimersQueue.end());
+        {
+            Debug::V35LuaLoadTrace::PhaseScope v35Heap(Debug::V35LuaLoadTrace::Phase::Heap);
+            std::make_heap(data.mSimulationTimersQueue.begin(), data.mSimulationTimersQueue.end());
+            std::make_heap(data.mGameTimersQueue.begin(), data.mGameTimersQueue.end());
+        }
 
         if (mTracker)
+        {
+            Debug::V35LuaLoadTrace::PhaseScope v35Tracker(Debug::V35LuaLoadTrace::Phase::Tracker);
             mTracker->onLoad(*this);
+        }
 
         return data;
     }
@@ -742,23 +798,63 @@ namespace LuaUtil
         }
     }
 
-    void ScriptsContainer::updateTimerQueue(std::vector<Timer>& timerQueue, double time)
+    unsigned ScriptsContainer::updateTimerQueue(std::vector<Timer>& timerQueue, double time, TimerType type)
     {
+        unsigned fired = 0;
         while (!timerQueue.empty() && timerQueue.front().mTime <= time)
         {
-            callTimer(timerQueue.front());
+            const Timer& timer = timerQueue.front();
+            std::string callbackName;
+            std::string detail;
+            std::string_view scriptPathValue;
+            if (Debug::V33LuaTrace::enabled())
+            {
+                callbackName = timer.mSerializable
+                    ? std::get<std::string>(timer.mCallback)
+                    : std::string("<unsavable:") + std::to_string(std::get<int64_t>(timer.mCallback)) + ">";
+                scriptPathValue = scriptPath(timer.mScriptId).value();
+                std::ostringstream stream;
+                stream << "scheduled=" << std::fixed << std::setprecision(6) << timer.mTime
+                       << ";lateness=" << std::max(0.0, time - timer.mTime);
+                detail = stream.str();
+            }
+            Debug::V33LuaTrace::CallbackScope v33TimerTrace("timer",
+                type == TimerType::SIMULATION_TIME ? "simulation" : "game", mNamePrefix, timer.mScriptId,
+                scriptPathValue, callbackName, detail);
+            callTimer(timer);
             std::pop_heap(timerQueue.begin(), timerQueue.end());
             timerQueue.pop_back();
+            ++fired;
         }
+        return fired;
     }
 
-    void ScriptsContainer::processTimers(double simulationTime, double gameTime)
+    void ScriptsContainer::processTimers(double simulationTime, double gameTime, bool idleTimerFastPath)
     {
+        if (LoadedData* data = std::get_if<LoadedData>(&mData))
+        {
+            const bool simulationDue
+                = !data->mSimulationTimersQueue.empty() && data->mSimulationTimersQueue.front().mTime <= simulationTime;
+            const bool gameDue = !data->mGameTimersQueue.empty() && data->mGameTimersQueue.front().mTime <= gameTime;
+            if (idleTimerFastPath && !simulationDue && !gameDue)
+            {
+                Debug::V33LuaTrace::recordTimerContainer(false, true, 0, 0);
+                return;
+            }
+        }
+
+        unsigned simulationFired = 0;
+        unsigned gameFired = 0;
+        bool due = false;
         mLua.protectedCall([&](LuaView& view) {
             LoadedData& data = ensureLoaded();
-            updateTimerQueue(data.mSimulationTimersQueue, simulationTime);
-            updateTimerQueue(data.mGameTimersQueue, gameTime);
+            due = (!data.mSimulationTimersQueue.empty() && data.mSimulationTimersQueue.front().mTime <= simulationTime)
+                || (!data.mGameTimersQueue.empty() && data.mGameTimersQueue.front().mTime <= gameTime);
+            simulationFired
+                = updateTimerQueue(data.mSimulationTimersQueue, simulationTime, TimerType::SIMULATION_TIME);
+            gameFired = updateTimerQueue(data.mGameTimersQueue, gameTime, TimerType::GAME_TIME);
         });
+        Debug::V33LuaTrace::recordTimerContainer(due, false, simulationFired, gameFired);
     }
 
     static constexpr float instructionCountAvgCoef = 1.0f / 30; // averaging over approximately 30 frames
@@ -773,6 +869,7 @@ namespace LuaUtil
                 script.mStats.mAvgInstructionCount *= 1 - instructionCountAvgCoef;
                 if (script.mStats.mAvgInstructionCount < 5)
                     script.mStats.mAvgInstructionCount = 0; // speeding up converge to zero if newValue is zero
+                script.mStats.mFrameInstructionCount = 0;
             }
         }
     }
@@ -783,7 +880,10 @@ namespace LuaUtil
         {
             auto it = data->mScripts.find(scriptId);
             if (it != data->mScripts.end())
+            {
                 it->second.mStats.mAvgInstructionCount += instructionCount * instructionCountAvgCoef;
+                it->second.mStats.mFrameInstructionCount += instructionCount;
+            }
         }
     }
 
@@ -824,6 +924,7 @@ namespace LuaUtil
             for (auto& [id, script] : data->mScripts)
             {
                 stats[id].mAvgInstructionCount += script.mStats.mAvgInstructionCount;
+                stats[id].mFrameInstructionCount += script.mStats.mFrameInstructionCount;
                 stats[id].mMemoryUsage += script.mStats.mMemoryUsage;
             }
         }

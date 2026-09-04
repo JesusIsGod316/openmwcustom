@@ -1,7 +1,9 @@
 #ifndef GAME_RENDER_OBJECTS_H
 #define GAME_RENDER_OBJECTS_H
 
+#include <cstddef>
 #include <map>
+#include <set>
 #include <string>
 
 #include <osg/Object>
@@ -28,6 +30,7 @@ namespace MWWorld
 namespace SceneUtil
 {
     class OcclusionCuller;
+    class PositionAttitudeTransform;
     class UnrefQueue;
 }
 
@@ -61,8 +64,24 @@ namespace MWRender
         using PtrAnimationMap = std::map<const MWWorld::LiveCellRefBase*, osg::ref_ptr<Animation>>;
 
         typedef std::map<const MWWorld::CellStore*, osg::ref_ptr<osg::Group>> CellMap;
+
+        struct HibernatedObject
+        {
+            osg::ref_ptr<Animation> mAnimation;
+            osg::ref_ptr<SceneUtil::PositionAttitudeTransform> mBaseNode;
+        };
+        using HibernatedObjectMap = std::map<const MWWorld::LiveCellRefBase*, HibernatedObject>;
+        struct HibernatedCell
+        {
+            osg::ref_ptr<osg::Group> mRoot;
+            HibernatedObjectMap mObjects;
+        };
+        using HibernatedCellMap = std::map<const MWWorld::CellStore*, HibernatedCell>;
+
         CellMap mCellSceneNodes;
         PtrAnimationMap mObjects;
+        HibernatedCellMap mHibernatedCells;
+        std::set<const MWWorld::LiveCellRefBase*> mRestoredObjects;
         osg::ref_ptr<osg::Group> mRootNode;
         Resource::ResourceSystem* mResourceSystem;
         SceneUtil::UnrefQueue& mUnrefQueue;
@@ -88,13 +107,20 @@ namespace MWRender
 
         void removeCell(const MWWorld::CellStore* store);
 
+        // V3.2: preserve only renderer-safe static state. Actors, doors and
+        // objects using the animation path continue through normal destruction.
+        std::size_t hibernateCell(const MWWorld::CellStore* store);
+        std::size_t restoreHibernatedCell(const MWWorld::CellStore* store);
+        bool consumeRestoredObject(const MWWorld::Ptr& ptr);
+        void clearHibernatedCells();
+
         /// Updates containing cell for object rendering data
         void updatePtr(const MWWorld::Ptr& old, const MWWorld::Ptr& cur);
 
         void setOcclusionCuller(SceneUtil::OcclusionCuller* culler, float occluderMinRadius, float occluderMaxRadius,
             float occluderShrinkFactor, int occluderMeshResolution, int occluderMaxMeshResolution,
             float occluderInsideThreshold, float occluderMaxDistance, bool enableStaticOccluders,
-            unsigned int maxTriangles, OcclusionStorage* storage = nullptr);
+            bool v34BroadenOcclusion, unsigned int maxTriangles, OcclusionStorage* storage = nullptr);
 
     private:
         SceneUtil::OcclusionCuller* mOcclusionCuller = nullptr;
@@ -106,6 +132,7 @@ namespace MWRender
         float mOccluderInsideThreshold = 1.0f;
         float mOccluderMaxDistance = 6144.0f;
         bool mEnableStaticOccluders = true;
+        bool mV34BroadenOcclusion = false;
         unsigned int mMaxTriangles = 30000;
         OcclusionStorage* mOcclusionStorage = nullptr;
 

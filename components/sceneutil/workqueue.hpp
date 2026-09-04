@@ -74,6 +74,9 @@ namespace SceneUtil
         std::condition_variable mCondition;
 
         std::vector<std::unique_ptr<WorkThread>> mThreads;
+        std::atomic_size_t mV3ActiveThreads{ 0 };
+
+        friend class WorkThread;
     };
 
     /// Internally used by WorkQueue.

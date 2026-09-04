@@ -6,7 +6,9 @@
 
 #include <components/esm/util.hpp>
 #include <components/resource/objectcache.hpp>
+#include <components/debug/v3diagnostics.hpp>
 #include <components/resource/scenemanager.hpp>
+#include <components/resource/v321classifiedcompileset.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
 
@@ -75,6 +77,8 @@ namespace Terrain
         if (pair.has_value() && templateKey == TemplateKey{ .mCenter = pair->first.mCenter, .mLod = pair->first.mLod })
             templateGeometry = static_cast<const TerrainDrawable*>(pair->second.get());
 
+        Debug::V3Diagnostics::ScopedCsvTimer timer(
+            Debug::V3Diagnostics::pagingWriter(), "terrain_chunk_create", templateGeometry ? "template_reuse" : "new", 0.25);
         osg::ref_ptr<osg::Node> node = createChunk(size, center, lod, lodFlags, compile, templateGeometry);
         mCache->addEntryToObjectCache(key, node.get());
         return node;
@@ -305,7 +309,14 @@ namespace Terrain
 
         if (!templateGeometry && compile && mSceneManager->getIncrementalCompileOperation())
         {
-            mSceneManager->getIncrementalCompileOperation()->add(geometry);
+            if (Resource::v321CP2FairnessEnabled())
+            {
+                auto compileSet = new Resource::V321ClassifiedCompileSet(
+                    geometry, Resource::V321CompileClass::Terrain);
+                mSceneManager->getIncrementalCompileOperation()->add(compileSet);
+            }
+            else
+                mSceneManager->getIncrementalCompileOperation()->add(geometry);
         }
         geometry->setNodeMask(mNodeMask);
 

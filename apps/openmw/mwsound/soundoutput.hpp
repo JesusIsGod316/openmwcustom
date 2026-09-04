@@ -42,6 +42,7 @@ namespace MWSound
 
         virtual std::pair<Sound_Handle, size_t> loadSound(VFS::Path::NormalizedView fname) = 0;
         virtual size_t unloadSound(Sound_Handle data) = 0;
+        virtual void queueSoundPredecode(std::vector<VFS::Path::Normalized>&& names) = 0;
 
         virtual bool playSound(Sound* sound, Sound_Handle data, float offset) = 0;
         virtual bool playSound3D(Sound* sound, Sound_Handle data, float offset) = 0;

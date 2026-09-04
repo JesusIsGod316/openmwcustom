@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <deque>
 #include <unordered_map>
+#include <vector>
 
 #include <components/esm/refid.hpp>
 #include <components/vfs/pathutil.hpp>
@@ -87,6 +88,14 @@ namespace MWSound
         // Lookup for a sound by file name, and ensure it's ready for use.
         SoundBuffer* load(VFS::Path::NormalizedView fileName);
 
+        // Prepare ESM sound metadata on the main thread and return unique resource
+        // names suitable for background PCM predecode.
+        std::vector<VFS::Path::Normalized> getResourceNamesForPredecode();
+
+        // V3.16 balanced/aggressive startup frontload. This performs metadata
+        // construction only; it does not decode audio or touch OpenAL buffers.
+        void prepareSoundRecordsForGameplay() { prepareSoundRecords(); }
+
         void use(SoundBuffer& sfx)
         {
             if (sfx.mUses++ == 0)
@@ -107,6 +116,7 @@ namespace MWSound
 
     private:
         SoundBuffer* loadSfx(SoundBuffer* sfx);
+        void prepareSoundRecords();
 
         SoundOutput* mOutput;
         std::deque<SoundBuffer> mSoundBuffers;
@@ -115,6 +125,7 @@ namespace MWSound
         std::size_t mBufferCacheMax;
         std::size_t mBufferCacheMin;
         std::size_t mBufferCacheSize = 0;
+        bool mSoundRecordsPrepared = false;
         // NOTE: unused buffers are stored in front-newest order.
         std::deque<SoundBuffer*> mUnusedBuffers;
 

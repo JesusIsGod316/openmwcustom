@@ -36,6 +36,11 @@ namespace Resource
     class ResourceSystem;
 }
 
+namespace NifOsg
+{
+    class KeyframeController;
+}
+
 namespace SceneUtil
 {
     class KeyframeHolder;
@@ -214,6 +219,19 @@ namespace MWRender
         mutable NodeMap mNodeMap;
         mutable bool mNodeMapCreated;
 
+        unsigned int mAnimSourceBatchDepth = 0;
+        bool mAnimSourceBatchNeedsControllerAssignment = false;
+
+        struct V325PendingControllerClone
+        {
+            std::shared_ptr<AnimSource> mAnimSource;
+            std::string mBoneName;
+            size_t mBlendMask = 0;
+            const NifOsg::KeyframeController* mController = nullptr;
+            std::shared_ptr<AnimationTime> mSource;
+        };
+        std::vector<V325PendingControllerClone> mV325PendingControllerClones;
+
         MWWorld::Ptr mPtr;
 
         Resource::ResourceSystem* mResourceSystem;
@@ -297,6 +315,13 @@ namespace MWRender
          */
         void addAnimSource(std::string_view model, const std::string& baseModel);
         std::shared_ptr<AnimSource> addSingleAnimSource(VFS::Path::NormalizedView kfname, const std::string& baseModel);
+
+        // V3.25 bridge primitive: defer actor-global source finalization across a
+        // known-safe group of ordered animation-source additions. Generic callers
+        // retain the historical immediate-finalization behavior.
+        void beginAnimSourceBatch();
+        void endAnimSourceBatch();
+        void flushV325PendingControllerClones();
 
         /** Adds an additional light to the given node using the specified ESM record. */
         void addExtraLight(osg::ref_ptr<osg::Group> parent, const SceneUtil::LightCommon& light);
