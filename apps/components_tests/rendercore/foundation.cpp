@@ -1,9 +1,12 @@
 #include <components/rendercore/handles.hpp>
 #include <components/rendercore/math.hpp>
 #include <components/rendercore/resources.hpp>
+#include <components/rendercore/slottable.hpp>
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <limits>
 #include <type_traits>
 
 namespace
@@ -81,5 +84,94 @@ namespace
         EXPECT_FLOAT_EQ(transform.scale.x, 1.0f);
         EXPECT_FLOAT_EQ(transform.scale.y, 1.0f);
         EXPECT_FLOAT_EQ(transform.scale.z, 1.0f);
+    }
+
+    TEST(RenderCoreSlotTable, RetireAndReuseRejectsStaleHandle)
+    {
+        RenderCore::SlotTable<RenderCore::InstanceHandle, int> table;
+        const auto first = table.insert(10);
+        ASSERT_TRUE(first.has_value());
+        ASSERT_NE(table.get(*first), nullptr);
+        EXPECT_EQ(*table.get(*first), 10);
+
+        ASSERT_TRUE(table.retire(*first));
+        EXPECT_EQ(table.get(*first), nullptr);
+
+        const auto replacement = table.insert(20);
+        ASSERT_TRUE(replacement.has_value());
+        EXPECT_EQ(replacement->slot(), first->slot());
+        EXPECT_EQ(replacement->generation(), first->generation() + 1u);
+        EXPECT_EQ(table.get(*first), nullptr);
+        ASSERT_NE(table.get(*replacement), nullptr);
+        EXPECT_EQ(*table.get(*replacement), 20);
+    }
+
+    TEST(RenderCoreSlotTable, ReuseOrderIsDeterministicLowestSlot)
+    {
+        RenderCore::SlotTable<RenderCore::MeshHandle, int> table;
+        const auto a = table.insert(1);
+        const auto b = table.insert(2);
+        const auto c = table.insert(3);
+        ASSERT_TRUE(a && b && c);
+
+        ASSERT_TRUE(table.retire(*b));
+        ASSERT_TRUE(table.retire(*a));
+
+        const auto firstReuse = table.insert(4);
+        const auto secondReuse = table.insert(5);
+        ASSERT_TRUE(firstReuse && secondReuse);
+        EXPECT_EQ(firstReuse->slot(), 0u);
+        EXPECT_EQ(secondReuse->slot(), 1u);
+    }
+
+    TEST(RenderCoreSlotTable, IdenticalOrderedOperationsProduceIdenticalHandles)
+    {
+        RenderCore::SlotTable<RenderCore::LightHandle, int> first;
+        RenderCore::SlotTable<RenderCore::LightHandle, int> second;
+
+        const auto a1 = first.insert(1);
+        const auto b1 = first.insert(2);
+        const auto a2 = second.insert(1);
+        const auto b2 = second.insert(2);
+        ASSERT_TRUE(a1 && b1 && a2 && b2);
+
+        ASSERT_TRUE(first.retire(*a1));
+        ASSERT_TRUE(second.retire(*a2));
+        const auto c1 = first.insert(3);
+        const auto c2 = second.insert(3);
+        ASSERT_TRUE(c1 && c2);
+
+        EXPECT_EQ(*a1, *a2);
+        EXPECT_EQ(*b1, *b2);
+        EXPECT_EQ(*c1, *c2);
+    }
+
+    TEST(RenderCoreSlotTable, GenerationWrapPolicyTombstonesInsteadOfAliasingZero)
+    {
+        constexpr auto retired = RenderCore::detail::retireGeneration<std::uint32_t>(
+            std::numeric_limits<std::uint32_t>::max());
+        static_assert(retired.tombstone);
+        static_assert(retired.next == 0u);
+
+        EXPECT_TRUE(retired.tombstone);
+        EXPECT_EQ(retired.next, 0u);
+    }
+
+    TEST(RenderCoreSlotTable, RetireAllInvalidatesLiveHandlesAndPreservesGenerationProgress)
+    {
+        RenderCore::SlotTable<RenderCore::ChunkHandle, int> table;
+        const auto first = table.insert(10);
+        const auto second = table.insert(20);
+        ASSERT_TRUE(first && second);
+
+        table.retireAll();
+        EXPECT_EQ(table.liveCount(), 0u);
+        EXPECT_FALSE(table.contains(*first));
+        EXPECT_FALSE(table.contains(*second));
+
+        const auto replacement = table.insert(30);
+        ASSERT_TRUE(replacement);
+        EXPECT_EQ(replacement->slot(), 0u);
+        EXPECT_EQ(replacement->generation(), first->generation() + 1u);
     }
 }
