@@ -1,0 +1,113 @@
+name: V4.0 CP0A generated provenance audit
+
+on:
+  push:
+    branches: [v4.0-cp0a-generated-provenance-audit]
+
+permissions:
+  contents: write
+
+jobs:
+  AuditGeneratedOutputs:
+    if: ${{ contains(github.event.head_commit.message, '[audit-generated-v325]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pre-materialization audit branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reproduce frozen V3.25 generated worktree
+        run: python3 tools/v4/V4-CP0A-Materialize-Final-V325.py
+
+      - name: Inventory every untracked generated output
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import subprocess
+
+          root = Path.cwd()
+          patch = root / 'V3-applied-source.patch'
+          patch_paths = set()
+          for line in patch.read_text(encoding='utf-8').splitlines():
+              prefix = 'diff --git a/'
+              if line.startswith(prefix):
+                  rest = line[len(prefix):]
+                  path, marker, rhs = rest.partition(' b/')
+                  if marker and rhs == path:
+                      patch_paths.add(path)
+
+          untracked = subprocess.run(
+              ['git', 'ls-files', '--others', '--exclude-standard'],
+              cwd=root, check=True, text=True, capture_output=True
+          ).stdout.splitlines()
+          status = subprocess.run(
+              ['git', 'status', '--porcelain=v1', '--untracked-files=all'],
+              cwd=root, check=True, text=True, capture_output=True
+          ).stdout
+
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open('rb') as stream:
+                  for block in iter(lambda: stream.read(1024 * 1024), b''):
+                      h.update(block)
+              return h.hexdigest()
+
+          known_provenance = {
+              'V3-applied-source.patch',
+              'V3-applied-source-stat.txt',
+              'V3-BUILD-IDENTITY.txt',
+              'V3-LAB-README.txt',
+          }
+          generated = [p for p in untracked if p not in known_provenance]
+          omitted = [p for p in generated if p not in patch_paths]
+
+          lines = [
+              'V4_CP0A_UNTRACKED_GENERATED_AUDIT/1',
+              'BASE=0c47f593c9c464ef158bade8604bfda536a6d628',
+              'FROZEN_V325_SOURCE=f7557829bcb14e339410cefb32b6612e5009e46d',
+              f'PATCH_PATH_COUNT={len(patch_paths)}',
+              f'UNTRACKED_COUNT={len(untracked)}',
+              f'GENERATED_NON_PROVENANCE_COUNT={len(generated)}',
+              f'OMITTED_FROM_PATCH_COUNT={len(omitted)}',
+              '',
+              '[UNTRACKED_ALL]',
+          ]
+          for rel in untracked:
+              path = root / rel
+              digest = sha256(path) if path.is_file() else 'DIRECTORY'
+              lines.append(f'{rel}|sha256={digest}')
+
+          lines += ['', '[GENERATED_NON_PROVENANCE]']
+          for rel in generated:
+              path = root / rel
+              digest = sha256(path) if path.is_file() else 'DIRECTORY'
+              lines.append(f'{rel}|sha256={digest}|in_patch={int(rel in patch_paths)}')
+
+          lines += ['', '[OMITTED_FROM_103_FILE_PATCH]']
+          for rel in omitted:
+              path = root / rel
+              digest = sha256(path) if path.is_file() else 'DIRECTORY'
+              lines.append(f'{rel}|sha256={digest}')
+
+          lines += ['', '[PORCELAIN_STATUS]', status.rstrip(), '']
+          Path('/tmp/v4-cp0a-untracked-generated-audit.txt').write_text('\n'.join(lines), encoding='utf-8')
+          print('\n'.join(lines))
+          PY
+
+      - name: Commit audit report only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard HEAD
+          git clean -fdx
+          cp /tmp/v4-cp0a-untracked-generated-audit.txt tools/v4/V4-CP0A-UNTRACKED-GENERATED-AUDIT.txt
+          git add tools/v4/V4-CP0A-UNTRACKED-GENERATED-AUDIT.txt
+          git diff --cached --check
+          git config user.name "OpenMW Custom Build CI"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "V4.0 CP0A: record complete untracked generated-source audit"
+          git push origin HEAD:v4.0-cp0a-generated-provenance-audit
