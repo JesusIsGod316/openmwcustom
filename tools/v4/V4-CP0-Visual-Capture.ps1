@@ -55,13 +55,15 @@ function Find-NewScreenshot {
     )
 
     $extensions = @('.png', '.bmp', '.tga', '.tif', '.tiff', '.jpg', '.jpeg')
-    $candidates = Get-ChildItem -LiteralPath $ScreenshotDir -File -Recurse -ErrorAction SilentlyContinue |
-        Where-Object {
-            $extensions -contains $_.Extension.ToLowerInvariant() -and
-            $_.LastWriteTime -ge $Since -and
-            -not $Seen.Contains($_.FullName)
-        } |
-        Sort-Object LastWriteTime -Descending
+    $candidates = @(
+        Get-ChildItem -LiteralPath $ScreenshotDir -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object {
+                $extensions -contains $_.Extension.ToLowerInvariant() -and
+                $_.LastWriteTime -ge $Since -and
+                -not $Seen.Contains($_.FullName)
+            } |
+            Sort-Object LastWriteTime -Descending
+    )
 
     if ($candidates.Count -eq 0) { return $null }
     return $candidates[0]
@@ -137,7 +139,7 @@ $steps = @(
     [ordered]@{ id='ALPHA_EFFECTS_08'; kind='image'; count=3; required=$true; prompt='Alpha-test/blend plus particles/VFX/projectile/overlap if practical. Capture animated sequence.' },
     [ordered]@{ id='FBFP_MAIN_09'; kind='image'; count=2; required=$true; prompt='Frozen full-body first person: body/gear visible, owner head hidden from main view, world/postfx normal.' },
     [ordered]@{ id='FBFP_SECONDARY_10'; kind='image'; count=2; required=$true; prompt='FBFP secondary-view anchor: main body view plus player shadow; include water reflection/refraction if practical.' },
-    [ordered]@{ id='FIRSTPERSON_NATIVE_VARIANT_11'; kind='image'; count=1; required=$true; prompt='EXPLICIT VARIANT: launch with OPENMW_V321_CP3_FULL_BODY_FIRST_PERSON=0 while all other frozen gates/settings stay unchanged; capture equivalent native first-person view.' },
+    [ordered]@{ id='FIRSTPERSON_NATIVE_VARIANT_11'; kind='image'; count=1; required=$true; prompt='EXPLICIT VARIANT: use tools/v4/V4-CP0-NativeFP-Reference.bat so only OPENMW_V321_CP3_FULL_BODY_FIRST_PERSON=0 changes while all other frozen gates/settings stay unchanged; capture equivalent native first-person view.' },
     [ordered]@{ id='UI_MAPS_12'; kind='image'; count=4; required=$true; prompt='Capture, in order: gameplay HUD; inventory/character preview; local map; world map.' },
     [ordered]@{ id='LOADING_13'; kind='image'; count=1; required=$true; prompt='Loading screen from a normal canonical interior/exterior transition.' },
     [ordered]@{ id='RCN_CHECK_14'; kind='check'; required=$true; prompt='Known RootCollisionNode/root-RCN asset: intended collision works and collision-only geometry remains hidden; recursive child behavior is correct.' },
@@ -156,7 +158,11 @@ Write-Host ''
 
 if ($PlanOnly) {
     foreach ($step in $steps) {
-        Write-Host ('{0} [{1}] x{2}: {3}' -f $step.id, $step.kind, ($step.count ?? 0), $step.prompt)
+        $count = 0
+        if ($step.Contains('count')) {
+            $count = [int]$step['count']
+        }
+        Write-Host ('{0} [{1}] x{2}: {3}' -f $step.id, $step.kind, $count, $step.prompt)
     }
     exit 0
 }
@@ -197,7 +203,7 @@ if (-not $identityChecks.effective_settings_matches_frozen_gaming_profile) {
 }
 
 $records = @()
-$seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+$seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
 
 foreach ($step in $steps) {
     Write-Host ''
