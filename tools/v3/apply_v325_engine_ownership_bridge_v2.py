@@ -59,6 +59,16 @@ print("V3.25 patched addSingleAnimSource controller assignment in function scope
 '''
 source = source[:start] + replacement + source[end:]
 
+# NpcAnimation has multiple anonymous namespaces in the full inherited generated
+# translation unit. The intended injection site is the first one after the include
+# block, and the original generator already replaces only the first occurrence.
+# Therefore require presence, not global uniqueness.
+namespace_guard = 'if text.count(namespace_anchor) != 1:\n    raise RuntimeError(f"{npc_cpp}: anonymous namespace anchor drifted")'
+namespace_guard_relaxed = 'if text.count(namespace_anchor) < 1:\n    raise RuntimeError(f"{npc_cpp}: anonymous namespace anchor missing")'
+if source.count(namespace_guard) != 1:
+    raise RuntimeError("V3.25 CP1 v2 failure: could not locate NPC anonymous-namespace guard")
+source = source.replace(namespace_guard, namespace_guard_relaxed, 1)
+
 exec(
     compile(source, str(ORIGINAL), "exec"),
     {"__file__": str(ORIGINAL), "__name__": "__main__"},
