@@ -22,21 +22,21 @@ if start < 0 or end < 0:
 end += len(")\n")
 
 # The inherited V3.6 controller profiler wraps the visitor in its own PhaseScope,
-# which changes only indentation around the two mutation lines. Patch those lines
-# inside the existing scope instead of matching the whole profiled block. This
-# preserves historical diagnostics while making only the expensive visitor itself
-# conditional on the explicit V3.25 batch.
-replacement = r'''replace_exact(
+# changing indentation around the two source-assignment lines. Build the injected
+# generator source with an explicit backslash so there is no nested-string escaping
+# ambiguity: the compiled original generator receives normal C++ newline matches.
+nl = chr(92) + "n"
+replacement = f'''replace_exact(
     animation_cpp,
-    "            SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);\\n"
-    "            mObjectRoot->accept(assignVisitor);\\n",
-    "            if (mAnimSourceBatchDepth != 0)\\n"
-    "                mAnimSourceBatchNeedsControllerAssignment = true;\\n"
-    "            else\\n"
-    "            {\\n"
-    "                SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);\\n"
-    "                mObjectRoot->accept(assignVisitor);\\n"
-    "            }\\n",
+    "            SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);{nl}"
+    "            mObjectRoot->accept(assignVisitor);{nl}",
+    "            if (mAnimSourceBatchDepth != 0){nl}"
+    "                mAnimSourceBatchNeedsControllerAssignment = true;{nl}"
+    "            else{nl}"
+    "            {{{nl}"
+    "                SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);{nl}"
+    "                mObjectRoot->accept(assignVisitor);{nl}"
+    "            }}{nl}",
 )
 '''
 source = source[:start] + replacement + source[end:]
