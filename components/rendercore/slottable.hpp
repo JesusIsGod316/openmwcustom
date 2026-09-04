@@ -160,6 +160,32 @@ namespace RenderCore
             }
         }
 
+        // Deterministic slot-order visitation for relationship validation and
+        // derived-index maintenance. Reserved/vacant/tombstoned slots are never
+        // exposed. This is an internal logical-world primitive, not pointer- or
+        // hash-order publication.
+        template <class Function>
+        void forEach(Function&& function)
+        {
+            for (SlotIndex slotIndex = 0; slotIndex < mSlots.size(); ++slotIndex)
+            {
+                Slot& slot = mSlots[slotIndex];
+                if (slot.state == State::Live && slot.payload)
+                    function(Handle::fromParts(slotIndex, slot.generation), *slot.payload);
+            }
+        }
+
+        template <class Function>
+        void forEach(Function&& function) const
+        {
+            for (SlotIndex slotIndex = 0; slotIndex < mSlots.size(); ++slotIndex)
+            {
+                const Slot& slot = mSlots[slotIndex];
+                if (slot.state == State::Live && slot.payload)
+                    function(Handle::fromParts(slotIndex, slot.generation), *slot.payload);
+            }
+        }
+
         [[nodiscard]] std::size_t liveCount() const noexcept { return mLiveCount; }
         [[nodiscard]] std::size_t slotCount() const noexcept { return mSlots.size(); }
 
