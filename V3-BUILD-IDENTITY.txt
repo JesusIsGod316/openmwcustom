@@ -1,0 +1,5 @@
+branch=v3.25-engine-ownership-bridge-cp2-actorbatch
+version=V3.25
+harness=apply_diagnostic_harness_v325.py
+routing=exact-fail-closed
+generated_source_identity=passed
