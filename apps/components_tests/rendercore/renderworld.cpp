@@ -74,6 +74,150 @@ namespace
         EXPECT_NE(world.get(*instance), nullptr);
     }
 
+    TEST(RenderWorld, InstanceCommitMaintainsDerivedChunkMembership)
+    {
+        RenderCore::RenderWorld world;
+        const BasicWorldHandles handles = populateBasicWorld(world);
+        ASSERT_TRUE(handles.instance.valid());
+
+        const RenderCore::ChunkRecord* chunk = world.get(handles.chunk);
+        ASSERT_NE(chunk, nullptr);
+        ASSERT_EQ(chunk->members.size(), 1u);
+        EXPECT_EQ(chunk->members.front(), handles.instance);
+
+        const RenderCore::InstanceRecord* instance = world.get(handles.instance);
+        ASSERT_NE(instance, nullptr);
+        ASSERT_TRUE(instance->chunk);
+        EXPECT_EQ(*instance->chunk, handles.chunk);
+    }
+
+    TEST(RenderWorld, ChunkCreateRejectsCallerAuthoredIndividualMembership)
+    {
+        RenderCore::RenderWorld world;
+        const auto chunk = world.reserveChunk();
+        ASSERT_TRUE(chunk);
+
+        RenderCore::ChunkRecord invalid;
+        invalid.producerIdentity = "cell:invalid";
+        invalid.members.push_back(RenderCore::InstanceHandle::fromParts(0u, 1u));
+        const auto revisionBefore = world.revision();
+
+        EXPECT_FALSE(world.commit(*chunk, std::move(invalid)));
+        EXPECT_EQ(world.revision(), revisionBefore);
+        EXPECT_EQ(world.get(*chunk), nullptr);
+    }
+
+    TEST(RenderWorld, ReparentMovesDerivedMembershipExactlyOnce)
+    {
+        RenderCore::RenderWorld world;
+        const BasicWorldHandles handles = populateBasicWorld(world);
+        ASSERT_TRUE(handles.instance.valid());
+
+        const auto secondChunk = world.reserveChunk();
+        ASSERT_TRUE(secondChunk);
+        ASSERT_TRUE(world.commit(*secondChunk, RenderCore::ChunkRecord{ .producerIdentity = "cell:second" }));
+        const auto revisionBefore = world.revision();
+
+        ASSERT_TRUE(world.reparentInstance(handles.instance, *secondChunk));
+        EXPECT_GT(world.revision(), revisionBefore);
+
+        const RenderCore::ChunkRecord* oldChunk = world.get(handles.chunk);
+        const RenderCore::ChunkRecord* newChunk = world.get(*secondChunk);
+        const RenderCore::InstanceRecord* instance = world.get(handles.instance);
+        ASSERT_NE(oldChunk, nullptr);
+        ASSERT_NE(newChunk, nullptr);
+        ASSERT_NE(instance, nullptr);
+        EXPECT_TRUE(oldChunk->members.empty());
+        ASSERT_EQ(newChunk->members.size(), 1u);
+        EXPECT_EQ(newChunk->members.front(), handles.instance);
+        ASSERT_TRUE(instance->chunk);
+        EXPECT_EQ(*instance->chunk, *secondChunk);
+
+        const auto noOpRevision = world.revision();
+        EXPECT_TRUE(world.reparentInstance(handles.instance, *secondChunk));
+        EXPECT_EQ(world.revision(), noOpRevision);
+        EXPECT_EQ(world.get(*secondChunk)->members.size(), 1u);
+    }
+
+    TEST(RenderWorld, InstanceRetireRemovesDerivedMembershipBeforeChunkRetire)
+    {
+        RenderCore::RenderWorld world;
+        const BasicWorldHandles handles = populateBasicWorld(world);
+        ASSERT_TRUE(handles.instance.valid());
+
+        const auto revisionBeforeRejectedRetire = world.revision();
+        EXPECT_FALSE(world.retire(handles.chunk));
+        EXPECT_EQ(world.revision(), revisionBeforeRejectedRetire);
+        EXPECT_NE(world.get(handles.chunk), nullptr);
+
+        ASSERT_TRUE(world.retire(handles.instance));
+        ASSERT_NE(world.get(handles.chunk), nullptr);
+        EXPECT_TRUE(world.get(handles.chunk)->members.empty());
+
+        EXPECT_TRUE(world.retire(handles.chunk));
+        EXPECT_EQ(world.get(handles.chunk), nullptr);
+    }
+
+    TEST(RenderWorld, ReferencedLogicalResourcesCannotRetireIndependently)
+    {
+        RenderCore::RenderWorld world;
+
+        const auto mesh = world.reserveMesh();
+        const auto material = world.reserveMaterial();
+        const auto skeleton = world.reserveSkeleton();
+        const auto instance = world.reserveInstance();
+        ASSERT_TRUE(mesh && material && skeleton && instance);
+        ASSERT_TRUE(world.commit(*mesh, RenderCore::MeshRecord{ .sourceIdentity = "meshes/a.nif" }));
+        ASSERT_TRUE(world.commit(*material, RenderCore::MaterialRecord{ .sourceIdentity = "materials/a" }));
+        ASSERT_TRUE(world.commit(*skeleton, RenderCore::SkeletonRecord{ .sourceIdentity = "skeletons/a" }));
+
+        RenderCore::InstanceRecord record;
+        record.mesh = *mesh;
+        record.materials.push_back(*material);
+        record.skeleton = *skeleton;
+        ASSERT_TRUE(world.commit(*instance, std::move(record)));
+
+        const auto revisionBefore = world.revision();
+        EXPECT_FALSE(world.retire(*mesh));
+        EXPECT_FALSE(world.retire(*material));
+        EXPECT_FALSE(world.retire(*skeleton));
+        EXPECT_EQ(world.revision(), revisionBefore);
+        EXPECT_NE(world.get(*mesh), nullptr);
+        EXPECT_NE(world.get(*material), nullptr);
+        EXPECT_NE(world.get(*skeleton), nullptr);
+
+        ASSERT_TRUE(world.retire(*instance));
+        EXPECT_TRUE(world.retire(*mesh));
+        EXPECT_TRUE(world.retire(*material));
+        EXPECT_TRUE(world.retire(*skeleton));
+    }
+
+    TEST(RenderWorld, StaleGenerationCannotReparentReplacement)
+    {
+        RenderCore::RenderWorld world;
+        const BasicWorldHandles first = populateBasicWorld(world);
+        ASSERT_TRUE(first.instance.valid());
+        ASSERT_TRUE(world.retire(first.instance));
+
+        const auto replacement = world.reserveInstance();
+        ASSERT_TRUE(replacement);
+        RenderCore::InstanceRecord record;
+        record.chunk = first.chunk;
+        record.mesh = first.mesh;
+        ASSERT_TRUE(world.commit(*replacement, std::move(record)));
+
+        const auto secondChunk = world.reserveChunk();
+        ASSERT_TRUE(secondChunk);
+        ASSERT_TRUE(world.commit(*secondChunk, RenderCore::ChunkRecord{ .producerIdentity = "cell:second" }));
+        const auto revisionBefore = world.revision();
+
+        EXPECT_FALSE(world.reparentInstance(first.instance, *secondChunk));
+        EXPECT_EQ(world.revision(), revisionBefore);
+        ASSERT_EQ(world.get(first.chunk)->members.size(), 1u);
+        EXPECT_EQ(world.get(first.chunk)->members.front(), *replacement);
+        EXPECT_TRUE(world.get(*secondChunk)->members.empty());
+    }
+
     TEST(RenderWorld, RetiredInstanceCannotAliasReplacement)
     {
         RenderCore::RenderWorld world;
@@ -131,6 +275,9 @@ namespace
         EXPECT_EQ(a.instance, b.instance);
         EXPECT_EQ(first.epoch(), second.epoch());
         EXPECT_EQ(first.revision(), second.revision());
+        ASSERT_NE(first.get(a.chunk), nullptr);
+        ASSERT_NE(second.get(b.chunk), nullptr);
+        EXPECT_EQ(first.get(a.chunk)->members, second.get(b.chunk)->members);
     }
 
     TEST(RenderWorld, InstanceDefaultsKeepOwnerSpecificVisibilityExpressible)
