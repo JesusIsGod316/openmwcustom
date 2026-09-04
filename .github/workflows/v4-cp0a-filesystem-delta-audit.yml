@@ -1,0 +1,173 @@
+name: V4.0 CP0A filesystem-delta provenance audit
+
+on:
+  push:
+    branches: [v4.0-cp0a-filesystem-delta-audit]
+
+permissions:
+  contents: write
+
+jobs:
+  AuditFilesystemDelta:
+    if: ${{ contains(github.event.head_commit.message, '[audit-filesystem-v325]') }}
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact pre-materialization branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Snapshot complete pre-generator filesystem
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+
+          root = Path.cwd()
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open('rb') as stream:
+                  for block in iter(lambda: stream.read(1024 * 1024), b''):
+                      h.update(block)
+              return h.hexdigest()
+
+          snapshot = {}
+          for path in sorted(root.rglob('*')):
+              rel = path.relative_to(root)
+              if rel.parts and rel.parts[0] == '.git':
+                  continue
+              if path.is_file():
+                  snapshot[rel.as_posix()] = sha256(path)
+          Path('/tmp/v4-cp0a-pre-files.json').write_text(json.dumps(snapshot, sort_keys=True), encoding='utf-8')
+          print(f'pre_file_count={len(snapshot)}')
+          PY
+
+      - name: Reproduce frozen V3.25 generated worktree
+        run: python3 tools/v4/V4-CP0A-Materialize-Final-V325.py
+
+      - name: Prove complete created-file delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import subprocess
+
+          root = Path.cwd()
+          pre = json.loads(Path('/tmp/v4-cp0a-pre-files.json').read_text(encoding='utf-8'))
+
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open('rb') as stream:
+                  for block in iter(lambda: stream.read(1024 * 1024), b''):
+                      h.update(block)
+              return h.hexdigest()
+
+          post = {}
+          for path in sorted(root.rglob('*')):
+              rel = path.relative_to(root)
+              if rel.parts and rel.parts[0] == '.git':
+                  continue
+              if path.is_file():
+                  post[rel.as_posix()] = sha256(path)
+
+          created = {path: post[path] for path in sorted(set(post) - set(pre))}
+          changed = {path: post[path] for path in sorted(set(post) & set(pre)) if post[path] != pre[path]}
+          deleted = sorted(set(pre) - set(post))
+
+          expected_created = {
+              'V3-BUILD-IDENTITY.txt': '3fd1e9c9410bba493bdb9e30f6bfc92382d9c579a911a277565abc8bd73f0bfc',
+              'V3-LAB-README.txt': '47c6cd8bf004cd6551efd59788fe84a668fb5fa8ed978c4d54e2ca46612472e5',
+              'V3-applied-source-stat.txt': 'c01f35f1a047b624b14daec279580805722fe4dbacdd5bb2b178e071ca28f045',
+              'V3-applied-source.patch': 'ac15332aeff34a5ce6a442e169704aab6f5eb0f1600b914d863b4561452d4c35',
+              'V3.16-HITCH-LAYER.txt': '8dadeae8c25896e6c42f615f2e1eceffda8587e9b10863c34fbf520dfa9d3b0a',
+              'V3.17-RUNTIME-LAYER.txt': '100ee2b424d8bdc9053b0e35d5ed00b2add420270e11d7e9f7c0c211713a305e',
+              'V3.18-NIS-PROVENANCE.txt': 'eef4f8aefe16b89b671334df7b952b9ddbd35696976d0a8477afb669c83c70e6',
+              'V3.18-RENDER-LAYER.txt': '60fc90c44914db5178b9c334d0106b037568b44f7656ff15fc68a36209704d10',
+              'components/debug/v320luafastpath.hpp': '33a2a4c3b29939ec235ade23acf75cbbe7f098413715860db1d5095e04513d99',
+              'components/resource/v321classifiedcompileset.hpp': 'a0959b688f283286c46e44fc28e1bc20dec5b5ff7c0d5443728217fffa390a2a',
+          }
+
+          if created != expected_created:
+              missing = sorted(set(expected_created) - set(created))
+              extra = sorted(set(created) - set(expected_created))
+              mismatched = sorted(path for path in set(created) & set(expected_created)
+                                  if created[path] != expected_created[path])
+              raise SystemExit(
+                  'filesystem-delta generated-output mismatch: '
+                  f'missing={missing}, extra={extra}, hash_mismatch={mismatched}'
+              )
+          if deleted:
+              raise SystemExit(f'frozen generator unexpectedly deleted files: {deleted}')
+
+          ignored = []
+          for rel in created:
+              probe = subprocess.run(['git', 'check-ignore', '-q', '--', rel], cwd=root)
+              if probe.returncode == 0:
+                  ignored.append(rel)
+              elif probe.returncode != 1:
+                  raise SystemExit(f'git check-ignore failed for {rel}')
+
+          patch_paths = set()
+          patch = root / 'V3-applied-source.patch'
+          for line in patch.read_text(encoding='utf-8').splitlines():
+              prefix = 'diff --git a/'
+              if line.startswith(prefix):
+                  rest = line[len(prefix):]
+                  path, marker, rhs = rest.partition(' b/')
+                  if marker and rhs == path:
+                      patch_paths.add(path)
+
+          omitted = sorted(path for path in created if path not in patch_paths
+                           and path not in {
+                               'V3-BUILD-IDENTITY.txt', 'V3-LAB-README.txt',
+                               'V3-applied-source-stat.txt', 'V3-applied-source.patch'
+                           })
+
+          lines = [
+              'V4_CP0A_FILESYSTEM_DELTA_AUDIT/1',
+              'BASE=0c47f593c9c464ef158bade8604bfda536a6d628',
+              'FROZEN_V325_SOURCE=f7557829bcb14e339410cefb32b6612e5009e46d',
+              f'PRE_FILE_COUNT={len(pre)}',
+              f'POST_FILE_COUNT={len(post)}',
+              f'CREATED_FILE_COUNT={len(created)}',
+              f'CHANGED_EXISTING_FILE_COUNT={len(changed)}',
+              f'DELETED_FILE_COUNT={len(deleted)}',
+              f'PATCH_PATH_COUNT={len(patch_paths)}',
+              f'CREATED_IGNORED_COUNT={len(ignored)}',
+              f'OMITTED_NONPACKAGING_COUNT={len(omitted)}',
+              '',
+              '[CREATED_FILES]',
+          ]
+          lines.extend(f'{path}|sha256={digest}' for path, digest in created.items())
+          lines += ['', '[CREATED_IGNORED]']
+          lines.extend(ignored or ['NONE'])
+          lines += ['', '[OMITTED_NONPACKAGING]']
+          lines.extend(omitted)
+          lines += ['', '[CHANGED_EXISTING_COUNT_ONLY]', str(len(changed)), '']
+
+          report = '\n'.join(lines)
+          print(report)
+          Path('/tmp/V4-CP0A-FILESYSTEM-DELTA-AUDIT.txt').write_text(report, encoding='utf-8')
+          PY
+
+      - name: Commit filesystem-delta audit report only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard HEAD
+          git clean -fdx
+          cp /tmp/V4-CP0A-FILESYSTEM-DELTA-AUDIT.txt tools/v4/V4-CP0A-FILESYSTEM-DELTA-AUDIT.txt
+          git add tools/v4/V4-CP0A-FILESYSTEM-DELTA-AUDIT.txt
+          git diff --cached --check
+          git config user.name "OpenMW Custom Build CI"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "V4.0 CP0A: prove complete frozen-generator filesystem delta"
+          git push origin HEAD:v4.0-cp0a-filesystem-delta-audit
