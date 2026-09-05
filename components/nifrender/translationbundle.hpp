@@ -1,0 +1,363 @@
+#ifndef OPENMW_COMPONENTS_NIFRENDER_TRANSLATIONBUNDLE_H
+#define OPENMW_COMPONENTS_NIFRENDER_TRANSLATIONBUNDLE_H
+
+#include <components/rendercore/records.hpp>
+
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace NifRender
+{
+    template <class Tag>
+    class LocalIndex final
+    {
+    public:
+        constexpr LocalIndex() noexcept = default;
+        explicit constexpr LocalIndex(std::uint32_t value) noexcept
+            : mValue(value)
+        {
+        }
+
+        [[nodiscard]] constexpr bool valid() const noexcept
+        {
+            return mValue != std::numeric_limits<std::uint32_t>::max();
+        }
+        explicit constexpr operator bool() const noexcept { return valid(); }
+        [[nodiscard]] constexpr std::uint32_t value() const noexcept { return mValue; }
+
+        friend constexpr bool operator==(LocalIndex, LocalIndex) noexcept = default;
+
+    private:
+        std::uint32_t mValue = std::numeric_limits<std::uint32_t>::max();
+    };
+
+    struct TextureIndexTag final
+    {
+    };
+    struct MaterialIndexTag final
+    {
+    };
+    struct MeshIndexTag final
+    {
+    };
+
+    using TextureIndex = LocalIndex<TextureIndexTag>;
+    using MaterialIndex = LocalIndex<MaterialIndexTag>;
+    using MeshIndex = LocalIndex<MeshIndexTag>;
+
+    enum class TranslationDisposition : std::uint8_t
+    {
+        Rendered,
+        CollisionOnly,
+        Hidden,
+        Deferred,
+        Unsupported,
+        Ignored,
+    };
+
+    enum class DiagnosticSeverity : std::uint8_t
+    {
+        Info,
+        Warning,
+        Error,
+    };
+
+    struct TranslationDiagnostic
+    {
+        DiagnosticSeverity severity = DiagnosticSeverity::Info;
+        TranslationDisposition disposition = TranslationDisposition::Ignored;
+        std::optional<std::uint32_t> sourceRecordId;
+        std::string sourceRecordType;
+        std::string code;
+        std::string message;
+    };
+
+    struct TranslationSummary
+    {
+        std::uint32_t rendered = 0;
+        std::uint32_t collisionOnly = 0;
+        std::uint32_t hidden = 0;
+        std::uint32_t deferred = 0;
+        std::uint32_t unsupported = 0;
+        std::uint32_t ignored = 0;
+
+        void observe(TranslationDisposition disposition) noexcept
+        {
+            switch (disposition)
+            {
+                case TranslationDisposition::Rendered:
+                    ++rendered;
+                    break;
+                case TranslationDisposition::CollisionOnly:
+                    ++collisionOnly;
+                    break;
+                case TranslationDisposition::Hidden:
+                    ++hidden;
+                    break;
+                case TranslationDisposition::Deferred:
+                    ++deferred;
+                    break;
+                case TranslationDisposition::Unsupported:
+                    ++unsupported;
+                    break;
+                case TranslationDisposition::Ignored:
+                    ++ignored;
+                    break;
+            }
+        }
+    };
+
+    enum class TextureStorage : std::uint8_t
+    {
+        ExternalVfs,
+        EmbeddedNif,
+    };
+
+    struct TranslatedTexture
+    {
+        RenderCore::TextureRecord record;
+        TextureStorage storage = TextureStorage::ExternalVfs;
+        std::optional<std::uint32_t> sourceRecordId;
+    };
+
+    struct TranslatedTextureBinding
+    {
+        TextureIndex texture;
+        RenderCore::TextureRole role = RenderCore::TextureRole::Diffuse;
+        RenderCore::TextureColorSpace colorSpace = RenderCore::TextureColorSpace::Srgb;
+        RenderCore::TextureFormatClass formatClass = RenderCore::TextureFormatClass::Unknown;
+        RenderCore::TextureTransform transform;
+        RenderCore::SamplerSemantic sampler;
+    };
+
+    struct TranslatedMaterial
+    {
+        // Static state is already expressed in the backend-neutral RenderCore
+        // vocabulary. The texture vector must remain empty until deterministic
+        // binding maps local texture indices to published TextureHandles.
+        RenderCore::MaterialRecord state;
+        std::vector<TranslatedTextureBinding> textures;
+    };
+
+    struct TranslatedMesh
+    {
+        RenderCore::MeshRecord record;
+        std::optional<std::uint32_t> sourceRecordId;
+    };
+
+    struct TranslatedModelNode
+    {
+        std::string name;
+        std::optional<std::uint32_t> sourceRecordId;
+        RenderCore::ModelNodeIndex parent;
+
+        // NIF NiTransform matrices may contain negative and non-uniform scale
+        // components. Preserve the authored affine transform exactly here;
+        // translation must never depend on lossy quaternion decomposition.
+        glm::mat4 localTransform{ 1.0f };
+
+        RenderCore::ModelNodeKind kind = RenderCore::ModelNodeKind::Transform;
+        std::optional<MeshIndex> mesh;
+        std::vector<MaterialIndex> materials;
+        std::optional<RenderCore::ModelNodeIndex> activeSwitchChild;
+        std::optional<RenderCore::ModelLodSemantic> lod;
+        std::optional<RenderCore::ModelBillboardMode> billboard;
+        std::optional<RenderCore::ModelSortMode> sort;
+        std::uint32_t flags = 0;
+    };
+
+    struct TranslatedModel
+    {
+        std::string sourceIdentity;
+        std::string contentIdentity;
+        RenderCore::AxisAlignedBounds bounds;
+        std::vector<TranslatedModelNode> nodes;
+        std::vector<RenderCore::ModelNodeIndex> roots;
+    };
+
+    namespace detail
+    {
+        [[nodiscard]] inline bool finite(float value) noexcept { return std::isfinite(value); }
+
+        [[nodiscard]] inline bool finite(const glm::vec2& value) noexcept
+        {
+            return finite(value.x) && finite(value.y);
+        }
+
+        [[nodiscard]] inline bool finite(const glm::vec3& value) noexcept
+        {
+            return finite(value.x) && finite(value.y) && finite(value.z);
+        }
+
+        [[nodiscard]] inline bool finite(const glm::vec4& value) noexcept
+        {
+            return finite(value.x) && finite(value.y) && finite(value.z) && finite(value.w);
+        }
+
+        [[nodiscard]] inline bool finite(const glm::mat4& value) noexcept
+        {
+            for (glm::length_t column = 0; column < 4; ++column)
+            {
+                for (glm::length_t row = 0; row < 4; ++row)
+                {
+                    if (!finite(value[column][row]))
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        [[nodiscard]] inline bool validTextureTransform(const RenderCore::TextureTransform& value) noexcept
+        {
+            return finite(value.offset) && finite(value.scale) && finite(value.center) && finite(value.rotation);
+        }
+
+        [[nodiscard]] inline bool validMaterialState(const RenderCore::MaterialRecord& value) noexcept
+        {
+            return value.revision.valid() && value.textures.empty() && finite(value.diffuse) && finite(value.ambient)
+                && finite(value.specular) && finite(value.emission) && finite(value.environmentMapColor)
+                && finite(value.shininess) && finite(value.emissiveMultiplier) && finite(value.specularStrength)
+                && finite(value.environmentMapStrength) && finite(value.alpha) && finite(value.alphaCutoff);
+        }
+    }
+
+    struct TranslationBundle
+    {
+        std::string sourceIdentity;
+        std::string contentIdentity;
+        std::vector<TranslatedTexture> textures;
+        std::vector<TranslatedMaterial> materials;
+        std::vector<TranslatedMesh> meshes;
+        TranslatedModel model;
+        std::vector<TranslationDiagnostic> diagnostics;
+
+        [[nodiscard]] TranslationSummary summary() const noexcept
+        {
+            TranslationSummary result;
+            for (const TranslationDiagnostic& diagnostic : diagnostics)
+                result.observe(diagnostic.disposition);
+            return result;
+        }
+
+        [[nodiscard]] bool valid() const noexcept
+        {
+            for (const TranslatedTexture& texture : textures)
+            {
+                if (!texture.record.revision.valid())
+                    return false;
+            }
+
+            for (const TranslatedMaterial& material : materials)
+            {
+                if (!detail::validMaterialState(material.state))
+                    return false;
+                for (const TranslatedTextureBinding& binding : material.textures)
+                {
+                    if (!binding.texture.valid() || binding.texture.value() >= textures.size()
+                        || !detail::validTextureTransform(binding.transform)
+                        || !detail::finite(binding.sampler.maxAnisotropy))
+                        return false;
+                }
+            }
+
+            for (const TranslatedMesh& mesh : meshes)
+            {
+                if (!mesh.record.revision.valid())
+                    return false;
+                if (mesh.record.payload)
+                {
+                    if (!RenderCore::validMeshPayload(*mesh.record.payload)
+                        || mesh.record.surfaceCount != mesh.record.payload->surfaces.size())
+                        return false;
+                }
+            }
+
+            std::vector<RenderCore::ModelNodeIndex> expectedRoots;
+            std::vector<std::uint32_t> childCounts(model.nodes.size(), 0);
+            for (std::size_t i = 0; i < model.nodes.size(); ++i)
+            {
+                const TranslatedModelNode& node = model.nodes[i];
+                if (!detail::finite(node.localTransform))
+                    return false;
+
+                if (node.parent.valid())
+                {
+                    if (node.parent.value() >= i)
+                        return false;
+                    ++childCounts[node.parent.value()];
+                }
+                else
+                    expectedRoots.emplace_back(static_cast<std::uint32_t>(i));
+
+                if (node.mesh && (!node.mesh->valid() || node.mesh->value() >= meshes.size()))
+                    return false;
+                for (const MaterialIndex material : node.materials)
+                {
+                    if (!material.valid() || material.value() >= materials.size())
+                        return false;
+                }
+                if ((node.flags & RenderCore::modelNodeFlag(RenderCore::ModelNodeFlag::CollisionOnly)) != 0
+                    && (node.flags & RenderCore::modelNodeFlag(RenderCore::ModelNodeFlag::Collision)) == 0)
+                    return false;
+            }
+
+            if (model.roots != expectedRoots)
+                return false;
+
+            for (std::size_t i = 0; i < model.nodes.size(); ++i)
+            {
+                const TranslatedModelNode& node = model.nodes[i];
+                const auto isDirectChild = [&](RenderCore::ModelNodeIndex child) {
+                    return child.valid() && child.value() < model.nodes.size()
+                        && model.nodes[child.value()].parent
+                            == RenderCore::ModelNodeIndex{ static_cast<std::uint32_t>(i) };
+                };
+
+                if ((node.kind == RenderCore::ModelNodeKind::Geometry) != node.mesh.has_value())
+                    return false;
+
+                if (node.kind == RenderCore::ModelNodeKind::Switch)
+                {
+                    if (node.activeSwitchChild && !isDirectChild(*node.activeSwitchChild))
+                        return false;
+                }
+                else if (node.activeSwitchChild)
+                    return false;
+
+                if (node.kind == RenderCore::ModelNodeKind::Lod)
+                {
+                    if (!node.lod || !detail::finite(node.lod->center) || node.lod->ranges.size() != childCounts[i])
+                        return false;
+                    for (std::size_t rangeIndex = 0; rangeIndex < node.lod->ranges.size(); ++rangeIndex)
+                    {
+                        const RenderCore::ModelLodRange& range = node.lod->ranges[rangeIndex];
+                        if (!isDirectChild(range.child) || !detail::finite(range.minimumDistance)
+                            || !detail::finite(range.maximumDistance) || range.minimumDistance > range.maximumDistance)
+                            return false;
+                        for (std::size_t other = rangeIndex + 1; other < node.lod->ranges.size(); ++other)
+                        {
+                            if (range.child == node.lod->ranges[other].child)
+                                return false;
+                        }
+                    }
+                }
+                else if (node.lod)
+                    return false;
+
+                if ((node.kind == RenderCore::ModelNodeKind::Billboard) != node.billboard.has_value())
+                    return false;
+                if ((node.kind == RenderCore::ModelNodeKind::Sort) != node.sort.has_value())
+                    return false;
+            }
+
+            return true;
+        }
+    };
+}
+
+#endif
