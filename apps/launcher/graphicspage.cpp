@@ -38,29 +38,30 @@ Launcher::GraphicsPage::GraphicsPage(QWidget* parent)
 
 bool Launcher::GraphicsPage::setupSDL()
 {
-    bool sdlConnectSuccessful = initSDL();
+    const bool sdlConnectSuccessful = initSDL();
     if (!sdlConnectSuccessful)
-    {
         return false;
-    }
 
-    int displays = SDL_GetNumVideoDisplays();
-
-    if (displays < 0)
+    int displayCount = 0;
+    SDL_DisplayID* displayIds = SDL_GetDisplays(&displayCount);
+    if (!displayIds || displayCount <= 0)
     {
         QMessageBox msgBox;
         msgBox.setWindowTitle(tr("Error receiving number of screens"));
         msgBox.setIcon(QMessageBox::Critical);
         msgBox.setStandardButtons(QMessageBox::Ok);
         msgBox.setText(
-            tr("<br><b>SDL_GetNumVideoDisplays failed:</b><br><br>") + QString::fromUtf8(SDL_GetError()) + "<br>");
+            tr("<br><b>SDL_GetDisplays failed:</b><br><br>") + QString::fromUtf8(SDL_GetError()) + "<br>");
         msgBox.exec();
+        SDL_free(displayIds);
+        quitSDL();
         return false;
     }
+    SDL_free(displayIds);
 
     screenComboBox->clear();
     mResolutionsPerScreen.clear();
-    for (int i = 0; i < displays; i++)
+    for (int i = 0; i < displayCount; ++i)
     {
         mResolutionsPerScreen.append(getAvailableResolutions(i));
         screenComboBox->addItem(QString(tr("Screen ")) + QString::number(i + 1));
@@ -172,38 +173,48 @@ void Launcher::GraphicsPage::saveSettings()
 QStringList Launcher::GraphicsPage::getAvailableResolutions(int screen)
 {
     QStringList result;
-    SDL_DisplayMode mode;
-    int modeIndex, modes = SDL_GetNumDisplayModes(screen);
 
-    if (modes < 0)
+    int displayCount = 0;
+    SDL_DisplayID* displayIds = SDL_GetDisplays(&displayCount);
+    if (!displayIds || screen < 0 || screen >= displayCount)
     {
         QMessageBox msgBox;
         msgBox.setWindowTitle(tr("Error receiving resolutions"));
         msgBox.setIcon(QMessageBox::Critical);
         msgBox.setStandardButtons(QMessageBox::Ok);
         msgBox.setText(
-            tr("<br><b>SDL_GetNumDisplayModes failed:</b><br><br>") + QString::fromUtf8(SDL_GetError()) + "<br>");
+            tr("<br><b>SDL_GetDisplays failed:</b><br><br>") + QString::fromUtf8(SDL_GetError()) + "<br>");
+        msgBox.exec();
+        SDL_free(displayIds);
+        return result;
+    }
+
+    const SDL_DisplayID displayId = displayIds[screen];
+    SDL_free(displayIds);
+
+    int modeCount = 0;
+    SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(displayId, &modeCount);
+    if (!modes)
+    {
+        QMessageBox msgBox;
+        msgBox.setWindowTitle(tr("Error receiving resolutions"));
+        msgBox.setIcon(QMessageBox::Critical);
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.setText(tr("<br><b>SDL_GetFullscreenDisplayModes failed:</b><br><br>")
+            + QString::fromUtf8(SDL_GetError()) + "<br>");
         msgBox.exec();
         return result;
     }
 
-    for (modeIndex = 0; modeIndex < modes; modeIndex++)
+    for (int modeIndex = 0; modeIndex < modeCount; ++modeIndex)
     {
-        if (SDL_GetDisplayMode(screen, modeIndex, &mode) < 0)
-        {
-            QMessageBox msgBox;
-            msgBox.setWindowTitle(tr("Error receiving resolutions"));
-            msgBox.setIcon(QMessageBox::Critical);
-            msgBox.setStandardButtons(QMessageBox::Ok);
-            msgBox.setText(
-                tr("<br><b>SDL_GetDisplayMode failed:</b><br><br>") + QString::fromUtf8(SDL_GetError()) + "<br>");
-            msgBox.exec();
-            return result;
-        }
-
-        auto str = Misc::getResolutionText(mode.w, mode.h);
+        const SDL_DisplayMode* mode = modes[modeIndex];
+        if (!mode)
+            continue;
+        auto str = Misc::getResolutionText(mode->w, mode->h);
         result.append(QString(str.c_str()));
     }
+    SDL_free(modes);
 
     result.removeDuplicates();
     return result;

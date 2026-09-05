@@ -353,14 +353,32 @@ namespace MWGui
 
         // fill resolution list
         const int screen = Settings::video().mScreen;
-        int numDisplayModes = SDL_GetNumDisplayModes(screen);
         std::vector<std::pair<int, int>> resolutions;
-        for (int i = 0; i < numDisplayModes; i++)
+
+        int displayCount = 0;
+        SDL_DisplayID* displayIds = SDL_GetDisplays(&displayCount);
+        if (displayIds && screen >= 0 && screen < displayCount)
         {
-            SDL_DisplayMode mode;
-            SDL_GetDisplayMode(screen, i, &mode);
-            resolutions.emplace_back(mode.w, mode.h);
+            const SDL_DisplayID displayId = displayIds[screen];
+            int modeCount = 0;
+            SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(displayId, &modeCount);
+            if (modes)
+            {
+                for (int i = 0; i < modeCount; ++i)
+                {
+                    const SDL_DisplayMode* mode = modes[i];
+                    if (mode)
+                        resolutions.emplace_back(mode->w, mode->h);
+                }
+                SDL_free(modes);
+            }
+            else
+                Log(Debug::Warning) << "SDL_GetFullscreenDisplayModes failed: " << SDL_GetError();
         }
+        else
+            Log(Debug::Warning) << "SDL_GetDisplays failed or configured screen is unavailable: " << SDL_GetError();
+        SDL_free(displayIds);
+
         std::sort(resolutions.begin(), resolutions.end(), sortResolutions);
         for (std::pair<int, int>& resolution : resolutions)
         {

@@ -155,11 +155,12 @@ def port_cursor_surface_and_renderer() -> None:
         if (!SDL_RenderClear(renderer.get()))
             throw std::runtime_error("Failed to clear SDL3 cursor surface: " + std::string(SDL_GetError()));
 
-        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
         std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)> cursorTexture(
             SDL_CreateTextureFromSurface(renderer.get(), cursorSurface.get()), SDL_DestroyTexture);
         if (!cursorTexture)
             throw std::runtime_error("Failed to create SDL3 cursor texture: " + std::string(SDL_GetError()));
+        if (!SDL_SetTextureScaleMode(cursorTexture.get(), SDL_SCALEMODE_LINEAR))
+            throw std::runtime_error("Failed to set SDL3 cursor texture scale mode: " + std::string(SDL_GetError()));
 
         if (!SDL_RenderTextureRotated(
                 renderer.get(), cursorTexture.get(), nullptr, nullptr, -rotDegrees, nullptr, SDL_FLIP_NONE))
