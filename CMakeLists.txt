@@ -523,10 +523,10 @@ if(WIN32)
 endif()
 
 find_package(SDL3 3.4.10 CONFIG REQUIRED)
-# CP1B links the native SDL3 runtime. SDL3's old-name aliases remain enabled
-# only as a compile-time bridge for harmless one-to-one renames; semantic
-# changes are ported explicitly and enforced by the CP1B source audit.
-add_compile_definitions(SDL_ENABLE_OLD_NAMES)
+# CP1B is now source-native SDL3. Disable SDL's old-name compatibility
+# aliases so any future SDL2 spelling fails at compile time instead of silently
+# passing through a transition macro. Semantic API changes are ported explicitly.
+add_compile_definitions(SDL_DISABLE_OLD_NAMES)
 
 if(WIN32)
     set(_openmw_sdl3_runtime "${_openmw_sdl3_root}/lib/x64/SDL3.dll")

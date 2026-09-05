@@ -508,10 +508,10 @@ namespace MWInput
     {
         int controllerType = ControllerManager::getControllerType();
 
-        bool isXbox = controllerType == SDL_CONTROLLER_TYPE_XBOX360 || controllerType == SDL_CONTROLLER_TYPE_XBOXONE;
-        bool isPsx = controllerType == SDL_CONTROLLER_TYPE_PS3 || controllerType == SDL_CONTROLLER_TYPE_PS4
-            || controllerType == SDL_CONTROLLER_TYPE_PS5;
-        bool isSwitch = controllerType == SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO;
+        bool isXbox = controllerType == SDL_GAMEPAD_TYPE_XBOX360 || controllerType == SDL_GAMEPAD_TYPE_XBOXONE;
+        bool isPsx = controllerType == SDL_GAMEPAD_TYPE_PS3 || controllerType == SDL_GAMEPAD_TYPE_PS4
+            || controllerType == SDL_GAMEPAD_TYPE_PS5;
+        bool isSwitch = controllerType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO;
 
         switch (button)
         {
@@ -574,8 +574,8 @@ namespace MWInput
     {
         int controllerType = ControllerManager::getControllerType();
 
-        bool isXbox = controllerType == SDL_CONTROLLER_TYPE_XBOX360 || controllerType == SDL_CONTROLLER_TYPE_XBOXONE;
-        bool isSwitch = controllerType == SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO;
+        bool isXbox = controllerType == SDL_GAMEPAD_TYPE_XBOX360 || controllerType == SDL_GAMEPAD_TYPE_XBOXONE;
+        bool isSwitch = controllerType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO;
 
         switch (axis)
         {

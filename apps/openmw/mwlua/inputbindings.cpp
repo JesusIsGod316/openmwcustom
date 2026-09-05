@@ -53,12 +53,12 @@ namespace MWLua
             });
             keyEvent["code"] = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> int { return e.scancode; });
             keyEvent["withShift"]
-                = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> bool { return e.mod & KMOD_SHIFT; });
+                = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> bool { return e.mod & SDL_KMOD_SHIFT; });
             keyEvent["withCtrl"]
-                = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> bool { return e.mod & KMOD_CTRL; });
-            keyEvent["withAlt"] = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> bool { return e.mod & KMOD_ALT; });
+                = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> bool { return e.mod & SDL_KMOD_CTRL; });
+            keyEvent["withAlt"] = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> bool { return e.mod & SDL_KMOD_ALT; });
             keyEvent["withSuper"]
-                = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> bool { return e.mod & KMOD_GUI; });
+                = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> bool { return e.mod & SDL_KMOD_GUI; });
 
             return sol::table(lua, sol::create);
         });
@@ -231,15 +231,15 @@ namespace MWLua
             else
                 return false;
         };
-        api["isShiftPressed"] = []() -> bool { return SDL_GetModState() & KMOD_SHIFT; };
-        api["isCtrlPressed"] = []() -> bool { return SDL_GetModState() & KMOD_CTRL; };
-        api["isAltPressed"] = []() -> bool { return SDL_GetModState() & KMOD_ALT; };
-        api["isSuperPressed"] = []() -> bool { return SDL_GetModState() & KMOD_GUI; };
+        api["isShiftPressed"] = []() -> bool { return SDL_GetModState() & SDL_KMOD_SHIFT; };
+        api["isCtrlPressed"] = []() -> bool { return SDL_GetModState() & SDL_KMOD_CTRL; };
+        api["isAltPressed"] = []() -> bool { return SDL_GetModState() & SDL_KMOD_ALT; };
+        api["isSuperPressed"] = []() -> bool { return SDL_GetModState() & SDL_KMOD_GUI; };
         api["isControllerButtonPressed"] = [input](int button) {
             return input->isControllerButtonPressed(static_cast<SDL_GamepadButton>(button));
         };
         api["isMouseButtonPressed"]
-            = [](int button) -> bool { return SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON(button); };
+            = [](int button) -> bool { return SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_MASK(button); };
         api["_isGamepadCursorActive"] = [input]() -> bool { return input->isGamepadGuiCursorEnabled(); };
         api["_isControllerMenusEnabled"] = []() -> bool { return Settings::gui().mControllerMenus; };
         api["_setGamepadCursorActive"] = [input](bool v) {

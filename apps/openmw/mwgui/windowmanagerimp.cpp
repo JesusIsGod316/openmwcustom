@@ -1890,7 +1890,7 @@ namespace MWGui
         // The (SDL_GetKeyboardFocus() != nullptr && SDL_TextInputActive(SDL_GetKeyboardFocus())) check helps to avoid duplicate calls in SDL2.
         // This may no longer be required when switching to SDL3 where the function
         // has also been renamed to SDL_TextInputActive() and returns bool instead
-        // of SDL_bool.
+        // of bool.
 
         SDL_Window* inputWindow = SDL_GetKeyboardFocus();
         const bool inputActive = inputWindow && SDL_TextInputActive(inputWindow);

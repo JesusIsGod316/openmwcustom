@@ -44,12 +44,10 @@ namespace SDLUtil
 
     void InputWrapper::_setWindowScale()
     {
-        int w, h;
-        SDL_GetWindowSize(mSDLWindow, &w, &h);
-        int dw, dh;
-        SDL_GetWindowSizeInPixels(mSDLWindow, &dw, &dh);
-        mScaleX = static_cast<Uint16>(dw / w);
-        mScaleY = static_cast<Uint16>(dh / h);
+        const float density = SDL_GetWindowPixelDensity(mSDLWindow);
+        const float scale = density > 0.f ? density : 1.f;
+        mScaleX = scale;
+        mScaleY = scale;
     }
 
     void InputWrapper::capture(bool windowEventsOnly)
@@ -66,11 +64,11 @@ namespace SDLUtil
             while (SDL_PeepEvents(&evt, 1, SDL_GETEVENT, SDL_EVENT_WINDOW_FIRST, SDL_EVENT_WINDOW_LAST) > 0)
                 handleWindowEvent(evt);
 
-            SDL_FlushEvent(SDL_KEYDOWN);
-            SDL_FlushEvent(SDL_CONTROLLERBUTTONDOWN);
-            SDL_FlushEvent(SDL_MOUSEBUTTONDOWN);
-            SDL_FlushEvent(SDL_MOUSEMOTION);
-            SDL_FlushEvent(SDL_MOUSEWHEEL);
+            SDL_FlushEvent(SDL_EVENT_KEY_DOWN);
+            SDL_FlushEvent(SDL_EVENT_GAMEPAD_BUTTON_DOWN);
+            SDL_FlushEvent(SDL_EVENT_MOUSE_BUTTON_DOWN);
+            SDL_FlushEvent(SDL_EVENT_MOUSE_MOTION);
+            SDL_FlushEvent(SDL_EVENT_MOUSE_WHEEL);
 
             return;
         }
@@ -85,7 +83,7 @@ namespace SDLUtil
 
             switch (evt.type)
             {
-                case SDL_MOUSEMOTION:
+                case SDL_EVENT_MOUSE_MOTION:
                     // Ignore this if it happened due to a warp
                     if (!_handleWarpMotion(evt.motion))
                     {
@@ -98,54 +96,54 @@ namespace SDLUtil
                             _wrapMousePointer(evt.motion);
                     }
                     break;
-                case SDL_MOUSEWHEEL:
+                case SDL_EVENT_MOUSE_WHEEL:
                     mMouseListener->mouseMoved(_packageMouseMotion(evt));
                     mMouseListener->mouseWheelMoved(evt.wheel);
                     break;
-                case SDL_SENSORUPDATE:
+                case SDL_EVENT_SENSOR_UPDATE:
                     mSensorListener->sensorUpdated(evt.sensor);
                     break;
-                case SDL_MOUSEBUTTONDOWN:
+                case SDL_EVENT_MOUSE_BUTTON_DOWN:
                     mMouseListener->mousePressed(evt.button, evt.button.button);
                     break;
-                case SDL_MOUSEBUTTONUP:
+                case SDL_EVENT_MOUSE_BUTTON_UP:
                     mMouseListener->mouseReleased(evt.button, evt.button.button);
                     break;
-                case SDL_KEYDOWN:
+                case SDL_EVENT_KEY_DOWN:
                     mKeyboardListener->keyPressed(evt.key);
 
-                    if (!isModifierHeld(KMOD_ALT) && evt.key.key >= SDLK_F1 && evt.key.key <= SDLK_F12)
+                    if (!isModifierHeld(SDL_KMOD_ALT) && evt.key.key >= SDLK_F1 && evt.key.key <= SDLK_F12)
                     {
                         mViewer->getEventQueue()->keyPress(
                             osgGA::GUIEventAdapter::KEY_F1 + (evt.key.key - SDLK_F1));
                     }
 
                     break;
-                case SDL_KEYUP:
+                case SDL_EVENT_KEY_UP:
                     if (!evt.key.repeat)
                     {
                         mKeyboardListener->keyReleased(evt.key);
 
-                        if (!isModifierHeld(KMOD_ALT) && evt.key.key >= SDLK_F1
+                        if (!isModifierHeld(SDL_KMOD_ALT) && evt.key.key >= SDLK_F1
                             && evt.key.key <= SDLK_F12)
                             mViewer->getEventQueue()->keyRelease(
                                 osgGA::GUIEventAdapter::KEY_F1 + (evt.key.key - SDLK_F1));
                     }
 
                     break;
-                case SDL_TEXTEDITING:
+                case SDL_EVENT_TEXT_EDITING:
                     break;
-                case SDL_TEXTINPUT:
+                case SDL_EVENT_TEXT_INPUT:
                     mKeyboardListener->textInput(evt.text);
                     break;
-                case SDL_KEYMAPCHANGED:
+                case SDL_EVENT_KEYMAP_CHANGED:
                     break;
-                case SDL_JOYHATMOTION: // As we manage everything with GameController, don't even bother with these.
-                case SDL_JOYAXISMOTION:
-                case SDL_JOYBUTTONDOWN:
-                case SDL_JOYBUTTONUP:
-                case SDL_JOYDEVICEADDED:
-                case SDL_JOYDEVICEREMOVED:
+                case SDL_EVENT_JOYSTICK_HAT_MOTION: // As we manage everything with GameController, don't even bother with these.
+                case SDL_EVENT_JOYSTICK_AXIS_MOTION:
+                case SDL_EVENT_JOYSTICK_BUTTON_DOWN:
+                case SDL_EVENT_JOYSTICK_BUTTON_UP:
+                case SDL_EVENT_JOYSTICK_ADDED:
+                case SDL_EVENT_JOYSTICK_REMOVED:
                     break;
                 case SDL_EVENT_GAMEPAD_ADDED:
                     if (mConListener)
@@ -180,7 +178,7 @@ namespace SDLUtil
                 case SDL_EVENT_GAMEPAD_TOUCHPAD_UP:
                     mConListener->touchpadReleased(1, TouchEvent(evt.gtouchpad));
                     break;
-                case SDL_QUIT:
+                case SDL_EVENT_QUIT:
                     if (mWindowListener)
                         mWindowListener->windowClosed();
                     break;
@@ -188,27 +186,27 @@ namespace SDLUtil
                     if (mSensorListener && evt.display.displayID == SDL_GetDisplayForWindow(mSDLWindow))
                         mSensorListener->displayOrientationChanged();
                     break;
-                case SDL_CLIPBOARDUPDATE:
+                case SDL_EVENT_CLIPBOARD_UPDATE:
                     break; // We don't need this event, clipboard is retrieved on demand
 
-                case SDL_FINGERDOWN:
-                case SDL_FINGERUP:
-                case SDL_FINGERMOTION:
+                case SDL_EVENT_FINGER_DOWN:
+                case SDL_EVENT_FINGER_UP:
+                case SDL_EVENT_FINGER_MOTION:
                     // No use for touch & gesture events
                     break;
 
-                case SDL_APP_WILLENTERBACKGROUND:
-                case SDL_APP_WILLENTERFOREGROUND:
-                case SDL_APP_DIDENTERBACKGROUND:
-                case SDL_APP_DIDENTERFOREGROUND:
+                case SDL_EVENT_WILL_ENTER_BACKGROUND:
+                case SDL_EVENT_WILL_ENTER_FOREGROUND:
+                case SDL_EVENT_DID_ENTER_BACKGROUND:
+                case SDL_EVENT_DID_ENTER_FOREGROUND:
                     // We do not need background/foreground switch event for mobile devices so far
                     break;
 
-                case SDL_APP_TERMINATING:
+                case SDL_EVENT_TERMINATING:
                     // There is nothing we can do here.
                     break;
 
-                case SDL_APP_LOWMEMORY:
+                case SDL_EVENT_LOW_MEMORY:
                     Log(Debug::Warning) << "System reports that free RAM on device is running low. You may encounter "
                                            "an unexpected behaviour.";
                     break;
@@ -352,7 +350,7 @@ namespace SDLUtil
 
         // now remove all mouse events using the old setting from the queue
         SDL_PumpEvents();
-        SDL_FlushEvent(SDL_MOUSEMOTION);
+        SDL_FlushEvent(SDL_EVENT_MOUSE_MOTION);
     }
 
     /// \brief Internal method for ignoring relative motions as a side effect
@@ -404,13 +402,13 @@ namespace SDLUtil
         packEvt.y = mMouseY * mScaleY;
         packEvt.z = mMouseZ;
 
-        if (evt.type == SDL_MOUSEMOTION)
+        if (evt.type == SDL_EVENT_MOUSE_MOTION)
         {
             packEvt.x = mMouseX = static_cast<Sint32>(evt.motion.x * mScaleX);
             packEvt.y = mMouseY = static_cast<Sint32>(evt.motion.y * mScaleY);
             packEvt.xrel = static_cast<Sint32>(evt.motion.xrel * mScaleX);
             packEvt.yrel = static_cast<Sint32>(evt.motion.yrel * mScaleY);
-            packEvt.type = SDL_MOUSEMOTION;
+            packEvt.type = SDL_EVENT_MOUSE_MOTION;
             if (mFirstMouseMove)
             {
                 // first event should be treated as non-relative, since there's no point of reference
@@ -419,7 +417,7 @@ namespace SDLUtil
                 mFirstMouseMove = false;
             }
         }
-        else if (evt.type == SDL_MOUSEWHEEL)
+        else if (evt.type == SDL_EVENT_MOUSE_WHEEL)
         {
             const double preciseY = evt.wheel.y;
 
@@ -430,7 +428,7 @@ namespace SDLUtil
             mMouseZ += zrel;
             packEvt.zrel = zrel;
             packEvt.z = mMouseZ;
-            packEvt.type = SDL_MOUSEWHEEL;
+            packEvt.type = SDL_EVENT_MOUSE_WHEEL;
 
             packEvt.x = static_cast<Sint32>(evt.wheel.mouse_x * mScaleX);
             packEvt.y = static_cast<Sint32>(evt.wheel.mouse_y * mScaleY);

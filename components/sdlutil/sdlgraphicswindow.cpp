@@ -56,13 +56,12 @@ namespace SDLUtil
         if (!mWindow)
             return false;
 
-        int w, h;
-        SDL_GetWindowSize(mWindow, &w, &h);
-        int dw, dh;
-        SDL_GetWindowSizeInPixels(mWindow, &dw, &dh);
+        const float density = SDL_GetWindowPixelDensity(mWindow);
+        const float scale = density > 0.f ? density : 1.f;
 
         SDL_SetWindowPosition(mWindow, x, y);
-        SDL_SetWindowSize(mWindow, width / (dw / w), height / (dh / h));
+        SDL_SetWindowSize(mWindow, static_cast<int>(static_cast<float>(width) / scale + 0.5f),
+            static_cast<int>(static_cast<float>(height) / scale + 0.5f));
         return true;
     }
 
