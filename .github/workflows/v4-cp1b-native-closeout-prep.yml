@@ -1,11 +1,13 @@
 name: V4.0 CP1B native SDL3 closeout staging materializer
 
-# Staging-only validator; rerun after optimizing the exact old-name pass.
+# Staging-only native SDL3 materializer. Tool/workflow changes trigger this job;
+# source-only materialization commits do not recursively retrigger it.
 on:
   push:
     branches: [v4.0-cp1b-sdl3-native-closeout-prep]
     paths:
       - .github/workflows/v4-cp1b-native-closeout-prep.yml
+      - tools/v4/V4-CP1B-*.py
 
 permissions:
   contents: write
@@ -68,5 +70,5 @@ jobs:
           git config user.email 'actions@users.noreply.github.com'
           git add CMakeLists.txt apps components extern/oics extern/osg-ffmpeg-videoplayer
           git diff --cached --check
-          git commit -m 'V4.0 CP1B: materialize native SDL3 alias and DPI closeout'
+          git commit -m 'V4.0 CP1B: materialize native SDL3 startup and closeout semantics'
           git push origin HEAD:v4.0-cp1b-sdl3-native-closeout-prep
