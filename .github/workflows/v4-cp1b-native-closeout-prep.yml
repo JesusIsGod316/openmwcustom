@@ -1,5 +1,6 @@
 name: V4.0 CP1B native SDL3 closeout staging materializer
 
+# Staging-only validator; rerun after optimizing the exact old-name pass.
 on:
   push:
     branches: [v4.0-cp1b-sdl3-native-closeout-prep]
