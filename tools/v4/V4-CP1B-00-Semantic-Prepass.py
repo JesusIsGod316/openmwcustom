@@ -34,22 +34,19 @@ rewrite(
 )
 
 # The later cursor semantic pass replaces SDL2's removed global render-scale
-# hint with SDL3's per-texture scale mode. Fold that final form into the main
-# migration's own accepted output so a second materializer pass is truly
-# idempotent instead of rejecting the already-correct cursor block.
-rewrite(
-    MIGRATION,
-    [
-        (
-            '''        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+# hint with SDL3's per-texture scale mode. Normalize both the already-
+# materialized source and the main migration's accepted output before the main
+# migration executes. This makes the first pass and the idempotency re-pass
+# converge on exactly the same SDL3 cursor block.
+cursor_old = '''        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
         std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)> cursorTexture(
             SDL_CreateTextureFromSurface(renderer.get(), cursorSurface.get()), SDL_DestroyTexture);
         if (!cursorTexture)
             throw std::runtime_error("Failed to create SDL3 cursor texture: " + std::string(SDL_GetError()));
 
         if (!SDL_RenderTextureRotated(
-''',
-            '''        std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)> cursorTexture(
+'''
+cursor_new = '''        std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)> cursorTexture(
             SDL_CreateTextureFromSurface(renderer.get(), cursorSurface.get()), SDL_DestroyTexture);
         if (!cursorTexture)
             throw std::runtime_error("Failed to create SDL3 cursor texture: " + std::string(SDL_GetError()));
@@ -57,10 +54,9 @@ rewrite(
             throw std::runtime_error("Failed to set SDL3 cursor texture scale mode: " + std::string(SDL_GetError()));
 
         if (!SDL_RenderTextureRotated(
-''',
-        ),
-    ],
-)
+'''
+rewrite(MIGRATION, [(cursor_old, cursor_new)])
+rewrite(ROOT / "components/sdlutil/sdlcursormanager.cpp", [(cursor_old, cursor_new)])
 
 # Lua UI synthesizes a keyboard event from a MyGUI key. SDL3 removed
 # SDL_Keysym and SDL_GetScancodeFromKey now takes a modifier out-parameter.
