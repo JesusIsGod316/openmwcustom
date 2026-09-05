@@ -105,4 +105,21 @@ namespace
             { RenderCore::RenderBackendPreference::VsgVulkan, false }, capabilities);
         EXPECT_FALSE(strict.valid);
     }
+
+    TEST(RenderCoreBackendSelection, AutoKeepsCompatibilityBackendUntilModernParityQualified)
+    {
+        RenderCore::RenderBackendCapabilities capabilities;
+        capabilities.legacyOpenGL = true;
+        capabilities.vsgVulkan = true;
+        capabilities.vsgVulkanCompatibilityQualified = false;
+
+        const auto beforeParity = RenderCore::selectRenderBackend({}, capabilities);
+        ASSERT_TRUE(beforeParity.valid);
+        EXPECT_EQ(beforeParity.backend, RenderCore::RenderBackendKind::LegacyOpenGL);
+
+        capabilities.vsgVulkanCompatibilityQualified = true;
+        const auto afterParity = RenderCore::selectRenderBackend({}, capabilities);
+        ASSERT_TRUE(afterParity.valid);
+        EXPECT_EQ(afterParity.backend, RenderCore::RenderBackendKind::VsgVulkan);
+    }
 }
