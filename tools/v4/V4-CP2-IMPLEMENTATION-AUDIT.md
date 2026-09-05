@@ -1,9 +1,9 @@
 # V4.0 CP2 — VSG/Vulkan Foundation Implementation Audit
 
-Status: **IMPLEMENTATION STARTED — WINDOWS QC QUEUED**  
-Branch: `v4.0-cp2-vsg-vulkan-foundation`  
-Exact parent: `40227915a9069d74743eb1a344e28cdeb9ee68d6` (`v4.0-cp1b-sdl3-opengl-parity`)  
-Checkpoint objective: **Windows VSG/Vulkan foundation + real CI validation + VRAM/resource lifetime**  
+Status: **IMPLEMENTATION STARTED — WINDOWS QC QUEUED**
+Branch: `v4.0-cp2-vsg-vulkan-foundation`
+Exact parent: `40227915a9069d74743eb1a344e28cdeb9ee68d6` (`v4.0-cp1b-sdl3-opengl-parity`)
+Checkpoint objective: **Windows VSG/Vulkan foundation + real CI validation + VRAM/resource lifetime**
 Performance claim: **NONE**
 
 ## 1. Audit correction: donors are not preferred over a better local design
