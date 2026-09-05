@@ -122,4 +122,44 @@ namespace
         ASSERT_TRUE(afterParity.valid);
         EXPECT_EQ(afterParity.backend, RenderCore::RenderBackendKind::VsgVulkan);
     }
+
+    TEST(RenderCoreRenderer, FrameMustMatchPublishedWorldAndLiveReferences)
+    {
+        RenderCore::RenderWorld world;
+        const auto mesh = world.reserveMesh();
+        const auto instance = world.reserveInstance();
+        const auto material = world.reserveMaterial();
+        ASSERT_TRUE(mesh && instance && material);
+        ASSERT_TRUE(world.commit(*mesh, RenderCore::MeshRecord{ .sourceIdentity = "meshes/a.nif" }));
+        ASSERT_TRUE(world.commit(*material, RenderCore::MaterialRecord{ .sourceIdentity = "material:a" }));
+
+        RenderCore::InstanceRecord instanceRecord;
+        instanceRecord.mesh = *mesh;
+        instanceRecord.materials.push_back(*material);
+        ASSERT_TRUE(world.commit(*instance, instanceRecord));
+
+        RenderCore::FrameRenderStateDesc desc;
+        desc.worldEpoch = world.epoch();
+        desc.renderWorldRevision = world.revision();
+        desc.renderExtent = { 1280, 720 };
+        desc.outputExtent = { 1280, 720 };
+        desc.dynamicTransforms.push_back(RenderCore::DynamicTransformState{ .instance = *instance });
+        desc.dynamicMaterials.push_back(RenderCore::DynamicMaterialState{ .material = *material });
+
+        EXPECT_TRUE(RenderCore::frameCompatibleWithWorld(world, RenderCore::FrameRenderState(desc)));
+
+        RenderCore::FrameRenderStateDesc stale = desc;
+        stale.renderWorldRevision = RenderCore::InitialRenderWorldRevision;
+        EXPECT_FALSE(RenderCore::frameCompatibleWithWorld(world, RenderCore::FrameRenderState(std::move(stale))));
+
+        RenderCore::FrameRenderStateDesc deadHandle = desc;
+        deadHandle.dynamicMaterials.front().material = RenderCore::MaterialHandle::fromParts(999u, 1u);
+        EXPECT_FALSE(RenderCore::frameCompatibleWithWorld(world, RenderCore::FrameRenderState(std::move(deadHandle))));
+
+        RenderCore::FrameRenderStateDesc badBinding = desc;
+        badBinding.dynamicMaterials.front().textureTransforms.push_back(
+            RenderCore::DynamicTextureTransformState{ .bindingIndex = 0 });
+        EXPECT_TRUE(RenderCore::FrameRenderState(badBinding).valid());
+        EXPECT_FALSE(RenderCore::frameCompatibleWithWorld(world, RenderCore::FrameRenderState(std::move(badBinding))));
+    }
 }
