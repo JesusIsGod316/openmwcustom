@@ -1,5 +1,5 @@
 V4.0 CP1B full Windows QC trigger
-materialized_parent=6f09e3a253a2281593361795bec3a98eb2e18407
-reason=repair SDL_GAMEPAD_BUTTON_BACK corruption and harden all SDL2-to-SDL3 gamepad enum rewrites to exact C/C++ identifiers; whole-source allowed-enum audit, materializer idempotency, and frozen-provenance gates passed in run 33943451777
-prior_failure=run33941303785 stopped at components/sdlutil/sdlmappings.cpp because substring replacement of SDL_GAMEPAD_BUTTON_B also mutated the valid SDL_GAMEPAD_BUTTON_BACK token into SDL_GAMEPAD_BUTTON_EASTACK
+materialized_parent=b00cf587fa16b4dc4236eb1778e1277fa8b70ba8
+reason=preserve V3.25 integer-facing mouse/Lua input semantics across SDL3 float wheel and relative-mouse APIs; use SDL3 bool gamepad button result directly; input-wrapper window flags now retain SDL_WindowFlags type; materializer/idempotency/frozen-provenance gates passed in run 33944378133
+prior_failure=run33943560965 stopped at apps/openmw/mwinput/mousemanager.cpp around 674/1422 because SDL3 wheel/relative-mouse values are float while inherited OpenMW Lua WheelChange and relative-move state are integer-facing; adjacent controller code also retained an SDL2 integer comparison against SDL3 bool
 scope=SDL3 3.4.10 platform/window/input/OpenGL parity only; no performance claim
