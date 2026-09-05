@@ -5,7 +5,6 @@
 #include <MyGUI_MouseButton.h>
 
 #include <SDL3/SDL.h>
-#include <SDL3/SDL.h>
 
 namespace SDLUtil
 {
@@ -13,47 +12,47 @@ namespace SDLUtil
     {
         switch (button)
         {
-            case SDL_CONTROLLER_BUTTON_A:
+            case SDL_GAMEPAD_BUTTON_A:
                 return "A Button";
-            case SDL_CONTROLLER_BUTTON_B:
+            case SDL_GAMEPAD_BUTTON_B:
                 return "B Button";
-            case SDL_CONTROLLER_BUTTON_BACK:
+            case SDL_GAMEPAD_BUTTON_BACK:
                 return "Back Button";
-            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+            case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
                 return "DPad Down";
-            case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+            case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
                 return "DPad Left";
-            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+            case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
                 return "DPad Right";
-            case SDL_CONTROLLER_BUTTON_DPAD_UP:
+            case SDL_GAMEPAD_BUTTON_DPAD_UP:
                 return "DPad Up";
-            case SDL_CONTROLLER_BUTTON_GUIDE:
+            case SDL_GAMEPAD_BUTTON_GUIDE:
                 return "Guide Button";
-            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+            case SDL_GAMEPAD_BUTTON_LEFTSHOULDER:
                 return "Left Shoulder";
-            case SDL_CONTROLLER_BUTTON_LEFTSTICK:
+            case SDL_GAMEPAD_BUTTON_LEFTSTICK:
                 return "Left Stick Button";
-            case SDL_CONTROLLER_BUTTON_MISC1:
+            case SDL_GAMEPAD_BUTTON_MISC1:
                 return "Misc 1";
-            case SDL_CONTROLLER_BUTTON_PADDLE1:
+            case SDL_GAMEPAD_BUTTON_PADDLE1:
                 return "Paddle 1";
-            case SDL_CONTROLLER_BUTTON_PADDLE2:
+            case SDL_GAMEPAD_BUTTON_PADDLE2:
                 return "Paddle 2";
-            case SDL_CONTROLLER_BUTTON_PADDLE3:
+            case SDL_GAMEPAD_BUTTON_PADDLE3:
                 return "Paddle 3";
-            case SDL_CONTROLLER_BUTTON_PADDLE4:
+            case SDL_GAMEPAD_BUTTON_PADDLE4:
                 return "Paddle 4";
-            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+            case SDL_GAMEPAD_BUTTON_RIGHTSHOULDER:
                 return "Right Shoulder";
-            case SDL_CONTROLLER_BUTTON_RIGHTSTICK:
+            case SDL_GAMEPAD_BUTTON_RIGHTSTICK:
                 return "Right Stick Button";
-            case SDL_CONTROLLER_BUTTON_START:
+            case SDL_GAMEPAD_BUTTON_START:
                 return "Start Button";
-            case SDL_CONTROLLER_BUTTON_TOUCHPAD:
+            case SDL_GAMEPAD_BUTTON_TOUCHPAD:
                 return "Touchpad";
-            case SDL_CONTROLLER_BUTTON_X:
+            case SDL_GAMEPAD_BUTTON_X:
                 return "X Button";
-            case SDL_CONTROLLER_BUTTON_Y:
+            case SDL_GAMEPAD_BUTTON_Y:
                 return "Y Button";
             default:
                 return "Button " + std::to_string(button);
@@ -64,17 +63,17 @@ namespace SDLUtil
     {
         switch (axis)
         {
-            case SDL_CONTROLLER_AXIS_LEFTX:
+            case SDL_GAMEPAD_AXIS_LEFTX:
                 return "Left Stick X";
-            case SDL_CONTROLLER_AXIS_LEFTY:
+            case SDL_GAMEPAD_AXIS_LEFTY:
                 return "Left Stick Y";
-            case SDL_CONTROLLER_AXIS_RIGHTX:
+            case SDL_GAMEPAD_AXIS_RIGHTX:
                 return "Right Stick X";
-            case SDL_CONTROLLER_AXIS_RIGHTY:
+            case SDL_GAMEPAD_AXIS_RIGHTY:
                 return "Right Stick Y";
-            case SDL_CONTROLLER_AXIS_TRIGGERLEFT:
+            case SDL_GAMEPAD_AXIS_TRIGGERLEFT:
                 return "Left Trigger";
-            case SDL_CONTROLLER_AXIS_TRIGGERRIGHT:
+            case SDL_GAMEPAD_AXIS_TRIGGERRIGHT:
                 return "Right Trigger";
             default:
                 return "Axis " + std::to_string(axis);

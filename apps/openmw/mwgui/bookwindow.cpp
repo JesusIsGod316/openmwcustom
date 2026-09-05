@@ -231,18 +231,18 @@ namespace MWGui
         return &mControllerButtons;
     }
 
-    bool BookWindow::onControllerButtonEvent(const SDL_ControllerButtonEvent& arg)
+    bool BookWindow::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_CONTROLLER_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_A)
         {
             if (mTakeButton->getVisible())
                 onTakeButtonClicked(mTakeButton);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
             onCloseButtonClicked(mCloseButton);
-        else if (arg.button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFTSHOULDER)
             prevPage();
-        else if (arg.button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSHOULDER)
             nextPage();
 
         return true;

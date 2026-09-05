@@ -1,11 +1,9 @@
 #include "sdlcursormanager.hpp"
 
+#include <memory>
 #include <stdexcept>
 
-#include <SDL_endian.h>
-#include <SDL_hints.h>
 #include <SDL3/SDL.h>
-#include <SDL_render.h>
 
 #include <osg/Geometry>
 #include <osg/GraphicsContext>
@@ -38,7 +36,7 @@ namespace SDLUtil
 
         while (cursIter != mCursorMap.end())
         {
-            SDL_FreeCursor(cursIter->second);
+            SDL_DestroyCursor(cursIter->second);
             ++cursIter;
         }
 
@@ -61,7 +59,7 @@ namespace SDLUtil
         // turn off hardware cursors
         else
         {
-            SDL_ShowCursor(SDL_FALSE);
+            SDL_HideCursor();
         }
     }
 
@@ -105,26 +103,43 @@ namespace SDLUtil
         Uint32 blueMask = 0x00ff0000;
         Uint32 alphaMask = useAlpha ? 0xff000000 : 0;
 
-        SDL_Surface* cursorSurface = SDL_CreateRGBSurfaceFrom(decompressedImage->data(), width, height,
-            decompressedImage->getPixelSizeInBits(), decompressedImage->getRowSizeInBytes(), redMask, greenMask,
-            blueMask, alphaMask);
+        const SDL_PixelFormat sourceFormat = SDL_GetPixelFormatForMasks(
+            decompressedImage->getPixelSizeInBits(), redMask, greenMask, blueMask, alphaMask);
+        const SDL_PixelFormat targetFormat
+            = SDL_GetPixelFormatForMasks(32, redMask, greenMask, blueMask, alphaMask);
+        if (sourceFormat == SDL_PIXELFORMAT_UNKNOWN || targetFormat == SDL_PIXELFORMAT_UNKNOWN)
+            throw std::runtime_error("Failed to select SDL3 cursor surface format: " + std::string(SDL_GetError()));
 
-        SDL_Surface* targetSurface
-            = SDL_CreateRGBSurface(0, cursorWidth, cursorHeight, 32, redMask, greenMask, blueMask, alphaMask);
-        SDL_Renderer* renderer = SDL_CreateSoftwareRenderer(targetSurface);
+        SDLUtil::SurfaceUniquePtr cursorSurface(
+            SDL_CreateSurfaceFrom(width, height, sourceFormat, decompressedImage->data(),
+                static_cast<int>(decompressedImage->getRowSizeInBytes())),
+            SDL_DestroySurface);
+        SDLUtil::SurfaceUniquePtr targetSurface(
+            SDL_CreateSurface(cursorWidth, cursorHeight, targetFormat), SDL_DestroySurface);
+        if (!cursorSurface || !targetSurface)
+            throw std::runtime_error("Failed to create SDL3 cursor surface: " + std::string(SDL_GetError()));
 
-        SDL_RenderClear(renderer);
+        std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)> renderer(
+            SDL_CreateSoftwareRenderer(targetSurface.get()), SDL_DestroyRenderer);
+        if (!renderer)
+            throw std::runtime_error("Failed to create SDL3 software renderer: " + std::string(SDL_GetError()));
+
+        if (!SDL_RenderClear(renderer.get()))
+            throw std::runtime_error("Failed to clear SDL3 cursor surface: " + std::string(SDL_GetError()));
 
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
-        SDL_Texture* cursorTexture = SDL_CreateTextureFromSurface(renderer, cursorSurface);
+        std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)> cursorTexture(
+            SDL_CreateTextureFromSurface(renderer.get(), cursorSurface.get()), SDL_DestroyTexture);
+        if (!cursorTexture)
+            throw std::runtime_error("Failed to create SDL3 cursor texture: " + std::string(SDL_GetError()));
 
-        SDL_RenderCopyEx(renderer, cursorTexture, nullptr, nullptr, -rotDegrees, nullptr, SDL_FLIP_NONE);
+        if (!SDL_RenderTextureRotated(
+                renderer.get(), cursorTexture.get(), nullptr, nullptr, -rotDegrees, nullptr, SDL_FLIP_NONE))
+            throw std::runtime_error("Failed to rotate SDL3 cursor texture: " + std::string(SDL_GetError()));
+        if (!SDL_RenderPresent(renderer.get()))
+            throw std::runtime_error("Failed to present SDL3 cursor surface: " + std::string(SDL_GetError()));
 
-        SDL_DestroyTexture(cursorTexture);
-        SDL_FreeSurface(cursorSurface);
-        SDL_DestroyRenderer(renderer);
-
-        return SDLUtil::SurfaceUniquePtr(targetSurface, SDL_FreeSurface);
+        return targetSurface;
     }
 
     void SDLCursorManager::_createCursorFromResource(std::string_view name, int rotDegrees, osg::Image* image,

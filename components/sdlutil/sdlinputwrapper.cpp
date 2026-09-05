@@ -47,7 +47,7 @@ namespace SDLUtil
         int w, h;
         SDL_GetWindowSize(mSDLWindow, &w, &h);
         int dw, dh;
-        SDL_GL_GetDrawableSize(mSDLWindow, &dw, &dh);
+        SDL_GetWindowSizeInPixels(mSDLWindow, &dw, &dh);
         mScaleX = static_cast<Uint16>(dw / w);
         mScaleY = static_cast<Uint16>(dh / h);
     }
@@ -63,7 +63,7 @@ namespace SDLUtil
         if (windowEventsOnly)
         {
             // During loading, handle window events, discard button presses and mouse movement and keep others for later
-            while (SDL_PeepEvents(&evt, 1, SDL_GETEVENT, SDL_WINDOWEVENT, SDL_WINDOWEVENT) > 0)
+            while (SDL_PeepEvents(&evt, 1, SDL_GETEVENT, SDL_EVENT_WINDOW_FIRST, SDL_EVENT_WINDOW_LAST) > 0)
                 handleWindowEvent(evt);
 
             SDL_FlushEvent(SDL_KEYDOWN);
@@ -77,18 +77,12 @@ namespace SDLUtil
 
         while (SDL_PollEvent(&evt))
         {
-#if SDL_VERSION_ATLEAST(2, 30, 50)
-            // SDL2-compat may pass us SDL3 display and window events alongside the SDL2 events for funsies
-            // Until we are ready to move to SDL3, we'll want to prevent the noise
-
-            // Silence 0x151 to 0x1FF range
-            if (evt.type > SDL_DISPLAYEVENT && evt.type < SDL_WINDOWEVENT)
+            if (evt.type >= SDL_EVENT_WINDOW_FIRST && evt.type <= SDL_EVENT_WINDOW_LAST)
+            {
+                handleWindowEvent(evt);
                 continue;
+            }
 
-            // Silence 0x202 to 0x2FF range
-            if (evt.type > SDL_SYSWMEVENT && evt.type < SDL_KEYDOWN)
-                continue;
-#endif
             switch (evt.type)
             {
                 case SDL_MOUSEMOTION:
@@ -120,10 +114,10 @@ namespace SDLUtil
                 case SDL_KEYDOWN:
                     mKeyboardListener->keyPressed(evt.key);
 
-                    if (!isModifierHeld(KMOD_ALT) && evt.key.keysym.sym >= SDLK_F1 && evt.key.keysym.sym <= SDLK_F12)
+                    if (!isModifierHeld(KMOD_ALT) && evt.key.key >= SDLK_F1 && evt.key.key <= SDLK_F12)
                     {
                         mViewer->getEventQueue()->keyPress(
-                            osgGA::GUIEventAdapter::KEY_F1 + (evt.key.keysym.sym - SDLK_F1));
+                            osgGA::GUIEventAdapter::KEY_F1 + (evt.key.key - SDLK_F1));
                     }
 
                     break;
@@ -132,10 +126,10 @@ namespace SDLUtil
                     {
                         mKeyboardListener->keyReleased(evt.key);
 
-                        if (!isModifierHeld(KMOD_ALT) && evt.key.keysym.sym >= SDLK_F1
-                            && evt.key.keysym.sym <= SDLK_F12)
+                        if (!isModifierHeld(KMOD_ALT) && evt.key.key >= SDLK_F1
+                            && evt.key.key <= SDLK_F12)
                             mViewer->getEventQueue()->keyRelease(
-                                osgGA::GUIEventAdapter::KEY_F1 + (evt.key.keysym.sym - SDLK_F1));
+                                osgGA::GUIEventAdapter::KEY_F1 + (evt.key.key - SDLK_F1));
                     }
 
                     break;
@@ -153,59 +147,46 @@ namespace SDLUtil
                 case SDL_JOYDEVICEADDED:
                 case SDL_JOYDEVICEREMOVED:
                     break;
-                case SDL_CONTROLLERDEVICEADDED:
+                case SDL_EVENT_GAMEPAD_ADDED:
                     if (mConListener)
                         mConListener->controllerAdded(
-                            1, evt.cdevice); // We only support one joystick, so give everything a generic deviceID
+                            1, evt.gdevice); // We only support one joystick, so give everything a generic deviceID
                     break;
-                case SDL_CONTROLLERDEVICEREMOVED:
+                case SDL_EVENT_GAMEPAD_REMOVED:
                     if (mConListener)
-                        mConListener->controllerRemoved(evt.cdevice);
+                        mConListener->controllerRemoved(evt.gdevice);
                     break;
-                case SDL_CONTROLLERBUTTONDOWN:
+                case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
                     if (mConListener)
-                        mConListener->buttonPressed(1, evt.cbutton);
+                        mConListener->buttonPressed(1, evt.gbutton);
                     break;
-                case SDL_CONTROLLERBUTTONUP:
+                case SDL_EVENT_GAMEPAD_BUTTON_UP:
                     if (mConListener)
-                        mConListener->buttonReleased(1, evt.cbutton);
+                        mConListener->buttonReleased(1, evt.gbutton);
                     break;
-                case SDL_CONTROLLERAXISMOTION:
+                case SDL_EVENT_GAMEPAD_AXIS_MOTION:
                     if (mConListener)
-                        mConListener->axisMoved(1, evt.caxis);
+                        mConListener->axisMoved(1, evt.gaxis);
                     break;
-                case SDL_CONTROLLERSENSORUPDATE:
+                case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
                     // controller sensor data is received on demand
                     break;
-                case SDL_CONTROLLERTOUCHPADDOWN:
-                    mConListener->touchpadPressed(1, TouchEvent(evt.ctouchpad));
+                case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
+                    mConListener->touchpadPressed(1, TouchEvent(evt.gtouchpad));
                     break;
-                case SDL_CONTROLLERTOUCHPADMOTION:
-                    mConListener->touchpadMoved(1, TouchEvent(evt.ctouchpad));
+                case SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION:
+                    mConListener->touchpadMoved(1, TouchEvent(evt.gtouchpad));
                     break;
-                case SDL_CONTROLLERTOUCHPADUP:
-                    mConListener->touchpadReleased(1, TouchEvent(evt.ctouchpad));
-                    break;
-                case SDL_WINDOWEVENT:
-                    handleWindowEvent(evt);
+                case SDL_EVENT_GAMEPAD_TOUCHPAD_UP:
+                    mConListener->touchpadReleased(1, TouchEvent(evt.gtouchpad));
                     break;
                 case SDL_QUIT:
                     if (mWindowListener)
                         mWindowListener->windowClosed();
                     break;
-                case SDL_DISPLAYEVENT:
-                    switch (evt.display.event)
-                    {
-                        case SDL_DISPLAYEVENT_ORIENTATION:
-                            if (mSensorListener
-                                && evt.display.display == static_cast<Uint32>(Settings::video().mScreen))
-                            {
-                                mSensorListener->displayOrientationChanged();
-                            }
-                            break;
-                        default:
-                            break;
-                    }
+                case SDL_EVENT_DISPLAY_ORIENTATION:
+                    if (mSensorListener && evt.display.displayID == SDL_GetDisplayForWindow(mSDLWindow))
+                        mSensorListener->displayOrientationChanged();
                     break;
                 case SDL_CLIPBOARDUPDATE:
                     break; // We don't need this event, clipboard is retrieved on demand
@@ -213,9 +194,6 @@ namespace SDLUtil
                 case SDL_FINGERDOWN:
                 case SDL_FINGERUP:
                 case SDL_FINGERMOTION:
-                case SDL_DOLLARGESTURE:
-                case SDL_DOLLARRECORD:
-                case SDL_MULTIGESTURE:
                     // No use for touch & gesture events
                     break;
 
@@ -244,23 +222,23 @@ namespace SDLUtil
 
     void InputWrapper::handleWindowEvent(const SDL_Event& evt)
     {
-        switch (evt.window.event)
+        switch (evt.type)
         {
-            case SDL_WINDOWEVENT_ENTER:
+            case SDL_EVENT_WINDOW_MOUSE_ENTER:
                 mMouseInWindow = true;
                 updateMouseSettings();
                 break;
-            case SDL_WINDOWEVENT_LEAVE:
+            case SDL_EVENT_WINDOW_MOUSE_LEAVE:
                 mMouseInWindow = false;
                 updateMouseSettings();
                 break;
-            case SDL_WINDOWEVENT_MOVED:
+            case SDL_EVENT_WINDOW_MOVED:
                 // I'm not sure what OSG is using the window position for, but I don't think it's needed,
                 // so we ignore window moved events (improves window movement performance)
                 break;
-            case SDL_WINDOWEVENT_SIZE_CHANGED:
+            case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 int w, h;
-                SDL_GL_GetDrawableSize(mSDLWindow, &w, &h);
+                SDL_GetWindowSizeInPixels(mSDLWindow, &w, &h);
                 int x, y;
                 SDL_GetWindowPosition(mSDLWindow, &x, &y);
 
@@ -279,27 +257,27 @@ namespace SDLUtil
 
                 break;
 
-            case SDL_WINDOWEVENT_RESIZED:
+            case SDL_EVENT_WINDOW_RESIZED:
                 // This should also fire SIZE_CHANGED, so no need to handle
                 break;
 
-            case SDL_WINDOWEVENT_FOCUS_GAINED:
+            case SDL_EVENT_WINDOW_FOCUS_GAINED:
                 mWindowHasFocus = true;
                 updateMouseSettings();
                 break;
-            case SDL_WINDOWEVENT_FOCUS_LOST:
+            case SDL_EVENT_WINDOW_FOCUS_LOST:
                 mWindowHasFocus = false;
                 updateMouseSettings();
                 break;
-            case SDL_WINDOWEVENT_CLOSE:
+            case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
                 break;
-            case SDL_WINDOWEVENT_SHOWN:
-            case SDL_WINDOWEVENT_RESTORED:
+            case SDL_EVENT_WINDOW_SHOWN:
+            case SDL_EVENT_WINDOW_RESTORED:
                 if (mWindowListener)
                     mWindowListener->windowVisibilityChange(true);
                 break;
-            case SDL_WINDOWEVENT_HIDDEN:
-            case SDL_WINDOWEVENT_MINIMIZED:
+            case SDL_EVENT_WINDOW_HIDDEN:
+            case SDL_EVENT_WINDOW_MINIMIZED:
                 if (mWindowListener)
                     mWindowListener->windowVisibilityChange(false);
                 break;
@@ -349,9 +327,12 @@ namespace SDLUtil
     void InputWrapper::updateMouseSettings()
     {
         mGrabPointer = mWantGrab && mMouseInWindow && mWindowHasFocus;
-        SDL_SetWindowGrab(mSDLWindow, mGrabPointer && mAllowGrab ? SDL_TRUE : SDL_FALSE);
+        SDL_SetWindowMouseGrab(mSDLWindow, mGrabPointer && mAllowGrab);
 
-        SDL_ShowCursor(mWantMouseVisible || !mWindowHasFocus);
+        if (mWantMouseVisible || !mWindowHasFocus)
+            SDL_ShowCursor();
+        else
+            SDL_HideCursor();
 
         bool relative = mWantRelative && mMouseInWindow && mWindowHasFocus;
         if (mMouseRelative == relative)
@@ -365,7 +346,7 @@ namespace SDLUtil
         // relative positioning natively
         // also use wrapping if no-grab was specified in options (SDL_SetRelativeMouseMode
         // appears to eat the mouse cursor when pausing in a debugger)
-        bool success = mAllowGrab && SDL_SetRelativeMouseMode(relative ? SDL_TRUE : SDL_FALSE) == 0;
+        const bool success = mAllowGrab && SDL_SetWindowRelativeMouseMode(mSDLWindow, relative);
         if (relative && !success)
             mWrapPointer = true;
 
@@ -425,10 +406,10 @@ namespace SDLUtil
 
         if (evt.type == SDL_MOUSEMOTION)
         {
-            packEvt.x = mMouseX = evt.motion.x * mScaleX;
-            packEvt.y = mMouseY = evt.motion.y * mScaleY;
-            packEvt.xrel = evt.motion.xrel * mScaleX;
-            packEvt.yrel = evt.motion.yrel * mScaleY;
+            packEvt.x = mMouseX = static_cast<Sint32>(evt.motion.x * mScaleX);
+            packEvt.y = mMouseY = static_cast<Sint32>(evt.motion.y * mScaleY);
+            packEvt.xrel = static_cast<Sint32>(evt.motion.xrel * mScaleX);
+            packEvt.yrel = static_cast<Sint32>(evt.motion.yrel * mScaleY);
             packEvt.type = SDL_MOUSEMOTION;
             if (mFirstMouseMove)
             {
@@ -440,7 +421,7 @@ namespace SDLUtil
         }
         else if (evt.type == SDL_MOUSEWHEEL)
         {
-            double preciseY = evt.wheel.preciseY;
+            const double preciseY = evt.wheel.y;
 
             mPendingWheelY += preciseY * 120.0;
             const int zrel = static_cast<int>(mPendingWheelY);
@@ -451,10 +432,8 @@ namespace SDLUtil
             packEvt.z = mMouseZ;
             packEvt.type = SDL_MOUSEWHEEL;
 
-#if SDL_VERSION_ATLEAST(2, 26, 0)
-            packEvt.x = evt.wheel.mouseX * mScaleX;
-            packEvt.y = evt.wheel.mouseY * mScaleY;
-#endif
+            packEvt.x = static_cast<Sint32>(evt.wheel.mouse_x * mScaleX);
+            packEvt.y = static_cast<Sint32>(evt.wheel.mouse_y * mScaleY);
         }
         else
         {

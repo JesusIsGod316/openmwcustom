@@ -4,7 +4,6 @@
 #include <osg/ref_ptr>
 
 #include <SDL3/SDL.h>
-#include <SDL3/SDL.h>
 
 #include "events.hpp"
 

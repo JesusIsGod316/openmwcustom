@@ -2,9 +2,6 @@
 int stderr = 0; // Hack: fix linker error
 #endif
 
-#include "SDL_main.h"
-#include <SDL3/SDL.h>
-#include <SDL3/SDL.h>
 #include <SDL3/SDL.h>
 
 /*******************************************************************************

@@ -98,9 +98,9 @@
 
 namespace
 {
-    void checkSDLError(int ret)
+    void checkSDLError(bool success)
     {
-        if (ret != 0)
+        if (!success)
             Log(Debug::Error) << "SDL error: " << SDL_GetError();
     }
 
@@ -853,12 +853,11 @@ OMW::Engine::Engine(Files::ConfigurationManager& configurationManager)
 #endif
     SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0"); // We use only gamepads
 
-    Uint32 flags
-        = SDL_INIT_VIDEO | SDL_INIT_NOPARACHUTE | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK | SDL_INIT_SENSOR;
+    const SDL_InitFlags flags = SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK | SDL_INIT_SENSOR;
     if (SDL_WasInit(flags) == 0)
     {
         SDL_SetMainReady();
-        if (SDL_Init(flags) != 0)
+        if (!SDL_Init(flags))
         {
             throw std::runtime_error("Could not initialize SDL! " + std::string(SDL_GetError()));
         }
@@ -966,20 +965,24 @@ void OMW::Engine::createWindow()
     const SDLUtil::VSyncMode vsync = Settings::video().mVsyncMode;
     unsigned antialiasing = static_cast<unsigned>(Settings::video().mAntialiasing);
 
-    int posX = SDL_WINDOWPOS_CENTERED_DISPLAY(screen);
-    int posY = SDL_WINDOWPOS_CENTERED_DISPLAY(screen);
+    int displayCount = 0;
+    SDL_DisplayID* displays = SDL_GetDisplays(&displayCount);
+    SDL_DisplayID displayId = 0;
+    if (displays && screen >= 0 && screen < displayCount)
+        displayId = displays[screen];
+    SDL_free(displays);
+    if (!displayId)
+        displayId = SDL_GetPrimaryDisplay();
 
+    int posX = SDL_WINDOWPOS_CENTERED_DISPLAY(displayId);
+    int posY = SDL_WINDOWPOS_CENTERED_DISPLAY(displayId);
     if (windowMode == Settings::WindowMode::Fullscreen || windowMode == Settings::WindowMode::WindowedFullscreen)
     {
-        posX = SDL_WINDOWPOS_UNDEFINED_DISPLAY(screen);
-        posY = SDL_WINDOWPOS_UNDEFINED_DISPLAY(screen);
+        posX = SDL_WINDOWPOS_UNDEFINED_DISPLAY(displayId);
+        posY = SDL_WINDOWPOS_UNDEFINED_DISPLAY(displayId);
     }
 
-    Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
-    if (windowMode == Settings::WindowMode::Fullscreen)
-        flags |= SDL_WINDOW_FULLSCREEN;
-    else if (windowMode == Settings::WindowMode::WindowedFullscreen)
-        flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+    SDL_WindowFlags flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 
     // Allows for Windows snapping features to properly work in borderless window
     SDL_SetHint("SDL_BORDERLESS_WINDOWED_STYLE", "1");
@@ -1009,7 +1012,24 @@ void OMW::Engine::createWindow()
     {
         while (!mWindow)
         {
-            mWindow = SDL_CreateWindow("OpenMW", posX, posY, width, height, flags);
+            mWindow = SDL_CreateWindow("OpenMW", width, height, flags);
+            if (mWindow)
+            {
+                SDL_SetWindowPosition(mWindow, posX, posY);
+                if (windowMode == Settings::WindowMode::Fullscreen)
+                {
+                    SDL_DisplayMode mode{};
+                    if (displayId
+                        && SDL_GetClosestFullscreenDisplayMode(displayId, width, height, 0.f, true, &mode))
+                        checkSDLError(SDL_SetWindowFullscreenMode(mWindow, &mode));
+                    checkSDLError(SDL_SetWindowFullscreen(mWindow, true));
+                }
+                else if (windowMode == Settings::WindowMode::WindowedFullscreen)
+                {
+                    checkSDLError(SDL_SetWindowFullscreenMode(mWindow, nullptr));
+                    checkSDLError(SDL_SetWindowFullscreen(mWindow, true));
+                }
+            }
             if (!mWindow)
             {
                 // Try with a lower AA
@@ -1036,7 +1056,7 @@ void OMW::Engine::createWindow()
         int w, h;
         SDL_GetWindowSize(mWindow, &w, &h);
         int dw, dh;
-        SDL_GL_GetDrawableSize(mWindow, &dw, &dh);
+        SDL_GetWindowSizeInPixels(mWindow, &dw, &dh);
         if (dw != w || dh != h)
         {
             SDL_SetWindowSize(mWindow, width / (dw / w), height / (dh / h));
@@ -1046,10 +1066,10 @@ void OMW::Engine::createWindow()
 
         osg::ref_ptr<osg::GraphicsContext::Traits> traits = new osg::GraphicsContext::Traits;
         SDL_GetWindowPosition(mWindow, &traits->x, &traits->y);
-        SDL_GL_GetDrawableSize(mWindow, &traits->width, &traits->height);
+        SDL_GetWindowSizeInPixels(mWindow, &traits->width, &traits->height);
         traits->windowName = SDL_GetWindowTitle(mWindow);
         traits->windowDecoration = !(SDL_GetWindowFlags(mWindow) & SDL_WINDOW_BORDERLESS);
-        traits->screenNum = SDL_GetWindowDisplayIndex(mWindow);
+        traits->screenNum = screen;
         traits->vsync = 0;
         traits->inheritedWindowData = new SDLUtil::GraphicsWindowSDL2::WindowData(mWindow);
 
@@ -1441,10 +1461,9 @@ void OMW::Engine::go()
     assert(!mContentFiles.empty());
 
     Log(Debug::Info) << "OSG version: " << osgGetVersion();
-    SDL_version sdlVersion;
-    SDL_GetVersion(&sdlVersion);
-    Log(Debug::Info) << "SDL version: " << (int)sdlVersion.major << "." << (int)sdlVersion.minor << "."
-                     << (int)sdlVersion.patch;
+    const int sdlVersion = SDL_GetVersion();
+    Log(Debug::Info) << "SDL version: " << SDL_VERSIONNUM_MAJOR(sdlVersion) << "."
+                     << SDL_VERSIONNUM_MINOR(sdlVersion) << "." << SDL_VERSIONNUM_MICRO(sdlVersion);
 
     Misc::Rng::init(mRandomSeed);
 

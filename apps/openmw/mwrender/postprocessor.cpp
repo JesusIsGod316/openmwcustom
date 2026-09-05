@@ -1,6 +1,6 @@
 #include "postprocessor.hpp"
 
-#include <SDL_opengl_glext.h>
+#include <SDL3/SDL.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>

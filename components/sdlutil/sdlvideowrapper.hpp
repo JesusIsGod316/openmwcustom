@@ -3,7 +3,7 @@
 
 #include <osg/ref_ptr>
 
-#include <SDL_types.h>
+#include <SDL3/SDL.h>
 
 #include "vsyncmode.hpp"
 
@@ -21,7 +21,6 @@ namespace Settings
 
 namespace SDLUtil
 {
-
     class VideoWrapper
     {
     public:
@@ -29,11 +28,8 @@ namespace SDLUtil
         ~VideoWrapper();
 
         void setSyncToVBlank(VSyncMode vsyncMode);
-
         void setGammaContrast(float gamma, float contrast);
-
         void setVideoMode(int width, int height, Settings::WindowMode windowMode, bool windowBorder);
-
         void centerWindow();
 
     private:
@@ -43,11 +39,12 @@ namespace SDLUtil
         float mGamma;
         float mContrast;
         bool mHasSetGammaContrast;
+        bool mHasSystemGammaRamp;
 
-        // Store system gamma ramp on window creation. Restore system gamma ramp on exit
-        Uint16 mOldSystemGammaRamp[256 * 3];
+        // SDL3 removed gamma-ramp APIs. On Windows CP1B preserves the legacy
+        // behavior through the native HDC owned by the SDL window.
+        Uint16 mOldSystemGammaRamp[256 * 3]{};
     };
-
 }
 
 #endif

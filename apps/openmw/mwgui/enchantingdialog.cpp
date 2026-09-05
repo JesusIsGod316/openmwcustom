@@ -391,17 +391,17 @@ namespace MWGui
         }
     }
 
-    bool EnchantingDialog::onControllerButtonEvent(const SDL_ControllerButtonEvent& arg)
+    bool EnchantingDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_CONTROLLER_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_B)
             onCancelButtonClicked(mCancelButton);
-        else if (arg.button == SDL_CONTROLLER_BUTTON_X)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_X)
             onBuyButtonClicked(mBuyButton);
-        else if (arg.button == SDL_CONTROLLER_BUTTON_Y)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_Y)
             onTypeButtonClicked(mTypeButton);
-        else if (arg.button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFTSHOULDER)
             onSelectItem(mItemBox);
-        else if (arg.button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSHOULDER)
             onSelectSoul(mSoulBox);
         else
             return EffectEditorBase::onControllerButtonEvent(arg);

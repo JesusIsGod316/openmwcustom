@@ -14,7 +14,7 @@
 #define MAC_OS_X_VERSION_MIN_REQUIRED __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__
 #endif // MAC_OS_X_VERSION_MIN_REQUIRED
 
-#include <SDL_video.h>
+#include <SDL3/SDL.h>
 
 #include <array>
 

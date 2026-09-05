@@ -96,19 +96,19 @@ namespace MWGui
         mItemEdit->setValue(static_cast<int>(position + 1));
     }
 
-    bool CountDialog::onControllerButtonEvent(const SDL_ControllerButtonEvent& arg)
+    bool CountDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_CONTROLLER_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_A)
             onOkButtonClicked(mOkButton);
-        else if (arg.button == SDL_CONTROLLER_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
             onCancelButtonClicked(mCancelButton);
-        else if (arg.button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFTSHOULDER)
             setCount(1);
-        else if (arg.button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSHOULDER)
             setCount(static_cast<int>(mSlider->getScrollRange()));
-        else if (arg.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT)
             MWBase::Environment::get().getWindowManager()->injectKeyPress(MyGUI::KeyCode::ArrowDown, 0, false);
-        else if (arg.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT)
             MWBase::Environment::get().getWindowManager()->injectKeyPress(MyGUI::KeyCode::ArrowUp, 0, false);
 
         return true;

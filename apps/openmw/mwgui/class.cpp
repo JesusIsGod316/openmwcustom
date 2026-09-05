@@ -78,21 +78,21 @@ namespace MWGui
         center();
     }
 
-    bool GenerateClassResultDialog::onControllerButtonEvent(const SDL_ControllerButtonEvent& arg)
+    bool GenerateClassResultDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_CONTROLLER_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_A)
         {
             if (mOkButtonFocus)
                 onOkClicked(mOkButton);
             else
                 onBackClicked(mBackButton);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
         {
             onBackClicked(mBackButton);
         }
-        else if ((arg.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT && mOkButtonFocus)
-            || (arg.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT && !mOkButtonFocus))
+        else if ((arg.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT && mOkButtonFocus)
+            || (arg.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT && !mOkButtonFocus))
         {
             mOkButtonFocus = !mOkButtonFocus;
             mOkButton->setStateSelected(mOkButtonFocus);
@@ -322,23 +322,23 @@ namespace MWGui
         setClassImage(mClassImage, mCurrentClassId);
     }
 
-    bool PickClassDialog::onControllerButtonEvent(const SDL_ControllerButtonEvent& arg)
+    bool PickClassDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_CONTROLLER_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_B)
         {
             onBackClicked(mBackButton);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_X)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_X)
         {
             onOkClicked(mOkButton);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_DPAD_UP)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_UP)
         {
             MWBase::WindowManager* winMgr = MWBase::Environment::get().getWindowManager();
             winMgr->setKeyFocusWidget(mClassList);
             winMgr->injectKeyPress(MyGUI::KeyCode::ArrowUp, 0, false);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
         {
             MWBase::WindowManager* winMgr = MWBase::Environment::get().getWindowManager();
             winMgr->setKeyFocusWidget(mClassList);
@@ -462,19 +462,19 @@ namespace MWGui
         }
     }
 
-    bool InfoBoxDialog::onControllerButtonEvent(const SDL_ControllerButtonEvent& arg)
+    bool InfoBoxDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_CONTROLLER_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_A)
         {
             if (mControllerFocus < mButtons.size())
                 onButtonClicked(mButtons[mControllerFocus]);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
         {
             if (mButtons.size() == 1)
                 onButtonClicked(mButtons[0]);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_DPAD_UP)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_UP)
         {
             if (mButtons.size() <= 1)
                 return true;
@@ -485,7 +485,7 @@ namespace MWGui
             mControllerFocus = wrap(mControllerFocus, mButtons.size(), -1);
             setControllerFocus(mButtons, mControllerFocus, true);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
         {
             if (mButtons.size() <= 1)
                 return true;
@@ -690,9 +690,9 @@ namespace MWGui
                 MyGUI::UString(MWBase::Environment::get().getWindowManager()->getGameSettingString("sOK", {})));
     }
 
-    bool CreateClassDialog::onControllerButtonEvent(const SDL_ControllerButtonEvent& arg)
+    bool CreateClassDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_CONTROLLER_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_A)
         {
             if (mControllerFocus == 0)
                 onDescriptionClicked(mButtons[0]);
@@ -701,21 +701,21 @@ namespace MWGui
             else
                 onOkClicked(mButtons[2]);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
         {
             onBackClicked(mButtons[1]);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_X)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_X)
         {
             onOkClicked(mButtons[2]);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT)
         {
             setControllerFocus(mButtons, mControllerFocus, false);
             mControllerFocus = wrap(mControllerFocus, mButtons.size(), -1);
             setControllerFocus(mButtons, mControllerFocus, true);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT)
         {
             setControllerFocus(mButtons, mControllerFocus, false);
             mControllerFocus = wrap(mControllerFocus, mButtons.size(), 1);
@@ -914,9 +914,9 @@ namespace MWGui
         return true;
     }
 
-    bool SelectSpecializationDialog::onControllerButtonEvent(const SDL_ControllerButtonEvent& arg)
+    bool SelectSpecializationDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_CONTROLLER_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_B)
         {
             onCancelClicked(nullptr);
             return true;
@@ -986,24 +986,24 @@ namespace MWGui
         return true;
     }
 
-    bool SelectAttributeDialog::onControllerButtonEvent(const SDL_ControllerButtonEvent& arg)
+    bool SelectAttributeDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_CONTROLLER_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_A)
         {
             if (mControllerFocus < mAttributeButtons.size())
                 onAttributeClicked(mAttributeButtons[mControllerFocus]);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
         {
             onCancelClicked(nullptr);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_DPAD_UP)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_UP)
         {
             mAttributeButtons[mControllerFocus]->setStateSelected(false);
             mControllerFocus = wrap(mControllerFocus, mAttributeButtons.size(), -1);
             mAttributeButtons[mControllerFocus]->setStateSelected(true);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
         {
             mAttributeButtons[mControllerFocus]->setStateSelected(false);
             mControllerFocus = wrap(mControllerFocus, mAttributeButtons.size(), 1);
@@ -1088,33 +1088,33 @@ namespace MWGui
         return true;
     }
 
-    bool SelectSkillDialog::onControllerButtonEvent(const SDL_ControllerButtonEvent& arg)
+    bool SelectSkillDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_CONTROLLER_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_A)
         {
             if (mControllerFocus < mSkillButtons.size())
                 onSkillClicked(mSkillButtons[mControllerFocus]);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
         {
             onCancelClicked(nullptr);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_DPAD_UP)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_UP)
         {
             mSkillButtons[mControllerFocus]->setStateSelected(false);
             mControllerFocus = wrap(mControllerFocus, mSkillButtons.size(), -1);
             mSkillButtons[mControllerFocus]->setStateSelected(true);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
         {
             mSkillButtons[mControllerFocus]->setStateSelected(false);
             mControllerFocus = wrap(mControllerFocus, mSkillButtons.size(), 1);
             mSkillButtons[mControllerFocus]->setStateSelected(true);
         }
-        else if (arg.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT || arg.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT || arg.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT)
         {
             mSkillButtons[mControllerFocus]->setStateSelected(false);
-            selectNextColumn(arg.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT ? -1 : 1);
+            selectNextColumn(arg.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT ? -1 : 1);
             mSkillButtons[mControllerFocus]->setStateSelected(true);
         }
 
@@ -1208,9 +1208,9 @@ namespace MWGui
         imageBox->setImageTexture(classImage);
     }
 
-    bool DescriptionDialog::onControllerButtonEvent(const SDL_ControllerButtonEvent& arg)
+    bool DescriptionDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_CONTROLLER_BUTTON_A || arg.button == SDL_CONTROLLER_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_A || arg.button == SDL_GAMEPAD_BUTTON_B)
         {
             onOkClicked(nullptr);
             return true;

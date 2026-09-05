@@ -2,8 +2,6 @@
 #define _SFO_EVENTS_H
 
 #include <SDL3/SDL.h>
-#include <SDL_types.h>
-#include <SDL3/SDL.h>
 
 ////////////
 // Events //
@@ -20,6 +18,21 @@ namespace SDLUtil
         Sint32 z;
     };
 
+    struct KeyEvent
+    {
+        SDL_Scancode scancode = SDL_SCANCODE_UNKNOWN;
+        SDL_Keycode sym = SDLK_UNKNOWN;
+        SDL_Keymod mod = SDL_KMOD_NONE;
+
+        KeyEvent() = default;
+        explicit KeyEvent(const SDL_KeyboardEvent& arg)
+            : scancode(arg.scancode)
+            , sym(arg.key)
+            , mod(arg.mod)
+        {
+        }
+    };
+
     struct TouchEvent
     {
         int mDevice;
@@ -28,7 +41,7 @@ namespace SDLUtil
         float mY;
         float mPressure;
 
-        explicit TouchEvent(const SDL_ControllerTouchpadEvent& arg)
+        explicit TouchEvent(const SDL_GamepadTouchpadEvent& arg)
             : mDevice(arg.touchpad)
             , mFinger(arg.finger)
             , mX(arg.x)
@@ -74,13 +87,13 @@ namespace SDLUtil
     public:
         virtual ~ControllerListener() {}
 
-        virtual void buttonPressed(int deviceID, const SDL_ControllerButtonEvent& evt) = 0;
-        virtual void buttonReleased(int deviceID, const SDL_ControllerButtonEvent& evt) = 0;
+        virtual void buttonPressed(int deviceID, const SDL_GamepadButtonEvent& evt) = 0;
+        virtual void buttonReleased(int deviceID, const SDL_GamepadButtonEvent& evt) = 0;
 
-        virtual void axisMoved(int deviceID, const SDL_ControllerAxisEvent& arg) = 0;
+        virtual void axisMoved(int deviceID, const SDL_GamepadAxisEvent& arg) = 0;
 
-        virtual void controllerAdded(int deviceID, const SDL_ControllerDeviceEvent& arg) = 0;
-        virtual void controllerRemoved(const SDL_ControllerDeviceEvent& arg) = 0;
+        virtual void controllerAdded(int deviceID, const SDL_GamepadDeviceEvent& arg) = 0;
+        virtual void controllerRemoved(const SDL_GamepadDeviceEvent& arg) = 0;
 
         virtual void touchpadMoved(int deviceId, const TouchEvent& arg) = 0;
         virtual void touchpadPressed(int deviceId, const TouchEvent& arg) = 0;

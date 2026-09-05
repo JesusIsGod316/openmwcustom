@@ -1,8 +1,6 @@
 #include "inputbindings.hpp"
 
 #include <SDL3/SDL.h>
-#include <SDL3/SDL.h>
-#include <SDL3/SDL.h>
 
 #include <components/lua/inputactions.hpp>
 #include <components/lua/luastate.hpp>
@@ -20,7 +18,7 @@
 namespace sol
 {
     template <>
-    struct is_automagical<SDL_Keysym> : std::false_type
+    struct is_automagical<SDLUtil::KeyEvent> : std::false_type
     {
     };
 
@@ -46,21 +44,21 @@ namespace MWLua
         sol::state_view lua = context.sol();
 
         context.cachePackage("openmw_input_keyevent", [&lua]() {
-            sol::usertype<SDL_Keysym> keyEvent = lua.new_usertype<SDL_Keysym>("KeyEvent");
-            keyEvent["symbol"] = sol::readonly_property([](const SDL_Keysym& e) {
+            sol::usertype<SDLUtil::KeyEvent> keyEvent = lua.new_usertype<SDLUtil::KeyEvent>("KeyEvent");
+            keyEvent["symbol"] = sol::readonly_property([](const SDLUtil::KeyEvent& e) {
                 if (e.sym > 0 && e.sym <= 255)
                     return std::string(1, static_cast<char>(e.sym));
                 else
                     return std::string();
             });
-            keyEvent["code"] = sol::readonly_property([](const SDL_Keysym& e) -> int { return e.scancode; });
+            keyEvent["code"] = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> int { return e.scancode; });
             keyEvent["withShift"]
-                = sol::readonly_property([](const SDL_Keysym& e) -> bool { return e.mod & KMOD_SHIFT; });
+                = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> bool { return e.mod & KMOD_SHIFT; });
             keyEvent["withCtrl"]
-                = sol::readonly_property([](const SDL_Keysym& e) -> bool { return e.mod & KMOD_CTRL; });
-            keyEvent["withAlt"] = sol::readonly_property([](const SDL_Keysym& e) -> bool { return e.mod & KMOD_ALT; });
+                = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> bool { return e.mod & KMOD_CTRL; });
+            keyEvent["withAlt"] = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> bool { return e.mod & KMOD_ALT; });
             keyEvent["withSuper"]
-                = sol::readonly_property([](const SDL_Keysym& e) -> bool { return e.mod & KMOD_GUI; });
+                = sol::readonly_property([](const SDLUtil::KeyEvent& e) -> bool { return e.mod & KMOD_GUI; });
 
             return sol::table(lua, sol::create);
         });
@@ -238,7 +236,7 @@ namespace MWLua
         api["isAltPressed"] = []() -> bool { return SDL_GetModState() & KMOD_ALT; };
         api["isSuperPressed"] = []() -> bool { return SDL_GetModState() & KMOD_GUI; };
         api["isControllerButtonPressed"] = [input](int button) {
-            return input->isControllerButtonPressed(static_cast<SDL_GameControllerButton>(button));
+            return input->isControllerButtonPressed(static_cast<SDL_GamepadButton>(button));
         };
         api["isMouseButtonPressed"]
             = [](int button) -> bool { return SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON(button); };
@@ -251,10 +249,10 @@ namespace MWLua
         api["getMouseMoveX"] = [input]() { return input->getMouseMoveX(); };
         api["getMouseMoveY"] = [input]() { return input->getMouseMoveY(); };
         api["getAxisValue"] = [input](int axis) {
-            if (axis < SDL_CONTROLLER_AXIS_MAX)
-                return input->getControllerAxisValue(static_cast<SDL_GameControllerAxis>(axis));
+            if (axis < SDL_GAMEPAD_AXIS_MAX)
+                return input->getControllerAxisValue(static_cast<SDL_GamepadAxis>(axis));
             else
-                return input->getActionValue(axis - SDL_CONTROLLER_AXIS_MAX) * 2 - 1;
+                return input->getActionValue(axis - SDL_GAMEPAD_AXIS_MAX) * 2 - 1;
         };
 
         // input.CONTROL_SWITCH is deprecated, remove after releasing 0.49
@@ -330,45 +328,45 @@ namespace MWLua
                 }));
 
         api["CONTROLLER_BUTTON"]
-            = LuaUtil::makeStrictReadOnly(LuaUtil::tableFromPairs<std::string_view, SDL_GameControllerButton>(lua,
+            = LuaUtil::makeStrictReadOnly(LuaUtil::tableFromPairs<std::string_view, SDL_GamepadButton>(lua,
                 {
-                    { "A", SDL_CONTROLLER_BUTTON_A },
-                    { "B", SDL_CONTROLLER_BUTTON_B },
-                    { "X", SDL_CONTROLLER_BUTTON_X },
-                    { "Y", SDL_CONTROLLER_BUTTON_Y },
-                    { "Back", SDL_CONTROLLER_BUTTON_BACK },
-                    { "Guide", SDL_CONTROLLER_BUTTON_GUIDE },
-                    { "Start", SDL_CONTROLLER_BUTTON_START },
-                    { "LeftStick", SDL_CONTROLLER_BUTTON_LEFTSTICK },
-                    { "RightStick", SDL_CONTROLLER_BUTTON_RIGHTSTICK },
-                    { "LeftShoulder", SDL_CONTROLLER_BUTTON_LEFTSHOULDER },
-                    { "RightShoulder", SDL_CONTROLLER_BUTTON_RIGHTSHOULDER },
-                    { "DPadUp", SDL_CONTROLLER_BUTTON_DPAD_UP },
-                    { "DPadDown", SDL_CONTROLLER_BUTTON_DPAD_DOWN },
-                    { "DPadLeft", SDL_CONTROLLER_BUTTON_DPAD_LEFT },
-                    { "DPadRight", SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
-                    { "Misc1", SDL_CONTROLLER_BUTTON_MISC1 },
-                    { "Paddle1", SDL_CONTROLLER_BUTTON_PADDLE1 },
-                    { "Paddle2", SDL_CONTROLLER_BUTTON_PADDLE2 },
-                    { "Paddle3", SDL_CONTROLLER_BUTTON_PADDLE3 },
-                    { "Paddle4", SDL_CONTROLLER_BUTTON_PADDLE4 },
-                    { "Touchpad", SDL_CONTROLLER_BUTTON_TOUCHPAD },
-                    { "Max", SDL_CONTROLLER_BUTTON_MAX },
+                    { "A", SDL_GAMEPAD_BUTTON_A },
+                    { "B", SDL_GAMEPAD_BUTTON_B },
+                    { "X", SDL_GAMEPAD_BUTTON_X },
+                    { "Y", SDL_GAMEPAD_BUTTON_Y },
+                    { "Back", SDL_GAMEPAD_BUTTON_BACK },
+                    { "Guide", SDL_GAMEPAD_BUTTON_GUIDE },
+                    { "Start", SDL_GAMEPAD_BUTTON_START },
+                    { "LeftStick", SDL_GAMEPAD_BUTTON_LEFTSTICK },
+                    { "RightStick", SDL_GAMEPAD_BUTTON_RIGHTSTICK },
+                    { "LeftShoulder", SDL_GAMEPAD_BUTTON_LEFTSHOULDER },
+                    { "RightShoulder", SDL_GAMEPAD_BUTTON_RIGHTSHOULDER },
+                    { "DPadUp", SDL_GAMEPAD_BUTTON_DPAD_UP },
+                    { "DPadDown", SDL_GAMEPAD_BUTTON_DPAD_DOWN },
+                    { "DPadLeft", SDL_GAMEPAD_BUTTON_DPAD_LEFT },
+                    { "DPadRight", SDL_GAMEPAD_BUTTON_DPAD_RIGHT },
+                    { "Misc1", SDL_GAMEPAD_BUTTON_MISC1 },
+                    { "Paddle1", SDL_GAMEPAD_BUTTON_PADDLE1 },
+                    { "Paddle2", SDL_GAMEPAD_BUTTON_PADDLE2 },
+                    { "Paddle3", SDL_GAMEPAD_BUTTON_PADDLE3 },
+                    { "Paddle4", SDL_GAMEPAD_BUTTON_PADDLE4 },
+                    { "Touchpad", SDL_GAMEPAD_BUTTON_TOUCHPAD },
+                    { "Max", SDL_GAMEPAD_BUTTON_MAX },
                 }));
 
         api["CONTROLLER_AXIS"] = LuaUtil::makeStrictReadOnly(LuaUtil::tableFromPairs<std::string_view, int>(lua,
             {
-                { "LeftX", SDL_CONTROLLER_AXIS_LEFTX },
-                { "LeftY", SDL_CONTROLLER_AXIS_LEFTY },
-                { "RightX", SDL_CONTROLLER_AXIS_RIGHTX },
-                { "RightY", SDL_CONTROLLER_AXIS_RIGHTY },
-                { "TriggerLeft", SDL_CONTROLLER_AXIS_TRIGGERLEFT },
-                { "TriggerRight", SDL_CONTROLLER_AXIS_TRIGGERRIGHT },
+                { "LeftX", SDL_GAMEPAD_AXIS_LEFTX },
+                { "LeftY", SDL_GAMEPAD_AXIS_LEFTY },
+                { "RightX", SDL_GAMEPAD_AXIS_RIGHTX },
+                { "RightY", SDL_GAMEPAD_AXIS_RIGHTY },
+                { "TriggerLeft", SDL_GAMEPAD_AXIS_TRIGGERLEFT },
+                { "TriggerRight", SDL_GAMEPAD_AXIS_TRIGGERRIGHT },
 
-                { "LookUpDown", SDL_CONTROLLER_AXIS_MAX + static_cast<int>(MWInput::A_LookUpDown) },
-                { "LookLeftRight", SDL_CONTROLLER_AXIS_MAX + static_cast<int>(MWInput::A_LookLeftRight) },
-                { "MoveForwardBackward", SDL_CONTROLLER_AXIS_MAX + static_cast<int>(MWInput::A_MoveForwardBackward) },
-                { "MoveLeftRight", SDL_CONTROLLER_AXIS_MAX + static_cast<int>(MWInput::A_MoveLeftRight) },
+                { "LookUpDown", SDL_GAMEPAD_AXIS_MAX + static_cast<int>(MWInput::A_LookUpDown) },
+                { "LookLeftRight", SDL_GAMEPAD_AXIS_MAX + static_cast<int>(MWInput::A_LookLeftRight) },
+                { "MoveForwardBackward", SDL_GAMEPAD_AXIS_MAX + static_cast<int>(MWInput::A_MoveForwardBackward) },
+                { "MoveLeftRight", SDL_GAMEPAD_AXIS_MAX + static_cast<int>(MWInput::A_MoveLeftRight) },
             }));
 
         api["KEY"] = LuaUtil::makeStrictReadOnly(LuaUtil::tableFromPairs<std::string_view, SDL_Scancode>(lua,

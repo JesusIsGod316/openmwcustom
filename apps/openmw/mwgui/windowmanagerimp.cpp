@@ -20,7 +20,6 @@
 #include <LinearMath/btQuickprof.h>
 
 #include <SDL3/SDL.h>
-#include <SDL3/SDL.h>
 
 #include <components/debug/debuglog.hpp>
 
@@ -207,7 +206,7 @@ namespace MWGui
         int w, h;
         SDL_GetWindowSize(window, &w, &h);
         int dw, dh;
-        SDL_GL_GetDrawableSize(window, &dw, &dh);
+        SDL_GetWindowSizeInPixels(window, &dw, &dh);
 
         mScalingFactor = Settings::gui().mScalingFactor * (dw / w);
         constexpr VFS::Path::NormalizedView resourcePath("mygui");
@@ -1888,19 +1887,22 @@ namespace MWGui
                 capturesInput = widget->castType<MyGUI::EditBox>(false);
         }
 
-        // The SDL_IsTextInputActive() check helps to avoid duplicate calls in SDL2.
+        // The (SDL_GetKeyboardFocus() != nullptr && SDL_TextInputActive(SDL_GetKeyboardFocus())) check helps to avoid duplicate calls in SDL2.
         // This may no longer be required when switching to SDL3 where the function
         // has also been renamed to SDL_TextInputActive() and returns bool instead
         // of SDL_bool.
 
-        const bool inputActive = SDL_IsTextInputActive() == SDL_TRUE;
+        SDL_Window* inputWindow = SDL_GetKeyboardFocus();
+        const bool inputActive = inputWindow && SDL_TextInputActive(inputWindow);
         if (capturesInput == inputActive)
             return;
 
+        if (!inputWindow)
+            return;
         if (capturesInput)
-            SDL_StartTextInput();
+            SDL_StartTextInput(inputWindow);
         else
-            SDL_StopTextInput();
+            SDL_StopTextInput(inputWindow);
     }
 
     void WindowManager::setEnemy(const MWWorld::Ptr& enemy)

@@ -27,10 +27,10 @@ namespace MWLua
             switch (event.mType)
             {
                 case InputEvent::KeyPressed:
-                    mScriptsContainer->callEngineHandlers(mKeyPressHandlers, std::get<SDL_Keysym>(event.mValue));
+                    mScriptsContainer->callEngineHandlers(mKeyPressHandlers, std::get<SDLUtil::KeyEvent>(event.mValue));
                     break;
                 case InputEvent::KeyReleased:
-                    mScriptsContainer->callEngineHandlers(mKeyReleaseHandlers, std::get<SDL_Keysym>(event.mValue));
+                    mScriptsContainer->callEngineHandlers(mKeyReleaseHandlers, std::get<SDLUtil::KeyEvent>(event.mValue));
                     break;
                 case InputEvent::ControllerPressed:
                     mScriptsContainer->callEngineHandlers(mControllerButtonPressHandlers, std::get<int>(event.mValue));

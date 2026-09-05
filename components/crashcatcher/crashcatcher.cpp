@@ -23,7 +23,7 @@
 #include <components/debug/debuglog.hpp>
 #include <components/files/conversion.hpp>
 
-#include <SDL_messagebox.h>
+#include <SDL3/SDL.h>
 
 #ifdef __linux__
 #include <sys/prctl.h>

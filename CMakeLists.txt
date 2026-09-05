@@ -523,9 +523,18 @@ if(WIN32)
 endif()
 
 find_package(SDL3 3.4.10 CONFIG REQUIRED)
-# SDL3 provides a native transition alias set while the remaining CP1B call
-# sites are converted to SDL3 names and semantics. No SDL2 runtime is linked.
+# CP1B links the native SDL3 runtime. SDL3's old-name aliases remain enabled
+# only as a compile-time bridge for harmless one-to-one renames; semantic
+# changes are ported explicitly and enforced by the CP1B source audit.
 add_compile_definitions(SDL_ENABLE_OLD_NAMES)
+
+if(WIN32)
+    set(_openmw_sdl3_runtime "${_openmw_sdl3_root}/lib/x64/SDL3.dll")
+    if(NOT EXISTS "${_openmw_sdl3_runtime}")
+        message(FATAL_ERROR "Pinned SDL3 runtime DLL not found: ${_openmw_sdl3_runtime}")
+    endif()
+    install(FILES "${_openmw_sdl3_runtime}" DESTINATION ".")
+endif()
 find_package(OpenAL REQUIRED)
 find_package(ZLIB REQUIRED)
 

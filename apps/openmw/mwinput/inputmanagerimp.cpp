@@ -169,12 +169,12 @@ namespace MWInput
         return mBindingsManager->getActionValue(action);
     }
 
-    bool InputManager::isControllerButtonPressed(SDL_GameControllerButton button) const
+    bool InputManager::isControllerButtonPressed(SDL_GamepadButton button) const
     {
         return mControllerManager->isButtonPressed(button);
     }
 
-    float InputManager::getControllerAxisValue(SDL_GameControllerAxis axis) const
+    float InputManager::getControllerAxisValue(SDL_GamepadAxis axis) const
     {
         return mControllerManager->getAxisValue(axis);
     }
@@ -205,7 +205,7 @@ namespace MWInput
             return;
 
         // Don't warp if an emulated mouse press is occurring.
-        if (isGamepadGuiCursorEnabled() && isControllerButtonPressed(SDL_CONTROLLER_BUTTON_A))
+        if (isGamepadGuiCursorEnabled() && isControllerButtonPressed(SDL_GAMEPAD_BUTTON_A))
             return;
 
         MWBase::Environment::get().getWindowManager()->setCursorVisible(false);

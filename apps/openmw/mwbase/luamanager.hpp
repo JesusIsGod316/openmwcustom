@@ -141,7 +141,7 @@ namespace MWBase
                 MouseButtonReleased,
                 MouseWheel,
             } mType;
-            std::variant<SDL_Keysym, int, SDLUtil::TouchEvent, WheelChange> mValue;
+            std::variant<SDLUtil::KeyEvent, int, SDLUtil::TouchEvent, WheelChange> mValue;
         };
         virtual void inputEvent(const InputEvent& event) = 0;
 

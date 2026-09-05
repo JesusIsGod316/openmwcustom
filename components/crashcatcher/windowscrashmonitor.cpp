@@ -8,7 +8,7 @@
 #include <memory>
 #include <thread>
 
-#include <SDL_messagebox.h>
+#include <SDL3/SDL.h>
 
 #include <components/debug/debuglog.hpp>
 #include <components/misc/strings/conversion.hpp>

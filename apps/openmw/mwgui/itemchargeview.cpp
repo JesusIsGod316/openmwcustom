@@ -244,15 +244,15 @@ namespace MWGui
 
         size_t prevFocus = mControllerFocus;
 
-        if (button == SDL_CONTROLLER_BUTTON_A)
+        if (button == SDL_GAMEPAD_BUTTON_A)
         {
             // Select the focused item, if any.
             if (mControllerFocus < mLines.size())
                 onIconClicked(mLines[mControllerFocus].mIcon);
         }
-        else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP)
+        else if (button == SDL_GAMEPAD_BUTTON_DPAD_UP)
             mControllerFocus = wrap(mControllerFocus, mLines.size(), -1);
-        else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+        else if (button == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
             mControllerFocus = wrap(mControllerFocus, mLines.size(), 1);
 
         if (prevFocus != mControllerFocus)

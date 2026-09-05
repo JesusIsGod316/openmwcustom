@@ -121,8 +121,8 @@ namespace MWGui
 
         bool mPreviewDirty;
 
-        bool onControllerButtonEvent(const SDL_ControllerButtonEvent& arg) override;
-        bool onControllerThumbstickEvent(const SDL_ControllerAxisEvent& arg) override;
+        bool onControllerButtonEvent(const SDL_GamepadButtonEvent& arg) override;
+        bool onControllerThumbstickEvent(const SDL_GamepadAxisEvent& arg) override;
     };
 }
 #endif
