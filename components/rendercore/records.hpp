@@ -458,6 +458,20 @@ namespace RenderCore
         Subsort,
     };
 
+    enum class ModelSortAccumulator : std::uint8_t
+    {
+        Missing,
+        Alpha,
+        Cluster,
+        Unsupported,
+    };
+
+    struct ModelSortSemantic
+    {
+        ModelSortMode mode = ModelSortMode::Inherit;
+        ModelSortAccumulator accumulator = ModelSortAccumulator::Missing;
+    };
+
     enum class ModelNodeFlag : std::uint32_t
     {
         Hidden = 1u << 0,
@@ -492,14 +506,17 @@ namespace RenderCore
         // resource or pipeline identity.
         std::optional<std::uint32_t> sourceRecordId;
         ModelNodeIndex parent;
-        LocalTransform localTransform;
+        // Preserve the exact parsed local affine transform. NIF rotation matrices
+        // may legally contain reflected/non-uniform scale components that are not
+        // safely representable as quaternion + scale decomposition.
+        glm::mat4 localTransform{ 1.0f };
         ModelNodeKind kind = ModelNodeKind::Transform;
         std::optional<MeshHandle> mesh;
         std::vector<MaterialHandle> materials;
         std::optional<ModelNodeIndex> activeSwitchChild;
         std::optional<ModelLodSemantic> lod;
         std::optional<ModelBillboardMode> billboard;
-        std::optional<ModelSortMode> sort;
+        std::optional<ModelSortSemantic> sort;
         std::uint32_t flags = 0;
     };
 
