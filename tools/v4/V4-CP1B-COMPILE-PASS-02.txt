@@ -1,0 +1,4 @@
+V4.0 CP1B compile-validation pass 02
+Parent CP1A: 0bd575fb8dc5665034cdd57da62a6813db0a1bb3
+Materialized SDL3 target repair: 1ef974769e26a8f389d81d12f09b04aaaefa4dc6
+Purpose: trigger full Windows configure/build/install/test validation after all known SDL2 CMake targets were migrated to SDL3::SDL3.
