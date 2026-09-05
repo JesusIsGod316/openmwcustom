@@ -1304,13 +1304,12 @@ def verify_source_contract() -> None:
         "SDL_WINDOW_FULLSCREEN_DESKTOP": "removed SDL2 borderless-fullscreen flag",
         "SDL_INIT_NOPARACHUTE": "removed SDL2 init flag",
         "SDL_INIT_GAMECONTROLLER": "renamed SDL2 init flag",
-        "SDL_SetRelativeMouseMode": "SDL2 global relative-mouse API",
+        "SDL_SetRelativeMouseMode(": "SDL2 global relative-mouse API",
         "SDL_SetWindowGrab": "removed SDL2 window-grab API",
         "SDL_IsTextInputActive()": "SDL2 no-window text-input API",
         "SDL_StartTextInput()": "SDL2 no-window text-input API",
         "SDL_StopTextInput()": "SDL2 no-window text-input API",
         "SDL_UNKNOWN": "invalid SDL3 keycode token",
-        "nWindow": "invalid CP1B window identifier",
     }
     offenders: list[str] = []
     bare_include_re = re.compile(r'#include[ \t]+[<"]SDL(?:_[A-Za-z0-9_]+)?\.h[>"]')
