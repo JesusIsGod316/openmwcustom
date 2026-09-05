@@ -66,7 +66,7 @@ jobs:
             echo 'CP1B platform/input surface still contains SDL2-style includes' >&2
             exit 1
           fi
-          if grep -RInF 'SDL2::SDL2' CMakeLists.txt components apps; then
+          if find . -name CMakeLists.txt -print0 | xargs -0 grep -nHF 'SDL2::SDL2'; then
             echo 'CP1B still links the SDL2 CMake target' >&2
             exit 1
           fi
