@@ -27,6 +27,38 @@ namespace
         EXPECT_TRUE(world.retire(*texture));
     }
 
+    TEST(RenderCoreSemanticAssets, OneImageSupportsDistinctBindingInterpretations)
+    {
+        RenderCore::RenderWorld world;
+        const auto texture = world.reserveTexture();
+        const auto colorMaterial = world.reserveMaterial();
+        const auto dataMaterial = world.reserveMaterial();
+        ASSERT_TRUE(texture && colorMaterial && dataMaterial);
+        ASSERT_TRUE(world.commit(*texture, RenderCore::TextureRecord{ .sourceIdentity = "textures/shared.dds" }));
+
+        RenderCore::MaterialRecord color;
+        color.sourceIdentity = "material:color";
+        color.textures.push_back(RenderCore::TextureBinding{
+            .role = RenderCore::TextureRole::Diffuse,
+            .texture = *texture,
+            .colorSpace = RenderCore::TextureColorSpace::Srgb,
+            .formatClass = RenderCore::TextureFormatClass::Color });
+        ASSERT_TRUE(world.commit(*colorMaterial, color));
+
+        RenderCore::MaterialRecord data;
+        data.sourceIdentity = "material:data";
+        data.textures.push_back(RenderCore::TextureBinding{
+            .role = RenderCore::TextureRole::Normal,
+            .texture = *texture,
+            .colorSpace = RenderCore::TextureColorSpace::Data,
+            .formatClass = RenderCore::TextureFormatClass::Normal });
+        ASSERT_TRUE(world.commit(*dataMaterial, data));
+
+        EXPECT_EQ(world.get(*colorMaterial)->textures.front().texture, world.get(*dataMaterial)->textures.front().texture);
+        EXPECT_NE(world.get(*colorMaterial)->textures.front().colorSpace,
+            world.get(*dataMaterial)->textures.front().colorSpace);
+    }
+
     TEST(RenderCoreSemanticAssets, MeshPayloadRejectsMismatchedVertexStreams)
     {
         RenderCore::RenderWorld world;
@@ -47,6 +79,48 @@ namespace
         EXPECT_TRUE(world.cancel(*mesh));
     }
 
+    TEST(RenderCoreSemanticAssets, MeshPayloadRejectsOutOfRangeIndex)
+    {
+        RenderCore::RenderWorld world;
+        const auto mesh = world.reserveMesh();
+        ASSERT_TRUE(mesh);
+
+        auto payload = std::make_shared<RenderCore::MeshPayload>();
+        payload->positions.resize(3);
+        payload->indices = { 0, 1, 3 };
+        payload->surfaces.push_back(RenderCore::MeshSurface{ .indexCount = 3 });
+
+        RenderCore::MeshRecord record;
+        record.sourceIdentity = "meshes/bad-index.nif";
+        record.surfaceCount = 1;
+        record.payload = std::move(payload);
+        EXPECT_FALSE(world.commit(*mesh, std::move(record)));
+        EXPECT_TRUE(world.cancel(*mesh));
+    }
+
+    TEST(RenderCoreSemanticAssets, MeshPayloadRejectsNonFiniteVertexData)
+    {
+        RenderCore::RenderWorld world;
+        const auto mesh = world.reserveMesh();
+        ASSERT_TRUE(mesh);
+
+        auto payload = std::make_shared<RenderCore::MeshPayload>();
+        payload->positions = {
+            { 0.0f, 0.0f, 0.0f },
+            { std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f },
+            { 0.0f, 1.0f, 0.0f },
+        };
+        payload->indices = { 0, 1, 2 };
+        payload->surfaces.push_back(RenderCore::MeshSurface{ .indexCount = 3 });
+
+        RenderCore::MeshRecord record;
+        record.sourceIdentity = "meshes/nonfinite.nif";
+        record.surfaceCount = 1;
+        record.payload = std::move(payload);
+        EXPECT_FALSE(world.commit(*mesh, std::move(record)));
+        EXPECT_TRUE(world.cancel(*mesh));
+    }
+
     TEST(RenderCoreSemanticAssets, SkeletonRequiresParentsBeforeChildren)
     {
         RenderCore::RenderWorld world;
@@ -59,6 +133,26 @@ namespace
 
         RenderCore::SkeletonRecord record;
         record.sourceIdentity = "skeleton:bad";
+        record.payload = std::move(payload);
+        EXPECT_FALSE(world.commit(*skeleton, std::move(record)));
+        EXPECT_TRUE(world.cancel(*skeleton));
+    }
+
+    TEST(RenderCoreSemanticAssets, SkeletonRejectsNonFiniteBindData)
+    {
+        RenderCore::RenderWorld world;
+        const auto skeleton = world.reserveSkeleton();
+        ASSERT_TRUE(skeleton);
+
+        auto payload = std::make_shared<RenderCore::SkeletonPayload>();
+        RenderCore::BoneRecord root;
+        root.name = "root";
+        root.parent = -1;
+        root.inverseBind[0][0] = std::numeric_limits<float>::infinity();
+        payload->bones.push_back(root);
+
+        RenderCore::SkeletonRecord record;
+        record.sourceIdentity = "skeleton:nonfinite";
         record.payload = std::move(payload);
         EXPECT_FALSE(world.commit(*skeleton, std::move(record)));
         EXPECT_TRUE(world.cancel(*skeleton));
