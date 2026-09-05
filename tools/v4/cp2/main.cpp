@@ -6,12 +6,13 @@
 
 #include <vsg/all.h>
 
-#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <iostream>
-#include <limits>
+#include <stdexcept>
+#include <string>
 #include <string_view>
+#include <system_error>
 
 namespace
 {
