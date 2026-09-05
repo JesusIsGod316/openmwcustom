@@ -30,15 +30,24 @@ int main()
     modelPayload->roots.push_back(ModelNodeIndex{ 0u });
     assert(validModelPayloadStructure(*modelPayload));
 
+    MeshRecord meshRecord;
+    meshRecord.sourceIdentity = "smoke:mesh";
+
+    MaterialRecord materialRecord;
+    materialRecord.sourceIdentity = "smoke:material";
+
+    ModelRecord modelRecord;
+    modelRecord.sourceIdentity = "smoke:model";
+    modelRecord.payload = std::move(modelPayload);
+
     InstanceRecord instanceRecord;
     instanceRecord.model = *model;
 
     RenderWorldUpdateBatch batch(world.epoch(), InitialUpdateSequence, "cp3b-smoke");
-    assert(batch.add(CreateMesh{ *mesh, MeshRecord{ .sourceIdentity = "smoke:mesh" } }));
-    assert(batch.add(CreateMaterial{ *material, MaterialRecord{ .sourceIdentity = "smoke:material" } }));
-    assert(batch.add(CreateModel{ *model,
-        ModelRecord{ .sourceIdentity = "smoke:model", .payload = std::move(modelPayload) } }));
-    assert(batch.add(CreateInstance{ *instance, instanceRecord }));
+    assert(batch.add(CreateMesh{ *mesh, std::move(meshRecord) }));
+    assert(batch.add(CreateMaterial{ *material, std::move(materialRecord) }));
+    assert(batch.add(CreateModel{ *model, std::move(modelRecord) }));
+    assert(batch.add(CreateInstance{ *instance, std::move(instanceRecord) }));
     assert(batch.seal());
     assert(publisher.apply(batch) == PublishStatus::Applied);
     assert(world.valid());
