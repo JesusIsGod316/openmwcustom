@@ -1,0 +1,71 @@
+name: V4.0 CP1B native SDL3 closeout staging materializer
+
+on:
+  push:
+    branches: [v4.0-cp1b-sdl3-native-closeout-prep]
+    paths:
+      - .github/workflows/v4-cp1b-native-closeout-prep.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v4-cp1b-native-closeout-prep-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  Materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout staging head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact CP1B parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 618165f593669223dc869746cd5d9bcb0720fa8b HEAD
+
+      - name: Materialize all CP1B SDL3 passes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in tools/v4/V4-CP1B-*.py; do
+            echo "Running ${script}"
+            python3 "${script}"
+          done
+          git diff > "$RUNNER_TEMP/first.diff"
+
+      - name: Verify idempotency and frozen provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in tools/v4/V4-CP1B-*.py; do
+            echo "Rechecking ${script}"
+            python3 "${script}"
+          done
+          git diff > "$RUNNER_TEMP/second.diff"
+          cmp "$RUNNER_TEMP/first.diff" "$RUNNER_TEMP/second.diff"
+          git diff --check -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+          git diff --exit-code -- V3-applied-source.patch V3-applied-source-stat.txt V3-BUILD-IDENTITY.txt V3-LAB-README.txt
+
+      - name: Commit staging materialization
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Native SDL3 closeout is already materialized.'
+            exit 0
+          fi
+          git config user.name 'OpenMW Custom Build CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add CMakeLists.txt apps components extern/oics extern/osg-ffmpeg-videoplayer
+          git diff --cached --check
+          git commit -m 'V4.0 CP1B: materialize native SDL3 alias and DPI closeout'
+          git push origin HEAD:v4.0-cp1b-sdl3-native-closeout-prep
