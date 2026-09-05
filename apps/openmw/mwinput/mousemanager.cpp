@@ -151,7 +151,7 @@ namespace MWInput
 
         input->setJoystickLastUsed(false);
         MWBase::Environment::get().getLuaManager()->inputEvent({ MWBase::LuaManager::InputEvent::MouseWheel,
-            MWBase::LuaManager::InputEvent::WheelChange{ arg.x, arg.y } });
+            MWBase::LuaManager::InputEvent::WheelChange{ static_cast<int>(arg.x), static_cast<int>(arg.y) } });
     }
 
     void MouseManager::mousePressed(const SDL_MouseButtonEvent& arg, Uint8 id)
@@ -215,7 +215,11 @@ namespace MWInput
 
     void MouseManager::update(float dt)
     {
-        SDL_GetRelativeMouseState(&mMouseMoveX, &mMouseMoveY);
+        float relativeMouseX = 0.f;
+        float relativeMouseY = 0.f;
+        SDL_GetRelativeMouseState(&relativeMouseX, &relativeMouseY);
+        mMouseMoveX = static_cast<int>(relativeMouseX);
+        mMouseMoveY = static_cast<int>(relativeMouseY);
 
         if (!mMouseLookEnabled)
             return;

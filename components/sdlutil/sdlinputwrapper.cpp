@@ -34,7 +34,7 @@ namespace SDLUtil
         , mWindowHasFocus(true)
         , mMouseInWindow(true)
     {
-        Uint32 flags = SDL_GetWindowFlags(mSDLWindow);
+        const SDL_WindowFlags flags = SDL_GetWindowFlags(mSDLWindow);
         mWindowHasFocus = (flags & SDL_WINDOW_INPUT_FOCUS);
         mMouseInWindow = (flags & SDL_WINDOW_MOUSE_FOCUS);
         _setWindowScale();
