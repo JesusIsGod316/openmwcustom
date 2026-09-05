@@ -1,0 +1,110 @@
+name: V4.0 CP3A semantic publication core QC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp3a-semantic-publication-core]
+
+concurrency:
+  group: v4-cp3a-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  Preflight:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-build]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact CP3A head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact accepted CP2 ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          CP2_BASE=dbfdbae94c6c96271a2c9e6f57ffec53d31e5406
+          git cat-file -e "${CP2_BASE}^{commit}"
+          merge_base=$(git merge-base "${CP2_BASE}" HEAD)
+          if [[ "${merge_base}" != "${CP2_BASE}" ]]; then
+            echo "CP3A is not rooted in accepted CP2 head ${CP2_BASE}" >&2
+            exit 1
+          fi
+
+      - name: Verify complete CP0A generated materialization
+        run: python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+
+      - name: Enforce neutral RenderCore boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '#include[[:space:]]*[<"](osg|osgViewer|osgUtil|vsg|vulkan|apps/openmw|components/mwworld)|\b(osg|osgViewer|osgUtil|vsg)::|\bVk[A-Z]|\bMWWorld::' components/rendercore; then
+            echo 'rendercore common boundary contains a forbidden backend/game type' >&2
+            exit 1
+          fi
+          test -f components/rendercore/records.hpp
+          test -f components/rendercore/updatebatch.hpp
+          test -f components/rendercore/renderer.hpp
+          grep -F 'class RenderWorldUpdateBatch final' components/rendercore/updatebatch.hpp
+          grep -F 'class RenderWorldPublisher final' components/rendercore/updatebatch.hpp
+          grep -F 'class SemanticRenderer' components/rendercore/renderer.hpp
+          grep -F 'std::vector<DynamicMaterialState>' components/rendercore/framerenderstate.hpp
+
+      - name: Verify compatibility policy is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f tools/v4/V4-COMPATIBILITY-CONTRACT.md
+          grep -F 'Compatibility is a primary release goal' tools/v4/V4-COMPATIBILITY-CONTRACT.md
+          grep -F 'shaders/post-processing' tools/v4/V4-COMPATIBILITY-CONTRACT.md
+
+      - name: Check CP3A whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check dbfdbae94c6c96271a2c9e6f57ffec53d31e5406 HEAD -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+
+  VulkanFoundationWindows:
+    needs: Preflight
+    runs-on: windows-2022
+    env:
+      VCPKG_FEATURE_FLAGS: manifests,versions
+    steps:
+      - name: Checkout exact CP3A head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: seanmiddleditch/gha-setup-ninja@master
+      - name: Ensure pinned vcpkg baseline is available
+        shell: pwsh
+        run: git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --no-tags --depth=1 origin 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+      - name: Configure retained CP2 Vulkan foundation
+        shell: pwsh
+        run: |
+          cmake `
+            -S "$env:GITHUB_WORKSPACE/tools/v4/cp2" `
+            -B "$env:GITHUB_WORKSPACE/build-v4-cp3a-foundation" `
+            -G Ninja `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D CMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -D VCPKG_MANIFEST_DIR="$env:GITHUB_WORKSPACE/tools/v4/cp2" `
+            -D VCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE/cp3a-vcpkg" `
+            -D VCPKG_TARGET_TRIPLET=x64-windows
+      - name: Build retained Vulkan foundation
+        run: cmake --build ${{ github.workspace }}/build-v4-cp3a-foundation
+      - name: Run retained Vulkan foundation tests
+        working-directory: ${{ github.workspace }}/build-v4-cp3a-foundation
+        run: ctest --output-on-failure
+
+  OpenGLControlWindows:
+    needs: Preflight
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false

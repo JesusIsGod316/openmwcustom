@@ -1,101 +1,18 @@
 #ifndef OPENMW_COMPONENTS_RENDERCORE_RENDERWORLD_H
 #define OPENMW_COMPONENTS_RENDERCORE_RENDERWORLD_H
 
-#include "handles.hpp"
-#include "math.hpp"
-#include "resources.hpp"
+#include "records.hpp"
 #include "slottable.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <optional>
-#include <string>
+#include <type_traits>
 #include <utility>
-#include <vector>
 
 namespace RenderCore
 {
-    struct MeshRecord
-    {
-        ResourceRevision revision = InitialResourceRevision;
-        std::string sourceIdentity;
-        std::uint32_t surfaceCount = 0;
-        bool skinned = false;
-        bool morphed = false;
-    };
-
-    struct MaterialRecord
-    {
-        ResourceRevision revision = InitialResourceRevision;
-        std::string sourceIdentity;
-    };
-
-    struct TextureRecord
-    {
-        ResourceRevision revision = InitialResourceRevision;
-        std::string sourceIdentity;
-    };
-
-    struct SkeletonRecord
-    {
-        ResourceRevision revision = InitialResourceRevision;
-        std::string sourceIdentity;
-    };
-
-    enum class InstanceSemanticFlag : std::uint64_t
-    {
-        OrdinaryWorld = 1ull << 0,
-        OwnerBody = 1ull << 1,
-        OwnerHead = 1ull << 2,
-        ShadowCaster = 1ull << 3,
-        ReflectionEligible = 1ull << 4,
-        RefractionEligible = 1ull << 5,
-        MapEligible = 1ull << 6,
-        PreviewEligible = 1ull << 7,
-    };
-
-    [[nodiscard]] constexpr std::uint64_t semanticFlag(InstanceSemanticFlag flag) noexcept
-    {
-        return static_cast<std::uint64_t>(flag);
-    }
-
-    struct InstanceRecord
-    {
-        // Canonical semantic ownership. ChunkRecord::members is a derived ordered
-        // reverse index maintained only by RenderWorld publication operations.
-        std::optional<ChunkHandle> chunk;
-        MeshHandle mesh;
-        std::vector<MaterialHandle> materials;
-        std::optional<SkeletonHandle> skeleton;
-        WorldTransform transform;
-        std::uint64_t semanticFlags = semanticFlag(InstanceSemanticFlag::OrdinaryWorld)
-            | semanticFlag(InstanceSemanticFlag::ShadowCaster)
-            | semanticFlag(InstanceSemanticFlag::ReflectionEligible)
-            | semanticFlag(InstanceSemanticFlag::RefractionEligible);
-        bool lightingEnabled = true;
-    };
-
-    struct ChunkRecord
-    {
-        ResourceRevision revision = InitialResourceRevision;
-        std::string producerIdentity;
-        // Derived ordered index for individually addressable instances. Producers
-        // never author this independently from InstanceRecord::chunk.
-        std::vector<InstanceHandle> members;
-    };
-
-    struct LightRecord
-    {
-        ResourceRevision revision = InitialResourceRevision;
-        WorldPosition position{ 0.0, 0.0, 0.0 };
-        Color diffuse{ 1.0f, 1.0f, 1.0f, 1.0f };
-        float constantAttenuation = 1.0f;
-        float linearAttenuation = 0.0f;
-        float quadraticAttenuation = 0.0f;
-        float effectiveRadius = 0.0f;
-        bool enabled = true;
-    };
-
     class RenderWorld
     {
     public:
@@ -120,36 +37,39 @@ namespace RenderCore
 
         bool commit(MeshHandle handle, MeshRecord record)
         {
-            return record.revision.valid() && commitRecord(mMeshes, handle, std::move(record));
+            return validateMeshRecord(record) && commitRecord(mMeshes, handle, std::move(record));
         }
+
         bool commit(MaterialHandle handle, MaterialRecord record)
         {
-            return record.revision.valid() && commitRecord(mMaterials, handle, std::move(record));
+            return validateMaterialRecord(record) && commitRecord(mMaterials, handle, std::move(record));
         }
+
         bool commit(TextureHandle handle, TextureRecord record)
         {
-            return record.revision.valid() && commitRecord(mTextures, handle, std::move(record));
+            return validateTextureRecord(record) && commitRecord(mTextures, handle, std::move(record));
         }
+
         bool commit(SkeletonHandle handle, SkeletonRecord record)
         {
-            return record.revision.valid() && commitRecord(mSkeletons, handle, std::move(record));
+            return validateSkeletonRecord(record) && commitRecord(mSkeletons, handle, std::move(record));
         }
+
         bool commit(ChunkHandle handle, ChunkRecord record)
         {
-            // Individual membership is derived from instance publication. Accepting
-            // caller-authored members here would create a second semantic write path.
-            if (!record.revision.valid() || !record.members.empty())
+            if (!validateChunkRecord(record) || !record.members.empty())
                 return false;
             return commitRecord(mChunks, handle, std::move(record));
         }
+
         bool commit(LightHandle handle, LightRecord record)
         {
-            return record.revision.valid() && commitRecord(mLights, handle, std::move(record));
+            return validateLightRecord(record) && commitRecord(mLights, handle, std::move(record));
         }
 
         bool commit(InstanceHandle handle, InstanceRecord record)
         {
-            if (!mInstances.isReserved(handle) || !validateInstanceReferences(record))
+            if (!mInstances.isReserved(handle) || !validateInstanceReferences(handle, record))
                 return false;
 
             const auto nextRevision = advanceMonotonic(mRevision);
@@ -160,9 +80,6 @@ namespace RenderCore
             if (chunk && containsMember(*chunk, handle))
                 return false;
 
-            // Publish the derived reverse index first. push_back can allocate and
-            // throw; if it does, no instance state has changed. If instance commit
-            // later throws/fails, roll the index back before propagating/returning.
             if (chunk)
                 chunk->members.push_back(handle);
 
@@ -186,34 +103,35 @@ namespace RenderCore
             return true;
         }
 
-        // Same-generation payload replacement. Versioned records must advance
-        // ResourceRevision. Chunk membership itself is not writable through this
-        // generic update API; relationship changes use reparentInstance().
         bool update(MeshHandle handle, MeshRecord record)
         {
-            return updateVersionedRecord(mMeshes, handle, std::move(record));
+            return validateMeshRecord(record) && updateVersionedRecord(mMeshes, handle, std::move(record));
         }
+
         bool update(MaterialHandle handle, MaterialRecord record)
         {
-            return updateVersionedRecord(mMaterials, handle, std::move(record));
+            return validateMaterialRecord(record) && updateVersionedRecord(mMaterials, handle, std::move(record));
         }
+
         bool update(TextureHandle handle, TextureRecord record)
         {
-            return updateVersionedRecord(mTextures, handle, std::move(record));
+            return validateTextureRecord(record) && updateVersionedRecord(mTextures, handle, std::move(record));
         }
+
         bool update(SkeletonHandle handle, SkeletonRecord record)
         {
-            return updateVersionedRecord(mSkeletons, handle, std::move(record));
+            return validateSkeletonRecord(record) && updateVersionedRecord(mSkeletons, handle, std::move(record));
         }
+
         bool update(LightHandle handle, LightRecord record)
         {
-            return updateVersionedRecord(mLights, handle, std::move(record));
+            return validateLightRecord(record) && updateVersionedRecord(mLights, handle, std::move(record));
         }
 
         bool update(ChunkHandle handle, ChunkRecord record)
         {
             const ChunkRecord* current = mChunks.get(handle);
-            if (!current || record.members != current->members)
+            if (!current || record.members != current->members || !validateChunkRecord(record))
                 return false;
             return updateVersionedRecord(mChunks, handle, std::move(record));
         }
@@ -221,16 +139,13 @@ namespace RenderCore
         bool update(InstanceHandle handle, InstanceRecord record)
         {
             const InstanceRecord* current = mInstances.get(handle);
-            if (!current || record.chunk != current->chunk || !validateInstanceReferences(record))
+            if (!current || record.chunk != current->chunk || !validateInstanceReferences(handle, record))
                 return false;
             if (record.chunk && !chunkContainsExactlyOnce(*record.chunk, handle))
                 return false;
             return updateRecord(mInstances, handle, std::move(record));
         }
 
-        // Move one live individually addressable instance between logical chunks.
-        // InstanceRecord::chunk is the semantic source of truth and members is
-        // updated in the same published RenderWorld revision.
         bool reparentInstance(InstanceHandle handle, std::optional<ChunkHandle> newChunk)
         {
             InstanceRecord* instance = mInstances.get(handle);
@@ -253,9 +168,6 @@ namespace RenderCore
             if (!nextRevision)
                 return false;
 
-            // New membership is the only step that can allocate/throw. Perform it
-            // before no-throw erasure/handle assignment so failure leaves the old
-            // published relationship untouched.
             if (newRecord)
                 newRecord->members.push_back(handle);
             if (oldRecord)
@@ -276,17 +188,21 @@ namespace RenderCore
         bool cancel(ChunkHandle handle) noexcept { return mChunks.cancel(handle); }
         bool cancel(LightHandle handle) noexcept { return mLights.cancel(handle); }
 
-        // Logical retirement fails closed while live dependents still reference
-        // the target. Backend residency retirement remains independent.
         bool retire(MeshHandle handle) noexcept
         {
             return !meshReferenced(handle) && retireRecord(mMeshes, handle);
         }
+
         bool retire(MaterialHandle handle) noexcept
         {
             return !materialReferenced(handle) && retireRecord(mMaterials, handle);
         }
-        bool retire(TextureHandle handle) noexcept { return retireRecord(mTextures, handle); }
+
+        bool retire(TextureHandle handle) noexcept
+        {
+            return !textureReferenced(handle) && retireRecord(mTextures, handle);
+        }
+
         bool retire(SkeletonHandle handle) noexcept
         {
             return !skeletonReferenced(handle) && retireRecord(mSkeletons, handle);
@@ -295,7 +211,7 @@ namespace RenderCore
         bool retire(InstanceHandle handle) noexcept
         {
             InstanceRecord* instance = mInstances.get(handle);
-            if (!instance)
+            if (!instance || instanceReferenced(handle))
                 return false;
 
             ChunkRecord* chunk = instance->chunk ? mChunks.get(*instance->chunk) : nullptr;
@@ -322,6 +238,7 @@ namespace RenderCore
                 return false;
             return retireRecord(mChunks, handle);
         }
+
         bool retire(LightHandle handle) noexcept { return retireRecord(mLights, handle); }
 
         [[nodiscard]] const MeshRecord* get(MeshHandle handle) const noexcept { return mMeshes.get(handle); }
@@ -332,36 +249,33 @@ namespace RenderCore
         [[nodiscard]] const ChunkRecord* get(ChunkHandle handle) const noexcept { return mChunks.get(handle); }
         [[nodiscard]] const LightRecord* get(LightHandle handle) const noexcept { return mLights.get(handle); }
 
-        // Expensive correctness audit intended for publication/checkpoint tests,
-        // not per-draw traversal. Public mutation methods should preserve it after
-        // every successful operation.
         [[nodiscard]] bool valid() const noexcept
         {
             bool result = true;
 
             mMeshes.forEachLive([&](MeshHandle, const MeshRecord& record) {
-                if (!record.revision.valid())
+                if (!validateMeshRecord(record))
                     result = false;
             });
             mMaterials.forEachLive([&](MaterialHandle, const MaterialRecord& record) {
-                if (!record.revision.valid())
+                if (!validateMaterialRecord(record))
                     result = false;
             });
             mTextures.forEachLive([&](TextureHandle, const TextureRecord& record) {
-                if (!record.revision.valid())
+                if (!validateTextureRecord(record))
                     result = false;
             });
             mSkeletons.forEachLive([&](SkeletonHandle, const SkeletonRecord& record) {
-                if (!record.revision.valid())
+                if (!validateSkeletonRecord(record))
                     result = false;
             });
             mLights.forEachLive([&](LightHandle, const LightRecord& record) {
-                if (!record.revision.valid())
+                if (!validateLightRecord(record))
                     result = false;
             });
 
             mChunks.forEachLive([&](ChunkHandle chunkHandle, const ChunkRecord& chunk) {
-                if (!chunk.revision.valid())
+                if (!validateChunkRecord(chunk))
                 {
                     result = false;
                     return;
@@ -381,7 +295,7 @@ namespace RenderCore
             });
 
             mInstances.forEachLive([&](InstanceHandle handle, const InstanceRecord& instance) {
-                if (!validateInstanceReferences(instance))
+                if (!validateInstanceReferences(handle, instance))
                 {
                     result = false;
                     return;
@@ -393,8 +307,6 @@ namespace RenderCore
             return result;
         }
 
-        // Destructive semantic reset. Slot generations advance so stale handles
-        // fail closed even before the new worldEpoch is checked by batch logic.
         bool reset() noexcept
         {
             const auto nextEpoch = advanceMonotonic(mEpoch);
@@ -416,7 +328,59 @@ namespace RenderCore
         }
 
     private:
-        [[nodiscard]] bool validateInstanceReferences(const InstanceRecord& record) const noexcept
+        [[nodiscard]] bool validateMeshRecord(const MeshRecord& record) const noexcept
+        {
+            if (!record.revision.valid())
+                return false;
+            if (record.payload)
+            {
+                if (!validMeshPayload(*record.payload))
+                    return false;
+                if (record.surfaceCount != record.payload->surfaces.size())
+                    return false;
+            }
+            return true;
+        }
+
+        [[nodiscard]] bool validateMaterialRecord(const MaterialRecord& record) const noexcept
+        {
+            if (!record.revision.valid() || !std::isfinite(record.shininess) || !std::isfinite(record.emissiveMultiplier)
+                || !std::isfinite(record.specularStrength) || !std::isfinite(record.environmentMapStrength)
+                || !std::isfinite(record.alpha) || !std::isfinite(record.alphaCutoff))
+                return false;
+            for (const TextureBinding& binding : record.textures)
+            {
+                if (!mTextures.contains(binding.texture) || !std::isfinite(binding.sampler.maxAnisotropy)
+                    || !std::isfinite(binding.transform.rotation))
+                    return false;
+            }
+            return true;
+        }
+
+        [[nodiscard]] static bool validateTextureRecord(const TextureRecord& record) noexcept
+        {
+            return record.revision.valid();
+        }
+
+        [[nodiscard]] static bool validateSkeletonRecord(const SkeletonRecord& record) noexcept
+        {
+            return record.revision.valid() && (!record.payload || validSkeletonPayload(*record.payload));
+        }
+
+        [[nodiscard]] static bool validateChunkRecord(const ChunkRecord& record) noexcept
+        {
+            return record.revision.valid();
+        }
+
+        [[nodiscard]] static bool validateLightRecord(const LightRecord& record) noexcept
+        {
+            return record.revision.valid() && std::isfinite(record.constantAttenuation)
+                && std::isfinite(record.linearAttenuation) && std::isfinite(record.quadraticAttenuation)
+                && std::isfinite(record.effectiveRadius) && record.effectiveRadius >= 0.0f
+                && std::isfinite(record.actorFade);
+        }
+
+        [[nodiscard]] bool validateInstanceReferences(InstanceHandle self, const InstanceRecord& record) const noexcept
         {
             if (!mMeshes.contains(record.mesh))
                 return false;
@@ -429,7 +393,40 @@ namespace RenderCore
                 if (!mMaterials.contains(material))
                     return false;
             }
-            return true;
+
+            if (!record.attachment)
+                return true;
+
+            const AttachmentBinding& attachment = *record.attachment;
+            if (!attachment.parent.valid() || attachment.parent == self || !mInstances.contains(attachment.parent))
+                return false;
+            if (attachment.skeleton && !mSkeletons.contains(*attachment.skeleton))
+                return false;
+            if (attachment.boneIndex && !attachment.skeleton)
+                return false;
+            if (attachment.boneIndex && attachment.skeleton)
+            {
+                const SkeletonRecord* skeleton = mSkeletons.get(*attachment.skeleton);
+                if (skeleton && skeleton->payload && *attachment.boneIndex >= skeleton->payload->bones.size())
+                    return false;
+            }
+            return !attachmentCycle(self, attachment.parent);
+        }
+
+        [[nodiscard]] bool attachmentCycle(InstanceHandle self, InstanceHandle parent) const noexcept
+        {
+            std::size_t remaining = mInstances.liveCount() + 1;
+            InstanceHandle current = parent;
+            while (current.valid() && remaining-- > 0)
+            {
+                if (current == self)
+                    return true;
+                const InstanceRecord* record = mInstances.get(current);
+                if (!record || !record->attachment)
+                    return false;
+                current = record->attachment->parent;
+            }
+            return current.valid();
         }
 
         [[nodiscard]] static bool containsMember(const ChunkRecord& chunk, InstanceHandle handle) noexcept
@@ -468,11 +465,35 @@ namespace RenderCore
             return referenced;
         }
 
+        [[nodiscard]] bool textureReferenced(TextureHandle handle) const noexcept
+        {
+            bool referenced = false;
+            mMaterials.forEachLive([&](MaterialHandle, const MaterialRecord& record) {
+                for (const TextureBinding& binding : record.textures)
+                {
+                    if (binding.texture == handle)
+                        referenced = true;
+                }
+            });
+            return referenced;
+        }
+
         [[nodiscard]] bool skeletonReferenced(SkeletonHandle handle) const noexcept
         {
             bool referenced = false;
             mInstances.forEachLive([&](InstanceHandle, const InstanceRecord& record) {
-                if (record.skeleton && *record.skeleton == handle)
+                if ((record.skeleton && *record.skeleton == handle)
+                    || (record.attachment && record.attachment->skeleton && *record.attachment->skeleton == handle))
+                    referenced = true;
+            });
+            return referenced;
+        }
+
+        [[nodiscard]] bool instanceReferenced(InstanceHandle handle) const noexcept
+        {
+            bool referenced = false;
+            mInstances.forEachLive([&](InstanceHandle, const InstanceRecord& record) {
+                if (record.attachment && record.attachment->parent == handle)
                     referenced = true;
             });
             return referenced;
@@ -537,6 +558,8 @@ namespace RenderCore
         ChunkTable mChunks;
         LightTable mLights;
     };
+
+    static_assert(std::is_nothrow_move_assignable_v<RenderWorld>);
 }
 
 #endif

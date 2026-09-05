@@ -114,6 +114,8 @@ file(GLOB UNITTEST_SRC_FILES
 
     rendercore/foundation.cpp
     rendercore/renderworld.cpp
+    rendercore/semanticassets.cpp
+    rendercore/updatebatch.cpp
 )
 
 source_group(apps\\components-tests FILES ${UNITTEST_SRC_FILES})

@@ -1,9 +1,7 @@
 #ifndef OPENMW_COMPONENTS_RENDERCORE_FRAMERENDERSTATE_H
 #define OPENMW_COMPONENTS_RENDERCORE_FRAMERENDERSTATE_H
 
-#include "handles.hpp"
-#include "math.hpp"
-#include "resources.hpp"
+#include "records.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -97,6 +95,7 @@ namespace RenderCore
         FrameEnvironmentState environment;
         std::vector<FrameView> views;
         std::vector<DynamicTransformState> dynamicTransforms;
+        std::vector<DynamicMaterialState> dynamicMaterials;
     };
 
     // Immutable-by-interface snapshot. Producers assemble a FrameRenderStateDesc,
@@ -126,6 +125,10 @@ namespace RenderCore
         [[nodiscard]] const std::vector<DynamicTransformState>& dynamicTransforms() const noexcept
         {
             return mDesc.dynamicTransforms;
+        }
+        [[nodiscard]] const std::vector<DynamicMaterialState>& dynamicMaterials() const noexcept
+        {
+            return mDesc.dynamicMaterials;
         }
 
         [[nodiscard]] bool valid() const noexcept
@@ -158,6 +161,27 @@ namespace RenderCore
                 {
                     if (transform.instance == mDesc.dynamicTransforms[j].instance)
                         return false;
+                }
+            }
+
+            for (std::size_t i = 0; i < mDesc.dynamicMaterials.size(); ++i)
+            {
+                const DynamicMaterialState& material = mDesc.dynamicMaterials[i];
+                if (!material.material.valid() || !finite(material))
+                    return false;
+                for (std::size_t j = i + 1; j < mDesc.dynamicMaterials.size(); ++j)
+                {
+                    if (material.material == mDesc.dynamicMaterials[j].material)
+                        return false;
+                }
+                for (std::size_t binding = 0; binding < material.textureTransforms.size(); ++binding)
+                {
+                    for (std::size_t other = binding + 1; other < material.textureTransforms.size(); ++other)
+                    {
+                        if (material.textureTransforms[binding].bindingIndex
+                            == material.textureTransforms[other].bindingIndex)
+                            return false;
+                    }
                 }
             }
             return true;
@@ -205,10 +229,9 @@ namespace RenderCore
             return true;
         }
 
-        [[nodiscard]] static bool finite(const CameraState& value) noexcept
+        [[nodiscard]] static bool finite(const LocalTransform& value) noexcept
         {
-            return finite(value.worldPosition) && finite(value.worldOrientation) && finite(value.view)
-                && finite(value.projection);
+            return finite(value.translation) && finite(value.rotation) && finite(value.scale);
         }
 
         [[nodiscard]] static bool finite(const WorldTransform& value) noexcept
@@ -216,11 +239,37 @@ namespace RenderCore
             return finite(value.translation) && finite(value.rotation) && finite(value.scale);
         }
 
+        [[nodiscard]] static bool finite(const TextureTransform& value) noexcept
+        {
+            return finite(value.offset) && finite(value.scale) && finite(value.center) && finite(value.rotation);
+        }
+
+        [[nodiscard]] static bool finite(const CameraState& value) noexcept
+        {
+            return finite(value.worldPosition) && finite(value.worldOrientation) && finite(value.view)
+                && finite(value.projection);
+        }
+
         [[nodiscard]] static bool finite(const FrameEnvironmentState& value) noexcept
         {
             return finite(value.ambient) && finite(value.fogColor) && finite(value.fogStart) && finite(value.fogEnd)
                 && finite(value.sunDirection) && finite(value.sunDiffuse) && finite(value.sunSpecular)
                 && finite(value.waterHeight);
+        }
+
+        [[nodiscard]] static bool finite(const DynamicMaterialState& value) noexcept
+        {
+            if ((value.diffuse && !finite(*value.diffuse)) || (value.ambient && !finite(*value.ambient))
+                || (value.specular && !finite(*value.specular)) || (value.emission && !finite(*value.emission))
+                || (value.alpha && !finite(*value.alpha))
+                || (value.emissiveMultiplier && !finite(*value.emissiveMultiplier)))
+                return false;
+            for (const DynamicTextureTransformState& transform : value.textureTransforms)
+            {
+                if (!finite(transform.transform))
+                    return false;
+            }
+            return true;
         }
 
         FrameRenderStateDesc mDesc;
