@@ -168,6 +168,7 @@ int main(int argc, char** argv)
             int renderedFrames = 0;
             while (running && viewer->advanceToNextFrame())
             {
+                bool resizePending = false;
                 SDL_Event event;
                 while (SDL_PollEvent(&event))
                 {
@@ -179,13 +180,7 @@ int main(int argc, char** argv)
                             break;
                         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                         case SDL_EVENT_WINDOW_RESIZED:
-                            window->resize();
-                            if (window->extent2D().width != 0 && window->extent2D().height != 0)
-                            {
-                                camera->viewportState = vsg::ViewportState::create(window->extent2D());
-                                perspective->aspectRatio = static_cast<double>(window->extent2D().width)
-                                    / static_cast<double>(window->extent2D().height);
-                            }
+                            resizePending = true;
                             break;
                         default:
                             break;
@@ -194,6 +189,16 @@ int main(int argc, char** argv)
 
                 if (!running)
                     break;
+
+                if (resizePending)
+                {
+                    // Rebuild the swapchain once for the coalesced SDL resize events. VSG's
+                    // RenderGraph detects the new Window extent during record traversal and
+                    // updates the camera projection and viewport through WindowResizeHandler.
+                    // Do not also mutate Perspective::aspectRatio here or the resize ratio is
+                    // applied twice, producing the extreme slab/sliver distortion.
+                    window->resize();
+                }
 
                 viewer->update();
                 viewer->recordAndSubmit();
