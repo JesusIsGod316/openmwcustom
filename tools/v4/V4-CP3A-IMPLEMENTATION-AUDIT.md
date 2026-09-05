@@ -19,6 +19,8 @@ CP3A is the semantic publication foundation for the first real OpenMW Vulkan ren
 
 `tools/v4/V4-COMPATIBILITY-CONTRACT.md` is a project-level requirement. V4 is intended to remain a downloadable general OpenMW build with existing OpenMW mods, shaders/post-processing, saves, content, scripts and configuration workflows. A custom settings profile/launcher option/BAT may select backend or compatibility mode, but a private fork-only mod ecosystem is rejected as a release direction. OSG/OpenGL remains the switchable compatibility control until the VSG/Vulkan path reaches parity.
 
+This requirement is also recorded in the structured archive as `evt.project.mod_shader_compatibility_contract.030`; all later CP3+ design decisions inherit it as a primary release constraint.
+
 ## Next after this build gate
 
 1. Repair any deterministic compiler/test issue exposed by CI.
