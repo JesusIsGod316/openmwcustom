@@ -83,6 +83,18 @@ namespace RenderCore
             return true;
         }
 
+        // Replaces the payload of the same live logical object without changing
+        // its slot/generation identity. RenderWorld owns semantic revision checks.
+        bool update(Handle handle, Payload payload)
+        {
+            Slot* slot = resolveState(handle, State::Live);
+            if (!slot || !slot->payload)
+                return false;
+
+            *slot->payload = std::move(payload);
+            return true;
+        }
+
         bool cancel(Handle handle) noexcept
         {
             Slot* slot = resolveState(handle, State::Reserved);
@@ -130,6 +142,19 @@ namespace RenderCore
         [[nodiscard]] bool isReserved(Handle handle) const noexcept
         {
             return resolveState(handle, State::Reserved) != nullptr;
+        }
+
+        // Read-only deterministic live-table walk for validation/dependency checks.
+        // Iteration order is slot order and therefore stable for a given operation stream.
+        template <class Fn>
+        void forEachLive(Fn&& fn) const
+        {
+            for (std::size_t i = 0; i < mSlots.size(); ++i)
+            {
+                const Slot& slot = mSlots[i];
+                if (slot.state == State::Live && slot.payload)
+                    fn(Handle::fromParts(static_cast<SlotIndex>(i), slot.generation), *slot.payload);
+            }
         }
 
         bool retire(Handle handle) noexcept

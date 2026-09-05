@@ -84,8 +84,11 @@ namespace RenderVsg
         std::uint64_t total = 0;
         for (const Retirement& retirement : mRetirements)
         {
-            if (retirement.category == category && retirement.pinned == pinned)
-                total += retirement.bytes;
+            if (retirement.category != category || retirement.pinned != pinned)
+                continue;
+            if (retirement.bytes > std::numeric_limits<std::uint64_t>::max() - total)
+                return std::numeric_limits<std::uint64_t>::max();
+            total += retirement.bytes;
         }
         return total;
     }
@@ -106,10 +109,14 @@ namespace RenderVsg
         const std::uint64_t alreadyQueued = pendingClassBytesLocked(category, pinned);
         if (alreadyQueued > residencyClass || bytes > residencyClass - alreadyQueued)
             return false;
-        if (!checkedAdd(counters.pendingRetireBytes, bytes))
-            return false;
 
+        // Publish the retirement ticket before mutating accounting. vector::push_back
+        // can allocate and throw; if it does, the ledger remains exactly unchanged.
         mRetirements.push_back(Retirement{ category, bytes, pinned, lastUseFrame });
+
+        // The bounds checks above prove this addition cannot overflow: pending +
+        // bytes remains <= residentBytes <= uint64_t max.
+        counters.pendingRetireBytes += bytes;
         return true;
     }
 
@@ -126,12 +133,22 @@ namespace RenderVsg
 
             ResidencyCounters& counters = mCategories[index(retirement.category)];
             std::uint64_t& residencyClass = retirement.pinned ? counters.pinnedBytes : counters.evictableBytes;
-            if (!checkedSubtract(counters.pendingRetireBytes, retirement.bytes)
-                || !checkedSubtract(counters.residentBytes, retirement.bytes)
-                || !checkedSubtract(residencyClass, retirement.bytes))
+
+            // Validate the complete accounting mutation before touching any field.
+            // If an invariant is ever violated, keep the ticket pending and leave the
+            // ledger unchanged instead of partially subtracting one counter.
+            if (retirement.bytes > counters.pendingRetireBytes || retirement.bytes > counters.residentBytes
+                || retirement.bytes > residencyClass)
                 return false;
 
-            released += retirement.bytes;
+            counters.pendingRetireBytes -= retirement.bytes;
+            counters.residentBytes -= retirement.bytes;
+            residencyClass -= retirement.bytes;
+
+            if (retirement.bytes > std::numeric_limits<std::uint64_t>::max() - released)
+                released = std::numeric_limits<std::uint64_t>::max();
+            else
+                released += retirement.bytes;
             return true;
         });
         mRetirements.erase(firstPending, mRetirements.end());
@@ -144,14 +161,21 @@ namespace RenderVsg
         ResidencySnapshot result;
         result.categories = mCategories;
 
+        auto accumulate = [](std::uint64_t& total, std::uint64_t value) noexcept {
+            if (value > std::numeric_limits<std::uint64_t>::max() - total)
+                total = std::numeric_limits<std::uint64_t>::max();
+            else
+                total += value;
+        };
+
         for (const ResidencyCounters& category : result.categories)
         {
-            checkedAdd(result.total.logicalLiveBytes, category.logicalLiveBytes);
-            checkedAdd(result.total.residentBytes, category.residentBytes);
-            checkedAdd(result.total.pendingUploadBytes, category.pendingUploadBytes);
-            checkedAdd(result.total.pendingRetireBytes, category.pendingRetireBytes);
-            checkedAdd(result.total.pinnedBytes, category.pinnedBytes);
-            checkedAdd(result.total.evictableBytes, category.evictableBytes);
+            accumulate(result.total.logicalLiveBytes, category.logicalLiveBytes);
+            accumulate(result.total.residentBytes, category.residentBytes);
+            accumulate(result.total.pendingUploadBytes, category.pendingUploadBytes);
+            accumulate(result.total.pendingRetireBytes, category.pendingRetireBytes);
+            accumulate(result.total.pinnedBytes, category.pinnedBytes);
+            accumulate(result.total.evictableBytes, category.evictableBytes);
         }
         return result;
     }

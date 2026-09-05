@@ -5,6 +5,7 @@
 #include "math.hpp"
 #include "resources.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -130,13 +131,16 @@ namespace RenderCore
         [[nodiscard]] bool valid() const noexcept
         {
             if (!mDesc.frameId.valid() || !mDesc.worldEpoch.valid() || !mDesc.renderWorldRevision.valid()
-                || !mDesc.historyEpoch.valid() || !mDesc.renderExtent.valid() || !mDesc.outputExtent.valid())
+                || !mDesc.historyEpoch.valid() || !mDesc.renderExtent.valid() || !mDesc.outputExtent.valid()
+                || !finite(mDesc.simulationTime) || !finite(mDesc.frameDelta) || !finite(mDesc.jitter)
+                || !finite(mDesc.projectionOffset))
                 return false;
 
             for (std::size_t i = 0; i < mDesc.views.size(); ++i)
             {
                 const FrameView& view = mDesc.views[i];
-                if (!view.extent.valid() || !view.historyEpoch.valid() || view.lodScale <= 0.0f)
+                if (!view.extent.valid() || !view.historyEpoch.valid() || !finite(view.lodScale) || view.lodScale <= 0.0f
+                    || !finite(view.current) || !finite(view.previous))
                     return false;
                 for (std::size_t j = i + 1; j < mDesc.views.size(); ++j)
                 {
@@ -147,13 +151,60 @@ namespace RenderCore
 
             for (const DynamicTransformState& transform : mDesc.dynamicTransforms)
             {
-                if (!transform.instance.valid())
+                if (!transform.instance.valid() || !finite(transform.current) || !finite(transform.previous))
                     return false;
             }
             return true;
         }
 
     private:
+        [[nodiscard]] static bool finite(float value) noexcept { return std::isfinite(value); }
+        [[nodiscard]] static bool finite(double value) noexcept { return std::isfinite(value); }
+
+        [[nodiscard]] static bool finite(const glm::vec2& value) noexcept
+        {
+            return finite(value.x) && finite(value.y);
+        }
+
+        [[nodiscard]] static bool finite(const glm::vec3& value) noexcept
+        {
+            return finite(value.x) && finite(value.y) && finite(value.z);
+        }
+
+        [[nodiscard]] static bool finite(const glm::dvec3& value) noexcept
+        {
+            return finite(value.x) && finite(value.y) && finite(value.z);
+        }
+
+        [[nodiscard]] static bool finite(const glm::quat& value) noexcept
+        {
+            return finite(value.w) && finite(value.x) && finite(value.y) && finite(value.z);
+        }
+
+        [[nodiscard]] static bool finite(const glm::mat4& value) noexcept
+        {
+            for (glm::length_t column = 0; column < 4; ++column)
+            {
+                for (glm::length_t row = 0; row < 4; ++row)
+                {
+                    if (!finite(value[column][row]))
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        [[nodiscard]] static bool finite(const CameraState& value) noexcept
+        {
+            return finite(value.worldPosition) && finite(value.worldOrientation) && finite(value.view)
+                && finite(value.projection);
+        }
+
+        [[nodiscard]] static bool finite(const WorldTransform& value) noexcept
+        {
+            return finite(value.translation) && finite(value.rotation) && finite(value.scale);
+        }
+
         FrameRenderStateDesc mDesc;
     };
 }
