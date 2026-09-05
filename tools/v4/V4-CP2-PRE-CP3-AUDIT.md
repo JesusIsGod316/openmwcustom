@@ -1,8 +1,8 @@
 # V4.0 CP2 — Pre-CP3 Source Hardening Audit
 
-Status: **SOURCE HARDENING PREPARED — WINDOWS QC REQUIRED — FINAL CORRECTED RESIZE RUNTIME RETEST STILL PENDING**  
-Audited head: `9af7acc701e9e1afa4799681b4e78e9c3a5c6c34`  
-Audited run: `33977577668` — Preflight, FoundationWindows and full OpenGL control all green  
+Status: **SOURCE HARDENING PREPARED — WINDOWS QC REQUIRED — FINAL CORRECTED RESIZE RUNTIME RETEST STILL PENDING**
+Audited head: `9af7acc701e9e1afa4799681b4e78e9c3a5c6c34`
+Audited run: `33977577668` — Preflight, FoundationWindows and full OpenGL control all green
 Performance claim: **NONE**
 
 ## 1. Runtime state carried into this audit
