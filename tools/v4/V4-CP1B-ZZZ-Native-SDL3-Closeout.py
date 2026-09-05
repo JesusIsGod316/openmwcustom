@@ -115,34 +115,36 @@ def fetch_pinned_oldname_map() -> dict[str, str]:
     return mapping
 
 
-def replace_identifier(text: str, old: str, new: str) -> str:
-    return re.sub(rf"(?<![A-Za-z0-9_]){re.escape(old)}(?![A-Za-z0-9_])", new, text)
-
-
 def materialize_remaining_old_names() -> None:
     cmake = read("CMakeLists.txt")
     enabled = "add_compile_definitions(SDL_ENABLE_OLD_NAMES)" in cmake
     disabled = "add_compile_definitions(SDL_DISABLE_OLD_NAMES)" in cmake
 
-    # First materialization pass: convert every alias that SDL itself exposes
-    # for 3.4.10. Sorting longest-first prevents shorter type names from
-    # corrupting longer function identifiers.
+    # First materialization pass only: convert every exact alias exposed by the
+    # pinned SDL release. A single alternation regex per file avoids thousands
+    # of repeated whole-file regex scans while preserving identifier boundaries.
     if enabled:
         mapping = fetch_pinned_oldname_map()
-        ordered = sorted(mapping.items(), key=lambda item: len(item[0]), reverse=True)
+        names = sorted(mapping, key=len, reverse=True)
+        alias_re = re.compile(
+            r"(?<![A-Za-z0-9_])(?:" + "|".join(re.escape(name) for name in names) + r")(?![A-Za-z0-9_])"
+        )
         for path in iter_sources():
             text = path.read_text(encoding="utf-8")
-            updated = text
-            for old, new in ordered:
-                updated = replace_identifier(updated, old, new)
+            updated = alias_re.sub(lambda match: mapping[match.group(0)], text)
             if updated != text:
                 path.write_text(updated, encoding="utf-8")
 
-        cmake = cmake.replace(
-            """# CP1B links the native SDL3 runtime. SDL3's old-name aliases remain enabled\n# only as a compile-time bridge for harmless one-to-one renames; semantic\n# changes are ported explicitly and enforced by the CP1B source audit.\nadd_compile_definitions(SDL_ENABLE_OLD_NAMES)\n""",
-            """# CP1B is now source-native SDL3. Disable SDL's old-name compatibility\n# aliases so any future SDL2 spelling fails at compile time instead of silently\n# passing through a transition macro. Semantic API changes are ported explicitly.\nadd_compile_definitions(SDL_DISABLE_OLD_NAMES)\n""",
-            1,
-        )
+        old_block = """# CP1B links the native SDL3 runtime. SDL3's old-name aliases remain enabled\n# only as a compile-time bridge for harmless one-to-one renames; semantic\n# changes are ported explicitly and enforced by the CP1B source audit.\nadd_compile_definitions(SDL_ENABLE_OLD_NAMES)\n"""
+        new_block = """# CP1B is now source-native SDL3. Disable SDL's old-name compatibility\n# aliases so any future SDL2 spelling fails at compile time instead of silently\n# passing through a transition macro. Semantic API changes are ported explicitly.\nadd_compile_definitions(SDL_DISABLE_OLD_NAMES)\n"""
+        if old_block in cmake:
+            cmake = cmake.replace(old_block, new_block, 1)
+        else:
+            cmake = cmake.replace(
+                "add_compile_definitions(SDL_ENABLE_OLD_NAMES)",
+                "add_compile_definitions(SDL_DISABLE_OLD_NAMES)",
+                1,
+            )
         if "SDL_ENABLE_OLD_NAMES" in cmake:
             raise RuntimeError("CMakeLists.txt: SDL_ENABLE_OLD_NAMES remains after native closeout")
         write("CMakeLists.txt", cmake)
@@ -175,18 +177,18 @@ def verify_native_closeout() -> None:
     if "width / (dw / w)" in graphics or "height / (dh / h)" in graphics:
         raise RuntimeError("GraphicsWindow integer DPI division remains")
 
-    # These patterns are the highest-risk alias families in the current OpenMW
-    # SDL surface. With SDL_DISABLE_OLD_NAMES, any missed obscure alias will also
-    # fail the compiler, but common regressions should fail the cheap preflight.
     forbidden_patterns = {
-        r"\bSDL_(?:APP|AUDIODEVICE|CLIPBOARDUPDATE|CONTROLLER|DISPLAYEVENT|DROP|FINGER|JOY|KEYDOWN|KEYUP|KEYMAPCHANGED|MOUSEBUTTON|MOUSEMOTION|MOUSEWHEEL|QUIT|SENSORUPDATE|TEXTEDITING|TEXTINPUT|USEREVENT)\b":
-            "SDL2-era event token remains",
+        r"\bSDL_APP_(?:DIDENTERBACKGROUND|DIDENTERFOREGROUND|LOWMEMORY|TERMINATING|WILLENTERBACKGROUND|WILLENTERFOREGROUND)\b":
+            "SDL2 app event token remains",
+        r"\bSDL_(?:CLIPBOARDUPDATE|FINGERDOWN|FINGERMOTION|FINGERUP|KEYDOWN|KEYUP|KEYMAPCHANGED|MOUSEBUTTONDOWN|MOUSEBUTTONUP|MOUSEMOTION|MOUSEWHEEL|QUIT|SENSORUPDATE|TEXTEDITING|TEXTINPUT|USEREVENT)\b":
+            "SDL2 event token remains",
+        r"\bSDL_JOY(?:AXISMOTION|BALLMOTION|BUTTONDOWN|BUTTONUP|DEVICEADDED|DEVICEREMOVED|HATMOTION)\b":
+            "SDL2 joystick event token remains",
+        r"\bSDL_CONTROLLER(?:AXISMOTION|BUTTONDOWN|BUTTONUP|DEVICEADDED|DEVICEREMAPPED|DEVICEREMOVED|SENSORUPDATE|TOUCHPADDOWN|TOUCHPADMOTION|TOUCHPADUP)\b":
+            "SDL2 controller event token remains",
         r"(?<!SDL_)\bKMOD_[A-Z0-9_]+\b": "SDL2 modifier token remains",
         r"\bSDLK_[a-z]\b": "SDL2 lowercase keycode token remains",
         r"\bSDL_GameController[A-Za-z0-9_]*\b": "SDL2 GameController token remains",
-        r"\bSDL_Joystick(?:Close|FromInstanceID|FromPlayerIndex|Get|InstanceID|Name|Num|Open|Path|Rumble|Send|Set|Update)\b":
-            "SDL2 joystick alias remains",
-        r"\bSDL_Sensor(?:Close|FromInstanceID|Get|Open|Update)\b": "SDL2 sensor alias remains",
         r"\bSDL_GL_DeleteContext\b": "SDL2 GL context destructor alias remains",
         r"\bSDL_GetWindowDisplayMode\b|\bSDL_SetWindowDisplayMode\b|\bSDL_GetDisplayOrientation\b":
             "SDL2 video alias remains",
