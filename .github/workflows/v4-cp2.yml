@@ -1,0 +1,154 @@
+name: V4.0 CP2 VSG Vulkan foundation QC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp2-vsg-vulkan-foundation]
+
+concurrency:
+  group: v4-cp2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  Preflight:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-build]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact CP2 head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact promoted CP1B ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          CP1B_BASE=40227915a9069d74743eb1a344e28cdeb9ee68d6
+          git cat-file -e "${CP1B_BASE}^{commit}"
+          merge_base=$(git merge-base "${CP1B_BASE}" HEAD)
+          if [[ "${merge_base}" != "${CP1B_BASE}" ]]; then
+            echo "CP2 is not rooted in the promoted CP1B head ${CP1B_BASE}" >&2
+            exit 1
+          fi
+
+      - name: Verify complete CP0A generated materialization
+        run: python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+
+      - name: Enforce neutral RenderCore boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '#include[[:space:]]*[<"](osg|osgViewer|osgUtil|vsg|vulkan|apps/openmw|components/mwworld)|\b(osg|osgViewer|osgUtil|vsg)::|\bVk[A-Z]|\bMWWorld::' components/rendercore; then
+            echo 'rendercore common boundary contains a forbidden backend/game type' >&2
+            exit 1
+          fi
+          test -f components/rendercore/framerenderstate.hpp
+          grep -F 'class FrameRenderState final' components/rendercore/framerenderstate.hpp
+          grep -F 'std::vector<FrameView>' components/rendercore/framerenderstate.hpp
+
+      - name: Verify CP2 Vulkan/residency source surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f components/render/backend/vsg/sdlvulkanwindow.hpp
+          test -f components/render/backend/vsg/sdlvulkanwindow.cpp
+          test -f components/render/backend/vsg/residencyledger.hpp
+          test -f components/render/backend/vsg/residencyledger.cpp
+          test -f tools/v4/cp2/CMakeLists.txt
+          test -f tools/v4/cp2/vcpkg.json
+          test -f tools/v4/cp2/main.cpp
+          test -f tools/v4/cp2/foundation_tests.cpp
+          grep -F 'SDL_Vulkan_CreateSurface' components/render/backend/vsg/sdlvulkanwindow.cpp
+          grep -F 'find_package(vsg 1.1.15 CONFIG REQUIRED)' tools/v4/cp2/CMakeLists.txt
+          grep -F '04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4' tools/v4/cp2/vcpkg.json
+          grep -F '3.4.10' tools/v4/cp2/CMakeLists.txt
+
+      - name: Check CP2 whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check 40227915a9069d74743eb1a344e28cdeb9ee68d6 HEAD -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+
+  FoundationWindows:
+    needs: Preflight
+    runs-on: windows-2022
+    env:
+      VCPKG_FEATURE_FLAGS: manifests,versions
+    steps:
+      - name: Checkout exact CP2 head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Ensure pinned vcpkg baseline is available
+        shell: pwsh
+        run: |
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --no-tags --depth=1 origin 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+
+      - name: Configure CP2 VSG Vulkan foundation
+        shell: pwsh
+        run: |
+          cmake `
+            -S "$env:GITHUB_WORKSPACE/tools/v4/cp2" `
+            -B "$env:GITHUB_WORKSPACE/build-v4-cp2" `
+            -G Ninja `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D CMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -D VCPKG_MANIFEST_DIR="$env:GITHUB_WORKSPACE/tools/v4/cp2" `
+            -D VCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE/cp2-vcpkg" `
+            -D VCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build CP2 VSG Vulkan foundation
+        run: cmake --build ${{ github.workspace }}/build-v4-cp2
+
+      - name: Run CP2 foundation contract tests
+        working-directory: ${{ github.workspace }}/build-v4-cp2
+        run: ctest --output-on-failure
+
+      - name: Install CP2 foundation probe
+        run: cmake --install ${{ github.workspace }}/build-v4-cp2 --prefix ${{ github.workspace }}/install-v4-cp2
+
+      - name: Stage VSG/Vulkan runtime dependencies
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE/cp2-vcpkg/x64-windows/bin"
+          if (Test-Path $bin) {
+            Get-ChildItem "$bin/*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination "$env:GITHUB_WORKSPACE/install-v4-cp2" -Force
+          }
+          if (-not (Test-Path "$env:GITHUB_WORKSPACE/install-v4-cp2/openmw-vulkan-foundation.exe")) {
+            throw "CP2 probe executable missing from install tree"
+          }
+          if (-not (Test-Path "$env:GITHUB_WORKSPACE/install-v4-cp2/SDL3.dll")) {
+            throw "Pinned SDL3.dll missing from CP2 install tree"
+          }
+
+      - name: Store CP2 Vulkan foundation artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: openmw-v4-cp2-vulkan-foundation-${{ github.sha }}
+          path: ${{ github.workspace }}/install-v4-cp2/*
+
+      - name: Store CP2 configure/build evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: openmw-v4-cp2-vulkan-foundation-logs-${{ github.sha }}
+          path: |
+            ${{ github.workspace }}/build-v4-cp2/CMakeCache.txt
+            ${{ github.workspace }}/build-v4-cp2/.ninja_log
+            ${{ github.workspace }}/build-v4-cp2/Testing/Temporary/LastTest.log
+
+  OpenGLControlWindows:
+    needs: Preflight
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
