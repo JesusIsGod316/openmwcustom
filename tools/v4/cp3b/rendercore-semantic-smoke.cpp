@@ -1,7 +1,9 @@
+#include <components/nifrender/translationbundle.hpp>
 #include <components/rendercore/renderer.hpp>
 #include <components/rendercore/updatebatch.hpp>
 
 #include <cassert>
+#include <limits>
 #include <memory>
 
 int main()
@@ -60,6 +62,46 @@ int main()
     assert(world.retire(*mesh));
     assert(world.retire(*material));
     assert(world.valid());
+
+    NifRender::TranslationBundle translated;
+    translated.sourceIdentity = "meshes/affine.nif";
+    translated.contentIdentity = "hash:affine";
+    translated.model.sourceIdentity = translated.sourceIdentity;
+    translated.model.contentIdentity = translated.contentIdentity;
+
+    NifRender::TranslatedMesh stagedMesh;
+    stagedMesh.record.sourceIdentity = translated.sourceIdentity + "#mesh:0";
+    translated.meshes.push_back(stagedMesh);
+
+    NifRender::TranslatedMaterial stagedMaterial;
+    stagedMaterial.state.sourceIdentity = translated.sourceIdentity + "#material:0";
+    translated.materials.push_back(stagedMaterial);
+
+    NifRender::TranslatedModelNode stagedRoot;
+    stagedRoot.kind = ModelNodeKind::Transform;
+    stagedRoot.localTransform[0][0] = -1.0f;
+    stagedRoot.localTransform[1][1] = 2.0f;
+    stagedRoot.localTransform[2][2] = 0.5f;
+    translated.model.nodes.push_back(stagedRoot);
+
+    NifRender::TranslatedModelNode stagedGeometry;
+    stagedGeometry.parent = ModelNodeIndex{ 0u };
+    stagedGeometry.kind = ModelNodeKind::Geometry;
+    stagedGeometry.mesh = NifRender::MeshIndex{ 0u };
+    stagedGeometry.materials.push_back(NifRender::MaterialIndex{ 0u });
+    translated.model.nodes.push_back(stagedGeometry);
+    translated.model.roots.push_back(ModelNodeIndex{ 0u });
+
+    NifRender::TranslationDiagnostic diagnostic;
+    diagnostic.disposition = NifRender::TranslationDisposition::Rendered;
+    diagnostic.code = "smoke.rendered";
+    translated.diagnostics.push_back(diagnostic);
+
+    assert(translated.valid());
+    assert(translated.summary().rendered == 1u);
+
+    translated.model.nodes[0].localTransform[3][0] = std::numeric_limits<float>::quiet_NaN();
+    assert(!translated.valid());
 
     return 0;
 }
