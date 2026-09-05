@@ -5,6 +5,7 @@
 #include "math.hpp"
 #include "resources.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -14,6 +15,49 @@
 
 namespace RenderCore
 {
+    namespace semantic_detail
+    {
+        [[nodiscard]] inline bool finite(float value) noexcept { return std::isfinite(value); }
+
+        [[nodiscard]] inline bool finite(const glm::vec2& value) noexcept
+        {
+            return finite(value.x) && finite(value.y);
+        }
+
+        [[nodiscard]] inline bool finite(const glm::vec3& value) noexcept
+        {
+            return finite(value.x) && finite(value.y) && finite(value.z);
+        }
+
+        [[nodiscard]] inline bool finite(const glm::vec4& value) noexcept
+        {
+            return finite(value.x) && finite(value.y) && finite(value.z) && finite(value.w);
+        }
+
+        [[nodiscard]] inline bool finite(const glm::quat& value) noexcept
+        {
+            return finite(value.w) && finite(value.x) && finite(value.y) && finite(value.z);
+        }
+
+        [[nodiscard]] inline bool finite(const glm::mat4& value) noexcept
+        {
+            for (glm::length_t column = 0; column < 4; ++column)
+            {
+                for (glm::length_t row = 0; row < 4; ++row)
+                {
+                    if (!finite(value[column][row]))
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        [[nodiscard]] inline bool finite(const LocalTransform& value) noexcept
+        {
+            return finite(value.translation) && finite(value.rotation) && finite(value.scale);
+        }
+    }
+
     enum class PrimitiveTopology : std::uint8_t
     {
         Triangles,
@@ -142,6 +186,11 @@ namespace RenderCore
     {
         TextureRole role = TextureRole::Diffuse;
         TextureHandle texture;
+        // Decode/interpretation belongs to the material use, not the image identity.
+        // One resident image may legitimately be sampled as color or data by
+        // different OpenMW material semantics without duplicating its logical asset.
+        TextureColorSpace colorSpace = TextureColorSpace::Srgb;
+        TextureFormatClass formatClass = TextureFormatClass::Unknown;
         TextureTransform transform;
         SamplerSemantic sampler;
     };
@@ -176,6 +225,36 @@ namespace RenderCore
             if (!texCoords.empty() && texCoords.size() != vertexCount)
                 return false;
         }
+
+        for (const glm::vec3& position : payload.positions)
+        {
+            if (!semantic_detail::finite(position))
+                return false;
+        }
+        for (const glm::vec3& normal : payload.normals)
+        {
+            if (!semantic_detail::finite(normal))
+                return false;
+        }
+        for (const glm::vec4& color : payload.colors)
+        {
+            if (!semantic_detail::finite(color))
+                return false;
+        }
+        for (const auto& texCoords : payload.texCoordSets)
+        {
+            for (const glm::vec2& texCoord : texCoords)
+            {
+                if (!semantic_detail::finite(texCoord))
+                    return false;
+            }
+        }
+        for (const std::uint32_t index : payload.indices)
+        {
+            if (index >= vertexCount)
+                return false;
+        }
+
         for (const MeshSurface& surface : payload.surfaces)
         {
             if (surface.indexCount == 0 || surface.firstIndex > payload.indices.size()
@@ -229,8 +308,6 @@ namespace RenderCore
         std::string sourceIdentity;
         std::uint32_t width = 0;
         std::uint32_t height = 0;
-        TextureColorSpace colorSpace = TextureColorSpace::Srgb;
-        TextureFormatClass formatClass = TextureFormatClass::Unknown;
         bool mipmapped = true;
     };
 
@@ -251,8 +328,11 @@ namespace RenderCore
     {
         for (std::size_t i = 0; i < payload.bones.size(); ++i)
         {
-            const std::int32_t parent = payload.bones[i].parent;
+            const BoneRecord& bone = payload.bones[i];
+            const std::int32_t parent = bone.parent;
             if (parent < -1 || (parent >= 0 && static_cast<std::size_t>(parent) >= i))
+                return false;
+            if (!semantic_detail::finite(bone.bindLocal) || !semantic_detail::finite(bone.inverseBind))
                 return false;
         }
         return true;
