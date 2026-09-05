@@ -4,7 +4,7 @@ on:
   push:
     branches: [v4.0-cp1b-sdl3-opengl-parity]
     paths:
-      - tools/v4/V4-CP1B-Migrate-SDL3.py
+      - tools/v4/V4-CP1B-*.py
   workflow_dispatch:
 
 permissions:
@@ -30,8 +30,14 @@ jobs:
           CP1A_BASE=0bd575fb8dc5665034cdd57da62a6813db0a1bb3
           git merge-base --is-ancestor "${CP1A_BASE}" HEAD
 
-      - name: Materialize native SDL3 migration
-        run: python3 tools/v4/V4-CP1B-Migrate-SDL3.py
+      - name: Materialize native SDL3 migration and repairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in tools/v4/V4-CP1B-*.py; do
+            echo "Running ${script}"
+            python3 "${script}"
+          done
 
       - name: Verify generated diff
         shell: bash
@@ -55,6 +61,6 @@ jobs:
           fi
           git config user.name 'OpenMW Custom Build CI'
           git config user.email 'actions@users.noreply.github.com'
-          git add CMakeLists.txt components/CMakeLists.txt components/sdlutil apps/openmw
+          git add CMakeLists.txt components/CMakeLists.txt components/sdlutil apps/openmw apps/launcher
           git commit -m 'V4.0 CP1B: materialize native SDL3 platform migration [full-build]'
           git push origin HEAD:v4.0-cp1b-sdl3-opengl-parity
