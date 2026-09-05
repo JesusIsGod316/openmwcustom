@@ -81,33 +81,134 @@ namespace
         return require(!frame.valid(), "non-finite frame/view state was accepted");
     }
 
-    bool testRenderWorldRevisionAndRetirement()
+    bool populateChunkedInstance(RenderCore::RenderWorld& world, RenderCore::MeshHandle& mesh,
+        RenderCore::ChunkHandle& chunk, RenderCore::InstanceHandle& instance)
+    {
+        const auto reservedMesh = world.reserveMesh();
+        const auto reservedChunk = world.reserveChunk();
+        const auto reservedInstance = world.reserveInstance();
+        if (!require(reservedMesh.has_value(), "mesh reservation failed")
+            || !require(reservedChunk.has_value(), "chunk reservation failed")
+            || !require(reservedInstance.has_value(), "instance reservation failed"))
+            return false;
+
+        RenderCore::MeshRecord meshRecord;
+        meshRecord.sourceIdentity = "meshes/chunked.nif";
+        RenderCore::ChunkRecord chunkRecord;
+        chunkRecord.producerIdentity = "cell:first";
+        if (!require(world.commit(*reservedMesh, meshRecord), "mesh commit failed")
+            || !require(world.commit(*reservedChunk, chunkRecord), "chunk commit failed"))
+            return false;
+
+        RenderCore::InstanceRecord instanceRecord;
+        instanceRecord.mesh = *reservedMesh;
+        instanceRecord.chunk = *reservedChunk;
+        if (!require(world.commit(*reservedInstance, instanceRecord), "instance commit failed"))
+            return false;
+
+        mesh = *reservedMesh;
+        chunk = *reservedChunk;
+        instance = *reservedInstance;
+        return require(world.valid(), "basic chunked world invalid after atomic instance publication");
+    }
+
+    bool testRenderWorldDerivedMembership()
+    {
+        RenderCore::RenderWorld world;
+        RenderCore::MeshHandle mesh;
+        RenderCore::ChunkHandle firstChunk;
+        RenderCore::InstanceHandle instance;
+        if (!populateChunkedInstance(world, mesh, firstChunk, instance))
+            return false;
+
+        const RenderCore::ChunkRecord* first = world.get(firstChunk);
+        if (!require(first && first->members.size() == 1 && first->members.front() == instance,
+                "instance publication did not derive chunk membership"))
+            return false;
+
+        const auto invalidChunk = world.reserveChunk();
+        if (!require(invalidChunk.has_value(), "invalid chunk reservation failed"))
+            return false;
+        RenderCore::ChunkRecord callerAuthored;
+        callerAuthored.members.push_back(instance);
+        if (!require(!world.commit(*invalidChunk, callerAuthored), "caller-authored chunk membership was accepted"))
+            return false;
+        if (!require(world.cancel(*invalidChunk), "failed chunk reservation was not cancellable"))
+            return false;
+
+        const auto secondChunk = world.reserveChunk();
+        if (!require(secondChunk.has_value(), "second chunk reservation failed"))
+            return false;
+        RenderCore::ChunkRecord secondRecord;
+        secondRecord.producerIdentity = "cell:second";
+        if (!require(world.commit(*secondChunk, secondRecord), "second chunk commit failed"))
+            return false;
+
+        const auto revisionBeforeReparent = world.revision();
+        if (!require(world.reparentInstance(instance, *secondChunk), "instance reparent failed")
+            || !require(world.revision() > revisionBeforeReparent, "reparent did not publish a world revision")
+            || !require(world.get(firstChunk) && world.get(firstChunk)->members.empty(),
+                "old chunk retained reparented member")
+            || !require(world.get(*secondChunk) && world.get(*secondChunk)->members.size() == 1
+                    && world.get(*secondChunk)->members.front() == instance,
+                "new chunk did not receive reparented member")
+            || !require(world.valid(), "world invalid after atomic reparent"))
+            return false;
+
+        const auto noOpRevision = world.revision();
+        if (!require(world.reparentInstance(instance, *secondChunk), "same-chunk reparent rejected")
+            || !require(world.revision() == noOpRevision, "same-chunk reparent changed revision")
+            || !require(world.get(*secondChunk)->members.size() == 1, "same-chunk reparent duplicated membership"))
+            return false;
+
+        RenderCore::InstanceRecord illegalGenericMove = *world.get(instance);
+        illegalGenericMove.chunk = firstChunk;
+        if (!require(!world.update(instance, illegalGenericMove), "generic instance update changed semantic chunk ownership"))
+            return false;
+
+        RenderCore::ChunkRecord illegalMemberUpdate = *world.get(*secondChunk);
+        illegalMemberUpdate.revision = RenderCore::ResourceRevision{ 2 };
+        illegalMemberUpdate.members.clear();
+        if (!require(!world.update(*secondChunk, illegalMemberUpdate), "generic chunk update changed derived membership"))
+            return false;
+
+        if (!require(!world.retire(*secondChunk), "chunk with a live member retired")
+            || !require(world.retire(instance), "instance retirement failed")
+            || !require(world.get(*secondChunk) && world.get(*secondChunk)->members.empty(),
+                "instance retirement did not remove derived membership")
+            || !require(world.retire(*secondChunk), "empty second chunk retirement failed")
+            || !require(world.retire(firstChunk), "empty first chunk retirement failed")
+            || !require(world.retire(mesh), "unreferenced mesh retirement failed")
+            || !require(world.valid(), "world invalid after relationship retirement"))
+            return false;
+
+        return true;
+    }
+
+    bool testRenderWorldResourceRevisionAndStaleGeneration()
     {
         RenderCore::RenderWorld world;
         const auto mesh = world.reserveMesh();
         const auto material = world.reserveMaterial();
         const auto instance = world.reserveInstance();
-        if (!require(mesh.has_value(), "mesh reservation failed")
+        if (!require(mesh.has_value(), "revision mesh reservation failed")
             || !require(material.has_value(), "material reservation failed")
-            || !require(instance.has_value(), "instance reservation failed"))
+            || !require(instance.has_value(), "revision instance reservation failed"))
             return false;
 
         RenderCore::MeshRecord meshRecord;
         meshRecord.sourceIdentity = "meshes/test.nif";
         RenderCore::MaterialRecord materialRecord;
         materialRecord.sourceIdentity = "materials/test";
-        if (!require(world.commit(*mesh, meshRecord), "mesh commit failed")
+        if (!require(world.commit(*mesh, meshRecord), "revision mesh commit failed")
             || !require(world.commit(*material, materialRecord), "material commit failed"))
             return false;
 
         RenderCore::InstanceRecord instanceRecord;
         instanceRecord.mesh = *mesh;
         instanceRecord.materials.push_back(*material);
-        if (!require(world.commit(*instance, instanceRecord), "instance commit failed")
-            || !require(world.valid(), "valid RenderWorld rejected"))
-            return false;
-
-        if (!require(!world.retire(*mesh), "referenced mesh retirement was accepted")
+        if (!require(world.commit(*instance, instanceRecord), "revision instance commit failed")
+            || !require(!world.retire(*mesh), "referenced mesh retirement was accepted")
             || !require(!world.retire(*material), "referenced material retirement was accepted"))
             return false;
 
@@ -122,77 +223,47 @@ namespace
             || !require(world.get(*mesh) && world.get(*mesh)->surfaceCount == 3, "mesh update payload missing"))
             return false;
 
-        if (!require(world.retire(*instance), "unlinked instance retirement failed")
-            || !require(world.retire(*material), "material retirement failed")
-            || !require(world.retire(*mesh), "mesh retirement failed")
-            || !require(world.get(*mesh) == nullptr, "retired mesh remained visible")
-            || !require(world.valid(), "empty RenderWorld became invalid"))
+        const RenderCore::InstanceHandle staleInstance = *instance;
+        if (!require(world.retire(*instance), "revision instance retirement failed")
+            || !require(world.retire(*material), "material retirement after unlink failed")
+            || !require(world.retire(*mesh), "mesh retirement after unlink failed"))
             return false;
 
-        const auto replacement = world.reserveMesh();
-        if (!require(replacement.has_value(), "replacement mesh reservation failed")
-            || !require(replacement->slot() == mesh->slot(), "lowest retired mesh slot was not reused")
-            || !require(replacement->generation() != mesh->generation(), "replacement mesh reused stale generation"))
+        const auto replacementMesh = world.reserveMesh();
+        if (!require(replacementMesh.has_value(), "replacement mesh reservation failed")
+            || !require(replacementMesh->slot() == mesh->slot(), "lowest mesh slot was not reused")
+            || !require(replacementMesh->generation() != mesh->generation(), "mesh generation did not advance"))
             return false;
 
         RenderCore::MeshRecord replacementRecord;
         replacementRecord.sourceIdentity = "meshes/replacement.nif";
-        return require(world.commit(*replacement, replacementRecord), "replacement mesh commit failed")
-            && require(world.get(*mesh) == nullptr, "stale mesh handle aliased replacement")
-            && require(world.get(*replacement) != nullptr, "replacement mesh missing");
-    }
+        if (!require(world.commit(*replacementMesh, replacementRecord), "replacement mesh commit failed")
+            || !require(world.get(*mesh) == nullptr, "stale mesh handle aliased replacement"))
+            return false;
 
-    bool testRenderWorldChunkIntegrity()
-    {
-        RenderCore::RenderWorld world;
-        const auto mesh = world.reserveMesh();
+        const auto replacementInstance = world.reserveInstance();
+        if (!require(replacementInstance.has_value(), "replacement instance reservation failed")
+            || !require(replacementInstance->slot() == staleInstance.slot(), "lowest instance slot was not reused")
+            || !require(replacementInstance->generation() != staleInstance.generation(),
+                "instance generation did not advance"))
+            return false;
+
+        RenderCore::InstanceRecord replacementInstanceRecord;
+        replacementInstanceRecord.mesh = *replacementMesh;
+        if (!require(world.commit(*replacementInstance, replacementInstanceRecord), "replacement instance commit failed"))
+            return false;
+
         const auto chunk = world.reserveChunk();
-        if (!require(mesh.has_value(), "chunk test mesh reservation failed")
-            || !require(chunk.has_value(), "chunk reservation failed"))
+        if (!require(chunk.has_value(), "stale-reparent chunk reservation failed"))
             return false;
-
-        RenderCore::MeshRecord meshRecord;
-        meshRecord.sourceIdentity = "meshes/chunk.nif";
         RenderCore::ChunkRecord chunkRecord;
-        chunkRecord.producerIdentity = "cell:test";
-        if (!require(world.commit(*mesh, meshRecord), "chunk test mesh commit failed")
-            || !require(world.commit(*chunk, chunkRecord), "empty chunk commit failed"))
+        if (!require(world.commit(*chunk, chunkRecord), "stale-reparent chunk commit failed"))
             return false;
 
-        const auto instance = world.reserveInstance();
-        if (!require(instance.has_value(), "chunk member reservation failed"))
-            return false;
-
-        RenderCore::InstanceRecord instanceRecord;
-        instanceRecord.mesh = *mesh;
-        instanceRecord.chunk = *chunk;
-        if (!require(world.commit(*instance, instanceRecord), "chunk member commit failed"))
-            return false;
-
-        RenderCore::ChunkRecord populated = *world.get(*chunk);
-        populated.revision = RenderCore::ResourceRevision{ 2 };
-        populated.members.push_back(*instance);
-        if (!require(world.update(*chunk, populated), "chunk membership update failed")
-            || !require(world.valid(), "bidirectional chunk membership rejected")
-            || !require(!world.retire(*instance), "chunk-owned instance retirement was accepted")
-            || !require(!world.retire(*chunk), "referenced chunk retirement was accepted"))
-            return false;
-
-        RenderCore::InstanceRecord detached = *world.get(*instance);
-        detached.chunk.reset();
-        if (!require(world.update(*instance, detached), "instance chunk detach failed"))
-            return false;
-
-        RenderCore::ChunkRecord emptied = *world.get(*chunk);
-        emptied.revision = RenderCore::ResourceRevision{ 3 };
-        emptied.members.clear();
-        if (!require(world.update(*chunk, emptied), "chunk member removal failed")
-            || !require(world.valid(), "detached chunk state invalid"))
-            return false;
-
-        return require(world.retire(*instance), "detached instance retirement failed")
-            && require(world.retire(*chunk), "detached chunk retirement failed")
-            && require(world.retire(*mesh), "detached chunk mesh retirement failed");
+        const auto revisionBeforeStale = world.revision();
+        return require(!world.reparentInstance(staleInstance, *chunk), "stale instance reparented replacement")
+            && require(world.revision() == revisionBeforeStale, "stale reparent changed world revision")
+            && require(world.valid(), "world invalid after stale-generation rejection");
     }
 
     bool testResidencyRetirement()
@@ -261,7 +332,8 @@ namespace
 int main()
 {
     const bool pass = testFrameRenderState() && testDuplicateViewRejection() && testNonFiniteFrameRejection()
-        && testRenderWorldRevisionAndRetirement() && testRenderWorldChunkIntegrity() && testResidencyRetirement();
+        && testRenderWorldDerivedMembership() && testRenderWorldResourceRevisionAndStaleGeneration()
+        && testResidencyRetirement();
     std::cout << (pass ? "V4 CP2 foundation contract tests: PASS\n" : "V4 CP2 foundation contract tests: FAIL\n");
     return pass ? 0 : 1;
 }

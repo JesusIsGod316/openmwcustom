@@ -6,6 +6,7 @@
 #include "resources.hpp"
 #include "slottable.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -60,6 +61,8 @@ namespace RenderCore
 
     struct InstanceRecord
     {
+        // Canonical semantic ownership. ChunkRecord::members is a derived ordered
+        // reverse index maintained only by RenderWorld publication operations.
         std::optional<ChunkHandle> chunk;
         MeshHandle mesh;
         std::vector<MaterialHandle> materials;
@@ -76,6 +79,8 @@ namespace RenderCore
     {
         ResourceRevision revision = InitialResourceRevision;
         std::string producerIdentity;
+        // Derived ordered index for individually addressable instances. Producers
+        // never author this independently from InstanceRecord::chunk.
         std::vector<InstanceHandle> members;
     };
 
@@ -131,7 +136,9 @@ namespace RenderCore
         }
         bool commit(ChunkHandle handle, ChunkRecord record)
         {
-            if (!record.revision.valid() || !validateChunkMembers(handle, record))
+            // Individual membership is derived from instance publication. Accepting
+            // caller-authored members here would create a second semantic write path.
+            if (!record.revision.valid() || !record.members.empty())
                 return false;
             return commitRecord(mChunks, handle, std::move(record));
         }
@@ -142,13 +149,46 @@ namespace RenderCore
 
         bool commit(InstanceHandle handle, InstanceRecord record)
         {
-            if (!validateInstanceReferences(record))
+            if (!mInstances.isReserved(handle) || !validateInstanceReferences(record))
                 return false;
-            return commitRecord(mInstances, handle, std::move(record));
+
+            const auto nextRevision = advanceMonotonic(mRevision);
+            if (!nextRevision)
+                return false;
+
+            ChunkRecord* chunk = record.chunk ? mChunks.get(*record.chunk) : nullptr;
+            if (chunk && containsMember(*chunk, handle))
+                return false;
+
+            // Publish the derived reverse index first. push_back can allocate and
+            // throw; if it does, no instance state has changed. If instance commit
+            // later throws/fails, roll the index back before propagating/returning.
+            if (chunk)
+                chunk->members.push_back(handle);
+
+            try
+            {
+                if (!mInstances.commit(handle, std::move(record)))
+                {
+                    if (chunk)
+                        chunk->members.pop_back();
+                    return false;
+                }
+            }
+            catch (...)
+            {
+                if (chunk)
+                    chunk->members.pop_back();
+                throw;
+            }
+
+            mRevision = *nextRevision;
+            return true;
         }
 
         // Same-generation payload replacement. Versioned records must advance
-        // their logical ResourceRevision; backend residency remains independent.
+        // ResourceRevision. Chunk membership itself is not writable through this
+        // generic update API; relationship changes use reparentInstance().
         bool update(MeshHandle handle, MeshRecord record)
         {
             return updateVersionedRecord(mMeshes, handle, std::move(record));
@@ -165,21 +205,67 @@ namespace RenderCore
         {
             return updateVersionedRecord(mSkeletons, handle, std::move(record));
         }
-        bool update(ChunkHandle handle, ChunkRecord record)
-        {
-            if (!validateChunkMembers(handle, record))
-                return false;
-            return updateVersionedRecord(mChunks, handle, std::move(record));
-        }
         bool update(LightHandle handle, LightRecord record)
         {
             return updateVersionedRecord(mLights, handle, std::move(record));
         }
+
+        bool update(ChunkHandle handle, ChunkRecord record)
+        {
+            const ChunkRecord* current = mChunks.get(handle);
+            if (!current || record.members != current->members)
+                return false;
+            return updateVersionedRecord(mChunks, handle, std::move(record));
+        }
+
         bool update(InstanceHandle handle, InstanceRecord record)
         {
-            if (!validateInstanceReferences(record))
+            const InstanceRecord* current = mInstances.get(handle);
+            if (!current || record.chunk != current->chunk || !validateInstanceReferences(record))
+                return false;
+            if (record.chunk && !chunkContainsExactlyOnce(*record.chunk, handle))
                 return false;
             return updateRecord(mInstances, handle, std::move(record));
+        }
+
+        // Move one live individually addressable instance between logical chunks.
+        // InstanceRecord::chunk is the semantic source of truth and members is
+        // updated in the same published RenderWorld revision.
+        bool reparentInstance(InstanceHandle handle, std::optional<ChunkHandle> newChunk)
+        {
+            InstanceRecord* instance = mInstances.get(handle);
+            if (!instance)
+                return false;
+            if (newChunk && !mChunks.contains(*newChunk))
+                return false;
+
+            ChunkRecord* oldRecord = instance->chunk ? mChunks.get(*instance->chunk) : nullptr;
+            ChunkRecord* newRecord = newChunk ? mChunks.get(*newChunk) : nullptr;
+            if (instance->chunk && (!oldRecord || !containsExactlyOnce(*oldRecord, handle)))
+                return false;
+
+            if (instance->chunk == newChunk)
+                return !newRecord || containsExactlyOnce(*newRecord, handle);
+            if (newRecord && containsMember(*newRecord, handle))
+                return false;
+
+            const auto nextRevision = advanceMonotonic(mRevision);
+            if (!nextRevision)
+                return false;
+
+            // New membership is the only step that can allocate/throw. Perform it
+            // before no-throw erasure/handle assignment so failure leaves the old
+            // published relationship untouched.
+            if (newRecord)
+                newRecord->members.push_back(handle);
+            if (oldRecord)
+            {
+                const auto oldMember = std::find(oldRecord->members.begin(), oldRecord->members.end(), handle);
+                oldRecord->members.erase(oldMember);
+            }
+            instance->chunk = newChunk;
+            mRevision = *nextRevision;
+            return true;
         }
 
         bool cancel(MeshHandle handle) noexcept { return mMeshes.cancel(handle); }
@@ -190,9 +276,8 @@ namespace RenderCore
         bool cancel(ChunkHandle handle) noexcept { return mChunks.cancel(handle); }
         bool cancel(LightHandle handle) noexcept { return mLights.cancel(handle); }
 
-        // Retire fails closed while a live logical object still references the
-        // target. CP3 resource streaming must unlink/update dependents first;
-        // backend eviction remains a separate ResidencyLedger operation.
+        // Logical retirement fails closed while live dependents still reference
+        // the target. Backend residency retirement remains independent.
         bool retire(MeshHandle handle) noexcept
         {
             return !meshReferenced(handle) && retireRecord(mMeshes, handle);
@@ -206,13 +291,36 @@ namespace RenderCore
         {
             return !skeletonReferenced(handle) && retireRecord(mSkeletons, handle);
         }
+
         bool retire(InstanceHandle handle) noexcept
         {
-            return !instanceReferenced(handle) && retireRecord(mInstances, handle);
+            InstanceRecord* instance = mInstances.get(handle);
+            if (!instance)
+                return false;
+
+            ChunkRecord* chunk = instance->chunk ? mChunks.get(*instance->chunk) : nullptr;
+            if (instance->chunk && (!chunk || !containsExactlyOnce(*chunk, handle)))
+                return false;
+
+            const auto nextRevision = advanceMonotonic(mRevision);
+            if (!nextRevision || !mInstances.retire(handle))
+                return false;
+
+            if (chunk)
+            {
+                const auto member = std::find(chunk->members.begin(), chunk->members.end(), handle);
+                chunk->members.erase(member);
+            }
+            mRevision = *nextRevision;
+            return true;
         }
+
         bool retire(ChunkHandle handle) noexcept
         {
-            return !chunkReferenced(handle) && retireRecord(mChunks, handle);
+            const ChunkRecord* chunk = mChunks.get(handle);
+            if (!chunk || !chunk->members.empty() || chunkReferenced(handle))
+                return false;
+            return retireRecord(mChunks, handle);
         }
         bool retire(LightHandle handle) noexcept { return retireRecord(mLights, handle); }
 
@@ -225,8 +333,8 @@ namespace RenderCore
         [[nodiscard]] const LightRecord* get(LightHandle handle) const noexcept { return mLights.get(handle); }
 
         // Expensive correctness audit intended for publication/checkpoint tests,
-        // not per-draw traversal. It verifies live references and chunk membership
-        // without exposing mutable backend/game identities.
+        // not per-draw traversal. Public mutation methods should preserve it after
+        // every successful operation.
         [[nodiscard]] bool valid() const noexcept
         {
             bool result = true;
@@ -252,18 +360,33 @@ namespace RenderCore
                     result = false;
             });
 
-            mChunks.forEachLive([&](ChunkHandle handle, const ChunkRecord& record) {
-                if (!record.revision.valid() || !validateChunkMembers(handle, record))
-                    result = false;
-            });
-
-            mInstances.forEachLive([&](InstanceHandle handle, const InstanceRecord& record) {
-                if (!validateInstanceReferences(record))
+            mChunks.forEachLive([&](ChunkHandle chunkHandle, const ChunkRecord& chunk) {
+                if (!chunk.revision.valid())
                 {
                     result = false;
                     return;
                 }
-                if (record.chunk && !chunkContainsInstance(*record.chunk, handle))
+                for (std::size_t i = 0; i < chunk.members.size(); ++i)
+                {
+                    const InstanceHandle member = chunk.members[i];
+                    const InstanceRecord* instance = mInstances.get(member);
+                    if (!instance || !instance->chunk || *instance->chunk != chunkHandle)
+                        result = false;
+                    for (std::size_t j = i + 1; j < chunk.members.size(); ++j)
+                    {
+                        if (member == chunk.members[j])
+                            result = false;
+                    }
+                }
+            });
+
+            mInstances.forEachLive([&](InstanceHandle handle, const InstanceRecord& instance) {
+                if (!validateInstanceReferences(instance))
+                {
+                    result = false;
+                    return;
+                }
+                if (instance.chunk && !chunkContainsExactlyOnce(*instance.chunk, handle))
                     result = false;
             });
 
@@ -309,34 +432,20 @@ namespace RenderCore
             return true;
         }
 
-        [[nodiscard]] bool validateChunkMembers(ChunkHandle handle, const ChunkRecord& record) const noexcept
+        [[nodiscard]] static bool containsMember(const ChunkRecord& chunk, InstanceHandle handle) noexcept
         {
-            for (std::size_t i = 0; i < record.members.size(); ++i)
-            {
-                const InstanceHandle member = record.members[i];
-                const InstanceRecord* instance = mInstances.get(member);
-                if (!instance || !instance->chunk || *instance->chunk != handle)
-                    return false;
-                for (std::size_t j = i + 1; j < record.members.size(); ++j)
-                {
-                    if (member == record.members[j])
-                        return false;
-                }
-            }
-            return true;
+            return std::find(chunk.members.begin(), chunk.members.end(), handle) != chunk.members.end();
         }
 
-        [[nodiscard]] bool chunkContainsInstance(ChunkHandle chunk, InstanceHandle instance) const noexcept
+        [[nodiscard]] static bool containsExactlyOnce(const ChunkRecord& chunk, InstanceHandle handle) noexcept
+        {
+            return std::count(chunk.members.begin(), chunk.members.end(), handle) == 1;
+        }
+
+        [[nodiscard]] bool chunkContainsExactlyOnce(ChunkHandle chunk, InstanceHandle instance) const noexcept
         {
             const ChunkRecord* record = mChunks.get(chunk);
-            if (!record)
-                return false;
-            for (const InstanceHandle member : record->members)
-            {
-                if (member == instance)
-                    return true;
-            }
-            return false;
+            return record && containsExactlyOnce(*record, instance);
         }
 
         [[nodiscard]] bool meshReferenced(MeshHandle handle) const noexcept
@@ -353,14 +462,8 @@ namespace RenderCore
         {
             bool referenced = false;
             mInstances.forEachLive([&](InstanceHandle, const InstanceRecord& record) {
-                for (const MaterialHandle material : record.materials)
-                {
-                    if (material == handle)
-                    {
-                        referenced = true;
-                        break;
-                    }
-                }
+                if (std::find(record.materials.begin(), record.materials.end(), handle) != record.materials.end())
+                    referenced = true;
             });
             return referenced;
         }
@@ -381,22 +484,6 @@ namespace RenderCore
             mInstances.forEachLive([&](InstanceHandle, const InstanceRecord& record) {
                 if (record.chunk && *record.chunk == handle)
                     referenced = true;
-            });
-            return referenced;
-        }
-
-        [[nodiscard]] bool instanceReferenced(InstanceHandle handle) const noexcept
-        {
-            bool referenced = false;
-            mChunks.forEachLive([&](ChunkHandle, const ChunkRecord& record) {
-                for (const InstanceHandle member : record.members)
-                {
-                    if (member == handle)
-                    {
-                        referenced = true;
-                        break;
-                    }
-                }
             });
             return referenced;
         }

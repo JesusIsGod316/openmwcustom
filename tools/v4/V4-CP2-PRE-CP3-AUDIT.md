@@ -1,125 +1,138 @@
 # V4.0 CP2 — Pre-CP3 Source Hardening Audit
 
-Status: **SOURCE HARDENING PREPARED — WINDOWS QC REQUIRED — FINAL CORRECTED RESIZE RUNTIME RETEST STILL PENDING**
-Audited head: `9af7acc701e9e1afa4799681b4e78e9c3a5c6c34`
-Audited run: `33977577668` — Preflight, FoundationWindows and full OpenGL control all green
+Status: **FINAL SOURCE HARDENING CORRECTION PREPARED — WINDOWS QC REQUIRED — CORRECTED RESIZE RUNTIME RETEST PENDING**
 Performance claim: **NONE**
 
-## 1. Runtime state carried into this audit
+## 1. Accepted CP2 evidence entering this audit
 
-The user-hardware CP2 probe has already proven the core Vulkan path on the RTX 5050 Laptop GPU:
+The corrected resize-ownership source at `9af7acc701e9e1afa4799681b4e78e9c3a5c6c34` passed run `33977577668` in all three lanes: Preflight, FoundationWindows, and full OpenGLControlWindows.
 
-- discrete NVIDIA device selected;
-- Vulkan API 1.4.351 reported;
-- device-local heap/budget telemetry returned;
-- VSG render graph + shader/pipeline + swapchain compile passed;
-- visible geometry presented;
+User-hardware evidence from the preceding probe established the core path on the NVIDIA GeForce RTX 5050 Laptop GPU:
+
+- Vulkan API 1.4.351;
+- device-local heap/budget reporting;
+- VSG render graph + shader/pipeline + swapchain compile PASS;
+- visible Vulkan geometry presentation;
 - swapchain survived repeated resize without a crash;
-- clean shutdown message was observed.
+- clean shutdown message observed.
 
-The first probe exposed a real aspect-ratio ownership bug during extreme resize. `9af7acc...` fixes that by coalescing SDL resize events and allowing VSG's RenderGraph/WindowResizeHandler to own camera projection/viewport extent changes. CI is green on that repair, but the corrected wide/tall user-hardware retest remains a CP2 closeout gate.
+The first probe exposed double-applied aspect-ratio resize ownership. `9af7acc...` removed the probe's manual projection/viewport mutation, coalesced SDL resize notifications, and lets VSG RenderGraph/WindowResizeHandler own projection/viewport extent changes. CI is green on that repair. The user is away from the machine, so the corrected extreme-wide/extreme-tall hardware retest remains the final CP2 runtime gate.
 
-## 2. Existing CP2 code that is sound and should not be churned
+## 2. Preliminary hardening and CI history
 
-### SDL/VSG window ownership
+`1294a7d28386b36e8ebb69a6f85923f625d5f3ce` introduced the first pre-CP3 hardening pass:
 
-`SdlVulkanWindow` keeps SDL3 as native-window authority and VSG as Vulkan-resource authority. The adapter's `releaseWindow()` behavior intentionally mirrors VSG's native window backends: it only severs the native handle; ordered teardown remains the owner's responsibility. The probe destroys the SDL window only after VSG viewer/window references are released. No speculative `releaseWindow()` rewrite is justified by this audit.
+- ResidencyLedger exception/invariant safety;
+- same-generation SlotTable/RenderWorld updates;
+- RenderWorld dependency validation and logical retirement guards;
+- FrameRenderState finite-value validation;
+- expanded isolated foundation tests;
+- this audit document.
 
-### Dependency pin
+Run `33982424653` stopped in preflight only because this Markdown file used trailing whitespace for line breaks. No C++ compile ran. `5cff240ffe74c86ceaa0385ac4e13192e0798bbb` removed that formatting-only defect and triggered run `33982475602`.
 
-VulkanSceneGraph v1.1.16 is now an official upstream release and contains useful available-memory, paging thread-safety and out-of-GPU-memory fixes. However the current upstream vcpkg `vsg` port still resolves to 1.1.15#1. CP2 therefore keeps the already validated 1.1.15#1 pin rather than introducing an ad-hoc overlay port immediately before CP3. A 1.1.16 dependency-only experiment remains worthwhile once it can be pinned reproducibly or deliberately carried as an isolated overlay delta.
+## 3. Recovered CP1A RenderWorld consistency history
 
-## 3. Defects found that matter before real CP3 resource churn
+A source audit recovered the historical unpromoted branch `v4.0-cp1a-renderworld-consistency-staging`. It must not be treated as accepted lineage or blindly cherry-picked, but it contains directly relevant design/QC evidence that was missing from the structured current-state narrative.
 
-### ResidencyLedger mutation safety
+Important evidence:
 
-The original CP2 ledger had two robustness gaps that the one-box probe was unlikely to exercise:
+- `V4-CP1A-RENDERWORLD-INVARIANTS.md` established `InstanceRecord::chunk` as the single semantic ownership write and `ChunkRecord::members` as a derived ordered reverse index, never an independently authored relationship.
+- staging `RenderWorld` implemented atomic instance publication, reparent, and retire maintenance of that derived index and fail-closed resource retirement while referenced;
+- run `33886312639` at staging head `6733a1268b2f7f2ade5e7374e65aeaea85488ea5` passed the standalone RenderWorld relationship compile/runtime smoke plus neutral-boundary and whitespace checks;
+- later commits carried the invariant and record-surface audit documents but their workflow runs were skipped because the staging workflow intentionally ran only when the commit message contained `[renderworld-qc]`;
+- there is no evidence that the single-semantic-write relationship rule was rejected; the branch simply was not promoted and later accepted work diverged.
 
-1. `queueRetire()` incremented `pendingRetireBytes` before `std::vector::push_back()`. If ticket allocation threw, accounting could claim a retirement that did not exist.
-2. `collectRetired()` subtracted several counters sequentially. If an invariant mismatch was encountered after the first subtraction, the ticket could remain while accounting was partially mutated.
+This recovered rule matches the locked neutral-render architecture and is therefore adapted into the current CP2 hardening rather than imported as branch ownership.
 
-Hardening:
+## 4. Final RenderWorld hardening rule
 
-- publish the retirement ticket before changing counters;
-- validate every required subtraction before mutating any counter;
-- overflow-protect queued-class summation;
-- saturate snapshot/released-byte aggregate telemetry rather than wrapping.
+The preliminary hardening's manually writable chunk membership path is superseded before CP3.
 
-This is correctness hardening, not an eviction policy or performance feature.
+Final rule:
 
-### RenderWorld referential integrity
+- `InstanceRecord::chunk` is canonical semantic ownership;
+- `ChunkRecord::members` is derived and cannot be supplied on chunk create;
+- instance commit establishes derived membership atomically with rollback on failure/exception;
+- `reparentInstance()` moves old/new membership and instance ownership in one published RenderWorld revision;
+- generic instance update cannot change chunk ownership;
+- generic chunk update cannot change derived members;
+- instance retire removes derived membership in the same revision;
+- chunk retire requires no live members/references;
+- mesh/material/skeleton retirement fails closed while referenced by a live instance;
+- versioned resource updates preserve handle slot/generation and require a strictly newer `ResourceRevision`;
+- `RenderWorld::valid()` remains an expensive checkpoint/test audit for live dependencies and bidirectional membership.
 
-The initial logical world could retire a mesh/material/skeleton/chunk that was still referenced by a live instance, and it had no same-generation update API for resource revision changes. That becomes dangerous as soon as CP3 streams/reloads NIF resources.
+Main `components-tests` are expanded with relationship, stale-generation, retirement, generic-update bypass, deterministic-membership, and versioned-update coverage so the OpenGL control lane also validates this neutral foundation.
 
-Hardening:
+## 5. ResidencyLedger hardening
 
-- `SlotTable::update()` preserves slot/generation identity while replacing a live payload;
-- deterministic read-only `forEachLive()` supports invariant checks without exposing mutable storage;
-- versioned RenderWorld records now require strictly increasing `ResourceRevision` on update;
-- instance updates revalidate mesh/material/skeleton/chunk handles;
-- resource/chunk/instance retirement fails closed while live logical dependents still reference the target;
-- chunk membership validation rejects stale, cross-chunk and duplicate member handles;
-- `RenderWorld::valid()` provides an explicit expensive publication/checkpoint audit for resource references and bidirectional chunk membership.
+The original box probe did not exercise enough churn to expose several bookkeeping failure modes that matter when CP3 begins uploading/retiring real meshes and textures.
 
-The implementation deliberately does not add backend objects, pointer identity or GPU allocation state to RenderWorld.
+Hardening keeps logical lifetime separate from backend residency but makes mutation fail safely:
 
-### FrameRenderState numeric fail-closed validation
+- `queueRetire()` publishes its retirement ticket before changing counters, so `vector::push_back()` allocation failure cannot leave phantom pending bytes;
+- queued class bytes are overflow-protected;
+- `collectRetired()` validates every required subtraction before mutating any counter, preventing partial accounting mutation if an invariant is violated;
+- aggregate telemetry saturates rather than wrapping;
+- tests verify that an overcommitted retirement is rejected without changing accounting.
 
-The original `lodScale <= 0` test accepts NaN because NaN comparisons are false. Real camera/transform publication in CP3 should not be allowed to put NaN/Inf into command recording or skinning data.
+This is correctness hardening only, not an eviction policy or performance mechanism.
 
-Hardening:
+## 6. FrameRenderState hardening
 
-- require finite simulation time/frame delta/jitter/projection offset;
-- require finite positive LOD scale;
-- require finite current/previous camera position/orientation/view/projection;
-- require finite current/previous dynamic transforms.
+The initial `lodScale <= 0` check allowed NaN through because NaN comparisons are false.
 
-This does not add CP3 pose/morph data yet; it only hardens the existing frame contract.
+The hardened snapshot rejects non-finite:
 
-## 4. Missing architecture that is intentionally CP3 work, not guessed into CP2
+- simulation time and frame delta;
+- jitter/projection offsets;
+- LOD scale;
+- current/previous camera position, orientation, view and projection matrices;
+- current/previous dynamic transforms;
+- environment scalar/vector/color values including fog, sun and water state.
 
-The locked common boundary remains:
+Duplicate frame-local view indices and duplicate dynamic-instance entries fail closed. This still does not add the CP3 skeleton-pose/morph payloads; those remain part of the real renderer slice.
 
-`game/mod semantics -> ordered immutable RenderWorldUpdateBatch -> persistent RenderWorld -> immutable FrameRenderState -> semantic renderer service -> backend`
+## 7. SDL/VSG ownership and dependency audit
 
-Current source still does not contain the full `RenderWorldUpdateBatch` producer/apply path or the semantic renderer service. CP2 explicitly deferred those because the Vulkan probe is isolated. They become the **first CP3 integration task** and must exist before real OpenMW game objects are allowed to reach VSG.
+### Window ownership
 
-Do not bypass this gap by mapping `MWWorld::Ptr` directly to long-lived `vsg::Node` ownership.
+No speculative `SdlVulkanWindow::releaseWindow()` change is justified. VSG's native window implementations likewise use `releaseWindow()` to sever the native handle, while ordered teardown is owner-managed. CP2 destroys the SDL native window only after VSG viewer/window references are released.
 
-Likewise, the current RenderWorld resource records are intentionally minimal. CP3 must derive the exact neutral payload from current OpenMW/V3.25 semantics plus the audited donor implementation rather than freezing a guessed GPU vertex/material ABI in CP2.
+### VSG version
 
-Required CP3 extensions include at least:
+VulkanSceneGraph v1.1.16 is now an official upstream release and includes available-memory checks plus paging thread-safety/out-of-GPU-memory fixes that are attractive for CP3. Current upstream vcpkg still resolves `vsg` to 1.1.15#1, which is the version already validated by CP2.
 
-- mesh bounds/topology/surface descriptors and backend-neutral geometry payload ownership;
-- material scalar/color/alpha/two-sided/texture-role semantics with current V3.25 PBR precedence;
-- texture role/color-space/sampler semantics;
-- skeleton hierarchy/bind/inverse-bind/stable bone indexing;
-- instance bounds/LOD/attachment semantics;
-- immutable per-frame skeleton pose and morph publication, including previous-rendered history where required.
+Decision: keep reproducible VSG 1.1.15#1 for CP2. Do not smuggle an ad-hoc overlay-port dependency change into final CP2. Evaluate 1.1.16 as an explicit isolated dependency delta once it can be pinned reproducibly or deliberately carried as a reviewed overlay.
 
-## 5. Engine integration audit
+## 8. What remains CP3 work rather than CP2 hardening
 
-`OMW::Engine::createWindow()` is still correctly hard-wired to `SDL_WINDOW_OPENGL`, `GraphicsWindowSDL2`, the OSG camera and OSG viewer. That is the protected OpenGL control path.
+Current accepted lineage still has no authoritative `RenderWorldUpdateBatch` implementation or semantic renderer service. The current persistent records are also intentionally too thin for the complete locked CP3 vocabulary.
 
-CP3 must not mutate that path into a conditional tangle. Use startup-scoped backend selection with a separate Vulkan/VSG construction path that shares SDL/input/game semantics above the renderer boundary. OpenGL remains available as the parity control until the locked V4 parity gates close.
+Recovered `V4-CP1A-RECORD-SURFACE-AUDIT.md` clarifies the correct sequence: complete the neutral semantic record surface before freezing update-batch operations. Therefore CP3 should not start by inventing batch operations against under-specified records.
 
-The first Vulkan game path must consume neutral handles/update batches/frame state. It must not require OSG scene nodes to exist merely to feed VSG.
+The first CP3 sub-checkpoints should be:
 
-## 6. Recommended CP3 implementation order
+1. **CP3A — neutral semantic record surface:** source/donor-driven bounds/topology/geometry ownership metadata; texture role/color-space/sampler semantics; V3.25 material semantics and texture-role bindings; skeleton hierarchy/bind/inverse-bind/stable bone indices; instance bounds/LOD/attachment/category semantics; remaining light semantics. No OSG/VSG/Vulkan ABI fields.
+2. **CP3B — publication contract:** immutable ordered `RenderWorldUpdateBatch`, epoch/sequence validation, deterministic atomic apply, read publication, and minimal semantic renderer service/backend selector. Extend referential-integrity rules to new relationships such as material→texture.
+3. **CP3C — first static interior Vulkan slice:** adapt the donor NIF/material implementation through the neutral records and VSG backend while preserving final V3.25 NIF/RCN/PBR/alpha semantics. No persistent `MWWorld::Ptr -> vsg::Node` ownership shortcut.
+4. **CP3D — dynamic actor slice:** skeleton/controller/animation/skin/morph neutral data plus immutable current/previous pose publication, then one NPC/actor path with serial fail-closed fallback where required.
+5. **CP3E — minimum GUI/playability bridge:** enough MyGUI/game UI integration to make the interior slice genuinely usable.
 
-1. Close CP2 with the corrected wide/tall resize + clean-shutdown retest on the final hardening head.
-2. Branch CP3 from that exact accepted head.
-3. Implement the immutable ordered `RenderWorldUpdateBatch` and minimal semantic renderer service, compile-isolated first.
-4. Audit/port the first static interior NIF/material path from the David implementation while preserving final V3.25 NIF/RCN/PBR/alpha semantics.
-5. Publish those resources into RenderWorld and consume them through VSG; no direct game-pointer/VSG-node persistent identity.
-6. Add skeleton/animation/controller/skin/morph neutral payloads and immutable pose publication, then bring one actor/NPC path online with serial fail-closed fallback.
-7. Add the minimum MyGUI bridge required for a genuinely usable interior slice.
-8. Keep the OSG/OpenGL executable/path buildable and testable on every CP3 source head.
+Every sub-checkpoint keeps the existing OSG/OpenGL path buildable and testable as the parity control.
 
-CP3 should be split into small switchable sub-checkpoints inside this vertical slice rather than attempting full renderer parity in one commit.
+## 9. Engine integration disposition
 
-## 7. CP3 readiness disposition
+`OMW::Engine::createWindow()` remains correctly hard-wired to `SDL_WINDOW_OPENGL`, `GraphicsWindowSDL2`, OSG camera and OSG viewer for the control backend. CP3 should not turn that function into a mixed OpenGL/Vulkan ownership tangle.
 
-After the hardening changes in this audit compile and pass the same CP2 FoundationWindows + full OpenGL control QC, there are no known CP2 source defects that justify delaying CP3 beyond the outstanding corrected hardware resize retest.
+Use startup-scoped backend selection with a distinct VSG/Vulkan construction path sharing platform/input/game semantics above the renderer boundary. The Vulkan path must consume neutral RenderWorld/frame publication rather than requiring OSG scene objects as its source of truth.
 
-The absent update-batch/renderer-service and richer NIF/material/skeleton/pose records are not waived. They are the first implementation layer of CP3 itself.
+## 10. CP3 readiness gate
+
+Before branching CP3:
+
+1. final RenderWorld/ResidencyLedger/FrameRenderState hardening must pass FoundationWindows and full OpenGL control QC on one exact head;
+2. the user must eventually repeat the corrected extreme-wide/extreme-tall Vulkan probe resize test and clean shutdown on the final exact hardening artifact.
+
+Once those two gates pass, no known CP2 source defect justifies delaying CP3. Missing richer records, update batches, renderer service, real NIF/material/animation/NPC/GUI integration are explicitly the first CP3 implementation layers, not waived prerequisites.

@@ -133,7 +133,7 @@ namespace RenderCore
             if (!mDesc.frameId.valid() || !mDesc.worldEpoch.valid() || !mDesc.renderWorldRevision.valid()
                 || !mDesc.historyEpoch.valid() || !mDesc.renderExtent.valid() || !mDesc.outputExtent.valid()
                 || !finite(mDesc.simulationTime) || !finite(mDesc.frameDelta) || !finite(mDesc.jitter)
-                || !finite(mDesc.projectionOffset))
+                || !finite(mDesc.projectionOffset) || !finite(mDesc.environment))
                 return false;
 
             for (std::size_t i = 0; i < mDesc.views.size(); ++i)
@@ -149,10 +149,16 @@ namespace RenderCore
                 }
             }
 
-            for (const DynamicTransformState& transform : mDesc.dynamicTransforms)
+            for (std::size_t i = 0; i < mDesc.dynamicTransforms.size(); ++i)
             {
+                const DynamicTransformState& transform = mDesc.dynamicTransforms[i];
                 if (!transform.instance.valid() || !finite(transform.current) || !finite(transform.previous))
                     return false;
+                for (std::size_t j = i + 1; j < mDesc.dynamicTransforms.size(); ++j)
+                {
+                    if (transform.instance == mDesc.dynamicTransforms[j].instance)
+                        return false;
+                }
             }
             return true;
         }
@@ -169,6 +175,11 @@ namespace RenderCore
         [[nodiscard]] static bool finite(const glm::vec3& value) noexcept
         {
             return finite(value.x) && finite(value.y) && finite(value.z);
+        }
+
+        [[nodiscard]] static bool finite(const glm::vec4& value) noexcept
+        {
+            return finite(value.x) && finite(value.y) && finite(value.z) && finite(value.w);
         }
 
         [[nodiscard]] static bool finite(const glm::dvec3& value) noexcept
@@ -203,6 +214,13 @@ namespace RenderCore
         [[nodiscard]] static bool finite(const WorldTransform& value) noexcept
         {
             return finite(value.translation) && finite(value.rotation) && finite(value.scale);
+        }
+
+        [[nodiscard]] static bool finite(const FrameEnvironmentState& value) noexcept
+        {
+            return finite(value.ambient) && finite(value.fogColor) && finite(value.fogStart) && finite(value.fogEnd)
+                && finite(value.sunDirection) && finite(value.sunDiffuse) && finite(value.sunSpecular)
+                && finite(value.waterHeight);
         }
 
         FrameRenderStateDesc mDesc;
