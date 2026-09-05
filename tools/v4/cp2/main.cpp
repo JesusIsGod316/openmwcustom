@@ -69,11 +69,11 @@ namespace
     {
         auto builder = vsg::Builder::create();
         vsg::GeometryInfo geometry;
-        geometry.position = { 0.0f, 0.0f, 0.0f };
-        geometry.dx = { 1.5f, 0.0f, 0.0f };
-        geometry.dy = { 0.0f, 1.5f, 0.0f };
-        geometry.dz = { 0.0f, 0.0f, 1.5f };
-        geometry.color = { 0.72f, 0.82f, 1.0f, 1.0f };
+        geometry.position = vsg::vec3(0.0f, 0.0f, 0.0f);
+        geometry.dx = vsg::vec3(1.5f, 0.0f, 0.0f);
+        geometry.dy = vsg::vec3(0.0f, 1.5f, 0.0f);
+        geometry.dz = vsg::vec3(0.0f, 0.0f, 1.5f);
+        geometry.color = vsg::vec4(0.72f, 0.82f, 1.0f, 1.0f);
 
         vsg::StateInfo state;
         state.lighting = false;
@@ -151,9 +151,6 @@ int main(int argc, char** argv)
             auto commandGraph = vsg::createCommandGraphForView(window, camera, scene);
             viewer->assignRecordAndSubmitTaskAndPresentation({ commandGraph });
 
-            // This compiles the actual Vulkan render graph, shader modules and
-            // graphics pipeline used by the visible proof scene. CP2 is not a
-            // "Vulkan headers compile" checkpoint.
             viewer->compile();
             std::cout << "V4 CP2 VSG compile: PASS (render graph + shader/pipeline + swapchain)\n";
 
