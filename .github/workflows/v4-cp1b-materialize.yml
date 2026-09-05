@@ -69,7 +69,7 @@ jobs:
           fi
           git config user.name 'OpenMW Custom Build CI'
           git config user.email 'actions@users.noreply.github.com'
-          git add CMakeLists.txt apps components extern/oics extern/osg-ffmpeg-videoplayer
+          git add CMakeLists.txt apps components extern/oics extern/osg-ffmpeg-videoplayer tools/v4/V4-CP1B-Migrate-SDL3.py
           git diff --cached --check
           git commit -m 'V4.0 CP1B: materialize broad native SDL3 semantic migration [full-build]'
           git push origin HEAD:v4.0-cp1b-sdl3-opengl-parity
