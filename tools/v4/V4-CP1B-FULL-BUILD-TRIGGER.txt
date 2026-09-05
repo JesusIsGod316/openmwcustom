@@ -1,4 +1,5 @@
 V4.0 CP1B full Windows QC trigger
-materialized_parent=2a7b91f8f8fef51fb3834c8bc75b83ac2ee49fa9
-reason=semantic materialization, whole-source removed-video audit, idempotency, and frozen-provenance gates passed in run 33940809137
+materialized_parent=ea640bcf42d8e6792f5f779e40623d923073c832
+reason=exact SDL2 controller button/axis enums were mapped to native SDL3 gamepad constants; invalid mechanical prefix substitutions are now fail-closed; materializer/idempotency/frozen-provenance gates passed in run 33941265410
+prior_failure=run33940895896 stopped at components/sdlutil/sdlmappings.cpp because generated SDL_GAMEPAD_BUTTON_A/B/X/Y, stick/shoulder/paddle, and trigger-axis spellings do not exist in SDL3 3.4.10
 scope=SDL3 3.4.10 platform/window/input/OpenGL parity only; no performance claim
