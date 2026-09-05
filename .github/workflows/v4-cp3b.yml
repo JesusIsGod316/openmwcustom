@@ -1,0 +1,71 @@
+name: V4.0 CP3B semantic QC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp3b-nif-static-vulkan]
+
+concurrency:
+  group: v4-cp3b-semantic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  SemanticCore:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CP3B head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact CP3A ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          CP3A_BASE=9e973f5648a6bd7ff90986f79936cb49946cc875
+          git cat-file -e "${CP3A_BASE}^{commit}"
+          merge_base=$(git merge-base "${CP3A_BASE}" HEAD)
+          test "${merge_base}" = "${CP3A_BASE}"
+
+      - name: Verify complete CP0A materialization
+        run: python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+
+      - name: Enforce neutral RenderCore purity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '#include[[:space:]]*[<"](osg|osgViewer|osgUtil|vsg|vulkan|apps/openmw|components/mwworld|components/nif)|\b(osg|osgViewer|osgUtil|vsg)::|\bVk[A-Z]|\bMWWorld::|\bNif::' components/rendercore; then
+            echo 'RenderCore common boundary contains a forbidden backend/game/source-format dependency' >&2
+            exit 1
+          fi
+          grep -F 'using ModelHandle' components/rendercore/handles.hpp
+          grep -F 'struct ModelPayload' components/rendercore/records.hpp
+          grep -F 'std::shared_ptr<const ModelPayload>' components/rendercore/records.hpp
+          grep -F 'struct CreateModel' components/rendercore/updatebatch.hpp
+
+      - name: Install lightweight compile dependency
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libglm-dev
+
+      - name: Compile neutral semantic smoke target
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+            tools/v4/cp3b/rendercore-semantic-smoke.cpp \
+            -o /tmp/v4-cp3b-rendercore-smoke
+
+      - name: Run neutral semantic smoke target
+        run: /tmp/v4-cp3b-rendercore-smoke
+
+      - name: Check CP3B whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check 9e973f5648a6bd7ff90986f79936cb49946cc875 HEAD -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
