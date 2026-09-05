@@ -1,0 +1,22 @@
+V4.0 CP1B SDL3/OpenGL parity source audit
+Date: 2026-09-04
+Parent: v4.0-cp1a-rendercore-foundation@0bd575fb8dc5665034cdd57da62a6813db0a1bb3
+Materialized source: 376ded3861aed6ff4c712dfc4dd99e6a38c44f0f
+
+Locked scope:
+- SDL3 3.4.10 native dependency and headers.
+- Existing V3.25 OSG/OpenGL renderer remains authoritative.
+- No VSG/Vulkan bootstrap in CP1B.
+- Preserve CP1A RenderCore boundary and frozen V3 packaging/provenance bytes.
+
+Initial materialization:
+- Replaced SDL2 package target with SDL3::SDL3.
+- Pinned official SDL3 3.4.10 Windows VC development archive by SHA256.
+- Migrated SDL core includes in components/sdlutil and apps/openmw to SDL3 headers.
+- Enabled SDL3 native old-name aliases only as a controlled compile bridge while changed API semantics are ported explicitly.
+
+Validation strategy:
+1. Fail-closed ancestry/materialization/boundary preflight.
+2. Full Windows configure/build/install/tests as compiler/API migration oracle.
+3. Repair SDL3 semantic/API deltas without changing OpenGL render behavior.
+4. Remove unnecessary transition aliases and perform manual window/input/OpenGL parity smoke before CP1B closeout.
