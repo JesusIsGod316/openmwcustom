@@ -2,6 +2,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <SDL3/SDL_main.h>
 bool initSDL()
 {
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");

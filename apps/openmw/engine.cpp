@@ -20,6 +20,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <SDL3/SDL_main.h>
 #include <components/debug/debuglog.hpp>
 #include <components/debug/gldebug.hpp>
 
@@ -848,10 +849,7 @@ OMW::Engine::Engine(Files::ConfigurationManager& configurationManager)
     , mCfgMgr(configurationManager)
     , mGlMaxTextureImageUnits(0)
 {
-#if SDL_VERSION_ATLEAST(2, 24, 0)
     SDL_SetHint(SDL_HINT_MAC_OPENGL_ASYNC_DISPATCH, "1");
-#endif
-    SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0"); // We use only gamepads
 
     const SDL_InitFlags flags = SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK | SDL_INIT_SENSOR;
     if (SDL_WasInit(flags) == 0)
