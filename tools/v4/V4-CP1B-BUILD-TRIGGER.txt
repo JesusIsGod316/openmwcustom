@@ -1,6 +1,7 @@
 V4.0 CP1B broad SDL3 semantic migration build trigger
-materialized_source_parent=b100c0a0b2c832580218b6e7760df2dba8f13840
-materializer_run=33939416184
+materialized_source_parent=b9b47d6ecc17a6387a15ce71979844dfd0f78974
+materializer_run=33939788797
 materializer_result=SUCCESS
 semantic_audit_tool_corrections=PERSISTED
+opengl_extension_header_parity=RESTORED_ALL_CP1A_SITES
 reason=GitHub Actions GITHUB_TOKEN pushes do not recursively trigger push workflows; this user-authored marker commit starts QC without changing runtime source.
