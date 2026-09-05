@@ -334,7 +334,7 @@ namespace MWLua
                     { "B", SDL_GAMEPAD_BUTTON_EAST },
                     { "X", SDL_GAMEPAD_BUTTON_WEST },
                     { "Y", SDL_GAMEPAD_BUTTON_NORTH },
-                    { "Back", SDL_GAMEPAD_BUTTON_EASTACK },
+                    { "Back", SDL_GAMEPAD_BUTTON_BACK },
                     { "Guide", SDL_GAMEPAD_BUTTON_GUIDE },
                     { "Start", SDL_GAMEPAD_BUTTON_START },
                     { "LeftStick", SDL_GAMEPAD_BUTTON_LEFT_STICK },

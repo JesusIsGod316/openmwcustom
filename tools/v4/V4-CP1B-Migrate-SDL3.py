@@ -1249,7 +1249,9 @@ def apply_simple_native_renames() -> None:
         text = path.read_text(encoding="utf-8")
         updated = text
         for old, new in replacements.items():
-            updated = updated.replace(old, new)
+            updated = re.sub(
+                rf"(?<![A-Za-z0-9_]){re.escape(old)}(?![A-Za-z0-9_])", new, updated
+            )
         if updated != text:
             path.write_text(updated, encoding="utf-8")
 
@@ -1344,6 +1346,7 @@ def verify_source_contract() -> None:
         "SDL_CONTROLLER_AXIS_": "SDL2 controller axis enum remains",
         "SDL_GAMEPAD_BUTTON_A": "invalid mechanical SDL3 gamepad button spelling",
         "SDL_GAMEPAD_BUTTON_B": "invalid mechanical SDL3 gamepad button spelling",
+        "SDL_GAMEPAD_BUTTON_EASTACK": "corrupted SDL3 BACK enum spelling",
         "SDL_GAMEPAD_BUTTON_X": "invalid mechanical SDL3 gamepad button spelling",
         "SDL_GAMEPAD_BUTTON_Y": "invalid mechanical SDL3 gamepad button spelling",
         "SDL_GAMEPAD_BUTTON_LEFTSTICK": "invalid mechanical SDL3 gamepad button spelling",
@@ -1368,7 +1371,13 @@ def verify_source_contract() -> None:
         if bool_compare_re.search(text):
             offenders.append(f"{path.relative_to(ROOT)}: SDL3 bool return compared with SDL2 integer convention")
         for token, reason in forbidden_tokens.items():
-            if token in text:
+            if token.endswith("_") or token.endswith("("):
+                present = token in text
+            else:
+                present = re.search(
+                    rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])", text
+                ) is not None
+            if present:
                 offenders.append(f"{path.relative_to(ROOT)}: {reason}: {token}")
 
     cmake_text = "\n".join(p.read_text(encoding="utf-8") for p in ROOT.rglob("CMakeLists.txt"))

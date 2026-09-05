@@ -523,7 +523,7 @@ namespace MWInput
                 if (isPsx)
                     return "textures/omw_psx_button_circle.dds";
                 return "textures/omw_steam_button_b.dds";
-            case SDL_GAMEPAD_BUTTON_EASTACK:
+            case SDL_GAMEPAD_BUTTON_BACK:
                 return "textures/omw_steam_button_view.dds";
             case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
             case SDL_GAMEPAD_BUTTON_DPAD_LEFT:

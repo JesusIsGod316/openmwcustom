@@ -16,7 +16,7 @@ namespace SDLUtil
                 return "A Button";
             case SDL_GAMEPAD_BUTTON_EAST:
                 return "B Button";
-            case SDL_GAMEPAD_BUTTON_EASTACK:
+            case SDL_GAMEPAD_BUTTON_BACK:
                 return "Back Button";
             case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
                 return "DPad Down";

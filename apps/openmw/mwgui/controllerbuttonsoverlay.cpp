@@ -24,7 +24,7 @@ namespace MWGui
         { ControllerButtonsOverlay::Button::Button_LStick, "LStick", ControllerButtonsOverlay::InputType_Axis,
             { .mAxis = SDL_GAMEPAD_AXIS_LEFTY }, &ControllerButtons::mLStick },
         { ControllerButtonsOverlay::Button::Button_Menu, "Menu", ControllerButtonsOverlay::InputType_Button,
-            { .mButton = SDL_GAMEPAD_BUTTON_EASTACK }, &ControllerButtons::mMenu },
+            { .mButton = SDL_GAMEPAD_BUTTON_BACK }, &ControllerButtons::mMenu },
         { ControllerButtonsOverlay::Button::Button_R1, "R1", ControllerButtonsOverlay::InputType_Button,
             { .mButton = SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER }, &ControllerButtons::mR1 },
         { ControllerButtonsOverlay::Button::Button_R2, "R2", ControllerButtonsOverlay::InputType_Axis,
