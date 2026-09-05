@@ -451,7 +451,7 @@ namespace MWGui
 
     bool InteractiveMessageBox::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (!mButtons.empty())
             {
@@ -460,7 +460,7 @@ namespace MWGui
                 buttonActivated(mButtons[mControllerFocus]);
             }
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             if (mButtons.size() == 1)
                 buttonActivated(mButtons[0]);

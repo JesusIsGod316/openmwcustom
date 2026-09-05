@@ -304,7 +304,7 @@ namespace MWGui
 
     bool SpellWindow::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
             MWBase::Environment::get().getWindowManager()->exitCurrentGuiMode();
         else
             mSpellView->onControllerButton(arg.button);

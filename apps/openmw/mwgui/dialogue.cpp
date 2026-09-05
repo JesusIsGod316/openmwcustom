@@ -176,12 +176,12 @@ namespace MWGui
 
     bool PersuasionDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             onPersuade(mButtons[mControllerFocus]);
             MWBase::Environment::get().getWindowManager()->playSound(ESM::RefId::stringRefId("Menu Click"));
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
             onCancel(mCancelButton);
         else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_UP)
         {
@@ -932,7 +932,7 @@ namespace MWGui
 
     bool DialogueWindow::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (mChoices.size() > 0)
             {
@@ -947,7 +947,7 @@ namespace MWGui
                 onSelectListItem(mTopicsList->getItemNameAt(mControllerFocus), static_cast<int>(mControllerFocus));
             MWBase::Environment::get().getWindowManager()->playSound(ESM::RefId::stringRefId("Menu Click"));
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B && mChoices.empty())
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST && mChoices.empty())
         {
             onGoodbyeActivated();
         }
@@ -995,13 +995,13 @@ namespace MWGui
                 setControllerFocus(mControllerFocus, true);
             }
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFTSHOULDER && mChoices.size() == 0)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER && mChoices.size() == 0)
         {
             setControllerFocus(mControllerFocus, false);
             mControllerFocus = mControllerFocus > 5 ? mControllerFocus - 5 : 0;
             setControllerFocus(mControllerFocus, true);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSHOULDER && mChoices.size() == 0)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER && mChoices.size() == 0)
         {
             setControllerFocus(mControllerFocus, false);
             mControllerFocus = std::min(mControllerFocus + 5, mTopicsList->getItemCount());

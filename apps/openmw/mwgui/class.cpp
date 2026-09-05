@@ -80,14 +80,14 @@ namespace MWGui
 
     bool GenerateClassResultDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (mOkButtonFocus)
                 onOkClicked(mOkButton);
             else
                 onBackClicked(mBackButton);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onBackClicked(mBackButton);
         }
@@ -324,11 +324,11 @@ namespace MWGui
 
     bool PickClassDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onBackClicked(mBackButton);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_X)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_WEST)
         {
             onOkClicked(mOkButton);
         }
@@ -464,12 +464,12 @@ namespace MWGui
 
     bool InfoBoxDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (mControllerFocus < mButtons.size())
                 onButtonClicked(mButtons[mControllerFocus]);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             if (mButtons.size() == 1)
                 onButtonClicked(mButtons[0]);
@@ -692,7 +692,7 @@ namespace MWGui
 
     bool CreateClassDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (mControllerFocus == 0)
                 onDescriptionClicked(mButtons[0]);
@@ -701,11 +701,11 @@ namespace MWGui
             else
                 onOkClicked(mButtons[2]);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onBackClicked(mButtons[1]);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_X)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_WEST)
         {
             onOkClicked(mButtons[2]);
         }
@@ -916,7 +916,7 @@ namespace MWGui
 
     bool SelectSpecializationDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onCancelClicked(nullptr);
             return true;
@@ -988,12 +988,12 @@ namespace MWGui
 
     bool SelectAttributeDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (mControllerFocus < mAttributeButtons.size())
                 onAttributeClicked(mAttributeButtons[mControllerFocus]);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onCancelClicked(nullptr);
         }
@@ -1090,12 +1090,12 @@ namespace MWGui
 
     bool SelectSkillDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (mControllerFocus < mSkillButtons.size())
                 onSkillClicked(mSkillButtons[mControllerFocus]);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onCancelClicked(nullptr);
         }
@@ -1210,7 +1210,7 @@ namespace MWGui
 
     bool DescriptionDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A || arg.button == SDL_GAMEPAD_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH || arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onOkClicked(nullptr);
             return true;

@@ -383,13 +383,13 @@ namespace MWGui
 
     bool LevelupDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (mControllerFocus < mAttributeButtons.size())
                 onAttributeClicked(mAttributeButtons[mControllerFocus]);
             MWBase::Environment::get().getWindowManager()->playSound(ESM::RefId::stringRefId("Item Gold Up"));
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_X)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_WEST)
         {
             onOkButtonClicked(mOkButton);
         }

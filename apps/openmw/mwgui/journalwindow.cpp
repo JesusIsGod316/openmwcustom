@@ -766,7 +766,7 @@ namespace
 
         bool optionsModeButtonHandler(const SDL_GamepadButtonEvent& arg)
         {
-            if (arg.button == SDL_GAMEPAD_BUTTON_A) // A: Mouse click or Select
+            if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH) // A: Mouse click or Select
             {
                 if (mQuestMode)
                 {
@@ -796,13 +796,13 @@ namespace
                     notifyIndexLinkClicked(static_cast<Utf8Stream::UnicodeChar>(ch));
                 }
             }
-            else if (arg.button == SDL_GAMEPAD_BUTTON_B) // B: Back
+            else if (arg.button == SDL_GAMEPAD_BUTTON_EAST) // B: Back
             {
                 // Hide the options overlay
                 notifyCancel(getWidget<MyGUI::Widget>(CancelBTN));
                 mQuestMode = false;
             }
-            else if (arg.button == SDL_GAMEPAD_BUTTON_X) // X: Quests
+            else if (arg.button == SDL_GAMEPAD_BUTTON_WEST) // X: Quests
             {
                 if (mQuestMode)
                 {
@@ -816,7 +816,7 @@ namespace
                     notifyQuests(getWidget<MyGUI::Widget>(QuestsBTN));
                 }
             }
-            else if (arg.button == SDL_GAMEPAD_BUTTON_Y) // Y: Topics
+            else if (arg.button == SDL_GAMEPAD_BUTTON_NORTH) // Y: Topics
             {
                 if (!mQuestMode)
                 {
@@ -829,7 +829,7 @@ namespace
                     notifyTopics(getWidget<MyGUI::Widget>(TopicsBTN));
                 }
             }
-            else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSTICK && mQuestMode) // R3: Show All/Some
+            else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK && mQuestMode) // R3: Show All/Some
             {
                 if (mAllQuests)
                     notifyShowActive(getWidget<MyGUI::Widget>(ShowActiveBTN));
@@ -866,12 +866,12 @@ namespace
                 moveSelectedIndex(-static_cast<int>(mIndexRowCount));
             else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT && !mQuestMode && !mTopicsMode)
                 moveSelectedIndex(static_cast<int>(mIndexRowCount));
-            else if (arg.button == SDL_GAMEPAD_BUTTON_LEFTSHOULDER && (mQuestMode || mTopicsMode))
+            else if (arg.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER && (mQuestMode || mTopicsMode))
             {
                 // Scroll up 5 items in the list of quests or topics
                 setControllerFocusedQuest(mSelectedQuest >= 5 ? mSelectedQuest - 5 : 0);
             }
-            else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSHOULDER && (mQuestMode || mTopicsMode))
+            else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER && (mQuestMode || mTopicsMode))
             {
                 // Scroll down 5 items in the list of quests or topics
                 setControllerFocusedQuest(std::min(mSelectedQuest + 5, mButtons.size() - 1));
@@ -886,9 +886,9 @@ namespace
             if (mOptionsMode)
                 return optionsModeButtonHandler(arg);
 
-            if (arg.button == SDL_GAMEPAD_BUTTON_A)
+            if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
                 return false;
-            else if (arg.button == SDL_GAMEPAD_BUTTON_B) // B: Back
+            else if (arg.button == SDL_GAMEPAD_BUTTON_EAST) // B: Back
             {
                 if (mStates.size() > 1)
                 {
@@ -906,24 +906,24 @@ namespace
                     notifyClose(getWidget<MyGUI::Widget>(CloseBTN));
                 }
             }
-            else if (arg.button == SDL_GAMEPAD_BUTTON_X) // X: Quests
+            else if (arg.button == SDL_GAMEPAD_BUTTON_WEST) // X: Quests
             {
                 // Show the quest overlay
                 notifyOptions(getWidget<MyGUI::Widget>(OptionsBTN));
                 if (!mQuestMode)
                     notifyQuests(getWidget<MyGUI::Widget>(QuestsBTN));
             }
-            else if (arg.button == SDL_GAMEPAD_BUTTON_Y) // Y: Topics
+            else if (arg.button == SDL_GAMEPAD_BUTTON_NORTH) // Y: Topics
             {
                 // Show the topics overlay
                 notifyOptions(getWidget<MyGUI::Widget>(OptionsBTN));
                 if (mQuestMode)
                     notifyTopics(getWidget<MyGUI::Widget>(TopicsBTN));
             }
-            else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT || arg.button == SDL_GAMEPAD_BUTTON_LEFTSHOULDER)
+            else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT || arg.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
                 notifyPrevPage(getWidget<MyGUI::Widget>(PrevPageBTN));
             else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT
-                || arg.button == SDL_GAMEPAD_BUTTON_RIGHTSHOULDER)
+                || arg.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
                 notifyNextPage(getWidget<MyGUI::Widget>(NextPageBTN));
 
             return true;

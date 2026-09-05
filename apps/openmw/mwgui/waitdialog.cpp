@@ -346,14 +346,14 @@ namespace MWGui
 
     bool WaitDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             onWaitButtonClicked(mWaitButton);
             MWBase::Environment::get().getWindowManager()->playSound(ESM::RefId::stringRefId("Menu Click"));
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
             onCancelButtonClicked(mCancelButton);
-        else if (arg.button == SDL_GAMEPAD_BUTTON_X && mUntilHealedButton->getVisible())
+        else if (arg.button == SDL_GAMEPAD_BUTTON_WEST && mUntilHealedButton->getVisible())
         {
             onUntilHealedButtonClicked(mUntilHealedButton);
             MWBase::Environment::get().getWindowManager()->playSound(ESM::RefId::stringRefId("Menu Click"));
@@ -362,12 +362,12 @@ namespace MWGui
             MWBase::Environment::get().getWindowManager()->injectKeyPress(MyGUI::KeyCode::ArrowDown, 0, false);
         else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT)
             MWBase::Environment::get().getWindowManager()->injectKeyPress(MyGUI::KeyCode::ArrowUp, 0, false);
-        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
         {
             mHourSlider->setScrollPosition(0);
             onHourSliderChangedPosition(mHourSlider, mHourSlider->getScrollPosition());
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
         {
             mHourSlider->setScrollPosition(mHourSlider->getScrollRange() - 1);
             onHourSliderChangedPosition(mHourSlider, mHourSlider->getScrollPosition());

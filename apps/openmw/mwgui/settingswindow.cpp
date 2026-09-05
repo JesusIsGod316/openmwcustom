@@ -1138,12 +1138,12 @@ namespace MWGui
 
     bool SettingsWindow::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onOkButtonClicked(mOkButton);
             return true;
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
         {
             size_t index = mSettingsTab->getIndexSelected();
             index = wrap(index, mSettingsTab->getItemCount(), -1);
@@ -1151,7 +1151,7 @@ namespace MWGui
             MWBase::Environment::get().getWindowManager()->playSound(ESM::RefId::stringRefId("Menu Click"));
             return true;
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
         {
             size_t index = mSettingsTab->getIndexSelected();
             index = wrap(index, mSettingsTab->getItemCount(), 1);

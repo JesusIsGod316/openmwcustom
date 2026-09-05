@@ -535,7 +535,7 @@ namespace MWGui
 
     bool SaveGameDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (mOkButtonFocus)
                 onOkButtonClicked(mOkButton);
@@ -543,11 +543,11 @@ namespace MWGui
                 onCancelButtonClicked(mCancelButton);
             MWBase::Environment::get().getWindowManager()->playSound(ESM::RefId::stringRefId("Menu Click"));
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onCancelButtonClicked(mCancelButton);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_Y)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_NORTH)
         {
             size_t index = mCharacterSelection->getIndexSelected();
             index = wrap(index, mCharacterSelection->getItemCount(), 1);

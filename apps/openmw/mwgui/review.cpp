@@ -542,7 +542,7 @@ namespace MWGui
 
     bool ReviewDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             switch (mControllerFocus)
             {
@@ -567,11 +567,11 @@ namespace MWGui
             }
             return true;
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onBackClicked(mButtons[4]);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_X)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_WEST)
         {
             onOkClicked(mButtons[5]);
         }

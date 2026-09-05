@@ -98,13 +98,13 @@ namespace MWGui
 
     bool CountDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
             onOkButtonClicked(mOkButton);
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
             onCancelButtonClicked(mCancelButton);
-        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
             setCount(1);
-        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
             setCount(static_cast<int>(mSlider->getScrollRange()));
         else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT)
             MWBase::Environment::get().getWindowManager()->injectKeyPress(MyGUI::KeyCode::ArrowDown, 0, false);

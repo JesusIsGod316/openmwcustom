@@ -549,7 +549,7 @@ namespace MWGui
 
     void AlchemyWindow::filterListButtonHandler(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A || arg.button == SDL_GAMEPAD_BUTTON_Y)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH || arg.button == SDL_GAMEPAD_BUTTON_NORTH)
         {
             // Select the highlighted entry in the combo box and close it. List is closed by focusing on another
             // widget.
@@ -560,7 +560,7 @@ namespace MWGui
 
             MWBase::Environment::get().getWindowManager()->playSound(ESM::RefId::stringRefId("Menu Click"));
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             // Close the list without selecting anything. List is closed by focusing on another widget.
             mFilterValue->clearIndexSelected();
@@ -586,7 +586,7 @@ namespace MWGui
             return true;
         }
 
-        if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             // Remove active ingredients or close the window, starting with right-most slot.
             for (size_t i = mIngredients.size(); i > 0; --i)
@@ -600,9 +600,9 @@ namespace MWGui
             // If the ingredients list is empty, B closes the menu.
             onCancelButtonClicked(mCancelButton);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_X)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_WEST)
             onCreateButtonClicked(mCreateButton);
-        else if (arg.button == SDL_GAMEPAD_BUTTON_Y && mFilterValue->getItemCount() > 0)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_NORTH && mFilterValue->getItemCount() > 0)
         {
             // Magical effects/ingredients filter
             if (mFilterValue->getIndexSelected() != MyGUI::ITEM_NONE)
@@ -619,9 +619,9 @@ namespace MWGui
             }
             MWBase::Environment::get().getWindowManager()->playSound(ESM::RefId::stringRefId("Menu Click"));
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
             onDecreaseButtonTriggered();
-        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
             onIncreaseButtonTriggered();
         else
             mItemView->onControllerButton(arg.button);

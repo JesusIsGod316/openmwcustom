@@ -75,14 +75,14 @@ namespace MWGui
 
     bool ConfirmationDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (mOkButtonFocus)
                 onOkButtonClicked(mOkButton);
             else
                 onCancelButtonClicked(mCancelButton);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onCancelButtonClicked(mCancelButton);
         }

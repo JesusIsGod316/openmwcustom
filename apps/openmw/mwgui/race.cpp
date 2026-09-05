@@ -473,23 +473,23 @@ namespace MWGui
 
     bool RaceDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onBackClicked(mBackButton);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_X)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_WEST)
         {
             onOkClicked(mOkButton);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_Y)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_NORTH)
         {
             onSelectNextGender(nullptr);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
         {
             onSelectNextHair(nullptr);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
         {
             onSelectNextFace(nullptr);
         }

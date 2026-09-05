@@ -176,12 +176,12 @@ namespace MWGui
 
     bool MerchantRepair::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (mControllerFocus < mButtons.size())
                 onRepairButtonClick(mButtons[mControllerFocus].first);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onOkButtonClick(mOkButton);
         }

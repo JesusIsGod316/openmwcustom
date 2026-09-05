@@ -137,7 +137,7 @@ namespace MWInput
             ICS::Control::ControlChangingDirection direction) override
         {
             // only allow binding to the trigers
-            if (axis != SDL_GAMEPAD_AXIS_TRIGGERLEFT && axis != SDL_GAMEPAD_AXIS_TRIGGERRIGHT)
+            if (axis != SDL_GAMEPAD_AXIS_LEFT_TRIGGER && axis != SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)
                 return;
             if (mDetectingKeyboard)
                 return;
@@ -364,16 +364,16 @@ namespace MWInput
         // across different versions of OpenMW (in the case where another input action is added)
         std::map<int, int> defaultButtonBindings;
 
-        defaultButtonBindings[A_Activate] = SDL_GAMEPAD_BUTTON_A;
-        defaultButtonBindings[A_ToggleWeapon] = SDL_GAMEPAD_BUTTON_X;
-        defaultButtonBindings[A_ToggleSpell] = SDL_GAMEPAD_BUTTON_Y;
+        defaultButtonBindings[A_Activate] = SDL_GAMEPAD_BUTTON_SOUTH;
+        defaultButtonBindings[A_ToggleWeapon] = SDL_GAMEPAD_BUTTON_WEST;
+        defaultButtonBindings[A_ToggleSpell] = SDL_GAMEPAD_BUTTON_NORTH;
         // defaultButtonBindings[A_QuickButtonsMenu] = SDL_GetButtonFromScancode(SDL_SCANCODE_F1); // Need to implement,
         // should be ToggleSpell(5) AND Wait(9)
-        defaultButtonBindings[A_Sneak] = SDL_GAMEPAD_BUTTON_LEFTSTICK;
-        defaultButtonBindings[A_Journal] = SDL_GAMEPAD_BUTTON_LEFTSHOULDER;
-        defaultButtonBindings[A_Rest] = SDL_GAMEPAD_BUTTON_RIGHTSHOULDER;
-        defaultButtonBindings[A_TogglePOV] = SDL_GAMEPAD_BUTTON_RIGHTSTICK;
-        defaultButtonBindings[A_Inventory] = SDL_GAMEPAD_BUTTON_B;
+        defaultButtonBindings[A_Sneak] = SDL_GAMEPAD_BUTTON_LEFT_STICK;
+        defaultButtonBindings[A_Journal] = SDL_GAMEPAD_BUTTON_LEFT_SHOULDER;
+        defaultButtonBindings[A_Rest] = SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER;
+        defaultButtonBindings[A_TogglePOV] = SDL_GAMEPAD_BUTTON_RIGHT_STICK;
+        defaultButtonBindings[A_Inventory] = SDL_GAMEPAD_BUTTON_EAST;
         defaultButtonBindings[A_GameMenu] = SDL_GAMEPAD_BUTTON_START;
         defaultButtonBindings[A_QuickSave] = SDL_GAMEPAD_BUTTON_GUIDE;
 
@@ -382,8 +382,8 @@ namespace MWInput
         defaultAxisBindings[A_MoveLeftRight] = SDL_GAMEPAD_AXIS_LEFTX;
         defaultAxisBindings[A_LookUpDown] = SDL_GAMEPAD_AXIS_RIGHTY;
         defaultAxisBindings[A_LookLeftRight] = SDL_GAMEPAD_AXIS_RIGHTX;
-        defaultAxisBindings[A_Use] = SDL_GAMEPAD_AXIS_TRIGGERRIGHT;
-        defaultAxisBindings[A_Jump] = SDL_GAMEPAD_AXIS_TRIGGERLEFT;
+        defaultAxisBindings[A_Use] = SDL_GAMEPAD_AXIS_RIGHT_TRIGGER;
+        defaultAxisBindings[A_Jump] = SDL_GAMEPAD_AXIS_LEFT_TRIGGER;
 
         for (int i = 0; i < A_Last; i++)
         {

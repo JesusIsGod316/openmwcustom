@@ -734,7 +734,7 @@ namespace MWGui
 
     bool StatsWindow::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
             MWBase::Environment::get().getWindowManager()->exitCurrentGuiMode();
 
         return true;

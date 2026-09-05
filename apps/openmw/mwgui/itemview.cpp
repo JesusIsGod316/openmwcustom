@@ -212,7 +212,7 @@ namespace MWGui
 
         switch (button)
         {
-            case SDL_GAMEPAD_BUTTON_A:
+            case SDL_GAMEPAD_BUTTON_SOUTH:
                 // Select the focused item, if any.
                 if (mControllerFocus >= 0 && mControllerFocus < mItemCount)
                 {
@@ -220,7 +220,7 @@ namespace MWGui
                     onSelectedItem(dragArea->getChildAt(mControllerFocus));
                 }
                 break;
-            case SDL_GAMEPAD_BUTTON_RIGHTSTICK:
+            case SDL_GAMEPAD_BUTTON_RIGHT_STICK:
                 // Toggle info tooltip
                 winMgr->setControllerTooltipEnabled(!winMgr->getControllerTooltipEnabled());
                 updateControllerFocus(-1, mControllerFocus);

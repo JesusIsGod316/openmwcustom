@@ -144,13 +144,13 @@ namespace MWGui
             image->setVisible(true);
             image->setUserString("Hidden", "false");
             image->setImageTexture(MWBase::Environment::get().getInputManager()->getControllerButtonIcon(
-                SDL_GAMEPAD_BUTTON_LEFTSHOULDER));
+                SDL_GAMEPAD_BUTTON_LEFT_SHOULDER));
 
             getWidget(image, "BtnR1Image");
             image->setVisible(true);
             image->setUserString("Hidden", "false");
             image->setImageTexture(MWBase::Environment::get().getInputManager()->getControllerButtonIcon(
-                SDL_GAMEPAD_BUTTON_RIGHTSHOULDER));
+                SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER));
 
             mControllerButtons.mR3 = "#{Interface:Info}";
         }
@@ -1006,11 +1006,11 @@ namespace MWGui
     {
         mPendingControllerAction = ControllerAction::None; // Clear any pending controller actions
 
-        if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             MWBase::Environment::get().getWindowManager()->exitCurrentGuiMode();
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (mGuiMode == MWGui::GM_Inventory)
                 mPendingControllerAction = ControllerAction::Use;
@@ -1019,14 +1019,14 @@ namespace MWGui
             else if (mGuiMode == MWGui::GM_Barter)
                 mPendingControllerAction = ControllerAction::Sell;
 
-            mItemView->onControllerButton(SDL_GAMEPAD_BUTTON_A);
+            mItemView->onControllerButton(SDL_GAMEPAD_BUTTON_SOUTH);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_X)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_WEST)
         {
             if (mGuiMode == MWGui::GM_Inventory)
             {
                 mPendingControllerAction = ControllerAction::Drop;
-                mItemView->onControllerButton(SDL_GAMEPAD_BUTTON_A);
+                mItemView->onControllerButton(SDL_GAMEPAD_BUTTON_SOUTH);
             }
             else if (mGuiMode == MWGui::GM_Container)
             {
@@ -1045,7 +1045,7 @@ namespace MWGui
                 tradeWindow->onControllerButtonEvent(arg);
             }
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
         {
             if (mFilterAll->getStateSelected())
                 onFilterChanged(mFilterMisc);
@@ -1059,7 +1059,7 @@ namespace MWGui
                 onFilterChanged(mFilterMagic);
             MWBase::Environment::get().getWindowManager()->playSound(ESM::RefId::stringRefId("Menu Click"));
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
         {
             if (mFilterAll->getStateSelected())
                 onFilterChanged(mFilterWeapon);

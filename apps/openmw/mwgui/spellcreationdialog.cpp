@@ -388,7 +388,7 @@ namespace MWGui
         mControllerFocus = std::clamp(mControllerFocus, 0, static_cast<int>(mButtons.size()) - 1);
         MyGUI::TextBox* button = mButtons[mControllerFocus];
 
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (button == mRangeButton)
                 onRangeButtonClicked(mRangeButton);
@@ -400,9 +400,9 @@ namespace MWGui
                 onDeleteButtonClicked(mDeleteButton);
             MWBase::Environment::get().getWindowManager()->playSound(ESM::RefId::stringRefId("Menu Click"));
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
             onCancelButtonClicked(mCancelButton);
-        else if (arg.button == SDL_GAMEPAD_BUTTON_X)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_WEST)
         {
             onOkButtonClicked(mOkButton);
             MWBase::Environment::get().getWindowManager()->playSound(ESM::RefId::stringRefId("Menu Click"));
@@ -425,7 +425,7 @@ namespace MWGui
             else
                 mControllerFocus++;
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
         {
             if (button == mMagnitudeMinValue)
             {
@@ -448,7 +448,7 @@ namespace MWGui
                 onAreaChanged(nullptr, mAreaSlider->getScrollPosition());
             }
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSHOULDER)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
         {
             if (button == mMagnitudeMinValue)
             {
@@ -736,12 +736,12 @@ namespace MWGui
 
     bool SpellCreationDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onCancelButtonClicked(mCancelButton);
             return true;
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_X)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_WEST)
         {
             onBuyButtonClicked(mBuyButton);
             return true;
@@ -1029,7 +1029,7 @@ namespace MWGui
     {
         MWBase::WindowManager* winMgr = MWBase::Environment::get().getWindowManager();
 
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (!mRightColumn && mAvailableFocus < mAvailableButtons.size())
             {
@@ -1042,7 +1042,7 @@ namespace MWGui
                 winMgr->playSound(ESM::RefId::stringRefId("Menu Click"));
             }
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSTICK)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK)
         {
             // Toggle info tooltip
             winMgr->setControllerTooltipEnabled(!winMgr->getControllerTooltipEnabled());

@@ -216,11 +216,11 @@ namespace MWGui
 
     bool MainMenu::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             MWBase::Environment::get().getWindowManager()->injectKeyPress(MyGUI::KeyCode::Space, 0, false);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B || arg.button == SDL_GAMEPAD_BUTTON_START)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST || arg.button == SDL_GAMEPAD_BUTTON_START)
         {
             if (mButtons["return"]->getVisible())
                 onButtonClicked(mButtons["return"]);

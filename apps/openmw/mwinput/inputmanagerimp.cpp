@@ -205,7 +205,7 @@ namespace MWInput
             return;
 
         // Don't warp if an emulated mouse press is occurring.
-        if (isGamepadGuiCursorEnabled() && isControllerButtonPressed(SDL_GAMEPAD_BUTTON_A))
+        if (isGamepadGuiCursorEnabled() && isControllerButtonPressed(SDL_GAMEPAD_BUTTON_SOUTH))
             return;
 
         MWBase::Environment::get().getWindowManager()->setCursorVisible(false);

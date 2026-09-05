@@ -232,17 +232,17 @@ namespace MWGui
     {
         MWBase::WindowManager* winMgr = MWBase::Environment::get().getWindowManager();
 
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (mControllerFocus < mSpellButtons.size())
                 onSpellButtonClick(mSpellButtons[mControllerFocus].first);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
         {
             onCancelButtonClicked(mCancelButton);
             return true;
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHTSTICK)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK)
         {
             // Toggle info tooltip
             winMgr->setControllerTooltipEnabled(!winMgr->getControllerTooltipEnabled());

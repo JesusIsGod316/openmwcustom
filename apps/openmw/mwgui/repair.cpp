@@ -156,12 +156,12 @@ namespace MWGui
 
     bool Repair::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if ((arg.button == SDL_GAMEPAD_BUTTON_A && !mToolBox->getVisible()) || arg.button == SDL_GAMEPAD_BUTTON_Y)
+        if ((arg.button == SDL_GAMEPAD_BUTTON_SOUTH && !mToolBox->getVisible()) || arg.button == SDL_GAMEPAD_BUTTON_NORTH)
         {
             onSelectItem(mToolIcon);
             MWBase::Environment::get().getWindowManager()->playSound(ESM::RefId::stringRefId("Menu Click"));
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
             onCancel(mCancelButton);
         else
             mRepairBox->onControllerButton(arg.button);

@@ -467,9 +467,9 @@ namespace MWGui
 
     bool QuickKeysMenu::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
             onQuickKeyButtonClicked(mKey[mControllerFocus].button);
-        if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
             onOkButtonClicked(mOkButton);
         else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_UP || arg.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
             mControllerFocus = (mControllerFocus + 5) % 10;
@@ -546,7 +546,7 @@ namespace MWGui
 
     bool QuickKeysMenuAssign::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_A)
+        if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
         {
             if (mControllerFocus == 0)
                 mParent->onItemButtonClicked(mItemButton);
@@ -557,7 +557,7 @@ namespace MWGui
             else if (mControllerFocus == 3)
                 mParent->onCancelButtonClicked(mCancelButton);
         }
-        else if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        else if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
             mParent->onCancelButtonClicked(mCancelButton);
         else if (arg.button == SDL_GAMEPAD_BUTTON_DPAD_UP)
             mControllerFocus = wrap(mControllerFocus, 4, -1);
@@ -735,7 +735,7 @@ namespace MWGui
 
     bool MagicSelectionDialog::onControllerButtonEvent(const SDL_GamepadButtonEvent& arg)
     {
-        if (arg.button == SDL_GAMEPAD_BUTTON_B)
+        if (arg.button == SDL_GAMEPAD_BUTTON_EAST)
             onCancelButtonClicked(mCancelButton);
         else
             mMagicList->onControllerButton(arg.button);

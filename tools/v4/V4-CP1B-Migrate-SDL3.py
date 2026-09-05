@@ -1196,6 +1196,37 @@ def apply_simple_native_renames() -> None:
         "SDL_GameControllerAxis": "SDL_GamepadAxis",
         "SDL_GameControllerButton": "SDL_GamepadButton",
         "SDL_GameControllerType": "SDL_GamepadType",
+        "SDL_CONTROLLER_BUTTON_INVALID": "SDL_GAMEPAD_BUTTON_INVALID",
+        "SDL_CONTROLLER_BUTTON_A": "SDL_GAMEPAD_BUTTON_SOUTH",
+        "SDL_CONTROLLER_BUTTON_B": "SDL_GAMEPAD_BUTTON_EAST",
+        "SDL_CONTROLLER_BUTTON_X": "SDL_GAMEPAD_BUTTON_WEST",
+        "SDL_CONTROLLER_BUTTON_Y": "SDL_GAMEPAD_BUTTON_NORTH",
+        "SDL_CONTROLLER_BUTTON_BACK": "SDL_GAMEPAD_BUTTON_BACK",
+        "SDL_CONTROLLER_BUTTON_GUIDE": "SDL_GAMEPAD_BUTTON_GUIDE",
+        "SDL_CONTROLLER_BUTTON_START": "SDL_GAMEPAD_BUTTON_START",
+        "SDL_CONTROLLER_BUTTON_LEFTSTICK": "SDL_GAMEPAD_BUTTON_LEFT_STICK",
+        "SDL_CONTROLLER_BUTTON_RIGHTSTICK": "SDL_GAMEPAD_BUTTON_RIGHT_STICK",
+        "SDL_CONTROLLER_BUTTON_LEFTSHOULDER": "SDL_GAMEPAD_BUTTON_LEFT_SHOULDER",
+        "SDL_CONTROLLER_BUTTON_RIGHTSHOULDER": "SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER",
+        "SDL_CONTROLLER_BUTTON_DPAD_UP": "SDL_GAMEPAD_BUTTON_DPAD_UP",
+        "SDL_CONTROLLER_BUTTON_DPAD_DOWN": "SDL_GAMEPAD_BUTTON_DPAD_DOWN",
+        "SDL_CONTROLLER_BUTTON_DPAD_LEFT": "SDL_GAMEPAD_BUTTON_DPAD_LEFT",
+        "SDL_CONTROLLER_BUTTON_DPAD_RIGHT": "SDL_GAMEPAD_BUTTON_DPAD_RIGHT",
+        "SDL_CONTROLLER_BUTTON_MISC1": "SDL_GAMEPAD_BUTTON_MISC1",
+        "SDL_CONTROLLER_BUTTON_PADDLE1": "SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1",
+        "SDL_CONTROLLER_BUTTON_PADDLE2": "SDL_GAMEPAD_BUTTON_LEFT_PADDLE1",
+        "SDL_CONTROLLER_BUTTON_PADDLE3": "SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2",
+        "SDL_CONTROLLER_BUTTON_PADDLE4": "SDL_GAMEPAD_BUTTON_LEFT_PADDLE2",
+        "SDL_CONTROLLER_BUTTON_TOUCHPAD": "SDL_GAMEPAD_BUTTON_TOUCHPAD",
+        "SDL_CONTROLLER_BUTTON_MAX": "SDL_GAMEPAD_BUTTON_COUNT",
+        "SDL_CONTROLLER_AXIS_INVALID": "SDL_GAMEPAD_AXIS_INVALID",
+        "SDL_CONTROLLER_AXIS_LEFTX": "SDL_GAMEPAD_AXIS_LEFTX",
+        "SDL_CONTROLLER_AXIS_LEFTY": "SDL_GAMEPAD_AXIS_LEFTY",
+        "SDL_CONTROLLER_AXIS_RIGHTX": "SDL_GAMEPAD_AXIS_RIGHTX",
+        "SDL_CONTROLLER_AXIS_RIGHTY": "SDL_GAMEPAD_AXIS_RIGHTY",
+        "SDL_CONTROLLER_AXIS_TRIGGERLEFT": "SDL_GAMEPAD_AXIS_LEFT_TRIGGER",
+        "SDL_CONTROLLER_AXIS_TRIGGERRIGHT": "SDL_GAMEPAD_AXIS_RIGHT_TRIGGER",
+        "SDL_CONTROLLER_AXIS_MAX": "SDL_GAMEPAD_AXIS_COUNT",
         "SDL_GameController*": "SDL_Gamepad*",
         "SDL_GameControllerAddMappingsFromFile": "SDL_AddGamepadMappingsFromFile",
         "SDL_GameControllerGetAxis": "SDL_GetGamepadAxis",
@@ -1219,8 +1250,6 @@ def apply_simple_native_renames() -> None:
         updated = text
         for old, new in replacements.items():
             updated = updated.replace(old, new)
-        updated = re.sub(r"\bSDL_CONTROLLER_BUTTON_", "SDL_GAMEPAD_BUTTON_", updated)
-        updated = re.sub(r"\bSDL_CONTROLLER_AXIS_", "SDL_GAMEPAD_AXIS_", updated)
         if updated != text:
             path.write_text(updated, encoding="utf-8")
 
@@ -1311,6 +1340,20 @@ def verify_source_contract() -> None:
         "SDL_StartTextInput()": "SDL2 no-window text-input API",
         "SDL_StopTextInput()": "SDL2 no-window text-input API",
         "SDL_UNKNOWN": "invalid SDL3 keycode token",
+        "SDL_CONTROLLER_BUTTON_": "SDL2 controller button enum remains",
+        "SDL_CONTROLLER_AXIS_": "SDL2 controller axis enum remains",
+        "SDL_GAMEPAD_BUTTON_A": "invalid mechanical SDL3 gamepad button spelling",
+        "SDL_GAMEPAD_BUTTON_B": "invalid mechanical SDL3 gamepad button spelling",
+        "SDL_GAMEPAD_BUTTON_X": "invalid mechanical SDL3 gamepad button spelling",
+        "SDL_GAMEPAD_BUTTON_Y": "invalid mechanical SDL3 gamepad button spelling",
+        "SDL_GAMEPAD_BUTTON_LEFTSTICK": "invalid mechanical SDL3 gamepad button spelling",
+        "SDL_GAMEPAD_BUTTON_RIGHTSTICK": "invalid mechanical SDL3 gamepad button spelling",
+        "SDL_GAMEPAD_BUTTON_LEFTSHOULDER": "invalid mechanical SDL3 gamepad button spelling",
+        "SDL_GAMEPAD_BUTTON_RIGHTSHOULDER": "invalid mechanical SDL3 gamepad button spelling",
+        "SDL_GAMEPAD_BUTTON_PADDLE": "invalid mechanical SDL3 gamepad paddle spelling",
+        "SDL_GAMEPAD_BUTTON_MAX": "invalid SDL3 gamepad button count spelling",
+        "SDL_GAMEPAD_AXIS_TRIGGER": "invalid mechanical SDL3 gamepad trigger spelling",
+        "SDL_GAMEPAD_AXIS_MAX": "invalid SDL3 gamepad axis count spelling",
     }
     offenders: list[str] = []
     bare_include_re = re.compile(r'#include[ \t]+[<"]SDL(?:_[A-Za-z0-9_]+)?\.h[>"]')

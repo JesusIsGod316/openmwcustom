@@ -145,7 +145,7 @@ namespace MWInput
             if (mGamepadGuiCursorEnabled)
             {
                 // Temporary mouse binding until keyboard controls are available:
-                if (arg.button == SDL_GAMEPAD_BUTTON_A) // We'll pretend that A is left click.
+                if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH) // We'll pretend that A is left click.
                 {
                     bool mousePressSuccess = mMouseManager->injectMouseButtonPress(SDL_BUTTON_LEFT);
                     mGamepadMousePressed = true;
@@ -196,7 +196,7 @@ namespace MWInput
             if (mGamepadGuiCursorEnabled && (!Settings::gui().mControllerMenus || mGamepadMousePressed))
             {
                 // Temporary mouse binding until keyboard controls are available:
-                if (arg.button == SDL_GAMEPAD_BUTTON_A) // We'll pretend that A is left click.
+                if (arg.button == SDL_GAMEPAD_BUTTON_SOUTH) // We'll pretend that A is left click.
                 {
                     bool mousePressSuccess = mMouseManager->injectMouseButtonRelease(SDL_BUTTON_LEFT);
                     mGamepadMousePressed = false;
@@ -236,7 +236,7 @@ namespace MWInput
                 return;
         }
         else if (mBindingsManager->actionIsActive(A_TogglePOV)
-            && (arg.axis == SDL_GAMEPAD_AXIS_TRIGGERRIGHT || arg.axis == SDL_GAMEPAD_AXIS_TRIGGERLEFT))
+            && (arg.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER || arg.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER))
         {
             // Preview Mode Gamepad Zooming; do not propagate to mBindingsManager
             return;
@@ -270,13 +270,13 @@ namespace MWInput
             {
                 // When the inventory tooltip is visible, we don't actually want the A button to
                 // act like a mouse button; it should act normally.
-                if (treatAsMouse && arg.button == SDL_GAMEPAD_BUTTON_A && winMgr->getControllerTooltipVisible())
+                if (treatAsMouse && arg.button == SDL_GAMEPAD_BUTTON_SOUTH && winMgr->getControllerTooltipVisible())
                     treatAsMouse = false;
 
                 mGamepadGuiCursorEnabled = topWin->isGamepadCursorAllowed();
 
                 // Fall through to mouse click
-                if (mGamepadGuiCursorEnabled && treatAsMouse && arg.button == SDL_GAMEPAD_BUTTON_A)
+                if (mGamepadGuiCursorEnabled && treatAsMouse && arg.button == SDL_GAMEPAD_BUTTON_SOUTH)
                     return false;
 
                 if (topWin->onControllerButtonEvent(arg))
@@ -301,33 +301,33 @@ namespace MWInput
             case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
                 key = MyGUI::KeyCode::ArrowLeft;
                 break;
-            case SDL_GAMEPAD_BUTTON_A:
+            case SDL_GAMEPAD_BUTTON_SOUTH:
                 // If we are using the joystick as a GUI mouse, A must be handled via mouse.
                 if (mGamepadGuiCursorEnabled)
                     return false;
                 key = MyGUI::KeyCode::Space;
                 break;
-            case SDL_GAMEPAD_BUTTON_B:
+            case SDL_GAMEPAD_BUTTON_EAST:
                 if (MyGUI::InputManager::getInstance().isModalAny())
                     winMgr->exitCurrentModal();
                 else
                     winMgr->exitCurrentGuiMode();
                 return true;
-            case SDL_GAMEPAD_BUTTON_X:
+            case SDL_GAMEPAD_BUTTON_WEST:
                 key = MyGUI::KeyCode::Semicolon;
                 break;
-            case SDL_GAMEPAD_BUTTON_Y:
+            case SDL_GAMEPAD_BUTTON_NORTH:
                 key = MyGUI::KeyCode::Apostrophe;
                 break;
-            case SDL_GAMEPAD_BUTTON_LEFTSHOULDER:
+            case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
                 MyGUI::InputManager::getInstance().injectKeyPress(MyGUI::KeyCode::LeftShift);
                 winMgr->injectKeyPress(MyGUI::KeyCode::Tab, 0, false);
                 MyGUI::InputManager::getInstance().injectKeyRelease(MyGUI::KeyCode::LeftShift);
                 return true;
-            case SDL_GAMEPAD_BUTTON_RIGHTSHOULDER:
+            case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
                 MWBase::Environment::get().getWindowManager()->injectKeyPress(MyGUI::KeyCode::Tab, 0, false);
                 return true;
-            case SDL_GAMEPAD_BUTTON_LEFTSTICK:
+            case SDL_GAMEPAD_BUTTON_LEFT_STICK:
                 mGamepadGuiCursorEnabled = !mGamepadGuiCursorEnabled;
                 winMgr->setCursorActive(mGamepadGuiCursorEnabled);
                 return true;
@@ -366,13 +366,13 @@ namespace MWInput
         if (Settings::gui().mControllerMenus)
         {
             // Left and right triggers toggle through open GUI windows.
-            if (arg.axis == SDL_GAMEPAD_AXIS_TRIGGERRIGHT)
+            if (arg.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)
             {
                 handleTriggerPress(
                     arg.value, mRightTriggerGuiPressed, [&] { winMgr->cycleActiveControllerWindow(true); });
                 return true;
             }
-            else if (arg.axis == SDL_GAMEPAD_AXIS_TRIGGERLEFT)
+            else if (arg.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER)
             {
                 handleTriggerPress(
                     arg.value, mLeftTriggerGuiPressed, [&] { winMgr->cycleActiveControllerWindow(false); });
@@ -422,11 +422,11 @@ namespace MWInput
 
         switch (arg.axis)
         {
-            case SDL_GAMEPAD_AXIS_TRIGGERRIGHT:
+            case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER:
                 handleTriggerPress(arg.value, mRightTriggerGuiPressed,
                     [&] { winMgr->injectKeyPress(MyGUI::KeyCode::Minus, 0, false); });
                 break;
-            case SDL_GAMEPAD_AXIS_TRIGGERLEFT:
+            case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
                 handleTriggerPress(arg.value, mLeftTriggerGuiPressed,
                     [&] { winMgr->injectKeyPress(MyGUI::KeyCode::Equals, 0, false); });
                 break;
@@ -515,15 +515,15 @@ namespace MWInput
 
         switch (button)
         {
-            case SDL_GAMEPAD_BUTTON_A:
+            case SDL_GAMEPAD_BUTTON_SOUTH:
                 if (isPsx)
                     return "textures/omw_psx_button_x.dds";
                 return "textures/omw_steam_button_a.dds";
-            case SDL_GAMEPAD_BUTTON_B:
+            case SDL_GAMEPAD_BUTTON_EAST:
                 if (isPsx)
                     return "textures/omw_psx_button_circle.dds";
                 return "textures/omw_steam_button_b.dds";
-            case SDL_GAMEPAD_BUTTON_BACK:
+            case SDL_GAMEPAD_BUTTON_EASTACK:
                 return "textures/omw_steam_button_view.dds";
             case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
             case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
@@ -532,38 +532,38 @@ namespace MWInput
                 if (isPsx)
                     return "textures/omw_psx_button_dpad.dds";
                 return "textures/omw_steam_button_dpad.dds";
-            case SDL_GAMEPAD_BUTTON_LEFTSHOULDER:
+            case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
                 if (isXbox)
                     return "textures/omw_xbox_button_lb.dds";
                 else if (isSwitch)
                     return "textures/omw_switch_button_l.dds";
                 return "textures/omw_steam_button_l1.dds";
-            case SDL_GAMEPAD_BUTTON_LEFTSTICK:
+            case SDL_GAMEPAD_BUTTON_LEFT_STICK:
                 return "textures/omw_steam_button_l3.dds";
-            case SDL_GAMEPAD_BUTTON_RIGHTSHOULDER:
+            case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
                 if (isXbox)
                     return "textures/omw_xbox_button_rb.dds";
                 else if (isSwitch)
                     return "textures/omw_switch_button_r.dds";
                 return "textures/omw_steam_button_r1.dds";
-            case SDL_GAMEPAD_BUTTON_RIGHTSTICK:
+            case SDL_GAMEPAD_BUTTON_RIGHT_STICK:
                 return "textures/omw_steam_button_r3.dds";
             case SDL_GAMEPAD_BUTTON_START:
                 return "textures/omw_steam_button_menu.dds";
-            case SDL_GAMEPAD_BUTTON_X:
+            case SDL_GAMEPAD_BUTTON_WEST:
                 if (isPsx)
                     return "textures/omw_psx_button_square.dds";
                 return "textures/omw_steam_button_x.dds";
-            case SDL_GAMEPAD_BUTTON_Y:
+            case SDL_GAMEPAD_BUTTON_NORTH:
                 if (isPsx)
                     return "textures/omw_psx_button_triangle.dds";
                 return "textures/omw_steam_button_y.dds";
             case SDL_GAMEPAD_BUTTON_GUIDE:
             case SDL_GAMEPAD_BUTTON_MISC1:
-            case SDL_GAMEPAD_BUTTON_PADDLE1:
-            case SDL_GAMEPAD_BUTTON_PADDLE2:
-            case SDL_GAMEPAD_BUTTON_PADDLE3:
-            case SDL_GAMEPAD_BUTTON_PADDLE4:
+            case SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1:
+            case SDL_GAMEPAD_BUTTON_LEFT_PADDLE1:
+            case SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2:
+            case SDL_GAMEPAD_BUTTON_LEFT_PADDLE2:
             case SDL_GAMEPAD_BUTTON_TOUCHPAD:
             default:
                 return {};
@@ -585,13 +585,13 @@ namespace MWInput
             case SDL_GAMEPAD_AXIS_RIGHTX:
             case SDL_GAMEPAD_AXIS_RIGHTY:
                 return "textures/omw_steam_button_rstick.dds";
-            case SDL_GAMEPAD_AXIS_TRIGGERLEFT:
+            case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
                 if (isXbox)
                     return "textures/omw_xbox_button_lt.dds";
                 else if (isSwitch)
                     return "textures/omw_switch_button_zl.dds";
                 return "textures/omw_steam_button_l2.dds";
-            case SDL_GAMEPAD_AXIS_TRIGGERRIGHT:
+            case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER:
                 if (isXbox)
                     return "textures/omw_xbox_button_rt.dds";
                 else if (isSwitch)
