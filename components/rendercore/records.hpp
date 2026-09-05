@@ -118,11 +118,44 @@ namespace RenderCore
         Border,
     };
 
+    enum class TextureApplyMode : std::uint8_t
+    {
+        Replace,
+        Decal,
+        Modulate,
+        Highlight,
+        Highlight2,
+    };
+
+    // The source translator preserves the authored transform convention so a
+    // backend can reproduce OpenMW's exact matrix ordering without retaining a
+    // NIF type. Direct is the canonical center/scale/rotate/offset convention
+    // used by backend-authored and already-normalized transforms.
+    enum class TextureTransformConvention : std::uint8_t
+    {
+        Direct,
+        MayaLegacy,
+        Max,
+        Maya,
+    };
+
     enum class AlphaMode : std::uint8_t
     {
         Opaque,
         Mask,
         Blend,
+    };
+
+    enum class CompareOp : std::uint8_t
+    {
+        Never,
+        Less,
+        Equal,
+        LessEqual,
+        Greater,
+        NotEqual,
+        GreaterEqual,
+        Always,
     };
 
     enum class BlendFactor : std::uint8_t
@@ -156,6 +189,29 @@ namespace RenderCore
         Front,
     };
 
+    enum class FrontFaceWinding : std::uint8_t
+    {
+        CounterClockwise,
+        Clockwise,
+    };
+
+    enum class TransparentSortPolicy : std::uint8_t
+    {
+        Inherit,
+        Sorted,
+        Unsorted,
+    };
+
+    enum class StencilOp : std::uint8_t
+    {
+        Keep,
+        Zero,
+        Replace,
+        Increment,
+        Decrement,
+        Invert,
+    };
+
     enum class VertexColorMode : std::uint8_t
     {
         Ignore,
@@ -170,6 +226,7 @@ namespace RenderCore
         glm::vec2 center{ 0.5f, 0.5f };
         float rotation = 0.0f;
         std::uint32_t uvSet = 0;
+        TextureTransformConvention convention = TextureTransformConvention::Direct;
     };
 
     struct SamplerSemantic
@@ -207,6 +264,11 @@ namespace RenderCore
     {
         std::vector<glm::vec3> positions;
         std::vector<glm::vec3> normals;
+        // Tangent and bitangent are kept as separate neutral streams because
+        // both legacy NiGeometryData and packed BS geometry preserve the full
+        // basis. Vulkan realization may repack this into tangent+handedness.
+        std::vector<glm::vec3> tangents;
+        std::vector<glm::vec3> bitangents;
         std::vector<glm::vec4> colors;
         std::vector<std::vector<glm::vec2>> texCoordSets;
         std::vector<std::uint32_t> indices;
@@ -217,6 +279,11 @@ namespace RenderCore
     {
         const std::size_t vertexCount = payload.positions.size();
         if (!payload.normals.empty() && payload.normals.size() != vertexCount)
+            return false;
+        if (payload.tangents.empty() != payload.bitangents.empty())
+            return false;
+        if (!payload.tangents.empty()
+            && (payload.tangents.size() != vertexCount || payload.bitangents.size() != vertexCount))
             return false;
         if (!payload.colors.empty() && payload.colors.size() != vertexCount)
             return false;
@@ -234,6 +301,16 @@ namespace RenderCore
         for (const glm::vec3& normal : payload.normals)
         {
             if (!semantic_detail::finite(normal))
+                return false;
+        }
+        for (const glm::vec3& tangent : payload.tangents)
+        {
+            if (!semantic_detail::finite(tangent))
+                return false;
+        }
+        for (const glm::vec3& bitangent : payload.bitangents)
+        {
+            if (!semantic_detail::finite(bitangent))
                 return false;
         }
         for (const glm::vec4& color : payload.colors)
@@ -275,6 +352,17 @@ namespace RenderCore
         std::shared_ptr<const MeshPayload> payload;
     };
 
+    struct StencilSemantic
+    {
+        bool enabled = false;
+        CompareOp compare = CompareOp::Always;
+        std::uint32_t reference = 0;
+        std::uint32_t compareMask = std::numeric_limits<std::uint32_t>::max();
+        StencilOp fail = StencilOp::Keep;
+        StencilOp depthFail = StencilOp::Keep;
+        StencilOp pass = StencilOp::Keep;
+    };
+
     struct MaterialRecord
     {
         ResourceRevision revision = InitialResourceRevision;
@@ -290,12 +378,23 @@ namespace RenderCore
         float environmentMapStrength = 0.0f;
         float alpha = 1.0f;
         float alphaCutoff = 0.5f;
+        // alphaMode is a coarse pass-class hint. The booleans and compare op
+        // below are authoritative because legacy content can enable blending
+        // and testing simultaneously.
         AlphaMode alphaMode = AlphaMode::Opaque;
+        bool alphaBlendEnabled = false;
+        bool alphaTestEnabled = false;
+        CompareOp alphaCompare = CompareOp::Always;
+        TransparentSortPolicy transparentSort = TransparentSortPolicy::Inherit;
         BlendFactor sourceBlend = BlendFactor::SourceAlpha;
         BlendFactor destinationBlend = BlendFactor::OneMinusSourceAlpha;
         BlendEquation blendEquation = BlendEquation::Add;
+        TextureApplyMode textureApply = TextureApplyMode::Modulate;
         CullMode cullMode = CullMode::Back;
+        FrontFaceWinding frontFace = FrontFaceWinding::CounterClockwise;
+        StencilSemantic stencil;
         VertexColorMode vertexColorMode = VertexColorMode::Ignore;
+        bool wireframe = false;
         bool unlit = false;
         bool depthTest = true;
         bool depthWrite = true;
@@ -309,6 +408,213 @@ namespace RenderCore
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         bool mipmapped = true;
+    };
+
+    inline constexpr std::uint32_t InvalidModelNodeIndex = std::numeric_limits<std::uint32_t>::max();
+
+    class ModelNodeIndex final
+    {
+    public:
+        constexpr ModelNodeIndex() noexcept = default;
+        explicit constexpr ModelNodeIndex(std::uint32_t value) noexcept
+            : mValue(value)
+        {
+        }
+
+        [[nodiscard]] constexpr bool valid() const noexcept { return mValue != InvalidModelNodeIndex; }
+        explicit constexpr operator bool() const noexcept { return valid(); }
+        [[nodiscard]] constexpr std::uint32_t value() const noexcept { return mValue; }
+
+        friend constexpr bool operator==(ModelNodeIndex, ModelNodeIndex) noexcept = default;
+
+    private:
+        std::uint32_t mValue = InvalidModelNodeIndex;
+    };
+
+    enum class ModelNodeKind : std::uint8_t
+    {
+        Transform,
+        Geometry,
+        Switch,
+        Lod,
+        Billboard,
+        Sort,
+    };
+
+    enum class ModelBillboardMode : std::uint8_t
+    {
+        AlwaysFaceCamera,
+        RotateAboutUp,
+        RigidFaceCamera,
+        AlwaysFaceCenter,
+        RigidFaceCenter,
+        RotateAboutUpBethesda,
+    };
+
+    enum class ModelSortMode : std::uint8_t
+    {
+        Inherit,
+        Off,
+        Subsort,
+    };
+
+    enum class ModelNodeFlag : std::uint32_t
+    {
+        Hidden = 1u << 0,
+        Collision = 1u << 1,
+        CollisionOnly = 1u << 2,
+        Marker = 1u << 3,
+        ControllerTarget = 1u << 4,
+    };
+
+    [[nodiscard]] constexpr std::uint32_t modelNodeFlag(ModelNodeFlag flag) noexcept
+    {
+        return static_cast<std::uint32_t>(flag);
+    }
+
+    struct ModelLodRange
+    {
+        ModelNodeIndex child;
+        float minimumDistance = 0.0f;
+        float maximumDistance = std::numeric_limits<float>::max();
+    };
+
+    struct ModelLodSemantic
+    {
+        glm::vec3 center{ 0.0f, 0.0f, 0.0f };
+        std::vector<ModelLodRange> ranges;
+    };
+
+    struct ModelNodeRecord
+    {
+        std::string name;
+        // Diagnostic/source-local provenance only. This is never a backend
+        // resource or pipeline identity.
+        std::optional<std::uint32_t> sourceRecordId;
+        ModelNodeIndex parent;
+        LocalTransform localTransform;
+        ModelNodeKind kind = ModelNodeKind::Transform;
+        std::optional<MeshHandle> mesh;
+        std::vector<MaterialHandle> materials;
+        std::optional<ModelNodeIndex> activeSwitchChild;
+        std::optional<ModelLodSemantic> lod;
+        std::optional<ModelBillboardMode> billboard;
+        std::optional<ModelSortMode> sort;
+        std::uint32_t flags = 0;
+    };
+
+    struct ModelPayload
+    {
+        // Nodes are immutable and topologically ordered: every parent precedes
+        // its children. Local indices are therefore stable, compact, cacheable,
+        // and suitable for deterministic CP3C/CP4 publication and later CP7
+        // backend packing without turning RenderCore into a scene graph.
+        std::vector<ModelNodeRecord> nodes;
+        std::vector<ModelNodeIndex> roots;
+    };
+
+    [[nodiscard]] inline bool validModelPayloadStructure(const ModelPayload& payload) noexcept
+    {
+        std::vector<ModelNodeIndex> expectedRoots;
+        std::vector<std::uint32_t> childCounts(payload.nodes.size(), 0);
+
+        for (std::size_t i = 0; i < payload.nodes.size(); ++i)
+        {
+            const ModelNodeRecord& node = payload.nodes[i];
+            if (!semantic_detail::finite(node.localTransform))
+                return false;
+
+            if (node.parent.valid())
+            {
+                if (node.parent.value() >= i)
+                    return false;
+                ++childCounts[node.parent.value()];
+            }
+            else
+                expectedRoots.emplace_back(static_cast<std::uint32_t>(i));
+
+            if (node.mesh && !node.mesh->valid())
+                return false;
+            for (const MaterialHandle material : node.materials)
+            {
+                if (!material.valid())
+                    return false;
+            }
+
+            if ((node.flags & modelNodeFlag(ModelNodeFlag::CollisionOnly)) != 0
+                && (node.flags & modelNodeFlag(ModelNodeFlag::Collision)) == 0)
+                return false;
+        }
+
+        if (payload.roots != expectedRoots)
+            return false;
+
+        for (std::size_t i = 0; i < payload.nodes.size(); ++i)
+        {
+            const ModelNodeRecord& node = payload.nodes[i];
+            const auto isDirectChild = [&](ModelNodeIndex child) {
+                return child.valid() && child.value() < payload.nodes.size()
+                    && payload.nodes[child.value()].parent == ModelNodeIndex{ static_cast<std::uint32_t>(i) };
+            };
+
+            if (node.kind == ModelNodeKind::Geometry)
+            {
+                if (!node.mesh)
+                    return false;
+            }
+            else if (node.mesh)
+                return false;
+
+            if (node.kind == ModelNodeKind::Switch)
+            {
+                if (node.activeSwitchChild && !isDirectChild(*node.activeSwitchChild))
+                    return false;
+            }
+            else if (node.activeSwitchChild)
+                return false;
+
+            if (node.kind == ModelNodeKind::Lod)
+            {
+                if (!node.lod || !semantic_detail::finite(node.lod->center)
+                    || node.lod->ranges.size() != childCounts[i])
+                    return false;
+
+                for (std::size_t rangeIndex = 0; rangeIndex < node.lod->ranges.size(); ++rangeIndex)
+                {
+                    const ModelLodRange& range = node.lod->ranges[rangeIndex];
+                    if (!isDirectChild(range.child) || !semantic_detail::finite(range.minimumDistance)
+                        || !semantic_detail::finite(range.maximumDistance)
+                        || range.minimumDistance > range.maximumDistance)
+                        return false;
+                    for (std::size_t other = rangeIndex + 1; other < node.lod->ranges.size(); ++other)
+                    {
+                        if (range.child == node.lod->ranges[other].child)
+                            return false;
+                    }
+                }
+            }
+            else if (node.lod)
+                return false;
+
+            if ((node.kind == ModelNodeKind::Billboard) != node.billboard.has_value())
+                return false;
+            if ((node.kind == ModelNodeKind::Sort) != node.sort.has_value())
+                return false;
+        }
+
+        return true;
+    }
+
+    struct ModelRecord
+    {
+        ResourceRevision revision = InitialResourceRevision;
+        // Source identity is normalized producer/VFS provenance. Content identity
+        // is optional until CP3B2 provides canonical content hashing; neither is
+        // permitted to substitute for backend semantic realization keys.
+        std::string sourceIdentity;
+        std::string contentIdentity;
+        AxisAlignedBounds bounds;
+        std::shared_ptr<const ModelPayload> payload;
     };
 
     struct BoneRecord
@@ -387,7 +693,10 @@ namespace RenderCore
         // Canonical semantic ownership. ChunkRecord::members is a derived ordered
         // reverse index maintained only by RenderWorld publication operations.
         std::optional<ChunkHandle> chunk;
+        // Exactly one asset path is authored. mesh is the compact path for a
+        // simple drawable; model preserves compound local hierarchy semantics.
         MeshHandle mesh;
+        std::optional<ModelHandle> model;
         std::vector<MaterialHandle> materials;
         std::optional<SkeletonHandle> skeleton;
         std::optional<AttachmentBinding> attachment;
