@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Finish CP1B SDL3 application-startup semantics and fail closed on removed SDL2 startup tokens.
 
-This pass intentionally runs last in the CP1B materializer stack.  It fixes the
+This pass intentionally runs last in the CP1B materializer stack. It fixes the
 SDL3 header-ownership change for SDL_SetMainReady(), removes the SDL2
 accelerometer-as-joystick hint (SDL3 no longer exposes accelerometers as
 joysticks), and audits source for the SDL2 hints/init flags that SDL 3.4.10
@@ -86,6 +86,7 @@ REMOVED_INIT_SYMBOLS = {
 }
 
 IDENT = re.compile(r"\bSDL_[A-Za-z0-9_]+\b")
+SDL3_INCLUDE = re.compile(r"^#include\s+[<\"]SDL3/SDL[^>\"]*[>\"]\s*$", re.MULTILINE)
 
 
 def replace_identifier(text: str, old: str, new: str) -> str:
@@ -101,21 +102,29 @@ def iter_sources():
                 yield path
 
 
+def ensure_mainready_header(path: pathlib.Path) -> None:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if "SDL_SetMainReady" not in text or "#include <SDL3/SDL_main.h>" in text:
+        return
+
+    match = SDL3_INCLUDE.search(text)
+    if not match:
+        raise RuntimeError(
+            f"{path.relative_to(ROOT)} uses SDL_SetMainReady but has no SDL3 include anchor"
+        )
+
+    insert_at = match.end()
+    text = text[:insert_at] + "\n#include <SDL3/SDL_main.h>" + text[insert_at:]
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def patch_engine() -> None:
     text = ENGINE.read_text(encoding="utf-8")
     original = text
 
-    # SDL3 no longer includes SDL_main.h through SDL.h.  SDL_MAIN_HANDLED users
-    # that call SDL_SetMainReady() must include the owning header explicitly.
-    if "SDL_SetMainReady" in text and "#include <SDL3/SDL_main.h>" not in text:
-        anchor = "#include <SDL3/SDL.h>\n"
-        if anchor not in text:
-            raise RuntimeError("engine.cpp uses SDL_SetMainReady but SDL3/SDL.h include anchor is missing")
-        text = text.replace(anchor, anchor + "#include <SDL3/SDL_main.h>\n", 1)
-
     # This SDL2 hint was removed in SDL3. Accelerometer sensor access is now a
     # gamepad-sensor API and is not exposed as a synthetic joystick, matching
-    # the intent of the old OpenMW setting (\"We use only gamepads\").
+    # the intent of the old OpenMW setting ("We use only gamepads").
     text = re.sub(
         r"^[ \t]*SDL_SetHint\(SDL_HINT_ACCELEROMETER_AS_JOYSTICK,[^\n]*\);[^\n]*\n",
         "",
@@ -124,8 +133,8 @@ def patch_engine() -> None:
     )
 
     # CP1B pins SDL 3.4.10, where this macOS OpenGL hint is native. The inherited
-    # SDL2 version guard is therefore dead compatibility syntax and can hide
-    # header/API ownership mistakes.
+    # SDL2 version guard is dead compatibility syntax and can hide header/API
+    # ownership mistakes.
     old_mac_block = (
         "#if SDL_VERSION_ATLEAST(2, 24, 0)\n"
         "    SDL_SetHint(SDL_HINT_MAC_OPENGL_ASYNC_DISPATCH, \"1\");\n"
@@ -145,6 +154,13 @@ def patch_engine() -> None:
 
     if text != original:
         ENGINE.write_text(text, encoding="utf-8", newline="\n")
+
+
+def patch_mainready_headers() -> None:
+    # SDL3 stopped including SDL_main.h from SDL.h. Apply the ownership fix to
+    # every current callsite, not only the first compiler failure.
+    for path in iter_sources():
+        ensure_mainready_header(path)
 
 
 def audit() -> None:
@@ -186,6 +202,7 @@ def audit() -> None:
 
 def main() -> None:
     patch_engine()
+    patch_mainready_headers()
     audit()
 
 
