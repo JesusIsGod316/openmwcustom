@@ -1,7 +1,7 @@
 #ifndef MWGUI_WINDOW_BASE_H
 #define MWGUI_WINDOW_BASE_H
 
-#include <SDL_events.h>
+#include <SDL3/SDL.h>
 
 #include "layout.hpp"
 

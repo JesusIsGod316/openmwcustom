@@ -3,8 +3,8 @@
 
 #include <osg/ref_ptr>
 
-#include <SDL_events.h>
-#include <SDL_version.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL.h>
 
 #include "events.hpp"
 

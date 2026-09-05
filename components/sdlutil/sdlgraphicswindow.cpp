@@ -1,6 +1,6 @@
 #include "sdlgraphicswindow.hpp"
 
-#include <SDL_video.h>
+#include <SDL3/SDL.h>
 
 #ifdef OPENMW_GL4ES_MANUAL_INIT
 #include "gl4esinit.h"

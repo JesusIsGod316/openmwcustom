@@ -1,8 +1,8 @@
 #include "inputbindings.hpp"
 
-#include <SDL_events.h>
-#include <SDL_gamecontroller.h>
-#include <SDL_mouse.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL.h>
 
 #include <components/lua/inputactions.hpp>
 #include <components/lua/luastate.hpp>

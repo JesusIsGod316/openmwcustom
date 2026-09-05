@@ -19,8 +19,8 @@
 // For BT_NO_PROFILE
 #include <LinearMath/btQuickprof.h>
 
-#include <SDL_clipboard.h>
-#include <SDL_keyboard.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL.h>
 
 #include <components/debug/debuglog.hpp>
 

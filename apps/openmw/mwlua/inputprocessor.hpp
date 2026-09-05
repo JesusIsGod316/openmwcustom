@@ -1,7 +1,7 @@
 #ifndef MWLUA_INPUTPROCESSOR_H
 #define MWLUA_INPUTPROCESSOR_H
 
-#include <SDL_events.h>
+#include <SDL3/SDL.h>
 
 #include <components/sdlutil/events.hpp>
 

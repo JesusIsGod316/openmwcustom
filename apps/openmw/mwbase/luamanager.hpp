@@ -7,7 +7,7 @@
 #include <variant>
 #include <vector>
 
-#include <SDL_events.h>
+#include <SDL3/SDL.h>
 #include <osg/Quat>
 #include <osg/Vec3f>
 

@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include <SDL_gamecontroller.h>
+#include <SDL3/SDL.h>
 #include <cstdint>
 
 namespace Loading

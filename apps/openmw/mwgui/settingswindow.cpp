@@ -13,7 +13,7 @@
 #include <MyGUI_UString.h>
 #include <MyGUI_Window.h>
 
-#include <SDL_video.h>
+#include <SDL3/SDL.h>
 
 #include <components/debug/debuglog.hpp>
 #include <components/files/configurationmanager.hpp>

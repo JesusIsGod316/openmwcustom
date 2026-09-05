@@ -2,7 +2,7 @@
 
 #include <MyGUI_InputManager.h>
 
-#include <SDL_keyboard.h>
+#include <SDL3/SDL.h>
 
 #include <components/settings/values.hpp>
 

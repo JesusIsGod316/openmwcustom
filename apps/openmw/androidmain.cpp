@@ -3,9 +3,9 @@ int stderr = 0; // Hack: fix linker error
 #endif
 
 #include "SDL_main.h"
-#include <SDL_events.h>
-#include <SDL_gamecontroller.h>
-#include <SDL_mouse.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL.h>
 
 /*******************************************************************************
  Functions called by JNI

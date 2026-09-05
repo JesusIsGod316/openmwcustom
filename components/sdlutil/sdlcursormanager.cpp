@@ -4,7 +4,7 @@
 
 #include <SDL_endian.h>
 #include <SDL_hints.h>
-#include <SDL_mouse.h>
+#include <SDL3/SDL.h>
 #include <SDL_render.h>
 
 #include <osg/Geometry>

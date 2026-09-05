@@ -18,7 +18,7 @@
 #include <osgViewer/Renderer>
 #include <osgViewer/ViewerEventHandlers>
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 #include <components/debug/debuglog.hpp>
 #include <components/debug/gldebug.hpp>

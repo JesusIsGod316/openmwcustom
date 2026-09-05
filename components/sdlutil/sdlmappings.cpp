@@ -4,8 +4,8 @@
 
 #include <MyGUI_MouseButton.h>
 
-#include <SDL_gamecontroller.h>
-#include <SDL_mouse.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL.h>
 
 namespace SDLUtil
 {

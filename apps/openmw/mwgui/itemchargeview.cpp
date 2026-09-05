@@ -1,6 +1,6 @@
 #include "itemchargeview.hpp"
 
-#include <SDL_gamecontroller.h>
+#include <SDL3/SDL.h>
 #include <set>
 
 #include <MyGUI_FactoryManager.h>

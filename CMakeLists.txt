@@ -486,7 +486,46 @@ find_package(Boost 1.70.0 CONFIG REQUIRED COMPONENTS ${BOOST_COMPONENTS} OPTIONA
 if(OPENMW_USE_SYSTEM_MYGUI)
     find_package(MyGUI 3.4.3 REQUIRED)
 endif()
-find_package(SDL2 2.0.20 REQUIRED)
+# V4 CP1B: pinned native SDL3 dependency
+set(OPENMW_SDL3_VERSION "3.4.10")
+set(OPENMW_SDL3_VC_SHA256 "e2b336b10b037934af98308027410732ef7b22f2c6697d58092aa1c209fae7d7")
+
+# CP1B's Windows CI bundle is still the frozen V3.25 dependency set, so SDL3
+# is pinned separately here. This keeps the migration reproducible without
+# changing the legacy OSG/OpenGL dependency bundle used by the control path.
+if(WIN32)
+    set(_openmw_sdl3_deps_dir "${CMAKE_BINARY_DIR}/_deps")
+    set(_openmw_sdl3_archive "${_openmw_sdl3_deps_dir}/SDL3-devel-${OPENMW_SDL3_VERSION}-VC.zip")
+    set(_openmw_sdl3_root "${_openmw_sdl3_deps_dir}/SDL3-${OPENMW_SDL3_VERSION}")
+    set(_openmw_sdl3_config "${_openmw_sdl3_root}/cmake/SDL3Config.cmake")
+    if(NOT EXISTS "${_openmw_sdl3_config}")
+        file(MAKE_DIRECTORY "${_openmw_sdl3_deps_dir}")
+        file(DOWNLOAD
+            "https://github.com/libsdl-org/SDL/releases/download/release-${OPENMW_SDL3_VERSION}/SDL3-devel-${OPENMW_SDL3_VERSION}-VC.zip"
+            "${_openmw_sdl3_archive}"
+            EXPECTED_HASH "SHA256=${OPENMW_SDL3_VC_SHA256}"
+            SHOW_PROGRESS
+            STATUS _openmw_sdl3_download_status)
+        list(GET _openmw_sdl3_download_status 0 _openmw_sdl3_download_code)
+        list(GET _openmw_sdl3_download_status 1 _openmw_sdl3_download_message)
+        if(NOT _openmw_sdl3_download_code EQUAL 0)
+            message(FATAL_ERROR "SDL3 download failed: ${_openmw_sdl3_download_message}")
+        endif()
+        execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E tar xvf "${_openmw_sdl3_archive}"
+            WORKING_DIRECTORY "${_openmw_sdl3_deps_dir}"
+            RESULT_VARIABLE _openmw_sdl3_extract_result)
+        if(NOT _openmw_sdl3_extract_result EQUAL 0 OR NOT EXISTS "${_openmw_sdl3_config}")
+            message(FATAL_ERROR "Failed to extract pinned SDL3 ${OPENMW_SDL3_VERSION} development package")
+        endif()
+    endif()
+    list(PREPEND CMAKE_PREFIX_PATH "${_openmw_sdl3_root}")
+endif()
+
+find_package(SDL3 3.4.10 CONFIG REQUIRED)
+# SDL3 provides a native transition alias set while the remaining CP1B call
+# sites are converted to SDL3 names and semantics. No SDL2 runtime is linked.
+add_compile_definitions(SDL_ENABLE_OLD_NAMES)
 find_package(OpenAL REQUIRED)
 find_package(ZLIB REQUIRED)
 
