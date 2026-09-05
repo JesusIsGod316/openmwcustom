@@ -1,0 +1,60 @@
+name: V4.0 CP1B SDL3 source materializer
+
+on:
+  push:
+    branches: [v4.0-cp1b-sdl3-opengl-parity]
+    paths:
+      - tools/v4/V4-CP1B-Migrate-SDL3.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v4-cp1b-materialize-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  Materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact CP1B head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify corrected CP1A ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          CP1A_BASE=0bd575fb8dc5665034cdd57da62a6813db0a1bb3
+          git merge-base --is-ancestor "${CP1A_BASE}" HEAD
+
+      - name: Materialize native SDL3 migration
+        run: python3 tools/v4/V4-CP1B-Migrate-SDL3.py
+
+      - name: Verify generated diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+          git diff --exit-code -- V3-applied-source.patch V3-applied-source-stat.txt V3-BUILD-IDENTITY.txt V3-LAB-README.txt
+          git status --short
+
+      - name: Commit materialized CP1B source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'CP1B SDL3 migration is already materialized.'
+            exit 0
+          fi
+          git config user.name 'OpenMW Custom Build CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add CMakeLists.txt components/CMakeLists.txt components/sdlutil apps/openmw
+          git commit -m 'V4.0 CP1B: materialize native SDL3 platform migration [full-build]'
+          git push origin HEAD:v4.0-cp1b-sdl3-opengl-parity
