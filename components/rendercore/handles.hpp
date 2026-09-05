@@ -48,6 +48,9 @@ namespace RenderCore
     struct MeshHandleTag final
     {
     };
+    struct ModelHandleTag final
+    {
+    };
     struct MaterialHandleTag final
     {
     };
@@ -68,6 +71,7 @@ namespace RenderCore
     };
 
     using MeshHandle = Handle<MeshHandleTag>;
+    using ModelHandle = Handle<ModelHandleTag>;
     using MaterialHandle = Handle<MaterialHandleTag>;
     using TextureHandle = Handle<TextureHandleTag>;
     using SkeletonHandle = Handle<SkeletonHandleTag>;
