@@ -15,6 +15,9 @@ namespace RenderCore
     struct CreateMesh { MeshHandle handle; MeshRecord record; };
     struct UpdateMesh { MeshHandle handle; MeshRecord record; };
     struct RetireMesh { MeshHandle handle; };
+    struct CreateModel { ModelHandle handle; ModelRecord record; };
+    struct UpdateModel { ModelHandle handle; ModelRecord record; };
+    struct RetireModel { ModelHandle handle; };
     struct CreateMaterial { MaterialHandle handle; MaterialRecord record; };
     struct UpdateMaterial { MaterialHandle handle; MaterialRecord record; };
     struct RetireMaterial { MaterialHandle handle; };
@@ -35,10 +38,10 @@ namespace RenderCore
     struct UpdateLight { LightHandle handle; LightRecord record; };
     struct RetireLight { LightHandle handle; };
 
-    using RenderWorldUpdateOperation = std::variant<CreateMesh, UpdateMesh, RetireMesh, CreateMaterial, UpdateMaterial,
-        RetireMaterial, CreateTexture, UpdateTexture, RetireTexture, CreateSkeleton, UpdateSkeleton, RetireSkeleton,
-        CreateInstance, UpdateInstance, ReparentInstance, RetireInstance, CreateChunk, UpdateChunk, RetireChunk,
-        CreateLight, UpdateLight, RetireLight>;
+    using RenderWorldUpdateOperation = std::variant<CreateMesh, UpdateMesh, RetireMesh, CreateModel, UpdateModel,
+        RetireModel, CreateMaterial, UpdateMaterial, RetireMaterial, CreateTexture, UpdateTexture, RetireTexture,
+        CreateSkeleton, UpdateSkeleton, RetireSkeleton, CreateInstance, UpdateInstance, ReparentInstance,
+        RetireInstance, CreateChunk, UpdateChunk, RetireChunk, CreateLight, UpdateLight, RetireLight>;
 
     class RenderWorldUpdateBatch final
     {
@@ -158,6 +161,9 @@ namespace RenderCore
         static bool applyOperation(RenderWorld& world, const CreateMesh& value) { return world.commit(value.handle, value.record); }
         static bool applyOperation(RenderWorld& world, const UpdateMesh& value) { return world.update(value.handle, value.record); }
         static bool applyOperation(RenderWorld& world, const RetireMesh& value) { return world.retire(value.handle); }
+        static bool applyOperation(RenderWorld& world, const CreateModel& value) { return world.commit(value.handle, value.record); }
+        static bool applyOperation(RenderWorld& world, const UpdateModel& value) { return world.update(value.handle, value.record); }
+        static bool applyOperation(RenderWorld& world, const RetireModel& value) { return world.retire(value.handle); }
         static bool applyOperation(RenderWorld& world, const CreateMaterial& value) { return world.commit(value.handle, value.record); }
         static bool applyOperation(RenderWorld& world, const UpdateMaterial& value) { return world.update(value.handle, value.record); }
         static bool applyOperation(RenderWorld& world, const RetireMaterial& value) { return world.retire(value.handle); }
