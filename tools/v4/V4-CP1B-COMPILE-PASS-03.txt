@@ -1,0 +1,5 @@
+V4.0 CP1B compile-validation pass 03
+Parent CP1A: 0bd575fb8dc5665034cdd57da62a6813db0a1bb3
+Materialized SDL3 extern-target repair: 7724b6b20aeb760fe5371eb96abed41d6c0764ed
+Prior pass 02 configure failure: extern/osg-ffmpeg-videoplayer and extern/oics still linked SDL2::SDL2.
+Purpose: run the first full configure/build attempt with all known CMake SDL targets migrated to SDL3::SDL3.
