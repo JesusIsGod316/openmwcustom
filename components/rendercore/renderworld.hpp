@@ -17,6 +17,7 @@ namespace RenderCore
     {
     public:
         using MeshTable = SlotTable<MeshHandle, MeshRecord>;
+        using ModelTable = SlotTable<ModelHandle, ModelRecord>;
         using MaterialTable = SlotTable<MaterialHandle, MaterialRecord>;
         using TextureTable = SlotTable<TextureHandle, TextureRecord>;
         using SkeletonTable = SlotTable<SkeletonHandle, SkeletonRecord>;
@@ -28,6 +29,7 @@ namespace RenderCore
         [[nodiscard]] RenderWorldRevision revision() const noexcept { return mRevision; }
 
         [[nodiscard]] std::optional<MeshHandle> reserveMesh() { return mMeshes.reserve(); }
+        [[nodiscard]] std::optional<ModelHandle> reserveModel() { return mModels.reserve(); }
         [[nodiscard]] std::optional<MaterialHandle> reserveMaterial() { return mMaterials.reserve(); }
         [[nodiscard]] std::optional<TextureHandle> reserveTexture() { return mTextures.reserve(); }
         [[nodiscard]] std::optional<SkeletonHandle> reserveSkeleton() { return mSkeletons.reserve(); }
@@ -38,6 +40,11 @@ namespace RenderCore
         bool commit(MeshHandle handle, MeshRecord record)
         {
             return validateMeshRecord(record) && commitRecord(mMeshes, handle, std::move(record));
+        }
+
+        bool commit(ModelHandle handle, ModelRecord record)
+        {
+            return validateModelRecord(record) && commitRecord(mModels, handle, std::move(record));
         }
 
         bool commit(MaterialHandle handle, MaterialRecord record)
@@ -106,6 +113,11 @@ namespace RenderCore
         bool update(MeshHandle handle, MeshRecord record)
         {
             return validateMeshRecord(record) && updateVersionedRecord(mMeshes, handle, std::move(record));
+        }
+
+        bool update(ModelHandle handle, ModelRecord record)
+        {
+            return validateModelRecord(record) && updateVersionedRecord(mModels, handle, std::move(record));
         }
 
         bool update(MaterialHandle handle, MaterialRecord record)
@@ -181,6 +193,7 @@ namespace RenderCore
         }
 
         bool cancel(MeshHandle handle) noexcept { return mMeshes.cancel(handle); }
+        bool cancel(ModelHandle handle) noexcept { return mModels.cancel(handle); }
         bool cancel(MaterialHandle handle) noexcept { return mMaterials.cancel(handle); }
         bool cancel(TextureHandle handle) noexcept { return mTextures.cancel(handle); }
         bool cancel(SkeletonHandle handle) noexcept { return mSkeletons.cancel(handle); }
@@ -191,6 +204,11 @@ namespace RenderCore
         bool retire(MeshHandle handle) noexcept
         {
             return !meshReferenced(handle) && retireRecord(mMeshes, handle);
+        }
+
+        bool retire(ModelHandle handle) noexcept
+        {
+            return !modelReferenced(handle) && retireRecord(mModels, handle);
         }
 
         bool retire(MaterialHandle handle) noexcept
@@ -242,6 +260,7 @@ namespace RenderCore
         bool retire(LightHandle handle) noexcept { return retireRecord(mLights, handle); }
 
         [[nodiscard]] const MeshRecord* get(MeshHandle handle) const noexcept { return mMeshes.get(handle); }
+        [[nodiscard]] const ModelRecord* get(ModelHandle handle) const noexcept { return mModels.get(handle); }
         [[nodiscard]] const MaterialRecord* get(MaterialHandle handle) const noexcept { return mMaterials.get(handle); }
         [[nodiscard]] const TextureRecord* get(TextureHandle handle) const noexcept { return mTextures.get(handle); }
         [[nodiscard]] const SkeletonRecord* get(SkeletonHandle handle) const noexcept { return mSkeletons.get(handle); }
@@ -255,6 +274,10 @@ namespace RenderCore
 
             mMeshes.forEachLive([&](MeshHandle, const MeshRecord& record) {
                 if (!validateMeshRecord(record))
+                    result = false;
+            });
+            mModels.forEachLive([&](ModelHandle, const ModelRecord& record) {
+                if (!validateModelRecord(record))
                     result = false;
             });
             mMaterials.forEachLive([&](MaterialHandle, const MaterialRecord& record) {
@@ -315,6 +338,7 @@ namespace RenderCore
                 return false;
 
             mMeshes.retireAll();
+            mModels.retireAll();
             mMaterials.retireAll();
             mTextures.retireAll();
             mSkeletons.retireAll();
@@ -342,15 +366,38 @@ namespace RenderCore
             return true;
         }
 
+        [[nodiscard]] bool validateModelRecord(const ModelRecord& record) const noexcept
+        {
+            if (!record.revision.valid() || !record.payload || !validModelPayloadStructure(*record.payload))
+                return false;
+
+            for (const ModelNodeRecord& node : record.payload->nodes)
+            {
+                if (node.mesh && !mMeshes.contains(*node.mesh))
+                    return false;
+                for (const MaterialHandle material : node.materials)
+                {
+                    if (!mMaterials.contains(material))
+                        return false;
+                }
+            }
+            return true;
+        }
+
         [[nodiscard]] bool validateMaterialRecord(const MaterialRecord& record) const noexcept
         {
-            if (!record.revision.valid() || !std::isfinite(record.shininess) || !std::isfinite(record.emissiveMultiplier)
+            if (!record.revision.valid() || !semantic_detail::finite(record.diffuse)
+                || !semantic_detail::finite(record.ambient) || !semantic_detail::finite(record.specular)
+                || !semantic_detail::finite(record.emission) || !semantic_detail::finite(record.environmentMapColor)
+                || !std::isfinite(record.shininess) || !std::isfinite(record.emissiveMultiplier)
                 || !std::isfinite(record.specularStrength) || !std::isfinite(record.environmentMapStrength)
                 || !std::isfinite(record.alpha) || !std::isfinite(record.alphaCutoff))
                 return false;
             for (const TextureBinding& binding : record.textures)
             {
                 if (!mTextures.contains(binding.texture) || !std::isfinite(binding.sampler.maxAnisotropy)
+                    || binding.sampler.maxAnisotropy < 0.0f || !semantic_detail::finite(binding.transform.offset)
+                    || !semantic_detail::finite(binding.transform.scale) || !semantic_detail::finite(binding.transform.center)
                     || !std::isfinite(binding.transform.rotation))
                     return false;
             }
@@ -382,7 +429,13 @@ namespace RenderCore
 
         [[nodiscard]] bool validateInstanceReferences(InstanceHandle self, const InstanceRecord& record) const noexcept
         {
-            if (!mMeshes.contains(record.mesh))
+            const bool hasMesh = record.mesh.valid();
+            const bool hasModel = record.model.has_value();
+            if (hasMesh == hasModel)
+                return false;
+            if (hasMesh && !mMeshes.contains(record.mesh))
+                return false;
+            if (hasModel && (!record.model->valid() || !mModels.contains(*record.model) || !record.materials.empty()))
                 return false;
             if (record.chunk && !mChunks.contains(*record.chunk))
                 return false;
@@ -452,6 +505,25 @@ namespace RenderCore
                 if (record.mesh == handle)
                     referenced = true;
             });
+            mModels.forEachLive([&](ModelHandle, const ModelRecord& record) {
+                if (!record.payload)
+                    return;
+                for (const ModelNodeRecord& node : record.payload->nodes)
+                {
+                    if (node.mesh && *node.mesh == handle)
+                        referenced = true;
+                }
+            });
+            return referenced;
+        }
+
+        [[nodiscard]] bool modelReferenced(ModelHandle handle) const noexcept
+        {
+            bool referenced = false;
+            mInstances.forEachLive([&](InstanceHandle, const InstanceRecord& record) {
+                if (record.model && *record.model == handle)
+                    referenced = true;
+            });
             return referenced;
         }
 
@@ -461,6 +533,15 @@ namespace RenderCore
             mInstances.forEachLive([&](InstanceHandle, const InstanceRecord& record) {
                 if (std::find(record.materials.begin(), record.materials.end(), handle) != record.materials.end())
                     referenced = true;
+            });
+            mModels.forEachLive([&](ModelHandle, const ModelRecord& record) {
+                if (!record.payload)
+                    return;
+                for (const ModelNodeRecord& node : record.payload->nodes)
+                {
+                    if (std::find(node.materials.begin(), node.materials.end(), handle) != node.materials.end())
+                        referenced = true;
+                }
             });
             return referenced;
         }
@@ -551,6 +632,7 @@ namespace RenderCore
         WorldEpoch mEpoch = InitialWorldEpoch;
         RenderWorldRevision mRevision = InitialRenderWorldRevision;
         MeshTable mMeshes;
+        ModelTable mModels;
         MaterialTable mMaterials;
         TextureTable mTextures;
         SkeletonTable mSkeletons;
