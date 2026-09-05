@@ -25,6 +25,9 @@ namespace RenderCore
     {
         bool legacyOpenGL = true;
         bool vsgVulkan = false;
+        // Auto must not make an incomplete modern renderer the normal user path.
+        // Explicit VSG/Vulkan requests remain available for checkpoint testing.
+        bool vsgVulkanCompatibilityQualified = false;
     };
 
     struct RenderBackendRequest
@@ -45,10 +48,14 @@ namespace RenderCore
     {
         if (request.preference == RenderBackendPreference::Auto)
         {
-            if (capabilities.vsgVulkan)
+            // Compatibility-first default: prefer the modern backend only after it
+            // has passed the applicable OpenMW mod/shader/content parity gate.
+            if (capabilities.vsgVulkan && capabilities.vsgVulkanCompatibilityQualified)
                 return { RenderBackendKind::VsgVulkan, true, false };
             if (capabilities.legacyOpenGL)
                 return { RenderBackendKind::LegacyOpenGL, true, false };
+            if (capabilities.vsgVulkan)
+                return { RenderBackendKind::VsgVulkan, true, false };
             return {};
         }
 
