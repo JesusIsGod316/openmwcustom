@@ -1,3 +1,4 @@
+# QC trigger: validate materialized native SDL3 closeout head f5af749b0e40c059d1c6d01046aa04ef59492c1f
 name: V4.0 CP1B native SDL3 closeout staging QC
 
 on:
