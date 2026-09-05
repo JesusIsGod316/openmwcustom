@@ -1,0 +1,91 @@
+name: V4.0 CP1B SDL3 OpenGL parity QC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp1b-sdl3-opengl-parity]
+
+concurrency:
+  group: v4-cp1b-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify corrected CP1A ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          CP1A_BASE=0bd575fb8dc5665034cdd57da62a6813db0a1bb3
+          git cat-file -e "${CP1A_BASE}^{commit}"
+          if ! git merge-base --is-ancestor "${CP1A_BASE}" HEAD; then
+            echo "CP1B does not inherit the corrected CP1A closeout head ${CP1A_BASE}" >&2
+            exit 1
+          fi
+
+      - name: Verify complete CP0A generated materialization
+        run: python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+
+      - name: Enforce neutral RenderCore boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '#include[[:space:]]*[<"](osg|osgViewer|osgUtil|vsg|vulkan|apps/openmw|components/mwworld)|\b(osg|osgViewer|osgUtil|vsg)::|\bVk[A-Z]|\bMWWorld::' components/rendercore; then
+            echo 'rendercore common boundary contains a forbidden backend/game type' >&2
+            exit 1
+          fi
+
+      - name: Verify CP1A foundation remains intact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f components/rendercore/handles.hpp
+          test -f components/rendercore/resources.hpp
+          test -f components/rendercore/math.hpp
+          test -f components/rendercore/slottable.hpp
+          test -f components/rendercore/renderworld.hpp
+          test -f apps/components_tests/rendercore/foundation.cpp
+          test -f apps/components_tests/rendercore/renderworld.cpp
+          test -f tools/v4/V4-CP0A-GENERATED-OUTPUT-MANIFEST.txt
+          test -f tools/v4/V4-CP0A-GENERATED-PACKAGING-MANIFEST.txt
+          test -f tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+
+      - name: Verify CP1B native SDL3 migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'find_package(SDL3 3.4.10' CMakeLists.txt
+          grep -F 'SDL3::SDL3' components/CMakeLists.txt
+          if grep -RInE '#include[[:space:]]*[<"](SDL2/|SDL\.h|SDL_events\.h|SDL_video\.h|SDL_gamecontroller\.h|SDL_joystick\.h|SDL_sensor\.h)' components/sdlutil apps/openmw/engine.cpp apps/openmw/mwinput; then
+            echo 'CP1B platform/input surface still contains SDL2-style includes' >&2
+            exit 1
+          fi
+          if grep -RInF 'SDL2::SDL2' CMakeLists.txt components apps; then
+            echo 'CP1B still links the SDL2 CMake target' >&2
+            exit 1
+          fi
+
+      - name: Check changed source whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check 0bd575fb8dc5665034cdd57da62a6813db0a1bb3 HEAD -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+
+  Windows:
+    needs: Preflight
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-build]') }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
