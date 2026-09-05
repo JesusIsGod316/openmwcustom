@@ -65,6 +65,21 @@ def port_launcher_displays() -> None:
     write(rel, text)
 
 
+def port_ingame_display_modes() -> None:
+    rel = "apps/openmw/mwgui/settingswindow.cpp"
+    text = read(rel)
+
+    old = '''        // fill resolution list\n        const int screen = Settings::video().mScreen;\n        int numDisplayModes = SDL_GetNumDisplayModes(screen);\n        std::vector<std::pair<int, int>> resolutions;\n        for (int i = 0; i < numDisplayModes; i++)\n        {\n            SDL_DisplayMode mode;\n            SDL_GetDisplayMode(screen, i, &mode);\n            resolutions.emplace_back(mode.w, mode.h);\n        }\n        std::sort(resolutions.begin(), resolutions.end(), sortResolutions);\n'''
+    new = '''        // fill resolution list\n        const int screen = Settings::video().mScreen;\n        std::vector<std::pair<int, int>> resolutions;\n\n        int displayCount = 0;\n        SDL_DisplayID* displayIds = SDL_GetDisplays(&displayCount);\n        if (displayIds && screen >= 0 && screen < displayCount)\n        {\n            const SDL_DisplayID displayId = displayIds[screen];\n            int modeCount = 0;\n            SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(displayId, &modeCount);\n            if (modes)\n            {\n                for (int i = 0; i < modeCount; ++i)\n                {\n                    const SDL_DisplayMode* mode = modes[i];\n                    if (mode)\n                        resolutions.emplace_back(mode->w, mode->h);\n                }\n                SDL_free(modes);\n            }\n            else\n                Log(Debug::Warning) << "SDL_GetFullscreenDisplayModes failed: " << SDL_GetError();\n        }\n        else\n            Log(Debug::Warning) << "SDL_GetDisplays failed or configured screen is unavailable: " << SDL_GetError();\n        SDL_free(displayIds);\n\n        std::sort(resolutions.begin(), resolutions.end(), sortResolutions);\n'''
+
+    if old in text:
+        text = text.replace(old, new, 1)
+    elif new not in text:
+        raise RuntimeError(f"{rel}: in-game resolution enumeration block not found")
+
+    write(rel, text)
+
+
 def verify_removed_video_contract() -> None:
     # These APIs are explicitly removed by SDL3 rather than simple renames.
     # Search invocation spellings so comments mentioning an API do not trip the
@@ -105,6 +120,7 @@ def verify_removed_video_contract() -> None:
 def main() -> None:
     port_cursor_scaling()
     port_launcher_displays()
+    port_ingame_display_modes()
     verify_removed_video_contract()
     print("CP1B SDL3 cursor/display semantic port complete; removed-video API audit clean.")
 
