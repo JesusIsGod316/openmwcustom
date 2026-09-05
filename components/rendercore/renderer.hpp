@@ -75,6 +75,36 @@ namespace RenderCore
         return {};
     }
 
+    // Renderer entry coherence gate. Backends must not consume frame-local state
+    // against a different logical world revision, or dereference dynamic handles
+    // that were retired/replaced after the frame snapshot was assembled.
+    [[nodiscard]] inline bool frameCompatibleWithWorld(
+        const RenderWorld& world, const FrameRenderState& frame) noexcept
+    {
+        if (!frame.valid() || frame.worldEpoch() != world.epoch()
+            || frame.renderWorldRevision() != world.revision())
+            return false;
+
+        for (const DynamicTransformState& transform : frame.dynamicTransforms())
+        {
+            if (!world.get(transform.instance))
+                return false;
+        }
+
+        for (const DynamicMaterialState& state : frame.dynamicMaterials())
+        {
+            const MaterialRecord* material = world.get(state.material);
+            if (!material)
+                return false;
+            for (const DynamicTextureTransformState& transform : state.textureTransforms)
+            {
+                if (transform.bindingIndex >= material->textures.size())
+                    return false;
+            }
+        }
+        return true;
+    }
+
     enum class RenderFrameResult : std::uint8_t
     {
         Presented,
