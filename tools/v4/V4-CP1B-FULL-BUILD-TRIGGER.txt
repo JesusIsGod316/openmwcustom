@@ -1,0 +1,4 @@
+V4.0 CP1B full Windows QC trigger
+materialized_parent=2a7b91f8f8fef51fb3834c8bc75b83ac2ee49fa9
+reason=semantic materialization, whole-source removed-video audit, idempotency, and frozen-provenance gates passed in run 33940809137
+scope=SDL3 3.4.10 platform/window/input/OpenGL parity only; no performance claim
