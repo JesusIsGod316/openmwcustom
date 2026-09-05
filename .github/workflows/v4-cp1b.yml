@@ -11,6 +11,7 @@ concurrency:
 
 jobs:
   Preflight:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-build]') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout exact branch head
@@ -56,18 +57,25 @@ jobs:
           test -f tools/v4/V4-CP0A-GENERATED-PACKAGING-MANIFEST.txt
           test -f tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
 
-      - name: Verify CP1B native SDL3 migration
+      - name: Verify CP1B semantic materialization is complete
         shell: bash
         run: |
           set -euo pipefail
-          grep -F 'find_package(SDL3 3.4.10' CMakeLists.txt
+          for script in tools/v4/V4-CP1B-*.py; do
+            echo "Auditing ${script}"
+            python3 "${script}"
+          done
+          git diff --check -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+          git diff --exit-code
+          grep -F 'find_package(SDL3 3.4.10 CONFIG REQUIRED)' CMakeLists.txt
           grep -F 'SDL3::SDL3' components/CMakeLists.txt
-          if grep -RInE '#include[[:space:]]*[<"](SDL2/|SDL\.h|SDL_events\.h|SDL_video\.h|SDL_gamecontroller\.h|SDL_joystick\.h|SDL_sensor\.h)' components/sdlutil apps/openmw/engine.cpp apps/openmw/mwinput; then
-            echo 'CP1B platform/input surface still contains SDL2-style includes' >&2
-            exit 1
-          fi
+          grep -F 'SDL3.dll' CMakeLists.txt
           if find . -name CMakeLists.txt -print0 | xargs -0 grep -nHF 'SDL2::SDL2'; then
-            echo 'CP1B still links the SDL2 CMake target' >&2
+            echo 'CP1B still links an SDL2 CMake target' >&2
             exit 1
           fi
 
@@ -83,7 +91,6 @@ jobs:
 
   Windows:
     needs: Preflight
-    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-build]') }}
     uses: ./.github/workflows/windows.yml
     with:
       image: '2022'

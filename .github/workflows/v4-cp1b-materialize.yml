@@ -5,6 +5,7 @@ on:
     branches: [v4.0-cp1b-sdl3-opengl-parity]
     paths:
       - tools/v4/V4-CP1B-*.py
+      - .github/workflows/v4-cp1b-materialize.yml
   workflow_dispatch:
 
 permissions:
@@ -38,11 +39,18 @@ jobs:
             echo "Running ${script}"
             python3 "${script}"
           done
+          git diff > "$RUNNER_TEMP/cp1b-first.diff"
 
-      - name: Verify generated diff
+      - name: Verify materializer idempotency and frozen provenance
         shell: bash
         run: |
           set -euo pipefail
+          for script in tools/v4/V4-CP1B-*.py; do
+            echo "Rechecking ${script}"
+            python3 "${script}"
+          done
+          git diff > "$RUNNER_TEMP/cp1b-second.diff"
+          cmp "$RUNNER_TEMP/cp1b-first.diff" "$RUNNER_TEMP/cp1b-second.diff"
           git diff --check -- . \
             ':(exclude)V3-applied-source.patch' \
             ':(exclude)V3-applied-source-stat.txt' \
@@ -61,7 +69,7 @@ jobs:
           fi
           git config user.name 'OpenMW Custom Build CI'
           git config user.email 'actions@users.noreply.github.com'
-          git add CMakeLists.txt components/CMakeLists.txt components/sdlutil apps/openmw apps/launcher \
-            extern/osg-ffmpeg-videoplayer extern/oics
-          git commit -m 'V4.0 CP1B: materialize native SDL3 platform migration [full-build]'
+          git add CMakeLists.txt apps components extern/oics extern/osg-ffmpeg-videoplayer
+          git diff --cached --check
+          git commit -m 'V4.0 CP1B: materialize broad native SDL3 semantic migration [full-build]'
           git push origin HEAD:v4.0-cp1b-sdl3-opengl-parity
