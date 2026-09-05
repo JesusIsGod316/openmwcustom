@@ -1,0 +1,78 @@
+name: V4.0 CP1B native SDL3 closeout staging QC
+
+on:
+  push:
+    branches: [v4.0-cp1b-sdl3-native-closeout-prep]
+    paths:
+      - .github/workflows/v4-cp1b-native-closeout-qc-prep.yml
+  workflow_dispatch:
+
+concurrency:
+  group: v4-cp1b-native-closeout-qc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout staging head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify CP1A ancestry and CP0A materialization
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 0bd575fb8dc5665034cdd57da62a6813db0a1bb3 HEAD
+          python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+
+      - name: Enforce neutral RenderCore boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '#include[[:space:]]*[<"](osg|osgViewer|osgUtil|vsg|vulkan|apps/openmw|components/mwworld)|\b(osg|osgViewer|osgUtil|vsg)::|\bVk[A-Z]|\bMWWorld::' components/rendercore; then
+            echo 'rendercore common boundary contains a forbidden backend/game type' >&2
+            exit 1
+          fi
+
+      - name: Verify all CP1B materializers are idempotent
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in tools/v4/V4-CP1B-*.py; do
+            echo "Auditing ${script}"
+            python3 "${script}"
+          done
+          git diff --check -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+          git diff --exit-code
+          grep -F 'find_package(SDL3 3.4.10 CONFIG REQUIRED)' CMakeLists.txt
+          grep -F 'add_compile_definitions(SDL_DISABLE_OLD_NAMES)' CMakeLists.txt
+          grep -F 'SDL3::SDL3' components/CMakeLists.txt
+          grep -F 'SDL3.dll' CMakeLists.txt
+          if find . -name CMakeLists.txt -print0 | xargs -0 grep -nHF 'SDL2::SDL2'; then
+            echo 'staging source still links an SDL2 target' >&2
+            exit 1
+          fi
+
+      - name: Check source whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check 0bd575fb8dc5665034cdd57da62a6813db0a1bb3 HEAD -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+
+  Windows:
+    needs: Preflight
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
