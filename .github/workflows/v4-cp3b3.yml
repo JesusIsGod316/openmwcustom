@@ -46,16 +46,25 @@ jobs:
           test -f components/render/backend/vsg/staticassetplan.hpp
           test -f components/render/backend/vsg/staticassetrealizer.hpp
           test -f components/render/backend/vsg/staticassetrealizer.cpp
+          test -f components/render/backend/vsg/staticassetconformance.hpp
+          test -f components/render/backend/vsg/staticassetconformance.cpp
           test -f components/render/backend/vsg/statictexturedecode.hpp
           test -f components/render/backend/vsg/statictexturedecode.cpp
           test -f components/render/backend/vsg/vfstextureresolver.hpp
+          test -f components/render/backend/vsg/staticnifconformance.hpp
+          test -f components/render/backend/vsg/staticnifconformance.cpp
           test -f tools/v4/cp3b3/CMakeLists.txt
           test -f tools/v4/cp3b3/realizer-smoke.cpp
+          test -f tools/v4/cp3b3/conformance-routing-smoke.cpp
+          test -f tools/v4/cp3b3/nif-conformance.cpp
+          test -f tools/v4/cp3b3/OpenMWRealNifTool.cmake
           grep -F 'find_package(vsg 1.1.15 CONFIG REQUIRED)' tools/v4/cp3b3/CMakeLists.txt
           grep -F 'find_package(vsgXchange CONFIG REQUIRED)' tools/v4/cp3b3/CMakeLists.txt
           grep -F '04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4' tools/v4/cp3b3/vcpkg.json
           grep -F 'vsgxchange' tools/v4/cp3b3/vcpkg.json
-          if grep -RInE '#include[[:space:]]*[<"](osg|osgViewer|osgUtil)|\bosg::' components/render/backend/vsg/staticassetplan.hpp components/render/backend/vsg/staticassetrealizer.* components/render/backend/vsg/statictexturedecode.* components/render/backend/vsg/vfstextureresolver.hpp; then
+          grep -F 'openmw-vulkan-nif-conformance' tools/v4/cp3b3/OpenMWRealNifTool.cmake
+          grep -F 'RenderVsg::realizeStaticNif' tools/v4/cp3b3/nif-conformance.cpp
+          if grep -RInE '#include[[:space:]]*[<"](osg|osgViewer|osgUtil)|\bosg::' components/render/backend/vsg/staticassetplan.hpp components/render/backend/vsg/staticassetrealizer.* components/render/backend/vsg/staticassetconformance.* components/render/backend/vsg/statictexturedecode.* components/render/backend/vsg/staticnifconformance.* components/render/backend/vsg/vfstextureresolver.hpp; then
             echo 'CP3B3 static VSG path regressed into OSG ownership' >&2
             exit 1
           fi
@@ -75,6 +84,7 @@ jobs:
     runs-on: windows-2022
     env:
       VCPKG_FEATURE_FLAGS: manifests,versions
+      archive: FAILEDTODOWNLOAD
     steps:
       - name: Checkout exact CP3B3 head
         uses: actions/checkout@v4
@@ -106,9 +116,85 @@ jobs:
       - name: Build CP3B3 backend-private VSG realization
         run: cmake --build ${{ github.workspace }}/build-v4-cp3b3
 
-      - name: Run CP3B3 static realization contract test
+      - name: Run CP3B3 static realization contract tests
         working-directory: ${{ github.workspace }}/build-v4-cp3b3
         run: ctest --output-on-failure
+
+      - name: Load OpenMW dependency identity
+        shell: bash
+        run: |
+          sed '/^\s*#/d; /^\s*$/d' "${{ github.workspace }}/CI/deps_versions.msvc.sh" >> $GITHUB_ENV
+
+      - name: Create OpenMW dependency directories
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force "${{ github.workspace }}/deps" | Out-Null
+
+      - name: Download prebuilt OpenMW vcpkg packages
+        shell: pwsh
+        working-directory: ${{ github.workspace }}/deps
+        run: |
+          $MANIFEST = "vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}-manifest.txt"
+          curl.exe --fail --retry 3 -L -o "$MANIFEST" "https://gitlab.com/OpenMW/openmw-deps/-/raw/main/windows/$MANIFEST"
+          $lines = Get-Content "$MANIFEST"
+          $URL = $lines[0]
+          $split = -split $lines[1]
+          $HASH = $split[0]
+          $FILE = $split[1]
+          curl.exe --fail --retry 3 -L -o "$FILE" "$URL"
+          $filehash = Get-FileHash "$FILE" -Algorithm SHA512
+          if ($filehash.hash -ne $HASH) { throw "OpenMW dependency archive hash mismatch" }
+          "archive=$FILE" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Extract prebuilt OpenMW vcpkg packages
+        shell: pwsh
+        working-directory: ${{ github.workspace }}/deps
+        run: 7z x -y -ovcpkg-x64-windows-2022-${{ env.VCPKG_TAG }} $env:archive
+
+      - name: Configure real-NIF tool against authoritative OpenMW components
+        shell: pwsh
+        run: |
+          $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
+          $vsgPrefix = "$env:GITHUB_WORKSPACE/cp3b3-vcpkg/x64-windows"
+          cmake `
+            -S "$env:GITHUB_WORKSPACE" `
+            -B "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" `
+            -G Ninja `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D CMAKE_TOOLCHAIN_FILE="$openmwDeps/scripts/buildsystems/vcpkg.cmake" `
+            -D CMAKE_PREFIX_PATH="$vsgPrefix" `
+            -D CMAKE_PROJECT_INCLUDE="$env:GITHUB_WORKSPACE/tools/v4/cp3b3/OpenMWRealNifTool.cmake" `
+            -D LuaJit_INCLUDE_DIR="$openmwDeps/installed/x64-windows/include/luajit" `
+            -D LuaJit_LIBRARY="$openmwDeps/installed/x64-windows/lib/lua51.lib" `
+            -D BUILD_OPENMW=OFF `
+            -D BUILD_LAUNCHER=OFF `
+            -D BUILD_WIZARD=OFF `
+            -D BUILD_MWINIIMPORTER=OFF `
+            -D BUILD_OPENCS=OFF `
+            -D BUILD_ESSIMPORTER=OFF `
+            -D BUILD_BSATOOL=OFF `
+            -D BUILD_ESMTOOL=OFF `
+            -D BUILD_NIFTEST=OFF `
+            -D BUILD_DOCS=OFF `
+            -D BUILD_COMPONENTS_TESTS=OFF `
+            -D BUILD_BENCHMARKS=OFF `
+            -D BUILD_NAVMESHTOOL=OFF `
+            -D BUILD_BULLETOBJECTTOOL=OFF `
+            -D BUILD_OPENCS_TESTS=OFF `
+            -D BUILD_OPENMW_TESTS=OFF `
+            -D OPENMW_USE_SYSTEM_SQLITE3=OFF `
+            -D OPENMW_USE_SYSTEM_YAML_CPP=OFF `
+            -D OPENMW_LTO_BUILD=OFF
+
+      - name: Build real-NIF Vulkan conformance executable
+        run: cmake --build ${{ github.workspace }}/build-v4-cp3b3-real-nif --target openmw-vulkan-nif-conformance
+
+      - name: Launch real-NIF tool command surface
+        shell: pwsh
+        run: |
+          $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
+          $env:PATH = "$env:GITHUB_WORKSPACE/cp3b3-vcpkg/x64-windows/bin;$openmwDeps/installed/x64-windows/bin;$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/_deps/SDL3-3.4.10/lib/x64;$env:PATH"
+          & "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/openmw-vulkan-nif-conformance.exe" --help
+          if ($LASTEXITCODE -ne 0) { throw "openmw-vulkan-nif-conformance --help failed with $LASTEXITCODE" }
 
       - name: Store CP3B3 configure/build evidence
         if: always()
@@ -119,4 +205,6 @@ jobs:
             ${{ github.workspace }}/build-v4-cp3b3/CMakeCache.txt
             ${{ github.workspace }}/build-v4-cp3b3/.ninja_log
             ${{ github.workspace }}/build-v4-cp3b3/Testing/Temporary/LastTest.log
+            ${{ github.workspace }}/build-v4-cp3b3-real-nif/CMakeCache.txt
+            ${{ github.workspace }}/build-v4-cp3b3-real-nif/.ninja_log
           if-no-files-found: ignore
