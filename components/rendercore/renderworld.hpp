@@ -406,7 +406,10 @@ namespace RenderCore
 
         [[nodiscard]] static bool validateTextureRecord(const TextureRecord& record) noexcept
         {
-            return record.revision.valid();
+            // Every published logical image must carry content identity. Source
+            // path/provenance alone is not a safe residency or dedup key and must
+            // never silently become one as CP4 paging and CP7 GPU residency grow.
+            return record.revision.valid() && !record.contentIdentity.empty();
         }
 
         [[nodiscard]] static bool validateSkeletonRecord(const SkeletonRecord& record) noexcept
