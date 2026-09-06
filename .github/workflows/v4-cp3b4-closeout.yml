@@ -1,0 +1,126 @@
+name: V4.0 CP3B4 compatibility closeout
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: v4-cp3b4-closeout-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  CloseoutPreflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact closeout head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require canonical CP3B branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "v4.0-cp3b-nif-static-vulkan"
+
+      - name: Verify lineage and frozen generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          CP3A_BASE=9e973f5648a6bd7ff90986f79936cb49946cc875
+          git cat-file -e "${CP3A_BASE}^{commit}"
+          test "$(git merge-base "${CP3A_BASE}" HEAD)" = "${CP3A_BASE}"
+          python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+
+      - name: Verify neutral boundary and CP3B4 evidence surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '#include[[:space:]]*[<"](osg|osgViewer|osgUtil|vsg|vulkan|apps/openmw|components/mwworld|components/nif)|\b(osg|osgViewer|osgUtil|vsg)::|\bVk[A-Z]|\bMWWorld::|\bNif::' components/rendercore; then
+            echo 'RenderCore common boundary contains a forbidden backend/game/source-format dependency' >&2
+            exit 1
+          fi
+          test -f tools/v4/cp3b4/asset-report.hpp
+          test -f tools/v4/cp3b4/conformance-report.hpp
+          test -f tools/v4/cp3b4/corpus-runner.py
+          test -f tools/v4/cp3b4/corpus.schema.json
+          test -f tools/v4/cp3b4/corpus.local.example.json
+          test -f tools/v4/cp3b4/Stage-Conformance-Package.ps1
+          test -f .github/workflows/v4-cp3b3.yml
+          grep -F 'workflow_call:' .github/workflows/v4-cp3b3.yml
+          grep -F 'openmw-v4-cp3b4-asset-report-v1' tools/v4/cp3b4/asset-report.hpp
+          grep -F 'openmw-v4-cp3b4-corpus-report-v1' tools/v4/cp3b4/corpus-runner.py
+
+      - name: Run cheap CP3B4 contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/v4/cp3b4/corpus-runner.py tools/v4/cp3b4/test-corpus-runner.py
+          python3 -m json.tool tools/v4/cp3b4/corpus.schema.json >/dev/null
+          python3 -m json.tool tools/v4/cp3b4/corpus.local.example.json >/dev/null
+          python3 tools/v4/cp3b4/test-corpus-runner.py
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+            tools/v4/cp3b4/asset-report-smoke.cpp \
+            -o /tmp/v4-cp3b4-asset-report-smoke
+          /tmp/v4-cp3b4-asset-report-smoke > /tmp/v4-cp3b4-asset-report.json
+          python3 -m json.tool /tmp/v4-cp3b4-asset-report.json >/dev/null
+
+      - name: Check closeout whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check 9e973f5648a6bd7ff90986f79936cb49946cc875 HEAD -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+
+  StaticNifConformanceWindows:
+    needs: CloseoutPreflight
+    uses: ./.github/workflows/v4-cp3b3.yml
+
+  RetainedVulkanFoundationWindows:
+    needs: CloseoutPreflight
+    runs-on: windows-2022
+    env:
+      VCPKG_FEATURE_FLAGS: manifests,versions
+    steps:
+      - name: Checkout exact closeout head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Ensure pinned vcpkg baseline is available
+        shell: pwsh
+        run: git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --no-tags --depth=1 origin 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+
+      - name: Configure retained CP2 Vulkan foundation
+        shell: pwsh
+        run: |
+          cmake `
+            -S "$env:GITHUB_WORKSPACE/tools/v4/cp2" `
+            -B "$env:GITHUB_WORKSPACE/build-v4-cp3b4-foundation" `
+            -G Ninja `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D CMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -D VCPKG_MANIFEST_DIR="$env:GITHUB_WORKSPACE/tools/v4/cp2" `
+            -D VCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE/cp3b4-foundation-vcpkg" `
+            -D VCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build retained Vulkan foundation
+        run: cmake --build ${{ github.workspace }}/build-v4-cp3b4-foundation
+
+      - name: Run retained Vulkan foundation tests
+        working-directory: ${{ github.workspace }}/build-v4-cp3b4-foundation
+        run: ctest --output-on-failure
+
+  OpenGLControlWindows:
+    needs: CloseoutPreflight
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
