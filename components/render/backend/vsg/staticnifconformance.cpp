@@ -6,6 +6,7 @@
 #include <components/vfs/pathutil.hpp>
 
 #include <vsg/io/Logger.h>
+#include <vsg/nodes/Group.h>
 #include <vsg/utils/SharedObjects.h>
 
 #include <memory>
