@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
-#include <string_view>
+#include <utility>
 
 namespace NifRender
 {
@@ -71,7 +71,7 @@ namespace NifRender
         constexpr std::uint64_t offset = 14695981039346656037ull;
         constexpr std::uint64_t prime = 1099511628211ull;
         std::uint64_t hash = offset;
-        const auto observeByte = [&](std::uint8_t byte) mutable {
+        auto observeByte = [&](std::uint8_t byte) {
             hash ^= byte;
             hash *= prime;
         };
