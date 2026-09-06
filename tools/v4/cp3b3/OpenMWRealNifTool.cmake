@@ -49,10 +49,14 @@ function(openmw_cp3b3_define_real_nif_tool)
         vsgXchange::vsgXchange)
     target_compile_features(openmw-vulkan-nif-conformance PRIVATE cxx_std_20)
 
+    # This integration target intentionally recompiles existing OpenMW translator
+    # sources in addition to CP3B3-owned code. Keep the normal high warning level
+    # and conformance flags, but do not make inherited production warnings fatal.
+    # The isolated CP3B3 backend targets remain warning-as-error gated.
     if(MSVC)
-        target_compile_options(openmw-vulkan-nif-conformance PRIVATE /W4 /WX /permissive-)
+        target_compile_options(openmw-vulkan-nif-conformance PRIVATE /W4 /permissive-)
     else()
-        target_compile_options(openmw-vulkan-nif-conformance PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(openmw-vulkan-nif-conformance PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endfunction()
 
