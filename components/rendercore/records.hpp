@@ -404,7 +404,13 @@ namespace RenderCore
     struct TextureRecord
     {
         ResourceRevision revision = InitialResourceRevision;
+        // Source identity records normalized producer/VFS provenance. Content
+        // identity names the logical image bytes and is the canonical dedup key.
+        // Binding interpretation (sRGB/linear/data) and sampler state are never
+        // part of either identity; backend realization may key those variants
+        // separately from this logical TextureHandle.
         std::string sourceIdentity;
+        std::string contentIdentity;
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         bool mipmapped = true;
@@ -626,8 +632,8 @@ namespace RenderCore
     {
         ResourceRevision revision = InitialResourceRevision;
         // Source identity is normalized producer/VFS provenance. Content identity
-        // is optional until CP3B2 provides canonical content hashing; neither is
-        // permitted to substitute for backend semantic realization keys.
+        // is canonical source content hashing; neither is permitted to substitute
+        // for backend semantic realization keys.
         std::string sourceIdentity;
         std::string contentIdentity;
         AxisAlignedBounds bounds;
