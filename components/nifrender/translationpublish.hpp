@@ -17,7 +17,6 @@ namespace NifRender
         Applied,
         InvalidBundle,
         TranslationErrors,
-        MaterialExtensionRequired,
         ReservationFailed,
         BatchBuildFailed,
         PublishRejected,
@@ -88,14 +87,6 @@ namespace NifRender
             result.status = TranslationPublishStatus::TranslationErrors;
             return result;
         }
-        if (bundle.requiresMaterialExtension())
-        {
-            // CP3B1 preserves proven source semantics that CP3A MaterialRecord
-            // cannot yet encode. Never publish a lossy material; CP3B2 will
-            // promote these fields into the stable neutral material contract.
-            result.status = TranslationPublishStatus::MaterialExtensionRequired;
-            return result;
-        }
 
         TranslationBinding binding;
         if (!publish_detail::reserveMany(bundle.textures.size(), binding.textures, [&] { return world.reserveTexture(); })
@@ -125,6 +116,7 @@ namespace NifRender
         for (std::size_t i = 0; i < bundle.materials.size() && built; ++i)
         {
             RenderCore::MaterialRecord record = bundle.materials[i].state;
+            promoteMaterialSupplement(bundle.materials[i], record);
             record.textures.reserve(bundle.materials[i].textures.size());
             for (const TranslatedTextureBinding& source : bundle.materials[i].textures)
             {

@@ -391,7 +391,11 @@ namespace RenderCore
                 || !semantic_detail::finite(record.emission) || !semantic_detail::finite(record.environmentMapColor)
                 || !std::isfinite(record.shininess) || !std::isfinite(record.emissiveMultiplier)
                 || !std::isfinite(record.specularStrength) || !std::isfinite(record.environmentMapStrength)
-                || !std::isfinite(record.alpha) || !std::isfinite(record.alphaCutoff))
+                || !std::isfinite(record.alpha) || !std::isfinite(record.alphaCutoff)
+                || !semantic_detail::finite(record.bumpMapMatrix)
+                || !semantic_detail::finite(record.environmentMapLumaBias) || !semantic_detail::finite(record.fog.color)
+                || !std::isfinite(record.fog.depth) || !std::isfinite(record.refractionStrength)
+                || !std::isfinite(record.softEffectDepth) || !semantic_detail::finite(record.falloffParams))
                 return false;
             for (const TextureBinding& binding : record.textures)
             {

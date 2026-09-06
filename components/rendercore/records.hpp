@@ -363,6 +363,20 @@ namespace RenderCore
         StencilOp pass = StencilOp::Keep;
     };
 
+    enum class MaterialFogMode : std::uint8_t
+    {
+        Inherit,
+        Disabled,
+        Override,
+    };
+
+    struct MaterialFogSemantic
+    {
+        MaterialFogMode mode = MaterialFogMode::Inherit;
+        Color color{ 0.0f, 0.0f, 0.0f, 1.0f };
+        float depth = 0.0f;
+    };
+
     struct MaterialRecord
     {
         ResourceRevision revision = InitialResourceRevision;
@@ -398,6 +412,22 @@ namespace RenderCore
         bool unlit = false;
         bool depthTest = true;
         bool depthWrite = true;
+        // These are realized V3.25 rendering semantics, not raw NIF/BGSM schema
+        // fields. Backend-specific implementation details (OSG state objects,
+        // reversed-depth polygon-offset signs, effect helper nodes) deliberately
+        // remain outside the neutral contract.
+        bool decal = false;
+        bool bumpParametersEnabled = false;
+        glm::vec4 bumpMapMatrix{ 1.0f, 0.0f, 0.0f, 1.0f };
+        glm::vec2 environmentMapLumaBias{ 0.0f, 0.0f };
+        MaterialFogSemantic fog;
+        bool treeAnimation = false;
+        bool refraction = false;
+        float refractionStrength = 0.0f;
+        bool softEffect = false;
+        float softEffectDepth = 0.0f;
+        bool falloff = false;
+        glm::vec4 falloffParams{ 0.0f };
         std::vector<TextureBinding> textures;
     };
 
