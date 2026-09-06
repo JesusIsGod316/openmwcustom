@@ -61,8 +61,9 @@ int main()
     RenderCore::RenderWorld world;
     const auto unresolved = world.reserveTexture();
     assert(unresolved);
-    assert(!world.commit(*unresolved,
-        RenderCore::TextureRecord{ .sourceIdentity = "textures/source-only.dds" }));
+    RenderCore::TextureRecord sourceOnly;
+    sourceOnly.sourceIdentity = "textures/source-only.dds";
+    assert(!world.commit(*unresolved, std::move(sourceOnly)));
     assert(world.cancel(*unresolved));
 
     const auto warning = world.reserveTexture();
