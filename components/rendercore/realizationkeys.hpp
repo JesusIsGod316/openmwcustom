@@ -86,8 +86,8 @@ namespace RenderCore
         friend bool operator==(const ShaderFeatureKey&, const ShaderFeatureKey&) = default;
     };
 
-    // Pass routing is broader than VkPipeline identity. Transparent sorting, for
-    // example, changes submission strategy but must not create another pipeline.
+    // Pass routing is broader than backend graphics-pipeline identity. Transparent
+    // sorting, for example, changes submission strategy but not pipeline state.
     struct StaticPassKey
     {
         bool alphaBlendEnabled = false;
