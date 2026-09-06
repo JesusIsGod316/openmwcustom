@@ -51,7 +51,13 @@ jobs:
           python3 -m json.tool tools/v4/cp3b4/corpus.schema.json >/dev/null
           python3 -m json.tool tools/v4/cp3b4/corpus.local.example.json >/dev/null
           python3 tools/v4/cp3b4/test-corpus-runner.py
-          grep -F 'openmw-v4-cp3b4-asset-report-v1' tools/v4/cp3b4/conformance-report.hpp
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+            tools/v4/cp3b4/asset-report-smoke.cpp \
+            -o /tmp/v4-cp3b4-asset-report-smoke
+          /tmp/v4-cp3b4-asset-report-smoke > /tmp/v4-cp3b4-asset-report.json
+          python3 -m json.tool /tmp/v4-cp3b4-asset-report.json >/dev/null
+          pwsh -NoProfile -Command '$tokens=$null; $errors=$null; [void][System.Management.Automation.Language.Parser]::ParseFile("tools/v4/cp3b4/Stage-Conformance-Package.ps1", [ref]$tokens, [ref]$errors); if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }'
+          grep -F 'openmw-v4-cp3b4-asset-report-v1' tools/v4/cp3b4/asset-report.hpp
           grep -F -- '--report-json' tools/v4/cp3b3/nif-conformance.cpp
           grep -F 'openmw-v4-cp3b4-corpus-report-v1' tools/v4/cp3b4/corpus-runner.py
 
