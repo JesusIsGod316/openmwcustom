@@ -17,6 +17,10 @@ identity.
   archive content. Within archives and within data roots, later entries have the
   higher-priority position. Duplicate loose roots are ignored after their first
   occurrence, matching OpenMW's registration path.
+- Archive member names use the same configurable legacy-to-UTF-8 conversion as
+  OpenMW. `--encoding` accepts `win1250`, `win1251`, or `win1252`, with OpenMW's
+  `win1252` default. The corpus report records the chosen encoding so results do
+  not silently mix different archive path interpretations.
 - `unsupported`, `deferred`, and unsupported texture bindings fail closed by
   default. A corpus may allow a known deferred/static-excluded case explicitly;
   this is visible in the manifest instead of being hidden in log text.
@@ -49,8 +53,8 @@ and structured translation/realization diagnostics.
 `corpus-runner.py` consumes manifests with schema
 `openmw-v4-cp3b4-corpus-v1` and writes aggregate reports with schema
 `openmw-v4-cp3b4-corpus-report-v1`. The aggregate includes the SHA-256 identity
-of both the executable and exact manifest, covered/required tags, per-asset
-results, and corpus-wide translation/realization totals.
+of both the executable and exact manifest, archive encoding, covered/required
+tags, per-asset results, and corpus-wide translation/realization totals.
 
 The schema version is intentionally explicit so CP3C/CP4 regression tooling can
 consume old reports without depending on unstable console wording.
@@ -78,6 +82,7 @@ python tools/v4/cp3b4/corpus-runner.py `
   --manifest .\cp3b4-local-corpus.json `
   --data "D:\Games\OpenMW\Data Files" `
   --archive "D:\Games\OpenMW\Data Files\Morrowind.bsa" `
+  --encoding win1252 `
   --output .\cp3b4-corpus-report.json `
   --determinism-runs 2
 ```
@@ -85,8 +90,9 @@ python tools/v4/cp3b4/corpus-runner.py `
 Repeat `--data` in OpenMW's data-root order and `--archive` in the configured
 archive order. The tool applies OpenMW's cross-class rule automatically:
 archives mount first, then loose data roots, so a loose replacement wins over an
-archive entry regardless of CLI grouping. Use `--render-id <asset-id>` for one
-or more selected visible assets; those entries use the Vulkan window path for
+archive entry regardless of CLI grouping. Use the same `encoding` value as the
+target OpenMW configuration. Use `--render-id <asset-id>` for one or more
+selected visible assets; those entries use the Vulkan window path for
 `--render-frames` frames instead of `--realize-only`.
 
 ## Acceptance boundary refinement
