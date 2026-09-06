@@ -15,9 +15,18 @@ identity.
 - `unsupported`, `deferred`, and unsupported texture bindings fail closed by
   default. A corpus may allow a known deferred/static-excluded case explicitly;
   this is visible in the manifest instead of being hidden in log text.
+- An asset must produce at least one meaningful rendered/collision-only/hidden
+  outcome by default. This prevents a parsed-but-effectively-empty model from
+  satisfying CP3B4 merely because it emitted no error.
 - Hidden and collision-only source records are valid dispositions. A rendered
   model should opt into `minRendered` / `minDraws`; a collision-only fixture
   should use its own explicit expectation.
+- A suite can declare `requiredTags`; the runner rejects the manifest before any
+  tool launch if its asset set does not cover every required compatibility class.
+  This makes corpus coverage itself machine-auditable instead of relying on a
+  checklist outside the evidence bundle.
+- VFS asset names must be normalized relative `.nif` paths. Host drive paths,
+  parent traversal, and empty path components are rejected from manifests.
 - Human console output remains useful for interactive diagnosis, but automation
   consumes the versioned JSON report contract rather than scraping prose.
 - Repeated corpus invocations can require deterministic report equality with
@@ -34,7 +43,9 @@ and structured translation/realization diagnostics.
 
 `corpus-runner.py` consumes manifests with schema
 `openmw-v4-cp3b4-corpus-v1` and writes aggregate reports with schema
-`openmw-v4-cp3b4-corpus-report-v1`.
+`openmw-v4-cp3b4-corpus-report-v1`. The aggregate includes the SHA-256 identity
+of both the executable and exact manifest, covered/required tags, per-asset
+results, and corpus-wide translation/realization totals.
 
 The schema version is intentionally explicit so CP3C/CP4 regression tooling can
 consume old reports without depending on unstable console wording.
@@ -42,8 +53,9 @@ consume old reports without depending on unstable console wording.
 ## Local real-asset run
 
 Create a local manifest from `corpus.local.example.json` and replace its
-placeholder VFS paths with assets from the user's installed content. The high
-value closeout set should cover, where locally available:
+placeholder VFS paths with assets from the user's installed content. The example
+already encodes the high-value closeout coverage tags so deleting a case without
+updating the suite contract fails immediately. The real set should cover:
 
 - a base Morrowind-style opaque static model;
 - alpha-test and alpha-blend models;
