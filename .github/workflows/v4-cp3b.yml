@@ -43,11 +43,11 @@ jobs:
           grep -F 'std::shared_ptr<const ModelPayload>' components/rendercore/records.hpp
           grep -F 'struct CreateModel' components/rendercore/updatebatch.hpp
 
-      - name: Install lightweight compile dependency
+      - name: Install lightweight compile dependencies
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libglm-dev
+          sudo apt-get install -y --no-install-recommends libglm-dev libopenscenegraph-dev
 
       - name: Compile neutral semantic smoke target
         shell: bash
@@ -56,6 +56,14 @@ jobs:
           g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
             tools/v4/cp3b/rendercore-semantic-smoke.cpp \
             -o /tmp/v4-cp3b-rendercore-smoke
+
+      - name: Compile NIF translator adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O1 -Wall -Wextra -Wpedantic -Werror -I. \
+            -c components/nifrender/niftranslator.cpp \
+            -o /tmp/v4-cp3b-niftranslator.o
 
       - name: Run neutral semantic smoke target
         run: /tmp/v4-cp3b-rendercore-smoke
