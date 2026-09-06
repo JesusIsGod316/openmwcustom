@@ -7,12 +7,12 @@
 
 namespace RenderCore
 {
-    // OpenMW/NIF semantics select the LAST direct child whose authored range
-    // contains the current eye distance. This is intentionally different from
-    // osg::LOD, which can select every matching child and therefore required the
-    // legacy RemoveLodOverlapVisitor workaround. The neutral contract records
-    // authored ranges unchanged and defines selection directly, so CP3B Vulkan
-    // realization does not inherit an OSG implementation artifact.
+    // Legacy source semantics select the LAST direct child whose authored range
+    // contains the current eye distance. Some scene-graph implementations can
+    // select every matching child and therefore require overlap-rewriting
+    // workarounds. The neutral contract records authored ranges unchanged and
+    // defines selection directly so backend realization inherits source behavior,
+    // not an implementation artifact.
     [[nodiscard]] inline std::optional<ModelNodeIndex> selectModelLodChild(
         const ModelLodSemantic& lod, float eyeDistance) noexcept
     {
