@@ -21,6 +21,9 @@ int main()
     auto modelPayload = std::make_shared<ModelPayload>();
     ModelNodeRecord root;
     root.kind = ModelNodeKind::Transform;
+    root.localTransform[0][0] = -1.0f;
+    root.localTransform[1][1] = 2.0f;
+    root.localTransform[2][2] = 0.5f;
     modelPayload->nodes.push_back(root);
 
     ModelNodeRecord geometry;
@@ -31,6 +34,20 @@ int main()
     modelPayload->nodes.push_back(geometry);
     modelPayload->roots.push_back(ModelNodeIndex{ 0u });
     assert(validModelPayloadStructure(*modelPayload));
+
+    ModelPayload invalidAffine = *modelPayload;
+    invalidAffine.nodes[0].localTransform[2][1] = std::numeric_limits<float>::infinity();
+    assert(!validModelPayloadStructure(invalidAffine));
+
+    ModelPayload sortPayload;
+    ModelNodeRecord sortRoot;
+    sortRoot.kind = ModelNodeKind::Sort;
+    sortRoot.sort = ModelSortSemantic{ .mode = ModelSortMode::Subsort, .accumulator = ModelSortAccumulator::Cluster };
+    sortPayload.nodes.push_back(sortRoot);
+    sortPayload.roots.push_back(ModelNodeIndex{ 0u });
+    assert(validModelPayloadStructure(sortPayload));
+    sortPayload.nodes[0].sort.reset();
+    assert(!validModelPayloadStructure(sortPayload));
 
     MeshRecord meshRecord;
     meshRecord.sourceIdentity = "smoke:mesh";
@@ -92,12 +109,23 @@ int main()
     translated.model.nodes.push_back(stagedGeometry);
     translated.model.roots.push_back(ModelNodeIndex{ 0u });
 
+    NifRender::TranslationOutcome outcome;
+    outcome.disposition = NifRender::TranslationDisposition::Rendered;
+    outcome.sourceRecordId = 7u;
+    outcome.sourceRecordType = "NiTriShape";
+    translated.outcomes.push_back(outcome);
+
     NifRender::TranslationDiagnostic diagnostic;
-    diagnostic.disposition = NifRender::TranslationDisposition::Rendered;
-    diagnostic.code = "smoke.rendered";
+    diagnostic.severity = NifRender::DiagnosticSeverity::Warning;
+    diagnostic.sourceRecordId = 7u;
+    diagnostic.sourceRecordType = "NiTriShape";
+    diagnostic.code = "smoke.warning.a";
+    translated.diagnostics.push_back(diagnostic);
+    diagnostic.code = "smoke.warning.b";
     translated.diagnostics.push_back(diagnostic);
 
     assert(translated.valid());
+    assert(!translated.hasErrors());
     assert(translated.summary().rendered == 1u);
 
     translated.model.nodes[0].localTransform[3][0] = std::numeric_limits<float>::quiet_NaN();
