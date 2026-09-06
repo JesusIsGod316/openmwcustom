@@ -3,7 +3,7 @@ name: V4.0 CP3B semantic QC
 on:
   workflow_dispatch:
   push:
-    branches: [v4.0-cp3b-nif-static-vulkan]
+    branches: [v4.0-cp3b-nif-static-vulkan, v4.0-cp3b4-corpus-staging]
 
 concurrency:
   group: v4-cp3b-semantic-${{ github.ref }}
@@ -42,6 +42,18 @@ jobs:
           grep -F 'struct ModelPayload' components/rendercore/records.hpp
           grep -F 'std::shared_ptr<const ModelPayload>' components/rendercore/records.hpp
           grep -F 'struct CreateModel' components/rendercore/updatebatch.hpp
+
+      - name: Validate CP3B4 corpus tooling contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/v4/cp3b4/corpus-runner.py tools/v4/cp3b4/test-corpus-runner.py
+          python3 -m json.tool tools/v4/cp3b4/corpus.schema.json >/dev/null
+          python3 -m json.tool tools/v4/cp3b4/corpus.local.example.json >/dev/null
+          python3 tools/v4/cp3b4/test-corpus-runner.py
+          grep -F 'openmw-v4-cp3b4-asset-report-v1' tools/v4/cp3b4/conformance-report.hpp
+          grep -F -- '--report-json' tools/v4/cp3b3/nif-conformance.cpp
+          grep -F 'openmw-v4-cp3b4-corpus-report-v1' tools/v4/cp3b4/corpus-runner.py
 
       - name: Install lightweight compile dependencies
         shell: bash
