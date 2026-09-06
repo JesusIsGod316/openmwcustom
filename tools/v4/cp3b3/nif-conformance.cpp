@@ -9,6 +9,7 @@
 #include <components/vfs/manager.hpp>
 #include <components/vfs/pathutil.hpp>
 
+#include <tools/v4/cp3b3/vfs-mount-plan.hpp>
 #include <tools/v4/cp3b4/conformance-report.hpp>
 
 #include <SDL3/SDL.h>
@@ -86,7 +87,9 @@ namespace
                "Usage:\n"
                "  openmw-vulkan-nif-conformance --data <dir> [--data <dir> ...]\n"
                "      [--archive <bsa-or-ba2> ...] --nif <vfs/path/model.nif> [options]\n\n"
-               "Mount order follows OpenMW VFS precedence: later data roots and later archives win.\n"
+               "Mount precedence mirrors OpenMW: archives are registered first, then loose data roots,\n"
+               "so loose files override archive content. Within each class later entries win; duplicate\n"
+               "data roots are ignored after their first occurrence.\n"
                "The NIF path must be relative to the mounted VFS (for example meshes/foo/bar.nif).\n\n"
                "Options:\n"
                "  --lod-distance <value>     Static LOD selection eye distance (default 0).\n"
@@ -327,17 +330,20 @@ int main(int argc, char** argv)
             throw std::runtime_error("--nif <VFS path> is required");
 
         VFS::Manager vfs;
-        for (const std::filesystem::path& root : options.dataRoots)
+        for (const Cp3b3::VfsMountEntry& entry : Cp3b3::buildVfsMountPlan(options.archives, options.dataRoots))
         {
-            if (!std::filesystem::is_directory(root))
-                throw std::runtime_error("data root is not a directory: " + Files::pathToUnicodeString(root));
-            vfs.addArchive(std::make_unique<VFS::FileSystemArchive>(root));
-        }
-        for (const std::filesystem::path& archive : options.archives)
-        {
-            if (!std::filesystem::is_regular_file(archive))
-                throw std::runtime_error("archive is not a file: " + Files::pathToUnicodeString(archive));
-            vfs.addArchive(VFS::makeBsaArchive(archive, nullptr));
+            if (entry.kind == Cp3b3::VfsMountKind::Archive)
+            {
+                if (!std::filesystem::is_regular_file(entry.path))
+                    throw std::runtime_error("archive is not a file: " + Files::pathToUnicodeString(entry.path));
+                vfs.addArchive(VFS::makeBsaArchive(entry.path, nullptr));
+            }
+            else
+            {
+                if (!std::filesystem::is_directory(entry.path))
+                    throw std::runtime_error("data root is not a directory: " + Files::pathToUnicodeString(entry.path));
+                vfs.addArchive(std::make_unique<VFS::FileSystemArchive>(entry.path));
+            }
         }
         vfs.buildIndex();
 
