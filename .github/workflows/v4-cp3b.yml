@@ -60,10 +60,16 @@ jobs:
             tools/v4/cp3b3/vfs-mount-plan-smoke.cpp \
             -o /tmp/v4-cp3b3-vfs-mount-plan-smoke
           /tmp/v4-cp3b3-vfs-mount-plan-smoke
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+            tools/v4/cp3b3/static-texture-quirks-smoke.cpp \
+            -o /tmp/v4-cp3b3-static-texture-quirks-smoke
+          /tmp/v4-cp3b3-static-texture-quirks-smoke
           pwsh -NoProfile -Command '$tokens=$null; $errors=$null; [void][System.Management.Automation.Language.Parser]::ParseFile("tools/v4/cp3b4/Stage-Conformance-Package.ps1", [ref]$tokens, [ref]$errors); if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }'
           grep -F 'openmw-v4-cp3b4-asset-report-v1' tools/v4/cp3b4/asset-report.hpp
           grep -F -- '--report-json' tools/v4/cp3b3/nif-conformance.cpp
           grep -F 'buildVfsMountPlan(options.archives, options.dataRoots)' tools/v4/cp3b3/nif-conformance.cpp
+          grep -F 'openMwDiscard16BitTgaAlpha' components/render/backend/vsg/statictexturedecode.cpp
+          grep -F 'openMwBc1UsesOneBitAlpha' components/render/backend/vsg/statictexturedecode.cpp
           grep -F 'openmw-v4-cp3b4-corpus-report-v1' tools/v4/cp3b4/corpus-runner.py
 
       - name: Install lightweight compile dependencies
