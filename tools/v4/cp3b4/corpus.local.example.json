@@ -1,22 +1,42 @@
 {
   "schema": "openmw-v4-cp3b4-corpus-v1",
   "suite": "local-real-static-closeout",
+  "requiredTags": [
+    "base-morrowind",
+    "alpha-test",
+    "alpha-blend",
+    "hierarchy",
+    "collision-hidden",
+    "modern-bs",
+    "project-cyrodiil",
+    "tamriel-data"
+  ],
   "assets": [
     {
       "id": "base-opaque-static",
       "nif": "meshes/<replace-with-base-opaque-static>.nif",
       "class": "base-morrowind",
-      "tags": ["opaque", "static"],
+      "tags": ["base-morrowind", "opaque", "static"],
       "expect": {
         "minRendered": 1,
         "minDraws": 1
       }
     },
     {
-      "id": "modern-material-static",
-      "nif": "meshes/<replace-with-modern-material-static>.nif",
-      "class": "modern-mod",
-      "tags": ["material", "static"],
+      "id": "alpha-test-static",
+      "nif": "meshes/<replace-with-alpha-test-static>.nif",
+      "class": "material-semantics",
+      "tags": ["alpha-test", "static"],
+      "expect": {
+        "minRendered": 1,
+        "minDraws": 1
+      }
+    },
+    {
+      "id": "alpha-blend-static",
+      "nif": "meshes/<replace-with-alpha-blend-static>.nif",
+      "class": "material-semantics",
+      "tags": ["alpha-blend", "static"],
       "expect": {
         "minRendered": 1,
         "minDraws": 1
@@ -26,7 +46,46 @@
       "id": "hierarchy-semantic-static",
       "nif": "meshes/<replace-with-switch-lod-billboard-or-sort-case>.nif",
       "class": "hierarchy",
-      "tags": ["switch-lod-billboard-sort"],
+      "tags": ["hierarchy", "switch-lod-billboard-sort"],
+      "expect": {
+        "minRendered": 1,
+        "minDraws": 1
+      }
+    },
+    {
+      "id": "collision-or-hidden-semantic",
+      "nif": "meshes/<replace-with-collision-or-hidden-case>.nif",
+      "class": "visibility-collision",
+      "tags": ["collision-hidden"],
+      "expect": {
+        "minMeaningful": 1
+      }
+    },
+    {
+      "id": "modern-bs-static",
+      "nif": "meshes/<replace-with-modern-bs-geometry-material>.nif",
+      "class": "modern-bs",
+      "tags": ["modern-bs", "material", "static"],
+      "expect": {
+        "minRendered": 1,
+        "minDraws": 1
+      }
+    },
+    {
+      "id": "project-cyrodiil-static",
+      "nif": "meshes/<replace-with-project-cyrodiil-static>.nif",
+      "class": "project-cyrodiil",
+      "tags": ["project-cyrodiil", "real-mod", "static"],
+      "expect": {
+        "minRendered": 1,
+        "minDraws": 1
+      }
+    },
+    {
+      "id": "tamriel-data-static",
+      "nif": "meshes/<replace-with-tamriel-data-static>.nif",
+      "class": "tamriel-data",
+      "tags": ["tamriel-data", "real-mod", "static"],
       "expect": {
         "minRendered": 1,
         "minDraws": 1
