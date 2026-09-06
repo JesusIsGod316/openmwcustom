@@ -7,6 +7,7 @@
 
 #include <vsg/utils/SharedObjects.h>
 
+#include <memory>
 #include <utility>
 
 namespace RenderVsg
@@ -40,13 +41,15 @@ namespace RenderVsg
         result.stage = StaticNifConformanceStage::Realize;
         vsg::ref_ptr<vsg::SharedObjects> effectiveShared
             = sharedObjects ? std::move(sharedObjects) : vsg::SharedObjects::create();
+        auto decodeReport = std::make_shared<StaticTextureDecodeReport>();
         StaticTextureResolver textureResolver = makeStaticTextureResolver(
             [&vfs](std::string_view sourceIdentity) -> Files::IStreamPtr {
                 return vfs.find(VFS::Path::Normalized(sourceIdentity));
             },
-            effectiveShared);
+            effectiveShared, decodeReport);
         result.realization
             = realizeStaticAssetConformant(world, result.model, result.plan, textureResolver, effectiveShared);
+        result.textureDecode = std::move(*decodeReport);
         if (!result.realization.valid())
             return result;
 
