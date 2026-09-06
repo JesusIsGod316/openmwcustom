@@ -112,12 +112,13 @@ exit $LASTEXITCODE
 Set-Content -LiteralPath (Join-Path $out 'Run-CP3B4-Corpus.ps1') -Value $launcher -Encoding UTF8
 
 $manifestPath = Join-Path $out 'PACKAGE-SHA256.txt'
+$trimChars = [char[]]@('\', '/')
 $packageFiles = Get-ChildItem -LiteralPath $out -Recurse -File |
     Where-Object { $_.FullName -ne $manifestPath } |
-    Sort-Object { $_.FullName.Substring($out.Length).Replace('\\', '/') }
+    Sort-Object { $_.FullName.Substring($out.Length).Replace('\', '/') }
 
 $manifestLines = foreach ($file in $packageFiles) {
-    $relative = $file.FullName.Substring($out.Length).TrimStart('\\', '/').Replace('\\', '/')
+    $relative = $file.FullName.Substring($out.Length).TrimStart($trimChars).Replace('\', '/')
     $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $relative"
 }
