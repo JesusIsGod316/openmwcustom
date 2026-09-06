@@ -45,6 +45,7 @@ namespace
         double cameraDistance = 0.0;
         int frameLimit = -1;
         bool realizeOnly = false;
+        bool diagnosticBox = false;
         bool help = false;
     };
 
@@ -99,6 +100,7 @@ namespace
                "  --lod-distance <value>     Static LOD selection eye distance (default 0).\n"
                "  --camera-distance <value> Camera distance; 0 auto-frames realized scene bounds (default 0).\n"
                "  --frames <count>           Render exactly count frames, then exit.\n"
+               "  --diagnostic-box           Add an unlit VSG reference box beside the NIF for GPU-path diagnosis.\n"
                "  --realize-only             Parse/translate/publish/plan/realize without opening a window.\n"
                "  --report-json <path>       Write CP3B4 machine-readable per-asset report JSON.\n"
                "  --help, -h                 Show this help.\n";
@@ -118,6 +120,11 @@ namespace
             if (arg == "--realize-only")
             {
                 options.realizeOnly = true;
+                continue;
+            }
+            if (arg == "--diagnostic-box")
+            {
+                options.diagnosticBox = true;
                 continue;
             }
 
@@ -202,7 +209,8 @@ namespace
             std::cout << "realization: " << diagnostic << '\n';
     }
 
-    [[nodiscard]] int renderScene(vsg::ref_ptr<vsg::Node> scene, double cameraDistance, int frameLimit)
+    [[nodiscard]] int renderScene(
+        vsg::ref_ptr<vsg::Node> scene, double cameraDistance, int frameLimit, bool diagnosticBox)
     {
         if (!scene)
             throw std::runtime_error("cannot render an empty CP3B3 scene");
@@ -288,7 +296,38 @@ namespace
             auto perspective = vsg::Perspective::create(verticalFovDegrees, aspect, nearPlane, farPlane);
             auto camera = vsg::Camera::create(perspective, lookAt, vsg::ViewportState::create(extent));
 
-            auto view = vsg::View::create(camera, scene);
+            auto view = vsg::View::create(camera);
+            // The standard PBR shader expects view-dependent lighting state.
+            // Match VSG's createRenderGraphForView() diagnostic convention by
+            // installing a headlight explicitly rather than relying on ambient
+            // black or undefined external scene lighting.
+            view->addChild(vsg::createHeadlight());
+            view->addChild(scene);
+
+            if (diagnosticBox)
+            {
+                vsg::Builder builder;
+                vsg::GeometryInfo geometry;
+                const float size = static_cast<float>(std::max(0.05, radius * 0.15));
+                geometry.position = vsg::vec3(static_cast<float>(center.x - radius * 0.75),
+                    static_cast<float>(center.y), static_cast<float>(center.z + radius * 0.55));
+                geometry.dx = vsg::vec3(size, 0.0f, 0.0f);
+                geometry.dy = vsg::vec3(0.0f, size, 0.0f);
+                geometry.dz = vsg::vec3(0.0f, 0.0f, size);
+                geometry.color = vsg::vec4(0.1f, 1.0f, 0.1f, 1.0f);
+
+                vsg::StateInfo state;
+                state.lighting = false;
+                state.two_sided = true;
+                if (auto reference = builder.createBox(geometry, state))
+                {
+                    view->addChild(reference);
+                    std::cout << "CP3B3 diagnostic box: ENABLED (unlit VSG reference geometry)\n";
+                }
+                else
+                    throw std::runtime_error("failed to construct CP3B3 diagnostic reference box");
+            }
+
             view->bins = RenderVsg::createStaticConformanceBins();
             auto renderGraph = vsg::RenderGraph::create(window);
             renderGraph->addChild(view);
@@ -296,7 +335,7 @@ namespace
             commandGraph->addChild(renderGraph);
             viewer->assignRecordAndSubmitTaskAndPresentation({ commandGraph });
             viewer->compile();
-            std::cout << "CP3B3 Vulkan compile: PASS (real NIF VSG scene + compatibility bins + swapchain)\n";
+            std::cout << "CP3B3 Vulkan compile: PASS (real NIF VSG scene + headlight + compatibility bins + swapchain)\n";
 
             bool running = true;
             int renderedFrames = 0;
@@ -423,7 +462,8 @@ int main(int argc, char** argv)
             return 0;
         }
 
-        return renderScene(result.realization.root, options.cameraDistance, options.frameLimit);
+        return renderScene(
+            result.realization.root, options.cameraDistance, options.frameLimit, options.diagnosticBox);
     }
     catch (const std::exception& e)
     {
