@@ -89,6 +89,14 @@ jobs:
             tools/v4/cp3b/drawable-material-smoke.cpp \
             -o /tmp/v4-cp3b-drawable-material-smoke
 
+      - name: Compile inherited material join pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter -I. \
+            tools/v4/cp3b/material-pass-compile.cpp \
+            -o /tmp/v4-cp3b-material-pass-compile
+
       - name: Compile NIF translator adapter
         shell: bash
         run: |
