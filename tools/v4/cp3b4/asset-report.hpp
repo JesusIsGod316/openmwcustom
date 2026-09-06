@@ -42,6 +42,12 @@ namespace Cp3b4
         std::uint32_t runtimeContextEffects = 0;
     };
 
+    struct TextureDecodeCounts
+    {
+        std::uint32_t warningFallbacks = 0;
+        std::vector<std::string> diagnostics;
+    };
+
     struct TranslationDiagnostic
     {
         std::string severity;
@@ -59,6 +65,7 @@ namespace Cp3b4
         std::string publishStatus;
         TranslationCounts translation;
         RealizationCounts realization;
+        TextureDecodeCounts textureDecode;
         std::vector<TranslationDiagnostic> translationDiagnostics;
         std::vector<std::string> realizationDiagnostics;
     };
@@ -70,27 +77,13 @@ namespace Cp3b4
         {
             switch (ch)
             {
-                case '"':
-                    out << "\\\"";
-                    break;
-                case '\\':
-                    out << "\\\\";
-                    break;
-                case '\b':
-                    out << "\\b";
-                    break;
-                case '\f':
-                    out << "\\f";
-                    break;
-                case '\n':
-                    out << "\\n";
-                    break;
-                case '\r':
-                    out << "\\r";
-                    break;
-                case '\t':
-                    out << "\\t";
-                    break;
+                case '"': out << "\\\""; break;
+                case '\\': out << "\\\\"; break;
+                case '\b': out << "\\b"; break;
+                case '\f': out << "\\f"; break;
+                case '\n': out << "\\n"; break;
+                case '\r': out << "\\r"; break;
+                case '\t': out << "\\t"; break;
                 default:
                     if (ch < 0x20)
                     {
@@ -107,6 +100,21 @@ namespace Cp3b4
             }
         }
         out << '"';
+    }
+
+    inline void writeStringArray(std::ostream& out, const std::vector<std::string>& values, std::string_view indent)
+    {
+        out << '[';
+        for (std::size_t i = 0; i < values.size(); ++i)
+        {
+            if (i != 0)
+                out << ',';
+            out << '\n' << indent;
+            writeJsonString(out, values[i]);
+        }
+        if (!values.empty())
+            out << '\n';
+        out << ']';
     }
 
     inline void writeAssetReport(std::ostream& out, const AssetReport& report)
@@ -141,6 +149,11 @@ namespace Cp3b4
             << "\"unsupportedTextureBindings\":" << report.realization.unsupportedTextureBindings << ','
             << "\"runtimeContextEffects\":" << report.realization.runtimeContextEffects << "},\n";
 
+        out << "  \"textureDecode\":{\"warningFallbacks\":" << report.textureDecode.warningFallbacks
+            << ",\"diagnostics\":";
+        writeStringArray(out, report.textureDecode.diagnostics, "    ");
+        out << "},\n";
+
         out << "  \"translationDiagnostics\":[";
         for (std::size_t i = 0; i < report.translationDiagnostics.size(); ++i)
         {
@@ -166,17 +179,9 @@ namespace Cp3b4
             out << '\n' << "  ";
         out << "],\n";
 
-        out << "  \"realizationDiagnostics\":[";
-        for (std::size_t i = 0; i < report.realizationDiagnostics.size(); ++i)
-        {
-            if (i != 0)
-                out << ',';
-            out << '\n' << "    ";
-            writeJsonString(out, report.realizationDiagnostics[i]);
-        }
-        if (!report.realizationDiagnostics.empty())
-            out << '\n' << "  ";
-        out << "]\n}\n";
+        out << "  \"realizationDiagnostics\":";
+        writeStringArray(out, report.realizationDiagnostics, "    ");
+        out << "\n}\n";
     }
 
     inline void writeAssetReport(const std::filesystem::path& path, const AssetReport& report)
