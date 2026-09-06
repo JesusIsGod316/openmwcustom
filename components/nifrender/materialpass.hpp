@@ -4,6 +4,7 @@
 #include "drawablematerial.hpp"
 #include "translationbundle.hpp"
 
+#include <components/nif/data.hpp>
 #include <components/nif/node.hpp>
 #include <components/nif/property.hpp>
 
@@ -84,8 +85,12 @@ namespace NifRender
                     case Nif::RC_NiFogProperty:
                     {
                         const auto& source = *static_cast<const Nif::NiFogProperty*>(property);
-                        material.supplement.fog.enabled = source.enabled() && !source.vertexAlpha();
-                        material.supplement.fog.radial = source.radial();
+                        // Match the realized V3.25 behavior exactly: vertex-alpha fog
+                        // is treated as broken and disables fog; otherwise enabled fog
+                        // overrides color/depth. The radial source bit is not honored by
+                        // the current renderer and therefore is not invented here.
+                        const bool enabled = source.enabled() && !source.vertexAlpha();
+                        material.supplement.fog.mode = enabled ? MaterialFogMode::Override : MaterialFogMode::Disabled;
                         material.supplement.fog.depth = source.mFogDepth;
                         material.supplement.fog.color = {
                             source.mColour.x(), source.mColour.y(), source.mColour.z(), 1.0f };
@@ -127,7 +132,7 @@ namespace NifRender
             void walk(const Nif::NiAVObject& node, std::vector<const Nif::NiProperty*> drawableProperties,
                 std::vector<const Nif::NiProperty*> inheritedState)
             {
-                for (const Nif::NiPropertyPtr& property : node.mProperties)
+                for (const auto& property : node.mProperties)
                 {
                     if (property.empty())
                         continue;
@@ -175,7 +180,6 @@ namespace NifRender
                 DrawableMaterialTranslation translated
                     = translateDrawableMaterial(drawableProperties, hasVertexColors, mFile.getVersion());
                 applyInheritedNodeState(inheritedState, translated.material, mBundle);
-                translated.material.sourceRecordId = static_cast<std::uint32_t>(node.mRecordIndex);
                 translated.material.state.sourceIdentity
                     = mBundle.sourceIdentity + "#material:" + std::to_string(static_cast<unsigned int>(node.mRecordIndex));
 
