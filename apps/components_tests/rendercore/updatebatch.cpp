@@ -18,7 +18,8 @@ namespace
         materialRecord.textures.push_back(RenderCore::TextureBinding{ .texture = *texture });
 
         RenderCore::RenderWorldUpdateBatch batch(world.epoch(), RenderCore::InitialUpdateSequence, "test:asset-create");
-        ASSERT_TRUE(batch.add(RenderCore::CreateTexture{ *texture, RenderCore::TextureRecord{ .sourceIdentity = "textures/stone.dds" } }));
+        ASSERT_TRUE(batch.add(RenderCore::CreateTexture{ *texture,
+            RenderCore::TextureRecord{ .sourceIdentity = "textures/stone.dds", .contentIdentity = "test:updatebatch-stone" } }));
         ASSERT_TRUE(batch.add(RenderCore::CreateMaterial{ *material, materialRecord }));
         ASSERT_TRUE(batch.seal());
 
