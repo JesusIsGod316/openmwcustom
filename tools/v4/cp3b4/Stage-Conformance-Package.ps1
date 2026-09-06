@@ -19,7 +19,7 @@ function Resolve-FullPath([string]$Path) {
     return [System.IO.Path]::GetFullPath($Path)
 }
 
-function Copy-UniqueFile([string]$Source, [string]$DestinationDirectory) {
+function Copy-PrecedenceFile([string]$Source, [string]$DestinationDirectory) {
     if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
         throw "Package source file does not exist: $Source"
     }
@@ -29,7 +29,7 @@ function Copy-UniqueFile([string]$Source, [string]$DestinationDirectory) {
         $sourceHash = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash
         $destinationHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
         if ($sourceHash -ne $destinationHash) {
-            throw "Runtime package collision has different content: $destination"
+            Write-Warning "Keeping earlier runtime-bin precedence for $([System.IO.Path]::GetFileName($Source)); later copy differs"
         }
         return
     }
@@ -53,7 +53,7 @@ if (Test-Path -LiteralPath $out) {
 }
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 
-Copy-UniqueFile $exe $out
+Copy-PrecedenceFile $exe $out
 
 $resolvedBins = @()
 foreach ($bin in $RuntimeBin) {
@@ -64,13 +64,13 @@ foreach ($bin in $RuntimeBin) {
     $resolvedBins += $resolved
 }
 
-# The conformance package is a diagnostic artifact, not a production installer.
-# Stage all runtime DLLs from the exact dependency roots used to link this tool.
-# This is intentionally more conservative than maintaining a hand-written DLL
-# allowlist that can silently become stale as VSG/OpenMW dependencies evolve.
+# RuntimeBin order is the tested PATH precedence. Stage all DLLs from those exact
+# dependency roots and keep the first copy of a duplicate DLL name. This mirrors
+# the conformance launch environment while avoiding a fragile hand-written DLL
+# allowlist as VSG/OpenMW dependencies evolve.
 foreach ($bin in $resolvedBins) {
     Get-ChildItem -LiteralPath $bin -Filter '*.dll' -File | Sort-Object Name | ForEach-Object {
-        Copy-UniqueFile $_.FullName $out
+        Copy-PrecedenceFile $_.FullName $out
     }
 }
 
