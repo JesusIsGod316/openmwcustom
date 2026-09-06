@@ -125,6 +125,7 @@ namespace NifRender
     {
         ExternalVfs,
         EmbeddedNif,
+        WarningFallback,
     };
 
     struct TranslatedTexture
@@ -327,7 +328,12 @@ namespace NifRender
         {
             for (const TranslatedTexture& texture : textures)
             {
-                if (!texture.record.revision.valid())
+                if (!texture.record.revision.valid() || texture.record.contentIdentity.empty())
+                    return false;
+                if (texture.storage == TextureStorage::ExternalVfs && texture.record.sourceIdentity.empty())
+                    return false;
+                if (texture.storage == TextureStorage::WarningFallback
+                    && texture.record.contentIdentity != "builtin:openmw-warning-image-v1")
                     return false;
             }
 
