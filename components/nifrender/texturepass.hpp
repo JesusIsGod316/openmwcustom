@@ -1,6 +1,7 @@
 #ifndef OPENMW_COMPONENTS_NIFRENDER_TEXTUREPASS_H
 #define OPENMW_COMPONENTS_NIFRENDER_TEXTUREPASS_H
 
+#include "materialsemantics.hpp"
 #include "textureidentity.hpp"
 #include "translationbundle.hpp"
 
