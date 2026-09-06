@@ -97,6 +97,14 @@ jobs:
             tools/v4/cp3b/material-pass-compile.cpp \
             -o /tmp/v4-cp3b-material-pass-compile
 
+      - name: Compile VFS identity resolver
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+            tools/v4/cp3b/vfs-identity-compile.cpp \
+            -o /tmp/v4-cp3b-vfs-identity-compile
+
       - name: Compile NIF translator adapter
         shell: bash
         run: |
@@ -122,6 +130,9 @@ jobs:
 
       - name: Run drawable material smoke target
         run: /tmp/v4-cp3b-drawable-material-smoke
+
+      - name: Run VFS identity smoke target
+        run: /tmp/v4-cp3b-vfs-identity-compile
 
       - name: Check CP3B whitespace
         shell: bash
