@@ -57,6 +57,14 @@ jobs:
             tools/v4/cp3b/rendercore-semantic-smoke.cpp \
             -o /tmp/v4-cp3b-rendercore-smoke
 
+      - name: Compile content identity smoke target
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+            tools/v4/cp3b/content-identity-smoke.cpp \
+            -o /tmp/v4-cp3b-content-identity-smoke
+
       - name: Compile NIF translator adapter
         shell: bash
         run: |
@@ -70,6 +78,9 @@ jobs:
 
       - name: Run neutral semantic smoke target
         run: /tmp/v4-cp3b-rendercore-smoke
+
+      - name: Run content identity smoke target
+        run: /tmp/v4-cp3b-content-identity-smoke
 
       - name: Check CP3B whitespace
         shell: bash
