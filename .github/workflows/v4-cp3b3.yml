@@ -1,0 +1,110 @@
+name: V4.0 CP3B3 static VSG realization QC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp3b-nif-static-vulkan]
+
+concurrency:
+  group: v4-cp3b3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  Preflight:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[cp3b3-build]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact CP3B3 head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact CP3A ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          CP3A_BASE=9e973f5648a6bd7ff90986f79936cb49946cc875
+          git cat-file -e "${CP3A_BASE}^{commit}"
+          test "$(git merge-base "${CP3A_BASE}" HEAD)" = "${CP3A_BASE}"
+
+      - name: Verify complete CP0A materialization
+        run: python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+
+      - name: Enforce neutral RenderCore boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '#include[[:space:]]*[<"](osg|osgViewer|osgUtil|vsg|vulkan|apps/openmw|components/mwworld|components/nif)|\b(osg|osgViewer|osgUtil|vsg)::|\bVk[A-Z]|\bMWWorld::|\bNif::' components/rendercore; then
+            echo 'RenderCore common boundary contains a forbidden backend/game/source-format dependency' >&2
+            exit 1
+          fi
+
+      - name: Verify CP3B3 backend-private source surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f components/render/backend/vsg/staticassetplan.hpp
+          test -f components/render/backend/vsg/staticassetrealizer.hpp
+          test -f components/render/backend/vsg/staticassetrealizer.cpp
+          test -f tools/v4/cp3b3/CMakeLists.txt
+          test -f tools/v4/cp3b3/vcpkg.json
+          test -f tools/v4/cp3b3/realizer-smoke.cpp
+          grep -F 'find_package(vsg 1.1.15 CONFIG REQUIRED)' tools/v4/cp3b3/CMakeLists.txt
+          grep -F '04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4' tools/v4/cp3b3/vcpkg.json
+          grep -F 'class StaticAssetRealizer' components/render/backend/vsg/staticassetrealizer.hpp
+
+      - name: Check CP3B3 whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check 64e6952724c53ecce5ec8453b39cf004037b1077 HEAD -- \
+            components/render/backend/vsg tools/v4/cp3b3 .github/workflows/v4-cp3b3.yml
+
+  StaticVsgWindows:
+    needs: Preflight
+    runs-on: windows-2022
+    env:
+      VCPKG_FEATURE_FLAGS: manifests,versions
+    steps:
+      - name: Checkout exact CP3B3 head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Ensure pinned vcpkg baseline is available
+        shell: pwsh
+        run: |
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --no-tags --depth=1 origin 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+
+      - name: Configure CP3B3 static VSG realization
+        shell: pwsh
+        run: |
+          cmake `
+            -S "$env:GITHUB_WORKSPACE/tools/v4/cp3b3" `
+            -B "$env:GITHUB_WORKSPACE/build-v4-cp3b3" `
+            -G Ninja `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D CMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -D VCPKG_MANIFEST_DIR="$env:GITHUB_WORKSPACE/tools/v4/cp3b3" `
+            -D VCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE/cp3b3-vcpkg" `
+            -D VCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build CP3B3 backend-private VSG realization
+        run: cmake --build ${{ github.workspace }}/build-v4-cp3b3
+
+      - name: Run CP3B3 static realization contract test
+        working-directory: ${{ github.workspace }}/build-v4-cp3b3
+        run: ctest --output-on-failure
+
+      - name: Store CP3B3 configure/build evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: openmw-v4-cp3b3-static-vsg-logs-${{ github.sha }}
+          path: |
+            ${{ github.workspace }}/build-v4-cp3b3/CMakeCache.txt
+            ${{ github.workspace }}/build-v4-cp3b3/.ninja_log
+            ${{ github.workspace }}/build-v4-cp3b3/Testing/Temporary/LastTest.log
