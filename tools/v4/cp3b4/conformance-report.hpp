@@ -94,6 +94,9 @@ namespace Cp3b4
         report.realization.unsupportedTextureBindings = stats.unsupportedTextureBindings;
         report.realization.runtimeContextEffects = stats.runtimeContextEffects;
 
+        report.textureDecode.warningFallbacks = result.textureDecode.warningFallbacks;
+        report.textureDecode.diagnostics = result.textureDecode.diagnostics;
+
         report.translationDiagnostics.reserve(result.translationDiagnostics.size());
         for (const NifRender::TranslationDiagnostic& source : result.translationDiagnostics)
         {
