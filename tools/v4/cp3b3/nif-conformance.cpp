@@ -14,6 +14,7 @@
 
 #include <vsg/all.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <filesystem>
