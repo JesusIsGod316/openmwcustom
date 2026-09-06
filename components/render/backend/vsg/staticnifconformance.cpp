@@ -5,6 +5,8 @@
 #include <components/vfs/manager.hpp>
 #include <components/vfs/pathutil.hpp>
 
+#include <vsg/utils/SharedObjects.h>
+
 #include <utility>
 
 namespace RenderVsg
