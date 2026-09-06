@@ -12,6 +12,11 @@ identity.
 - A corpus manifest stores only VFS-relative NIF paths plus expected semantic
   dispositions. Local `--data` roots and `--archive` files are supplied at run
   time and are never serialized into the portable manifest.
+- The conformance VFS mirrors `components/vfs/registerarchives.cpp`: archives
+  are registered first and loose data roots afterward, so loose files override
+  archive content. Within archives and within data roots, later entries have the
+  higher-priority position. Duplicate loose roots are ignored after their first
+  occurrence, matching OpenMW's registration path.
 - `unsupported`, `deferred`, and unsupported texture bindings fail closed by
   default. A corpus may allow a known deferred/static-excluded case explicitly;
   this is visible in the manifest instead of being hidden in log text.
@@ -77,10 +82,12 @@ python tools/v4/cp3b4/corpus-runner.py `
   --determinism-runs 2
 ```
 
-Repeat `--data` and `--archive` in the same precedence order used by the target
-OpenMW setup. Use `--render-id <asset-id>` for one or more selected visible
-assets; those entries use the Vulkan window path for `--render-frames` frames
-instead of `--realize-only`.
+Repeat `--data` in OpenMW's data-root order and `--archive` in the configured
+archive order. The tool applies OpenMW's cross-class rule automatically:
+archives mount first, then loose data roots, so a loose replacement wins over an
+archive entry regardless of CLI grouping. Use `--render-id <asset-id>` for one
+or more selected visible assets; those entries use the Vulkan window path for
+`--render-frames` frames instead of `--realize-only`.
 
 ## Acceptance boundary refinement
 
