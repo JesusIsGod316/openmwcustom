@@ -5,6 +5,7 @@
 #include <vsg/utils/ShaderSet.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -148,6 +149,14 @@ namespace RenderVsg
             return { value.x, value.y, value.z, value.w };
         }
 
+        [[nodiscard]] bool hasNonIdentityTextureTransform(const RenderCore::TextureTransform& transform) noexcept
+        {
+            return transform.offset.x != 0.0f || transform.offset.y != 0.0f || transform.scale.x != 1.0f
+                || transform.scale.y != 1.0f || transform.center.x != 0.5f || transform.center.y != 0.5f
+                || transform.rotation != 0.0f
+                || transform.convention != RenderCore::TextureTransformConvention::Direct;
+        }
+
         [[nodiscard]] std::optional<const char*> descriptorName(RenderCore::TextureRole role) noexcept
         {
             switch (role)
@@ -213,11 +222,11 @@ namespace RenderVsg
                 state.depthBiasEnable = key.fixedFunction.raster.decal ? VK_TRUE : VK_FALSE;
                 if (state.depthBiasEnable)
                 {
-                    // V3.25's sign depends on its reversed-depth projection. CP3B3
-                    // owns only the semantic request; use a small normal-depth bias
-                    // in the isolated conformance viewer and keep the sign private.
-                    state.depthBiasConstantFactor = -1.0f;
-                    state.depthBiasSlopeFactor = -1.0f;
+                    // VSG 1.1.15 uses reverse depth (near=1, far=0). Positive
+                    // depth bias moves a decal toward the camera under the
+                    // GREATER/GREATER_OR_EQUAL depth convention.
+                    state.depthBiasConstantFactor = 1.0f;
+                    state.depthBiasSlopeFactor = 1.0f;
                 }
             }
 
@@ -241,7 +250,10 @@ namespace RenderVsg
             {
                 state.depthTestEnable = key.fixedFunction.depthStencil.depthTest ? VK_TRUE : VK_FALSE;
                 state.depthWriteEnable = key.fixedFunction.depthStencil.depthWrite ? VK_TRUE : VK_FALSE;
-                state.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+                // VSG's Perspective and RenderGraph use reverse depth and clear
+                // the depth attachment to 0.0. LESS/LESS_OR_EQUAL rejects normal
+                // visible fragments against that clear value.
+                state.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
                 state.stencilTestEnable = key.fixedFunction.depthStencil.stencilEnabled ? VK_TRUE : VK_FALSE;
                 if (state.stencilTestEnable)
                 {
@@ -263,8 +275,13 @@ namespace RenderVsg
         {
             auto value = vsg::PbrMaterialValue::create();
             auto& material = value->value();
-            material.baseColorFactor = toVsg(source.diffuse);
-            material.diffuseFactor = toVsg(source.diffuse);
+            glm::vec4 baseColor = source.diffuse;
+            // MaterialRecord::alpha is the authoritative drawable alpha. Legacy
+            // NiMaterialProperty mirrors it into diffuse.a, while Bethesda shader
+            // properties carry it separately.
+            baseColor.a = source.alpha;
+            material.baseColorFactor = toVsg(baseColor);
+            material.diffuseFactor = toVsg(baseColor);
             material.specularFactor = toVsg(source.specular * source.specularStrength);
             material.emissiveFactor = toVsg(source.emission * source.emissiveMultiplier);
             material.metallicFactor = 0.0f;
@@ -400,7 +417,7 @@ namespace RenderVsg
                 config->assignArray(arrays, "vsg_TexCoord" + std::to_string(set), VK_VERTEX_INPUT_RATE_VERTEX, texCoords);
             }
 
-            if (!payload.colors.empty())
+            if (!payload.colors.empty() && material->vertexColorMode == VertexColorMode::AmbientDiffuse)
             {
                 auto colors = vsg::vec4Array::create(payload.colors.size());
                 for (std::size_t i = 0; i < payload.colors.size(); ++i)
@@ -411,6 +428,31 @@ namespace RenderVsg
             config->assignDescriptor("material", makeMaterial(*material));
             config->assignDescriptor("texCoordIndices", makeTexCoordIndices(*material));
 
+            if (material->unlit)
+            {
+                ++result.stats.runtimeContextEffects;
+                result.diagnostics.emplace_back(
+                    "Standard VSG PBR path cannot express OpenMW unlit material semantics; compatibility shader variant required");
+            }
+            if (material->vertexColorMode == VertexColorMode::Emissive)
+            {
+                ++result.stats.runtimeContextEffects;
+                result.diagnostics.emplace_back(
+                    "Standard VSG PBR vertex color input is diffuse modulation, not OpenMW emissive vertex-color semantics; compatibility shader variant required");
+            }
+            if (material->textureApply != TextureApplyMode::Modulate)
+            {
+                ++result.stats.runtimeContextEffects;
+                result.diagnostics.emplace_back(
+                    "Standard VSG PBR path cannot express this legacy texture apply mode; compatibility shader variant required");
+            }
+            if (std::ranges::any_of(material->textures,
+                    [](const TextureBinding& binding) { return hasNonIdentityTextureTransform(binding.transform); }))
+            {
+                ++result.stats.runtimeContextEffects;
+                result.diagnostics.emplace_back(
+                    "Static texture transform is preserved in RenderCore but not yet realized by the standard VSG PBR path; compatibility shader variant required");
+            }
             if (material->alphaTestEnabled && material->alphaCompare != CompareOp::Greater
                 && material->alphaCompare != CompareOp::GreaterEqual)
             {
