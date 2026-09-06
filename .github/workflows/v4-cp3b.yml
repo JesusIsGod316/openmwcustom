@@ -81,6 +81,14 @@ jobs:
             tools/v4/cp3b/texture-binding-smoke.cpp \
             -o /tmp/v4-cp3b-texture-binding-smoke
 
+      - name: Compile BS shader material smoke target
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter -I. \
+            tools/v4/cp3b/bs-shader-material-smoke.cpp \
+            -o /tmp/v4-cp3b-bs-shader-material-smoke
+
       - name: Compile LOD selection smoke target
         shell: bash
         run: |
@@ -132,6 +140,14 @@ jobs:
             -c components/nifrender/niftranslator.cpp \
             -o /tmp/v4-cp3b-niftranslator.o
 
+      - name: Compile integrated static NIF translator
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O1 -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter -I. \
+            -c components/nifrender/staticniftranslator.cpp \
+            -o /tmp/v4-cp3b-staticniftranslator.o
+
       - name: Run neutral semantic smoke target
         run: /tmp/v4-cp3b-rendercore-smoke
 
@@ -143,6 +159,9 @@ jobs:
 
       - name: Run texture binding smoke target
         run: /tmp/v4-cp3b-texture-binding-smoke
+
+      - name: Run BS shader material smoke target
+        run: /tmp/v4-cp3b-bs-shader-material-smoke
 
       - name: Run LOD selection smoke target
         run: /tmp/v4-cp3b-lod-selection-smoke

@@ -8,6 +8,11 @@ namespace Nif
     class FileView;
 }
 
+namespace VFS
+{
+    class Manager;
+}
+
 namespace NifRender
 {
     struct TranslatorOptions
@@ -17,11 +22,17 @@ namespace NifRender
         bool showMarkers = false;
     };
 
-    // Translate the already-parsed NIF view into unpublished immutable neutral
-    // data. This function never mutates RenderWorld and never produces OSG/VSG
-    // backend objects. Stable RenderCore handles are assigned only by the later
-    // deterministic publication/binding stage.
+    // Structural translation entry retained for focused source/graph tests.
+    // It does not have enough information to resolve VFS-backed textures or
+    // external shader materials and therefore is not the production static path.
     [[nodiscard]] TranslationBundle translateNif(Nif::FileView file, TranslatorOptions options = {});
+
+    // Complete CP3B static translation entry: existing parsed FileView plus the
+    // winning OpenMW VFS view -> immutable neutral model/material/texture bundle.
+    // This prevents production callers from accidentally publishing geometry
+    // while omitting VFS texture and BGSM/BGEM resolution.
+    [[nodiscard]] TranslationBundle translateStaticNif(
+        Nif::FileView file, const VFS::Manager& vfs, TranslatorOptions options = {});
 }
 
 #endif

@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_NIFRENDER_MATERIALPASS_H
 
 #include "drawablematerial.hpp"
+#include "shadermaterialpass.hpp"
 #include "texturepass.hpp"
 #include "translationbundle.hpp"
 
@@ -181,40 +182,86 @@ namespace NifRender
                 const std::vector<const Nif::NiProperty*>& inheritedState, TranslatedModelNode& targetNode)
             {
                 bool hasVertexColors = false;
+                const Nif::BSShaderProperty* specialShader = nullptr;
+                const Nif::NiAlphaProperty* specialAlpha = nullptr;
+
                 if (const auto* legacy = dynamic_cast<const Nif::NiGeometry*>(&node))
                 {
                     if (!legacy->mData.empty())
                         hasVertexColors = !legacy->mData->mColors.empty();
                     if (!legacy->mShaderProperty.empty())
-                        drawableProperties.push_back(legacy->mShaderProperty.getPtr());
+                    {
+                        specialShader = legacy->mShaderProperty.getPtr();
+                        drawableProperties.push_back(specialShader);
+                    }
                     if (!legacy->mAlphaProperty.empty())
-                        drawableProperties.push_back(legacy->mAlphaProperty.getPtr());
+                    {
+                        specialAlpha = legacy->mAlphaProperty.getPtr();
+                        drawableProperties.push_back(specialAlpha);
+                    }
                 }
                 else if (const auto* bethesda = dynamic_cast<const Nif::BSTriShape*>(&node))
                 {
-                    hasVertexColors = (bethesda->mVertDesc.mFlags & Nif::BSVertexDesc::VertexAttribute::Vertex_Colors) != 0;
+                    hasVertexColors
+                        = (bethesda->mVertDesc.mFlags & Nif::BSVertexDesc::VertexAttribute::Vertex_Colors) != 0;
                     if (!bethesda->mShaderProperty.empty())
-                        drawableProperties.push_back(bethesda->mShaderProperty.getPtr());
+                    {
+                        specialShader = bethesda->mShaderProperty.getPtr();
+                        drawableProperties.push_back(specialShader);
+                    }
                     if (!bethesda->mAlphaProperty.empty())
-                        drawableProperties.push_back(bethesda->mAlphaProperty.getPtr());
+                    {
+                        specialAlpha = bethesda->mAlphaProperty.getPtr();
+                        drawableProperties.push_back(specialAlpha);
+                    }
                 }
 
                 DrawableMaterialTranslation translated
                     = translateDrawableMaterial(drawableProperties, hasVertexColors, mFile.getVersion());
+
+                std::optional<ResolvedShaderMaterial> externalMaterial;
+                const bool externalRequested
+                    = specialShader != nullptr && isExternalShaderMaterialReference(*specialShader);
+                if (externalRequested)
+                {
+                    externalMaterial = resolveExternalShaderMaterial(*specialShader, mVfs, mBundle);
+                    if (externalMaterial)
+                    {
+                        (void)applyShaderMaterialSemantic(externalMaterial->semantic, translated);
+                        // Special alpha is appended after the shader property in
+                        // current NifOsg and therefore wins over BGSM/BGEM alpha.
+                        if (specialAlpha != nullptr)
+                            applyDrawableAlphaSemantics(specialAlpha->mFlags, specialAlpha->mThreshold, translated);
+                    }
+                }
+
+                // Normal inherited node properties are realized before the
+                // geometry's dedicated BS shader property in V3.25.
                 applyInheritedNodeState(inheritedState, mVfs, translated.material, mBundle);
+                if (specialShader != nullptr)
+                {
+                    if (externalMaterial)
+                    {
+                        applyExternalShaderMaterialNodeState(
+                            *externalMaterial, *specialShader, mVfs, translated.material, mBundle);
+                    }
+                    else
+                        applyInlineBsShaderNodeState(*specialShader, mVfs, translated.material, mBundle);
+                }
+
                 normalizeTextureUvSets(node, targetNode, translated.material, mBundle);
                 translated.material.state.sourceIdentity
                     = mBundle.sourceIdentity + "#material:" + std::to_string(static_cast<unsigned int>(node.mRecordIndex));
 
                 if ((translated.issues & drawableMaterialIssue(DrawableMaterialIssue::InvalidPackedAlpha)) != 0)
                     diagnose(mBundle, node, DiagnosticSeverity::Error, "material.invalid_packed_alpha",
-                        "Drawable contains an unknown packed alpha mode; static publication must fail closed");
+                        "Drawable contains an unknown packed alpha or shader blend mode; static publication must fail closed");
                 if ((translated.issues & drawableMaterialIssue(DrawableMaterialIssue::DynamicMaterialController)) != 0)
                     diagnose(mBundle, node, DiagnosticSeverity::Info, "material.controller_deferred",
                         "Static base material is retained; dynamic material controller playback remains deferred to CP3D");
-                if ((translated.issues & drawableMaterialIssue(DrawableMaterialIssue::ExternalShaderMaterial)) != 0)
-                    diagnose(mBundle, node, DiagnosticSeverity::Info, "material.external_shader_vfs_deferred",
-                        "External shader material remains explicit and will be resolved by the next CP3B2 shader-material VFS slice");
+                if (externalRequested && !externalMaterial)
+                    diagnose(mBundle, node, DiagnosticSeverity::Info, "material.external_shader_inline_fallback",
+                        "External shader material did not resolve; the explicit V3.25 inline shader-property fallback was retained");
 
                 const MaterialIndex materialIndex{ static_cast<std::uint32_t>(mBundle.materials.size()) };
                 mBundle.materials.push_back(std::move(translated.material));
@@ -229,16 +276,16 @@ namespace NifRender
     }
 
     // Structural/source-only entry point retained for focused translator tests.
-    // If an external texture is encountered, the texture pass emits an Error so
-    // this path can never be used for lossy final static publication.
+    // External textures/materials emit Errors so this path cannot become a
+    // lossy final static publication route accidentally.
     inline void applyStaticMaterialPass(Nif::FileView file, TranslationBundle& bundle)
     {
         material_pass_detail::MaterialPass(file, bundle, nullptr).run();
     }
 
     // Production CP3B2 material path: consumes the already parsed FileView and
-    // the live VFS index, preserving current OpenMW path correction, winning
-    // archive selection and content identity without introducing a second parser.
+    // live VFS, preserving path correction, archive selection and content
+    // identity without using OSG image/material caches as modern ownership.
     inline void applyStaticMaterialPass(Nif::FileView file, const VFS::Manager& vfs, TranslationBundle& bundle)
     {
         material_pass_detail::MaterialPass(file, bundle, &vfs).run();
