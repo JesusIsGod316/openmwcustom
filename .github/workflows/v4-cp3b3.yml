@@ -1,6 +1,7 @@
 name: V4.0 CP3B3 static VSG realization QC
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches: [v4.0-cp3b-nif-static-vulkan]
@@ -11,7 +12,7 @@ concurrency:
 
 jobs:
   Preflight:
-    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[cp3b3-build]') }}
+    if: ${{ github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[cp3b3-build]') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout exact CP3B3 head
