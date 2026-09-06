@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_NIFRENDER_MATERIALPASS_H
 
 #include "drawablematerial.hpp"
+#include "texturepass.hpp"
 #include "translationbundle.hpp"
 
 #include <components/nif/data.hpp>
@@ -46,7 +47,7 @@ namespace NifRender
         }
 
         inline void applyInheritedNodeState(const std::vector<const Nif::NiProperty*>& properties,
-            TranslatedMaterial& material, TranslationBundle& bundle)
+            const VFS::Manager* vfs, TranslatedMaterial& material, TranslationBundle& bundle)
         {
             for (const Nif::NiProperty* property : properties)
             {
@@ -65,23 +66,9 @@ namespace NifRender
                         applyZBufferProperty(*static_cast<const Nif::NiZBufferProperty*>(property), material.state);
                         break;
                     case Nif::RC_NiTexturingProperty:
-                    {
-                        const auto& source = *static_cast<const Nif::NiTexturingProperty*>(property);
-                        material.state.textureApply = translateTextureApply(source.mApplyMode);
-                        material.supplement.bumpMapMatrix = {
-                            source.mBumpMapMatrix.x(), source.mBumpMapMatrix.y(), source.mBumpMapMatrix.z(), source.mBumpMapMatrix.w() };
-                        material.supplement.environmentMapLumaBias = {
-                            source.mEnvMapLumaBias.x(), source.mEnvMapLumaBias.y() };
-                        // Texture bindings themselves are resolved by the VFS-aware
-                        // CP3B2 texture pass. Record the deferral once per property.
-                        bool hasEnabledTexture = false;
-                        for (const auto& texture : source.mTextures)
-                            hasEnabledTexture = hasEnabledTexture || texture.mEnabled;
-                        if (hasEnabledTexture)
-                            diagnose(bundle, source, DiagnosticSeverity::Info, "material.textures_vfs_deferred",
-                                "Texture property state is preserved; VFS-aware image identity/binding is deferred to the CP3B2 texture pass");
+                        applyLegacyTextureProperty(
+                            *static_cast<const Nif::NiTexturingProperty*>(property), vfs, material, bundle);
                         break;
-                    }
                     case Nif::RC_NiFogProperty:
                     {
                         const auto& source = *static_cast<const Nif::NiFogProperty*>(property);
@@ -102,12 +89,47 @@ namespace NifRender
             }
         }
 
+        inline void normalizeTextureUvSets(const Nif::NiAVObject& node, const TranslatedModelNode& targetNode,
+            TranslatedMaterial& material, TranslationBundle& bundle)
+        {
+            if (!targetNode.mesh || !targetNode.mesh->valid() || targetNode.mesh->value() >= bundle.meshes.size())
+                return;
+            const RenderCore::MeshRecord& mesh = bundle.meshes[targetNode.mesh->value()].record;
+            if (!mesh.payload)
+                return;
+
+            const std::size_t uvSetCount = mesh.payload->texCoordSets.size();
+            for (TranslatedTextureBinding& binding : material.textures)
+            {
+                if (binding.transform.uvSet < uvSetCount)
+                    continue;
+
+                if (uvSetCount == 0u)
+                {
+                    // NifOsg keeps the image binding but installs no texcoord array
+                    // when the geometry has no UV sets. Preserve that ownership and
+                    // normalize the otherwise unusable index for deterministic backends.
+                    binding.transform.uvSet = 0u;
+                    diagnose(bundle, node, DiagnosticSeverity::Warning, "texture.uv_stream_missing",
+                        "Texture is bound to geometry with no UV stream; V3.25 keeps the binding but supplies no texture-coordinate array");
+                    continue;
+                }
+
+                // Current V3.25 logs and falls back to UV set zero when the authored
+                // set index is out of range and at least one set exists.
+                binding.transform.uvSet = 0u;
+                diagnose(bundle, node, DiagnosticSeverity::Warning, "texture.uv_set_fallback_zero",
+                    "Authored texture UV set is out of range for this geometry; reproducing V3.25 fallback to UV set zero");
+            }
+        }
+
         class MaterialPass final
         {
         public:
-            MaterialPass(Nif::FileView file, TranslationBundle& bundle)
+            MaterialPass(Nif::FileView file, TranslationBundle& bundle, const VFS::Manager* vfs)
                 : mFile(file)
                 , mBundle(bundle)
+                , mVfs(vfs)
             {
                 for (std::size_t i = 0; i < bundle.model.nodes.size(); ++i)
                 {
@@ -179,7 +201,8 @@ namespace NifRender
 
                 DrawableMaterialTranslation translated
                     = translateDrawableMaterial(drawableProperties, hasVertexColors, mFile.getVersion());
-                applyInheritedNodeState(inheritedState, translated.material, mBundle);
+                applyInheritedNodeState(inheritedState, mVfs, translated.material, mBundle);
+                normalizeTextureUvSets(node, targetNode, translated.material, mBundle);
                 translated.material.state.sourceIdentity
                     = mBundle.sourceIdentity + "#material:" + std::to_string(static_cast<unsigned int>(node.mRecordIndex));
 
@@ -191,7 +214,7 @@ namespace NifRender
                         "Static base material is retained; dynamic material controller playback remains deferred to CP3D");
                 if ((translated.issues & drawableMaterialIssue(DrawableMaterialIssue::ExternalShaderMaterial)) != 0)
                     diagnose(mBundle, node, DiagnosticSeverity::Info, "material.external_shader_vfs_deferred",
-                        "External shader material requires VFS-aware resolution in CP3B2 before final static publication");
+                        "External shader material remains explicit and will be resolved by the next CP3B2 shader-material VFS slice");
 
                 const MaterialIndex materialIndex{ static_cast<std::uint32_t>(mBundle.materials.size()) };
                 mBundle.materials.push_back(std::move(translated.material));
@@ -200,16 +223,25 @@ namespace NifRender
 
             Nif::FileView mFile;
             TranslationBundle& mBundle;
+            const VFS::Manager* mVfs = nullptr;
             std::unordered_map<std::uint32_t, TranslatedModelNode*> mGeometryNodes;
         };
     }
 
-    // Completes the CP3B1 material fold over the geometry/hierarchy translator
-    // without reparsing source bytes. The operation is deterministic and only
-    // consumes the existing FileView plus stable source record IDs.
+    // Structural/source-only entry point retained for focused translator tests.
+    // If an external texture is encountered, the texture pass emits an Error so
+    // this path can never be used for lossy final static publication.
     inline void applyStaticMaterialPass(Nif::FileView file, TranslationBundle& bundle)
     {
-        material_pass_detail::MaterialPass(file, bundle).run();
+        material_pass_detail::MaterialPass(file, bundle, nullptr).run();
+    }
+
+    // Production CP3B2 material path: consumes the already parsed FileView and
+    // the live VFS index, preserving current OpenMW path correction, winning
+    // archive selection and content identity without introducing a second parser.
+    inline void applyStaticMaterialPass(Nif::FileView file, const VFS::Manager& vfs, TranslationBundle& bundle)
+    {
+        material_pass_detail::MaterialPass(file, bundle, &vfs).run();
     }
 }
 
