@@ -27,6 +27,7 @@ if encoding not in ('win1250', 'win1251', 'win1252'):
     raise SystemExit(9)
 report_path = pathlib.Path(value('--report-json'))
 unsupported = 1 if 'unsupported' in nif else 0
+warning_fallbacks = 1 if 'warning' in nif else 0
 report = {
     'schema': 'openmw-v4-cp3b4-asset-report-v1',
     'nif': nif,
@@ -53,6 +54,10 @@ report = {
         'textureCacheHits': 0,
         'unsupportedTextureBindings': 0,
         'runtimeContextEffects': 0,
+    },
+    'textureDecode': {
+        'warningFallbacks': warning_fallbacks,
+        'diagnostics': ['synthetic warning fallback'] if warning_fallbacks else [],
     },
     'translationDiagnostics': [],
     'realizationDiagnostics': [],
@@ -169,6 +174,30 @@ def main() -> int:
             }
         ],
     }
+    warning_manifest = {
+        "schema": "openmw-v4-cp3b4-corpus-v1",
+        "suite": "synthetic-warning-fallback-failure",
+        "assets": [
+            {
+                "id": "warning-static",
+                "nif": "meshes/test/warning.nif",
+                "class": "synthetic",
+                "expect": {"minRendered": 1, "minDraws": 1},
+            }
+        ],
+    }
+    allowed_warning_manifest = {
+        "schema": "openmw-v4-cp3b4-corpus-v1",
+        "suite": "synthetic-warning-fallback-explicit",
+        "assets": [
+            {
+                "id": "warning-static",
+                "nif": "meshes/test/warning.nif",
+                "class": "synthetic",
+                "expect": {"minRendered": 1, "minDraws": 1, "maxWarningTextureFallbacks": 1},
+            }
+        ],
+    }
 
     with tempfile.TemporaryDirectory(prefix="cp3b4-runner-test-") as temp:
         root = pathlib.Path(temp)
@@ -178,6 +207,8 @@ def main() -> int:
             raise AssertionError(f"unexpected passing aggregate: {good}")
         if summary["translationTotals"]["rendered"] != 1 or summary["realizationTotals"]["draws"] != 1:
             raise AssertionError(f"aggregate disposition totals are wrong: {summary}")
+        if summary["textureDecodeTotals"]["warningFallbacks"] != 0:
+            raise AssertionError(f"unexpected warning fallback aggregate: {summary}")
         if good["requiredTags"] != ["opaque"] or "opaque" not in good["coveredTags"]:
             raise AssertionError(f"aggregate coverage identity is wrong: {good}")
         if good.get("encoding") != "win1251":
@@ -193,6 +224,17 @@ def main() -> int:
         errors = bad["assets"][0]["errors"]
         if not any("unsupported" in error.lower() for error in errors):
             raise AssertionError(f"policy failure did not identify unsupported content: {errors}")
+
+        warning = run_runner(root / "warning", warning_manifest, 1, runs=1)
+        warning_errors = warning["assets"][0]["errors"]
+        if warning["passed"] or not any("warningfallbacks" in error.lower() for error in warning_errors):
+            raise AssertionError(f"warning fallback did not fail closed: {warning}")
+        if warning["summary"]["textureDecodeTotals"]["warningFallbacks"] != 1:
+            raise AssertionError(f"warning fallback aggregate was not preserved: {warning['summary']}")
+
+        allowed_warning = run_runner(root / "allowed-warning", allowed_warning_manifest, 0, runs=1)
+        if not allowed_warning["passed"]:
+            raise AssertionError(f"explicit warning fallback allowance was not honored: {allowed_warning}")
 
         missing_coverage = {
             "schema": "openmw-v4-cp3b4-corpus-v1",
