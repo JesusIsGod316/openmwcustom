@@ -29,6 +29,10 @@ Later mounted roots/archives retain OpenMW VFS override semantics. Texture/mater
 
 Without `--realize-only`, the tool reuses the CP2 SDL3/Vulkan window foundation, installs the CP3B3 traversal and back-to-front compatibility bins, compiles the realized VSG graph, and presents it until the window closes or `--frames` is reached.
 
+## Validation gate
+
+The CP3B3 Windows workflow first builds and runs the isolated backend realization/routing tests, then configures the repository root with the CP3B3 injection, builds only `openmw-vulkan-nif-conformance` against the authoritative `components` target, and launches `--help` as a dependency/runtime command-surface check. The expensive gate is intentionally batched behind the `[cp3b3-build]` head marker.
+
 ## Scope
 
 CP3B3 validates the executable static architecture and exact V3.25 compatibility routing for the supported static surface. Dynamic skinning, morphs, particle systems, and controller realization remain explicitly deferred to CP3D. Unsupported or unsafe static cases fail closed with diagnostics rather than silently crossing the neutral boundary.
