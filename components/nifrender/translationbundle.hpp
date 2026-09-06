@@ -144,6 +144,47 @@ namespace NifRender
         RenderCore::SamplerSemantic sampler;
     };
 
+    enum class MaterialFogMode : std::uint8_t
+    {
+        Inherit,
+        Disabled,
+        Override,
+    };
+
+    struct MaterialFogSemantic
+    {
+        MaterialFogMode mode = MaterialFogMode::Inherit;
+        RenderCore::Color color{ 0.0f, 0.0f, 0.0f, 1.0f };
+        float depth = 0.0f;
+    };
+
+    // Source semantics proven to affect V3.25 rendering but not yet present in
+    // the CP3A RenderCore MaterialRecord. CP3B preserves them here rather than
+    // silently dropping them. Deterministic publication refuses a material with
+    // non-default supplemental state until the neutral RenderCore contract is
+    // extended in the following CP3B material/backend slice.
+    struct MaterialSupplement
+    {
+        bool decal = false;
+        bool hasBumpParameters = false;
+        glm::vec4 bumpMapMatrix{ 1.0f, 0.0f, 0.0f, 1.0f };
+        glm::vec2 environmentMapLumaBias{ 0.0f, 0.0f };
+        MaterialFogSemantic fog;
+        bool treeAnimation = false;
+        bool refraction = false;
+        float refractionStrength = 0.0f;
+        bool softEffect = false;
+        float softEffectDepth = 0.0f;
+        bool falloff = false;
+        glm::vec4 falloffParams{ 0.0f };
+
+        [[nodiscard]] bool requiresRenderCoreExtension() const noexcept
+        {
+            return decal || hasBumpParameters || fog.mode != MaterialFogMode::Inherit || treeAnimation || refraction
+                || softEffect || falloff;
+        }
+    };
+
     struct TranslatedMaterial
     {
         // Static state is already expressed in the backend-neutral RenderCore
@@ -151,6 +192,7 @@ namespace NifRender
         // binding maps local texture indices to published TextureHandles.
         RenderCore::MaterialRecord state;
         std::vector<TranslatedTextureBinding> textures;
+        MaterialSupplement supplement;
     };
 
     struct TranslatedMesh
@@ -233,6 +275,13 @@ namespace NifRender
                 && finite(value.shininess) && finite(value.emissiveMultiplier) && finite(value.specularStrength)
                 && finite(value.environmentMapStrength) && finite(value.alpha) && finite(value.alphaCutoff);
         }
+
+        [[nodiscard]] inline bool validMaterialSupplement(const MaterialSupplement& value) noexcept
+        {
+            return finite(value.bumpMapMatrix) && finite(value.environmentMapLumaBias) && finite(value.fog.color)
+                && finite(value.fog.depth) && finite(value.refractionStrength) && finite(value.softEffectDepth)
+                && finite(value.falloffParams);
+        }
     }
 
     struct TranslationBundle
@@ -264,6 +313,16 @@ namespace NifRender
             return false;
         }
 
+        [[nodiscard]] bool requiresMaterialExtension() const noexcept
+        {
+            for (const TranslatedMaterial& material : materials)
+            {
+                if (material.supplement.requiresRenderCoreExtension())
+                    return true;
+            }
+            return false;
+        }
+
         [[nodiscard]] bool valid() const noexcept
         {
             for (const TranslatedTexture& texture : textures)
@@ -274,7 +333,7 @@ namespace NifRender
 
             for (const TranslatedMaterial& material : materials)
             {
-                if (!detail::validMaterialState(material.state))
+                if (!detail::validMaterialState(material.state) || !detail::validMaterialSupplement(material.supplement))
                     return false;
                 for (const TranslatedTextureBinding& binding : material.textures)
                 {
