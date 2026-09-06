@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openmw-v4-cp3b4-corpus-v1",
+  "title": "OpenMW V4 CP3B4 static NIF conformance corpus",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "assets"],
+  "properties": {
+    "schema": {
+      "const": "openmw-v4-cp3b4-corpus-v1"
+    },
+    "suite": {
+      "type": "string",
+      "minLength": 1
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "nif"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nif": {
+            "type": "string",
+            "minLength": 1
+          },
+          "class": {
+            "type": "string",
+            "minLength": 1
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          },
+          "expect": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "complete": { "type": "boolean" },
+              "minRendered": { "type": "integer", "minimum": 0 },
+              "minCollisionOnly": { "type": "integer", "minimum": 0 },
+              "minHidden": { "type": "integer", "minimum": 0 },
+              "minDraws": { "type": "integer", "minimum": 0 },
+              "maxDeferred": { "type": "integer", "minimum": 0 },
+              "maxUnsupported": { "type": "integer", "minimum": 0 },
+              "maxIgnored": { "type": "integer", "minimum": 0 },
+              "maxUnsupportedTextureBindings": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    }
+  }
+}
