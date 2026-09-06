@@ -67,7 +67,8 @@ namespace
         const auto texture = world.reserveTexture();
         const auto material = world.reserveMaterial();
         ASSERT_TRUE(texture && material);
-        ASSERT_TRUE(world.commit(*texture, RenderCore::TextureRecord{ .sourceIdentity = "textures/state.dds" }));
+        ASSERT_TRUE(world.commit(*texture, RenderCore::TextureRecord{
+            .sourceIdentity = "textures/state.dds", .contentIdentity = "test:texture-state" }));
 
         RenderCore::MaterialRecord record;
         record.sourceIdentity = "material:state";
@@ -115,7 +116,8 @@ namespace
         const auto texture = world.reserveTexture();
         const auto material = world.reserveMaterial();
         ASSERT_TRUE(texture && material);
-        ASSERT_TRUE(world.commit(*texture, RenderCore::TextureRecord{ .sourceIdentity = "textures/state.dds" }));
+        ASSERT_TRUE(world.commit(*texture, RenderCore::TextureRecord{
+            .sourceIdentity = "textures/state.dds", .contentIdentity = "test:texture-state-nonfinite" }));
 
         RenderCore::MaterialRecord record;
         RenderCore::TextureBinding binding;
