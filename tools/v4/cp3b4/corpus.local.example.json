@@ -1,0 +1,36 @@
+{
+  "schema": "openmw-v4-cp3b4-corpus-v1",
+  "suite": "local-real-static-closeout",
+  "assets": [
+    {
+      "id": "base-opaque-static",
+      "nif": "meshes/<replace-with-base-opaque-static>.nif",
+      "class": "base-morrowind",
+      "tags": ["opaque", "static"],
+      "expect": {
+        "minRendered": 1,
+        "minDraws": 1
+      }
+    },
+    {
+      "id": "modern-material-static",
+      "nif": "meshes/<replace-with-modern-material-static>.nif",
+      "class": "modern-mod",
+      "tags": ["material", "static"],
+      "expect": {
+        "minRendered": 1,
+        "minDraws": 1
+      }
+    },
+    {
+      "id": "hierarchy-semantic-static",
+      "nif": "meshes/<replace-with-switch-lod-billboard-or-sort-case>.nif",
+      "class": "hierarchy",
+      "tags": ["switch-lod-billboard-sort"],
+      "expect": {
+        "minRendered": 1,
+        "minDraws": 1
+      }
+    }
+  ]
+}
