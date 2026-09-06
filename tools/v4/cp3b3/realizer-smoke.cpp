@@ -3,11 +3,21 @@
 
 #include <vsg/all.h>
 
-#include <cassert>
 #include <cstdint>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+
+namespace
+{
+    void require(bool condition, std::string_view message)
+    {
+        if (!condition)
+            throw std::runtime_error(std::string(message));
+    }
+}
 
 int main()
 {
@@ -16,17 +26,17 @@ int main()
     RenderWorld world;
 
     const auto texture = world.reserveTexture();
-    assert(texture);
+    require(texture.has_value(), "failed to reserve texture");
     TextureRecord textureRecord;
     textureRecord.sourceIdentity = "builtin:cp3b3-checker";
     textureRecord.contentIdentity = "cp3b3:checker:v1";
     textureRecord.width = 2u;
     textureRecord.height = 2u;
     textureRecord.mipmapped = false;
-    assert(world.commit(*texture, std::move(textureRecord)));
+    require(world.commit(*texture, std::move(textureRecord)), "failed to commit texture");
 
     const auto material = world.reserveMaterial();
-    assert(material);
+    require(material.has_value(), "failed to reserve material");
     MaterialRecord materialRecord;
     materialRecord.sourceIdentity = "cp3b3:material";
 
@@ -43,7 +53,7 @@ int main()
     normal.colorSpace = TextureColorSpace::Data;
     normal.formatClass = TextureFormatClass::Normal;
     materialRecord.textures.push_back(normal);
-    assert(world.commit(*material, std::move(materialRecord)));
+    require(world.commit(*material, std::move(materialRecord)), "failed to commit material");
 
     auto meshPayload = std::make_shared<MeshPayload>();
     meshPayload->positions = { { -1.0f, -1.0f, 0.0f }, { 1.0f, -1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f } };
@@ -51,15 +61,15 @@ int main()
     meshPayload->texCoordSets.push_back({ { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 0.5f, 1.0f } });
     meshPayload->indices = { 0u, 1u, 2u };
     meshPayload->surfaces.push_back(MeshSurface{ PrimitiveTopology::Triangles, 0u, 3u, 0u });
-    assert(validMeshPayload(*meshPayload));
+    require(validMeshPayload(*meshPayload), "synthetic mesh payload is invalid");
 
     const auto mesh = world.reserveMesh();
-    assert(mesh);
+    require(mesh.has_value(), "failed to reserve mesh");
     MeshRecord meshRecord;
     meshRecord.sourceIdentity = "cp3b3:mesh";
     meshRecord.surfaceCount = 1u;
     meshRecord.payload = meshPayload;
-    assert(world.commit(*mesh, std::move(meshRecord)));
+    require(world.commit(*mesh, std::move(meshRecord)), "failed to commit mesh");
 
     auto modelPayload = std::make_shared<ModelPayload>();
     ModelNodeRecord geometry;
@@ -68,26 +78,26 @@ int main()
     geometry.materials.push_back(*material);
     modelPayload->nodes.push_back(geometry);
     modelPayload->roots.push_back(ModelNodeIndex{ 0u });
-    assert(validModelPayloadStructure(*modelPayload));
+    require(validModelPayloadStructure(*modelPayload), "synthetic model payload is invalid");
 
     const auto model = world.reserveModel();
-    assert(model);
+    require(model.has_value(), "failed to reserve model");
     ModelRecord modelRecord;
     modelRecord.sourceIdentity = "cp3b3:synthetic-model";
     modelRecord.contentIdentity = "cp3b3:synthetic-model:v1";
     modelRecord.payload = modelPayload;
-    assert(world.commit(*model, std::move(modelRecord)));
-    assert(world.valid());
+    require(world.commit(*model, std::move(modelRecord)), "failed to commit model");
+    require(world.valid(), "RenderWorld is invalid after synthetic publication");
 
     const auto plan = RenderVsg::buildStaticAssetPlan(world, *model);
-    assert(plan);
-    assert(plan->draws.size() == 1u);
+    require(plan.has_value(), "failed to build static asset plan");
+    require(plan->draws.size() == 1u, "static asset plan must contain exactly one draw");
 
     std::uint32_t resolverCalls = 0u;
     const RenderVsg::StaticTextureResolver resolver = [&](const TextureRecord& record,
                                                         const TextureRealizationKey& key) -> vsg::ref_ptr<vsg::Data> {
         ++resolverCalls;
-        assert(record.contentIdentity == "cp3b3:checker:v1");
+        require(record.contentIdentity == "cp3b3:checker:v1", "resolver received unexpected texture content");
         auto image = vsg::ubvec4Array2D::create(2u, 2u);
         image->set(0u, 0u, vsg::ubvec4(255u, 0u, 255u, 255u));
         image->set(1u, 0u, vsg::ubvec4(32u, 32u, 32u, 255u));
@@ -102,16 +112,16 @@ int main()
 
     RenderVsg::StaticAssetRealizer realizer;
     const RenderVsg::StaticRealizationResult realized = realizer.realize(world, *plan, resolver);
-    assert(realized.valid());
-    assert(realized.root->children.size() == 1u);
-    assert(realized.stats.drawCount == 1u);
-    assert(realized.stats.pipelineKeys == 1u);
-    assert(realized.stats.materialKeys == 1u);
-    assert(realized.stats.textureViewKeys == 2u);
-    assert(realized.stats.samplerKeys == 1u);
-    assert(realized.stats.textureLoads == 2u);
-    assert(realized.stats.unsupportedTextureBindings == 0u);
-    assert(resolverCalls == 2u);
+    require(realized.valid(), "static VSG realization is invalid");
+    require(realized.root->children.size() == 1u, "realized root must contain exactly one draw node");
+    require(realized.stats.drawCount == 1u, "unexpected realized draw count");
+    require(realized.stats.pipelineKeys == 1u, "unexpected pipeline-key count");
+    require(realized.stats.materialKeys == 1u, "unexpected material-key count");
+    require(realized.stats.textureViewKeys == 2u, "sRGB and data views must realize separately");
+    require(realized.stats.samplerKeys == 1u, "identical samplers must share one realization key");
+    require(realized.stats.textureLoads == 2u, "each texture view variant must be resolved exactly once");
+    require(realized.stats.unsupportedTextureBindings == 0u, "synthetic supported bindings were rejected");
+    require(resolverCalls == 2u, "texture resolver call count does not match realization variants");
 
     RenderVsg::StaticTextureDecoder decoder;
     TextureRecord warningRecord;
@@ -126,14 +136,14 @@ int main()
         ++warningOpenCalls;
         return {};
     });
-    assert(warning);
-    assert(warningOpenCalls == 0u);
-    assert(warning->width() == 8u && warning->height() == 8u);
-    assert(warning->properties.format == VK_FORMAT_R8G8B8_SRGB);
+    require(static_cast<bool>(warning), "OpenMW warning texture failed to realize");
+    require(warningOpenCalls == 0u, "built-in warning texture must not open VFS content");
+    require(warning->width() == 8u && warning->height() == 8u, "warning texture dimensions changed");
+    require(warning->properties.format == VK_FORMAT_R8G8B8_SRGB, "warning texture format must be sRGB RGB8");
     const auto* warningPixels = dynamic_cast<const vsg::ubvec3Array2D*>(warning.get());
-    assert(warningPixels && warningPixels->size() == 64u);
+    require(warningPixels != nullptr && warningPixels->size() == 64u, "warning texture payload shape changed");
     for (const vsg::ubvec3& pixel : *warningPixels)
-        assert(pixel == vsg::ubvec3(255u, 0u, 255u));
+        require(pixel == vsg::ubvec3(255u, 0u, 255u), "warning texture must remain solid magenta");
 
     TextureRecord streamRecord;
     streamRecord.sourceIdentity = "textures/cp3b3-stream.ppm";
@@ -144,26 +154,28 @@ int main()
     const std::string ppm("P6\n1 1\n255\n\x7f\x20\xe0", 14u);
     std::uint32_t streamOpenCalls = 0u;
     const RenderVsg::StaticTextureStreamOpener opener = [&](std::string_view path) -> Files::IStreamPtr {
-        assert(path == streamRecord.sourceIdentity);
+        require(path == streamRecord.sourceIdentity, "decoder requested an unexpected VFS path");
         ++streamOpenCalls;
         return std::make_unique<std::istringstream>(ppm, std::ios::in | std::ios::binary);
     };
 
     const TextureRealizationKey srgbKey = makeTextureRealizationKey(diffuse, streamRecord);
     auto srgb = decoder.decode(streamRecord, srgbKey, opener);
-    assert(srgb && srgb->width() == 1u && srgb->height() == 1u);
-    assert(srgb->properties.format == VK_FORMAT_R8G8B8A8_SRGB);
+    require(static_cast<bool>(srgb) && srgb->width() == 1u && srgb->height() == 1u,
+        "sRGB stream decode failed");
+    require(srgb->properties.format == VK_FORMAT_R8G8B8A8_SRGB, "sRGB stream view realized with wrong format");
 
     const TextureRealizationKey dataKey = makeTextureRealizationKey(normal, streamRecord);
     auto data = decoder.decode(streamRecord, dataKey, opener);
-    assert(data && data->width() == 1u && data->height() == 1u);
-    assert(data->properties.format == VK_FORMAT_R8G8B8A8_UNORM);
-    assert(streamOpenCalls == 2u);
+    require(static_cast<bool>(data) && data->width() == 1u && data->height() == 1u,
+        "data stream decode failed");
+    require(data->properties.format == VK_FORMAT_R8G8B8A8_UNORM, "data stream view realized with wrong format");
+    require(streamOpenCalls == 2u, "stream should be opened once for each distinct interpretation variant");
 
     TextureRealizationKey staleKey = srgbKey;
     staleKey.revision = ResourceRevision{ streamRecord.revision.value() + 1u };
-    assert(!decoder.decode(streamRecord, staleKey, opener));
-    assert(streamOpenCalls == 2u);
+    require(!decoder.decode(streamRecord, staleKey, opener), "stale texture revision must fail closed");
+    require(streamOpenCalls == 2u, "stale revision must be rejected before opening the stream");
 
     return 0;
 }
