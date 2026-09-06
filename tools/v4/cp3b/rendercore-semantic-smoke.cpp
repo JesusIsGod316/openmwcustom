@@ -1,4 +1,4 @@
-#include <components/nifrender/translationbundle.hpp>
+#include <components/nifrender/translationpublish.hpp>
 #include <components/rendercore/renderer.hpp>
 #include <components/rendercore/updatebatch.hpp>
 
@@ -127,6 +127,32 @@ int main()
     assert(translated.valid());
     assert(!translated.hasErrors());
     assert(translated.summary().rendered == 1u);
+
+    RenderWorld translatedWorld;
+    RenderWorldPublisher translatedPublisher(translatedWorld);
+    const auto published = NifRender::publishTranslation(
+        translatedWorld, translatedPublisher, translated, InitialUpdateSequence);
+    assert(published.applied());
+    assert(translatedWorld.get(published.binding.meshes.front()) != nullptr);
+    assert(translatedWorld.get(published.binding.materials.front()) != nullptr);
+    const ModelRecord* publishedModel = translatedWorld.get(published.binding.model);
+    assert(publishedModel && publishedModel->payload);
+    assert(publishedModel->payload->nodes.front().localTransform[0][0] == -1.0f);
+    assert(translatedWorld.valid());
+
+    NifRender::TranslationBundle errorBundle = translated;
+    NifRender::TranslationDiagnostic error;
+    error.severity = NifRender::DiagnosticSeverity::Error;
+    error.code = "smoke.error";
+    errorBundle.diagnostics.push_back(error);
+    RenderWorld rejectedWorld;
+    RenderWorldPublisher rejectedPublisher(rejectedWorld);
+    const RenderWorldRevision rejectedRevision = rejectedWorld.revision();
+    const auto rejected = NifRender::publishTranslation(
+        rejectedWorld, rejectedPublisher, errorBundle, InitialUpdateSequence);
+    assert(rejected.status == NifRender::TranslationPublishStatus::TranslationErrors);
+    assert(rejectedWorld.revision() == rejectedRevision);
+    assert(rejectedWorld.valid());
 
     translated.model.nodes[0].localTransform[3][0] = std::numeric_limits<float>::quiet_NaN();
     assert(!translated.valid());
