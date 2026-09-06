@@ -65,6 +65,14 @@ jobs:
             tools/v4/cp3b/content-identity-smoke.cpp \
             -o /tmp/v4-cp3b-content-identity-smoke
 
+      - name: Compile static realization plan smoke target
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+            tools/v4/cp3b/static-asset-plan-smoke.cpp \
+            -o /tmp/v4-cp3b-static-asset-plan-smoke
+
       - name: Compile texture identity smoke target
         shell: bash
         run: |
@@ -153,6 +161,9 @@ jobs:
 
       - name: Run content identity smoke target
         run: /tmp/v4-cp3b-content-identity-smoke
+
+      - name: Run static realization plan smoke target
+        run: /tmp/v4-cp3b-static-asset-plan-smoke
 
       - name: Run texture identity smoke target
         run: /tmp/v4-cp3b-texture-identity-smoke
