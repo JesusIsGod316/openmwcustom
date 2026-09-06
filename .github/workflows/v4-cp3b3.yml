@@ -191,7 +191,12 @@ jobs:
             -D OPENMW_LTO_BUILD=OFF
 
       - name: Build real-NIF Vulkan conformance executable
-        run: cmake --build ${{ github.workspace }}/build-v4-cp3b3-real-nif --target openmw-vulkan-nif-conformance
+        shell: pwsh
+        run: |
+          $log = "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/build-output.log"
+          cmake --build "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" --target openmw-vulkan-nif-conformance --verbose 2>&1 | Tee-Object -FilePath $log
+          $buildExit = $LASTEXITCODE
+          if ($buildExit -ne 0) { exit $buildExit }
 
       - name: Launch real-NIF tool command surface
         shell: pwsh
@@ -233,4 +238,5 @@ jobs:
             ${{ github.workspace }}/build-v4-cp3b3/Testing/Temporary/LastTest.log
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/CMakeCache.txt
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/.ninja_log
+            ${{ github.workspace }}/build-v4-cp3b3-real-nif/build-output.log
           if-no-files-found: ignore
