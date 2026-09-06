@@ -29,6 +29,8 @@ int main()
     report.realization.billboardDraws = 1;
     report.realization.pipelines = 2;
     report.realization.materials = 3;
+    report.textureDecode.warningFallbacks = 1;
+    report.textureDecode.diagnostics.emplace_back("OpenMW warning texture fallback for textures/missing.dds");
 
     Cp3b4::TranslationDiagnostic diagnostic;
     diagnostic.severity = "warning";
@@ -46,6 +48,9 @@ int main()
         "asset report schema missing");
     require(json.find("\"rendered\":3") != std::string::npos, "translation count missing");
     require(json.find("\"draws\":4") != std::string::npos, "realization count missing");
+    require(json.find("\"warningFallbacks\":1") != std::string::npos, "warning fallback count missing");
+    require(json.find("OpenMW warning texture fallback for textures/missing.dds") != std::string::npos,
+        "warning fallback diagnostic missing");
     require(json.find("quoted-\\\"name\\\"") != std::string::npos, "JSON quote escaping missing");
     require(json.find("line one\\nline two with \\\\ and \\\"quotes\\\"") != std::string::npos,
         "JSON diagnostic escaping missing");
