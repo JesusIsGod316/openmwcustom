@@ -2,6 +2,8 @@ name: V4.0 CP3B4 compatibility closeout
 
 on:
   workflow_dispatch:
+  push:
+    branches: [v4.0-cp3b-nif-static-vulkan]
 
 concurrency:
   group: v4-cp3b4-closeout-${{ github.ref }}
@@ -9,6 +11,7 @@ concurrency:
 
 jobs:
   CloseoutPreflight:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[cp3b4-closeout]') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout exact closeout head
@@ -47,6 +50,7 @@ jobs:
           test -f tools/v4/cp3b4/Stage-Conformance-Package.ps1
           test -f .github/workflows/v4-cp3b3.yml
           grep -F 'workflow_call:' .github/workflows/v4-cp3b3.yml
+          grep -F 'force_run:' .github/workflows/v4-cp3b3.yml
           grep -F 'openmw-v4-cp3b4-asset-report-v1' tools/v4/cp3b4/asset-report.hpp
           grep -F 'openmw-v4-cp3b4-corpus-report-v1' tools/v4/cp3b4/corpus-runner.py
 
@@ -77,6 +81,8 @@ jobs:
   StaticNifConformanceWindows:
     needs: CloseoutPreflight
     uses: ./.github/workflows/v4-cp3b3.yml
+    with:
+      force_run: true
 
   RetainedVulkanFoundationWindows:
     needs: CloseoutPreflight
