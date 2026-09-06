@@ -15,7 +15,8 @@ namespace
         const auto texture = world.reserveTexture();
         const auto material = world.reserveMaterial();
         ASSERT_TRUE(texture && material);
-        ASSERT_TRUE(world.commit(*texture, RenderCore::TextureRecord{ .sourceIdentity = "textures/stone.dds" }));
+        ASSERT_TRUE(world.commit(*texture, RenderCore::TextureRecord{
+            .sourceIdentity = "textures/stone.dds", .contentIdentity = "test:texture-stone" }));
 
         RenderCore::MaterialRecord materialRecord;
         materialRecord.sourceIdentity = "material:stone";
@@ -34,7 +35,8 @@ namespace
         const auto colorMaterial = world.reserveMaterial();
         const auto dataMaterial = world.reserveMaterial();
         ASSERT_TRUE(texture && colorMaterial && dataMaterial);
-        ASSERT_TRUE(world.commit(*texture, RenderCore::TextureRecord{ .sourceIdentity = "textures/shared.dds" }));
+        ASSERT_TRUE(world.commit(*texture, RenderCore::TextureRecord{
+            .sourceIdentity = "textures/shared.dds", .contentIdentity = "test:texture-shared" }));
 
         RenderCore::MaterialRecord color;
         color.sourceIdentity = "material:color";
@@ -57,6 +59,24 @@ namespace
         EXPECT_EQ(world.get(*colorMaterial)->textures.front().texture, world.get(*dataMaterial)->textures.front().texture);
         EXPECT_NE(world.get(*colorMaterial)->textures.front().colorSpace,
             world.get(*dataMaterial)->textures.front().colorSpace);
+    }
+
+    TEST(RenderCoreSemanticAssets, TexturePublicationRequiresContentIdentity)
+    {
+        RenderCore::RenderWorld world;
+        const auto texture = world.reserveTexture();
+        ASSERT_TRUE(texture);
+
+        EXPECT_FALSE(world.commit(*texture,
+            RenderCore::TextureRecord{ .sourceIdentity = "textures/source-only.dds" }));
+        EXPECT_EQ(world.get(*texture), nullptr);
+        EXPECT_TRUE(world.cancel(*texture));
+
+        const auto resolved = world.reserveTexture();
+        ASSERT_TRUE(resolved);
+        EXPECT_TRUE(world.commit(*resolved, RenderCore::TextureRecord{
+            .sourceIdentity = "textures/resolved.dds", .contentIdentity = "openmw128:resolved" }));
+        EXPECT_TRUE(world.valid());
     }
 
     TEST(RenderCoreSemanticAssets, MeshPayloadRejectsMismatchedVertexStreams)
