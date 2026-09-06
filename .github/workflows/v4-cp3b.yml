@@ -3,7 +3,7 @@ name: V4.0 CP3B semantic QC
 on:
   workflow_dispatch:
   push:
-    branches: [v4.0-cp3b-nif-static-vulkan]
+    branches: [v4.0-cp3b-nif-static-vulkan, v4.0-cp3b-texture-binding-staging]
 
 concurrency:
   group: v4-cp3b-semantic-${{ github.ref }}
