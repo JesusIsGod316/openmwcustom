@@ -92,21 +92,44 @@ param(
     [Parameter(Mandatory = $true)] [string[]]$Data,
     [string[]]$Archive = @(),
     [string]$Output = '.\cp3b4-corpus-report.json',
-    [int]$DeterminismRuns = 2
+    [int]$DeterminismRuns = 2,
+    [string[]]$RenderId = @(),
+    [int]$RenderFrames = 120,
+    [double]$LodDistance = 0.0,
+    [double]$CameraDistance = 500.0,
+    [double]$TimeoutSeconds = 180.0
 )
 
 $ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
 $packageRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+$python = Get-Command python -ErrorAction SilentlyContinue
+$pythonPrefix = @()
+if ($null -eq $python) {
+    $python = Get-Command py -ErrorAction SilentlyContinue
+    if ($null -eq $python) {
+        throw 'CP3B4 corpus runner requires Python 3 on PATH (python or py launcher).'
+    }
+    $pythonPrefix = @('-3')
+}
+
 $arguments = @(
     (Join-Path $packageRoot 'cp3b4\corpus-runner.py'),
     '--tool', (Join-Path $packageRoot 'openmw-vulkan-nif-conformance.exe'),
     '--manifest', $Manifest,
     '--output', $Output,
-    '--determinism-runs', [string]$DeterminismRuns
+    '--determinism-runs', [string]$DeterminismRuns,
+    '--render-frames', [string]$RenderFrames,
+    '--lod-distance', [string]$LodDistance,
+    '--camera-distance', [string]$CameraDistance,
+    '--timeout', [string]$TimeoutSeconds
 )
 foreach ($root in $Data) { $arguments += @('--data', $root) }
 foreach ($archivePath in $Archive) { $arguments += @('--archive', $archivePath) }
-& python @arguments
+foreach ($assetId in $RenderId) { $arguments += @('--render-id', $assetId) }
+
+& $python.Source @pythonPrefix @arguments
 exit $LASTEXITCODE
 '@
 Set-Content -LiteralPath (Join-Path $out 'Run-CP3B4-Corpus.ps1') -Value $launcher -Encoding UTF8
