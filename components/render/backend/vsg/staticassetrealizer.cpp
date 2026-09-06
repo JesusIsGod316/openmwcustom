@@ -135,9 +135,9 @@ namespace RenderVsg
         [[nodiscard]] vsg::dmat4 toVsg(const glm::mat4& source) noexcept
         {
             vsg::dmat4 result;
-            for (std::size_t column = 0; column < 4; ++column)
+            for (glm::length_t column = 0; column < 4; ++column)
             {
-                for (std::size_t row = 0; row < 4; ++row)
+                for (glm::length_t row = 0; row < 4; ++row)
                     result(static_cast<unsigned int>(column), static_cast<unsigned int>(row)) = source[column][row];
             }
             return result;
