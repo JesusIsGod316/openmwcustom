@@ -17,6 +17,23 @@ namespace
         if (!condition)
             throw std::runtime_error(std::string(message));
     }
+
+    template <class State>
+    [[nodiscard]] const State* findPipelineState(const vsg::StateGroup& stateGroup)
+    {
+        for (const auto& command : stateGroup.stateCommands)
+        {
+            const auto* bind = dynamic_cast<const vsg::BindGraphicsPipeline*>(command.get());
+            if (bind == nullptr || !bind->pipeline)
+                continue;
+            for (const auto& state : bind->pipeline->pipelineStates)
+            {
+                if (const auto* typed = dynamic_cast<const State*>(state.get()))
+                    return typed;
+            }
+        }
+        return nullptr;
+    }
 }
 
 int main()
@@ -39,6 +56,7 @@ int main()
     require(material.has_value(), "failed to reserve material");
     MaterialRecord materialRecord;
     materialRecord.sourceIdentity = "cp3b3:material";
+    materialRecord.decal = true;
 
     TextureBinding diffuse;
     diffuse.texture = *texture;
@@ -58,6 +76,7 @@ int main()
     auto meshPayload = std::make_shared<MeshPayload>();
     meshPayload->positions = { { -1.0f, -1.0f, 0.0f }, { 1.0f, -1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f } };
     meshPayload->normals.assign(3u, glm::vec3(0.0f, 0.0f, 1.0f));
+    meshPayload->colors.assign(3u, glm::vec4(0.75f, 0.5f, 0.25f, 1.0f));
     meshPayload->texCoordSets.push_back({ { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 0.5f, 1.0f } });
     meshPayload->indices = { 0u, 1u, 2u };
     meshPayload->surfaces.push_back(MeshSurface{ PrimitiveTopology::Triangles, 0u, 3u, 0u });
@@ -121,7 +140,70 @@ int main()
     require(realized.stats.samplerKeys == 1u, "identical samplers must share one realization key");
     require(realized.stats.textureLoads == 2u, "each texture view variant must be resolved exactly once");
     require(realized.stats.unsupportedTextureBindings == 0u, "synthetic supported bindings were rejected");
+    require(realized.stats.runtimeContextEffects == 0u, "supported synthetic material unexpectedly failed closed");
     require(resolverCalls == 2u, "texture resolver call count does not match realization variants");
+
+    const auto* transform = dynamic_cast<const vsg::MatrixTransform*>(realized.root->children.front().get());
+    require(transform != nullptr && transform->children.size() == 1u,
+        "realized draw must retain the expected MatrixTransform/StateGroup shape");
+    const auto* stateGroup = dynamic_cast<const vsg::StateGroup*>(transform->children.front().get());
+    require(stateGroup != nullptr, "realized draw is missing its StateGroup");
+
+    const vsg::DepthStencilState* depth = findPipelineState<vsg::DepthStencilState>(*stateGroup);
+    require(depth != nullptr, "realized pipeline is missing DepthStencilState");
+    require(depth->depthTestEnable == VK_TRUE, "synthetic depth test unexpectedly disabled");
+    require(depth->depthWriteEnable == VK_TRUE, "synthetic depth write unexpectedly disabled");
+    require(depth->depthCompareOp == VK_COMPARE_OP_GREATER_OR_EQUAL,
+        "CP3B3 pipeline must use VSG reverse-depth GREATER_OR_EQUAL comparison");
+
+    const vsg::RasterizationState* raster = findPipelineState<vsg::RasterizationState>(*stateGroup);
+    require(raster != nullptr, "realized pipeline is missing RasterizationState");
+    require(raster->depthBiasEnable == VK_TRUE, "synthetic decal did not enable depth bias");
+    require(raster->depthBiasConstantFactor > 0.0f && raster->depthBiasSlopeFactor > 0.0f,
+        "reverse-depth decal bias must move toward the camera with positive factors");
+
+    // The standard PBR bridge may render only semantics it actually expresses.
+    // Exercise the fail-closed counters so complete=true cannot silently bless
+    // promoted static material behavior that still needs a compatibility shader.
+    const auto unsupportedMaterial = world.reserveMaterial();
+    require(unsupportedMaterial.has_value(), "failed to reserve unsupported semantic material");
+    MaterialRecord unsupportedRecord;
+    unsupportedRecord.sourceIdentity = "cp3b3:unsupported-material";
+    unsupportedRecord.unlit = true;
+    unsupportedRecord.vertexColorMode = VertexColorMode::Emissive;
+    unsupportedRecord.textureApply = TextureApplyMode::Replace;
+    TextureBinding transformedDiffuse = diffuse;
+    transformedDiffuse.transform.offset.x = 0.25f;
+    unsupportedRecord.textures.push_back(transformedDiffuse);
+    require(world.commit(*unsupportedMaterial, std::move(unsupportedRecord)),
+        "failed to commit unsupported semantic material");
+
+    auto unsupportedModelPayload = std::make_shared<ModelPayload>();
+    ModelNodeRecord unsupportedGeometry;
+    unsupportedGeometry.kind = ModelNodeKind::Geometry;
+    unsupportedGeometry.mesh = *mesh;
+    unsupportedGeometry.materials.push_back(*unsupportedMaterial);
+    unsupportedModelPayload->nodes.push_back(unsupportedGeometry);
+    unsupportedModelPayload->roots.push_back(ModelNodeIndex{ 0u });
+    require(validModelPayloadStructure(*unsupportedModelPayload), "unsupported semantic model payload is invalid");
+
+    const auto unsupportedModel = world.reserveModel();
+    require(unsupportedModel.has_value(), "failed to reserve unsupported semantic model");
+    ModelRecord unsupportedModelRecord;
+    unsupportedModelRecord.sourceIdentity = "cp3b3:unsupported-model";
+    unsupportedModelRecord.contentIdentity = "cp3b3:unsupported-model:v1";
+    unsupportedModelRecord.payload = unsupportedModelPayload;
+    require(world.commit(*unsupportedModel, std::move(unsupportedModelRecord)),
+        "failed to commit unsupported semantic model");
+
+    const auto unsupportedPlan = RenderVsg::buildStaticAssetPlan(world, *unsupportedModel);
+    require(unsupportedPlan.has_value() && unsupportedPlan->draws.size() == 1u,
+        "failed to build unsupported semantic plan");
+    const RenderVsg::StaticRealizationResult unsupportedRealized
+        = realizer.realize(world, *unsupportedPlan, resolver);
+    require(unsupportedRealized.valid(), "unsupported semantic realization should remain inspectable");
+    require(unsupportedRealized.stats.runtimeContextEffects == 4u,
+        "unlit/emissive-vertex/texture-apply/static-UV gaps must each fail closed");
 
     RenderVsg::StaticTextureDecoder decoder;
     TextureRecord warningRecord;
