@@ -95,9 +95,9 @@ param(
     [string]$Output = '.\cp3b4-corpus-report.json',
     [int]$DeterminismRuns = 2,
     [string[]]$RenderId = @(),
-    [int]$RenderFrames = 120,
+    [int]$RenderFrames = 600,
     [double]$LodDistance = 0.0,
-    [double]$CameraDistance = 500.0,
+    [double]$CameraDistance = 0.0,
     [double]$TimeoutSeconds = 180.0
 )
 
