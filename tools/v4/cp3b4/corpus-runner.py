@@ -21,6 +21,7 @@ from typing import Any
 CORPUS_SCHEMA = "openmw-v4-cp3b4-corpus-v1"
 ASSET_REPORT_SCHEMA = "openmw-v4-cp3b4-asset-report-v1"
 CORPUS_REPORT_SCHEMA = "openmw-v4-cp3b4-corpus-report-v1"
+SUPPORTED_ENCODINGS = ("win1250", "win1251", "win1252")
 
 DEFAULT_EXPECT = {
     "complete": True,
@@ -63,6 +64,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", required=True, type=pathlib.Path, help="CP3B4 corpus manifest JSON")
     parser.add_argument("--data", action="append", default=[], type=pathlib.Path, help="OpenMW VFS data root; repeatable")
     parser.add_argument("--archive", action="append", default=[], type=pathlib.Path, help="BSA/BA2 archive; repeatable")
+    parser.add_argument(
+        "--encoding",
+        choices=SUPPORTED_ENCODINGS,
+        default="win1252",
+        help="archive filename encoding; mirror the target OpenMW configuration (default win1252)",
+    )
     parser.add_argument("--output", required=True, type=pathlib.Path, help="aggregate corpus report JSON")
     parser.add_argument("--lod-distance", type=float, default=0.0)
     parser.add_argument("--camera-distance", type=float, default=500.0)
@@ -94,11 +101,15 @@ def sha256_file(path: pathlib.Path) -> str:
 def validate_vfs_nif_path(nif: str, prefix: str) -> None:
     normalized = nif.replace("\\", "/")
     require(not normalized.startswith("/"), f"{prefix}.nif must be a VFS-relative path")
-    require(not (len(normalized) >= 2 and normalized[0].isalpha() and normalized[1] == ":"),
-            f"{prefix}.nif must not contain a drive-qualified path")
+    require(
+        not (len(normalized) >= 2 and normalized[0].isalpha() and normalized[1] == ":"),
+        f"{prefix}.nif must not contain a drive-qualified path",
+    )
     parts = normalized.split("/")
-    require(all(part not in ("", ".", "..") for part in parts),
-            f"{prefix}.nif must be a normalized VFS path without empty, '.' or '..' components")
+    require(
+        all(part not in ("", ".", "..") for part in parts),
+        f"{prefix}.nif must be a normalized VFS path without empty, '.' or '..' components",
+    )
     require(normalized.lower().endswith(".nif"), f"{prefix}.nif must name a .nif asset")
 
 
@@ -135,7 +146,7 @@ def load_manifest(path: pathlib.Path) -> dict[str, Any]:
         require(not unknown, f"{prefix}.expect has unknown keys: {sorted(unknown)}")
         if "complete" in expect:
             require(isinstance(expect["complete"], bool), f"{prefix}.expect.complete must be boolean")
-        for key in (set(expect) & (set(INTEGER_EXPECTATIONS) | {"minMeaningful"})):
+        for key in set(expect) & (set(INTEGER_EXPECTATIONS) | {"minMeaningful"}):
             value = expect[key]
             require(
                 isinstance(value, int) and not isinstance(value, bool) and value >= 0,
@@ -149,7 +160,10 @@ def load_manifest(path: pathlib.Path) -> dict[str, Any]:
         require(len(set(tags)) == len(tags), f"{prefix}.tags must not contain duplicates")
         covered_tags.update(tags)
         if "class" in asset:
-            require(isinstance(asset["class"], str) and asset["class"].strip(), f"{prefix}.class must be a non-empty string")
+            require(
+                isinstance(asset["class"], str) and asset["class"].strip(),
+                f"{prefix}.class must be a non-empty string",
+            )
 
     missing_tags = sorted(set(required_tags) - covered_tags)
     require(not missing_tags, f"manifest requiredTags are not covered by any asset: {missing_tags}")
@@ -212,6 +226,7 @@ def command_for_asset(args: argparse.Namespace, asset: dict[str, Any], report_pa
         command.extend(["--data", str(root)])
     for archive in args.archive:
         command.extend(["--archive", str(archive)])
+    command.extend(["--encoding", args.encoding])
     command.extend(["--nif", asset["nif"]])
     command.extend(["--lod-distance", str(args.lod_distance)])
     command.extend(["--camera-distance", str(args.camera_distance)])
@@ -367,6 +382,7 @@ def main() -> int:
             "suite": manifest.get("suite", "unnamed"),
             "toolSha256": sha256_file(args.tool),
             "manifestSha256": sha256_file(args.manifest),
+            "encoding": args.encoding,
             "determinismRuns": args.determinism_runs,
             "requiredTags": manifest.get("requiredTags", []),
             "coveredTags": covered_tags,
