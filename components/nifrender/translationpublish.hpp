@@ -17,6 +17,7 @@ namespace NifRender
         Applied,
         InvalidBundle,
         TranslationErrors,
+        MaterialExtensionRequired,
         ReservationFailed,
         BatchBuildFailed,
         PublishRejected,
@@ -85,6 +86,14 @@ namespace NifRender
         if (bundle.hasErrors())
         {
             result.status = TranslationPublishStatus::TranslationErrors;
+            return result;
+        }
+        if (bundle.requiresMaterialExtension())
+        {
+            // CP3B1 preserves proven source semantics that CP3A MaterialRecord
+            // cannot yet encode. Never publish a lossy material; CP3B2 will
+            // promote these fields into the stable neutral material contract.
+            result.status = TranslationPublishStatus::MaterialExtensionRequired;
             return result;
         }
 
