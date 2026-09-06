@@ -53,6 +53,25 @@ namespace RenderVsg
         if (!result.realization.valid())
             return result;
 
+        // A valid VSG node graph is not sufficient for static semantic
+        // conformance. These counters mean the neutral source requested a
+        // material/texture behavior that the current backend did not realize.
+        // Keep the result at the Realize stage so callers, JSON reports and the
+        // corpus runner cannot mistake a drawable-but-incomplete graph for a
+        // CP3B-complete asset.
+        if (result.realization.stats.unsupportedTextureBindings != 0u)
+        {
+            result.realization.diagnostics.emplace_back(
+                "Static VSG realization left one or more texture bindings unsupported; compatibility realization is required");
+            return result;
+        }
+        if (result.realization.stats.runtimeContextEffects != 0u)
+        {
+            result.realization.diagnostics.emplace_back(
+                "Static VSG realization left one or more promoted material semantics unresolved; compatibility realization is required");
+            return result;
+        }
+
         result.stage = StaticNifConformanceStage::Complete;
         return result;
     }
