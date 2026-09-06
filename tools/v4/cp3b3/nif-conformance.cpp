@@ -4,6 +4,7 @@
 #include <components/render/backend/vsg/staticassetconformance.hpp>
 #include <components/render/backend/vsg/staticnifconformance.hpp>
 #include <components/rendercore/updatebatch.hpp>
+#include <components/toutf8/toutf8.hpp>
 #include <components/vfs/bsaarchive.hpp>
 #include <components/vfs/filesystemarchive.hpp>
 #include <components/vfs/manager.hpp>
@@ -38,6 +39,7 @@ namespace
         std::vector<std::filesystem::path> archives;
         std::string nifPath;
         std::filesystem::path reportJson;
+        std::string encodingName = "win1252";
         float lodDistance = 0.0f;
         double cameraDistance = 500.0;
         int frameLimit = -1;
@@ -92,6 +94,7 @@ namespace
                "data roots are ignored after their first occurrence.\n"
                "The NIF path must be relative to the mounted VFS (for example meshes/foo/bar.nif).\n\n"
                "Options:\n"
+               "  --encoding <name>          Archive filename encoding: win1250, win1251, win1252 (default).\n"
                "  --lod-distance <value>     Static LOD selection eye distance (default 0).\n"
                "  --camera-distance <value> Fixed conformance camera distance (default 500).\n"
                "  --frames <count>           Render exactly count frames, then exit.\n"
@@ -129,6 +132,8 @@ namespace
                 options.nifPath = std::string(value);
             else if (arg == "--report-json")
                 options.reportJson = std::filesystem::path(std::string(value));
+            else if (arg == "--encoding")
+                options.encodingName = std::string(value);
             else if (arg == "--lod-distance")
             {
                 if (!parseFloat(value, options.lodDistance) || options.lodDistance < 0.0f)
@@ -329,6 +334,8 @@ int main(int argc, char** argv)
         if (options.nifPath.empty())
             throw std::runtime_error("--nif <VFS path> is required");
 
+        const ToUTF8::FromType encoding = ToUTF8::calculateEncoding(options.encodingName);
+        const ToUTF8::StatelessUtf8Encoder encoder(encoding);
         VFS::Manager vfs;
         for (const Cp3b3::VfsMountEntry& entry : Cp3b3::buildVfsMountPlan(options.archives, options.dataRoots))
         {
@@ -336,7 +343,7 @@ int main(int argc, char** argv)
             {
                 if (!std::filesystem::is_regular_file(entry.path))
                     throw std::runtime_error("archive is not a file: " + Files::pathToUnicodeString(entry.path));
-                vfs.addArchive(VFS::makeBsaArchive(entry.path, nullptr));
+                vfs.addArchive(VFS::makeBsaArchive(entry.path, &encoder));
             }
             else
             {
