@@ -73,6 +73,14 @@ jobs:
             tools/v4/cp3b/static-asset-plan-smoke.cpp \
             -o /tmp/v4-cp3b-static-asset-plan-smoke
 
+      - name: Compile loader-global sort policy smoke target
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+            tools/v4/cp3b/static-sort-policy-smoke.cpp \
+            -o /tmp/v4-cp3b-static-sort-policy-smoke
+
       - name: Compile texture identity smoke target
         shell: bash
         run: |
@@ -164,6 +172,9 @@ jobs:
 
       - name: Run static realization plan smoke target
         run: /tmp/v4-cp3b-static-asset-plan-smoke
+
+      - name: Run loader-global sort policy smoke target
+        run: /tmp/v4-cp3b-static-sort-policy-smoke
 
       - name: Run texture identity smoke target
         run: /tmp/v4-cp3b-texture-identity-smoke
