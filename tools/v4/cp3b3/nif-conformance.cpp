@@ -9,6 +9,8 @@
 #include <components/vfs/manager.hpp>
 #include <components/vfs/pathutil.hpp>
 
+#include <tools/v4/cp3b4/conformance-report.hpp>
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
@@ -34,6 +36,7 @@ namespace
         std::vector<std::filesystem::path> dataRoots;
         std::vector<std::filesystem::path> archives;
         std::string nifPath;
+        std::filesystem::path reportJson;
         float lodDistance = 0.0f;
         double cameraDistance = 500.0;
         int frameLimit = -1;
@@ -79,7 +82,7 @@ namespace
 
     void printUsage(std::ostream& out)
     {
-        out << "OpenMW V4 CP3B3 real-NIF Vulkan conformance tool\n\n"
+        out << "OpenMW V4 CP3B3/CP3B4 real-NIF Vulkan conformance tool\n\n"
                "Usage:\n"
                "  openmw-vulkan-nif-conformance --data <dir> [--data <dir> ...]\n"
                "      [--archive <bsa-or-ba2> ...] --nif <vfs/path/model.nif> [options]\n\n"
@@ -90,6 +93,7 @@ namespace
                "  --camera-distance <value> Fixed conformance camera distance (default 500).\n"
                "  --frames <count>           Render exactly count frames, then exit.\n"
                "  --realize-only             Parse/translate/publish/plan/realize without opening a window.\n"
+               "  --report-json <path>       Write CP3B4 machine-readable per-asset report JSON.\n"
                "  --help, -h                 Show this help.\n";
     }
 
@@ -120,6 +124,8 @@ namespace
                 options.archives.emplace_back(std::string(value));
             else if (arg == "--nif")
                 options.nifPath = std::string(value);
+            else if (arg == "--report-json")
+                options.reportJson = std::filesystem::path(std::string(value));
             else if (arg == "--lod-distance")
             {
                 if (!parseFloat(value, options.lodDistance) || options.lodDistance < 0.0f)
@@ -187,8 +193,7 @@ namespace
             std::cout << "realization: " << diagnostic << '\n';
     }
 
-    [[nodiscard]] int renderScene(
-        vsg::ref_ptr<vsg::Node> scene, double cameraDistance, int frameLimit)
+    [[nodiscard]] int renderScene(vsg::ref_ptr<vsg::Node> scene, double cameraDistance, int frameLimit)
     {
         if (!scene)
             throw std::runtime_error("cannot render an empty CP3B3 scene");
@@ -353,6 +358,11 @@ int main(int argc, char** argv)
         RenderVsg::StaticNifConformanceResult result
             = RenderVsg::realizeStaticNif(fileView, vfs, world, publisher, planOptions, sharedObjects);
         printResult(result);
+        if (!options.reportJson.empty())
+        {
+            Cp3b4::writeAssetReport(options.reportJson, options.nifPath, result);
+            std::cout << "CP3B4 report: " << Files::pathToUnicodeString(options.reportJson) << '\n';
+        }
         if (!result.complete())
             return 3;
 
