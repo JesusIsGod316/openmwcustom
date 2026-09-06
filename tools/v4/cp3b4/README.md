@@ -21,9 +21,16 @@ identity.
   OpenMW. `--encoding` accepts `win1250`, `win1251`, or `win1252`, with OpenMW's
   `win1252` default. The corpus report records the chosen encoding so results do
   not silently mix different archive path interpretations.
-- `unsupported`, `deferred`, and unsupported texture bindings fail closed by
-  default. A corpus may allow a known deferred/static-excluded case explicitly;
-  this is visible in the manifest instead of being hidden in log text.
+- The backend reproduces OpenMW's visible magenta warning-image substitution
+  when an external image cannot be opened or decoded, but every substitution is
+  counted and diagnosed in `textureDecode`. CP3B4 allows **zero** warning-image
+  fallbacks by default. A corpus can raise `maxWarningTextureFallbacks` only for
+  a deliberately accepted known case, so compatibility fallback behavior never
+  turns into silent asset loss.
+- `unsupported`, `deferred`, unsupported texture bindings, and warning-image
+  substitutions fail closed by default. A corpus may allow a known
+  deferred/static-excluded or fallback case explicitly; this is visible in the
+  manifest instead of being hidden in log text.
 - An asset must produce at least one meaningful rendered/collision-only/hidden
   outcome by default. This prevents a parsed-but-effectively-empty model from
   satisfying CP3B4 merely because it emitted no error.
@@ -48,13 +55,15 @@ identity.
 `openmw-vulkan-nif-conformance --report-json <path>` writes
 `openmw-v4-cp3b4-asset-report-v1`. The report records the final conformance
 stage, publication status, semantic disposition counts, VSG realization counts,
-and structured translation/realization diagnostics.
+texture-decode warning fallback count/diagnostics, and structured
+translation/realization diagnostics.
 
 `corpus-runner.py` consumes manifests with schema
 `openmw-v4-cp3b4-corpus-v1` and writes aggregate reports with schema
 `openmw-v4-cp3b4-corpus-report-v1`. The aggregate includes the SHA-256 identity
 of both the executable and exact manifest, archive encoding, covered/required
-tags, per-asset results, and corpus-wide translation/realization totals.
+tags, per-asset results, and corpus-wide translation/realization/texture-decode
+totals.
 
 The schema version is intentionally explicit so CP3C/CP4 regression tooling can
 consume old reports without depending on unstable console wording.
@@ -94,6 +103,12 @@ archive entry regardless of CLI grouping. Use the same `encoding` value as the
 target OpenMW configuration. Use `--render-id <asset-id>` for one or more
 selected visible assets; those entries use the Vulkan window path for
 `--render-frames` frames instead of `--realize-only`.
+
+Do not raise `maxWarningTextureFallbacks` merely to make a corpus pass. The
+normal closeout target is zero. A nonzero allowance is evidence that a specific
+asset is intentionally being accepted with OpenMW's magenta fallback and should
+remain visible in the corpus report until the underlying texture issue is
+resolved or explicitly deferred by project decision.
 
 ## Acceptance boundary refinement
 
