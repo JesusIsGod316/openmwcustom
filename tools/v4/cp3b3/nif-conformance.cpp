@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -41,7 +42,7 @@ namespace
         std::filesystem::path reportJson;
         std::string encodingName = "win1252";
         float lodDistance = 0.0f;
-        double cameraDistance = 500.0;
+        double cameraDistance = 0.0;
         int frameLimit = -1;
         bool realizeOnly = false;
         bool help = false;
@@ -96,7 +97,7 @@ namespace
                "Options:\n"
                "  --encoding <name>          Archive filename encoding: win1250, win1251, win1252 (default).\n"
                "  --lod-distance <value>     Static LOD selection eye distance (default 0).\n"
-               "  --camera-distance <value> Fixed conformance camera distance (default 500).\n"
+               "  --camera-distance <value> Camera distance; 0 auto-frames realized scene bounds (default 0).\n"
                "  --frames <count>           Render exactly count frames, then exit.\n"
                "  --realize-only             Parse/translate/publish/plan/realize without opening a window.\n"
                "  --report-json <path>       Write CP3B4 machine-readable per-asset report JSON.\n"
@@ -141,8 +142,8 @@ namespace
             }
             else if (arg == "--camera-distance")
             {
-                if (!parseDouble(value, options.cameraDistance) || options.cameraDistance <= 0.0)
-                    throw std::runtime_error("--camera-distance must be greater than zero");
+                if (!parseDouble(value, options.cameraDistance) || options.cameraDistance < 0.0)
+                    throw std::runtime_error("--camera-distance must be non-negative (0 selects automatic framing)");
             }
             else if (arg == "--frames")
             {
@@ -244,10 +245,47 @@ namespace
 
             const VkExtent2D extent = window->extent2D();
             const double aspect = extent.height == 0 ? 1.0 : static_cast<double>(extent.width) / extent.height;
-            auto lookAt = vsg::LookAt::create(vsg::dvec3(0.0, -cameraDistance, cameraDistance * 0.35),
-                vsg::dvec3(0.0, 0.0, 0.0), vsg::dvec3(0.0, 0.0, 1.0));
-            auto perspective = vsg::Perspective::create(
-                45.0, aspect, std::max(0.01, cameraDistance * 0.0001), cameraDistance * 100.0);
+
+            vsg::ComputeBounds computeBounds;
+            computeBounds.useNodeBounds = false;
+            scene->accept(computeBounds);
+            if (!computeBounds.bounds.valid())
+                throw std::runtime_error("unable to compute bounds for realized CP3B3 scene");
+
+            const vsg::dbox& bounds = computeBounds.bounds;
+            const vsg::dvec3 center((bounds.min.x + bounds.max.x) * 0.5, (bounds.min.y + bounds.max.y) * 0.5,
+                (bounds.min.z + bounds.max.z) * 0.5);
+            const double extentX = bounds.max.x - bounds.min.x;
+            const double extentY = bounds.max.y - bounds.min.y;
+            const double extentZ = bounds.max.z - bounds.min.z;
+            const double radius = std::max(0.001, 0.5 * std::sqrt(extentX * extentX + extentY * extentY + extentZ * extentZ));
+
+            constexpr double verticalFovDegrees = 45.0;
+            constexpr double pi = 3.14159265358979323846;
+            const double verticalHalfFov = verticalFovDegrees * pi / 360.0;
+            const double horizontalHalfFov = std::atan(std::tan(verticalHalfFov) * aspect);
+            const double limitingHalfFov = std::min(verticalHalfFov, horizontalHalfFov);
+            const double automaticDistance = radius / std::max(0.001, std::sin(limitingHalfFov)) * 1.15;
+            const double resolvedCameraDistance = cameraDistance > 0.0 ? cameraDistance : automaticDistance;
+
+            const vsg::dvec3 viewDirection(0.0, -1.0, 0.35);
+            const double directionLength = std::sqrt(viewDirection.x * viewDirection.x + viewDirection.y * viewDirection.y
+                + viewDirection.z * viewDirection.z);
+            const vsg::dvec3 eye(center.x + viewDirection.x / directionLength * resolvedCameraDistance,
+                center.y + viewDirection.y / directionLength * resolvedCameraDistance,
+                center.z + viewDirection.z / directionLength * resolvedCameraDistance);
+            const double nearPlane = std::max(0.01, resolvedCameraDistance - radius * 1.25);
+            const double farPlane = std::max(nearPlane + 1.0, resolvedCameraDistance + radius * 2.0);
+
+            std::cout << "CP3B4 scene bounds: min=(" << bounds.min.x << ',' << bounds.min.y << ',' << bounds.min.z
+                      << ") max=(" << bounds.max.x << ',' << bounds.max.y << ',' << bounds.max.z << ") center=("
+                      << center.x << ',' << center.y << ',' << center.z << ") radius=" << radius << '\n';
+            std::cout << "CP3B4 camera: mode=" << (cameraDistance > 0.0 ? "manual" : "auto")
+                      << " distance=" << resolvedCameraDistance << " eye=(" << eye.x << ',' << eye.y << ',' << eye.z
+                      << ") near=" << nearPlane << " far=" << farPlane << '\n';
+
+            auto lookAt = vsg::LookAt::create(eye, center, vsg::dvec3(0.0, 0.0, 1.0));
+            auto perspective = vsg::Perspective::create(verticalFovDegrees, aspect, nearPlane, farPlane);
             auto camera = vsg::Camera::create(perspective, lookAt, vsg::ViewportState::create(extent));
 
             auto view = vsg::View::create(camera, scene);
