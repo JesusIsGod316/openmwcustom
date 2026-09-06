@@ -10,6 +10,7 @@ produces one deterministic machine-readable corpus report.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -23,6 +24,7 @@ CORPUS_REPORT_SCHEMA = "openmw-v4-cp3b4-corpus-report-v1"
 
 DEFAULT_EXPECT = {
     "complete": True,
+    "minMeaningful": 1,
     "maxDeferred": 0,
     "maxUnsupported": 0,
     "maxUnsupportedTextureBindings": 0,
@@ -38,6 +40,21 @@ INTEGER_EXPECTATIONS = {
     "maxIgnored": ("translation", "ignored", "max"),
     "maxUnsupportedTextureBindings": ("realization", "unsupportedTextureBindings", "max"),
 }
+
+TRANSLATION_FIELDS = ("rendered", "collisionOnly", "hidden", "deferred", "unsupported", "ignored")
+REALIZATION_FIELDS = (
+    "draws",
+    "sortedDraws",
+    "billboardDraws",
+    "pipelines",
+    "materials",
+    "textureViews",
+    "samplers",
+    "textureLoads",
+    "textureCacheHits",
+    "unsupportedTextureBindings",
+    "runtimeContextEffects",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,6 +83,25 @@ def require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
+def sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def validate_vfs_nif_path(nif: str, prefix: str) -> None:
+    normalized = nif.replace("\\", "/")
+    require(not normalized.startswith("/"), f"{prefix}.nif must be a VFS-relative path")
+    require(not (len(normalized) >= 2 and normalized[0].isalpha() and normalized[1] == ":"),
+            f"{prefix}.nif must not contain a drive-qualified path")
+    parts = normalized.split("/")
+    require(all(part not in ("", ".", "..") for part in parts),
+            f"{prefix}.nif must be a normalized VFS path without empty, '.' or '..' components")
+    require(normalized.lower().endswith(".nif"), f"{prefix}.nif must name a .nif asset")
+
+
 def load_manifest(path: pathlib.Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as stream:
         manifest = json.load(stream)
@@ -74,7 +110,15 @@ def load_manifest(path: pathlib.Path) -> dict[str, Any]:
     assets = manifest.get("assets")
     require(isinstance(assets, list) and assets, "manifest assets must be a non-empty array")
 
+    required_tags = manifest.get("requiredTags", [])
+    require(
+        isinstance(required_tags, list) and all(isinstance(tag, str) and tag.strip() for tag in required_tags),
+        "manifest requiredTags must be an array of non-empty strings",
+    )
+    require(len(set(required_tags)) == len(required_tags), "manifest requiredTags must not contain duplicates")
+
     seen_ids: set[str] = set()
+    covered_tags: set[str] = set()
     for index, asset in enumerate(assets):
         prefix = f"assets[{index}]"
         require(isinstance(asset, dict), f"{prefix} must be an object")
@@ -84,29 +128,46 @@ def load_manifest(path: pathlib.Path) -> dict[str, Any]:
         require(asset_id not in seen_ids, f"duplicate asset id {asset_id!r}")
         seen_ids.add(asset_id)
         require(isinstance(nif, str) and nif.strip(), f"{prefix}.nif must be a non-empty VFS path")
-        require(not pathlib.PurePath(nif).is_absolute(), f"{prefix}.nif must be a VFS-relative path")
+        validate_vfs_nif_path(nif, prefix)
         expect = asset.get("expect", {})
         require(isinstance(expect, dict), f"{prefix}.expect must be an object")
-        unknown = set(expect) - ({"complete"} | set(INTEGER_EXPECTATIONS))
+        unknown = set(expect) - ({"complete", "minMeaningful"} | set(INTEGER_EXPECTATIONS))
         require(not unknown, f"{prefix}.expect has unknown keys: {sorted(unknown)}")
         if "complete" in expect:
             require(isinstance(expect["complete"], bool), f"{prefix}.expect.complete must be boolean")
-        for key in set(expect) & set(INTEGER_EXPECTATIONS):
+        for key in (set(expect) & (set(INTEGER_EXPECTATIONS) | {"minMeaningful"})):
             value = expect[key]
-            require(isinstance(value, int) and not isinstance(value, bool) and value >= 0, f"{prefix}.expect.{key} must be a non-negative integer")
+            require(
+                isinstance(value, int) and not isinstance(value, bool) and value >= 0,
+                f"{prefix}.expect.{key} must be a non-negative integer",
+            )
         tags = asset.get("tags", [])
-        require(isinstance(tags, list) and all(isinstance(tag, str) and tag for tag in tags), f"{prefix}.tags must be an array of non-empty strings")
+        require(
+            isinstance(tags, list) and all(isinstance(tag, str) and tag.strip() for tag in tags),
+            f"{prefix}.tags must be an array of non-empty strings",
+        )
+        require(len(set(tags)) == len(tags), f"{prefix}.tags must not contain duplicates")
+        covered_tags.update(tags)
         if "class" in asset:
-            require(isinstance(asset["class"], str) and asset["class"], f"{prefix}.class must be a non-empty string")
+            require(isinstance(asset["class"], str) and asset["class"].strip(), f"{prefix}.class must be a non-empty string")
 
+    missing_tags = sorted(set(required_tags) - covered_tags)
+    require(not missing_tags, f"manifest requiredTags are not covered by any asset: {missing_tags}")
     return manifest
 
 
 def nested_integer(report: dict[str, Any], section: str, field: str) -> int:
-    value = report.get(section, {}).get(field)
+    container = report.get(section)
+    if not isinstance(container, dict):
+        raise ValueError(f"tool report {section} is not an object")
+    value = container.get(field)
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError(f"tool report {section}.{field} is not a non-negative integer")
     return value
+
+
+def meaningful_outcomes(report: dict[str, Any]) -> int:
+    return sum(nested_integer(report, "translation", field) for field in ("rendered", "collisionOnly", "hidden"))
 
 
 def evaluate_policy(asset: dict[str, Any], report: dict[str, Any]) -> list[str]:
@@ -120,6 +181,13 @@ def evaluate_policy(asset: dict[str, Any], report: dict[str, Any]) -> list[str]:
     expected.update(asset.get("expect", {}))
     if report.get("complete") is not expected["complete"]:
         errors.append(f"complete={report.get('complete')!r}, expected {expected['complete']!r}")
+
+    try:
+        meaningful = meaningful_outcomes(report)
+        if meaningful < expected["minMeaningful"]:
+            errors.append(f"meaningful translation outcomes={meaningful} is below required minimum {expected['minMeaningful']}")
+    except ValueError as exc:
+        errors.append(str(exc))
 
     for key, (section, field, direction) in INTEGER_EXPECTATIONS.items():
         if key not in expected:
@@ -259,6 +327,20 @@ def run_asset(args: argparse.Namespace, asset: dict[str, Any], work_dir: pathlib
     }
 
 
+def aggregate_counts(assets: list[dict[str, Any]], section: str, fields: tuple[str, ...]) -> dict[str, int]:
+    totals = {field: 0 for field in fields}
+    for asset in assets:
+        report = asset.get("toolReport")
+        if not isinstance(report, dict) or report.get("schema") != ASSET_REPORT_SCHEMA:
+            continue
+        for field in fields:
+            try:
+                totals[field] += nested_integer(report, section, field)
+            except ValueError:
+                pass
+    return totals
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -267,6 +349,7 @@ def main() -> int:
         require(args.render_frames >= 0, "--render-frames must be non-negative")
         require(args.timeout > 0, "--timeout must be greater than zero")
         require(args.tool.is_file(), f"tool does not exist: {args.tool}")
+        require(args.manifest.is_file(), f"manifest does not exist: {args.manifest}")
         manifest = load_manifest(args.manifest)
         asset_ids = {asset["id"] for asset in manifest["assets"]}
         unknown_render_ids = set(args.render_id) - asset_ids
@@ -277,16 +360,23 @@ def main() -> int:
             assets = [run_asset(args, asset, work_dir) for asset in manifest["assets"]]
 
         passed = all(asset["passed"] for asset in assets)
+        covered_tags = sorted({tag for asset in manifest["assets"] for tag in asset.get("tags", [])})
         aggregate = {
             "schema": CORPUS_REPORT_SCHEMA,
             "manifestSchema": manifest["schema"],
             "suite": manifest.get("suite", "unnamed"),
+            "toolSha256": sha256_file(args.tool),
+            "manifestSha256": sha256_file(args.manifest),
             "determinismRuns": args.determinism_runs,
+            "requiredTags": manifest.get("requiredTags", []),
+            "coveredTags": covered_tags,
             "passed": passed,
             "summary": {
                 "assets": len(assets),
                 "passed": sum(1 for asset in assets if asset["passed"]),
                 "failed": sum(1 for asset in assets if not asset["passed"]),
+                "translationTotals": aggregate_counts(assets, "translation", TRANSLATION_FIELDS),
+                "realizationTotals": aggregate_counts(assets, "realization", REALIZATION_FIELDS),
             },
             "assets": assets,
         }
