@@ -44,7 +44,9 @@ namespace RenderVsg
 
         [[nodiscard]] bool complete() const noexcept
         {
-            return stage == StaticNifConformanceStage::Complete && realization.valid();
+            return stage == StaticNifConformanceStage::Complete && realization.valid()
+                && realization.stats.unsupportedTextureBindings == 0u
+                && realization.stats.runtimeContextEffects == 0u;
         }
     };
 
@@ -55,6 +57,8 @@ namespace RenderVsg
     // ImageManager/cache, source pointer, or NIF record identity crosses the
     // RenderCore boundary. OpenMW-compatible warning-image substitutions remain
     // visible in textureDecode rather than being hidden by successful realization.
+    // A drawable graph is not "complete" while any promoted static semantic or
+    // texture binding remains unrealized.
     [[nodiscard]] StaticNifConformanceResult realizeStaticNif(const Nif::FileView& file, const VFS::Manager& vfs,
         RenderCore::RenderWorld& world, RenderCore::RenderWorldPublisher& publisher,
         StaticPlanOptions planOptions = {}, vsg::ref_ptr<vsg::SharedObjects> sharedObjects = {});
