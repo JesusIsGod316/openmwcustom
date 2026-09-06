@@ -1,65 +1,16 @@
 #ifndef OPENMW_TOOLS_V4_CP3B4_CONFORMANCE_REPORT_H
 #define OPENMW_TOOLS_V4_CP3B4_CONFORMANCE_REPORT_H
 
+#include "asset-report.hpp"
+
 #include <components/render/backend/vsg/staticnifconformance.hpp>
 
 #include <filesystem>
-#include <fstream>
-#include <iomanip>
-#include <ostream>
-#include <stdexcept>
+#include <string>
 #include <string_view>
 
 namespace Cp3b4
 {
-    inline constexpr std::string_view AssetReportSchema = "openmw-v4-cp3b4-asset-report-v1";
-
-    inline void writeJsonString(std::ostream& out, std::string_view value)
-    {
-        out << '"';
-        for (const unsigned char ch : value)
-        {
-            switch (ch)
-            {
-                case '"':
-                    out << "\\\"";
-                    break;
-                case '\\':
-                    out << "\\\\";
-                    break;
-                case '\b':
-                    out << "\\b";
-                    break;
-                case '\f':
-                    out << "\\f";
-                    break;
-                case '\n':
-                    out << "\\n";
-                    break;
-                case '\r':
-                    out << "\\r";
-                    break;
-                case '\t':
-                    out << "\\t";
-                    break;
-                default:
-                    if (ch < 0x20)
-                    {
-                        const std::ios_base::fmtflags flags = out.flags();
-                        const char fill = out.fill();
-                        out << "\\u00" << std::hex << std::setw(2) << std::setfill('0')
-                            << static_cast<unsigned int>(ch);
-                        out.flags(flags);
-                        out.fill(fill);
-                    }
-                    else
-                        out << static_cast<char>(ch);
-                    break;
-            }
-        }
-        out << '"';
-    }
-
     [[nodiscard]] inline std::string_view stageName(RenderVsg::StaticNifConformanceStage stage) noexcept
     {
         switch (stage)
@@ -112,86 +63,55 @@ namespace Cp3b4
         return "unknown";
     }
 
+    [[nodiscard]] inline AssetReport makeAssetReport(
+        std::string_view nifPath, const RenderVsg::StaticNifConformanceResult& result)
+    {
+        AssetReport report;
+        report.nif = std::string(nifPath);
+        report.complete = result.complete();
+        report.stage = std::string(stageName(result.stage));
+        report.publishStatus = std::string(publishStatusName(result.publishStatus));
+
+        const NifRender::TranslationSummary& summary = result.translationSummary;
+        report.translation.rendered = summary.rendered;
+        report.translation.collisionOnly = summary.collisionOnly;
+        report.translation.hidden = summary.hidden;
+        report.translation.deferred = summary.deferred;
+        report.translation.unsupported = summary.unsupported;
+        report.translation.ignored = summary.ignored;
+
+        const RenderVsg::StaticRealizationStats& stats = result.realization.stats;
+        report.realization.draws = stats.drawCount;
+        report.realization.sortedDraws = stats.sortedDrawCount;
+        report.realization.billboardDraws = stats.billboardDraws;
+        report.realization.pipelines = stats.pipelineKeys;
+        report.realization.materials = stats.materialKeys;
+        report.realization.textureViews = stats.textureViewKeys;
+        report.realization.samplers = stats.samplerKeys;
+        report.realization.textureLoads = stats.textureLoads;
+        report.realization.textureCacheHits = stats.textureCacheHits;
+        report.realization.unsupportedTextureBindings = stats.unsupportedTextureBindings;
+        report.realization.runtimeContextEffects = stats.runtimeContextEffects;
+
+        report.translationDiagnostics.reserve(result.translationDiagnostics.size());
+        for (const NifRender::TranslationDiagnostic& source : result.translationDiagnostics)
+        {
+            TranslationDiagnostic diagnostic;
+            diagnostic.severity = std::string(severityName(source.severity));
+            diagnostic.code = source.code;
+            diagnostic.record = source.sourceRecordId;
+            diagnostic.type = source.sourceRecordType;
+            diagnostic.message = source.message;
+            report.translationDiagnostics.push_back(std::move(diagnostic));
+        }
+        report.realizationDiagnostics = result.realization.diagnostics;
+        return report;
+    }
+
     inline void writeAssetReport(
         const std::filesystem::path& path, std::string_view nifPath, const RenderVsg::StaticNifConformanceResult& result)
     {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out)
-            throw std::runtime_error("unable to open CP3B4 report for writing: " + path.string());
-
-        const NifRender::TranslationSummary& summary = result.translationSummary;
-        const RenderVsg::StaticRealizationStats& stats = result.realization.stats;
-
-        out << "{\n  \"schema\":";
-        writeJsonString(out, AssetReportSchema);
-        out << ",\n  \"nif\":";
-        writeJsonString(out, nifPath);
-        out << ",\n  \"complete\":" << (result.complete() ? "true" : "false") << ",\n  \"stage\":";
-        writeJsonString(out, stageName(result.stage));
-        out << ",\n  \"publishStatus\":";
-        writeJsonString(out, publishStatusName(result.publishStatus));
-
-        out << ",\n  \"translation\":{"
-            << "\"rendered\":" << summary.rendered << ','
-            << "\"collisionOnly\":" << summary.collisionOnly << ','
-            << "\"hidden\":" << summary.hidden << ','
-            << "\"deferred\":" << summary.deferred << ','
-            << "\"unsupported\":" << summary.unsupported << ','
-            << "\"ignored\":" << summary.ignored << "},\n";
-
-        out << "  \"realization\":{"
-            << "\"draws\":" << stats.drawCount << ','
-            << "\"sortedDraws\":" << stats.sortedDrawCount << ','
-            << "\"billboardDraws\":" << stats.billboardDraws << ','
-            << "\"pipelines\":" << stats.pipelineKeys << ','
-            << "\"materials\":" << stats.materialKeys << ','
-            << "\"textureViews\":" << stats.textureViewKeys << ','
-            << "\"samplers\":" << stats.samplerKeys << ','
-            << "\"textureLoads\":" << stats.textureLoads << ','
-            << "\"textureCacheHits\":" << stats.textureCacheHits << ','
-            << "\"unsupportedTextureBindings\":" << stats.unsupportedTextureBindings << ','
-            << "\"runtimeContextEffects\":" << stats.runtimeContextEffects << "},\n";
-
-        out << "  \"translationDiagnostics\":[";
-        for (std::size_t i = 0; i < result.translationDiagnostics.size(); ++i)
-        {
-            const NifRender::TranslationDiagnostic& diagnostic = result.translationDiagnostics[i];
-            if (i != 0)
-                out << ',';
-            out << "\n    {\"severity\":";
-            writeJsonString(out, severityName(diagnostic.severity));
-            out << ",\"code\":";
-            writeJsonString(out, diagnostic.code);
-            out << ",\"record\":";
-            if (diagnostic.sourceRecordId)
-                out << *diagnostic.sourceRecordId;
-            else
-                out << "null";
-            out << ",\"type\":";
-            writeJsonString(out, diagnostic.sourceRecordType);
-            out << ",\"message\":";
-            writeJsonString(out, diagnostic.message);
-            out << '}';
-        }
-        if (!result.translationDiagnostics.empty())
-            out << '\n' << "  ";
-        out << "],\n";
-
-        out << "  \"realizationDiagnostics\":[";
-        for (std::size_t i = 0; i < result.realization.diagnostics.size(); ++i)
-        {
-            if (i != 0)
-                out << ',';
-            out << '\n' << "    ";
-            writeJsonString(out, result.realization.diagnostics[i]);
-        }
-        if (!result.realization.diagnostics.empty())
-            out << '\n' << "  ";
-        out << "]\n}\n";
-
-        out.flush();
-        if (!out)
-            throw std::runtime_error("failed while writing CP3B4 report: " + path.string());
+        writeAssetReport(path, makeAssetReport(nifPath, result));
     }
 }
 
