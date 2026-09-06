@@ -167,7 +167,7 @@ namespace NifRender
         std::optional<RenderCore::ModelNodeIndex> activeSwitchChild;
         std::optional<RenderCore::ModelLodSemantic> lod;
         std::optional<RenderCore::ModelBillboardMode> billboard;
-        std::optional<RenderCore::ModelSortMode> sort;
+        std::optional<RenderCore::ModelSortSemantic> sort;
         std::uint32_t flags = 0;
     };
 
