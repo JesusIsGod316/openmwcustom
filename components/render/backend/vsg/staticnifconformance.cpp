@@ -5,6 +5,7 @@
 #include <components/vfs/manager.hpp>
 #include <components/vfs/pathutil.hpp>
 
+#include <vsg/io/Logger.h>
 #include <vsg/utils/SharedObjects.h>
 
 #include <memory>
