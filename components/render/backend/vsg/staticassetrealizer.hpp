@@ -19,17 +19,7 @@ namespace vsg
 
 namespace RenderVsg
 {
-    struct StaticTextureResolution
-    {
-        vsg::ref_ptr<vsg::Data> data;
-        bool warningFallback = false;
-        std::string diagnostic;
-
-        [[nodiscard]] bool valid() const noexcept { return static_cast<bool>(data); }
-        explicit operator bool() const noexcept { return valid(); }
-    };
-
-    using StaticTextureResolver = std::function<StaticTextureResolution(
+    using StaticTextureResolver = std::function<vsg::ref_ptr<vsg::Data>(
         const RenderCore::TextureRecord&, const RenderCore::TextureRealizationKey&)>;
 
     struct StaticRealizationStats
@@ -42,7 +32,6 @@ namespace RenderVsg
         std::uint32_t samplerKeys = 0;
         std::uint32_t textureLoads = 0;
         std::uint32_t textureCacheHits = 0;
-        std::uint32_t warningTextureFallbacks = 0;
         std::uint32_t unsupportedTextureBindings = 0;
         std::uint32_t billboardDraws = 0;
         std::uint32_t runtimeContextEffects = 0;
@@ -62,9 +51,6 @@ namespace RenderVsg
     // StaticAssetPlan and materializes VSG arrays, descriptors, pipeline state and
     // draw commands. Texture bytes are supplied through a resolver so VFS/image
     // decoding ownership stays outside RenderCore and can be shared with CP4 paging.
-    // A resolver may explicitly report OpenMW's magenta warning-image fallback;
-    // that remains drawable compatibility behavior but is counted/diagnosed so
-    // corpus closeout can fail on accidental decode regressions instead of hiding them.
     class StaticAssetRealizer
     {
     public:
