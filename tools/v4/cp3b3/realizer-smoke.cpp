@@ -1,10 +1,13 @@
 #include <components/render/backend/vsg/staticassetrealizer.hpp>
+#include <components/render/backend/vsg/statictexturedecode.hpp>
 
 #include <vsg/all.h>
 
 #include <cassert>
 #include <cstdint>
 #include <memory>
+#include <sstream>
+#include <string>
 
 int main()
 {
@@ -109,6 +112,58 @@ int main()
     assert(realized.stats.textureLoads == 2u);
     assert(realized.stats.unsupportedTextureBindings == 0u);
     assert(resolverCalls == 2u);
+
+    RenderVsg::StaticTextureDecoder decoder;
+    TextureRecord warningRecord;
+    warningRecord.sourceIdentity = std::string(RenderVsg::OpenMwWarningTextureSourceIdentity);
+    warningRecord.contentIdentity = std::string(RenderVsg::OpenMwWarningTextureContentIdentity);
+    warningRecord.width = 8u;
+    warningRecord.height = 8u;
+    warningRecord.mipmapped = false;
+    const TextureRealizationKey warningKey = makeTextureRealizationKey(diffuse, warningRecord);
+    std::uint32_t warningOpenCalls = 0u;
+    auto warning = decoder.decode(warningRecord, warningKey, [&](std::string_view) -> Files::IStreamPtr {
+        ++warningOpenCalls;
+        return {};
+    });
+    assert(warning);
+    assert(warningOpenCalls == 0u);
+    assert(warning->width() == 8u && warning->height() == 8u);
+    assert(warning->properties.format == VK_FORMAT_R8G8B8_SRGB);
+    const auto* warningPixels = dynamic_cast<const vsg::ubvec3Array2D*>(warning.get());
+    assert(warningPixels && warningPixels->size() == 64u);
+    for (const vsg::ubvec3& pixel : *warningPixels)
+        assert(pixel == vsg::ubvec3(255u, 0u, 255u));
+
+    TextureRecord streamRecord;
+    streamRecord.sourceIdentity = "textures/cp3b3-stream.ppm";
+    streamRecord.contentIdentity = "cp3b3:stream:v1";
+    streamRecord.width = 1u;
+    streamRecord.height = 1u;
+    streamRecord.mipmapped = false;
+    const std::string ppm("P6\n1 1\n255\n\x7f\x20\xe0", 14u);
+    std::uint32_t streamOpenCalls = 0u;
+    const RenderVsg::StaticTextureStreamOpener opener = [&](std::string_view path) -> Files::IStreamPtr {
+        assert(path == streamRecord.sourceIdentity);
+        ++streamOpenCalls;
+        return std::make_unique<std::istringstream>(ppm, std::ios::in | std::ios::binary);
+    };
+
+    const TextureRealizationKey srgbKey = makeTextureRealizationKey(diffuse, streamRecord);
+    auto srgb = decoder.decode(streamRecord, srgbKey, opener);
+    assert(srgb && srgb->width() == 1u && srgb->height() == 1u);
+    assert(srgb->properties.format == VK_FORMAT_R8G8B8A8_SRGB);
+
+    const TextureRealizationKey dataKey = makeTextureRealizationKey(normal, streamRecord);
+    auto data = decoder.decode(streamRecord, dataKey, opener);
+    assert(data && data->width() == 1u && data->height() == 1u);
+    assert(data->properties.format == VK_FORMAT_R8G8B8A8_UNORM);
+    assert(streamOpenCalls == 2u);
+
+    TextureRealizationKey staleKey = srgbKey;
+    staleKey.revision = ResourceRevision{ streamRecord.revision.value() + 1u };
+    assert(!decoder.decode(streamRecord, staleKey, opener));
+    assert(streamOpenCalls == 2u);
 
     return 0;
 }

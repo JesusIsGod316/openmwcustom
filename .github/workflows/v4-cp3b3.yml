@@ -46,19 +46,29 @@ jobs:
           test -f components/render/backend/vsg/staticassetplan.hpp
           test -f components/render/backend/vsg/staticassetrealizer.hpp
           test -f components/render/backend/vsg/staticassetrealizer.cpp
+          test -f components/render/backend/vsg/statictexturedecode.hpp
+          test -f components/render/backend/vsg/statictexturedecode.cpp
+          test -f components/render/backend/vsg/vfstextureresolver.hpp
           test -f tools/v4/cp3b3/CMakeLists.txt
-          test -f tools/v4/cp3b3/vcpkg.json
           test -f tools/v4/cp3b3/realizer-smoke.cpp
           grep -F 'find_package(vsg 1.1.15 CONFIG REQUIRED)' tools/v4/cp3b3/CMakeLists.txt
+          grep -F 'find_package(vsgXchange CONFIG REQUIRED)' tools/v4/cp3b3/CMakeLists.txt
           grep -F '04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4' tools/v4/cp3b3/vcpkg.json
-          grep -F 'class StaticAssetRealizer' components/render/backend/vsg/staticassetrealizer.hpp
+          grep -F 'vsgxchange' tools/v4/cp3b3/vcpkg.json
+          if grep -RInE '#include[[:space:]]*[<"](osg|osgViewer|osgUtil)|\bosg::' components/render/backend/vsg/staticassetplan.hpp components/render/backend/vsg/staticassetrealizer.* components/render/backend/vsg/statictexturedecode.* components/render/backend/vsg/vfstextureresolver.hpp; then
+            echo 'CP3B3 static VSG path regressed into OSG ownership' >&2
+            exit 1
+          fi
 
       - name: Check CP3B3 whitespace
         shell: bash
         run: |
           set -euo pipefail
-          git diff --check 64e6952724c53ecce5ec8453b39cf004037b1077 HEAD -- \
-            components/render/backend/vsg tools/v4/cp3b3 .github/workflows/v4-cp3b3.yml
+          git diff --check 9e973f5648a6bd7ff90986f79936cb49946cc875 HEAD -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
 
   StaticVsgWindows:
     needs: Preflight
@@ -101,10 +111,12 @@ jobs:
         run: ctest --output-on-failure
 
       - name: Store CP3B3 configure/build evidence
+        if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: openmw-v4-cp3b3-static-vsg-logs-${{ github.sha }}
+          name: openmw-v4-cp3b3-static-realization-logs-${{ github.sha }}
           path: |
             ${{ github.workspace }}/build-v4-cp3b3/CMakeCache.txt
             ${{ github.workspace }}/build-v4-cp3b3/.ninja_log
             ${{ github.workspace }}/build-v4-cp3b3/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore

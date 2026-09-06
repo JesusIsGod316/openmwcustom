@@ -12,13 +12,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(glm CONFIG REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(vsg 1.1.15 CONFIG REQUIRED)
+find_package(vsgXchange CONFIG REQUIRED)
 
 get_filename_component(OPENMW_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 
 add_library(openmw_cp3b3_vsg STATIC
-    "${OPENMW_ROOT}/components/render/backend/vsg/staticassetrealizer.cpp")
+    "${OPENMW_ROOT}/components/render/backend/vsg/staticassetrealizer.cpp"
+    "${OPENMW_ROOT}/components/render/backend/vsg/statictexturedecode.cpp")
 target_include_directories(openmw_cp3b3_vsg PUBLIC "${OPENMW_ROOT}")
-target_link_libraries(openmw_cp3b3_vsg PUBLIC glm::glm Vulkan::Vulkan vsg::vsg)
+target_link_libraries(openmw_cp3b3_vsg PUBLIC glm::glm Vulkan::Vulkan vsg::vsg vsgXchange::vsgXchange)
 target_compile_features(openmw_cp3b3_vsg PUBLIC cxx_std_20)
 
 if(MSVC)
