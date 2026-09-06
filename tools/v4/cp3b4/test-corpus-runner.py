@@ -22,6 +22,9 @@ def value(name):
     return args[args.index(name) + 1]
 
 nif = value('--nif')
+encoding = value('--encoding')
+if encoding not in ('win1250', 'win1251', 'win1252'):
+    raise SystemExit(9)
 report_path = pathlib.Path(value('--report-json'))
 unsupported = 1 if 'unsupported' in nif else 0
 report = {
@@ -73,7 +76,9 @@ def prepare(root: pathlib.Path, manifest: dict) -> tuple[pathlib.Path, pathlib.P
     return tool, data, manifest_path, output
 
 
-def run_runner(root: pathlib.Path, manifest: dict, expected_exit: int, runs: int = 2) -> dict:
+def run_runner(
+    root: pathlib.Path, manifest: dict, expected_exit: int, runs: int = 2, encoding: str = "win1252"
+) -> dict:
     runner = pathlib.Path(__file__).with_name("corpus-runner.py")
     tool, data, manifest_path, output = prepare(root, manifest)
 
@@ -87,6 +92,8 @@ def run_runner(root: pathlib.Path, manifest: dict, expected_exit: int, runs: int
             str(manifest_path),
             "--data",
             str(data),
+            "--encoding",
+            encoding,
             "--output",
             str(output),
             "--determinism-runs",
@@ -165,7 +172,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="cp3b4-runner-test-") as temp:
         root = pathlib.Path(temp)
-        good = run_runner(root / "good", good_manifest, 0)
+        good = run_runner(root / "good", good_manifest, 0, encoding="win1251")
         summary = good["summary"]
         if not good["passed"] or summary["assets"] != 1 or summary["passed"] != 1 or summary["failed"] != 0:
             raise AssertionError(f"unexpected passing aggregate: {good}")
@@ -173,6 +180,8 @@ def main() -> int:
             raise AssertionError(f"aggregate disposition totals are wrong: {summary}")
         if good["requiredTags"] != ["opaque"] or "opaque" not in good["coveredTags"]:
             raise AssertionError(f"aggregate coverage identity is wrong: {good}")
+        if good.get("encoding") != "win1251":
+            raise AssertionError(f"aggregate encoding identity was not preserved: {good.get('encoding')!r}")
         for key in ("toolSha256", "manifestSha256"):
             value = good.get(key, "")
             if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
