@@ -67,10 +67,19 @@ namespace NifRender
         Error,
     };
 
+    // Exactly one outcome is emitted for each source record the translator
+    // deliberately classifies. Diagnostics are independent and may be many per
+    // record; CP3B4 accounting therefore never depends on log-message count.
+    struct TranslationOutcome
+    {
+        TranslationDisposition disposition = TranslationDisposition::Ignored;
+        std::optional<std::uint32_t> sourceRecordId;
+        std::string sourceRecordType;
+    };
+
     struct TranslationDiagnostic
     {
         DiagnosticSeverity severity = DiagnosticSeverity::Info;
-        TranslationDisposition disposition = TranslationDisposition::Ignored;
         std::optional<std::uint32_t> sourceRecordId;
         std::string sourceRecordType;
         std::string code;
@@ -234,14 +243,25 @@ namespace NifRender
         std::vector<TranslatedMaterial> materials;
         std::vector<TranslatedMesh> meshes;
         TranslatedModel model;
+        std::vector<TranslationOutcome> outcomes;
         std::vector<TranslationDiagnostic> diagnostics;
 
         [[nodiscard]] TranslationSummary summary() const noexcept
         {
             TranslationSummary result;
-            for (const TranslationDiagnostic& diagnostic : diagnostics)
-                result.observe(diagnostic.disposition);
+            for (const TranslationOutcome& outcome : outcomes)
+                result.observe(outcome.disposition);
             return result;
+        }
+
+        [[nodiscard]] bool hasErrors() const noexcept
+        {
+            for (const TranslationDiagnostic& diagnostic : diagnostics)
+            {
+                if (diagnostic.severity == DiagnosticSeverity::Error)
+                    return true;
+            }
+            return false;
         }
 
         [[nodiscard]] bool valid() const noexcept
