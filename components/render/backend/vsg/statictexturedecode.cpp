@@ -87,7 +87,7 @@ namespace RenderVsg
             vsg::Data::Properties properties;
             properties.format = colorSpace == RenderCore::TextureColorSpace::Srgb ? VK_FORMAT_R8G8B8_SRGB
                                                                                    : VK_FORMAT_R8G8B8_UNORM;
-            properties.mipLevels = std::max<std::uint8_t>(1u, rgba->properties.mipLevels);
+            properties.mipLevels = rgba->properties.mipLevels == 0u ? 1u : rgba->properties.mipLevels;
             properties.origin = vsg::TOP_LEFT;
             properties.imageViewType = rgba->properties.imageViewType;
             properties.dataVariance = rgba->properties.dataVariance;
@@ -127,13 +127,31 @@ namespace RenderVsg
         }
     }
 
-    StaticTextureDecoder::StaticTextureDecoder(vsg::ref_ptr<vsg::SharedObjects> sharedObjects)
+    StaticTextureDecoder::StaticTextureDecoder(vsg::ref_ptr<vsg::SharedObjects> sharedObjects,
+        std::shared_ptr<StaticTextureDecodeReport> report)
         : mSharedObjects(sharedObjects ? std::move(sharedObjects) : vsg::SharedObjects::create())
         , mImages(vsgXchange::images::create())
+        , mReport(std::move(report))
     {
     }
 
     StaticTextureDecoder::~StaticTextureDecoder() = default;
+
+    vsg::ref_ptr<vsg::Data> StaticTextureDecoder::warningFallback(const RenderCore::TextureRecord& record,
+        const RenderCore::TextureRealizationKey& key, std::string reason) const
+    {
+        if (mReport)
+        {
+            ++mReport->warningFallbacks;
+            std::string message = "OpenMW warning texture fallback";
+            if (!record.sourceIdentity.empty())
+                message += " for " + record.sourceIdentity;
+            if (!reason.empty())
+                message += ": " + reason;
+            mReport->diagnostics.push_back(std::move(message));
+        }
+        return createWarningTexture(key);
+    }
 
     vsg::ref_ptr<vsg::Data> StaticTextureDecoder::decode(const RenderCore::TextureRecord& record,
         const RenderCore::TextureRealizationKey& key, const StaticTextureStreamOpener& opener) const
@@ -142,24 +160,28 @@ namespace RenderVsg
             return {};
 
         if (warningTexture(record))
-            return createWarningTexture(key);
+            return warningFallback(record, key, "neutral translation selected the canonical missing-image fallback");
 
-        if (!mImages || !opener || record.sourceIdentity.empty())
-            return {};
+        if (!mImages)
+            return warningFallback(record, key, "VSG image reader registry is unavailable");
+        if (!opener)
+            return warningFallback(record, key, "no winning VFS stream opener is available");
+        if (record.sourceIdentity.empty())
+            return warningFallback(record, key, "published external texture has no VFS source identity");
 
         const std::string extension = extensionHint(record.sourceIdentity);
         if (extension.empty())
-            return {};
+            return warningFallback(record, key, "source path has no image extension");
 
         try
         {
             Files::IStreamPtr stream = opener(record.sourceIdentity);
             if (!stream)
-                return {};
+                return warningFallback(record, key, "winning VFS resource could not be opened");
 
             bool discardLegacyTgaAlpha = false;
             if (extension == ".tga" && !readTgaKillAlphaHeader(*stream, discardLegacyTgaAlpha))
-                return {};
+                return warningFallback(record, key, "TGA header is shorter than the required 18 bytes or is not seekable");
 
             auto options = vsg::Options::create();
             options->sharedObjects = mSharedObjects;
@@ -169,14 +191,14 @@ namespace RenderVsg
             vsg::ref_ptr<vsg::Object> decoded = mImages->read(*stream, options);
             auto* rawData = decoded ? dynamic_cast<vsg::Data*>(decoded.get()) : nullptr;
             if (!rawData || !rawData->dataAvailable() || rawData->width() == 0u || rawData->height() == 0u)
-                return {};
+                return warningFallback(record, key, "image decoder returned no usable pixel payload");
 
             vsg::ref_ptr<vsg::Data> data(rawData);
             if (discardLegacyTgaAlpha)
             {
                 data = discardTgaAlpha(data, key.view.colorSpace);
                 if (!data)
-                    return {};
+                    return warningFallback(record, key, "16bpp TGA one-bit alpha could not be discarded exactly");
             }
 
             // VSG's canonical image origin is top-left. vsgXchange/stb_image
@@ -186,16 +208,20 @@ namespace RenderVsg
             applyOpenMwDxt1Detection(*data);
             return data;
         }
-        catch (const std::exception&)
+        catch (const std::exception& e)
         {
-            return {};
+            return warningFallback(record, key, std::string("decoder exception: ") + e.what());
+        }
+        catch (...)
+        {
+            return warningFallback(record, key, "unknown decoder exception");
         }
     }
 
-    StaticTextureResolver makeStaticTextureResolver(
-        StaticTextureStreamOpener opener, vsg::ref_ptr<vsg::SharedObjects> sharedObjects)
+    StaticTextureResolver makeStaticTextureResolver(StaticTextureStreamOpener opener,
+        vsg::ref_ptr<vsg::SharedObjects> sharedObjects, std::shared_ptr<StaticTextureDecodeReport> report)
     {
-        auto decoder = std::make_shared<StaticTextureDecoder>(std::move(sharedObjects));
+        auto decoder = std::make_shared<StaticTextureDecoder>(std::move(sharedObjects), std::move(report));
         return [decoder = std::move(decoder), opener = std::move(opener)](const RenderCore::TextureRecord& record,
                    const RenderCore::TextureRealizationKey& key) { return decoder->decode(record, key, opener); };
     }
