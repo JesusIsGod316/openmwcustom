@@ -39,6 +39,7 @@ namespace RenderVsg
         NifRender::TranslationPublishStatus publishStatus = NifRender::TranslationPublishStatus::InvalidBundle;
         RenderCore::ModelHandle model;
         StaticAssetPlan plan;
+        StaticTextureDecodeReport textureDecode;
         StaticRealizationResult realization;
 
         [[nodiscard]] bool complete() const noexcept
@@ -52,7 +53,8 @@ namespace RenderVsg
     // the neutral RenderWorld, planned, and realized through the conformant VSG
     // routing path. Texture bytes are reopened from the same winning VFS. No OSG
     // ImageManager/cache, source pointer, or NIF record identity crosses the
-    // RenderCore boundary.
+    // RenderCore boundary. OpenMW-compatible warning-image substitutions remain
+    // visible in textureDecode rather than being hidden by successful realization.
     [[nodiscard]] StaticNifConformanceResult realizeStaticNif(const Nif::FileView& file, const VFS::Manager& vfs,
         RenderCore::RenderWorld& world, RenderCore::RenderWorldPublisher& publisher,
         StaticPlanOptions planOptions = {}, vsg::ref_ptr<vsg::SharedObjects> sharedObjects = {});
