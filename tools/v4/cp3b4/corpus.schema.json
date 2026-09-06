@@ -62,7 +62,8 @@
               "maxDeferred": { "type": "integer", "minimum": 0 },
               "maxUnsupported": { "type": "integer", "minimum": 0 },
               "maxIgnored": { "type": "integer", "minimum": 0 },
-              "maxUnsupportedTextureBindings": { "type": "integer", "minimum": 0 }
+              "maxUnsupportedTextureBindings": { "type": "integer", "minimum": 0 },
+              "maxWarningTextureFallbacks": { "type": "integer", "minimum": 0 }
             }
           }
         }
