@@ -4,6 +4,7 @@
 #include <components/nif/property.hpp>
 #include <components/rendercore/records.hpp>
 
+#include <cstdint>
 #include <optional>
 
 namespace NifRender
@@ -109,41 +110,57 @@ namespace NifRender
         return Result::Keep;
     }
 
+    // The raw-value helpers keep semantic mapping independently testable without
+    // constructing parser records whose virtual read/post functions require the
+    // complete NIF parser linkage. Property wrappers below remain the production seam.
+    inline void applyStencilSemantics(bool enabled, Nif::NiStencilProperty::TestFunc testFunction,
+        std::uint32_t stencilReference, std::uint32_t stencilMask, Nif::NiStencilProperty::Action failAction,
+        Nif::NiStencilProperty::Action depthFailAction, Nif::NiStencilProperty::Action passAction,
+        Nif::NiStencilProperty::DrawMode drawMode, RenderCore::MaterialRecord& target) noexcept
+    {
+        using DrawMode = Nif::NiStencilProperty::DrawMode;
+        target.frontFace = drawMode == DrawMode::Clockwise ? RenderCore::FrontFaceWinding::Clockwise
+                                                            : RenderCore::FrontFaceWinding::CounterClockwise;
+        target.cullMode = drawMode == DrawMode::Both ? RenderCore::CullMode::None : RenderCore::CullMode::Back;
+        target.stencil.enabled = enabled;
+        target.stencil.compare = translateStencilCompare(testFunction);
+        target.stencil.reference = stencilReference;
+        target.stencil.compareMask = stencilMask;
+        target.stencil.fail = translateStencilOp(failAction);
+        target.stencil.depthFail = translateStencilOp(depthFailAction);
+        target.stencil.pass = translateStencilOp(passAction);
+    }
+
     // Mirrors the realized V3.25 state, not the nominal file-format schema:
     // Clockwise changes front face; Both disables culling; all other draw modes
     // use counter-clockwise front faces with back-face culling enabled.
     inline void applyStencilProperty(const Nif::NiStencilProperty& source, RenderCore::MaterialRecord& target) noexcept
     {
-        using DrawMode = Nif::NiStencilProperty::DrawMode;
-        target.frontFace = source.mDrawMode == DrawMode::Clockwise ? RenderCore::FrontFaceWinding::Clockwise
-                                                                   : RenderCore::FrontFaceWinding::CounterClockwise;
-        target.cullMode = source.mDrawMode == DrawMode::Both ? RenderCore::CullMode::None : RenderCore::CullMode::Back;
-        target.stencil.enabled = source.mEnabled;
-        target.stencil.compare = translateStencilCompare(source.mTestFunction);
-        target.stencil.reference = source.mStencilRef;
-        target.stencil.compareMask = source.mStencilMask;
-        target.stencil.fail = translateStencilOp(source.mFailAction);
-        target.stencil.depthFail = translateStencilOp(source.mZFailAction);
-        target.stencil.pass = translateStencilOp(source.mPassAction);
+        applyStencilSemantics(source.mEnabled, source.mTestFunction, source.mStencilRef, source.mStencilMask,
+            source.mFailAction, source.mZFailAction, source.mPassAction, source.mDrawMode, target);
     }
 
-    [[nodiscard]] inline bool applyAlphaProperty(
-        const Nif::NiAlphaProperty& source, RenderCore::MaterialRecord& target) noexcept
+    [[nodiscard]] inline bool applyAlphaSemantics(
+        std::uint16_t flags, std::uint8_t threshold, RenderCore::MaterialRecord& target) noexcept
     {
-        const auto sourceBlend = translateBlendFactor(source.sourceBlendMode());
-        const auto destinationBlend = translateBlendFactor(source.destinationBlendMode());
-        const auto compare = translateAlphaCompare(source.alphaTestMode());
+        const int sourceMode = static_cast<int>((flags >> 1u) & 0x0fu);
+        const int destinationMode = static_cast<int>((flags >> 5u) & 0x0fu);
+        const int testMode = static_cast<int>((flags >> 10u) & 0x07u);
+        const auto sourceBlend = translateBlendFactor(sourceMode);
+        const auto destinationBlend = translateBlendFactor(destinationMode);
+        const auto compare = translateAlphaCompare(testMode);
         if (!sourceBlend || !destinationBlend || !compare)
             return false;
 
-        target.alphaBlendEnabled = source.useAlphaBlending();
-        target.alphaTestEnabled = source.useAlphaTesting();
+        target.alphaBlendEnabled = (flags & Nif::NiAlphaProperty::Flag_Blending) != 0u;
+        target.alphaTestEnabled = (flags & Nif::NiAlphaProperty::Flag_Testing) != 0u;
         target.sourceBlend = *sourceBlend;
         target.destinationBlend = *destinationBlend;
         target.alphaCompare = *compare;
-        target.alphaCutoff = static_cast<float>(source.mThreshold) / 255.0f;
-        target.transparentSort = source.noSorter() ? RenderCore::TransparentSortPolicy::Unsorted
-                                                   : RenderCore::TransparentSortPolicy::Sorted;
+        target.alphaCutoff = static_cast<float>(threshold) / 255.0f;
+        target.transparentSort = (flags & Nif::NiAlphaProperty::Flag_NoSorter) != 0u
+            ? RenderCore::TransparentSortPolicy::Unsorted
+            : RenderCore::TransparentSortPolicy::Sorted;
 
         if (target.alphaBlendEnabled)
             target.alphaMode = RenderCore::AlphaMode::Blend;
@@ -154,17 +171,34 @@ namespace NifRender
         return true;
     }
 
+    [[nodiscard]] inline bool applyAlphaProperty(
+        const Nif::NiAlphaProperty& source, RenderCore::MaterialRecord& target) noexcept
+    {
+        return applyAlphaSemantics(source.mFlags, source.mThreshold, target);
+    }
+
+    inline void applyZBufferSemantics(std::uint16_t flags, RenderCore::MaterialRecord& target) noexcept
+    {
+        // V3.25 intentionally ignores the nominal comparison function and realizes
+        // only the legacy bit-0 depth-test and bit-1 depth-write behavior.
+        target.depthTest = (flags & 0x0001u) != 0u;
+        target.depthWrite = (flags & 0x0002u) != 0u;
+    }
+
     inline void applyZBufferProperty(const Nif::NiZBufferProperty& source, RenderCore::MaterialRecord& target) noexcept
     {
-        // V3.25 intentionally ignores mTestFunction and realizes only these flags.
-        target.depthTest = source.depthTest();
-        target.depthWrite = source.depthWrite();
+        applyZBufferSemantics(source.mFlags, target);
+    }
+
+    inline void applyWireframeSemantics(bool enabled, RenderCore::MaterialRecord& target) noexcept
+    {
+        target.wireframe = enabled;
     }
 
     inline void applyWireframeProperty(
         const Nif::NiWireframeProperty& source, RenderCore::MaterialRecord& target) noexcept
     {
-        target.wireframe = source.mEnable;
+        applyWireframeSemantics(source.mEnable, target);
     }
 }
 

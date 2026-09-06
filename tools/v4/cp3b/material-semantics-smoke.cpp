@@ -1,6 +1,7 @@
 #include <components/nifrender/materialsemantics.hpp>
 
 #include <cassert>
+#include <cstdint>
 
 int main()
 {
@@ -26,14 +27,12 @@ int main()
     assert(translateTextureTransformConvention(Nif::NiTextureTransform::Method::Maya)
         == RenderCore::TextureTransformConvention::Maya);
 
-    Nif::NiAlphaProperty alpha;
-    alpha.mFlags = Nif::NiAlphaProperty::Flag_Blending | Nif::NiAlphaProperty::Flag_Testing
+    const std::uint16_t alphaFlags = Nif::NiAlphaProperty::Flag_Blending | Nif::NiAlphaProperty::Flag_Testing
         | Nif::NiAlphaProperty::Flag_NoSorter | static_cast<std::uint16_t>(6u << 1u)
         | static_cast<std::uint16_t>(7u << 5u) | static_cast<std::uint16_t>(4u << 10u);
-    alpha.mThreshold = 64u;
 
     RenderCore::MaterialRecord material;
-    assert(applyAlphaProperty(alpha, material));
+    assert(applyAlphaSemantics(alphaFlags, 64u, material));
     assert(material.alphaBlendEnabled);
     assert(material.alphaTestEnabled);
     assert(material.alphaMode == RenderCore::AlphaMode::Blend);
@@ -43,36 +42,26 @@ int main()
     assert(material.transparentSort == RenderCore::TransparentSortPolicy::Unsorted);
     assert(material.alphaCutoff > 0.250f && material.alphaCutoff < 0.252f);
 
-    Nif::NiStencilProperty stencil;
-    stencil.mEnabled = true;
-    stencil.mTestFunction = Nif::NiStencilProperty::TestFunc::GreaterEqual;
-    stencil.mStencilRef = 3u;
-    stencil.mStencilMask = 0xffu;
-    stencil.mFailAction = Nif::NiStencilProperty::Action::Keep;
-    stencil.mZFailAction = Nif::NiStencilProperty::Action::Increment;
-    stencil.mPassAction = Nif::NiStencilProperty::Action::Replace;
-    stencil.mDrawMode = Nif::NiStencilProperty::DrawMode::Clockwise;
-    applyStencilProperty(stencil, material);
+    applyStencilSemantics(true, Nif::NiStencilProperty::TestFunc::GreaterEqual, 3u, 0xffu,
+        Nif::NiStencilProperty::Action::Keep, Nif::NiStencilProperty::Action::Increment,
+        Nif::NiStencilProperty::Action::Replace, Nif::NiStencilProperty::DrawMode::Clockwise, material);
     assert(material.frontFace == RenderCore::FrontFaceWinding::Clockwise);
     assert(material.cullMode == RenderCore::CullMode::Back);
     assert(material.stencil.enabled);
     assert(material.stencil.compare == RenderCore::CompareOp::GreaterEqual);
     assert(material.stencil.depthFail == RenderCore::StencilOp::Increment);
 
-    stencil.mDrawMode = Nif::NiStencilProperty::DrawMode::Both;
-    applyStencilProperty(stencil, material);
+    applyStencilSemantics(true, Nif::NiStencilProperty::TestFunc::GreaterEqual, 3u, 0xffu,
+        Nif::NiStencilProperty::Action::Keep, Nif::NiStencilProperty::Action::Increment,
+        Nif::NiStencilProperty::Action::Replace, Nif::NiStencilProperty::DrawMode::Both, material);
     assert(material.frontFace == RenderCore::FrontFaceWinding::CounterClockwise);
     assert(material.cullMode == RenderCore::CullMode::None);
 
-    Nif::NiZBufferProperty depth;
-    depth.mFlags = 2u;
-    applyZBufferProperty(depth, material);
+    applyZBufferSemantics(2u, material);
     assert(!material.depthTest);
     assert(material.depthWrite);
 
-    Nif::NiWireframeProperty wire;
-    wire.mEnable = true;
-    applyWireframeProperty(wire, material);
+    applyWireframeSemantics(true, material);
     assert(material.wireframe);
 
     return 0;
