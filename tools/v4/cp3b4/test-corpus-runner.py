@@ -62,6 +62,7 @@ report_path.write_text(json.dumps(report), encoding='utf-8')
 
 
 def run_runner(root: pathlib.Path, manifest: dict, expected_exit: int, runs: int = 2) -> dict:
+    root.mkdir(parents=True, exist_ok=True)
     runner = pathlib.Path(__file__).with_name("corpus-runner.py")
     tool = root / "fake-conformance"
     data = root / "data"
@@ -133,7 +134,6 @@ def main() -> int:
         if not good["passed"] or good["summary"] != {"assets": 1, "failed": 0, "passed": 1}:
             raise AssertionError(f"unexpected passing aggregate: {good}")
 
-        (root / "bad").mkdir()
         bad = run_runner(root / "bad", bad_manifest, 1, runs=1)
         if bad["passed"] or bad["summary"]["failed"] != 1:
             raise AssertionError(f"unexpected failing aggregate: {bad}")
