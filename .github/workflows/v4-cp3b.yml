@@ -81,6 +81,14 @@ jobs:
             tools/v4/cp3b/material-semantics-smoke.cpp \
             -o /tmp/v4-cp3b-material-semantics-smoke
 
+      - name: Compile drawable material smoke target
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter -I. \
+            tools/v4/cp3b/drawable-material-smoke.cpp \
+            -o /tmp/v4-cp3b-drawable-material-smoke
+
       - name: Compile NIF translator adapter
         shell: bash
         run: |
@@ -103,6 +111,9 @@ jobs:
 
       - name: Run material semantics smoke target
         run: /tmp/v4-cp3b-material-semantics-smoke
+
+      - name: Run drawable material smoke target
+        run: /tmp/v4-cp3b-drawable-material-smoke
 
       - name: Check CP3B whitespace
         shell: bash
