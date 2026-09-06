@@ -29,6 +29,7 @@ DEFAULT_EXPECT = {
     "maxDeferred": 0,
     "maxUnsupported": 0,
     "maxUnsupportedTextureBindings": 0,
+    "maxWarningTextureFallbacks": 0,
 }
 
 INTEGER_EXPECTATIONS = {
@@ -40,6 +41,7 @@ INTEGER_EXPECTATIONS = {
     "maxUnsupported": ("translation", "unsupported", "max"),
     "maxIgnored": ("translation", "ignored", "max"),
     "maxUnsupportedTextureBindings": ("realization", "unsupportedTextureBindings", "max"),
+    "maxWarningTextureFallbacks": ("textureDecode", "warningFallbacks", "max"),
 }
 
 TRANSLATION_FIELDS = ("rendered", "collisionOnly", "hidden", "deferred", "unsupported", "ignored")
@@ -56,6 +58,7 @@ REALIZATION_FIELDS = (
     "unsupportedTextureBindings",
     "runtimeContextEffects",
 )
+TEXTURE_DECODE_FIELDS = ("warningFallbacks",)
 
 
 def parse_args() -> argparse.Namespace:
@@ -393,6 +396,7 @@ def main() -> int:
                 "failed": sum(1 for asset in assets if not asset["passed"]),
                 "translationTotals": aggregate_counts(assets, "translation", TRANSLATION_FIELDS),
                 "realizationTotals": aggregate_counts(assets, "realization", REALIZATION_FIELDS),
+                "textureDecodeTotals": aggregate_counts(assets, "textureDecode", TEXTURE_DECODE_FIELDS),
             },
             "assets": assets,
         }
