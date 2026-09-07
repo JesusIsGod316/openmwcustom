@@ -27,8 +27,11 @@ namespace RenderVsg
         vsg::vec4 diffuseColor{ 1.0f, 1.0f, 1.0f, 1.0f };
         vsg::vec4 specularColor{ 0.0f, 0.0f, 0.0f, 1.0f };
         vsg::vec4 emissiveColor{ 0.0f, 0.0f, 0.0f, 1.0f };
-        // x=shininess, y=alpha cutoff, z/w reserved for compatible extensions.
-        vsg::vec4 parameters{ 0.0f, 0.5f, 0.0f, 0.0f };
+        // x=shininess, y=alpha cutoff, z=specular strength,
+        // w=emissive multiplier. The latter two remain separate because legacy
+        // specular maps and emissive vertex colors replace the source color but
+        // do not replace these authored scalar multipliers.
+        vsg::vec4 parameters{ 0.0f, 0.5f, 1.0f, 1.0f };
         // x=VertexColorMode, y=alpha-test enabled, z=CompareOp,
         // w=two-sided lighting enabled. Values are exact small integers encoded
         // as floats to keep the std140 layout six tightly-defined vec4 slots.
