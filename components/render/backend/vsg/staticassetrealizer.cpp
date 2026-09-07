@@ -1,3 +1,4 @@
+#include "legacymaterialshader.hpp"
 #include "staticassetrealizer.hpp"
 
 #include <vsg/all.h>
@@ -270,29 +271,6 @@ namespace RenderVsg
             }
         };
 
-        [[nodiscard]] vsg::ref_ptr<vsg::PhongMaterialValue> makeLegacyMaterial(
-            const RenderCore::MaterialRecord& source)
-        {
-            auto value = vsg::PhongMaterialValue::create();
-            auto& material = value->value();
-            glm::vec4 diffuse = source.diffuse;
-            diffuse.a = source.alpha;
-            glm::vec4 ambient = source.ambient;
-            ambient.a = source.alpha;
-            glm::vec4 specular = source.specular * source.specularStrength;
-            specular.a = source.alpha;
-            glm::vec4 emissive = source.emission * source.emissiveMultiplier;
-            emissive.a = source.alpha;
-            material.ambient = toVsg(ambient);
-            material.diffuse = toVsg(diffuse);
-            material.specular = toVsg(specular);
-            material.emissive = toVsg(emissive);
-            material.shininess = std::max(0.0f, source.shininess);
-            material.alphaMask = source.alphaTestEnabled ? 1.0f : 0.0f;
-            material.alphaMaskCutoff = source.alphaCutoff;
-            return value;
-        }
-
         [[nodiscard]] vsg::ref_ptr<vsg::TexCoordIndicesValue> makeTexCoordIndices(
             const RenderCore::MaterialRecord& source)
         {
@@ -357,11 +335,11 @@ namespace RenderVsg
         std::unordered_map<TextureRealizationKey, TextureCacheEntry, TextureRealizationKeyHash> textureCache;
         std::unordered_map<SamplerRealizationKey, vsg::ref_ptr<vsg::Sampler>, SamplerRealizationKeyHash> samplerCache;
 
-        auto legacyShaderSet = vsg::createPhongShaderSet();
+        auto legacyShaderSet = createLegacyCompatibilityShaderSet();
         if (!legacyShaderSet)
         {
             result.root = {};
-            result.diagnostics.emplace_back("VSG Phong ShaderSet is unavailable for legacy compatibility realization");
+            result.diagnostics.emplace_back("OpenMW legacy compatibility ShaderSet is unavailable");
             return result;
         }
 
@@ -391,7 +369,16 @@ namespace RenderVsg
             {
                 result.root = {};
                 result.diagnostics.emplace_back(
-                    "VSG 1.1.15 standard compatibility shader exposes four texture-coordinate sets");
+                    "VSG 1.1.15 standard compatibility vertex contract exposes four texture-coordinate sets");
+                return result;
+            }
+
+            const bool usesVertexColors = material->vertexColorMode != VertexColorMode::Ignore;
+            if (usesVertexColors && payload.colors.empty())
+            {
+                result.root = {};
+                result.diagnostics.emplace_back(
+                    "Legacy material requires authored vertex colors but the published mesh has no color stream");
                 return result;
             }
 
@@ -430,24 +417,23 @@ namespace RenderVsg
                 config->assignArray(arrays, "vsg_TexCoord" + std::to_string(set), VK_VERTEX_INPUT_RATE_VERTEX, texCoords);
             }
 
-            if (!payload.colors.empty() && material->vertexColorMode == VertexColorMode::AmbientDiffuse)
+            auto colors = vsg::vec4Array::create(payload.positions.size());
+            for (std::size_t i = 0; i < payload.positions.size(); ++i)
             {
-                auto colors = vsg::vec4Array::create(payload.colors.size());
-                for (std::size_t i = 0; i < payload.colors.size(); ++i)
-                    colors->set(i, toVsg(payload.colors[i]));
-                if (!config->assignArray(arrays, "vsg_Color", VK_VERTEX_INPUT_RATE_VERTEX, colors))
-                {
-                    result.root = {};
-                    result.diagnostics.emplace_back(
-                        "Legacy compatibility shader rejected authored AmbientDiffuse vertex color/alpha stream");
-                    return result;
-                }
+                const glm::vec4 color = usesVertexColors ? payload.colors[i] : glm::vec4(1.0f);
+                colors->set(i, toVsg(color));
             }
-
-            if (!config->assignDescriptor("material", makeLegacyMaterial(*material)))
+            if (!config->assignArray(arrays, "vsg_Color", VK_VERTEX_INPUT_RATE_VERTEX, colors))
             {
                 result.root = {};
-                result.diagnostics.emplace_back("Legacy compatibility shader rejected Phong material descriptor");
+                result.diagnostics.emplace_back("Legacy compatibility shader rejected its explicit vertex color stream");
+                return result;
+            }
+
+            if (!config->assignDescriptor("material", makeLegacyCompatibilityMaterial(*material)))
+            {
+                result.root = {};
+                result.diagnostics.emplace_back("Legacy compatibility shader rejected the OpenMW material descriptor");
                 return result;
             }
             config->assignDescriptor("texCoordIndices", makeTexCoordIndices(*material));
@@ -457,12 +443,6 @@ namespace RenderVsg
                 ++result.stats.runtimeContextEffects;
                 result.diagnostics.emplace_back(
                     "Legacy unlit material requires a dedicated compatibility shader variant");
-            }
-            if (material->vertexColorMode == VertexColorMode::Emissive)
-            {
-                ++result.stats.runtimeContextEffects;
-                result.diagnostics.emplace_back(
-                    "Legacy emissive vertex-color mode requires a dedicated compatibility shader variant");
             }
             if (material->textureApply != TextureApplyMode::Modulate)
             {
@@ -476,13 +456,6 @@ namespace RenderVsg
                 ++result.stats.runtimeContextEffects;
                 result.diagnostics.emplace_back(
                     "Static texture transform is preserved in RenderCore but requires a dedicated compatibility shader variant");
-            }
-            if (material->alphaTestEnabled && material->alphaCompare != CompareOp::Greater
-                && material->alphaCompare != CompareOp::GreaterEqual)
-            {
-                ++result.stats.runtimeContextEffects;
-                result.diagnostics.emplace_back(
-                    "Legacy alpha compare operation is not representable by the current VSG alpha-mask variant");
             }
             if (material->fog.mode != MaterialFogMode::Inherit || material->treeAnimation || material->refraction
                 || material->softEffect || material->falloff || material->bumpParametersEnabled)
