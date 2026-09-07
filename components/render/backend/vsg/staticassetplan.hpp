@@ -18,6 +18,8 @@ namespace RenderVsg
     {
         float lodEyeDistance = 0.0f;
         bool showMarkers = false;
+
+        friend bool operator==(const StaticPlanOptions&, const StaticPlanOptions&) = default;
     };
 
     // Effective V3.25 drawable ordering after NiSortAdjustNode's loader-global

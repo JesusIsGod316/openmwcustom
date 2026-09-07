@@ -1,4 +1,4 @@
-#include <components/render/backend/vsg/staticworldplan.hpp>
+#include <components/render/backend/vsg/staticworldresidency.hpp>
 
 #include <cstdlib>
 #include <iostream>
@@ -99,11 +99,42 @@ int main()
         || !require(RenderVsg::staticInstancePlanCurrent(world, planned), "fresh plan accepted"))
         return EXIT_FAILURE;
 
+    RenderVsg::StaticWorldResidency<std::shared_ptr<int>> residency;
+    const RenderVsg::StaticWorldMutation initialMutation = residency.prepare(world);
+    auto initialObject = std::make_shared<int>(10);
+    auto initialCommit = residency.commit(world, initialMutation, { initialObject });
+    if (!require(initialMutation.valid && initialMutation.upserts.size() == 1, "initial persistent upsert")
+        || !require(initialCommit.committed && initialCommit.immediatelyReleased.empty(), "initial commit")
+        || !require(residency.residentCount() == 1, "one persistent resident")
+        || !require(residency.markSubmitted(RenderCore::FrameId{ 10 }), "mark first GPU use"))
+        return EXIT_FAILURE;
+    const RenderVsg::StaticWorldMutation unchangedMutation = residency.prepare(world);
+    if (!require(unchangedMutation.valid && unchangedMutation.upserts.empty() && unchangedMutation.removals.empty(),
+            "unchanged world preserves resident object"))
+        return EXIT_FAILURE;
+    const RenderVsg::StaticWorldMutation optionMutation
+        = residency.prepare(world, RenderVsg::StaticPlanOptions{ .showMarkers = true });
+    if (!require(optionMutation.valid && optionMutation.upserts.size() == 1,
+            "compatibility-affecting plan option stages replacement"))
+        return EXIT_FAILURE;
+
     RenderCore::InstanceRecord moved = *world.get(fixture.instance);
     moved.revision = RenderCore::ResourceRevision{ 2 };
     moved.transform.translation.x = 4000.0;
     if (!require(world.update(fixture.instance, moved), "revisioned move")
         || !require(!RenderVsg::staticInstancePlanCurrent(world, planned), "stale placement rejected"))
+        return EXIT_FAILURE;
+
+    const RenderVsg::StaticWorldMutation replacementMutation = residency.prepare(world);
+    auto replacementObject = std::make_shared<int>(20);
+    auto replacementCommit = residency.commit(world, replacementMutation, { replacementObject });
+    if (!require(replacementMutation.upserts.size() == 1, "changed instance stages replacement")
+        || !require(replacementCommit.committed, "replacement commit")
+        || !require(residency.pendingRetirementCount() == 1, "old GPU object retained")
+        || !require(residency.collect(RenderCore::FrameId{ 9 }).empty(), "in-flight object cannot retire"))
+        return EXIT_FAILURE;
+    auto firstRetired = residency.collect(RenderCore::FrameId{ 10 });
+    if (!require(firstRetired.size() == 1 && *firstRetired.front() == 10, "completed object retires"))
         return EXIT_FAILURE;
 
     const RenderVsg::StaticWorldPlan second = RenderVsg::buildStaticWorldPlan(world);
@@ -128,6 +159,15 @@ int main()
     const RenderVsg::StaticWorldPlan withDeferred = RenderVsg::buildStaticWorldPlan(world);
     if (!require(withDeferred.valid(), "deferred population does not poison static plan")
         || !require(withDeferred.simpleMeshInstancesDeferred == 1, "simple mesh explicitly deferred"))
+        return EXIT_FAILURE;
+
+    const RenderVsg::StaticWorldMutation stagedBeforeNewChange = residency.prepare(world);
+    RenderCore::MaterialRecord changedAgain = *world.get(fixture.material);
+    changedAgain.revision = RenderCore::ResourceRevision{ 3 };
+    changedAgain.alpha = 0.25f;
+    if (!require(world.update(fixture.material, changedAgain), "second material revision")
+        || !require(!residency.commit(world, stagedBeforeNewChange, { std::make_shared<int>(30) }).committed,
+            "stale asynchronously realized mutation rejected"))
         return EXIT_FAILURE;
 
     std::cout << "V4 CP3C static world planning: PASS\n";

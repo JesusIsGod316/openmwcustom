@@ -89,6 +89,7 @@ namespace RenderVsg
         }
 
         [[nodiscard]] std::size_t size() const noexcept { return mEntries.size(); }
+        void reserveAdditional(std::size_t count) { mEntries.reserve(mEntries.size() + count); }
 
     private:
         struct Entry

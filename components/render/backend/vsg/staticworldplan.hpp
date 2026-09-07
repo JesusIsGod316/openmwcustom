@@ -35,6 +35,7 @@ namespace RenderVsg
         RenderCore::WorldTransform placement;
         std::uint64_t semanticFlags = 0;
         bool lightingEnabled = true;
+        StaticPlanOptions options;
         StaticAssetPlan asset;
         std::vector<StaticResourceDependency<RenderCore::MeshHandle>> meshes;
         std::vector<StaticResourceDependency<RenderCore::MaterialHandle>> materials;
@@ -93,6 +94,7 @@ namespace RenderVsg
             .placement = instance->transform,
             .semanticFlags = instance->semanticFlags,
             .lightingEnabled = instance->lightingEnabled,
+            .options = options,
             .asset = std::move(*asset),
             .meshes = {},
             .materials = {},

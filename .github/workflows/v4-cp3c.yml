@@ -38,7 +38,19 @@ jobs:
           grep -F 'RequiredAutomaticVsgCompatibility' components/rendercore/renderer.hpp
 
       - name: Install lightweight compile dependency
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglm-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglm-dev libvulkan-dev
+
+      - name: Prepare exact VSG 1.1.15 headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          VSG_COMMIT=599a8c5c61cbb993079261b2ada99bd843badf5b
+          git init /tmp/vsg-1.1.15
+          git -C /tmp/vsg-1.1.15 remote add origin https://github.com/vsg-dev/VulkanSceneGraph.git
+          git -C /tmp/vsg-1.1.15 fetch --depth 1 origin "${VSG_COMMIT}"
+          git -C /tmp/vsg-1.1.15 checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/vsg-1.1.15 rev-parse HEAD)" = "${VSG_COMMIT}"
+          cmake -S /tmp/vsg-1.1.15 -B /tmp/vsg-1.1.15-build -DVSG_BUILD_TESTS=OFF
 
       - name: Compile and run CP3C ownership contracts
         shell: bash
@@ -49,6 +61,9 @@ jobs:
           /tmp/v4-cp3c-static-world-plan-smoke
           g++ "${common[@]}" tools/v4/cp3c/frame-lifetime-smoke.cpp -o /tmp/v4-cp3c-frame-lifetime-smoke
           /tmp/v4-cp3c-frame-lifetime-smoke
+          printf '#include <components/render/backend/vsg/vsgsubmission.hpp>\n' |
+            g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
+              -x c++ -c -o /tmp/v4-cp3c-vsgsubmission.o -
 
       - name: Retain relevant CP3B neutral planning regressions
         shell: bash
