@@ -397,10 +397,11 @@ void main()
 
         uniform.specularColor = toVsg(source.specular);
         uniform.emissiveColor = toVsg(source.emission);
-        uniform.parameters = { std::max(0.0f, source.shininess), source.alphaCutoff, source.specularStrength,
-            source.emissiveMultiplier };
-        uniform.semantics = { static_cast<float>(source.vertexColorMode), source.alphaTestEnabled ? 1.0f : 0.0f,
-            static_cast<float>(source.alphaCompare), source.cullMode == RenderCore::CullMode::None ? 1.0f : 0.0f };
+        uniform.parameters = vsg::vec4(std::max(0.0f, source.shininess), source.alphaCutoff, source.specularStrength,
+            source.emissiveMultiplier);
+        uniform.semantics = vsg::vec4(static_cast<float>(source.vertexColorMode),
+            source.alphaTestEnabled ? 1.0f : 0.0f, static_cast<float>(source.alphaCompare),
+            source.cullMode == RenderCore::CullMode::None ? 1.0f : 0.0f);
         return result;
     }
 
@@ -419,7 +420,6 @@ void main()
         result->optionalDefines = base->optionalDefines;
         result->defaultGraphicsPipelineStates = base->defaultGraphicsPipelineStates;
         result->customDescriptorSetBindings = base->customDescriptorSetBindings;
-        result->geometryHints = base->geometryHints;
         result->defaultShaderHints = base->defaultShaderHints;
 
         // Until explicitly implemented, non-hard shadow variants must not become
