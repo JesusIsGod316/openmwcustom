@@ -40,7 +40,8 @@ function(openmw_cp3b3_define_real_nif_tool)
         "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/statictexturedecode.cpp"
         "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/staticnifconformance.cpp"
         "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgruntimebootstrap.cpp"
-        "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgruntimehost.cpp")
+        "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgruntimehost.cpp"
+        "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgsemanticsession.cpp")
 
     target_include_directories(openmw-vulkan-nif-conformance PRIVATE "${CMAKE_SOURCE_DIR}")
     target_link_libraries(openmw-vulkan-nif-conformance PRIVATE

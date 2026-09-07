@@ -41,6 +41,11 @@ This batch establishes a production-shaped, single-window Vulkan/VSG host behind
 - The production OpenMW target compiles source adapters for stable cell/`RefNum` identity, authoritative static placement,
   and the live gameplay camera's Vulkan reversed-Z/down-Y state. The adapters observe game state directly and do not scrape
   OSG nodes or expose VSG objects.
+- Published static NIF bindings are cached by normalized winning-VFS identity plus content identity. Repeated references
+  reuse one logical resource graph; a mid-epoch path/content mismatch fails closed pending a real hot-reload transaction.
+- `VsgSemanticSession` gives the future engine factory one build-gated owner for the semantic world, shared publisher,
+  model/cell/frame producers, distinct SDL/Vulkan bootstrap and runtime host. Reset synchronizes GPU work before changing
+  epoch, and member order tears the Vulkan runtime down before source bindings.
 
 ## Deliberate fail-closed boundaries
 
@@ -71,6 +76,8 @@ are implemented and validated.
 - Retained CP3B RenderCore, static asset, sort-policy and texture-identity smoke tests pass.
 - Active-cell producer smoke and component tests cover transform revisioning, atomic cell moves/unloads, shared sequencing,
   missing dependency rejection and world-epoch reset.
+- Static-model cache smoke covers stable reuse, no-op cache hits, shared producer sequencing, content-conflict rejection and
+  generation-safe republish after a world reset.
 
 ## Next integration step
 

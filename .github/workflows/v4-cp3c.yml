@@ -75,6 +75,9 @@ jobs:
           g++ "${common[@]}" tools/v4/cp3c/active-cell-producer-smoke.cpp \
             -o /tmp/v4-cp3c-active-cell-producer-smoke
           /tmp/v4-cp3c-active-cell-producer-smoke
+          g++ "${common[@]}" tools/v4/cp3c/static-model-cache-smoke.cpp \
+            -o /tmp/v4-cp3c-static-model-cache-smoke
+          /tmp/v4-cp3c-static-model-cache-smoke
           g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
             tools/v4/cp3c/frame-camera-smoke.cpp -o /tmp/v4-cp3c-frame-camera-smoke
           /tmp/v4-cp3c-frame-camera-smoke
@@ -89,6 +92,9 @@ jobs:
           g++ "${common[@]}" -I/tmp/SDL-3.4.10/include \
               -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
               -c components/render/backend/vsg/vsgruntimebootstrap.cpp -o /tmp/v4-cp3c-runtime-bootstrap.o
+          g++ "${common[@]}" -I/tmp/SDL-3.4.10/include \
+              -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
+              -c components/render/backend/vsg/vsgsemanticsession.cpp -o /tmp/v4-cp3c-semantic-session.o
 
       - name: Verify production startup selection seam
         shell: bash
@@ -104,6 +110,7 @@ jobs:
           grep -F 'makeV4StaticInstanceSource' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'makeV4MainCameraState' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'VsgRuntimeBootstrap::create' components/render/backend/vsg/vsgruntimebootstrap.cpp
+          grep -F 'VsgSemanticSession::create' components/render/backend/vsg/vsgsemanticsession.cpp
           grep -F -- '--runtime-host' tools/v4/cp3b3/nif-conformance.cpp
 
       - name: Retain relevant CP3B neutral planning regressions

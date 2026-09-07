@@ -77,7 +77,8 @@ namespace MWRender
         result.cellIdentity = cell->identity;
         result.model = model;
         result.transform.translation = { position.pos[0], position.pos[1], position.pos[2] };
-        result.transform.rotation = { rotation.w(), rotation.x(), rotation.y(), rotation.z() };
+        result.transform.rotation = { static_cast<float>(rotation.w()), static_cast<float>(rotation.x()),
+            static_cast<float>(rotation.y()), static_cast<float>(rotation.z()) };
         result.transform.scale = { scale, scale, scale };
         result.localBounds = localBounds;
         return result;

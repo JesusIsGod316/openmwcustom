@@ -63,6 +63,21 @@ and the live gameplay camera into RenderCore's reversed-Z/down-Y contract. It is
 compiled by the normal OpenMW target but has no side effects and contains no VSG
 or Vulkan dependency; the existing OpenGL path remains unchanged.
 
+`StaticModelCache` retains the complete published binding for each normalized,
+winning VFS model path. Repeated cell references reuse the same neutral resources;
+a different content identity for the same path during one world epoch is rejected
+instead of mixing mod versions. A new world epoch clears the cache and permits a
+generation-safe republish. This is the session-level ownership baseline for later
+CP4 paging and CP7 residency budgets.
+
+`VsgSemanticSession` is the build-gated engine ownership aggregate: it keeps the
+world, common publisher, model cache, active-cell producer, frame-history
+producer, distinct SDL/Vulkan bootstrap, and runtime renderer under one lifetime.
+Reset waits for GPU completion before advancing the world epoch, and destruction
+releases the Vulkan runtime before any logical source bindings. It is compiled in
+the real-NIF Vulkan target but is not linked into or selected by the normal
+OpenGL engine yet.
+
 ## Cheap local checks
 
 ```sh
@@ -85,6 +100,10 @@ g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
 g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
   tools/v4/cp3c/active-cell-producer-smoke.cpp -o /tmp/v4-cp3c-active-cell-producer-smoke
 /tmp/v4-cp3c-active-cell-producer-smoke
+
+g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+  tools/v4/cp3c/static-model-cache-smoke.cpp -o /tmp/v4-cp3c-static-model-cache-smoke
+/tmp/v4-cp3c-static-model-cache-smoke
 ```
 
 The RenderCore targets require GLM include paths in the compiler environment.
