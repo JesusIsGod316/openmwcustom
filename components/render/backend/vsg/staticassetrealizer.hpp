@@ -22,6 +22,17 @@ namespace RenderVsg
     using StaticTextureResolver = std::function<vsg::ref_ptr<vsg::Data>(
         const RenderCore::TextureRecord&, const RenderCore::TextureRealizationKey&)>;
 
+    // Backend-private shader-family routing. RenderCore stays source-format and
+    // renderer agnostic; CP3B3 can reproduce legacy fixed-function/NIF material
+    // semantics without forcing future CP4+/modern content through the same
+    // shader family. ModernPbr is intentionally reserved for an explicitly
+    // selected future producer path rather than inferred from NIF provenance.
+    enum class StaticMaterialShaderFamily : std::uint8_t
+    {
+        LegacyCompatibility,
+        ModernPbr,
+    };
+
     struct StaticRealizationStats
     {
         std::uint32_t drawCount = 0;
@@ -35,6 +46,8 @@ namespace RenderVsg
         std::uint32_t unsupportedTextureBindings = 0;
         std::uint32_t billboardDraws = 0;
         std::uint32_t runtimeContextEffects = 0;
+        std::uint32_t legacyCompatibilityDraws = 0;
+        std::uint32_t modernPbrDraws = 0;
     };
 
     struct StaticRealizationResult
@@ -51,6 +64,11 @@ namespace RenderVsg
     // StaticAssetPlan and materializes VSG arrays, descriptors, pipeline state and
     // draw commands. Texture bytes are supplied through a resolver so VFS/image
     // decoding ownership stays outside RenderCore and can be shared with CP4 paging.
+    //
+    // CP4+ boundary: shader-family choice remains backend-private and may later be
+    // supplied by terrain/modern-material producers without changing neutral
+    // texture/material handles, sampler identities, residency accounting, or
+    // publication lifetime rules.
     class StaticAssetRealizer
     {
     public:
