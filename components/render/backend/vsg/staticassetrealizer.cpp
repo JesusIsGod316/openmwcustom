@@ -157,6 +157,15 @@ namespace RenderVsg
                 || transform.convention != RenderCore::TextureTransformConvention::Direct;
         }
 
+        [[nodiscard]] StaticMaterialShaderFamily selectShaderFamily(const RenderCore::MaterialRecord&) noexcept
+        {
+            // CP3B3 NIF translation publishes legacy fixed-function/Gamebryo
+            // semantics. Do not guess a modern PBR model from texture names or
+            // source provenance. CP4+ may explicitly select ModernPbr when a
+            // producer owns a true metallic/roughness material contract.
+            return StaticMaterialShaderFamily::LegacyCompatibility;
+        }
+
         [[nodiscard]] std::optional<const char*> descriptorName(RenderCore::TextureRole role) noexcept
         {
             switch (role)
@@ -166,10 +175,6 @@ namespace RenderVsg
                 case RenderCore::TextureRole::Emissive: return "emissiveMap";
                 case RenderCore::TextureRole::Normal: return "normalMap";
                 case RenderCore::TextureRole::Specular: return "specularMap";
-                // Current V3.25 legacy dark/decal/bump/gloss stages require the
-                // compatibility shader path rather than a semantically-wrong PBR
-                // alias. Preserve them in neutral records and diagnose here until
-                // that dedicated shader is installed later in CP3B3.
                 case RenderCore::TextureRole::Dark:
                 case RenderCore::TextureRole::Decal:
                 case RenderCore::TextureRole::Environment:
@@ -222,9 +227,6 @@ namespace RenderVsg
                 state.depthBiasEnable = key.fixedFunction.raster.decal ? VK_TRUE : VK_FALSE;
                 if (state.depthBiasEnable)
                 {
-                    // VSG 1.1.15 uses reverse depth (near=1, far=0). Positive
-                    // depth bias moves a decal toward the camera under the
-                    // GREATER/GREATER_OR_EQUAL depth convention.
                     state.depthBiasConstantFactor = 1.0f;
                     state.depthBiasSlopeFactor = 1.0f;
                 }
@@ -250,9 +252,6 @@ namespace RenderVsg
             {
                 state.depthTestEnable = key.fixedFunction.depthStencil.depthTest ? VK_TRUE : VK_FALSE;
                 state.depthWriteEnable = key.fixedFunction.depthStencil.depthWrite ? VK_TRUE : VK_FALSE;
-                // VSG's Perspective and RenderGraph use reverse depth and clear
-                // the depth attachment to 0.0. LESS/LESS_OR_EQUAL rejects normal
-                // visible fragments against that clear value.
                 state.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
                 state.stencilTestEnable = key.fixedFunction.depthStencil.stencilEnabled ? VK_TRUE : VK_FALSE;
                 if (state.stencilTestEnable)
@@ -271,21 +270,24 @@ namespace RenderVsg
             }
         };
 
-        [[nodiscard]] vsg::ref_ptr<vsg::PbrMaterialValue> makeMaterial(const RenderCore::MaterialRecord& source)
+        [[nodiscard]] vsg::ref_ptr<vsg::PhongMaterialValue> makeLegacyMaterial(
+            const RenderCore::MaterialRecord& source)
         {
-            auto value = vsg::PbrMaterialValue::create();
+            auto value = vsg::PhongMaterialValue::create();
             auto& material = value->value();
-            glm::vec4 baseColor = source.diffuse;
-            // MaterialRecord::alpha is the authoritative drawable alpha. Legacy
-            // NiMaterialProperty mirrors it into diffuse.a, while Bethesda shader
-            // properties carry it separately.
-            baseColor.a = source.alpha;
-            material.baseColorFactor = toVsg(baseColor);
-            material.diffuseFactor = toVsg(baseColor);
-            material.specularFactor = toVsg(source.specular * source.specularStrength);
-            material.emissiveFactor = toVsg(source.emission * source.emissiveMultiplier);
-            material.metallicFactor = 0.0f;
-            material.roughnessFactor = std::clamp(1.0f - source.shininess / 128.0f, 0.0f, 1.0f);
+            glm::vec4 diffuse = source.diffuse;
+            diffuse.a = source.alpha;
+            glm::vec4 ambient = source.ambient;
+            ambient.a = source.alpha;
+            glm::vec4 specular = source.specular * source.specularStrength;
+            specular.a = source.alpha;
+            glm::vec4 emissive = source.emission * source.emissiveMultiplier;
+            emissive.a = source.alpha;
+            material.ambient = toVsg(ambient);
+            material.diffuse = toVsg(diffuse);
+            material.specular = toVsg(specular);
+            material.emissive = toVsg(emissive);
+            material.shininess = std::max(0.0f, source.shininess);
             material.alphaMask = source.alphaTestEnabled ? 1.0f : 0.0f;
             material.alphaMaskCutoff = source.alphaCutoff;
             return value;
@@ -355,11 +357,11 @@ namespace RenderVsg
         std::unordered_map<TextureRealizationKey, TextureCacheEntry, TextureRealizationKeyHash> textureCache;
         std::unordered_map<SamplerRealizationKey, vsg::ref_ptr<vsg::Sampler>, SamplerRealizationKeyHash> samplerCache;
 
-        auto shaderSet = vsg::createPhysicsBasedRenderingShaderSet();
-        if (!shaderSet)
+        auto legacyShaderSet = vsg::createPhongShaderSet();
+        if (!legacyShaderSet)
         {
             result.root = {};
-            result.diagnostics.emplace_back("VSG PBR ShaderSet is unavailable");
+            result.diagnostics.emplace_back("VSG Phong ShaderSet is unavailable for legacy compatibility realization");
             return result;
         }
 
@@ -374,19 +376,30 @@ namespace RenderVsg
                 return result;
             }
 
+            const StaticMaterialShaderFamily shaderFamily = selectShaderFamily(*material);
+            if (shaderFamily != StaticMaterialShaderFamily::LegacyCompatibility)
+            {
+                result.root = {};
+                result.diagnostics.emplace_back(
+                    "Modern PBR static material family was selected without an explicit CP4+ material contract");
+                return result;
+            }
+            ++result.stats.legacyCompatibilityDraws;
+
             const MeshPayload& payload = *mesh->payload;
             if (payload.texCoordSets.size() > 4u)
             {
                 result.root = {};
-                result.diagnostics.emplace_back("VSG 1.1.15 standard static shader exposes four texture-coordinate sets; source needs a CP3B3 compatibility shader variant");
+                result.diagnostics.emplace_back(
+                    "VSG 1.1.15 standard compatibility shader exposes four texture-coordinate sets");
                 return result;
             }
 
-            auto config = vsg::GraphicsPipelineConfigurator::create(shaderSet);
+            auto config = vsg::GraphicsPipelineConfigurator::create(legacyShaderSet);
             if (!config)
             {
                 result.root = {};
-                result.diagnostics.emplace_back("Failed to allocate GraphicsPipelineConfigurator");
+                result.diagnostics.emplace_back("Failed to allocate legacy GraphicsPipelineConfigurator");
                 return result;
             }
 
@@ -397,7 +410,7 @@ namespace RenderVsg
             if (!config->assignArray(arrays, "vsg_Vertex", VK_VERTEX_INPUT_RATE_VERTEX, positions))
             {
                 result.root = {};
-                result.diagnostics.emplace_back("PBR shader does not expose vsg_Vertex");
+                result.diagnostics.emplace_back("Legacy compatibility shader does not expose vsg_Vertex");
                 return result;
             }
 
@@ -422,43 +435,54 @@ namespace RenderVsg
                 auto colors = vsg::vec4Array::create(payload.colors.size());
                 for (std::size_t i = 0; i < payload.colors.size(); ++i)
                     colors->set(i, toVsg(payload.colors[i]));
-                config->assignArray(arrays, "vsg_Color", VK_VERTEX_INPUT_RATE_VERTEX, colors);
+                if (!config->assignArray(arrays, "vsg_Color", VK_VERTEX_INPUT_RATE_VERTEX, colors))
+                {
+                    result.root = {};
+                    result.diagnostics.emplace_back(
+                        "Legacy compatibility shader rejected authored AmbientDiffuse vertex color/alpha stream");
+                    return result;
+                }
             }
 
-            config->assignDescriptor("material", makeMaterial(*material));
+            if (!config->assignDescriptor("material", makeLegacyMaterial(*material)))
+            {
+                result.root = {};
+                result.diagnostics.emplace_back("Legacy compatibility shader rejected Phong material descriptor");
+                return result;
+            }
             config->assignDescriptor("texCoordIndices", makeTexCoordIndices(*material));
 
             if (material->unlit)
             {
                 ++result.stats.runtimeContextEffects;
                 result.diagnostics.emplace_back(
-                    "Standard VSG PBR path cannot express OpenMW unlit material semantics; compatibility shader variant required");
+                    "Legacy unlit material requires a dedicated compatibility shader variant");
             }
             if (material->vertexColorMode == VertexColorMode::Emissive)
             {
                 ++result.stats.runtimeContextEffects;
                 result.diagnostics.emplace_back(
-                    "Standard VSG PBR vertex color input is diffuse modulation, not OpenMW emissive vertex-color semantics; compatibility shader variant required");
+                    "Legacy emissive vertex-color mode requires a dedicated compatibility shader variant");
             }
             if (material->textureApply != TextureApplyMode::Modulate)
             {
                 ++result.stats.runtimeContextEffects;
                 result.diagnostics.emplace_back(
-                    "Standard VSG PBR path cannot express this legacy texture apply mode; compatibility shader variant required");
+                    "Legacy non-Modulate texture apply mode requires a dedicated compatibility shader variant");
             }
             if (std::ranges::any_of(material->textures,
                     [](const TextureBinding& binding) { return hasNonIdentityTextureTransform(binding.transform); }))
             {
                 ++result.stats.runtimeContextEffects;
                 result.diagnostics.emplace_back(
-                    "Static texture transform is preserved in RenderCore but not yet realized by the standard VSG PBR path; compatibility shader variant required");
+                    "Static texture transform is preserved in RenderCore but requires a dedicated compatibility shader variant");
             }
             if (material->alphaTestEnabled && material->alphaCompare != CompareOp::Greater
                 && material->alphaCompare != CompareOp::GreaterEqual)
             {
                 ++result.stats.runtimeContextEffects;
                 result.diagnostics.emplace_back(
-                    "Standard VSG PBR alpha mask cannot express this legacy compare op yet; compatibility shader variant required before CP3B3 closeout");
+                    "Legacy alpha compare operation is not representable by the current VSG alpha-mask variant");
             }
             if (material->fog.mode != MaterialFogMode::Inherit || material->treeAnimation || material->refraction
                 || material->softEffect || material->falloff || material->bumpParametersEnabled)
@@ -529,7 +553,8 @@ namespace RenderVsg
                 if (!config->assignTexture(*descriptor, data, sampler))
                 {
                     result.root = {};
-                    result.diagnostics.emplace_back(std::string("PBR ShaderSet rejected texture descriptor ") + *descriptor);
+                    result.diagnostics.emplace_back(
+                        std::string("Legacy compatibility ShaderSet rejected texture descriptor ") + *descriptor);
                     return result;
                 }
 
