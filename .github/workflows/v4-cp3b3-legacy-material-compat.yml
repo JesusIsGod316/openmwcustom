@@ -1,0 +1,16 @@
+name: V4.0 CP3B3 legacy material compatibility branch QC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp3b3-legacy-material-compat]
+
+concurrency:
+  group: v4-cp3b3-legacy-material-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  TargetedCP3B3:
+    uses: ./.github/workflows/v4-cp3b3.yml
+    with:
+      force_run: true
