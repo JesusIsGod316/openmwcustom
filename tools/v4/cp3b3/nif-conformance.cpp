@@ -4,6 +4,7 @@
 #include <components/render/backend/vsg/staticassetconformance.hpp>
 #include <components/render/backend/vsg/staticnifconformance.hpp>
 #include <components/render/backend/vsg/vsgruntimebootstrap.hpp>
+#include <components/rendercore/activecellproducer.hpp>
 #include <components/rendercore/frameproducer.hpp>
 #include <components/rendercore/updatebatch.hpp>
 #include <components/toutf8/toutf8.hpp>
@@ -639,10 +640,17 @@ int main(int argc, char** argv)
 
         if (options.runtimeHost)
         {
-            const std::optional<RenderCore::InstanceHandle> instance = world.reserveInstance();
-            RenderCore::InstanceRecord record;
-            record.model = result.model;
-            if (!instance || !world.commit(*instance, std::move(record)))
+            RenderCore::ActiveCellProducer scene(world, publisher);
+            RenderCore::ActiveCellSource cell;
+            cell.identity = "cp3c:conformance-cell";
+            cell.worldspaceIdentity = "cp3c:conformance-world";
+            if (!scene.addCell(cell).applied())
+                throw std::runtime_error("failed to publish the CP3C conformance cell");
+            RenderCore::StaticInstanceSource source;
+            source.identity = "cp3c:conformance-instance";
+            source.cellIdentity = cell.identity;
+            source.model = result.model;
+            if (!scene.upsertStaticInstance(source).applied())
                 throw std::runtime_error("failed to publish the CP3C static world instance");
             return renderRuntimeHost(world, vfs, *result.realization.root, options);
         }

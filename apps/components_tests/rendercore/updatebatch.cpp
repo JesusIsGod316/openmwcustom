@@ -56,6 +56,7 @@ namespace
     {
         RenderCore::RenderWorld world;
         RenderCore::RenderWorldPublisher publisher(world);
+        EXPECT_EQ(publisher.nextSequence(), RenderCore::InitialUpdateSequence);
 
         RenderCore::RenderWorldUpdateBatch skipped(world.epoch(), RenderCore::UpdateSequence{ 2 }, "test:skip");
         ASSERT_TRUE(skipped.seal());
@@ -64,6 +65,7 @@ namespace
         RenderCore::RenderWorldUpdateBatch first(world.epoch(), RenderCore::InitialUpdateSequence, "test:first");
         ASSERT_TRUE(first.seal());
         EXPECT_EQ(publisher.apply(first), RenderCore::PublishStatus::Applied);
+        EXPECT_EQ(publisher.nextSequence(), RenderCore::UpdateSequence{ 2 });
 
         RenderCore::RenderWorldUpdateBatch duplicate(world.epoch(), RenderCore::InitialUpdateSequence, "test:duplicate");
         ASSERT_TRUE(duplicate.seal());
@@ -80,6 +82,7 @@ namespace
         ASSERT_TRUE(first.seal());
         ASSERT_EQ(publisher.apply(first), RenderCore::PublishStatus::Applied);
         ASSERT_TRUE(world.reset());
+        EXPECT_EQ(publisher.nextSequence(), RenderCore::InitialUpdateSequence);
 
         RenderCore::RenderWorldUpdateBatch stale(oldEpoch, RenderCore::UpdateSequence{ 2 });
         ASSERT_TRUE(stale.seal());

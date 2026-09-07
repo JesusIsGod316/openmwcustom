@@ -188,6 +188,15 @@ namespace NifRender
         result.binding = std::move(binding);
         return result;
     }
+
+    // Production convenience overload. Asset and scene producers share one
+    // publisher, so callers should normally allocate from its common sequence
+    // rather than assuming they are the first producer in a world epoch.
+    [[nodiscard]] inline TranslationPublishResult publishTranslation(RenderCore::RenderWorld& world,
+        RenderCore::RenderWorldPublisher& publisher, const TranslationBundle& bundle)
+    {
+        return publishTranslation(world, publisher, bundle, publisher.nextSequence());
+    }
 }
 
 #endif

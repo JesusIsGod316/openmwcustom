@@ -148,6 +148,15 @@ namespace RenderCore
 
         [[nodiscard]] UpdateSequence lastSequence() const noexcept { return mLastSequence; }
         [[nodiscard]] WorldEpoch observedEpoch() const noexcept { return mObservedEpoch; }
+        // Shared main-thread producers must allocate from this common commit
+        // point. A world reset restarts sequencing even before the first
+        // post-reset batch has caused apply() to observe the new epoch.
+        [[nodiscard]] UpdateSequence nextSequence() const noexcept
+        {
+            if (mObservedEpoch != mWorld.epoch() || !mLastSequence.valid())
+                return InitialUpdateSequence;
+            return advanceMonotonic(mLastSequence).value_or(UpdateSequence{});
+        }
 
     private:
         [[nodiscard]] UpdateSequence expectedSequence() const noexcept

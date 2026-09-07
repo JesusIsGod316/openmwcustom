@@ -72,6 +72,9 @@ jobs:
           /tmp/v4-cp3c-backend-selection-smoke
           g++ "${common[@]}" tools/v4/cp3c/frame-producer-smoke.cpp -o /tmp/v4-cp3c-frame-producer-smoke
           /tmp/v4-cp3c-frame-producer-smoke
+          g++ "${common[@]}" tools/v4/cp3c/active-cell-producer-smoke.cpp \
+            -o /tmp/v4-cp3c-active-cell-producer-smoke
+          /tmp/v4-cp3c-active-cell-producer-smoke
           g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
             tools/v4/cp3c/frame-camera-smoke.cpp -o /tmp/v4-cp3c-frame-camera-smoke
           /tmp/v4-cp3c-frame-camera-smoke
@@ -97,6 +100,9 @@ jobs:
           grep -F '#include <components/rendercore/backendselection.hpp>' apps/openmw/engine.cpp
           grep -F '.vsgVulkan = false' apps/openmw/engine.cpp
           grep -F 'Selected renderer has no engine bootstrap path' apps/openmw/engine.cpp
+          grep -F 'v4semanticsource' apps/openmw/CMakeLists.txt
+          grep -F 'makeV4StaticInstanceSource' apps/openmw/mwrender/v4semanticsource.cpp
+          grep -F 'makeV4MainCameraState' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'VsgRuntimeBootstrap::create' components/render/backend/vsg/vsgruntimebootstrap.cpp
           grep -F -- '--runtime-host' tools/v4/cp3b3/nif-conformance.cpp
 

@@ -34,6 +34,13 @@ This batch establishes a production-shaped, single-window Vulkan/VSG host behind
   complete parity mask passes.
 - Startup policy lives in the GLM-free `backendselection.hpp`; the OpenGL engine does not inherit semantic world/math or
   Vulkan/VSG dependencies merely to choose a renderer. `renderer.hpp` layers the heavier frame/world service on top.
+- Active cells and individually addressable static references now have a backend-neutral, atomic producer. Source
+  identities survive transform updates and cross-cell moves while generation-safe handles reject removed or reset state.
+- Asset translation and cell publication allocate from one `RenderWorldPublisher` sequence, so later terrain, actor and
+  streaming producers can share the world without independently assuming sequence 1.
+- The production OpenMW target compiles source adapters for stable cell/`RefNum` identity, authoritative static placement,
+  and the live gameplay camera's Vulkan reversed-Z/down-Y state. The adapters observe game state directly and do not scrape
+  OSG nodes or expose VSG objects.
 
 ## Deliberate fail-closed boundaries
 
@@ -62,11 +69,13 @@ are implemented and validated.
   qualification and the unqualified Vulkan-only fail-closed case.
 - The runtime host and submission bridge syntax-compile with warnings-as-errors against exact VSG 1.1.15 headers.
 - Retained CP3B RenderCore, static asset, sort-policy and texture-identity smoke tests pass.
+- Active-cell producer smoke and component tests cover transform revisioning, atomic cell moves/unloads, shared sequencing,
+  missing dependency rejection and world-epoch reset.
 
 ## Next integration step
 
-Add a distinct, build-gated Vulkan engine bootstrap factory without disturbing the OSG viewer dependencies used by GUI,
-input, world rendering and mod-visible behavior. Do not create an SDL Vulkan window inside the current hardwired OSG
-`Engine::createWindow()` path. The Vulkan bootstrap should own its separate window/host construction and accept a minimal
-semantic producer that publishes a static test world and frame state into `VsgRuntimeHost`. Only after that route exists
-may the executable advertise `.vsgVulkan = true`, and `Auto` must remain OpenGL while any compatibility facet is missing.
+Connect the source adapters to a distinct, build-gated Vulkan engine bootstrap factory without disturbing the OSG viewer
+dependencies used by GUI, input, world rendering and mod-visible behavior. Do not create an SDL Vulkan window inside the
+current hardwired OSG `Engine::createWindow()` path. The factory should own its separate window/host construction and the
+RenderWorld/publisher/active-cell/frame producer aggregate. Only after that explicit route exists may the executable
+advertise `.vsgVulkan = true`, and `Auto` must remain OpenGL while any compatibility facet is missing.

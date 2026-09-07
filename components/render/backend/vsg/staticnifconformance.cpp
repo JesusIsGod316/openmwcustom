@@ -27,8 +27,7 @@ namespace RenderVsg
             return result;
 
         result.stage = StaticNifConformanceStage::Publish;
-        NifRender::TranslationPublishResult published
-            = NifRender::publishTranslation(world, publisher, bundle, RenderCore::InitialUpdateSequence);
+        NifRender::TranslationPublishResult published = NifRender::publishTranslation(world, publisher, bundle);
         result.publishStatus = published.status;
         if (!published.applied())
             return result;

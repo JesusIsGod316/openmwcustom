@@ -52,6 +52,17 @@ current world revision and invalidates temporal history on world-epoch, extent,
 or explicit continuity changes. These sources remain build-gated and do not make
 Vulkan eligible for `Auto`.
 
+The active-cell slice adds a shared-sequence semantic publisher for loaded cells
+and static references. It preserves stable instance handles across transform
+updates and cell moves, retires a cell and all of its owned references atomically,
+and discards all source bindings when the world epoch changes. NIF asset
+publication now allocates from the same publisher sequence instead of assuming it
+is always the first producer. `MWRender::v4semanticsource` supplies the production
+game-side conversions from stable cell/`RefNum` identity, authoritative placement,
+and the live gameplay camera into RenderCore's reversed-Z/down-Y contract. It is
+compiled by the normal OpenMW target but has no side effects and contains no VSG
+or Vulkan dependency; the existing OpenGL path remains unchanged.
+
 ## Cheap local checks
 
 ```sh
@@ -70,6 +81,10 @@ g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
 g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
   tools/v4/cp3c/frame-producer-smoke.cpp -o /tmp/v4-cp3c-frame-producer-smoke
 /tmp/v4-cp3c-frame-producer-smoke
+
+g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+  tools/v4/cp3c/active-cell-producer-smoke.cpp -o /tmp/v4-cp3c-active-cell-producer-smoke
+/tmp/v4-cp3c-active-cell-producer-smoke
 ```
 
-The second target requires GLM include paths in the compiler environment.
+The RenderCore targets require GLM include paths in the compiler environment.
