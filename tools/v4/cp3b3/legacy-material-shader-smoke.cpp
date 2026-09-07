@@ -69,14 +69,15 @@ int main()
     require(static_cast<bool>(uniform), "failed to create legacy material uniform");
     const RenderVsg::LegacyMaterialUniform& packed = uniform->value();
     require(near(packed.diffuseColor.a, 0.6f), "legacy material alpha packing changed");
-    require(near(packed.specularColor.x, 0.5f) && near(packed.specularColor.y, 1.0f)
-            && near(packed.specularColor.z, 1.5f),
-        "legacy specular strength was not folded into the compatibility uniform");
-    require(near(packed.emissiveColor.x, 0.15f) && near(packed.emissiveColor.y, 0.3f)
-            && near(packed.emissiveColor.z, 0.6f),
-        "legacy emissive multiplier was not folded into the compatibility uniform");
-    require(near(packed.parameters.x, 37.0f) && near(packed.parameters.y, 0.375f),
-        "legacy shininess/alpha cutoff packing changed");
+    require(near(packed.specularColor.x, 0.25f) && near(packed.specularColor.y, 0.5f)
+            && near(packed.specularColor.z, 0.75f),
+        "legacy specular RGB must remain unscaled in the compatibility uniform");
+    require(near(packed.emissiveColor.x, 0.05f) && near(packed.emissiveColor.y, 0.1f)
+            && near(packed.emissiveColor.z, 0.2f),
+        "legacy emissive RGB must remain unscaled in the compatibility uniform");
+    require(near(packed.parameters.x, 37.0f) && near(packed.parameters.y, 0.375f)
+            && near(packed.parameters.z, 2.0f) && near(packed.parameters.w, 3.0f),
+        "legacy shininess/alpha cutoff/specular strength/emissive multiplier packing changed");
     require(near(packed.semantics.x, static_cast<float>(VertexColorMode::AmbientDiffuse))
             && near(packed.semantics.y, 1.0f)
             && near(packed.semantics.z, static_cast<float>(CompareOp::NotEqual))
@@ -97,8 +98,11 @@ int main()
             && source.find("case 7: return true") != std::string_view::npos,
         "complete legacy alpha comparison table is absent from the shader");
     require(source.find("specularColor = specularSample.rgb") != std::string_view::npos
-            && source.find("shininess = specularSample.a * 255.0") != std::string_view::npos,
-        "legacy specular-map RGB/shininess semantics are absent from the shader");
+            && source.find("shininess = specularSample.a * 255.0") != std::string_view::npos
+            && source.find("specularColor * specularStrength") != std::string_view::npos,
+        "legacy specular-map RGB/shininess/strength semantics are absent from the shader");
+    require(source.find("effectiveEmission.rgb * emissiveMultiplier") != std::string_view::npos,
+        "legacy emissive multiplier no longer survives vertex-color replacement");
     require(source.find("outColor.rgb += texture(emissiveMap") != std::string_view::npos,
         "legacy additive emissive-map stage is absent from the shader");
     require(source.find("material.semantics.w > 0.5 && !gl_FrontFacing") != std::string_view::npos,
