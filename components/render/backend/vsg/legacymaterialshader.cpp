@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <string>
+#include <utility>
 
 namespace RenderVsg
 {
@@ -225,9 +226,11 @@ void main()
 
     vec3 specularColor = material.specularColor.rgb;
     float shininess = max(material.parameters.x, 0.0);
+    float specularStrength = material.parameters.z;
+    float emissiveMultiplier = material.parameters.w;
 #ifdef VSG_SPECULAR_MAP
-    // V3.25 specular maps replace material specular RGB and source shininess
-    // from map alpha rather than multiplying a pre-existing Phong value.
+    // V3.25 specular maps replace material specular RGB and source shininess,
+    // but the independent material specular-strength multiplier still applies.
     vec4 specularSample = texture(specularMap, texCoord[texCoordIndices.specularMap].st);
     specularColor = specularSample.rgb;
     shininess = specularSample.a * 255.0;
@@ -293,7 +296,7 @@ void main()
         if (shininess > 0.0 && diffuseFactor > 0.0)
         {
             vec3 halfDir = normalize(direction + vd);
-            color += specularColor * pow(max(dot(halfDir, nd), 0.0), shininess) * intensity;
+            color += specularColor * specularStrength * pow(max(dot(halfDir, nd), 0.0), shininess) * intensity;
         }
     }
 
@@ -313,7 +316,7 @@ void main()
         if (shininess > 0.0 && diffuseFactor > 0.0)
         {
             vec3 halfDir = normalize(direction + vd);
-            color += specularColor * pow(max(dot(halfDir, nd), 0.0), shininess) * scale;
+            color += specularColor * specularStrength * pow(max(dot(halfDir, nd), 0.0), shininess) * scale;
         }
     }
 
@@ -359,13 +362,14 @@ void main()
         if (shininess > 0.0 && diffuseFactor > 0.0)
         {
             vec3 halfDir = normalize(direction + vd);
-            color += specularColor * pow(max(dot(halfDir, nd), 0.0), shininess) * scale;
+            color += specularColor * specularStrength * pow(max(dot(halfDir, nd), 0.0), shininess) * scale;
         }
     }
 
-    // Material emission is part of the legacy textured lighting equation.
-    // Glow/emissive-map RGB is a separate additive stage in V3.25.
-    outColor.rgb = color * ambientOcclusion + surfaceColor.rgb * effectiveEmission.rgb;
+    // Material/vertex emission is part of the legacy textured lighting equation
+    // and retains the authored emissive multiplier. Glow/emissive-map RGB is a
+    // separate additive stage in V3.25.
+    outColor.rgb = color * ambientOcclusion + surfaceColor.rgb * effectiveEmission.rgb * emissiveMultiplier;
 #ifdef VSG_EMISSIVE_MAP
     outColor.rgb += texture(emissiveMap, texCoord[texCoordIndices.emissiveMap].st).rgb;
 #endif
@@ -391,15 +395,10 @@ void main()
         diffuse.a = source.alpha;
         uniform.diffuseColor = toVsg(diffuse);
 
-        glm::vec4 specular = source.specular * source.specularStrength;
-        specular.a = 1.0f;
-        uniform.specularColor = toVsg(specular);
-
-        glm::vec4 emissive = source.emission * source.emissiveMultiplier;
-        emissive.a = 1.0f;
-        uniform.emissiveColor = toVsg(emissive);
-
-        uniform.parameters = { std::max(0.0f, source.shininess), source.alphaCutoff, 0.0f, 0.0f };
+        uniform.specularColor = toVsg(source.specular);
+        uniform.emissiveColor = toVsg(source.emission);
+        uniform.parameters = { std::max(0.0f, source.shininess), source.alphaCutoff, source.specularStrength,
+            source.emissiveMultiplier };
         uniform.semantics = { static_cast<float>(source.vertexColorMode), source.alphaTestEnabled ? 1.0f : 0.0f,
             static_cast<float>(source.alphaCompare), source.cullMode == RenderCore::CullMode::None ? 1.0f : 0.0f };
         return result;
