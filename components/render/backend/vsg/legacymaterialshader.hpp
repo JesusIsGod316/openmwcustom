@@ -5,13 +5,13 @@
 
 #include <vsg/core/Value.h>
 #include <vsg/core/ref_ptr.h>
+#include <vsg/io/Options.h>
 #include <vsg/maths/vec4.h>
 
 #include <string_view>
 
 namespace vsg
 {
-    class Options;
     class ShaderSet;
 }
 
