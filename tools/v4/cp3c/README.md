@@ -43,6 +43,15 @@ Startup policy is isolated in the GLM-free `backendselection.hpp`, so wiring the
 selector into the existing executable does not add semantic-world math or modern
 backend dependencies to the OpenGL build.
 
+The next bootstrap slice adds a backend-private `VsgRuntimeBootstrap` that owns
+a distinct SDL Vulkan window without entering the established OSG/OpenGL window
+path. Its teardown order keeps the SDL native window alive until the runtime has
+waited for its submissions and the VSG surface/swapchain objects are gone. The
+backend-neutral `SingleViewFrameProducer` binds each immutable frame to the
+current world revision and invalidates temporal history on world-epoch, extent,
+or explicit continuity changes. These sources remain build-gated and do not make
+Vulkan eligible for `Auto`.
+
 ## Cheap local checks
 
 ```sh
@@ -57,6 +66,10 @@ g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
 g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
   tools/v4/cp3c/backend-selection-smoke.cpp -o /tmp/v4-cp3c-backend-selection-smoke
 /tmp/v4-cp3c-backend-selection-smoke
+
+g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+  tools/v4/cp3c/frame-producer-smoke.cpp -o /tmp/v4-cp3c-frame-producer-smoke
+/tmp/v4-cp3c-frame-producer-smoke
 ```
 
 The second target requires GLM include paths in the compiler environment.

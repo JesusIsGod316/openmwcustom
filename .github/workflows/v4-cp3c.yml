@@ -52,6 +52,12 @@ jobs:
           test "$(git -C /tmp/vsg-1.1.15 rev-parse HEAD)" = "${VSG_COMMIT}"
           cmake -S /tmp/vsg-1.1.15 -B /tmp/vsg-1.1.15-build \
             -DVSG_BUILD_TESTS=OFF -DVSG_SUPPORTS_Windowing=OFF
+          SDL_COMMIT=8e37db5e797b6167f3a00d697d816a684bd259c7
+          git init /tmp/SDL-3.4.10
+          git -C /tmp/SDL-3.4.10 remote add origin https://github.com/libsdl-org/SDL.git
+          git -C /tmp/SDL-3.4.10 fetch --depth 1 origin "${SDL_COMMIT}"
+          git -C /tmp/SDL-3.4.10 checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/SDL-3.4.10 rev-parse HEAD)" = "${SDL_COMMIT}"
 
       - name: Compile and run CP3C ownership contracts
         shell: bash
@@ -64,6 +70,8 @@ jobs:
           /tmp/v4-cp3c-frame-lifetime-smoke
           g++ "${common[@]}" tools/v4/cp3c/backend-selection-smoke.cpp -o /tmp/v4-cp3c-backend-selection-smoke
           /tmp/v4-cp3c-backend-selection-smoke
+          g++ "${common[@]}" tools/v4/cp3c/frame-producer-smoke.cpp -o /tmp/v4-cp3c-frame-producer-smoke
+          /tmp/v4-cp3c-frame-producer-smoke
           g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
             tools/v4/cp3c/frame-camera-smoke.cpp -o /tmp/v4-cp3c-frame-camera-smoke
           /tmp/v4-cp3c-frame-camera-smoke
@@ -75,6 +83,9 @@ jobs:
               -x c++ -c -o /tmp/v4-cp3c-framecamera.o -
           g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
               -c components/render/backend/vsg/vsgruntimehost.cpp -o /tmp/v4-cp3c-runtime-host.o
+          g++ "${common[@]}" -I/tmp/SDL-3.4.10/include \
+              -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
+              -c components/render/backend/vsg/vsgruntimebootstrap.cpp -o /tmp/v4-cp3c-runtime-bootstrap.o
 
       - name: Verify production startup selection seam
         shell: bash
@@ -86,6 +97,8 @@ jobs:
           grep -F '#include <components/rendercore/backendselection.hpp>' apps/openmw/engine.cpp
           grep -F '.vsgVulkan = false' apps/openmw/engine.cpp
           grep -F 'Selected renderer has no engine bootstrap path' apps/openmw/engine.cpp
+          grep -F 'VsgRuntimeBootstrap::create' components/render/backend/vsg/vsgruntimebootstrap.cpp
+          grep -F -- '--runtime-host' tools/v4/cp3b3/nif-conformance.cpp
 
       - name: Retain relevant CP3B neutral planning regressions
         shell: bash
@@ -111,3 +124,8 @@ jobs:
       image: '2022'
       tests: true
       package: false
+
+  RuntimeVulkanWindows:
+    uses: ./.github/workflows/v4-cp3b3.yml
+    with:
+      force_run: true

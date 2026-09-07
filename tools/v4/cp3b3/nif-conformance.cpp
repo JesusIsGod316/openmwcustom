@@ -3,6 +3,8 @@
 #include <components/render/backend/vsg/sdlvulkanwindow.hpp>
 #include <components/render/backend/vsg/staticassetconformance.hpp>
 #include <components/render/backend/vsg/staticnifconformance.hpp>
+#include <components/render/backend/vsg/vsgruntimebootstrap.hpp>
+#include <components/rendercore/frameproducer.hpp>
 #include <components/rendercore/updatebatch.hpp>
 #include <components/toutf8/toutf8.hpp>
 #include <components/vfs/bsaarchive.hpp>
@@ -17,6 +19,9 @@
 #include <SDL3/SDL_vulkan.h>
 
 #include <vsg/all.h>
+
+#include <glm/ext/matrix_clip_space.hpp>
+#include <glm/ext/matrix_transform.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -47,6 +52,7 @@ namespace
         bool realizeOnly = false;
         bool diagnosticBox = false;
         bool orbit = false;
+        bool runtimeHost = false;
         bool help = false;
     };
 
@@ -102,6 +108,7 @@ namespace
                "  --camera-distance <value> Camera distance; 0 auto-frames realized scene bounds (default 0).\n"
                "  --frames <count>           Render exactly count frames, then exit.\n"
                "  --orbit                    Orbit 360 degrees around scene bounds over the render frame budget.\n"
+               "  --runtime-host             Render through the CP3C semantic world/frame runtime host.\n"
                "  --diagnostic-box           Add an unlit VSG reference box beside the NIF for GPU-path diagnosis.\n"
                "  --realize-only             Parse/translate/publish/plan/realize without opening a window.\n"
                "  --report-json <path>       Write CP3B4 machine-readable per-asset report JSON.\n"
@@ -132,6 +139,11 @@ namespace
             if (arg == "--orbit")
             {
                 options.orbit = true;
+                continue;
+            }
+            if (arg == "--runtime-host")
+            {
+                options.runtimeHost = true;
                 continue;
             }
 
@@ -414,6 +426,149 @@ namespace
         SDL_Quit();
         return 0;
     }
+
+    struct SceneFraming
+    {
+        vsg::dvec3 center;
+        double radius = 0.0;
+    };
+
+    [[nodiscard]] SceneFraming frameScene(vsg::Node& scene)
+    {
+        vsg::ComputeBounds computeBounds;
+        computeBounds.useNodeBounds = false;
+        scene.accept(computeBounds);
+        if (!computeBounds.bounds.valid())
+            throw std::runtime_error("unable to compute bounds for CP3C runtime scene");
+        const vsg::dbox& bounds = computeBounds.bounds;
+        const vsg::dvec3 center((bounds.min.x + bounds.max.x) * 0.5, (bounds.min.y + bounds.max.y) * 0.5,
+            (bounds.min.z + bounds.max.z) * 0.5);
+        const double x = bounds.max.x - bounds.min.x;
+        const double y = bounds.max.y - bounds.min.y;
+        const double z = bounds.max.z - bounds.min.z;
+        return { center, std::max(0.001, 0.5 * std::sqrt(x * x + y * y + z * z)) };
+    }
+
+    [[nodiscard]] int renderRuntimeHost(const RenderCore::RenderWorld& world, const VFS::Manager& vfs,
+        vsg::Node& realizedScene, const Options& options)
+    {
+        if (options.diagnosticBox)
+            throw std::runtime_error("--diagnostic-box is not supported with --runtime-host");
+        if (options.orbit && options.frameLimit <= 0)
+            throw std::runtime_error("--orbit requires --frames with a positive frame count for deterministic coverage");
+        if (!SDL_Init(SDL_INIT_VIDEO))
+            throw std::runtime_error(std::string("SDL_Init failed: ") + SDL_GetError());
+
+        try
+        {
+            auto textureSharedObjects = vsg::SharedObjects::create();
+            auto decodeReport = std::make_shared<RenderVsg::StaticTextureDecodeReport>();
+            RenderVsg::StaticTextureResolver resolver = RenderVsg::makeStaticTextureResolver(
+                [&vfs](std::string_view sourceIdentity) -> Files::IStreamPtr {
+                    return vfs.find(VFS::Path::Normalized(sourceIdentity));
+                },
+                textureSharedObjects, decodeReport);
+
+            RenderVsg::VsgRuntimeBootstrapOptions bootstrapOptions;
+            bootstrapOptions.title = "OpenMW V4 CP3C - semantic runtime host";
+            bootstrapOptions.host.staticPlan.lodEyeDistance = options.lodDistance;
+            std::unique_ptr<RenderVsg::VsgRuntimeBootstrap> bootstrap
+                = RenderVsg::VsgRuntimeBootstrap::create(std::move(resolver), std::move(bootstrapOptions));
+
+            const SceneFraming framing = frameScene(realizedScene);
+            RenderCore::SingleViewFrameProducer frames;
+            bool running = true;
+            int renderedFrames = 0;
+            while (running)
+            {
+                bool resized = false;
+                SDL_Event event;
+                while (SDL_PollEvent(&event))
+                {
+                    switch (event.type)
+                    {
+                        case SDL_EVENT_QUIT:
+                        case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+                            running = false;
+                            break;
+                        case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+                        case SDL_EVENT_WINDOW_RESIZED:
+                            resized = true;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+                if (!running)
+                    break;
+                if (resized)
+                    bootstrap->vsgWindow()->resize();
+
+                int pixelWidth = 0;
+                int pixelHeight = 0;
+                if (!SDL_GetWindowSizeInPixels(bootstrap->sdlWindow(), &pixelWidth, &pixelHeight)
+                    || pixelWidth <= 0 || pixelHeight <= 0)
+                    continue;
+
+                constexpr double pi = 3.14159265358979323846;
+                constexpr double verticalFovDegrees = 45.0;
+                const double aspect = static_cast<double>(pixelWidth) / static_cast<double>(pixelHeight);
+                const double halfFov = std::min(verticalFovDegrees * pi / 360.0,
+                    std::atan(std::tan(verticalFovDegrees * pi / 360.0) * aspect));
+                const double automaticDistance = framing.radius / std::max(0.001, std::sin(halfFov)) * 1.15;
+                const double distance = options.cameraDistance > 0.0 ? options.cameraDistance : automaticDistance;
+                const double phase = options.orbit
+                    ? static_cast<double>(renderedFrames) / static_cast<double>(options.frameLimit)
+                    : 0.0;
+                const double angle = phase * 2.0 * pi;
+                const double horizontal = distance / std::sqrt(1.0 + 0.35 * 0.35);
+                const glm::dvec3 center(framing.center.x, framing.center.y, framing.center.z);
+                const glm::dvec3 eye(center.x + std::sin(angle) * horizontal,
+                    center.y - std::cos(angle) * horizontal, center.z + horizontal * 0.35);
+                const double nearPlane = std::max(0.01, distance - framing.radius * 1.25);
+                const double farPlane = std::max(nearPlane + 1.0, distance + framing.radius * 2.0);
+
+                RenderCore::SingleViewFrameInput input;
+                input.renderExtent = { static_cast<std::uint32_t>(pixelWidth), static_cast<std::uint32_t>(pixelHeight) };
+                input.outputExtent = input.renderExtent;
+                input.simulationTime = static_cast<double>(renderedFrames) / 60.0;
+                input.frameDelta = 1.0 / 60.0;
+                input.camera.worldPosition = eye;
+                input.camera.view = glm::mat4(glm::lookAtRH(eye, center, glm::dvec3(0.0, 0.0, 1.0)));
+                input.camera.projection.matrix = glm::perspectiveRH_ZO(static_cast<float>(verticalFovDegrees * pi / 180.0),
+                    static_cast<float>(aspect), static_cast<float>(farPlane), static_cast<float>(nearPlane));
+                input.camera.projection.matrix[1][1] *= -1.0f;
+                input.camera.projection.nearPlane = nearPlane;
+                input.camera.projection.farPlane = farPlane;
+                input.environment.interior = true;
+                input.environment.ambient = { 0.35f, 0.35f, 0.35f, 1.0f };
+                input.environment.fogColor = { 0.05f, 0.05f, 0.05f, 1.0f };
+                input.environment.skyEnabled = false;
+                input.environment.sunVisible = true;
+
+                std::optional<RenderCore::FrameRenderState> frame = frames.produce(world, input);
+                if (!frame)
+                    throw std::runtime_error("CP3C semantic frame production failed");
+                const RenderCore::RenderFrameResult rendered = bootstrap->renderer().renderFrame(world, *frame);
+                if (rendered == RenderCore::RenderFrameResult::Failed)
+                    throw std::runtime_error("CP3C runtime host failed: " + bootstrap->renderer().lastDiagnostic());
+                if (rendered == RenderCore::RenderFrameResult::Presented)
+                    ++renderedFrames;
+                if (options.frameLimit >= 0 && renderedFrames >= options.frameLimit)
+                    running = false;
+            }
+            bootstrap->renderer().waitIdle();
+            std::cout << "CP3C semantic runtime host: PASS after " << renderedFrames << " presented frames"
+                      << " (resident instances=" << bootstrap->renderer().residentStaticInstanceCount() << ")\n";
+        }
+        catch (...)
+        {
+            SDL_Quit();
+            throw;
+        }
+        SDL_Quit();
+        return 0;
+    }
 }
 
 int main(int argc, char** argv)
@@ -480,6 +635,16 @@ int main(int argc, char** argv)
         {
             std::cout << "CP3B3 real-NIF source-to-VSG conformance: PASS (realize-only)\n";
             return 0;
+        }
+
+        if (options.runtimeHost)
+        {
+            const std::optional<RenderCore::InstanceHandle> instance = world.reserveInstance();
+            RenderCore::InstanceRecord record;
+            record.model = result.model;
+            if (!instance || !world.commit(*instance, std::move(record)))
+                throw std::runtime_error("failed to publish the CP3C static world instance");
+            return renderRuntimeHost(world, vfs, *result.realization.root, options);
         }
 
         return renderScene(result.realization.root, options.cameraDistance, options.frameLimit,
