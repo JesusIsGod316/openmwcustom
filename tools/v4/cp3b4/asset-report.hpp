@@ -40,6 +40,8 @@ namespace Cp3b4
         std::uint32_t textureCacheHits = 0;
         std::uint32_t unsupportedTextureBindings = 0;
         std::uint32_t runtimeContextEffects = 0;
+        std::uint32_t legacyCompatibilityDraws = 0;
+        std::uint32_t modernPbrDraws = 0;
     };
 
     struct TextureDecodeCounts
@@ -147,7 +149,9 @@ namespace Cp3b4
             << "\"textureLoads\":" << report.realization.textureLoads << ','
             << "\"textureCacheHits\":" << report.realization.textureCacheHits << ','
             << "\"unsupportedTextureBindings\":" << report.realization.unsupportedTextureBindings << ','
-            << "\"runtimeContextEffects\":" << report.realization.runtimeContextEffects << "},\n";
+            << "\"runtimeContextEffects\":" << report.realization.runtimeContextEffects << ','
+            << "\"legacyCompatibilityDraws\":" << report.realization.legacyCompatibilityDraws << ','
+            << "\"modernPbrDraws\":" << report.realization.modernPbrDraws << "},\n";
 
         out << "  \"textureDecode\":{\"warningFallbacks\":" << report.textureDecode.warningFallbacks
             << ",\"diagnostics\":";

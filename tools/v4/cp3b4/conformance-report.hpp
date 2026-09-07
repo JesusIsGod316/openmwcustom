@@ -93,6 +93,8 @@ namespace Cp3b4
         report.realization.textureCacheHits = stats.textureCacheHits;
         report.realization.unsupportedTextureBindings = stats.unsupportedTextureBindings;
         report.realization.runtimeContextEffects = stats.runtimeContextEffects;
+        report.realization.legacyCompatibilityDraws = stats.legacyCompatibilityDraws;
+        report.realization.modernPbrDraws = stats.modernPbrDraws;
 
         report.textureDecode.warningFallbacks = result.textureDecode.warningFallbacks;
         report.textureDecode.diagnostics = result.textureDecode.diagnostics;

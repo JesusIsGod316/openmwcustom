@@ -46,7 +46,9 @@ namespace RenderVsg
         {
             return stage == StaticNifConformanceStage::Complete && realization.valid()
                 && realization.stats.unsupportedTextureBindings == 0u
-                && realization.stats.runtimeContextEffects == 0u;
+                && realization.stats.runtimeContextEffects == 0u
+                && realization.stats.modernPbrDraws == 0u
+                && realization.stats.legacyCompatibilityDraws == realization.stats.drawCount;
         }
     };
 
@@ -58,7 +60,9 @@ namespace RenderVsg
     // RenderCore boundary. OpenMW-compatible warning-image substitutions remain
     // visible in textureDecode rather than being hidden by successful realization.
     // A drawable graph is not "complete" while any promoted static semantic or
-    // texture binding remains unrealized.
+    // texture binding remains unrealized. Current CP3B NIF conformance also requires
+    // every realized draw to remain in the legacy compatibility shader family;
+    // ModernPbr is reserved for an explicit CP4+ producer contract.
     [[nodiscard]] StaticNifConformanceResult realizeStaticNif(const Nif::FileView& file, const VFS::Manager& vfs,
         RenderCore::RenderWorld& world, RenderCore::RenderWorldPublisher& publisher,
         StaticPlanOptions planOptions = {}, vsg::ref_ptr<vsg::SharedObjects> sharedObjects = {});
