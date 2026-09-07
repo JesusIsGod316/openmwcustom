@@ -62,6 +62,8 @@ jobs:
           /tmp/v4-cp3c-static-world-plan-smoke
           g++ "${common[@]}" tools/v4/cp3c/frame-lifetime-smoke.cpp -o /tmp/v4-cp3c-frame-lifetime-smoke
           /tmp/v4-cp3c-frame-lifetime-smoke
+          g++ "${common[@]}" tools/v4/cp3c/backend-selection-smoke.cpp -o /tmp/v4-cp3c-backend-selection-smoke
+          /tmp/v4-cp3c-backend-selection-smoke
           g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
             tools/v4/cp3c/frame-camera-smoke.cpp -o /tmp/v4-cp3c-frame-camera-smoke
           /tmp/v4-cp3c-frame-camera-smoke
@@ -72,7 +74,17 @@ jobs:
             g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
               -x c++ -c -o /tmp/v4-cp3c-framecamera.o -
           g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
-            -c components/render/backend/vsg/vsgruntimehost.cpp -o /tmp/v4-cp3c-runtime-host.o
+              -c components/render/backend/vsg/vsgruntimehost.cpp -o /tmp/v4-cp3c-runtime-host.o
+
+      - name: Verify production startup selection seam
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'renderer backend = auto' files/settings-default.cfg
+          grep -F 'renderer fallback = true' files/settings-default.cfg
+          grep -F 'selectConfiguredRenderBackend()' apps/openmw/engine.cpp
+          grep -F '.vsgVulkan = false' apps/openmw/engine.cpp
+          grep -F 'Selected renderer has no engine bootstrap path' apps/openmw/engine.cpp
 
       - name: Retain relevant CP3B neutral planning regressions
         shell: bash
@@ -91,3 +103,10 @@ jobs:
 
       - name: Check changed-source whitespace
         run: git diff --check e11cb067eafc30972655a8836376320256c33159 HEAD -- .
+
+  OpenGLControlWindows:
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false

@@ -148,6 +148,29 @@ Video Settings
    Choosing to limit the frame rate using this setting instead of vsync may reduce input lag
    due to the game not having to wait for the vertical blanking interval.
 
+.. omw-setting::
+   :title: renderer backend
+   :type: string
+   :range: auto, opengl, vulkan
+   :default: auto
+
+   Selects the rendering backend at startup. Changing this setting requires restarting OpenMW.
+   ``auto`` retains the OpenGL compatibility backend until VSG/Vulkan has passed all required
+   gameplay, content, mod, shader, user-interface, post-processing, multiview, capture, save,
+   Lua, and configuration compatibility gates. ``vulkan`` is reserved for explicit development/testing
+   while those gates remain incomplete. Builds without an enabled Vulkan engine bootstrap will either
+   use the configured fallback or stop before creating a window.
+
+.. omw-setting::
+   :title: renderer fallback
+   :type: boolean
+   :range: true, false
+   :default: true
+
+   If the explicitly requested renderer is unavailable, allows startup to use a compatible,
+   qualified backend instead. Set this to ``false`` when testing Vulkan so an unavailable
+   Vulkan runtime fails with an explicit diagnostic rather than starting with OpenGL.
+
 
 .. omw-setting::
    :title: contrast

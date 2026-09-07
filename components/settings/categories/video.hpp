@@ -29,6 +29,11 @@ namespace Settings
         SettingValue<int> mAntialiasing{ mIndex, "Video", "antialiasing", makeMaxSanitizerInt(0) };
         SettingValue<SDLUtil::VSyncMode> mVsyncMode{ mIndex, "Video", "vsync mode" };
         SettingValue<float> mFramerateLimit{ mIndex, "Video", "framerate limit", makeMaxSanitizerFloat(0) };
+        // Startup-scoped and additive. Auto intentionally remains OpenGL until
+        // the complete RenderCore compatibility-facet gate is qualified.
+        SettingValue<std::string> mRendererBackend{
+            mIndex, "Video", "renderer backend", makeEnumSanitizerString({ "auto", "opengl", "vulkan" }) };
+        SettingValue<bool> mRendererFallback{ mIndex, "Video", "renderer fallback" };
         SettingValue<float> mRenderScale{ mIndex, "Video", "render scale", makeClampSanitizerFloat(0.5f, 1.0f) };
         SettingValue<std::string> mUpscaler{ mIndex, "Video", "upscaler", makeEnumSanitizerString({ "bilinear", "nis" }) };
         SettingValue<float> mUpscalerSharpness{ mIndex, "Video", "upscaler sharpness", makeClampSanitizerFloat(0.0f, 1.0f) };

@@ -37,6 +37,8 @@
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/stats.hpp>
 
+#include <components/rendercore/renderer.hpp>
+
 #include <components/compiler/extensions0.hpp>
 
 #include <components/stereo/stereomanager.hpp>
@@ -99,6 +101,67 @@
 
 namespace
 {
+    std::string missingVsgCompatibilityFacetNames(std::uint64_t mask)
+    {
+        std::string result;
+        for (std::uint64_t bit = 1; bit <= RenderCore::RequiredAutomaticVsgCompatibility; bit <<= 1)
+        {
+            if ((mask & bit) == 0)
+                continue;
+            if (!result.empty())
+                result += ", ";
+            result += RenderCore::renderCompatibilityFacetName(
+                static_cast<RenderCore::RenderCompatibilityFacet>(bit));
+        }
+        return result;
+    }
+
+    RenderCore::RenderBackendSelection selectConfiguredRenderBackend()
+    {
+        const std::string configured = Settings::video().mRendererBackend.get();
+        const std::optional<RenderCore::RenderBackendPreference> preference
+            = RenderCore::parseRenderBackendPreference(configured);
+        if (!preference)
+            throw std::runtime_error("Invalid renderer backend setting: " + configured);
+
+        // The production-shaped VSG host is intentionally not advertised here
+        // until the OpenMW executable has a distinct Vulkan bootstrap and a real
+        // semantic world/frame producer. This keeps the existing OSG-dependent
+        // GUI, input, world, shader-mod and post-processing path intact.
+        constexpr RenderCore::RenderBackendCapabilities capabilities{
+            .legacyOpenGL = true,
+            .vsgVulkan = false,
+            .vsgVulkanCompatibilityFacets = 0,
+        };
+        const RenderCore::RenderBackendSelection selection = RenderCore::selectRenderBackend(
+            { .preference = *preference, .allowFallback = Settings::video().mRendererFallback }, capabilities);
+
+        if (!selection.valid)
+        {
+            throw std::runtime_error("Renderer backend '" + configured
+                + "' is unavailable in this build and renderer fallback is disabled or unsafe. "
+                  "The VSG/Vulkan engine bootstrap is not enabled yet; use 'opengl' or enable renderer fallback. "
+                  "Unqualified Vulkan compatibility facets: "
+                + missingVsgCompatibilityFacetNames(selection.missingVsgCompatibilityFacets));
+        }
+
+        if (selection.fellBack)
+        {
+            Log(Debug::Warning) << "Requested renderer backend '" << configured << "' is unavailable; using "
+                                << RenderCore::renderBackendKindName(selection.backend)
+                                << ". Unqualified Vulkan compatibility facets: "
+                                << missingVsgCompatibilityFacetNames(selection.missingVsgCompatibilityFacets);
+        }
+        else if (selection.reason == RenderCore::RenderBackendSelection::Reason::AutomaticCompatibilityControl)
+        {
+            Log(Debug::Info) << "Renderer backend: OpenGL (Auto compatibility control)";
+        }
+        else
+            Log(Debug::Info) << "Renderer backend: " << RenderCore::renderBackendKindName(selection.backend);
+
+        return selection;
+    }
+
     void checkSDLError(bool success)
     {
         if (!success)
@@ -1466,6 +1529,10 @@ void OMW::Engine::go()
     Misc::Rng::init(mRandomSeed);
 
     Settings::ShaderManager::get().load(mCfgMgr.getUserConfigPath() / "shaders.yaml");
+
+    const RenderCore::RenderBackendSelection renderBackend = selectConfiguredRenderBackend();
+    if (renderBackend.backend != RenderCore::RenderBackendKind::LegacyOpenGL)
+        throw std::logic_error("Selected renderer has no engine bootstrap path");
 
     MWClass::registerClasses();
 

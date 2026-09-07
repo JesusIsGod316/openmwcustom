@@ -23,6 +23,15 @@ This batch establishes a production-shaped, single-window Vulkan/VSG host behind
 - VSG 1.1.15 record/submit and present `VkResult` values are checked instead of discarded.
 - The completion bridge is pinned to VSG 1.1.15's exact three-buffer `RecordAndSubmitTask` ring.
 - Every rejected frame or realization publishes a backend diagnostic suitable for later engine logging/UI routing.
+- Startup configuration now has additive `auto`, `opengl` and `vulkan` values plus a strict/fallback control. The engine
+  resolves this policy before it creates the established OSG viewer/window path.
+- The production executable deliberately advertises Vulkan as unavailable until its distinct bootstrap and semantic
+  producer are connected. Explicit Vulkan therefore either falls back with named missing compatibility facets or fails
+  before window creation; it cannot accidentally create an OpenGL/Vulkan mixed-ownership window.
+- Configuration and content discovery are now an independent automatic-compatibility facet. Existing content/config
+  semantics cannot be hidden inside the broader gameplay/save/Lua qualification bit.
+- `Auto` fails closed in an unqualified Vulkan-only build, and an OpenGL request may fall back to Vulkan only after the
+  complete parity mask passes.
 
 ## Deliberate fail-closed boundaries
 
@@ -47,12 +56,15 @@ are implemented and validated.
 - CP3C static planning/residency smoke passes, including replacement-order preservation and stale mutation rejection.
 - CP3C frame completion smoke passes, including submit preflight and capacity rejection.
 - CP3C camera smoke passes, including column/row mapping, double-precision placement and malformed projection rejection.
+- CP3C backend-selection smoke passes, including stable setting parsing, strict/fallback behavior, configuration/content
+  qualification and the unqualified Vulkan-only fail-closed case.
 - The runtime host and submission bridge syntax-compile with warnings-as-errors against exact VSG 1.1.15 headers.
 - Retained CP3B RenderCore, static asset, sort-policy and texture-identity smoke tests pass.
 
 ## Next integration step
 
-Add the first engine-side semantic producer/host selection seam without disturbing the OSG viewer dependencies used by
-GUI, input, world rendering and mod-visible behavior. Do not create an SDL Vulkan window inside the current hardwired OSG
-`Engine::createWindow()` path until those consumers have explicit backend routing. The next slice should first publish a
-minimal static test world and frame state into `VsgRuntimeHost`, with explicit Vulkan-only diagnostics and OpenGL fallback.
+Add a distinct, build-gated Vulkan engine bootstrap factory without disturbing the OSG viewer dependencies used by GUI,
+input, world rendering and mod-visible behavior. Do not create an SDL Vulkan window inside the current hardwired OSG
+`Engine::createWindow()` path. The Vulkan bootstrap should own its separate window/host construction and accept a minimal
+semantic producer that publishes a static test world and frame state into `VsgRuntimeHost`. Only after that route exists
+may the executable advertise `.vsgVulkan = true`, and `Auto` must remain OpenGL while any compatibility facet is missing.

@@ -101,10 +101,30 @@ namespace
         EXPECT_TRUE(fallback.valid);
         EXPECT_TRUE(fallback.fellBack);
         EXPECT_EQ(fallback.backend, RenderCore::RenderBackendKind::LegacyOpenGL);
+        EXPECT_EQ(fallback.reason,
+            RenderCore::RenderBackendSelection::Reason::RequestedBackendUnavailableFallback);
+        EXPECT_NE(fallback.missingVsgCompatibilityFacets, 0u);
 
         const auto strict = RenderCore::selectRenderBackend(
             { RenderCore::RenderBackendPreference::VsgVulkan, false }, capabilities);
         EXPECT_FALSE(strict.valid);
+    }
+
+    TEST(RenderCoreBackendSelection, ParsesStableAdditiveConfigurationValues)
+    {
+        EXPECT_EQ(RenderCore::parseRenderBackendPreference("auto"), RenderCore::RenderBackendPreference::Auto);
+        EXPECT_EQ(RenderCore::parseRenderBackendPreference("opengl"),
+            RenderCore::RenderBackendPreference::LegacyOpenGL);
+        EXPECT_EQ(RenderCore::parseRenderBackendPreference("vulkan"),
+            RenderCore::RenderBackendPreference::VsgVulkan);
+        EXPECT_FALSE(RenderCore::parseRenderBackendPreference("Vulkan"));
+        EXPECT_EQ(RenderCore::renderBackendKindName(RenderCore::RenderBackendKind::LegacyOpenGL), "OpenGL");
+        EXPECT_EQ(RenderCore::renderBackendKindName(RenderCore::RenderBackendKind::VsgVulkan), "VSG/Vulkan");
+        EXPECT_EQ(RenderCore::renderBackendPreferenceName(RenderCore::RenderBackendPreference::Auto), "auto");
+        EXPECT_EQ(RenderCore::renderBackendPreferenceName(RenderCore::RenderBackendPreference::LegacyOpenGL),
+            "opengl");
+        EXPECT_EQ(RenderCore::renderBackendPreferenceName(RenderCore::RenderBackendPreference::VsgVulkan),
+            "vulkan");
     }
 
     TEST(RenderCoreBackendSelection, AutoKeepsCompatibilityBackendUntilModernParityQualified)
@@ -116,6 +136,8 @@ namespace
         const auto beforeParity = RenderCore::selectRenderBackend({}, capabilities);
         ASSERT_TRUE(beforeParity.valid);
         EXPECT_EQ(beforeParity.backend, RenderCore::RenderBackendKind::LegacyOpenGL);
+        EXPECT_EQ(beforeParity.reason,
+            RenderCore::RenderBackendSelection::Reason::AutomaticCompatibilityControl);
 
         capabilities.vsgVulkanCompatibilityFacets
             = RenderCore::RequiredAutomaticVsgCompatibility
@@ -128,6 +150,34 @@ namespace
         const auto afterParity = RenderCore::selectRenderBackend({}, capabilities);
         ASSERT_TRUE(afterParity.valid);
         EXPECT_EQ(afterParity.backend, RenderCore::RenderBackendKind::VsgVulkan);
+        EXPECT_EQ(afterParity.reason, RenderCore::RenderBackendSelection::Reason::AutomaticQualifiedVulkan);
+        EXPECT_EQ(afterParity.missingVsgCompatibilityFacets, 0u);
+    }
+
+    TEST(RenderCoreBackendSelection, AutoNeverSelectsAnUnqualifiedVulkanOnlyBuild)
+    {
+        RenderCore::RenderBackendCapabilities capabilities;
+        capabilities.legacyOpenGL = false;
+        capabilities.vsgVulkan = true;
+
+        const auto automatic = RenderCore::selectRenderBackend({}, capabilities);
+        EXPECT_FALSE(automatic.valid);
+
+        const auto explicitVulkan = RenderCore::selectRenderBackend(
+            { RenderCore::RenderBackendPreference::VsgVulkan, false }, capabilities);
+        ASSERT_TRUE(explicitVulkan.valid);
+        EXPECT_EQ(explicitVulkan.backend, RenderCore::RenderBackendKind::VsgVulkan);
+
+        const auto unsafeLegacyFallback = RenderCore::selectRenderBackend(
+            { RenderCore::RenderBackendPreference::LegacyOpenGL, true }, capabilities);
+        EXPECT_FALSE(unsafeLegacyFallback.valid);
+
+        capabilities.vsgVulkanCompatibilityFacets = RenderCore::RequiredAutomaticVsgCompatibility;
+        const auto qualifiedLegacyFallback = RenderCore::selectRenderBackend(
+            { RenderCore::RenderBackendPreference::LegacyOpenGL, true }, capabilities);
+        ASSERT_TRUE(qualifiedLegacyFallback.valid);
+        EXPECT_TRUE(qualifiedLegacyFallback.fellBack);
+        EXPECT_EQ(qualifiedLegacyFallback.backend, RenderCore::RenderBackendKind::VsgVulkan);
     }
 
     TEST(RenderCoreRenderer, FrameMustMatchPublishedWorldAndLiveReferences)

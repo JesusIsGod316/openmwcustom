@@ -4,7 +4,8 @@ CP3C connects the accepted CP3B neutral static-NIF path to a production Vulkan
 runtime. The implementation is deliberately incremental, but the compatibility
 boundary is not: Vulkan must not become the automatic backend until content,
 actors, terrain, environment, UI/composition, post-processing, shader mods,
-multiview, auxiliary views, and gameplay/save/Lua integration are qualified.
+multiview, auxiliary views, gameplay/save/Lua integration, and configuration/
+content discovery are qualified.
 
 ## First ownership batch
 
@@ -32,6 +33,13 @@ The bridge is source-checked against VSG 1.1.15 commit
 `599a8c5c61cbb993079261b2ada99bd843badf5b`, the exact dereferenced upstream
 tag identity used by the CP3C gate.
 
+The startup-selection slice adds canonical `auto`, `opengl`, and `vulkan`
+configuration values plus a strict/fallback control. The production executable
+continues to advertise only OpenGL until its distinct Vulkan bootstrap and real
+semantic producer are connected. `Auto` also fails closed rather than selecting
+an unqualified Vulkan-only build, and fallback from OpenGL to Vulkan is permitted
+only after the complete automatic-compatibility mask passes.
+
 ## Cheap local checks
 
 ```sh
@@ -42,6 +50,10 @@ g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
 g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
   tools/v4/cp3c/static-world-plan-smoke.cpp -o /tmp/v4-cp3c-static-world-plan-smoke
 /tmp/v4-cp3c-static-world-plan-smoke
+
+g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+  tools/v4/cp3c/backend-selection-smoke.cpp -o /tmp/v4-cp3c-backend-selection-smoke
+/tmp/v4-cp3c-backend-selection-smoke
 ```
 
 The second target requires GLM include paths in the compiler environment.
