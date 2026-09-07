@@ -75,9 +75,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output", required=True, type=pathlib.Path, help="aggregate corpus report JSON")
     parser.add_argument("--lod-distance", type=float, default=0.0)
-    parser.add_argument("--camera-distance", type=float, default=500.0)
+    parser.add_argument("--camera-distance", type=float, default=0.0)
     parser.add_argument("--render-id", action="append", default=[], help="asset id to visibly render instead of realize-only")
-    parser.add_argument("--render-frames", type=int, default=120, help="frame count for each --render-id asset")
+    parser.add_argument(
+        "--render-frames",
+        type=int,
+        default=600,
+        help="frame count for each --render-id asset; visible renders use deterministic 360-degree orbit",
+    )
     parser.add_argument(
         "--determinism-runs",
         type=int,
@@ -235,7 +240,7 @@ def command_for_asset(args: argparse.Namespace, asset: dict[str, Any], report_pa
     command.extend(["--camera-distance", str(args.camera_distance)])
     command.extend(["--report-json", str(report_path)])
     if asset["id"] in args.render_id:
-        command.extend(["--frames", str(args.render_frames)])
+        command.extend(["--frames", str(args.render_frames), "--orbit"])
     else:
         command.append("--realize-only")
     return command
@@ -365,6 +370,8 @@ def main() -> int:
         require(args.data, "at least one --data root is required")
         require(args.determinism_runs >= 1, "--determinism-runs must be at least 1")
         require(args.render_frames >= 0, "--render-frames must be non-negative")
+        if args.render_id:
+            require(args.render_frames > 0, "visible --render-id orbit requires --render-frames greater than zero")
         require(args.timeout > 0, "--timeout must be greater than zero")
         require(args.tool.is_file(), f"tool does not exist: {args.tool}")
         require(args.manifest.is_file(), f"manifest does not exist: {args.manifest}")
@@ -387,6 +394,8 @@ def main() -> int:
             "manifestSha256": sha256_file(args.manifest),
             "encoding": args.encoding,
             "determinismRuns": args.determinism_runs,
+            "visibleRenderMode": "bounds-centered-orbit" if args.render_id else "none",
+            "renderFrames": args.render_frames if args.render_id else 0,
             "requiredTags": manifest.get("requiredTags", []),
             "coveredTags": covered_tags,
             "passed": passed,
