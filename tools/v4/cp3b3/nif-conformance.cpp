@@ -46,6 +46,7 @@ namespace
         int frameLimit = -1;
         bool realizeOnly = false;
         bool diagnosticBox = false;
+        bool orbit = false;
         bool help = false;
     };
 
@@ -100,6 +101,7 @@ namespace
                "  --lod-distance <value>     Static LOD selection eye distance (default 0).\n"
                "  --camera-distance <value> Camera distance; 0 auto-frames realized scene bounds (default 0).\n"
                "  --frames <count>           Render exactly count frames, then exit.\n"
+               "  --orbit                    Orbit 360 degrees around scene bounds over the render frame budget.\n"
                "  --diagnostic-box           Add an unlit VSG reference box beside the NIF for GPU-path diagnosis.\n"
                "  --realize-only             Parse/translate/publish/plan/realize without opening a window.\n"
                "  --report-json <path>       Write CP3B4 machine-readable per-asset report JSON.\n"
@@ -125,6 +127,11 @@ namespace
             if (arg == "--diagnostic-box")
             {
                 options.diagnosticBox = true;
+                continue;
+            }
+            if (arg == "--orbit")
+            {
+                options.orbit = true;
                 continue;
             }
 
@@ -204,16 +211,20 @@ namespace
                   << " materials=" << stats.materialKeys << " textureViews=" << stats.textureViewKeys
                   << " samplers=" << stats.samplerKeys << " textureLoads=" << stats.textureLoads
                   << " textureCacheHits=" << stats.textureCacheHits
-                  << " unsupportedTextureBindings=" << stats.unsupportedTextureBindings << '\n';
+                  << " unsupportedTextureBindings=" << stats.unsupportedTextureBindings
+                  << " legacyCompatibilityDraws=" << stats.legacyCompatibilityDraws
+                  << " modernPbrDraws=" << stats.modernPbrDraws << '\n';
         for (const std::string& diagnostic : result.realization.diagnostics)
             std::cout << "realization: " << diagnostic << '\n';
     }
 
-    [[nodiscard]] int renderScene(
-        vsg::ref_ptr<vsg::Node> scene, double cameraDistance, int frameLimit, bool diagnosticBox)
+    [[nodiscard]] int renderScene(vsg::ref_ptr<vsg::Node> scene, double cameraDistance, int frameLimit,
+        bool diagnosticBox, bool orbit)
     {
         if (!scene)
             throw std::runtime_error("cannot render an empty CP3B3 scene");
+        if (orbit && frameLimit <= 0)
+            throw std::runtime_error("--orbit requires --frames with a positive frame count for deterministic coverage");
         if (!SDL_Init(SDL_INIT_VIDEO))
             throw std::runtime_error(std::string("SDL_Init failed: ") + SDL_GetError());
 
@@ -266,7 +277,8 @@ namespace
             const double extentX = bounds.max.x - bounds.min.x;
             const double extentY = bounds.max.y - bounds.min.y;
             const double extentZ = bounds.max.z - bounds.min.z;
-            const double radius = std::max(0.001, 0.5 * std::sqrt(extentX * extentX + extentY * extentY + extentZ * extentZ));
+            const double radius = std::max(0.001,
+                0.5 * std::sqrt(extentX * extentX + extentY * extentY + extentZ * extentZ));
 
             constexpr double verticalFovDegrees = 45.0;
             constexpr double pi = 3.14159265358979323846;
@@ -289,18 +301,14 @@ namespace
                       << ") max=(" << bounds.max.x << ',' << bounds.max.y << ',' << bounds.max.z << ") center=("
                       << center.x << ',' << center.y << ',' << center.z << ") radius=" << radius << '\n';
             std::cout << "CP3B4 camera: mode=" << (cameraDistance > 0.0 ? "manual" : "auto")
-                      << " distance=" << resolvedCameraDistance << " eye=(" << eye.x << ',' << eye.y << ',' << eye.z
-                      << ") near=" << nearPlane << " far=" << farPlane << '\n';
+                      << (orbit ? "+orbit" : "") << " distance=" << resolvedCameraDistance << " eye=(" << eye.x << ','
+                      << eye.y << ',' << eye.z << ") near=" << nearPlane << " far=" << farPlane << '\n';
 
             auto lookAt = vsg::LookAt::create(eye, center, vsg::dvec3(0.0, 0.0, 1.0));
             auto perspective = vsg::Perspective::create(verticalFovDegrees, aspect, nearPlane, farPlane);
             auto camera = vsg::Camera::create(perspective, lookAt, vsg::ViewportState::create(extent));
 
             auto view = vsg::View::create(camera);
-            // The standard PBR shader expects view-dependent lighting state.
-            // Match VSG's createRenderGraphForView() diagnostic convention by
-            // installing a headlight explicitly rather than relying on ambient
-            // black or undefined external scene lighting.
             view->addChild(vsg::createHeadlight());
             view->addChild(scene);
 
@@ -363,6 +371,18 @@ namespace
                     break;
                 if (resizePending)
                     window->resize();
+
+                if (orbit)
+                {
+                    const double phase = static_cast<double>(renderedFrames) / static_cast<double>(frameLimit);
+                    const double angle = phase * 2.0 * pi;
+                    const double horizontalRadius = resolvedCameraDistance / std::sqrt(1.0 + 0.35 * 0.35);
+                    const double height = horizontalRadius * 0.35;
+                    lookAt->eye = vsg::dvec3(center.x + std::sin(angle) * horizontalRadius,
+                        center.y - std::cos(angle) * horizontalRadius, center.z + height);
+                    lookAt->center = center;
+                    lookAt->up = vsg::dvec3(0.0, 0.0, 1.0);
+                }
 
                 viewer->update();
                 viewer->recordAndSubmit();
@@ -462,8 +482,8 @@ int main(int argc, char** argv)
             return 0;
         }
 
-        return renderScene(
-            result.realization.root, options.cameraDistance, options.frameLimit, options.diagnosticBox);
+        return renderScene(result.realization.root, options.cameraDistance, options.frameLimit,
+            options.diagnosticBox, options.orbit);
     }
     catch (const std::exception& e)
     {
