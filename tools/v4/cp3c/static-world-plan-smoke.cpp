@@ -118,6 +118,18 @@ int main()
             "compatibility-affecting plan option stages replacement"))
         return EXIT_FAILURE;
 
+    const auto secondInstance = world.reserveInstance();
+    RenderCore::InstanceRecord secondPlacement = *world.get(fixture.instance);
+    secondPlacement.transform.translation.x = 2000.0;
+    if (!require(secondInstance && world.commit(*secondInstance, secondPlacement), "second instance publication"))
+        return EXIT_FAILURE;
+    const RenderVsg::StaticWorldMutation secondMutation = residency.prepare(world);
+    auto secondCommit = residency.commit(world, secondMutation, { std::make_shared<int>(15) });
+    if (!require(secondMutation.orderedInstances.size() == 2 && secondMutation.upserts.size() == 1,
+            "deterministic two-instance mutation")
+        || !require(secondCommit.committed && residency.residentCount() == 2, "second resident commit"))
+        return EXIT_FAILURE;
+
     RenderCore::InstanceRecord moved = *world.get(fixture.instance);
     moved.revision = RenderCore::ResourceRevision{ 2 };
     moved.transform.translation.x = 4000.0;
@@ -133,12 +145,17 @@ int main()
         || !require(residency.pendingRetirementCount() == 1, "old GPU object retained")
         || !require(residency.collect(RenderCore::FrameId{ 9 }).empty(), "in-flight object cannot retire"))
         return EXIT_FAILURE;
+    std::vector<int> residentOrder;
+    residency.forEachResident(
+        [&](const RenderVsg::StaticInstancePlan&, const std::shared_ptr<int>& value) { residentOrder.push_back(*value); });
+    if (!require(residentOrder == std::vector<int>{ 20, 15 }, "replacement preserves planner traversal order"))
+        return EXIT_FAILURE;
     auto firstRetired = residency.collect(RenderCore::FrameId{ 10 });
     if (!require(firstRetired.size() == 1 && *firstRetired.front() == 10, "completed object retires"))
         return EXIT_FAILURE;
 
     const RenderVsg::StaticWorldPlan second = RenderVsg::buildStaticWorldPlan(world);
-    if (!require(second.valid() && second.instances.size() == 1, "replacement plan")
+    if (!require(second.valid() && second.instances.size() == 2, "replacement plan")
         || !require(second.instances.front().instanceRevision == RenderCore::ResourceRevision{ 2 }, "new revision")
         || !require(RenderVsg::staticInstancePlanCurrent(world, second.instances.front()), "new plan current"))
         return EXIT_FAILURE;

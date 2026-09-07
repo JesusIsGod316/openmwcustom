@@ -6,7 +6,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -24,10 +26,15 @@ namespace RenderVsg
         {
         }
 
+        [[nodiscard]] bool canSubmit(RenderCore::FrameId frame) const noexcept
+        {
+            return frame.valid() && mMaximumFramesInFlight != 0 && !atCapacity()
+                && (!mLastSubmitted || frame > *mLastSubmitted);
+        }
+
         [[nodiscard]] bool submit(RenderCore::FrameId frame)
         {
-            if (!frame.valid() || mMaximumFramesInFlight == 0 || atCapacity()
-                || (mLastSubmitted && frame <= *mLastSubmitted))
+            if (!canSubmit(frame))
                 return false;
             mSubmitted.push_back(frame);
             mLastSubmitted = frame;
@@ -89,7 +96,12 @@ namespace RenderVsg
         }
 
         [[nodiscard]] std::size_t size() const noexcept { return mEntries.size(); }
-        void reserveAdditional(std::size_t count) { mEntries.reserve(mEntries.size() + count); }
+        void reserveAdditional(std::size_t count)
+        {
+            if (count > mEntries.max_size() - mEntries.size())
+                throw std::length_error("frame retirement queue capacity overflow");
+            mEntries.reserve(mEntries.size() + count);
+        }
 
     private:
         struct Entry

@@ -15,6 +15,71 @@
 
 namespace RenderVsg
 {
+    // VSG 1.1.15 Viewer::assignRecordAndSubmitTaskAndPresentation() constructs
+    // RecordAndSubmitTask with this hard-coded buffer count.
+    inline constexpr std::size_t VsgRecordAndSubmitRingSize = 3;
+
+    struct VsgSubmitPresentResult
+    {
+        VkResult submit = VK_SUCCESS;
+        VkResult present = VK_SUCCESS;
+
+        [[nodiscard]] bool success() const noexcept
+        {
+            return submit == VK_SUCCESS && (present == VK_SUCCESS || present == VK_SUBOPTIMAL_KHR);
+        }
+    };
+
+    // Viewer::recordAndSubmit() and Viewer::present() intentionally discard the
+    // VkResult returned by VSG 1.1.15 tasks. The production semantic backend
+    // needs truthful failure propagation, so its single-threaded path uses this
+    // checked equivalent. A future threaded host must add result collection to
+    // VSG's worker barrier instead of calling this helper concurrently.
+    [[nodiscard]] inline VsgSubmitPresentResult submitAndPresentChecked(vsg::Viewer& viewer)
+    {
+        VsgSubmitPresentResult result;
+        if (viewer.recordAndSubmitTasks.size() != 1 || viewer.presentations.size() != 1)
+        {
+            // Avoid an untrackable partial success if a later task fails. The
+            // current production-shaped host owns exactly one swapchain/task;
+            // multiview submission will need a transaction result per task.
+            result.submit = VK_ERROR_INITIALIZATION_FAILED;
+            return result;
+        }
+        vsg::FrameStamp* frameStamp = viewer.getFrameStamp();
+        if (!frameStamp)
+        {
+            result.submit = VK_ERROR_INITIALIZATION_FAILED;
+            return result;
+        }
+
+        for (const auto& task : viewer.recordAndSubmitTasks)
+        {
+            if (!task)
+            {
+                result.submit = VK_ERROR_INITIALIZATION_FAILED;
+                return result;
+            }
+            for (auto& commandGraph : task->commandGraphs)
+                commandGraph->reset();
+            result.submit = task->submit(vsg::ref_ptr<vsg::FrameStamp>(frameStamp));
+            if (result.submit != VK_SUCCESS)
+                return result;
+        }
+        for (const auto& presentation : viewer.presentations)
+        {
+            if (!presentation)
+            {
+                result.present = VK_ERROR_INITIALIZATION_FAILED;
+                return result;
+            }
+            result.present = presentation->present();
+            if (result.present != VK_SUCCESS && result.present != VK_SUBOPTIMAL_KHR)
+                return result;
+        }
+        return result;
+    }
+
     struct VsgCompletionPoll
     {
         VkResult result = VK_SUCCESS;
@@ -28,7 +93,7 @@ namespace RenderVsg
     class VsgSubmissionCompletion
     {
     public:
-        explicit VsgSubmissionCompletion(std::size_t maximumFramesInFlight = 3)
+        explicit VsgSubmissionCompletion(std::size_t maximumFramesInFlight = VsgRecordAndSubmitRingSize)
             : mTracker(maximumFramesInFlight)
         {
         }
@@ -54,20 +119,26 @@ namespace RenderVsg
             return poll;
         }
 
-        [[nodiscard]] bool canRegisterSubmission() const noexcept { return !mTracker.atCapacity(); }
+        [[nodiscard]] bool canRegisterSubmission(RenderCore::FrameId frame) const noexcept
+        {
+            return mTracker.canSubmit(frame);
+        }
 
         // Call immediately after Viewer::recordAndSubmit() for a frame that will
         // be treated as submitted by the semantic renderer.
         [[nodiscard]] bool registerSubmission(vsg::Viewer& viewer, RenderCore::FrameId frame)
         {
-            if (!mTracker.submit(frame))
-                return false;
             Submission submission;
             submission.frame = frame;
             submission.fences.reserve(viewer.recordAndSubmitTasks.size());
             for (const auto& task : viewer.recordAndSubmitTasks)
                 submission.fences.push_back(task ? task->fence(0) : nullptr);
             mSubmissions.push_back(std::move(submission));
+            if (!mTracker.submit(frame))
+            {
+                mSubmissions.pop_back();
+                return false;
+            }
             return true;
         }
 

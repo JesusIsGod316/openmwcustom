@@ -1,0 +1,85 @@
+#ifndef OPENMW_COMPONENTS_RENDER_BACKEND_VSG_VSGRUNTIMEHOST_H
+#define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_VSGRUNTIMEHOST_H
+
+#include "framecamera.hpp"
+#include "sdlvulkanwindow.hpp"
+#include "staticassetrealizer.hpp"
+#include "staticworldresidency.hpp"
+#include "vsgsubmission.hpp"
+
+#include <components/rendercore/renderer.hpp>
+
+#include <vsg/core/ref_ptr.h>
+
+#include <cstddef>
+#include <string>
+
+namespace vsg
+{
+    class Group;
+    class AmbientLight;
+    class DirectionalLight;
+    class MatrixTransform;
+    class RenderGraph;
+    class SharedObjects;
+    class View;
+    class Viewer;
+}
+
+namespace RenderVsg
+{
+    struct VsgRuntimeHostOptions
+    {
+        std::size_t maximumFramesInFlight = VsgRecordAndSubmitRingSize;
+        StaticPlanOptions staticPlan;
+    };
+
+    // Production-shaped CP3C host for one SDL-owned swapchain and one semantic
+    // main view. It intentionally fails closed on unsupported multiview or
+    // render/output scaling instead of presenting a misleading compatibility
+    // result. Engine selection remains separate so the established OpenGL host
+    // stays intact until all required compatibility facets are implemented.
+    class VsgRuntimeHost final : public RenderCore::SemanticRenderer
+    {
+    public:
+        VsgRuntimeHost(vsg::ref_ptr<SdlVulkanWindow> window, StaticTextureResolver textureResolver,
+            VsgRuntimeHostOptions options = {});
+        ~VsgRuntimeHost() override;
+
+        [[nodiscard]] RenderCore::RenderBackendKind backendKind() const noexcept override;
+        RenderCore::RenderFrameResult renderFrame(
+            const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame) override;
+        void waitIdle() override;
+
+        [[nodiscard]] std::size_t residentStaticInstanceCount() const noexcept;
+        [[nodiscard]] std::size_t pendingRetirementCount() const noexcept;
+        [[nodiscard]] const std::string& lastDiagnostic() const noexcept { return mLastDiagnostic; }
+
+    private:
+        using StaticResident = vsg::ref_ptr<vsg::MatrixTransform>;
+
+        [[nodiscard]] bool synchronizeStaticWorld(const RenderCore::RenderWorld& world);
+        [[nodiscard]] const RenderCore::FrameView* selectMainView(
+            const RenderCore::FrameRenderState& frame) const noexcept;
+        RenderCore::RenderFrameResult finish(
+            RenderCore::RenderFrameResult result, std::string diagnostic = {});
+
+        VsgRuntimeHostOptions mOptions;
+        StaticTextureResolver mTextureResolver;
+        vsg::ref_ptr<SdlVulkanWindow> mWindow;
+        vsg::ref_ptr<vsg::SharedObjects> mSharedObjects;
+        vsg::ref_ptr<vsg::Viewer> mViewer;
+        vsg::ref_ptr<vsg::Group> mSceneRoot;
+        vsg::ref_ptr<vsg::View> mView;
+        vsg::ref_ptr<vsg::RenderGraph> mRenderGraph;
+        vsg::ref_ptr<vsg::AmbientLight> mAmbientLight;
+        vsg::ref_ptr<vsg::DirectionalLight> mSunLight;
+        FrameCameraObjects mCamera;
+        StaticWorldResidency<StaticResident> mStaticResidency;
+        VsgSubmissionCompletion mCompletion;
+        std::string mLastDiagnostic;
+        bool mWaitedIdle = false;
+    };
+}
+
+#endif

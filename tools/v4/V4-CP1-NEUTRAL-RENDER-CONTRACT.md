@@ -465,6 +465,8 @@ For the primary camera and each temporal-capable view, frame state reserves:
 - previous unjittered view matrix;
 - current projection;
 - previous projection;
+- explicit clip-depth range, forward/reversed depth direction and clip-space Y direction for each projection;
+- near/far plane semantics, including an explicit infinite-far marker;
 - current jittered projection or jitter value;
 - near/far/FOV/aspect semantics;
 - camera-cut/history reset identity.
@@ -472,6 +474,11 @@ For the primary camera and each temporal-capable view, frame state reserves:
 A teleport, load, backend reset, incompatible resolution change or explicit camera cut can invalidate history by incrementing/resetting the history epoch.
 
 Previous state must be previous **rendered** state, not merely whatever simulation value happened to exist one update earlier.
+
+Raw matrices are not self-describing across OpenGL and Vulkan. The neutral projection state therefore carries its convention
+alongside the matrix. The initial Vulkan compatibility convention is zero-to-one clip depth, reversed Z and down-facing
+clip Y; adapters must declare or convert other conventions rather than relying on backend inference. This metadata is also
+part of the shader/post-processing compatibility surface used for depth reconstruction.
 
 ## 19. Explicit multi-view model
 

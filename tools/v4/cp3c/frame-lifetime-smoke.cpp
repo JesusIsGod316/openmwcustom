@@ -18,9 +18,11 @@ namespace
 int main()
 {
     RenderVsg::FrameCompletionTracker completion(2);
-    if (!require(completion.submit(RenderCore::FrameId{ 10 }), "submit 10")
+    if (!require(completion.canSubmit(RenderCore::FrameId{ 10 }), "preflight submit 10")
+        || !require(completion.submit(RenderCore::FrameId{ 10 }), "submit 10")
         || !require(completion.submit(RenderCore::FrameId{ 11 }), "submit 11")
         || !require(completion.atCapacity(), "capacity")
+        || !require(!completion.canSubmit(RenderCore::FrameId{ 12 }), "over-capacity preflight rejected")
         || !require(!completion.submit(RenderCore::FrameId{ 12 }), "over-capacity submit rejected")
         || !require(!completion.submit(RenderCore::FrameId{ 11 }), "duplicate submit rejected")
         || !require(!completion.completeThrough(RenderCore::FrameId{ 12 }), "future completion rejected"))

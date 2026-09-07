@@ -10,6 +10,35 @@
 
 namespace RenderCore
 {
+    enum class ClipDepthRange : std::uint8_t
+    {
+        NegativeOneToOne,
+        ZeroToOne,
+    };
+
+    enum class DepthDirection : std::uint8_t
+    {
+        Forward,
+        Reversed,
+    };
+
+    enum class ClipYDirection : std::uint8_t
+    {
+        Up,
+        Down,
+    };
+
+    struct ProjectionState
+    {
+        glm::mat4 matrix{ 1.0f };
+        ClipDepthRange depthRange = ClipDepthRange::ZeroToOne;
+        DepthDirection depthDirection = DepthDirection::Reversed;
+        ClipYDirection yDirection = ClipYDirection::Down;
+        double nearPlane = 0.1;
+        double farPlane = 10000.0;
+        bool infiniteFar = false;
+    };
+
     struct Extent2D
     {
         std::uint32_t width = 0;
@@ -36,7 +65,7 @@ namespace RenderCore
         WorldPosition worldPosition{ 0.0, 0.0, 0.0 };
         Rotation worldOrientation{ 1.0f, 0.0f, 0.0f, 0.0f };
         glm::mat4 view{ 1.0f };
-        glm::mat4 projection{ 1.0f };
+        ProjectionState projection;
     };
 
     struct FrameView
@@ -248,6 +277,17 @@ namespace RenderCore
         {
             return finite(value.worldPosition) && finite(value.worldOrientation) && finite(value.view)
                 && finite(value.projection);
+        }
+
+        [[nodiscard]] static bool finite(const ProjectionState& value) noexcept
+        {
+            return finite(value.matrix) && finite(value.nearPlane) && finite(value.farPlane) && value.nearPlane > 0.0
+                && (value.infiniteFar || value.farPlane > value.nearPlane)
+                && (value.depthRange == ClipDepthRange::NegativeOneToOne
+                    || value.depthRange == ClipDepthRange::ZeroToOne)
+                && (value.depthDirection == DepthDirection::Forward
+                    || value.depthDirection == DepthDirection::Reversed)
+                && (value.yDirection == ClipYDirection::Up || value.yDirection == ClipYDirection::Down);
         }
 
         [[nodiscard]] static bool finite(const FrameEnvironmentState& value) noexcept

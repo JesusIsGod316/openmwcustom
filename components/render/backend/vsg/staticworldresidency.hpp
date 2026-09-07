@@ -9,16 +9,24 @@
 #include <cstdint>
 #include <optional>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace RenderVsg
 {
+    [[nodiscard]] inline std::uint64_t staticInstanceKey(RenderCore::InstanceHandle handle) noexcept
+    {
+        return (static_cast<std::uint64_t>(handle.generation()) << 32u) | handle.slot();
+    }
+
     struct StaticWorldMutation
     {
         std::uint64_t serial = 0;
         RenderCore::WorldEpoch worldEpoch;
         RenderCore::RenderWorldRevision worldRevision;
+        std::vector<RenderCore::InstanceHandle> orderedInstances;
         std::vector<StaticInstancePlan> upserts;
         std::vector<RenderCore::InstanceHandle> removals;
         std::uint32_t simpleMeshInstancesDeferred = 0;
@@ -58,8 +66,14 @@ namespace RenderVsg
             if (!mutation.valid)
                 return mutation;
 
+            mutation.orderedInstances.reserve(plan.instances.size());
+            mutation.upserts.reserve(plan.instances.size());
+            std::unordered_set<std::uint64_t> planned;
+            planned.reserve(plan.instances.size());
             for (const StaticInstancePlan& candidate : plan.instances)
             {
+                mutation.orderedInstances.push_back(candidate.instance);
+                planned.insert(staticInstanceKey(candidate.instance));
                 const Resident* resident = find(candidate.instance);
                 if (!resident || resident->plan.instanceRevision != candidate.instanceRevision
                     || resident->plan.options != candidate.options || !staticInstancePlanCurrent(world, resident->plan))
@@ -67,10 +81,7 @@ namespace RenderVsg
             }
             for (const Resident& resident : mResidents)
             {
-                const auto found = std::find_if(plan.instances.begin(), plan.instances.end(), [&](const auto& candidate) {
-                    return candidate.instance == resident.plan.instance;
-                });
-                if (found == plan.instances.end())
+                if (!planned.contains(staticInstanceKey(resident.plan.instance)))
                     mutation.removals.push_back(resident.plan.instance);
             }
             return mutation;
@@ -93,19 +104,73 @@ namespace RenderVsg
                     return result;
             }
 
+            std::unordered_map<std::uint64_t, std::size_t> upsertIndices;
+            upsertIndices.reserve(mutation.upserts.size());
+            for (std::size_t i = 0; i < mutation.upserts.size(); ++i)
+            {
+                if (!upsertIndices.emplace(staticInstanceKey(mutation.upserts[i].instance), i).second)
+                    return result;
+            }
+            std::unordered_set<std::uint64_t> removalKeys;
+            removalKeys.reserve(mutation.removals.size());
+            for (const RenderCore::InstanceHandle handle : mutation.removals)
+            {
+                if (!removalKeys.insert(staticInstanceKey(handle)).second)
+                    return result;
+            }
             const auto replacedOrRemoved = [&](RenderCore::InstanceHandle handle) {
-                return std::find(mutation.removals.begin(), mutation.removals.end(), handle)
-                        != mutation.removals.end()
-                    || std::find_if(mutation.upserts.begin(), mutation.upserts.end(),
-                           [&](const StaticInstancePlan& plan) { return plan.instance == handle; })
-                        != mutation.upserts.end();
+                const std::uint64_t key = staticInstanceKey(handle);
+                return removalKeys.contains(key) || upsertIndices.contains(key);
             };
 
-            // Build the complete replacement set before touching live ownership.
-            // For the production vsg::ref_ptr object type this is a cheap reference
-            // copy and gives allocation/plan-copy failures a strong rollback path.
+            // Rebuild in the deterministic planner order. This is observable for
+            // legacy no-sort transparency, so replacing one instance must not
+            // silently move it to the end of backend traversal order.
             std::vector<Resident> nextResidents;
-            nextResidents.reserve(mResidents.size() + mutation.upserts.size());
+            nextResidents.reserve(mutation.orderedInstances.size());
+            std::unordered_set<std::uint64_t> orderedKeys;
+            orderedKeys.reserve(mutation.orderedInstances.size());
+            for (const RenderCore::InstanceHandle handle : mutation.orderedInstances)
+            {
+                const std::uint64_t key = staticInstanceKey(handle);
+                if (!orderedKeys.insert(key).second)
+                    return result;
+                const auto replacement = upsertIndices.find(key);
+                if (replacement != upsertIndices.end())
+                {
+                    const std::size_t index = replacement->second;
+                    nextResidents.push_back(
+                        Resident{ mutation.upserts[index], std::move(realizedUpserts[index]), std::nullopt });
+                    continue;
+                }
+                const Resident* resident = find(handle);
+                if (!resident || replacedOrRemoved(handle))
+                    return result;
+                nextResidents.push_back(*resident);
+            }
+            for (const StaticInstancePlan& upsert : mutation.upserts)
+            {
+                if (!orderedKeys.contains(staticInstanceKey(upsert.instance)))
+                    return result;
+            }
+            for (const Resident& resident : mResidents)
+            {
+                if (!replacedOrRemoved(resident.plan.instance)
+                    && !orderedKeys.contains(staticInstanceKey(resident.plan.instance)))
+                    return result;
+            }
+
+            std::unordered_map<std::uint64_t, std::size_t> nextIndex;
+            nextIndex.reserve(nextResidents.size());
+            for (std::size_t i = 0; i < nextResidents.size(); ++i)
+            {
+                if (!nextIndex.emplace(staticInstanceKey(nextResidents[i].plan.instance), i).second)
+                    return result;
+            }
+
+            // The complete replacement set exists before live ownership changes.
+            // For vsg::ref_ptr this is a cheap reference copy and provides a
+            // strong rollback path for allocation or plan-copy failures.
             std::size_t retirementCount = 0;
             std::size_t immediateCount = 0;
             for (const Resident& resident : mResidents)
@@ -113,12 +178,8 @@ namespace RenderVsg
                 if (replacedOrRemoved(resident.plan.instance))
                 {
                     resident.lastUseFrame ? ++retirementCount : ++immediateCount;
-                    continue;
                 }
-                nextResidents.push_back(resident);
             }
-            for (std::size_t i = 0; i < mutation.upserts.size(); ++i)
-                nextResidents.push_back(Resident{ mutation.upserts[i], std::move(realizedUpserts[i]), std::nullopt });
             mRetirements.reserveAdditional(retirementCount);
             result.immediatelyReleased.reserve(immediateCount);
 
@@ -132,6 +193,7 @@ namespace RenderVsg
                     result.immediatelyReleased.push_back(std::move(resident.object));
             }
             mResidents.swap(nextResidents);
+            mResidentIndex.swap(nextIndex);
             mWorldEpoch = mutation.worldEpoch;
             mWorldRevision = mutation.worldRevision;
             mLastCommittedSerial = mutation.serial;
@@ -161,6 +223,12 @@ namespace RenderVsg
         [[nodiscard]] RenderCore::WorldEpoch worldEpoch() const noexcept { return mWorldEpoch; }
         [[nodiscard]] RenderCore::RenderWorldRevision worldRevision() const noexcept { return mWorldRevision; }
 
+        [[nodiscard]] const Object* residentObject(RenderCore::InstanceHandle handle) const noexcept
+        {
+            const Resident* resident = find(handle);
+            return resident ? &resident->object : nullptr;
+        }
+
         template <class Visitor>
         void forEachResident(Visitor&& visitor) const
         {
@@ -178,19 +246,24 @@ namespace RenderVsg
 
         [[nodiscard]] Resident* find(RenderCore::InstanceHandle handle)
         {
-            const auto found = std::find_if(mResidents.begin(), mResidents.end(),
-                [&](const Resident& resident) { return resident.plan.instance == handle; });
-            return found == mResidents.end() ? nullptr : &*found;
+            const auto found = mResidentIndex.find(staticInstanceKey(handle));
+            if (found == mResidentIndex.end() || found->second >= mResidents.size()
+                || mResidents[found->second].plan.instance != handle)
+                return nullptr;
+            return &mResidents[found->second];
         }
 
         [[nodiscard]] const Resident* find(RenderCore::InstanceHandle handle) const
         {
-            const auto found = std::find_if(mResidents.begin(), mResidents.end(),
-                [&](const Resident& resident) { return resident.plan.instance == handle; });
-            return found == mResidents.end() ? nullptr : &*found;
+            const auto found = mResidentIndex.find(staticInstanceKey(handle));
+            if (found == mResidentIndex.end() || found->second >= mResidents.size()
+                || mResidents[found->second].plan.instance != handle)
+                return nullptr;
+            return &mResidents[found->second];
         }
 
         std::vector<Resident> mResidents;
+        std::unordered_map<std::uint64_t, std::size_t> mResidentIndex;
         FrameRetirementQueue<Object> mRetirements;
         RenderCore::WorldEpoch mWorldEpoch;
         RenderCore::RenderWorldRevision mWorldRevision;

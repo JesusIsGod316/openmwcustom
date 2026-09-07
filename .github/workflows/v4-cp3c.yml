@@ -62,9 +62,17 @@ jobs:
           /tmp/v4-cp3c-static-world-plan-smoke
           g++ "${common[@]}" tools/v4/cp3c/frame-lifetime-smoke.cpp -o /tmp/v4-cp3c-frame-lifetime-smoke
           /tmp/v4-cp3c-frame-lifetime-smoke
+          g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
+            tools/v4/cp3c/frame-camera-smoke.cpp -o /tmp/v4-cp3c-frame-camera-smoke
+          /tmp/v4-cp3c-frame-camera-smoke
           printf '#include <components/render/backend/vsg/vsgsubmission.hpp>\n' |
             g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
               -x c++ -c -o /tmp/v4-cp3c-vsgsubmission.o -
+          printf '#include <components/render/backend/vsg/framecamera.hpp>\n' |
+            g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
+              -x c++ -c -o /tmp/v4-cp3c-framecamera.o -
+          g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
+            -c components/render/backend/vsg/vsgruntimehost.cpp -o /tmp/v4-cp3c-runtime-host.o
 
       - name: Retain relevant CP3B neutral planning regressions
         shell: bash
