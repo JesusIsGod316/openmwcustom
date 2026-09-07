@@ -34,8 +34,8 @@ jobs:
             echo 'RenderCore common boundary contains a forbidden backend/game/source-format dependency' >&2
             exit 1
           fi
-          grep -F 'RenderCompatibilityFacet::ShaderModSurface' components/rendercore/renderer.hpp
-          grep -F 'RequiredAutomaticVsgCompatibility' components/rendercore/renderer.hpp
+          grep -F 'RenderCompatibilityFacet::ShaderModSurface' components/rendercore/backendselection.hpp
+          grep -F 'RequiredAutomaticVsgCompatibility' components/rendercore/backendselection.hpp
 
       - name: Install lightweight compile dependency
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglm-dev libvulkan-dev
@@ -83,6 +83,7 @@ jobs:
           grep -F 'renderer backend = auto' files/settings-default.cfg
           grep -F 'renderer fallback = true' files/settings-default.cfg
           grep -F 'selectConfiguredRenderBackend()' apps/openmw/engine.cpp
+          grep -F '#include <components/rendercore/backendselection.hpp>' apps/openmw/engine.cpp
           grep -F '.vsgVulkan = false' apps/openmw/engine.cpp
           grep -F 'Selected renderer has no engine bootstrap path' apps/openmw/engine.cpp
 

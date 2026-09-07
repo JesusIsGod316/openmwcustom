@@ -39,6 +39,9 @@ continues to advertise only OpenGL until its distinct Vulkan bootstrap and real
 semantic producer are connected. `Auto` also fails closed rather than selecting
 an unqualified Vulkan-only build, and fallback from OpenGL to Vulkan is permitted
 only after the complete automatic-compatibility mask passes.
+Startup policy is isolated in the GLM-free `backendselection.hpp`, so wiring the
+selector into the existing executable does not add semantic-world math or modern
+backend dependencies to the OpenGL build.
 
 ## Cheap local checks
 

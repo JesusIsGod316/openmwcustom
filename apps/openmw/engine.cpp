@@ -37,7 +37,7 @@
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/stats.hpp>
 
-#include <components/rendercore/renderer.hpp>
+#include <components/rendercore/backendselection.hpp>
 
 #include <components/compiler/extensions0.hpp>
 

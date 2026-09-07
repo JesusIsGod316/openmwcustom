@@ -32,6 +32,8 @@ This batch establishes a production-shaped, single-window Vulkan/VSG host behind
   semantics cannot be hidden inside the broader gameplay/save/Lua qualification bit.
 - `Auto` fails closed in an unqualified Vulkan-only build, and an OpenGL request may fall back to Vulkan only after the
   complete parity mask passes.
+- Startup policy lives in the GLM-free `backendselection.hpp`; the OpenGL engine does not inherit semantic world/math or
+  Vulkan/VSG dependencies merely to choose a renderer. `renderer.hpp` layers the heavier frame/world service on top.
 
 ## Deliberate fail-closed boundaries
 
