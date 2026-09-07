@@ -151,7 +151,8 @@ namespace RenderCore
         bool update(InstanceHandle handle, InstanceRecord record)
         {
             const InstanceRecord* current = mInstances.get(handle);
-            if (!current || record.chunk != current->chunk || !validateInstanceReferences(handle, record))
+            if (!current || !record.revision.valid() || record.revision <= current->revision
+                || record.chunk != current->chunk || !validateInstanceReferences(handle, record))
                 return false;
             if (record.chunk && !chunkContainsExactlyOnce(*record.chunk, handle))
                 return false;
@@ -177,7 +178,8 @@ namespace RenderCore
                 return false;
 
             const auto nextRevision = advanceMonotonic(mRevision);
-            if (!nextRevision)
+            const auto nextInstanceRevision = advanceMonotonic(instance->revision);
+            if (!nextRevision || !nextInstanceRevision)
                 return false;
 
             if (newRecord)
@@ -188,6 +190,7 @@ namespace RenderCore
                 oldRecord->members.erase(oldMember);
             }
             instance->chunk = newChunk;
+            instance->revision = *nextInstanceRevision;
             mRevision = *nextRevision;
             return true;
         }
@@ -267,6 +270,30 @@ namespace RenderCore
         [[nodiscard]] const InstanceRecord* get(InstanceHandle handle) const noexcept { return mInstances.get(handle); }
         [[nodiscard]] const ChunkRecord* get(ChunkHandle handle) const noexcept { return mChunks.get(handle); }
         [[nodiscard]] const LightRecord* get(LightHandle handle) const noexcept { return mLights.get(handle); }
+
+        // Stable read-only walks are the production backend's discovery surface.
+        // Slot order is deterministic for an ordered publication stream; callers
+        // receive semantic handles and records, never SlotTable or backend state.
+        template <class Fn>
+        void forEachMesh(Fn&& fn) const { mMeshes.forEachLive(std::forward<Fn>(fn)); }
+        template <class Fn>
+        void forEachModel(Fn&& fn) const { mModels.forEachLive(std::forward<Fn>(fn)); }
+        template <class Fn>
+        void forEachMaterial(Fn&& fn) const { mMaterials.forEachLive(std::forward<Fn>(fn)); }
+        template <class Fn>
+        void forEachTexture(Fn&& fn) const { mTextures.forEachLive(std::forward<Fn>(fn)); }
+        template <class Fn>
+        void forEachSkeleton(Fn&& fn) const { mSkeletons.forEachLive(std::forward<Fn>(fn)); }
+        template <class Fn>
+        void forEachInstance(Fn&& fn) const { mInstances.forEachLive(std::forward<Fn>(fn)); }
+        template <class Fn>
+        void forEachChunk(Fn&& fn) const { mChunks.forEachLive(std::forward<Fn>(fn)); }
+        template <class Fn>
+        void forEachLight(Fn&& fn) const { mLights.forEachLive(std::forward<Fn>(fn)); }
+
+        [[nodiscard]] std::size_t instanceCount() const noexcept { return mInstances.liveCount(); }
+        [[nodiscard]] std::size_t chunkCount() const noexcept { return mChunks.liveCount(); }
+        [[nodiscard]] std::size_t lightCount() const noexcept { return mLights.liveCount(); }
 
         [[nodiscard]] bool valid() const noexcept
         {
@@ -436,6 +463,8 @@ namespace RenderCore
 
         [[nodiscard]] bool validateInstanceReferences(InstanceHandle self, const InstanceRecord& record) const noexcept
         {
+            if (!record.revision.valid())
+                return false;
             const bool hasMesh = record.mesh.valid();
             const bool hasModel = record.model.has_value();
             if (hasMesh == hasModel)

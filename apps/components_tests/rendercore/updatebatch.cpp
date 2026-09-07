@@ -112,13 +112,19 @@ namespace
         RenderCore::RenderBackendCapabilities capabilities;
         capabilities.legacyOpenGL = true;
         capabilities.vsgVulkan = true;
-        capabilities.vsgVulkanCompatibilityQualified = false;
 
         const auto beforeParity = RenderCore::selectRenderBackend({}, capabilities);
         ASSERT_TRUE(beforeParity.valid);
         EXPECT_EQ(beforeParity.backend, RenderCore::RenderBackendKind::LegacyOpenGL);
 
-        capabilities.vsgVulkanCompatibilityQualified = true;
+        capabilities.vsgVulkanCompatibilityFacets
+            = RenderCore::RequiredAutomaticVsgCompatibility
+            & ~RenderCore::compatibilityFacet(RenderCore::RenderCompatibilityFacet::ShaderModSurface);
+        const auto withoutShaderMods = RenderCore::selectRenderBackend({}, capabilities);
+        ASSERT_TRUE(withoutShaderMods.valid);
+        EXPECT_EQ(withoutShaderMods.backend, RenderCore::RenderBackendKind::LegacyOpenGL);
+
+        capabilities.vsgVulkanCompatibilityFacets = RenderCore::RequiredAutomaticVsgCompatibility;
         const auto afterParity = RenderCore::selectRenderBackend({}, capabilities);
         ASSERT_TRUE(afterParity.valid);
         EXPECT_EQ(afterParity.backend, RenderCore::RenderBackendKind::VsgVulkan);

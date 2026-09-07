@@ -1,0 +1,69 @@
+name: V4.0 CP3C runtime integration QC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp3c-runtime-integration]
+
+concurrency:
+  group: v4-cp3c-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  OwnershipContracts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact CP3C head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact accepted CP3B ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          CP3B_BASE=e11cb067eafc30972655a8836376320256c33159
+          git cat-file -e "${CP3B_BASE}^{commit}"
+          test "$(git merge-base "${CP3B_BASE}" HEAD)" = "${CP3B_BASE}"
+
+      - name: Enforce neutral RenderCore purity and compatibility gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '#include[[:space:]]*[<"](osg|osgViewer|osgUtil|vsg|vulkan|apps/openmw|components/mwworld|components/nif)|\b(osg|osgViewer|osgUtil|vsg)::|\bVk[A-Z]|\bMWWorld::|\bNif::' components/rendercore; then
+            echo 'RenderCore common boundary contains a forbidden backend/game/source-format dependency' >&2
+            exit 1
+          fi
+          grep -F 'RenderCompatibilityFacet::ShaderModSurface' components/rendercore/renderer.hpp
+          grep -F 'RequiredAutomaticVsgCompatibility' components/rendercore/renderer.hpp
+
+      - name: Install lightweight compile dependency
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglm-dev
+
+      - name: Compile and run CP3C ownership contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          common=(-std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I.)
+          g++ "${common[@]}" tools/v4/cp3c/static-world-plan-smoke.cpp -o /tmp/v4-cp3c-static-world-plan-smoke
+          /tmp/v4-cp3c-static-world-plan-smoke
+          g++ "${common[@]}" tools/v4/cp3c/frame-lifetime-smoke.cpp -o /tmp/v4-cp3c-frame-lifetime-smoke
+          /tmp/v4-cp3c-frame-lifetime-smoke
+
+      - name: Retain relevant CP3B neutral planning regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          common=(-std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I.)
+          for source in \
+            tools/v4/cp3b/rendercore-semantic-smoke.cpp \
+            tools/v4/cp3b/static-asset-plan-smoke.cpp \
+            tools/v4/cp3b/static-sort-policy-smoke.cpp \
+            tools/v4/cp3b/texture-identity-smoke.cpp; do
+            output="/tmp/$(basename "${source}" .cpp)"
+            g++ "${common[@]}" "${source}" -o "${output}"
+            "${output}"
+          done
+
+      - name: Check changed-source whitespace
+        run: git diff --check e11cb067eafc30972655a8836376320256c33159 HEAD -- .

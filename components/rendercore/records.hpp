@@ -743,6 +743,11 @@ namespace RenderCore
 
     struct InstanceRecord
     {
+        // Instance placement and visibility are mutable independently from the
+        // referenced model resources. Backends use this revision together with
+        // the generation-safe handle to reject stale placement/residency work
+        // without rebuilding every instance after an unrelated world update.
+        ResourceRevision revision = InitialResourceRevision;
         // Canonical semantic ownership. ChunkRecord::members is a derived ordered
         // reverse index maintained only by RenderWorld publication operations.
         std::optional<ChunkHandle> chunk;

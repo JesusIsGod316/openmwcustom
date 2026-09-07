@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <vector>
+
 namespace
 {
     struct BasicWorldHandles
@@ -135,12 +137,54 @@ namespace
         EXPECT_EQ(newChunk->members.front(), handles.instance);
         ASSERT_TRUE(instance->chunk);
         EXPECT_EQ(*instance->chunk, *secondChunk);
+        EXPECT_EQ(instance->revision, RenderCore::ResourceRevision{ 2 });
         EXPECT_TRUE(world.valid());
 
         const auto noOpRevision = world.revision();
         EXPECT_TRUE(world.reparentInstance(handles.instance, *secondChunk));
         EXPECT_EQ(world.revision(), noOpRevision);
         EXPECT_EQ(world.get(*secondChunk)->members.size(), 1u);
+    }
+
+    TEST(RenderWorld, InstanceUpdatesRequireMonotonicRevision)
+    {
+        RenderCore::RenderWorld world;
+        const BasicWorldHandles handles = populateBasicWorld(world);
+        ASSERT_TRUE(handles.instance.valid());
+
+        RenderCore::InstanceRecord stale = *world.get(handles.instance);
+        stale.transform.translation.x += 1.0;
+        const auto worldRevision = world.revision();
+        EXPECT_FALSE(world.update(handles.instance, stale));
+        EXPECT_EQ(world.revision(), worldRevision);
+
+        stale.revision = RenderCore::ResourceRevision{ 2 };
+        EXPECT_TRUE(world.update(handles.instance, stale));
+        ASSERT_NE(world.get(handles.instance), nullptr);
+        EXPECT_EQ(world.get(handles.instance)->revision, RenderCore::ResourceRevision{ 2 });
+        EXPECT_DOUBLE_EQ(world.get(handles.instance)->transform.translation.x, 101.0);
+    }
+
+    TEST(RenderWorld, ReadOnlyWalksExposeStableHandleOrderedWorld)
+    {
+        RenderCore::RenderWorld world;
+        const BasicWorldHandles handles = populateBasicWorld(world);
+        ASSERT_TRUE(handles.instance.valid());
+
+        std::vector<RenderCore::InstanceHandle> instances;
+        std::vector<RenderCore::ChunkHandle> chunks;
+        world.forEachInstance([&](RenderCore::InstanceHandle handle, const RenderCore::InstanceRecord&) {
+            instances.push_back(handle);
+        });
+        world.forEachChunk([&](RenderCore::ChunkHandle handle, const RenderCore::ChunkRecord&) {
+            chunks.push_back(handle);
+        });
+
+        EXPECT_EQ(instances, std::vector<RenderCore::InstanceHandle>{ handles.instance });
+        EXPECT_EQ(chunks, std::vector<RenderCore::ChunkHandle>{ handles.chunk });
+        EXPECT_EQ(world.instanceCount(), 1u);
+        EXPECT_EQ(world.chunkCount(), 1u);
+        EXPECT_EQ(world.lightCount(), 0u);
     }
 
     TEST(RenderWorld, GenericUpdatesCannotBypassChunkOwnership)
