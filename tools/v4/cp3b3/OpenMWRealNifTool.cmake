@@ -33,6 +33,7 @@ function(openmw_cp3b3_define_real_nif_tool)
         "${CMAKE_SOURCE_DIR}/tools/v4/cp3b3/nif-conformance.cpp"
         "${CMAKE_SOURCE_DIR}/components/nifrender/niftranslator.cpp"
         "${CMAKE_SOURCE_DIR}/components/nifrender/staticniftranslator.cpp"
+        "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/legacymaterialshader.cpp"
         "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/sdlvulkanwindow.cpp"
         "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/staticassetrealizer.cpp"
         "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/staticassetconformance.cpp"

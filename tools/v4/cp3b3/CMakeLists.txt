@@ -17,6 +17,7 @@ find_package(vsgXchange CONFIG REQUIRED)
 get_filename_component(OPENMW_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 
 add_library(openmw_cp3b3_vsg STATIC
+    "${OPENMW_ROOT}/components/render/backend/vsg/legacymaterialshader.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/staticassetrealizer.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/staticassetconformance.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/statictexturedecode.cpp")
@@ -37,6 +38,13 @@ if(MSVC)
     target_compile_options(openmw-vulkan-static-realizer-smoke PRIVATE /W4 /WX /permissive-)
 endif()
 
+add_executable(openmw-vulkan-legacy-material-shader-smoke legacy-material-shader-smoke.cpp)
+target_include_directories(openmw-vulkan-legacy-material-shader-smoke PRIVATE "${OPENMW_ROOT}")
+target_link_libraries(openmw-vulkan-legacy-material-shader-smoke PRIVATE openmw_cp3b3_vsg)
+if(MSVC)
+    target_compile_options(openmw-vulkan-legacy-material-shader-smoke PRIVATE /W4 /WX /permissive-)
+endif()
+
 add_executable(openmw-vulkan-static-conformance-routing-smoke conformance-routing-smoke.cpp)
 target_include_directories(openmw-vulkan-static-conformance-routing-smoke PRIVATE "${OPENMW_ROOT}")
 target_link_libraries(openmw-vulkan-static-conformance-routing-smoke PRIVATE openmw_cp3b3_vsg)
@@ -46,4 +54,5 @@ endif()
 
 enable_testing()
 add_test(NAME openmw-vulkan-static-realizer-smoke COMMAND openmw-vulkan-static-realizer-smoke)
+add_test(NAME openmw-vulkan-legacy-material-shader-smoke COMMAND openmw-vulkan-legacy-material-shader-smoke)
 add_test(NAME openmw-vulkan-static-conformance-routing-smoke COMMAND openmw-vulkan-static-conformance-routing-smoke)
