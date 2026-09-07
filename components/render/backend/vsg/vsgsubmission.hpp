@@ -4,7 +4,10 @@
 #include "framecompletion.hpp"
 
 #include <vsg/app/Viewer.h>
+#include <vsg/app/Presentation.h>
 #include <vsg/vk/Fence.h>
+#include <vsg/vk/Queue.h>
+#include <vsg/vk/Swapchain.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +32,56 @@ namespace RenderVsg
             return submit == VK_SUCCESS && (present == VK_SUCCESS || present == VK_SUBOPTIMAL_KHR);
         }
     };
+
+    // VSG 1.1.15 does not mark Presentation with VSG_DECLSPEC, so calling
+    // Presentation::present() directly fails to link against its Windows shared
+    // library. Keep the checked path by reproducing that pinned implementation
+    // through exported/public Queue, Window, Swapchain and Semaphore APIs.
+    [[nodiscard]] inline VkResult presentChecked(vsg::Presentation& presentation)
+    {
+        if (!presentation.queue)
+            return VK_ERROR_INITIALIZATION_FAILED;
+
+        std::vector<VkSemaphore> semaphores;
+        semaphores.reserve(presentation.waitSemaphores.size() + presentation.windows.size());
+        for (const auto& semaphore : presentation.waitSemaphores)
+        {
+            if (!semaphore)
+                return VK_ERROR_INITIALIZATION_FAILED;
+            semaphores.push_back(semaphore->vk());
+        }
+
+        std::vector<VkSwapchainKHR> swapchains;
+        std::vector<std::uint32_t> imageIndices;
+        swapchains.reserve(presentation.windows.size());
+        imageIndices.reserve(presentation.windows.size());
+        for (const auto& window : presentation.windows)
+        {
+            if (!window)
+                return VK_ERROR_INITIALIZATION_FAILED;
+            const std::size_t imageIndex = window->imageIndex();
+            if (!window->visible() || imageIndex >= window->numFrames())
+                continue;
+            const vsg::ref_ptr<vsg::Swapchain> swapchain = window->getOrCreateSwapchain();
+            const vsg::ref_ptr<vsg::Semaphore>& renderFinished = window->frame(imageIndex).renderFinishedSemaphore;
+            if (!swapchain || !renderFinished)
+                return VK_ERROR_INITIALIZATION_FAILED;
+            swapchains.push_back(swapchain->vk());
+            imageIndices.push_back(static_cast<std::uint32_t>(imageIndex));
+            semaphores.push_back(renderFinished->vk());
+        }
+        if (swapchains.empty())
+            return VK_SUCCESS;
+
+        VkPresentInfoKHR info{};
+        info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        info.waitSemaphoreCount = static_cast<std::uint32_t>(semaphores.size());
+        info.pWaitSemaphores = semaphores.data();
+        info.swapchainCount = static_cast<std::uint32_t>(swapchains.size());
+        info.pSwapchains = swapchains.data();
+        info.pImageIndices = imageIndices.data();
+        return presentation.queue->present(info);
+    }
 
     // Viewer::recordAndSubmit() and Viewer::present() intentionally discard the
     // VkResult returned by VSG 1.1.15 tasks. The production semantic backend
@@ -73,7 +126,7 @@ namespace RenderVsg
                 result.present = VK_ERROR_INITIALIZATION_FAILED;
                 return result;
             }
-            result.present = presentation->present();
+            result.present = presentChecked(*presentation);
             if (result.present != VK_SUCCESS && result.present != VK_SUBOPTIMAL_KHR)
                 return result;
         }
