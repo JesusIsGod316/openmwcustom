@@ -38,9 +38,10 @@ This batch establishes a production-shaped, single-window Vulkan/VSG host behind
   identities survive transform updates and cross-cell moves while generation-safe handles reject removed or reset state.
 - Asset translation and cell publication allocate from one `RenderWorldPublisher` sequence, so later terrain, actor and
   streaming producers can share the world without independently assuming sequence 1.
-- The production OpenMW target compiles source adapters for stable cell/`RefNum` identity, authoritative static placement,
-  and the live gameplay camera's Vulkan reversed-Z/down-Y state. The adapters observe game state directly and do not scrape
-  OSG nodes or expose VSG objects.
+- The Vulkan integration target compiles production source adapters for stable cell/`RefNum` identity, authoritative static
+  placement, and the live gameplay camera's Vulkan reversed-Z/down-Y state. The adapters observe game state directly and
+  do not scrape OSG nodes or expose VSG objects. They remain outside the legacy OpenGL target graph until the explicit
+  production Vulkan factory owns GLM/VSG dependencies.
 - Published static NIF bindings are cached by normalized winning-VFS identity plus content identity. Repeated references
   reuse one logical resource graph; a mid-epoch path/content mismatch fails closed pending a real hot-reload transaction.
 - `VsgSemanticSession` gives the future engine factory one build-gated owner for the semantic world, shared publisher,
@@ -78,6 +79,8 @@ are implemented and validated.
   missing dependency rejection and world-epoch reset.
 - Static-model cache smoke covers stable reuse, no-op cache hits, shared producer sequencing, content-conflict rejection and
   generation-safe republish after a world reset.
+- The normal Windows OpenGL control build remains GLM-free; CI rejects an accidental `v4semanticsource` leak into its source
+  list, while the Windows Vulkan integration target separately compiles that adapter against its declared `glm::glm` dependency.
 
 ## Next integration step
 

@@ -59,9 +59,10 @@ and discards all source bindings when the world epoch changes. NIF asset
 publication now allocates from the same publisher sequence instead of assuming it
 is always the first producer. `MWRender::v4semanticsource` supplies the production
 game-side conversions from stable cell/`RefNum` identity, authoritative placement,
-and the live gameplay camera into RenderCore's reversed-Z/down-Y contract. It is
-compiled by the normal OpenMW target but has no side effects and contains no VSG
-or Vulkan dependency; the existing OpenGL path remains unchanged.
+and the live gameplay camera into RenderCore's reversed-Z/down-Y contract. The
+Vulkan integration target compiles this GLM-backed adapter; the legacy OpenGL
+target does not acquire a new renderer-math dependency before the explicit
+production Vulkan engine path is enabled.
 
 `StaticModelCache` retains the complete published binding for each normalized,
 winning VFS model path. Repeated cell references reuse the same neutral resources;

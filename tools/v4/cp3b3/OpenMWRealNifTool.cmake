@@ -29,6 +29,16 @@ function(openmw_cp3b3_define_real_nif_tool)
     find_package(vsg 1.1.15 CONFIG REQUIRED)
     find_package(vsgXchange CONFIG REQUIRED)
 
+    # Keep GLM/VSG semantics out of the legacy OpenGL target graph until the
+    # production Vulkan engine path is explicitly enabled. Compile the real
+    # game-state adapter here so its OpenMW-facing surface remains checked by
+    # the Vulkan integration job without adding GLM to OpenGL-only builds.
+    add_library(openmw-v4-semantic-source-compile OBJECT
+        "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4semanticsource.cpp")
+    target_include_directories(openmw-v4-semantic-source-compile PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_link_libraries(openmw-v4-semantic-source-compile PRIVATE components glm::glm)
+    target_compile_features(openmw-v4-semantic-source-compile PRIVATE cxx_std_20)
+
     add_executable(openmw-vulkan-nif-conformance
         "${CMAKE_SOURCE_DIR}/tools/v4/cp3b3/nif-conformance.cpp"
         "${CMAKE_SOURCE_DIR}/components/nifrender/niftranslator.cpp"
@@ -52,14 +62,17 @@ function(openmw_cp3b3_define_real_nif_tool)
         vsg::vsg
         vsgXchange::vsgXchange)
     target_compile_features(openmw-vulkan-nif-conformance PRIVATE cxx_std_20)
+    add_dependencies(openmw-vulkan-nif-conformance openmw-v4-semantic-source-compile)
 
     # This integration target intentionally recompiles existing OpenMW translator
     # sources in addition to CP3B3-owned code. Keep the normal high warning level
     # and conformance flags, but do not make inherited production warnings fatal.
     # The isolated CP3B3 backend targets remain warning-as-error gated.
     if(MSVC)
+        target_compile_options(openmw-v4-semantic-source-compile PRIVATE /W4 /permissive-)
         target_compile_options(openmw-vulkan-nif-conformance PRIVATE /W4 /permissive-)
     else()
+        target_compile_options(openmw-v4-semantic-source-compile PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openmw-vulkan-nif-conformance PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endfunction()

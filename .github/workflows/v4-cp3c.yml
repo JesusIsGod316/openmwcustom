@@ -106,7 +106,11 @@ jobs:
           grep -F '#include <components/rendercore/backendselection.hpp>' apps/openmw/engine.cpp
           grep -F '.vsgVulkan = false' apps/openmw/engine.cpp
           grep -F 'Selected renderer has no engine bootstrap path' apps/openmw/engine.cpp
-          grep -F 'v4semanticsource' apps/openmw/CMakeLists.txt
+          if grep -F 'v4semanticsource' apps/openmw/CMakeLists.txt; then
+            echo 'GLM-backed V4 source adapter leaked into the legacy OpenGL target graph' >&2
+            exit 1
+          fi
+          grep -F 'openmw-v4-semantic-source-compile' tools/v4/cp3b3/OpenMWRealNifTool.cmake
           grep -F 'makeV4StaticInstanceSource' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'makeV4MainCameraState' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'VsgRuntimeBootstrap::create' components/render/backend/vsg/vsgruntimebootstrap.cpp
