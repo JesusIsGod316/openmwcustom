@@ -101,6 +101,7 @@
 #include "manualref.hpp"
 #include "player.hpp"
 #include "projectilemanager.hpp"
+#include "scenerenderlifecycle.hpp"
 #include "weather.hpp"
 
 #include "contentloader.hpp"
@@ -230,7 +231,8 @@ namespace MWWorld
     }
 
     void World::init(Debug::Level maxRecastLogLevel, osgViewer::Viewer* viewer, osg::ref_ptr<osg::Group> rootNode,
-        SceneUtil::WorkQueue* workQueue, SceneUtil::UnrefQueue& unrefQueue)
+        SceneUtil::WorkQueue* workQueue, SceneUtil::UnrefQueue& unrefQueue,
+        std::unique_ptr<SceneRenderLifecycle> renderLifecycle)
     {
         mPhysics = std::make_unique<MWPhysics::PhysicsSystem>(mResourceSystem, rootNode);
 
@@ -258,7 +260,8 @@ namespace MWWorld
 
         mWeatherManager = std::make_unique<MWWorld::WeatherManager>(*mRendering, mStore);
 
-        mWorldScene = std::make_unique<Scene>(*this, *mRendering.get(), mPhysics.get(), *mNavigator);
+        mWorldScene = std::make_unique<Scene>(
+            *this, *mRendering.get(), mPhysics.get(), *mNavigator, std::move(renderLifecycle));
     }
 
     void World::fillGlobalVariables()
@@ -1107,6 +1110,7 @@ namespace MWWorld
         {
             mRendering->pagingBlacklistObject(mStore.find(ptr.getCellRef().getRefId()), ptr);
             mWorldScene->removeFromPagedRefs(newPtr);
+            mWorldScene->notifyObjectChanged(newPtr);
         }
 
         return newPtr;
@@ -1154,6 +1158,8 @@ namespace MWWorld
 
         if (ptr.getRefData().getBaseNode() != nullptr)
             mWorldScene->updateObjectScale(ptr);
+        else
+            mWorldScene->notifyObjectChanged(ptr);
 
         if (mPhysics->getActor(ptr))
         {
@@ -1207,6 +1213,8 @@ namespace MWWorld
             if (const auto object = mPhysics->getObject(ptr))
                 updateNavigatorObject(*object);
         }
+        else
+            mWorldScene->notifyObjectChanged(ptr);
     }
 
     void World::adjustPosition(const Ptr& ptr, bool force)

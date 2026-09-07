@@ -78,6 +78,9 @@ jobs:
           g++ "${common[@]}" tools/v4/cp3c/static-model-cache-smoke.cpp \
             -o /tmp/v4-cp3c-static-model-cache-smoke
           /tmp/v4-cp3c-static-model-cache-smoke
+          g++ "${common[@]}" tools/v4/cp3c/scene-render-lifecycle-smoke.cpp \
+            -o /tmp/v4-cp3c-scene-render-lifecycle-smoke
+          /tmp/v4-cp3c-scene-render-lifecycle-smoke
           g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
             tools/v4/cp3c/frame-camera-smoke.cpp -o /tmp/v4-cp3c-frame-camera-smoke
           /tmp/v4-cp3c-frame-camera-smoke
@@ -110,11 +113,22 @@ jobs:
             echo 'GLM-backed V4 source adapter leaked into the legacy OpenGL target graph' >&2
             exit 1
           fi
+          if grep -F 'v4scenerenderlifecycle' apps/openmw/CMakeLists.txt; then
+            echo 'VSG lifecycle adapter leaked into the legacy OpenGL target graph' >&2
+            exit 1
+          fi
           grep -F 'openmw-v4-semantic-source-compile' tools/v4/cp3b3/OpenMWRealNifTool.cmake
           grep -F 'makeV4StaticInstanceSource' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'makeV4MainCameraState' apps/openmw/mwrender/v4semanticsource.cpp
+          grep -F 'V4SceneRenderLifecycle::publishStaticObject' apps/openmw/mwrender/v4scenerenderlifecycle.cpp
+          grep -F 'translateStaticNif' apps/openmw/mwrender/v4scenerenderlifecycle.cpp
           grep -F 'VsgRuntimeBootstrap::create' components/render/backend/vsg/vsgruntimebootstrap.cpp
           grep -F 'VsgSemanticSession::create' components/render/backend/vsg/vsgsemanticsession.cpp
+          grep -F 'std::unique_ptr<SceneRenderLifecycle> renderLifecycle = {}' apps/openmw/mwworld/worldimp.hpp
+          grep -F 'mRenderLifecycle->cellActivated(cell)' apps/openmw/mwworld/scene.cpp
+          grep -F 'mRenderLifecycle->cellDeactivating(*cell)' apps/openmw/mwworld/scene.cpp
+          grep -F 'mRenderLifecycle->objectChanged(ptr)' apps/openmw/mwworld/scene.cpp
+          grep -F 'mRenderLifecycle->worldResetting()' apps/openmw/mwworld/scene.cpp
           grep -F -- '--runtime-host' tools/v4/cp3b3/nif-conformance.cpp
 
       - name: Retain relevant CP3B neutral planning regressions

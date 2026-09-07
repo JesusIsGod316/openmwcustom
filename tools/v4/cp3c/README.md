@@ -79,6 +79,21 @@ releases the Vulkan runtime before any logical source bindings. It is compiled i
 the real-NIF Vulkan target but is not linked into or selected by the normal
 OpenGL engine yet.
 
+The production world now exposes an optional, owned `SceneRenderLifecycle`
+boundary at the exact `MWWorld::Scene` load/unload and object mutation points.
+It receives authoritative `CellStore`/`Ptr` state, is injectable through
+`MWWorld::World::init`, and is null on the unchanged OpenGL route. Activation,
+addition, and mutation may fail an explicitly selected renderer; retirement and
+reset are `noexcept` so unload and shutdown cannot be blocked. This is the
+engine-facing seam for `VsgSemanticSession`, not an OSG-node mirroring path.
+The build-gated `V4SceneRenderLifecycle` implementation resolves each eligible
+static `Ptr` through its corrected winning VFS model path, reuses or publishes
+that NIF through `StaticModelCache`, and upserts the reference into the active
+cell producer. Missing content, translation failures, stale handles, and
+publication failures stop the explicit route instead of silently dropping an
+object. Cell and object retirement remain cleanup-safe and retain a health
+diagnostic for the engine loop.
+
 ## Cheap local checks
 
 ```sh
@@ -105,6 +120,10 @@ g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
 g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
   tools/v4/cp3c/static-model-cache-smoke.cpp -o /tmp/v4-cp3c-static-model-cache-smoke
 /tmp/v4-cp3c-static-model-cache-smoke
+
+g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+  tools/v4/cp3c/scene-render-lifecycle-smoke.cpp -o /tmp/v4-cp3c-scene-render-lifecycle-smoke
+/tmp/v4-cp3c-scene-render-lifecycle-smoke
 ```
 
 The RenderCore targets require GLM include paths in the compiler environment.

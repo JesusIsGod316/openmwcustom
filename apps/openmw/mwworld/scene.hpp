@@ -65,6 +65,7 @@ namespace MWWorld
     class Player;
     class CellStore;
     class CellPreloader;
+    class SceneRenderLifecycle;
     class World;
 
     enum class RotationOrder
@@ -124,6 +125,10 @@ namespace MWWorld
 
         std::optional<ChangeCellGridRequest> mChangeCellGridRequest;
 
+        // Optional and owned by Scene so it cannot outlive the authoritative
+        // CellStore/Ptr event source. The OpenGL control path leaves this null.
+        std::unique_ptr<SceneRenderLifecycle> mRenderLifecycle;
+
         void insertCell(CellStore& cell, Loading::Listener* loadingListener,
             const DetourNavigator::UpdateGuard* navigatorUpdateGuard);
 
@@ -153,7 +158,7 @@ namespace MWWorld
 
     public:
         Scene(MWWorld::World& world, MWRender::RenderingManager& rendering, MWPhysics::PhysicsSystem* physics,
-            DetourNavigator::Navigator& navigator);
+            DetourNavigator::Navigator& navigator, std::unique_ptr<SceneRenderLifecycle> renderLifecycle = {});
 
         ~Scene();
 
@@ -205,6 +210,7 @@ namespace MWWorld
 
         void updateObjectRotation(const Ptr& ptr, RotationOrder order);
         void updateObjectScale(const Ptr& ptr);
+        void notifyObjectChanged(const Ptr& ptr);
 
         bool isCellActive(const CellStore& cell);
 

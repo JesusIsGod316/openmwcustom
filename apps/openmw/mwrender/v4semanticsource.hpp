@@ -5,6 +5,7 @@
 #include <components/rendercore/framerenderstate.hpp>
 
 #include <optional>
+#include <string>
 
 namespace MWWorld
 {
@@ -20,6 +21,10 @@ namespace MWRender
     // deliberately consume game state, never OSG scene nodes: content-file
     // identity, active-cell ownership, placement, and the gameplay camera stay
     // authoritative regardless of the selected rendering backend.
+    [[nodiscard]] std::optional<std::string> makeV4CellIdentity(const MWWorld::CellStore& cell);
+
+    [[nodiscard]] std::optional<std::string> makeV4ReferenceIdentity(const MWWorld::Ptr& ptr);
+
     [[nodiscard]] std::optional<RenderCore::ActiveCellSource> makeV4ActiveCellSource(
         const MWWorld::CellStore& cell);
 

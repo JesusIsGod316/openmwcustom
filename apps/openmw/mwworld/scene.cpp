@@ -55,6 +55,7 @@
 #include "esmstore.hpp"
 #include "localscripts.hpp"
 #include "player.hpp"
+#include "scenerenderlifecycle.hpp"
 #include "worldimp.hpp"
 
 namespace
@@ -437,6 +438,7 @@ namespace MWWorld
         const auto rot = makeNodeRotation(ptr, order);
         setNodeRotation(ptr, mRendering, rot);
         mPhysics->updateRotation(ptr, rot);
+        notifyObjectChanged(ptr);
     }
 
     void Scene::updateObjectScale(const Ptr& ptr)
@@ -446,6 +448,14 @@ namespace MWWorld
         ptr.getClass().adjustScale(ptr, scaleVec, true);
         mRendering.scaleObject(ptr, scaleVec);
         mPhysics->updateScale(ptr);
+        notifyObjectChanged(ptr);
+    }
+
+    void Scene::notifyObjectChanged(const Ptr& ptr)
+    {
+        if (mRenderLifecycle && !ptr.isEmpty() && ptr.getCell() && isCellActive(*ptr.getCell())
+            && ptr.getRefData().isEnabled())
+            mRenderLifecycle->objectChanged(ptr);
     }
 
     void Scene::update(float duration)
@@ -594,6 +604,8 @@ namespace MWWorld
     {
         if (mActiveCells.find(cell) == mActiveCells.end())
             return;
+        if (mRenderLifecycle)
+            mRenderLifecycle->cellDeactivating(*cell);
         Debug::V3Diagnostics::writeEvent("unload_cell", cell->getCell()->getDescription());
         Debug::V3Diagnostics::ScopedCsvTimer v3UnloadTimer(
             Debug::V3Diagnostics::transitionWriter(), "unload_cell", cell->getCell()->getDescription());
@@ -675,6 +687,18 @@ namespace MWWorld
 
         assert(mActiveCells.find(&cell) == mActiveCells.end());
         mActiveCells.insert(&cell);
+        if (mRenderLifecycle)
+        {
+            try
+            {
+                mRenderLifecycle->cellActivated(cell);
+            }
+            catch (...)
+            {
+                mActiveCells.erase(&cell);
+                throw;
+            }
+        }
 
         Log(Debug::Info) << "Loading cell " << cell.getCell()->getDescription();
 
@@ -793,6 +817,9 @@ namespace MWWorld
         assert(mActiveCells.empty());
         mCurrentCell = nullptr;
         mLowestPoint = std::numeric_limits<float>::max();
+
+        if (mRenderLifecycle)
+            mRenderLifecycle->worldResetting();
 
         mPreloader->clear();
     }
@@ -1143,7 +1170,7 @@ namespace MWWorld
     }
 
     Scene::Scene(MWWorld::World& world, MWRender::RenderingManager& rendering, MWPhysics::PhysicsSystem* physics,
-        DetourNavigator::Navigator& navigator)
+        DetourNavigator::Navigator& navigator, std::unique_ptr<SceneRenderLifecycle> renderLifecycle)
         : mCurrentCell(nullptr)
         , mCellChanged(false)
         , mWorld(world)
@@ -1159,6 +1186,7 @@ namespace MWWorld
         , mV33SpeculativePreloadBudget(Settings::cells().mV33SpeculativePreloadBudget)
         , mPredictionTime(Settings::RamCache::predictionTime())
         , mLowestPoint(std::numeric_limits<float>::max())
+        , mRenderLifecycle(std::move(renderLifecycle))
     {
         mPreloader = std::make_unique<CellPreloader>(rendering.getResourceSystem(), physics->getShapeManager(),
             rendering.getTerrain(), rendering.getLandManager());
@@ -1171,6 +1199,9 @@ namespace MWWorld
 
     Scene::~Scene()
     {
+        if (mRenderLifecycle)
+            mRenderLifecycle->worldResetting();
+
         for (const osg::ref_ptr<SceneUtil::WorkItem>& v : mWorkItems)
             v->abort();
 
@@ -1326,7 +1357,11 @@ namespace MWWorld
             Debug::V3Diagnostics::ScopedCsvTimer timer(
                 Debug::V3Diagnostics::transitionWriter(), "insert_render_physics", cell.getCell()->getDescription());
             insertVisitor.insert(
-                [&](const MWWorld::Ptr& ptr) { addObject(ptr, mWorld, mPagedRefs, *mPhysics, mRendering); });
+                [&](const MWWorld::Ptr& ptr) {
+                    addObject(ptr, mWorld, mPagedRefs, *mPhysics, mRendering);
+                    if (mRenderLifecycle)
+                        mRenderLifecycle->objectAdded(ptr);
+                });
         }
         {
             Debug::V3Diagnostics::ScopedCsvTimer timer(
@@ -1392,11 +1427,16 @@ namespace MWWorld
         catch (std::exception& e)
         {
             Log(Debug::Error) << "failed to render '" << ptr.getCellRef().getRefId() << "': " << e.what();
+            return;
         }
+        if (mRenderLifecycle)
+            mRenderLifecycle->objectAdded(ptr);
     }
 
     void Scene::removeObjectFromScene(const Ptr& ptr, bool keepActive)
     {
+        if (mRenderLifecycle)
+            mRenderLifecycle->objectRemoving(ptr);
         MWBase::Environment::get().getMechanicsManager()->remove(ptr, keepActive);
         // You'd expect the sounds attached to the object to be stopped here
         // because the object is nowhere to be heard, but in Morrowind, they're not.

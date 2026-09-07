@@ -47,6 +47,14 @@ This batch establishes a production-shaped, single-window Vulkan/VSG host behind
 - `VsgSemanticSession` gives the future engine factory one build-gated owner for the semantic world, shared publisher,
   model/cell/frame producers, distinct SDL/Vulkan bootstrap and runtime host. Reset synchronizes GPU work before changing
   epoch, and member order tears the Vulkan runtime down before source bindings.
+- `MWWorld::Scene` owns an optional backend-neutral `SceneRenderLifecycle` observer and emits authoritative cell
+  activation/deactivation, object add/remove/mutation, and world-reset events. `MWWorld::World::init` accepts ownership of
+  that observer, allowing a build-gated Vulkan factory to attach before the first cell load while the OpenGL route passes
+  no observer and gains no GLM, VSG, or Vulkan dependency. Retirement/reset callbacks cannot throw during gameplay cleanup.
+- The build-gated `V4SceneRenderLifecycle` adapter uses corrected model paths from real `Ptr` state, parses the winning VFS
+  NIF, invokes the accepted CP3B static translator, publishes/reuses it through `StaticModelCache`, and upserts stable
+  reference identity into the active-cell producer. Missing models and semantic publication failures fail the explicit
+  route; dynamic/animated categories remain deferred and keep the compatibility mask incomplete.
 
 ## Deliberate fail-closed boundaries
 
@@ -84,8 +92,8 @@ are implemented and validated.
 
 ## Next integration step
 
-Connect the source adapters to a distinct, build-gated Vulkan engine bootstrap factory without disturbing the OSG viewer
-dependencies used by GUI, input, world rendering and mod-visible behavior. Do not create an SDL Vulkan window inside the
+Connect the build-gated `V4SceneRenderLifecycle` and `VsgSemanticSession` to a distinct Vulkan engine bootstrap factory
+without disturbing the OSG viewer dependencies used by GUI, input, world rendering and mod-visible behavior. Do not create an SDL Vulkan window inside the
 current hardwired OSG `Engine::createWindow()` path. The factory should own its separate window/host construction and the
 RenderWorld/publisher/active-cell/frame producer aggregate. Only after that explicit route exists may the executable
 advertise `.vsgVulkan = true`, and `Auto` must remain OpenGL while any compatibility facet is missing.

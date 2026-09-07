@@ -46,6 +46,24 @@ namespace MWRender
         }
     }
 
+    std::optional<std::string> makeV4CellIdentity(const MWWorld::CellStore& cell)
+    {
+        const MWWorld::Cell* source = cell.getCell();
+        if (!source)
+            return std::nullopt;
+        return cellIdentity(*source);
+    }
+
+    std::optional<std::string> makeV4ReferenceIdentity(const MWWorld::Ptr& ptr)
+    {
+        if (ptr.isEmpty())
+            return std::nullopt;
+        const ESM::RefNum refNum = ptr.getCellRef().getRefNum();
+        if (!refNum.isSet())
+            return std::nullopt;
+        return "ref:" + refNum.toString();
+    }
+
     std::optional<RenderCore::ActiveCellSource> makeV4ActiveCellSource(const MWWorld::CellStore& cell)
     {
         const MWWorld::Cell* source = cell.getCell();
@@ -53,7 +71,7 @@ namespace MWRender
             return std::nullopt;
 
         RenderCore::ActiveCellSource result;
-        result.identity = cellIdentity(*source);
+        result.identity = *makeV4CellIdentity(cell);
         result.worldspaceIdentity = source->getWorldSpace().serializeText();
         return result;
     }
@@ -64,16 +82,16 @@ namespace MWRender
         if (ptr.isEmpty() || !ptr.getCell() || !model.valid() || !ptr.getRefData().isEnabled()
             || ptr.getClass().isActor() || ptr.getClass().useAnim())
             return std::nullopt;
-        const ESM::RefNum refNum = ptr.getCellRef().getRefNum();
+        const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
         const std::optional<RenderCore::ActiveCellSource> cell = makeV4ActiveCellSource(*ptr.getCell());
-        if (!refNum.isSet() || !cell)
+        if (!identity || !cell)
             return std::nullopt;
 
         const ESM::Position& position = ptr.getRefData().getPosition();
         const osg::Quat rotation = Misc::Convert::makeOsgQuat(position);
         const float scale = ptr.getCellRef().getScale();
         RenderCore::StaticInstanceSource result;
-        result.identity = "ref:" + refNum.toString();
+        result.identity = *identity;
         result.cellIdentity = cell->identity;
         result.model = model;
         result.transform.translation = { position.pos[0], position.pos[1], position.pos[2] };
