@@ -162,9 +162,9 @@ int main()
     require(raster->depthBiasConstantFactor > 0.0f && raster->depthBiasSlopeFactor > 0.0f,
         "reverse-depth decal bias must move toward the camera with positive factors");
 
-    // The standard PBR bridge may render only semantics it actually expresses.
-    // Exercise the fail-closed counters so complete=true cannot silently bless
-    // promoted static material behavior that still needs a compatibility shader.
+    // The legacy compatibility path may publish only semantics it actually expresses.
+    // Exercise the remaining fail-closed counters so complete=true cannot silently bless
+    // static material behavior that still needs a dedicated compatibility variant.
     const auto unsupportedMaterial = world.reserveMaterial();
     require(unsupportedMaterial.has_value(), "failed to reserve unsupported semantic material");
     MaterialRecord unsupportedRecord;
@@ -202,8 +202,8 @@ int main()
     const RenderVsg::StaticRealizationResult unsupportedRealized
         = realizer.realize(world, *unsupportedPlan, resolver);
     require(unsupportedRealized.valid(), "unsupported semantic realization should remain inspectable");
-    require(unsupportedRealized.stats.runtimeContextEffects == 4u,
-        "unlit/emissive-vertex/texture-apply/static-UV gaps must each fail closed");
+    require(unsupportedRealized.stats.runtimeContextEffects == 3u,
+        "unlit/texture-apply/static-UV gaps must each fail closed while emissive vertex color remains supported");
 
     RenderVsg::StaticTextureDecoder decoder;
     TextureRecord warningRecord;
