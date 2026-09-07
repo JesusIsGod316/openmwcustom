@@ -50,7 +50,8 @@ jobs:
           git -C /tmp/vsg-1.1.15 fetch --depth 1 origin "${VSG_COMMIT}"
           git -C /tmp/vsg-1.1.15 checkout --detach FETCH_HEAD
           test "$(git -C /tmp/vsg-1.1.15 rev-parse HEAD)" = "${VSG_COMMIT}"
-          cmake -S /tmp/vsg-1.1.15 -B /tmp/vsg-1.1.15-build -DVSG_BUILD_TESTS=OFF
+          cmake -S /tmp/vsg-1.1.15 -B /tmp/vsg-1.1.15-build \
+            -DVSG_BUILD_TESTS=OFF -DVSG_SUPPORTS_Windowing=OFF
 
       - name: Compile and run CP3C ownership contracts
         shell: bash
