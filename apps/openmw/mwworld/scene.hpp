@@ -7,6 +7,7 @@
 
 #include "positioncellgrid.hpp"
 #include "ptr.hpp"
+#include "scenerenderlifecycle.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -65,7 +66,6 @@ namespace MWWorld
     class Player;
     class CellStore;
     class CellPreloader;
-    class SceneRenderLifecycle;
     class World;
 
     enum class RotationOrder

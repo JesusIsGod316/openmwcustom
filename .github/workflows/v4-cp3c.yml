@@ -125,6 +125,7 @@ jobs:
           grep -F 'VsgRuntimeBootstrap::create' components/render/backend/vsg/vsgruntimebootstrap.cpp
           grep -F 'VsgSemanticSession::create' components/render/backend/vsg/vsgsemanticsession.cpp
           grep -F 'std::unique_ptr<SceneRenderLifecycle> renderLifecycle = {}' apps/openmw/mwworld/worldimp.hpp
+          grep -F '#include "scenerenderlifecycle.hpp"' apps/openmw/mwworld/scene.hpp
           grep -F 'mRenderLifecycle->cellActivated(cell)' apps/openmw/mwworld/scene.cpp
           grep -F 'mRenderLifecycle->cellDeactivating(*cell)' apps/openmw/mwworld/scene.cpp
           grep -F 'mRenderLifecycle->objectChanged(ptr)' apps/openmw/mwworld/scene.cpp
