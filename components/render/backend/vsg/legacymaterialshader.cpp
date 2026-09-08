@@ -198,7 +198,10 @@ vec3 getNormal()
         result = -result;
     return result;
 }
-
+)glsl"
+        // Keep each token below MSVC's 16,380-byte string-literal limit. Adjacent
+        // literals are concatenated without changing the shader source.
+        R"glsl(
 void main()
 {
     const int vertexColorMode = int(material.semantics.x + 0.5);

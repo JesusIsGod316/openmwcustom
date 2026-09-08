@@ -45,6 +45,8 @@ jobs:
           grep -F 'upsertLight(const CellLightSource& source)' components/rendercore/activecellproducer.hpp
           grep -F 'batch.add(RetireLight{ binding.handle })' components/rendercore/activecellproducer.hpp
           grep -F 'semantic_detail::finite(record.position)' components/rendercore/renderworld.hpp
+          perl -0777 -ne 'while (/R"glsl\((.*?)\)glsl"/sg) { die "MSVC-sized GLSL literal exceeded\n" if length($1) >= 16380 }' \
+            components/render/backend/vsg/legacymaterialshader.cpp
 
       - name: Install lightweight compile dependency
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglm-dev libvulkan-dev
