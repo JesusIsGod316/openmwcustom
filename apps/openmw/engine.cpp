@@ -1284,10 +1284,6 @@ void OMW::Engine::prepareEngine()
 
     createWindow();
 
-    mVFS = std::make_unique<VFS::Manager>();
-
-    VFS::registerArchives(mVFS.get(), mFileCollections, mArchives, true, &mEncoder.get()->getStatelessEncoder());
-
     const float effectiveResourceCacheExpiry = Settings::RamCache::cacheExpiryDelay();
     Log(Debug::Info) << "V3 RAM cache mode: " << Settings::RamCache::name()
                      << " resource expiry=" << effectiveResourceCacheExpiry << "s"
@@ -1516,6 +1512,18 @@ void OMW::Engine::prepareEngine()
     mLuaWorker = std::make_unique<MWLua::Worker>(*mLuaManager);
 }
 
+void OMW::Engine::prepareVirtualFileSystem()
+{
+    if (mVFS)
+        throw std::logic_error("Virtual file system was already prepared");
+    if (!mEncoder)
+        throw std::logic_error("Virtual file system requires the content encoder");
+
+    auto vfs = std::make_unique<VFS::Manager>();
+    VFS::registerArchives(vfs.get(), mFileCollections, mArchives, true, &mEncoder->getStatelessEncoder());
+    mVFS = std::move(vfs);
+}
+
 // Initialise and enter main loop.
 void OMW::Engine::go()
 {
@@ -1538,6 +1546,11 @@ void OMW::Engine::go()
 
     // Create encoder
     mEncoder = std::make_unique<ToUTF8::Utf8Encoder>(mEncoding);
+
+    // Renderer-independent content authority. The distinct Vulkan route must
+    // resolve the same winning mod files without first creating an OSG/OpenGL
+    // viewer or graphics window.
+    prepareVirtualFileSystem();
 
     // Setup viewer
     mViewer = new osgViewer::Viewer;

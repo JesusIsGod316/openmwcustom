@@ -38,6 +38,13 @@ namespace RenderCore
         bool lightingEnabled = true;
     };
 
+    struct CellLightSource
+    {
+        std::string identity;
+        std::string cellIdentity;
+        LightRecord light;
+    };
+
     enum class ActiveCellPublishStatus : std::uint8_t
     {
         Applied,
@@ -59,6 +66,7 @@ namespace RenderCore
         PublishStatus worldStatus = PublishStatus::OperationRejected;
         ChunkHandle chunk;
         InstanceHandle instance;
+        LightHandle light;
 
         [[nodiscard]] bool applied() const noexcept { return status == ActiveCellPublishStatus::Applied; }
     };
@@ -91,7 +99,7 @@ namespace RenderCore
             {
                 if (!mWorld.get(entry->second))
                     return failure(ActiveCellPublishStatus::PublishRejected);
-                return { ActiveCellPublishStatus::AlreadyPresent, PublishStatus::Applied, entry->second, {} };
+                return { ActiveCellPublishStatus::AlreadyPresent, PublishStatus::Applied, entry->second, {}, {} };
             }
 
             const std::optional<ChunkHandle> handle = mWorld.reserveChunk();
@@ -125,7 +133,7 @@ namespace RenderCore
                 return failure(ActiveCellPublishStatus::PublishRejected, published);
             }
             entry->second = *handle;
-            return { ActiveCellPublishStatus::Applied, published, *handle, {} };
+            return { ActiveCellPublishStatus::Applied, published, *handle, {}, {} };
         }
 
         [[nodiscard]] ActiveCellPublishResult removeCell(std::string_view identity)
@@ -146,6 +154,16 @@ namespace RenderCore
                         return failure(ActiveCellPublishStatus::BatchBuildFailed);
                 }
             }
+            std::vector<std::string> lights;
+            for (const auto& [sourceIdentity, binding] : mLights)
+            {
+                if (binding.cellIdentity == identity)
+                {
+                    lights.push_back(sourceIdentity);
+                    if (!batch.add(RetireLight{ binding.handle }))
+                        return failure(ActiveCellPublishStatus::BatchBuildFailed);
+                }
+            }
             if (!batch.sequence().valid())
                 return failure(ActiveCellPublishStatus::SequenceExhausted);
             if (!batch.add(RetireChunk{ cell->second }) || !batch.seal())
@@ -156,9 +174,11 @@ namespace RenderCore
                 return failure(ActiveCellPublishStatus::PublishRejected, published);
             for (const std::string& member : members)
                 mInstances.erase(member);
+            for (const std::string& light : lights)
+                mLights.erase(light);
             const ChunkHandle removed = cell->second;
             mCells.erase(cell);
-            return { ActiveCellPublishStatus::Applied, published, removed, {} };
+            return { ActiveCellPublishStatus::Applied, published, removed, {}, {} };
         }
 
         [[nodiscard]] ActiveCellPublishResult upsertStaticInstance(const StaticInstanceSource& source)
@@ -196,8 +216,46 @@ namespace RenderCore
 
             const InstanceHandle removed = instance->second.handle;
             mInstances.erase(instance);
-            ActiveCellPublishResult result{ ActiveCellPublishStatus::Applied, published, {}, {} };
+            ActiveCellPublishResult result{ ActiveCellPublishStatus::Applied, published, {}, {}, {} };
             result.instance = removed;
+            return result;
+        }
+
+        [[nodiscard]] ActiveCellPublishResult upsertLight(const CellLightSource& source)
+        {
+            synchronizeEpoch();
+            if (source.identity.empty() || source.cellIdentity.empty())
+                return failure(ActiveCellPublishStatus::InvalidSource);
+            const auto cell = mCells.find(source.cellIdentity);
+            if (cell == mCells.end() || !mWorld.get(cell->second))
+                return failure(ActiveCellPublishStatus::MissingCell);
+
+            const auto existing = mLights.find(source.identity);
+            if (existing == mLights.end())
+                return createLight(source);
+            return updateLight(source, existing);
+        }
+
+        [[nodiscard]] ActiveCellPublishResult removeLight(std::string_view identity)
+        {
+            synchronizeEpoch();
+            const auto light = mLights.find(identity);
+            if (light == mLights.end())
+                return failure(ActiveCellPublishStatus::NotFound);
+
+            RenderWorldUpdateBatch batch(mWorld.epoch(), nextSequence(), std::string(identity));
+            if (!batch.sequence().valid())
+                return failure(ActiveCellPublishStatus::SequenceExhausted);
+            if (!batch.add(RetireLight{ light->second.handle }) || !batch.seal())
+                return failure(ActiveCellPublishStatus::BatchBuildFailed);
+            const PublishStatus published = mPublisher.apply(batch);
+            if (published != PublishStatus::Applied)
+                return failure(ActiveCellPublishStatus::PublishRejected, published);
+
+            const LightHandle removed = light->second.handle;
+            mLights.erase(light);
+            ActiveCellPublishResult result{ ActiveCellPublishStatus::Applied, published, {}, {}, {} };
+            result.light = removed;
             return result;
         }
 
@@ -213,8 +271,15 @@ namespace RenderCore
             return found == mInstances.end() ? std::nullopt : std::optional<InstanceHandle>(found->second.handle);
         }
 
+        [[nodiscard]] std::optional<LightHandle> findLight(std::string_view identity) const
+        {
+            const auto found = mLights.find(identity);
+            return found == mLights.end() ? std::nullopt : std::optional<LightHandle>(found->second.handle);
+        }
+
         [[nodiscard]] std::size_t cellCount() const noexcept { return mCells.size(); }
         [[nodiscard]] std::size_t instanceCount() const noexcept { return mInstances.size(); }
+        [[nodiscard]] std::size_t lightCount() const noexcept { return mLights.size(); }
 
     private:
         struct InstanceBinding
@@ -225,10 +290,18 @@ namespace RenderCore
 
         using InstanceMap = std::map<std::string, InstanceBinding, std::less<>>;
 
+        struct LightBinding
+        {
+            LightHandle handle;
+            std::string cellIdentity;
+        };
+
+        using LightMap = std::map<std::string, LightBinding, std::less<>>;
+
         [[nodiscard]] static ActiveCellPublishResult failure(
             ActiveCellPublishStatus status, PublishStatus worldStatus = PublishStatus::OperationRejected)
         {
-            return { status, worldStatus, {}, {} };
+            return { status, worldStatus, {}, {}, {} };
         }
 
         void synchronizeEpoch()
@@ -238,6 +311,7 @@ namespace RenderCore
             mObservedEpoch = mWorld.epoch();
             mCells.clear();
             mInstances.clear();
+            mLights.clear();
         }
 
         [[nodiscard]] UpdateSequence nextSequence() const noexcept
@@ -296,7 +370,7 @@ namespace RenderCore
                 return failure(ActiveCellPublishStatus::PublishRejected, published);
             }
             entry->second.handle = *handle;
-            ActiveCellPublishResult result{ ActiveCellPublishStatus::Applied, published, {}, {} };
+            ActiveCellPublishResult result{ ActiveCellPublishStatus::Applied, published, {}, {}, {} };
             result.instance = *handle;
             return result;
         }
@@ -328,8 +402,73 @@ namespace RenderCore
             if (published != PublishStatus::Applied)
                 return failure(ActiveCellPublishStatus::PublishRejected, published);
             existing->second.cellIdentity = source.cellIdentity;
-            ActiveCellPublishResult result{ ActiveCellPublishStatus::Applied, published, {}, {} };
+            ActiveCellPublishResult result{ ActiveCellPublishStatus::Applied, published, {}, {}, {} };
             result.instance = existing->second.handle;
+            return result;
+        }
+
+        [[nodiscard]] ActiveCellPublishResult createLight(const CellLightSource& source)
+        {
+            const auto [entry, inserted]
+                = mLights.try_emplace(source.identity, LightBinding{ {}, source.cellIdentity });
+            if (!inserted)
+                return failure(ActiveCellPublishStatus::PublishRejected);
+            const std::optional<LightHandle> handle = mWorld.reserveLight();
+            if (!handle)
+            {
+                mLights.erase(entry);
+                return failure(ActiveCellPublishStatus::ReservationFailed);
+            }
+
+            LightRecord record = source.light;
+            record.revision = InitialResourceRevision;
+            RenderWorldUpdateBatch batch(mWorld.epoch(), nextSequence(), source.identity);
+            const bool built
+                = batch.sequence().valid() && batch.add(CreateLight{ *handle, std::move(record) }) && batch.seal();
+            if (!built)
+            {
+                mWorld.cancel(*handle);
+                mLights.erase(entry);
+                return failure(batch.sequence().valid() ? ActiveCellPublishStatus::BatchBuildFailed
+                                                        : ActiveCellPublishStatus::SequenceExhausted);
+            }
+            const PublishStatus published = mPublisher.apply(batch);
+            if (published != PublishStatus::Applied)
+            {
+                mWorld.cancel(*handle);
+                mLights.erase(entry);
+                return failure(ActiveCellPublishStatus::PublishRejected, published);
+            }
+            entry->second.handle = *handle;
+            ActiveCellPublishResult result{ ActiveCellPublishStatus::Applied, published, {}, {}, {} };
+            result.light = *handle;
+            return result;
+        }
+
+        [[nodiscard]] ActiveCellPublishResult updateLight(
+            const CellLightSource& source, LightMap::iterator existing)
+        {
+            const LightRecord* current = mWorld.get(existing->second.handle);
+            if (!current)
+                return failure(ActiveCellPublishStatus::PublishRejected);
+            const std::optional<ResourceRevision> revision = advanceMonotonic(current->revision);
+            if (!revision)
+                return failure(ActiveCellPublishStatus::ResourceRevisionExhausted);
+
+            LightRecord record = source.light;
+            record.revision = *revision;
+            RenderWorldUpdateBatch batch(mWorld.epoch(), nextSequence(), source.identity);
+            if (!batch.sequence().valid())
+                return failure(ActiveCellPublishStatus::SequenceExhausted);
+            if (!batch.add(UpdateLight{ existing->second.handle, std::move(record) }) || !batch.seal())
+                return failure(ActiveCellPublishStatus::BatchBuildFailed);
+            const PublishStatus published = mPublisher.apply(batch);
+            if (published != PublishStatus::Applied)
+                return failure(ActiveCellPublishStatus::PublishRejected, published);
+
+            existing->second.cellIdentity = source.cellIdentity;
+            ActiveCellPublishResult result{ ActiveCellPublishStatus::Applied, published, {}, {}, {} };
+            result.light = existing->second.handle;
             return result;
         }
 
@@ -338,6 +477,7 @@ namespace RenderCore
         WorldEpoch mObservedEpoch;
         std::map<std::string, ChunkHandle, std::less<>> mCells;
         InstanceMap mInstances;
+        LightMap mLights;
     };
 }
 

@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string_view>
 
@@ -68,6 +69,50 @@ int main()
         || !require(world.instanceCount() == 1 && world.chunkCount() == 2, "published population"))
         return EXIT_FAILURE;
 
+    RenderCore::CellLightSource light;
+    light.identity = "content:0/ref:lamp";
+    light.cellIdentity = balmora.identity;
+    light.light.position = { 12.0, 24.0, 36.0 };
+    light.light.diffuse = { 1.0f, 0.5f, 0.25f, 1.0f };
+    light.light.effectiveRadius = 256.0f;
+    RenderCore::CellLightSource invalidLight = light;
+    invalidLight.identity = "content:0/ref:invalid-lamp";
+    invalidLight.light.position.x = std::numeric_limits<double>::quiet_NaN();
+    if (!require(producer.upsertLight(invalidLight).status == RenderCore::ActiveCellPublishStatus::PublishRejected,
+            "non-finite light rejected")
+        || !require(world.lightCount() == 0 && producer.lightCount() == 0,
+            "rejected light leaves no reservation or source binding"))
+        return EXIT_FAILURE;
+    RenderCore::CellLightSource invalidModulation = light;
+    invalidModulation.identity = "content:0/ref:invalid-modulation";
+    invalidModulation.light.modulation = static_cast<RenderCore::LightModulation>(255);
+    if (!require(producer.upsertLight(invalidModulation).status
+                == RenderCore::ActiveCellPublishStatus::PublishRejected,
+            "unknown light modulation rejected")
+        || !require(world.lightCount() == 0 && producer.lightCount() == 0,
+            "rejected modulation leaves no reservation or source binding"))
+        return EXIT_FAILURE;
+    light.light.modulation = RenderCore::LightModulation::FlickerSlow;
+    light.light.semanticFlags = RenderCore::lightSemanticFlag(RenderCore::LightSemanticFlag::Dynamic);
+    const auto createdLight = producer.upsertLight(light);
+    if (!require(createdLight.applied() && createdLight.light.valid(), "create cell light")
+        || !require(world.lightCount() == 1 && producer.lightCount() == 1, "published light population"))
+        return EXIT_FAILURE;
+
+    light.light.position.x = 48.0;
+    light.cellIdentity = pelagiad.identity;
+    const auto updatedLight = producer.upsertLight(light);
+    const RenderCore::LightRecord* updatedLightRecord = world.get(createdLight.light);
+    if (!require(updatedLight.applied() && updatedLight.light == createdLight.light,
+            "stable handle on light update and cell move")
+        || !require(updatedLightRecord && updatedLightRecord->revision == RenderCore::ResourceRevision{ 2 }
+                && updatedLightRecord->position.x == 48.0
+                && updatedLightRecord->modulation == RenderCore::LightModulation::FlickerSlow
+                && (updatedLightRecord->semanticFlags
+                    & RenderCore::lightSemanticFlag(RenderCore::LightSemanticFlag::Dynamic)) != 0,
+            "revisioned light update preserves authored semantics"))
+        return EXIT_FAILURE;
+
     source.transform.translation.x = 40.0;
     const auto updated = producer.upsertStaticInstance(source);
     const RenderCore::InstanceRecord* updatedRecord = world.get(created.instance);
@@ -93,14 +138,16 @@ int main()
 
     if (!require(producer.removeCell(balmora.identity).applied(), "remove empty active cell")
         || !require(producer.removeCell(pelagiad.identity).applied(), "cell unload retires owned references")
-        || !require(world.instanceCount() == 0 && world.chunkCount() == 0 && producer.instanceCount() == 0,
+        || !require(world.instanceCount() == 0 && world.lightCount() == 0 && world.chunkCount() == 0
+                && producer.instanceCount() == 0 && producer.lightCount() == 0,
             "unload population cleanup")
-        || !require(!world.get(created.instance), "removed generation is stale"))
+        || !require(!world.get(created.instance) && !world.get(createdLight.light), "removed generations are stale"))
         return EXIT_FAILURE;
 
     if (!require(world.reset(), "world epoch reset")
         || !require(producer.addCell(balmora).applied(), "producer resynchronizes after epoch reset")
-        || !require(producer.cellCount() == 1 && producer.instanceCount() == 0, "epoch clears source bindings"))
+        || !require(producer.cellCount() == 1 && producer.instanceCount() == 0 && producer.lightCount() == 0,
+            "epoch clears source bindings"))
         return EXIT_FAILURE;
 
     source.cellIdentity = balmora.identity;

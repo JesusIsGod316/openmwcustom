@@ -12,6 +12,9 @@
 #include "lightmanager.hpp"
 #include "visitor.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 namespace
 {
     class CheckEmptyLightVisitor : public osg::NodeVisitor
@@ -41,12 +44,9 @@ namespace
 
 namespace SceneUtil
 {
-
-    void configureLight(SceneUtil::Light* light, float radius, bool isExterior)
+    LightAttenuation resolveLightAttenuation(float radius, bool isExterior)
     {
-        float quadraticAttenuation = 0.f;
-        float linearAttenuation = 0.f;
-        float constantAttenuation = 0.f;
+        LightAttenuation result{ 0.f, 0.f, 0.f };
 
         static const bool useConstant = Fallback::Map::getBool("LightAttenuation_UseConstant");
         static const bool useLinear = Fallback::Map::getBool("LightAttenuation_UseLinear");
@@ -65,31 +65,37 @@ namespace SceneUtil
         static const bool outQuadInLin = Fallback::Map::getBool("LightAttenuation_OutQuadInLin");
 
         if (useConstant)
-            constantAttenuation = constantValue;
+            result.constant = constantValue;
 
         if (useLinear)
         {
-            linearAttenuation = linearMethod == 0 ? linearValue : 0.01f;
+            result.linear = linearMethod == 0 ? linearValue : 0.01f;
             float r = radius * linearRadiusMult;
             if (r > 0.f && (linearMethod == 1 || linearMethod == 2))
-                linearAttenuation = linearValue / std::pow(r, static_cast<float>(linearMethod));
+                result.linear = linearValue / std::pow(r, static_cast<float>(linearMethod));
         }
 
         if (useQuadratic && (!outQuadInLin || isExterior))
         {
-            quadraticAttenuation = quadraticMethod == 0 ? quadraticValue : 0.01f;
+            result.quadratic = quadraticMethod == 0 ? quadraticValue : 0.01f;
             float r = radius * quadraticRadiusMult;
             if (r > 0.f && (quadraticMethod == 1 || quadraticMethod == 2))
-                quadraticAttenuation = quadraticValue / std::pow(r, static_cast<float>(quadraticMethod));
+                result.quadratic = quadraticValue / std::pow(r, static_cast<float>(quadraticMethod));
         }
 
         // If the values are still nonsense, try to at least prevent UB and disable attenuation
-        if (constantAttenuation == 0.f && linearAttenuation == 0.f && quadraticAttenuation == 0.f)
-            constantAttenuation = 1.f;
+        if (result.constant == 0.f && result.linear == 0.f && result.quadratic == 0.f)
+            result.constant = 1.f;
 
-        light->setConstantAttenuation(constantAttenuation);
-        light->setLinearAttenuation(linearAttenuation);
-        light->setQuadraticAttenuation(quadraticAttenuation);
+        return result;
+    }
+
+    void configureLight(SceneUtil::Light* light, float radius, bool isExterior)
+    {
+        const LightAttenuation attenuation = resolveLightAttenuation(radius, isExterior);
+        light->setConstantAttenuation(attenuation.constant);
+        light->setLinearAttenuation(attenuation.linear);
+        light->setQuadraticAttenuation(attenuation.quadratic);
     }
 
     osg::ref_ptr<LightSource> addLight(

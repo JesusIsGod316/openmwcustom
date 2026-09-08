@@ -8,10 +8,15 @@
 #include "../mwworld/ptr.hpp"
 
 #include <components/misc/convert.hpp>
+#include <components/esm3/loadligh.hpp>
+#include <components/esm4/loadligh.hpp>
+#include <components/sceneutil/lightcommon.hpp>
+#include <components/sceneutil/lightutil.hpp>
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <string>
@@ -43,6 +48,60 @@ namespace MWRender
                 return result;
             }
             return result + "/interior:" + cell.getId().serializeText();
+        }
+
+        [[nodiscard]] RenderCore::LightModulation lightModulation(const SceneUtil::LightCommon& light) noexcept
+        {
+            // Match the established controller's assignment precedence.
+            if (light.mPulseSlow)
+                return RenderCore::LightModulation::PulseSlow;
+            if (light.mPulse)
+                return RenderCore::LightModulation::Pulse;
+            if (light.mFlickerSlow)
+                return RenderCore::LightModulation::FlickerSlow;
+            if (light.mFlicker)
+                return RenderCore::LightModulation::Flicker;
+            return RenderCore::LightModulation::Constant;
+        }
+
+        [[nodiscard]] std::optional<RenderCore::CellLightSource> makeCellLightSource(const MWWorld::Ptr& ptr,
+            const SceneUtil::LightCommon& light, std::uint64_t semanticFlags)
+        {
+            const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
+            const std::optional<RenderCore::ActiveCellSource> cell = makeV4ActiveCellSource(*ptr.getCell());
+            if (!identity || !cell)
+                return std::nullopt;
+
+            const ESM::Position& position = ptr.getRefData().getPosition();
+            const float radius = std::max(light.mRadius, 16.f);
+            const bool exterior = ptr.getCell()->getCell()->isExterior();
+            const SceneUtil::LightAttenuation attenuation = SceneUtil::resolveLightAttenuation(radius, exterior);
+
+            RenderCore::CellLightSource result;
+            result.identity = *identity;
+            result.cellIdentity = cell->identity;
+            result.light.position = { position.pos[0], position.pos[1], position.pos[2] };
+            result.light.diffuse = { light.mColor.r(), light.mColor.g(), light.mColor.b(), light.mColor.a() };
+            result.light.specular = result.light.diffuse;
+            if (light.mNegative)
+            {
+                result.light.diffuse.r *= -1.f;
+                result.light.diffuse.g *= -1.f;
+                result.light.diffuse.b *= -1.f;
+                result.light.diffuse.a = 1.f;
+                result.light.specular = {};
+                semanticFlags |= RenderCore::lightSemanticFlag(RenderCore::LightSemanticFlag::Negative);
+            }
+            result.light.constantAttenuation = attenuation.constant;
+            result.light.linearAttenuation = attenuation.linear;
+            result.light.quadraticAttenuation = attenuation.quadratic;
+            result.light.effectiveRadius = radius;
+            result.light.modulation = lightModulation(light);
+            result.light.semanticFlags = semanticFlags;
+            result.light.enabled = !light.mOffDefault;
+            if (light.mOffDefault)
+                result.light.semanticFlags |= RenderCore::lightSemanticFlag(RenderCore::LightSemanticFlag::OffDefault);
+            return result;
         }
     }
 
@@ -100,6 +159,37 @@ namespace MWRender
         result.transform.scale = { scale, scale, scale };
         result.localBounds = localBounds;
         return result;
+    }
+
+    std::optional<RenderCore::CellLightSource> makeV4CellLightSource(const MWWorld::Ptr& ptr)
+    {
+        if (ptr.isEmpty() || !ptr.getCell() || !ptr.getRefData().isEnabled())
+            return std::nullopt;
+
+        std::uint64_t semanticFlags = 0;
+        if (ptr.getType() == ESM::Light::sRecordId)
+        {
+            const ESM::Light& source = *ptr.get<ESM::Light>()->mBase;
+            if (source.mData.mFlags & ESM::Light::Dynamic)
+                semanticFlags |= RenderCore::lightSemanticFlag(RenderCore::LightSemanticFlag::Dynamic);
+            if (source.mData.mFlags & ESM::Light::Carry)
+                semanticFlags |= RenderCore::lightSemanticFlag(RenderCore::LightSemanticFlag::Carryable);
+            return makeCellLightSource(ptr, SceneUtil::LightCommon(source), semanticFlags);
+        }
+        if (ptr.getType() == ESM4::Light::sRecordId)
+        {
+            const ESM4::Light& source = *ptr.get<ESM4::Light>()->mBase;
+            if (source.mData.flags & ESM4::Light::Dynamic)
+                semanticFlags |= RenderCore::lightSemanticFlag(RenderCore::LightSemanticFlag::Dynamic);
+            if (source.mData.flags & ESM4::Light::Carryable)
+                semanticFlags |= RenderCore::lightSemanticFlag(RenderCore::LightSemanticFlag::Carryable);
+            if (source.mData.flags & ESM4::Light::SpotLight)
+                semanticFlags |= RenderCore::lightSemanticFlag(RenderCore::LightSemanticFlag::Spot);
+            if (source.mData.flags & ESM4::Light::SpotShadow)
+                semanticFlags |= RenderCore::lightSemanticFlag(RenderCore::LightSemanticFlag::SpotShadow);
+            return makeCellLightSource(ptr, SceneUtil::LightCommon(source), semanticFlags);
+        }
+        return std::nullopt;
     }
 
     std::optional<RenderCore::CameraState> makeV4MainCameraState(const Camera& camera,

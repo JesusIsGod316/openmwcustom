@@ -91,6 +91,18 @@ namespace RenderCore
         bool historyValid = false;
     };
 
+    enum class FogDistanceMode : std::uint8_t
+    {
+        Planar,
+        Radial,
+    };
+
+    enum class FogFalloffMode : std::uint8_t
+    {
+        Linear,
+        Exponential,
+    };
+
     struct FrameEnvironmentState
     {
         bool interior = false;
@@ -98,6 +110,9 @@ namespace RenderCore
         Color fogColor{ 0.0f, 0.0f, 0.0f, 1.0f };
         float fogStart = 0.0f;
         float fogEnd = 0.0f;
+        FogDistanceMode fogDistanceMode = FogDistanceMode::Planar;
+        FogFalloffMode fogFalloffMode = FogFalloffMode::Linear;
+        bool fogEnabled = false;
         glm::vec3 sunDirection{ 0.0f, 0.0f, -1.0f };
         Color sunDiffuse{ 1.0f, 1.0f, 1.0f, 1.0f };
         Color sunSpecular{ 1.0f, 1.0f, 1.0f, 1.0f };
@@ -292,7 +307,13 @@ namespace RenderCore
 
         [[nodiscard]] static bool finite(const FrameEnvironmentState& value) noexcept
         {
+            const bool fogModesValid = (value.fogDistanceMode == FogDistanceMode::Planar
+                                           || value.fogDistanceMode == FogDistanceMode::Radial)
+                && (value.fogFalloffMode == FogFalloffMode::Linear
+                    || value.fogFalloffMode == FogFalloffMode::Exponential);
+            const bool fogRangeValid = !value.fogEnabled || (value.fogEnd > value.fogStart && value.fogEnd > 0.0f);
             return finite(value.ambient) && finite(value.fogColor) && finite(value.fogStart) && finite(value.fogEnd)
+                && fogModesValid && fogRangeValid
                 && finite(value.sunDirection) && finite(value.sunDiffuse) && finite(value.sunSpecular)
                 && finite(value.waterHeight);
         }

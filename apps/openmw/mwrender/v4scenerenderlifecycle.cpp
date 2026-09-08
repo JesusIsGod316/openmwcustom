@@ -6,6 +6,8 @@
 #include "../mwworld/ptr.hpp"
 
 #include <components/misc/resourcehelpers.hpp>
+#include <components/esm3/loadligh.hpp>
+#include <components/esm4/loadligh.hpp>
 #include <components/nif/niffile.hpp>
 #include <components/nifrender/niftranslator.hpp>
 #include <components/render/backend/vsg/vsgsemanticsession.hpp>
@@ -29,25 +31,47 @@ namespace MWRender
             return std::runtime_error(
                 std::string("V4 scene lifecycle ") + operation + " failed with status " + std::to_string(status));
         }
+
+        [[nodiscard]] bool isLight(const MWWorld::Ptr& ptr) noexcept
+        {
+            return !ptr.isEmpty()
+                && (ptr.getType() == ESM::Light::sRecordId || ptr.getType() == ESM4::Light::sRecordId);
+        }
     }
 
     V4SceneRenderLifecycle::V4SceneRenderLifecycle(
-        std::shared_ptr<RenderVsg::VsgSemanticSession> session, const VFS::Manager& vfs)
+        std::shared_ptr<RenderVsg::VsgSemanticSession> session, const VFS::Manager& vfs,
+        std::shared_ptr<V4RenderRouteStatus> routeStatus)
         : mSession(std::move(session))
+        , mRouteStatus(std::move(routeStatus))
         , mVfs(vfs)
     {
-        if (!mSession)
-            throw std::invalid_argument("V4 scene lifecycle requires a semantic session");
+        if (!mSession || !mRouteStatus)
+            throw std::invalid_argument("V4 scene lifecycle requires a semantic session and route status");
     }
 
     void V4SceneRenderLifecycle::cellActivated(const MWWorld::CellStore& cell)
     {
-        const std::optional<RenderCore::ActiveCellSource> source = makeV4ActiveCellSource(cell);
-        if (!source)
-            throw std::runtime_error("V4 scene lifecycle rejected an invalid active cell");
-        const RenderCore::ActiveCellPublishResult result = mSession->cells().addCell(*source);
-        if (!accepted(result.status))
-            throw publicationError("cell activation", static_cast<unsigned int>(result.status));
+        try
+        {
+            requireHealthy();
+            const std::optional<RenderCore::ActiveCellSource> source = makeV4ActiveCellSource(cell);
+            if (!source)
+                throw std::runtime_error("V4 scene lifecycle rejected an invalid active cell");
+            const RenderCore::ActiveCellPublishResult result = mSession->cells().addCell(*source);
+            if (!accepted(result.status))
+                throw publicationError("cell activation", static_cast<unsigned int>(result.status));
+        }
+        catch (const std::exception& error)
+        {
+            recordFailure(error.what());
+            throw;
+        }
+        catch (...)
+        {
+            recordFailure("V4 scene lifecycle cell activation threw an unknown exception");
+            throw;
+        }
     }
 
     void V4SceneRenderLifecycle::cellDeactivating(const MWWorld::CellStore& cell) noexcept
@@ -57,28 +81,54 @@ namespace MWRender
             const std::optional<std::string> identity = makeV4CellIdentity(cell);
             if (!identity)
             {
-                recordRetirementFailure("V4 scene lifecycle could not identify a deactivating cell");
+                recordFailure("V4 scene lifecycle could not identify a deactivating cell");
                 return;
             }
             const RenderCore::ActiveCellPublishResult result = mSession->cells().removeCell(*identity);
             if (result.status != RenderCore::ActiveCellPublishStatus::Applied
                 && result.status != RenderCore::ActiveCellPublishStatus::NotFound)
-                recordRetirementFailure("V4 scene lifecycle failed to retire a cell");
+                recordFailure("V4 scene lifecycle failed to retire a cell");
         }
         catch (...)
         {
-            recordRetirementFailure("V4 scene lifecycle cell retirement threw unexpectedly");
+            recordFailure("V4 scene lifecycle cell retirement threw unexpectedly");
         }
     }
 
     void V4SceneRenderLifecycle::objectAdded(const MWWorld::Ptr& ptr)
     {
-        publishStaticObject(ptr);
+        try
+        {
+            publishStaticObject(ptr);
+        }
+        catch (const std::exception& error)
+        {
+            recordFailure(error.what());
+            throw;
+        }
+        catch (...)
+        {
+            recordFailure("V4 scene lifecycle object publication threw an unknown exception");
+            throw;
+        }
     }
 
     void V4SceneRenderLifecycle::objectChanged(const MWWorld::Ptr& ptr)
     {
-        publishStaticObject(ptr);
+        try
+        {
+            publishStaticObject(ptr);
+        }
+        catch (const std::exception& error)
+        {
+            recordFailure(error.what());
+            throw;
+        }
+        catch (...)
+        {
+            recordFailure("V4 scene lifecycle object mutation threw an unknown exception");
+            throw;
+        }
     }
 
     void V4SceneRenderLifecycle::objectRemoving(const MWWorld::Ptr& ptr) noexcept
@@ -88,14 +138,18 @@ namespace MWRender
             const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
             if (!identity)
                 return;
-            const RenderCore::ActiveCellPublishResult result = mSession->cells().removeStaticInstance(*identity);
-            if (result.status != RenderCore::ActiveCellPublishStatus::Applied
-                && result.status != RenderCore::ActiveCellPublishStatus::NotFound)
-                recordRetirementFailure("V4 scene lifecycle failed to retire a static object");
+            const RenderCore::ActiveCellPublishResult instance = mSession->cells().removeStaticInstance(*identity);
+            if (instance.status != RenderCore::ActiveCellPublishStatus::Applied
+                && instance.status != RenderCore::ActiveCellPublishStatus::NotFound)
+                recordFailure("V4 scene lifecycle failed to retire a static object");
+            const RenderCore::ActiveCellPublishResult light = mSession->cells().removeLight(*identity);
+            if (light.status != RenderCore::ActiveCellPublishStatus::Applied
+                && light.status != RenderCore::ActiveCellPublishStatus::NotFound)
+                recordFailure("V4 scene lifecycle failed to retire a cell light");
         }
         catch (...)
         {
-            recordRetirementFailure("V4 scene lifecycle object retirement threw unexpectedly");
+            recordFailure("V4 scene lifecycle object retirement threw unexpectedly");
         }
     }
 
@@ -104,17 +158,18 @@ namespace MWRender
         try
         {
             if (!mSession->resetWorld())
-                recordRetirementFailure("V4 scene lifecycle failed to reset the semantic world");
+                recordFailure("V4 scene lifecycle failed to reset the semantic world");
         }
         catch (...)
         {
-            recordRetirementFailure("V4 scene lifecycle world reset threw unexpectedly");
+            recordFailure("V4 scene lifecycle world reset threw unexpectedly");
         }
     }
 
     void V4SceneRenderLifecycle::publishStaticObject(const MWWorld::Ptr& ptr)
     {
-        if (ptr.isEmpty() || !ptr.getCell() || ptr.getClass().isActor() || ptr.getClass().useAnim())
+        requireHealthy();
+        if (ptr.isEmpty() || !ptr.getCell() || ptr.getClass().isActor())
             return;
 
         const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
@@ -124,6 +179,25 @@ namespace MWRender
                 objectRemoving(ptr);
             return;
         }
+
+        if (isLight(ptr))
+        {
+            const std::optional<RenderCore::CellLightSource> light = makeV4CellLightSource(ptr);
+            if (!light)
+                throw std::runtime_error("V4 scene lifecycle rejected an enabled cell light");
+            const RenderCore::ActiveCellPublishResult result = mSession->cells().upsertLight(*light);
+            if (!accepted(result.status))
+                throw publicationError("cell light publication", static_cast<unsigned int>(result.status));
+
+            // Light models follow the animated-object path in OpenMW even when
+            // their NIF is visually static. Keep their light semantics without
+            // misclassifying the model as a static translation; the VSG host
+            // remains fail-closed until that animated model path is available.
+            return;
+        }
+
+        if (ptr.getClass().useAnim())
+            return;
 
         const VFS::Path::Normalized modelPath = ptr.getClass().getCorrectedModel(ptr);
         if (modelPath.empty() || Misc::ResourceHelpers::isHiddenMarker(ptr.getCellRef().getRefId()))
@@ -159,15 +233,17 @@ namespace MWRender
             throw publicationError("static object publication", static_cast<unsigned int>(result.status));
     }
 
-    void V4SceneRenderLifecycle::recordRetirementFailure(std::string_view message) noexcept
+    void V4SceneRenderLifecycle::requireHealthy() const
     {
-        mHealthy = false;
-        try
-        {
-            mLastDiagnostic = message;
-        }
-        catch (...)
-        {
-        }
+        if (mRouteStatus->healthy())
+            return;
+        if (!mRouteStatus->firstDiagnostic().empty())
+            throw std::runtime_error(mRouteStatus->firstDiagnostic());
+        throw std::runtime_error("V4 scene publication route is unhealthy");
+    }
+
+    void V4SceneRenderLifecycle::recordFailure(std::string_view message) noexcept
+    {
+        mRouteStatus->fail(message);
     }
 }

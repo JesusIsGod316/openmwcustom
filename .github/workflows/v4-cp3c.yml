@@ -36,6 +36,12 @@ jobs:
           fi
           grep -F 'RenderCompatibilityFacet::ShaderModSurface' components/rendercore/backendselection.hpp
           grep -F 'RequiredAutomaticVsgCompatibility' components/rendercore/backendselection.hpp
+          grep -F 'FogDistanceMode fogDistanceMode' components/rendercore/framerenderstate.hpp
+          grep -F 'FogFalloffMode fogFalloffMode' components/rendercore/framerenderstate.hpp
+          grep -F 'bool fogEnabled = false' components/rendercore/framerenderstate.hpp
+          grep -F 'upsertLight(const CellLightSource& source)' components/rendercore/activecellproducer.hpp
+          grep -F 'batch.add(RetireLight{ binding.handle })' components/rendercore/activecellproducer.hpp
+          grep -F 'semantic_detail::finite(record.position)' components/rendercore/renderworld.hpp
 
       - name: Install lightweight compile dependency
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglm-dev libvulkan-dev
@@ -75,12 +81,18 @@ jobs:
           g++ "${common[@]}" tools/v4/cp3c/active-cell-producer-smoke.cpp \
             -o /tmp/v4-cp3c-active-cell-producer-smoke
           /tmp/v4-cp3c-active-cell-producer-smoke
+          g++ "${common[@]}" tools/v4/cp3c/local-light-plan-smoke.cpp \
+            -o /tmp/v4-cp3c-local-light-plan-smoke
+          /tmp/v4-cp3c-local-light-plan-smoke
           g++ "${common[@]}" tools/v4/cp3c/static-model-cache-smoke.cpp \
             -o /tmp/v4-cp3c-static-model-cache-smoke
           /tmp/v4-cp3c-static-model-cache-smoke
           g++ "${common[@]}" tools/v4/cp3c/scene-render-lifecycle-smoke.cpp \
             -o /tmp/v4-cp3c-scene-render-lifecycle-smoke
           /tmp/v4-cp3c-scene-render-lifecycle-smoke
+          g++ "${common[@]}" tools/v4/cp3c/render-route-status-smoke.cpp \
+            -o /tmp/v4-cp3c-render-route-status-smoke
+          /tmp/v4-cp3c-render-route-status-smoke
           g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
             tools/v4/cp3c/frame-camera-smoke.cpp -o /tmp/v4-cp3c-frame-camera-smoke
           /tmp/v4-cp3c-frame-camera-smoke
@@ -107,6 +119,8 @@ jobs:
           grep -F 'renderer fallback = true' files/settings-default.cfg
           grep -F 'selectConfiguredRenderBackend()' apps/openmw/engine.cpp
           grep -F '#include <components/rendercore/backendselection.hpp>' apps/openmw/engine.cpp
+          grep -F 'prepareVirtualFileSystem();' apps/openmw/engine.cpp
+          grep -F 'VFS::registerArchives(vfs.get()' apps/openmw/engine.cpp
           grep -F '.vsgVulkan = false' apps/openmw/engine.cpp
           grep -F 'Selected renderer has no engine bootstrap path' apps/openmw/engine.cpp
           if grep -F 'v4semanticsource' apps/openmw/CMakeLists.txt; then
@@ -124,12 +138,17 @@ jobs:
           grep -F 'openmw-v4-semantic-source-compile' tools/v4/cp3b3/OpenMWRealNifTool.cmake
           grep -F 'v4enginerenderbridge.cpp' tools/v4/cp3b3/OpenMWRealNifTool.cmake
           grep -F 'makeV4StaticInstanceSource' apps/openmw/mwrender/v4semanticsource.cpp
+          grep -F 'makeV4CellLightSource' apps/openmw/mwrender/v4semanticsource.cpp
+          grep -F 'SceneUtil::resolveLightAttenuation' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'makeV4MainCameraState' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'V4EngineRenderBridge::takeSceneRenderLifecycle' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'V4EngineRenderBridge::renderMainFrame' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'SDL_GetWindowSizeInPixels' apps/openmw/mwrender/v4enginerenderbridge.cpp
+          grep -F 'if (!mRouteStatus->healthy())' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'V4SceneRenderLifecycle::publishStaticObject' apps/openmw/mwrender/v4scenerenderlifecycle.cpp
+          grep -F 'mSession->cells().upsertLight' apps/openmw/mwrender/v4scenerenderlifecycle.cpp
           grep -F 'std::shared_ptr<RenderVsg::VsgSemanticSession> mSession' apps/openmw/mwrender/v4scenerenderlifecycle.hpp
+          grep -F 'mRouteStatus->fail(message)' apps/openmw/mwrender/v4scenerenderlifecycle.cpp
           grep -F 'translateStaticNif' apps/openmw/mwrender/v4scenerenderlifecycle.cpp
           grep -F 'VsgRuntimeBootstrap::create' components/render/backend/vsg/vsgruntimebootstrap.cpp
           grep -F 'VsgSemanticSession::create' components/render/backend/vsg/vsgsemanticsession.cpp

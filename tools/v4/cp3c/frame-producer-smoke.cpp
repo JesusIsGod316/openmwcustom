@@ -22,6 +22,11 @@ int main()
     input.renderExtent = { 1280, 720 };
     input.outputExtent = input.renderExtent;
     input.environment.skyEnabled = false;
+    input.environment.fogEnabled = true;
+    input.environment.fogStart = 2048.0f;
+    input.environment.fogEnd = 4096.0f;
+    input.environment.fogDistanceMode = RenderCore::FogDistanceMode::Radial;
+    input.environment.fogFalloffMode = RenderCore::FogFalloffMode::Exponential;
 
     auto first = producer.produce(world, input);
     if (!require(first && first->valid(), "first frame")
@@ -56,6 +61,21 @@ int main()
         return EXIT_FAILURE;
 
     input.renderExtent = input.outputExtent;
+    input.environment.fogEnd = input.environment.fogStart;
+    if (!require(!producer.produce(world, input), "invalid enabled fog range rejected")
+        || !require(producer.nextFrameId() == RenderCore::FrameId{ 5 }, "invalid fog does not consume id"))
+        return EXIT_FAILURE;
+    input.environment.fogEnd = 4096.0f;
+    input.environment.fogDistanceMode = static_cast<RenderCore::FogDistanceMode>(255);
+    if (!require(!producer.produce(world, input), "unknown fog distance mode rejected")
+        || !require(producer.nextFrameId() == RenderCore::FrameId{ 5 }, "unknown fog mode does not consume id"))
+        return EXIT_FAILURE;
+    input.environment.fogDistanceMode = RenderCore::FogDistanceMode::Radial;
+    input.environment.fogFalloffMode = static_cast<RenderCore::FogFalloffMode>(255);
+    if (!require(!producer.produce(world, input), "unknown fog falloff mode rejected")
+        || !require(producer.nextFrameId() == RenderCore::FrameId{ 5 }, "unknown fog falloff does not consume id"))
+        return EXIT_FAILURE;
+    input.environment.fogFalloffMode = RenderCore::FogFalloffMode::Exponential;
     if (!require(world.reset(), "world epoch reset"))
         return EXIT_FAILURE;
     auto newWorld = producer.produce(world, input);

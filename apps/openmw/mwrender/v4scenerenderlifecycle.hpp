@@ -1,6 +1,8 @@
 #ifndef OPENMW_MWRENDER_V4SCENERENDERLIFECYCLE_H
 #define OPENMW_MWRENDER_V4SCENERENDERLIFECYCLE_H
 
+#include "v4renderroutestatus.hpp"
+
 #include "../mwworld/scenerenderlifecycle.hpp"
 
 #include <memory>
@@ -27,7 +29,8 @@ namespace MWRender
     class V4SceneRenderLifecycle final : public MWWorld::SceneRenderLifecycle
     {
     public:
-        V4SceneRenderLifecycle(std::shared_ptr<RenderVsg::VsgSemanticSession> session, const VFS::Manager& vfs);
+        V4SceneRenderLifecycle(std::shared_ptr<RenderVsg::VsgSemanticSession> session, const VFS::Manager& vfs,
+            std::shared_ptr<V4RenderRouteStatus> routeStatus = std::make_shared<V4RenderRouteStatus>());
 
         void cellActivated(const MWWorld::CellStore& cell) override;
         void cellDeactivating(const MWWorld::CellStore& cell) noexcept override;
@@ -36,17 +39,20 @@ namespace MWRender
         void objectRemoving(const MWWorld::Ptr& ptr) noexcept override;
         void worldResetting() noexcept override;
 
-        [[nodiscard]] bool healthy() const noexcept { return mHealthy; }
-        [[nodiscard]] const std::string& lastDiagnostic() const noexcept { return mLastDiagnostic; }
+        [[nodiscard]] bool healthy() const noexcept { return mRouteStatus->healthy(); }
+        [[nodiscard]] const std::string& lastDiagnostic() const noexcept
+        {
+            return mRouteStatus->firstDiagnostic();
+        }
 
     private:
+        void requireHealthy() const;
         void publishStaticObject(const MWWorld::Ptr& ptr);
-        void recordRetirementFailure(std::string_view message) noexcept;
+        void recordFailure(std::string_view message) noexcept;
 
         std::shared_ptr<RenderVsg::VsgSemanticSession> mSession;
+        std::shared_ptr<V4RenderRouteStatus> mRouteStatus;
         const VFS::Manager& mVfs;
-        bool mHealthy = true;
-        std::string mLastDiagnostic;
     };
 }
 

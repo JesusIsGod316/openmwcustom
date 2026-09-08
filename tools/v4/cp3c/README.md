@@ -107,6 +107,52 @@ does not link or select this bridge; the remaining engine branch must instantiat
 it before `World::init` and drive it from a Vulkan-specific loop after the
 non-rendering subsystems have been separated from the OSG host.
 
+Scene-source failures also cross that ownership boundary through a shared,
+sticky `V4RenderRouteStatus`. If cell, model, or reference publication fails,
+the first diagnostic is retained and the application bridge rejects every later
+frame even when an outer engine catch continues simulation. Cleanup failures do
+not overwrite the original cause. This prevents an explicitly selected Vulkan
+route from presenting a believable but incomplete mod-resolved scene.
+
+Engine startup now establishes the authoritative VFS immediately after the
+content encoder and before constructing the OSG viewer/window. The OpenGL route
+then continues through its existing preparation path unchanged. This ordering
+is a required seam for the distinct Vulkan branch: its session can consume the
+same archive precedence, loose-file overrides, and normalized winning paths
+without creating an OpenGL graphics context first.
+
+The immutable frame environment now carries explicit fog enablement, planar vs.
+radial distance, and linear vs. exponential falloff. Validation rejects unknown
+modes and enabled fog with an invalid range. Backends no longer guess whether
+fog is active from its numeric endpoints; this preserves the established OpenMW
+shader choices and gives later post-processing/depth reconstruction one stable
+semantic contract. The CP3C host still fails closed when fog is enabled until
+the compatibility shader consumes this state.
+
+`ActiveCellProducer` now owns stable, source-identified local-light bindings in
+addition to static instances. Light changes retain their handles and advance
+resource revisions; cross-cell moves update semantic ownership; cell unload
+retires owned lights and references in the same atomic batch; world-epoch reset
+clears every source binding. This is the neutral ownership needed for genuine
+static interiors, while flicker/pulse/controller realization remains explicitly
+deferred rather than being flattened into an incorrect constant light.
+
+The build-gated OpenMW adapter now recognizes ESM3 and ESM4 lights before the
+generic animated-object exclusion. It publishes their authoritative reference
+identity and placement, negative-light colors, off-default state, modulation
+class, and dynamic/carry/spot flags. Attenuation is resolved by the same shared
+fallback calculation used by the OpenGL light manager, avoiding backend-specific
+brightness drift from duplicated settings logic. Animated light-model attachment
+and GPU light/modulation realization are still fail-closed: the semantics are
+retained, but the VSG host will not present an incomplete lit scene.
+
+`LocalLightWorldPlan` is the deterministic backend discovery boundary for the
+next realization slice. It snapshots generation-safe handles, revisions, and
+the complete neutral records, rejects stale plans after an update, and counts
+modulated, spot, and disabled categories explicitly. A constant-point-only
+implementation therefore cannot accidentally claim compatibility with a scene
+whose authored behavior it would lose.
+
 ## Cheap local checks
 
 ```sh
@@ -137,6 +183,10 @@ g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
 g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
   tools/v4/cp3c/scene-render-lifecycle-smoke.cpp -o /tmp/v4-cp3c-scene-render-lifecycle-smoke
 /tmp/v4-cp3c-scene-render-lifecycle-smoke
+
+g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+  tools/v4/cp3c/render-route-status-smoke.cpp -o /tmp/v4-cp3c-render-route-status-smoke
+/tmp/v4-cp3c-render-route-status-smoke
 ```
 
 The RenderCore targets require GLM include paths in the compiler environment.

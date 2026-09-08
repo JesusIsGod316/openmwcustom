@@ -455,10 +455,18 @@ namespace RenderCore
 
         [[nodiscard]] static bool validateLightRecord(const LightRecord& record) noexcept
         {
-            return record.revision.valid() && std::isfinite(record.constantAttenuation)
-                && std::isfinite(record.linearAttenuation) && std::isfinite(record.quadraticAttenuation)
+            const bool knownModulation = record.modulation == LightModulation::Constant
+                || record.modulation == LightModulation::Flicker || record.modulation == LightModulation::FlickerSlow
+                || record.modulation == LightModulation::Pulse || record.modulation == LightModulation::PulseSlow;
+            return record.revision.valid() && semantic_detail::finite(record.position)
+                && semantic_detail::finite(record.diffuse) && semantic_detail::finite(record.specular)
+                && semantic_detail::finite(record.ambient) && std::isfinite(record.constantAttenuation)
+                && record.constantAttenuation >= 0.0f && std::isfinite(record.linearAttenuation)
+                && record.linearAttenuation >= 0.0f && std::isfinite(record.quadraticAttenuation)
+                && record.quadraticAttenuation >= 0.0f
                 && std::isfinite(record.effectiveRadius) && record.effectiveRadius >= 0.0f
-                && std::isfinite(record.actorFade);
+                && std::isfinite(record.actorFade) && record.actorFade >= 0.0f && record.actorFade <= 1.0f
+                && knownModulation;
         }
 
         [[nodiscard]] bool validateInstanceReferences(InstanceHandle self, const InstanceRecord& record) const noexcept

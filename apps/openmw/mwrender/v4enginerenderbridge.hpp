@@ -1,6 +1,8 @@
 #ifndef OPENMW_MWRENDER_V4ENGINERENDERBRIDGE_H
 #define OPENMW_MWRENDER_V4ENGINERENDERBRIDGE_H
 
+#include "v4renderroutestatus.hpp"
+
 #include "../mwworld/scenerenderlifecycle.hpp"
 
 #include <components/render/backend/vsg/vsgruntimebootstrap.hpp>
@@ -68,6 +70,7 @@ namespace MWRender
 
         const VFS::Manager& mVfs;
         std::shared_ptr<RenderVsg::VsgSemanticSession> mSession;
+        std::shared_ptr<V4RenderRouteStatus> mRouteStatus;
         std::string mLastDiagnostic;
         bool mLifecycleTaken = false;
     };

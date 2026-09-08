@@ -31,6 +31,11 @@ namespace MWRender
     [[nodiscard]] std::optional<RenderCore::StaticInstanceSource> makeV4StaticInstanceSource(
         const MWWorld::Ptr& ptr, RenderCore::ModelHandle model, RenderCore::AxisAlignedBounds localBounds);
 
+    // Preserves authored ESM3/ESM4 light behaviour at the backend-neutral
+    // boundary, including negative colors, fallback attenuation, off-default
+    // state, and temporal flicker/pulse classification.
+    [[nodiscard]] std::optional<RenderCore::CellLightSource> makeV4CellLightSource(const MWWorld::Ptr& ptr);
+
     [[nodiscard]] std::optional<RenderCore::CameraState> makeV4MainCameraState(const Camera& camera,
         RenderCore::Extent2D extent, double verticalFieldOfViewDegrees, double nearPlane, double farPlane);
 }

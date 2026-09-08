@@ -197,6 +197,7 @@ namespace OMW
         /// Prepare engine for game play
         void prepareEngine();
 
+        void prepareVirtualFileSystem();
         void createWindow();
         void setWindowIcon();
 

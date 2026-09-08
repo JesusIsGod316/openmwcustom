@@ -187,8 +187,7 @@ namespace RenderVsg
         if (!frame.dynamicTransforms().empty() || !frame.dynamicMaterials().empty() || world.lightCount() != 0)
             return finish(RenderCore::RenderFrameResult::Failed,
                 "dynamic transforms, dynamic materials, and local lights require later compatibility facets");
-        if (frame.environment().skyEnabled || frame.environment().waterEnabled
-            || frame.environment().fogEnd > frame.environment().fogStart)
+        if (frame.environment().skyEnabled || frame.environment().waterEnabled || frame.environment().fogEnabled)
             return finish(RenderCore::RenderFrameResult::Failed,
                 "sky, water, and distance fog require the environment compatibility facet");
         const RenderCore::FrameView* mainView = selectMainView(frame);

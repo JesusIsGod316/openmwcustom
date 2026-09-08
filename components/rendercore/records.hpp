@@ -19,12 +19,19 @@ namespace RenderCore
     {
         [[nodiscard]] inline bool finite(float value) noexcept { return std::isfinite(value); }
 
+        [[nodiscard]] inline bool finite(double value) noexcept { return std::isfinite(value); }
+
         [[nodiscard]] inline bool finite(const glm::vec2& value) noexcept
         {
             return finite(value.x) && finite(value.y);
         }
 
         [[nodiscard]] inline bool finite(const glm::vec3& value) noexcept
+        {
+            return finite(value.x) && finite(value.y) && finite(value.z);
+        }
+
+        [[nodiscard]] inline bool finite(const glm::dvec3& value) noexcept
         {
             return finite(value.x) && finite(value.y) && finite(value.z);
         }
@@ -780,6 +787,30 @@ namespace RenderCore
         std::vector<InstanceHandle> members;
     };
 
+    enum class LightModulation : std::uint8_t
+    {
+        Constant,
+        Flicker,
+        FlickerSlow,
+        Pulse,
+        PulseSlow,
+    };
+
+    enum class LightSemanticFlag : std::uint8_t
+    {
+        Dynamic,
+        Carryable,
+        Negative,
+        OffDefault,
+        Spot,
+        SpotShadow,
+    };
+
+    [[nodiscard]] constexpr std::uint64_t lightSemanticFlag(LightSemanticFlag value) noexcept
+    {
+        return std::uint64_t{ 1 } << static_cast<std::uint8_t>(value);
+    }
+
     struct LightRecord
     {
         ResourceRevision revision = InitialResourceRevision;
@@ -792,7 +823,8 @@ namespace RenderCore
         float quadraticAttenuation = 0.0f;
         float effectiveRadius = 0.0f;
         float actorFade = 1.0f;
-        std::uint64_t semanticFlags = ~std::uint64_t{ 0 };
+        LightModulation modulation = LightModulation::Constant;
+        std::uint64_t semanticFlags = 0;
         bool enabled = true;
     };
 

@@ -21,6 +21,18 @@ namespace SceneUtil
     class LightSource;
     struct LightCommon;
 
+    struct LightAttenuation
+    {
+        float constant = 1.f;
+        float linear = 0.f;
+        float quadratic = 0.f;
+    };
+
+    /// Resolve the compatibility attenuation fallback settings without
+    /// constructing an OSG light. Alternate renderers must consume this same
+    /// result so content does not change brightness when switching backends.
+    [[nodiscard]] LightAttenuation resolveLightAttenuation(float radius, bool isExterior);
+
     /// @brief Set up global attenuation settings for a Light.
     /// @param radius The radius of the light source.
     /// @param isExterior Is the light outside? May be used for deciding which attenuation settings to use.

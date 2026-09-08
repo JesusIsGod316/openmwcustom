@@ -27,6 +27,7 @@ namespace MWRender
         const VFS::Manager& vfs, std::shared_ptr<RenderVsg::VsgSemanticSession> session)
         : mVfs(vfs)
         , mSession(std::move(session))
+        , mRouteStatus(std::make_shared<V4RenderRouteStatus>())
     {
     }
 
@@ -40,7 +41,7 @@ namespace MWRender
         if (mLifecycleTaken)
             throw std::logic_error("V4 scene render lifecycle was already taken");
         std::unique_ptr<MWWorld::SceneRenderLifecycle> result
-            = std::make_unique<V4SceneRenderLifecycle>(mSession, mVfs);
+            = std::make_unique<V4SceneRenderLifecycle>(mSession, mVfs, mRouteStatus);
         mLifecycleTaken = true;
         return result;
     }
@@ -67,6 +68,13 @@ namespace MWRender
         const Camera& camera, const V4MainFrameSource& source)
     {
         mLastDiagnostic.clear();
+        if (!mRouteStatus->healthy())
+        {
+            mLastDiagnostic = mRouteStatus->firstDiagnostic();
+            if (mLastDiagnostic.empty())
+                mLastDiagnostic = "V4 scene publication route is unhealthy";
+            return RenderCore::RenderFrameResult::Failed;
+        }
         if (!mLifecycleTaken)
         {
             mLastDiagnostic = "scene lifecycle must be attached before rendering a V4 frame";
