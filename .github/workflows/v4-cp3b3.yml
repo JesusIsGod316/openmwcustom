@@ -175,7 +175,8 @@ jobs:
             -D CMAKE_PROJECT_INCLUDE="$env:GITHUB_WORKSPACE/tools/v4/cp3b3/OpenMWRealNifTool.cmake" `
             -D LuaJit_INCLUDE_DIR="$openmwDeps/installed/x64-windows/include/luajit" `
             -D LuaJit_LIBRARY="$openmwDeps/installed/x64-windows/lib/lua51.lib" `
-            -D BUILD_OPENMW=OFF `
+            -D BUILD_OPENMW=ON `
+            -D OPENMW_ENABLE_V4_VULKAN_RUNTIME=ON `
             -D BUILD_LAUNCHER=OFF `
             -D BUILD_WIZARD=OFF `
             -D BUILD_MWINIIMPORTER=OFF `
@@ -200,6 +201,14 @@ jobs:
         run: |
           $log = "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/build-output.log"
           cmake --build "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" --target openmw-vulkan-nif-conformance --verbose 2>&1 | Tee-Object -FilePath $log
+          $buildExit = $LASTEXITCODE
+          if ($buildExit -ne 0) { exit $buildExit }
+
+      - name: Build production OpenMW with linked V4 Vulkan runtime
+        shell: pwsh
+        run: |
+          $log = "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/openmw-v4-link-output.log"
+          cmake --build "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" --target openmw --verbose 2>&1 | Tee-Object -FilePath $log
           $buildExit = $LASTEXITCODE
           if ($buildExit -ne 0) { exit $buildExit }
 
@@ -244,4 +253,5 @@ jobs:
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/CMakeCache.txt
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/.ninja_log
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/build-output.log
+            ${{ github.workspace }}/build-v4-cp3b3-real-nif/openmw-v4-link-output.log
           if-no-files-found: ignore

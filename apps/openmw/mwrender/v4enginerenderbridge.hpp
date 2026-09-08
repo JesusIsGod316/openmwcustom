@@ -1,6 +1,7 @@
 #ifndef OPENMW_MWRENDER_V4ENGINERENDERBRIDGE_H
 #define OPENMW_MWRENDER_V4ENGINERENDERBRIDGE_H
 
+#include "v4engineframesource.hpp"
 #include "v4renderroutestatus.hpp"
 
 #include "../mwworld/scenerenderlifecycle.hpp"
@@ -25,20 +26,6 @@ namespace RenderVsg
 
 namespace MWRender
 {
-    class Camera;
-
-    struct V4MainFrameSource
-    {
-        double verticalFieldOfViewDegrees = 55.0;
-        double nearPlane = 1.0;
-        double farPlane = 8192.0;
-        double simulationTime = 0.0;
-        double frameDelta = 0.0;
-        float lodScale = 1.0f;
-        RenderCore::FrameEnvironmentState environment;
-        bool invalidateHistory = false;
-    };
-
     // Build-gated application bridge for the distinct VSG route. It creates the
     // session directly from OpenMW's winning VFS, hands the world an observer
     // before its first cell activation, and publishes main-camera frames without
@@ -46,8 +33,14 @@ namespace MWRender
     class V4EngineRenderBridge final
     {
     public:
+        // Out-of-line probe used by the guarded production executable target.
+        // Referencing it forces the bridge/session/backend archive chain through
+        // the final link even while renderer selection remains unadvertised.
+        [[nodiscard]] static bool linkedRuntimeAvailable() noexcept;
+
         [[nodiscard]] static std::unique_ptr<V4EngineRenderBridge> create(
             const VFS::Manager& vfs, RenderVsg::VsgRuntimeBootstrapOptions options = {});
+        [[nodiscard]] static std::unique_ptr<V4EngineRenderBridge> createConfigured(const VFS::Manager& vfs);
 
         ~V4EngineRenderBridge();
         V4EngineRenderBridge(const V4EngineRenderBridge&) = delete;
@@ -60,7 +53,7 @@ namespace MWRender
         [[nodiscard]] bool sceneRenderLifecycleTaken() const noexcept { return mLifecycleTaken; }
 
         [[nodiscard]] std::optional<RenderCore::Extent2D> outputExtent() const noexcept;
-        RenderCore::RenderFrameResult renderMainFrame(const Camera& camera, const V4MainFrameSource& source);
+        RenderCore::RenderFrameResult renderMainFrame(const V4MainFrameSource& source);
         void waitIdle();
 
         [[nodiscard]] const std::string& lastDiagnostic() const noexcept { return mLastDiagnostic; }

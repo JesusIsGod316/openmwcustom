@@ -169,8 +169,11 @@ namespace MWRender
     void V4SceneRenderLifecycle::publishStaticObject(const MWWorld::Ptr& ptr)
     {
         requireHealthy();
-        if (ptr.isEmpty() || !ptr.getCell() || ptr.getClass().isActor())
+        if (ptr.isEmpty() || !ptr.getCell())
             return;
+
+        if (ptr.getClass().isActor())
+            throw std::runtime_error("V4 scene lifecycle encountered an actor before actor compatibility is available");
 
         const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
         if (!ptr.getRefData().isEnabled())
@@ -190,14 +193,18 @@ namespace MWRender
                 throw publicationError("cell light publication", static_cast<unsigned int>(result.status));
 
             // Light models follow the animated-object path in OpenMW even when
-            // their NIF is visually static. Keep their light semantics without
-            // misclassifying the model as a static translation; the VSG host
-            // remains fail-closed until that animated model path is available.
+            // their NIF is visually static. Publishing the light while silently
+            // dropping an authored visible model would be false compatibility.
+            const VFS::Path::Normalized modelPath = ptr.getClass().getCorrectedModel(ptr);
+            if (!modelPath.empty() && !Misc::ResourceHelpers::isHiddenMarker(ptr.getCellRef().getRefId()))
+                throw std::runtime_error(
+                    "V4 scene lifecycle encountered a visible light model before animated light compatibility is available");
             return;
         }
 
         if (ptr.getClass().useAnim())
-            return;
+            throw std::runtime_error(
+                "V4 scene lifecycle encountered an animated object before animation compatibility is available");
 
         const VFS::Path::Normalized modelPath = ptr.getClass().getCorrectedModel(ptr);
         if (modelPath.empty() || Misc::ResourceHelpers::isHiddenMarker(ptr.getCellRef().getRefId()))

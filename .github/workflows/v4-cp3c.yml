@@ -129,18 +129,16 @@ jobs:
           grep -F 'VFS::registerArchives(vfs.get()' apps/openmw/engine.cpp
           grep -F '.vsgVulkan = false' apps/openmw/engine.cpp
           grep -F 'Selected renderer has no engine bootstrap path' apps/openmw/engine.cpp
-          if grep -F 'v4semanticsource' apps/openmw/CMakeLists.txt; then
-            echo 'GLM-backed V4 source adapter leaked into the legacy OpenGL target graph' >&2
-            exit 1
-          fi
-          if grep -F 'v4scenerenderlifecycle' apps/openmw/CMakeLists.txt; then
-            echo 'VSG lifecycle adapter leaked into the legacy OpenGL target graph' >&2
-            exit 1
-          fi
-          if grep -F 'v4enginerenderbridge' apps/openmw/CMakeLists.txt; then
-            echo 'VSG engine bridge leaked into the legacy OpenGL target graph' >&2
-            exit 1
-          fi
+          grep -F 'option(OPENMW_ENABLE_V4_VULKAN_RUNTIME' CMakeLists.txt
+          grep -F 'if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)' apps/openmw/CMakeLists.txt
+          grep -F 'add_library(openmw-v4-vulkan-runtime STATIC' apps/openmw/CMakeLists.txt
+          grep -F 'mwrender/v4semanticsource.cpp' apps/openmw/CMakeLists.txt
+          grep -F 'mwrender/v4engineframecoordinator.cpp' apps/openmw/CMakeLists.txt
+          grep -F 'mwrender/v4runtimeoptions.cpp' apps/openmw/CMakeLists.txt
+          grep -F 'OPENMW_ENABLE_V4_VULKAN_RUNTIME=1' apps/openmw/CMakeLists.txt
+          grep -F 'V4EngineRenderBridge::linkedRuntimeAvailable()' apps/openmw/engine.cpp
+          grep -F 'OPENMW_ENABLE_V4_VULKAN_RUNTIME=ON' .github/workflows/v4-cp3b3.yml
+          grep -F 'Build production OpenMW with linked V4 Vulkan runtime' .github/workflows/v4-cp3b3.yml
           grep -F 'openmw-v4-semantic-source-compile' tools/v4/cp3b3/OpenMWRealNifTool.cmake
           grep -F 'v4enginerenderbridge.cpp' tools/v4/cp3b3/OpenMWRealNifTool.cmake
           grep -F 'makeV4StaticInstanceSource' apps/openmw/mwrender/v4semanticsource.cpp
@@ -149,10 +147,18 @@ jobs:
           grep -F 'makeV4InteriorEnvironmentState' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'result.clusteredLocalLighting = Settings::shaders().mClusteredLighting;' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'resolveCellLighting(cell)' apps/openmw/mwrender/v4semanticsource.cpp
-          grep -F 'const FogManager::State fog = mFog->getState(isUnderwater)' apps/openmw/mwrender/renderingmanager.cpp
+          grep -F 'const FogState fog = mFog->getSemanticState(isUnderwater)' apps/openmw/mwrender/renderingmanager.cpp
           grep -F 'environment.sunLightEnabled ? 1.0f : 0.0f' components/render/backend/vsg/vsgruntimehost.cpp
           grep -F 'mOpenMwViewState->setEnvironment(environment, mainView->current.projection);' components/render/backend/vsg/vsgruntimehost.cpp
           grep -F 'makeV4MainCameraState' apps/openmw/mwrender/v4semanticsource.cpp
+          grep -F 'makeV4MainFrameSource' apps/openmw/mwrender/v4semanticsource.cpp
+          grep -F 'rendering.isUnderwater()' apps/openmw/mwrender/v4engineframecoordinator.cpp
+          grep -F 'mBridge.renderMainFrame(*source)' apps/openmw/mwrender/v4engineframecoordinator.cpp
+          grep -F 'if (!mHealthy)' apps/openmw/mwrender/v4engineframecoordinator.cpp
+          grep -F 'V4EngineRenderBridge::createConfigured' apps/openmw/mwrender/v4enginerenderbridge.cpp
+          grep -F 'makeV4RuntimeBootstrapOptions' apps/openmw/mwrender/v4runtimeoptions.cpp
+          grep -F 'VK_PRESENT_MODE_FIFO_RELAXED_KHR' components/render/backend/vsg/vsgruntimebootstrap.cpp
+          grep -F 'SDL_WINDOW_MINIMIZED' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'V4EngineRenderBridge::takeSceneRenderLifecycle' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'V4EngineRenderBridge::renderMainFrame' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'SDL_GetWindowSizeInPixels' apps/openmw/mwrender/v4enginerenderbridge.cpp
@@ -164,6 +170,9 @@ jobs:
           grep -F 'translateStaticNif' apps/openmw/mwrender/v4scenerenderlifecycle.cpp
           grep -F 'VsgRuntimeBootstrap::create' components/render/backend/vsg/vsgruntimebootstrap.cpp
           grep -F 'VsgSemanticSession::create' components/render/backend/vsg/vsgsemanticsession.cpp
+          grep -F 'mFrames.prepare(mWorld, input)' components/render/backend/vsg/vsgsemanticsession.cpp
+          grep -F 'mFrames.commitPresented(*frame)' components/render/backend/vsg/vsgsemanticsession.cpp
+          grep -F 'if (!mHealthy)' components/render/backend/vsg/vsgsemanticsession.cpp
           grep -F 'std::unique_ptr<SceneRenderLifecycle> renderLifecycle = {}' apps/openmw/mwworld/worldimp.hpp
           grep -F '#include "scenerenderlifecycle.hpp"' apps/openmw/mwworld/scene.hpp
           grep -F 'mRenderLifecycle->cellActivated(cell)' apps/openmw/mwworld/scene.cpp

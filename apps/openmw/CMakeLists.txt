@@ -21,7 +21,7 @@ add_openmw_dir (mwrender
     actors objects renderingmanager animation rotatecontroller sky skyutil npcanimation esm4npcanimation vismask
     creatureanimation effectmanager util renderinginterface pathgrid rendermode weaponanimation screenshotmanager
     bulletdebugdraw globalmap characterpreview camera localmap water terrainstorage ripplesimulation
-    renderbin actoranimation landmanager navmesh actorspaths recastmesh fogmanager celllighting objectpaging groundcover
+    renderbin actoranimation landmanager navmesh actorspaths recastmesh fogmanager fogstate celllighting objectpaging groundcover
     postprocessor pingpongcull luminancecalculator pingpongcanvas nisscaler transparentpass precipitationocclusion ripples
     actorutil distortion animationpriority bonegroup blendmask animblendcontroller occlusionculling
     )
@@ -122,6 +122,47 @@ add_library(openmw-lib STATIC
     ${OPENMW_FILES}
     ${OPENMW_SOURCES}
 )
+
+if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+    if(NOT BUILD_OPENMW)
+        message(FATAL_ERROR "OPENMW_ENABLE_V4_VULKAN_RUNTIME requires BUILD_OPENMW=ON")
+    endif()
+
+    find_package(glm CONFIG REQUIRED)
+    find_package(Vulkan REQUIRED)
+    find_package(vsg 1.1.15 CONFIG REQUIRED)
+    find_package(vsgXchange CONFIG REQUIRED)
+
+    add_library(openmw-v4-vulkan-runtime STATIC
+        ${CMAKE_SOURCE_DIR}/components/nifrender/niftranslator.cpp
+        ${CMAKE_SOURCE_DIR}/components/nifrender/staticniftranslator.cpp
+        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/legacymaterialshader.cpp
+        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/openmwviewdependentstate.cpp
+        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/sdlvulkanwindow.cpp
+        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/staticassetrealizer.cpp
+        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/statictexturedecode.cpp
+        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgruntimebootstrap.cpp
+        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgruntimehost.cpp
+        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgsemanticsession.cpp)
+    target_include_directories(openmw-v4-vulkan-runtime PUBLIC ${CMAKE_SOURCE_DIR})
+    target_link_libraries(openmw-v4-vulkan-runtime PUBLIC
+        components
+        SDL3::SDL3
+        glm::glm
+        Vulkan::Vulkan
+        vsg::vsg
+        vsgXchange::vsgXchange)
+    target_compile_features(openmw-v4-vulkan-runtime PUBLIC cxx_std_20)
+
+    target_sources(openmw-lib PRIVATE
+        mwrender/v4engineframecoordinator.cpp
+        mwrender/v4enginerenderbridge.cpp
+        mwrender/v4runtimeoptions.cpp
+        mwrender/v4scenerenderlifecycle.cpp
+        mwrender/v4semanticsource.cpp)
+    target_link_libraries(openmw-lib PRIVATE openmw-v4-vulkan-runtime)
+    target_compile_definitions(openmw-lib PRIVATE OPENMW_ENABLE_V4_VULKAN_RUNTIME=1)
+endif()
 
 if (MSVC)
     # these TUs take a lot of memory for codegen

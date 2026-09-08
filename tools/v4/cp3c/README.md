@@ -52,6 +52,17 @@ current world revision and invalidates temporal history on world-epoch, extent,
 or explicit continuity changes. These sources remain build-gated and do not make
 Vulkan eligible for `Auto`.
 
+Frame publication is transactional at the runtime boundary. Preparing a frame
+does not consume its ID or update previous-camera history; the semantic session
+commits those values only after VSG reports a successful presentation. Minimize,
+resize and swapchain-acquire skips therefore cannot poison later motion vectors,
+TAA or upscaler history with a frame the user never saw.
+
+An unavailable zero-sized/minimized output is a non-consuming skip. A true
+frame-production, realization, submit or present failure instead poisons the VSG
+session with its first diagnostic. The engine cannot retry an ambiguous frame ID
+or continue after a partially submitted failure under a believable scene.
+
 The active-cell slice adds a shared-sequence semantic publisher for loaded cells
 and static references. It preserves stable instance handles across transform
 updates and cell moves, retires a cell and all of its owned references atomically,
@@ -91,21 +102,49 @@ static `Ptr` through its corrected winning VFS model path, reuses or publishes
 that NIF through `StaticModelCache`, and upserts the reference into the active
 cell producer. Missing content, translation failures, stale handles, and
 publication failures stop the explicit route instead of silently dropping an
-object. Cell and object retirement remain cleanup-safe and retain a health
-diagnostic for the engine loop.
+object. Actors, animated objects and authored visible light models also stop the
+route until their compatibility paths exist; publishing only their static/light
+subset would be a false successful frame. Cell and object retirement remain
+cleanup-safe and retain a health diagnostic for the engine loop.
 
 `V4EngineRenderBridge` now provides the build-gated application factory around
 that session. It creates the texture resolver from OpenMW's already-registered
 winning VFS, hands exactly one lifecycle observer to the world before cell
-activation, and converts the authoritative game camera plus the current SDL
-pixel extent into a `SingleViewFrameInput`. The lifecycle shares ownership of
-the session, preventing a future application-member reorder from destroying GPU
+activation, and combines a backend-neutral authoritative camera snapshot with
+the current SDL pixel extent into a `SingleViewFrameInput`. Camera extraction
+from the current OSG controller remains an outer source adapter rather than a
+dependency of the Vulkan engine bridge, so a later native controller can replace
+it without changing session or frame publication. The transitional production
+adapter captures camera, field of view, clip distances, neutral fog, night-eye,
+environment and timing after world update. OpenGL consumes that same neutral fog
+snapshot, so there is no second fog calculation to drift. The lifecycle shares
+ownership of the session, preventing a future application-member reorder from destroying GPU
 state while the world can still issue retirement callbacks. Resize sampling is
 kept at the SDL pixel boundary, so render and output extents are explicit and do
-not depend on OSG camera or graphics-window state. The normal executable still
-does not link or select this bridge; the remaining engine branch must instantiate
-it before `World::init` and drive it from a Vulkan-specific loop after the
-non-rendering subsystems have been separated from the OSG host.
+not depend on OSG graphics-window state. `OPENMW_ENABLE_V4_VULKAN_RUNTIME` now
+builds the backend, accepted translator and source adapters as guarded production
+targets and forces their archive chain through the OpenMW link. The default build
+does not see those dependencies, and selection remains unadvertised until the
+remaining engine branch instantiates the bridge before `World::init` and drives
+it from a Vulkan-specific loop.
+
+The configured bridge factory now maps the established resolution, display,
+window/fullscreen mode, border, minimize-on-focus-loss and vsync policy into the
+distinct Vulkan bootstrap. Immediate, FIFO and FIFO-relaxed present preferences
+preserve disabled, enabled and adaptive-vsync intent, with VSG's pinned swapchain
+selection retaining its defined fallback behavior when a mode is unavailable.
+Hidden or minimized windows produce non-consuming skips before swapchain acquire.
+The source-side settings adapter is separate from semantic camera/world/material
+conversion so future headless, capture, multiview and scaled-output hosts do not
+inherit desktop-window policy.
+
+`V4EngineFrameCoordinator` is the corresponding production-loop seam. After the
+existing world/rendering update it samples pixel extent, underwater state,
+camera, projection, fog, lighting and timing into one immutable main-frame
+source, then invokes the neutral bridge. A hidden/minimized extent is retryable;
+an invalid authoritative snapshot or backend failure is sticky. This keeps the
+future application loop small and prevents it from accidentally advancing
+simulation or temporal history on an unpresented frame.
 
 Scene-source failures also cross that ownership boundary through a shared,
 sticky `V4RenderRouteStatus`. If cell, model, or reference publication fails,

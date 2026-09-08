@@ -2,7 +2,8 @@
 
 #include "camera.hpp"
 #include "celllighting.hpp"
-#include "fogmanager.hpp"
+#include "fogstate.hpp"
+#include "renderingmanager.hpp"
 
 #include "../mwworld/cell.hpp"
 #include "../mwworld/cellstore.hpp"
@@ -45,6 +46,11 @@ namespace MWRender
         [[nodiscard]] RenderCore::Color toColor(const osg::Vec4f& source) noexcept
         {
             return { source.r(), source.g(), source.b(), source.a() };
+        }
+
+        [[nodiscard]] RenderCore::Color toColor(const FogColorState& source) noexcept
+        {
+            return { source.red, source.green, source.blue, source.alpha };
         }
 
         [[nodiscard]] std::string cellIdentity(const MWWorld::Cell& cell)
@@ -201,27 +207,34 @@ namespace MWRender
     }
 
     std::optional<RenderCore::FrameEnvironmentState> makeV4InteriorEnvironmentState(
-        const MWWorld::Cell& cell, const FogManager& fog, bool underwater, float nightEyeFactor)
+        const MWWorld::Cell& cell, const FogState& fog, bool underwater, float nightEyeFactor)
     {
-        if (cell.isExterior() || cell.isQuasiExterior() || !std::isfinite(nightEyeFactor))
+        if (cell.isExterior() || cell.isQuasiExterior() || !std::isfinite(nightEyeFactor)
+            || fog.underwater != underwater)
             return std::nullopt;
 
         const CellLightingState lighting = resolveCellLighting(cell);
-        const FogManager::State fogState = fog.getState(underwater);
-
         RenderCore::FrameEnvironmentState result;
         result.interior = true;
         result.ambient = toColor(applyNightEyeToAmbient(lighting.ambient, nightEyeFactor));
-        result.fogColor = toColor(fogState.color);
-        result.fogStart = fogState.start;
-        result.fogEnd = fogState.end;
-        result.fogFalloffMode = Settings::fog().mExponentialFog ? RenderCore::FogFalloffMode::Exponential
-                                                                : RenderCore::FogFalloffMode::Linear;
-        // OpenGL forces radial distance whenever exponential fog is selected.
-        result.fogDistanceMode = (Settings::fog().mExponentialFog || Settings::fog().mRadialFog)
-            ? RenderCore::FogDistanceMode::Radial
-            : RenderCore::FogDistanceMode::Planar;
-        result.fogEnabled = fogState.enabled;
+        result.fogColor = toColor(fog.color);
+        result.fogStart = fog.start;
+        result.fogEnd = fog.end;
+        switch (fog.falloffMode)
+        {
+            case FogFalloffMode::Linear: result.fogFalloffMode = RenderCore::FogFalloffMode::Linear; break;
+            case FogFalloffMode::Exponential:
+                result.fogFalloffMode = RenderCore::FogFalloffMode::Exponential;
+                break;
+            default: return std::nullopt;
+        }
+        switch (fog.distanceMode)
+        {
+            case FogDistanceMode::Planar: result.fogDistanceMode = RenderCore::FogDistanceMode::Planar; break;
+            case FogDistanceMode::Radial: result.fogDistanceMode = RenderCore::FogDistanceMode::Radial; break;
+            default: return std::nullopt;
+        }
+        result.fogEnabled = fog.enabled;
 
         const osg::Vec4f direction = -lighting.directionalPosition;
         const glm::vec3 rawDirection{ direction.x(), direction.y(), direction.z() };
@@ -268,6 +281,29 @@ namespace MWRender
         result.projection.yDirection = RenderCore::ClipYDirection::Down;
         result.projection.nearPlane = nearPlane;
         result.projection.farPlane = farPlane;
+        return result;
+    }
+
+    std::optional<V4MainFrameSource> makeV4MainFrameSource(const RenderingManager& rendering,
+        const MWWorld::Cell& cell, bool underwater, RenderCore::Extent2D extent, double simulationTime,
+        double frameDelta, bool invalidateHistory)
+    {
+        const Camera* const camera = rendering.getCamera();
+        if (!camera)
+            return std::nullopt;
+        const std::optional<RenderCore::CameraState> cameraState = makeV4MainCameraState(*camera, extent,
+            rendering.getFieldOfView(), rendering.getNearClipDistance(), rendering.getViewDistance());
+        const std::optional<RenderCore::FrameEnvironmentState> environment = makeV4InteriorEnvironmentState(
+            cell, rendering.getFogState(underwater), underwater, rendering.getNightEyeFactor());
+        if (!cameraState || !environment)
+            return std::nullopt;
+
+        V4MainFrameSource result;
+        result.camera = *cameraState;
+        result.simulationTime = simulationTime;
+        result.frameDelta = frameDelta;
+        result.environment = *environment;
+        result.invalidateHistory = invalidateHistory;
         return result;
     }
 }

@@ -1,6 +1,7 @@
 #ifndef OPENMW_MWRENDER_RENDERINGMANAGER_H
 #define OPENMW_MWRENDER_RENDERINGMANAGER_H
 
+#include "fogstate.hpp"
 #include "objects.hpp"
 #include "renderinginterface.hpp"
 #include "rendermode.hpp"
@@ -255,6 +256,10 @@ namespace MWRender
 
         // camera stuff
         Camera* getCamera() { return mCamera.get(); }
+        const Camera* getCamera() const { return mCamera.get(); }
+        [[nodiscard]] FogState getFogState(bool underwater) const;
+        [[nodiscard]] bool isUnderwater() const;
+        [[nodiscard]] float getNightEyeFactor() const noexcept { return mNightEyeFactor; }
 
         /// temporarily override the field of view with given value.
         void overrideFieldOfView(float val);

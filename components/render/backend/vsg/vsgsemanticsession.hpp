@@ -39,10 +39,12 @@ namespace RenderVsg
         [[nodiscard]] bool resetWorld();
         void waitIdle();
 
+        [[nodiscard]] bool healthy() const noexcept { return mHealthy; }
         [[nodiscard]] const std::string& lastDiagnostic() const noexcept { return mLastDiagnostic; }
 
     private:
         VsgSemanticSession(StaticTextureResolver textureResolver, VsgRuntimeBootstrapOptions options);
+        RenderCore::RenderFrameResult fail(std::string diagnostic);
 
         RenderCore::RenderWorld mWorld;
         RenderCore::RenderWorldPublisher mPublisher;
@@ -50,6 +52,7 @@ namespace RenderVsg
         RenderCore::ActiveCellProducer mCells;
         RenderCore::SingleViewFrameProducer mFrames;
         std::string mLastDiagnostic;
+        bool mHealthy = true;
         std::unique_ptr<VsgRuntimeBootstrap> mBootstrap;
     };
 }

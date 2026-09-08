@@ -17,6 +17,23 @@ namespace
 int main()
 {
     RenderCore::RenderWorld world;
+    RenderCore::SingleViewFrameProducer transactional;
+    RenderCore::SingleViewFrameInput stagedInput;
+    stagedInput.renderExtent = { 1280, 720 };
+    stagedInput.outputExtent = stagedInput.renderExtent;
+    stagedInput.environment.skyEnabled = false;
+    auto skipped = transactional.prepare(world, stagedInput);
+    if (!require(skipped && skipped->frameId() == RenderCore::FrameId{ 1 }, "prepared frame")
+        || !require(transactional.nextFrameId() == RenderCore::FrameId{ 1 }, "prepare does not consume id"))
+        return EXIT_FAILURE;
+    stagedInput.camera.worldPosition.x = 3.0;
+    auto retry = transactional.prepare(world, stagedInput);
+    if (!require(retry && retry->frameId() == RenderCore::FrameId{ 1 }, "skipped frame id is retried")
+        || !require(!retry->historyValid(), "skipped camera is not history")
+        || !require(transactional.commitPresented(*retry), "presented frame commits")
+        || !require(transactional.nextFrameId() == RenderCore::FrameId{ 2 }, "commit consumes id"))
+        return EXIT_FAILURE;
+
     RenderCore::SingleViewFrameProducer producer;
     RenderCore::SingleViewFrameInput input;
     input.renderExtent = { 1280, 720 };

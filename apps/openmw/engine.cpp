@@ -89,6 +89,10 @@
 
 #include "mwclass/classes.hpp"
 
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+#include "mwrender/v4enginerenderbridge.hpp"
+#endif
+
 #include "mwdialogue/dialoguemanagerimp.hpp"
 #include "mwdialogue/journalimp.hpp"
 #include "mwdialogue/scripttest.hpp"
@@ -1539,6 +1543,10 @@ void OMW::Engine::go()
     Settings::ShaderManager::get().load(mCfgMgr.getUserConfigPath() / "shaders.yaml");
 
     const RenderCore::RenderBackendSelection renderBackend = selectConfiguredRenderBackend();
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+    if (!MWRender::V4EngineRenderBridge::linkedRuntimeAvailable())
+        throw std::logic_error("V4 Vulkan runtime link probe failed");
+#endif
     if (renderBackend.backend != RenderCore::RenderBackendKind::LegacyOpenGL)
         throw std::logic_error("Selected renderer has no engine bootstrap path");
 

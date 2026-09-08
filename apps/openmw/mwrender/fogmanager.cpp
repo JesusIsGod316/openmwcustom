@@ -104,4 +104,13 @@ namespace MWRender
         const bool enabled = end > start && end < std::numeric_limits<float>::max();
         return { getFogColor(isUnderwater), start, end, enabled };
     }
+
+    FogState FogManager::getSemanticState(bool isUnderwater) const
+    {
+        const State state = getState(isUnderwater);
+        const bool exponential = Settings::fog().mExponentialFog;
+        return { { state.color.r(), state.color.g(), state.color.b(), state.color.a() }, state.start, state.end,
+            (exponential || Settings::fog().mRadialFog) ? FogDistanceMode::Radial : FogDistanceMode::Planar,
+            exponential ? FogFalloffMode::Exponential : FogFalloffMode::Linear, state.enabled, isUnderwater };
+    }
 }

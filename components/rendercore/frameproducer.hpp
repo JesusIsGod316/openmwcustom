@@ -31,8 +31,11 @@ namespace RenderCore
     class SingleViewFrameProducer final
     {
     public:
-        [[nodiscard]] std::optional<FrameRenderState> produce(
-            const RenderWorld& world, const SingleViewFrameInput& input)
+        // Prepare is transactional: a renderer may skip acquisition during
+        // minimize/resize without turning an unpresented camera into temporal
+        // history or consuming a semantic frame id.
+        [[nodiscard]] std::optional<FrameRenderState> prepare(
+            const RenderWorld& world, const SingleViewFrameInput& input) const
         {
             if (!mNextFrameId)
                 return std::nullopt;
@@ -79,12 +82,33 @@ namespace RenderCore
             if (!result.valid())
                 return std::nullopt;
 
-            mHistoryEpoch = candidateHistoryEpoch;
-            mPreviousCamera = input.camera;
-            mPreviousWorldEpoch = world.epoch();
-            mPreviousRenderExtent = input.renderExtent;
-            mPreviousOutputExtent = input.outputExtent;
+            return result;
+        }
+
+        [[nodiscard]] bool commitPresented(const FrameRenderState& frame) noexcept
+        {
+            if (!mNextFrameId || !frame.valid() || frame.frameId() != *mNextFrameId || frame.views().size() != 1
+                || frame.views().front().extent != frame.renderExtent()
+                || frame.views().front().historyEpoch != frame.historyEpoch())
+                return false;
+
+            mHistoryEpoch = frame.historyEpoch();
+            mPreviousCamera = frame.views().front().current;
+            mPreviousWorldEpoch = frame.worldEpoch();
+            mPreviousRenderExtent = frame.renderExtent();
+            mPreviousOutputExtent = frame.outputExtent();
             mNextFrameId = advanceMonotonic(*mNextFrameId);
+            return true;
+        }
+
+        // Convenience for consumers whose publication is guaranteed. Runtime
+        // backends with a fallible acquire/present path use prepare/commit.
+        [[nodiscard]] std::optional<FrameRenderState> produce(
+            const RenderWorld& world, const SingleViewFrameInput& input)
+        {
+            std::optional<FrameRenderState> result = prepare(world, input);
+            if (!result || !commitPresented(*result))
+                return std::nullopt;
             return result;
         }
 

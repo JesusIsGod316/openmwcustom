@@ -607,6 +607,16 @@ namespace MWRender
         return mSceneRoot.get();
     }
 
+    FogState RenderingManager::getFogState(bool underwater) const
+    {
+        return mFog->getSemanticState(underwater);
+    }
+
+    bool RenderingManager::isUnderwater() const
+    {
+        return mWater->isUnderwater(mCamera->getPosition());
+    }
+
     void RenderingManager::setNightEyeFactor(float factor)
     {
         if (factor != mNightEyeFactor)
@@ -1103,10 +1113,10 @@ namespace MWRender
 
         bool isUnderwater = mWater->isUnderwater(mCamera->getPosition());
 
-        const FogManager::State fog = mFog->getState(isUnderwater);
+        const FogState fog = mFog->getSemanticState(isUnderwater);
         const float fogStart = fog.start;
         const float fogEnd = fog.end;
-        const osg::Vec4f fogColor = fog.color;
+        const osg::Vec4f fogColor(fog.color.red, fog.color.green, fog.color.blue, fog.color.alpha);
 
         mStateUpdater->setFogStart(fogStart);
         mStateUpdater->setFogEnd(fogEnd);

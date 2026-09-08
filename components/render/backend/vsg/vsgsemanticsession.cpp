@@ -31,21 +31,42 @@ namespace RenderVsg
 
     RenderCore::RenderFrameResult VsgSemanticSession::renderFrame(const RenderCore::SingleViewFrameInput& input)
     {
-        mLastDiagnostic.clear();
-        std::optional<RenderCore::FrameRenderState> frame = mFrames.produce(mWorld, input);
-        if (!frame)
-        {
-            mLastDiagnostic = "semantic frame producer rejected the engine frame input";
+        if (!mHealthy)
             return RenderCore::RenderFrameResult::Failed;
-        }
+        mLastDiagnostic.clear();
+        std::optional<RenderCore::FrameRenderState> frame = mFrames.prepare(mWorld, input);
+        if (!frame)
+            return fail("semantic frame producer rejected the engine frame input");
 
         const RenderCore::RenderFrameResult result = mBootstrap->renderer().renderFrame(mWorld, *frame);
         mLastDiagnostic = mBootstrap->renderer().lastDiagnostic();
+        if (result == RenderCore::RenderFrameResult::Presented && !mFrames.commitPresented(*frame))
+        {
+            // Presentation already happened, so synchronize before poisoning
+            // the route. This should be unreachable for a prepared frame, but
+            // must not leave later lifetime/history state ambiguous.
+            waitIdle();
+            return fail("presented semantic frame could not commit frame history");
+        }
+        if (result == RenderCore::RenderFrameResult::Failed)
+            return fail(mLastDiagnostic.empty() ? "VSG runtime rejected the semantic frame" : mLastDiagnostic);
         return result;
+    }
+
+    RenderCore::RenderFrameResult VsgSemanticSession::fail(std::string diagnostic)
+    {
+        if (mHealthy)
+        {
+            mHealthy = false;
+            mLastDiagnostic = std::move(diagnostic);
+        }
+        return RenderCore::RenderFrameResult::Failed;
     }
 
     bool VsgSemanticSession::resetWorld()
     {
+        if (!mHealthy)
+            return false;
         waitIdle();
         if (!mWorld.reset())
         {

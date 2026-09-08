@@ -29,6 +29,7 @@ option(DEPLOY_QT_TRANSLATIONS "Deploy standard Qt translations to resources fold
 
 # Apps and tools
 option(BUILD_OPENMW             "Build OpenMW" ON)
+option(OPENMW_ENABLE_V4_VULKAN_RUNTIME "Compile and link the experimental V4 VSG/Vulkan runtime into OpenMW" OFF)
 option(BUILD_LAUNCHER           "Build Launcher" ON)
 option(BUILD_WIZARD             "Build Installation Wizard" ON)
 option(BUILD_MWINIIMPORTER      "Build MWiniImporter" ON)

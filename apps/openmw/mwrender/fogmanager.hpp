@@ -1,6 +1,8 @@
 #ifndef OPENMW_MWRENDER_FOGMANAGER_H
 #define OPENMW_MWRENDER_FOGMANAGER_H
 
+#include "fogstate.hpp"
+
 #include <osg/Vec4f>
 
 namespace MWWorld
@@ -31,6 +33,7 @@ namespace MWRender
         float getFogStart(bool isUnderwater) const;
         float getFogEnd(bool isUnderwater) const;
         [[nodiscard]] State getState(bool isUnderwater) const;
+        [[nodiscard]] FogState getSemanticState(bool isUnderwater) const;
 
     private:
         float mLandFogStart;

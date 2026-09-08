@@ -1,7 +1,7 @@
 #include "v4enginerenderbridge.hpp"
 
+#include "v4runtimeoptions.hpp"
 #include "v4scenerenderlifecycle.hpp"
-#include "v4semanticsource.hpp"
 
 #include <components/render/backend/vsg/vfstextureresolver.hpp>
 #include <components/render/backend/vsg/vsgsemanticsession.hpp>
@@ -13,6 +13,11 @@
 
 namespace MWRender
 {
+    bool V4EngineRenderBridge::linkedRuntimeAvailable() noexcept
+    {
+        return true;
+    }
+
     std::unique_ptr<V4EngineRenderBridge> V4EngineRenderBridge::create(
         const VFS::Manager& vfs, RenderVsg::VsgRuntimeBootstrapOptions options)
     {
@@ -21,6 +26,11 @@ namespace MWRender
         if (!session)
             throw std::runtime_error("V4 engine render bridge received no semantic session");
         return std::unique_ptr<V4EngineRenderBridge>(new V4EngineRenderBridge(vfs, std::move(session)));
+    }
+
+    std::unique_ptr<V4EngineRenderBridge> V4EngineRenderBridge::createConfigured(const VFS::Manager& vfs)
+    {
+        return create(vfs, makeV4RuntimeBootstrapOptions());
     }
 
     V4EngineRenderBridge::V4EngineRenderBridge(
@@ -53,6 +63,9 @@ namespace MWRender
         SDL_Window* const window = mSession->bootstrap().sdlWindow();
         if (!window)
             return std::nullopt;
+        const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+        if ((flags & SDL_WINDOW_HIDDEN) != 0 || (flags & SDL_WINDOW_MINIMIZED) != 0)
+            return std::nullopt;
         int width = 0;
         int height = 0;
         if (!SDL_GetWindowSizeInPixels(window, &width, &height) || width <= 0 || height <= 0)
@@ -64,8 +77,7 @@ namespace MWRender
         return result;
     }
 
-    RenderCore::RenderFrameResult V4EngineRenderBridge::renderMainFrame(
-        const Camera& camera, const V4MainFrameSource& source)
+    RenderCore::RenderFrameResult V4EngineRenderBridge::renderMainFrame(const V4MainFrameSource& source)
     {
         mLastDiagnostic.clear();
         if (!mRouteStatus->healthy())
@@ -84,19 +96,11 @@ namespace MWRender
         const std::optional<RenderCore::Extent2D> extent = outputExtent();
         if (!extent)
         {
-            mLastDiagnostic = "V4 output extent is unavailable";
-            return RenderCore::RenderFrameResult::Failed;
+            mLastDiagnostic = "V4 output extent is temporarily unavailable";
+            return RenderCore::RenderFrameResult::Skipped;
         }
-        const std::optional<RenderCore::CameraState> cameraState = makeV4MainCameraState(
-            camera, *extent, source.verticalFieldOfViewDegrees, source.nearPlane, source.farPlane);
-        if (!cameraState)
-        {
-            mLastDiagnostic = "V4 main camera source is invalid";
-            return RenderCore::RenderFrameResult::Failed;
-        }
-
         RenderCore::SingleViewFrameInput input;
-        input.camera = *cameraState;
+        input.camera = source.camera;
         input.renderExtent = *extent;
         input.outputExtent = *extent;
         input.environment = source.environment;

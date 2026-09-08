@@ -1,6 +1,8 @@
 #ifndef OPENMW_MWRENDER_V4SEMANTICSOURCE_H
 #define OPENMW_MWRENDER_V4SEMANTICSOURCE_H
 
+#include "v4engineframesource.hpp"
+
 #include <components/rendercore/activecellproducer.hpp>
 #include <components/rendercore/framerenderstate.hpp>
 
@@ -17,7 +19,8 @@ namespace MWWorld
 namespace MWRender
 {
     class Camera;
-    class FogManager;
+    class RenderingManager;
+    struct FogState;
 
     // Source-side conversions for the V4 semantic renderer. These functions
     // deliberately consume game state, never OSG scene nodes: content-file
@@ -42,10 +45,17 @@ namespace MWRender
     // intentionally rejected until the weather/sky producer can supply their
     // live blended state; fabricating those values would break shader mods.
     [[nodiscard]] std::optional<RenderCore::FrameEnvironmentState> makeV4InteriorEnvironmentState(
-        const MWWorld::Cell& cell, const FogManager& fog, bool underwater, float nightEyeFactor);
+        const MWWorld::Cell& cell, const FogState& fog, bool underwater, float nightEyeFactor);
 
     [[nodiscard]] std::optional<RenderCore::CameraState> makeV4MainCameraState(const Camera& camera,
         RenderCore::Extent2D extent, double verticalFieldOfViewDegrees, double nearPlane, double farPlane);
+
+    // Transitional production adapter: capture the established gameplay
+    // controller/environment after world update, then cross the engine/backend
+    // boundary only as immutable neutral data.
+    [[nodiscard]] std::optional<V4MainFrameSource> makeV4MainFrameSource(const RenderingManager& rendering,
+        const MWWorld::Cell& cell, bool underwater, RenderCore::Extent2D extent, double simulationTime,
+        double frameDelta, bool invalidateHistory = false);
 }
 
 #endif

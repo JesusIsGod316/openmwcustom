@@ -11,13 +11,32 @@ struct SDL_Window;
 
 namespace RenderVsg
 {
+    enum class VsgWindowMode : std::uint8_t
+    {
+        Windowed,
+        Fullscreen,
+        WindowedFullscreen,
+    };
+
+    enum class VsgPresentMode : std::uint8_t
+    {
+        Immediate,
+        VSync,
+        Adaptive,
+    };
+
     struct VsgRuntimeBootstrapOptions
     {
         std::string title = "OpenMW V4 Vulkan";
         std::uint32_t width = 1280;
         std::uint32_t height = 720;
+        int displayIndex = 0;
+        VsgWindowMode windowMode = VsgWindowMode::Windowed;
+        VsgPresentMode presentMode = VsgPresentMode::VSync;
         bool resizable = true;
         bool highPixelDensity = true;
+        bool windowBorder = true;
+        bool minimizeOnFocusLoss = true;
         bool hidden = false;
         VsgRuntimeHostOptions host;
     };

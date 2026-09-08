@@ -19,6 +19,10 @@ This batch establishes a production-shaped, single-window Vulkan/VSG host behind
   planes and infinite-far intent. This removes an ambiguity that would otherwise break depth reconstruction for postfx and
   shader mods across OpenGL and Vulkan.
 - Current and previous camera matrices cross into VSG without parameter reconstruction.
+- Frame production uses prepare/present/commit semantics. Swapchain skips during minimize, resize or acquisition do not
+  consume a frame ID or promote an unpresented camera to temporal history.
+- A minimized or temporarily zero-sized SDL pixel extent is a non-consuming skipped frame. A real semantic, realization,
+  submission or presentation failure is sticky for the session, preventing unsafe reuse of a possibly submitted frame ID.
 - The host consumes frame ambient/sun state and fog clear color.
 - Constant point lights are delivered through an OpenMW-owned per-view storage buffer rather than VSG's inverse-square
   point-light encoding. The compatibility shader retains diffuse, ambient, specular, negative-light, actor-fade, exact
@@ -61,7 +65,23 @@ This batch establishes a production-shaped, single-window Vulkan/VSG host behind
 - The build-gated `V4SceneRenderLifecycle` adapter uses corrected model paths from real `Ptr` state, parses the winning VFS
   NIF, invokes the accepted CP3B static translator, publishes/reuses it through `StaticModelCache`, and upserts stable
   reference identity into the active-cell producer. Missing models and semantic publication failures fail the explicit
-  route; dynamic/animated categories remain deferred and keep the compatibility mask incomplete.
+  route. Actors, animated objects and visible light models now fail the explicit route with a sticky diagnostic instead
+  of being silently omitted; their deferred compatibility facets remain incomplete.
+- `V4EngineRenderBridge` consumes a backend-neutral `CameraState`, not the OSG-backed gameplay camera class. The current
+  OSG camera conversion is isolated in the source adapter and can be replaced by a native Vulkan camera producer without
+  changing engine/session ownership, frame history, or backend submission.
+- The transitional engine-frame adapter captures the established gameplay camera, FOV, clip distances, neutral fog,
+  night-eye and timing into one immutable source after world update. OpenGL reads the same neutral fog snapshot.
+- `OPENMW_ENABLE_V4_VULKAN_RUNTIME` adds guarded production targets for the VSG backend, accepted NIF translator and game
+  adapters and forces the archive chain through an OpenMW executable link; default/OpenGL builds retain their old graph.
+- The configured application bridge maps OpenMW's current resolution, selected display, exclusive/borderless/windowed
+  mode, border, minimize-on-focus-loss and disabled/enabled/adaptive vsync policy into the distinct Vulkan window. It does
+  not manufacture a second hard-coded window policy, and minimized/hidden windows skip before frame history is consumed.
+- Desktop window policy lives outside semantic source conversion. Headless/capture/multiview/upscaler hosts can reuse the
+  same world and frame contracts without importing fullscreen or present-mode assumptions.
+- `V4EngineFrameCoordinator` provides the backend-owned loop boundary identified by the donor audit: after gameplay/world
+  update it captures extent, underwater state, camera, environment and timing, then submits only immutable neutral state.
+  Surface skips remain retryable while source/backend failures poison the coordinator with the first diagnostic.
 
 ## Deliberate fail-closed boundaries
 
@@ -102,8 +122,10 @@ are implemented and validated.
 
 ## Next integration step
 
-Connect the build-gated `V4SceneRenderLifecycle` and `VsgSemanticSession` to a distinct Vulkan engine bootstrap factory
-without disturbing the OSG viewer dependencies used by GUI, input, world rendering and mod-visible behavior. Do not create an SDL Vulkan window inside the
-current hardwired OSG `Engine::createWindow()` path. The factory should own its separate window/host construction and the
-RenderWorld/publisher/active-cell/frame producer aggregate. Only after that explicit route exists may the executable
-advertise `.vsgVulkan = true`, and `Auto` must remain OpenGL while any compatibility facet is missing.
+Connect the configured `V4EngineRenderBridge` before `World::init` from a distinct Vulkan application route and drive it
+from a backend-owned loop. The primary vsgopenmw donor confirms this ownership shape: its VSG render engine owns the SDL
+Vulkan window/viewer and invokes gameplay through a per-frame callback, rather than entering the OSG viewer loop. Do not
+create a Vulkan window inside the current hardwired OSG `Engine::createWindow()` path or keep a hidden OpenGL window as a
+temporary dependency. The next extraction must preserve the existing input, GUI, world and mod-visible behavior behind a
+backend-neutral gameplay-update boundary. Only after that explicit route exists may the executable advertise
+`.vsgVulkan = true`, and `Auto` must remain OpenGL while any compatibility facet is missing.
