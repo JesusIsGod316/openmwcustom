@@ -153,6 +153,24 @@ modulated, spot, and disabled categories explicitly. A constant-point-only
 implementation therefore cannot accidentally claim compatibility with a scene
 whose authored behavior it would lose.
 
+The first local-light realization extends VSG's own per-view descriptor owner
+with an OpenMW storage-buffer binding. It does not translate point lights into
+VSG's inverse-square representation: the compatibility shader consumes the
+authored diffuse/ambient/specular channels, negative colors, enabled/actor fade,
+and exact constant/linear/quadratic attenuation directly. Classic versus
+non-classic radius behavior comes from immutable frame state. The buffer remains
+bounded at 4096 lights to prevent an accidental unbounded fragment loop, while
+its std430 layout can feed later clustered selection without a record or shader
+data-layout rewrite. Modulated, spot, overflow, and clustered cases still fail
+closed rather than degrading silently.
+
+Interior distance fog now uses a second frame-safe OpenMW view descriptor. The
+legacy shader matches the established planar/radial distance choice and
+linear/exponential equations, and material packing preserves `NiFogProperty`
+disablement plus color/depth overrides. Source-alpha/one materials use the
+legacy additive rule (fade toward black); other materials blend toward fog
+color. Sky blending remains out of scope while the host rejects sky rendering.
+
 ## Cheap local checks
 
 ```sh

@@ -16,6 +16,17 @@
 
 namespace RenderVsg
 {
+    OpenMwEnvironmentValues packOpenMwEnvironment(const RenderCore::FrameEnvironmentState& environment,
+        const RenderCore::ProjectionState& projection) noexcept
+    {
+        return { vsg::vec4(environment.fogColor.r, environment.fogColor.g, environment.fogColor.b,
+                     environment.fogColor.a),
+            vsg::vec4(environment.fogStart, environment.fogEnd, environment.fogEnabled ? 1.0f : 0.0f,
+                static_cast<float>(environment.fogDistanceMode)),
+            vsg::vec4(static_cast<float>(projection.nearPlane), static_cast<float>(projection.farPlane),
+                static_cast<float>(environment.fogFalloffMode), 0.0f) };
+    }
+
     OpenMwViewDependentState::OpenMwViewDependentState(vsg::View* view)
         : Inherit(view)
     {
@@ -31,9 +42,10 @@ namespace RenderVsg
             return;
         if (std::any_of(descriptorSetLayout->bindings.begin(), descriptorSetLayout->bindings.end(),
                 [](const VkDescriptorSetLayoutBinding& binding) {
-                    return binding.binding == OpenMwLocalLightDescriptorBinding;
+                    return binding.binding == OpenMwLocalLightDescriptorBinding
+                        || binding.binding == OpenMwEnvironmentDescriptorBinding;
                 }))
-            throw std::runtime_error("VSG view descriptor binding 5 is no longer available for OpenMW local lights");
+            throw std::runtime_error("VSG view descriptor binding 5 or 6 conflicts with OpenMW per-view state");
 
         const std::size_t vec4Count
             = 1u + DefaultMaximumPackedLocalLights * OpenMwLocalLightVec4Stride;
@@ -45,6 +57,16 @@ namespace RenderVsg
             OpenMwLocalLightDescriptorBinding, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
         descriptorSetLayout->bindings.push_back({ OpenMwLocalLightDescriptorBinding,
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr });
+
+        mOpenMwEnvironmentData = vsg::vec4Array::create(OpenMwEnvironmentVec4Count);
+        mOpenMwEnvironmentData->setValue("name", "openmwEnvironmentData");
+        mOpenMwEnvironmentData->properties.dataVariance = vsg::DYNAMIC_DATA_TRANSFER_AFTER_RECORD;
+        mOpenMwEnvironmentBufferInfo = vsg::BufferInfo::create(mOpenMwEnvironmentData.get());
+        descriptorSet->descriptors.push_back(vsg::DescriptorBuffer::create(
+            vsg::BufferInfoList{ mOpenMwEnvironmentBufferInfo }, OpenMwEnvironmentDescriptorBinding, 0,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER));
+        descriptorSetLayout->bindings.push_back({ OpenMwEnvironmentDescriptorBinding,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr });
     }
 
     bool OpenMwViewDependentState::setLocalLights(LocalLightBufferPlan plan)
@@ -60,9 +82,30 @@ namespace RenderVsg
         return localLightBufferPlanCurrent(world, mPlan);
     }
 
+    void OpenMwViewDependentState::setEnvironment(const RenderCore::FrameEnvironmentState& environment,
+        const RenderCore::ProjectionState& projection) noexcept
+    {
+        mEnvironment = environment;
+        mProjection = projection;
+    }
+
     void OpenMwViewDependentState::traverse(vsg::RecordTraversal& traversal) const
     {
         vsg::ViewDependentState::traverse(traversal);
+        if (mOpenMwEnvironmentData)
+        {
+            const OpenMwEnvironmentValues values = packOpenMwEnvironment(mEnvironment, mProjection);
+            bool environmentChanged = false;
+            auto environmentOutput = mOpenMwEnvironmentData->begin();
+            for (const vsg::vec4& value : values)
+            {
+                environmentChanged = environmentChanged || *environmentOutput != value;
+                *environmentOutput++ = value;
+            }
+            if (environmentChanged)
+                mOpenMwEnvironmentData->dirty();
+        }
+
         if (!mOpenMwLightData || !view || !view->camera)
             return;
 

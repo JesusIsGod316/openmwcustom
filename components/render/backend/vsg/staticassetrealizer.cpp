@@ -457,8 +457,8 @@ namespace RenderVsg
                 result.diagnostics.emplace_back(
                     "Static texture transform is preserved in RenderCore but requires a dedicated compatibility shader variant");
             }
-            if (material->fog.mode != MaterialFogMode::Inherit || material->treeAnimation || material->refraction
-                || material->softEffect || material->falloff || material->bumpParametersEnabled)
+            if (material->treeAnimation || material->refraction || material->softEffect || material->falloff
+                || material->bumpParametersEnabled)
             {
                 ++result.stats.runtimeContextEffects;
             }

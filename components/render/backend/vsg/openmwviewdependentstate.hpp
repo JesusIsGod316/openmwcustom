@@ -3,10 +3,13 @@
 
 #include "locallightbuffer.hpp"
 
+#include <components/rendercore/framerenderstate.hpp>
+
 #include <vsg/core/Array.h>
 #include <vsg/core/ref_ptr.h>
 #include <vsg/state/ViewDependentState.h>
 
+#include <array>
 #include <cstddef>
 
 namespace vsg
@@ -20,7 +23,14 @@ namespace vsg
 namespace RenderVsg
 {
     inline constexpr std::uint32_t OpenMwLocalLightDescriptorBinding = 5;
+    inline constexpr std::uint32_t OpenMwEnvironmentDescriptorBinding = 6;
     inline constexpr std::size_t OpenMwLocalLightVec4Stride = 5;
+    inline constexpr std::size_t OpenMwEnvironmentVec4Count = 3;
+
+    using OpenMwEnvironmentValues = std::array<vsg::vec4, OpenMwEnvironmentVec4Count>;
+
+    [[nodiscard]] OpenMwEnvironmentValues packOpenMwEnvironment(const RenderCore::FrameEnvironmentState& environment,
+        const RenderCore::ProjectionState& projection) noexcept;
 
     // Extends VSG's supported per-view descriptor lifetime instead of creating
     // a parallel descriptor binder. Ambient/directional/shadow ownership stays
@@ -36,6 +46,8 @@ namespace RenderVsg
         [[nodiscard]] bool setLocalLights(LocalLightBufferPlan plan);
         [[nodiscard]] bool localLightsCurrent(const RenderCore::RenderWorld& world) const noexcept;
         void setRadiusFadeEnabled(bool enabled) noexcept { mRadiusFadeEnabled = enabled; }
+        void setEnvironment(const RenderCore::FrameEnvironmentState& environment,
+            const RenderCore::ProjectionState& projection) noexcept;
 
         [[nodiscard]] std::size_t localLightCount() const noexcept { return mPlan.lights.size(); }
 
@@ -43,6 +55,10 @@ namespace RenderVsg
         LocalLightBufferPlan mPlan;
         vsg::ref_ptr<vsg::vec4Array> mOpenMwLightData;
         vsg::ref_ptr<vsg::BufferInfo> mOpenMwLightBufferInfo;
+        vsg::ref_ptr<vsg::vec4Array> mOpenMwEnvironmentData;
+        vsg::ref_ptr<vsg::BufferInfo> mOpenMwEnvironmentBufferInfo;
+        RenderCore::FrameEnvironmentState mEnvironment;
+        RenderCore::ProjectionState mProjection;
         bool mRadiusFadeEnabled = true;
     };
 }

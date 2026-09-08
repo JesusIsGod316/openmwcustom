@@ -18,9 +18,9 @@ namespace vsg
 namespace RenderVsg
 {
     // Backend-private uniform contract for the legacy/Gamebryo compatibility
-    // shader family. Six vec4 slots keep the CPU/GPU layout explicit and stable:
-    // colors, scalar parameters, then semantic selectors. RenderCore itself stays
-    // renderer agnostic and future CP4+ material families may use different data.
+    // shader family. Eight vec4 slots keep the CPU/GPU layout explicit and
+    // stable: colors, scalar parameters, semantic selectors, and material fog.
+    // RenderCore stays renderer agnostic and later material families may differ.
     struct alignas(16) LegacyMaterialUniform
     {
         vsg::vec4 ambientColor{ 1.0f, 1.0f, 1.0f, 1.0f };
@@ -34,11 +34,15 @@ namespace RenderVsg
         vsg::vec4 parameters{ 0.0f, 0.5f, 1.0f, 1.0f };
         // x=VertexColorMode, y=alpha-test enabled, z=CompareOp,
         // w=two-sided lighting enabled. Values are exact small integers encoded
-        // as floats to keep the std140 layout six tightly-defined vec4 slots.
+        // as floats to keep the std140 layout in tightly-defined vec4 slots.
         vsg::vec4 semantics{ 0.0f, 0.0f, 7.0f, 0.0f };
+        // xyz = NiFogProperty override color; w is reserved.
+        vsg::vec4 fogColor{ 0.0f, 0.0f, 0.0f, 1.0f };
+        // x = MaterialFogMode, y = fog depth, z = additive-fog behavior.
+        vsg::vec4 effects{ 0.0f, 0.0f, 0.0f, 0.0f };
     };
 
-    static_assert(sizeof(LegacyMaterialUniform) == sizeof(vsg::vec4) * 6u);
+    static_assert(sizeof(LegacyMaterialUniform) == sizeof(vsg::vec4) * 8u);
     static_assert(alignof(LegacyMaterialUniform) >= 16u);
 
     using LegacyMaterialUniformValue = vsg::Value<LegacyMaterialUniform>;

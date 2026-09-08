@@ -151,6 +151,7 @@ jobs:
           grep -F 'resolveCellLighting(cell)' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'const FogManager::State fog = mFog->getState(isUnderwater)' apps/openmw/mwrender/renderingmanager.cpp
           grep -F 'environment.sunLightEnabled ? 1.0f : 0.0f' components/render/backend/vsg/vsgruntimehost.cpp
+          grep -F 'mOpenMwViewState->setEnvironment(environment, mainView->current.projection);' components/render/backend/vsg/vsgruntimehost.cpp
           grep -F 'makeV4MainCameraState' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'V4EngineRenderBridge::takeSceneRenderLifecycle' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'V4EngineRenderBridge::renderMainFrame' apps/openmw/mwrender/v4enginerenderbridge.cpp

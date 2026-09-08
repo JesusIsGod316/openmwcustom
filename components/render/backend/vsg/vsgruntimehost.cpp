@@ -232,9 +232,9 @@ namespace RenderVsg
         if (!frame.dynamicTransforms().empty() || !frame.dynamicMaterials().empty())
             return finish(RenderCore::RenderFrameResult::Failed,
                 "dynamic transforms and dynamic materials require later compatibility facets");
-        if (frame.environment().skyEnabled || frame.environment().waterEnabled || frame.environment().fogEnabled)
+        if (frame.environment().skyEnabled || frame.environment().waterEnabled)
             return finish(RenderCore::RenderFrameResult::Failed,
-                "sky, water, and distance fog require the environment compatibility facet");
+                "sky and water require the environment compatibility facet");
         if (frame.environment().clusteredLocalLighting)
             return finish(RenderCore::RenderFrameResult::Failed,
                 "clustered local-light selection and far-plane fading require the clustered compatibility facet");
@@ -272,6 +272,7 @@ namespace RenderVsg
         mView->LODScale = mainView->lodScale;
         const RenderCore::FrameEnvironmentState& environment = frame.environment();
         mOpenMwViewState->setRadiusFadeEnabled(environment.localLightRadiusFade);
+        mOpenMwViewState->setEnvironment(environment, mainView->current.projection);
         mAmbientLight->color.set(environment.ambient.r, environment.ambient.g, environment.ambient.b);
         mAmbientLight->intensity = 1.0f;
         mSunLight->color.set(environment.sunDiffuse.r, environment.sunDiffuse.g, environment.sunDiffuse.b);

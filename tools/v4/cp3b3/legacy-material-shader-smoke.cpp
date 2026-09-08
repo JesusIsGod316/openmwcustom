@@ -66,6 +66,9 @@ int main()
     semanticMaterial.destinationBlend = BlendFactor::OneMinusSourceAlpha;
     semanticMaterial.vertexColorMode = VertexColorMode::AmbientDiffuse;
     semanticMaterial.cullMode = CullMode::None;
+    semanticMaterial.fog.mode = MaterialFogMode::Override;
+    semanticMaterial.fog.color = { 0.6f, 0.5f, 0.4f, 1.0f };
+    semanticMaterial.fog.depth = 0.25f;
 
     auto uniform = RenderVsg::makeLegacyCompatibilityMaterial(semanticMaterial);
     require(static_cast<bool>(uniform), "failed to create legacy material uniform");
@@ -85,6 +88,36 @@ int main()
             && near(packed.semantics.z, static_cast<float>(CompareOp::NotEqual))
             && near(packed.semantics.w, 1.0f),
         "legacy semantic selectors changed");
+    require(near(packed.fogColor.x, 0.6f) && near(packed.fogColor.y, 0.5f)
+            && near(packed.fogColor.z, 0.4f)
+            && near(packed.effects.x, static_cast<float>(MaterialFogMode::Override))
+            && near(packed.effects.y, 0.25f) && near(packed.effects.z, 0.0f),
+        "legacy material fog override packing changed");
+    MaterialRecord additiveMaterial = semanticMaterial;
+    additiveMaterial.destinationBlend = BlendFactor::One;
+    require(near(RenderVsg::makeLegacyCompatibilityMaterial(additiveMaterial)->value().effects.z, 1.0f),
+        "source-alpha/one material no longer selects additive fog");
+
+    FrameEnvironmentState environment;
+    environment.fogColor = { 0.1f, 0.2f, 0.3f, 1.0f };
+    environment.fogStart = 64.0f;
+    environment.fogEnd = 2048.0f;
+    environment.fogEnabled = true;
+    environment.fogDistanceMode = FogDistanceMode::Radial;
+    environment.fogFalloffMode = FogFalloffMode::Exponential;
+    ProjectionState projection;
+    projection.nearPlane = 1.0;
+    projection.farPlane = 8192.0;
+    const RenderVsg::OpenMwEnvironmentValues environmentValues
+        = RenderVsg::packOpenMwEnvironment(environment, projection);
+    require(environmentValues.size() == RenderVsg::OpenMwEnvironmentVec4Count
+            && near(environmentValues[0].x, 0.1f) && near(environmentValues[0].y, 0.2f)
+            && near(environmentValues[0].z, 0.3f) && near(environmentValues[1].x, 64.0f)
+            && near(environmentValues[1].y, 2048.0f) && near(environmentValues[1].z, 1.0f)
+            && near(environmentValues[1].w, static_cast<float>(FogDistanceMode::Radial))
+            && near(environmentValues[2].x, 1.0f) && near(environmentValues[2].y, 8192.0f)
+            && near(environmentValues[2].z, static_cast<float>(FogFalloffMode::Exponential)),
+        "OpenMW view fog packing changed");
 
     const std::string_view source = RenderVsg::legacyCompatibilityFragmentShaderSource();
     require(source.find("effectiveDiffuse = vertexColor") != std::string_view::npos,
@@ -117,6 +150,14 @@ int main()
     require(source.find("lightDistance > positionRadius.w") != std::string_view::npos
             && source.find("scale *= 1.0 - radiusFade") != std::string_view::npos,
         "OpenMW non-classic radius cutoff/fade is absent from the shader");
+    require(source.find("binding = 6) uniform OpenMwEnvironmentData") != std::string_view::npos
+            && source.find("fogDistance - fogStart / 2.0") != std::string_view::npos
+            && source.find("fogDistance - fogStart) / (fogEnd - fogStart)") != std::string_view::npos,
+        "OpenMW view fog descriptor or linear/exponential equations are absent from the shader");
+    require(source.find("if (materialFogMode == 1)") != std::string_view::npos
+            && source.find("else if (materialFogMode == 2)") != std::string_view::npos
+            && source.find("outColor.rgb *= 1.0 - fogValue") != std::string_view::npos,
+        "disabled, override, or additive material fog behavior is absent from the shader");
 
     auto shaderSet = RenderVsg::createLegacyCompatibilityShaderSet();
     require(static_cast<bool>(shaderSet), "failed to create legacy compatibility ShaderSet");
@@ -145,6 +186,22 @@ int main()
     require(localDescriptor != viewState->descriptorSet->descriptors.end()
             && (*localDescriptor)->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         "OpenMW local-light descriptor was not attached to the per-view set");
+    const auto environmentLayout = std::find_if(viewState->descriptorSetLayout->bindings.begin(),
+        viewState->descriptorSetLayout->bindings.end(), [](const VkDescriptorSetLayoutBinding& binding) {
+            return binding.binding == RenderVsg::OpenMwEnvironmentDescriptorBinding;
+        });
+    require(environmentLayout != viewState->descriptorSetLayout->bindings.end()
+            && environmentLayout->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+            && environmentLayout->descriptorCount == 1
+            && environmentLayout->stageFlags == VK_SHADER_STAGE_FRAGMENT_BIT,
+        "OpenMW environment view descriptor layout changed");
+    const auto environmentDescriptor = std::find_if(viewState->descriptorSet->descriptors.begin(),
+        viewState->descriptorSet->descriptors.end(), [](const vsg::ref_ptr<vsg::Descriptor>& descriptor) {
+            return descriptor && descriptor->dstBinding == RenderVsg::OpenMwEnvironmentDescriptorBinding;
+        });
+    require(environmentDescriptor != viewState->descriptorSet->descriptors.end()
+            && (*environmentDescriptor)->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        "OpenMW environment descriptor was not attached to the per-view set");
 
     const auto& materialBinding = shaderSet->getDescriptorBinding("material");
     require(static_cast<bool>(materialBinding), "legacy ShaderSet lost its material binding");

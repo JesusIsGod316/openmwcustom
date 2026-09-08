@@ -20,6 +20,13 @@ This batch establishes a production-shaped, single-window Vulkan/VSG host behind
   shader mods across OpenGL and Vulkan.
 - Current and previous camera matrices cross into VSG without parameter reconstruction.
 - The host consumes frame ambient/sun state and fog clear color.
+- Constant point lights are delivered through an OpenMW-owned per-view storage buffer rather than VSG's inverse-square
+  point-light encoding. The compatibility shader retains diffuse, ambient, specular, negative-light, actor-fade, exact
+  constant/linear/quadratic attenuation, and classic/non-classic radius semantics. The packed layout is suitable for a
+  later clustered-selection consumer without changing the neutral records.
+- Interior fog is delivered through a separate frame-safe view descriptor. The shader implements OpenMW's planar/radial
+  distance and linear/exponential curves, including `NiFogProperty` color/depth overrides, material fog disablement, and
+  source-alpha/one additive fading toward black.
 - VSG 1.1.15 record/submit and present `VkResult` values are checked instead of discarded.
 - The completion bridge is pinned to VSG 1.1.15's exact three-buffer `RecordAndSubmitTask` ring.
 - Every rejected frame or realization publishes a backend diagnostic suitable for later engine logging/UI routing.
@@ -62,7 +69,8 @@ The host rejects rather than silently approximates:
 
 - dynamic transforms, animated actors and dynamic material overrides;
 - simple-mesh populations not yet routed through the static-model path;
-- local lights, sky, water and distance fog;
+- flicker/pulse/controller-driven, spot, and clustered local-light behavior;
+- sky and water;
 - per-instance disabled lighting;
 - material/controller effects counted as unresolved runtime-context effects;
 - unsupported texture bindings;
@@ -82,6 +90,8 @@ are implemented and validated.
 - CP3C backend-selection smoke passes, including stable setting parsing, strict/fallback behavior, configuration/content
   qualification and the unqualified Vulkan-only fail-closed case.
 - The runtime host and submission bridge syntax-compile with warnings-as-errors against exact VSG 1.1.15 headers.
+- The compatibility shader gate compiles plain and fully textured variants and checks both OpenMW per-view descriptor
+  layouts, material fog packing, and the local-light/fog equation source contracts.
 - Retained CP3B RenderCore, static asset, sort-policy and texture-identity smoke tests pass.
 - Active-cell producer smoke and component tests cover transform revisioning, atomic cell moves/unloads, shared sequencing,
   missing dependency rejection and world-epoch reset.

@@ -66,6 +66,8 @@ layout(set = MATERIAL_DESCRIPTOR_SET, binding = 10) uniform LegacyMaterialData
     vec4 emissiveColor;
     vec4 parameters;
     vec4 semantics;
+    vec4 fogColor;
+    vec4 effects;
 } material;
 
 layout(set = MATERIAL_DESCRIPTOR_SET, binding = 11) uniform TexCoordIndices
@@ -95,6 +97,15 @@ layout(std430, set = VIEW_DESCRIPTOR_SET, binding = 5) readonly buffer OpenMwLoc
     // constant/linear/quadratic attenuation plus enabled actor fade.
     vec4 values[];
 } openmwLocalLights;
+
+layout(set = VIEW_DESCRIPTOR_SET, binding = 6) uniform OpenMwEnvironmentData
+{
+    vec4 fogColor;
+    // x=start, y=end, z=enabled, w=FogDistanceMode.
+    vec4 fogRangeModes;
+    // x=near, y=far, z=FogFalloffMode.
+    vec4 projectionFog;
+} openmwEnvironment;
 
 layout(location = 0) in vec3 eyePos;
 layout(location = 1) in vec3 normalDir;
@@ -427,6 +438,39 @@ void main()
 #ifdef VSG_EMISSIVE_MAP
     outColor.rgb += texture(emissiveMap, texCoord[texCoordIndices.emissiveMap].st).rgb;
 #endif
+
+    bool fogEnabled = openmwEnvironment.fogRangeModes.z > 0.5;
+    vec3 fogColor = openmwEnvironment.fogColor.rgb;
+    float fogStart = openmwEnvironment.fogRangeModes.x;
+    float fogEnd = openmwEnvironment.fogRangeModes.y;
+    const int materialFogMode = int(material.effects.x + 0.5);
+    if (materialFogMode == 1)
+        fogEnabled = false;
+    else if (materialFogMode == 2)
+    {
+        fogColor = material.fogColor.rgb;
+        if (material.effects.y >= 0.0)
+        {
+            fogStart = openmwEnvironment.projectionFog.x * material.effects.y
+                + openmwEnvironment.projectionFog.y * (1.0 - material.effects.y);
+            fogEnd = openmwEnvironment.projectionFog.y;
+            fogEnabled = true;
+        }
+    }
+    if (fogEnabled)
+    {
+        float fogDistance = openmwEnvironment.fogRangeModes.w > 0.5 ? length(eyePos) : abs(eyePos.z);
+        float fogValue;
+        if (openmwEnvironment.projectionFog.z > 0.5)
+            fogValue = 1.0 - exp(-2.0 * max(0.0, fogDistance - fogStart / 2.0)
+                / (fogEnd - fogStart / 2.0));
+        else
+            fogValue = clamp((fogDistance - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
+        if (material.effects.z > 0.5)
+            outColor.rgb *= 1.0 - fogValue;
+        else
+            outColor.rgb = mix(outColor.rgb, fogColor, fogValue);
+    }
     outColor.a = surfaceColor.a;
 }
 )glsl";
@@ -456,6 +500,12 @@ void main()
         uniform.semantics = vsg::vec4(static_cast<float>(source.vertexColorMode),
             source.alphaTestEnabled ? 1.0f : 0.0f, static_cast<float>(source.alphaCompare),
             source.cullMode == RenderCore::CullMode::None ? 1.0f : 0.0f);
+        uniform.fogColor = toVsg(source.fog.color);
+        const bool additiveFog = source.alphaBlendEnabled
+            && source.sourceBlend == RenderCore::BlendFactor::SourceAlpha
+            && source.destinationBlend == RenderCore::BlendFactor::One;
+        uniform.effects = vsg::vec4(static_cast<float>(source.fog.mode), source.fog.depth,
+            additiveFog ? 1.0f : 0.0f, 0.0f);
         return result;
     }
 
