@@ -18,6 +18,7 @@ get_filename_component(OPENMW_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLU
 
 add_library(openmw_cp3b3_vsg STATIC
     "${OPENMW_ROOT}/components/render/backend/vsg/legacymaterialshader.cpp"
+    "${OPENMW_ROOT}/components/render/backend/vsg/openmwviewdependentstate.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/staticassetrealizer.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/staticassetconformance.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/statictexturedecode.cpp")

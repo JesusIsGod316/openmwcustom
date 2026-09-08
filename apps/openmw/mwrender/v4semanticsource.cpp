@@ -231,6 +231,9 @@ namespace MWRender
         result.sunSpecular.a = 0.0f;
         result.sunLightEnabled = true;
         result.sunVisible = false;
+        result.localLightRadiusFade
+            = !Settings::shaders().mClassicFalloff || Settings::shaders().mClusteredLighting;
+        result.clusteredLocalLighting = Settings::shaders().mClusteredLighting;
         result.skyEnabled = false;
         result.waterEnabled = cell.hasWater();
         result.waterHeight = cell.getWaterHeight();

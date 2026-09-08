@@ -40,6 +40,8 @@ jobs:
           grep -F 'FogFalloffMode fogFalloffMode' components/rendercore/framerenderstate.hpp
           grep -F 'bool fogEnabled = false' components/rendercore/framerenderstate.hpp
           grep -F 'bool sunLightEnabled = true' components/rendercore/framerenderstate.hpp
+          grep -F 'bool localLightRadiusFade = true' components/rendercore/framerenderstate.hpp
+          grep -F 'bool clusteredLocalLighting = false' components/rendercore/framerenderstate.hpp
           grep -F 'upsertLight(const CellLightSource& source)' components/rendercore/activecellproducer.hpp
           grep -F 'batch.add(RetireLight{ binding.handle })' components/rendercore/activecellproducer.hpp
           grep -F 'semantic_detail::finite(record.position)' components/rendercore/renderworld.hpp
@@ -105,6 +107,9 @@ jobs:
               -x c++ -c -o /tmp/v4-cp3c-framecamera.o -
           g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
               -c components/render/backend/vsg/vsgruntimehost.cpp -o /tmp/v4-cp3c-runtime-host.o
+          g++ "${common[@]}" -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
+              -c components/render/backend/vsg/openmwviewdependentstate.cpp \
+              -o /tmp/v4-cp3c-openmw-view-state.o
           g++ "${common[@]}" -I/tmp/SDL-3.4.10/include \
               -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
               -c components/render/backend/vsg/vsgruntimebootstrap.cpp -o /tmp/v4-cp3c-runtime-bootstrap.o
@@ -142,6 +147,7 @@ jobs:
           grep -F 'makeV4CellLightSource' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'SceneUtil::resolveLightAttenuation' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'makeV4InteriorEnvironmentState' apps/openmw/mwrender/v4semanticsource.cpp
+          grep -F 'result.clusteredLocalLighting = Settings::shaders().mClusteredLighting;' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'resolveCellLighting(cell)' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'const FogManager::State fog = mFog->getState(isUnderwater)' apps/openmw/mwrender/renderingmanager.cpp
           grep -F 'environment.sunLightEnabled ? 1.0f : 0.0f' components/render/backend/vsg/vsgruntimehost.cpp

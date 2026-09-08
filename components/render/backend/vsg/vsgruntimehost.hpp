@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_VSGRUNTIMEHOST_H
 
 #include "framecamera.hpp"
+#include "openmwviewdependentstate.hpp"
 #include "sdlvulkanwindow.hpp"
 #include "staticassetrealizer.hpp"
 #include "staticworldresidency.hpp"
@@ -59,6 +60,7 @@ namespace RenderVsg
         using StaticResident = vsg::ref_ptr<vsg::MatrixTransform>;
 
         [[nodiscard]] bool synchronizeStaticWorld(const RenderCore::RenderWorld& world);
+        [[nodiscard]] bool synchronizeLocalLights(const RenderCore::RenderWorld& world);
         [[nodiscard]] const RenderCore::FrameView* selectMainView(
             const RenderCore::FrameRenderState& frame) const noexcept;
         RenderCore::RenderFrameResult finish(
@@ -71,6 +73,7 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::Viewer> mViewer;
         vsg::ref_ptr<vsg::Group> mSceneRoot;
         vsg::ref_ptr<vsg::View> mView;
+        vsg::ref_ptr<OpenMwViewDependentState> mOpenMwViewState;
         vsg::ref_ptr<vsg::RenderGraph> mRenderGraph;
         vsg::ref_ptr<vsg::AmbientLight> mAmbientLight;
         vsg::ref_ptr<vsg::DirectionalLight> mSunLight;

@@ -120,6 +120,13 @@ namespace RenderCore
         // retain authored directional lighting while hiding the sun itself.
         bool sunLightEnabled = true;
         bool sunVisible = true;
+        // Matches the OpenMW shader choice: non-classic and clustered lighting
+        // fade point lights over the final quarter of their effective radius.
+        bool localLightRadiusFade = true;
+        // Kept distinct from radius fading: clustered mode also owns tile/light
+        // selection and far-plane fading, so a backend must not silently treat
+        // it as the unclustered loop merely because their radius curves match.
+        bool clusteredLocalLighting = false;
         bool skyEnabled = true;
         bool waterEnabled = false;
         double waterHeight = 0.0;

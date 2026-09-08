@@ -1,5 +1,7 @@
 #include "legacymaterialshader.hpp"
 
+#include "locallightbuffer.hpp"
+
 #include <vsg/state/ShaderModule.h>
 #include <vsg/state/ShaderStage.h>
 #include <vsg/utils/ShaderSet.h>
@@ -84,6 +86,15 @@ layout(set = VIEW_DESCRIPTOR_SET, binding = 0) uniform LightData
 } lightData;
 layout(set = VIEW_DESCRIPTOR_SET, binding = 2) uniform texture2DArray shadowMaps;
 layout(set = VIEW_DESCRIPTOR_SET, binding = 4) uniform sampler shadowMapShadowSampler;
+
+layout(std430, set = VIEW_DESCRIPTOR_SET, binding = 5) readonly buffer OpenMwLocalLightData
+{
+    // header: x=count, y=radius-fade enabled, z=vec4 stride.
+    vec4 header;
+    // Per light: position/radius, diffuse, specular, ambient,
+    // constant/linear/quadratic attenuation plus enabled actor fade.
+    vec4 values[];
+} openmwLocalLights;
 
 layout(location = 0) in vec3 eyePos;
 layout(location = 1) in vec3 normalDir;
@@ -317,6 +328,49 @@ void main()
         {
             vec3 halfDir = normalize(direction + vd);
             color += specularColor * specularStrength * pow(max(dot(halfDir, nd), 0.0), shininess) * scale;
+        }
+    }
+
+    int openmwPointLightCount = min(int(openmwLocalLights.header.x), openmwLocalLights.values.length() / 5);
+    for (int i = 0; i < openmwPointLightCount; ++i)
+    {
+        int base = i * 5;
+        vec4 positionRadius = openmwLocalLights.values[base];
+        vec4 diffuse = openmwLocalLights.values[base + 1];
+        vec4 specular = openmwLocalLights.values[base + 2];
+        vec4 ambient = openmwLocalLights.values[base + 3];
+        vec4 attenuationFade = openmwLocalLights.values[base + 4];
+        if (attenuationFade.w < intensityMinimum)
+            continue;
+
+        vec3 delta = positionRadius.xyz - eyePos;
+        float lightDistance = length(delta);
+        if (openmwLocalLights.header.y > 0.5)
+        {
+            if (positionRadius.w <= 0.0 || lightDistance > positionRadius.w)
+                continue;
+        }
+        vec3 direction = lightDistance > 0.0 ? delta / lightDistance : nd;
+        float denominator = attenuationFade.x + attenuationFade.y * lightDistance
+            + attenuationFade.z * lightDistance * lightDistance;
+        if (denominator <= 0.0)
+            continue;
+        float scale = attenuationFade.w / denominator;
+        if (openmwLocalLights.header.y > 0.5)
+        {
+            float radiusFade = clamp((lightDistance / positionRadius.w - 0.75) / 0.25, 0.0, 1.0);
+            radiusFade = 1.0 - radiusFade * radiusFade;
+            radiusFade = 1.0 - radiusFade * radiusFade;
+            scale *= 1.0 - radiusFade;
+        }
+        float diffuseFactor = scale * max(dot(direction, nd), 0.0);
+        color += surfaceColor.rgb * effectiveDiffuse.rgb * diffuse.rgb * diffuseFactor;
+        color += surfaceColor.rgb * effectiveAmbient.rgb * ambient.rgb * scale;
+        if (shininess > 0.0 && diffuseFactor > 0.0)
+        {
+            vec3 halfDir = normalize(direction + vd);
+            color += specularColor * specularStrength * specular.rgb
+                * pow(max(dot(halfDir, nd), 0.0), shininess) * scale;
         }
     }
 

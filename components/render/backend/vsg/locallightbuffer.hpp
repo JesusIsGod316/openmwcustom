@@ -60,6 +60,10 @@ namespace RenderVsg
         [[nodiscard]] bool ready() const noexcept { return status == LocalLightBufferStatus::Ready; }
     };
 
+    // The baseline path remains bounded so an extreme mod cannot accidentally
+    // create an unbounded per-fragment loop. Storage-buffer delivery avoids the
+    // much smaller uniform-buffer range ceiling and can later feed clustered
+    // selection without changing the semantic light records or packed layout.
     inline constexpr std::size_t DefaultMaximumPackedLocalLights = 4096;
 
     [[nodiscard]] inline bool packRelativePosition(

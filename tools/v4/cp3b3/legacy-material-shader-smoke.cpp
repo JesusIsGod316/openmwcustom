@@ -1,10 +1,12 @@
 #include <components/render/backend/vsg/legacymaterialshader.hpp>
+#include <components/render/backend/vsg/openmwviewdependentstate.hpp>
 #include <components/render/backend/vsg/staticassetplan.hpp>
 #include <components/render/backend/vsg/staticassetrealizer.hpp>
 
 #include <vsg/all.h>
 #include <vsg/utils/ShaderCompiler.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -107,9 +109,43 @@ int main()
         "legacy additive emissive-map stage is absent from the shader");
     require(source.find("material.semantics.w > 0.5 && !gl_FrontFacing") != std::string_view::npos,
         "two-sided legacy lighting semantic is absent from the shader");
+    require(source.find("binding = 5) readonly buffer OpenMwLocalLightData") != std::string_view::npos
+            && source.find("attenuationFade.x + attenuationFade.y * lightDistance") != std::string_view::npos
+            && source.find("surfaceColor.rgb * effectiveAmbient.rgb * ambient.rgb * scale") != std::string_view::npos
+            && source.find("specularColor * specularStrength * specular.rgb") != std::string_view::npos,
+        "exact OpenMW local-light descriptor or lighting channels are absent from the shader");
+    require(source.find("lightDistance > positionRadius.w") != std::string_view::npos
+            && source.find("scale *= 1.0 - radiusFade") != std::string_view::npos,
+        "OpenMW non-classic radius cutoff/fade is absent from the shader");
 
     auto shaderSet = RenderVsg::createLegacyCompatibilityShaderSet();
     require(static_cast<bool>(shaderSet), "failed to create legacy compatibility ShaderSet");
+
+    auto view = vsg::View::create();
+    auto viewState = RenderVsg::OpenMwViewDependentState::create(view.get());
+    viewState->shaderSet = shaderSet;
+    vsg::ResourceRequirements requirements;
+    requirements.views[view.get()] = {};
+    viewState->init(requirements);
+    require(viewState->descriptorSetLayout && viewState->descriptorSet,
+        "OpenMW view-dependent descriptor set was not initialized");
+    const auto localLayout = std::find_if(viewState->descriptorSetLayout->bindings.begin(),
+        viewState->descriptorSetLayout->bindings.end(), [](const VkDescriptorSetLayoutBinding& binding) {
+            return binding.binding == RenderVsg::OpenMwLocalLightDescriptorBinding;
+        });
+    require(localLayout != viewState->descriptorSetLayout->bindings.end()
+            && localLayout->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+            && localLayout->descriptorCount == 1
+            && localLayout->stageFlags == VK_SHADER_STAGE_FRAGMENT_BIT,
+        "OpenMW local-light view descriptor layout changed");
+    const auto localDescriptor = std::find_if(viewState->descriptorSet->descriptors.begin(),
+        viewState->descriptorSet->descriptors.end(), [](const vsg::ref_ptr<vsg::Descriptor>& descriptor) {
+            return descriptor && descriptor->dstBinding == RenderVsg::OpenMwLocalLightDescriptorBinding;
+        });
+    require(localDescriptor != viewState->descriptorSet->descriptors.end()
+            && (*localDescriptor)->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        "OpenMW local-light descriptor was not attached to the per-view set");
+
     const auto& materialBinding = shaderSet->getDescriptorBinding("material");
     require(static_cast<bool>(materialBinding), "legacy ShaderSet lost its material binding");
     require(dynamic_cast<const RenderVsg::LegacyMaterialUniformValue*>(materialBinding.data.get()) != nullptr,

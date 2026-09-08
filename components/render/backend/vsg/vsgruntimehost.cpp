@@ -1,5 +1,6 @@
 #include "vsgruntimehost.hpp"
 
+#include "legacymaterialshader.hpp"
 #include "staticassetconformance.hpp"
 
 #include <vsg/app/CommandGraph.h>
@@ -58,6 +59,11 @@ namespace RenderVsg
 
         mViewer->addWindow(mWindow);
         mView = vsg::View::create(mCamera.camera);
+        mOpenMwViewState = OpenMwViewDependentState::create(mView.get());
+        mOpenMwViewState->shaderSet = createLegacyCompatibilityShaderSet();
+        if (!mOpenMwViewState->shaderSet)
+            throw std::runtime_error("VsgRuntimeHost could not create its OpenMW view shader contract");
+        mView->viewDependentState = mOpenMwViewState;
         mAmbientLight->name = "OpenMW ambient";
         mSunLight->name = "OpenMW sun";
         mView->addChild(mAmbientLight);
@@ -80,6 +86,7 @@ namespace RenderVsg
         if (mSceneRoot)
             mSceneRoot->children.clear();
         mRenderGraph = {};
+        mOpenMwViewState = {};
         mView = {};
         mViewer = {};
         mWindow = {};
@@ -178,18 +185,59 @@ namespace RenderVsg
         return true;
     }
 
+    bool VsgRuntimeHost::synchronizeLocalLights(const RenderCore::RenderWorld& world)
+    {
+        if (mOpenMwViewState->localLightsCurrent(world))
+            return true;
+
+        LocalLightBufferPlan plan
+            = buildLocalLightBufferPlan(buildLocalLightWorldPlan(world), glm::dvec3(0.0));
+        if (!plan.ready())
+        {
+            switch (plan.status)
+            {
+                case LocalLightBufferStatus::UnsupportedModulation:
+                    mLastDiagnostic = "modulated local lights require the temporal light compatibility facet";
+                    break;
+                case LocalLightBufferStatus::UnsupportedSpotLight:
+                    mLastDiagnostic = "spot lights require the directional cone compatibility facet";
+                    break;
+                case LocalLightBufferStatus::RelativePositionOutOfRange:
+                    mLastDiagnostic = "local light position cannot be represented in the render coordinate frame";
+                    break;
+                case LocalLightBufferStatus::CapacityExceeded:
+                    mLastDiagnostic = "active local light count exceeds the bounded compatibility buffer";
+                    break;
+                case LocalLightBufferStatus::InvalidWorldPlan:
+                case LocalLightBufferStatus::Ready:
+                    mLastDiagnostic = "local light world plan is invalid";
+                    break;
+            }
+            return false;
+        }
+        if (!mOpenMwViewState->setLocalLights(std::move(plan)))
+        {
+            mLastDiagnostic = "OpenMW view state rejected its prepared local light buffer";
+            return false;
+        }
+        return true;
+    }
+
     RenderCore::RenderFrameResult VsgRuntimeHost::renderFrame(
         const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame)
     {
         mLastDiagnostic.clear();
         if (!frame.valid() || !RenderCore::frameCompatibleWithWorld(world, frame))
             return finish(RenderCore::RenderFrameResult::Failed, "invalid or stale semantic frame state");
-        if (!frame.dynamicTransforms().empty() || !frame.dynamicMaterials().empty() || world.lightCount() != 0)
+        if (!frame.dynamicTransforms().empty() || !frame.dynamicMaterials().empty())
             return finish(RenderCore::RenderFrameResult::Failed,
-                "dynamic transforms, dynamic materials, and local lights require later compatibility facets");
+                "dynamic transforms and dynamic materials require later compatibility facets");
         if (frame.environment().skyEnabled || frame.environment().waterEnabled || frame.environment().fogEnabled)
             return finish(RenderCore::RenderFrameResult::Failed,
                 "sky, water, and distance fog require the environment compatibility facet");
+        if (frame.environment().clusteredLocalLighting)
+            return finish(RenderCore::RenderFrameResult::Failed,
+                "clustered local-light selection and far-plane fading require the clustered compatibility facet");
         const RenderCore::FrameView* mainView = selectMainView(frame);
         if (!mainView || mainView->extent != frame.renderExtent() || frame.renderExtent() != frame.outputExtent())
             return finish(RenderCore::RenderFrameResult::Failed,
@@ -223,6 +271,7 @@ namespace RenderVsg
         mCamera.update(*mainView);
         mView->LODScale = mainView->lodScale;
         const RenderCore::FrameEnvironmentState& environment = frame.environment();
+        mOpenMwViewState->setRadiusFadeEnabled(environment.localLightRadiusFade);
         mAmbientLight->color.set(environment.ambient.r, environment.ambient.g, environment.ambient.b);
         mAmbientLight->intensity = 1.0f;
         mSunLight->color.set(environment.sunDiffuse.r, environment.sunDiffuse.g, environment.sunDiffuse.b);
@@ -231,7 +280,7 @@ namespace RenderVsg
             environment.sunDirection.x, environment.sunDirection.y, environment.sunDirection.z);
         const RenderCore::Color& clear = environment.fogColor;
         mRenderGraph->setClearValues({ { clear.r, clear.g, clear.b, clear.a } });
-        if (!synchronizeStaticWorld(world))
+        if (!synchronizeLocalLights(world) || !synchronizeStaticWorld(world))
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
 
         mViewer->update();

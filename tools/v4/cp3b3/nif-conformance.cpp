@@ -1,5 +1,7 @@
 #include <components/files/conversion.hpp>
 #include <components/nif/niffile.hpp>
+#include <components/render/backend/vsg/legacymaterialshader.hpp>
+#include <components/render/backend/vsg/openmwviewdependentstate.hpp>
 #include <components/render/backend/vsg/sdlvulkanwindow.hpp>
 #include <components/render/backend/vsg/staticassetconformance.hpp>
 #include <components/render/backend/vsg/staticnifconformance.hpp>
@@ -322,6 +324,11 @@ namespace
             auto camera = vsg::Camera::create(perspective, lookAt, vsg::ViewportState::create(extent));
 
             auto view = vsg::View::create(camera);
+            auto openmwViewState = RenderVsg::OpenMwViewDependentState::create(view.get());
+            openmwViewState->shaderSet = RenderVsg::createLegacyCompatibilityShaderSet();
+            if (!openmwViewState->shaderSet)
+                throw std::runtime_error("failed to create OpenMW conformance view shader contract");
+            view->viewDependentState = openmwViewState;
             view->addChild(vsg::createHeadlight());
             view->addChild(scene);
 
