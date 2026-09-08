@@ -29,16 +29,14 @@ function(openmw_cp3b3_define_real_nif_tool)
     find_package(vsg 1.1.15 CONFIG REQUIRED)
     find_package(vsgXchange CONFIG REQUIRED)
 
+    include("${CMAKE_SOURCE_DIR}/components/render/backend/vsg/runtime-sources.cmake")
+    include("${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4engine-sources.cmake")
+
     # Keep GLM/VSG semantics out of the legacy OpenGL target graph until the
     # production Vulkan engine path is explicitly enabled. Compile the real
     # game-state adapter here so its OpenMW-facing surface remains checked by
     # the Vulkan integration job without adding GLM to OpenGL-only builds.
-    add_library(openmw-v4-semantic-source-compile OBJECT
-        "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4engineframecoordinator.cpp"
-        "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4enginerenderbridge.cpp"
-        "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4runtimeoptions.cpp"
-        "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4semanticsource.cpp"
-        "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4scenerenderlifecycle.cpp")
+    add_library(openmw-v4-semantic-source-compile OBJECT ${OPENMW_V4_ENGINE_RUNTIME_SOURCES})
     target_include_directories(openmw-v4-semantic-source-compile PRIVATE "${CMAKE_SOURCE_DIR}")
     target_link_libraries(
         openmw-v4-semantic-source-compile PRIVATE components SDL3::SDL3 glm::glm Vulkan::Vulkan vsg::vsg)
@@ -46,18 +44,8 @@ function(openmw_cp3b3_define_real_nif_tool)
 
     add_executable(openmw-vulkan-nif-conformance
         "${CMAKE_SOURCE_DIR}/tools/v4/cp3b3/nif-conformance.cpp"
-        "${CMAKE_SOURCE_DIR}/components/nifrender/niftranslator.cpp"
-        "${CMAKE_SOURCE_DIR}/components/nifrender/staticniftranslator.cpp"
-        "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/legacymaterialshader.cpp"
-        "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/openmwviewdependentstate.cpp"
-        "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/sdlvulkanwindow.cpp"
-        "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/staticassetrealizer.cpp"
-        "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/staticassetconformance.cpp"
-        "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/statictexturedecode.cpp"
         "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/staticnifconformance.cpp"
-        "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgruntimebootstrap.cpp"
-        "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgruntimehost.cpp"
-        "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgsemanticsession.cpp")
+        ${OPENMW_V4_VSG_RUNTIME_SOURCES})
 
     target_include_directories(openmw-vulkan-nif-conformance PRIVATE "${CMAKE_SOURCE_DIR}")
     target_link_libraries(openmw-vulkan-nif-conformance PRIVATE

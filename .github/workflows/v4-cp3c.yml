@@ -138,15 +138,19 @@ jobs:
           grep -F 'if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)' apps/openmw/CMakeLists.txt
           grep -F 'add_library(openmw-v4-vulkan-runtime STATIC' apps/openmw/CMakeLists.txt
           grep -F 'target_link_libraries(openmw-lib openmw-v4-vulkan-runtime)' apps/openmw/CMakeLists.txt
-          grep -F 'mwrender/v4semanticsource.cpp' apps/openmw/CMakeLists.txt
-          grep -F 'mwrender/v4engineframecoordinator.cpp' apps/openmw/CMakeLists.txt
-          grep -F 'mwrender/v4runtimeoptions.cpp' apps/openmw/CMakeLists.txt
+          grep -F 'OPENMW_V4_VSG_RUNTIME_SOURCES' apps/openmw/CMakeLists.txt
+          grep -F 'OPENMW_V4_ENGINE_RUNTIME_SOURCES' apps/openmw/CMakeLists.txt
+          grep -F 'staticassetconformance.cpp' components/render/backend/vsg/runtime-sources.cmake
+          grep -F 'v4semanticsource.cpp' apps/openmw/mwrender/v4engine-sources.cmake
+          grep -F 'v4engineframecoordinator.cpp' apps/openmw/mwrender/v4engine-sources.cmake
+          grep -F 'v4runtimeoptions.cpp' apps/openmw/mwrender/v4engine-sources.cmake
           grep -F 'OPENMW_ENABLE_V4_VULKAN_RUNTIME=1' apps/openmw/CMakeLists.txt
           grep -F 'V4EngineRenderBridge::linkedRuntimeAvailable()' apps/openmw/engine.cpp
           grep -F 'OPENMW_ENABLE_V4_VULKAN_RUNTIME=ON' .github/workflows/v4-cp3b3.yml
           grep -F 'Build production OpenMW with linked V4 Vulkan runtime' .github/workflows/v4-cp3b3.yml
           grep -F 'openmw-v4-semantic-source-compile' tools/v4/cp3b3/OpenMWRealNifTool.cmake
-          grep -F 'v4enginerenderbridge.cpp' tools/v4/cp3b3/OpenMWRealNifTool.cmake
+          grep -F 'OPENMW_V4_ENGINE_RUNTIME_SOURCES' tools/v4/cp3b3/OpenMWRealNifTool.cmake
+          grep -F 'OPENMW_V4_VSG_RUNTIME_SOURCES' tools/v4/cp3b3/OpenMWRealNifTool.cmake
           grep -F 'makeV4StaticInstanceSource' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'makeV4CellLightSource' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'SceneUtil::resolveLightAttenuation' apps/openmw/mwrender/v4semanticsource.cpp

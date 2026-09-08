@@ -133,17 +133,10 @@ if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
     find_package(vsg 1.1.15 CONFIG REQUIRED)
     find_package(vsgXchange CONFIG REQUIRED)
 
-    add_library(openmw-v4-vulkan-runtime STATIC
-        ${CMAKE_SOURCE_DIR}/components/nifrender/niftranslator.cpp
-        ${CMAKE_SOURCE_DIR}/components/nifrender/staticniftranslator.cpp
-        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/legacymaterialshader.cpp
-        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/openmwviewdependentstate.cpp
-        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/sdlvulkanwindow.cpp
-        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/staticassetrealizer.cpp
-        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/statictexturedecode.cpp
-        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgruntimebootstrap.cpp
-        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgruntimehost.cpp
-        ${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgsemanticsession.cpp)
+    include("${CMAKE_SOURCE_DIR}/components/render/backend/vsg/runtime-sources.cmake")
+    include("${CMAKE_CURRENT_SOURCE_DIR}/mwrender/v4engine-sources.cmake")
+
+    add_library(openmw-v4-vulkan-runtime STATIC ${OPENMW_V4_VSG_RUNTIME_SOURCES})
     target_include_directories(openmw-v4-vulkan-runtime PUBLIC ${CMAKE_SOURCE_DIR})
     target_link_libraries(openmw-v4-vulkan-runtime PUBLIC
         components
@@ -154,12 +147,7 @@ if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
         vsgXchange::vsgXchange)
     target_compile_features(openmw-v4-vulkan-runtime PUBLIC cxx_std_20)
 
-    target_sources(openmw-lib PRIVATE
-        mwrender/v4engineframecoordinator.cpp
-        mwrender/v4enginerenderbridge.cpp
-        mwrender/v4runtimeoptions.cpp
-        mwrender/v4scenerenderlifecycle.cpp
-        mwrender/v4semanticsource.cpp)
+    target_sources(openmw-lib PRIVATE ${OPENMW_V4_ENGINE_RUNTIME_SOURCES})
     # openmw-lib uses CMake's plain target_link_libraries signature below.
     # Mixing the keyword and plain signatures is rejected at configure time.
     target_link_libraries(openmw-lib openmw-v4-vulkan-runtime)
