@@ -160,7 +160,9 @@ if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
         mwrender/v4runtimeoptions.cpp
         mwrender/v4scenerenderlifecycle.cpp
         mwrender/v4semanticsource.cpp)
-    target_link_libraries(openmw-lib PRIVATE openmw-v4-vulkan-runtime)
+    # openmw-lib uses CMake's plain target_link_libraries signature below.
+    # Mixing the keyword and plain signatures is rejected at configure time.
+    target_link_libraries(openmw-lib openmw-v4-vulkan-runtime)
     target_compile_definitions(openmw-lib PRIVATE OPENMW_ENABLE_V4_VULKAN_RUNTIME=1)
 endif()
 

@@ -45,8 +45,11 @@ jobs:
           grep -F 'upsertLight(const CellLightSource& source)' components/rendercore/activecellproducer.hpp
           grep -F 'batch.add(RetireLight{ binding.handle })' components/rendercore/activecellproducer.hpp
           grep -F 'semantic_detail::finite(record.position)' components/rendercore/renderworld.hpp
-          perl -0777 -ne 'while (/R"glsl\((.*?)\)glsl"/sg) { die "MSVC-sized GLSL literal exceeded\n" if length($1) >= 16380 }' \
-            components/render/backend/vsg/legacymaterialshader.cpp
+          perl -0777 -ne 'while (/R"([A-Za-z0-9_]*)\((.*?)\)\1"/sg) { die "$ARGV contains a raw string too large for MSVC\n" if length($2) >= 16000 }' \
+            components/render/backend/vsg/*.cpp components/render/backend/vsg/*.hpp \
+            apps/openmw/mwrender/v4*.cpp apps/openmw/mwrender/v4*.hpp
+          perl -0777 -ne 'while (/target_link_libraries\s*\(\s*([^\s\)]+)\s*(.*?)\)/sg) { $target=$1; $kind=$2 =~ /^\s*(?:PRIVATE|PUBLIC|INTERFACE)\b/ ? "keyword" : "plain"; die "$target mixes target_link_libraries signatures\n" if exists($signature{$target}) && $signature{$target} ne $kind; $signature{$target}=$kind }' \
+            apps/openmw/CMakeLists.txt tools/v4/cp3b3/OpenMWRealNifTool.cmake
 
       - name: Install lightweight compile dependency
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglm-dev libvulkan-dev
@@ -134,6 +137,7 @@ jobs:
           grep -F 'option(OPENMW_ENABLE_V4_VULKAN_RUNTIME' CMakeLists.txt
           grep -F 'if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)' apps/openmw/CMakeLists.txt
           grep -F 'add_library(openmw-v4-vulkan-runtime STATIC' apps/openmw/CMakeLists.txt
+          grep -F 'target_link_libraries(openmw-lib openmw-v4-vulkan-runtime)' apps/openmw/CMakeLists.txt
           grep -F 'mwrender/v4semanticsource.cpp' apps/openmw/CMakeLists.txt
           grep -F 'mwrender/v4engineframecoordinator.cpp' apps/openmw/CMakeLists.txt
           grep -F 'mwrender/v4runtimeoptions.cpp' apps/openmw/CMakeLists.txt
