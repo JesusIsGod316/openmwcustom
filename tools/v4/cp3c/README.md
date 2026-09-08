@@ -94,6 +94,19 @@ publication failures stop the explicit route instead of silently dropping an
 object. Cell and object retirement remain cleanup-safe and retain a health
 diagnostic for the engine loop.
 
+`V4EngineRenderBridge` now provides the build-gated application factory around
+that session. It creates the texture resolver from OpenMW's already-registered
+winning VFS, hands exactly one lifecycle observer to the world before cell
+activation, and converts the authoritative game camera plus the current SDL
+pixel extent into a `SingleViewFrameInput`. The lifecycle shares ownership of
+the session, preventing a future application-member reorder from destroying GPU
+state while the world can still issue retirement callbacks. Resize sampling is
+kept at the SDL pixel boundary, so render and output extents are explicit and do
+not depend on OSG camera or graphics-window state. The normal executable still
+does not link or select this bridge; the remaining engine branch must instantiate
+it before `World::init` and drive it from a Vulkan-specific loop after the
+non-rendering subsystems have been separated from the OSG host.
+
 ## Cheap local checks
 
 ```sh

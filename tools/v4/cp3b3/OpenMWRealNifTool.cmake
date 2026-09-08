@@ -34,6 +34,7 @@ function(openmw_cp3b3_define_real_nif_tool)
     # game-state adapter here so its OpenMW-facing surface remains checked by
     # the Vulkan integration job without adding GLM to OpenGL-only builds.
     add_library(openmw-v4-semantic-source-compile OBJECT
+        "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4enginerenderbridge.cpp"
         "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4semanticsource.cpp"
         "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4scenerenderlifecycle.cpp")
     target_include_directories(openmw-v4-semantic-source-compile PRIVATE "${CMAKE_SOURCE_DIR}")

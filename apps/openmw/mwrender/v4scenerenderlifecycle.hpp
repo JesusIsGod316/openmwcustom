@@ -3,6 +3,7 @@
 
 #include "../mwworld/scenerenderlifecycle.hpp"
 
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -18,14 +19,15 @@ namespace VFS
 
 namespace MWRender
 {
-    // Production game-world adapter for the build-gated Vulkan session. Static
-    // assets are parsed from the winning OpenMW VFS entry and published through
-    // the one CP3B translator/cache path. Unsupported dynamic categories remain
-    // outside this adapter and therefore keep the Vulkan compatibility gate shut.
+    // Production game-world adapter for the build-gated Vulkan session. Shared
+    // session ownership keeps GPU state alive until the scene has retired its
+    // observer. Static assets are parsed from the winning OpenMW VFS entry and
+    // published through the one CP3B translator/cache path. Unsupported dynamic
+    // categories remain outside this adapter and keep the compatibility gate shut.
     class V4SceneRenderLifecycle final : public MWWorld::SceneRenderLifecycle
     {
     public:
-        V4SceneRenderLifecycle(RenderVsg::VsgSemanticSession& session, const VFS::Manager& vfs);
+        V4SceneRenderLifecycle(std::shared_ptr<RenderVsg::VsgSemanticSession> session, const VFS::Manager& vfs);
 
         void cellActivated(const MWWorld::CellStore& cell) override;
         void cellDeactivating(const MWWorld::CellStore& cell) noexcept override;
@@ -41,7 +43,7 @@ namespace MWRender
         void publishStaticObject(const MWWorld::Ptr& ptr);
         void recordRetirementFailure(std::string_view message) noexcept;
 
-        RenderVsg::VsgSemanticSession& mSession;
+        std::shared_ptr<RenderVsg::VsgSemanticSession> mSession;
         const VFS::Manager& mVfs;
         bool mHealthy = true;
         std::string mLastDiagnostic;

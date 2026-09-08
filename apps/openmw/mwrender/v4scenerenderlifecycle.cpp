@@ -12,6 +12,7 @@
 #include <components/vfs/manager.hpp>
 
 #include <stdexcept>
+#include <utility>
 
 namespace MWRender
 {
@@ -31,10 +32,12 @@ namespace MWRender
     }
 
     V4SceneRenderLifecycle::V4SceneRenderLifecycle(
-        RenderVsg::VsgSemanticSession& session, const VFS::Manager& vfs)
-        : mSession(session)
+        std::shared_ptr<RenderVsg::VsgSemanticSession> session, const VFS::Manager& vfs)
+        : mSession(std::move(session))
         , mVfs(vfs)
     {
+        if (!mSession)
+            throw std::invalid_argument("V4 scene lifecycle requires a semantic session");
     }
 
     void V4SceneRenderLifecycle::cellActivated(const MWWorld::CellStore& cell)
@@ -42,7 +45,7 @@ namespace MWRender
         const std::optional<RenderCore::ActiveCellSource> source = makeV4ActiveCellSource(cell);
         if (!source)
             throw std::runtime_error("V4 scene lifecycle rejected an invalid active cell");
-        const RenderCore::ActiveCellPublishResult result = mSession.cells().addCell(*source);
+        const RenderCore::ActiveCellPublishResult result = mSession->cells().addCell(*source);
         if (!accepted(result.status))
             throw publicationError("cell activation", static_cast<unsigned int>(result.status));
     }
@@ -57,7 +60,7 @@ namespace MWRender
                 recordRetirementFailure("V4 scene lifecycle could not identify a deactivating cell");
                 return;
             }
-            const RenderCore::ActiveCellPublishResult result = mSession.cells().removeCell(*identity);
+            const RenderCore::ActiveCellPublishResult result = mSession->cells().removeCell(*identity);
             if (result.status != RenderCore::ActiveCellPublishStatus::Applied
                 && result.status != RenderCore::ActiveCellPublishStatus::NotFound)
                 recordRetirementFailure("V4 scene lifecycle failed to retire a cell");
@@ -85,7 +88,7 @@ namespace MWRender
             const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
             if (!identity)
                 return;
-            const RenderCore::ActiveCellPublishResult result = mSession.cells().removeStaticInstance(*identity);
+            const RenderCore::ActiveCellPublishResult result = mSession->cells().removeStaticInstance(*identity);
             if (result.status != RenderCore::ActiveCellPublishStatus::Applied
                 && result.status != RenderCore::ActiveCellPublishStatus::NotFound)
                 recordRetirementFailure("V4 scene lifecycle failed to retire a static object");
@@ -100,7 +103,7 @@ namespace MWRender
     {
         try
         {
-            if (!mSession.resetWorld())
+            if (!mSession->resetWorld())
                 recordRetirementFailure("V4 scene lifecycle failed to reset the semantic world");
         }
         catch (...)
@@ -126,7 +129,7 @@ namespace MWRender
         if (modelPath.empty() || Misc::ResourceHelpers::isHiddenMarker(ptr.getCellRef().getRefId()))
             return;
 
-        std::optional<RenderCore::ModelHandle> model = mSession.models().find(modelPath.value());
+        std::optional<RenderCore::ModelHandle> model = mSession->models().find(modelPath.value());
         if (!model)
         {
             if (!mVfs.exists(modelPath))
@@ -137,13 +140,13 @@ namespace MWRender
             reader.parse(mVfs.get(modelPath));
             const NifRender::TranslationBundle bundle
                 = NifRender::translateStaticNif(Nif::FileView(nifFile), mVfs);
-            const NifRender::StaticModelCacheResult published = mSession.models().publish(bundle);
+            const NifRender::StaticModelCacheResult published = mSession->models().publish(bundle);
             if (!published.available())
                 throw publicationError("static model publication", static_cast<unsigned int>(published.status));
             model = published.model;
         }
 
-        const RenderCore::ModelRecord* modelRecord = mSession.world().get(*model);
+        const RenderCore::ModelRecord* modelRecord = mSession->world().get(*model);
         if (!modelRecord)
             throw std::runtime_error("V4 static model cache returned a stale model handle");
         const std::optional<RenderCore::StaticInstanceSource> source
@@ -151,7 +154,7 @@ namespace MWRender
         if (!source)
             throw std::runtime_error("V4 scene lifecycle rejected an eligible static object");
 
-        const RenderCore::ActiveCellPublishResult result = mSession.cells().upsertStaticInstance(*source);
+        const RenderCore::ActiveCellPublishResult result = mSession->cells().upsertStaticInstance(*source);
         if (!accepted(result.status))
             throw publicationError("static object publication", static_cast<unsigned int>(result.status));
     }

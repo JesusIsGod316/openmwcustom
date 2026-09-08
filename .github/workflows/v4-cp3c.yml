@@ -117,10 +117,19 @@ jobs:
             echo 'VSG lifecycle adapter leaked into the legacy OpenGL target graph' >&2
             exit 1
           fi
+          if grep -F 'v4enginerenderbridge' apps/openmw/CMakeLists.txt; then
+            echo 'VSG engine bridge leaked into the legacy OpenGL target graph' >&2
+            exit 1
+          fi
           grep -F 'openmw-v4-semantic-source-compile' tools/v4/cp3b3/OpenMWRealNifTool.cmake
+          grep -F 'v4enginerenderbridge.cpp' tools/v4/cp3b3/OpenMWRealNifTool.cmake
           grep -F 'makeV4StaticInstanceSource' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'makeV4MainCameraState' apps/openmw/mwrender/v4semanticsource.cpp
+          grep -F 'V4EngineRenderBridge::takeSceneRenderLifecycle' apps/openmw/mwrender/v4enginerenderbridge.cpp
+          grep -F 'V4EngineRenderBridge::renderMainFrame' apps/openmw/mwrender/v4enginerenderbridge.cpp
+          grep -F 'SDL_GetWindowSizeInPixels' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'V4SceneRenderLifecycle::publishStaticObject' apps/openmw/mwrender/v4scenerenderlifecycle.cpp
+          grep -F 'std::shared_ptr<RenderVsg::VsgSemanticSession> mSession' apps/openmw/mwrender/v4scenerenderlifecycle.hpp
           grep -F 'translateStaticNif' apps/openmw/mwrender/v4scenerenderlifecycle.cpp
           grep -F 'VsgRuntimeBootstrap::create' components/render/backend/vsg/vsgruntimebootstrap.cpp
           grep -F 'VsgSemanticSession::create' components/render/backend/vsg/vsgsemanticsession.cpp
