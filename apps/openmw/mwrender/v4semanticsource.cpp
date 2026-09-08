@@ -1,6 +1,8 @@
 #include "v4semanticsource.hpp"
 
 #include "camera.hpp"
+#include "celllighting.hpp"
+#include "fogmanager.hpp"
 
 #include "../mwworld/cell.hpp"
 #include "../mwworld/cellstore.hpp"
@@ -12,6 +14,7 @@
 #include <components/esm4/loadligh.hpp>
 #include <components/sceneutil/lightcommon.hpp>
 #include <components/sceneutil/lightutil.hpp>
+#include <components/settings/values.hpp>
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -37,6 +40,11 @@ namespace MWRender
                     result[column][row] = source(column, row);
             }
             return result;
+        }
+
+        [[nodiscard]] RenderCore::Color toColor(const osg::Vec4f& source) noexcept
+        {
+            return { source.r(), source.g(), source.b(), source.a() };
         }
 
         [[nodiscard]] std::string cellIdentity(const MWWorld::Cell& cell)
@@ -190,6 +198,44 @@ namespace MWRender
             return makeCellLightSource(ptr, SceneUtil::LightCommon(source), semanticFlags);
         }
         return std::nullopt;
+    }
+
+    std::optional<RenderCore::FrameEnvironmentState> makeV4InteriorEnvironmentState(
+        const MWWorld::Cell& cell, const FogManager& fog, bool underwater, float nightEyeFactor)
+    {
+        if (cell.isExterior() || cell.isQuasiExterior() || !std::isfinite(nightEyeFactor))
+            return std::nullopt;
+
+        const CellLightingState lighting = resolveCellLighting(cell);
+        const FogManager::State fogState = fog.getState(underwater);
+
+        RenderCore::FrameEnvironmentState result;
+        result.interior = true;
+        result.ambient = toColor(applyNightEyeToAmbient(lighting.ambient, nightEyeFactor));
+        result.fogColor = toColor(fogState.color);
+        result.fogStart = fogState.start;
+        result.fogEnd = fogState.end;
+        result.fogFalloffMode = Settings::fog().mExponentialFog ? RenderCore::FogFalloffMode::Exponential
+                                                                : RenderCore::FogFalloffMode::Linear;
+        // OpenGL forces radial distance whenever exponential fog is selected.
+        result.fogDistanceMode = (Settings::fog().mExponentialFog || Settings::fog().mRadialFog)
+            ? RenderCore::FogDistanceMode::Radial
+            : RenderCore::FogDistanceMode::Planar;
+        result.fogEnabled = fogState.enabled;
+
+        const osg::Vec4f direction = -lighting.directionalPosition;
+        const glm::vec3 rawDirection{ direction.x(), direction.y(), direction.z() };
+        result.sunDirection = glm::normalize(rawDirection);
+        result.sunDiffuse = toColor(lighting.directional);
+        result.sunSpecular = toColor(lighting.directional);
+        result.sunSpecular.a = 0.0f;
+        result.sunLightEnabled = true;
+        result.sunVisible = false;
+        result.skyEnabled = false;
+        result.waterEnabled = cell.hasWater();
+        result.waterHeight = cell.getWaterHeight();
+        result.underwater = underwater;
+        return result;
     }
 
     std::optional<RenderCore::CameraState> makeV4MainCameraState(const Camera& camera,

@@ -226,7 +226,7 @@ namespace RenderVsg
         mAmbientLight->color.set(environment.ambient.r, environment.ambient.g, environment.ambient.b);
         mAmbientLight->intensity = 1.0f;
         mSunLight->color.set(environment.sunDiffuse.r, environment.sunDiffuse.g, environment.sunDiffuse.b);
-        mSunLight->intensity = environment.sunVisible ? 1.0f : 0.0f;
+        mSunLight->intensity = environment.sunLightEnabled ? 1.0f : 0.0f;
         mSunLight->direction.set(
             environment.sunDirection.x, environment.sunDirection.y, environment.sunDirection.z);
         const RenderCore::Color& clear = environment.fogColor;

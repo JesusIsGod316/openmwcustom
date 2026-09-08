@@ -80,6 +80,7 @@
 
 #include "actorspaths.hpp"
 #include "camera.hpp"
+#include "celllighting.hpp"
 #include "effectmanager.hpp"
 #include "fogmanager.hpp"
 #include "groundcover.hpp"
@@ -638,44 +639,12 @@ namespace MWRender
 
     void RenderingManager::configureAmbient(const MWWorld::Cell& cell)
     {
-        bool isInterior = !cell.isExterior() && !cell.isQuasiExterior();
-        bool needsAdjusting = false;
-        needsAdjusting = isInterior && (!Settings::shaders().mClassicFalloff || Settings::shaders().mClusteredLighting);
-
-        osg::Vec4f ambient = SceneUtil::colourFromRGB(cell.getMood().mAmbiantColor);
-
-        if (needsAdjusting)
-        {
-            constexpr float pR = 0.2126f;
-            constexpr float pG = 0.7152f;
-            constexpr float pB = 0.0722f;
-
-            // we already work in linear RGB so no conversions are needed for the luminosity function
-            float relativeLuminance = pR * ambient.r() + pG * ambient.g() + pB * ambient.b();
-            const float minimumAmbientLuminance = Settings::shaders().mMinimumInteriorBrightness;
-            if (relativeLuminance < minimumAmbientLuminance)
-            {
-                // brighten ambient so it reaches the minimum threshold but no more, we want to mess with content data
-                // as least we can
-                if (ambient.r() == 0.f && ambient.g() == 0.f && ambient.b() == 0.f)
-                    ambient = osg::Vec4(
-                        minimumAmbientLuminance, minimumAmbientLuminance, minimumAmbientLuminance, ambient.a());
-                else
-                    ambient *= minimumAmbientLuminance / relativeLuminance;
-            }
-        }
-
-        setAmbientColour(ambient);
-
-        osg::Vec4f diffuse = SceneUtil::colourFromRGB(cell.getMood().mDirectionalColor);
-
-        setSunColour(diffuse, diffuse, 0.f);
-        // This is total nonsense but it's what Morrowind uses
-        static const osg::Vec4f interiorSunPos
-            = osg::Vec4f(-1.f, osg::DegreesToRadians(45.f), osg::DegreesToRadians(45.f), 0.f);
-        mPostProcessor->getStateUpdater()->setSunPos(interiorSunPos, false);
-        mPostProcessor->getStateUpdater()->setSunVec(-interiorSunPos);
-        mSunLight->setPosition(interiorSunPos);
+        const CellLightingState lighting = resolveCellLighting(cell);
+        setAmbientColour(lighting.ambient);
+        setSunColour(lighting.directional, lighting.directional, 0.f);
+        mPostProcessor->getStateUpdater()->setSunPos(lighting.directionalPosition, false);
+        mPostProcessor->getStateUpdater()->setSunVec(-lighting.directionalPosition);
+        mSunLight->setPosition(lighting.directionalPosition);
     }
 
     void RenderingManager::setSunColour(const osg::Vec4f& diffuse, const osg::Vec4f& specular, float sunVis)
@@ -1134,9 +1103,10 @@ namespace MWRender
 
         bool isUnderwater = mWater->isUnderwater(mCamera->getPosition());
 
-        float fogStart = mFog->getFogStart(isUnderwater);
-        float fogEnd = mFog->getFogEnd(isUnderwater);
-        osg::Vec4f fogColor = mFog->getFogColor(isUnderwater);
+        const FogManager::State fog = mFog->getState(isUnderwater);
+        const float fogStart = fog.start;
+        const float fogEnd = fog.end;
+        const osg::Vec4f fogColor = fog.color;
 
         mStateUpdater->setFogStart(fogStart);
         mStateUpdater->setFogEnd(fogEnd);
@@ -1678,10 +1648,7 @@ namespace MWRender
 
     void RenderingManager::updateAmbient()
     {
-        osg::Vec4f color = mAmbientColor;
-
-        if (mNightEyeFactor > 0.f)
-            color += osg::Vec4f(0.7f, 0.7f, 0.7f, 0.0f) * mNightEyeFactor;
+        const osg::Vec4f color = applyNightEyeToAmbient(mAmbientColor, mNightEyeFactor);
 
         mSunLight->setAmbient(color);
 

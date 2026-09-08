@@ -116,6 +116,9 @@ namespace RenderCore
         glm::vec3 sunDirection{ 0.0f, 0.0f, -1.0f };
         Color sunDiffuse{ 1.0f, 1.0f, 1.0f, 1.0f };
         Color sunSpecular{ 1.0f, 1.0f, 1.0f, 1.0f };
+        // Lighting and visible solar-disc/glare state are distinct. Interiors
+        // retain authored directional lighting while hiding the sun itself.
+        bool sunLightEnabled = true;
         bool sunVisible = true;
         bool skyEnabled = true;
         bool waterEnabled = false;

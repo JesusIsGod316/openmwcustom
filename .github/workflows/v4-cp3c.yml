@@ -39,6 +39,7 @@ jobs:
           grep -F 'FogDistanceMode fogDistanceMode' components/rendercore/framerenderstate.hpp
           grep -F 'FogFalloffMode fogFalloffMode' components/rendercore/framerenderstate.hpp
           grep -F 'bool fogEnabled = false' components/rendercore/framerenderstate.hpp
+          grep -F 'bool sunLightEnabled = true' components/rendercore/framerenderstate.hpp
           grep -F 'upsertLight(const CellLightSource& source)' components/rendercore/activecellproducer.hpp
           grep -F 'batch.add(RetireLight{ binding.handle })' components/rendercore/activecellproducer.hpp
           grep -F 'semantic_detail::finite(record.position)' components/rendercore/renderworld.hpp
@@ -140,6 +141,10 @@ jobs:
           grep -F 'makeV4StaticInstanceSource' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'makeV4CellLightSource' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'SceneUtil::resolveLightAttenuation' apps/openmw/mwrender/v4semanticsource.cpp
+          grep -F 'makeV4InteriorEnvironmentState' apps/openmw/mwrender/v4semanticsource.cpp
+          grep -F 'resolveCellLighting(cell)' apps/openmw/mwrender/v4semanticsource.cpp
+          grep -F 'const FogManager::State fog = mFog->getState(isUnderwater)' apps/openmw/mwrender/renderingmanager.cpp
+          grep -F 'environment.sunLightEnabled ? 1.0f : 0.0f' components/render/backend/vsg/vsgruntimehost.cpp
           grep -F 'makeV4MainCameraState' apps/openmw/mwrender/v4semanticsource.cpp
           grep -F 'V4EngineRenderBridge::takeSceneRenderLifecycle' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'V4EngineRenderBridge::renderMainFrame' apps/openmw/mwrender/v4enginerenderbridge.cpp

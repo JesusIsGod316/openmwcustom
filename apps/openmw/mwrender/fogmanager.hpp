@@ -13,6 +13,14 @@ namespace MWRender
     class FogManager
     {
     public:
+        struct State
+        {
+            osg::Vec4f color;
+            float start = 0.f;
+            float end = 0.f;
+            bool enabled = false;
+        };
+
         FogManager();
 
         void configure(float viewDistance, const MWWorld::Cell& cell);
@@ -22,6 +30,7 @@ namespace MWRender
         osg::Vec4f getFogColor(bool isUnderwater) const;
         float getFogStart(bool isUnderwater) const;
         float getFogEnd(bool isUnderwater) const;
+        [[nodiscard]] State getState(bool isUnderwater) const;
 
     private:
         float mLandFogStart;

@@ -1,6 +1,7 @@
 #include "fogmanager.hpp"
 
 #include <algorithm>
+#include <limits>
 
 #include <components/esm/esmbridge.hpp>
 #include <components/esm3/loadcell.hpp>
@@ -91,5 +92,16 @@ namespace MWRender
         }
 
         return mFogColor;
+    }
+
+    FogManager::State FogManager::getState(bool isUnderwater) const
+    {
+        const float start = getFogStart(isUnderwater);
+        const float end = getFogEnd(isUnderwater);
+        // OpenGL historically represents disabled land fog as [0, max-float].
+        // Preserve that calculation while exposing the semantic toggle needed
+        // by explicit APIs and avoiding an invalid zero-width fog interval.
+        const bool enabled = end > start && end < std::numeric_limits<float>::max();
+        return { getFogColor(isUnderwater), start, end, enabled };
     }
 }

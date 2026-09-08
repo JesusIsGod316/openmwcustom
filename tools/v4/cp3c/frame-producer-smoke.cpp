@@ -27,10 +27,15 @@ int main()
     input.environment.fogEnd = 4096.0f;
     input.environment.fogDistanceMode = RenderCore::FogDistanceMode::Radial;
     input.environment.fogFalloffMode = RenderCore::FogFalloffMode::Exponential;
+    input.environment.interior = true;
+    input.environment.sunLightEnabled = true;
+    input.environment.sunVisible = false;
 
     auto first = producer.produce(world, input);
     if (!require(first && first->valid(), "first frame")
         || !require(first->frameId() == RenderCore::FrameId{ 1 }, "first frame id")
+        || !require(first->environment().sunLightEnabled && !first->environment().sunVisible,
+            "interior directional light remains independent from visible sun")
         || !require(!first->historyValid() && !first->views().front().historyValid, "cold history"))
         return EXIT_FAILURE;
 
