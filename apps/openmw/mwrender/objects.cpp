@@ -434,6 +434,15 @@ namespace MWRender
         return nullptr;
     }
 
+    void Objects::forEachAnimation(const std::function<void(Animation&)>& visitor) const
+    {
+        for (const auto& [_, animation] : mObjects)
+        {
+            if (animation)
+                visitor(*animation);
+        }
+    }
+
     void Objects::setOcclusionCuller(SceneUtil::OcclusionCuller* culler, float occluderMinRadius,
         float occluderMaxRadius, float occluderShrinkFactor, int occluderMeshResolution, int occluderMaxMeshResolution,
         float occluderInsideThreshold, float occluderMaxDistance, bool enableStaticOccluders,

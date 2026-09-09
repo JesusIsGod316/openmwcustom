@@ -71,6 +71,12 @@ int main()
     dynamicMeshRecord.surfaceCount = static_cast<std::uint32_t>(meshPayload->surfaces.size());
     dynamicMeshRecord.payload = meshPayload;
     dynamicMeshRecord.skinned = true;
+    auto dynamicSkin = std::make_shared<SkinPayload>();
+    dynamicSkin->bones.push_back({ "root", glm::mat4{ 1.0f } });
+    dynamicSkin->vertexInfluences.resize(meshPayload->positions.size());
+    for (auto& influences : dynamicSkin->vertexInfluences)
+        influences.push_back({ 0u, 1.0f });
+    dynamicMeshRecord.skin = std::move(dynamicSkin);
     assert(world.commit(*dynamicMesh, std::move(dynamicMeshRecord)));
 
     auto modelPayload = std::make_shared<ModelPayload>();
@@ -169,6 +175,13 @@ int main()
     assert(plan->markerNodes == 2u);
     assert(plan->dynamicMeshesDeferred == 1u);
 
+    RenderVsg::StaticPlanOptions deformableOptions = options;
+    deformableOptions.includeDeformableMeshes = true;
+    const auto deformablePlan = RenderVsg::buildStaticAssetPlan(world, *model, deformableOptions);
+    assert(deformablePlan);
+    assert(deformablePlan->draws.size() == 4u);
+    assert(deformablePlan->dynamicMeshesDeferred == 0u);
+
     assert(plan->draws[0].surface.topology == PrimitiveTopology::Triangles);
     assert(plan->draws[1].surface.topology == PrimitiveTopology::Lines);
     assert(plan->draws[0].worldTransform[3][0] == 5.0f);
@@ -183,6 +196,12 @@ int main()
     assert(markerPlan);
     assert(markerPlan->draws.size() == 4u);
     assert(markerPlan->markerNodes == 0u);
+
+    ModelRecord particleModel = *world.get(*model);
+    particleModel.revision = ResourceRevision{ particleModel.revision.value() + 1u };
+    particleModel.dynamicRequirements = modelDynamicRequirement(ModelDynamicRequirement::ParticleSystem);
+    assert(world.update(*model, std::move(particleModel)));
+    assert(!RenderVsg::buildStaticAssetPlan(world, *model, options));
 
     return 0;
 }

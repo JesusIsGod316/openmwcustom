@@ -72,6 +72,7 @@ namespace RenderVsg
     [[nodiscard]] inline std::optional<StaticInstancePlan> buildStaticInstancePlan(
         const RenderCore::RenderWorld& world, RenderCore::InstanceHandle handle, StaticPlanOptions options = {})
     {
+        options.includeDeformableMeshes = false;
         const RenderCore::InstanceRecord* instance = world.get(handle);
         if (!instance || !instance->revision.valid() || !instance->model || instance->mesh.valid()
             || instance->skeleton || instance->attachment)

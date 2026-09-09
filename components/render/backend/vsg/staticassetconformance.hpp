@@ -47,7 +47,8 @@ namespace RenderVsg
     // createStaticConformanceBins().
     [[nodiscard]] StaticRealizationResult realizeStaticAssetConformant(const RenderCore::RenderWorld& world,
         RenderCore::ModelHandle model, const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
-        vsg::ref_ptr<vsg::SharedObjects> sharedObjects = {});
+        vsg::ref_ptr<vsg::SharedObjects> sharedObjects = {},
+        const MeshPayloadResolver& meshPayloadResolver = {});
 }
 
 #endif

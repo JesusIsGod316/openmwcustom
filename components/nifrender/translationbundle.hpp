@@ -45,10 +45,14 @@ namespace NifRender
     struct MeshIndexTag final
     {
     };
+    struct SkeletonIndexTag final
+    {
+    };
 
     using TextureIndex = LocalIndex<TextureIndexTag>;
     using MaterialIndex = LocalIndex<MaterialIndexTag>;
     using MeshIndex = LocalIndex<MeshIndexTag>;
+    using SkeletonIndex = LocalIndex<SkeletonIndexTag>;
 
     enum class TranslationDisposition : std::uint8_t
     {
@@ -228,6 +232,12 @@ namespace NifRender
         std::optional<std::uint32_t> sourceRecordId;
     };
 
+    struct TranslatedSkeleton
+    {
+        RenderCore::SkeletonRecord record;
+        std::optional<std::uint32_t> sourceRecordId;
+    };
+
     struct TranslatedModelNode
     {
         std::string name;
@@ -247,6 +257,7 @@ namespace NifRender
         std::optional<RenderCore::ModelBillboardMode> billboard;
         std::optional<RenderCore::ModelSortSemantic> sort;
         std::uint32_t flags = 0;
+        std::uint32_t controllerFlags = 0;
     };
 
     struct TranslatedModel
@@ -254,6 +265,8 @@ namespace NifRender
         std::string sourceIdentity;
         std::string contentIdentity;
         RenderCore::AxisAlignedBounds bounds;
+        std::uint32_t dynamicRequirements = 0;
+        std::optional<SkeletonIndex> skeleton;
         std::vector<TranslatedModelNode> nodes;
         std::vector<RenderCore::ModelNodeIndex> roots;
     };
@@ -321,6 +334,7 @@ namespace NifRender
         std::vector<TranslatedTexture> textures;
         std::vector<TranslatedMaterial> materials;
         std::vector<TranslatedMesh> meshes;
+        std::vector<TranslatedSkeleton> skeletons;
         TranslatedModel model;
         std::vector<TranslationOutcome> outcomes;
         std::vector<TranslationDiagnostic> diagnostics;
@@ -371,15 +385,37 @@ namespace NifRender
 
             for (const TranslatedMesh& mesh : meshes)
             {
-                if (!mesh.record.revision.valid())
+                if (!mesh.record.revision.valid()
+                    || mesh.record.skinned != static_cast<bool>(mesh.record.skin)
+                    || mesh.record.morphed != static_cast<bool>(mesh.record.morphs))
+                    return false;
+                if (mesh.record.skin && mesh.record.morphs)
                     return false;
                 if (mesh.record.payload)
                 {
                     if (!RenderCore::validMeshPayload(*mesh.record.payload)
                         || mesh.record.surfaceCount != mesh.record.payload->surfaces.size())
                         return false;
+                    const std::size_t vertexCount = mesh.record.payload->positions.size();
+                    if ((mesh.record.skin && !RenderCore::validSkinPayload(*mesh.record.skin, vertexCount))
+                        || (mesh.record.morphs && !RenderCore::validMorphPayload(*mesh.record.morphs, vertexCount)))
+                        return false;
                 }
+                else if (mesh.record.skin || mesh.record.morphs)
+                    return false;
             }
+
+            for (const TranslatedSkeleton& skeleton : skeletons)
+            {
+                if (!skeleton.record.revision.valid() || !skeleton.record.payload
+                    || !RenderCore::validSkeletonPayload(*skeleton.record.payload))
+                    return false;
+            }
+            if (model.skeleton
+                && (!model.skeleton->valid() || model.skeleton->value() >= skeletons.size()))
+                return false;
+            if (!RenderCore::validModelDynamicRequirements(model.dynamicRequirements))
+                return false;
 
             std::vector<RenderCore::ModelNodeIndex> expectedRoots;
             std::vector<std::uint32_t> childCounts(model.nodes.size(), 0);
@@ -416,6 +452,10 @@ namespace NifRender
             for (std::size_t i = 0; i < model.nodes.size(); ++i)
             {
                 const TranslatedModelNode& node = model.nodes[i];
+                if (!RenderCore::validModelControllerFlags(node.controllerFlags)
+                    || (node.controllerFlags != 0)
+                        != ((node.flags & RenderCore::modelNodeFlag(RenderCore::ModelNodeFlag::ControllerTarget)) != 0))
+                    return false;
                 const auto isDirectChild = [&](RenderCore::ModelNodeIndex child) {
                     return child.valid() && child.value() < model.nodes.size()
                         && model.nodes[child.value()].parent

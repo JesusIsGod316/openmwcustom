@@ -10,6 +10,8 @@
 #include "../mwworld/inventorystore.hpp"
 
 #include <array>
+#include <string>
+#include <vector>
 
 namespace ESM
 {
@@ -31,7 +33,18 @@ namespace MWRender
     class NpcAnimation : public ActorAnimation, public WeaponAnimation, public MWWorld::InventoryStoreListener
     {
     public:
+        struct V4PartSource
+        {
+            ESM::PartReferenceType type;
+            VFS::Path::Normalized model;
+            std::string boneName;
+            bool visible = true;
+            bool isLight = false;
+            bool enchantedGlow = false;
+        };
+
         void equipmentChanged() override;
+        [[nodiscard]] std::vector<V4PartSource> getV4PartSources() const;
 
     public:
         typedef std::map<ESM::PartReferenceType, std::string> PartBoneMap;
@@ -49,6 +62,10 @@ namespace MWRender
 
         // Bounded Parts
         PartHolderPtr mObjectParts[ESM::PRT_Count];
+        VFS::Path::Normalized mV4PartModels[ESM::PRT_Count];
+        std::string mV4PartBones[ESM::PRT_Count];
+        bool mV4PartLights[ESM::PRT_Count]{};
+        bool mV4PartEnchanted[ESM::PRT_Count]{};
         std::array<MWSound::Sound*, ESM::PRT_Count> mSounds;
 
         const ESM::NPC* mNpc;

@@ -267,6 +267,7 @@ namespace MWRender
 
         bool mPlayScriptedOnly;
         bool mRequiresBoneMap;
+        VFS::Path::Normalized mV4SourceModel;
 
         const NodeMap& getNodeMap() const;
 
@@ -365,6 +366,23 @@ namespace MWRender
         osg::Group* getOrCreateObjectRoot();
 
         osg::Group* getObjectRoot();
+
+        // Transitional V4 producer access. The evaluated OSG skeleton remains
+        // source-side; callers must copy it into renderer-neutral pose records.
+        SceneUtil::Skeleton* getSkeleton() const noexcept { return mSkeleton; }
+        VFS::Path::NormalizedView getV4SourceModel() const noexcept { return mV4SourceModel; }
+        [[nodiscard]] bool hasV4EffectAttachments() const noexcept
+        {
+            return mHasMagicEffects || mGlowUpdater.valid();
+        }
+        [[nodiscard]] bool hasV4DynamicLightAttachments() const noexcept
+        {
+            return mGlowLight.valid() || mExtraLightSource.valid();
+        }
+        [[nodiscard]] bool hasV4TransparencyOverride() const noexcept
+        {
+            return mAlpha != 1.0f || mActorFade != 1.0f;
+        }
 
         /**
          * @brief Add an effect mesh attached to a bone or the insert scene node

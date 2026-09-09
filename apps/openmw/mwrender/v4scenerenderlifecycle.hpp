@@ -47,7 +47,7 @@ namespace MWRender
 
     private:
         void requireHealthy() const;
-        void publishStaticObject(const MWWorld::Ptr& ptr);
+        void publishObject(const MWWorld::Ptr& ptr);
         void recordFailure(std::string_view message) noexcept;
 
         std::shared_ptr<RenderVsg::VsgSemanticSession> mSession;

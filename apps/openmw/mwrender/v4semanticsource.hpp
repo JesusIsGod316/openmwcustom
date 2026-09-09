@@ -36,6 +36,10 @@ namespace MWRender
     [[nodiscard]] std::optional<RenderCore::StaticInstanceSource> makeV4StaticInstanceSource(
         const MWWorld::Ptr& ptr, RenderCore::ModelHandle model, RenderCore::AxisAlignedBounds localBounds);
 
+    [[nodiscard]] std::optional<RenderCore::DynamicInstanceSource> makeV4DynamicInstanceSource(
+        const MWWorld::Ptr& ptr, RenderCore::ModelHandle model, RenderCore::SkeletonHandle skeleton,
+        RenderCore::AxisAlignedBounds localBounds);
+
     // Preserves authored ESM3/ESM4 light behaviour at the backend-neutral
     // boundary, including negative colors, fallback attenuation, off-default
     // state, and temporal flicker/pulse classification.

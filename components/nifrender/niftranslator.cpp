@@ -10,11 +10,15 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include <glm/gtc/matrix_inverse.hpp>
+
 #include <components/misc/strings/algorithm.hpp>
+#include <components/nif/controller.hpp>
 #include <components/nif/data.hpp>
 #include <components/nif/extra.hpp>
 #include <components/nif/niffile.hpp>
@@ -212,6 +216,9 @@ namespace
                 mResult.diagnostics.push_back(std::move(diagnostic));
             }
 
+            if (resolveSkinSpaces())
+                buildSkeleton();
+
             return std::move(mResult);
         }
 
@@ -281,20 +288,39 @@ namespace
             return false;
         }
 
-        [[nodiscard]] bool classifyControllers(const Nif::NiAVObject& node)
+        [[nodiscard]] std::uint32_t classifyControllers(const Nif::NiAVObject& node)
         {
-            bool hasActiveController = false;
+            std::uint32_t flags = 0;
             for (Nif::NiTimeControllerPtr controller = node.mController; !controller.empty();
                  controller = controller->mNext)
             {
-                if (!controller->isActive())
+                // V3.25 intentionally ignores the active bit for legacy
+                // keyframe controllers. Preserve that loader behavior here;
+                // other inactive controllers remain non-playing metadata.
+                if (!controller->isActive() && controller->mRecordType != Nif::RC_NiKeyframeController
+                    && controller->mRecordType != Nif::RC_BSKeyframeController)
                     continue;
-                hasActiveController = true;
+                switch (controller->mRecordType)
+                {
+                    case Nif::RC_NiKeyframeController:
+                    case Nif::RC_BSKeyframeController:
+                        flags |= RenderCore::modelControllerFlag(RenderCore::ModelControllerFlag::Transform);
+                        break;
+                    case Nif::RC_NiGeomMorpherController:
+                        flags |= RenderCore::modelControllerFlag(RenderCore::ModelControllerFlag::Morph);
+                        break;
+                    case Nif::RC_NiVisController:
+                        flags |= RenderCore::modelControllerFlag(RenderCore::ModelControllerFlag::Visibility);
+                        break;
+                    default:
+                        flags |= RenderCore::modelControllerFlag(RenderCore::ModelControllerFlag::Unsupported);
+                        break;
+                }
                 classify(*controller.getPtr(), NifRender::TranslationDisposition::Deferred);
                 diagnose(*controller.getPtr(), NifRender::DiagnosticSeverity::Info, "controller.playback_deferred",
                     "Controller metadata target is preserved, but dynamic playback is deferred to CP3D");
             }
-            return hasActiveController;
+            return flags;
         }
 
         [[nodiscard]] bool shouldSkipMarkerGeometry(const Nif::NiAVObject& node, bool marker) const
@@ -391,7 +417,7 @@ namespace
 
             const bool hidden = source.isHidden() || context.hiddenByAncestor;
             const bool hiddenWithoutController = hidden && !hasVisibilityController(source);
-            const bool hasController = classifyControllers(source);
+            const std::uint32_t controllerFlags = classifyControllers(source);
 
             NifRender::TranslatedModelNode node;
             node.name = source.mName;
@@ -410,8 +436,9 @@ namespace
             }
             else if (source.hasMeshCollision() || source.hasBBoxCollision() || source.collisionActive())
                 node.flags |= RenderCore::modelNodeFlag(RenderCore::ModelNodeFlag::Collision);
-            if (hasController)
+            if (controllerFlags != 0)
                 node.flags |= RenderCore::modelNodeFlag(RenderCore::ModelNodeFlag::ControllerTarget);
+            node.controllerFlags = controllerFlags;
 
             const bool legacyGeometry = isLegacyGeometry(source.mRecordType);
             const bool bethesdaGeometry = isBethesdaGeometry(source.mRecordType);
@@ -423,6 +450,8 @@ namespace
 
             if (source.mRecordType == Nif::RC_NiParticles)
             {
+                mResult.model.dynamicRequirements |= RenderCore::modelDynamicRequirement(
+                    RenderCore::ModelDynamicRequirement::ParticleSystem);
                 node.kind = RenderCore::ModelNodeKind::Transform;
                 classify(source, NifRender::TranslationDisposition::Deferred);
                 diagnose(source, NifRender::DiagnosticSeverity::Info, "particles.realization_deferred",
@@ -463,11 +492,13 @@ namespace
                 RenderCore::ModelLodSemantic semantic;
                 semantic.center = toGlm(lod.mLODCenter);
                 node.lod = std::move(semantic);
-                classify(source, hasController ? NifRender::TranslationDisposition::Deferred
+                classify(source, controllerFlags != 0 ? NifRender::TranslationDisposition::Deferred
                                                : NifRender::TranslationDisposition::Rendered);
             }
             else if (source.mRecordType == Nif::RC_NiFltAnimationNode)
             {
+                mResult.model.dynamicRequirements |= RenderCore::modelDynamicRequirement(
+                    RenderCore::ModelDynamicRequirement::SequencePlayback);
                 node.kind = RenderCore::ModelNodeKind::Switch;
                 classify(source, NifRender::TranslationDisposition::Deferred);
                 diagnose(source, NifRender::DiagnosticSeverity::Info, "sequence.playback_deferred",
@@ -476,7 +507,7 @@ namespace
             else if (source.mRecordType == Nif::RC_NiSwitchNode)
             {
                 node.kind = RenderCore::ModelNodeKind::Switch;
-                classify(source, hasController ? NifRender::TranslationDisposition::Deferred
+                classify(source, controllerFlags != 0 ? NifRender::TranslationDisposition::Deferred
                                                : NifRender::TranslationDisposition::Rendered);
             }
             else if (source.mRecordType == Nif::RC_NiBillboardNode)
@@ -494,7 +525,7 @@ namespace
             else
             {
                 node.kind = RenderCore::ModelNodeKind::Transform;
-                classify(source, hasController ? NifRender::TranslationDisposition::Deferred
+                classify(source, controllerFlags != 0 ? NifRender::TranslationDisposition::Deferred
                                                : (hidden ? NifRender::TranslationDisposition::Hidden
                                                          : NifRender::TranslationDisposition::Rendered));
             }
@@ -502,6 +533,7 @@ namespace
             const auto nodeIndex
                 = RenderCore::ModelNodeIndex{ static_cast<std::uint32_t>(mResult.model.nodes.size()) };
             mResult.model.nodes.push_back(std::move(node));
+            mSourceNodes.push_back(&source);
 
             const auto* group = dynamic_cast<const Nif::NiNode*>(&source);
             if (group == nullptr)
@@ -562,6 +594,8 @@ namespace
             {
                 if (effect.empty())
                     continue;
+                mResult.model.dynamicRequirements |= RenderCore::modelDynamicRequirement(
+                    RenderCore::ModelDynamicRequirement::NodeEffect);
                 classify(*effect.getPtr(), NifRender::TranslationDisposition::Deferred);
                 diagnose(*effect.getPtr(), NifRender::DiagnosticSeverity::Info, "effect.realization_deferred",
                     "Node effect semantics will be translated with the material/effect CP3B1 slice");
@@ -583,6 +617,372 @@ namespace
             for (const unsigned short index : sourceIndices)
                 payload.indices.push_back(index);
             payload.surfaces.push_back(surface);
+        }
+
+        [[nodiscard]] std::shared_ptr<const RenderCore::SkinPayload> translateLegacySkin(
+            const Nif::NiGeometry& geometry, std::size_t vertexCount)
+        {
+            if (geometry.mSkin.empty())
+                return {};
+
+            const Nif::NiSkinInstance& source = *geometry.mSkin.getPtr();
+            if (source.mData.empty())
+            {
+                diagnose(geometry, NifRender::DiagnosticSeverity::Error, "skin.missing_data",
+                    "Skinned geometry has no NiSkinData; deformation cannot be reproduced safely");
+                return {};
+            }
+
+            const Nif::NiSkinData& data = *source.mData.getPtr();
+            if (source.mBones.size() != data.mBones.size() || source.mBones.empty())
+            {
+                diagnose(geometry, NifRender::DiagnosticSeverity::Error, "skin.bone_count_mismatch",
+                    "NiSkinInstance bone references do not match NiSkinData bindings");
+                return {};
+            }
+
+            auto result = std::make_shared<RenderCore::SkinPayload>();
+            result->meshToSkeleton = toGlm(data.mTransform);
+            if (!source.mRoot.empty())
+                result->rootBoneName = Misc::StringUtils::lowerCase(source.mRoot.getPtr()->mName);
+            result->bones.reserve(source.mBones.size());
+            result->vertexInfluences.resize(vertexCount);
+
+            for (std::size_t boneIndex = 0; boneIndex < source.mBones.size(); ++boneIndex)
+            {
+                if (source.mBones[boneIndex].empty())
+                {
+                    diagnose(geometry, NifRender::DiagnosticSeverity::Error, "skin.missing_bone",
+                        "NiSkinInstance contains a missing bone reference");
+                    return {};
+                }
+
+                RenderCore::SkinBoneBinding binding;
+                const Nif::NiAVObject* sourceBone = source.mBones[boneIndex].getPtr();
+                binding.name = Misc::StringUtils::lowerCase(sourceBone->mName);
+                binding.inverseBind = toGlm(data.mBones[boneIndex].mTransform);
+                result->bones.push_back(std::move(binding));
+                mRequiredBones.insert(sourceBone);
+
+                for (const auto& [vertex, weight] : data.mBones[boneIndex].mWeights)
+                {
+                    if (vertex >= vertexCount || !std::isfinite(weight) || weight < 0.0f)
+                    {
+                        diagnose(geometry, NifRender::DiagnosticSeverity::Error, "skin.invalid_influence",
+                            "NiSkinData contains an out-of-range vertex or invalid bone weight");
+                        return {};
+                    }
+                    result->vertexInfluences[vertex].push_back(
+                        { static_cast<std::uint32_t>(boneIndex), weight });
+                }
+            }
+
+            if (!RenderCore::validSkinPayload(*result, vertexCount))
+            {
+                diagnose(geometry, NifRender::DiagnosticSeverity::Error, "skin.invalid_payload",
+                    "NiSkinData cannot be represented by the neutral deformation contract");
+                return {};
+            }
+            mPendingSkinSpaces.push_back({ result, source.mRoot.getPtr(), &geometry });
+            return result;
+        }
+
+        [[nodiscard]] std::shared_ptr<const RenderCore::SkinPayload> translateBethesdaSkin(
+            const Nif::BSTriShape& geometry, std::size_t vertexCount)
+        {
+            const bool hasSkinStream
+                = (geometry.mVertDesc.mFlags & Nif::BSVertexDesc::VertexAttribute::Skinned) != 0;
+            if (geometry.mSkin.empty() || !hasSkinStream
+                || geometry.mSkin->mRecordType != Nif::RC_BSSkinInstance)
+                return {};
+
+            const auto& source = static_cast<const Nif::BSSkinInstance&>(*geometry.mSkin.getPtr());
+            if (source.mData.empty() || source.mBones.empty()
+                || source.mBones.size() != source.mData->mBones.size())
+            {
+                diagnose(geometry, NifRender::DiagnosticSeverity::Error, "bsskin.invalid_bindings",
+                    "BSSkinInstance bone references do not match BSSkinBoneData");
+                return {};
+            }
+
+            auto result = std::make_shared<RenderCore::SkinPayload>();
+            if (!source.mRoot.empty())
+                result->rootBoneName = Misc::StringUtils::lowerCase(source.mRoot.getPtr()->mName);
+            result->bones.reserve(source.mBones.size());
+            result->vertexInfluences.resize(vertexCount);
+            for (std::size_t boneIndex = 0; boneIndex < source.mBones.size(); ++boneIndex)
+            {
+                const Nif::NiAVObject* sourceBone = source.mBones[boneIndex].getPtr();
+                if (!sourceBone)
+                {
+                    diagnose(geometry, NifRender::DiagnosticSeverity::Error, "bsskin.missing_bone",
+                        "BSSkinInstance contains a missing bone reference");
+                    return {};
+                }
+                result->bones.push_back({ Misc::StringUtils::lowerCase(sourceBone->mName),
+                    toGlm(source.mData->mBones[boneIndex].mTransform) });
+                mRequiredBones.insert(sourceBone);
+            }
+
+            for (std::size_t vertex = 0; vertex < geometry.mVertData.size(); ++vertex)
+            {
+                for (std::size_t slot = 0; slot < geometry.mVertData[vertex].mBoneWeights.size(); ++slot)
+                {
+                    const float weight = halfToFloat(geometry.mVertData[vertex].mBoneWeights[slot]);
+                    if (weight == 0.0f)
+                        continue;
+                    const std::uint32_t boneIndex
+                        = static_cast<unsigned char>(geometry.mVertData[vertex].mBoneIndices[slot]);
+                    if (boneIndex >= result->bones.size() || !std::isfinite(weight) || weight < 0.0f)
+                    {
+                        diagnose(geometry, NifRender::DiagnosticSeverity::Error, "bsskin.invalid_influence",
+                            "BSTriShape contains an out-of-range bone index or invalid skin weight");
+                        return {};
+                    }
+                    result->vertexInfluences[vertex].push_back({ boneIndex, weight });
+                }
+            }
+
+            if (!RenderCore::validSkinPayload(*result, vertexCount))
+            {
+                diagnose(geometry, NifRender::DiagnosticSeverity::Error, "bsskin.invalid_payload",
+                    "BSSkinInstance cannot be represented by the neutral deformation contract");
+                return {};
+            }
+            mPendingSkinSpaces.push_back({ result, source.mRoot.getPtr(), &geometry });
+            return result;
+        }
+
+        [[nodiscard]] bool resolveSkinSpaces()
+        {
+            if (mPendingSkinSpaces.empty())
+                return true;
+
+            std::unordered_map<const Nif::NiAVObject*, std::size_t> nodeIndices;
+            nodeIndices.reserve(mSourceNodes.size());
+            for (std::size_t i = 0; i < mSourceNodes.size(); ++i)
+                nodeIndices.emplace(mSourceNodes[i], i);
+
+            std::vector<glm::mat4> global(mResult.model.nodes.size(), glm::mat4(1.0f));
+            for (std::size_t i = 0; i < mResult.model.nodes.size(); ++i)
+            {
+                const auto& node = mResult.model.nodes[i];
+                global[i] = node.parent.valid() ? global[node.parent.value()] * node.localTransform
+                                                : node.localTransform;
+            }
+
+            for (const PendingSkinSpace& pending : mPendingSkinSpaces)
+            {
+                if (!pending.payload || !pending.geometry)
+                    return false;
+                const auto geometry = nodeIndices.find(pending.geometry);
+                if (geometry == nodeIndices.end())
+                {
+                    diagnose(*pending.geometry, NifRender::DiagnosticSeverity::Error,
+                        "skin.unresolved_skeleton_space",
+                        "Skinned geometry is not reachable through the translated model hierarchy");
+                    return false;
+                }
+
+                std::optional<std::size_t> cancellationNode;
+                if (pending.root)
+                {
+                    const auto root = nodeIndices.find(pending.root);
+                    if (root == nodeIndices.end())
+                    {
+                        diagnose(*pending.geometry, NifRender::DiagnosticSeverity::Error,
+                            "skin.unresolved_skeleton_space",
+                            "Skinned geometry names a root bone outside the translated model hierarchy");
+                        return false;
+                    }
+                    cancellationNode = root->second;
+                }
+                else
+                {
+                    // V3.25's rootless fallback cancels the transform chain up
+                    // to, but not including, the NiGeometry transform which
+                    // owns the RigGeometry drawable.
+                    const auto parent = mResult.model.nodes[geometry->second].parent;
+                    if (parent.valid())
+                        cancellationNode = parent.value();
+                }
+                if (!cancellationNode)
+                    continue;
+
+                const float determinant = glm::determinant(global[*cancellationNode]);
+                if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-8f)
+                {
+                    diagnose(*pending.geometry, NifRender::DiagnosticSeverity::Error,
+                        "skin.non_invertible_root_space", "Skin root transform is non-invertible");
+                    return false;
+                }
+                // Column-vector form of V3.25's
+                // skinToSkeleton * NiSkinData::mTransform row-vector order.
+                pending.payload->meshToSkeleton *= glm::inverse(global[*cancellationNode]);
+            }
+            return true;
+        }
+
+        void buildSkeleton()
+        {
+            if (mRequiredBones.empty())
+                return;
+
+            std::vector<std::size_t> boneNodes;
+            boneNodes.reserve(mRequiredBones.size());
+            std::unordered_set<const Nif::NiAVObject*> found;
+            for (std::size_t nodeIndex = 0; nodeIndex < mSourceNodes.size(); ++nodeIndex)
+            {
+                const Nif::NiAVObject* source = mSourceNodes[nodeIndex];
+                if (!source || !mRequiredBones.contains(source))
+                    continue;
+                if (!found.insert(source).second)
+                {
+                    diagnose(*source, NifRender::DiagnosticSeverity::Error, "skeleton.shared_bone_node",
+                        "A skin bone occurs through multiple model paths and needs explicit instance semantics");
+                    return;
+                }
+                boneNodes.push_back(nodeIndex);
+            }
+            if (found.size() != mRequiredBones.size())
+            {
+                NifRender::TranslationDiagnostic diagnostic;
+                diagnostic.severity = NifRender::DiagnosticSeverity::Error;
+                diagnostic.sourceRecordType = "Skeleton";
+                diagnostic.code = "skeleton.bone_outside_model";
+                diagnostic.message = "A referenced skin bone is not reachable from the translated model roots";
+                mResult.diagnostics.push_back(std::move(diagnostic));
+                return;
+            }
+
+            auto payload = std::make_shared<RenderCore::SkeletonPayload>();
+            payload->bones.reserve(boneNodes.size());
+            std::vector<glm::mat4> globalBind;
+            globalBind.reserve(boneNodes.size());
+            std::vector<std::optional<std::size_t>> modelToBone(mSourceNodes.size());
+
+            for (const std::size_t modelNode : boneNodes)
+            {
+                std::vector<std::size_t> path;
+                std::optional<std::size_t> parentBone;
+                RenderCore::ModelNodeIndex cursor{ static_cast<std::uint32_t>(modelNode) };
+                while (cursor.valid())
+                {
+                    const std::size_t index = cursor.value();
+                    if (index != modelNode && modelToBone[index])
+                    {
+                        parentBone = modelToBone[index];
+                        break;
+                    }
+                    path.push_back(index);
+                    cursor = mResult.model.nodes[index].parent;
+                }
+
+                glm::mat4 bindLocal(1.0f);
+                for (auto it = path.rbegin(); it != path.rend(); ++it)
+                    bindLocal *= mResult.model.nodes[*it].localTransform;
+                const glm::mat4 global = parentBone ? globalBind[*parentBone] * bindLocal : bindLocal;
+                const float determinant = glm::determinant(global);
+                if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-8f)
+                {
+                    diagnose(*mSourceNodes[modelNode], NifRender::DiagnosticSeverity::Error,
+                        "skeleton.non_invertible_bind", "Bone bind transform is non-invertible");
+                    return;
+                }
+
+                RenderCore::BoneRecord bone;
+                bone.name = Misc::StringUtils::lowerCase(mSourceNodes[modelNode]->mName);
+                bone.parent = parentBone ? static_cast<std::int32_t>(*parentBone) : -1;
+                bone.bindLocal = bindLocal;
+                bone.inverseBind = glm::inverse(global);
+                modelToBone[modelNode] = payload->bones.size();
+                payload->bones.push_back(std::move(bone));
+                globalBind.push_back(global);
+            }
+
+            if (!RenderCore::validSkeletonPayload(*payload))
+            {
+                NifRender::TranslationDiagnostic diagnostic;
+                diagnostic.severity = NifRender::DiagnosticSeverity::Error;
+                diagnostic.sourceRecordType = "Skeleton";
+                diagnostic.code = "skeleton.invalid_payload";
+                diagnostic.message = "Translated skin bones do not form a valid canonical skeleton";
+                mResult.diagnostics.push_back(std::move(diagnostic));
+                return;
+            }
+
+            NifRender::TranslatedSkeleton skeleton;
+            skeleton.record.sourceIdentity = mResult.sourceIdentity + "#skeleton";
+            skeleton.record.payload = std::move(payload);
+            if (!boneNodes.empty())
+                skeleton.sourceRecordId = sourceId(*mSourceNodes[boneNodes.front()]);
+            mResult.model.skeleton
+                = NifRender::SkeletonIndex{ static_cast<std::uint32_t>(mResult.skeletons.size()) };
+            mResult.skeletons.push_back(std::move(skeleton));
+        }
+
+        [[nodiscard]] std::shared_ptr<const RenderCore::MorphPayload> translateLegacyMorphs(
+            const Nif::NiGeometry& geometry, RenderCore::MeshPayload& mesh)
+        {
+            // V3.25 deliberately does not install NiGeomMorpherController on a
+            // RigGeometry. Preserve that observable behavior rather than trying
+            // to combine two deformation implementations here.
+            if (!geometry.mSkin.empty())
+                return {};
+
+            for (Nif::NiTimeControllerPtr controller = geometry.mController; !controller.empty();
+                 controller = controller->mNext)
+            {
+                if (!controller->isActive()
+                    || controller->mRecordType != Nif::RC_NiGeomMorpherController)
+                    continue;
+
+                const auto& morpher = static_cast<const Nif::NiGeomMorpherController&>(*controller.getPtr());
+                if (morpher.mData.empty())
+                    continue;
+                const auto& sourceTargets = morpher.mData->mMorphs;
+                if (sourceTargets.empty() || sourceTargets.front().mVertices.size() != mesh.positions.size())
+                    continue;
+                if (sourceTargets.size() == 1)
+                    return {};
+
+                auto result = std::make_shared<RenderCore::MorphPayload>();
+                result->targets.reserve(sourceTargets.size() - 1);
+                for (std::size_t targetIndex = 1; targetIndex < sourceTargets.size(); ++targetIndex)
+                {
+                    const auto& sourceTarget = sourceTargets[targetIndex];
+                    if (sourceTarget.mVertices.size() != mesh.positions.size())
+                    {
+                        diagnose(geometry, NifRender::DiagnosticSeverity::Error, "morph.vertex_count_mismatch",
+                            "NiMorphData target vertex count does not match its geometry");
+                        return {};
+                    }
+                    RenderCore::MorphTargetPayload target;
+                    target.name = "target:" + std::to_string(targetIndex);
+                    target.sourceIndex = static_cast<std::uint32_t>(targetIndex);
+                    target.positionOffsets.reserve(sourceTarget.mVertices.size());
+                    for (const osg::Vec3f& offset : sourceTarget.mVertices)
+                        target.positionOffsets.push_back(toGlm(offset));
+                    result->targets.push_back(std::move(target));
+                }
+
+                // OpenMW's MorphGeometry uses target zero as its absolute base
+                // vertex array and targets one..N as offsets, irrespective of
+                // NiMorphData::mRelativeTargets. Match that established behavior.
+                mesh.positions.clear();
+                mesh.positions.reserve(sourceTargets.front().mVertices.size());
+                for (const osg::Vec3f& position : sourceTargets.front().mVertices)
+                    mesh.positions.push_back(toGlm(position));
+
+                if (!RenderCore::validMorphPayload(*result, mesh.positions.size()))
+                {
+                    diagnose(geometry, NifRender::DiagnosticSeverity::Error, "morph.invalid_payload",
+                        "NiMorphData cannot be represented by the neutral deformation contract");
+                    return {};
+                }
+                return result;
+            }
+            return {};
         }
 
         [[nodiscard]] std::optional<NifRender::MeshIndex> translateLegacyGeometry(const Nif::NiAVObject& source)
@@ -687,26 +1087,20 @@ namespace
             record.sourceIdentity
                 = mResult.sourceIdentity + "#mesh:" + std::to_string(static_cast<unsigned int>(source.mRecordIndex));
             record.surfaceCount = static_cast<std::uint32_t>(payload->surfaces.size());
-            record.skinned = !geometry.mSkin.empty();
-            record.payload = std::move(payload);
-            updateBounds(record.bounds, record.payload->positions);
-
-            for (Nif::NiTimeControllerPtr controller = source.mController; !controller.empty();
-                 controller = controller->mNext)
+            if (!geometry.mSkin.empty())
             {
-                if (controller->isActive() && controller->mRecordType == Nif::RC_NiGeomMorpherController)
-                {
-                    record.morphed = true;
-                    break;
-                }
+                record.skin = translateLegacySkin(geometry, payload->positions.size());
+                if (!record.skin)
+                    return std::nullopt;
+                record.skinned = true;
             }
-
-            if (record.skinned)
-                diagnose(source, NifRender::DiagnosticSeverity::Info, "geometry.skinning_deferred",
-                    "Skin metadata source is recognized; dynamic skin realization is deferred to CP3D");
-            if (record.morphed)
-                diagnose(source, NifRender::DiagnosticSeverity::Info, "geometry.morph_deferred",
-                    "Morph metadata source is recognized; morph playback is deferred to CP3D");
+            else
+            {
+                record.morphs = translateLegacyMorphs(geometry, *payload);
+                record.morphed = static_cast<bool>(record.morphs);
+            }
+            updateBounds(record.bounds, payload->positions);
+            record.payload = std::move(payload);
 
             const auto index = NifRender::MeshIndex{ static_cast<std::uint32_t>(mResult.meshes.size()) };
             NifRender::TranslatedMesh translated;
@@ -789,19 +1183,24 @@ namespace
             record.sourceIdentity
                 = mResult.sourceIdentity + "#mesh:" + std::to_string(static_cast<unsigned int>(source.mRecordIndex));
             record.surfaceCount = static_cast<std::uint32_t>(payload->surfaces.size());
-            record.skinned = !geometry.mSkin.empty();
+            record.skin = translateBethesdaSkin(geometry, payload->positions.size());
+            record.skinned = static_cast<bool>(record.skin);
             record.payload = std::move(payload);
             updateBounds(record.bounds, record.payload->positions);
 
             if (hasSecondUv)
                 diagnose(source, NifRender::DiagnosticSeverity::Warning, "bsgeometry.second_uv_deferred",
                     "Packed second UV stream is declared but not exposed by the current parser vertex record; never silently alias it");
-            if (record.skinned)
-                diagnose(source, NifRender::DiagnosticSeverity::Info, "bsgeometry.skinning_deferred",
-                    "Bethesda skin metadata is recognized; dynamic skin realization is deferred to CP3D");
+            if (!geometry.mSkin.empty() && !record.skinned)
+                diagnose(source, NifRender::DiagnosticSeverity::Info, "bsgeometry.skinning_not_realized_by_v325",
+                    "This Bethesda skin encoding is not realized by V3.25 and retains its source vertex stream");
             if (source.mRecordType == Nif::RC_BSDynamicTriShape)
+            {
+                mResult.model.dynamicRequirements |= RenderCore::modelDynamicRequirement(
+                    RenderCore::ModelDynamicRequirement::DynamicVertexData);
                 diagnose(source, NifRender::DiagnosticSeverity::Info, "bsgeometry.dynamic_positions_deferred",
                     "BSDynamicTriShape dynamic position playback is deferred; static source vertex data is retained");
+            }
             if (source.mRecordType == Nif::RC_BSMeshLODTriShape || source.mRecordType == Nif::RC_BSSubIndexTriShape)
                 diagnose(source, NifRender::DiagnosticSeverity::Warning, "bsgeometry.substructure_deferred",
                     "Subtype-specific LOD/segmentation metadata still requires explicit CP3B translation before closeout");
@@ -818,6 +1217,15 @@ namespace
         NifRender::TranslatorOptions mOptions;
         NifRender::TranslationBundle mResult;
         std::unordered_set<std::uint32_t> mClassifiedRecords;
+        std::unordered_set<const Nif::NiAVObject*> mRequiredBones;
+        std::vector<const Nif::NiAVObject*> mSourceNodes;
+        struct PendingSkinSpace
+        {
+            std::shared_ptr<RenderCore::SkinPayload> payload;
+            const Nif::NiAVObject* root = nullptr;
+            const Nif::NiAVObject* geometry = nullptr;
+        };
+        std::vector<PendingSkinSpace> mPendingSkinSpaces;
     };
 }
 

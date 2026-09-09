@@ -21,7 +21,39 @@ namespace RenderCore
 
         for (const DynamicTransformState& transform : frame.dynamicTransforms())
         {
-            if (!world.get(transform.instance))
+            const InstanceRecord* instance = world.get(transform.instance);
+            if (!instance || instance->revision != transform.instanceRevision)
+                return false;
+        }
+
+        for (const SkeletonPoseState& pose : frame.skeletonPoses())
+        {
+            const InstanceRecord* instance = world.get(pose.instance);
+            const SkeletonRecord* skeleton = world.get(pose.skeleton);
+            if (!instance || instance->revision != pose.instanceRevision || instance->skeleton != pose.skeleton
+                || !skeleton || skeleton->revision != pose.skeletonRevision || !skeleton->payload
+                || skeleton->payload->bones.size() != pose.current.size())
+                return false;
+        }
+
+        for (const MorphWeightState& morph : frame.morphWeights())
+        {
+            const InstanceRecord* instance = world.get(morph.instance);
+            const MeshRecord* mesh = world.get(morph.mesh);
+            if (!instance || instance->revision != morph.instanceRevision || !mesh
+                || mesh->revision != morph.meshRevision || !mesh->morphs
+                || mesh->morphs->targets.size() != morph.current.size())
+                return false;
+            if (morph.modelNode)
+            {
+                const ModelRecord* model = instance->model ? world.get(*instance->model) : nullptr;
+                if (!model || !model->payload || morph.modelNode->value() >= model->payload->nodes.size())
+                    return false;
+                const ModelNodeRecord& node = model->payload->nodes[morph.modelNode->value()];
+                if (node.kind != ModelNodeKind::Geometry || node.mesh != morph.mesh)
+                    return false;
+            }
+            else if (instance->model || instance->mesh != morph.mesh)
                 return false;
         }
 

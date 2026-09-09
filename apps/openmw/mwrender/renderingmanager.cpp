@@ -1507,6 +1507,13 @@ namespace MWRender
         return mObjects->getAnimation(ptr);
     }
 
+    void RenderingManager::forEachAnimation(const std::function<void(Animation&)>& visitor) const
+    {
+        if (mPlayerAnimation)
+            visitor(*mPlayerAnimation);
+        mObjects->forEachAnimation(visitor);
+    }
+
     PostProcessor* RenderingManager::getPostProcessor()
     {
         return mPostProcessor;

@@ -18,6 +18,10 @@ namespace RenderVsg
     {
         float lodEyeDistance = 0.0f;
         bool showMarkers = false;
+        // Explicit CP3D opt-in. The static world never enables this; actor
+        // realization uses it so rigid equipment and deformable body parts
+        // retain one authored traversal/material order.
+        bool includeDeformableMeshes = false;
 
         friend bool operator==(const StaticPlanOptions&, const StaticPlanOptions&) = default;
     };
@@ -190,7 +194,8 @@ namespace RenderVsg
         using namespace RenderCore;
         const ModelRecord* model = world.get(modelHandle);
         if (!model || !model->payload || !validModelPayloadStructure(*model->payload)
-            || !semantic_detail::finite(options.lodEyeDistance))
+            || !validModelDynamicRequirements(model->dynamicRequirements)
+            || model->dynamicRequirements != 0 || !semantic_detail::finite(options.lodEyeDistance))
             return std::nullopt;
 
         const ModelPayload& payload = *model->payload;
@@ -283,8 +288,11 @@ namespace RenderVsg
 
                 if (mesh->skinned || mesh->morphed)
                 {
-                    ++plan.dynamicMeshesDeferred;
-                    return true;
+                    if (!options.includeDeformableMeshes)
+                    {
+                        ++plan.dynamicMeshesDeferred;
+                        return true;
+                    }
                 }
 
                 const auto& materialSortPolicies = nodeMaterialSortPolicies[index.value()];

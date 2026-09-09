@@ -21,6 +21,8 @@ namespace RenderVsg
 {
     using StaticTextureResolver = std::function<vsg::ref_ptr<vsg::Data>(
         const RenderCore::TextureRecord&, const RenderCore::TextureRealizationKey&)>;
+    using MeshPayloadResolver = std::function<const RenderCore::MeshPayload*(
+        RenderCore::MeshHandle, RenderCore::ModelNodeIndex)>;
 
     // Backend-private shader-family routing. RenderCore stays source-format and
     // renderer agnostic; CP3B3 can reproduce legacy fixed-function/NIF material
@@ -75,7 +77,8 @@ namespace RenderVsg
         explicit StaticAssetRealizer(vsg::ref_ptr<vsg::SharedObjects> sharedObjects = {});
 
         [[nodiscard]] StaticRealizationResult realize(const RenderCore::RenderWorld& world,
-            const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver) const;
+            const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
+            const MeshPayloadResolver& meshPayloadResolver = {}) const;
 
     private:
         vsg::ref_ptr<vsg::SharedObjects> mSharedObjects;

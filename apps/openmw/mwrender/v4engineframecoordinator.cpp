@@ -26,6 +26,10 @@ namespace MWRender
             rendering.isUnderwater(), *extent, simulationTime, frameDelta, invalidateHistory);
         if (!source)
             return fail("authoritative gameplay state could not produce a compatible V4 main frame");
+        if (!mBridge.captureDynamicFrameState(rendering, *source))
+            return fail(mBridge.lastDiagnostic().empty()
+                    ? "authoritative actor state could not produce a compatible V4 frame"
+                    : mBridge.lastDiagnostic());
 
         const RenderCore::RenderFrameResult result = mBridge.renderMainFrame(*source);
         mLastDiagnostic = mBridge.lastDiagnostic();

@@ -282,6 +282,107 @@ namespace RenderCore
         std::vector<MeshSurface> surfaces;
     };
 
+    // Skin indices are local to SkinPayload::bones. Keeping the source skin's
+    // compact bone palette on the mesh avoids assuming that every body part or
+    // equipment mesh uses the same full actor-skeleton indices. Realization
+    // resolves the canonical bone names against the instance SkeletonRecord.
+    struct SkinInfluence
+    {
+        std::uint32_t boneIndex = 0;
+        float weight = 0.0f;
+    };
+
+    struct SkinBoneBinding
+    {
+        std::string name;
+        glm::mat4 inverseBind{ 1.0f };
+    };
+
+    struct SkinPayload
+    {
+        glm::mat4 meshToSkeleton{ 1.0f };
+        std::string rootBoneName;
+        std::vector<SkinBoneBinding> bones;
+        // Exactly one influence list per source vertex. Empty lists are kept:
+        // the OpenGL compatibility path leaves those vertices undeformed.
+        std::vector<std::vector<SkinInfluence>> vertexInfluences;
+    };
+
+    struct MorphTargetPayload
+    {
+        std::string name;
+        // Original controller target index. Legacy NiGeomMorpherController
+        // reserves source target zero as the absolute base shape, so published
+        // deforming targets normally begin at one.
+        std::uint32_t sourceIndex = 0;
+        // Canonical offsets applied to MeshPayload::positions. The NIF adapter
+        // preserves OpenMW's established interpretation of targets one..N as
+        // offsets even when source metadata describes another convention.
+        std::vector<glm::vec3> positionOffsets;
+    };
+
+    struct MorphPayload
+    {
+        std::vector<MorphTargetPayload> targets;
+    };
+
+    [[nodiscard]] inline bool validSkinPayload(const SkinPayload& skin, std::size_t vertexCount) noexcept
+    {
+        if (!semantic_detail::finite(skin.meshToSkeleton) || skin.bones.empty()
+            || skin.vertexInfluences.size() != vertexCount)
+            return false;
+        for (std::size_t i = 0; i < skin.bones.size(); ++i)
+        {
+            const SkinBoneBinding& bone = skin.bones[i];
+            if (bone.name.empty() || !semantic_detail::finite(bone.inverseBind))
+                return false;
+            for (std::size_t other = i + 1; other < skin.bones.size(); ++other)
+            {
+                if (bone.name == skin.bones[other].name)
+                    return false;
+            }
+        }
+        for (const auto& influences : skin.vertexInfluences)
+        {
+            for (std::size_t i = 0; i < influences.size(); ++i)
+            {
+                const SkinInfluence& influence = influences[i];
+                if (influence.boneIndex >= skin.bones.size() || !std::isfinite(influence.weight)
+                    || influence.weight < 0.0f)
+                    return false;
+                for (std::size_t other = i + 1; other < influences.size(); ++other)
+                {
+                    if (influence.boneIndex == influences[other].boneIndex)
+                        return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] inline bool validMorphPayload(const MorphPayload& morphs, std::size_t vertexCount) noexcept
+    {
+        if (morphs.targets.empty())
+            return false;
+        for (std::size_t i = 0; i < morphs.targets.size(); ++i)
+        {
+            const MorphTargetPayload& target = morphs.targets[i];
+            if (target.sourceIndex == 0 || target.positionOffsets.size() != vertexCount)
+                return false;
+            for (std::size_t other = i + 1; other < morphs.targets.size(); ++other)
+            {
+                if (target.sourceIndex == morphs.targets[other].sourceIndex)
+                    return false;
+            }
+            for (const glm::vec3& offset : target.positionOffsets)
+            {
+                if (!semantic_detail::finite(offset))
+                    return false;
+            }
+        }
+        return true;
+    }
+
     [[nodiscard]] inline bool validMeshPayload(const MeshPayload& payload) noexcept
     {
         const std::size_t vertexCount = payload.positions.size();
@@ -357,6 +458,8 @@ namespace RenderCore
         bool skinned = false;
         bool morphed = false;
         std::shared_ptr<const MeshPayload> payload;
+        std::shared_ptr<const SkinPayload> skin;
+        std::shared_ptr<const MorphPayload> morphs;
     };
 
     struct StencilSemantic
@@ -529,6 +632,50 @@ namespace RenderCore
         return static_cast<std::uint32_t>(flag);
     }
 
+    enum class ModelControllerFlag : std::uint32_t
+    {
+        Transform = 1u << 0,
+        Morph = 1u << 1,
+        Visibility = 1u << 2,
+        Unsupported = 1u << 3,
+    };
+
+    [[nodiscard]] constexpr std::uint32_t modelControllerFlag(ModelControllerFlag flag) noexcept
+    {
+        return static_cast<std::uint32_t>(flag);
+    }
+
+    [[nodiscard]] constexpr bool validModelControllerFlags(std::uint32_t flags) noexcept
+    {
+        constexpr std::uint32_t all = modelControllerFlag(ModelControllerFlag::Transform)
+            | modelControllerFlag(ModelControllerFlag::Morph)
+            | modelControllerFlag(ModelControllerFlag::Visibility)
+            | modelControllerFlag(ModelControllerFlag::Unsupported);
+        return (flags & ~all) == 0;
+    }
+
+    enum class ModelDynamicRequirement : std::uint32_t
+    {
+        ParticleSystem = 1u << 0,
+        NodeEffect = 1u << 1,
+        SequencePlayback = 1u << 2,
+        DynamicVertexData = 1u << 3,
+    };
+
+    [[nodiscard]] constexpr std::uint32_t modelDynamicRequirement(ModelDynamicRequirement value) noexcept
+    {
+        return static_cast<std::uint32_t>(value);
+    }
+
+    [[nodiscard]] constexpr bool validModelDynamicRequirements(std::uint32_t requirements) noexcept
+    {
+        constexpr std::uint32_t all = modelDynamicRequirement(ModelDynamicRequirement::ParticleSystem)
+            | modelDynamicRequirement(ModelDynamicRequirement::NodeEffect)
+            | modelDynamicRequirement(ModelDynamicRequirement::SequencePlayback)
+            | modelDynamicRequirement(ModelDynamicRequirement::DynamicVertexData);
+        return (requirements & ~all) == 0;
+    }
+
     struct ModelLodRange
     {
         ModelNodeIndex child;
@@ -561,6 +708,7 @@ namespace RenderCore
         std::optional<ModelBillboardMode> billboard;
         std::optional<ModelSortSemantic> sort;
         std::uint32_t flags = 0;
+        std::uint32_t controllerFlags = 0;
     };
 
     struct ModelPayload
@@ -612,6 +760,10 @@ namespace RenderCore
         for (std::size_t i = 0; i < payload.nodes.size(); ++i)
         {
             const ModelNodeRecord& node = payload.nodes[i];
+            if (!validModelControllerFlags(node.controllerFlags)
+                || (node.controllerFlags != 0)
+                    != ((node.flags & modelNodeFlag(ModelNodeFlag::ControllerTarget)) != 0))
+                return false;
             const auto isDirectChild = [&](ModelNodeIndex child) {
                 return child.valid() && child.value() < payload.nodes.size()
                     && payload.nodes[child.value()].parent == ModelNodeIndex{ static_cast<std::uint32_t>(i) };
@@ -674,6 +826,10 @@ namespace RenderCore
         std::string sourceIdentity;
         std::string contentIdentity;
         AxisAlignedBounds bounds;
+        // Source features which require frame-driven realization beyond the
+        // immutable node/material graph. A backend must consume or explicitly
+        // reject every bit; it may never infer compatibility from missing nodes.
+        std::uint32_t dynamicRequirements = 0;
         std::shared_ptr<const ModelPayload> payload;
     };
 
@@ -681,7 +837,10 @@ namespace RenderCore
     {
         std::string name;
         std::int32_t parent = -1;
-        LocalTransform bindLocal;
+        // Exact local affine bind transform. Actor bones can inherit reflected
+        // or non-uniform transforms that are not losslessly representable as a
+        // translation/quaternion/uniform-scale tuple.
+        glm::mat4 bindLocal{ 1.0f };
         glm::mat4 inverseBind{ 1.0f };
     };
 
@@ -692,14 +851,21 @@ namespace RenderCore
 
     [[nodiscard]] inline bool validSkeletonPayload(const SkeletonPayload& payload) noexcept
     {
+        if (payload.bones.empty())
+            return false;
         for (std::size_t i = 0; i < payload.bones.size(); ++i)
         {
             const BoneRecord& bone = payload.bones[i];
             const std::int32_t parent = bone.parent;
-            if (parent < -1 || (parent >= 0 && static_cast<std::size_t>(parent) >= i))
+            if (bone.name.empty() || parent < -1 || (parent >= 0 && static_cast<std::size_t>(parent) >= i))
                 return false;
             if (!semantic_detail::finite(bone.bindLocal) || !semantic_detail::finite(bone.inverseBind))
                 return false;
+            for (std::size_t other = i + 1; other < payload.bones.size(); ++other)
+            {
+                if (bone.name == payload.bones[other].name)
+                    return false;
+            }
         }
         return true;
     }

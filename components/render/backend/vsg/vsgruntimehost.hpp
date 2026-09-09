@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_VSGRUNTIMEHOST_H
 
 #include "framecamera.hpp"
+#include "framecompletion.hpp"
 #include "openmwviewdependentstate.hpp"
 #include "sdlvulkanwindow.hpp"
 #include "staticassetrealizer.hpp"
@@ -13,6 +14,7 @@
 #include <vsg/core/ref_ptr.h>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 
 namespace vsg
@@ -60,6 +62,8 @@ namespace RenderVsg
         using StaticResident = vsg::ref_ptr<vsg::MatrixTransform>;
 
         [[nodiscard]] bool synchronizeStaticWorld(const RenderCore::RenderWorld& world);
+        [[nodiscard]] bool synchronizeDynamicActors(
+            const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame);
         [[nodiscard]] bool synchronizeLocalLights(const RenderCore::RenderWorld& world);
         [[nodiscard]] const RenderCore::FrameView* selectMainView(
             const RenderCore::FrameRenderState& frame) const noexcept;
@@ -72,6 +76,8 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::SharedObjects> mSharedObjects;
         vsg::ref_ptr<vsg::Viewer> mViewer;
         vsg::ref_ptr<vsg::Group> mSceneRoot;
+        vsg::ref_ptr<vsg::Group> mStaticRoot;
+        vsg::ref_ptr<vsg::Group> mDynamicRoot;
         vsg::ref_ptr<vsg::View> mView;
         vsg::ref_ptr<OpenMwViewDependentState> mOpenMwViewState;
         vsg::ref_ptr<vsg::RenderGraph> mRenderGraph;
@@ -79,6 +85,8 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::DirectionalLight> mSunLight;
         FrameCameraObjects mCamera;
         StaticWorldResidency<StaticResident> mStaticResidency;
+        FrameRetirementQueue<vsg::ref_ptr<vsg::Group>> mDynamicRetirements;
+        std::optional<RenderCore::FrameId> mDynamicLastUse;
         VsgSubmissionCompletion mCompletion;
         std::string mLastDiagnostic;
         bool mWaitedIdle = false;

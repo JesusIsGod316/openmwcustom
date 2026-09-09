@@ -11,6 +11,7 @@
 #include <components/rendercore/renderer.hpp>
 
 #include <memory>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -26,6 +27,7 @@ namespace RenderVsg
 
 namespace MWRender
 {
+    class RenderingManager;
     // Build-gated application bridge for the distinct VSG route. It creates the
     // session directly from OpenMW's winning VFS, hands the world an observer
     // before its first cell activation, and publishes main-camera frames without
@@ -53,6 +55,8 @@ namespace MWRender
         [[nodiscard]] bool sceneRenderLifecycleTaken() const noexcept { return mLifecycleTaken; }
 
         [[nodiscard]] std::optional<RenderCore::Extent2D> outputExtent() const noexcept;
+        [[nodiscard]] bool captureDynamicFrameState(
+            const RenderingManager& rendering, V4MainFrameSource& source);
         RenderCore::RenderFrameResult renderMainFrame(const V4MainFrameSource& source);
         void waitIdle();
 
@@ -66,6 +70,14 @@ namespace MWRender
         std::shared_ptr<V4RenderRouteStatus> mRouteStatus;
         std::string mLastDiagnostic;
         bool mLifecycleTaken = false;
+        unsigned int mPoseTraversal = 0;
+        struct ComposedActorEntry
+        {
+            RenderCore::ModelHandle model;
+            std::string signature;
+        };
+        std::map<std::string, ComposedActorEntry, std::less<>> mComposedActors;
+        RenderCore::WorldEpoch mComposedActorEpoch;
     };
 }
 

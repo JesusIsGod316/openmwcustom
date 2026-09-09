@@ -1760,6 +1760,7 @@ namespace MWRender
         }
         mObjectRoot = nullptr;
         mSkeleton = nullptr;
+        mV4SourceModel = VFS::Path::toNormalized(model);
 
         mNodeMap.clear();
         mNodeMapCreated = false;

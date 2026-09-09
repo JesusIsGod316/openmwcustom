@@ -27,6 +27,7 @@ namespace NifRender
         std::vector<RenderCore::TextureHandle> textures;
         std::vector<RenderCore::MaterialHandle> materials;
         std::vector<RenderCore::MeshHandle> meshes;
+        std::vector<RenderCore::SkeletonHandle> skeletons;
         RenderCore::ModelHandle model;
     };
 
@@ -46,6 +47,8 @@ namespace NifRender
             if (binding.model.valid())
                 world.cancel(binding.model);
             for (auto it = binding.meshes.rbegin(); it != binding.meshes.rend(); ++it)
+                world.cancel(*it);
+            for (auto it = binding.skeletons.rbegin(); it != binding.skeletons.rend(); ++it)
                 world.cancel(*it);
             for (auto it = binding.materials.rbegin(); it != binding.materials.rend(); ++it)
                 world.cancel(*it);
@@ -92,6 +95,8 @@ namespace NifRender
         if (!publish_detail::reserveMany(bundle.textures.size(), binding.textures, [&] { return world.reserveTexture(); })
             || !publish_detail::reserveMany(
                 bundle.materials.size(), binding.materials, [&] { return world.reserveMaterial(); })
+            || !publish_detail::reserveMany(
+                bundle.skeletons.size(), binding.skeletons, [&] { return world.reserveSkeleton(); })
             || !publish_detail::reserveMany(bundle.meshes.size(), binding.meshes, [&] { return world.reserveMesh(); }))
         {
             publish_detail::cancelReservations(world, binding);
@@ -132,6 +137,9 @@ namespace NifRender
             built = batch.add(RenderCore::CreateMaterial{ binding.materials[i], std::move(record) });
         }
 
+        for (std::size_t i = 0; i < bundle.skeletons.size() && built; ++i)
+            built = batch.add(RenderCore::CreateSkeleton{ binding.skeletons[i], bundle.skeletons[i].record });
+
         for (std::size_t i = 0; i < bundle.meshes.size() && built; ++i)
             built = batch.add(RenderCore::CreateMesh{ binding.meshes[i], bundle.meshes[i].record });
 
@@ -158,6 +166,7 @@ namespace NifRender
                 translated.billboard = source.billboard;
                 translated.sort = source.sort;
                 translated.flags = source.flags;
+                translated.controllerFlags = source.controllerFlags;
                 payload->nodes.push_back(std::move(translated));
             }
 
@@ -165,6 +174,7 @@ namespace NifRender
             record.sourceIdentity = bundle.model.sourceIdentity;
             record.contentIdentity = bundle.model.contentIdentity;
             record.bounds = bundle.model.bounds;
+            record.dynamicRequirements = bundle.model.dynamicRequirements;
             record.payload = std::move(payload);
             built = batch.add(RenderCore::CreateModel{ binding.model, std::move(record) });
         }

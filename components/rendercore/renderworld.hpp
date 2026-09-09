@@ -383,19 +383,32 @@ namespace RenderCore
         {
             if (!record.revision.valid())
                 return false;
+            if (record.skinned != static_cast<bool>(record.skin)
+                || record.morphed != static_cast<bool>(record.morphs))
+                return false;
+            if (record.skin && record.morphs)
+                return false;
             if (record.payload)
             {
                 if (!validMeshPayload(*record.payload))
                     return false;
                 if (record.surfaceCount != record.payload->surfaces.size())
                     return false;
+
+                const std::size_t vertexCount = record.payload->positions.size();
+                if ((record.skin && !validSkinPayload(*record.skin, vertexCount))
+                    || (record.morphs && !validMorphPayload(*record.morphs, vertexCount)))
+                    return false;
             }
+            else if (record.skin || record.morphs)
+                return false;
             return true;
         }
 
         [[nodiscard]] bool validateModelRecord(const ModelRecord& record) const noexcept
         {
-            if (!record.revision.valid() || !record.payload || !validModelPayloadStructure(*record.payload))
+            if (!record.revision.valid() || !record.payload || !validModelPayloadStructure(*record.payload)
+                || !validModelDynamicRequirements(record.dynamicRequirements))
                 return false;
 
             for (const ModelNodeRecord& node : record.payload->nodes)

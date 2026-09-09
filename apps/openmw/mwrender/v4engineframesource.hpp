@@ -1,7 +1,9 @@
 #ifndef OPENMW_MWRENDER_V4ENGINEFRAMESOURCE_H
 #define OPENMW_MWRENDER_V4ENGINEFRAMESOURCE_H
 
-#include <components/rendercore/framerenderstate.hpp>
+#include <components/rendercore/frameproducer.hpp>
+
+#include <vector>
 
 namespace MWRender
 {
@@ -15,6 +17,9 @@ namespace MWRender
         double frameDelta = 0.0;
         float lodScale = 1.0f;
         RenderCore::FrameEnvironmentState environment;
+        std::vector<RenderCore::DynamicTransformInput> dynamicTransforms;
+        std::vector<RenderCore::SkeletonPoseInput> skeletonPoses;
+        std::vector<RenderCore::MorphWeightInput> morphWeights;
         bool invalidateHistory = false;
     };
 }

@@ -86,8 +86,38 @@ namespace RenderCore
     struct DynamicTransformState
     {
         InstanceHandle instance;
+        ResourceRevision instanceRevision;
         WorldTransform current;
         WorldTransform previous;
+        bool historyValid = false;
+    };
+
+    // Evaluated actor state is published at the frame boundary instead of
+    // exposing mutable OSG controller or bone nodes to the backend. Local bone
+    // order is exactly SkeletonPayload::bones, allowing each backend to derive
+    // current and previous skin matrices for rendering and motion vectors.
+    struct SkeletonPoseState
+    {
+        InstanceHandle instance;
+        ResourceRevision instanceRevision;
+        SkeletonHandle skeleton;
+        ResourceRevision skeletonRevision;
+        std::vector<glm::mat4> current;
+        std::vector<glm::mat4> previous;
+        bool historyValid = false;
+    };
+
+    struct MorphWeightState
+    {
+        InstanceHandle instance;
+        ResourceRevision instanceRevision;
+        MeshHandle mesh;
+        ResourceRevision meshRevision;
+        // Compound models identify the exact geometry node. Direct mesh
+        // instances leave modelNode unset.
+        std::optional<ModelNodeIndex> modelNode;
+        std::vector<float> current;
+        std::vector<float> previous;
         bool historyValid = false;
     };
 
@@ -149,6 +179,8 @@ namespace RenderCore
         FrameEnvironmentState environment;
         std::vector<FrameView> views;
         std::vector<DynamicTransformState> dynamicTransforms;
+        std::vector<SkeletonPoseState> skeletonPoses;
+        std::vector<MorphWeightState> morphWeights;
         std::vector<DynamicMaterialState> dynamicMaterials;
     };
 
@@ -180,6 +212,14 @@ namespace RenderCore
         {
             return mDesc.dynamicTransforms;
         }
+        [[nodiscard]] const std::vector<SkeletonPoseState>& skeletonPoses() const noexcept
+        {
+            return mDesc.skeletonPoses;
+        }
+        [[nodiscard]] const std::vector<MorphWeightState>& morphWeights() const noexcept
+        {
+            return mDesc.morphWeights;
+        }
         [[nodiscard]] const std::vector<DynamicMaterialState>& dynamicMaterials() const noexcept
         {
             return mDesc.dynamicMaterials;
@@ -209,11 +249,51 @@ namespace RenderCore
             for (std::size_t i = 0; i < mDesc.dynamicTransforms.size(); ++i)
             {
                 const DynamicTransformState& transform = mDesc.dynamicTransforms[i];
-                if (!transform.instance.valid() || !finite(transform.current) || !finite(transform.previous))
+                if (!transform.instance.valid() || !transform.instanceRevision.valid()
+                    || !finite(transform.current) || !finite(transform.previous))
                     return false;
                 for (std::size_t j = i + 1; j < mDesc.dynamicTransforms.size(); ++j)
                 {
                     if (transform.instance == mDesc.dynamicTransforms[j].instance)
+                        return false;
+                }
+            }
+
+            for (std::size_t i = 0; i < mDesc.skeletonPoses.size(); ++i)
+            {
+                const SkeletonPoseState& pose = mDesc.skeletonPoses[i];
+                if (!pose.instance.valid() || !pose.instanceRevision.valid() || !pose.skeleton.valid()
+                    || !pose.skeletonRevision.valid() || pose.current.empty()
+                    || pose.current.size() != pose.previous.size() || (pose.historyValid && !mDesc.historyValid))
+                    return false;
+                for (std::size_t bone = 0; bone < pose.current.size(); ++bone)
+                {
+                    if (!finite(pose.current[bone]) || !finite(pose.previous[bone]))
+                        return false;
+                }
+                for (std::size_t j = i + 1; j < mDesc.skeletonPoses.size(); ++j)
+                {
+                    if (pose.instance == mDesc.skeletonPoses[j].instance)
+                        return false;
+                }
+            }
+
+            for (std::size_t i = 0; i < mDesc.morphWeights.size(); ++i)
+            {
+                const MorphWeightState& morph = mDesc.morphWeights[i];
+                if (!morph.instance.valid() || !morph.instanceRevision.valid() || !morph.mesh.valid()
+                    || !morph.meshRevision.valid() || morph.current.empty()
+                    || morph.current.size() != morph.previous.size() || (morph.historyValid && !mDesc.historyValid))
+                    return false;
+                for (std::size_t target = 0; target < morph.current.size(); ++target)
+                {
+                    if (!finite(morph.current[target]) || !finite(morph.previous[target]))
+                        return false;
+                }
+                for (std::size_t j = i + 1; j < mDesc.morphWeights.size(); ++j)
+                {
+                    const MorphWeightState& other = mDesc.morphWeights[j];
+                    if (morph.instance == other.instance && morph.modelNode == other.modelNode)
                         return false;
                 }
             }

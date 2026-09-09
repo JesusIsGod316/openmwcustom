@@ -14,6 +14,7 @@
 #include <osgUtil/IncrementalCompileOperation>
 
 #include <deque>
+#include <functional>
 #include <memory>
 #include <span>
 #include <unordered_map>
@@ -230,6 +231,8 @@ namespace MWRender
 
         Animation* getAnimation(const MWWorld::Ptr& ptr);
         const Animation* getAnimation(const MWWorld::ConstPtr& ptr) const;
+
+        void forEachAnimation(const std::function<void(Animation&)>& visitor) const;
 
         PostProcessor* getPostProcessor();
 

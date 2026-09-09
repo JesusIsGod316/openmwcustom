@@ -203,7 +203,8 @@ namespace
         desc.renderWorldRevision = world.revision();
         desc.renderExtent = { 1280, 720 };
         desc.outputExtent = { 1280, 720 };
-        desc.dynamicTransforms.push_back(RenderCore::DynamicTransformState{ .instance = *instance });
+        desc.dynamicTransforms.push_back(RenderCore::DynamicTransformState{
+            .instance = *instance, .instanceRevision = instanceRecord.revision });
         desc.dynamicMaterials.push_back(RenderCore::DynamicMaterialState{ .material = *material });
 
         EXPECT_TRUE(RenderCore::frameCompatibleWithWorld(world, RenderCore::FrameRenderState(desc)));

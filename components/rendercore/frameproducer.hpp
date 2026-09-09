@@ -4,11 +4,33 @@
 #include "framerenderstate.hpp"
 #include "renderworld.hpp"
 
+#include <algorithm>
 #include <optional>
 #include <utility>
 
 namespace RenderCore
 {
+    struct DynamicTransformInput
+    {
+        InstanceHandle instance;
+        WorldTransform transform;
+    };
+
+    struct SkeletonPoseInput
+    {
+        InstanceHandle instance;
+        SkeletonHandle skeleton;
+        std::vector<glm::mat4> localTransforms;
+    };
+
+    struct MorphWeightInput
+    {
+        InstanceHandle instance;
+        MeshHandle mesh;
+        std::optional<ModelNodeIndex> modelNode;
+        std::vector<float> weights;
+    };
+
     struct SingleViewFrameInput
     {
         CameraState camera;
@@ -20,6 +42,9 @@ namespace RenderCore
         float lodScale = 1.0f;
         glm::vec2 jitter{ 0.0f, 0.0f };
         glm::vec2 projectionOffset{ 0.0f, 0.0f };
+        std::vector<DynamicTransformInput> dynamicTransforms;
+        std::vector<SkeletonPoseInput> skeletonPoses;
+        std::vector<MorphWeightInput> morphWeights;
         bool invalidateHistory = false;
     };
 
@@ -78,6 +103,82 @@ namespace RenderCore
             desc.environment = input.environment;
             desc.views.push_back(std::move(view));
 
+            for (const DynamicTransformInput& inputTransform : input.dynamicTransforms)
+            {
+                const InstanceRecord* instance = world.get(inputTransform.instance);
+                if (!instance)
+                    return std::nullopt;
+                const auto previous = std::find_if(mPreviousDynamicTransforms.begin(),
+                    mPreviousDynamicTransforms.end(), [&](const DynamicTransformState& value) {
+                        return value.instance == inputTransform.instance;
+                    });
+                const bool transformContinuous = continuous && previous != mPreviousDynamicTransforms.end()
+                    && previous->instanceRevision == instance->revision;
+                DynamicTransformState transform;
+                transform.instance = inputTransform.instance;
+                transform.instanceRevision = instance->revision;
+                transform.current = inputTransform.transform;
+                transform.previous = transformContinuous ? previous->current : inputTransform.transform;
+                transform.historyValid = transformContinuous;
+                desc.dynamicTransforms.push_back(std::move(transform));
+            }
+
+            for (const SkeletonPoseInput& inputPose : input.skeletonPoses)
+            {
+                const InstanceRecord* instance = world.get(inputPose.instance);
+                const SkeletonRecord* skeleton = world.get(inputPose.skeleton);
+                if (!instance || !instance->skeleton || *instance->skeleton != inputPose.skeleton || !skeleton
+                    || !skeleton->payload || skeleton->payload->bones.empty()
+                    || inputPose.localTransforms.size() != skeleton->payload->bones.size())
+                    return std::nullopt;
+
+                const auto previous = std::find_if(mPreviousSkeletonPoses.begin(), mPreviousSkeletonPoses.end(),
+                    [&](const SkeletonPoseState& value) { return value.instance == inputPose.instance; });
+                const bool poseContinuous = continuous && previous != mPreviousSkeletonPoses.end()
+                    && previous->instanceRevision == instance->revision && previous->skeleton == inputPose.skeleton
+                    && previous->skeletonRevision == skeleton->revision
+                    && previous->current.size() == inputPose.localTransforms.size();
+
+                SkeletonPoseState pose;
+                pose.instance = inputPose.instance;
+                pose.instanceRevision = instance->revision;
+                pose.skeleton = inputPose.skeleton;
+                pose.skeletonRevision = skeleton->revision;
+                pose.current = inputPose.localTransforms;
+                pose.previous = poseContinuous ? previous->current : inputPose.localTransforms;
+                pose.historyValid = poseContinuous;
+                desc.skeletonPoses.push_back(std::move(pose));
+            }
+
+            for (const MorphWeightInput& inputMorph : input.morphWeights)
+            {
+                const InstanceRecord* instance = world.get(inputMorph.instance);
+                const MeshRecord* mesh = world.get(inputMorph.mesh);
+                if (!instance || !mesh || !mesh->morphed || !mesh->morphs
+                    || inputMorph.weights.size() != mesh->morphs->targets.size()
+                    || !instanceOwnsMesh(world, *instance, inputMorph))
+                    return std::nullopt;
+
+                const auto previous = std::find_if(mPreviousMorphWeights.begin(), mPreviousMorphWeights.end(),
+                    [&](const MorphWeightState& value) {
+                        return value.instance == inputMorph.instance && value.modelNode == inputMorph.modelNode;
+                    });
+                const bool morphContinuous = continuous && previous != mPreviousMorphWeights.end()
+                    && previous->instanceRevision == instance->revision && previous->mesh == inputMorph.mesh
+                    && previous->meshRevision == mesh->revision && previous->current.size() == inputMorph.weights.size();
+
+                MorphWeightState morph;
+                morph.instance = inputMorph.instance;
+                morph.instanceRevision = instance->revision;
+                morph.mesh = inputMorph.mesh;
+                morph.meshRevision = mesh->revision;
+                morph.modelNode = inputMorph.modelNode;
+                morph.current = inputMorph.weights;
+                morph.previous = morphContinuous ? previous->current : inputMorph.weights;
+                morph.historyValid = morphContinuous;
+                desc.morphWeights.push_back(std::move(morph));
+            }
+
             FrameRenderState result(std::move(desc));
             if (!result.valid())
                 return std::nullopt;
@@ -97,6 +198,9 @@ namespace RenderCore
             mPreviousWorldEpoch = frame.worldEpoch();
             mPreviousRenderExtent = frame.renderExtent();
             mPreviousOutputExtent = frame.outputExtent();
+            mPreviousDynamicTransforms = frame.dynamicTransforms();
+            mPreviousSkeletonPoses = frame.skeletonPoses();
+            mPreviousMorphWeights = frame.morphWeights();
             mNextFrameId = advanceMonotonic(*mNextFrameId);
             return true;
         }
@@ -116,12 +220,29 @@ namespace RenderCore
         [[nodiscard]] HistoryEpoch historyEpoch() const noexcept { return mHistoryEpoch; }
 
     private:
+        [[nodiscard]] static bool instanceOwnsMesh(
+            const RenderWorld& world, const InstanceRecord& instance, const MorphWeightInput& morph) noexcept
+        {
+            if (!morph.modelNode)
+                return !instance.model && instance.mesh == morph.mesh;
+            if (!instance.model)
+                return false;
+            const ModelRecord* model = world.get(*instance.model);
+            if (!model || !model->payload || morph.modelNode->value() >= model->payload->nodes.size())
+                return false;
+            const ModelNodeRecord& node = model->payload->nodes[morph.modelNode->value()];
+            return node.kind == ModelNodeKind::Geometry && node.mesh && *node.mesh == morph.mesh;
+        }
+
         std::optional<FrameId> mNextFrameId = InitialFrameId;
         HistoryEpoch mHistoryEpoch = InitialHistoryEpoch;
         std::optional<CameraState> mPreviousCamera;
         WorldEpoch mPreviousWorldEpoch;
         Extent2D mPreviousRenderExtent;
         Extent2D mPreviousOutputExtent;
+        std::vector<DynamicTransformState> mPreviousDynamicTransforms;
+        std::vector<SkeletonPoseState> mPreviousSkeletonPoses;
+        std::vector<MorphWeightState> mPreviousMorphWeights;
     };
 }
 

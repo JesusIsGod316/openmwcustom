@@ -1,19 +1,19 @@
-name: V4.0 CP3C runtime integration QC
+name: V4.0 CP3D dynamic actor QC
 
 on:
   workflow_dispatch:
   push:
-    branches: [v4.0-cp3c-runtime-integration]
+    branches: [v4.0-cp3d-dynamic-actors]
 
 concurrency:
-  group: v4-cp3c-${{ github.ref }}
+  group: v4-cp3d-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   OwnershipContracts:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout exact CP3C head
+      - name: Checkout exact CP3D head
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -122,6 +122,27 @@ jobs:
               -I/tmp/vsg-1.1.15/include -I/tmp/vsg-1.1.15-build/include \
               -c components/render/backend/vsg/vsgsemanticsession.cpp -o /tmp/v4-cp3c-semantic-session.o
 
+      - name: Compile and run CP3D actor contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          common=(-std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I.)
+          for source in \
+            tools/v4/cp3d/actor-lifecycle-smoke.cpp \
+            tools/v4/cp3d/actor-model-composition-smoke.cpp \
+            tools/v4/cp3d/deformation-smoke.cpp \
+            tools/v4/cp3d/dynamic-actor-plan-smoke.cpp \
+            tools/v4/cp3d/pose-publication-smoke.cpp \
+            tools/v4/cp3d/skeleton-publication-smoke.cpp; do
+            output="/tmp/$(basename "${source}" .cpp)"
+            g++ "${common[@]}" "${source}" -o "${output}"
+            "${output}"
+          done
+          grep -F 'evaluateDynamicActorAssetPlan' components/render/backend/vsg/vsgruntimehost.cpp
+          grep -F 'mDynamicRetirements.queue' components/render/backend/vsg/vsgruntimehost.cpp
+          grep -F 'captureDynamicFrameState' apps/openmw/mwrender/v4enginerenderbridge.cpp
+          grep -F 'composeActorModel' apps/openmw/mwrender/v4enginerenderbridge.cpp
+
       - name: Verify production startup selection seam
         shell: bash
         run: |
@@ -173,7 +194,7 @@ jobs:
           grep -F 'V4EngineRenderBridge::renderMainFrame' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'SDL_GetWindowSizeInPixels' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'if (!mRouteStatus->healthy())' apps/openmw/mwrender/v4enginerenderbridge.cpp
-          grep -F 'V4SceneRenderLifecycle::publishStaticObject' apps/openmw/mwrender/v4scenerenderlifecycle.cpp
+          grep -F 'V4SceneRenderLifecycle::publishObject' apps/openmw/mwrender/v4scenerenderlifecycle.cpp
           grep -F 'mSession->cells().upsertLight' apps/openmw/mwrender/v4scenerenderlifecycle.cpp
           grep -F 'std::shared_ptr<RenderVsg::VsgSemanticSession> mSession' apps/openmw/mwrender/v4scenerenderlifecycle.hpp
           grep -F 'mRouteStatus->fail(message)' apps/openmw/mwrender/v4scenerenderlifecycle.cpp

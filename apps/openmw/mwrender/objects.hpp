@@ -2,6 +2,7 @@
 #define GAME_RENDER_OBJECTS_H
 
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -101,6 +102,8 @@ namespace MWRender
 
         Animation* getAnimation(const MWWorld::Ptr& ptr);
         const Animation* getAnimation(const MWWorld::ConstPtr& ptr) const;
+
+        void forEachAnimation(const std::function<void(Animation&)>& visitor) const;
 
         bool removeObject(const MWWorld::Ptr& ptr);
         ///< \return found?

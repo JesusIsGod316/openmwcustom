@@ -1,7 +1,10 @@
 #include "vsgruntimehost.hpp"
 
 #include "legacymaterialshader.hpp"
+#include "dynamicactorplan.hpp"
 #include "staticassetconformance.hpp"
+
+#include <components/rendercore/deformation.hpp>
 
 #include <vsg/app/CommandGraph.h>
 #include <vsg/app/RenderGraph.h>
@@ -47,6 +50,8 @@ namespace RenderVsg
         , mSharedObjects(vsg::SharedObjects::create())
         , mViewer(vsg::Viewer::create())
         , mSceneRoot(vsg::Group::create())
+        , mStaticRoot(vsg::Group::create())
+        , mDynamicRoot(vsg::Group::create())
         , mAmbientLight(vsg::AmbientLight::create())
         , mSunLight(vsg::DirectionalLight::create())
         , mCamera(FrameCameraObjects::create(initialView()))
@@ -68,6 +73,8 @@ namespace RenderVsg
         mSunLight->name = "OpenMW sun";
         mView->addChild(mAmbientLight);
         mView->addChild(mSunLight);
+        mSceneRoot->addChild(mStaticRoot);
+        mSceneRoot->addChild(mDynamicRoot);
         mView->addChild(mSceneRoot);
         mView->bins = createStaticConformanceBins();
         mRenderGraph = vsg::RenderGraph::create(mWindow);
@@ -110,7 +117,7 @@ namespace RenderVsg
     bool VsgRuntimeHost::synchronizeStaticWorld(const RenderCore::RenderWorld& world)
     {
         const StaticWorldMutation mutation = mStaticResidency.prepare(world, mOptions.staticPlan);
-        if (!mutation.valid || mutation.simpleMeshInstancesDeferred != 0 || mutation.dynamicInstancesDeferred != 0)
+        if (!mutation.valid || mutation.simpleMeshInstancesDeferred != 0)
         {
             mLastDiagnostic = "static world contains invalid or not-yet-supported instance populations";
             return false;
@@ -181,7 +188,107 @@ namespace RenderVsg
             mLastDiagnostic = "static world changed while its replacement graph was being realized";
             return false;
         }
-        mSceneRoot->children.swap(nextChildren);
+        mStaticRoot->children.swap(nextChildren);
+        return true;
+    }
+
+    bool VsgRuntimeHost::synchronizeDynamicActors(
+        const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame)
+    {
+        const DynamicActorWorldPlan plan = buildDynamicActorWorldPlan(world, mOptions.staticPlan);
+        if (!plan.valid())
+        {
+            mLastDiagnostic = "dynamic actor world contains an invalid model/skeleton dependency";
+            return false;
+        }
+
+        auto nextRoot = vsg::Group::create();
+        nextRoot->children.reserve(plan.actors.size());
+        for (const DynamicActorPlan& actor : plan.actors)
+        {
+            if (!actor.lightingEnabled)
+            {
+                mLastDiagnostic = "per-actor disabled lighting is not implemented by the CP3D host";
+                return false;
+            }
+            const auto transform = std::find_if(frame.dynamicTransforms().begin(), frame.dynamicTransforms().end(),
+                [&](const RenderCore::DynamicTransformState& value) { return value.instance == actor.instance; });
+            if (transform == frame.dynamicTransforms().end())
+            {
+                mLastDiagnostic = "dynamic actor frame is missing its current world transform";
+                return false;
+            }
+            const std::optional<StaticAssetPlan> evaluatedAsset
+                = evaluateDynamicActorAssetPlan(world, frame, actor);
+            if (!evaluatedAsset)
+            {
+                mLastDiagnostic = "dynamic actor draw transforms rejected the evaluated skeleton pose";
+                return false;
+            }
+
+            std::unordered_map<std::uint32_t, RenderCore::MeshPayload> deformed;
+            for (const StaticDrawPlan& draw : evaluatedAsset->draws)
+            {
+                const RenderCore::MeshRecord* mesh = world.get(draw.mesh);
+                if (!mesh || (!mesh->skinned && !mesh->morphed) || deformed.contains(draw.node.value()))
+                    continue;
+                RenderCore::DeformedMeshPayload result
+                    = RenderCore::deformMesh(world, frame, actor.instance, draw.mesh, draw.node);
+                if (!result.ready() || !mesh->payload)
+                {
+                    mLastDiagnostic = "dynamic actor CPU deformation rejected its evaluated pose or morph state";
+                    return false;
+                }
+                RenderCore::MeshPayload payload = *mesh->payload;
+                payload.positions = std::move(result.positions);
+                payload.normals = std::move(result.normals);
+                payload.tangents = std::move(result.tangents);
+                payload.bitangents = std::move(result.bitangents);
+                deformed.emplace(draw.node.value(), std::move(payload));
+            }
+            const MeshPayloadResolver resolve = [&](RenderCore::MeshHandle, RenderCore::ModelNodeIndex node)
+                -> const RenderCore::MeshPayload* {
+                const auto found = deformed.find(node.value());
+                return found == deformed.end() ? nullptr : &found->second;
+            };
+            StaticRealizationResult realized = realizeStaticAssetConformant(
+                world, actor.model, *evaluatedAsset, mTextureResolver, mSharedObjects, resolve);
+            if (!realized.valid() || realized.stats.runtimeContextEffects != 0
+                || realized.stats.unsupportedTextureBindings != 0)
+            {
+                mLastDiagnostic = realized.diagnostics.empty()
+                    ? "dynamic actor realization requires a not-yet-supported compatibility effect"
+                    : realized.diagnostics.front();
+                return false;
+            }
+            if (!dynamicActorPlanCurrent(world, actor))
+            {
+                mLastDiagnostic = "dynamic actor changed while its frame graph was being realized";
+                return false;
+            }
+            auto placed = vsg::MatrixTransform::create(
+                toVsgMatrix(staticInstancePlacementMatrix(transform->current)));
+            placed->addChild(realized.root);
+            nextRoot->addChild(placed);
+        }
+        if (!compileForViewer(*mViewer, nextRoot))
+        {
+            mLastDiagnostic = "incremental VSG actor compilation failed before scene publication";
+            return false;
+        }
+
+        if (mDynamicLastUse)
+        {
+            mDynamicRetirements.reserveAdditional(1);
+            if (!mDynamicRetirements.queue(*mDynamicLastUse, mDynamicRoot))
+            {
+                mLastDiagnostic = "previous dynamic actor graph could not be retained through GPU completion";
+                return false;
+            }
+        }
+        mDynamicRoot = std::move(nextRoot);
+        mSceneRoot->children[1] = mDynamicRoot;
+        mDynamicLastUse.reset();
         return true;
     }
 
@@ -229,9 +336,9 @@ namespace RenderVsg
         mLastDiagnostic.clear();
         if (!frame.valid() || !RenderCore::frameCompatibleWithWorld(world, frame))
             return finish(RenderCore::RenderFrameResult::Failed, "invalid or stale semantic frame state");
-        if (!frame.dynamicTransforms().empty() || !frame.dynamicMaterials().empty())
+        if (!frame.dynamicMaterials().empty())
             return finish(RenderCore::RenderFrameResult::Failed,
-                "dynamic transforms and dynamic materials require later compatibility facets");
+                "dynamic materials require a later compatibility facet");
         if (frame.environment().skyEnabled || frame.environment().waterEnabled)
             return finish(RenderCore::RenderFrameResult::Failed,
                 "sky and water require the environment compatibility facet");
@@ -264,7 +371,10 @@ namespace RenderVsg
             return finish(RenderCore::RenderFrameResult::Failed,
                 "Vulkan completion polling failed with VkResult " + std::to_string(completion.result));
         if (completion.completedThrough)
+        {
             (void)mStaticResidency.collect(*completion.completedThrough);
+            (void)mDynamicRetirements.collect(*completion.completedThrough);
+        }
         if (!mCompletion.canRegisterSubmission(frame.frameId()))
             return finish(RenderCore::RenderFrameResult::Failed, "semantic frame id is not submit-safe");
 
@@ -281,7 +391,8 @@ namespace RenderVsg
             environment.sunDirection.x, environment.sunDirection.y, environment.sunDirection.z);
         const RenderCore::Color& clear = environment.fogColor;
         mRenderGraph->setClearValues({ { clear.r, clear.g, clear.b, clear.a } });
-        if (!synchronizeLocalLights(world) || !synchronizeStaticWorld(world))
+        if (!synchronizeLocalLights(world) || !synchronizeStaticWorld(world)
+            || !synchronizeDynamicActors(world, frame))
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
 
         mViewer->update();
@@ -300,6 +411,7 @@ namespace RenderVsg
             return finish(RenderCore::RenderFrameResult::Failed,
                 "submitted frame could not be registered; device was synchronized for safety");
         }
+        mDynamicLastUse = frame.frameId();
         if (!submission.success())
             return finish(RenderCore::RenderFrameResult::Failed,
                 "Vulkan presentation failed with VkResult " + std::to_string(submission.present));
@@ -329,6 +441,6 @@ namespace RenderVsg
 
     std::size_t VsgRuntimeHost::pendingRetirementCount() const noexcept
     {
-        return mStaticResidency.pendingRetirementCount();
+        return mStaticResidency.pendingRetirementCount() + mDynamicRetirements.size();
     }
 }

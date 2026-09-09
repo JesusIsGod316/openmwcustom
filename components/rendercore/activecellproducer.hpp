@@ -38,6 +38,22 @@ namespace RenderCore
         bool lightingEnabled = true;
     };
 
+    struct DynamicInstanceSource
+    {
+        std::string identity;
+        std::string cellIdentity;
+        ModelHandle model;
+        SkeletonHandle skeleton;
+        WorldTransform transform;
+        AxisAlignedBounds localBounds;
+        LodSemantic lod;
+        std::uint64_t semanticFlags = semanticFlag(InstanceSemanticFlag::OrdinaryWorld)
+            | semanticFlag(InstanceSemanticFlag::ShadowCaster)
+            | semanticFlag(InstanceSemanticFlag::ReflectionEligible)
+            | semanticFlag(InstanceSemanticFlag::RefractionEligible);
+        bool lightingEnabled = true;
+    };
+
     struct CellLightSource
     {
         std::string identity;
@@ -53,6 +69,7 @@ namespace RenderCore
         InvalidSource,
         MissingCell,
         MissingModel,
+        MissingSkeleton,
         ReservationFailed,
         SequenceExhausted,
         ResourceRevisionExhausted,
@@ -194,11 +211,41 @@ namespace RenderCore
 
             const auto existing = mInstances.find(source.identity);
             if (existing == mInstances.end())
-                return createStaticInstance(source, cell->second);
-            return updateStaticInstance(source, cell->second, existing);
+                return createInstance(source, cell->second);
+            return updateInstance(source, cell->second, existing);
+        }
+
+        [[nodiscard]] ActiveCellPublishResult upsertDynamicInstance(const DynamicInstanceSource& source)
+        {
+            synchronizeEpoch();
+            if (source.identity.empty() || source.cellIdentity.empty() || !source.model.valid()
+                || !source.skeleton.valid())
+                return failure(ActiveCellPublishStatus::InvalidSource);
+            const auto cell = mCells.find(source.cellIdentity);
+            if (cell == mCells.end() || !mWorld.get(cell->second))
+                return failure(ActiveCellPublishStatus::MissingCell);
+            if (!mWorld.get(source.model))
+                return failure(ActiveCellPublishStatus::MissingModel);
+            if (!mWorld.get(source.skeleton))
+                return failure(ActiveCellPublishStatus::MissingSkeleton);
+
+            const auto existing = mInstances.find(source.identity);
+            if (existing == mInstances.end())
+                return createInstance(source, cell->second);
+            return updateInstance(source, cell->second, existing);
         }
 
         [[nodiscard]] ActiveCellPublishResult removeStaticInstance(std::string_view identity)
+        {
+            return removeInstance(identity);
+        }
+
+        [[nodiscard]] ActiveCellPublishResult removeDynamicInstance(std::string_view identity)
+        {
+            return removeInstance(identity);
+        }
+
+        [[nodiscard]] ActiveCellPublishResult removeInstance(std::string_view identity)
         {
             synchronizeEpoch();
             const auto instance = mInstances.find(identity);
@@ -337,8 +384,24 @@ namespace RenderCore
             return record;
         }
 
-        [[nodiscard]] ActiveCellPublishResult createStaticInstance(
-            const StaticInstanceSource& source, ChunkHandle chunk)
+        [[nodiscard]] static InstanceRecord makeRecord(
+            const DynamicInstanceSource& source, ChunkHandle chunk, ResourceRevision revision)
+        {
+            InstanceRecord record;
+            record.revision = revision;
+            record.chunk = chunk;
+            record.model = source.model;
+            record.skeleton = source.skeleton;
+            record.transform = source.transform;
+            record.localBounds = source.localBounds;
+            record.lod = source.lod;
+            record.semanticFlags = source.semanticFlags;
+            record.lightingEnabled = source.lightingEnabled;
+            return record;
+        }
+
+        template <class Source>
+        [[nodiscard]] ActiveCellPublishResult createInstance(const Source& source, ChunkHandle chunk)
         {
             const auto [entry, inserted]
                 = mInstances.try_emplace(source.identity, InstanceBinding{ {}, source.cellIdentity });
@@ -375,8 +438,9 @@ namespace RenderCore
             return result;
         }
 
-        [[nodiscard]] ActiveCellPublishResult updateStaticInstance(
-            const StaticInstanceSource& source, ChunkHandle chunk, InstanceMap::iterator existing)
+        template <class Source>
+        [[nodiscard]] ActiveCellPublishResult updateInstance(
+            const Source& source, ChunkHandle chunk, InstanceMap::iterator existing)
         {
             const InstanceRecord* current = mWorld.get(existing->second.handle);
             if (!current)

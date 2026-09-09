@@ -29,6 +29,7 @@ namespace NifRender
         StaticModelCacheStatus status = StaticModelCacheStatus::InvalidBundle;
         TranslationPublishStatus publishStatus = TranslationPublishStatus::InvalidBundle;
         RenderCore::ModelHandle model;
+        std::optional<RenderCore::SkeletonHandle> skeleton;
 
         [[nodiscard]] bool available() const noexcept
         {
@@ -57,12 +58,28 @@ namespace NifRender
             const auto found = mEntries.find(sourceIdentity);
             if (found == mEntries.end())
                 return std::nullopt;
-            if (!mWorld.get(found->second.binding.model))
+            if (!mWorld.get(found->second.binding.model)
+                || (found->second.skeleton && !mWorld.get(*found->second.skeleton)))
             {
                 mEntries.erase(found);
                 return std::nullopt;
             }
             return found->second.binding.model;
+        }
+
+        [[nodiscard]] std::optional<RenderCore::SkeletonHandle> findSkeleton(std::string_view sourceIdentity)
+        {
+            synchronizeEpoch();
+            const auto found = mEntries.find(sourceIdentity);
+            if (found == mEntries.end())
+                return std::nullopt;
+            if (!mWorld.get(found->second.binding.model)
+                || (found->second.skeleton && !mWorld.get(*found->second.skeleton)))
+            {
+                mEntries.erase(found);
+                return std::nullopt;
+            }
+            return found->second.skeleton;
         }
 
         [[nodiscard]] StaticModelCacheResult publish(const TranslationBundle& bundle)
@@ -85,23 +102,26 @@ namespace NifRender
                     if (existing->second.contentIdentity != bundle.contentIdentity)
                     {
                         return { StaticModelCacheStatus::ContentConflict, TranslationPublishStatus::InvalidBundle,
-                            existing->second.binding.model };
+                            existing->second.binding.model, existing->second.skeleton };
                     }
                     return { StaticModelCacheStatus::Reused, TranslationPublishStatus::Applied,
-                        existing->second.binding.model };
+                        existing->second.binding.model, existing->second.skeleton };
                 }
             }
 
             TranslationPublishResult published = publishTranslation(mWorld, mPublisher, bundle);
             if (!published.applied())
-                return { StaticModelCacheStatus::PublishFailed, published.status, {} };
+                return { StaticModelCacheStatus::PublishFailed, published.status, {}, {} };
 
             Entry entry;
             entry.contentIdentity = bundle.contentIdentity;
             entry.binding = std::move(published.binding);
+            if (bundle.model.skeleton)
+                entry.skeleton = entry.binding.skeletons[bundle.model.skeleton->value()];
             const RenderCore::ModelHandle model = entry.binding.model;
+            const std::optional<RenderCore::SkeletonHandle> skeleton = entry.skeleton;
             mEntries.emplace(bundle.sourceIdentity, std::move(entry));
-            return { StaticModelCacheStatus::Published, TranslationPublishStatus::Applied, model };
+            return { StaticModelCacheStatus::Published, TranslationPublishStatus::Applied, model, skeleton };
         }
 
         [[nodiscard]] std::size_t size() const noexcept { return mEntries.size(); }
@@ -111,6 +131,7 @@ namespace NifRender
         {
             std::string contentIdentity;
             TranslationBinding binding;
+            std::optional<RenderCore::SkeletonHandle> skeleton;
         };
 
         void synchronizeEpoch()

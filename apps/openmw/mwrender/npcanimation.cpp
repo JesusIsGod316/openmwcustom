@@ -826,6 +826,10 @@ namespace MWRender
         mPartslots[type] = -1;
 
         mObjectParts[type].reset();
+        mV4PartModels[type].clear();
+        mV4PartBones[type].clear();
+        mV4PartLights[type] = false;
+        mV4PartEnchanted[type] = false;
         if (mSounds[type] != nullptr && !mSoundsDisabled)
         {
             MWBase::Environment::get().getSoundManager()->stopSound(mSounds[type]);
@@ -892,6 +896,12 @@ namespace MWRender
             // attachment bone
             const std::string_view bonefilter = (type == ESM::PRT_Hair) ? std::string_view{ "hair" } : bonename;
             mObjectParts[type] = insertBoundedPart(mesh, bonename, bonefilter, enchantedGlow, glowColor, isLight);
+            if (!mObjectParts[type])
+                return false;
+            mV4PartModels[type] = VFS::Path::Normalized(mesh);
+            mV4PartBones[type] = bonename;
+            mV4PartLights[type] = isLight;
+            mV4PartEnchanted[type] = enchantedGlow;
         }
         catch (std::exception& e)
         {
@@ -1386,6 +1396,26 @@ namespace MWRender
             }
             return parts;
         }
+    }
+
+    std::vector<NpcAnimation::V4PartSource> NpcAnimation::getV4PartSources() const
+    {
+        std::vector<V4PartSource> result;
+        for (std::size_t i = 0; i < ESM::PRT_Count; ++i)
+        {
+            if (!mObjectParts[i] || mV4PartModels[i].empty())
+                continue;
+            const osg::Node* node = mObjectParts[i]->getNode();
+            result.push_back(V4PartSource{
+                .type = static_cast<ESM::PartReferenceType>(i),
+                .model = mV4PartModels[i],
+                .boneName = mV4PartBones[i],
+                .visible = node && node->getNodeMask() != 0u,
+                .isLight = mV4PartLights[i],
+                .enchantedGlow = mV4PartEnchanted[i],
+            });
+        }
+        return result;
     }
 
     void NpcAnimation::setAccurateAiming(bool enabled)

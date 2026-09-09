@@ -99,7 +99,7 @@ namespace MWRender
     {
         try
         {
-            publishStaticObject(ptr);
+            publishObject(ptr);
         }
         catch (const std::exception& error)
         {
@@ -117,7 +117,7 @@ namespace MWRender
     {
         try
         {
-            publishStaticObject(ptr);
+            publishObject(ptr);
         }
         catch (const std::exception& error)
         {
@@ -138,10 +138,10 @@ namespace MWRender
             const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
             if (!identity)
                 return;
-            const RenderCore::ActiveCellPublishResult instance = mSession->cells().removeStaticInstance(*identity);
+            const RenderCore::ActiveCellPublishResult instance = mSession->cells().removeInstance(*identity);
             if (instance.status != RenderCore::ActiveCellPublishStatus::Applied
                 && instance.status != RenderCore::ActiveCellPublishStatus::NotFound)
-                recordFailure("V4 scene lifecycle failed to retire a static object");
+                recordFailure("V4 scene lifecycle failed to retire an object instance");
             const RenderCore::ActiveCellPublishResult light = mSession->cells().removeLight(*identity);
             if (light.status != RenderCore::ActiveCellPublishStatus::Applied
                 && light.status != RenderCore::ActiveCellPublishStatus::NotFound)
@@ -166,14 +166,11 @@ namespace MWRender
         }
     }
 
-    void V4SceneRenderLifecycle::publishStaticObject(const MWWorld::Ptr& ptr)
+    void V4SceneRenderLifecycle::publishObject(const MWWorld::Ptr& ptr)
     {
         requireHealthy();
         if (ptr.isEmpty() || !ptr.getCell())
             return;
-
-        if (ptr.getClass().isActor())
-            throw std::runtime_error("V4 scene lifecycle encountered an actor before actor compatibility is available");
 
         const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
         if (!ptr.getRefData().isEnabled())
@@ -182,6 +179,14 @@ namespace MWRender
                 objectRemoving(ptr);
             return;
         }
+
+        // Actor publication is captured after OpenMW has assembled/evaluated
+        // its Animation. This lifecycle notification establishes cell order,
+        // while V4EngineRenderBridge publishes the exact selected actor parts
+        // and the matching first pose together at the frame boundary.
+        const bool actor = ptr.getClass().isActor();
+        if (actor)
+            return;
 
         if (isLight(ptr))
         {
@@ -207,7 +212,11 @@ namespace MWRender
                 "V4 scene lifecycle encountered an animated object before animation compatibility is available");
 
         const VFS::Path::Normalized modelPath = ptr.getClass().getCorrectedModel(ptr);
-        if (modelPath.empty() || Misc::ResourceHelpers::isHiddenMarker(ptr.getCellRef().getRefId()))
+        if (modelPath.empty())
+        {
+            return;
+        }
+        if (Misc::ResourceHelpers::isHiddenMarker(ptr.getCellRef().getRefId()))
             return;
 
         std::optional<RenderCore::ModelHandle> model = mSession->models().find(modelPath.value());
@@ -234,7 +243,6 @@ namespace MWRender
             = makeV4StaticInstanceSource(ptr, *model, modelRecord->bounds);
         if (!source)
             throw std::runtime_error("V4 scene lifecycle rejected an eligible static object");
-
         const RenderCore::ActiveCellPublishResult result = mSession->cells().upsertStaticInstance(*source);
         if (!accepted(result.status))
             throw publicationError("static object publication", static_cast<unsigned int>(result.status));

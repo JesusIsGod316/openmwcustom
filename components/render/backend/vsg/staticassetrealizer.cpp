@@ -321,7 +321,8 @@ namespace RenderVsg
     }
 
     StaticRealizationResult StaticAssetRealizer::realize(const RenderCore::RenderWorld& world,
-        const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver) const
+        const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
+        const MeshPayloadResolver& meshPayloadResolver) const
     {
         using namespace RenderCore;
 
@@ -347,7 +348,12 @@ namespace RenderVsg
         {
             const MeshRecord* mesh = world.get(draw.mesh);
             const MaterialRecord* material = world.get(draw.material);
-            if (!mesh || !mesh->payload || !material || draw.surfaceIndex >= mesh->payload->surfaces.size())
+            const MeshPayload* resolvedPayload
+                = meshPayloadResolver ? meshPayloadResolver(draw.mesh, draw.node) : nullptr;
+            if (!resolvedPayload && mesh)
+                resolvedPayload = mesh->payload.get();
+            if (!mesh || !resolvedPayload || !validMeshPayload(*resolvedPayload) || !material
+                || draw.surfaceIndex >= resolvedPayload->surfaces.size())
             {
                 result.root = {};
                 result.diagnostics.emplace_back("Static draw references a missing published mesh/material resource");
@@ -364,7 +370,7 @@ namespace RenderVsg
             }
             ++result.stats.legacyCompatibilityDraws;
 
-            const MeshPayload& payload = *mesh->payload;
+            const MeshPayload& payload = *resolvedPayload;
             if (payload.texCoordSets.size() > 4u)
             {
                 result.root = {};

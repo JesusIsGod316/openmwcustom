@@ -37,6 +37,7 @@ namespace
 
         RenderCore::DynamicTransformState dynamic;
         dynamic.instance = RenderCore::InstanceHandle::fromParts(4u, 9u);
+        dynamic.instanceRevision = RenderCore::InitialResourceRevision;
         dynamic.historyValid = true;
         desc.dynamicTransforms.push_back(dynamic);
 
