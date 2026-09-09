@@ -22,7 +22,7 @@ namespace MWRender
             return RenderCore::RenderFrameResult::Skipped;
         }
 
-        const std::optional<V4MainFrameSource> source = makeV4MainFrameSource(rendering, cell,
+        std::optional<V4MainFrameSource> source = makeV4MainFrameSource(rendering, cell,
             rendering.isUnderwater(), *extent, simulationTime, frameDelta, invalidateHistory);
         if (!source)
             return fail("authoritative gameplay state could not produce a compatible V4 main frame");

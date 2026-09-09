@@ -8,6 +8,8 @@
 #include "npcanimation.hpp"
 #include "renderingmanager.hpp"
 
+#include "../mwworld/class.hpp"
+
 #include <components/nif/niffile.hpp>
 #include <components/nifrender/actormodelcomposer.hpp>
 #include <components/nifrender/niftranslator.hpp>
