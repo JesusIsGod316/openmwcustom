@@ -16,7 +16,7 @@
 #include "../mwrender/localmap.hpp"
 
 #include <components/misc/guarded.hpp>
-#include <components/myguiplatform/myguiplatform.hpp>
+#include <components/myguiplatform/platformbase.hpp>
 #include <components/sdlutil/events.hpp>
 #include <components/sdlutil/sdlcursormanager.hpp>
 #include <components/sdlutil/sdlvideowrapper.hpp>
@@ -131,7 +131,8 @@ namespace MWGui
             Resource::ResourceSystem* resourceSystem, SceneUtil::WorkQueue* workQueue,
             const std::filesystem::path& logpath, bool consoleOnlyScripts, Translation::Storage& translationDataStorage,
             ToUTF8::FromType encoding, bool exportFonts, const std::string& versionDescription,
-            Files::ConfigurationManager& cfgMgr);
+            Files::ConfigurationManager& cfgMgr,
+            std::unique_ptr<MyGUIPlatform::PlatformBase> guiPlatform = {});
         virtual ~WindowManager();
 
         /// Set the ESMStore to use for retrieving of GUI-related strings.
@@ -419,7 +420,7 @@ namespace MWGui
         Resource::ResourceSystem* mResourceSystem;
         osg::ref_ptr<SceneUtil::WorkQueue> mWorkQueue;
 
-        std::unique_ptr<MyGUIPlatform::Platform> mGuiPlatform;
+        std::unique_ptr<MyGUIPlatform::PlatformBase> mGuiPlatform;
         osgViewer::Viewer* mViewer;
 
         std::unique_ptr<Gui::FontLoader> mFontLoader;

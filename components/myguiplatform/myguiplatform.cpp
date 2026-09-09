@@ -28,6 +28,16 @@ namespace MyGUIPlatform
         mRenderManager->shutdown();
     }
 
+    void Platform::enableShaders(Shader::ShaderManager& shaderManager)
+    {
+        mRenderManager->enableShaders(shaderManager);
+    }
+
+    void Platform::setViewSize(int width, int height)
+    {
+        mRenderManager->setViewSize(width, height);
+    }
+
     RenderManager* Platform::getRenderManagerPtr()
     {
         return mRenderManager.get();

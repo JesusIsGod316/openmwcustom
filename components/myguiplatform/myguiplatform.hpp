@@ -7,6 +7,8 @@
 
 #include <components/vfs/pathutil.hpp>
 
+#include "platformbase.hpp"
+
 namespace osgViewer
 {
     class Viewer;
@@ -35,16 +37,18 @@ namespace MyGUIPlatform
     class DataManager;
     class LogFacility;
 
-    class Platform
+    class Platform final : public PlatformBase
     {
     public:
         Platform(osgViewer::Viewer* viewer, osg::Group* guiRoot, Resource::ImageManager* imageManager,
             const VFS::Manager* vfs, float uiScalingFactor, VFS::Path::NormalizedView resourcePath,
             const std::filesystem::path& logName = "MyGUI.log");
 
-        ~Platform();
+        ~Platform() override;
 
-        void shutdown();
+        void shutdown() override;
+        void enableShaders(Shader::ShaderManager& shaderManager) override;
+        void setViewSize(int width, int height) override;
 
         RenderManager* getRenderManagerPtr();
 

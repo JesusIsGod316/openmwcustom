@@ -12,6 +12,7 @@
 
 #include <memory>
 #include <map>
+#include <filesystem>
 #include <optional>
 #include <string>
 
@@ -19,6 +20,13 @@ namespace VFS
 {
     class Manager;
 }
+
+namespace MyGUIPlatform
+{
+    class PlatformBase;
+}
+
+struct SDL_Window;
 
 namespace RenderVsg
 {
@@ -55,6 +63,9 @@ namespace MWRender
         [[nodiscard]] bool sceneRenderLifecycleTaken() const noexcept { return mLifecycleTaken; }
 
         [[nodiscard]] std::optional<RenderCore::Extent2D> outputExtent() const noexcept;
+        [[nodiscard]] SDL_Window* sdlWindow() const noexcept;
+        [[nodiscard]] std::unique_ptr<MyGUIPlatform::PlatformBase> createGuiPlatform(
+            const std::filesystem::path& logName = {});
         [[nodiscard]] bool captureDynamicFrameState(
             const RenderingManager& rendering, V4MainFrameSource& source);
         RenderCore::RenderFrameResult renderMainFrame(const V4MainFrameSource& source);

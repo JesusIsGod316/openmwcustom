@@ -1,5 +1,7 @@
 #include "windowmanagerimp.hpp"
 
+#include <components/myguiplatform/myguiplatform.hpp>
+
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -149,7 +151,8 @@ namespace MWGui
     WindowManager::WindowManager(SDL_Window* window, osgViewer::Viewer* viewer, osg::Group* guiRoot,
         Resource::ResourceSystem* resourceSystem, SceneUtil::WorkQueue* workQueue, const std::filesystem::path& logpath,
         bool consoleOnlyScripts, Translation::Storage& translationDataStorage, ToUTF8::FromType encoding,
-        bool exportFonts, const std::string& versionDescription, Files::ConfigurationManager& cfgMgr)
+        bool exportFonts, const std::string& versionDescription, Files::ConfigurationManager& cfgMgr,
+        std::unique_ptr<MyGUIPlatform::PlatformBase> guiPlatform)
         : mOldUpdateMask(0)
         , mOldCullMask(0)
         , mStore(nullptr)
@@ -210,8 +213,12 @@ namespace MWGui
 
         mScalingFactor = Settings::gui().mScalingFactor * (dw / w);
         constexpr VFS::Path::NormalizedView resourcePath("mygui");
-        mGuiPlatform = std::make_unique<MyGUIPlatform::Platform>(viewer, guiRoot, resourceSystem->getImageManager(),
-            resourceSystem->getVFS(), mScalingFactor, resourcePath, logpath / "MyGUI.log");
+        if (guiPlatform)
+            mGuiPlatform = std::move(guiPlatform);
+        else
+            mGuiPlatform = std::make_unique<MyGUIPlatform::Platform>(viewer, guiRoot,
+                resourceSystem->getImageManager(), resourceSystem->getVFS(), mScalingFactor, resourcePath,
+                logpath / "MyGUI.log");
 
         mGui = std::make_unique<MyGUI::Gui>();
         mGui->initialise({});
@@ -303,7 +310,7 @@ namespace MWGui
         mVideoWrapper = std::make_unique<SDLUtil::VideoWrapper>(window, viewer);
         mVideoWrapper->setGammaContrast(Settings::video().mGamma, Settings::video().mContrast);
 
-        mGuiPlatform->getRenderManagerPtr()->enableShaders(mResourceSystem->getSceneManager()->getShaderManager());
+        mGuiPlatform->enableShaders(mResourceSystem->getSceneManager()->getShaderManager());
 
         mStatsWatcher = std::make_unique<StatsWatcher>();
     }
@@ -1333,7 +1340,7 @@ namespace MWGui
 
         Settings::Manager::resetPendingChanges(filter);
 
-        mGuiPlatform->getRenderManagerPtr()->setViewSize(x, y);
+        mGuiPlatform->setViewSize(x, y);
 
         // scaled size
         const MyGUI::IntSize& viewSize = MyGUI::RenderManager::getInstance().getViewSize();

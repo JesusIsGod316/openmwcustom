@@ -4,6 +4,8 @@
 #include "dynamicactorplan.hpp"
 #include "staticassetconformance.hpp"
 
+#include <components/vsgmygui/rendermanager.hpp>
+
 #include <components/rendercore/deformation.hpp>
 
 #include <vsg/app/CommandGraph.h>
@@ -52,6 +54,7 @@ namespace RenderVsg
         , mSceneRoot(vsg::Group::create())
         , mStaticRoot(vsg::Group::create())
         , mDynamicRoot(vsg::Group::create())
+        , mGuiRoot(vsg::Group::create())
         , mAmbientLight(vsg::AmbientLight::create())
         , mSunLight(vsg::DirectionalLight::create())
         , mCamera(FrameCameraObjects::create(initialView()))
@@ -75,6 +78,11 @@ namespace RenderVsg
         mView->addChild(mSunLight);
         mSceneRoot->addChild(mStaticRoot);
         mSceneRoot->addChild(mDynamicRoot);
+        mSceneRoot->addChild(mGuiRoot);
+        const VkExtent2D initialExtent = mWindow->extent2D();
+        mUiPipeline = createUiPipeline(std::max(1u, initialExtent.width), std::max(1u, initialExtent.height));
+        if (!mUiPipeline)
+            throw std::runtime_error("VsgRuntimeHost could not create its MyGUI pipeline");
         mView->addChild(mSceneRoot);
         mView->bins = createStaticConformanceBins();
         mRenderGraph = vsg::RenderGraph::create(mWindow);
@@ -85,6 +93,17 @@ namespace RenderVsg
         const vsg::CompileResult compile = mViewer->compile();
         if (!compile)
             throw std::runtime_error("VsgRuntimeHost initial graph compilation failed: " + compile.message);
+    }
+
+    void VsgRuntimeHost::attachGuiRenderer(VsgMyGui::RenderManager* renderer) noexcept
+    {
+        mGuiRenderer = renderer;
+    }
+
+    void VsgRuntimeHost::detachGuiRenderer(const VsgMyGui::RenderManager* renderer) noexcept
+    {
+        if (mGuiRenderer == renderer)
+            mGuiRenderer = nullptr;
     }
 
     VsgRuntimeHost::~VsgRuntimeHost()
@@ -330,6 +349,41 @@ namespace RenderVsg
         return true;
     }
 
+    bool VsgRuntimeHost::synchronizeGui()
+    {
+        if (!mGuiRenderer)
+            return true;
+        mGuiRenderer->collect();
+        if (!mGuiRenderer->overlayStructureChanged())
+        {
+            mGuiRenderer->updatePersistentOverlay();
+            return true;
+        }
+
+        vsg::ref_ptr<vsg::Node> overlay = mGuiRenderer->buildPersistentOverlay();
+        auto nextRoot = vsg::Group::create();
+        if (overlay)
+            nextRoot->addChild(overlay);
+        if (!compileForViewer(*mViewer, nextRoot))
+        {
+            mLastDiagnostic = "incremental VSG MyGUI compilation failed before overlay publication";
+            return false;
+        }
+        if (mGuiLastUse)
+        {
+            mGuiRetirements.reserveAdditional(1);
+            if (!mGuiRetirements.queue(*mGuiLastUse, mGuiRoot))
+            {
+                mLastDiagnostic = "previous MyGUI graph could not be retained through GPU completion";
+                return false;
+            }
+        }
+        mGuiRoot = std::move(nextRoot);
+        mSceneRoot->children[2] = mGuiRoot;
+        mGuiLastUse.reset();
+        return true;
+    }
+
     RenderCore::RenderFrameResult VsgRuntimeHost::renderFrame(
         const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame)
     {
@@ -374,6 +428,7 @@ namespace RenderVsg
         {
             (void)mStaticResidency.collect(*completion.completedThrough);
             (void)mDynamicRetirements.collect(*completion.completedThrough);
+            (void)mGuiRetirements.collect(*completion.completedThrough);
         }
         if (!mCompletion.canRegisterSubmission(frame.frameId()))
             return finish(RenderCore::RenderFrameResult::Failed, "semantic frame id is not submit-safe");
@@ -392,7 +447,7 @@ namespace RenderVsg
         const RenderCore::Color& clear = environment.fogColor;
         mRenderGraph->setClearValues({ { clear.r, clear.g, clear.b, clear.a } });
         if (!synchronizeLocalLights(world) || !synchronizeStaticWorld(world)
-            || !synchronizeDynamicActors(world, frame))
+            || !synchronizeDynamicActors(world, frame) || !synchronizeGui())
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
 
         mViewer->update();
@@ -412,6 +467,7 @@ namespace RenderVsg
                 "submitted frame could not be registered; device was synchronized for safety");
         }
         mDynamicLastUse = frame.frameId();
+        mGuiLastUse = frame.frameId();
         if (!submission.success())
             return finish(RenderCore::RenderFrameResult::Failed,
                 "Vulkan presentation failed with VkResult " + std::to_string(submission.present));
@@ -441,6 +497,6 @@ namespace RenderVsg
 
     std::size_t VsgRuntimeHost::pendingRetirementCount() const noexcept
     {
-        return mStaticResidency.pendingRetirementCount() + mDynamicRetirements.size();
+        return mStaticResidency.pendingRetirementCount() + mDynamicRetirements.size() + mGuiRetirements.size();
     }
 }

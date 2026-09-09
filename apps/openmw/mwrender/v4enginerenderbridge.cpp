@@ -18,6 +18,9 @@
 
 #include <components/misc/strings/lower.hpp>
 #include <components/vfs/manager.hpp>
+#include <components/vsgmygui/platform.hpp>
+#include <components/vsgmygui/rendermanager.hpp>
+#include <components/vsgmygui/vfsimagedecoder.hpp>
 
 #include <osg/Geode>
 #include <osg/NodeVisitor>
@@ -180,6 +183,29 @@ namespace MWRender
         if (!result.valid())
             return std::nullopt;
         return result;
+    }
+
+    SDL_Window* V4EngineRenderBridge::sdlWindow() const noexcept
+    {
+        return mSession ? mSession->bootstrap().sdlWindow() : nullptr;
+    }
+
+    std::unique_ptr<MyGUIPlatform::PlatformBase> V4EngineRenderBridge::createGuiPlatform(
+        const std::filesystem::path& logName)
+    {
+        const std::optional<RenderCore::Extent2D> extent = outputExtent();
+        if (!extent)
+            throw std::runtime_error("V4 MyGUI platform requires a visible Vulkan drawable extent");
+        RenderVsg::VsgRuntimeHost& host = mSession->bootstrap().renderer();
+        constexpr VFS::Path::NormalizedView resourcePath("mygui");
+        auto platform = std::make_unique<VsgMyGui::Platform>(host.uiPipeline(),
+            VsgMyGui::makeVfsImageDecoder(mVfs), &mVfs, static_cast<int>(extent->width),
+            static_cast<int>(extent->height), resourcePath, logName,
+            [session = mSession](VsgMyGui::RenderManager* renderer) {
+                session->bootstrap().renderer().detachGuiRenderer(renderer);
+            });
+        host.attachGuiRenderer(platform->getRenderManagerPtr());
+        return platform;
     }
 
     bool V4EngineRenderBridge::captureDynamicFrameState(

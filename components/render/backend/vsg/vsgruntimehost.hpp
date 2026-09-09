@@ -8,6 +8,7 @@
 #include "staticassetrealizer.hpp"
 #include "staticworldresidency.hpp"
 #include "vsgsubmission.hpp"
+#include "uipipeline.hpp"
 
 #include <components/rendercore/renderer.hpp>
 
@@ -27,6 +28,11 @@ namespace vsg
     class SharedObjects;
     class View;
     class Viewer;
+}
+
+namespace VsgMyGui
+{
+    class RenderManager;
 }
 
 namespace RenderVsg
@@ -56,6 +62,9 @@ namespace RenderVsg
 
         [[nodiscard]] std::size_t residentStaticInstanceCount() const noexcept;
         [[nodiscard]] std::size_t pendingRetirementCount() const noexcept;
+        [[nodiscard]] const UiPipeline& uiPipeline() const noexcept { return mUiPipeline; }
+        void attachGuiRenderer(VsgMyGui::RenderManager* renderer) noexcept;
+        void detachGuiRenderer(const VsgMyGui::RenderManager* renderer) noexcept;
         [[nodiscard]] const std::string& lastDiagnostic() const noexcept { return mLastDiagnostic; }
 
     private:
@@ -65,6 +74,7 @@ namespace RenderVsg
         [[nodiscard]] bool synchronizeDynamicActors(
             const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame);
         [[nodiscard]] bool synchronizeLocalLights(const RenderCore::RenderWorld& world);
+        [[nodiscard]] bool synchronizeGui();
         [[nodiscard]] const RenderCore::FrameView* selectMainView(
             const RenderCore::FrameRenderState& frame) const noexcept;
         RenderCore::RenderFrameResult finish(
@@ -78,6 +88,7 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::Group> mSceneRoot;
         vsg::ref_ptr<vsg::Group> mStaticRoot;
         vsg::ref_ptr<vsg::Group> mDynamicRoot;
+        vsg::ref_ptr<vsg::Group> mGuiRoot;
         vsg::ref_ptr<vsg::View> mView;
         vsg::ref_ptr<OpenMwViewDependentState> mOpenMwViewState;
         vsg::ref_ptr<vsg::RenderGraph> mRenderGraph;
@@ -86,7 +97,11 @@ namespace RenderVsg
         FrameCameraObjects mCamera;
         StaticWorldResidency<StaticResident> mStaticResidency;
         FrameRetirementQueue<vsg::ref_ptr<vsg::Group>> mDynamicRetirements;
+        FrameRetirementQueue<vsg::ref_ptr<vsg::Group>> mGuiRetirements;
         std::optional<RenderCore::FrameId> mDynamicLastUse;
+        std::optional<RenderCore::FrameId> mGuiLastUse;
+        UiPipeline mUiPipeline;
+        VsgMyGui::RenderManager* mGuiRenderer = nullptr;
         VsgSubmissionCompletion mCompletion;
         std::string mLastDiagnostic;
         bool mWaitedIdle = false;
