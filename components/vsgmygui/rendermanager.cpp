@@ -1,6 +1,8 @@
 #include "rendermanager.hpp"
 
 #include <cstring>
+#include <algorithm>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -167,6 +169,16 @@ namespace VsgMyGui
         // hands MyGUI an OSG-backed ITexture). Those aren't ours — fall back to the white texture in
         // buildOverlayNode rather than reinterpreting a foreign object as a VsgMyGui::Texture.
         batch.texture = dynamic_cast<Texture*>(texture);
+        if (texture && !batch.texture)
+        {
+            if (!mWarnedForeignTexture)
+            {
+                Log(Debug::Warning) << "VsgMyGui: skipping an OSG or foreign render-target texture; "
+                                       "cross-API map, preview, save and video views are not implemented";
+                mWarnedForeignTexture = true;
+            }
+            return;
+        }
         batch.count = static_cast<uint32_t>(count);
         mBatches.push_back(std::move(batch));
     }
@@ -211,7 +223,15 @@ namespace VsgMyGui
 
     namespace
     {
-        constexpr uint32_t kMaxVertsPerSlot = 4096; // per-batch DYNAMIC buffer capacity (96 KB); text is far under
+        constexpr uint32_t kInitialVertsPerSlot = 4096;
+
+        [[nodiscard]] uint32_t slotCapacity(uint32_t required)
+        {
+            uint32_t result = kInitialVertsPerSlot;
+            while (result < required && result <= std::numeric_limits<uint32_t>::max() / 2)
+                result *= 2;
+            return std::max(result, required);
+        }
     }
 
     vsg::ref_ptr<vsg::Node> RenderManager::buildPersistentOverlay()
@@ -231,14 +251,25 @@ namespace VsgMyGui
             slot.textureRevision = key.second;
             // Reuse a pooled DYNAMIC buffer for this slot index (allocated + GPU-compiled once, then reused across
             // rebuilds) rather than allocating a fresh one each rebuild — the fresh-alloc path was the leak.
-            if (i >= mVertPool.size())
+            if (i >= mVertPool.size() || mVertPoolCapacities[i] < b.count)
             {
-                auto buf = vsg::ubyteArray::create(kMaxVertsPerSlot * sizeof(MyGUI::Vertex));
+                const uint32_t capacity = slotCapacity(b.count);
+                auto buf = vsg::ubyteArray::create(capacity * sizeof(MyGUI::Vertex));
                 buf->properties.dataVariance = vsg::DYNAMIC_DATA; // dirty() re-uploads without recompiling
-                mVertPool.push_back(buf);
+                if (i >= mVertPool.size())
+                {
+                    mVertPool.push_back(buf);
+                    mVertPoolCapacities.push_back(capacity);
+                }
+                else
+                {
+                    mVertPool[i] = buf;
+                    mVertPoolCapacities[i] = capacity;
+                }
             }
             slot.verts = mVertPool[i];
-            const uint32_t n = b.count < kMaxVertsPerSlot ? b.count : kMaxVertsPerSlot;
+            slot.capacity = mVertPoolCapacities[i];
+            const uint32_t n = b.count;
             if (b.vertices && n > 0)
                 std::memcpy(slot.verts->dataPointer(), b.vertices->dataPointer(), n * sizeof(MyGUI::Vertex));
             slot.verts->dirty(); // pooled buffer already compiled → mark for re-upload
@@ -300,7 +331,7 @@ namespace VsgMyGui
             const TextureKey key = textureKey(mBatches[i].texture);
             if (key.first != mSlots[i].textureIdentity || key.second != mSlots[i].textureRevision)
                 continue; // texture identity changed → don't feed it through a stale descriptor
-            const uint32_t n = mBatches[i].count < kMaxVertsPerSlot ? mBatches[i].count : kMaxVertsPerSlot;
+            const uint32_t n = mBatches[i].count;
             if (mBatches[i].vertices && n > 0)
             {
                 std::memcpy(
@@ -323,6 +354,8 @@ namespace VsgMyGui
         {
             const TextureKey key = textureKey(mBatches[i].texture);
             if (key.first != mSlots[i].textureIdentity || key.second != mSlots[i].textureRevision)
+                return true;
+            if (mBatches[i].count > mSlots[i].capacity)
                 return true;
         }
         return false;

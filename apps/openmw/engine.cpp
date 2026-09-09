@@ -90,6 +90,7 @@
 #include "mwclass/classes.hpp"
 
 #if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+#include "mwrender/v4engineframecoordinator.hpp"
 #include "mwrender/v4enginerenderbridge.hpp"
 #endif
 
@@ -134,8 +135,18 @@ namespace
         // GUI, input, world, shader-mod and post-processing path intact.
         constexpr RenderCore::RenderBackendCapabilities capabilities{
             .legacyOpenGL = true,
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+            .vsgVulkan = true,
+            .vsgVulkanCompatibilityFacets
+            = RenderCore::compatibilityFacet(RenderCore::RenderCompatibilityFacet::StaticWorld)
+                | RenderCore::compatibilityFacet(RenderCore::RenderCompatibilityFacet::DynamicActors)
+                | RenderCore::compatibilityFacet(RenderCore::RenderCompatibilityFacet::UiVideoAndComposition)
+                | RenderCore::compatibilityFacet(RenderCore::RenderCompatibilityFacet::GameplaySaveLuaIntegration)
+                | RenderCore::compatibilityFacet(RenderCore::RenderCompatibilityFacet::ConfigurationAndContentDiscovery),
+#else
             .vsgVulkan = false,
             .vsgVulkanCompatibilityFacets = 0,
+#endif
         };
         const RenderCore::RenderBackendSelection selection = RenderCore::selectRenderBackend(
             { .preference = *preference, .allowFallback = Settings::video().mRendererFallback }, capabilities);
@@ -144,7 +155,7 @@ namespace
         {
             throw std::runtime_error("Renderer backend '" + configured
                 + "' is unavailable in this build and renderer fallback is disabled or unsafe. "
-                  "The VSG/Vulkan engine bootstrap is not enabled yet; use 'opengl' or enable renderer fallback. "
+                  "The requested renderer is not compiled into this executable; use 'opengl' or enable renderer fallback. "
                   "Unqualified Vulkan compatibility facets: "
                 + missingVsgCompatibilityFacetNames(selection.missingVsgCompatibilityFacets));
         }
@@ -880,7 +891,14 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
     {
         Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(
             Debug::V3HitchTelemetry::FrameTailStage::RenderingTraversal);
-        mViewer->renderingTraversals();
+        if (mUseVulkanRenderer)
+        {
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+            presentVulkanFrame(frametime, false);
+#endif
+        }
+        else
+            mViewer->renderingTraversals();
     }
 
     {
@@ -958,6 +976,16 @@ OMW::Engine::~Engine()
     mWorkQueue = nullptr;
 
     mViewer = nullptr;
+
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+    // The VSG bootstrap owns the SDL window used by the Vulkan route. Tear the
+    // session down after all consumers, then clear the borrowed pointer so the
+    // OpenGL-owned-window cleanup below cannot destroy it a second time.
+    mV4FrameCoordinator.reset();
+    mV4RenderBridge.reset();
+    if (mUseVulkanRenderer)
+        mWindow = nullptr;
+#endif
 
     mResourceSystem.reset();
 
@@ -1286,7 +1314,10 @@ void OMW::Engine::prepareEngine()
     osg::ref_ptr<osg::Group> rootNode(new osg::Group);
     mViewer->setSceneData(rootNode);
 
-    createWindow();
+    if (!mUseVulkanRenderer)
+        createWindow();
+    else if (!mWindow)
+        throw std::logic_error("Vulkan route did not provide its SDL window");
 
     const float effectiveResourceCacheExpiry = Settings::RamCache::cacheExpiryDelay();
     Log(Debug::Info) << "V3 RAM cache mode: " << Settings::RamCache::name()
@@ -1384,12 +1415,14 @@ void OMW::Engine::prepareEngine()
     // gui needs our shaders path before everything else
     mResourceSystem->getSceneManager()->setShaderPath(mResDir / "shaders");
 
-    osg::GLExtensions& exts = SceneUtil::getGLExtensions();
-
 #if OSG_VERSION_LESS_THAN(3, 6, 6)
     // hack fix for https://github.com/openscenegraph/OpenSceneGraph/issues/1028
-    if (!osg::isGLExtensionSupported(exts.contextID, "NV_framebuffer_multisample_coverage"))
-        exts.glRenderbufferStorageMultisampleCoverageNV = nullptr;
+    if (!mUseVulkanRenderer)
+    {
+        osg::GLExtensions& exts = SceneUtil::getGLExtensions();
+        if (!osg::isGLExtensionSupported(exts.contextID, "NV_framebuffer_multisample_coverage"))
+            exts.glRenderbufferStorageMultisampleCoverageNV = nullptr;
+    }
 #endif
 
     osg::ref_ptr<osg::Group> guiRoot = new osg::Group;
@@ -1398,9 +1431,18 @@ void OMW::Engine::prepareEngine()
     mStereoManager->disableStereoForNode(guiRoot);
     rootNode->addChild(guiRoot);
 
+    std::unique_ptr<MyGUIPlatform::PlatformBase> guiPlatform;
+    std::function<void()> presentCallback;
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+    if (mUseVulkanRenderer)
+    {
+        guiPlatform = mV4RenderBridge->createGuiPlatform(mCfgMgr.getLogPath() / "MyGUI.log");
+        presentCallback = [this] { presentVulkanFrame(0.0f, true); };
+    }
+#endif
     mWindowManager = std::make_unique<MWGui::WindowManager>(mWindow, mViewer, guiRoot, mResourceSystem.get(),
         mWorkQueue.get(), mCfgMgr.getLogPath(), mScriptConsoleMode, mTranslationDataStorage, mEncoding, mExportFonts,
-        Version::getOpenmwVersionDescription(), mCfgMgr);
+        Version::getOpenmwVersionDescription(), mCfgMgr, std::move(guiPlatform), std::move(presentCallback));
     mEnvironment.setWindowManager(*mWindowManager);
 
     mInputManager = std::make_unique<MWInput::InputManager>(mWindow, mViewer, mScreenCaptureHandler, keybinderUser,
@@ -1489,7 +1531,13 @@ void OMW::Engine::prepareEngine()
     }
     listener->loadingOff();
 
-    mWorld->init(mMaxRecastLogLevel, mViewer, std::move(rootNode), mWorkQueue.get(), *mUnrefQueue);
+    std::unique_ptr<MWWorld::SceneRenderLifecycle> renderLifecycle;
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+    if (mUseVulkanRenderer)
+        renderLifecycle = mV4RenderBridge->takeSceneRenderLifecycle();
+#endif
+    mWorld->init(mMaxRecastLogLevel, mViewer, std::move(rootNode), mWorkQueue.get(), *mUnrefQueue,
+        std::move(renderLifecycle));
     mEnvironment.setWorldScene(mWorld->getWorldScene());
     mWorld->setupPlayer();
     mWorld->setRandomSeed(mRandomSeed);
@@ -1528,6 +1576,37 @@ void OMW::Engine::prepareVirtualFileSystem()
     mVFS = std::move(vfs);
 }
 
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+void OMW::Engine::presentVulkanFrame(float frameDelta, bool invalidateHistory)
+{
+    if (!mV4RenderBridge || !mV4FrameCoordinator)
+        throw std::logic_error("Vulkan frame presentation requested before route creation");
+
+    const double simulationTime = mWorld && mWorld->getTimeManager()
+        ? mWorld->getTimeManager()->getRenderingSimulationTime()
+        : 0.0;
+    RenderCore::RenderFrameResult result = RenderCore::RenderFrameResult::Skipped;
+    MWRender::RenderingManager* rendering = mWorld ? mWorld->getRenderingManager() : nullptr;
+    MWWorld::CellStore* current = rendering ? mWorld->getWorldScene().getCurrentCell() : nullptr;
+    if (rendering && current && current->getCell() && mV4RenderBridge->sceneRenderLifecycleTaken())
+    {
+        result = mV4FrameCoordinator->render(
+            *rendering, *current->getCell(), simulationTime, frameDelta, invalidateHistory);
+    }
+    else
+        result = mV4RenderBridge->renderGuiFrame(simulationTime, frameDelta);
+
+    if (result == RenderCore::RenderFrameResult::Failed)
+    {
+        std::string diagnostic = mV4FrameCoordinator->lastDiagnostic();
+        if (diagnostic.empty())
+            diagnostic = mV4RenderBridge->lastDiagnostic();
+        throw std::runtime_error(
+            diagnostic.empty() ? "Vulkan renderer rejected the application frame" : diagnostic);
+    }
+}
+#endif
+
 // Initialise and enter main loop.
 void OMW::Engine::go()
 {
@@ -1547,8 +1626,7 @@ void OMW::Engine::go()
     if (!MWRender::V4EngineRenderBridge::linkedRuntimeAvailable())
         throw std::logic_error("V4 Vulkan runtime link probe failed");
 #endif
-    if (renderBackend.backend != RenderCore::RenderBackendKind::LegacyOpenGL)
-        throw std::logic_error("Selected renderer has no engine bootstrap path");
+    mUseVulkanRenderer = renderBackend.backend == RenderCore::RenderBackendKind::VsgVulkan;
 
     MWClass::registerClasses();
 
@@ -1560,11 +1638,26 @@ void OMW::Engine::go()
     // viewer or graphics window.
     prepareVirtualFileSystem();
 
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+    if (mUseVulkanRenderer)
+    {
+        if (Settings::stereo().mStereoEnabled || osg::DisplaySettings::instance().get()->getStereo())
+            throw std::runtime_error("The CP3E Vulkan checkpoint does not implement stereo or multiview");
+        mV4RenderBridge = MWRender::V4EngineRenderBridge::createConfigured(*mVFS);
+        mV4FrameCoordinator = std::make_unique<MWRender::V4EngineFrameCoordinator>(*mV4RenderBridge);
+        mWindow = mV4RenderBridge->sdlWindow();
+        mGlMaxTextureImageUnits = 16;
+    }
+#endif
+
     // Setup viewer
     mViewer = new osgViewer::Viewer;
-    mViewer->getCamera()->getOrCreateStateSet()->removeAttribute(osg::StateAttribute::MATERIAL);
-    SceneUtil::disableFFPStateForRenderer(static_cast<osgViewer::Renderer*>(mViewer->getCamera()->getRenderer()));
-    mViewer->setReleaseContextAtEndOfFrameHint(false);
+    if (!mUseVulkanRenderer)
+    {
+        mViewer->getCamera()->getOrCreateStateSet()->removeAttribute(osg::StateAttribute::MATERIAL);
+        SceneUtil::disableFFPStateForRenderer(static_cast<osgViewer::Renderer*>(mViewer->getCamera()->getRenderer()));
+        mViewer->setReleaseContextAtEndOfFrameHint(false);
+    }
 
     // Do not try to outsmart the OS thread scheduler (see bug #4785).
     mViewer->setUseConfigureAffinity(false);

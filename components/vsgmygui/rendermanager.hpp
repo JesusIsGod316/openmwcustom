@@ -110,12 +110,14 @@ namespace VsgMyGui
             const Texture* texture = nullptr;
             std::uint64_t textureIdentity = 0;
             std::uint64_t textureRevision = 0;
+            std::uint32_t capacity = 0;
         };
 
         RenderVsg::UiPipeline mPipeline;
         ImageDecoder mDecoder;
         std::vector<Slot> mSlots;
         bool mWarnedStructure = false; // one-shot log when the live batch structure diverges from the slots
+        bool mWarnedForeignTexture = false;
         MyGUI::IntSize mViewSize;
         MyGUI::RenderTargetInfo mInfo;
         MyGUI::VertexColourType mVertexFormat;
@@ -133,6 +135,7 @@ namespace VsgMyGui
         using TextureKey = std::pair<std::uint64_t, std::uint64_t>;
         std::map<TextureKey, vsg::ref_ptr<vsg::BindDescriptorSet>> mDsCache;
         std::vector<vsg::ref_ptr<vsg::ubyteArray>> mVertPool;
+        std::vector<std::uint32_t> mVertPoolCapacities;
         vsg::ref_ptr<vsg::BindDescriptorSet> bindDescriptorSetFor(const Texture* texture);
         static TextureKey textureKey(const Texture* texture) noexcept;
     };

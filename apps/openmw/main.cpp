@@ -23,6 +23,7 @@ extern "C" __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 0x
 #endif
 
 #include <filesystem>
+#include <string_view>
 
 #if (defined(__APPLE__) || defined(__linux) || defined(__unix) || defined(__posix))
 #include <unistd.h>
@@ -212,6 +213,18 @@ namespace
 int runApplication(int argc, char* argv[])
 {
     Platform::init();
+
+    // Keep the version probe independent of SDL video initialization. Besides
+    // being the expected command-line behavior, this gives Windows packaging
+    // a reliable loader/link smoke test on headless CI workers.
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string_view(argv[i]) == "--version")
+        {
+            Debug::getRawStdout() << Version::getOpenmwVersionDescription() << std::endl;
+            return 0;
+        }
+    }
 
 #ifdef __APPLE__
     setenv("OSG_GL_TEXTURE_STORAGE", "OFF", 0);

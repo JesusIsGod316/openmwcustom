@@ -8,6 +8,7 @@
 **/
 
 #include <memory>
+#include <functional>
 #include <vector>
 
 #include <osg/ref_ptr>
@@ -132,7 +133,8 @@ namespace MWGui
             const std::filesystem::path& logpath, bool consoleOnlyScripts, Translation::Storage& translationDataStorage,
             ToUTF8::FromType encoding, bool exportFonts, const std::string& versionDescription,
             Files::ConfigurationManager& cfgMgr,
-            std::unique_ptr<MyGUIPlatform::PlatformBase> guiPlatform = {});
+            std::unique_ptr<MyGUIPlatform::PlatformBase> guiPlatform = {},
+            std::function<void()> presentCallback = {});
         virtual ~WindowManager();
 
         /// Set the ESMStore to use for retrieving of GUI-related strings.
@@ -421,6 +423,7 @@ namespace MWGui
         osg::ref_ptr<SceneUtil::WorkQueue> mWorkQueue;
 
         std::unique_ptr<MyGUIPlatform::PlatformBase> mGuiPlatform;
+        std::function<void()> mPresentCallback;
         osgViewer::Viewer* mViewer;
 
         std::unique_ptr<Gui::FontLoader> mFontLoader;

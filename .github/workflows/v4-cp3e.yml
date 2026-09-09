@@ -1,0 +1,111 @@
+name: V4.0 CP3E Vulkan UI checkpoint
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp3e-vulkan-ui]
+
+concurrency:
+  group: v4-cp3e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  RouteContracts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact CP3E head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact accepted CP3D ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          CP3D_BASE=f2e2572e18d1cfe2c6534b0d67f5be034699b658
+          git cat-file -e "${CP3D_BASE}^{commit}"
+          test "$(git merge-base "${CP3D_BASE}" HEAD)" = "${CP3D_BASE}"
+          git log --format=%s "${CP3D_BASE}..HEAD" | grep -Fx 'Vulkan MyGUI backend checkpoint'
+          git log --format=%s "${CP3D_BASE}..HEAD" | grep -Fx 'explicit Vulkan application/UI route checkpoint'
+
+      - name: Run CP3E route and source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/v4/cp3e/application-route-contract.py
+          python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+          git diff --check f2e2572e18d1cfe2c6534b0d67f5be034699b658 HEAD -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+
+      - name: Install strict compile dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglm-dev libvulkan-dev python3-yaml
+
+      - name: Parse workflow YAML
+        run: |
+          python3 - <<'PY'
+          import pathlib, yaml
+          for path in pathlib.Path('.github/workflows').glob('*.yml'):
+              yaml.safe_load(path.read_text(encoding='utf-8'))
+          print('workflow YAML parse: PASS')
+          PY
+
+      - name: Prepare exact VSG and MyGUI headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          VSG_COMMIT=599a8c5c61cbb993079261b2ada99bd843badf5b
+          git init /tmp/vsg-1.1.15
+          git -C /tmp/vsg-1.1.15 remote add origin https://github.com/vsg-dev/VulkanSceneGraph.git
+          git -C /tmp/vsg-1.1.15 fetch --depth 1 origin "${VSG_COMMIT}"
+          git -C /tmp/vsg-1.1.15 checkout --detach FETCH_HEAD
+          cmake -S /tmp/vsg-1.1.15 -B /tmp/vsg-1.1.15-build -DVSG_BUILD_TESTS=OFF -DVSG_SUPPORTS_Windowing=OFF
+          MYGUI_COMMIT=dae9ac4be5a09e672bec509b1a8552b107c40214
+          git init /tmp/mygui-3.4.3
+          git -C /tmp/mygui-3.4.3 remote add origin https://github.com/MyGUI/mygui.git
+          git -C /tmp/mygui-3.4.3 fetch --depth 1 origin "${MYGUI_COMMIT}"
+          git -C /tmp/mygui-3.4.3 checkout --detach FETCH_HEAD
+
+      - name: Strict-compile VSG MyGUI translation units
+        shell: bash
+        run: |
+          set -euo pipefail
+          common=(-std=c++20 -O1 -Wall -Wextra -Wpedantic -Werror -I. \
+            -isystem /tmp/vsg-1.1.15/include -isystem /tmp/vsg-1.1.15-build/include \
+            -isystem /tmp/mygui-3.4.3/MyGUIEngine/include)
+          g++ "${common[@]}" -c components/render/backend/vsg/uipipeline.cpp -o /tmp/uipipeline.o
+          g++ "${common[@]}" -c components/vsgmygui/texture.cpp -o /tmp/vsgmygui-texture.o
+          g++ "${common[@]}" -c components/vsgmygui/rendermanager.cpp -o /tmp/vsgmygui-render.o
+          g++ "${common[@]}" -c components/vsgmygui/platform.cpp -o /tmp/vsgmygui-platform.o
+          g++ "${common[@]}" -c components/render/backend/vsg/vsgruntimehost.cpp -o /tmp/vsg-runtime-host.o
+
+      - name: Retain CP3D actor contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          common=(-std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I.)
+          for source in \
+            tools/v4/cp3d/actor-lifecycle-smoke.cpp \
+            tools/v4/cp3d/actor-model-composition-smoke.cpp \
+            tools/v4/cp3d/deformation-smoke.cpp \
+            tools/v4/cp3d/dynamic-actor-plan-smoke.cpp \
+            tools/v4/cp3d/pose-publication-smoke.cpp \
+            tools/v4/cp3d/skeleton-publication-smoke.cpp; do
+            output="/tmp/$(basename "${source}" .cpp)"
+            g++ "${common[@]}" "${source}" -o "${output}"
+            "${output}"
+          done
+
+  OpenGLControlWindows:
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
+
+  RuntimeVulkanWindows:
+    uses: ./.github/workflows/v4-cp3b3.yml
+    with:
+      force_run: true

@@ -212,13 +212,20 @@ jobs:
           $buildExit = $LASTEXITCODE
           if ($buildExit -ne 0) { exit $buildExit }
 
-      - name: Launch real-NIF tool command surface
+      - name: Validate production executable before packaging
         shell: pwsh
         run: |
           $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
-          $env:PATH = "$env:GITHUB_WORKSPACE/cp3b3-vcpkg/x64-windows/bin;$openmwDeps/installed/x64-windows/bin;$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/_deps/SDL3-3.4.10/lib/x64;$env:PATH"
-          & "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/openmw-vulkan-nif-conformance.exe" --help
-          if ($LASTEXITCODE -ne 0) { throw "openmw-vulkan-nif-conformance --help failed with $LASTEXITCODE" }
+          $runtimePath = @(
+            "$env:GITHUB_WORKSPACE/cp3b3-vcpkg/x64-windows/bin",
+            "$openmwDeps/installed/x64-windows/bin/Release",
+            "$openmwDeps/installed/x64-windows/bin",
+            "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/_deps/SDL3-3.4.10/lib/x64",
+            $env:PATH
+          ) -join ';'
+          $env:PATH = $runtimePath
+          & "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/openmw.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "build-tree Vulkan openmw.exe --version failed with $LASTEXITCODE" }
 
       - name: Stage CP3B4 local conformance package
         shell: pwsh
@@ -228,11 +235,18 @@ jobs:
             -Executable "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/openmw-vulkan-nif-conformance.exe" `
             -RuntimeBin @(
               "$env:GITHUB_WORKSPACE/cp3b3-vcpkg/x64-windows/bin",
+              "$openmwDeps/installed/x64-windows/bin/Release",
               "$openmwDeps/installed/x64-windows/bin",
               "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/_deps/SDL3-3.4.10/lib/x64"
             ) `
             -RepositoryRoot "$env:GITHUB_WORKSPACE" `
             -OutputDirectory "$env:GITHUB_WORKSPACE/stage-v4-cp3b4"
+
+      - name: Launch staged real-NIF tool command surface
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE/stage-v4-cp3b4/openmw-vulkan-nif-conformance.exe" --help
+          if ($LASTEXITCODE -ne 0) { throw "staged openmw-vulkan-nif-conformance --help failed with $LASTEXITCODE" }
 
       - name: Upload CP3B4 local conformance package
         uses: actions/upload-artifact@v6
@@ -240,6 +254,75 @@ jobs:
           name: openmw-v4-cp3b4-conformance-${{ github.sha }}
           path: ${{ github.workspace }}/stage-v4-cp3b4
           if-no-files-found: error
+
+      - name: Stage runtime-complete V4 Vulkan OpenMW test package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = "$env:GITHUB_WORKSPACE/stage-v4-vulkan-openmw"
+          $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
+          cmake --install "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" --prefix $stage
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $openmwExe = Get-ChildItem -LiteralPath $stage -Recurse -File -Filter openmw.exe | Select-Object -First 1
+          if ($null -eq $openmwExe) { throw 'Installed Vulkan package is missing openmw.exe' }
+          $runtime = $openmwExe.Directory.FullName
+          $vsgBin = "$env:GITHUB_WORKSPACE/cp3b3-vcpkg/x64-windows/bin"
+          if (-not (Test-Path -LiteralPath $vsgBin -PathType Container)) { throw "VSG runtime bin is missing: $vsgBin" }
+          $provenance = @('source,sha256,file')
+          Get-ChildItem -LiteralPath $vsgBin -File -Filter '*.dll' | Sort-Object Name | ForEach-Object {
+            $sourceHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $destination = Join-Path $runtime $_.Name
+            if (Test-Path -LiteralPath $destination -PathType Leaf) {
+              $destinationHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($sourceHash -ne $destinationHash) {
+                throw "Conflicting OpenMW/VSG runtime DLL: $($_.Name)"
+              }
+              $provenance += "shared,$sourceHash,$($_.Name)"
+            }
+            else {
+              Copy-Item -LiteralPath $_.FullName -Destination $destination
+              $provenance += "vsg,$sourceHash,$($_.Name)"
+            }
+          }
+          $provenance | Set-Content -LiteralPath (Join-Path $runtime 'CP3E-RUNTIME-PROVENANCE.csv') -Encoding Ascii
+          $osgPlugins = Join-Path $openmwDeps 'installed/x64-windows/bin/osgPlugins-3.6.5'
+          if (Test-Path -LiteralPath $osgPlugins -PathType Container) {
+            Copy-Item -LiteralPath $osgPlugins -Destination $runtime -Recurse -Force
+          }
+          @(
+            'OpenMW V4 CP3E Vulkan test checkpoint',
+            "commit=${{ github.sha }}",
+            'renderer_selection=vulkan must be requested explicitly',
+            'automatic_renderer=opengl until all compatibility facets qualify',
+            'runtime_status=experimental smoke-test only',
+            ''
+          ) | Set-Content -LiteralPath (Join-Path $runtime 'CP3E-TEST-IDENTITY.txt') -Encoding Ascii
+          $manifestPath = Join-Path $runtime 'CP3E-PACKAGE-SHA256.txt'
+          $trimChars = [char[]]@('\', '/')
+          Get-ChildItem -LiteralPath $runtime -Recurse -File |
+            Where-Object { $_.FullName -ne $manifestPath } |
+            Sort-Object FullName |
+            ForEach-Object {
+              $relative = $_.FullName.Substring($runtime.Length).TrimStart($trimChars).Replace('\', '/')
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $relative"
+            } | Set-Content -LiteralPath $manifestPath -Encoding Ascii
+
+      - name: Upload runtime-complete V4 Vulkan OpenMW test package
+        uses: actions/upload-artifact@v6
+        with:
+          name: openmw-v4-cp3e-vulkan-windows-${{ github.sha }}
+          path: ${{ github.workspace }}/stage-v4-vulkan-openmw/**
+          if-no-files-found: error
+
+      - name: Validate uploaded-package executable surface
+        shell: pwsh
+        run: |
+          $openmwExe = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE/stage-v4-vulkan-openmw" -Recurse -File -Filter openmw.exe | Select-Object -First 1
+          if ($null -eq $openmwExe) { throw 'Staged Vulkan package is missing openmw.exe' }
+          & $openmwExe.FullName --version
+          if ($LASTEXITCODE -ne 0) { throw "staged Vulkan openmw.exe --version failed with $LASTEXITCODE" }
 
       - name: Store CP3B3 configure/build evidence
         if: always()

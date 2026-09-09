@@ -2,6 +2,7 @@
 #define MWGUI_LOADINGSCREEN_H
 
 #include <memory>
+#include <functional>
 
 #include <osg/Timer>
 #include <osg/ref_ptr>
@@ -33,7 +34,8 @@ namespace MWGui
     class LoadingScreen : public WindowBase, public Loading::Listener
     {
     public:
-        LoadingScreen(Resource::ResourceSystem* resourceSystem, osgViewer::Viewer* viewer);
+        LoadingScreen(Resource::ResourceSystem* resourceSystem, osgViewer::Viewer* viewer,
+            std::function<void()> presentCallback = {});
         virtual ~LoadingScreen();
 
         /// Overridden from Loading::Listener, see the Loading::Listener documentation for usage details
@@ -56,6 +58,7 @@ namespace MWGui
 
         Resource::ResourceSystem* mResourceSystem;
         osg::ref_ptr<osgViewer::Viewer> mViewer;
+        std::function<void()> mPresentCallback;
 
         double mTargetFrameRate;
 

@@ -44,9 +44,14 @@ namespace MWRender
         mUseCompute = false;
 #else
         constexpr float minimumGLVersionRequiredForCompute = 4.4f;
-        osg::GLExtensions& exts = SceneUtil::getGLExtensions();
-        mUseCompute = exts.glVersion >= minimumGLVersionRequiredForCompute
-            && exts.glslLanguageVersion >= minimumGLVersionRequiredForCompute;
+        if (SceneUtil::glExtensionsReady())
+        {
+            osg::GLExtensions& exts = SceneUtil::getGLExtensions();
+            mUseCompute = exts.glVersion >= minimumGLVersionRequiredForCompute
+                && exts.glslLanguageVersion >= minimumGLVersionRequiredForCompute;
+        }
+        else
+            mUseCompute = false;
 #endif
 
         for (size_t i = 0; i < mState.size(); ++i)

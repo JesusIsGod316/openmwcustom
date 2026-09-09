@@ -69,6 +69,7 @@ namespace MWRender
         [[nodiscard]] bool captureDynamicFrameState(
             const RenderingManager& rendering, V4MainFrameSource& source);
         RenderCore::RenderFrameResult renderMainFrame(const V4MainFrameSource& source);
+        RenderCore::RenderFrameResult renderGuiFrame(double simulationTime, double frameDelta);
         void waitIdle();
 
         [[nodiscard]] const std::string& lastDiagnostic() const noexcept { return mLastDiagnostic; }
@@ -81,6 +82,7 @@ namespace MWRender
         std::shared_ptr<V4RenderRouteStatus> mRouteStatus;
         std::string mLastDiagnostic;
         bool mLifecycleTaken = false;
+        bool mGuiOnlyFramePresented = false;
         unsigned int mPoseTraversal = 0;
         struct ComposedActorEntry
         {

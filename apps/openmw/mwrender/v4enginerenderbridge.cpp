@@ -585,8 +585,34 @@ namespace MWRender
         input.dynamicTransforms = source.dynamicTransforms;
         input.skeletonPoses = source.skeletonPoses;
         input.morphWeights = source.morphWeights;
-        input.invalidateHistory = source.invalidateHistory;
+        input.invalidateHistory = source.invalidateHistory || mGuiOnlyFramePresented;
         const RenderCore::RenderFrameResult result = mSession->renderFrame(input);
+        if (result == RenderCore::RenderFrameResult::Presented)
+            mGuiOnlyFramePresented = false;
+        mLastDiagnostic = mSession->lastDiagnostic();
+        return result;
+    }
+
+    RenderCore::RenderFrameResult V4EngineRenderBridge::renderGuiFrame(
+        double simulationTime, double frameDelta)
+    {
+        mLastDiagnostic.clear();
+        const std::optional<RenderCore::Extent2D> extent = outputExtent();
+        if (!extent)
+            return RenderCore::RenderFrameResult::Skipped;
+
+        RenderCore::SingleViewFrameInput input;
+        input.renderExtent = *extent;
+        input.outputExtent = *extent;
+        input.simulationTime = simulationTime;
+        input.frameDelta = frameDelta;
+        input.invalidateHistory = true;
+        input.environment.skyEnabled = false;
+        input.environment.sunLightEnabled = false;
+        input.environment.sunVisible = false;
+        const RenderCore::RenderFrameResult result = mSession->renderFrame(input);
+        if (result == RenderCore::RenderFrameResult::Presented)
+            mGuiOnlyFramePresented = true;
         mLastDiagnostic = mSession->lastDiagnostic();
         return result;
     }

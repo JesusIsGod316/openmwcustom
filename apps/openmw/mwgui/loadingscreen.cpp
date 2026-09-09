@@ -1,6 +1,7 @@
 #include "loadingscreen.hpp"
 
 #include <array>
+#include <utility>
 
 #include <osgViewer/Viewer>
 
@@ -30,10 +31,12 @@
 namespace MWGui
 {
 
-    LoadingScreen::LoadingScreen(Resource::ResourceSystem* resourceSystem, osgViewer::Viewer* viewer)
+    LoadingScreen::LoadingScreen(Resource::ResourceSystem* resourceSystem, osgViewer::Viewer* viewer,
+        std::function<void()> presentCallback)
         : WindowBase("openmw_loading_screen.layout")
         , mResourceSystem(resourceSystem)
         , mViewer(viewer)
+        , mPresentCallback(std::move(presentCallback))
         , mTargetFrameRate(120.0)
         , mLastWallpaperChangeTime(0.0)
         , mLastRenderTime(0.0)
@@ -326,7 +329,7 @@ namespace MWGui
             changeWallpaper();
         }
 
-        if (!mShowWallpaper && mLastRenderTime < mLoadingOnTime)
+        if (!mPresentCallback && !mShowWallpaper && mLastRenderTime < mLoadingOnTime)
         {
             setupCopyFramebufferToTextureCallback();
         }
@@ -350,7 +353,10 @@ namespace MWGui
         // refer to the advance() and frame() order in Engine::go()
         mViewer->eventTraversal();
         mViewer->updateTraversal();
-        mViewer->renderingTraversals();
+        if (mPresentCallback)
+            mPresentCallback();
+        else
+            mViewer->renderingTraversals();
         mViewer->advance(mViewer->getFrameStamp()->getSimulationTime());
 
         mLastRenderTime = mTimer.time_m();

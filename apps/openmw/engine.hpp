@@ -78,6 +78,14 @@ namespace MWGui
     class WindowManager;
 }
 
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+namespace MWRender
+{
+    class V4EngineRenderBridge;
+    class V4EngineFrameCoordinator;
+}
+#endif
+
 namespace MWInput
 {
     class InputManager;
@@ -127,6 +135,10 @@ namespace OMW
     {
         SDL_Window* mWindow;
         std::unique_ptr<VFS::Manager> mVFS;
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        std::unique_ptr<MWRender::V4EngineRenderBridge> mV4RenderBridge;
+        std::unique_ptr<MWRender::V4EngineFrameCoordinator> mV4FrameCoordinator;
+#endif
         std::unique_ptr<Resource::ResourceSystem> mResourceSystem;
         osg::ref_ptr<SceneUtil::WorkQueue> mWorkQueue;
         std::unique_ptr<SceneUtil::UnrefQueue> mUnrefQueue;
@@ -185,6 +197,7 @@ namespace OMW
 
         Files::ConfigurationManager& mCfgMgr;
         int mGlMaxTextureImageUnits;
+        bool mUseVulkanRenderer = false;
 
         // not implemented
         Engine(const Engine&);
@@ -200,6 +213,9 @@ namespace OMW
         void prepareVirtualFileSystem();
         void createWindow();
         void setWindowIcon();
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        void presentVulkanFrame(float frameDelta, bool invalidateHistory);
+#endif
 
     public:
         Engine(Files::ConfigurationManager& configurationManager);
