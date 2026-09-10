@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <string_view>
 
 namespace
@@ -33,12 +34,20 @@ namespace
                 .extent = { 1024, 1024 },
                 .colorFormat = RenderCore::RenderTargetFormat::Rgba16Float,
                 .depthFormat = RenderCore::RenderTargetFormat::Depth32Float,
+                .sampleCount = 1,
+                .historyEpoch = RenderCore::InitialHistoryEpoch,
+                .historyValid = false,
                 .transient = true,
             },
             RenderCore::RenderTargetDesc{
                 .identity = presentTarget,
                 .kind = RenderCore::RenderTargetKind::Swapchain,
                 .extent = desc.outputExtent,
+                .colorFormat = RenderCore::RenderTargetFormat::SurfaceColor,
+                .depthFormat = std::nullopt,
+                .sampleCount = 1,
+                .historyEpoch = RenderCore::InitialHistoryEpoch,
+                .historyValid = false,
                 .transient = false,
             },
         };
@@ -63,6 +72,13 @@ namespace
                 .identity = auxiliaryPass,
                 .view = auxiliaryView,
                 .output = auxiliaryTarget,
+                .inputs = {},
+                .dependencies = {},
+                .colorLoad = RenderCore::RenderPassLoad::Clear,
+                .depthLoad = RenderCore::RenderPassLoad::Clear,
+                .colorStore = RenderCore::RenderPassStore::Store,
+                .depthStore = RenderCore::RenderPassStore::Store,
+                .present = false,
             },
             RenderCore::RenderPassDesc{
                 .identity = presentPass,
@@ -70,6 +86,10 @@ namespace
                 .output = presentTarget,
                 .inputs = { auxiliaryTarget },
                 .dependencies = { auxiliaryPass },
+                .colorLoad = RenderCore::RenderPassLoad::Clear,
+                .depthLoad = RenderCore::RenderPassLoad::Clear,
+                .colorStore = RenderCore::RenderPassStore::Store,
+                .depthStore = RenderCore::RenderPassStore::Store,
                 .present = true,
             },
         };
