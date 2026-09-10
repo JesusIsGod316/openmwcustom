@@ -13,6 +13,8 @@ namespace RenderCore
     {
         std::int32_t gridX = 0;
         std::int32_t gridY = 0;
+        std::uint32_t lodLevel = 0;
+        std::uint8_t stitchMask = 0;
         bool required = false;
         bool predicted = false;
 
@@ -55,20 +57,37 @@ namespace RenderCore
             mHasCenter = true;
 
             std::vector<TerrainResidencyCell> result;
-            result.reserve(mDirectionX == 0 && mDirectionY == 0 ? 9 : 12);
-            for (std::int32_t y = -1; y <= 1; ++y)
-                for (std::int32_t x = -1; x <= 1; ++x)
-                    result.push_back({ gridX + x, gridY + y, x == 0 && y == 0, false });
+            result.reserve(mDirectionX == 0 && mDirectionY == 0 ? 25 : 30);
+            for (std::int32_t y = -2; y <= 2; ++y)
+            {
+                for (std::int32_t x = -2; x <= 2; ++x)
+                {
+                    const bool inner = std::max(std::abs(x), std::abs(y)) <= 1;
+                    std::uint8_t stitchMask = 0;
+                    if (inner)
+                    {
+                        if (y == 1)
+                            stitchMask |= 1u << 0;
+                        if (x == 1)
+                            stitchMask |= 1u << 1;
+                        if (y == -1)
+                            stitchMask |= 1u << 2;
+                        if (x == -1)
+                            stitchMask |= 1u << 3;
+                    }
+                    result.push_back({ gridX + x, gridY + y, inner ? 0u : 1u, stitchMask, x == 0 && y == 0, false });
+                }
+            }
 
             if (mDirectionX != 0)
             {
-                for (std::int32_t y = -1; y <= 1; ++y)
-                    result.push_back({ gridX + 2 * mDirectionX, gridY + y, false, true });
+                for (std::int32_t y = -2; y <= 2; ++y)
+                    result.push_back({ gridX + 3 * mDirectionX, gridY + y, 1u, 0u, false, true });
             }
             else if (mDirectionY != 0)
             {
-                for (std::int32_t x = -1; x <= 1; ++x)
-                    result.push_back({ gridX + x, gridY + 2 * mDirectionY, false, true });
+                for (std::int32_t x = -2; x <= 2; ++x)
+                    result.push_back({ gridX + x, gridY + 3 * mDirectionY, 1u, 0u, false, true });
             }
             return result;
         }

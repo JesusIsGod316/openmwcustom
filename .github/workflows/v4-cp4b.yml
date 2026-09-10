@@ -1,0 +1,76 @@
+name: V4.0 CP4B terrain streaming checkpoint
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp4-exterior-foundation]
+
+concurrency:
+  group: v4-cp4b-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  RouteContracts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact CP4B head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify final CP3E ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          CP3E_BASE=bab2614614564e8c24e7bdd7c4fad25230df5eed
+          git cat-file -e "${CP3E_BASE}^{commit}"
+          test "$(git merge-base "${CP3E_BASE}" HEAD)" = "${CP3E_BASE}"
+
+      - name: Run route, generated-source, and CP4B contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/v4/cp3e/application-route-contract.py
+          python3 tools/v4/cp4/streaming-contract.py
+          python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+          git diff --check bab2614614564e8c24e7bdd7c4fad25230df5eed HEAD -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+
+      - name: Install strict compile dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglm-dev python3-yaml
+
+      - name: Parse workflow YAML
+        run: |
+          python3 - <<'PY'
+          import pathlib, yaml
+          for path in pathlib.Path('.github/workflows').glob('*.yml'):
+              yaml.safe_load(path.read_text(encoding='utf-8'))
+          print('workflow YAML parse: PASS')
+          PY
+
+      - name: Strict-compile CP4 terrain contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          common=(-std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthread -I.)
+          for source in tools/v4/cp4/frame-route-smoke.cpp tools/v4/cp4/terrain-chunk-smoke.cpp \
+            tools/v4/cp4/terrain-streaming-smoke.cpp; do
+            output="/tmp/$(basename "${source}" .cpp)"
+            g++ "${common[@]}" "${source}" -o "${output}"
+            "${output}"
+          done
+
+  OpenGLControlWindows:
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
+
+  RuntimeVulkanWindows:
+    uses: ./.github/workflows/v4-cp3b3.yml
+    with:
+      force_run: true

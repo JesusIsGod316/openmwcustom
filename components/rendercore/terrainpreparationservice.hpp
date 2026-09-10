@@ -47,7 +47,15 @@ namespace RenderCore
         std::uint64_t generation = 0;
         std::vector<TerrainChunkSource> chunks;
         std::vector<std::string> failedIdentities;
+        std::uint64_t preparedBytes = 0;
         bool requiredChunksReady = false;
+        bool budgetLimited = false;
+    };
+
+    struct TerrainPreparationLimits
+    {
+        std::size_t maxChunks = 32;
+        std::uint64_t maxPreparedBytes = 64u * 1024u * 1024u;
     };
 
     // Owns one coarse terrain-preparation lane. Requests replace, rather than
@@ -60,8 +68,9 @@ namespace RenderCore
         using Builder
             = std::function<std::optional<TerrainChunkSource>(const TerrainPreparationRequest&, std::stop_token)>;
 
-        explicit TerrainPreparationService(Builder builder)
+        explicit TerrainPreparationService(Builder builder, TerrainPreparationLimits limits = {})
             : mBuilder(std::move(builder))
+            , mLimits(limits)
             , mWorker([this](std::stop_token stop) { run(stop); })
         {
         }
@@ -79,7 +88,7 @@ namespace RenderCore
         {
             std::vector<TerrainPreparationRequest> canonical(requested.begin(), requested.end());
             std::ranges::sort(canonical, {}, &TerrainPreparationRequest::identity);
-            if (!valid(canonical))
+            if (!valid(canonical) || canonical.size() > mLimits.maxChunks)
                 return TerrainPreparationRequestStatus::Invalid;
 
             std::scoped_lock lock(mMutex);
@@ -207,6 +216,15 @@ namespace RenderCore
                         requiredReady = requiredReady && !request.required;
                         continue;
                     }
+                    const std::optional<std::uint64_t> bytes = terrainMeshPayloadBytes(*source->mesh);
+                    if (!bytes || *bytes > mLimits.maxPreparedBytes - result.preparedBytes)
+                    {
+                        result.failedIdentities.push_back(request.identity);
+                        result.budgetLimited = true;
+                        requiredReady = requiredReady && !request.required;
+                        continue;
+                    }
+                    result.preparedBytes += *bytes;
                     nextCache.emplace(request.identity, CachedChunk{ request, *source });
                     result.chunks.push_back(std::move(*source));
                 }
@@ -223,6 +241,7 @@ namespace RenderCore
         }
 
         Builder mBuilder;
+        TerrainPreparationLimits mLimits;
         mutable std::mutex mMutex;
         std::condition_variable_any mCondition;
         std::uint64_t mNextGeneration = 0;

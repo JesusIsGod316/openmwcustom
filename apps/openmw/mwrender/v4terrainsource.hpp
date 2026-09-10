@@ -18,8 +18,8 @@ namespace MWRender
     class TerrainStorage;
 
     [[nodiscard]] std::string makeV4TerrainChunkIdentity(const MWWorld::Cell& cell);
-    [[nodiscard]] RenderCore::TerrainPreparationRequest makeV4TerrainChunkRequest(
-        const MWWorld::Cell& cell, std::int32_t gridX, std::int32_t gridY, bool required);
+    [[nodiscard]] RenderCore::TerrainPreparationRequest makeV4TerrainChunkRequest(const MWWorld::Cell& cell,
+        std::int32_t gridX, std::int32_t gridY, bool required, std::uint32_t lodLevel = 0, std::uint8_t stitchMask = 0);
 
     // Builds one backend-neutral LAND chunk from the authoritative ESM terrain
     // storage. OSG arrays are temporary source-adapter scratch only; no OSG or

@@ -4,6 +4,7 @@
 #include "updatebatch.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -44,6 +45,7 @@ namespace RenderCore
     enum class TerrainChunkPublishStatus : std::uint8_t
     {
         Applied,
+        PartiallyApplied,
         AlreadyPresent,
         InvalidSource,
         ReservationFailed,
@@ -51,6 +53,33 @@ namespace RenderCore
         BatchBuildFailed,
         PublishRejected,
     };
+
+    struct TerrainPublicationLimits
+    {
+        std::size_t maxNewChunks = std::numeric_limits<std::size_t>::max();
+        std::uint64_t maxNewMeshBytes = std::numeric_limits<std::uint64_t>::max();
+    };
+
+    [[nodiscard]] inline std::optional<std::uint64_t> terrainMeshPayloadBytes(const MeshPayload& payload) noexcept
+    {
+        std::uint64_t total = 0;
+        const auto add = [&](std::size_t count, std::size_t size) {
+            const std::uint64_t bytes = static_cast<std::uint64_t>(count) * size;
+            if (bytes > std::numeric_limits<std::uint64_t>::max() - total)
+                return false;
+            total += bytes;
+            return true;
+        };
+        if (!add(payload.positions.size(), sizeof(glm::vec3)) || !add(payload.normals.size(), sizeof(glm::vec3))
+            || !add(payload.tangents.size(), sizeof(glm::vec3)) || !add(payload.bitangents.size(), sizeof(glm::vec3))
+            || !add(payload.colors.size(), sizeof(glm::vec4)) || !add(payload.indices.size(), sizeof(std::uint32_t))
+            || !add(payload.surfaces.size(), sizeof(MeshSurface)))
+            return std::nullopt;
+        for (const auto& coordinates : payload.texCoordSets)
+            if (!add(coordinates.size(), sizeof(glm::vec2)))
+                return std::nullopt;
+        return total;
+    }
 
     // CP4A uses the single-source wrapper for one current LAND surface. The
     // ordered set path is the CP4B ownership seam for active and predicted
@@ -72,7 +101,8 @@ namespace RenderCore
             return synchronize(std::span<const TerrainChunkSource>(&*source, 1));
         }
 
-        [[nodiscard]] TerrainChunkPublishStatus synchronize(std::span<const TerrainChunkSource> sources)
+        [[nodiscard]] TerrainChunkPublishStatus synchronize(
+            std::span<const TerrainChunkSource> sources, TerrainPublicationLimits limits = {})
         {
             synchronizeEpoch();
             if (!validSet(sources))
@@ -90,17 +120,24 @@ namespace RenderCore
                 return TerrainChunkPublishStatus::AlreadyPresent;
 
             std::map<std::string, Binding, std::less<>> additions;
+            std::size_t admittedChunks = 0;
+            std::uint64_t admittedBytes = 0;
             for (const TerrainChunkSource& source : sources)
             {
                 if (mActive.contains(source.identity))
                     continue;
-                std::optional<Binding> binding = reserve(source.identity);
+                const std::optional<std::uint64_t> bytes = terrainMeshPayloadBytes(*source.mesh);
+                if (!bytes || admittedChunks >= limits.maxNewChunks || *bytes > limits.maxNewMeshBytes - admittedBytes)
+                    continue;
+                std::optional<Binding> binding = reserve(source);
                 if (!binding)
                 {
                     cancel(additions);
                     return TerrainChunkPublishStatus::ReservationFailed;
                 }
                 additions.emplace(source.identity, std::move(*binding));
+                ++admittedChunks;
+                admittedBytes += *bytes;
             }
 
             const UpdateSequence sequence = mPublisher.nextSequence();
@@ -111,12 +148,25 @@ namespace RenderCore
             }
             RenderWorldUpdateBatch batch(mWorld.epoch(), sequence, "terrain:active-set");
             bool built = true;
+            std::vector<std::string> retiredIdentities;
+            const bool targetCompleteAfterBatch = std::ranges::all_of(sources, [&](const TerrainChunkSource& source) {
+                return mActive.contains(source.identity) || additions.contains(source.identity);
+            });
             for (const auto& [identity, binding] : mActive)
             {
                 const bool retained = std::ranges::any_of(
                     sources, [&](const TerrainChunkSource& source) { return source.identity == identity; });
-                if (!retained)
-                    built = built && addRetirement(batch, binding);
+                const bool replaced = std::ranges::any_of(sources, [&](const TerrainChunkSource& source) {
+                    return additions.contains(source.identity) && source.gridX == binding.gridX
+                        && source.gridY == binding.gridY;
+                });
+                if (!retained && (targetCompleteAfterBatch || replaced))
+                {
+                    if (built && addRetirement(batch, binding))
+                        retiredIdentities.push_back(identity);
+                    else
+                        built = false;
+                }
             }
             for (const TerrainChunkSource& source : sources)
             {
@@ -138,11 +188,13 @@ namespace RenderCore
                 return TerrainChunkPublishStatus::PublishRejected;
             }
             std::erase_if(mActive, [&](const auto& entry) {
-                return std::ranges::none_of(
-                    sources, [&](const TerrainChunkSource& source) { return source.identity == entry.first; });
+                return std::ranges::find(retiredIdentities, entry.first) != retiredIdentities.end();
             });
             mActive.merge(additions);
-            return TerrainChunkPublishStatus::Applied;
+            const bool complete = mActive.size() == sources.size()
+                && std::ranges::all_of(
+                    sources, [&](const TerrainChunkSource& source) { return mActive.contains(source.identity); });
+            return complete ? TerrainChunkPublishStatus::Applied : TerrainChunkPublishStatus::PartiallyApplied;
         }
 
         [[nodiscard]] std::string_view activeIdentity() const noexcept
@@ -168,6 +220,8 @@ namespace RenderCore
             ModelHandle model;
             ChunkHandle chunk;
             InstanceHandle instance;
+            std::int32_t gridX = 0;
+            std::int32_t gridY = 0;
         };
 
         [[nodiscard]] static bool valid(const TerrainChunkSource& source) noexcept
@@ -194,10 +248,12 @@ namespace RenderCore
             return true;
         }
 
-        [[nodiscard]] std::optional<Binding> reserve(std::string identity)
+        [[nodiscard]] std::optional<Binding> reserve(const TerrainChunkSource& source)
         {
             Binding result;
-            result.identity = std::move(identity);
+            result.identity = source.identity;
+            result.gridX = source.gridX;
+            result.gridY = source.gridY;
             const auto mesh = mWorld.reserveMesh();
             const auto material = mWorld.reserveMaterial();
             const auto model = mWorld.reserveModel();

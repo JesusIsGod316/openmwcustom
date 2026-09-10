@@ -157,6 +157,7 @@ namespace MWRender
         if (!cell.isExterior())
         {
             mTerrainResidencyPlanner.reset();
+            mPendingTerrainPublication.clear();
             if (mTerrainPreparation)
             {
                 static_cast<void>(
@@ -210,7 +211,8 @@ namespace MWRender
         std::vector<RenderCore::TerrainPreparationRequest> desired;
         desired.reserve(residency.size());
         for (const RenderCore::TerrainResidencyCell& resident : residency)
-            desired.push_back(makeV4TerrainChunkRequest(cell, resident.gridX, resident.gridY, resident.required));
+            desired.push_back(makeV4TerrainChunkRequest(
+                cell, resident.gridX, resident.gridY, resident.required, resident.lodLevel, resident.stitchMask));
         const RenderCore::TerrainPreparationRequestStatus requested
             = mTerrainPreparation->request(std::span<const RenderCore::TerrainPreparationRequest>(desired));
         if (requested == RenderCore::TerrainPreparationRequestStatus::Invalid
@@ -219,6 +221,8 @@ namespace MWRender
             mLastDiagnostic = "terrain preparation rejected the desired resident cell set";
             return false;
         }
+        if (requested == RenderCore::TerrainPreparationRequestStatus::Accepted)
+            mPendingTerrainPublication.clear();
 
         if (std::optional<RenderCore::PreparedTerrainSet> ready = mTerrainPreparation->takeReady())
         {
@@ -227,15 +231,26 @@ namespace MWRender
                 mLastDiagnostic = "background terrain preparation failed for the required current cell";
                 return false;
             }
-            const RenderCore::TerrainChunkPublishStatus status
-                = mTerrain->synchronize(std::span<const RenderCore::TerrainChunkSource>(ready->chunks));
+            mPendingTerrainPublication = std::move(ready->chunks);
+        }
+        if (!mPendingTerrainPublication.empty())
+        {
+            constexpr RenderCore::TerrainPublicationLimits limits{
+                .maxNewChunks = 4,
+                .maxNewMeshBytes = 8u * 1024u * 1024u,
+            };
+            const RenderCore::TerrainChunkPublishStatus status = mTerrain->synchronize(
+                std::span<const RenderCore::TerrainChunkSource>(mPendingTerrainPublication), limits);
             if (status != RenderCore::TerrainChunkPublishStatus::Applied
+                && status != RenderCore::TerrainChunkPublishStatus::PartiallyApplied
                 && status != RenderCore::TerrainChunkPublishStatus::AlreadyPresent)
             {
                 mLastDiagnostic = "prepared terrain set publication failed with status "
                     + std::to_string(static_cast<unsigned int>(status));
                 return false;
             }
+            if (status != RenderCore::TerrainChunkPublishStatus::PartiallyApplied)
+                mPendingTerrainPublication.clear();
         }
         return true;
     }

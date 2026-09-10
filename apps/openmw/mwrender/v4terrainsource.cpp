@@ -24,15 +24,17 @@ namespace MWRender
         return makeV4TerrainChunkRequest(cell, cell.getGridX(), cell.getGridY(), true).identity;
     }
 
-    RenderCore::TerrainPreparationRequest makeV4TerrainChunkRequest(
-        const MWWorld::Cell& cell, std::int32_t gridX, std::int32_t gridY, bool required)
+    RenderCore::TerrainPreparationRequest makeV4TerrainChunkRequest(const MWWorld::Cell& cell, std::int32_t gridX,
+        std::int32_t gridY, bool required, std::uint32_t lodLevel, std::uint8_t stitchMask)
     {
         RenderCore::TerrainPreparationRequest result;
         result.worldspaceIdentity = cell.getWorldSpace().serializeText();
         result.gridX = gridX;
         result.gridY = gridY;
         result.identity = "terrain:" + result.worldspaceIdentity + ":" + std::to_string(gridX) + ","
-            + std::to_string(gridY) + ":lod0";
+            + std::to_string(gridY) + ":lod" + std::to_string(lodLevel) + ":stitch" + std::to_string(stitchMask);
+        result.lodLevel = lodLevel;
+        result.stitchMask = stitchMask;
         result.required = required;
         return result;
     }

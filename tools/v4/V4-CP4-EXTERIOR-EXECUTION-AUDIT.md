@@ -50,7 +50,7 @@ The first local CP4A checkpoint is intentionally larger than a contract-only sli
 - Terrain layer textures are not part of this checkpoint. Vertex color provides the first visible LAND surface while the
   permanent texture and streaming design is built in CP4B.
 
-## CP4B terrain-streaming foundation in progress
+## CP4B terrain-streaming checkpoint
 
 The first CP4B implementation widens CP4A without publishing a separate test artifact:
 
@@ -59,21 +59,26 @@ The first CP4B implementation widens CP4A without publishing a separate test art
 - `TerrainPreparationService` owns one coarse background lane. New desired sets replace queued work, stale generations
   are abandoned between chunks, unchanged prepared chunks are reused, and exceptions or malformed output remain
   isolated from frame publication.
-- The Vulkan application route keeps the current exterior cell correctness-critical, then prepares a 3-by-3 LOD0 LAND
-  neighborhood without a same-frame queue-and-wait dependency. Completed immutable sets publish atomically.
+- The Vulkan application route keeps the current exterior cell correctness-critical, then prepares a mixed-LOD LAND
+  neighborhood without a same-frame queue-and-wait dependency. Completed immutable sets publish progressively.
 - Movement within the resident neighborhood reuses prepared meshes. A teleport or first exterior entry synchronously
   establishes only the required current cell, after which neighborhood expansion resumes asynchronously.
-- Cell-to-cell movement retains a three-cell look-ahead row in the dominant travel direction; the prediction persists
+- Cell-to-cell movement retains a five-cell look-ahead row in the dominant travel direction; the prediction persists
   while stationary and resets across worldspace or interior transitions, avoiding per-frame request churn.
 - Interior transitions retire the resident terrain set. Shutdown joins the preparation worker before world-owned terrain
   storage is released.
 
-This is a safe streaming foundation, not CP4B completion. Distance LOD rings, seam stitching, bounded GPU admission, and
-measured residency budgets remain before the first consolidated CP4 artifact.
+The resident layout is now a 5-by-5 grid with nine LOD0 cells and a sixteen-cell LOD1 ring. Fine inner-ring edges carry
+explicit stitch masks toward their coarser neighbors, and movement can add one five-cell LOD1 predictive row. Preparation
+is capped at 32 chunks and 64 MiB of neutral mesh payload. Publication admits at most four new chunks or 8 MiB per frame,
+so background completion cannot become one unbounded GPU compilation spike.
 
-The Vulkan terrain adapter now derives its neutral triangle indices from OpenMW's established, thread-safe terrain
+The Vulkan terrain adapter derives its neutral triangle indices from OpenMW's established, thread-safe terrain
 `BufferCache`. This preserves the legacy diamond topology and makes all four one-level edge-stitch combinations available
-without placing OSG objects in RenderCore ownership. Mixed LOD activation remains gated on a tested residency layout.
+without placing OSG objects in RenderCore ownership.
+
+This closes the implementation scope of CP4B. Runtime visual correctness, traversal smoothness, and actual VRAM behavior
+remain artifact-test obligations; they are not inferred from source or build success.
 
 ## Validation gate
 

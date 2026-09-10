@@ -121,4 +121,47 @@ namespace
         EXPECT_EQ(world.instanceCount(), 2u);
         EXPECT_TRUE(world.valid());
     }
+
+    TEST(TerrainChunkProducer, AdmitsPreparedChunksAcrossBoundedPublications)
+    {
+        RenderCore::RenderWorld world;
+        RenderCore::RenderWorldPublisher publisher(world);
+        RenderCore::TerrainChunkProducer producer(world, publisher);
+        const std::vector desired{
+            makeSource("terrain:0,0", 0, 0),
+            makeSource("terrain:1,0", 1, 0),
+            makeSource("terrain:2,0", 2, 0),
+        };
+        const RenderCore::TerrainPublicationLimits onePerFrame{ .maxNewChunks = 1 };
+
+        EXPECT_EQ(producer.synchronize(desired, onePerFrame), RenderCore::TerrainChunkPublishStatus::PartiallyApplied);
+        EXPECT_EQ(producer.activeCount(), 1u);
+        EXPECT_EQ(producer.synchronize(desired, onePerFrame), RenderCore::TerrainChunkPublishStatus::PartiallyApplied);
+        EXPECT_EQ(producer.activeCount(), 2u);
+        EXPECT_EQ(producer.synchronize(desired, onePerFrame), RenderCore::TerrainChunkPublishStatus::Applied);
+        EXPECT_EQ(producer.activeCount(), 3u);
+        EXPECT_TRUE(world.valid());
+    }
+
+    TEST(TerrainChunkProducer, RetainsOldCoverageUntilBoundedReplacementIsReady)
+    {
+        RenderCore::RenderWorld world;
+        RenderCore::RenderWorldPublisher publisher(world);
+        RenderCore::TerrainChunkProducer producer(world, publisher);
+        const std::vector initial{ makeSource("terrain:old-0", 0, 0), makeSource("terrain:old-1", 1, 0) };
+        ASSERT_EQ(producer.synchronize(initial), RenderCore::TerrainChunkPublishStatus::Applied);
+        const std::vector replacement{
+            makeSource("terrain:new-0", 0, 0),
+            makeSource("terrain:new-1", 1, 0),
+            makeSource("terrain:new-2", 2, 0),
+        };
+
+        EXPECT_EQ(producer.synchronize(replacement, { .maxNewChunks = 1 }),
+            RenderCore::TerrainChunkPublishStatus::PartiallyApplied);
+        EXPECT_FALSE(producer.contains("terrain:old-0"));
+        EXPECT_TRUE(producer.contains("terrain:new-0"));
+        EXPECT_TRUE(producer.contains("terrain:old-1"));
+        EXPECT_EQ(world.chunkCount(), 2u);
+        EXPECT_TRUE(world.valid());
+    }
 }

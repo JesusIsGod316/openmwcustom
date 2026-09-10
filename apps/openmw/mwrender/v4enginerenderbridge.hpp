@@ -92,6 +92,7 @@ namespace MWRender
         std::unique_ptr<RenderCore::TerrainChunkProducer> mTerrain;
         std::unique_ptr<RenderCore::TerrainPreparationService> mTerrainPreparation;
         RenderCore::TerrainResidencyPlanner mTerrainResidencyPlanner;
+        std::vector<RenderCore::TerrainChunkSource> mPendingTerrainPublication;
         std::string mLastDiagnostic;
         bool mLifecycleTaken = false;
         bool mGuiOnlyFramePresented = false;

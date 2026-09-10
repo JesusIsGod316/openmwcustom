@@ -151,4 +151,24 @@ namespace
         EXPECT_EQ(ready->chunks.front().identity, "terrain:new");
         EXPECT_EQ(ready->generation, service.latestRequestedGeneration());
     }
+
+    TEST(TerrainPreparationService, EnforcesChunkAndPreparedByteBudgets)
+    {
+        RenderCore::TerrainPreparationService countLimited(
+            [](const auto& item, std::stop_token) { return build(item); }, { .maxChunks = 1 });
+        const std::vector tooMany{ request("terrain:0", 0), request("terrain:1", 1) };
+        EXPECT_EQ(countLimited.request(std::span<const RenderCore::TerrainPreparationRequest>(tooMany)),
+            RenderCore::TerrainPreparationRequestStatus::Invalid);
+
+        RenderCore::TerrainPreparationService byteLimited(
+            [](const auto& item, std::stop_token) { return build(item); }, { .maxChunks = 2, .maxPreparedBytes = 1 });
+        const std::vector desired{ request("terrain:required", 0, true), request("terrain:optional", 1) };
+        ASSERT_EQ(byteLimited.request(std::span<const RenderCore::TerrainPreparationRequest>(desired)),
+            RenderCore::TerrainPreparationRequestStatus::Accepted);
+        const auto ready = waitForReady(byteLimited);
+        ASSERT_TRUE(ready);
+        EXPECT_TRUE(ready->budgetLimited);
+        EXPECT_FALSE(ready->requiredChunksReady);
+        EXPECT_TRUE(ready->chunks.empty());
+    }
 }
