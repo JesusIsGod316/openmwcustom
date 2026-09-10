@@ -28,6 +28,19 @@ namespace RenderCore
         MaterialRecord material;
     };
 
+    [[nodiscard]] inline bool validTerrainChunkSource(const TerrainChunkSource& source) noexcept
+    {
+        return !source.identity.empty() && !source.worldspaceIdentity.empty() && source.mesh
+            && validMeshPayload(*source.mesh) && !source.mesh->positions.empty() && !source.mesh->surfaces.empty()
+            && semantic_detail::finite(source.localBounds.minimum)
+            && semantic_detail::finite(source.localBounds.maximum)
+            && semantic_detail::finite(source.transform.translation)
+            && semantic_detail::finite(source.transform.rotation) && semantic_detail::finite(source.transform.scale)
+            && source.localBounds.minimum.x <= source.localBounds.maximum.x
+            && source.localBounds.minimum.y <= source.localBounds.maximum.y
+            && source.localBounds.minimum.z <= source.localBounds.maximum.z;
+    }
+
     enum class TerrainChunkPublishStatus : std::uint8_t
     {
         Applied,
@@ -159,15 +172,7 @@ namespace RenderCore
 
         [[nodiscard]] static bool valid(const TerrainChunkSource& source) noexcept
         {
-            return !source.identity.empty() && !source.worldspaceIdentity.empty() && source.mesh
-                && validMeshPayload(*source.mesh) && !source.mesh->positions.empty() && !source.mesh->surfaces.empty()
-                && semantic_detail::finite(source.localBounds.minimum)
-                && semantic_detail::finite(source.localBounds.maximum)
-                && semantic_detail::finite(source.transform.translation)
-                && semantic_detail::finite(source.transform.rotation) && semantic_detail::finite(source.transform.scale)
-                && source.localBounds.minimum.x <= source.localBounds.maximum.x
-                && source.localBounds.minimum.y <= source.localBounds.maximum.y
-                && source.localBounds.minimum.z <= source.localBounds.maximum.z;
+            return validTerrainChunkSource(source);
         }
 
         [[nodiscard]] static bool validSet(std::span<const TerrainChunkSource> sources) noexcept

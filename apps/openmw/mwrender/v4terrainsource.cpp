@@ -18,8 +18,20 @@ namespace MWRender
 {
     std::string makeV4TerrainChunkIdentity(const MWWorld::Cell& cell)
     {
-        return "terrain:" + cell.getWorldSpace().serializeText() + ":" + std::to_string(cell.getGridX()) + ","
-            + std::to_string(cell.getGridY()) + ":lod0";
+        return makeV4TerrainChunkRequest(cell, cell.getGridX(), cell.getGridY(), true).identity;
+    }
+
+    RenderCore::TerrainPreparationRequest makeV4TerrainChunkRequest(
+        const MWWorld::Cell& cell, std::int32_t gridX, std::int32_t gridY, bool required)
+    {
+        RenderCore::TerrainPreparationRequest result;
+        result.worldspaceIdentity = cell.getWorldSpace().serializeText();
+        result.gridX = gridX;
+        result.gridY = gridY;
+        result.identity = "terrain:" + result.worldspaceIdentity + ":" + std::to_string(gridX) + ","
+            + std::to_string(gridY) + ":lod0";
+        result.required = required;
+        return result;
     }
 
     std::optional<RenderCore::TerrainChunkSource> makeV4TerrainChunkSource(
@@ -28,17 +40,24 @@ namespace MWRender
         TerrainStorage* const storage = rendering.getTerrainStorage();
         if (!storage || !cell.isExterior())
             return std::nullopt;
+        return makeV4TerrainChunkSource(
+            *storage, makeV4TerrainChunkRequest(cell, cell.getGridX(), cell.getGridY(), true));
+    }
 
-        const ESM::RefId worldspace = cell.getWorldSpace();
-        const float cellWorldSize = storage->getCellWorldSize(worldspace);
+    std::optional<RenderCore::TerrainChunkSource> makeV4TerrainChunkSource(
+        TerrainStorage& storage, const RenderCore::TerrainPreparationRequest& request)
+    {
+        const ESM::RefId worldspace = ESM::RefId::deserializeText(request.worldspaceIdentity);
+        const float cellWorldSize = storage.getCellWorldSize(worldspace);
         if (!std::isfinite(cellWorldSize) || cellWorldSize <= 0.0f)
             return std::nullopt;
 
         osg::ref_ptr<osg::Vec3Array> positions(new osg::Vec3Array);
         osg::ref_ptr<osg::Vec3Array> normals(new osg::Vec3Array);
         osg::ref_ptr<osg::Vec4ubArray> colours(new osg::Vec4ubArray);
-        const osg::Vec2f center(static_cast<float>(cell.getGridX()) + 0.5f, static_cast<float>(cell.getGridY()) + 0.5f);
-        storage->fillVertexBuffers(0, 1.0f, center, worldspace, *positions, *normals, *colours);
+        const osg::Vec2f center(static_cast<float>(request.gridX) + 0.5f, static_cast<float>(request.gridY) + 0.5f);
+        storage.fillVertexBuffers(
+            static_cast<int>(request.lodLevel), 1.0f, center, worldspace, *positions, *normals, *colours);
         if (positions->empty() || positions->size() != normals->size() || positions->size() != colours->size())
             return std::nullopt;
         const std::size_t side = static_cast<std::size_t>(std::sqrt(static_cast<double>(positions->size())));
@@ -102,10 +121,12 @@ namespace MWRender
         });
 
         RenderCore::TerrainChunkSource result;
-        result.identity = makeV4TerrainChunkIdentity(cell);
-        result.worldspaceIdentity = worldspace.serializeText();
-        result.gridX = cell.getGridX();
-        result.gridY = cell.getGridY();
+        result.identity = request.identity;
+        result.worldspaceIdentity = request.worldspaceIdentity;
+        result.gridX = request.gridX;
+        result.gridY = request.gridY;
+        result.lodLevel = request.lodLevel;
+        result.stitchMask = request.stitchMask;
         result.transform.translation = { center.x() * cellWorldSize, center.y() * cellWorldSize, 0.0 };
         result.localBounds = bounds;
         result.mesh = std::move(mesh);

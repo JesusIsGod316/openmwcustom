@@ -960,6 +960,12 @@ OMW::Engine::~Engine()
     mDialogueManager = nullptr;
     mJournal = nullptr;
     mWindowManager = nullptr;
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+    // Terrain preparation reads thread-safe LAND storage owned by the world.
+    // Join that worker before the world tears its rendering manager down.
+    if (mV4RenderBridge)
+        mV4RenderBridge->stopBackgroundPreparation();
+#endif
     mScriptManager = nullptr;
     mWorld = nullptr;
     mStereoManager = nullptr;

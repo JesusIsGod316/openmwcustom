@@ -118,6 +118,7 @@ file(GLOB UNITTEST_SRC_FILES
     rendercore/renderworld.cpp
     rendercore/semanticassets.cpp
     rendercore/terrainchunkproducer.cpp
+    rendercore/terrainpreparationservice.cpp
     rendercore/updatebatch.cpp
 )
 

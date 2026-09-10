@@ -154,33 +154,101 @@ namespace MWRender
     bool V4EngineRenderBridge::synchronizeExteriorTerrain(const RenderingManager& rendering, const MWWorld::Cell& cell)
     {
         mLastDiagnostic.clear();
-        std::optional<RenderCore::TerrainChunkSource> source;
-        if (cell.isExterior())
+        if (!cell.isExterior())
         {
-            const std::string identity = makeV4TerrainChunkIdentity(cell);
-            if (mTerrain->contains(identity))
-                return true;
-            source = makeV4TerrainChunkSource(rendering, cell);
+            if (mTerrainPreparation)
+            {
+                static_cast<void>(
+                    mTerrainPreparation->request(std::span<const RenderCore::TerrainPreparationRequest>{}));
+                static_cast<void>(mTerrainPreparation->takeReady());
+            }
+            const RenderCore::TerrainChunkPublishStatus status = mTerrain->synchronize(std::nullopt);
+            return status == RenderCore::TerrainChunkPublishStatus::Applied
+                || status == RenderCore::TerrainChunkPublishStatus::AlreadyPresent;
+        }
+
+        TerrainStorage* const storage = rendering.getTerrainStorage();
+        if (!storage)
+        {
+            mLastDiagnostic = "authoritative exterior terrain storage is unavailable";
+            return false;
+        }
+
+        const RenderCore::TerrainPreparationRequest current
+            = makeV4TerrainChunkRequest(cell, cell.getGridX(), cell.getGridY(), true);
+        if (!mTerrain->contains(current.identity))
+        {
+            const std::optional<RenderCore::TerrainChunkSource> source = makeV4TerrainChunkSource(*storage, current);
             if (!source)
             {
-                mLastDiagnostic = "authoritative exterior LAND data could not produce a neutral terrain chunk";
+                mLastDiagnostic = "authoritative exterior LAND data could not produce the required terrain chunk";
+                return false;
+            }
+            const RenderCore::TerrainChunkPublishStatus status = mTerrain->synchronize(source);
+            if (status != RenderCore::TerrainChunkPublishStatus::Applied
+                && status != RenderCore::TerrainChunkPublishStatus::AlreadyPresent)
+            {
+                mLastDiagnostic = "required terrain chunk publication failed with status "
+                    + std::to_string(static_cast<unsigned int>(status));
                 return false;
             }
         }
-        const RenderCore::TerrainChunkPublishStatus status = mTerrain->synchronize(source);
-        if (status != RenderCore::TerrainChunkPublishStatus::Applied
-            && status != RenderCore::TerrainChunkPublishStatus::AlreadyPresent)
+
+        if (!mTerrainPreparation)
         {
-            mLastDiagnostic = "neutral terrain chunk publication failed with status "
-                + std::to_string(static_cast<unsigned int>(status));
+            mTerrainPreparation = std::make_unique<RenderCore::TerrainPreparationService>(
+                [storage](const RenderCore::TerrainPreparationRequest& request, std::stop_token stop) {
+                    if (stop.stop_requested())
+                        return std::optional<RenderCore::TerrainChunkSource>{};
+                    return makeV4TerrainChunkSource(*storage, request);
+                });
+        }
+
+        std::vector<RenderCore::TerrainPreparationRequest> desired;
+        desired.reserve(9);
+        for (std::int32_t y = cell.getGridY() - 1; y <= cell.getGridY() + 1; ++y)
+        {
+            for (std::int32_t x = cell.getGridX() - 1; x <= cell.getGridX() + 1; ++x)
+                desired.push_back(makeV4TerrainChunkRequest(cell, x, y, x == cell.getGridX() && y == cell.getGridY()));
+        }
+        const RenderCore::TerrainPreparationRequestStatus requested
+            = mTerrainPreparation->request(std::span<const RenderCore::TerrainPreparationRequest>(desired));
+        if (requested == RenderCore::TerrainPreparationRequestStatus::Invalid
+            || requested == RenderCore::TerrainPreparationRequestStatus::GenerationExhausted)
+        {
+            mLastDiagnostic = "terrain preparation rejected the desired resident cell set";
             return false;
+        }
+
+        if (std::optional<RenderCore::PreparedTerrainSet> ready = mTerrainPreparation->takeReady())
+        {
+            if (!ready->requiredChunksReady)
+            {
+                mLastDiagnostic = "background terrain preparation failed for the required current cell";
+                return false;
+            }
+            const RenderCore::TerrainChunkPublishStatus status
+                = mTerrain->synchronize(std::span<const RenderCore::TerrainChunkSource>(ready->chunks));
+            if (status != RenderCore::TerrainChunkPublishStatus::Applied
+                && status != RenderCore::TerrainChunkPublishStatus::AlreadyPresent)
+            {
+                mLastDiagnostic = "prepared terrain set publication failed with status "
+                    + std::to_string(static_cast<unsigned int>(status));
+                return false;
+            }
         }
         return true;
     }
 
     V4EngineRenderBridge::~V4EngineRenderBridge()
     {
+        stopBackgroundPreparation();
         waitIdle();
+    }
+
+    void V4EngineRenderBridge::stopBackgroundPreparation()
+    {
+        mTerrainPreparation.reset();
     }
 
     std::unique_ptr<MWWorld::SceneRenderLifecycle> V4EngineRenderBridge::takeSceneRenderLifecycle()

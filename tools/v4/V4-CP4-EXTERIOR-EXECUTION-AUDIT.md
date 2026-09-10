@@ -50,6 +50,25 @@ The first local CP4A checkpoint is intentionally larger than a contract-only sli
 - Terrain layer textures are not part of this checkpoint. Vertex color provides the first visible LAND surface while the
   permanent texture and streaming design is built in CP4B.
 
+## CP4B terrain-streaming foundation in progress
+
+The first CP4B implementation widens CP4A without publishing a separate test artifact:
+
+- `TerrainChunkProducer` owns a deterministic active set and atomically retains, adds, and retires LAND chunks while
+  rejecting duplicate semantic addresses and mixed-worldspace batches.
+- `TerrainPreparationService` owns one coarse background lane. New desired sets replace queued work, stale generations
+  are abandoned between chunks, unchanged prepared chunks are reused, and exceptions or malformed output remain
+  isolated from frame publication.
+- The Vulkan application route keeps the current exterior cell correctness-critical, then prepares a 3-by-3 LOD0 LAND
+  neighborhood without a same-frame queue-and-wait dependency. Completed immutable sets publish atomically.
+- Movement within the resident neighborhood reuses prepared meshes. A teleport or first exterior entry synchronously
+  establishes only the required current cell, after which neighborhood expansion resumes asynchronously.
+- Interior transitions retire the resident terrain set. Shutdown joins the preparation worker before world-owned terrain
+  storage is released.
+
+This is a safe streaming foundation, not CP4B completion. Predictive direction/rate input, distance LOD rings, seam
+stitching, bounded GPU admission, and measured residency budgets remain before the first consolidated CP4 artifact.
+
 ## Validation gate
 
 Before publication, this checkpoint requires:

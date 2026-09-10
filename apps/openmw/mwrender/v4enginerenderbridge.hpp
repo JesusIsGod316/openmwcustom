@@ -10,6 +10,7 @@
 #include <components/rendercore/frameproducer.hpp>
 #include <components/rendercore/renderer.hpp>
 #include <components/rendercore/terrainchunkproducer.hpp>
+#include <components/rendercore/terrainpreparationservice.hpp>
 
 #include <filesystem>
 #include <map>
@@ -76,6 +77,7 @@ namespace MWRender
         [[nodiscard]] bool synchronizeExteriorTerrain(const RenderingManager& rendering, const MWWorld::Cell& cell);
         RenderCore::RenderFrameResult renderMainFrame(const V4MainFrameSource& source);
         RenderCore::RenderFrameResult renderGuiFrame(double simulationTime, double frameDelta);
+        void stopBackgroundPreparation();
         void waitIdle();
 
         [[nodiscard]] const std::string& lastDiagnostic() const noexcept { return mLastDiagnostic; }
@@ -87,6 +89,7 @@ namespace MWRender
         std::shared_ptr<RenderVsg::VsgSemanticSession> mSession;
         std::shared_ptr<V4RenderRouteStatus> mRouteStatus;
         std::unique_ptr<RenderCore::TerrainChunkProducer> mTerrain;
+        std::unique_ptr<RenderCore::TerrainPreparationService> mTerrainPreparation;
         std::string mLastDiagnostic;
         bool mLifecycleTaken = false;
         bool mGuiOnlyFramePresented = false;
