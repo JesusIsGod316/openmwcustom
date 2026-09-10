@@ -111,8 +111,9 @@ CP4D is in progress and is not yet a complete environment implementation:
 - VSG native hard shadows provide a bounded 1-8 cascade directional-shadow foundation. Object, terrain, and actor caster
   categories are explicit, per-frame interior/exterior policy can disable maps, and non-casters are excluded with VSG
   traversal masks.
-- An enabled OpenMW sky now contributes its live weather sky colour as the Vulkan background. Disabled skies and interiors
-  retain the fog-colour control path.
+- An enabled exterior OpenMW sky now drives a persistent full-screen Vulkan atmosphere backdrop, blending live weather
+  sky and horizon/fog colours without rebuilding scene topology or swapchain-sized resources. The color-only node is
+  excluded from native shadow traversal; disabled skies and interiors retain the fog-colour clear control path.
 
 Textured atmosphere, animated/blended clouds, sun and moons, precipitation geometry, and precipitation occlusion are not
 implemented yet. The native VSG shadow pre-render path also still needs an explicit semantic adapter to the common

@@ -8,6 +8,7 @@ set(OPENMW_V4_VSG_RUNTIME_SOURCES
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/legacymaterialshader.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/openmwviewdependentstate.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/sdlvulkanwindow.cpp"
+    "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/skybackdrop.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/staticassetconformance.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/staticassetrealizer.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/statictexturedecode.cpp"

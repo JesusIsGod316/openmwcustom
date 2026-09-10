@@ -5,6 +5,7 @@
 #include "framecompletion.hpp"
 #include "openmwviewdependentstate.hpp"
 #include "sdlvulkanwindow.hpp"
+#include "skybackdrop.hpp"
 #include "staticassetrealizer.hpp"
 #include "staticpopulationresidency.hpp"
 #include "staticworldresidency.hpp"
@@ -117,6 +118,7 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::RenderGraph> mRenderGraph;
         vsg::ref_ptr<vsg::AmbientLight> mAmbientLight;
         vsg::ref_ptr<vsg::DirectionalLight> mSunLight;
+        SkyBackdrop mSkyBackdrop;
         FrameCameraObjects mCamera;
         StaticWorldResidency<StaticResident> mStaticResidency;
         StaticPopulationResidency<StaticPopulationResident> mStaticPopulationResidency;

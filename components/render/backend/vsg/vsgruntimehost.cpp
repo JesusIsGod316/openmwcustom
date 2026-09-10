@@ -84,6 +84,7 @@ namespace RenderVsg
         , mGuiRoot(vsg::Group::create())
         , mAmbientLight(vsg::AmbientLight::create())
         , mSunLight(vsg::DirectionalLight::create())
+        , mSkyBackdrop(SkyBackdrop::create())
         , mCamera(FrameCameraObjects::create(initialView()))
         , mCompletion(options.maximumFramesInFlight)
     {
@@ -116,6 +117,12 @@ namespace RenderVsg
         }
         mView->addChild(mAmbientLight);
         mView->addChild(mSunLight);
+        if (!mSkyBackdrop)
+            throw std::runtime_error("VsgRuntimeHost could not create its CP4D sky backdrop");
+        // The backdrop belongs only to the color-producing main view. Native
+        // VSG shadow traversals use ShadowTraversalMask and must never record
+        // this color-only pipeline into a depth-only shadow render pass.
+        mView->addChild(maskedNode(vsg::MASK_ALL & ~ShadowTraversalMask, mSkyBackdrop.node()));
         mSceneRoot->addChild(mStaticRoot);
         mSceneRoot->addChild(mDynamicRoot);
         mSceneRoot->addChild(mGuiRoot);
@@ -613,6 +620,7 @@ namespace RenderVsg
         mSunLight->color.set(environment.sunDiffuse.r, environment.sunDiffuse.g, environment.sunDiffuse.b);
         mSunLight->intensity = environment.sunLightEnabled ? 1.0f : 0.0f;
         mSunLight->direction.set(environment.sunDirection.x, environment.sunDirection.y, environment.sunDirection.z);
+        mSkyBackdrop.update(environment);
         if (mOptions.shadows.enabled)
         {
             if (environment.shadowsEnabled)

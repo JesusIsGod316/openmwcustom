@@ -88,6 +88,7 @@ jobs:
           g++ "${backend[@]}" -c components/render/backend/vsg/staticassetrealizer.cpp -o /tmp/staticassetrealizer.o
           g++ "${backend[@]}" -c components/render/backend/vsg/staticassetconformance.cpp -o /tmp/staticassetconformance.o
           g++ "${backend[@]}" -c components/render/backend/vsg/openmwviewdependentstate.cpp -o /tmp/openmwviewdependentstate.o
+          g++ "${backend[@]}" -c components/render/backend/vsg/skybackdrop.cpp -o /tmp/skybackdrop.o
           g++ "${backend[@]}" -c components/render/backend/vsg/vsgruntimehost.cpp -o /tmp/vsgruntimehost.o
 
   OpenGLControlWindows:

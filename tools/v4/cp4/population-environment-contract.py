@@ -41,6 +41,19 @@ require(
     "maskedNode(placementMask(castsShadow)",
     "populationWithinMaximumDistance(world, plan, mainView.current.worldPosition)",
     "environment.skyEnabled ? environment.skyColor : environment.fogColor",
+    "mSkyBackdrop.update(environment)",
+    "maskedNode(vsg::MASK_ALL & ~ShadowTraversalMask, mSkyBackdrop.node())",
+)
+require(
+    "components/render/backend/vsg/skybackdrop.cpp",
+    "vsg::DynamicState::create(VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR)",
+    "mRoot->setAllChildren(environment.skyEnabled && !environment.interior)",
+    "vsg::PushConstants::create(VK_SHADER_STAGE_FRAGMENT_BIT, 0, result.mParameters.get())",
+    "depth->depthWriteEnable = VK_FALSE",
+)
+require(
+    "components/render/backend/vsg/runtime-sources.cmake",
+    "components/render/backend/vsg/skybackdrop.cpp",
 )
 require(
     "components/render/backend/vsg/staticassetrealizer.cpp",
