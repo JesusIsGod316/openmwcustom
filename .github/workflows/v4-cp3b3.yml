@@ -267,24 +267,52 @@ jobs:
           $openmwExe = Get-ChildItem -LiteralPath $stage -Recurse -File -Filter openmw.exe | Select-Object -First 1
           if ($null -eq $openmwExe) { throw 'Installed Vulkan package is missing openmw.exe' }
           $runtime = $openmwExe.Directory.FullName
-          $vsgBin = "$env:GITHUB_WORKSPACE/cp3b3-vcpkg/x64-windows/bin"
-          if (-not (Test-Path -LiteralPath $vsgBin -PathType Container)) { throw "VSG runtime bin is missing: $vsgBin" }
-          $provenance = @('source,sha256,file')
-          Get-ChildItem -LiteralPath $vsgBin -File -Filter '*.dll' | Sort-Object Name | ForEach-Object {
-            $sourceHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            $destination = Join-Path $runtime $_.Name
-            if (Test-Path -LiteralPath $destination -PathType Leaf) {
-              $destinationHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
-              if ($sourceHash -ne $destinationHash) {
-                throw "Conflicting OpenMW/VSG runtime DLL: $($_.Name)"
-              }
-              $provenance += "shared,$sourceHash,$($_.Name)"
+          $provenance = [System.Collections.Generic.List[string]]::new()
+          $provenance.Add('source,sha256,file') | Out-Null
+
+          function Add-RuntimeDllRoot {
+            param(
+              [Parameter(Mandatory=$true)][string]$Source,
+              [Parameter(Mandatory=$true)][string]$Label
+            )
+
+            if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
+              throw "Runtime DLL root is missing: $Source"
             }
-            else {
-              Copy-Item -LiteralPath $_.FullName -Destination $destination
-              $provenance += "vsg,$sourceHash,$($_.Name)"
+
+            $dlls = @(Get-ChildItem -LiteralPath $Source -File -Filter '*.dll' | Sort-Object Name)
+            if ($dlls.Count -eq 0) {
+              throw "Runtime DLL root contains no DLLs: $Source"
+            }
+
+            foreach ($dll in $dlls) {
+              $sourceHash = (Get-FileHash -LiteralPath $dll.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              $destination = Join-Path $runtime $dll.Name
+              if (Test-Path -LiteralPath $destination -PathType Leaf) {
+                $destinationHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($sourceHash -ne $destinationHash) {
+                  throw "Conflicting runtime DLL '$($dll.Name)' from '$Source'"
+                }
+                $provenance.Add("$Label-shared,$sourceHash,$($dll.Name)") | Out-Null
+              }
+              else {
+                Copy-Item -LiteralPath $dll.FullName -Destination $destination
+                $provenance.Add("$Label,$sourceHash,$($dll.Name)") | Out-Null
+              }
             }
           }
+
+          Add-RuntimeDllRoot -Source (Join-Path $openmwDeps 'installed/x64-windows/bin/Release') -Label 'openmw-release'
+          Add-RuntimeDllRoot -Source (Join-Path $openmwDeps 'installed/x64-windows/bin') -Label 'openmw-vcpkg'
+          Add-RuntimeDllRoot -Source "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/_deps/SDL3-3.4.10/lib/x64" -Label 'sdl3'
+          Add-RuntimeDllRoot -Source "$env:GITHUB_WORKSPACE/cp3b3-vcpkg/x64-windows/bin" -Label 'vsg'
+
+          foreach ($requiredDll in @('MyGUIEngine.dll', 'SDL3.dll')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $runtime $requiredDll) -PathType Leaf)) {
+              throw "Staged Vulkan package is missing required runtime DLL: $requiredDll"
+            }
+          }
+
           $provenance | Set-Content -LiteralPath (Join-Path $runtime 'CP3E-RUNTIME-PROVENANCE.csv') -Encoding Ascii
           $osgPlugins = Join-Path $openmwDeps 'installed/x64-windows/bin/osgPlugins-3.6.5'
           if (Test-Path -LiteralPath $osgPlugins -PathType Container) {
