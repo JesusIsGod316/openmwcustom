@@ -3,6 +3,8 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <span>
+#include <vector>
 
 namespace
 {
@@ -82,6 +84,41 @@ namespace
         EXPECT_EQ(producer.synchronize(source), RenderCore::TerrainChunkPublishStatus::InvalidSource);
         EXPECT_EQ(world.chunkCount(), 0u);
         EXPECT_EQ(world.instanceCount(), 0u);
+        EXPECT_TRUE(world.valid());
+    }
+
+    TEST(TerrainChunkProducer, PublishesAndChurnsDeterministicActiveSetAtomically)
+    {
+        RenderCore::RenderWorld world;
+        RenderCore::RenderWorldPublisher publisher(world);
+        RenderCore::TerrainChunkProducer producer(world, publisher);
+        std::vector<RenderCore::TerrainChunkSource> desired{
+            makeSource("terrain:0,0", 0, 0),
+            makeSource("terrain:1,0", 1, 0),
+        };
+
+        EXPECT_EQ(producer.synchronize(std::span<const RenderCore::TerrainChunkSource>(desired)),
+            RenderCore::TerrainChunkPublishStatus::Applied);
+        EXPECT_EQ(producer.activeCount(), 2u);
+        EXPECT_EQ(world.chunkCount(), 2u);
+        EXPECT_EQ(world.instanceCount(), 2u);
+        EXPECT_TRUE(world.valid());
+
+        desired = { makeSource("terrain:1,0", 1, 0), makeSource("terrain:2,0", 2, 0) };
+        EXPECT_EQ(producer.synchronize(std::span<const RenderCore::TerrainChunkSource>(desired)),
+            RenderCore::TerrainChunkPublishStatus::Applied);
+        EXPECT_FALSE(producer.contains("terrain:0,0"));
+        EXPECT_TRUE(producer.contains("terrain:1,0"));
+        EXPECT_TRUE(producer.contains("terrain:2,0"));
+        EXPECT_EQ(world.chunkCount(), 2u);
+        EXPECT_EQ(world.instanceCount(), 2u);
+        EXPECT_TRUE(world.valid());
+
+        desired.push_back(makeSource("terrain:2,0-duplicate", 2, 0));
+        EXPECT_EQ(producer.synchronize(std::span<const RenderCore::TerrainChunkSource>(desired)),
+            RenderCore::TerrainChunkPublishStatus::InvalidSource);
+        EXPECT_EQ(world.chunkCount(), 2u);
+        EXPECT_EQ(world.instanceCount(), 2u);
         EXPECT_TRUE(world.valid());
     }
 }

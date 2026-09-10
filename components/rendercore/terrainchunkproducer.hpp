@@ -3,10 +3,14 @@
 
 #include "updatebatch.hpp"
 
+#include <algorithm>
+#include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace RenderCore
 {
@@ -35,9 +39,9 @@ namespace RenderCore
         PublishRejected,
     };
 
-    // CP4A owns one current LAND surface while establishing the permanent
-    // neutral publication seam. CP4B can widen this to an active/predicted set
-    // without changing chunk/resource identities or backend ownership.
+    // CP4A uses the single-source wrapper for one current LAND surface. The
+    // ordered set path is the CP4B ownership seam for active and predicted
+    // chunks without changing resource identities or backend ownership.
     class TerrainChunkProducer final
     {
     public:
@@ -50,62 +54,97 @@ namespace RenderCore
 
         [[nodiscard]] TerrainChunkPublishStatus synchronize(const std::optional<TerrainChunkSource>& source)
         {
+            if (!source)
+                return synchronize(std::span<const TerrainChunkSource>{});
+            return synchronize(std::span<const TerrainChunkSource>(&*source, 1));
+        }
+
+        [[nodiscard]] TerrainChunkPublishStatus synchronize(std::span<const TerrainChunkSource> sources)
+        {
             synchronizeEpoch();
-            if (source && !valid(*source))
+            if (!validSet(sources))
                 return TerrainChunkPublishStatus::InvalidSource;
-            if (source && mActive && source->identity == mActive->identity)
-                return live(*mActive) ? TerrainChunkPublishStatus::AlreadyPresent
-                                      : TerrainChunkPublishStatus::PublishRejected;
-            if (!source && !mActive)
+
+            bool unchanged = sources.size() == mActive.size();
+            for (const TerrainChunkSource& source : sources)
+            {
+                const auto active = mActive.find(source.identity);
+                if (active != mActive.end() && !live(active->second))
+                    return TerrainChunkPublishStatus::PublishRejected;
+                unchanged = unchanged && active != mActive.end();
+            }
+            if (unchanged)
                 return TerrainChunkPublishStatus::AlreadyPresent;
 
-            std::optional<Binding> replacement;
-            if (source)
+            std::map<std::string, Binding, std::less<>> additions;
+            for (const TerrainChunkSource& source : sources)
             {
-                replacement = reserve(source->identity);
-                if (!replacement)
+                if (mActive.contains(source.identity))
+                    continue;
+                std::optional<Binding> binding = reserve(source.identity);
+                if (!binding)
+                {
+                    cancel(additions);
                     return TerrainChunkPublishStatus::ReservationFailed;
+                }
+                additions.emplace(source.identity, std::move(*binding));
             }
 
             const UpdateSequence sequence = mPublisher.nextSequence();
             if (!sequence.valid())
             {
-                cancel(replacement);
+                cancel(additions);
                 return TerrainChunkPublishStatus::SequenceExhausted;
             }
-            RenderWorldUpdateBatch batch(mWorld.epoch(), sequence, source ? source->identity : mActive->identity);
+            RenderWorldUpdateBatch batch(mWorld.epoch(), sequence, "terrain:active-set");
             bool built = true;
-            if (mActive)
-                built = addRetirement(batch, *mActive);
-            if (built && source)
-                built = addCreation(batch, *source, *replacement);
+            for (const auto& [identity, binding] : mActive)
+            {
+                const bool retained = std::ranges::any_of(
+                    sources, [&](const TerrainChunkSource& source) { return source.identity == identity; });
+                if (!retained)
+                    built = built && addRetirement(batch, binding);
+            }
+            for (const TerrainChunkSource& source : sources)
+            {
+                const auto addition = additions.find(source.identity);
+                if (addition != additions.end())
+                    built = built && addCreation(batch, source, addition->second);
+            }
             built = built && batch.seal();
             if (!built)
             {
-                cancel(replacement);
+                cancel(additions);
                 return TerrainChunkPublishStatus::BatchBuildFailed;
             }
 
             const PublishStatus published = mPublisher.apply(batch);
             if (published != PublishStatus::Applied)
             {
-                cancel(replacement);
+                cancel(additions);
                 return TerrainChunkPublishStatus::PublishRejected;
             }
-            mActive = std::move(replacement);
+            std::erase_if(mActive, [&](const auto& entry) {
+                return std::ranges::none_of(
+                    sources, [&](const TerrainChunkSource& source) { return source.identity == entry.first; });
+            });
+            mActive.merge(additions);
             return TerrainChunkPublishStatus::Applied;
         }
 
         [[nodiscard]] std::string_view activeIdentity() const noexcept
         {
-            return mActive ? std::string_view(mActive->identity) : std::string_view{};
+            return mActive.size() == 1 ? std::string_view(mActive.begin()->first) : std::string_view{};
         }
 
         [[nodiscard]] bool contains(std::string_view identity)
         {
             synchronizeEpoch();
-            return mActive && identity == mActive->identity && live(*mActive);
+            const auto active = mActive.find(identity);
+            return active != mActive.end() && live(active->second);
         }
+
+        [[nodiscard]] std::size_t activeCount() const noexcept { return mActive.size(); }
 
     private:
         struct Binding
@@ -125,8 +164,29 @@ namespace RenderCore
                 && semantic_detail::finite(source.localBounds.minimum)
                 && semantic_detail::finite(source.localBounds.maximum)
                 && semantic_detail::finite(source.transform.translation)
-                && semantic_detail::finite(source.transform.rotation)
-                && semantic_detail::finite(source.transform.scale);
+                && semantic_detail::finite(source.transform.rotation) && semantic_detail::finite(source.transform.scale)
+                && source.localBounds.minimum.x <= source.localBounds.maximum.x
+                && source.localBounds.minimum.y <= source.localBounds.maximum.y
+                && source.localBounds.minimum.z <= source.localBounds.maximum.z;
+        }
+
+        [[nodiscard]] static bool validSet(std::span<const TerrainChunkSource> sources) noexcept
+        {
+            for (std::size_t i = 0; i < sources.size(); ++i)
+            {
+                if (!valid(sources[i]))
+                    return false;
+                if (i != 0 && sources[i].worldspaceIdentity != sources.front().worldspaceIdentity)
+                    return false;
+                for (std::size_t j = i + 1; j < sources.size(); ++j)
+                {
+                    if (sources[i].identity == sources[j].identity
+                        || (sources[i].gridX == sources[j].gridX && sources[i].gridY == sources[j].gridY
+                            && sources[i].lodLevel == sources[j].lodLevel))
+                        return false;
+                }
+            }
+            return true;
         }
 
         [[nodiscard]] std::optional<Binding> reserve(std::string identity)
@@ -160,15 +220,19 @@ namespace RenderCore
             return result;
         }
 
-        void cancel(const std::optional<Binding>& binding) noexcept
+        void cancel(const Binding& binding) noexcept
         {
-            if (!binding)
-                return;
-            mWorld.cancel(binding->instance);
-            mWorld.cancel(binding->chunk);
-            mWorld.cancel(binding->model);
-            mWorld.cancel(binding->material);
-            mWorld.cancel(binding->mesh);
+            mWorld.cancel(binding.instance);
+            mWorld.cancel(binding.chunk);
+            mWorld.cancel(binding.model);
+            mWorld.cancel(binding.material);
+            mWorld.cancel(binding.mesh);
+        }
+
+        void cancel(const std::map<std::string, Binding, std::less<>>& bindings) noexcept
+        {
+            for (const auto& [identity, binding] : bindings)
+                cancel(binding);
         }
 
         [[nodiscard]] bool addCreation(
@@ -242,13 +306,13 @@ namespace RenderCore
             if (mObservedEpoch == mWorld.epoch())
                 return;
             mObservedEpoch = mWorld.epoch();
-            mActive.reset();
+            mActive.clear();
         }
 
         RenderWorld& mWorld;
         RenderWorldPublisher& mPublisher;
         WorldEpoch mObservedEpoch;
-        std::optional<Binding> mActive;
+        std::map<std::string, Binding, std::less<>> mActive;
     };
 }
 
