@@ -879,6 +879,11 @@ namespace MWRender
         return mSky.get();
     }
 
+    const SkyManager* RenderingManager::getSkyManager() const
+    {
+        return mSky.get();
+    }
+
     void RenderingManager::update(float dt, bool paused)
     {
         Debug::V324DeepTelemetry::Scope v324DeepScope("render_update", "manager_update");

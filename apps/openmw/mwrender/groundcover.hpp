@@ -45,19 +45,25 @@ namespace MWRender
 
         struct GroundcoverEntry
         {
+            ESM::RefNum mRefNum;
             ESM::Position mPos;
             float mScale;
 
             GroundcoverEntry(const ESM::CellRef& ref)
-                : mPos(ref.mPos)
+                : mRefNum(ref.mRefNum)
+                , mPos(ref.mPos)
                 , mScale(ref.mScale)
             {
             }
         };
 
-    private:
         using InstanceMap = std::map<VFS::Path::Normalized, std::vector<GroundcoverEntry>, std::less<>>;
 
+        // Backend-neutral callers reuse the exact winning-file merge, density,
+        // and border selection used by the established OpenGL renderer.
+        [[nodiscard]] InstanceMap collectInstances(float size, const osg::Vec2f& center) const;
+
+    private:
         Resource::SceneManager* mSceneManager;
         osg::ref_ptr<SceneUtil::OcclusionCuller> mOcclusionCuller;
         bool mV35CoarseChunkOcclusion = false;
@@ -68,7 +74,7 @@ namespace MWRender
         std::atomic_uint64_t mV314CompileQueued{ 0 };
 
         osg::ref_ptr<osg::Node> createChunk(InstanceMap& instances, const osg::Vec2f& center);
-        void collectInstances(InstanceMap& instances, float size, const osg::Vec2f& center);
+        void collectInstances(InstanceMap& instances, float size, const osg::Vec2f& center) const;
     };
 }
 

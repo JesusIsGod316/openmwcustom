@@ -17,7 +17,10 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
+#include <span>
 #include <string>
+#include <string_view>
 
 namespace VFS
 {
@@ -85,6 +88,8 @@ namespace MWRender
 
     private:
         V4EngineRenderBridge(const VFS::Manager& vfs, std::shared_ptr<RenderVsg::VsgSemanticSession> session);
+        [[nodiscard]] bool synchronizeGroundcover(const RenderingManager& rendering,
+            std::string_view worldspaceIdentity, std::span<const RenderCore::TerrainResidencyCell> residency);
 
         const VFS::Manager& mVfs;
         std::shared_ptr<RenderVsg::VsgSemanticSession> mSession;
@@ -104,6 +109,8 @@ namespace MWRender
         };
         std::map<std::string, ComposedActorEntry, std::less<>> mComposedActors;
         RenderCore::WorldEpoch mComposedActorEpoch;
+        std::set<std::string, std::less<>> mGroundcoverCells;
+        RenderCore::WorldEpoch mGroundcoverEpoch;
     };
 }
 

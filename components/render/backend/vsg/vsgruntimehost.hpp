@@ -6,6 +6,7 @@
 #include "openmwviewdependentstate.hpp"
 #include "sdlvulkanwindow.hpp"
 #include "staticassetrealizer.hpp"
+#include "staticpopulationresidency.hpp"
 #include "staticworldresidency.hpp"
 #include "vsgsubmission.hpp"
 #include "uipipeline.hpp"
@@ -20,6 +21,7 @@
 
 namespace vsg
 {
+    class Node;
     class Group;
     class AmbientLight;
     class DirectionalLight;
@@ -37,10 +39,24 @@ namespace VsgMyGui
 
 namespace RenderVsg
 {
+    struct VsgShadowOptions
+    {
+        bool enabled = false;
+        std::uint32_t cascadeCount = 1;
+        std::uint32_t mapResolution = 2048;
+        double maximumDistance = 1e8;
+        double depthBias = 0.005;
+        double splitLambda = 0.5;
+        bool actorCasters = true;
+        bool terrainCasters = true;
+        bool objectCasters = true;
+    };
+
     struct VsgRuntimeHostOptions
     {
         std::size_t maximumFramesInFlight = VsgRecordAndSubmitRingSize;
         StaticPlanOptions staticPlan;
+        VsgShadowOptions shadows;
     };
 
     // Production-shaped CP3C host for one SDL-owned swapchain and one semantic
@@ -68,7 +84,8 @@ namespace RenderVsg
         [[nodiscard]] const std::string& lastDiagnostic() const noexcept { return mLastDiagnostic; }
 
     private:
-        using StaticResident = vsg::ref_ptr<vsg::MatrixTransform>;
+        using StaticResident = vsg::ref_ptr<vsg::Node>;
+        using StaticPopulationResident = vsg::ref_ptr<vsg::Group>;
 
         [[nodiscard]] bool synchronizeStaticWorld(const RenderCore::RenderWorld& world);
         [[nodiscard]] bool synchronizeDynamicActors(
@@ -96,6 +113,7 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::DirectionalLight> mSunLight;
         FrameCameraObjects mCamera;
         StaticWorldResidency<StaticResident> mStaticResidency;
+        StaticPopulationResidency<StaticPopulationResident> mStaticPopulationResidency;
         FrameRetirementQueue<vsg::ref_ptr<vsg::Group>> mDynamicRetirements;
         FrameRetirementQueue<vsg::ref_ptr<vsg::Group>> mGuiRetirements;
         std::optional<RenderCore::FrameId> mDynamicLastUse;

@@ -6,8 +6,11 @@
 #include <vsg/core/Data.h>
 #include <vsg/core/ref_ptr.h>
 
+#include <glm/vec3.hpp>
+
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -78,7 +81,9 @@ namespace RenderVsg
 
         [[nodiscard]] StaticRealizationResult realize(const RenderCore::RenderWorld& world,
             const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
-            const MeshPayloadResolver& meshPayloadResolver = {}) const;
+            const MeshPayloadResolver& meshPayloadResolver = {},
+            std::span<const RenderCore::PopulationInstanceRecord> placements = {},
+            glm::dvec3 placementOrigin = {}) const;
 
     private:
         vsg::ref_ptr<vsg::SharedObjects> mSharedObjects;

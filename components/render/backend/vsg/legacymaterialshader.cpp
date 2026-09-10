@@ -105,6 +105,13 @@ layout(set = VIEW_DESCRIPTOR_SET, binding = 6) uniform OpenMwEnvironmentData
     vec4 fogRangeModes;
     // x=near, y=far, z=FogFalloffMode.
     vec4 projectionFog;
+    vec4 skyColor;
+    // x=night factor, y=cloud blend, z=cloud speed, w=precipitation intensity.
+    vec4 weatherFactors;
+    // xyz=wind direction, w=wind speed.
+    vec4 wind;
+    // x=precipitation enabled, y=storm, z=sky enabled, w=shadows enabled.
+    vec4 weatherFlags;
 } openmwEnvironment;
 
 layout(location = 0) in vec3 eyePos;

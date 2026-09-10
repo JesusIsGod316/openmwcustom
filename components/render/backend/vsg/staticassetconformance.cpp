@@ -289,10 +289,12 @@ namespace RenderVsg
 
     StaticRealizationResult realizeStaticAssetConformant(const RenderCore::RenderWorld& world,
         RenderCore::ModelHandle modelHandle, const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
-        vsg::ref_ptr<vsg::SharedObjects> sharedObjects, const MeshPayloadResolver& meshPayloadResolver)
+        vsg::ref_ptr<vsg::SharedObjects> sharedObjects, const MeshPayloadResolver& meshPayloadResolver,
+        std::span<const RenderCore::PopulationInstanceRecord> placements, glm::dvec3 placementOrigin)
     {
         StaticAssetRealizer realizer(std::move(sharedObjects));
-        StaticRealizationResult result = realizer.realize(world, plan, textureResolver, meshPayloadResolver);
+        StaticRealizationResult result
+            = realizer.realize(world, plan, textureResolver, meshPayloadResolver, placements, placementOrigin);
         if (!result.valid())
             return result;
 

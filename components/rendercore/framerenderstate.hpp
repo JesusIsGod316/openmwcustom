@@ -209,6 +209,9 @@ namespace RenderCore
         // retain authored directional lighting while hiding the sun itself.
         bool sunLightEnabled = true;
         bool sunVisible = true;
+        // Shadow-map resources are fixed when the backend is constructed, but
+        // outdoor/interior policy remains frame-varying across transitions.
+        bool shadowsEnabled = false;
         // Matches the OpenMW shader choice: non-classic and clustered lighting
         // fade point lights over the final quarter of their effective radius.
         bool localLightRadiusFade = true;
@@ -216,6 +219,18 @@ namespace RenderCore
         // selection and far-plane fading, so a backend must not silently treat
         // it as the unclustered loop merely because their radius curves match.
         bool clusteredLocalLighting = false;
+        // CP4D weather values are frame-varying semantic inputs. Sky/cloud
+        // textures and geometry remain persistent resources rather than being
+        // copied into every frame snapshot.
+        Color skyColor{ 0.0f, 0.0f, 0.0f, 1.0f };
+        float nightSkyFactor = 0.0f;
+        float cloudBlendFactor = 0.0f;
+        float cloudSpeed = 0.0f;
+        glm::vec3 windDirection{ 0.0f, 1.0f, 0.0f };
+        float windSpeed = 0.0f;
+        float precipitationIntensity = 0.0f;
+        bool precipitationEnabled = false;
+        bool storm = false;
         bool skyEnabled = true;
         bool waterEnabled = false;
         double waterHeight = 0.0;
@@ -553,7 +568,12 @@ namespace RenderCore
             const bool fogRangeValid = !value.fogEnabled || (value.fogEnd > value.fogStart && value.fogEnd > 0.0f);
             return finite(value.ambient) && finite(value.fogColor) && finite(value.fogStart) && finite(value.fogEnd)
                 && fogModesValid && fogRangeValid && finite(value.sunDirection) && finite(value.sunDiffuse)
-                && finite(value.sunSpecular) && finite(value.waterHeight);
+                && finite(value.sunSpecular) && finite(value.skyColor) && finite(value.nightSkyFactor)
+                && value.nightSkyFactor >= 0.0f && value.nightSkyFactor <= 1.0f && finite(value.cloudBlendFactor)
+                && value.cloudBlendFactor >= 0.0f && value.cloudBlendFactor <= 1.0f && finite(value.cloudSpeed)
+                && finite(value.windDirection) && finite(value.windSpeed) && value.windSpeed >= 0.0f
+                && finite(value.precipitationIntensity) && value.precipitationIntensity >= 0.0f
+                && value.precipitationIntensity <= 1.0f && finite(value.waterHeight);
         }
 
         [[nodiscard]] static bool finite(const DynamicMaterialState& value) noexcept

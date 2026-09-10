@@ -9,6 +9,7 @@
 #include <glm/vec3.hpp>
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace RenderVsg
@@ -48,7 +49,9 @@ namespace RenderVsg
     [[nodiscard]] StaticRealizationResult realizeStaticAssetConformant(const RenderCore::RenderWorld& world,
         RenderCore::ModelHandle model, const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
         vsg::ref_ptr<vsg::SharedObjects> sharedObjects = {},
-        const MeshPayloadResolver& meshPayloadResolver = {});
+        const MeshPayloadResolver& meshPayloadResolver = {},
+        std::span<const RenderCore::PopulationInstanceRecord> placements = {},
+        glm::dvec3 placementOrigin = {});
 }
 
 #endif

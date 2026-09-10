@@ -945,6 +945,35 @@ namespace RenderCore
         bool lightingEnabled = true;
     };
 
+    struct PopulationInstanceRecord
+    {
+        // Stable gameplay/source identity remains available for deterministic
+        // replacement and diagnostics, but no InstanceHandle or backend node is
+        // allocated for each high-volume exterior placement.
+        std::string sourceIdentity;
+        WorldTransform transform;
+        AxisAlignedBounds localBounds;
+        LodSemantic lod;
+        std::uint64_t semanticFlags = semanticFlag(InstanceSemanticFlag::OrdinaryWorld)
+            | semanticFlag(InstanceSemanticFlag::ShadowCaster) | semanticFlag(InstanceSemanticFlag::ReflectionEligible)
+            | semanticFlag(InstanceSemanticFlag::RefractionEligible);
+        bool lightingEnabled = true;
+    };
+
+    struct ModelPopulationRecord
+    {
+        ModelHandle model;
+        std::vector<PopulationInstanceRecord> instances;
+    };
+
+    struct StaticPopulationPayload
+    {
+        // Groups are ordered by model handle and placements are ordered by
+        // source identity. This is the neutral CP4C data-oriented ownership
+        // shape consumed by backend-private instancing/work generation.
+        std::vector<ModelPopulationRecord> groups;
+    };
+
     struct ChunkRecord
     {
         enum class Kind : std::uint8_t
@@ -968,6 +997,7 @@ namespace RenderCore
         std::int32_t gridY = 0;
         std::uint32_t lodLevel = 0;
         std::uint8_t stitchMask = 0;
+        std::shared_ptr<const StaticPopulationPayload> population;
         // Derived ordered index for individually addressable instances. Producers
         // never author this independently from InstanceRecord::chunk.
         std::vector<InstanceHandle> members;

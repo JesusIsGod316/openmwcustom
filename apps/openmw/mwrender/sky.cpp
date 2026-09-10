@@ -497,7 +497,7 @@ namespace MWRender
         return mSecunda->getPhaseInt();
     }
 
-    bool SkyManager::isEnabled()
+    bool SkyManager::isEnabled() const
     {
         return mEnabled;
     }

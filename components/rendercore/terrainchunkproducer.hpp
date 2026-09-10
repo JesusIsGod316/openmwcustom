@@ -328,7 +328,8 @@ namespace RenderCore
             chunk.bounds.minimum = source.localBounds.minimum + glm::vec3(source.transform.translation);
             chunk.bounds.maximum = source.localBounds.maximum + glm::vec3(source.transform.translation);
             chunk.semanticFlags
-                = semanticFlag(InstanceSemanticFlag::OrdinaryWorld) | semanticFlag(InstanceSemanticFlag::Terrain);
+                = semanticFlag(InstanceSemanticFlag::OrdinaryWorld) | semanticFlag(InstanceSemanticFlag::Terrain)
+                | semanticFlag(InstanceSemanticFlag::ShadowCaster);
             chunk.kind = ChunkRecord::Kind::Terrain;
             chunk.gridX = source.gridX;
             chunk.gridY = source.gridY;

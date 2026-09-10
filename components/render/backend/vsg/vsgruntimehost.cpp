@@ -14,8 +14,11 @@
 #include <vsg/app/Viewer.h>
 #include <vsg/lighting/AmbientLight.h>
 #include <vsg/lighting/DirectionalLight.h>
+#include <vsg/lighting/HardShadows.h>
 #include <vsg/nodes/Group.h>
 #include <vsg/nodes/MatrixTransform.h>
+#include <vsg/nodes/Switch.h>
+#include <vsg/state/ResourceHints.h>
 #include <vsg/utils/SharedObjects.h>
 
 #include <algorithm>
@@ -44,6 +47,27 @@ namespace RenderVsg
                 && projection.depthDirection == RenderCore::DepthDirection::Reversed
                 && projection.yDirection == RenderCore::ClipYDirection::Down;
         }
+
+        constexpr vsg::Mask ShadowTraversalMask = 0x1;
+
+        [[nodiscard]] bool hasSemanticFlag(
+            std::uint64_t flags, RenderCore::InstanceSemanticFlag flag) noexcept
+        {
+            return (flags & RenderCore::semanticFlag(flag)) != 0;
+        }
+
+        [[nodiscard]] vsg::Mask placementMask(bool castsShadow) noexcept
+        {
+            return castsShadow ? vsg::MASK_ALL : (vsg::MASK_ALL & ~ShadowTraversalMask);
+        }
+
+        [[nodiscard]] vsg::ref_ptr<vsg::Switch> maskedNode(
+            vsg::Mask mask, vsg::ref_ptr<vsg::Node> child)
+        {
+            auto result = vsg::Switch::create();
+            result->addChild(mask, std::move(child));
+            return result;
+        }
     }
 
     VsgRuntimeHost::VsgRuntimeHost(
@@ -66,6 +90,12 @@ namespace RenderVsg
             || options.maximumFramesInFlight != VsgRecordAndSubmitRingSize)
             throw std::invalid_argument(
                 "VsgRuntimeHost requires a valid window/resolver and the exact VSG 1.1.15 three-frame task ring");
+        if (options.shadows.enabled
+            && (options.shadows.cascadeCount == 0 || options.shadows.cascadeCount > 8
+                || options.shadows.mapResolution < 256 || options.shadows.mapResolution > 4096
+                || options.shadows.maximumDistance <= 0.0 || options.shadows.depthBias < 0.0
+                || options.shadows.splitLambda < 0.0 || options.shadows.splitLambda > 1.0))
+            throw std::invalid_argument("VsgRuntimeHost received unsafe or invalid CP4D shadow settings");
 
         mViewer->addWindow(mWindow);
         mView = vsg::View::create(mCamera.camera);
@@ -76,6 +106,13 @@ namespace RenderVsg
         mView->viewDependentState = mOpenMwViewState;
         mAmbientLight->name = "OpenMW ambient";
         mSunLight->name = "OpenMW sun";
+        if (options.shadows.enabled)
+        {
+            mSunLight->shadowSettings = vsg::HardShadows::create(options.shadows.cascadeCount);
+            mOpenMwViewState->maxShadowDistance = options.shadows.maximumDistance;
+            mOpenMwViewState->shadowMapBias = options.shadows.depthBias;
+            mOpenMwViewState->lambda = options.shadows.splitLambda;
+        }
         mView->addChild(mAmbientLight);
         mView->addChild(mSunLight);
         mSceneRoot->addChild(mStaticRoot);
@@ -92,7 +129,14 @@ namespace RenderVsg
         auto commandGraph = vsg::CommandGraph::create(mWindow);
         commandGraph->addChild(mRenderGraph);
         mViewer->assignRecordAndSubmitTaskAndPresentation({ commandGraph });
-        const vsg::CompileResult compile = mViewer->compile();
+        auto resourceHints = vsg::ResourceHints::create();
+        if (options.shadows.enabled)
+        {
+            resourceHints->numShadowMapsRange
+                = { options.shadows.cascadeCount, options.shadows.cascadeCount };
+            resourceHints->shadowMapSize = { options.shadows.mapResolution, options.shadows.mapResolution };
+        }
+        const vsg::CompileResult compile = mViewer->compile(resourceHints);
         if (!compile)
             throw std::runtime_error("VsgRuntimeHost initial graph compilation failed: " + compile.message);
     }
@@ -143,13 +187,16 @@ namespace RenderVsg
 
     bool VsgRuntimeHost::synchronizeStaticWorld(const RenderCore::RenderWorld& world)
     {
-        const StaticWorldMutation mutation = mStaticResidency.prepare(world, mOptions.staticPlan);
-        if (!mutation.valid || mutation.simpleMeshInstancesDeferred != 0)
+        const StaticWorldPlan worldPlan = buildStaticWorldPlan(world, mOptions.staticPlan);
+        const StaticWorldMutation mutation = mStaticResidency.prepare(world, worldPlan);
+        const StaticPopulationMutation populationMutation = mStaticPopulationResidency.prepare(world, worldPlan);
+        if (!mutation.valid || !populationMutation.valid || mutation.simpleMeshInstancesDeferred != 0)
         {
             mLastDiagnostic = "static world contains invalid or not-yet-supported instance populations";
             return false;
         }
-        if (mutation.upserts.empty() && mutation.removals.empty())
+        if (mutation.upserts.empty() && mutation.removals.empty() && populationMutation.upserts.empty()
+            && populationMutation.removals.empty())
             return true;
 
         std::vector<StaticResident> replacements;
@@ -172,13 +219,81 @@ namespace RenderVsg
                 return false;
             }
             auto placed = vsg::MatrixTransform::create(toVsgMatrix(staticInstancePlacementMatrix(plan.placement)));
+            const bool terrain = hasSemanticFlag(plan.semanticFlags, RenderCore::InstanceSemanticFlag::Terrain);
+            const bool castsShadow = hasSemanticFlag(plan.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster)
+                && (terrain ? mOptions.shadows.terrainCasters : mOptions.shadows.objectCasters);
             placed->addChild(realized.root);
             if (!compileForViewer(*mViewer, placed))
             {
                 mLastDiagnostic = "incremental VSG compilation failed before scene publication";
                 return false;
             }
-            replacements.push_back(std::move(placed));
+            replacements.push_back(maskedNode(placementMask(castsShadow), std::move(placed)));
+        }
+
+        std::vector<StaticPopulationResident> populationReplacements;
+        populationReplacements.reserve(populationMutation.upserts.size());
+        for (const StaticPopulationPlan& plan : populationMutation.upserts)
+        {
+            if (std::ranges::any_of(plan.placements,
+                    [](const RenderCore::PopulationInstanceRecord& placement) { return !placement.lightingEnabled; }))
+            {
+                mLastDiagnostic = "per-placement disabled lighting is not implemented by the CP4C host";
+                return false;
+            }
+            const auto castsShadow = [&](const RenderCore::PopulationInstanceRecord& placement) {
+                const bool terrain
+                    = hasSemanticFlag(placement.semanticFlags, RenderCore::InstanceSemanticFlag::Terrain);
+                return hasSemanticFlag(placement.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster)
+                    && (terrain ? mOptions.shadows.terrainCasters : mOptions.shadows.objectCasters);
+            };
+            const bool mixedShadowMasks = std::ranges::any_of(plan.placements,
+                [&](const RenderCore::PopulationInstanceRecord& placement) {
+                    return castsShadow(placement) != castsShadow(plan.placements.front());
+                });
+            const bool requiresIndividualPlacement = mixedShadowMasks || std::ranges::any_of(plan.asset.draws,
+                [&](const StaticDrawPlan& draw) {
+                    const RenderCore::MaterialRecord* material = world.get(draw.material);
+                    return !material || material->transparentSort == RenderCore::TransparentSortPolicy::Sorted
+                        || draw.billboard.has_value();
+                });
+            StaticRealizationResult realized = requiresIndividualPlacement
+                ? realizeStaticAssetConformant(world, plan.model, plan.asset, mTextureResolver, mSharedObjects)
+                : realizeStaticAssetConformant(world, plan.model, plan.asset, mTextureResolver, mSharedObjects, {},
+                    plan.placements, plan.coordinateOrigin);
+            if (!realized.valid() || realized.stats.runtimeContextEffects != 0
+                || realized.stats.unsupportedTextureBindings != 0)
+            {
+                mLastDiagnostic = realized.diagnostics.empty()
+                    ? "population realization requires a not-yet-supported compatibility effect"
+                    : realized.diagnostics.front();
+                return false;
+            }
+            auto group = vsg::Group::create();
+            if (!requiresIndividualPlacement)
+            {
+                auto origin = vsg::MatrixTransform::create(
+                    vsg::translate(plan.coordinateOrigin.x, plan.coordinateOrigin.y, plan.coordinateOrigin.z));
+                origin->addChild(realized.root);
+                group->addChild(maskedNode(placementMask(castsShadow(plan.placements.front())), std::move(origin)));
+            }
+            else
+            {
+                group->children.reserve(plan.placements.size());
+                for (const RenderCore::PopulationInstanceRecord& placement : plan.placements)
+                {
+                    auto placed
+                        = vsg::MatrixTransform::create(toVsgMatrix(staticInstancePlacementMatrix(placement.transform)));
+                    placed->addChild(realized.root);
+                    group->addChild(maskedNode(placementMask(castsShadow(placement)), std::move(placed)));
+                }
+            }
+            if (!compileForViewer(*mViewer, group))
+            {
+                mLastDiagnostic = "incremental VSG population compilation failed before scene publication";
+                return false;
+            }
+            populationReplacements.push_back(std::move(group));
         }
 
         std::unordered_map<std::uint64_t, std::size_t> replacementIndices;
@@ -190,7 +305,7 @@ namespace RenderVsg
         // the live root. Residency performs its own pre-publication allocation;
         // the final scene-root publication is an allocation-free swap.
         vsg::Group::Children nextChildren;
-        nextChildren.reserve(mutation.orderedInstances.size());
+        nextChildren.reserve(mutation.orderedInstances.size() + populationMutation.orderedPopulations.size());
         for (const RenderCore::InstanceHandle handle : mutation.orderedInstances)
         {
             const auto replacement = replacementIndices.find(staticInstanceKey(handle));
@@ -207,10 +322,34 @@ namespace RenderVsg
             }
             nextChildren.push_back(*resident);
         }
+        for (const StaticPopulationIdentity identity : populationMutation.orderedPopulations)
+        {
+            const auto replacement = std::find_if(populationMutation.upserts.begin(), populationMutation.upserts.end(),
+                [&](const StaticPopulationPlan& plan) { return populationIdentity(plan) == identity; });
+            if (replacement != populationMutation.upserts.end())
+            {
+                const std::size_t index
+                    = static_cast<std::size_t>(replacement - populationMutation.upserts.begin());
+                nextChildren.push_back(populationReplacements[index]);
+                continue;
+            }
+            const StaticPopulationResident* resident = mStaticPopulationResidency.residentObject(identity);
+            if (!resident)
+            {
+                mLastDiagnostic = "static traversal order could not resolve a resident population";
+                return false;
+            }
+            nextChildren.push_back(*resident);
+        }
 
-        StaticWorldCommitResult<StaticResident> committed
-            = mStaticResidency.commit(world, mutation, std::move(replacements));
-        if (!committed.committed)
+        if ((!populationMutation.upserts.empty() || !populationMutation.removals.empty())
+            && !mStaticPopulationResidency.commit(world, populationMutation, std::move(populationReplacements)).committed)
+        {
+            mLastDiagnostic = "static population changed while its replacement graph was being realized";
+            return false;
+        }
+        if ((!mutation.upserts.empty() || !mutation.removals.empty())
+            && !mStaticResidency.commit(world, mutation, std::move(replacements)).committed)
         {
             mLastDiagnostic = "static world changed while its replacement graph was being realized";
             return false;
@@ -294,7 +433,9 @@ namespace RenderVsg
             }
             auto placed = vsg::MatrixTransform::create(toVsgMatrix(staticInstancePlacementMatrix(transform->current)));
             placed->addChild(realized.root);
-            nextRoot->addChild(placed);
+            const bool castsShadow = mOptions.shadows.actorCasters
+                && hasSemanticFlag(actor.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster);
+            nextRoot->addChild(maskedNode(placementMask(castsShadow), std::move(placed)));
         }
         if (!compileForViewer(*mViewer, nextRoot))
         {
@@ -433,6 +574,7 @@ namespace RenderVsg
         if (completion.completedThrough)
         {
             (void)mStaticResidency.collect(*completion.completedThrough);
+            (void)mStaticPopulationResidency.collect(*completion.completedThrough);
             (void)mDynamicRetirements.collect(*completion.completedThrough);
             (void)mGuiRetirements.collect(*completion.completedThrough);
         }
@@ -449,6 +591,13 @@ namespace RenderVsg
         mSunLight->color.set(environment.sunDiffuse.r, environment.sunDiffuse.g, environment.sunDiffuse.b);
         mSunLight->intensity = environment.sunLightEnabled ? 1.0f : 0.0f;
         mSunLight->direction.set(environment.sunDirection.x, environment.sunDirection.y, environment.sunDirection.z);
+        if (mOptions.shadows.enabled)
+        {
+            if (environment.shadowsEnabled)
+                mOpenMwViewState->shadowSettingsOverride.erase(mSunLight);
+            else
+                mOpenMwViewState->shadowSettingsOverride[mSunLight] = {};
+        }
         const RenderCore::Color& clear = environment.fogColor;
         mRenderGraph->setClearValues({ { clear.r, clear.g, clear.b, clear.a } });
         if (!synchronizeLocalLights(world) || !synchronizeStaticWorld(world) || !synchronizeDynamicActors(world, frame)
@@ -462,7 +611,8 @@ namespace RenderVsg
                 "Vulkan record/submit failed with VkResult " + std::to_string(submission.submit));
         mWaitedIdle = false;
         if (!mCompletion.registerSubmission(*mViewer, frame.frameId())
-            || !mStaticResidency.markSubmitted(frame.frameId()))
+            || !mStaticResidency.markSubmitted(frame.frameId())
+            || !mStaticPopulationResidency.markSubmitted(frame.frameId()))
         {
             // Submission has already happened. Synchronize before returning so
             // an untracked in-flight frame can never make later destruction or
@@ -501,6 +651,7 @@ namespace RenderVsg
 
     std::size_t VsgRuntimeHost::pendingRetirementCount() const noexcept
     {
-        return mStaticResidency.pendingRetirementCount() + mDynamicRetirements.size() + mGuiRetirements.size();
+        return mStaticResidency.pendingRetirementCount() + mStaticPopulationResidency.pendingRetirementCount()
+            + mDynamicRetirements.size() + mGuiRetirements.size();
     }
 }

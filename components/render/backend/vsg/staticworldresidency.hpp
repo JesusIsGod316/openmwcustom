@@ -55,9 +55,14 @@ namespace RenderVsg
         [[nodiscard]] StaticWorldMutation prepare(
             const RenderCore::RenderWorld& world, StaticPlanOptions options = {})
         {
+            return prepare(world, buildStaticWorldPlan(world, options));
+        }
+
+        [[nodiscard]] StaticWorldMutation prepare(
+            const RenderCore::RenderWorld& world, const StaticWorldPlan& plan)
+        {
             StaticWorldMutation mutation;
             mutation.serial = ++mLastPreparedSerial;
-            const StaticWorldPlan plan = buildStaticWorldPlan(world, options);
             mutation.worldEpoch = plan.worldEpoch;
             mutation.worldRevision = plan.worldRevision;
             mutation.simpleMeshInstancesDeferred = plan.simpleMeshInstancesDeferred;

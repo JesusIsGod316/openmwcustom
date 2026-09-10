@@ -414,7 +414,14 @@ namespace MWRender
         mV35CoarseChunkOcclusion = coarseChunkOcclusion;
     }
 
-    void Groundcover::collectInstances(InstanceMap& instances, float size, const osg::Vec2f& center)
+    Groundcover::InstanceMap Groundcover::collectInstances(float size, const osg::Vec2f& center) const
+    {
+        InstanceMap result;
+        collectInstances(result, size, center);
+        return result;
+    }
+
+    void Groundcover::collectInstances(InstanceMap& instances, float size, const osg::Vec2f& center) const
     {
         if (mDensity <= 0.f)
             return;

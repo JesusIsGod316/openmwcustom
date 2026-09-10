@@ -4,6 +4,7 @@
 #include "celllighting.hpp"
 #include "fogstate.hpp"
 #include "renderingmanager.hpp"
+#include "sky.hpp"
 
 #include "../mwworld/cell.hpp"
 #include "../mwworld/cellstore.hpp"
@@ -279,6 +280,7 @@ namespace MWRender
         result.sunSpecular.a = 0.0f;
         result.sunLightEnabled = true;
         result.sunVisible = false;
+        result.shadowsEnabled = Settings::shadows().mEnableShadows && Settings::shadows().mEnableIndoorShadows;
         result.localLightRadiusFade = !Settings::shaders().mClassicFalloff || Settings::shaders().mClusteredLighting;
         result.clusteredLocalLighting = Settings::shaders().mClusteredLighting;
         result.skyEnabled = false;
@@ -338,9 +340,26 @@ namespace MWRender
             result.sunSpecular = toColor(rendering.getSunSpecular());
             result.sunLightEnabled = true;
             result.sunVisible = false;
+            result.shadowsEnabled = Settings::shadows().mEnableShadows;
             result.localLightRadiusFade
                 = !Settings::shaders().mClassicFalloff || Settings::shaders().mClusteredLighting;
             result.clusteredLocalLighting = Settings::shaders().mClusteredLighting;
+            if (const SkyManager* sky = rendering.getSkyManager())
+            {
+                result.skyColor = toColor(sky->getSkyColor());
+                result.nightSkyFactor = std::clamp(sky->getNightSkyFactor(), 0.0f, 1.0f);
+                result.cloudBlendFactor = std::clamp(sky->getCloudBlendFactor(), 0.0f, 1.0f);
+                result.cloudSpeed = sky->getCloudSpeed();
+                const osg::Vec3f wind = sky->getStormDirection();
+                const glm::vec3 windDirection{ wind.x(), wind.y(), wind.z() };
+                result.windDirection = glm::length(windDirection) > 0.0f
+                    ? glm::normalize(windDirection)
+                    : glm::vec3(0.0f, 1.0f, 0.0f);
+                result.windSpeed = std::max(0.0f, sky->getWindSpeed());
+                result.precipitationIntensity = std::clamp(sky->getPrecipitationAlpha(), 0.0f, 1.0f);
+                result.precipitationEnabled = sky->hasRain() || result.precipitationIntensity > 0.0f;
+                result.storm = sky->isStorm();
+            }
             result.skyEnabled = false;
             result.waterEnabled = false;
             result.waterHeight = cell.hasWater() ? cell.getWaterHeight() : 0.0;

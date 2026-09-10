@@ -322,7 +322,8 @@ namespace RenderVsg
 
     StaticRealizationResult StaticAssetRealizer::realize(const RenderCore::RenderWorld& world,
         const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
-        const MeshPayloadResolver& meshPayloadResolver) const
+        const MeshPayloadResolver& meshPayloadResolver,
+        std::span<const RenderCore::PopulationInstanceRecord> placements, glm::dvec3 placementOrigin) const
     {
         using namespace RenderCore;
 
@@ -342,6 +343,32 @@ namespace RenderVsg
             result.root = {};
             result.diagnostics.emplace_back("OpenMW legacy compatibility ShaderSet is unavailable");
             return result;
+        }
+
+        vsg::ref_ptr<vsg::vec3Array> instanceTranslations;
+        vsg::ref_ptr<vsg::vec4Array> instanceRotations;
+        vsg::ref_ptr<vsg::vec3Array> instanceScales;
+        if (!placements.empty())
+        {
+            if (placements.size() > std::numeric_limits<std::uint32_t>::max())
+            {
+                result.root = {};
+                result.diagnostics.emplace_back("Static population exceeds Vulkan draw instanceCount range");
+                return result;
+            }
+            instanceTranslations = vsg::vec3Array::create(placements.size());
+            instanceRotations = vsg::vec4Array::create(placements.size());
+            instanceScales = vsg::vec3Array::create(placements.size());
+            for (std::size_t i = 0; i < placements.size(); ++i)
+            {
+                const RenderCore::WorldTransform& placement = placements[i].transform;
+                const glm::dvec3 relative = placement.translation - placementOrigin;
+                instanceTranslations->set(i, vsg::vec3(
+                    static_cast<float>(relative.x), static_cast<float>(relative.y), static_cast<float>(relative.z)));
+                instanceRotations->set(i, vsg::vec4(placement.rotation.x, placement.rotation.y,
+                    placement.rotation.z, placement.rotation.w));
+                instanceScales->set(i, vsg::vec3(placement.scale.x, placement.scale.y, placement.scale.z));
+            }
         }
 
         for (const StaticDrawPlan& draw : plan.draws)
@@ -404,6 +431,16 @@ namespace RenderVsg
             {
                 result.root = {};
                 result.diagnostics.emplace_back("Legacy compatibility shader does not expose vsg_Vertex");
+                return result;
+            }
+            if (instanceTranslations
+                && (!config->assignArray(
+                        arrays, "vsg_Translation", VK_VERTEX_INPUT_RATE_INSTANCE, instanceTranslations)
+                    || !config->assignArray(arrays, "vsg_Rotation", VK_VERTEX_INPUT_RATE_INSTANCE, instanceRotations)
+                    || !config->assignArray(arrays, "vsg_Scale", VK_VERTEX_INPUT_RATE_INSTANCE, instanceScales)))
+            {
+                result.root = {};
+                result.diagnostics.emplace_back("Legacy compatibility shader rejected CP4C instance transforms");
                 return result;
             }
 
@@ -562,7 +599,8 @@ namespace RenderVsg
             command->assignArrays(arrays);
             command->assignIndices(indices);
             command->indexCount = draw.surface.indexCount;
-            command->instanceCount = 1u;
+            command->instanceCount
+                = placements.empty() ? 1u : static_cast<std::uint32_t>(placements.size());
             command->firstIndex = draw.surface.firstIndex;
             stateGroup->addChild(command);
 

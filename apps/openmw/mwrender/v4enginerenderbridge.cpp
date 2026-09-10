@@ -6,6 +6,7 @@
 #include "v4terrainsource.hpp"
 
 #include "animation.hpp"
+#include "groundcover.hpp"
 #include "npcanimation.hpp"
 #include "renderingmanager.hpp"
 
@@ -19,6 +20,8 @@
 #include <components/sceneutil/skeleton.hpp>
 
 #include <components/misc/strings/lower.hpp>
+#include <components/misc/convert.hpp>
+#include <components/settings/values.hpp>
 #include <components/vfs/manager.hpp>
 #include <components/vsgmygui/platform.hpp>
 #include <components/vsgmygui/rendermanager.hpp>
@@ -156,6 +159,8 @@ namespace MWRender
         mLastDiagnostic.clear();
         if (!cell.isExterior())
         {
+            if (!synchronizeGroundcover(rendering, {}, {}))
+                return false;
             mTerrainResidencyPlanner.reset();
             mPendingTerrainPublication.clear();
             if (mTerrainPreparation)
@@ -208,6 +213,8 @@ namespace MWRender
 
         const std::vector<RenderCore::TerrainResidencyCell> residency
             = mTerrainResidencyPlanner.update(current.worldspaceIdentity, current.gridX, current.gridY);
+        if (!synchronizeGroundcover(rendering, current.worldspaceIdentity, residency))
+            return false;
         std::vector<RenderCore::TerrainPreparationRequest> desired;
         desired.reserve(residency.size());
         for (const RenderCore::TerrainResidencyCell& resident : residency)
@@ -251,6 +258,124 @@ namespace MWRender
             }
             if (status != RenderCore::TerrainChunkPublishStatus::PartiallyApplied)
                 mPendingTerrainPublication.clear();
+        }
+        return true;
+    }
+
+    bool V4EngineRenderBridge::synchronizeGroundcover(const RenderingManager& rendering,
+        std::string_view worldspaceIdentity, std::span<const RenderCore::TerrainResidencyCell> residency)
+    {
+        if (mGroundcoverEpoch != mSession->world().epoch())
+        {
+            mGroundcoverCells.clear();
+            mGroundcoverEpoch = mSession->world().epoch();
+        }
+
+        std::set<std::string, std::less<>> desired;
+        const Groundcover* groundcover = rendering.getGroundcover();
+        if (groundcover && !worldspaceIdentity.empty())
+        {
+            for (const RenderCore::TerrainResidencyCell& resident : residency)
+            {
+                if (resident.lodLevel == 0)
+                    desired.insert("groundcover:" + std::string(worldspaceIdentity) + ":"
+                        + std::to_string(resident.gridX) + "," + std::to_string(resident.gridY));
+            }
+
+            // File merge/density filtering is deterministic but currently
+            // synchronous. Bound new work per frame until it moves onto the
+            // CP4 preparation service, preventing a nine-cell entry spike.
+            constexpr std::size_t maxNewCellsPerFrame = 1;
+            std::size_t newCells = 0;
+            for (const RenderCore::TerrainResidencyCell& resident : residency)
+            {
+                if (resident.lodLevel != 0)
+                    continue;
+                const std::string cellIdentity = "groundcover:" + std::string(worldspaceIdentity) + ":"
+                    + std::to_string(resident.gridX) + "," + std::to_string(resident.gridY);
+                if (mGroundcoverCells.contains(cellIdentity))
+                    continue;
+                if (newCells >= maxNewCellsPerFrame)
+                    continue;
+
+                RenderCore::StaticPopulationCellSource cellSource;
+                cellSource.identity = cellIdentity;
+                cellSource.worldspaceIdentity = worldspaceIdentity;
+                cellSource.gridX = resident.gridX;
+                cellSource.gridY = resident.gridY;
+                cellSource.groundcover = true;
+                const RenderCore::StaticPopulationPublishStatus added
+                    = mSession->populations().addCell(std::move(cellSource));
+                if (added != RenderCore::StaticPopulationPublishStatus::Applied
+                    && added != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
+                {
+                    mLastDiagnostic = "groundcover population cell staging failed";
+                    return false;
+                }
+
+                const osg::Vec2f center(
+                    static_cast<float>(resident.gridX) + 0.5f, static_cast<float>(resident.gridY) + 0.5f);
+                Groundcover::InstanceMap instances = groundcover->collectInstances(1.0f, center);
+                for (const auto& [modelPath, entries] : instances)
+                {
+                    const std::optional<NifRender::StaticModelCacheResult> published
+                        = ensureModelPublished(*mSession, mVfs, modelPath);
+                    if (!published)
+                    {
+                        mLastDiagnostic = "groundcover model publication failed for " + modelPath.value();
+                        return false;
+                    }
+                    const RenderCore::ModelRecord* model = mSession->world().get(published->model);
+                    if (!model)
+                    {
+                        mLastDiagnostic = "groundcover model cache returned a stale handle";
+                        return false;
+                    }
+                    for (const Groundcover::GroundcoverEntry& entry : entries)
+                    {
+                        RenderCore::StaticPopulationInstanceSource source;
+                        source.identity = "groundcover:" + entry.mRefNum.toString();
+                        source.cellIdentity = cellIdentity;
+                        source.model = published->model;
+                        source.transform.translation
+                            = { entry.mPos.pos[0], entry.mPos.pos[1], entry.mPos.pos[2] };
+                        const osg::Quat rotation = Misc::Convert::makeOsgQuat(entry.mPos);
+                        source.transform.rotation = { static_cast<float>(rotation.w()), static_cast<float>(rotation.x()),
+                            static_cast<float>(rotation.y()), static_cast<float>(rotation.z()) };
+                        source.transform.scale = { entry.mScale, entry.mScale, entry.mScale };
+                        source.localBounds = model->bounds;
+                        source.lod.maximumDistance = std::max(0.0f, Settings::groundcover().mRenderingDistance.get());
+                        source.semanticFlags &= ~RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::ShadowCaster);
+                        const RenderCore::StaticPopulationPublishStatus status
+                            = mSession->populations().upsert(std::move(source));
+                        if (status != RenderCore::StaticPopulationPublishStatus::Applied
+                            && status != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
+                        {
+                            mLastDiagnostic = "groundcover placement staging failed";
+                            return false;
+                        }
+                    }
+                }
+                mGroundcoverCells.insert(cellIdentity);
+                ++newCells;
+            }
+        }
+
+        for (auto current = mGroundcoverCells.begin(); current != mGroundcoverCells.end();)
+        {
+            if (desired.contains(*current))
+            {
+                ++current;
+                continue;
+            }
+            const RenderCore::StaticPopulationPublishStatus status = mSession->populations().removeCell(*current);
+            if (status != RenderCore::StaticPopulationPublishStatus::Applied
+                && status != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
+            {
+                mLastDiagnostic = "groundcover population retirement failed";
+                return false;
+            }
+            current = mGroundcoverCells.erase(current);
         }
         return true;
     }

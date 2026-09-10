@@ -18,6 +18,7 @@ namespace RenderVsg
         : mPublisher(mWorld)
         , mModels(mWorld, mPublisher)
         , mCells(mWorld, mPublisher)
+        , mPopulations(mWorld, mPublisher)
         , mBootstrap(VsgRuntimeBootstrap::create(std::move(textureResolver), std::move(options)))
     {
         if (!mBootstrap)
@@ -34,6 +35,10 @@ namespace RenderVsg
         if (!mHealthy)
             return RenderCore::RenderFrameResult::Failed;
         mLastDiagnostic.clear();
+        const RenderCore::StaticPopulationPublishStatus populationStatus = mPopulations.flush();
+        if (populationStatus != RenderCore::StaticPopulationPublishStatus::Applied
+            && populationStatus != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
+            return fail("static population publication failed at the frame boundary");
         std::optional<RenderCore::FrameRenderState> frame = mFrames.prepare(mWorld, input);
         if (!frame)
             return fail("semantic frame producer rejected the engine frame input");

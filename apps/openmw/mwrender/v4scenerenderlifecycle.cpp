@@ -26,6 +26,12 @@ namespace MWRender
                 || status == RenderCore::ActiveCellPublishStatus::AlreadyPresent;
         }
 
+        [[nodiscard]] bool accepted(RenderCore::StaticPopulationPublishStatus status) noexcept
+        {
+            return status == RenderCore::StaticPopulationPublishStatus::Applied
+                || status == RenderCore::StaticPopulationPublishStatus::AlreadyPresent;
+        }
+
         [[nodiscard]] std::runtime_error publicationError(const char* operation, unsigned int status)
         {
             return std::runtime_error(
@@ -61,6 +67,18 @@ namespace MWRender
             const RenderCore::ActiveCellPublishResult result = mSession->cells().addCell(*source);
             if (!accepted(result.status))
                 throw publicationError("cell activation", static_cast<unsigned int>(result.status));
+            if (cell.getCell()->isExterior())
+            {
+                RenderCore::StaticPopulationCellSource population;
+                population.identity = source->identity;
+                population.worldspaceIdentity = source->worldspaceIdentity;
+                population.gridX = cell.getCell()->getGridX();
+                population.gridY = cell.getCell()->getGridY();
+                const RenderCore::StaticPopulationPublishStatus populationResult
+                    = mSession->populations().addCell(std::move(population));
+                if (!accepted(populationResult))
+                    throw publicationError("exterior population activation", static_cast<unsigned int>(populationResult));
+            }
         }
         catch (const std::exception& error)
         {
@@ -88,6 +106,10 @@ namespace MWRender
             if (result.status != RenderCore::ActiveCellPublishStatus::Applied
                 && result.status != RenderCore::ActiveCellPublishStatus::NotFound)
                 recordFailure("V4 scene lifecycle failed to retire a cell");
+            const RenderCore::StaticPopulationPublishStatus population = mSession->populations().removeCell(*identity);
+            if (population != RenderCore::StaticPopulationPublishStatus::Applied
+                && population != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
+                recordFailure("V4 scene lifecycle failed to retire an exterior population");
         }
         catch (...)
         {
@@ -142,6 +164,10 @@ namespace MWRender
             if (instance.status != RenderCore::ActiveCellPublishStatus::Applied
                 && instance.status != RenderCore::ActiveCellPublishStatus::NotFound)
                 recordFailure("V4 scene lifecycle failed to retire an object instance");
+            const RenderCore::StaticPopulationPublishStatus population = mSession->populations().remove(*identity);
+            if (population != RenderCore::StaticPopulationPublishStatus::Applied
+                && population != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
+                recordFailure("V4 scene lifecycle failed to retire an exterior population placement");
             const RenderCore::ActiveCellPublishResult light = mSession->cells().removeLight(*identity);
             if (light.status != RenderCore::ActiveCellPublishStatus::Applied
                 && light.status != RenderCore::ActiveCellPublishStatus::NotFound)
@@ -243,6 +269,31 @@ namespace MWRender
             = makeV4StaticInstanceSource(ptr, *model, modelRecord->bounds);
         if (!source)
             throw std::runtime_error("V4 scene lifecycle rejected an eligible static object");
+        if (ptr.getCell()->getCell()->isExterior())
+        {
+            const RenderCore::ActiveCellPublishResult removed = mSession->cells().removeInstance(source->identity);
+            if (removed.status != RenderCore::ActiveCellPublishStatus::Applied
+                && removed.status != RenderCore::ActiveCellPublishStatus::NotFound)
+                throw publicationError("interior static retirement", static_cast<unsigned int>(removed.status));
+            RenderCore::StaticPopulationInstanceSource population;
+            population.identity = source->identity;
+            population.cellIdentity = source->cellIdentity;
+            population.model = source->model;
+            population.transform = source->transform;
+            population.localBounds = source->localBounds;
+            population.lod = source->lod;
+            population.semanticFlags = source->semanticFlags;
+            population.lightingEnabled = source->lightingEnabled;
+            const RenderCore::StaticPopulationPublishStatus result
+                = mSession->populations().upsert(std::move(population));
+            if (!accepted(result))
+                throw publicationError("exterior static population", static_cast<unsigned int>(result));
+            return;
+        }
+
+        const RenderCore::StaticPopulationPublishStatus removed = mSession->populations().remove(source->identity);
+        if (!accepted(removed))
+            throw publicationError("exterior static retirement", static_cast<unsigned int>(removed));
         const RenderCore::ActiveCellPublishResult result = mSession->cells().upsertStaticInstance(*source);
         if (!accepted(result.status))
             throw publicationError("static object publication", static_cast<unsigned int>(result.status));

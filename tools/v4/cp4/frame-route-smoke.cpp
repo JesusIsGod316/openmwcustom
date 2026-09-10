@@ -118,6 +118,22 @@ int main()
     if (!require(!RenderCore::FrameRenderState(duplicateIdentity).valid(), "duplicate stable view identity accepted"))
         return EXIT_FAILURE;
 
-    std::cout << "CP4A frame route smoke: PASS\n";
+    auto weather = valid;
+    weather.environment.skyColor = { 0.2f, 0.3f, 0.5f, 1.0f };
+    weather.environment.nightSkyFactor = 0.4f;
+    weather.environment.cloudBlendFactor = 0.6f;
+    weather.environment.windDirection = { 1.0f, 0.0f, 0.0f };
+    weather.environment.windSpeed = 12.0f;
+    weather.environment.precipitationIntensity = 0.75f;
+    weather.environment.precipitationEnabled = true;
+    weather.environment.shadowsEnabled = true;
+    if (!require(RenderCore::FrameRenderState(weather).valid(), "valid CP4D weather state rejected"))
+        return EXIT_FAILURE;
+
+    weather.environment.precipitationIntensity = 1.25f;
+    if (!require(!RenderCore::FrameRenderState(weather).valid(), "out-of-range precipitation accepted"))
+        return EXIT_FAILURE;
+
+    std::cout << "CP4A/CP4D frame route smoke: PASS\n";
     return EXIT_SUCCESS;
 }

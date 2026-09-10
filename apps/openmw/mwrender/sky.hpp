@@ -71,7 +71,7 @@ namespace MWRender
 
         void sunDisable();
 
-        bool isEnabled();
+        bool isEnabled() const;
 
         bool hasRain() const;
 
@@ -98,6 +98,13 @@ namespace MWRender
             std::vector<VFS::Path::Normalized>& models, std::vector<VFS::Path::Normalized>& textures);
 
         float getBaseWindSpeed() const;
+
+        [[nodiscard]] float getWindSpeed() const noexcept { return mWindSpeed; }
+        [[nodiscard]] const osg::Vec3f& getStormDirection() const noexcept { return mStormDirection; }
+        [[nodiscard]] bool isStorm() const noexcept { return mIsStorm; }
+        [[nodiscard]] float getCloudBlendFactor() const noexcept { return mCloudBlendFactor; }
+        [[nodiscard]] float getCloudSpeed() const noexcept { return mCloudSpeed; }
+        [[nodiscard]] float getNightSkyFactor() const noexcept { return mStarsOpacity; }
 
         void setSunglare(bool enabled);
 

@@ -42,18 +42,37 @@ namespace RenderVsg
         std::vector<StaticResourceDependency<RenderCore::TextureHandle>> textures;
     };
 
+    struct StaticPopulationPlan
+    {
+        RenderCore::ChunkHandle chunk;
+        RenderCore::ResourceRevision chunkRevision;
+        RenderCore::ChunkRecord::Kind kind = RenderCore::ChunkRecord::Kind::StaticPopulation;
+        RenderCore::ModelHandle model;
+        RenderCore::ResourceRevision modelRevision;
+        RenderCore::WorldPosition coordinateOrigin;
+        std::vector<RenderCore::PopulationInstanceRecord> placements;
+        StaticPlanOptions options;
+        StaticAssetPlan asset;
+        std::vector<StaticResourceDependency<RenderCore::MeshHandle>> meshes;
+        std::vector<StaticResourceDependency<RenderCore::MaterialHandle>> materials;
+        std::vector<StaticResourceDependency<RenderCore::TextureHandle>> textures;
+    };
+
     struct StaticWorldPlan
     {
         RenderCore::WorldEpoch worldEpoch;
         RenderCore::RenderWorldRevision worldRevision;
         std::vector<StaticInstancePlan> instances;
+        std::vector<StaticPopulationPlan> populations;
         std::uint32_t simpleMeshInstancesDeferred = 0;
         std::uint32_t dynamicInstancesDeferred = 0;
         std::uint32_t invalidModelInstances = 0;
+        std::uint32_t invalidPopulationGroups = 0;
 
         [[nodiscard]] bool valid() const noexcept
         {
-            return worldEpoch.valid() && worldRevision.valid() && invalidModelInstances == 0;
+            return worldEpoch.valid() && worldRevision.valid() && invalidModelInstances == 0
+                && invalidPopulationGroups == 0;
         }
     };
 
@@ -122,6 +141,52 @@ namespace RenderVsg
         return result;
     }
 
+    [[nodiscard]] inline std::optional<StaticPopulationPlan> buildStaticPopulationPlan(
+        const RenderCore::RenderWorld& world, RenderCore::ChunkHandle chunkHandle,
+        const RenderCore::ModelPopulationRecord& population, StaticPlanOptions options = {})
+    {
+        options.includeDeformableMeshes = false;
+        const RenderCore::ChunkRecord* chunk = world.get(chunkHandle);
+        const RenderCore::ModelRecord* model = world.get(population.model);
+        if (!chunk || !chunk->revision.valid() || !chunk->population || population.instances.empty() || !model
+            || !model->revision.valid())
+            return std::nullopt;
+
+        std::optional<StaticAssetPlan> asset = buildStaticAssetPlan(world, population.model, options);
+        if (!asset)
+            return std::nullopt;
+        StaticPopulationPlan result{
+            .chunk = chunkHandle,
+            .chunkRevision = chunk->revision,
+            .kind = chunk->kind,
+            .model = population.model,
+            .modelRevision = model->revision,
+            .coordinateOrigin = glm::dvec3(chunk->bounds.minimum)
+                + (glm::dvec3(chunk->bounds.maximum) - glm::dvec3(chunk->bounds.minimum)) * 0.5,
+            .placements = population.instances,
+            .options = options,
+            .asset = std::move(*asset),
+        };
+        const auto addUnique = []<class Handle>(std::vector<StaticResourceDependency<Handle>>& dependencies,
+                                   Handle dependency, RenderCore::ResourceRevision revision) {
+            const StaticResourceDependency<Handle> candidate{ dependency, revision };
+            if (std::find(dependencies.begin(), dependencies.end(), candidate) == dependencies.end())
+                dependencies.push_back(candidate);
+        };
+        for (const StaticDrawPlan& draw : result.asset.draws)
+        {
+            const RenderCore::MeshRecord* mesh = world.get(draw.mesh);
+            const RenderCore::MaterialRecord* material = world.get(draw.material);
+            if (!mesh || !material)
+                return std::nullopt;
+            addUnique(result.meshes, draw.mesh, mesh->revision);
+            addUnique(result.materials, draw.material, material->revision);
+            for (const RenderCore::TextureRealizationKey& texture : draw.textures)
+                addUnique(result.textures, texture.view.texture, texture.revision);
+        }
+        return result;
+    }
+
     // Deterministic production discovery pass. Unsupported CP3D/CP4 populations
     // are counted explicitly, while malformed static-model instances make the
     // plan invalid instead of disappearing from the Vulkan scene silently.
@@ -153,6 +218,21 @@ namespace RenderVsg
             }
             result.instances.push_back(std::move(*plan));
         });
+        world.forEachChunk([&](RenderCore::ChunkHandle handle, const RenderCore::ChunkRecord& chunk) {
+            if (!chunk.population)
+                return;
+            for (const RenderCore::ModelPopulationRecord& population : chunk.population->groups)
+            {
+                std::optional<StaticPopulationPlan> plan
+                    = buildStaticPopulationPlan(world, handle, population, options);
+                if (!plan)
+                {
+                    ++result.invalidPopulationGroups;
+                    continue;
+                }
+                result.populations.push_back(std::move(*plan));
+            }
+        });
         return result;
     }
 
@@ -163,6 +243,39 @@ namespace RenderVsg
         const RenderCore::ModelRecord* model = world.get(plan.model);
         if (!instance || !model || instance->revision != plan.instanceRevision || instance->model != plan.model
             || model->revision != plan.modelRevision)
+            return false;
+        for (const auto& dependency : plan.meshes)
+        {
+            const RenderCore::MeshRecord* record = world.get(dependency.handle);
+            if (!record || record->revision != dependency.revision)
+                return false;
+        }
+        for (const auto& dependency : plan.materials)
+        {
+            const RenderCore::MaterialRecord* record = world.get(dependency.handle);
+            if (!record || record->revision != dependency.revision)
+                return false;
+        }
+        for (const auto& dependency : plan.textures)
+        {
+            const RenderCore::TextureRecord* record = world.get(dependency.handle);
+            if (!record || record->revision != dependency.revision)
+                return false;
+        }
+        return true;
+    }
+
+    [[nodiscard]] inline bool staticPopulationPlanCurrent(
+        const RenderCore::RenderWorld& world, const StaticPopulationPlan& plan) noexcept
+    {
+        const RenderCore::ChunkRecord* chunk = world.get(plan.chunk);
+        const RenderCore::ModelRecord* model = world.get(plan.model);
+        if (!chunk || !model || chunk->revision != plan.chunkRevision || !chunk->population
+            || model->revision != plan.modelRevision || chunk->kind != plan.kind)
+            return false;
+        const auto group = std::find_if(chunk->population->groups.begin(), chunk->population->groups.end(),
+            [&](const RenderCore::ModelPopulationRecord& value) { return value.model == plan.model; });
+        if (group == chunk->population->groups.end() || group->instances.size() != plan.placements.size())
             return false;
         for (const auto& dependency : plan.meshes)
         {

@@ -24,7 +24,14 @@ namespace RenderVsg
             vsg::vec4(environment.fogStart, environment.fogEnd, environment.fogEnabled ? 1.0f : 0.0f,
                 static_cast<float>(environment.fogDistanceMode)),
             vsg::vec4(static_cast<float>(projection.nearPlane), static_cast<float>(projection.farPlane),
-                static_cast<float>(environment.fogFalloffMode), 0.0f) };
+                static_cast<float>(environment.fogFalloffMode), 0.0f),
+            vsg::vec4(environment.skyColor.r, environment.skyColor.g, environment.skyColor.b, environment.skyColor.a),
+            vsg::vec4(environment.nightSkyFactor, environment.cloudBlendFactor, environment.cloudSpeed,
+                environment.precipitationIntensity),
+            vsg::vec4(environment.windDirection.x, environment.windDirection.y, environment.windDirection.z,
+                environment.windSpeed),
+            vsg::vec4(environment.precipitationEnabled ? 1.0f : 0.0f, environment.storm ? 1.0f : 0.0f,
+                environment.skyEnabled ? 1.0f : 0.0f, environment.shadowsEnabled ? 1.0f : 0.0f) };
     }
 
     OpenMwViewDependentState::OpenMwViewDependentState(vsg::View* view)

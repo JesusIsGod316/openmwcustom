@@ -8,8 +8,11 @@
 #include <cmath>
 #include <cstdint>
 #include <optional>
+#include <ranges>
+#include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace RenderCore
 {
@@ -478,15 +481,59 @@ namespace RenderCore
             return record.revision.valid() && (!record.payload || validSkeletonPayload(*record.payload));
         }
 
-        [[nodiscard]] static bool validateChunkRecord(const ChunkRecord& record) noexcept
+        [[nodiscard]] bool validateChunkRecord(const ChunkRecord& record) const noexcept
         {
             const bool knownKind = record.kind == ChunkRecord::Kind::SceneCell
                 || record.kind == ChunkRecord::Kind::Terrain || record.kind == ChunkRecord::Kind::StaticPopulation
                 || record.kind == ChunkRecord::Kind::Groundcover;
-            return record.revision.valid() && knownKind && semantic_detail::finite(record.bounds.minimum)
-                && semantic_detail::finite(record.bounds.maximum) && record.bounds.minimum.x <= record.bounds.maximum.x
-                && record.bounds.minimum.y <= record.bounds.maximum.y
-                && record.bounds.minimum.z <= record.bounds.maximum.z && (record.stitchMask & 0xf0u) == 0;
+            if (!record.revision.valid() || !knownKind || !semantic_detail::finite(record.bounds.minimum)
+                || !semantic_detail::finite(record.bounds.maximum) || record.bounds.minimum.x > record.bounds.maximum.x
+                || record.bounds.minimum.y > record.bounds.maximum.y || record.bounds.minimum.z > record.bounds.maximum.z
+                || (record.stitchMask & 0xf0u) != 0)
+                return false;
+            const bool populationKind
+                = record.kind == ChunkRecord::Kind::StaticPopulation || record.kind == ChunkRecord::Kind::Groundcover;
+            if (static_cast<bool>(record.population) != populationKind)
+                return false;
+            if (!record.population)
+                return true;
+            if (record.population->groups.empty() || !record.members.empty())
+                return false;
+
+            std::vector<std::string_view> identities;
+            for (std::size_t groupIndex = 0; groupIndex < record.population->groups.size(); ++groupIndex)
+            {
+                const ModelPopulationRecord& group = record.population->groups[groupIndex];
+                if (!group.model.valid() || !mModels.contains(group.model) || group.instances.empty())
+                    return false;
+                for (std::size_t other = groupIndex + 1; other < record.population->groups.size(); ++other)
+                {
+                    if (group.model == record.population->groups[other].model)
+                        return false;
+                }
+                for (const PopulationInstanceRecord& instance : group.instances)
+                {
+                    if (instance.sourceIdentity.empty() || !semantic_detail::finite(instance.transform.translation)
+                        || !semantic_detail::finite(instance.transform.rotation)
+                        || !semantic_detail::finite(instance.transform.scale)
+                        || !semantic_detail::finite(instance.localBounds.minimum)
+                        || !semantic_detail::finite(instance.localBounds.maximum)
+                        || instance.localBounds.minimum.x > instance.localBounds.maximum.x
+                        || instance.localBounds.minimum.y > instance.localBounds.maximum.y
+                        || instance.localBounds.minimum.z > instance.localBounds.maximum.z
+                        || !semantic_detail::finite(instance.lod.center) || !std::isfinite(instance.lod.minimumDistance)
+                        || !std::isfinite(instance.lod.maximumDistance) || !std::isfinite(instance.lod.scale)
+                        || instance.lod.minimumDistance < 0.0f
+                        || instance.lod.maximumDistance < instance.lod.minimumDistance || instance.lod.scale <= 0.0f)
+                        return false;
+                    if (record.kind == ChunkRecord::Kind::Groundcover
+                        && (instance.semanticFlags & semanticFlag(InstanceSemanticFlag::Groundcover)) == 0)
+                        return false;
+                    identities.push_back(instance.sourceIdentity);
+                }
+            }
+            std::ranges::sort(identities);
+            return std::ranges::adjacent_find(identities) == identities.end();
         }
 
         [[nodiscard]] static bool validateLightRecord(const LightRecord& record) noexcept
@@ -602,6 +649,15 @@ namespace RenderCore
             mInstances.forEachLive([&](InstanceHandle, const InstanceRecord& record) {
                 if (record.model && *record.model == handle)
                     referenced = true;
+            });
+            mChunks.forEachLive([&](ChunkHandle, const ChunkRecord& record) {
+                if (!record.population)
+                    return;
+                for (const ModelPopulationRecord& group : record.population->groups)
+                {
+                    if (group.model == handle)
+                        referenced = true;
+                }
             });
             return referenced;
         }

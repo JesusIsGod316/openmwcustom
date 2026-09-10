@@ -6,6 +6,7 @@
 #include <components/nifrender/staticmodelcache.hpp>
 #include <components/rendercore/activecellproducer.hpp>
 #include <components/rendercore/frameproducer.hpp>
+#include <components/rendercore/staticpopulationproducer.hpp>
 
 #include <memory>
 #include <string>
@@ -32,6 +33,7 @@ namespace RenderVsg
         [[nodiscard]] RenderCore::RenderWorldPublisher& publisher() noexcept { return mPublisher; }
         [[nodiscard]] NifRender::StaticModelCache& models() noexcept { return mModels; }
         [[nodiscard]] RenderCore::ActiveCellProducer& cells() noexcept { return mCells; }
+        [[nodiscard]] RenderCore::StaticPopulationProducer& populations() noexcept { return mPopulations; }
         [[nodiscard]] VsgRuntimeBootstrap& bootstrap() noexcept { return *mBootstrap; }
         [[nodiscard]] const VsgRuntimeBootstrap& bootstrap() const noexcept { return *mBootstrap; }
 
@@ -50,6 +52,7 @@ namespace RenderVsg
         RenderCore::RenderWorldPublisher mPublisher;
         NifRender::StaticModelCache mModels;
         RenderCore::ActiveCellProducer mCells;
+        RenderCore::StaticPopulationProducer mPopulations;
         RenderCore::SingleViewFrameProducer mFrames;
         std::string mLastDiagnostic;
         bool mHealthy = true;

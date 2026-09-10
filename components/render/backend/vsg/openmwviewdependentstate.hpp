@@ -25,7 +25,7 @@ namespace RenderVsg
     inline constexpr std::uint32_t OpenMwLocalLightDescriptorBinding = 5;
     inline constexpr std::uint32_t OpenMwEnvironmentDescriptorBinding = 6;
     inline constexpr std::size_t OpenMwLocalLightVec4Stride = 5;
-    inline constexpr std::size_t OpenMwEnvironmentVec4Count = 3;
+    inline constexpr std::size_t OpenMwEnvironmentVec4Count = 7;
 
     using OpenMwEnvironmentValues = std::array<vsg::vec4, OpenMwEnvironmentVec4Count>;
 
