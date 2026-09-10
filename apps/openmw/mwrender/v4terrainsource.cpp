@@ -6,6 +6,9 @@
 #include "../mwworld/cell.hpp"
 
 #include <osg/Array>
+#include <osg/PrimitiveSet>
+
+#include <components/terrain/buffercache.hpp>
 
 #include <cmath>
 #include <cstddef>
@@ -86,33 +89,18 @@ namespace MWRender
             bounds.maximum = glm::max(bounds.maximum, p);
         }
 
-        mesh->indices.reserve((side - 1) * (side - 1) * 6);
-        for (std::size_t column = 0; column + 1 < side; ++column)
-        {
-            for (std::size_t row = 0; row + 1 < side; ++row)
-            {
-                const auto index
-                    = [side](std::size_t x, std::size_t y) { return static_cast<std::uint32_t>(x * side + y); };
-                if ((column + row) % 2 == 1)
-                {
-                    mesh->indices.push_back(index(column + 1, row));
-                    mesh->indices.push_back(index(column + 1, row + 1));
-                    mesh->indices.push_back(index(column, row + 1));
-                    mesh->indices.push_back(index(column, row));
-                    mesh->indices.push_back(index(column + 1, row));
-                    mesh->indices.push_back(index(column, row + 1));
-                }
-                else
-                {
-                    mesh->indices.push_back(index(column, row));
-                    mesh->indices.push_back(index(column + 1, row + 1));
-                    mesh->indices.push_back(index(column, row + 1));
-                    mesh->indices.push_back(index(column, row));
-                    mesh->indices.push_back(index(column + 1, row));
-                    mesh->indices.push_back(index(column + 1, row + 1));
-                }
-            }
-        }
+        unsigned int lodFlags = 0;
+        for (unsigned int edge = 0; edge < 4; ++edge)
+            if ((request.stitchMask & (1u << edge)) != 0)
+                lodFlags |= 1u << (4 * edge);
+        static Terrain::BufferCache indexCache;
+        const osg::ref_ptr<osg::DrawElements> indices
+            = indexCache.getIndexBuffer(static_cast<unsigned int>(side), lodFlags);
+        if (!indices || indices->getNumIndices() == 0)
+            return std::nullopt;
+        mesh->indices.reserve(indices->getNumIndices());
+        for (unsigned int i = 0; i < indices->getNumIndices(); ++i)
+            mesh->indices.push_back(indices->index(i));
         mesh->surfaces.push_back(RenderCore::MeshSurface{
             .topology = RenderCore::PrimitiveTopology::Triangles,
             .firstIndex = 0,

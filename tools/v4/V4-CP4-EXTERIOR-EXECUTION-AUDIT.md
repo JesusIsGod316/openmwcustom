@@ -71,6 +71,10 @@ The first CP4B implementation widens CP4A without publishing a separate test art
 This is a safe streaming foundation, not CP4B completion. Distance LOD rings, seam stitching, bounded GPU admission, and
 measured residency budgets remain before the first consolidated CP4 artifact.
 
+The Vulkan terrain adapter now derives its neutral triangle indices from OpenMW's established, thread-safe terrain
+`BufferCache`. This preserves the legacy diamond topology and makes all four one-level edge-stitch combinations available
+without placing OSG objects in RenderCore ownership. Mixed LOD activation remains gated on a tested residency layout.
+
 ## Validation gate
 
 Before publication, this checkpoint requires:
