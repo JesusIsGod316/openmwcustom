@@ -80,6 +80,55 @@ without placing OSG objects in RenderCore ownership.
 This closes the implementation scope of CP4B. Runtime visual correctness, traversal smoothness, and actual VRAM behavior
 remain artifact-test obligations; they are not inferred from source or build success.
 
+## CP4C implementation checkpoint
+
+CP4C now has a production-shaped local implementation on top of the repaired, passing CP4B base:
+
+- Exterior static references and groundcover publish immutable cell-owned, model-grouped population payloads instead of
+  allocating an authoritative `InstanceRecord` and VSG transform node for every placement.
+- Opaque, non-billboard populations use native VSG per-instance translation, rotation, and scale arrays with one
+  hardware-instanced draw per model/draw group. Sorted transparency, billboards, and mixed shadow-caster groups retain a
+  correctness-first individual-placement fallback.
+- Population residency is persistent and transactional. Replacements compile before publication, and superseded graphs
+  remain retained through observed GPU completion.
+- Groundcover reuses the established winning-file merge, density filter, border selection, and reference identity. New
+  cell preparation is bounded to one cell per frame, retries are idempotent, and departed cells retire explicitly.
+- Authored population maximum distance now changes only a persistent traversal switch. This avoids per-frame population
+  graph or instance-buffer reconstruction; a zero rendering distance disables the population.
+
+This closes the first CP4C implementation checkpoint, not its runtime qualification. The transparent/billboard fallback
+must still be measured with dense modded populations, and the conservative cell/model visibility granularity can be
+refined only if complete-world profiling identifies it as a bottleneck.
+
+## CP4D implementation status
+
+CP4D is in progress and is not yet a complete environment implementation:
+
+- Frame state carries authoritative exterior fog, ambient light, sun direction and colours, weather sky colour, night
+  factor, cloud blend/speed, wind, precipitation intensity, storm state, and frame-varying shadow policy.
+- The VSG view state uploads that environment contract alongside persistent local-light data. Existing fog and exterior
+  light behavior remains active through the shared resident scene.
+- VSG native hard shadows provide a bounded 1-8 cascade directional-shadow foundation. Object, terrain, and actor caster
+  categories are explicit, per-frame interior/exterior policy can disable maps, and non-casters are excluded with VSG
+  traversal masks.
+- An enabled OpenMW sky now contributes its live weather sky colour as the Vulkan background. Disabled skies and interiors
+  retain the fog-colour control path.
+
+Textured atmosphere, animated/blended clouds, sun and moons, precipitation geometry, and precipitation occlusion are not
+implemented yet. The native VSG shadow pre-render path also still needs an explicit semantic adapter to the common
+view/target/pass contract before CP4D can be called complete. Water remains fail-closed for CP4E.
+
+## Combined CP4C-CP4D build gate
+
+The next branch push is intentionally consolidated. The old CP4B workflow remains manually runnable but no longer starts
+on every branch push; `v4-cp4cd.yml` owns the next automatic checkpoint. It retains CP3E and CP4B contracts, adds CP4C/CP4D
+contracts and strict smokes, compiles the touched backend against exact VSG 1.1.15 and MyGUI headers, and runs both the
+OpenGL control build and the runtime-complete Vulkan Windows build.
+
+Before this audit update, the complete production `openmw` target was configured with the authoritative Windows dependency
+bundle, compiled, linked, and launched through `openmw.exe --version`. That proves build integration only; it does not
+replace the eventual GitHub package run or user runtime testing.
+
 ## Validation gate
 
 Before publication, this checkpoint requires:
