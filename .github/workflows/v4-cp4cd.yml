@@ -1,0 +1,103 @@
+name: V4.0 CP4C-CP4D exterior populations and environment checkpoint
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp4-exterior-foundation]
+
+concurrency:
+  group: v4-cp4cd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  RouteContracts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact CP4C-CP4D head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify repaired passing CP4B ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          CP4B_BASE=98cb43893dc740c9b35447821aa1fb3cbe9b1caf
+          git cat-file -e "${CP4B_BASE}^{commit}"
+          test "$(git merge-base "${CP4B_BASE}" HEAD)" = "${CP4B_BASE}"
+
+      - name: Run retained and new source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/v4/cp3e/application-route-contract.py
+          python3 tools/v4/cp4/streaming-contract.py
+          python3 tools/v4/cp4/population-environment-contract.py
+          python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+          git diff --check 98cb43893dc740c9b35447821aa1fb3cbe9b1caf HEAD -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+
+      - name: Install strict compile dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglm-dev libvulkan-dev python3-yaml
+
+      - name: Parse workflow YAML
+        run: |
+          python3 - <<'PY'
+          import pathlib, yaml
+          for path in pathlib.Path('.github/workflows').glob('*.yml'):
+              yaml.safe_load(path.read_text(encoding='utf-8'))
+          print('workflow YAML parse: PASS')
+          PY
+
+      - name: Prepare exact VSG and MyGUI headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          VSG_COMMIT=599a8c5c61cbb993079261b2ada99bd843badf5b
+          git init /tmp/vsg-1.1.15
+          git -C /tmp/vsg-1.1.15 remote add origin https://github.com/vsg-dev/VulkanSceneGraph.git
+          git -C /tmp/vsg-1.1.15 fetch --depth 1 origin "${VSG_COMMIT}"
+          git -C /tmp/vsg-1.1.15 checkout --detach FETCH_HEAD
+          cmake -S /tmp/vsg-1.1.15 -B /tmp/vsg-1.1.15-build -DVSG_BUILD_TESTS=OFF -DVSG_SUPPORTS_Windowing=OFF
+          MYGUI_COMMIT=dae9ac4be5a09e672bec509b1a8552b107c40214
+          git init /tmp/mygui-3.4.3
+          git -C /tmp/mygui-3.4.3 remote add origin https://github.com/MyGUI/mygui.git
+          git -C /tmp/mygui-3.4.3 fetch --depth 1 origin "${MYGUI_COMMIT}"
+          git -C /tmp/mygui-3.4.3 checkout --detach FETCH_HEAD
+
+      - name: Strict-compile CP4 render contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          neutral=(-std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthread -I.)
+          for source in \
+            tools/v4/cp4/frame-route-smoke.cpp \
+            tools/v4/cp4/terrain-chunk-smoke.cpp \
+            tools/v4/cp4/terrain-streaming-smoke.cpp \
+            tools/v4/cp4/static-population-smoke.cpp; do
+            output="/tmp/$(basename "${source}" .cpp)"
+            g++ "${neutral[@]}" "${source}" -o "${output}"
+            "${output}"
+          done
+          backend=(-std=c++20 -O1 -Wall -Wextra -Wpedantic -Werror -I. \
+            -isystem /tmp/vsg-1.1.15/include -isystem /tmp/vsg-1.1.15-build/include \
+            -isystem /tmp/mygui-3.4.3/MyGUIEngine/include)
+          g++ "${backend[@]}" -c components/render/backend/vsg/staticassetrealizer.cpp -o /tmp/staticassetrealizer.o
+          g++ "${backend[@]}" -c components/render/backend/vsg/staticassetconformance.cpp -o /tmp/staticassetconformance.o
+          g++ "${backend[@]}" -c components/render/backend/vsg/openmwviewdependentstate.cpp -o /tmp/openmwviewdependentstate.o
+          g++ "${backend[@]}" -c components/render/backend/vsg/vsgruntimehost.cpp -o /tmp/vsgruntimehost.o
+
+  OpenGLControlWindows:
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
+
+  RuntimeVulkanWindows:
+    uses: ./.github/workflows/v4-cp3b3.yml
+    with:
+      force_run: true

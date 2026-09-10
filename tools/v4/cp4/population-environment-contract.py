@@ -39,6 +39,8 @@ require(
     "vsg::HardShadows::create(options.shadows.cascadeCount)",
     "shadowSettingsOverride[mSunLight]",
     "maskedNode(placementMask(castsShadow)",
+    "populationWithinMaximumDistance(world, plan, mainView.current.worldPosition)",
+    "environment.skyEnabled ? environment.skyColor : environment.fogColor",
 )
 require(
     "components/render/backend/vsg/staticassetrealizer.cpp",
@@ -83,6 +85,7 @@ require(
     "sky->getCloudBlendFactor()",
     "sky->getPrecipitationAlpha()",
     "sky->getStormDirection()",
+    "result.skyEnabled = sky->isEnabled()",
 )
 
 print("CP4C/CP4D population and environment contracts: PASS")

@@ -28,6 +28,7 @@ namespace vsg
     class MatrixTransform;
     class RenderGraph;
     class SharedObjects;
+    class Switch;
     class View;
     class Viewer;
 }
@@ -85,9 +86,14 @@ namespace RenderVsg
 
     private:
         using StaticResident = vsg::ref_ptr<vsg::Node>;
-        using StaticPopulationResident = vsg::ref_ptr<vsg::Group>;
+        struct StaticPopulationResident
+        {
+            vsg::ref_ptr<vsg::Switch> visibility;
+        };
 
         [[nodiscard]] bool synchronizeStaticWorld(const RenderCore::RenderWorld& world);
+        [[nodiscard]] bool synchronizePopulationVisibility(
+            const RenderCore::RenderWorld& world, const RenderCore::FrameView& mainView);
         [[nodiscard]] bool synchronizeDynamicActors(
             const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame);
         [[nodiscard]] bool synchronizeLocalLights(const RenderCore::RenderWorld& world);

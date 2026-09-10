@@ -2,8 +2,6 @@ name: V4.0 CP4B terrain streaming checkpoint
 
 on:
   workflow_dispatch:
-  push:
-    branches: [v4.0-cp4-exterior-foundation]
 
 concurrency:
   group: v4-cp4b-${{ github.ref }}

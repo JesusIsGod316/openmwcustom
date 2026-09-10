@@ -213,6 +213,13 @@ namespace RenderVsg
         [[nodiscard]] std::size_t residentCount() const noexcept { return mResidents.size(); }
         [[nodiscard]] std::size_t pendingRetirementCount() const noexcept { return mRetirements.size(); }
 
+        template <class Visitor>
+        void forEachResident(Visitor&& visitor)
+        {
+            for (Resident& resident : mResidents)
+                visitor(resident.plan, resident.object);
+        }
+
     private:
         struct Resident
         {

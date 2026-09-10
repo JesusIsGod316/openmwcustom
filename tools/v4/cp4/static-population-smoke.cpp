@@ -1,4 +1,5 @@
 #include <components/render/backend/vsg/staticpopulationresidency.hpp>
+#include <components/render/backend/vsg/populationvisibility.hpp>
 #include <components/rendercore/staticpopulationproducer.hpp>
 
 #include <cstdlib>
@@ -74,6 +75,7 @@ int main()
         source.cellIdentity = "cell:0,0";
         source.model = model;
         source.transform.translation.x = index * 10.0;
+        source.lod.maximumDistance = 25.0f;
         const RenderCore::StaticPopulationPublishStatus status = producer.upsert(std::move(source));
         if (status != RenderCore::StaticPopulationPublishStatus::Applied)
             std::cerr << "placement status=" << static_cast<unsigned int>(status) << '\n';
@@ -87,7 +89,17 @@ int main()
     const RenderVsg::StaticWorldPlan plan = RenderVsg::buildStaticWorldPlan(world);
     if (!require(plan.valid() && plan.populations.size() == 1, "backend population discovery")
         || !require(plan.populations[0].placements.size() == 4, "grouped placements")
-        || !require(plan.populations[0].placements.front().sourceIdentity == "ref:0", "deterministic source order"))
+        || !require(plan.populations[0].placements.front().sourceIdentity == "ref:0", "deterministic source order")
+        || !require(RenderVsg::populationWithinMaximumDistance(world, plan.populations[0], { 0.0, 0.0, 0.0 }),
+            "near population visibility")
+        || !require(!RenderVsg::populationWithinMaximumDistance(world, plan.populations[0], { 100.0, 0.0, 0.0 }),
+            "distant population culling"))
+        return EXIT_FAILURE;
+    auto disabledPlan = plan.populations[0];
+    for (RenderCore::PopulationInstanceRecord& placement : disabledPlan.placements)
+        placement.lod.maximumDistance = 0.0f;
+    if (!require(!RenderVsg::populationWithinMaximumDistance(world, disabledPlan, { 0.0, 0.0, 0.0 }),
+            "zero-distance population disable"))
         return EXIT_FAILURE;
 
     RenderVsg::StaticPopulationResidency<std::shared_ptr<int>> residency;

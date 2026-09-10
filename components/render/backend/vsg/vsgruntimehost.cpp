@@ -2,6 +2,7 @@
 
 #include "dynamicactorplan.hpp"
 #include "legacymaterialshader.hpp"
+#include "populationvisibility.hpp"
 #include "staticassetconformance.hpp"
 
 #include <components/vsgmygui/rendermanager.hpp>
@@ -293,7 +294,9 @@ namespace RenderVsg
                 mLastDiagnostic = "incremental VSG population compilation failed before scene publication";
                 return false;
             }
-            populationReplacements.push_back(std::move(group));
+            auto visibility = vsg::Switch::create();
+            visibility->addChild(vsg::MASK_ALL, std::move(group));
+            populationReplacements.push_back({ std::move(visibility) });
         }
 
         std::unordered_map<std::uint64_t, std::size_t> replacementIndices;
@@ -330,7 +333,7 @@ namespace RenderVsg
             {
                 const std::size_t index
                     = static_cast<std::size_t>(replacement - populationMutation.upserts.begin());
-                nextChildren.push_back(populationReplacements[index]);
+                nextChildren.push_back(populationReplacements[index].visibility);
                 continue;
             }
             const StaticPopulationResident* resident = mStaticPopulationResidency.residentObject(identity);
@@ -339,7 +342,7 @@ namespace RenderVsg
                 mLastDiagnostic = "static traversal order could not resolve a resident population";
                 return false;
             }
-            nextChildren.push_back(*resident);
+            nextChildren.push_back(resident->visibility);
         }
 
         if ((!populationMutation.upserts.empty() || !populationMutation.removals.empty())
@@ -356,6 +359,25 @@ namespace RenderVsg
         }
         mStaticRoot->children.swap(nextChildren);
         return true;
+    }
+
+    bool VsgRuntimeHost::synchronizePopulationVisibility(
+        const RenderCore::RenderWorld& world, const RenderCore::FrameView& mainView)
+    {
+        bool valid = true;
+        mStaticPopulationResidency.forEachResident(
+            [&](const StaticPopulationPlan& plan, StaticPopulationResident& resident) {
+                if (!resident.visibility || resident.visibility->children.size() != 1)
+                {
+                    valid = false;
+                    return;
+                }
+                resident.visibility->setAllChildren(
+                    populationWithinMaximumDistance(world, plan, mainView.current.worldPosition));
+            });
+        if (!valid)
+            mLastDiagnostic = "resident population visibility graph is invalid";
+        return valid;
     }
 
     bool VsgRuntimeHost::synchronizeDynamicActors(
@@ -539,9 +561,9 @@ namespace RenderVsg
         if (!frame.dynamicMaterials().empty())
             return finish(
                 RenderCore::RenderFrameResult::Failed, "dynamic materials require a later compatibility facet");
-        if (frame.environment().skyEnabled || frame.environment().waterEnabled)
+        if (frame.environment().waterEnabled)
             return finish(
-                RenderCore::RenderFrameResult::Failed, "sky and water require the environment compatibility facet");
+                RenderCore::RenderFrameResult::Failed, "water requires the CP4E environment compatibility facet");
         if (frame.environment().clusteredLocalLighting)
             return finish(RenderCore::RenderFrameResult::Failed,
                 "clustered local-light selection and far-plane fading require the clustered compatibility facet");
@@ -598,9 +620,14 @@ namespace RenderVsg
             else
                 mOpenMwViewState->shadowSettingsOverride[mSunLight] = {};
         }
-        const RenderCore::Color& clear = environment.fogColor;
+        // CP4D's first visible sky facet is deliberately resource-free: the
+        // weather system's current sky colour owns uncovered background pixels.
+        // The legacy fog clear remains the control for interiors and disabled
+        // skies, while later atmosphere/cloud geometry can layer over this.
+        const RenderCore::Color& clear = environment.skyEnabled ? environment.skyColor : environment.fogColor;
         mRenderGraph->setClearValues({ { clear.r, clear.g, clear.b, clear.a } });
-        if (!synchronizeLocalLights(world) || !synchronizeStaticWorld(world) || !synchronizeDynamicActors(world, frame)
+        if (!synchronizeLocalLights(world) || !synchronizeStaticWorld(world)
+            || !synchronizePopulationVisibility(world, *mainView) || !synchronizeDynamicActors(world, frame)
             || !synchronizeGui())
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
 

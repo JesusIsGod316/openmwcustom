@@ -359,8 +359,11 @@ namespace MWRender
                 result.precipitationIntensity = std::clamp(sky->getPrecipitationAlpha(), 0.0f, 1.0f);
                 result.precipitationEnabled = sky->hasRain() || result.precipitationIntensity > 0.0f;
                 result.storm = sky->isStorm();
+                // The first CP4D visual slice uses the authored weather sky
+                // colour as a Vulkan backdrop. Textured atmosphere, clouds and
+                // celestial bodies remain independently additive later facets.
+                result.skyEnabled = sky->isEnabled();
             }
-            result.skyEnabled = false;
             result.waterEnabled = false;
             result.waterHeight = cell.hasWater() ? cell.getWaterHeight() : 0.0;
             result.underwater = false;

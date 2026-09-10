@@ -2,6 +2,7 @@
 
 #include "v4semanticsource.hpp"
 
+#include "../mwworld/cellstore.hpp"
 #include "../mwworld/class.hpp"
 #include "../mwworld/ptr.hpp"
 
