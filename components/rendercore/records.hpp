@@ -17,9 +17,15 @@ namespace RenderCore
 {
     namespace semantic_detail
     {
-        [[nodiscard]] inline bool finite(float value) noexcept { return std::isfinite(value); }
+        [[nodiscard]] inline bool finite(float value) noexcept
+        {
+            return std::isfinite(value);
+        }
 
-        [[nodiscard]] inline bool finite(double value) noexcept { return std::isfinite(value); }
+        [[nodiscard]] inline bool finite(double value) noexcept
+        {
+            return std::isfinite(value);
+        }
 
         [[nodiscard]] inline bool finite(const glm::vec2& value) noexcept
         {
@@ -648,8 +654,7 @@ namespace RenderCore
     [[nodiscard]] constexpr bool validModelControllerFlags(std::uint32_t flags) noexcept
     {
         constexpr std::uint32_t all = modelControllerFlag(ModelControllerFlag::Transform)
-            | modelControllerFlag(ModelControllerFlag::Morph)
-            | modelControllerFlag(ModelControllerFlag::Visibility)
+            | modelControllerFlag(ModelControllerFlag::Morph) | modelControllerFlag(ModelControllerFlag::Visibility)
             | modelControllerFlag(ModelControllerFlag::Unsupported);
         return (flags & ~all) == 0;
     }
@@ -761,8 +766,7 @@ namespace RenderCore
         {
             const ModelNodeRecord& node = payload.nodes[i];
             if (!validModelControllerFlags(node.controllerFlags)
-                || (node.controllerFlags != 0)
-                    != ((node.flags & modelNodeFlag(ModelNodeFlag::ControllerTarget)) != 0))
+                || (node.controllerFlags != 0) != ((node.flags & modelNodeFlag(ModelNodeFlag::ControllerTarget)) != 0))
                 return false;
             const auto isDirectChild = [&](ModelNodeIndex child) {
                 return child.valid() && child.value() < payload.nodes.size()
@@ -890,6 +894,7 @@ namespace RenderCore
         Effect = 1ull << 8,
         Projectile = 1ull << 9,
         Groundcover = 1ull << 10,
+        Terrain = 1ull << 11,
     };
 
     [[nodiscard]] constexpr std::uint64_t semanticFlag(InstanceSemanticFlag flag) noexcept
@@ -935,19 +940,34 @@ namespace RenderCore
         AxisAlignedBounds localBounds;
         LodSemantic lod;
         std::uint64_t semanticFlags = semanticFlag(InstanceSemanticFlag::OrdinaryWorld)
-            | semanticFlag(InstanceSemanticFlag::ShadowCaster)
-            | semanticFlag(InstanceSemanticFlag::ReflectionEligible)
+            | semanticFlag(InstanceSemanticFlag::ShadowCaster) | semanticFlag(InstanceSemanticFlag::ReflectionEligible)
             | semanticFlag(InstanceSemanticFlag::RefractionEligible);
         bool lightingEnabled = true;
     };
 
     struct ChunkRecord
     {
+        enum class Kind : std::uint8_t
+        {
+            SceneCell,
+            Terrain,
+            StaticPopulation,
+            Groundcover,
+        };
+
         ResourceRevision revision = InitialResourceRevision;
         std::string producerIdentity;
         std::string worldspaceIdentity;
         AxisAlignedBounds bounds;
         std::uint64_t semanticFlags = semanticFlag(InstanceSemanticFlag::OrdinaryWorld);
+        Kind kind = Kind::SceneCell;
+        // Stable semantic address for data-oriented exterior populations. The
+        // backend may replace its realization and visibility algorithms without
+        // changing gameplay ownership or treating a VSG node as chunk identity.
+        std::int32_t gridX = 0;
+        std::int32_t gridY = 0;
+        std::uint32_t lodLevel = 0;
+        std::uint8_t stitchMask = 0;
         // Derived ordered index for individually addressable instances. Producers
         // never author this independently from InstanceRecord::chunk.
         std::vector<InstanceHandle> members;

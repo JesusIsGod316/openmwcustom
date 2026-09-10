@@ -32,15 +32,29 @@ int main()
     placement[3][0] = 9007199254740000.0;
     placement[3][1] = -4000000000.125;
     const vsg::dmat4 precise = RenderVsg::toVsgMatrix(placement);
-    if (!require(precise(3, 0) == placement[3][0] && precise(3, 1) == placement[3][1],
-            "double-precision world placement"))
+    if (!require(
+            precise(3, 0) == placement[3][0] && precise(3, 1) == placement[3][1], "double-precision world placement"))
         return EXIT_FAILURE;
 
     RenderCore::FrameRenderStateDesc frameDesc;
     frameDesc.renderExtent = { 1280, 720 };
     frameDesc.outputExtent = frameDesc.renderExtent;
     RenderCore::FrameView frameView;
+    frameView.identity = RenderCore::ViewHandle::fromParts(0, 1);
     frameView.extent = frameDesc.renderExtent;
+    frameView.outputTarget = RenderCore::RenderTargetHandle::fromParts(0, 1);
+    frameDesc.renderTargets.push_back(RenderCore::RenderTargetDesc{
+        .identity = frameView.outputTarget,
+        .kind = RenderCore::RenderTargetKind::Swapchain,
+        .extent = frameDesc.outputExtent,
+        .transient = false,
+    });
+    frameDesc.renderPasses.push_back(RenderCore::RenderPassDesc{
+        .identity = RenderCore::RenderPassHandle::fromParts(0, 1),
+        .view = frameView.identity,
+        .output = frameView.outputTarget,
+        .present = true,
+    });
     frameDesc.views.push_back(frameView);
     if (!require(RenderCore::FrameRenderState(frameDesc).valid(), "explicit default projection convention"))
         return EXIT_FAILURE;

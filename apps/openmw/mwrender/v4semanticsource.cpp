@@ -10,9 +10,9 @@
 #include "../mwworld/class.hpp"
 #include "../mwworld/ptr.hpp"
 
-#include <components/misc/convert.hpp>
 #include <components/esm3/loadligh.hpp>
 #include <components/esm4/loadligh.hpp>
+#include <components/misc/convert.hpp>
 #include <components/sceneutil/lightcommon.hpp>
 #include <components/sceneutil/lightutil.hpp>
 #include <components/settings/values.hpp>
@@ -35,10 +35,10 @@ namespace MWRender
             // the equivalent GLM column-vector transform; GLM's [column][row]
             // indexing therefore reads OSG at (column,row).
             glm::mat4 result(1.0f);
-            for (std::size_t column = 0; column < 4; ++column)
+            for (int column = 0; column < 4; ++column)
             {
-                for (std::size_t row = 0; row < 4; ++row)
-                    result[column][row] = source(column, row);
+                for (int row = 0; row < 4; ++row)
+                    result[static_cast<glm::length_t>(column)][static_cast<glm::length_t>(row)] = source(column, row);
             }
             return result;
         }
@@ -78,8 +78,8 @@ namespace MWRender
             return RenderCore::LightModulation::Constant;
         }
 
-        [[nodiscard]] std::optional<RenderCore::CellLightSource> makeCellLightSource(const MWWorld::Ptr& ptr,
-            const SceneUtil::LightCommon& light, std::uint64_t semanticFlags)
+        [[nodiscard]] std::optional<RenderCore::CellLightSource> makeCellLightSource(
+            const MWWorld::Ptr& ptr, const SceneUtil::LightCommon& light, std::uint64_t semanticFlags)
         {
             const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
             const std::optional<RenderCore::ActiveCellSource> cell = makeV4ActiveCellSource(*ptr.getCell());
@@ -178,8 +178,8 @@ namespace MWRender
     std::optional<RenderCore::DynamicInstanceSource> makeV4DynamicInstanceSource(const MWWorld::Ptr& ptr,
         RenderCore::ModelHandle model, RenderCore::SkeletonHandle skeleton, RenderCore::AxisAlignedBounds localBounds)
     {
-        if (ptr.isEmpty() || !ptr.getCell() || !model.valid() || !skeleton.valid()
-            || !ptr.getRefData().isEnabled() || !ptr.getClass().isActor())
+        if (ptr.isEmpty() || !ptr.getCell() || !model.valid() || !skeleton.valid() || !ptr.getRefData().isEnabled()
+            || !ptr.getClass().isActor())
             return std::nullopt;
         const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
         const std::optional<RenderCore::ActiveCellSource> cell = makeV4ActiveCellSource(*ptr.getCell());
@@ -249,17 +249,25 @@ namespace MWRender
         result.fogEnd = fog.end;
         switch (fog.falloffMode)
         {
-            case FogFalloffMode::Linear: result.fogFalloffMode = RenderCore::FogFalloffMode::Linear; break;
+            case FogFalloffMode::Linear:
+                result.fogFalloffMode = RenderCore::FogFalloffMode::Linear;
+                break;
             case FogFalloffMode::Exponential:
                 result.fogFalloffMode = RenderCore::FogFalloffMode::Exponential;
                 break;
-            default: return std::nullopt;
+            default:
+                return std::nullopt;
         }
         switch (fog.distanceMode)
         {
-            case FogDistanceMode::Planar: result.fogDistanceMode = RenderCore::FogDistanceMode::Planar; break;
-            case FogDistanceMode::Radial: result.fogDistanceMode = RenderCore::FogDistanceMode::Radial; break;
-            default: return std::nullopt;
+            case FogDistanceMode::Planar:
+                result.fogDistanceMode = RenderCore::FogDistanceMode::Planar;
+                break;
+            case FogDistanceMode::Radial:
+                result.fogDistanceMode = RenderCore::FogDistanceMode::Radial;
+                break;
+            default:
+                return std::nullopt;
         }
         result.fogEnabled = fog.enabled;
 
@@ -271,8 +279,7 @@ namespace MWRender
         result.sunSpecular.a = 0.0f;
         result.sunLightEnabled = true;
         result.sunVisible = false;
-        result.localLightRadiusFade
-            = !Settings::shaders().mClassicFalloff || Settings::shaders().mClusteredLighting;
+        result.localLightRadiusFade = !Settings::shaders().mClassicFalloff || Settings::shaders().mClusteredLighting;
         result.clusteredLocalLighting = Settings::shaders().mClusteredLighting;
         result.skyEnabled = false;
         result.waterEnabled = cell.hasWater();
@@ -281,8 +288,69 @@ namespace MWRender
         return result;
     }
 
-    std::optional<RenderCore::CameraState> makeV4MainCameraState(const Camera& camera,
-        RenderCore::Extent2D extent, double verticalFieldOfViewDegrees, double nearPlane, double farPlane)
+    namespace
+    {
+        [[nodiscard]] std::optional<RenderCore::FrameEnvironmentState> makeV4ExteriorEnvironmentState(
+            const RenderingManager& rendering, const MWWorld::Cell& cell, const FogState& fog, bool underwater,
+            float nightEyeFactor)
+        {
+            // CP4A deliberately renders LAND before CP4D sky/weather and CP4E
+            // water. Underwater cannot be represented correctly by this slice.
+            if ((!cell.isExterior() && !cell.isQuasiExterior()) || underwater || !std::isfinite(nightEyeFactor)
+                || fog.underwater != underwater)
+                return std::nullopt;
+
+            RenderCore::FrameEnvironmentState result;
+            result.interior = false;
+            result.ambient = toColor(applyNightEyeToAmbient(rendering.getAmbientColour(), nightEyeFactor));
+            result.fogColor = toColor(fog.color);
+            result.fogStart = fog.start;
+            result.fogEnd = fog.end;
+            switch (fog.falloffMode)
+            {
+                case FogFalloffMode::Linear:
+                    result.fogFalloffMode = RenderCore::FogFalloffMode::Linear;
+                    break;
+                case FogFalloffMode::Exponential:
+                    result.fogFalloffMode = RenderCore::FogFalloffMode::Exponential;
+                    break;
+                default:
+                    return std::nullopt;
+            }
+            switch (fog.distanceMode)
+            {
+                case FogDistanceMode::Planar:
+                    result.fogDistanceMode = RenderCore::FogDistanceMode::Planar;
+                    break;
+                case FogDistanceMode::Radial:
+                    result.fogDistanceMode = RenderCore::FogDistanceMode::Radial;
+                    break;
+                default:
+                    return std::nullopt;
+            }
+            result.fogEnabled = fog.enabled;
+
+            const osg::Vec4f direction = -rendering.getSunLightPosition();
+            const glm::vec3 rawDirection{ direction.x(), direction.y(), direction.z() };
+            result.sunDirection
+                = glm::length(rawDirection) > 0.0f ? glm::normalize(rawDirection) : glm::vec3(0.0f, 0.0f, -1.0f);
+            result.sunDiffuse = toColor(rendering.getSunDiffuse());
+            result.sunSpecular = toColor(rendering.getSunSpecular());
+            result.sunLightEnabled = true;
+            result.sunVisible = false;
+            result.localLightRadiusFade
+                = !Settings::shaders().mClassicFalloff || Settings::shaders().mClusteredLighting;
+            result.clusteredLocalLighting = Settings::shaders().mClusteredLighting;
+            result.skyEnabled = false;
+            result.waterEnabled = false;
+            result.waterHeight = cell.hasWater() ? cell.getWaterHeight() : 0.0;
+            result.underwater = false;
+            return result;
+        }
+    }
+
+    std::optional<RenderCore::CameraState> makeV4MainCameraState(const Camera& camera, RenderCore::Extent2D extent,
+        double verticalFieldOfViewDegrees, double nearPlane, double farPlane)
     {
         if (!extent.valid() || !std::isfinite(verticalFieldOfViewDegrees) || verticalFieldOfViewDegrees <= 0.0
             || verticalFieldOfViewDegrees >= 180.0 || !std::isfinite(nearPlane) || !std::isfinite(farPlane)
@@ -311,17 +379,18 @@ namespace MWRender
         return result;
     }
 
-    std::optional<V4MainFrameSource> makeV4MainFrameSource(const RenderingManager& rendering,
-        const MWWorld::Cell& cell, bool underwater, RenderCore::Extent2D extent, double simulationTime,
-        double frameDelta, bool invalidateHistory)
+    std::optional<V4MainFrameSource> makeV4MainFrameSource(const RenderingManager& rendering, const MWWorld::Cell& cell,
+        bool underwater, RenderCore::Extent2D extent, double simulationTime, double frameDelta, bool invalidateHistory)
     {
         const Camera* const camera = rendering.getCamera();
         if (!camera)
             return std::nullopt;
-        const std::optional<RenderCore::CameraState> cameraState = makeV4MainCameraState(*camera, extent,
-            rendering.getFieldOfView(), rendering.getNearClipDistance(), rendering.getViewDistance());
-        const std::optional<RenderCore::FrameEnvironmentState> environment = makeV4InteriorEnvironmentState(
-            cell, rendering.getFogState(underwater), underwater, rendering.getNightEyeFactor());
+        const std::optional<RenderCore::CameraState> cameraState = makeV4MainCameraState(
+            *camera, extent, rendering.getFieldOfView(), rendering.getNearClipDistance(), rendering.getViewDistance());
+        const FogState fog = rendering.getFogState(underwater);
+        const std::optional<RenderCore::FrameEnvironmentState> environment = cell.isExterior() || cell.isQuasiExterior()
+            ? makeV4ExteriorEnvironmentState(rendering, cell, fog, underwater, rendering.getNightEyeFactor())
+            : makeV4InteriorEnvironmentState(cell, fog, underwater, rendering.getNightEyeFactor());
         if (!cameraState || !environment)
             return std::nullopt;
 

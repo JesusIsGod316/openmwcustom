@@ -3,18 +3,20 @@
 #include "v4runtimeoptions.hpp"
 #include "v4scenerenderlifecycle.hpp"
 #include "v4semanticsource.hpp"
+#include "v4terrainsource.hpp"
 
 #include "animation.hpp"
 #include "npcanimation.hpp"
 #include "renderingmanager.hpp"
 
+#include "../mwworld/cell.hpp"
 #include "../mwworld/class.hpp"
 
 #include <components/nif/niffile.hpp>
 #include <components/nifrender/actormodelcomposer.hpp>
 #include <components/nifrender/niftranslator.hpp>
-#include <components/sceneutil/skeleton.hpp>
 #include <components/sceneutil/morphgeometry.hpp>
+#include <components/sceneutil/skeleton.hpp>
 
 #include <components/misc/strings/lower.hpp>
 #include <components/vfs/manager.hpp>
@@ -48,9 +50,9 @@ namespace MWRender
         [[nodiscard]] glm::mat4 toGlm(const osg::Matrixf& source) noexcept
         {
             glm::mat4 result(1.0f);
-            for (std::size_t column = 0; column < 4; ++column)
-                for (std::size_t row = 0; row < 4; ++row)
-                    result[column][row] = source(column, row);
+            for (int column = 0; column < 4; ++column)
+                for (int row = 0; row < 4; ++row)
+                    result[static_cast<glm::length_t>(column)][static_cast<glm::length_t>(row)] = source(column, row);
             return result;
         }
 
@@ -79,8 +81,7 @@ namespace MWRender
             Nif::NIFFile nifFile(normalized);
             Nif::Reader reader(nifFile, nullptr);
             reader.parse(vfs.get(normalized));
-            const NifRender::TranslationBundle bundle
-                = NifRender::translateStaticNif(Nif::FileView(nifFile), vfs);
+            const NifRender::TranslationBundle bundle = NifRender::translateStaticNif(Nif::FileView(nifFile), vfs);
             const NifRender::StaticModelCacheResult published = session.models().publish(bundle);
             return published.available() ? std::optional<NifRender::StaticModelCacheResult>(published) : std::nullopt;
         }
@@ -146,7 +147,35 @@ namespace MWRender
         : mVfs(vfs)
         , mSession(std::move(session))
         , mRouteStatus(std::make_shared<V4RenderRouteStatus>())
+        , mTerrain(std::make_unique<RenderCore::TerrainChunkProducer>(mSession->world(), mSession->publisher()))
     {
+    }
+
+    bool V4EngineRenderBridge::synchronizeExteriorTerrain(const RenderingManager& rendering, const MWWorld::Cell& cell)
+    {
+        mLastDiagnostic.clear();
+        std::optional<RenderCore::TerrainChunkSource> source;
+        if (cell.isExterior())
+        {
+            const std::string identity = makeV4TerrainChunkIdentity(cell);
+            if (mTerrain->contains(identity))
+                return true;
+            source = makeV4TerrainChunkSource(rendering, cell);
+            if (!source)
+            {
+                mLastDiagnostic = "authoritative exterior LAND data could not produce a neutral terrain chunk";
+                return false;
+            }
+        }
+        const RenderCore::TerrainChunkPublishStatus status = mTerrain->synchronize(source);
+        if (status != RenderCore::TerrainChunkPublishStatus::Applied
+            && status != RenderCore::TerrainChunkPublishStatus::AlreadyPresent)
+        {
+            mLastDiagnostic = "neutral terrain chunk publication failed with status "
+                + std::to_string(static_cast<unsigned int>(status));
+            return false;
+        }
+        return true;
     }
 
     V4EngineRenderBridge::~V4EngineRenderBridge()
@@ -178,8 +207,7 @@ namespace MWRender
         int height = 0;
         if (!SDL_GetWindowSizeInPixels(window, &width, &height) || width <= 0 || height <= 0)
             return std::nullopt;
-        const RenderCore::Extent2D result{
-            static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height) };
+        const RenderCore::Extent2D result{ static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height) };
         if (!result.valid())
             return std::nullopt;
         return result;
@@ -198,18 +226,15 @@ namespace MWRender
             throw std::runtime_error("V4 MyGUI platform requires a visible Vulkan drawable extent");
         RenderVsg::VsgRuntimeHost& host = mSession->bootstrap().renderer();
         constexpr VFS::Path::NormalizedView resourcePath("mygui");
-        auto platform = std::make_unique<VsgMyGui::Platform>(host.uiPipeline(),
-            VsgMyGui::makeVfsImageDecoder(mVfs), &mVfs, static_cast<int>(extent->width),
-            static_cast<int>(extent->height), resourcePath, logName,
-            [session = mSession](VsgMyGui::RenderManager* renderer) {
-                session->bootstrap().renderer().detachGuiRenderer(renderer);
-            });
+        auto platform = std::make_unique<VsgMyGui::Platform>(host.uiPipeline(), VsgMyGui::makeVfsImageDecoder(mVfs),
+            &mVfs, static_cast<int>(extent->width), static_cast<int>(extent->height), resourcePath, logName,
+            [session = mSession](
+                VsgMyGui::RenderManager* renderer) { session->bootstrap().renderer().detachGuiRenderer(renderer); });
         host.attachGuiRenderer(platform->getRenderManagerPtr());
         return platform;
     }
 
-    bool V4EngineRenderBridge::captureDynamicFrameState(
-        const RenderingManager& rendering, V4MainFrameSource& source)
+    bool V4EngineRenderBridge::captureDynamicFrameState(const RenderingManager& rendering, V4MainFrameSource& source)
     {
         mLastDiagnostic.clear();
         if (mComposedActorEpoch != mSession->world().epoch())
@@ -286,8 +311,7 @@ namespace MWRender
                     }
                     parts.push_back({ published->model, part.boneName, part.visible });
                     signature += "\n" + std::to_string(static_cast<unsigned int>(part.type)) + ":"
-                        + std::string(part.model.value()) + ":" + part.boneName + ":"
-                        + (part.visible ? "1" : "0");
+                        + std::string(part.model.value()) + ":" + part.boneName + ":" + (part.visible ? "1" : "0");
                 }
                 if (!compatible)
                     return;
@@ -306,8 +330,8 @@ namespace MWRender
                     }
 
                     RenderCore::ModelHandle composedHandle;
-                    RenderCore::RenderWorldUpdateBatch batch(mSession->world().epoch(),
-                        mSession->publisher().nextSequence(), "runtime:npc:" + *identity);
+                    RenderCore::RenderWorldUpdateBatch batch(
+                        mSession->world().epoch(), mSession->publisher().nextSequence(), "runtime:npc:" + *identity);
                     if (entry == mComposedActors.end() || !mSession->world().get(entry->second.model))
                     {
                         const std::optional<RenderCore::ModelHandle> reserved = mSession->world().reserveModel();
@@ -371,8 +395,7 @@ namespace MWRender
                     mLastDiagnostic = "active actor could not produce a dynamic instance source";
                     return;
                 }
-                const RenderCore::ActiveCellPublishResult published
-                    = mSession->cells().upsertDynamicInstance(*dynamic);
+                const RenderCore::ActiveCellPublishResult published = mSession->cells().upsertDynamicInstance(*dynamic);
                 if (published.status != RenderCore::ActiveCellPublishStatus::Applied
                     && published.status != RenderCore::ActiveCellPublishStatus::AlreadyPresent)
                 {
@@ -393,8 +416,7 @@ namespace MWRender
                 return;
             }
 
-            const RenderCore::ModelRecord* model
-                = instance->model ? mSession->world().get(*instance->model) : nullptr;
+            const RenderCore::ModelRecord* model = instance->model ? mSession->world().get(*instance->model) : nullptr;
             if (!model || !model->payload)
             {
                 compatible = false;
@@ -411,8 +433,7 @@ namespace MWRender
             for (std::size_t nodeIndex = 0; nodeIndex < model->payload->nodes.size(); ++nodeIndex)
             {
                 const RenderCore::ModelNodeRecord& node = model->payload->nodes[nodeIndex];
-                const RenderCore::MeshRecord* mesh
-                    = node.mesh ? mSession->world().get(*node.mesh) : nullptr;
+                const RenderCore::MeshRecord* mesh = node.mesh ? mSession->world().get(*node.mesh) : nullptr;
                 if (mesh && mesh->morphed)
                     morphNodes.emplace_back(RenderCore::ModelNodeIndex{ static_cast<std::uint32_t>(nodeIndex) }, mesh);
             }
@@ -452,9 +473,8 @@ namespace MWRender
             for (std::size_t i = 0; i < global.size(); ++i)
             {
                 const std::int32_t parent = skeleton->payload->bones[i].parent;
-                pose.localTransforms[i] = parent < 0
-                    ? global[i]
-                    : glm::inverse(global[static_cast<std::size_t>(parent)]) * global[i];
+                pose.localTransforms[i]
+                    = parent < 0 ? global[i] : glm::inverse(global[static_cast<std::size_t>(parent)]) * global[i];
                 if (!finite(pose.localTransforms[i]))
                 {
                     compatible = false;
@@ -523,8 +543,7 @@ namespace MWRender
                             mLastDiagnostic = "evaluated actor morph target count is incompatible with translated data";
                             return;
                         }
-                        weights.weights.push_back(
-                            evaluatedMorph.getMorphTarget(target.sourceIndex).getWeight());
+                        weights.weights.push_back(evaluatedMorph.getMorphTarget(target.sourceIndex).getWeight());
                     }
                     source.morphWeights.push_back(std::move(weights));
                 }
@@ -593,8 +612,7 @@ namespace MWRender
         return result;
     }
 
-    RenderCore::RenderFrameResult V4EngineRenderBridge::renderGuiFrame(
-        double simulationTime, double frameDelta)
+    RenderCore::RenderFrameResult V4EngineRenderBridge::renderGuiFrame(double simulationTime, double frameDelta)
     {
         mLastDiagnostic.clear();
         const std::optional<RenderCore::Extent2D> extent = outputExtent();

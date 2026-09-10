@@ -8,10 +8,11 @@ if(NOT PROJECT_NAME STREQUAL "OpenMW")
     return()
 endif()
 
-if(OPENMW_CP3B3_REAL_NIF_TOOL_SCHEDULED)
+get_property(_openmw_cp3b3_real_nif_tool_scheduled GLOBAL PROPERTY OPENMW_CP3B3_REAL_NIF_TOOL_SCHEDULED)
+if(_openmw_cp3b3_real_nif_tool_scheduled)
     return()
 endif()
-set(OPENMW_CP3B3_REAL_NIF_TOOL_SCHEDULED TRUE CACHE INTERNAL "CP3B3 real-NIF target injection scheduled")
+set_property(GLOBAL PROPERTY OPENMW_CP3B3_REAL_NIF_TOOL_SCHEDULED TRUE)
 
 function(openmw_cp3b3_define_real_nif_tool)
     if(TARGET openmw-vulkan-nif-conformance)

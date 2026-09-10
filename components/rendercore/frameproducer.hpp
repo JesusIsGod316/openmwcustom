@@ -65,8 +65,8 @@ namespace RenderCore
             if (!mNextFrameId)
                 return std::nullopt;
 
-            const bool dimensionsMatch = mPreviousRenderExtent == input.renderExtent
-                && mPreviousOutputExtent == input.outputExtent;
+            const bool dimensionsMatch
+                = mPreviousRenderExtent == input.renderExtent && mPreviousOutputExtent == input.outputExtent;
             const bool continuous = mPreviousCamera.has_value() && mPreviousWorldEpoch == world.epoch()
                 && dimensionsMatch && !input.invalidateHistory;
 
@@ -80,9 +80,11 @@ namespace RenderCore
             }
 
             FrameView view;
+            view.identity = ViewHandle::fromParts(0, 1);
             view.current = input.camera;
             view.previous = continuous ? *mPreviousCamera : input.camera;
             view.extent = input.renderExtent;
+            view.outputTarget = RenderTargetHandle::fromParts(0, 1);
             view.lodScale = input.lodScale;
             view.historyEpoch = candidateHistoryEpoch;
             view.temporal = input.jitter != glm::vec2(0.0f) || input.projectionOffset != glm::vec2(0.0f);
@@ -101,6 +103,23 @@ namespace RenderCore
             desc.projectionOffset = input.projectionOffset;
             desc.historyValid = continuous;
             desc.environment = input.environment;
+            desc.renderTargets.push_back(RenderTargetDesc{
+                .identity = view.outputTarget,
+                .kind = RenderTargetKind::Swapchain,
+                .extent = input.outputExtent,
+                .colorFormat = RenderTargetFormat::SurfaceColor,
+                .depthFormat = RenderTargetFormat::Depth32Float,
+                .sampleCount = 1,
+                .historyEpoch = candidateHistoryEpoch,
+                .historyValid = continuous,
+                .transient = false,
+            });
+            desc.renderPasses.push_back(RenderPassDesc{
+                .identity = RenderPassHandle::fromParts(0, 1),
+                .view = view.identity,
+                .output = view.outputTarget,
+                .present = true,
+            });
             desc.views.push_back(std::move(view));
 
             for (const DynamicTransformInput& inputTransform : input.dynamicTransforms)
@@ -108,10 +127,8 @@ namespace RenderCore
                 const InstanceRecord* instance = world.get(inputTransform.instance);
                 if (!instance)
                     return std::nullopt;
-                const auto previous = std::find_if(mPreviousDynamicTransforms.begin(),
-                    mPreviousDynamicTransforms.end(), [&](const DynamicTransformState& value) {
-                        return value.instance == inputTransform.instance;
-                    });
+                const auto previous = std::find_if(mPreviousDynamicTransforms.begin(), mPreviousDynamicTransforms.end(),
+                    [&](const DynamicTransformState& value) { return value.instance == inputTransform.instance; });
                 const bool transformContinuous = continuous && previous != mPreviousDynamicTransforms.end()
                     && previous->instanceRevision == instance->revision;
                 DynamicTransformState transform;
@@ -159,13 +176,14 @@ namespace RenderCore
                     || !instanceOwnsMesh(world, *instance, inputMorph))
                     return std::nullopt;
 
-                const auto previous = std::find_if(mPreviousMorphWeights.begin(), mPreviousMorphWeights.end(),
-                    [&](const MorphWeightState& value) {
+                const auto previous = std::find_if(
+                    mPreviousMorphWeights.begin(), mPreviousMorphWeights.end(), [&](const MorphWeightState& value) {
                         return value.instance == inputMorph.instance && value.modelNode == inputMorph.modelNode;
                     });
                 const bool morphContinuous = continuous && previous != mPreviousMorphWeights.end()
                     && previous->instanceRevision == instance->revision && previous->mesh == inputMorph.mesh
-                    && previous->meshRevision == mesh->revision && previous->current.size() == inputMorph.weights.size();
+                    && previous->meshRevision == mesh->revision
+                    && previous->current.size() == inputMorph.weights.size();
 
                 MorphWeightState morph;
                 morph.instance = inputMorph.instance;

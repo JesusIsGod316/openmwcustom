@@ -22,8 +22,13 @@ namespace MWRender
             return RenderCore::RenderFrameResult::Skipped;
         }
 
-        std::optional<V4MainFrameSource> source = makeV4MainFrameSource(rendering, cell,
-            rendering.isUnderwater(), *extent, simulationTime, frameDelta, invalidateHistory);
+        if (!mBridge.synchronizeExteriorTerrain(rendering, cell))
+            return fail(mBridge.lastDiagnostic().empty()
+                    ? "authoritative terrain state could not produce a compatible V4 frame"
+                    : mBridge.lastDiagnostic());
+
+        std::optional<V4MainFrameSource> source = makeV4MainFrameSource(
+            rendering, cell, rendering.isUnderwater(), *extent, simulationTime, frameDelta, invalidateHistory);
         if (!source)
             return fail("authoritative gameplay state could not produce a compatible V4 main frame");
         if (!mBridge.captureDynamicFrameState(rendering, *source))

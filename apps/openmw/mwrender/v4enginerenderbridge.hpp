@@ -9,10 +9,11 @@
 #include <components/render/backend/vsg/vsgruntimebootstrap.hpp>
 #include <components/rendercore/frameproducer.hpp>
 #include <components/rendercore/renderer.hpp>
+#include <components/rendercore/terrainchunkproducer.hpp>
 
-#include <memory>
-#include <map>
 #include <filesystem>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -31,6 +32,11 @@ struct SDL_Window;
 namespace RenderVsg
 {
     class VsgSemanticSession;
+}
+
+namespace MWWorld
+{
+    class Cell;
 }
 
 namespace MWRender
@@ -66,8 +72,8 @@ namespace MWRender
         [[nodiscard]] SDL_Window* sdlWindow() const noexcept;
         [[nodiscard]] std::unique_ptr<MyGUIPlatform::PlatformBase> createGuiPlatform(
             const std::filesystem::path& logName = {});
-        [[nodiscard]] bool captureDynamicFrameState(
-            const RenderingManager& rendering, V4MainFrameSource& source);
+        [[nodiscard]] bool captureDynamicFrameState(const RenderingManager& rendering, V4MainFrameSource& source);
+        [[nodiscard]] bool synchronizeExteriorTerrain(const RenderingManager& rendering, const MWWorld::Cell& cell);
         RenderCore::RenderFrameResult renderMainFrame(const V4MainFrameSource& source);
         RenderCore::RenderFrameResult renderGuiFrame(double simulationTime, double frameDelta);
         void waitIdle();
@@ -80,6 +86,7 @@ namespace MWRender
         const VFS::Manager& mVfs;
         std::shared_ptr<RenderVsg::VsgSemanticSession> mSession;
         std::shared_ptr<V4RenderRouteStatus> mRouteStatus;
+        std::unique_ptr<RenderCore::TerrainChunkProducer> mTerrain;
         std::string mLastDiagnostic;
         bool mLifecycleTaken = false;
         bool mGuiOnlyFramePresented = false;

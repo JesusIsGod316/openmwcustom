@@ -3,8 +3,10 @@
 
 #include "records.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -60,6 +62,61 @@ namespace RenderCore
         Debug,
     };
 
+    enum class RenderTargetKind : std::uint8_t
+    {
+        Swapchain,
+        Offscreen,
+        History,
+    };
+
+    enum class RenderTargetFormat : std::uint8_t
+    {
+        SurfaceColor,
+        Rgba8Srgb,
+        Rgba16Float,
+        Depth32Float,
+    };
+
+    struct RenderTargetDesc
+    {
+        RenderTargetHandle identity;
+        RenderTargetKind kind = RenderTargetKind::Offscreen;
+        Extent2D extent;
+        RenderTargetFormat colorFormat = RenderTargetFormat::SurfaceColor;
+        std::optional<RenderTargetFormat> depthFormat;
+        std::uint32_t sampleCount = 1;
+        HistoryEpoch historyEpoch = InitialHistoryEpoch;
+        bool historyValid = false;
+        bool transient = false;
+    };
+
+    enum class RenderPassLoad : std::uint8_t
+    {
+        Load,
+        Clear,
+        Discard,
+    };
+
+    enum class RenderPassStore : std::uint8_t
+    {
+        Store,
+        Discard,
+    };
+
+    struct RenderPassDesc
+    {
+        RenderPassHandle identity;
+        std::optional<ViewHandle> view;
+        RenderTargetHandle output;
+        std::vector<RenderTargetHandle> inputs;
+        std::vector<RenderPassHandle> dependencies;
+        RenderPassLoad colorLoad = RenderPassLoad::Clear;
+        RenderPassLoad depthLoad = RenderPassLoad::Clear;
+        RenderPassStore colorStore = RenderPassStore::Store;
+        RenderPassStore depthStore = RenderPassStore::Store;
+        bool present = false;
+    };
+
     struct CameraState
     {
         WorldPosition worldPosition{ 0.0, 0.0, 0.0 };
@@ -70,8 +127,10 @@ namespace RenderCore
 
     struct FrameView
     {
+        ViewHandle identity;
         std::uint32_t viewIndex = 0;
         ViewKind kind = ViewKind::Main;
+        RenderTargetHandle outputTarget;
         CameraState current;
         CameraState previous;
         Extent2D extent;
@@ -177,6 +236,8 @@ namespace RenderCore
         glm::vec2 projectionOffset{ 0.0f, 0.0f };
         bool historyValid = false;
         FrameEnvironmentState environment;
+        std::vector<RenderTargetDesc> renderTargets;
+        std::vector<RenderPassDesc> renderPasses;
         std::vector<FrameView> views;
         std::vector<DynamicTransformState> dynamicTransforms;
         std::vector<SkeletonPoseState> skeletonPoses;
@@ -207,6 +268,11 @@ namespace RenderCore
         [[nodiscard]] const glm::vec2& projectionOffset() const noexcept { return mDesc.projectionOffset; }
         [[nodiscard]] bool historyValid() const noexcept { return mDesc.historyValid; }
         [[nodiscard]] const FrameEnvironmentState& environment() const noexcept { return mDesc.environment; }
+        [[nodiscard]] const std::vector<RenderTargetDesc>& renderTargets() const noexcept
+        {
+            return mDesc.renderTargets;
+        }
+        [[nodiscard]] const std::vector<RenderPassDesc>& renderPasses() const noexcept { return mDesc.renderPasses; }
         [[nodiscard]] const std::vector<FrameView>& views() const noexcept { return mDesc.views; }
         [[nodiscard]] const std::vector<DynamicTransformState>& dynamicTransforms() const noexcept
         {
@@ -216,10 +282,7 @@ namespace RenderCore
         {
             return mDesc.skeletonPoses;
         }
-        [[nodiscard]] const std::vector<MorphWeightState>& morphWeights() const noexcept
-        {
-            return mDesc.morphWeights;
-        }
+        [[nodiscard]] const std::vector<MorphWeightState>& morphWeights() const noexcept { return mDesc.morphWeights; }
         [[nodiscard]] const std::vector<DynamicMaterialState>& dynamicMaterials() const noexcept
         {
             return mDesc.dynamicMaterials;
@@ -233,24 +296,71 @@ namespace RenderCore
                 || !finite(mDesc.projectionOffset) || !finite(mDesc.environment))
                 return false;
 
+            for (std::size_t i = 0; i < mDesc.renderTargets.size(); ++i)
+            {
+                const RenderTargetDesc& target = mDesc.renderTargets[i];
+                if (!target.identity.valid() || !target.extent.valid() || target.sampleCount == 0
+                    || !target.historyEpoch.valid() || (target.historyValid && !mDesc.historyValid)
+                    || !known(target.kind) || !known(target.colorFormat)
+                    || (target.depthFormat && !known(*target.depthFormat))
+                    || (target.kind == RenderTargetKind::Swapchain && target.transient))
+                    return false;
+                for (std::size_t j = i + 1; j < mDesc.renderTargets.size(); ++j)
+                {
+                    if (target.identity == mDesc.renderTargets[j].identity)
+                        return false;
+                }
+            }
+
             for (std::size_t i = 0; i < mDesc.views.size(); ++i)
             {
                 const FrameView& view = mDesc.views[i];
-                if (!view.extent.valid() || !view.historyEpoch.valid() || !finite(view.lodScale) || view.lodScale <= 0.0f
-                    || !finite(view.current) || !finite(view.previous))
+                if (!view.identity.valid() || !view.outputTarget.valid() || !findTarget(view.outputTarget)
+                    || !view.extent.valid() || !view.historyEpoch.valid() || !finite(view.lodScale)
+                    || view.lodScale <= 0.0f || !finite(view.current) || !finite(view.previous))
                     return false;
                 for (std::size_t j = i + 1; j < mDesc.views.size(); ++j)
                 {
-                    if (view.viewIndex == mDesc.views[j].viewIndex)
+                    if (view.viewIndex == mDesc.views[j].viewIndex || view.identity == mDesc.views[j].identity)
                         return false;
                 }
+            }
+
+            for (std::size_t i = 0; i < mDesc.renderPasses.size(); ++i)
+            {
+                const RenderPassDesc& pass = mDesc.renderPasses[i];
+                const RenderTargetDesc* output = findTarget(pass.output);
+                if (!pass.identity.valid() || !output || (pass.view && !findView(*pass.view)) || !known(pass.colorLoad)
+                    || !known(pass.depthLoad) || !known(pass.colorStore) || !known(pass.depthStore)
+                    || (pass.present && output->kind != RenderTargetKind::Swapchain))
+                    return false;
+                for (std::size_t inputIndex = 0; inputIndex < pass.inputs.size(); ++inputIndex)
+                {
+                    const RenderTargetHandle input = pass.inputs[inputIndex];
+                    if (!findTarget(input) || input == pass.output
+                        || std::find(pass.inputs.begin() + inputIndex + 1, pass.inputs.end(), input)
+                            != pass.inputs.end())
+                        return false;
+                }
+                for (std::size_t dependencyIndex = 0; dependencyIndex < pass.dependencies.size(); ++dependencyIndex)
+                {
+                    const RenderPassHandle dependency = pass.dependencies[dependencyIndex];
+                    if (dependency == pass.identity || !findEarlierPass(dependency, i))
+                        return false;
+                    if (std::find(pass.dependencies.begin() + dependencyIndex + 1, pass.dependencies.end(), dependency)
+                        != pass.dependencies.end())
+                        return false;
+                }
+                for (std::size_t j = i + 1; j < mDesc.renderPasses.size(); ++j)
+                    if (pass.identity == mDesc.renderPasses[j].identity)
+                        return false;
             }
 
             for (std::size_t i = 0; i < mDesc.dynamicTransforms.size(); ++i)
             {
                 const DynamicTransformState& transform = mDesc.dynamicTransforms[i];
-                if (!transform.instance.valid() || !transform.instanceRevision.valid()
-                    || !finite(transform.current) || !finite(transform.previous))
+                if (!transform.instance.valid() || !transform.instanceRevision.valid() || !finite(transform.current)
+                    || !finite(transform.previous))
                     return false;
                 for (std::size_t j = i + 1; j < mDesc.dynamicTransforms.size(); ++j)
                 {
@@ -322,13 +432,53 @@ namespace RenderCore
         }
 
     private:
+        [[nodiscard]] static bool known(RenderTargetKind value) noexcept
+        {
+            return value == RenderTargetKind::Swapchain || value == RenderTargetKind::Offscreen
+                || value == RenderTargetKind::History;
+        }
+
+        [[nodiscard]] static bool known(RenderTargetFormat value) noexcept
+        {
+            return value == RenderTargetFormat::SurfaceColor || value == RenderTargetFormat::Rgba8Srgb
+                || value == RenderTargetFormat::Rgba16Float || value == RenderTargetFormat::Depth32Float;
+        }
+
+        [[nodiscard]] static bool known(RenderPassLoad value) noexcept
+        {
+            return value == RenderPassLoad::Load || value == RenderPassLoad::Clear || value == RenderPassLoad::Discard;
+        }
+
+        [[nodiscard]] static bool known(RenderPassStore value) noexcept
+        {
+            return value == RenderPassStore::Store || value == RenderPassStore::Discard;
+        }
+
+        [[nodiscard]] const RenderTargetDesc* findTarget(RenderTargetHandle identity) const noexcept
+        {
+            const auto found = std::find_if(mDesc.renderTargets.begin(), mDesc.renderTargets.end(),
+                [identity](const RenderTargetDesc& target) { return target.identity == identity; });
+            return found == mDesc.renderTargets.end() ? nullptr : &*found;
+        }
+
+        [[nodiscard]] const FrameView* findView(ViewHandle identity) const noexcept
+        {
+            const auto found = std::find_if(mDesc.views.begin(), mDesc.views.end(),
+                [identity](const FrameView& view) { return view.identity == identity; });
+            return found == mDesc.views.end() ? nullptr : &*found;
+        }
+
+        [[nodiscard]] bool findEarlierPass(RenderPassHandle identity, std::size_t before) const noexcept
+        {
+            return std::find_if(mDesc.renderPasses.begin(), mDesc.renderPasses.begin() + before,
+                       [identity](const RenderPassDesc& pass) { return pass.identity == identity; })
+                != mDesc.renderPasses.begin() + before;
+        }
+
         [[nodiscard]] static bool finite(float value) noexcept { return std::isfinite(value); }
         [[nodiscard]] static bool finite(double value) noexcept { return std::isfinite(value); }
 
-        [[nodiscard]] static bool finite(const glm::vec2& value) noexcept
-        {
-            return finite(value.x) && finite(value.y);
-        }
+        [[nodiscard]] static bool finite(const glm::vec2& value) noexcept { return finite(value.x) && finite(value.y); }
 
         [[nodiscard]] static bool finite(const glm::vec3& value) noexcept
         {
@@ -390,22 +540,20 @@ namespace RenderCore
                 && (value.infiniteFar || value.farPlane > value.nearPlane)
                 && (value.depthRange == ClipDepthRange::NegativeOneToOne
                     || value.depthRange == ClipDepthRange::ZeroToOne)
-                && (value.depthDirection == DepthDirection::Forward
-                    || value.depthDirection == DepthDirection::Reversed)
+                && (value.depthDirection == DepthDirection::Forward || value.depthDirection == DepthDirection::Reversed)
                 && (value.yDirection == ClipYDirection::Up || value.yDirection == ClipYDirection::Down);
         }
 
         [[nodiscard]] static bool finite(const FrameEnvironmentState& value) noexcept
         {
-            const bool fogModesValid = (value.fogDistanceMode == FogDistanceMode::Planar
-                                           || value.fogDistanceMode == FogDistanceMode::Radial)
+            const bool fogModesValid
+                = (value.fogDistanceMode == FogDistanceMode::Planar || value.fogDistanceMode == FogDistanceMode::Radial)
                 && (value.fogFalloffMode == FogFalloffMode::Linear
                     || value.fogFalloffMode == FogFalloffMode::Exponential);
             const bool fogRangeValid = !value.fogEnabled || (value.fogEnd > value.fogStart && value.fogEnd > 0.0f);
             return finite(value.ambient) && finite(value.fogColor) && finite(value.fogStart) && finite(value.fogEnd)
-                && fogModesValid && fogRangeValid
-                && finite(value.sunDirection) && finite(value.sunDiffuse) && finite(value.sunSpecular)
-                && finite(value.waterHeight);
+                && fogModesValid && fogRangeValid && finite(value.sunDirection) && finite(value.sunDiffuse)
+                && finite(value.sunSpecular) && finite(value.waterHeight);
         }
 
         [[nodiscard]] static bool finite(const DynamicMaterialState& value) noexcept

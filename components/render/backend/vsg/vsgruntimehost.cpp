@@ -1,7 +1,7 @@
 #include "vsgruntimehost.hpp"
 
-#include "legacymaterialshader.hpp"
 #include "dynamicactorplan.hpp"
+#include "legacymaterialshader.hpp"
 #include "staticassetconformance.hpp"
 
 #include <components/vsgmygui/rendermanager.hpp>
@@ -32,6 +32,8 @@ namespace RenderVsg
         [[nodiscard]] RenderCore::FrameView initialView()
         {
             RenderCore::FrameView result;
+            result.identity = RenderCore::ViewHandle::fromParts(0, 1);
+            result.outputTarget = RenderCore::RenderTargetHandle::fromParts(0, 1);
             result.extent = { 1, 1 };
             return result;
         }
@@ -44,8 +46,8 @@ namespace RenderVsg
         }
     }
 
-    VsgRuntimeHost::VsgRuntimeHost(vsg::ref_ptr<SdlVulkanWindow> window,
-        StaticTextureResolver textureResolver, VsgRuntimeHostOptions options)
+    VsgRuntimeHost::VsgRuntimeHost(
+        vsg::ref_ptr<SdlVulkanWindow> window, StaticTextureResolver textureResolver, VsgRuntimeHostOptions options)
         : mOptions(options)
         , mTextureResolver(std::move(textureResolver))
         , mWindow(std::move(window))
@@ -128,7 +130,13 @@ namespace RenderVsg
     {
         if (frame.views().size() != 1 || frame.views().front().kind != RenderCore::ViewKind::Main
             || frame.views().front().semanticIncludeMask != ~std::uint64_t{ 0 }
-            || frame.views().front().semanticExcludeMask != 0)
+            || frame.views().front().semanticExcludeMask != 0 || frame.renderTargets().size() != 1
+            || frame.renderTargets().front().identity != frame.views().front().outputTarget
+            || frame.renderTargets().front().kind != RenderCore::RenderTargetKind::Swapchain
+            || frame.renderPasses().size() != 1 || !frame.renderPasses().front().view
+            || *frame.renderPasses().front().view != frame.views().front().identity
+            || frame.renderPasses().front().output != frame.views().front().outputTarget
+            || !frame.renderPasses().front().present)
             return nullptr;
         return &frame.views().front();
     }
@@ -153,8 +161,8 @@ namespace RenderVsg
                 mLastDiagnostic = "per-instance disabled lighting is not implemented by the CP3C host";
                 return false;
             }
-            StaticRealizationResult realized = realizeStaticAssetConformant(
-                world, plan.model, plan.asset, mTextureResolver, mSharedObjects);
+            StaticRealizationResult realized
+                = realizeStaticAssetConformant(world, plan.model, plan.asset, mTextureResolver, mSharedObjects);
             if (!realized.valid() || realized.stats.runtimeContextEffects != 0
                 || realized.stats.unsupportedTextureBindings != 0)
             {
@@ -237,8 +245,7 @@ namespace RenderVsg
                 mLastDiagnostic = "dynamic actor frame is missing its current world transform";
                 return false;
             }
-            const std::optional<StaticAssetPlan> evaluatedAsset
-                = evaluateDynamicActorAssetPlan(world, frame, actor);
+            const std::optional<StaticAssetPlan> evaluatedAsset = evaluateDynamicActorAssetPlan(world, frame, actor);
             if (!evaluatedAsset)
             {
                 mLastDiagnostic = "dynamic actor draw transforms rejected the evaluated skeleton pose";
@@ -265,8 +272,8 @@ namespace RenderVsg
                 payload.bitangents = std::move(result.bitangents);
                 deformed.emplace(draw.node.value(), std::move(payload));
             }
-            const MeshPayloadResolver resolve = [&](RenderCore::MeshHandle, RenderCore::ModelNodeIndex node)
-                -> const RenderCore::MeshPayload* {
+            const MeshPayloadResolver resolve
+                = [&](RenderCore::MeshHandle, RenderCore::ModelNodeIndex node) -> const RenderCore::MeshPayload* {
                 const auto found = deformed.find(node.value());
                 return found == deformed.end() ? nullptr : &found->second;
             };
@@ -285,8 +292,7 @@ namespace RenderVsg
                 mLastDiagnostic = "dynamic actor changed while its frame graph was being realized";
                 return false;
             }
-            auto placed = vsg::MatrixTransform::create(
-                toVsgMatrix(staticInstancePlacementMatrix(transform->current)));
+            auto placed = vsg::MatrixTransform::create(toVsgMatrix(staticInstancePlacementMatrix(transform->current)));
             placed->addChild(realized.root);
             nextRoot->addChild(placed);
         }
@@ -316,8 +322,7 @@ namespace RenderVsg
         if (mOpenMwViewState->localLightsCurrent(world))
             return true;
 
-        LocalLightBufferPlan plan
-            = buildLocalLightBufferPlan(buildLocalLightWorldPlan(world), glm::dvec3(0.0));
+        LocalLightBufferPlan plan = buildLocalLightBufferPlan(buildLocalLightWorldPlan(world), glm::dvec3(0.0));
         if (!plan.ready())
         {
             switch (plan.status)
@@ -391,11 +396,11 @@ namespace RenderVsg
         if (!frame.valid() || !RenderCore::frameCompatibleWithWorld(world, frame))
             return finish(RenderCore::RenderFrameResult::Failed, "invalid or stale semantic frame state");
         if (!frame.dynamicMaterials().empty())
-            return finish(RenderCore::RenderFrameResult::Failed,
-                "dynamic materials require a later compatibility facet");
+            return finish(
+                RenderCore::RenderFrameResult::Failed, "dynamic materials require a later compatibility facet");
         if (frame.environment().skyEnabled || frame.environment().waterEnabled)
-            return finish(RenderCore::RenderFrameResult::Failed,
-                "sky and water require the environment compatibility facet");
+            return finish(
+                RenderCore::RenderFrameResult::Failed, "sky and water require the environment compatibility facet");
         if (frame.environment().clusteredLocalLighting)
             return finish(RenderCore::RenderFrameResult::Failed,
                 "clustered local-light selection and far-plane fading require the clustered compatibility facet");
@@ -416,7 +421,8 @@ namespace RenderVsg
         if (!extentMatches())
             mWindow->resize();
         if (!extentMatches())
-            return finish(RenderCore::RenderFrameResult::Skipped, "SDL pixel extent is not ready for the requested output");
+            return finish(
+                RenderCore::RenderFrameResult::Skipped, "SDL pixel extent is not ready for the requested output");
         if (!mViewer->advanceToNextFrame(frame.simulationTime()))
             return finish(RenderCore::RenderFrameResult::Skipped, "VSG could not acquire the next swapchain frame");
 
@@ -442,12 +448,11 @@ namespace RenderVsg
         mAmbientLight->intensity = 1.0f;
         mSunLight->color.set(environment.sunDiffuse.r, environment.sunDiffuse.g, environment.sunDiffuse.b);
         mSunLight->intensity = environment.sunLightEnabled ? 1.0f : 0.0f;
-        mSunLight->direction.set(
-            environment.sunDirection.x, environment.sunDirection.y, environment.sunDirection.z);
+        mSunLight->direction.set(environment.sunDirection.x, environment.sunDirection.y, environment.sunDirection.z);
         const RenderCore::Color& clear = environment.fogColor;
         mRenderGraph->setClearValues({ { clear.r, clear.g, clear.b, clear.a } });
-        if (!synchronizeLocalLights(world) || !synchronizeStaticWorld(world)
-            || !synchronizeDynamicActors(world, frame) || !synchronizeGui())
+        if (!synchronizeLocalLights(world) || !synchronizeStaticWorld(world) || !synchronizeDynamicActors(world, frame)
+            || !synchronizeGui())
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
 
         mViewer->update();
@@ -474,8 +479,7 @@ namespace RenderVsg
         return finish(RenderCore::RenderFrameResult::Presented);
     }
 
-    RenderCore::RenderFrameResult VsgRuntimeHost::finish(
-        RenderCore::RenderFrameResult result, std::string diagnostic)
+    RenderCore::RenderFrameResult VsgRuntimeHost::finish(RenderCore::RenderFrameResult result, std::string diagnostic)
     {
         mLastDiagnostic = std::move(diagnostic);
         return result;

@@ -204,15 +204,9 @@ namespace RenderCore
         bool cancel(ChunkHandle handle) noexcept { return mChunks.cancel(handle); }
         bool cancel(LightHandle handle) noexcept { return mLights.cancel(handle); }
 
-        bool retire(MeshHandle handle) noexcept
-        {
-            return !meshReferenced(handle) && retireRecord(mMeshes, handle);
-        }
+        bool retire(MeshHandle handle) noexcept { return !meshReferenced(handle) && retireRecord(mMeshes, handle); }
 
-        bool retire(ModelHandle handle) noexcept
-        {
-            return !modelReferenced(handle) && retireRecord(mModels, handle);
-        }
+        bool retire(ModelHandle handle) noexcept { return !modelReferenced(handle) && retireRecord(mModels, handle); }
 
         bool retire(MaterialHandle handle) noexcept
         {
@@ -275,21 +269,45 @@ namespace RenderCore
         // Slot order is deterministic for an ordered publication stream; callers
         // receive semantic handles and records, never SlotTable or backend state.
         template <class Fn>
-        void forEachMesh(Fn&& fn) const { mMeshes.forEachLive(std::forward<Fn>(fn)); }
+        void forEachMesh(Fn&& fn) const
+        {
+            mMeshes.forEachLive(std::forward<Fn>(fn));
+        }
         template <class Fn>
-        void forEachModel(Fn&& fn) const { mModels.forEachLive(std::forward<Fn>(fn)); }
+        void forEachModel(Fn&& fn) const
+        {
+            mModels.forEachLive(std::forward<Fn>(fn));
+        }
         template <class Fn>
-        void forEachMaterial(Fn&& fn) const { mMaterials.forEachLive(std::forward<Fn>(fn)); }
+        void forEachMaterial(Fn&& fn) const
+        {
+            mMaterials.forEachLive(std::forward<Fn>(fn));
+        }
         template <class Fn>
-        void forEachTexture(Fn&& fn) const { mTextures.forEachLive(std::forward<Fn>(fn)); }
+        void forEachTexture(Fn&& fn) const
+        {
+            mTextures.forEachLive(std::forward<Fn>(fn));
+        }
         template <class Fn>
-        void forEachSkeleton(Fn&& fn) const { mSkeletons.forEachLive(std::forward<Fn>(fn)); }
+        void forEachSkeleton(Fn&& fn) const
+        {
+            mSkeletons.forEachLive(std::forward<Fn>(fn));
+        }
         template <class Fn>
-        void forEachInstance(Fn&& fn) const { mInstances.forEachLive(std::forward<Fn>(fn)); }
+        void forEachInstance(Fn&& fn) const
+        {
+            mInstances.forEachLive(std::forward<Fn>(fn));
+        }
         template <class Fn>
-        void forEachChunk(Fn&& fn) const { mChunks.forEachLive(std::forward<Fn>(fn)); }
+        void forEachChunk(Fn&& fn) const
+        {
+            mChunks.forEachLive(std::forward<Fn>(fn));
+        }
         template <class Fn>
-        void forEachLight(Fn&& fn) const { mLights.forEachLive(std::forward<Fn>(fn)); }
+        void forEachLight(Fn&& fn) const
+        {
+            mLights.forEachLive(std::forward<Fn>(fn));
+        }
 
         [[nodiscard]] std::size_t instanceCount() const noexcept { return mInstances.liveCount(); }
         [[nodiscard]] std::size_t chunkCount() const noexcept { return mChunks.liveCount(); }
@@ -383,8 +401,7 @@ namespace RenderCore
         {
             if (!record.revision.valid())
                 return false;
-            if (record.skinned != static_cast<bool>(record.skin)
-                || record.morphed != static_cast<bool>(record.morphs))
+            if (record.skinned != static_cast<bool>(record.skin) || record.morphed != static_cast<bool>(record.morphs))
                 return false;
             if (record.skin && record.morphs)
                 return false;
@@ -441,8 +458,8 @@ namespace RenderCore
             {
                 if (!mTextures.contains(binding.texture) || !std::isfinite(binding.sampler.maxAnisotropy)
                     || binding.sampler.maxAnisotropy < 0.0f || !semantic_detail::finite(binding.transform.offset)
-                    || !semantic_detail::finite(binding.transform.scale) || !semantic_detail::finite(binding.transform.center)
-                    || !std::isfinite(binding.transform.rotation))
+                    || !semantic_detail::finite(binding.transform.scale)
+                    || !semantic_detail::finite(binding.transform.center) || !std::isfinite(binding.transform.rotation))
                     return false;
             }
             return true;
@@ -463,7 +480,13 @@ namespace RenderCore
 
         [[nodiscard]] static bool validateChunkRecord(const ChunkRecord& record) noexcept
         {
-            return record.revision.valid();
+            const bool knownKind = record.kind == ChunkRecord::Kind::SceneCell
+                || record.kind == ChunkRecord::Kind::Terrain || record.kind == ChunkRecord::Kind::StaticPopulation
+                || record.kind == ChunkRecord::Kind::Groundcover;
+            return record.revision.valid() && knownKind && semantic_detail::finite(record.bounds.minimum)
+                && semantic_detail::finite(record.bounds.maximum) && record.bounds.minimum.x <= record.bounds.maximum.x
+                && record.bounds.minimum.y <= record.bounds.maximum.y
+                && record.bounds.minimum.z <= record.bounds.maximum.z && (record.stitchMask & 0xf0u) == 0;
         }
 
         [[nodiscard]] static bool validateLightRecord(const LightRecord& record) noexcept
@@ -476,10 +499,9 @@ namespace RenderCore
                 && semantic_detail::finite(record.ambient) && std::isfinite(record.constantAttenuation)
                 && record.constantAttenuation >= 0.0f && std::isfinite(record.linearAttenuation)
                 && record.linearAttenuation >= 0.0f && std::isfinite(record.quadraticAttenuation)
-                && record.quadraticAttenuation >= 0.0f
-                && std::isfinite(record.effectiveRadius) && record.effectiveRadius >= 0.0f
-                && std::isfinite(record.actorFade) && record.actorFade >= 0.0f && record.actorFade <= 1.0f
-                && knownModulation;
+                && record.quadraticAttenuation >= 0.0f && std::isfinite(record.effectiveRadius)
+                && record.effectiveRadius >= 0.0f && std::isfinite(record.actorFade) && record.actorFade >= 0.0f
+                && record.actorFade <= 1.0f && knownModulation;
         }
 
         [[nodiscard]] bool validateInstanceReferences(InstanceHandle self, const InstanceRecord& record) const noexcept

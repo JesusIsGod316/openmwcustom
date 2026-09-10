@@ -16,10 +16,10 @@
 #include <components/nifosg/nifloader.hpp>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/v36gpuprofiler.hpp>
 #include <components/debug/v3deeptelemetry.hpp>
 #include <components/debug/v3diagnostics.hpp>
 #include <components/debug/v3gpumemory.hpp>
-#include <components/debug/v36gpuprofiler.hpp>
 
 #include <components/stereo/multiview.hpp>
 #include <components/stereo/stereomanager.hpp>
@@ -36,12 +36,12 @@
 #include <components/settings/v36profile.hpp>
 #include <components/settings/values.hpp>
 
+#include <components/occlusionculling/occlusionstorage.hpp>
 #include <components/sceneutil/cullsafeboundsvisitor.hpp>
 #include <components/sceneutil/depth.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
 #include <components/sceneutil/occlusionculling.hpp>
-#include <components/occlusionculling/occlusionstorage.hpp>
 #include <components/sceneutil/positionattitudetransform.hpp>
 #include <components/sceneutil/rtt.hpp>
 #include <components/sceneutil/shadow.hpp>
@@ -52,7 +52,6 @@
 #include <components/sceneutil/writescene.hpp>
 
 #include <components/misc/constants.hpp>
-
 
 #include <components/terrain/quadtreeworld.hpp>
 #include <components/terrain/terraingrid.hpp>
@@ -355,10 +354,8 @@ namespace MWRender
                 // 36 Hz spare-time target. CP1 instead follows the configured game
                 // target and relies on a small minimum + hard object cap.
                 compileTarget = configuredTarget;
-                maxObjectsPerFrame
-                    = static_cast<unsigned int>(Settings::cells().mV321CompileObjectsPerFrame);
-                conservativeRatio
-                    = static_cast<double>(Settings::cells().mV321CompileConservativeRatio);
+                maxObjectsPerFrame = static_cast<unsigned int>(Settings::cells().mV321CompileObjectsPerFrame);
+                conservativeRatio = static_cast<double>(Settings::cells().mV321CompileConservativeRatio);
                 ico->setMinimumTimeAvailableForGLCompileAndDeletePerFrame(
                     static_cast<double>(Settings::cells().mV321CompileMinimumMilliseconds) / 1000.0);
             }
@@ -415,9 +412,8 @@ namespace MWRender
             const bool debugMessages = Settings::camera().mOcclusionDebugMessages;
             const bool enableInteriors = Settings::camera().mOcclusionCullingInteriors;
             const unsigned int maxTriangles = static_cast<unsigned int>(Settings::camera().mOcclusionMaxTriangles);
-            mSceneOcclusionCallback = new SceneOcclusionCallback(
-                mOcclusionCuller, mTerrainOccluder.get(), radius, enableTerrain, debugOverlay, debugMessages,
-                enableInteriors, mOcclusionStorage.get());
+            mSceneOcclusionCallback = new SceneOcclusionCallback(mOcclusionCuller, mTerrainOccluder.get(), radius,
+                enableTerrain, debugOverlay, debugMessages, enableInteriors, mOcclusionStorage.get());
             sceneRoot->addCullCallback(mSceneOcclusionCallback);
 
             const float occluderMinRadius = Settings::camera().mOcclusionOccluderMinRadius;
@@ -672,6 +668,16 @@ namespace MWRender
         return mSunLight->getPosition();
     }
 
+    const osg::Vec4f& RenderingManager::getSunDiffuse() const
+    {
+        return mSunLight->getDiffuse();
+    }
+
+    const osg::Vec4f& RenderingManager::getSunSpecular() const
+    {
+        return mSunLight->getSpecular();
+    }
+
     void RenderingManager::setSunDirection(const osg::Vec3f& direction)
     {
         osg::Vec3f position = -direction;
@@ -922,10 +928,8 @@ namespace MWRender
                     pagingAge = pressure == Debug::V3GpuMemory::PressureState::Hard ? 8.0 : 20.0;
                 }
 
-                const int v39ProactiveResidencyMode
-                    = static_cast<int>(Settings::cells().mV39ProactiveResidencyMode);
-                if (v39ProactiveResidencyMode > 0
-                    && pressure == Debug::V3GpuMemory::PressureState::Soft)
+                const int v39ProactiveResidencyMode = static_cast<int>(Settings::cells().mV39ProactiveResidencyMode);
+                if (v39ProactiveResidencyMode > 0 && pressure == Debug::V3GpuMemory::PressureState::Soft)
                 {
                     if (v39ProactiveResidencyMode == 1)
                     {
@@ -968,8 +972,7 @@ namespace MWRender
             }
         }
 
-        const int v315CompileGovernor
-            = static_cast<int>(Settings::cells().mV315AdaptiveCompileGovernor);
+        const int v315CompileGovernor = static_cast<int>(Settings::cells().mV315AdaptiveCompileGovernor);
         if (v315CompileGovernor > 0)
         {
             if (osgUtil::IncrementalCompileOperation* const ico = mViewer->getIncrementalCompileOperation())
@@ -2122,8 +2125,8 @@ namespace MWRender
         for (auto& [worldspace, chunkMgr] : mWorldspaceChunks)
         {
             if (chunkMgr.mObjectPaging)
-                chunkMgr.mObjectPaging->setOcclusionCuller(mOcclusionCuller, maxTriangles,
-                    mOcclusionStorage.get(), Settings::V36Profile::coarseChunkOcclusionEnabled());
+                chunkMgr.mObjectPaging->setOcclusionCuller(mOcclusionCuller, maxTriangles, mOcclusionStorage.get(),
+                    Settings::V36Profile::coarseChunkOcclusionEnabled());
         }
         if (mSceneOcclusionCallback)
             mSceneOcclusionCallback->setStorage(mOcclusionStorage.get());

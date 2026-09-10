@@ -150,6 +150,9 @@ namespace MWRender
         void skySetMoonColour(bool red);
 
         const osg::Vec4f& getSunLightPosition() const;
+        const osg::Vec4f& getSunDiffuse() const;
+        const osg::Vec4f& getSunSpecular() const;
+        const osg::Vec4f& getAmbientColour() const noexcept { return mAmbientColor; }
         void setSunDirection(const osg::Vec3f& direction);
         void setSunColour(const osg::Vec4f& diffuse, const osg::Vec4f& specular, float sunVis);
         void setNight(bool isNight) { mNight = isNight; }
@@ -282,6 +285,7 @@ namespace MWRender
         Debug::DebugDrawer& getDebugDrawer() const { return *mDebugDraw; }
 
         LandManager* getLandManager() const;
+        TerrainStorage* getTerrainStorage() const noexcept { return mTerrainStorage.get(); }
 
         bool toggleBorders();
 

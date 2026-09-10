@@ -15,6 +15,25 @@ namespace
         return condition;
     }
 
+    void addMainPresentRoute(RenderCore::FrameRenderStateDesc& desc, RenderCore::FrameView view)
+    {
+        view.identity = RenderCore::ViewHandle::fromParts(0, 1);
+        view.outputTarget = RenderCore::RenderTargetHandle::fromParts(0, 1);
+        desc.renderTargets.push_back(RenderCore::RenderTargetDesc{
+            .identity = view.outputTarget,
+            .kind = RenderCore::RenderTargetKind::Swapchain,
+            .extent = desc.outputExtent,
+            .transient = false,
+        });
+        desc.renderPasses.push_back(RenderCore::RenderPassDesc{
+            .identity = RenderCore::RenderPassHandle::fromParts(0, 1),
+            .view = view.identity,
+            .output = view.outputTarget,
+            .present = true,
+        });
+        desc.views.push_back(std::move(view));
+    }
+
     bool testFrameRenderState()
     {
         RenderCore::FrameRenderStateDesc desc;
@@ -33,7 +52,7 @@ namespace
         mainView.temporal = true;
         mainView.historyValid = true;
         mainView.historyEpoch = desc.historyEpoch;
-        desc.views.push_back(mainView);
+        addMainPresentRoute(desc, mainView);
 
         RenderCore::DynamicTransformState dynamic;
         dynamic.instance = RenderCore::InstanceHandle::fromParts(4u, 9u);
@@ -57,10 +76,16 @@ namespace
         desc.outputExtent = desc.renderExtent;
 
         RenderCore::FrameView first;
+        first.identity = RenderCore::ViewHandle::fromParts(0, 1);
         first.viewIndex = 2;
         first.extent = desc.renderExtent;
+        first.outputTarget = RenderCore::RenderTargetHandle::fromParts(0, 1);
         RenderCore::FrameView duplicate = first;
         duplicate.kind = RenderCore::ViewKind::Shadow;
+        desc.renderTargets.push_back(RenderCore::RenderTargetDesc{
+            .identity = first.outputTarget,
+            .extent = desc.outputExtent,
+        });
         desc.views = { first, duplicate };
 
         const RenderCore::FrameRenderState frame(std::move(desc));
@@ -76,7 +101,7 @@ namespace
         RenderCore::FrameView view;
         view.extent = desc.renderExtent;
         view.lodScale = std::numeric_limits<float>::quiet_NaN();
-        desc.views.push_back(view);
+        addMainPresentRoute(desc, view);
 
         const RenderCore::FrameRenderState frame(std::move(desc));
         return require(!frame.valid(), "non-finite frame/view state was accepted");
@@ -148,8 +173,8 @@ namespace
         const auto revisionBeforeReparent = world.revision();
         if (!require(world.reparentInstance(instance, *secondChunk), "instance reparent failed")
             || !require(world.revision() > revisionBeforeReparent, "reparent did not publish a world revision")
-            || !require(world.get(firstChunk) && world.get(firstChunk)->members.empty(),
-                "old chunk retained reparented member")
+            || !require(
+                world.get(firstChunk) && world.get(firstChunk)->members.empty(), "old chunk retained reparented member")
             || !require(world.get(*secondChunk) && world.get(*secondChunk)->members.size() == 1
                     && world.get(*secondChunk)->members.front() == instance,
                 "new chunk did not receive reparented member")
@@ -164,13 +189,15 @@ namespace
 
         RenderCore::InstanceRecord illegalGenericMove = *world.get(instance);
         illegalGenericMove.chunk = firstChunk;
-        if (!require(!world.update(instance, illegalGenericMove), "generic instance update changed semantic chunk ownership"))
+        if (!require(!world.update(instance, illegalGenericMove),
+                "generic instance update changed semantic chunk ownership"))
             return false;
 
         RenderCore::ChunkRecord illegalMemberUpdate = *world.get(*secondChunk);
         illegalMemberUpdate.revision = RenderCore::ResourceRevision{ 2 };
         illegalMemberUpdate.members.clear();
-        if (!require(!world.update(*secondChunk, illegalMemberUpdate), "generic chunk update changed derived membership"))
+        if (!require(
+                !world.update(*secondChunk, illegalMemberUpdate), "generic chunk update changed derived membership"))
             return false;
 
         if (!require(!world.retire(*secondChunk), "chunk with a live member retired")
@@ -245,13 +272,14 @@ namespace
         const auto replacementInstance = world.reserveInstance();
         if (!require(replacementInstance.has_value(), "replacement instance reservation failed")
             || !require(replacementInstance->slot() == staleInstance.slot(), "lowest instance slot was not reused")
-            || !require(replacementInstance->generation() != staleInstance.generation(),
-                "instance generation did not advance"))
+            || !require(
+                replacementInstance->generation() != staleInstance.generation(), "instance generation did not advance"))
             return false;
 
         RenderCore::InstanceRecord replacementInstanceRecord;
         replacementInstanceRecord.mesh = *replacementMesh;
-        if (!require(world.commit(*replacementInstance, replacementInstanceRecord), "replacement instance commit failed"))
+        if (!require(
+                world.commit(*replacementInstance, replacementInstanceRecord), "replacement instance commit failed"))
             return false;
 
         const auto chunk = world.reserveChunk();
@@ -275,8 +303,10 @@ namespace
         constexpr std::uint64_t mib = 1024u * 1024u;
         constexpr std::uint64_t bytes = 4u * mib;
         if (!require(ledger.addLogicalLive(ResidencyCategory::MeshVertexIndex, bytes), "logical mesh accounting failed")
-            || !require(ledger.beginUpload(ResidencyCategory::MeshVertexIndex, bytes), "pending upload accounting failed")
-            || !require(ledger.commitUpload(ResidencyCategory::MeshVertexIndex, bytes, false), "resident upload commit failed"))
+            || !require(
+                ledger.beginUpload(ResidencyCategory::MeshVertexIndex, bytes), "pending upload accounting failed")
+            || !require(
+                ledger.commitUpload(ResidencyCategory::MeshVertexIndex, bytes, false), "resident upload commit failed"))
             return false;
 
         auto snapshot = ledger.snapshot();
@@ -287,11 +317,11 @@ namespace
             return false;
 
         constexpr std::uint64_t firstRetire = 3u * mib;
-        if (!require(ledger.queueRetire(
-                         ResidencyCategory::MeshVertexIndex, firstRetire, false, RenderCore::FrameId{ 12 }),
+        if (!require(
+                ledger.queueRetire(ResidencyCategory::MeshVertexIndex, firstRetire, false, RenderCore::FrameId{ 12 }),
                 "frame-delayed retirement queue failed")
-            || !require(!ledger.queueRetire(
-                            ResidencyCategory::MeshVertexIndex, 2u * mib, false, RenderCore::FrameId{ 12 }),
+            || !require(
+                !ledger.queueRetire(ResidencyCategory::MeshVertexIndex, 2u * mib, false, RenderCore::FrameId{ 12 }),
                 "overcommitted retirement was accepted"))
             return false;
 
@@ -311,8 +341,7 @@ namespace
             || !require(snapshot.total.evictableBytes == mib, "partial retirement evictable total mismatch"))
             return false;
 
-        if (!require(ledger.queueRetire(
-                         ResidencyCategory::MeshVertexIndex, mib, false, RenderCore::FrameId{ 13 }),
+        if (!require(ledger.queueRetire(ResidencyCategory::MeshVertexIndex, mib, false, RenderCore::FrameId{ 13 }),
                 "final retirement queue failed")
             || !require(ledger.collectRetired(RenderCore::FrameId{ 13 }) == mib, "final retirement collection failed"))
             return false;

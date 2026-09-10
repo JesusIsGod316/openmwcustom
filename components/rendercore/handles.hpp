@@ -22,10 +22,7 @@ namespace RenderCore
             return Handle(slot, generation);
         }
 
-        [[nodiscard]] constexpr bool valid() const noexcept
-        {
-            return mSlot != InvalidHandleSlot && mGeneration != 0;
-        }
+        [[nodiscard]] constexpr bool valid() const noexcept { return mSlot != InvalidHandleSlot && mGeneration != 0; }
 
         explicit constexpr operator bool() const noexcept { return valid(); }
 
@@ -69,6 +66,15 @@ namespace RenderCore
     struct LightHandleTag final
     {
     };
+    struct ViewHandleTag final
+    {
+    };
+    struct RenderTargetHandleTag final
+    {
+    };
+    struct RenderPassHandleTag final
+    {
+    };
 
     using MeshHandle = Handle<MeshHandleTag>;
     using ModelHandle = Handle<ModelHandleTag>;
@@ -78,6 +84,9 @@ namespace RenderCore
     using InstanceHandle = Handle<InstanceHandleTag>;
     using ChunkHandle = Handle<ChunkHandleTag>;
     using LightHandle = Handle<LightHandleTag>;
+    using ViewHandle = Handle<ViewHandleTag>;
+    using RenderTargetHandle = Handle<RenderTargetHandleTag>;
+    using RenderPassHandle = Handle<RenderPassHandleTag>;
 }
 
 #endif
