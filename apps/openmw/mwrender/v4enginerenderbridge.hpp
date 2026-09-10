@@ -11,6 +11,7 @@
 #include <components/rendercore/renderer.hpp>
 #include <components/rendercore/terrainchunkproducer.hpp>
 #include <components/rendercore/terrainpreparationservice.hpp>
+#include <components/rendercore/terrainresidencyplanner.hpp>
 
 #include <filesystem>
 #include <map>
@@ -90,6 +91,7 @@ namespace MWRender
         std::shared_ptr<V4RenderRouteStatus> mRouteStatus;
         std::unique_ptr<RenderCore::TerrainChunkProducer> mTerrain;
         std::unique_ptr<RenderCore::TerrainPreparationService> mTerrainPreparation;
+        RenderCore::TerrainResidencyPlanner mTerrainResidencyPlanner;
         std::string mLastDiagnostic;
         bool mLifecycleTaken = false;
         bool mGuiOnlyFramePresented = false;

@@ -63,11 +63,13 @@ The first CP4B implementation widens CP4A without publishing a separate test art
   neighborhood without a same-frame queue-and-wait dependency. Completed immutable sets publish atomically.
 - Movement within the resident neighborhood reuses prepared meshes. A teleport or first exterior entry synchronously
   establishes only the required current cell, after which neighborhood expansion resumes asynchronously.
+- Cell-to-cell movement retains a three-cell look-ahead row in the dominant travel direction; the prediction persists
+  while stationary and resets across worldspace or interior transitions, avoiding per-frame request churn.
 - Interior transitions retire the resident terrain set. Shutdown joins the preparation worker before world-owned terrain
   storage is released.
 
-This is a safe streaming foundation, not CP4B completion. Predictive direction/rate input, distance LOD rings, seam
-stitching, bounded GPU admission, and measured residency budgets remain before the first consolidated CP4 artifact.
+This is a safe streaming foundation, not CP4B completion. Distance LOD rings, seam stitching, bounded GPU admission, and
+measured residency budgets remain before the first consolidated CP4 artifact.
 
 ## Validation gate
 

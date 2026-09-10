@@ -156,6 +156,7 @@ namespace MWRender
         mLastDiagnostic.clear();
         if (!cell.isExterior())
         {
+            mTerrainResidencyPlanner.reset();
             if (mTerrainPreparation)
             {
                 static_cast<void>(
@@ -204,13 +205,12 @@ namespace MWRender
                 });
         }
 
+        const std::vector<RenderCore::TerrainResidencyCell> residency
+            = mTerrainResidencyPlanner.update(current.worldspaceIdentity, current.gridX, current.gridY);
         std::vector<RenderCore::TerrainPreparationRequest> desired;
-        desired.reserve(9);
-        for (std::int32_t y = cell.getGridY() - 1; y <= cell.getGridY() + 1; ++y)
-        {
-            for (std::int32_t x = cell.getGridX() - 1; x <= cell.getGridX() + 1; ++x)
-                desired.push_back(makeV4TerrainChunkRequest(cell, x, y, x == cell.getGridX() && y == cell.getGridY()));
-        }
+        desired.reserve(residency.size());
+        for (const RenderCore::TerrainResidencyCell& resident : residency)
+            desired.push_back(makeV4TerrainChunkRequest(cell, resident.gridX, resident.gridY, resident.required));
         const RenderCore::TerrainPreparationRequestStatus requested
             = mTerrainPreparation->request(std::span<const RenderCore::TerrainPreparationRequest>(desired));
         if (requested == RenderCore::TerrainPreparationRequestStatus::Invalid
