@@ -10,58 +10,58 @@ def replace_once(path: str, old: str, new: str) -> None:
     p.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
-# CP4F local-map cleanup: native VSG/MyGUI surfaces are not OSG textures.
-# Track their binding state explicitly instead of manufacturing an empty
-# MyGUIPlatform::OSGTexture as a sentinel.
+# Thread the evaluated-effect draw list through the immutable semantic frame.
 replace_once(
-    "apps/openmw/mwgui/mapwindow.hpp",
-    """            std::unique_ptr<MyGUI::ITexture> mMapTexture;\n            std::unique_ptr<MyGUI::ITexture> mFogTexture;\n            int mCellX;\n""",
-    """            std::unique_ptr<MyGUI::ITexture> mMapTexture;\n            std::unique_ptr<MyGUI::ITexture> mFogTexture;\n            bool mNativeMapBound = false;\n            bool mNativeFogBound = false;\n            int mCellX;\n""",
+    "components/rendercore/framerenderstate.hpp",
+    '#include "records.hpp"\n',
+    '#include "records.hpp"\n#include "effectframe.hpp"\n',
+)
+replace_once(
+    "components/rendercore/framerenderstate.hpp",
+    """        std::vector<MorphWeightState> morphWeights;\n        std::vector<DynamicMaterialState> dynamicMaterials;\n""",
+    """        std::vector<MorphWeightState> morphWeights;\n        std::vector<DynamicMaterialState> dynamicMaterials;\n        std::vector<ImmediateEffectDraw> immediateEffectDraws;\n""",
+)
+replace_once(
+    "components/rendercore/framerenderstate.hpp",
+    """        [[nodiscard]] const std::vector<DynamicMaterialState>& dynamicMaterials() const noexcept\n        {\n            return mDesc.dynamicMaterials;\n        }\n\n        [[nodiscard]] bool valid() const noexcept\n""",
+    """        [[nodiscard]] const std::vector<DynamicMaterialState>& dynamicMaterials() const noexcept\n        {\n            return mDesc.dynamicMaterials;\n        }\n        [[nodiscard]] const std::vector<ImmediateEffectDraw>& immediateEffectDraws() const noexcept\n        {\n            return mDesc.immediateEffectDraws;\n        }\n\n        [[nodiscard]] bool valid() const noexcept\n""",
+)
+replace_once(
+    "components/rendercore/framerenderstate.hpp",
+    """            }\n            return true;\n        }\n\n    private:\n""",
+    """            }\n\n            for (std::size_t i = 0; i < mDesc.immediateEffectDraws.size(); ++i)\n            {\n                if (!validImmediateEffectDraw(mDesc.immediateEffectDraws[i]))\n                    return false;\n                for (std::size_t j = i + 1; j < mDesc.immediateEffectDraws.size(); ++j)\n                {\n                    if (mDesc.immediateEffectDraws[i].identity == mDesc.immediateEffectDraws[j].identity)\n                        return false;\n                }\n            }\n            return true;\n        }\n\n    private:\n""",
 )
 
 replace_once(
-    "apps/openmw/mwgui/mapwindow.cpp",
-    """                entry.mFogWidget->setImageTexture({});\n                entry.mFogTexture.reset();\n""",
-    """                entry.mFogWidget->setImageTexture({});\n                entry.mFogTexture.reset();\n                entry.mNativeFogBound = false;\n""",
+    "components/rendercore/frameproducer.hpp",
+    """        std::vector<MorphWeightInput> morphWeights;\n        bool invalidateHistory = false;\n""",
+    """        std::vector<MorphWeightInput> morphWeights;\n        std::vector<ImmediateEffectDraw> immediateEffectDraws;\n        bool invalidateHistory = false;\n""",
+)
+replace_once(
+    "components/rendercore/frameproducer.hpp",
+    """            desc.historyValid = continuous;\n            desc.environment = input.environment;\n            desc.renderTargets.push_back(RenderTargetDesc{\n""",
+    """            desc.historyValid = continuous;\n            desc.environment = input.environment;\n            desc.immediateEffectDraws = input.immediateEffectDraws;\n            desc.renderTargets.push_back(RenderTargetDesc{\n""",
 )
 
 replace_once(
-    "apps/openmw/mwgui/mapwindow.cpp",
-    """            entry.mMapTexture.reset();\n            entry.mFogTexture.reset();\n        };\n""",
-    """            entry.mMapTexture.reset();\n            entry.mFogTexture.reset();\n            entry.mNativeMapBound = false;\n            entry.mNativeFogBound = false;\n        };\n""",
+    "apps/openmw/mwrender/v4engineframesource.hpp",
+    """        std::vector<RenderCore::MorphWeightInput> morphWeights;\n        bool invalidateHistory = false;\n""",
+    """        std::vector<RenderCore::MorphWeightInput> morphWeights;\n        std::vector<RenderCore::ImmediateEffectDraw> immediateEffectDraws;\n        bool invalidateHistory = false;\n""",
 )
-
 replace_once(
-    "apps/openmw/mwgui/mapwindow.cpp",
-    """                if (!entry.mMapTexture)\n                {\n                    std::string_view textureName\n""",
-    """                if (!entry.mNativeMapBound)\n                {\n                    std::string_view textureName\n""",
+    "apps/openmw/mwrender/v4enginerenderbridge.cpp",
+    """        input.skeletonPoses = source.skeletonPoses;\n        input.morphWeights = source.morphWeights;\n        input.invalidateHistory = source.invalidateHistory || mGuiOnlyFramePresented;\n""",
+    """        input.skeletonPoses = source.skeletonPoses;\n        input.morphWeights = source.morphWeights;\n        input.immediateEffectDraws = source.immediateEffectDraws;\n        input.invalidateHistory = source.invalidateHistory || mGuiOnlyFramePresented;\n""",
 )
 
-replace_once(
-    "apps/openmw/mwgui/mapwindow.cpp",
-    """                        // Bind by MyGUI name. The VSG renderer owns this name and\n                        // its ImageView; the empty OSGTexture is only a local UI\n                        // readiness sentinel and is never submitted to MyGUI.\n                        entry.mMapWidget->setImageTexture(textureName);\n                        entry.mMapTexture\n                            = std::make_unique<MyGUIPlatform::OSGTexture>(std::string(), nullptr);\n""",
-    """                        // Bind by MyGUI name. The VSG renderer owns this name and\n                        // its ImageView; no foreign OSG texture object participates\n                        // in the native auxiliary-surface path.\n                        entry.mMapWidget->setImageTexture(textureName);\n                        entry.mNativeMapBound = true;\n""",
-)
+for path in [
+    "components/rendercore/framerenderstate.hpp",
+    "components/rendercore/frameproducer.hpp",
+    "apps/openmw/mwrender/v4engineframesource.hpp",
+    "apps/openmw/mwrender/v4enginerenderbridge.cpp",
+]:
+    text = Path(path).read_text(encoding="utf-8")
+    if "immediateEffectDraw" not in text:
+        raise RuntimeError(f"{path}: evaluated effect frame wiring missing")
 
-replace_once(
-    "apps/openmw/mwgui/mapwindow.cpp",
-    """                if (!entry.mFogTexture && mFogOfWarToggled && mFogOfWarEnabled)\n""",
-    """                if (!entry.mNativeFogBound && mFogOfWarToggled && mFogOfWarEnabled)\n""",
-)
-
-replace_once(
-    "apps/openmw/mwgui/mapwindow.cpp",
-    """                        entry.mFogWidget->setImageTexture(fogName);\n                        entry.mFogTexture\n                            = std::make_unique<MyGUIPlatform::OSGTexture>(std::string(), nullptr);\n""",
-    """                        entry.mFogWidget->setImageTexture(fogName);\n                        entry.mNativeFogBound = true;\n""",
-)
-
-cpp = Path("apps/openmw/mwgui/mapwindow.cpp").read_text(encoding="utf-8")
-header = Path("apps/openmw/mwgui/mapwindow.hpp").read_text(encoding="utf-8")
-if "mNativeMapBound" not in header or "mNativeFogBound" not in header:
-    raise RuntimeError("native map binding state was not added")
-if "empty OSGTexture is only a local UI" in cpp:
-    raise RuntimeError("obsolete native OSGTexture sentinel path remains")
-if "if (!entry.mNativeMapBound)" not in cpp or "if (!entry.mNativeFogBound" not in cpp:
-    raise RuntimeError("native map/fog binding guards are incomplete")
-
-print("CP4F guarded source closeout patch applied")
+print("CP4F evaluated-effect frame wiring applied")
