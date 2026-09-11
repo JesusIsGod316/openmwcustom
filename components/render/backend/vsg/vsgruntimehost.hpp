@@ -145,6 +145,12 @@ namespace RenderVsg
             FrameCameraObjects camera;
             vsg::ref_ptr<vsg::View> view;
             vsg::ref_ptr<OpenMwViewDependentState> state;
+            // Map views reproduce the legacy local-map lighting contract rather
+            // than borrowing the live gameplay sun/ambient objects. The simple
+            // water surface likewise has no reflection/refraction dependency.
+            vsg::ref_ptr<vsg::AmbientLight> ambientLight;
+            vsg::ref_ptr<vsg::DirectionalLight> sunLight;
+            WaterSurface waterSurface;
             bool active = false;
         };
 
