@@ -1,0 +1,187 @@
+name: V4.0 CP4F exterior closeout checkpoint
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp4f-exterior-closeout]
+    paths:
+      - .github/workflows/v4-cp4f.yml
+
+concurrency:
+  group: v4-cp4f-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  RouteContracts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact CP4F gate head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact source checkpoint and CP4E ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
+          CP4F_SOURCE=ec1692683833a2076b391a7c77e660fa9721f69f
+          git cat-file -e "${CP4E_BASE}^{commit}"
+          git cat-file -e "${CP4F_SOURCE}^{commit}"
+          test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
+          test "$(git merge-base "${CP4F_SOURCE}" HEAD)" = "${CP4F_SOURCE}"
+          test "$(git rev-parse HEAD^)" = "${CP4F_SOURCE}"
+
+      - name: Run retained CP4 source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/v4/cp3e/application-route-contract.py
+          python3 tools/v4/cp4/streaming-contract.py
+          python3 tools/v4/cp4/population-environment-contract.py
+          python3 tools/v4/cp4/water-environment-contract.py
+          python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+
+      - name: Verify CP4F source closeout surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in \
+            apps/openmw/mwrender/v4effectcapture.hpp \
+            apps/openmw/mwrender/v4localmapbridge.cpp \
+            apps/openmw/mwrender/localmapnative.cpp \
+            apps/openmw/mwrender/globalmapnative.cpp \
+            components/rendercore/effectframe.hpp \
+            components/rendercore/namedvisualsemantics.hpp \
+            components/render/backend/vsg/immediateeffectrealizer.hpp \
+            components/render/backend/vsg/auxiliaryreadback.cpp \
+            components/render/backend/vsg/enchantedmaterialshader.hpp \
+            components/vsgmygui/externaltextures.cpp; do
+            test -f "${path}"
+          done
+
+          grep -F 'captureV4WholeEffectSubtree' apps/openmw/mwrender/v4effectcapture.hpp
+          grep -F 'soft-particle opaque-depth sampling' apps/openmw/mwrender/v4effectcapture.hpp
+          grep -F 'post-process distortion target' apps/openmw/mwrender/v4effectcapture.hpp
+          grep -F 'authored polygon-offset realization' apps/openmw/mwrender/v4effectcapture.hpp
+          grep -F 'captureV4ProjectileFrameState' apps/openmw/mwrender/v4engineframecoordinator.cpp
+          grep -F 'captureV4AttachedLights' apps/openmw/mwrender/v4enginerenderbridge.cpp
+          grep -F 'publishEnchantedGlowVariant' apps/openmw/mwrender/v4enginerenderbridge.cpp
+          grep -F 'renderMainFrameWithNativeLocalMap' apps/openmw/mwrender/v4engineframecoordinator.cpp
+          grep -F 'setRgba8Texture' components/vsgmygui/externaltextures.cpp
+          grep -F 'openmw-vulkan-enchanted-material-shader-smoke' tools/v4/cp3b3/CMakeLists.txt
+
+          git diff --check 161568af75c54fb0c445e258fa235c304b27fc8d HEAD -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+
+      - name: Install strict compile dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglm-dev libvulkan-dev python3-yaml glslang-tools
+
+      - name: Parse workflow YAML
+        run: |
+          python3 - <<'PY'
+          import pathlib, yaml
+          for path in pathlib.Path('.github/workflows').glob('*.yml'):
+              yaml.safe_load(path.read_text(encoding='utf-8'))
+          print('workflow YAML parse: PASS')
+          PY
+
+      - name: Prepare exact VSG and MyGUI headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          VSG_COMMIT=599a8c5c61cbb993079261b2ada99bd843badf5b
+          git init /tmp/vsg-1.1.15
+          git -C /tmp/vsg-1.1.15 remote add origin https://github.com/vsg-dev/VulkanSceneGraph.git
+          git -C /tmp/vsg-1.1.15 fetch --depth 1 origin "${VSG_COMMIT}"
+          git -C /tmp/vsg-1.1.15 checkout --detach FETCH_HEAD
+          cmake -S /tmp/vsg-1.1.15 -B /tmp/vsg-1.1.15-build -DVSG_BUILD_TESTS=OFF -DVSG_SUPPORTS_Windowing=OFF
+          MYGUI_COMMIT=dae9ac4be5a09e672bec509b1a8552b107c40214
+          git init /tmp/mygui-3.4.3
+          git -C /tmp/mygui-3.4.3 remote add origin https://github.com/MyGUI/mygui.git
+          git -C /tmp/mygui-3.4.3 fetch --depth 1 origin "${MYGUI_COMMIT}"
+          git -C /tmp/mygui-3.4.3 checkout --detach FETCH_HEAD
+
+      - name: Compile retained CP4 water shaders
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          source = Path('components/render/backend/vsg/watersurface.cpp').read_text(encoding='utf-8')
+          shaders = {
+              'WaterVertexSource': Path('/tmp/cp4f-water.vert'),
+              'WaterFragmentSource': Path('/tmp/cp4f-water.frag'),
+          }
+          for symbol, output in shaders.items():
+              match = re.search(rf'constexpr const char\* {symbol} = R"\((.*?)\)";', source, re.DOTALL)
+              if not match:
+                  raise SystemExit(f'could not extract {symbol}')
+              output.write_text(match.group(1), encoding='utf-8')
+          PY
+          glslangValidator -V /tmp/cp4f-water.vert -o /tmp/cp4f-water.vert.spv
+          glslangValidator -V /tmp/cp4f-water.frag -o /tmp/cp4f-water.frag.spv
+
+      - name: Strict-compile CP4F neutral and backend contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          neutral=(-std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -Wno-missing-field-initializers -pthread -I.)
+          for source in \
+            tools/v4/cp4/frame-route-smoke.cpp \
+            tools/v4/cp4/water-auxiliary-smoke.cpp \
+            tools/v4/cp4/terrain-chunk-smoke.cpp \
+            tools/v4/cp4/terrain-streaming-smoke.cpp \
+            tools/v4/cp4/static-population-smoke.cpp; do
+            output="/tmp/$(basename "${source}" .cpp)"
+            g++ "${neutral[@]}" "${source}" -o "${output}"
+            "${output}"
+          done
+          cat > /tmp/cp4f-neutral-contract.cpp <<'CPP'
+          #include <components/rendercore/effectframe.hpp>
+          #include <components/rendercore/namedvisualsemantics.hpp>
+          int main() { return 0; }
+          CPP
+          g++ "${neutral[@]}" /tmp/cp4f-neutral-contract.cpp -o /tmp/cp4f-neutral-contract
+          /tmp/cp4f-neutral-contract
+
+          backend=(-std=c++20 -O1 -Wall -Wextra -Wpedantic -Werror -I. \
+            -isystem /tmp/vsg-1.1.15/include -isystem /tmp/vsg-1.1.15-build/include \
+            -isystem /tmp/mygui-3.4.3/MyGUIEngine/include)
+          for source in \
+            components/render/backend/vsg/auxiliaryreadback.cpp \
+            components/render/backend/vsg/offscreenrendertarget.cpp \
+            components/render/backend/vsg/watersurface.cpp \
+            components/render/backend/vsg/openmwviewdependentstate.cpp \
+            components/render/backend/vsg/legacymaterialshader.cpp \
+            components/render/backend/vsg/skybackdrop.cpp \
+            components/vsgmygui/texture.cpp \
+            components/vsgmygui/rendermanager.cpp \
+            components/vsgmygui/externaltextures.cpp \
+            components/render/backend/vsg/vsgruntimehost.cpp; do
+            g++ "${backend[@]}" -c "${source}" -o "/tmp/$(basename "${source}" .cpp).o"
+          done
+          cat > /tmp/cp4f-immediate-effect-contract.cpp <<'CPP'
+          #include <components/render/backend/vsg/immediateeffectrealizer.hpp>
+          int main() { return 0; }
+          CPP
+          g++ "${backend[@]}" -c /tmp/cp4f-immediate-effect-contract.cpp -o /tmp/cp4f-immediate-effect-contract.o
+
+  OpenGLControlWindows:
+    needs: RouteContracts
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
+
+  RuntimeVulkanWindows:
+    needs: RouteContracts
+    uses: ./.github/workflows/v4-cp3b3.yml
+    with:
+      force_run: true
