@@ -101,6 +101,11 @@ namespace RenderVsg
         if (!model || !model->revision.valid())
             return std::nullopt;
 
+        // Graphic herbalism is reference state, not model state. Derive the
+        // realization option from this exact instance so two organic containers
+        // sharing one model may legitimately select different switch children.
+        options.herbalismHarvested
+            = (instance->semanticFlags & RenderCore::HerbalismHarvestedSemanticFlag) != 0;
         std::optional<StaticAssetPlan> asset = buildStaticAssetPlan(world, *instance->model, options);
         if (!asset)
             return std::nullopt;
@@ -146,6 +151,10 @@ namespace RenderVsg
         const RenderCore::ModelPopulationRecord& population, StaticPlanOptions options = {})
     {
         options.includeDeformableMeshes = false;
+        // Population groups share one immutable model draw plan. Per-reference
+        // herbalism state is intentionally unavailable here; interactive
+        // useAnim references stay individually addressable instead.
+        options.herbalismHarvested = false;
         const RenderCore::ChunkRecord* chunk = world.get(chunkHandle);
         const RenderCore::ModelRecord* model = world.get(population.model);
         if (!chunk || !chunk->revision.valid() || !chunk->population || population.instances.empty() || !model
