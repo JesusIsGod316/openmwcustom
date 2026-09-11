@@ -6,6 +6,7 @@
 #include "../mwworld/class.hpp"
 #include "../mwworld/ptr.hpp"
 
+#include <components/misc/convert.hpp>
 #include <components/misc/resourcehelpers.hpp>
 #include <components/esm3/loadligh.hpp>
 #include <components/esm4/loadligh.hpp>
@@ -43,6 +44,51 @@ namespace MWRender
         {
             return !ptr.isEmpty()
                 && (ptr.getType() == ESM::Light::sRecordId || ptr.getType() == ESM4::Light::sRecordId);
+        }
+
+        // useAnim() is a class capability, not proof that this particular
+        // reference actually has a playable model animation. Objects::insertModel
+        // only attaches an external animation source when x<model>.kf exists.
+        // Keep that exact distinction at the semantic boundary: controller-free
+        // instances may use the immutable model plus live reference transform,
+        // while an authored external animation remains fail-closed.
+        [[nodiscard]] bool hasExternalAnimationSource(
+            VFS::Path::NormalizedView modelPath, const VFS::Manager& vfs)
+        {
+            if (modelPath.empty())
+                return false;
+            return Misc::ResourceHelpers::correctActorModelPath(modelPath, &vfs) != modelPath;
+        }
+
+        // makeV4StaticInstanceSource intentionally rejects every useAnim() class.
+        // This narrowly-scoped companion is called only after publishObject has
+        // proved that the winning model has neither an external animation source
+        // nor any neutral dynamic model requirement. Reference translation,
+        // rotation and scale remain live and objectChanged() republishes them.
+        [[nodiscard]] std::optional<RenderCore::StaticInstanceSource> makeControllerFreeAnimatedInstanceSource(
+            const MWWorld::Ptr& ptr, RenderCore::ModelHandle model, RenderCore::AxisAlignedBounds localBounds)
+        {
+            if (ptr.isEmpty() || !ptr.getCell() || !model.valid() || !ptr.getRefData().isEnabled()
+                || ptr.getClass().isActor() || !ptr.getClass().useAnim())
+                return std::nullopt;
+            const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
+            const std::optional<RenderCore::ActiveCellSource> cell = makeV4ActiveCellSource(*ptr.getCell());
+            if (!identity || !cell)
+                return std::nullopt;
+
+            const ESM::Position& position = ptr.getRefData().getPosition();
+            const osg::Quat rotation = Misc::Convert::makeOsgQuat(position);
+            const float scale = ptr.getCellRef().getScale();
+            RenderCore::StaticInstanceSource result;
+            result.identity = *identity;
+            result.cellIdentity = cell->identity;
+            result.model = model;
+            result.transform.translation = { position.pos[0], position.pos[1], position.pos[2] };
+            result.transform.rotation = { static_cast<float>(rotation.w()), static_cast<float>(rotation.x()),
+                static_cast<float>(rotation.y()), static_cast<float>(rotation.z()) };
+            result.transform.scale = { scale, scale, scale };
+            result.localBounds = localBounds;
+            return result;
         }
     }
 
@@ -215,7 +261,8 @@ namespace MWRender
         if (actor)
             return;
 
-        if (isLight(ptr))
+        const bool lightObject = isLight(ptr);
+        if (lightObject)
         {
             const std::optional<RenderCore::CellLightSource> light = makeV4CellLightSource(ptr);
             if (!light)
@@ -223,28 +270,21 @@ namespace MWRender
             const RenderCore::ActiveCellPublishResult result = mSession->cells().upsertLight(*light);
             if (!accepted(result.status))
                 throw publicationError("cell light publication", static_cast<unsigned int>(result.status));
-
-            // Light models follow the animated-object path in OpenMW even when
-            // their NIF is visually static. Publishing the light while silently
-            // dropping an authored visible model would be false compatibility.
-            const VFS::Path::Normalized modelPath = ptr.getClass().getCorrectedModel(ptr);
-            if (!modelPath.empty() && !Misc::ResourceHelpers::isHiddenMarker(ptr.getCellRef().getRefId()))
-                throw std::runtime_error(
-                    "V4 scene lifecycle encountered a visible light model before animated light compatibility is available");
-            return;
+            // Do not return here when a visible model exists. Light emission and
+            // visible fixture geometry are independent semantic resources.
         }
-
-        if (ptr.getClass().useAnim())
-            throw std::runtime_error(
-                "V4 scene lifecycle encountered an animated object before animation compatibility is available");
 
         const VFS::Path::Normalized modelPath = ptr.getClass().getCorrectedModel(ptr);
-        if (modelPath.empty())
+        if (modelPath.empty() || Misc::ResourceHelpers::isHiddenMarker(ptr.getCellRef().getRefId()))
+            return;
+
+        const bool animatedClass = ptr.getClass().useAnim();
+        if (animatedClass && hasExternalAnimationSource(modelPath, mVfs))
         {
-            return;
+            throw std::runtime_error(
+                "V4 scene lifecycle encountered an object with an external animation source before model-animation compatibility is available: "
+                + modelPath.value());
         }
-        if (Misc::ResourceHelpers::isHiddenMarker(ptr.getCellRef().getRefId()))
-            return;
 
         std::optional<RenderCore::ModelHandle> model = mSession->models().find(modelPath.value());
         if (!model)
@@ -266,10 +306,18 @@ namespace MWRender
         const RenderCore::ModelRecord* modelRecord = mSession->world().get(*model);
         if (!modelRecord)
             throw std::runtime_error("V4 static model cache returned a stale model handle");
-        const std::optional<RenderCore::StaticInstanceSource> source
-            = makeV4StaticInstanceSource(ptr, *model, modelRecord->bounds);
+        if (animatedClass && modelRecord->dynamicRequirements != 0)
+        {
+            throw std::runtime_error(
+                "V4 scene lifecycle encountered an animated-class model with controller/deformation requirements before model-animation compatibility is available: "
+                + modelPath.value());
+        }
+
+        const std::optional<RenderCore::StaticInstanceSource> source = animatedClass
+            ? makeControllerFreeAnimatedInstanceSource(ptr, *model, modelRecord->bounds)
+            : makeV4StaticInstanceSource(ptr, *model, modelRecord->bounds);
         if (!source)
-            throw std::runtime_error("V4 scene lifecycle rejected an eligible static object");
+            throw std::runtime_error("V4 scene lifecycle rejected an eligible static/reference-animated object");
         if (ptr.getCell()->getCell()->isExterior())
         {
             const RenderCore::ActiveCellPublishResult removed = mSession->cells().removeInstance(source->identity);
