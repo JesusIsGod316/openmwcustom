@@ -3,6 +3,7 @@
 set(OPENMW_V4_ENGINE_RUNTIME_SOURCES
     "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4engineframecoordinator.cpp"
     "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4enginerenderbridge.cpp"
+    "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4localmapbridge.cpp"
     "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4runtimeoptions.cpp"
     "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4scenerenderlifecycle.cpp"
     "${CMAKE_SOURCE_DIR}/apps/openmw/mwrender/v4semanticsource.cpp"
