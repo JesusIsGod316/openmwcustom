@@ -13,7 +13,9 @@
 #include <components/misc/constants.hpp>
 #include <components/misc/convert.hpp>
 #include <components/misc/resourcehelpers.hpp>
+#include <components/nif/extra.hpp>
 #include <components/nif/niffile.hpp>
+#include <components/nif/node.hpp>
 #include <components/nifrender/niftranslator.hpp>
 #include <components/render/backend/vsg/vsgsemanticsession.hpp>
 #include <components/rendercore/namedvisualsemantics.hpp>
@@ -52,6 +54,32 @@ namespace MWRender
                 && (ptr.getType() == ESM::Light::sRecordId || ptr.getType() == ESM4::Light::sRecordId);
         }
 
+        // SceneUtil::hasUserDescription() performs exact description equality.
+        // Recover the same capability information from the winning source NIF
+        // before OSG exists, then publish only neutral semantic bits downstream.
+        [[nodiscard]] std::uint64_t inspectNamedVisualCapabilities(Nif::FileView file) noexcept
+        {
+            std::uint64_t result = 0;
+            for (std::size_t rootIndex = 0; rootIndex < file.numRoots(); ++rootIndex)
+            {
+                const Nif::Record* record = file.getRoot(rootIndex);
+                const auto* root = dynamic_cast<const Nif::NiAVObject*>(record);
+                if (!root)
+                    continue;
+                for (const Nif::ExtraPtr& extra : root->getExtraList())
+                {
+                    if (extra.empty() || extra->mRecordType != Nif::RC_NiStringExtraData)
+                        continue;
+                    const auto* value = static_cast<const Nif::NiStringExtraData*>(extra.getPtr());
+                    if (value->mData == Constants::NightDayLabel)
+                        result |= RenderCore::NightDaySwitchCapabilitySemanticFlag;
+                    else if (value->mData == Constants::HerbalismLabel)
+                        result |= RenderCore::HerbalismSwitchCapabilitySemanticFlag;
+                }
+            }
+            return result;
+        }
+
         // useAnim() is a class capability, not proof that this particular
         // reference actually has a playable model animation. Objects::insertModel
         // only attaches an external animation source when x<model>.kf exists.
@@ -74,13 +102,6 @@ namespace MWRender
                 return true;
             return std::any_of(model.payload->nodes.begin(), model.payload->nodes.end(),
                 [](const RenderCore::ModelNodeRecord& node) { return node.controllerFlags != 0; });
-        }
-
-        [[nodiscard]] bool hasNamedNode(const RenderCore::ModelRecord& model, std::string_view name) noexcept
-        {
-            return model.payload
-                && std::any_of(model.payload->nodes.begin(), model.payload->nodes.end(),
-                    [&](const RenderCore::ModelNodeRecord& node) { return node.name == name; });
         }
 
         // makeV4StaticInstanceSource intentionally rejects every useAnim() class.
@@ -115,11 +136,13 @@ namespace MWRender
             return result;
         }
 
-        void applyReferenceVisualSemantics(const MWWorld::Ptr& ptr, const RenderCore::ModelRecord& model,
+        void applyReferenceVisualSemantics(const MWWorld::Ptr& ptr, std::uint64_t modelCapabilities,
             RenderCore::StaticInstanceSource& source)
         {
-            if (!Settings::game().mGraphicHerbalism || ptr.getType() != ESM::Container::sRecordId
-                || ptr.getRefData().getCustomData() == nullptr || !hasNamedNode(model, Constants::HerbalismLabel))
+            source.semanticFlags |= modelCapabilities;
+            if (!Settings::game().mGraphicHerbalism
+                || (modelCapabilities & RenderCore::HerbalismSwitchCapabilitySemanticFlag) == 0
+                || ptr.getType() != ESM::Container::sRecordId || ptr.getRefData().getCustomData() == nullptr)
                 return;
 
             const MWWorld::LiveCellRef<ESM::Container>* ref = ptr.get<ESM::Container>();
@@ -270,6 +293,7 @@ namespace MWRender
     {
         try
         {
+            mModelVisualCapabilities.clear();
             if (!mSession->resetWorld())
                 recordFailure("V4 scene lifecycle failed to reset the semantic world");
         }
@@ -326,21 +350,42 @@ namespace MWRender
                 + modelPath.value());
         }
 
-        std::optional<RenderCore::ModelHandle> model = mSession->models().find(modelPath.value());
+        const std::string modelIdentity = modelPath.value();
+        std::uint64_t visualCapabilities = 0;
+        auto capability = mModelVisualCapabilities.find(modelIdentity);
+        std::optional<RenderCore::ModelHandle> model = mSession->models().find(modelIdentity);
         if (!model)
         {
             if (!mVfs.exists(modelPath))
-                throw std::runtime_error("V4 static model is missing from the winning VFS: " + modelPath.value());
+                throw std::runtime_error("V4 static model is missing from the winning VFS: " + modelIdentity);
 
             Nif::NIFFile nifFile(modelPath);
             Nif::Reader reader(nifFile, nullptr);
             reader.parse(mVfs.get(modelPath));
-            const NifRender::TranslationBundle bundle
-                = NifRender::translateStaticNif(Nif::FileView(nifFile), mVfs);
+            const Nif::FileView file(nifFile);
+            visualCapabilities = inspectNamedVisualCapabilities(file);
+            mModelVisualCapabilities.insert_or_assign(modelIdentity, visualCapabilities);
+            const NifRender::TranslationBundle bundle = NifRender::translateStaticNif(file, mVfs);
             const NifRender::StaticModelCacheResult published = mSession->models().publish(bundle);
             if (!published.available())
                 throw publicationError("static model publication", static_cast<unsigned int>(published.status));
             model = published.model;
+        }
+        else if (capability != mModelVisualCapabilities.end())
+            visualCapabilities = capability->second;
+        else
+        {
+            // Another source path (notably actor model composition) can populate
+            // the shared model cache before this lifecycle sees a world object.
+            // Recover the root descriptions once, then retain them for live
+            // objectChanged updates such as door rotation and harvesting.
+            if (!mVfs.exists(modelPath))
+                throw std::runtime_error("V4 cached static model is missing from the winning VFS: " + modelIdentity);
+            Nif::NIFFile nifFile(modelPath);
+            Nif::Reader reader(nifFile, nullptr);
+            reader.parse(mVfs.get(modelPath));
+            visualCapabilities = inspectNamedVisualCapabilities(Nif::FileView(nifFile));
+            mModelVisualCapabilities.emplace(modelIdentity, visualCapabilities);
         }
 
         const RenderCore::ModelRecord* modelRecord = mSession->world().get(*model);
@@ -350,7 +395,7 @@ namespace MWRender
         {
             throw std::runtime_error(
                 "V4 scene lifecycle encountered a non-actor model with controller/effect/deformation playback requirements before model-animation compatibility is available: "
-                + modelPath.value());
+                + modelIdentity);
         }
 
         std::optional<RenderCore::StaticInstanceSource> source = animatedClass
@@ -358,7 +403,7 @@ namespace MWRender
             : makeV4StaticInstanceSource(ptr, *model, modelRecord->bounds);
         if (!source)
             throw std::runtime_error("V4 scene lifecycle rejected an eligible static/reference-animated object");
-        applyReferenceVisualSemantics(ptr, *modelRecord, *source);
+        applyReferenceVisualSemantics(ptr, visualCapabilities, *source);
 
         // Dense immutable exterior statics keep the data-oriented population
         // path. Interactive/useAnim references stay individually addressable so
