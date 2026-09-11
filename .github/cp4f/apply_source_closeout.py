@@ -10,95 +10,75 @@ def replace_once(path: str, old: str, new: str) -> None:
     p.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
-# Frame-local effects still use the same winning-VFS/content-identity contract
-# as persistent resources. Never substitute an image filename for byte identity.
+# Finish the evaluated-effect state audit before the aggregate Windows gate.
+# Lossless legacy state is copied; state without a CP4F neutral/runtime facet
+# fails explicitly instead of being silently discarded.
 replace_once(
     "apps/openmw/mwrender/v4effectcapture.hpp",
-    "#include <components/rendercore/effectframe.hpp>\n",
-    "#include <components/rendercore/effectframe.hpp>\n#include <components/nifrender/vfsidentity.hpp>\n",
+    "#include <osg/Geometry>\n",
+    "#include <osg/Geometry>\n#include <osg/FrontFace>\n",
 )
 replace_once(
     "apps/openmw/mwrender/v4effectcapture.hpp",
-    """        [[nodiscard]] inline bool captureMaterial(const osg::NodePath& path, const osg::StateSet* drawableState,\n            CapturedMaterial& out, std::string& diagnostic)\n""",
-    """        [[nodiscard]] inline bool captureMaterial(const osg::NodePath& path, const osg::StateSet* drawableState,\n            const VFS::Manager& vfs, CapturedMaterial& out, std::string& diagnostic)\n""",
-)
-replace_once(
-    "apps/openmw/mwrender/v4effectcapture.hpp",
-    """                EffectTextureSnapshot snapshot;\n                snapshot.texture.revision = InitialResourceRevision;\n                snapshot.texture.sourceIdentity = image->getFileName();\n                snapshot.texture.contentIdentity = image->getFileName();\n""",
-    """                const NifRender::ResolvedVfsIdentity resolved\n                    = NifRender::resolveTextureVfsIdentity(VFS::Path::NormalizedView(image->getFileName()), vfs);\n                if (!resolved.valid())\n                {\n                    diagnostic = \"evaluated effect texture could not resolve its winning VFS content identity\";\n                    return false;\n                }\n\n                EffectTextureSnapshot snapshot;\n                snapshot.texture.revision = InitialResourceRevision;\n                snapshot.texture.sourceIdentity = std::string(resolved.canonicalPath.value());\n                snapshot.texture.contentIdentity = resolved.contentIdentity;\n""",
-)
-replace_once(
-    "apps/openmw/mwrender/v4effectcapture.hpp",
-    """        [[nodiscard]] inline bool captureGeometry(const osg::Geometry& geometry, const osg::NodePath& path,\n            std::string identity, RenderCore::ImmediateEffectDraw& draw, std::string& diagnostic)\n""",
-    """        [[nodiscard]] inline bool captureGeometry(const osg::Geometry& geometry, const osg::NodePath& path,\n            const VFS::Manager& vfs, std::string identity, RenderCore::ImmediateEffectDraw& draw,\n            std::string& diagnostic)\n""",
-)
-replace_once(
-    "apps/openmw/mwrender/v4effectcapture.hpp",
-    """            CapturedMaterial captured;\n            if (!captureMaterial(path, geometry.getStateSet(), captured, diagnostic))\n""",
-    """            CapturedMaterial captured;\n            if (!captureMaterial(path, geometry.getStateSet(), vfs, captured, diagnostic))\n""",
-)
-replace_once(
-    "apps/openmw/mwrender/v4effectcapture.hpp",
-    """        [[nodiscard]] inline bool captureParticleSystem(const osgParticle::ParticleSystem& particles,\n            const osg::NodePath& path, std::string_view identityPrefix,\n            std::vector<RenderCore::ImmediateEffectDraw>& draws, std::string& diagnostic)\n""",
-    """        [[nodiscard]] inline bool captureParticleSystem(const osgParticle::ParticleSystem& particles,\n            const osg::NodePath& path, const VFS::Manager& vfs, std::string_view identityPrefix,\n            std::vector<RenderCore::ImmediateEffectDraw>& draws, std::string& diagnostic)\n""",
-)
-replace_once(
-    "apps/openmw/mwrender/v4effectcapture.hpp",
-    """            CapturedMaterial captured;\n            if (!captureMaterial(path, particles.getStateSet(), captured, diagnostic))\n""",
-    """            CapturedMaterial captured;\n            if (!captureMaterial(path, particles.getStateSet(), vfs, captured, diagnostic))\n""",
-)
-replace_once(
-    "apps/openmw/mwrender/v4effectcapture.hpp",
-    """            CaptureVisitor(std::string identityPrefix, bool wholeSubtree)\n                : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN)\n                , mIdentityPrefix(std::move(identityPrefix))\n                , mWholeSubtree(wholeSubtree)\n""",
-    """            CaptureVisitor(std::string identityPrefix, bool wholeSubtree, const VFS::Manager& vfs)\n                : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN)\n                , mIdentityPrefix(std::move(identityPrefix))\n                , mWholeSubtree(wholeSubtree)\n                , mVfs(vfs)\n""",
-)
-replace_once(
-    "apps/openmw/mwrender/v4effectcapture.hpp",
-    """                        if (!captureParticleSystem(*particles, getNodePath(), nextIdentity(\"system\"), mResult.draws,\n                                mResult.diagnostic))\n""",
-    """                        if (!captureParticleSystem(*particles, getNodePath(), mVfs, nextIdentity(\"system\"),\n                                mResult.draws, mResult.diagnostic))\n""",
-)
-replace_once(
-    "apps/openmw/mwrender/v4effectcapture.hpp",
-    """                            if (!captureGeometry(*geometry, getNodePath(), nextIdentity(\"geometry\"), draw,\n                                    mResult.diagnostic))\n""",
-    """                            if (!captureGeometry(*geometry, getNodePath(), mVfs, nextIdentity(\"geometry\"), draw,\n                                    mResult.diagnostic))\n""",
-)
-replace_once(
-    "apps/openmw/mwrender/v4effectcapture.hpp",
-    """                            if (!captureParticleSystem(*particles, getNodePath(), nextIdentity(\"system\"),\n                                    mResult.draws, mResult.diagnostic))\n""",
-    """                            if (!captureParticleSystem(*particles, getNodePath(), mVfs, nextIdentity(\"system\"),\n                                    mResult.draws, mResult.diagnostic))\n""",
-)
-replace_once(
-    "apps/openmw/mwrender/v4effectcapture.hpp",
-    """            std::string mIdentityPrefix;\n            bool mWholeSubtree = false;\n""",
-    """            std::string mIdentityPrefix;\n            bool mWholeSubtree = false;\n            const VFS::Manager& mVfs;\n""",
-)
-replace_once(
-    "apps/openmw/mwrender/v4effectcapture.hpp",
-    """    [[nodiscard]] inline V4EffectCaptureResult captureV4AttachedEffects(\n        osg::Node& animationRoot, std::string identityPrefix)\n    {\n        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), false);\n""",
-    """    [[nodiscard]] inline V4EffectCaptureResult captureV4AttachedEffects(\n        osg::Node& animationRoot, std::string identityPrefix, const VFS::Manager& vfs)\n    {\n        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), false, vfs);\n""",
-)
-replace_once(
-    "apps/openmw/mwrender/v4effectcapture.hpp",
-    """    [[nodiscard]] inline V4EffectCaptureResult captureV4WholeEffectSubtree(\n        osg::Node& root, std::string identityPrefix)\n    {\n        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), true);\n""",
-    """    [[nodiscard]] inline V4EffectCaptureResult captureV4WholeEffectSubtree(\n        osg::Node& root, std::string identityPrefix, const VFS::Manager& vfs)\n    {\n        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), true, vfs);\n""",
+    "#include <osg/PolygonMode>\n",
+    "#include <osg/PolygonMode>\n#include <osg/Stencil>\n",
 )
 
 replace_once(
-    "apps/openmw/mwrender/v4engineframecoordinator.cpp",
-    """            V4EffectCaptureResult captured = captureV4WholeEffectSubtree(\n                *bolt.effectRoot, \"magic-projectile:\" + std::to_string(bolt.runtimeId));\n""",
-    """            V4EffectCaptureResult captured = captureV4WholeEffectSubtree(\n                *bolt.effectRoot, \"magic-projectile:\" + std::to_string(bolt.runtimeId), mVfs);\n""",
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """        [[nodiscard]] inline std::optional<RenderCore::BlendEquation> blendEquation(GLenum value) noexcept\n        {\n            using RenderCore::BlendEquation;\n            switch (value)\n            {\n                case GL_FUNC_ADD: return BlendEquation::Add;\n                case GL_FUNC_SUBTRACT: return BlendEquation::Subtract;\n                case GL_FUNC_REVERSE_SUBTRACT: return BlendEquation::ReverseSubtract;\n                case GL_MIN: return BlendEquation::Minimum;\n                case GL_MAX: return BlendEquation::Maximum;\n                default: return std::nullopt;\n            }\n        }\n\n""",
+    """        [[nodiscard]] inline std::optional<RenderCore::BlendEquation> blendEquation(GLenum value) noexcept\n        {\n            using RenderCore::BlendEquation;\n            switch (value)\n            {\n                case GL_FUNC_ADD: return BlendEquation::Add;\n                case GL_FUNC_SUBTRACT: return BlendEquation::Subtract;\n                case GL_FUNC_REVERSE_SUBTRACT: return BlendEquation::ReverseSubtract;\n                case GL_MIN: return BlendEquation::Minimum;\n                case GL_MAX: return BlendEquation::Maximum;\n                default: return std::nullopt;\n            }\n        }\n\n        [[nodiscard]] inline std::optional<RenderCore::StencilOp> stencilOp(GLenum value) noexcept\n        {\n            using RenderCore::StencilOp;\n            switch (value)\n            {\n                case GL_KEEP: return StencilOp::Keep;\n                case GL_ZERO: return StencilOp::Zero;\n                case GL_REPLACE: return StencilOp::Replace;\n                case GL_INCR: return StencilOp::Increment;\n                case GL_DECR: return StencilOp::Decrement;\n                case GL_INVERT: return StencilOp::Invert;\n                default: return std::nullopt;\n            }\n        }\n\n""",
+)
+
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """            MaterialRecord material;\n            material.textureApply = textureApplyMode(path);\n            material.unlit = noLightingShader(path);\n\n""",
+    """            MaterialRecord material;\n            material.textureApply = textureApplyMode(path);\n            material.unlit = noLightingShader(path);\n\n            // Soft effects require the opaque-depth texture sampled by the OSG\n            // shader visitor. The immediate-effect Vulkan path does not expose\n            // that sampled attachment yet, so reject this optional (default-off)\n            // setting rather than drawing hard intersections silently.\n            if (state->getUniform(\"particleSize\") || state->getUniform(\"particleFade\")\n                || state->getUniform(\"softFalloffDepth\"))\n            {\n                diagnostic = \"evaluated effect requires soft-particle opaque-depth sampling\";\n                return false;\n            }\n            if (state->getUniform(\"distortionStrength\") || state->getBinName() == \"Distortion\")\n            {\n                diagnostic = \"evaluated effect requires the post-process distortion target\";\n                return false;\n            }\n\n""",
+)
+
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """            material.cullMode = CullMode::Back;\n            if (!stateEnabled(*state, GL_CULL_FACE, true))\n""",
+    """            if (const auto* front = dynamic_cast<const osg::FrontFace*>(\n                    state->getAttribute(osg::StateAttribute::FRONTFACE)))\n            {\n                material.frontFace = front->getMode() == osg::FrontFace::CLOCKWISE\n                    ? FrontFaceWinding::Clockwise\n                    : FrontFaceWinding::CounterClockwise;\n            }\n\n            material.cullMode = CullMode::Back;\n            if (!stateEnabled(*state, GL_CULL_FACE, true))\n""",
+)
+
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """            material.depthTest = stateEnabled(*state, GL_DEPTH_TEST, true);\n            if (const auto* depth = dynamic_cast<const osg::Depth*>(\n""",
+    """            material.stencil.enabled = stateEnabled(*state, GL_STENCIL_TEST, false);\n            if (material.stencil.enabled)\n            {\n                if (const auto* stencil = dynamic_cast<const osg::Stencil*>(\n                        state->getAttribute(osg::StateAttribute::STENCIL)))\n                {\n                    const auto compare = compareOp(static_cast<GLenum>(stencil->getFunction()));\n                    const auto fail = stencilOp(static_cast<GLenum>(stencil->getStencilFailOperation()));\n                    const auto depthFail\n                        = stencilOp(static_cast<GLenum>(stencil->getStencilPassAndDepthFailOperation()));\n                    const auto pass = stencilOp(static_cast<GLenum>(stencil->getStencilPassAndDepthPassOperation()));\n                    if (!compare || !fail || !depthFail || !pass || stencil->getFunctionRef() < 0\n                        || stencil->getWriteMask() != ~0u)\n                    {\n                        diagnostic = \"evaluated effect uses unsupported stencil state\";\n                        return false;\n                    }\n                    material.stencil.compare = *compare;\n                    material.stencil.reference = static_cast<std::uint32_t>(stencil->getFunctionRef());\n                    material.stencil.compareMask = stencil->getFunctionMask();\n                    material.stencil.fail = *fail;\n                    material.stencil.depthFail = *depthFail;\n                    material.stencil.pass = *pass;\n                }\n            }\n\n            material.depthTest = stateEnabled(*state, GL_DEPTH_TEST, true);\n            if (const auto* depth = dynamic_cast<const osg::Depth*>(\n""",
+)
+
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """            if (const auto* polygon = dynamic_cast<const osg::PolygonMode*>(\n                    state->getAttribute(osg::StateAttribute::POLYGONMODE)))\n""",
+    """            if (stateEnabled(*state, GL_POLYGON_OFFSET_FILL, false)\n                || stateEnabled(*state, GL_POLYGON_OFFSET_LINE, false)\n                || stateEnabled(*state, GL_POLYGON_OFFSET_POINT, false))\n            {\n                diagnostic = \"evaluated effect requires authored polygon-offset realization\";\n                return false;\n            }\n\n            if (const auto* polygon = dynamic_cast<const osg::PolygonMode*>(\n                    state->getAttribute(osg::StateAttribute::POLYGONMODE)))\n""",
+)
+
+# OSG permits OVERALL-bound normal/color arrays with one entry. Replicate that
+# constant value so the neutral mesh has the per-vertex streams expected by the
+# already-tested legacy material realizer.
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """            if (const auto* normals = dynamic_cast<const osg::Vec3Array*>(geometry.getNormalArray()))\n            {\n                if (normals->size() == positions->size())\n                {\n                    draw.mesh.normals.reserve(normals->size());\n                    for (const osg::Vec3f& normal : *normals)\n                        draw.mesh.normals.push_back(toGlm(normal));\n                }\n            }\n\n""",
+    """            if (const auto* normals = dynamic_cast<const osg::Vec3Array*>(geometry.getNormalArray()))\n            {\n                if (normals->size() == positions->size())\n                {\n                    draw.mesh.normals.reserve(normals->size());\n                    for (const osg::Vec3f& normal : *normals)\n                        draw.mesh.normals.push_back(toGlm(normal));\n                }\n                else if (normals->size() == 1u)\n                    draw.mesh.normals.assign(positions->size(), toGlm(normals->front()));\n                else if (!normals->empty())\n                {\n                    diagnostic = \"evaluated effect geometry uses a non-vertex normal binding\";\n                    return false;\n                }\n            }\n\n""",
 )
 replace_once(
-    "apps/openmw/mwrender/v4enginerenderbridge.cpp",
-    """                V4EffectCaptureResult captured\n                    = captureV4AttachedEffects(*effectRoot, \"actor-effect:\" + *identity);\n""",
-    """                V4EffectCaptureResult captured\n                    = captureV4AttachedEffects(*effectRoot, \"actor-effect:\" + *identity, mVfs);\n""",
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """            if (const auto* colors = dynamic_cast<const osg::Vec4Array*>(geometry.getColorArray()))\n            {\n                if (colors->size() == positions->size())\n                {\n                    draw.mesh.colors.reserve(colors->size());\n                    for (const osg::Vec4f& color : *colors)\n                        draw.mesh.colors.push_back(toGlm(color));\n                }\n            }\n            else if (const auto* colors = dynamic_cast<const osg::Vec4ubArray*>(geometry.getColorArray()))\n            {\n                if (colors->size() == positions->size())\n                {\n                    draw.mesh.colors.reserve(colors->size());\n                    for (const osg::Vec4ub& color : *colors)\n                        draw.mesh.colors.emplace_back(color.r() / 255.0f, color.g() / 255.0f,\n                            color.b() / 255.0f, color.a() / 255.0f);\n                }\n            }\n\n""",
+    """            if (const auto* colors = dynamic_cast<const osg::Vec4Array*>(geometry.getColorArray()))\n            {\n                if (colors->size() == positions->size())\n                {\n                    draw.mesh.colors.reserve(colors->size());\n                    for (const osg::Vec4f& color : *colors)\n                        draw.mesh.colors.push_back(toGlm(color));\n                }\n                else if (colors->size() == 1u)\n                    draw.mesh.colors.assign(positions->size(), toGlm(colors->front()));\n                else if (!colors->empty())\n                {\n                    diagnostic = \"evaluated effect geometry uses a non-vertex color binding\";\n                    return false;\n                }\n            }\n            else if (const auto* colors = dynamic_cast<const osg::Vec4ubArray*>(geometry.getColorArray()))\n            {\n                const auto convert = [](const osg::Vec4ub& color) {\n                    return glm::vec4(color.r() / 255.0f, color.g() / 255.0f,\n                        color.b() / 255.0f, color.a() / 255.0f);\n                };\n                if (colors->size() == positions->size())\n                {\n                    draw.mesh.colors.reserve(colors->size());\n                    for (const osg::Vec4ub& color : *colors)\n                        draw.mesh.colors.push_back(convert(color));\n                }\n                else if (colors->size() == 1u)\n                    draw.mesh.colors.assign(positions->size(), convert(colors->front()));\n                else if (!colors->empty())\n                {\n                    diagnostic = \"evaluated effect geometry uses a non-vertex color binding\";\n                    return false;\n                }\n            }\n\n""",
 )
 
 capture = Path("apps/openmw/mwrender/v4effectcapture.hpp").read_text(encoding="utf-8")
-for needle in ["resolveTextureVfsIdentity", "resolved.contentIdentity", "const VFS::Manager& mVfs"]:
+for needle in [
+    "soft-particle opaque-depth sampling",
+    "post-process distortion target",
+    "getStencilPassAndDepthPassOperation",
+    "authored polygon-offset realization",
+    "FrontFaceWinding::Clockwise",
+    "normals->size() == 1u",
+    "colors->size() == 1u",
+]:
     if needle not in capture:
-        raise RuntimeError(f"evaluated effect VFS identity stage missing {needle!r}")
-if "snapshot.texture.contentIdentity = image->getFileName()" in capture:
-    raise RuntimeError("evaluated effect still substitutes source path for content identity")
+        raise RuntimeError(f"evaluated effect state hardening missing {needle!r}")
 
-print("CP4F evaluated-effect texture identity canonicalization applied")
+print("CP4F evaluated-effect state hardening applied")
