@@ -10,60 +10,95 @@ def replace_once(path: str, old: str, new: str) -> None:
     p.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
-# OpenMW actor VFX can override sun.ambient on the effect subtree while still
-# receiving directional and local lights. Preserve that as neutral material
-# state; treating it as unlit would suppress real lighting and is not equivalent.
-replace_once(
-    "components/rendercore/records.hpp",
-    """        Color environmentMapColor{ 1.0f, 1.0f, 1.0f, 1.0f };\n        float shininess = 0.0f;\n""",
-    """        Color environmentMapColor{ 1.0f, 1.0f, 1.0f, 1.0f };\n        bool ambientLightOverrideEnabled = false;\n        Color ambientLightOverride{ 1.0f, 1.0f, 1.0f, 1.0f };\n        float shininess = 0.0f;\n""",
-)
-replace_once(
-    "components/rendercore/renderworld.hpp",
-    """                || !semantic_detail::finite(record.emission) || !semantic_detail::finite(record.environmentMapColor)\n                || !std::isfinite(record.shininess) || !std::isfinite(record.emissiveMultiplier)\n""",
-    """                || !semantic_detail::finite(record.emission) || !semantic_detail::finite(record.environmentMapColor)\n                || !semantic_detail::finite(record.ambientLightOverride)\n                || !std::isfinite(record.shininess) || !std::isfinite(record.emissiveMultiplier)\n""",
-)
-
+# Frame-local effects still use the same winning-VFS/content-identity contract
+# as persistent resources. Never substitute an image filename for byte identity.
 replace_once(
     "apps/openmw/mwrender/v4effectcapture.hpp",
-    """            material.alpha = material.diffuse.a;\n            if (const osg::Uniform* alpha = state->getUniform(\"alpha\"))\n""",
-    """            if (const osg::Uniform* ambient = state->getUniform(\"sun.ambient\"))\n            {\n                osg::Vec4f value;\n                if (ambient->get(value))\n                {\n                    material.ambientLightOverrideEnabled = true;\n                    material.ambientLightOverride = toGlm(value);\n                }\n            }\n\n            material.alpha = material.diffuse.a;\n            if (const osg::Uniform* alpha = state->getUniform(\"alpha\"))\n""",
+    "#include <components/rendercore/effectframe.hpp>\n",
+    "#include <components/rendercore/effectframe.hpp>\n#include <components/nifrender/vfsidentity.hpp>\n",
+)
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """        [[nodiscard]] inline bool captureMaterial(const osg::NodePath& path, const osg::StateSet* drawableState,\n            CapturedMaterial& out, std::string& diagnostic)\n""",
+    """        [[nodiscard]] inline bool captureMaterial(const osg::NodePath& path, const osg::StateSet* drawableState,\n            const VFS::Manager& vfs, CapturedMaterial& out, std::string& diagnostic)\n""",
+)
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """                EffectTextureSnapshot snapshot;\n                snapshot.texture.revision = InitialResourceRevision;\n                snapshot.texture.sourceIdentity = image->getFileName();\n                snapshot.texture.contentIdentity = image->getFileName();\n""",
+    """                const NifRender::ResolvedVfsIdentity resolved\n                    = NifRender::resolveTextureVfsIdentity(VFS::Path::NormalizedView(image->getFileName()), vfs);\n                if (!resolved.valid())\n                {\n                    diagnostic = \"evaluated effect texture could not resolve its winning VFS content identity\";\n                    return false;\n                }\n\n                EffectTextureSnapshot snapshot;\n                snapshot.texture.revision = InitialResourceRevision;\n                snapshot.texture.sourceIdentity = std::string(resolved.canonicalPath.value());\n                snapshot.texture.contentIdentity = resolved.contentIdentity;\n""",
+)
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """        [[nodiscard]] inline bool captureGeometry(const osg::Geometry& geometry, const osg::NodePath& path,\n            std::string identity, RenderCore::ImmediateEffectDraw& draw, std::string& diagnostic)\n""",
+    """        [[nodiscard]] inline bool captureGeometry(const osg::Geometry& geometry, const osg::NodePath& path,\n            const VFS::Manager& vfs, std::string identity, RenderCore::ImmediateEffectDraw& draw,\n            std::string& diagnostic)\n""",
+)
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """            CapturedMaterial captured;\n            if (!captureMaterial(path, geometry.getStateSet(), captured, diagnostic))\n""",
+    """            CapturedMaterial captured;\n            if (!captureMaterial(path, geometry.getStateSet(), vfs, captured, diagnostic))\n""",
+)
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """        [[nodiscard]] inline bool captureParticleSystem(const osgParticle::ParticleSystem& particles,\n            const osg::NodePath& path, std::string_view identityPrefix,\n            std::vector<RenderCore::ImmediateEffectDraw>& draws, std::string& diagnostic)\n""",
+    """        [[nodiscard]] inline bool captureParticleSystem(const osgParticle::ParticleSystem& particles,\n            const osg::NodePath& path, const VFS::Manager& vfs, std::string_view identityPrefix,\n            std::vector<RenderCore::ImmediateEffectDraw>& draws, std::string& diagnostic)\n""",
+)
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """            CapturedMaterial captured;\n            if (!captureMaterial(path, particles.getStateSet(), captured, diagnostic))\n""",
+    """            CapturedMaterial captured;\n            if (!captureMaterial(path, particles.getStateSet(), vfs, captured, diagnostic))\n""",
+)
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """            CaptureVisitor(std::string identityPrefix, bool wholeSubtree)\n                : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN)\n                , mIdentityPrefix(std::move(identityPrefix))\n                , mWholeSubtree(wholeSubtree)\n""",
+    """            CaptureVisitor(std::string identityPrefix, bool wholeSubtree, const VFS::Manager& vfs)\n                : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN)\n                , mIdentityPrefix(std::move(identityPrefix))\n                , mWholeSubtree(wholeSubtree)\n                , mVfs(vfs)\n""",
+)
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """                        if (!captureParticleSystem(*particles, getNodePath(), nextIdentity(\"system\"), mResult.draws,\n                                mResult.diagnostic))\n""",
+    """                        if (!captureParticleSystem(*particles, getNodePath(), mVfs, nextIdentity(\"system\"),\n                                mResult.draws, mResult.diagnostic))\n""",
+)
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """                            if (!captureGeometry(*geometry, getNodePath(), nextIdentity(\"geometry\"), draw,\n                                    mResult.diagnostic))\n""",
+    """                            if (!captureGeometry(*geometry, getNodePath(), mVfs, nextIdentity(\"geometry\"), draw,\n                                    mResult.diagnostic))\n""",
+)
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """                            if (!captureParticleSystem(*particles, getNodePath(), nextIdentity(\"system\"),\n                                    mResult.draws, mResult.diagnostic))\n""",
+    """                            if (!captureParticleSystem(*particles, getNodePath(), mVfs, nextIdentity(\"system\"),\n                                    mResult.draws, mResult.diagnostic))\n""",
+)
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """            std::string mIdentityPrefix;\n            bool mWholeSubtree = false;\n""",
+    """            std::string mIdentityPrefix;\n            bool mWholeSubtree = false;\n            const VFS::Manager& mVfs;\n""",
+)
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """    [[nodiscard]] inline V4EffectCaptureResult captureV4AttachedEffects(\n        osg::Node& animationRoot, std::string identityPrefix)\n    {\n        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), false);\n""",
+    """    [[nodiscard]] inline V4EffectCaptureResult captureV4AttachedEffects(\n        osg::Node& animationRoot, std::string identityPrefix, const VFS::Manager& vfs)\n    {\n        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), false, vfs);\n""",
+)
+replace_once(
+    "apps/openmw/mwrender/v4effectcapture.hpp",
+    """    [[nodiscard]] inline V4EffectCaptureResult captureV4WholeEffectSubtree(\n        osg::Node& root, std::string identityPrefix)\n    {\n        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), true);\n""",
+    """    [[nodiscard]] inline V4EffectCaptureResult captureV4WholeEffectSubtree(\n        osg::Node& root, std::string identityPrefix, const VFS::Manager& vfs)\n    {\n        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), true, vfs);\n""",
 )
 
-# Add one vec4 to the backend-private legacy material ABI. xyz carries the
-# replacement ambient color and w is the enable bit. Local-light ambient terms
-# remain untouched; only the view/global ambient light is replaced.
 replace_once(
-    "components/render/backend/vsg/legacymaterialshader.hpp",
-    """        // x = MaterialFogMode, y = fog depth, z = additive-fog behavior,\n        // w = legacy unlit/no-lighting material.\n        vsg::vec4 effects{ 0.0f, 0.0f, 0.0f, 0.0f };\n    };\n\n    static_assert(sizeof(LegacyMaterialUniform) == sizeof(vsg::vec4) * 8u);\n""",
-    """        // x = MaterialFogMode, y = fog depth, z = additive-fog behavior,\n        // w = legacy unlit/no-lighting material.\n        vsg::vec4 effects{ 0.0f, 0.0f, 0.0f, 0.0f };\n        // xyz = per-draw replacement for the global/sun ambient term;\n        // w = override enabled. Local point-light ambient is intentionally separate.\n        vsg::vec4 ambientOverride{ 1.0f, 1.0f, 1.0f, 0.0f };\n    };\n\n    static_assert(sizeof(LegacyMaterialUniform) == sizeof(vsg::vec4) * 9u);\n""",
+    "apps/openmw/mwrender/v4engineframecoordinator.cpp",
+    """            V4EffectCaptureResult captured = captureV4WholeEffectSubtree(\n                *bolt.effectRoot, \"magic-projectile:\" + std::to_string(bolt.runtimeId));\n""",
+    """            V4EffectCaptureResult captured = captureV4WholeEffectSubtree(\n                *bolt.effectRoot, \"magic-projectile:\" + std::to_string(bolt.runtimeId), mVfs);\n""",
 )
 replace_once(
-    "components/render/backend/vsg/legacymaterialshader.cpp",
-    """    vec4 fogColor;\n    vec4 effects;\n} material;\n""",
-    """    vec4 fogColor;\n    vec4 effects;\n    vec4 ambientOverride;\n} material;\n""",
-)
-replace_once(
-    "components/render/backend/vsg/legacymaterialshader.cpp",
-    """        vec4 lightColor = lightData.values[lightDataIndex++];\n        color += surfaceColor.rgb * effectiveAmbient.rgb * lightColor.rgb * lightColor.a;\n""",
-    """        vec4 lightColor = lightData.values[lightDataIndex++];\n        vec3 ambientLightColor = material.ambientOverride.w > 0.5\n            ? material.ambientOverride.rgb\n            : lightColor.rgb;\n        color += surfaceColor.rgb * effectiveAmbient.rgb * ambientLightColor * lightColor.a;\n""",
-)
-replace_once(
-    "components/render/backend/vsg/legacymaterialshader.cpp",
-    """        uniform.effects = vsg::vec4(static_cast<float>(source.fog.mode), source.fog.depth,\n            additiveFog ? 1.0f : 0.0f, source.unlit ? 1.0f : 0.0f);\n        return result;\n""",
-    """        uniform.effects = vsg::vec4(static_cast<float>(source.fog.mode), source.fog.depth,\n            additiveFog ? 1.0f : 0.0f, source.unlit ? 1.0f : 0.0f);\n        uniform.ambientOverride = vsg::vec4(source.ambientLightOverride.r, source.ambientLightOverride.g,\n            source.ambientLightOverride.b, source.ambientLightOverrideEnabled ? 1.0f : 0.0f);\n        return result;\n""",
+    "apps/openmw/mwrender/v4enginerenderbridge.cpp",
+    """                V4EffectCaptureResult captured\n                    = captureV4AttachedEffects(*effectRoot, \"actor-effect:\" + *identity);\n""",
+    """                V4EffectCaptureResult captured\n                    = captureV4AttachedEffects(*effectRoot, \"actor-effect:\" + *identity, mVfs);\n""",
 )
 
-checks = {
-    "components/rendercore/records.hpp": ["ambientLightOverrideEnabled", "ambientLightOverride"],
-    "apps/openmw/mwrender/v4effectcapture.hpp": ["getUniform(\"sun.ambient\")", "ambientLightOverrideEnabled = true"],
-    "components/render/backend/vsg/legacymaterialshader.hpp": ["ambientOverride", "sizeof(vsg::vec4) * 9u"],
-    "components/render/backend/vsg/legacymaterialshader.cpp": ["material.ambientOverride.w", "uniform.ambientOverride"],
-}
-for path, needles in checks.items():
-    text = Path(path).read_text(encoding="utf-8")
-    for needle in needles:
-        if needle not in text:
-            raise RuntimeError(f"{path}: missing effect ambient override token {needle!r}")
+capture = Path("apps/openmw/mwrender/v4effectcapture.hpp").read_text(encoding="utf-8")
+for needle in ["resolveTextureVfsIdentity", "resolved.contentIdentity", "const VFS::Manager& mVfs"]:
+    if needle not in capture:
+        raise RuntimeError(f"evaluated effect VFS identity stage missing {needle!r}")
+if "snapshot.texture.contentIdentity = image->getFileName()" in capture:
+    raise RuntimeError("evaluated effect still substitutes source path for content identity")
 
-print("CP4F per-effect ambient override semantics applied")
+print("CP4F evaluated-effect texture identity canonicalization applied")
