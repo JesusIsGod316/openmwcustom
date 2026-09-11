@@ -60,8 +60,10 @@ namespace MWRender
             float zMin = 0.f;
             float zMax = 0.f;
             bool needsRender = false;
+            bool mapReady = false;
             std::span<const std::uint8_t> fogRgba;
             std::uint64_t fogRevision = 0;
+            bool fogReady = false;
         };
 
         // V4 configures the neutral native-auxiliary route before LocalMap is
@@ -95,7 +97,7 @@ namespace MWRender
         osg::ref_ptr<osg::Texture2D> getFogOfWarTexture(int x, int y);
 
         [[nodiscard]] bool nativeAuxiliaryRouteEnabled() const noexcept { return mNativeAuxiliaryRoute; }
-        [[nodiscard]] std::vector<NativeMapSurface> nativeMapSurfaces() const;
+        [[nodiscard]] std::vector<NativeMapSurface> nativeMapSurfaces();
         [[nodiscard]] bool markNativeMapRendered(std::uint32_t stableSlot) noexcept;
         [[nodiscard]] bool markNativeFogPublished(std::uint32_t stableSlot, std::uint64_t revision) noexcept;
         [[nodiscard]] std::string_view nativeMapTextureName(int x, int y) const noexcept;
@@ -175,15 +177,12 @@ namespace MWRender
             std::string mNativeLogicalIdentity;
             std::string mNativeMapTextureName;
             std::string mNativeFogTextureName;
-            float mNativeCenterX = 0.f;
-            float mNativeCenterY = 0.f;
-            std::array<double, 3> mNativeUpVector{ 0.0, 1.0, 0.0 };
-            float mNativeZMin = 0.f;
-            float mNativeZMax = 0.f;
             bool mNativeMapRequested = false;
             bool mNativeMapNeedsRender = false;
             bool mNativeMapReady = false;
             bool mNativeFogReady = false;
+            const osg::Texture2D* mNativeObservedMapTexture = nullptr;
+            std::uint64_t mNativeFogContentHash = 0;
             std::uint64_t mFogRevision = 0;
             std::uint64_t mPublishedFogRevision = 0;
         };
@@ -208,15 +207,26 @@ namespace MWRender
         void requestExteriorMap(const MWWorld::CellStore* cell, MapSegment& segment);
         void requestInteriorMap(const MWWorld::CellStore* cell);
 
-        void setupRenderToTexture(int segmentX, int segmentY, float left, float top, const osg::Vec3d& upVector,
-            float zmin, float zmax, std::string_view logicalCellIdentity);
+        void setupRenderToTexture(
+            int segmentX, int segmentY, float left, float top, const osg::Vec3d& upVector, float zmin, float zmax);
         [[nodiscard]] const MapSegment* findSegment(int x, int y) const noexcept;
         [[nodiscard]] MapSegment* findNativeSegment(std::uint32_t stableSlot) noexcept;
+
+        struct NativeRegistration
+        {
+            explicit NativeRegistration(LocalMap* owner) noexcept;
+            ~NativeRegistration();
+            NativeRegistration(const NativeRegistration&) = delete;
+            NativeRegistration& operator=(const NativeRegistration&) = delete;
+
+            LocalMap* mOwner = nullptr;
+        };
 
         osg::BoundingBox mBounds;
         osg::Vec2f mCenter;
         bool mInterior;
         bool mNativeAuxiliaryRoute = false;
+        NativeRegistration mNativeRegistration{ this };
 
         std::uint8_t getExteriorNeighbourFlags(int cellX, int cellY) const;
     };
