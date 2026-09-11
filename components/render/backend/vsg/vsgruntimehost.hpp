@@ -21,13 +21,16 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace vsg
 {
     class Node;
     class Group;
     class AmbientLight;
+    class CommandGraph;
     class DirectionalLight;
+    class ImageView;
     class MatrixTransform;
     class RenderGraph;
     class SharedObjects;
@@ -73,10 +76,10 @@ namespace RenderVsg
     };
 
     // Production-shaped CP3C host for one SDL-owned swapchain and one semantic
-    // main view. It intentionally fails closed on unsupported multiview or
-    // render/output scaling instead of presenting a misleading compatibility
-    // result. Engine selection remains separate so the established OpenGL host
-    // stays intact until all required compatibility facets are implemented.
+    // main view. CP4F extends the same command graph with bounded persistent
+    // auxiliary map/preview/debug targets while keeping all backend objects
+    // private to RenderVsg. Engine selection remains separate so the established
+    // OpenGL host stays intact until all required compatibility facets are implemented.
     class VsgRuntimeHost final : public RenderCore::SemanticRenderer
     {
     public:
@@ -94,6 +97,9 @@ namespace RenderVsg
         [[nodiscard]] const UiPipeline& uiPipeline() const noexcept { return mUiPipeline; }
         void attachGuiRenderer(VsgMyGui::RenderManager* renderer) noexcept;
         void detachGuiRenderer(const VsgMyGui::RenderManager* renderer) noexcept;
+        [[nodiscard]] VsgMyGui::RenderManager* guiRenderer() noexcept { return mGuiRenderer; }
+        [[nodiscard]] vsg::ref_ptr<vsg::ImageView> auxiliaryColorImage(
+            RenderCore::RenderTargetHandle target) const noexcept;
         [[nodiscard]] const std::string& lastDiagnostic() const noexcept { return mLastDiagnostic; }
 
     private:
@@ -109,6 +115,19 @@ namespace RenderVsg
             vsg::ref_ptr<vsg::View> view;
             vsg::ref_ptr<OpenMwViewDependentState> state;
         };
+        struct AuxiliaryViewRuntime
+        {
+            RenderCore::ViewHandle identity;
+            RenderCore::RenderTargetHandle targetIdentity;
+            RenderCore::ViewKind kind = RenderCore::ViewKind::Preview;
+            RenderCore::RenderTargetFormat colorFormat = RenderCore::RenderTargetFormat::Rgba8Srgb;
+            std::optional<RenderCore::RenderTargetFormat> depthFormat = RenderCore::RenderTargetFormat::Depth32Float;
+            OffscreenRenderTarget target;
+            FrameCameraObjects camera;
+            vsg::ref_ptr<vsg::View> view;
+            vsg::ref_ptr<OpenMwViewDependentState> state;
+            bool active = false;
+        };
 
         [[nodiscard]] bool synchronizeStaticWorld(const RenderCore::RenderWorld& world);
         [[nodiscard]] bool synchronizePopulationVisibility(
@@ -116,6 +135,7 @@ namespace RenderVsg
         [[nodiscard]] bool synchronizeDynamicActors(
             const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame);
         [[nodiscard]] bool synchronizeLocalLights(const RenderCore::RenderWorld& world);
+        [[nodiscard]] bool synchronizeAuxiliaryViews(const RenderCore::FrameRenderState& frame);
         [[nodiscard]] bool synchronizeGui();
         [[nodiscard]] const RenderCore::FrameView* selectMainView(
             const RenderCore::FrameRenderState& frame) const noexcept;
@@ -139,8 +159,10 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::View> mView;
         vsg::ref_ptr<OpenMwViewDependentState> mOpenMwViewState;
         vsg::ref_ptr<vsg::RenderGraph> mRenderGraph;
+        vsg::ref_ptr<vsg::CommandGraph> mCommandGraph;
         std::optional<WaterViewRuntime> mReflectionView;
         std::optional<WaterViewRuntime> mRefractionView;
+        std::vector<AuxiliaryViewRuntime> mAuxiliaryViews;
         vsg::ref_ptr<vsg::AmbientLight> mAmbientLight;
         vsg::ref_ptr<vsg::DirectionalLight> mSunLight;
         SkyBackdrop mSkyBackdrop;
