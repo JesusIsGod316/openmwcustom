@@ -981,6 +981,7 @@ namespace MWRender
         input.dynamicTransforms = source.dynamicTransforms;
         input.skeletonPoses = source.skeletonPoses;
         input.morphWeights = source.morphWeights;
+        input.immediateEffectDraws = source.immediateEffectDraws;
         input.invalidateHistory = source.invalidateHistory || mGuiOnlyFramePresented;
         const RenderCore::RenderFrameResult result = mSession->renderFrame(input);
         if (result == RenderCore::RenderFrameResult::Presented)

@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_RENDERCORE_FRAMERENDERSTATE_H
 
 #include "records.hpp"
+#include "effectframe.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -288,6 +289,7 @@ namespace RenderCore
         std::vector<SkeletonPoseState> skeletonPoses;
         std::vector<MorphWeightState> morphWeights;
         std::vector<DynamicMaterialState> dynamicMaterials;
+        std::vector<ImmediateEffectDraw> immediateEffectDraws;
     };
 
     // Immutable-by-interface snapshot. Producers assemble a FrameRenderStateDesc,
@@ -335,6 +337,10 @@ namespace RenderCore
         [[nodiscard]] const std::vector<DynamicMaterialState>& dynamicMaterials() const noexcept
         {
             return mDesc.dynamicMaterials;
+        }
+        [[nodiscard]] const std::vector<ImmediateEffectDraw>& immediateEffectDraws() const noexcept
+        {
+            return mDesc.immediateEffectDraws;
         }
 
         [[nodiscard]] bool valid() const noexcept
@@ -494,6 +500,17 @@ namespace RenderCore
                             == material.textureTransforms[other].bindingIndex)
                             return false;
                     }
+                }
+            }
+
+            for (std::size_t i = 0; i < mDesc.immediateEffectDraws.size(); ++i)
+            {
+                if (!validImmediateEffectDraw(mDesc.immediateEffectDraws[i]))
+                    return false;
+                for (std::size_t j = i + 1; j < mDesc.immediateEffectDraws.size(); ++j)
+                {
+                    if (mDesc.immediateEffectDraws[i].identity == mDesc.immediateEffectDraws[j].identity)
+                        return false;
                 }
             }
             return true;

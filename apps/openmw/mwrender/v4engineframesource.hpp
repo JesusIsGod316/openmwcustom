@@ -20,6 +20,7 @@ namespace MWRender
         std::vector<RenderCore::DynamicTransformInput> dynamicTransforms;
         std::vector<RenderCore::SkeletonPoseInput> skeletonPoses;
         std::vector<RenderCore::MorphWeightInput> morphWeights;
+        std::vector<RenderCore::ImmediateEffectDraw> immediateEffectDraws;
         bool invalidateHistory = false;
     };
 }

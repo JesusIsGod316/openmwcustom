@@ -91,6 +91,7 @@ namespace RenderCore
         std::vector<DynamicTransformInput> dynamicTransforms;
         std::vector<SkeletonPoseInput> skeletonPoses;
         std::vector<MorphWeightInput> morphWeights;
+        std::vector<ImmediateEffectDraw> immediateEffectDraws;
         bool invalidateHistory = false;
         DerivedShadowViews shadowViews;
         WaterViews waterViews;
@@ -152,6 +153,7 @@ namespace RenderCore
             desc.projectionOffset = input.projectionOffset;
             desc.historyValid = continuous;
             desc.environment = input.environment;
+            desc.immediateEffectDraws = input.immediateEffectDraws;
             desc.renderTargets.push_back(RenderTargetDesc{
                 .identity = view.outputTarget,
                 .kind = RenderTargetKind::Swapchain,
