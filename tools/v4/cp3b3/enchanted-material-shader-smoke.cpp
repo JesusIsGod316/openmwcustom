@@ -5,6 +5,7 @@
 #include <vsg/utils/ShaderCompiler.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -36,11 +37,14 @@ int main()
     MaterialRecord material;
     material.environmentMapColor = { 0.25f, 0.5f, 0.75f, 1.0f };
     material.environmentMapStrength = 0.5f;
+    material.environmentMapPreLight = true;
     auto environmentUniform = RenderVsg::makeEnchantedEnvironmentMaterial(material);
     require(static_cast<bool>(environmentUniform), "failed to create enchanted environment uniform");
     const auto& color = environmentUniform->value().colorStrength;
     require(color.x == 0.125f && color.y == 0.25f && color.z == 0.375f && color.w == 0.5f,
         "enchanted environment color/strength packing changed");
+    require(environmentUniform->value().effects.x == 1.0f,
+        "enchanted pre-light material semantic was not packed into the backend uniform");
 
     auto shaderSet = RenderVsg::createEnchantedLegacyCompatibilityShaderSet();
     require(static_cast<bool>(shaderSet),
@@ -78,9 +82,9 @@ int main()
             && fragment->module->source.find("binding = 15) uniform OpenMwEnvironmentEffectData")
                 != std::string::npos
             && fragment->module->source.find("openmwEnvironment.temporalEffects.x") != std::string::npos
-            && fragment->module->source.find("texture(openmwEnvironmentMaps[openmwGlowFrame], openmwEnvUv)")
-                != std::string::npos,
-        "enchanted fragment descriptor, clock, or sample realization is absent");
+            && fragment->module->source.find("surfaceColor.rgb += openmwEnvEffect") != std::string::npos
+            && fragment->module->source.find("outColor.rgb += openmwEnvEffect") != std::string::npos,
+        "enchanted descriptor, clock, or pre/post-light realization is absent");
 
     vsg::ShaderCompiler compiler;
     require(compiler.supported(), "VSG was built without GLSL compiler support");
