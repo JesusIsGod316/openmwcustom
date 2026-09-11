@@ -4,6 +4,7 @@
 #include "records.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,10 @@ namespace RenderCore
         glm::mat4 worldTransform{ 1.0f };
         MeshPayload mesh;
         AxisAlignedBounds bounds;
+        // Particle quads need one billboard boundary per evaluated particle.
+        // Keeping this semantic neutral lets the VSG compatibility realizer use
+        // the same legacy billboard math in main/reflection/refraction views.
+        std::optional<ModelBillboardMode> billboard;
         // Frame snapshots carry material values directly. Persistent texture
         // handles are not valid here; textures must be described by `textures`.
         MaterialRecord material;
