@@ -62,6 +62,8 @@
 
 namespace
 {
+    MWWorld::ProjectileManager* sV4ProjectileManager = nullptr;
+
     ESM::EffectList getMagicBoltData(std::vector<ESM::RefId>& projectileIDs, std::set<ESM::RefId>& sounds, float& speed,
         VFS::Path::NormalizedView& texture, std::string& sourceName, const ESM::RefId& id)
     {
@@ -187,6 +189,15 @@ namespace MWWorld
         , mPhysics(physics)
         , mCleanupTimer(0.0f)
     {
+        if (sV4ProjectileManager && sV4ProjectileManager != this)
+            Log(Debug::Warning) << "Replacing an existing V4 projectile snapshot owner";
+        sV4ProjectileManager = this;
+    }
+
+    ProjectileManager::~ProjectileManager()
+    {
+        if (sV4ProjectileManager == this)
+            sV4ProjectileManager = nullptr;
     }
 
     /// Rotates an osg::PositionAttitudeTransform over time.
@@ -824,6 +835,34 @@ namespace MWWorld
             for (MagicBoltState& bolt : mMagicBolts)
                 reader.mActorIdConverter->convert(bolt.mCaster, bolt.mCaster.mIndex);
         }
+    }
+
+    V4ProjectileFrameSnapshot ProjectileManager::captureV4FrameState() const
+    {
+        V4ProjectileFrameSnapshot result;
+        result.physicalProjectiles.reserve(mProjectiles.size());
+        for (const ProjectileState& projectile : mProjectiles)
+        {
+            if (projectile.mToDelete || !projectile.mNode)
+                continue;
+            result.physicalProjectiles.push_back(V4PhysicalProjectileSnapshot{
+                .runtimeId = projectile.mProjectileId,
+                .projectileId = projectile.mIdArrow,
+                .position = projectile.mNode->getPosition(),
+                .orientation = projectile.mNode->getAttitude(),
+            });
+        }
+        for (const MagicBoltState& bolt : mMagicBolts)
+        {
+            if (!bolt.mToDelete)
+                ++result.liveMagicBoltCount;
+        }
+        return result;
+    }
+
+    V4ProjectileFrameSnapshot captureV4ProjectileFrameState()
+    {
+        return sV4ProjectileManager ? sV4ProjectileManager->captureV4FrameState() : V4ProjectileFrameSnapshot{};
     }
 
     MWWorld::Ptr ProjectileManager::State::getCaster()
