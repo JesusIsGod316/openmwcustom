@@ -114,7 +114,7 @@ namespace RenderVsg
         // short queue submission so N visible map cells do not cause N device
         // idle waits or N fence round trips.
         waitIdle();
-        vsg::ref_ptr<vsg::PhysicalDevice> physicalDevice = device->getPhysicalDevice();
+        vsg::PhysicalDevice* const physicalDevice = device->getPhysicalDevice();
         if (!physicalDevice)
         {
             mLastDiagnostic = "auxiliary RGBA readback has no Vulkan physical device";
