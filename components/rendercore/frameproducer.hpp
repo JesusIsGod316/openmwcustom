@@ -70,6 +70,12 @@ namespace RenderCore
             bool temporal = false;
             bool transient = false;
             bool sampledByMain = false;
+
+            // A caller-owned logical slot keeps a persistent auxiliary surface
+            // on the same neutral view/target/pass handles even when other
+            // requests are added or removed. Unspecified requests retain the
+            // original positional behavior for one-shot preview/debug callers.
+            std::optional<std::uint32_t> stableSlot;
         };
 
         CameraState camera;
@@ -242,15 +248,23 @@ namespace RenderCore
                     addWaterView(ViewKind::Refraction, 3, input.waterViews.refractionLodScale);
             }
 
+            std::vector<std::uint32_t> auxiliarySlots;
+            auxiliarySlots.reserve(input.auxiliaryViews.size());
             for (std::size_t i = 0; i < input.auxiliaryViews.size(); ++i)
             {
                 const SingleViewFrameInput::AuxiliaryView& request = input.auxiliaryViews[i];
                 if (request.kind != ViewKind::Map && request.kind != ViewKind::Preview
                     && request.kind != ViewKind::Debug)
                     return std::nullopt;
-                if (i > std::numeric_limits<std::uint32_t>::max() - 4)
+                const std::uint64_t logicalSlot
+                    = request.stableSlot ? static_cast<std::uint64_t>(*request.stableSlot)
+                                         : static_cast<std::uint64_t>(i);
+                if (logicalSlot > std::numeric_limits<std::uint32_t>::max() - 4ull)
                     return std::nullopt;
-                const std::uint32_t slot = static_cast<std::uint32_t>(i) + 4;
+                const std::uint32_t slot = static_cast<std::uint32_t>(logicalSlot) + 4;
+                if (std::find(auxiliarySlots.begin(), auxiliarySlots.end(), slot) != auxiliarySlots.end())
+                    return std::nullopt;
+                auxiliarySlots.push_back(slot);
                 const RenderTargetHandle target = RenderTargetHandle::fromParts(slot, 1);
                 const ViewHandle identity = ViewHandle::fromParts(slot, 1);
                 const RenderPassHandle pass = RenderPassHandle::fromParts(slot, 1);
