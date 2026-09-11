@@ -36,7 +36,7 @@ namespace RenderVsg
             vsg::vec4(environment.precipitationEnabled ? 1.0f : 0.0f, environment.storm ? 1.0f : 0.0f,
                 environment.skyEnabled ? 1.0f : 0.0f, environment.shadowsEnabled ? 1.0f : 0.0f),
             vsg::vec4(eyeClipPlane.x, eyeClipPlane.y, eyeClipPlane.z, eyeClipPlane.w),
-            vsg::vec4(0.0f) };
+            vsg::vec4(0.0f, 0.0f, 0.0f, 0.0f) };
     }
 
     OpenMwViewDependentState::OpenMwViewDependentState(vsg::View* view)
