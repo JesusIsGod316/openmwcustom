@@ -5,8 +5,11 @@
 #include "renderworld.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <utility>
+
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace RenderCore
 {
@@ -41,6 +44,34 @@ namespace RenderCore
             float maximumDistance = 1.0f;
         };
 
+        struct WaterViews
+        {
+            bool enabled = false;
+            bool reflection = true;
+            bool refraction = true;
+            Extent2D extent{ 512, 512 };
+            float reflectionLodScale = 0.5f;
+            float refractionLodScale = 0.5f;
+        };
+
+        // Explicit, reusable offscreen work for maps, previews, and diagnostic
+        // views. The producer owns stable handles; callers own camera/policy.
+        struct AuxiliaryView
+        {
+            ViewKind kind = ViewKind::Preview;
+            CameraState camera;
+            Extent2D extent{ 512, 512 };
+            RenderTargetFormat colorFormat = RenderTargetFormat::Rgba8Srgb;
+            std::optional<RenderTargetFormat> depthFormat = RenderTargetFormat::Depth32Float;
+            float lodScale = 1.0f;
+            std::uint64_t semanticIncludeMask = ~std::uint64_t{ 0 };
+            std::uint64_t semanticExcludeMask = 0;
+            std::optional<WorldClipPlane> clipPlane;
+            bool temporal = false;
+            bool transient = false;
+            bool sampledByMain = false;
+        };
+
         CameraState camera;
         Extent2D renderExtent;
         Extent2D outputExtent;
@@ -55,6 +86,8 @@ namespace RenderCore
         std::vector<MorphWeightInput> morphWeights;
         bool invalidateHistory = false;
         DerivedShadowViews shadowViews;
+        WaterViews waterViews;
+        std::vector<AuxiliaryView> auxiliaryViews;
     };
 
     // Small backend-neutral frame-boundary producer for the primary view. It
@@ -123,13 +156,156 @@ namespace RenderCore
                 .historyValid = continuous,
                 .transient = false,
             });
+            desc.views.push_back(std::move(view));
+
+            std::vector<RenderTargetHandle> mainInputs;
+            std::vector<RenderPassHandle> mainDependencies;
+            if (input.waterViews.enabled && input.environment.waterEnabled)
+            {
+                if ((!input.waterViews.reflection && !input.waterViews.refraction)
+                    || !input.waterViews.extent.valid()
+                    || std::abs(input.environment.waterHeight)
+                        > static_cast<double>(std::numeric_limits<float>::max()) * 0.5)
+                    return std::nullopt;
+                const auto addWaterView = [&](ViewKind kind, std::uint32_t slot, float auxiliaryLodScale) {
+                    const RenderTargetHandle target = RenderTargetHandle::fromParts(slot, 1);
+                    const ViewHandle identity = ViewHandle::fromParts(slot, 1);
+                    const RenderPassHandle pass = RenderPassHandle::fromParts(slot, 1);
+                    CameraState camera = input.camera;
+                    WorldClipPlane clipPlane;
+                    if (kind == ViewKind::Reflection)
+                    {
+                        const glm::mat4 sourceWorld = glm::inverse(input.camera.view);
+                        glm::vec3 position(sourceWorld[3]);
+                        glm::vec3 forward = -glm::normalize(glm::vec3(sourceWorld[2]));
+                        glm::vec3 up = glm::normalize(glm::vec3(sourceWorld[1]));
+                        position.z = static_cast<float>(2.0 * input.environment.waterHeight) - position.z;
+                        forward.z = -forward.z;
+                        up.z = -up.z;
+                        // Rebuilding a right-handed camera from the reflected
+                        // forward/up basis avoids the negative determinant of
+                        // a raw reflection matrix and preserves face culling.
+                        camera.view = glm::lookAtRH(position, position + forward, up);
+                        const glm::mat4 cameraWorld = glm::inverse(camera.view);
+                        camera.worldPosition = glm::dvec3(position);
+                        camera.worldOrientation = glm::normalize(glm::quat_cast(glm::mat3(cameraWorld)));
+                        clipPlane = { glm::vec3(0.0f, 0.0f, 1.0f), -input.environment.waterHeight };
+                    }
+                    else
+                        clipPlane = { glm::vec3(0.0f, 0.0f, -1.0f), input.environment.waterHeight };
+
+                    desc.renderTargets.push_back(RenderTargetDesc{
+                        .identity = target,
+                        .kind = RenderTargetKind::Offscreen,
+                        .extent = input.waterViews.extent,
+                        .colorFormat = RenderTargetFormat::Rgba16Float,
+                        .depthFormat = RenderTargetFormat::Depth32Float,
+                        .sampleCount = 1,
+                        .historyEpoch = candidateHistoryEpoch,
+                        .historyValid = continuous,
+                        .transient = false,
+                    });
+                    desc.views.push_back(FrameView{
+                        .identity = identity,
+                        .viewIndex = slot,
+                        .kind = kind,
+                        .outputTarget = target,
+                        .current = camera,
+                        .previous = camera,
+                        .extent = input.waterViews.extent,
+                        .lodScale = auxiliaryLodScale,
+                        .semanticIncludeMask = semanticFlag(kind == ViewKind::Reflection
+                                ? InstanceSemanticFlag::ReflectionEligible
+                                : InstanceSemanticFlag::RefractionEligible),
+                        .semanticExcludeMask = 0,
+                        .clipPlane = clipPlane,
+                        .historyEpoch = candidateHistoryEpoch,
+                        .temporal = false,
+                        .historyValid = false,
+                    });
+                    desc.renderPasses.push_back(RenderPassDesc{
+                        .identity = pass,
+                        .view = identity,
+                        .output = target,
+                        .colorLoad = RenderPassLoad::Clear,
+                        .depthLoad = RenderPassLoad::Clear,
+                        .colorStore = RenderPassStore::Store,
+                        .depthStore = RenderPassStore::Store,
+                        .present = false,
+                    });
+                    mainInputs.push_back(target);
+                    mainDependencies.push_back(pass);
+                };
+                if (input.waterViews.reflection)
+                    addWaterView(ViewKind::Reflection, 2, input.waterViews.reflectionLodScale);
+                if (input.waterViews.refraction)
+                    addWaterView(ViewKind::Refraction, 3, input.waterViews.refractionLodScale);
+            }
+
+            for (std::size_t i = 0; i < input.auxiliaryViews.size(); ++i)
+            {
+                const SingleViewFrameInput::AuxiliaryView& request = input.auxiliaryViews[i];
+                if (request.kind != ViewKind::Map && request.kind != ViewKind::Preview
+                    && request.kind != ViewKind::Debug)
+                    return std::nullopt;
+                if (i > std::numeric_limits<std::uint32_t>::max() - 4)
+                    return std::nullopt;
+                const std::uint32_t slot = static_cast<std::uint32_t>(i) + 4;
+                const RenderTargetHandle target = RenderTargetHandle::fromParts(slot, 1);
+                const ViewHandle identity = ViewHandle::fromParts(slot, 1);
+                const RenderPassHandle pass = RenderPassHandle::fromParts(slot, 1);
+                desc.renderTargets.push_back(RenderTargetDesc{
+                    .identity = target,
+                    .kind = RenderTargetKind::Offscreen,
+                    .extent = request.extent,
+                    .colorFormat = request.colorFormat,
+                    .depthFormat = request.depthFormat,
+                    .sampleCount = 1,
+                    .historyEpoch = candidateHistoryEpoch,
+                    .historyValid = false,
+                    .transient = request.transient,
+                });
+                desc.views.push_back(FrameView{
+                    .identity = identity,
+                    .viewIndex = slot,
+                    .kind = request.kind,
+                    .outputTarget = target,
+                    .current = request.camera,
+                    .previous = request.camera,
+                    .extent = request.extent,
+                    .lodScale = request.lodScale,
+                    .semanticIncludeMask = request.semanticIncludeMask,
+                    .semanticExcludeMask = request.semanticExcludeMask,
+                    .clipPlane = request.clipPlane,
+                    .historyEpoch = candidateHistoryEpoch,
+                    .temporal = request.temporal,
+                    .historyValid = false,
+                });
+                desc.renderPasses.push_back(RenderPassDesc{
+                    .identity = pass,
+                    .view = identity,
+                    .output = target,
+                    .colorLoad = RenderPassLoad::Clear,
+                    .depthLoad = RenderPassLoad::Clear,
+                    .colorStore = RenderPassStore::Store,
+                    .depthStore = RenderPassStore::Store,
+                    .present = false,
+                });
+                if (request.sampledByMain)
+                {
+                    mainInputs.push_back(target);
+                    mainDependencies.push_back(pass);
+                }
+            }
+
             desc.renderPasses.push_back(RenderPassDesc{
                 .identity = RenderPassHandle::fromParts(0, 1),
-                .view = view.identity,
-                .output = view.outputTarget,
+                .view = desc.views.front().identity,
+                .output = desc.views.front().outputTarget,
+                .inputs = std::move(mainInputs),
+                .dependencies = std::move(mainDependencies),
                 .present = true,
             });
-            desc.views.push_back(std::move(view));
             if (input.shadowViews.enabled && input.environment.shadowsEnabled)
             {
                 desc.derivedViewFamilies.push_back(DerivedViewFamilyDesc{
@@ -229,7 +405,7 @@ namespace RenderCore
 
         [[nodiscard]] bool commitPresented(const FrameRenderState& frame) noexcept
         {
-            if (!mNextFrameId || !frame.valid() || frame.frameId() != *mNextFrameId || frame.views().size() != 1
+            if (!mNextFrameId || !frame.valid() || frame.frameId() != *mNextFrameId || frame.views().empty()
                 || frame.views().front().extent != frame.renderExtent()
                 || frame.views().front().historyEpoch != frame.historyEpoch())
                 return false;

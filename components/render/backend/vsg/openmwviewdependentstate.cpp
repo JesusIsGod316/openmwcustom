@@ -17,7 +17,7 @@
 namespace RenderVsg
 {
     OpenMwEnvironmentValues packOpenMwEnvironment(const RenderCore::FrameEnvironmentState& environment,
-        const RenderCore::ProjectionState& projection) noexcept
+        const RenderCore::ProjectionState& projection, const glm::vec4& eyeClipPlane) noexcept
     {
         return { vsg::vec4(environment.fogColor.r, environment.fogColor.g, environment.fogColor.b,
                      environment.fogColor.a),
@@ -31,7 +31,8 @@ namespace RenderVsg
             vsg::vec4(environment.windDirection.x, environment.windDirection.y, environment.windDirection.z,
                 environment.windSpeed),
             vsg::vec4(environment.precipitationEnabled ? 1.0f : 0.0f, environment.storm ? 1.0f : 0.0f,
-                environment.skyEnabled ? 1.0f : 0.0f, environment.shadowsEnabled ? 1.0f : 0.0f) };
+                environment.skyEnabled ? 1.0f : 0.0f, environment.shadowsEnabled ? 1.0f : 0.0f),
+            vsg::vec4(eyeClipPlane.x, eyeClipPlane.y, eyeClipPlane.z, eyeClipPlane.w) };
     }
 
     OpenMwViewDependentState::OpenMwViewDependentState(vsg::View* view)
@@ -96,12 +97,24 @@ namespace RenderVsg
         mProjection = projection;
     }
 
+    void OpenMwViewDependentState::setClipPlane(
+        const std::optional<RenderCore::WorldClipPlane>& clipPlane, const RenderCore::CameraState& camera) noexcept
+    {
+        mEyeClipPlane = {};
+        if (!clipPlane)
+            return;
+        const glm::vec4 worldPlane(
+            clipPlane->normal, static_cast<float>(clipPlane->distance));
+        mEyeClipPlane = glm::transpose(glm::inverse(camera.view)) * worldPlane;
+    }
+
     void OpenMwViewDependentState::traverse(vsg::RecordTraversal& traversal) const
     {
         vsg::ViewDependentState::traverse(traversal);
         if (mOpenMwEnvironmentData)
         {
-            const OpenMwEnvironmentValues values = packOpenMwEnvironment(mEnvironment, mProjection);
+            const OpenMwEnvironmentValues values
+                = packOpenMwEnvironment(mEnvironment, mProjection, mEyeClipPlane);
             bool environmentChanged = false;
             auto environmentOutput = mOpenMwEnvironmentData->begin();
             for (const vsg::vec4& value : values)

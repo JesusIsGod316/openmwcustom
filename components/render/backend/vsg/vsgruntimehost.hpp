@@ -4,6 +4,7 @@
 #include "framecamera.hpp"
 #include "framecompletion.hpp"
 #include "openmwviewdependentstate.hpp"
+#include "offscreenrendertarget.hpp"
 #include "sdlvulkanwindow.hpp"
 #include "skybackdrop.hpp"
 #include "staticassetrealizer.hpp"
@@ -11,6 +12,7 @@
 #include "staticworldresidency.hpp"
 #include "vsgsubmission.hpp"
 #include "uipipeline.hpp"
+#include "watersurface.hpp"
 
 #include <components/rendercore/renderer.hpp>
 
@@ -59,6 +61,15 @@ namespace RenderVsg
         std::size_t maximumFramesInFlight = VsgRecordAndSubmitRingSize;
         StaticPlanOptions staticPlan;
         VsgShadowOptions shadows;
+        struct Water
+        {
+            bool enabled = false;
+            bool reflection = true;
+            bool refraction = true;
+            std::uint32_t targetSize = 512;
+            float reflectionLodScale = 0.5f;
+            float refractionLodScale = 0.5f;
+        } water;
     };
 
     // Production-shaped CP3C host for one SDL-owned swapchain and one semantic
@@ -91,6 +102,13 @@ namespace RenderVsg
         {
             vsg::ref_ptr<vsg::Switch> visibility;
         };
+        struct WaterViewRuntime
+        {
+            OffscreenRenderTarget target;
+            FrameCameraObjects camera;
+            vsg::ref_ptr<vsg::View> view;
+            vsg::ref_ptr<OpenMwViewDependentState> state;
+        };
 
         [[nodiscard]] bool synchronizeStaticWorld(const RenderCore::RenderWorld& world);
         [[nodiscard]] bool synchronizePopulationVisibility(
@@ -103,6 +121,8 @@ namespace RenderVsg
             const RenderCore::FrameRenderState& frame) const noexcept;
         [[nodiscard]] bool shadowViewFamilyCompatible(
             const RenderCore::FrameRenderState& frame) const noexcept;
+        [[nodiscard]] bool waterViewsCompatible(const RenderCore::FrameRenderState& frame,
+            const RenderCore::FrameView*& reflection, const RenderCore::FrameView*& refraction) const noexcept;
         RenderCore::RenderFrameResult finish(
             RenderCore::RenderFrameResult result, std::string diagnostic = {});
 
@@ -115,12 +135,16 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::Group> mStaticRoot;
         vsg::ref_ptr<vsg::Group> mDynamicRoot;
         vsg::ref_ptr<vsg::Group> mGuiRoot;
+        vsg::ref_ptr<vsg::Group> mMainOnlyRoot;
         vsg::ref_ptr<vsg::View> mView;
         vsg::ref_ptr<OpenMwViewDependentState> mOpenMwViewState;
         vsg::ref_ptr<vsg::RenderGraph> mRenderGraph;
+        std::optional<WaterViewRuntime> mReflectionView;
+        std::optional<WaterViewRuntime> mRefractionView;
         vsg::ref_ptr<vsg::AmbientLight> mAmbientLight;
         vsg::ref_ptr<vsg::DirectionalLight> mSunLight;
         SkyBackdrop mSkyBackdrop;
+        WaterSurface mWaterSurface;
         FrameCameraObjects mCamera;
         StaticWorldResidency<StaticResident> mStaticResidency;
         StaticPopulationResidency<StaticPopulationResident> mStaticPopulationResidency;

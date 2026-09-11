@@ -51,6 +51,8 @@ namespace RenderVsg
         }
 
         constexpr vsg::Mask ShadowTraversalMask = 0x1;
+        constexpr vsg::Mask ReflectionTraversalMask = 0x2;
+        constexpr vsg::Mask RefractionTraversalMask = 0x4;
 
         [[nodiscard]] bool hasSemanticFlag(
             std::uint64_t flags, RenderCore::InstanceSemanticFlag flag) noexcept
@@ -58,9 +60,14 @@ namespace RenderVsg
             return (flags & RenderCore::semanticFlag(flag)) != 0;
         }
 
-        [[nodiscard]] vsg::Mask placementMask(bool castsShadow) noexcept
+        [[nodiscard]] vsg::Mask placementMask(bool castsShadow, std::uint64_t semanticFlags) noexcept
         {
-            return castsShadow ? vsg::MASK_ALL : (vsg::MASK_ALL & ~ShadowTraversalMask);
+            vsg::Mask result = castsShadow ? vsg::MASK_ALL : (vsg::MASK_ALL & ~ShadowTraversalMask);
+            if (!hasSemanticFlag(semanticFlags, RenderCore::InstanceSemanticFlag::ReflectionEligible))
+                result &= ~ReflectionTraversalMask;
+            if (!hasSemanticFlag(semanticFlags, RenderCore::InstanceSemanticFlag::RefractionEligible))
+                result &= ~RefractionTraversalMask;
+            return result;
         }
 
         [[nodiscard]] vsg::ref_ptr<vsg::Switch> maskedNode(
@@ -83,6 +90,7 @@ namespace RenderVsg
         , mStaticRoot(vsg::Group::create())
         , mDynamicRoot(vsg::Group::create())
         , mGuiRoot(vsg::Group::create())
+        , mMainOnlyRoot(vsg::Group::create())
         , mAmbientLight(vsg::AmbientLight::create())
         , mSunLight(vsg::DirectionalLight::create())
         , mSkyBackdrop(SkyBackdrop::create())
@@ -100,6 +108,10 @@ namespace RenderVsg
                 || options.shadows.maximumDistance > std::numeric_limits<float>::max() || options.shadows.depthBias < 0.0
                 || options.shadows.splitLambda < 0.0 || options.shadows.splitLambda > 1.0))
             throw std::invalid_argument("VsgRuntimeHost received unsafe or invalid CP4D shadow settings");
+        if (options.water.enabled
+            && (options.water.targetSize < 64 || options.water.targetSize > 2048
+                || options.water.reflectionLodScale <= 0.0f || options.water.refractionLodScale <= 0.0f))
+            throw std::invalid_argument("VsgRuntimeHost received unsafe or invalid CP4E water settings");
 
         mViewer->addWindow(mWindow);
         mView = vsg::View::create(mCamera.camera);
@@ -127,16 +139,60 @@ namespace RenderVsg
         mView->addChild(maskedNode(vsg::MASK_ALL & ~ShadowTraversalMask, mSkyBackdrop.node()));
         mSceneRoot->addChild(mStaticRoot);
         mSceneRoot->addChild(mDynamicRoot);
-        mSceneRoot->addChild(mGuiRoot);
         const VkExtent2D initialExtent = mWindow->extent2D();
         mUiPipeline = createUiPipeline(std::max(1u, initialExtent.width), std::max(1u, initialExtent.height));
         if (!mUiPipeline)
             throw std::runtime_error("VsgRuntimeHost could not create its MyGUI pipeline");
         mView->addChild(mSceneRoot);
+        const auto makeWaterView = [&](RenderCore::ViewKind kind) -> std::optional<WaterViewRuntime> {
+            WaterViewRuntime result;
+            RenderCore::FrameView initial = initialView();
+            initial.kind = kind;
+            initial.extent = { options.water.targetSize, options.water.targetSize };
+            result.target = createOffscreenRenderTarget(mWindow->getOrCreateDevice(), initial.extent);
+            if (!result.target)
+                return std::nullopt;
+            result.camera = FrameCameraObjects::create(initial);
+            result.view = vsg::View::create(
+                result.camera.camera, vsg::ref_ptr<vsg::Node>{}, vsg::RECORD_LIGHTS);
+            result.view->mask = vsg::MASK_OFF;
+            result.state = OpenMwViewDependentState::create(result.view.get());
+            result.state->shaderSet = createLegacyCompatibilityShaderSet();
+            if (!result.state->shaderSet)
+                return std::nullopt;
+            result.view->viewDependentState = result.state;
+            result.view->addChild(mAmbientLight);
+            result.view->addChild(mSunLight);
+            result.view->addChild(mSceneRoot);
+            result.view->bins = createStaticConformanceBins();
+            result.target.renderGraph->addChild(result.view);
+            return result;
+        };
+        if (options.water.enabled && options.water.reflection)
+            mReflectionView = makeWaterView(RenderCore::ViewKind::Reflection);
+        if (options.water.enabled && options.water.refraction)
+            mRefractionView = makeWaterView(RenderCore::ViewKind::Refraction);
+        if ((options.water.enabled && options.water.reflection && !mReflectionView)
+            || (options.water.enabled && options.water.refraction && !mRefractionView))
+            throw std::runtime_error("VsgRuntimeHost could not create persistent CP4E water targets");
+
+        if (options.water.enabled)
+            mWaterSurface = WaterSurface::create(mReflectionView ? mReflectionView->target.color : nullptr,
+                mRefractionView ? mRefractionView->target.color : nullptr);
+        if (options.water.enabled && !mWaterSurface)
+            throw std::runtime_error("VsgRuntimeHost could not create its CP4E water surface");
+        if (mWaterSurface)
+            mMainOnlyRoot->addChild(mWaterSurface.node());
+        mMainOnlyRoot->addChild(mGuiRoot);
+        mView->addChild(mMainOnlyRoot);
         mView->bins = createStaticConformanceBins();
         mRenderGraph = vsg::RenderGraph::create(mWindow);
         mRenderGraph->addChild(mView);
         auto commandGraph = vsg::CommandGraph::create(mWindow);
+        if (mReflectionView)
+            commandGraph->addChild(mReflectionView->target.renderGraph);
+        if (mRefractionView)
+            commandGraph->addChild(mRefractionView->target.renderGraph);
         commandGraph->addChild(mRenderGraph);
         mViewer->assignRecordAndSubmitTaskAndPresentation({ commandGraph });
         auto resourceHints = vsg::ResourceHints::create();
@@ -167,6 +223,10 @@ namespace RenderVsg
         waitIdle();
         if (mSceneRoot)
             mSceneRoot->children.clear();
+        if (mMainOnlyRoot)
+            mMainOnlyRoot->children.clear();
+        mReflectionView.reset();
+        mRefractionView.reset();
         mRenderGraph = {};
         mOpenMwViewState = {};
         mView = {};
@@ -182,17 +242,76 @@ namespace RenderVsg
     const RenderCore::FrameView* VsgRuntimeHost::selectMainView(
         const RenderCore::FrameRenderState& frame) const noexcept
     {
-        if (frame.views().size() != 1 || frame.views().front().kind != RenderCore::ViewKind::Main
-            || frame.views().front().semanticIncludeMask != ~std::uint64_t{ 0 }
-            || frame.views().front().semanticExcludeMask != 0 || frame.renderTargets().size() != 1
-            || frame.renderTargets().front().identity != frame.views().front().outputTarget
-            || frame.renderTargets().front().kind != RenderCore::RenderTargetKind::Swapchain
-            || frame.renderPasses().size() != 1 || !frame.renderPasses().front().view
-            || *frame.renderPasses().front().view != frame.views().front().identity
-            || frame.renderPasses().front().output != frame.views().front().outputTarget
-            || !frame.renderPasses().front().present)
+        const auto main = std::find_if(frame.views().begin(), frame.views().end(), [](const auto& view) {
+            return view.kind == RenderCore::ViewKind::Main;
+        });
+        if (main == frame.views().end() || main != frame.views().begin()
+            || main->semanticIncludeMask != ~std::uint64_t{ 0 } || main->semanticExcludeMask != 0)
             return nullptr;
-        return &frame.views().front();
+        const auto target = std::find_if(frame.renderTargets().begin(), frame.renderTargets().end(),
+            [&](const auto& value) { return value.identity == main->outputTarget; });
+        const auto present = std::find_if(frame.renderPasses().begin(), frame.renderPasses().end(),
+            [](const auto& pass) { return pass.present; });
+        if (target == frame.renderTargets().end() || target->kind != RenderCore::RenderTargetKind::Swapchain
+            || present == frame.renderPasses().end() || !present->view || *present->view != main->identity
+            || present->output != main->outputTarget
+            || std::count_if(frame.renderPasses().begin(), frame.renderPasses().end(),
+                   [](const auto& pass) { return pass.present; })
+                != 1)
+            return nullptr;
+        return &*main;
+    }
+
+    bool VsgRuntimeHost::waterViewsCompatible(const RenderCore::FrameRenderState& frame,
+        const RenderCore::FrameView*& reflection, const RenderCore::FrameView*& refraction) const noexcept
+    {
+        reflection = nullptr;
+        refraction = nullptr;
+        for (const RenderCore::FrameView& view : frame.views())
+        {
+            if (view.kind == RenderCore::ViewKind::Main)
+                continue;
+            if (view.kind == RenderCore::ViewKind::Reflection && !reflection)
+                reflection = &view;
+            else if (view.kind == RenderCore::ViewKind::Refraction && !refraction)
+                refraction = &view;
+            else
+                return false;
+        }
+        const bool water = frame.environment().waterEnabled;
+        const bool expectReflection = water && mOptions.water.enabled && mOptions.water.reflection;
+        const bool expectRefraction = water && mOptions.water.enabled && mOptions.water.refraction;
+        if ((reflection != nullptr) != expectReflection || (refraction != nullptr) != expectRefraction)
+            return false;
+        const auto validView = [&](const RenderCore::FrameView* view, RenderCore::ViewKind kind,
+                                   float lodScale) {
+            if (!view)
+                return true;
+            const auto target = std::find_if(frame.renderTargets().begin(), frame.renderTargets().end(),
+                [&](const auto& value) { return value.identity == view->outputTarget; });
+            const auto pass = std::find_if(frame.renderPasses().begin(), frame.renderPasses().end(),
+                [&](const auto& value) { return value.view && *value.view == view->identity; });
+            const auto present = std::find_if(frame.renderPasses().begin(), frame.renderPasses().end(),
+                [](const auto& value) { return value.present; });
+            return view->kind == kind && view->clipPlane && !view->temporal && !view->historyValid
+                && view->extent == RenderCore::Extent2D{ mOptions.water.targetSize, mOptions.water.targetSize }
+                && view->lodScale == lodScale && target != frame.renderTargets().end()
+                && target->kind == RenderCore::RenderTargetKind::Offscreen
+                && target->colorFormat == RenderCore::RenderTargetFormat::Rgba16Float
+                && target->depthFormat == RenderCore::RenderTargetFormat::Depth32Float && !target->transient
+                && pass != frame.renderPasses().end() && !pass->present && pass->output == view->outputTarget
+                && present != frame.renderPasses().end()
+                && std::find(present->inputs.begin(), present->inputs.end(), view->outputTarget)
+                    != present->inputs.end()
+                && std::find(present->dependencies.begin(), present->dependencies.end(), pass->identity)
+                    != present->dependencies.end();
+        };
+        return validView(reflection, RenderCore::ViewKind::Reflection, mOptions.water.reflectionLodScale)
+            && validView(refraction, RenderCore::ViewKind::Refraction, mOptions.water.refractionLodScale)
+            && frame.views().size() == 1 + static_cast<std::size_t>(expectReflection)
+                    + static_cast<std::size_t>(expectRefraction)
+            && frame.renderTargets().size() == frame.views().size()
+            && frame.renderPasses().size() == frame.views().size();
     }
 
     bool VsgRuntimeHost::shadowViewFamilyCompatible(const RenderCore::FrameRenderState& frame) const noexcept
@@ -257,7 +376,7 @@ namespace RenderVsg
                 mLastDiagnostic = "incremental VSG compilation failed before scene publication";
                 return false;
             }
-            replacements.push_back(maskedNode(placementMask(castsShadow), std::move(placed)));
+            replacements.push_back(maskedNode(placementMask(castsShadow, plan.semanticFlags), std::move(placed)));
         }
 
         std::vector<StaticPopulationResident> populationReplacements;
@@ -276,11 +395,13 @@ namespace RenderVsg
                 return hasSemanticFlag(placement.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster)
                     && (terrain ? mOptions.shadows.terrainCasters : mOptions.shadows.objectCasters);
             };
-            const bool mixedShadowMasks = std::ranges::any_of(plan.placements,
+            const vsg::Mask firstPlacementMask
+                = placementMask(castsShadow(plan.placements.front()), plan.placements.front().semanticFlags);
+            const bool mixedTraversalMasks = std::ranges::any_of(plan.placements,
                 [&](const RenderCore::PopulationInstanceRecord& placement) {
-                    return castsShadow(placement) != castsShadow(plan.placements.front());
+                    return placementMask(castsShadow(placement), placement.semanticFlags) != firstPlacementMask;
                 });
-            const bool requiresIndividualPlacement = mixedShadowMasks || std::ranges::any_of(plan.asset.draws,
+            const bool requiresIndividualPlacement = mixedTraversalMasks || std::ranges::any_of(plan.asset.draws,
                 [&](const StaticDrawPlan& draw) {
                     const RenderCore::MaterialRecord* material = world.get(draw.material);
                     return !material || material->transparentSort == RenderCore::TransparentSortPolicy::Sorted
@@ -304,7 +425,7 @@ namespace RenderVsg
                 auto origin = vsg::MatrixTransform::create(
                     vsg::translate(plan.coordinateOrigin.x, plan.coordinateOrigin.y, plan.coordinateOrigin.z));
                 origin->addChild(realized.root);
-                group->addChild(maskedNode(placementMask(castsShadow(plan.placements.front())), std::move(origin)));
+                group->addChild(maskedNode(firstPlacementMask, std::move(origin)));
             }
             else
             {
@@ -314,7 +435,8 @@ namespace RenderVsg
                     auto placed
                         = vsg::MatrixTransform::create(toVsgMatrix(staticInstancePlacementMatrix(placement.transform)));
                     placed->addChild(realized.root);
-                    group->addChild(maskedNode(placementMask(castsShadow(placement)), std::move(placed)));
+                    group->addChild(maskedNode(
+                        placementMask(castsShadow(placement), placement.semanticFlags), std::move(placed)));
                 }
             }
             if (!compileForViewer(*mViewer, group))
@@ -485,7 +607,7 @@ namespace RenderVsg
             placed->addChild(realized.root);
             const bool castsShadow = mOptions.shadows.actorCasters
                 && hasSemanticFlag(actor.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster);
-            nextRoot->addChild(maskedNode(placementMask(castsShadow), std::move(placed)));
+            nextRoot->addChild(maskedNode(placementMask(castsShadow, actor.semanticFlags), std::move(placed)));
         }
         if (!compileForViewer(*mViewer, nextRoot))
         {
@@ -510,7 +632,10 @@ namespace RenderVsg
 
     bool VsgRuntimeHost::synchronizeLocalLights(const RenderCore::RenderWorld& world)
     {
-        if (mOpenMwViewState->localLightsCurrent(world))
+        const bool allCurrent = mOpenMwViewState->localLightsCurrent(world)
+            && (!mReflectionView || mReflectionView->state->localLightsCurrent(world))
+            && (!mRefractionView || mRefractionView->state->localLightsCurrent(world));
+        if (allCurrent)
             return true;
 
         LocalLightBufferPlan plan = buildLocalLightBufferPlan(buildLocalLightWorldPlan(world), glm::dvec3(0.0));
@@ -537,7 +662,9 @@ namespace RenderVsg
             }
             return false;
         }
-        if (!mOpenMwViewState->setLocalLights(std::move(plan)))
+        if (!mOpenMwViewState->setLocalLights(plan)
+            || (mReflectionView && !mReflectionView->state->setLocalLights(plan))
+            || (mRefractionView && !mRefractionView->state->setLocalLights(std::move(plan))))
         {
             mLastDiagnostic = "OpenMW view state rejected its prepared local light buffer";
             return false;
@@ -575,7 +702,7 @@ namespace RenderVsg
             }
         }
         mGuiRoot = std::move(nextRoot);
-        mSceneRoot->children[2] = mGuiRoot;
+        mMainOnlyRoot->children.back() = mGuiRoot;
         mGuiLastUse.reset();
         return true;
     }
@@ -589,9 +716,9 @@ namespace RenderVsg
         if (!frame.dynamicMaterials().empty())
             return finish(
                 RenderCore::RenderFrameResult::Failed, "dynamic materials require a later compatibility facet");
-        if (frame.environment().waterEnabled)
-            return finish(
-                RenderCore::RenderFrameResult::Failed, "water requires the CP4E environment compatibility facet");
+        if (frame.environment().waterEnabled && !mOptions.water.enabled)
+            return finish(RenderCore::RenderFrameResult::Failed,
+                "water is present but the CP4E Vulkan water route was disabled at bootstrap");
         if (frame.environment().clusteredLocalLighting)
             return finish(RenderCore::RenderFrameResult::Failed,
                 "clustered local-light selection and far-plane fading require the clustered compatibility facet");
@@ -599,6 +726,11 @@ namespace RenderVsg
         if (!mainView || mainView->extent != frame.renderExtent() || frame.renderExtent() != frame.outputExtent())
             return finish(RenderCore::RenderFrameResult::Failed,
                 "CP3C host requires one unmasked main view with equal render and output extents");
+        const RenderCore::FrameView* reflectionView = nullptr;
+        const RenderCore::FrameView* refractionView = nullptr;
+        if (!waterViewsCompatible(frame, reflectionView, refractionView))
+            return finish(RenderCore::RenderFrameResult::Failed,
+                "CP4E water views and persistent target policy do not match the semantic frame");
         if (!shadowViewFamilyCompatible(frame))
             return finish(RenderCore::RenderFrameResult::Failed,
                 "CP4D native shadow resources do not match the semantic derived-view family");
@@ -639,12 +771,36 @@ namespace RenderVsg
         const RenderCore::FrameEnvironmentState& environment = frame.environment();
         mOpenMwViewState->setRadiusFadeEnabled(environment.localLightRadiusFade);
         mOpenMwViewState->setEnvironment(environment, mainView->current.projection);
+        mOpenMwViewState->setClipPlane(mainView->clipPlane, mainView->current);
+        const auto updateWaterView = [&](std::optional<WaterViewRuntime>& runtime,
+                                         const RenderCore::FrameView* view) {
+            if (!runtime)
+                return;
+            runtime->view->mask = view
+                ? (view->kind == RenderCore::ViewKind::Reflection ? ReflectionTraversalMask
+                                                                  : RefractionTraversalMask)
+                : vsg::MASK_OFF;
+            if (!view)
+                return;
+            runtime->camera.update(*view);
+            runtime->view->LODScale = view->lodScale;
+            runtime->state->setRadiusFadeEnabled(environment.localLightRadiusFade);
+            runtime->state->setEnvironment(environment, view->current.projection);
+            runtime->state->setClipPlane(view->clipPlane, view->current);
+            const RenderCore::Color& auxiliaryClear
+                = environment.skyEnabled && !environment.underwater ? environment.skyColor : environment.fogColor;
+            runtime->target.renderGraph->setClearValues(
+                { { auxiliaryClear.r, auxiliaryClear.g, auxiliaryClear.b, auxiliaryClear.a } }, { 0.0f, 0 });
+        };
+        updateWaterView(mReflectionView, reflectionView);
+        updateWaterView(mRefractionView, refractionView);
         mAmbientLight->color.set(environment.ambient.r, environment.ambient.g, environment.ambient.b);
         mAmbientLight->intensity = 1.0f;
         mSunLight->color.set(environment.sunDiffuse.r, environment.sunDiffuse.g, environment.sunDiffuse.b);
         mSunLight->intensity = environment.sunLightEnabled ? 1.0f : 0.0f;
         mSunLight->direction.set(environment.sunDirection.x, environment.sunDirection.y, environment.sunDirection.z);
         mSkyBackdrop.update(environment, *mainView);
+        mWaterSurface.update(environment, *mainView, frame.simulationTime());
         if (mOptions.shadows.enabled)
         {
             if (environment.shadowsEnabled)

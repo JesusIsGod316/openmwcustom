@@ -56,6 +56,7 @@ namespace
         bool diagnosticBox = false;
         bool orbit = false;
         bool runtimeHost = false;
+        bool water = false;
         bool help = false;
     };
 
@@ -112,6 +113,7 @@ namespace
                "  --frames <count>           Render exactly count frames, then exit.\n"
                "  --orbit                    Orbit 360 degrees around scene bounds over the render frame budget.\n"
                "  --runtime-host             Render through the CP3C semantic world/frame runtime host.\n"
+               "  --water                    Exercise CP4E water reflection/refraction through the runtime host.\n"
                "  --diagnostic-box           Add an unlit VSG reference box beside the NIF for GPU-path diagnosis.\n"
                "  --realize-only             Parse/translate/publish/plan/realize without opening a window.\n"
                "  --report-json <path>       Write CP3B4 machine-readable per-asset report JSON.\n"
@@ -147,6 +149,11 @@ namespace
             if (arg == "--runtime-host")
             {
                 options.runtimeHost = true;
+                continue;
+            }
+            if (arg == "--water")
+            {
+                options.water = true;
                 continue;
             }
 
@@ -462,6 +469,8 @@ namespace
     {
         if (options.diagnosticBox)
             throw std::runtime_error("--diagnostic-box is not supported with --runtime-host");
+        if (options.water && !options.runtimeHost)
+            throw std::runtime_error("--water requires --runtime-host");
         if (options.orbit && options.frameLimit <= 0)
             throw std::runtime_error("--orbit requires --frames with a positive frame count for deterministic coverage");
         if (!SDL_Init(SDL_INIT_VIDEO))
@@ -480,6 +489,11 @@ namespace
             RenderVsg::VsgRuntimeBootstrapOptions bootstrapOptions;
             bootstrapOptions.title = "OpenMW V4 CP3C - semantic runtime host";
             bootstrapOptions.host.staticPlan.lodEyeDistance = options.lodDistance;
+            bootstrapOptions.hidden = options.water;
+            bootstrapOptions.host.water.enabled = options.water;
+            bootstrapOptions.host.water.reflection = options.water;
+            bootstrapOptions.host.water.refraction = options.water;
+            bootstrapOptions.host.water.targetSize = 256;
             std::unique_ptr<RenderVsg::VsgRuntimeBootstrap> bootstrap
                 = RenderVsg::VsgRuntimeBootstrap::create(std::move(resolver), std::move(bootstrapOptions));
 
@@ -553,6 +567,13 @@ namespace
                 input.environment.fogColor = { 0.05f, 0.05f, 0.05f, 1.0f };
                 input.environment.skyEnabled = false;
                 input.environment.sunVisible = true;
+                if (options.water)
+                {
+                    input.environment.interior = false;
+                    input.environment.waterEnabled = true;
+                    input.environment.waterHeight = center.z;
+                    input.waterViews = { true, true, true, { 256, 256 }, 0.5f, 0.5f };
+                }
 
                 std::optional<RenderCore::FrameRenderState> frame = frames.produce(world, input);
                 if (!frame)
@@ -589,6 +610,8 @@ int main(int argc, char** argv)
             printUsage(std::cout);
             return 0;
         }
+        if (options.water && !options.runtimeHost)
+            throw std::runtime_error("--water requires --runtime-host");
         if (options.dataRoots.empty())
             throw std::runtime_error("at least one --data root is required");
         if (options.nifPath.empty())

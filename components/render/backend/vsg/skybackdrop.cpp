@@ -128,7 +128,7 @@ void main()
         if (!*this)
             return;
 
-        mRoot->setAllChildren(environment.skyEnabled && !environment.interior);
+        mRoot->setAllChildren(environment.skyEnabled && !environment.interior && !environment.underwater);
         const glm::vec4 sunView = view.current.view * glm::vec4(-environment.sunDirection, 0.0f);
         const glm::vec4 sunClip = view.current.projection.matrix * sunView;
         const bool sunInFront = environment.sunVisible && sunClip.w > 0.0001f;

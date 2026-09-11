@@ -26,6 +26,11 @@ namespace MWRender
         result.host.shadows.actorCasters = Settings::shadows().mActorShadows || Settings::shadows().mPlayerShadows;
         result.host.shadows.terrainCasters = Settings::shadows().mTerrainShadows;
         result.host.shadows.objectCasters = Settings::shadows().mObjectShadows;
+        result.host.water.enabled = true;
+        result.host.water.reflection = Settings::water().mReflectionDetail.get() > 0;
+        result.host.water.refraction = Settings::water().mRefraction;
+        result.host.water.targetSize
+            = static_cast<std::uint32_t>(std::clamp(Settings::water().mRttSize.get(), 64, 2048));
         switch (static_cast<Settings::WindowMode>(Settings::video().mWindowMode))
         {
             case Settings::WindowMode::Fullscreen: result.windowMode = RenderVsg::VsgWindowMode::Fullscreen; break;

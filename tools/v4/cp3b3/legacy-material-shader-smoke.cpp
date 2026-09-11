@@ -151,6 +151,7 @@ int main()
             && source.find("scale *= 1.0 - radiusFade") != std::string_view::npos,
         "OpenMW non-classic radius cutoff/fade is absent from the shader");
     require(source.find("binding = 6) uniform OpenMwEnvironmentData") != std::string_view::npos
+            && source.find("openmwEnvironment.clipPlane") != std::string_view::npos
             && source.find("fogDistance - fogStart / 2.0") != std::string_view::npos
             && source.find("fogDistance - fogStart) / (fogEnd - fogStart)") != std::string_view::npos,
         "OpenMW view fog descriptor or linear/exponential equations are absent from the shader");
