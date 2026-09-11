@@ -851,11 +851,48 @@ namespace RenderVsg
                     return false;
                 }
                 created.view->viewDependentState = created.state;
-                created.view->addChild(mAmbientLight);
-                created.view->addChild(mSunLight);
-                created.view->addChild(view.kind == RenderCore::ViewKind::Map ? mStaticRoot : mSceneRoot);
-                if (view.kind == RenderCore::ViewKind::Map && mWaterSurface)
-                    created.view->addChild(mWaterSurface.node());
+                if (view.kind == RenderCore::ViewKind::Map)
+                {
+                    // Match LocalMapRenderToTexture::setDefaults(): one fixed
+                    // 0.3 ambient plus a fixed 0.7 directional light, no local
+                    // lights or shadows, and the static/simple-water mask only.
+                    created.ambientLight = vsg::AmbientLight::create();
+                    created.sunLight = vsg::DirectionalLight::create();
+                    if (!created.ambientLight || !created.sunLight)
+                    {
+                        mLastDiagnostic = "Vulkan map view could not create its legacy fixed lights";
+                        return false;
+                    }
+                    created.ambientLight->name = "OpenMW local-map ambient";
+                    created.ambientLight->color.set(0.3f, 0.3f, 0.3f);
+                    created.ambientLight->intensity = 1.0f;
+                    created.sunLight->name = "OpenMW local-map sun";
+                    created.sunLight->color.set(0.7f, 0.7f, 0.7f);
+                    created.sunLight->intensity = 1.0f;
+                    // VSG stores the ray direction; the compatibility shader
+                    // negates it to obtain the surface-to-light vector used by
+                    // the legacy OSG light at (-0.3,-0.3,+0.7,0).
+                    created.sunLight->direction.set(0.3f, 0.3f, -0.7f);
+                    created.view->addChild(created.ambientLight);
+                    created.view->addChild(created.sunLight);
+                    created.view->addChild(mStaticRoot);
+                    if (mOptions.water.enabled)
+                    {
+                        created.waterSurface = WaterSurface::create({}, {});
+                        if (!created.waterSurface)
+                        {
+                            mLastDiagnostic = "Vulkan map view could not create its simple-water compatibility surface";
+                            return false;
+                        }
+                        created.view->addChild(created.waterSurface.node());
+                    }
+                }
+                else
+                {
+                    created.view->addChild(mAmbientLight);
+                    created.view->addChild(mSunLight);
+                    created.view->addChild(mSceneRoot);
+                }
                 created.view->bins = createStaticConformanceBins();
                 created.target.renderGraph->addChild(created.view);
                 if (!compileForViewer(*mViewer, created.target.renderGraph))
@@ -895,8 +932,12 @@ namespace RenderVsg
                 auxiliaryEnvironment.shadowsEnabled = false;
                 auxiliaryEnvironment.clusteredLocalLighting = false;
                 auxiliaryEnvironment.skyEnabled = false;
-                auxiliaryEnvironment.waterEnabled = false;
+                // The legacy map cull mask includes Mask_SimpleWater. Preserve
+                // the cell's water enable/height, but never treat the overhead
+                // map camera as underwater and never sample gameplay RTTs.
                 auxiliaryEnvironment.underwater = false;
+                if (runtime->waterSurface)
+                    runtime->waterSurface.update(auxiliaryEnvironment, view, frame.simulationTime());
             }
             runtime->state->setRadiusFadeEnabled(auxiliaryEnvironment.localLightRadiusFade);
             runtime->state->setEnvironment(auxiliaryEnvironment, view.current.projection);
