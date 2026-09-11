@@ -14,9 +14,11 @@
 #include <osg/CullFace>
 #include <osg/Depth>
 #include <osg/Geometry>
+#include <osg/FrontFace>
 #include <osg/GL>
 #include <osg/NodeVisitor>
 #include <osg/PolygonMode>
+#include <osg/Stencil>
 #include <osg/StateSet>
 #include <osg/TexMat>
 #include <osg/Texture2D>
@@ -123,6 +125,21 @@ namespace MWRender
                 case GL_FUNC_REVERSE_SUBTRACT: return BlendEquation::ReverseSubtract;
                 case GL_MIN: return BlendEquation::Minimum;
                 case GL_MAX: return BlendEquation::Maximum;
+                default: return std::nullopt;
+            }
+        }
+
+        [[nodiscard]] inline std::optional<RenderCore::StencilOp> stencilOp(GLenum value) noexcept
+        {
+            using RenderCore::StencilOp;
+            switch (value)
+            {
+                case GL_KEEP: return StencilOp::Keep;
+                case GL_ZERO: return StencilOp::Zero;
+                case GL_REPLACE: return StencilOp::Replace;
+                case GL_INCR: return StencilOp::Increment;
+                case GL_DECR: return StencilOp::Decrement;
+                case GL_INVERT: return StencilOp::Invert;
                 default: return std::nullopt;
             }
         }
@@ -279,6 +296,22 @@ namespace MWRender
             material.textureApply = textureApplyMode(path);
             material.unlit = noLightingShader(path);
 
+            // Soft effects require the opaque-depth texture sampled by the OSG
+            // shader visitor. The immediate-effect Vulkan path does not expose
+            // that sampled attachment yet, so reject this optional (default-off)
+            // setting rather than drawing hard intersections silently.
+            if (state->getUniform("particleSize") || state->getUniform("particleFade")
+                || state->getUniform("softFalloffDepth"))
+            {
+                diagnostic = "evaluated effect requires soft-particle opaque-depth sampling";
+                return false;
+            }
+            if (state->getUniform("distortionStrength") || state->getBinName() == "Distortion")
+            {
+                diagnostic = "evaluated effect requires the post-process distortion target";
+                return false;
+            }
+
             if (const auto* source = dynamic_cast<const SceneUtil::Material*>(
                     state->getAttribute(osg::StateAttribute::MATERIAL)))
             {
@@ -380,6 +413,14 @@ namespace MWRender
                     material.alphaMode = AlphaMode::Mask;
             }
 
+            if (const auto* front = dynamic_cast<const osg::FrontFace*>(
+                    state->getAttribute(osg::StateAttribute::FRONTFACE)))
+            {
+                material.frontFace = front->getMode() == osg::FrontFace::CLOCKWISE
+                    ? FrontFaceWinding::Clockwise
+                    : FrontFaceWinding::CounterClockwise;
+            }
+
             material.cullMode = CullMode::Back;
             if (!stateEnabled(*state, GL_CULL_FACE, true))
                 material.cullMode = CullMode::None;
@@ -395,6 +436,32 @@ namespace MWRender
                 }
             }
 
+            material.stencil.enabled = stateEnabled(*state, GL_STENCIL_TEST, false);
+            if (material.stencil.enabled)
+            {
+                if (const auto* stencil = dynamic_cast<const osg::Stencil*>(
+                        state->getAttribute(osg::StateAttribute::STENCIL)))
+                {
+                    const auto compare = compareOp(static_cast<GLenum>(stencil->getFunction()));
+                    const auto fail = stencilOp(static_cast<GLenum>(stencil->getStencilFailOperation()));
+                    const auto depthFail
+                        = stencilOp(static_cast<GLenum>(stencil->getStencilPassAndDepthFailOperation()));
+                    const auto pass = stencilOp(static_cast<GLenum>(stencil->getStencilPassAndDepthPassOperation()));
+                    if (!compare || !fail || !depthFail || !pass || stencil->getFunctionRef() < 0
+                        || stencil->getWriteMask() != ~0u)
+                    {
+                        diagnostic = "evaluated effect uses unsupported stencil state";
+                        return false;
+                    }
+                    material.stencil.compare = *compare;
+                    material.stencil.reference = static_cast<std::uint32_t>(stencil->getFunctionRef());
+                    material.stencil.compareMask = stencil->getFunctionMask();
+                    material.stencil.fail = *fail;
+                    material.stencil.depthFail = *depthFail;
+                    material.stencil.pass = *pass;
+                }
+            }
+
             material.depthTest = stateEnabled(*state, GL_DEPTH_TEST, true);
             if (const auto* depth = dynamic_cast<const osg::Depth*>(
                     state->getAttribute(osg::StateAttribute::DEPTH)))
@@ -402,6 +469,14 @@ namespace MWRender
                 material.depthWrite = depth->getWriteMask();
                 if (depth->getFunction() == osg::Depth::ALWAYS)
                     material.depthTest = false;
+            }
+
+            if (stateEnabled(*state, GL_POLYGON_OFFSET_FILL, false)
+                || stateEnabled(*state, GL_POLYGON_OFFSET_LINE, false)
+                || stateEnabled(*state, GL_POLYGON_OFFSET_POINT, false))
+            {
+                diagnostic = "evaluated effect requires authored polygon-offset realization";
+                return false;
             }
 
             if (const auto* polygon = dynamic_cast<const osg::PolygonMode*>(
@@ -586,6 +661,13 @@ namespace MWRender
                     for (const osg::Vec3f& normal : *normals)
                         draw.mesh.normals.push_back(toGlm(normal));
                 }
+                else if (normals->size() == 1u)
+                    draw.mesh.normals.assign(positions->size(), toGlm(normals->front()));
+                else if (!normals->empty())
+                {
+                    diagnostic = "evaluated effect geometry uses a non-vertex normal binding";
+                    return false;
+                }
             }
 
             if (const auto* colors = dynamic_cast<const osg::Vec4Array*>(geometry.getColorArray()))
@@ -596,15 +678,32 @@ namespace MWRender
                     for (const osg::Vec4f& color : *colors)
                         draw.mesh.colors.push_back(toGlm(color));
                 }
+                else if (colors->size() == 1u)
+                    draw.mesh.colors.assign(positions->size(), toGlm(colors->front()));
+                else if (!colors->empty())
+                {
+                    diagnostic = "evaluated effect geometry uses a non-vertex color binding";
+                    return false;
+                }
             }
             else if (const auto* colors = dynamic_cast<const osg::Vec4ubArray*>(geometry.getColorArray()))
             {
+                const auto convert = [](const osg::Vec4ub& color) {
+                    return glm::vec4(color.r() / 255.0f, color.g() / 255.0f,
+                        color.b() / 255.0f, color.a() / 255.0f);
+                };
                 if (colors->size() == positions->size())
                 {
                     draw.mesh.colors.reserve(colors->size());
                     for (const osg::Vec4ub& color : *colors)
-                        draw.mesh.colors.emplace_back(color.r() / 255.0f, color.g() / 255.0f,
-                            color.b() / 255.0f, color.a() / 255.0f);
+                        draw.mesh.colors.push_back(convert(color));
+                }
+                else if (colors->size() == 1u)
+                    draw.mesh.colors.assign(positions->size(), convert(colors->front()));
+                else if (!colors->empty())
+                {
+                    diagnostic = "evaluated effect geometry uses a non-vertex color binding";
+                    return false;
                 }
             }
 
