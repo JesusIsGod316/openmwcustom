@@ -42,9 +42,8 @@ namespace RenderVsg
         material.textures.clear();
         material.textures.reserve(draw.textures.size());
 
-        for (std::size_t i = 0; i < draw.textures.size(); ++i)
+        for (const EffectTextureSnapshot& snapshot : draw.textures)
         {
-            const EffectTextureSnapshot& snapshot = draw.textures[i];
             const std::optional<TextureHandle> handle = world.reserveTexture();
             if (!handle)
             {
@@ -95,13 +94,27 @@ namespace RenderVsg
         }
 
         auto payload = std::make_shared<ModelPayload>();
-        ModelNodeRecord node;
-        node.name = draw.identity;
-        node.kind = ModelNodeKind::Geometry;
-        node.mesh = *meshHandle;
-        node.materials = { *materialHandle };
-        payload->nodes.push_back(std::move(node));
-        payload->roots.emplace_back(0u);
+        ModelNodeRecord geometry;
+        geometry.name = draw.identity + ":geometry";
+        geometry.kind = ModelNodeKind::Geometry;
+        geometry.mesh = *meshHandle;
+        geometry.materials = { *materialHandle };
+        if (draw.billboard)
+        {
+            ModelNodeRecord billboard;
+            billboard.name = draw.identity + ":billboard";
+            billboard.kind = ModelNodeKind::Billboard;
+            billboard.billboard = draw.billboard;
+            payload->nodes.push_back(std::move(billboard));
+            geometry.parent = ModelNodeIndex{ 0u };
+            payload->nodes.push_back(std::move(geometry));
+            payload->roots.emplace_back(0u);
+        }
+        else
+        {
+            payload->nodes.push_back(std::move(geometry));
+            payload->roots.emplace_back(0u);
+        }
 
         const std::optional<ModelHandle> modelHandle = world.reserveModel();
         if (!modelHandle)
