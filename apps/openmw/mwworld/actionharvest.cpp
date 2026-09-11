@@ -15,6 +15,7 @@
 
 #include "class.hpp"
 #include "containerstore.hpp"
+#include "worldimp.hpp"
 
 namespace MWWorld
 {
@@ -95,5 +96,13 @@ namespace MWWorld
         MWRender::Animation* anim = world->getAnimation(target);
         if (anim != nullptr)
             anim->harvest(target);
+
+        // Graphic herbalism mutates reference-owned visual state after the
+        // container contents change. The production World owns the scene
+        // lifecycle observer, so republish the same reference through its
+        // backend-neutral objectChanged seam. OpenGL has no lifecycle observer
+        // here and remains unchanged.
+        if (auto* concreteWorld = dynamic_cast<MWWorld::World*>(world))
+            concreteWorld->getWorldScene().notifyObjectChanged(target);
     }
 }
