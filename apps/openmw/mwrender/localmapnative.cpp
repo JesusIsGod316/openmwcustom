@@ -173,6 +173,7 @@ namespace MWRender
                 segment.mNativeMapReady = false;
                 segment.mNativeFogReady = false;
                 segment.mNativeObservedMapTexture = nullptr;
+                segment.mNativeMapRgba.clear();
                 segment.mNativeFogContentHash = 0;
                 segment.mFogRevision = 0;
                 segment.mPublishedFogRevision = 0;
@@ -184,6 +185,7 @@ namespace MWRender
                 segment.mNativeMapRequested = true;
                 segment.mNativeMapNeedsRender = true;
                 segment.mNativeMapReady = false;
+                segment.mNativeMapRgba.clear();
             }
 
             if (!segment.mNativeMapRequested)
@@ -283,6 +285,29 @@ namespace MWRender
         segment->mPublishedFogRevision = revision;
         segment->mNativeFogReady = true;
         return true;
+    }
+
+    bool LocalMap::storeNativeMapRgba(
+        std::uint32_t stableSlotValue, std::vector<std::uint8_t> rgba) noexcept
+    {
+        MapSegment* const segment = findNativeSegment(stableSlotValue);
+        if (!segment || !segment->mNativeMapReady || mMapResolution <= 0)
+            return false;
+        const std::size_t resolution = static_cast<std::size_t>(mMapResolution);
+        if (resolution > std::numeric_limits<std::size_t>::max() / resolution
+            || resolution * resolution > std::numeric_limits<std::size_t>::max() / 4u
+            || rgba.size() != resolution * resolution * 4u)
+            return false;
+        segment->mNativeMapRgba = std::move(rgba);
+        return true;
+    }
+
+    std::span<const std::uint8_t> LocalMap::nativeMapRgba(int x, int y) const noexcept
+    {
+        const MapSegment* const segment = findSegment(x, y);
+        if (!segment || !segment->mNativeMapReady || segment->mNativeMapRgba.empty())
+            return {};
+        return segment->mNativeMapRgba;
     }
 
     std::string_view LocalMap::nativeMapTextureName(int x, int y) const noexcept
