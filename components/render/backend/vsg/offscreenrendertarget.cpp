@@ -25,38 +25,70 @@ namespace RenderVsg
             image->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             return vsg::createImageView(device, image, aspect);
         }
+
+        [[nodiscard]] VkFormat colorFormat(RenderCore::RenderTargetFormat format) noexcept
+        {
+            switch (format)
+            {
+                case RenderCore::RenderTargetFormat::Rgba8Srgb: return VK_FORMAT_R8G8B8A8_SRGB;
+                case RenderCore::RenderTargetFormat::Rgba16Float: return VK_FORMAT_R16G16B16A16_SFLOAT;
+                case RenderCore::RenderTargetFormat::SurfaceColor:
+                case RenderCore::RenderTargetFormat::Depth32Float: return VK_FORMAT_UNDEFINED;
+            }
+            return VK_FORMAT_UNDEFINED;
+        }
     }
 
-    OffscreenRenderTarget createOffscreenRenderTarget(vsg::Device* device, RenderCore::Extent2D extent)
+    OffscreenRenderTarget createOffscreenRenderTarget(vsg::Device* device, RenderCore::Extent2D extent,
+        RenderCore::RenderTargetFormat requestedColorFormat,
+        std::optional<RenderCore::RenderTargetFormat> requestedDepthFormat)
     {
         OffscreenRenderTarget result;
         if (!device || !extent.valid())
             return result;
 
-        constexpr VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-        constexpr VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
-        result.color = createAttachment(device, extent, colorFormat,
+        const VkFormat colorVk = colorFormat(requestedColorFormat);
+        if (colorVk == VK_FORMAT_UNDEFINED
+            || (requestedDepthFormat && *requestedDepthFormat != RenderCore::RenderTargetFormat::Depth32Float))
+            return result;
+
+        result.color = createAttachment(device, extent, colorVk,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-        result.depth = createAttachment(
-            device, extent, depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
-        if (!result.color || !result.depth)
+        if (!result.color)
             return {};
 
-        vsg::AttachmentDescription color = vsg::defaultColorAttachment(colorFormat);
+        constexpr VkFormat depthVk = VK_FORMAT_D32_SFLOAT;
+        if (requestedDepthFormat)
+        {
+            result.depth = createAttachment(
+                device, extent, depthVk, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+            if (!result.depth)
+                return {};
+        }
+
+        vsg::AttachmentDescription color = vsg::defaultColorAttachment(colorVk);
         color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         color.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        vsg::AttachmentDescription depth = vsg::defaultDepthAttachment(depthFormat);
-        depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
+        vsg::RenderPass::Attachments attachments{ color };
+        vsg::ImageViews imageViews{ result.color };
         vsg::SubpassDescription subpass;
         subpass.colorAttachments = { { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT } };
-        subpass.depthStencilAttachments
-            = { { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT } };
+        if (requestedDepthFormat)
+        {
+            vsg::AttachmentDescription depth = vsg::defaultDepthAttachment(depthVk);
+            depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            attachments.push_back(depth);
+            imageViews.push_back(result.depth);
+            subpass.depthStencilAttachments
+                = { { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT } };
+        }
+
         vsg::RenderPass::Dependencies dependencies{
             { VK_SUBPASS_EXTERNAL, 0, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_SHADER_READ_BIT,
@@ -65,10 +97,9 @@ namespace RenderVsg
                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                 VK_ACCESS_SHADER_READ_BIT, VK_DEPENDENCY_BY_REGION_BIT },
         };
-        auto renderPass = vsg::RenderPass::create(device, vsg::RenderPass::Attachments{ color, depth },
-            vsg::RenderPass::Subpasses{ subpass }, dependencies);
-        auto framebuffer = vsg::Framebuffer::create(renderPass, vsg::ImageViews{ result.color, result.depth },
-            extent.width, extent.height, 1);
+        auto renderPass = vsg::RenderPass::create(
+            device, attachments, vsg::RenderPass::Subpasses{ subpass }, dependencies);
+        auto framebuffer = vsg::Framebuffer::create(renderPass, imageViews, extent.width, extent.height, 1);
         if (!renderPass || !framebuffer)
             return {};
 
@@ -77,6 +108,8 @@ namespace RenderVsg
         result.renderGraph->renderArea = { { 0, 0 }, { extent.width, extent.height } };
         result.renderGraph->setClearValues({ { 0.0f, 0.0f, 0.0f, 1.0f } }, { 0.0f, 0 });
         result.extent = extent;
+        result.colorFormat = requestedColorFormat;
+        result.depthFormat = requestedDepthFormat;
         return result;
     }
 }
