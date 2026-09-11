@@ -31,6 +31,7 @@ namespace NifRender
         InvalidSource,
         MissingTexture,
         ExistingEnvironmentBinding,
+        UnsupportedLightingOrder,
         ReservationFailed,
         BatchBuildFailed,
         PublishRejected,
@@ -123,19 +124,28 @@ namespace NifRender
     // caustic frames are neutral texture resources in exact source order. The
     // VSG compatibility backend chooses int(simulationTime * 16) % 32 without
     // rebuilding the static scene or consulting the VFS at render time.
+    //
+    // Current CP4F shader realization implements the established post-light
+    // environment contribution. OpenMW's optional "apply lighting to environment
+    // maps" mode moves the contribution before lighting; until that equation is
+    // represented exactly, reject it here rather than publishing a semantically
+    // indistinguishable variant that Vulkan would render incorrectly.
     [[nodiscard]] inline EnchantedGlowPublishResult publishEnchantedGlowVariant(RenderCore::RenderWorld& world,
         RenderCore::RenderWorldPublisher& publisher, const VFS::Manager& vfs, RenderCore::ModelHandle sourceModel,
-        const RenderCore::Color& color)
+        const RenderCore::Color& color, bool applyLightingToEnvironmentMaps = false)
     {
         using namespace RenderCore;
         if (!sourceModel.valid() || !semantic_detail::finite(color))
             return {};
+        if (applyLightingToEnvironmentMaps)
+            return { EnchantedGlowPublishStatus::UnsupportedLightingOrder, {} };
         const ModelRecord* source = world.get(sourceModel);
         if (!source || source->sourceIdentity.empty() || source->contentIdentity.empty() || !source->payload
             || !validModelPayloadStructure(*source->payload))
             return {};
 
-        const std::string suffix = "#openmw-enchanted-glow:" + enchanted_glow_detail::colorIdentity(color);
+        const std::string suffix = "#openmw-enchanted-glow-postlight:"
+            + enchanted_glow_detail::colorIdentity(color);
         const std::string variantSourceIdentity = source->sourceIdentity + suffix;
         if (const std::optional<ModelHandle> existing
             = enchanted_glow_detail::findModelBySource(world, variantSourceIdentity))
