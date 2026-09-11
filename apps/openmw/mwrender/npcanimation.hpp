@@ -10,6 +10,7 @@
 #include "../mwworld/inventorystore.hpp"
 
 #include <array>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,11 @@ namespace MWRender
 
         void equipmentChanged() override;
         [[nodiscard]] std::vector<V4PartSource> getV4PartSources() const;
+        [[nodiscard]] int getV4PartSlot(ESM::PartReferenceType type) const noexcept
+        {
+            const std::size_t index = static_cast<std::size_t>(type);
+            return index < ESM::PRT_Count ? mPartslots[index] : -1;
+        }
 
     public:
         typedef std::map<ESM::PartReferenceType, std::string> PartBoneMap;
