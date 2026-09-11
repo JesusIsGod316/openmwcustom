@@ -27,12 +27,16 @@ namespace RenderVsg
     struct alignas(16) EnchantedEnvironmentUniform
     {
         // xyz is the realized legacy envMapColor multiplied by the neutral
-        // environment-map strength. Alpha is intentionally unused by V3.25's
-        // environment contribution.
+        // environment-map strength. Alpha remains available for source parity
+        // even though the compatibility environment equation consumes RGB only.
         vsg::vec4 colorStrength{ 1.0f, 1.0f, 1.0f, 1.0f };
+        // x: add the environment effect to the sampled surface before lighting,
+        // matching compatibility/objects.frag @preLightEnv. Zero adds it to the
+        // lit result afterward. yzw are reserved neutral effect semantics.
+        vsg::vec4 effects{ 0.0f, 0.0f, 0.0f, 0.0f };
     };
 
-    static_assert(sizeof(EnchantedEnvironmentUniform) == sizeof(vsg::vec4));
+    static_assert(sizeof(EnchantedEnvironmentUniform) == sizeof(vsg::vec4) * 2u);
     static_assert(alignof(EnchantedEnvironmentUniform) >= 16u);
 
     using EnchantedEnvironmentUniformValue = vsg::Value<EnchantedEnvironmentUniform>;
@@ -96,6 +100,7 @@ namespace RenderVsg
                     "layout(set = MATERIAL_DESCRIPTOR_SET, binding = 15) uniform OpenMwEnvironmentEffectData\n"
                     "{\n"
                     "    vec4 colorStrength;\n"
+                    "    vec4 effects;\n"
                     "} openmwEnvironmentEffect;\n"
                     "#endif\n"))
                 return false;
@@ -111,24 +116,34 @@ namespace RenderVsg
                     "layout(location = 8) in vec2 openmwEnvironmentUv;\n"
                     "#endif\n"))
                 return false;
+            if (!insertAfterOnce(source, "    vec3 vd = normalize(viewDir);\n",
+                    "#ifdef OPENMW_ENCHANTED_ENVIRONMENT\n"
+                    "    vec2 openmwEnvUv = openmwEnvironmentUv;\n"
+                    "#ifdef VSG_NORMAL_MAP\n"
+                    "    // Legacy normal mapping recomputes reflection coordinates\n"
+                    "    // per fragment from the perturbed normal.\n"
+                    "    vec3 openmwViewVector = normalize(eyePos);\n"
+                    "    vec3 openmwReflection = reflect(openmwViewVector, nd);\n"
+                    "    float openmwM = 2.0 * sqrt(openmwReflection.x * openmwReflection.x\n"
+                    "        + openmwReflection.y * openmwReflection.y\n"
+                    "        + (openmwReflection.z + 1.0) * (openmwReflection.z + 1.0));\n"
+                    "    openmwEnvUv = vec2(openmwReflection.x / openmwM + 0.5,\n"
+                    "        openmwReflection.y / openmwM + 0.5);\n"
+                    "#endif\n"
+                    "    int openmwGlowFrame = clamp(int(openmwEnvironment.temporalEffects.x + 0.5), 0, 31);\n"
+                    "    vec3 openmwEnvEffect = texture(openmwEnvironmentMaps[openmwGlowFrame], openmwEnvUv).rgb\n"
+                    "        * openmwEnvironmentEffect.colorStrength.rgb;\n"
+                    "    // compatibility/objects.frag @preLightEnv: add to the\n"
+                    "    // sampled surface before lighting, leaving specular separate.\n"
+                    "    if (openmwEnvironmentEffect.effects.x > 0.5)\n"
+                    "        surfaceColor.rgb += openmwEnvEffect;\n"
+                    "#endif\n"))
+                return false;
             return insertAfterOnce(source,
                 "    outColor.rgb = color * ambientOcclusion + surfaceColor.rgb * effectiveEmission.rgb * emissiveMultiplier;\n",
                 "#ifdef OPENMW_ENCHANTED_ENVIRONMENT\n"
-                "    vec2 openmwEnvUv = openmwEnvironmentUv;\n"
-                "#ifdef VSG_NORMAL_MAP\n"
-                "    // Legacy normal mapping recomputes reflection coordinates\n"
-                "    // per fragment from the perturbed normal.\n"
-                "    vec3 openmwViewVector = normalize(eyePos);\n"
-                "    vec3 openmwReflection = reflect(openmwViewVector, nd);\n"
-                "    float openmwM = 2.0 * sqrt(openmwReflection.x * openmwReflection.x\n"
-                "        + openmwReflection.y * openmwReflection.y\n"
-                "        + (openmwReflection.z + 1.0) * (openmwReflection.z + 1.0));\n"
-                "    openmwEnvUv = vec2(openmwReflection.x / openmwM + 0.5,\n"
-                "        openmwReflection.y / openmwM + 0.5);\n"
-                "#endif\n"
-                "    int openmwGlowFrame = clamp(int(openmwEnvironment.temporalEffects.x + 0.5), 0, 31);\n"
-                "    outColor.rgb += texture(openmwEnvironmentMaps[openmwGlowFrame], openmwEnvUv).rgb\n"
-                "        * openmwEnvironmentEffect.colorStrength.rgb;\n"
+                "    if (openmwEnvironmentEffect.effects.x <= 0.5)\n"
+                "        outColor.rgb += openmwEnvEffect;\n"
                 "#endif\n");
         }
     }
@@ -139,6 +154,7 @@ namespace RenderVsg
         auto result = EnchantedEnvironmentUniformValue::create();
         const glm::vec4 color = source.environmentMapColor * source.environmentMapStrength;
         result->value().colorStrength = vsg::vec4(color.r, color.g, color.b, color.a);
+        result->value().effects = vsg::vec4(source.environmentMapPreLight ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
         return result;
     }
 
