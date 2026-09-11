@@ -1,0 +1,44 @@
+name: V4 CP4F guarded source closeout
+
+on:
+  push:
+    branches:
+      - v4.0-cp4f-exterior-closeout
+    paths:
+      - .github/cp4f/**
+      - .github/workflows/v4-cp4f-source-closeout.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-source-closeout:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+        with:
+          ref: v4.0-cp4f-exterior-closeout
+          fetch-depth: 0
+
+      - name: Apply guarded CP4F edits
+        run: python3 .github/cp4f/apply_source_closeout.py
+
+      - name: Source hygiene
+        shell: bash
+        run: |
+          git diff --check
+          git status --short
+
+      - name: Commit guarded edits
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No source changes were required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/openmw/mwgui/mapwindow.cpp apps/openmw/mwgui/mapwindow.hpp
+          git commit -m "CP4F: remove native map OSG sentinel textures"
+          git push origin HEAD:v4.0-cp4f-exterior-closeout
