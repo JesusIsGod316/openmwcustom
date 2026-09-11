@@ -101,7 +101,7 @@ namespace MWRender
                 case Status::ExistingEnvironmentBinding:
                     return "NPC enchanted equipment also owns an authored environment map; combined semantics remain fail-closed";
                 case Status::UnsupportedLightingOrder:
-                    return "NPC enchanted equipment requires the pre-light environment-map compatibility facet because Apply Lighting to Environment Maps is enabled";
+                    return "NPC enchanted equipment returned the reserved unsupported lighting-order status";
                 case Status::ReservationFailed:
                     return "NPC enchanted equipment glow resource reservation failed";
                 case Status::BatchBuildFailed:
@@ -523,7 +523,7 @@ namespace MWRender
                 return;
             }
             RenderCore::ModelHandle actorModel = base->model;
-            if (const auto* npc = dynamic_cast<const NpcAnimation*>(&animation))
+            if (auto* npc = dynamic_cast<NpcAnimation*>(&animation))
             {
                 std::vector<NifRender::ActorPartModelSource> parts;
                 std::string signature(animation.getV4SourceModel().value());
@@ -587,6 +587,61 @@ namespace MWRender
                 }
                 if (!compatible)
                     return;
+
+                if (osg::Node* attachedAmmunition = npc->getAttachedAmmunitionNode())
+                {
+                    MWWorld::InventoryStore& inventory = ptr.getClass().getInventoryStore(ptr);
+                    const auto ammo = inventory.getSlot(MWWorld::InventoryStore::Slot_Ammunition);
+                    osg::Group* const arrowBone = npc->getArrowBone();
+                    if (ammo == inventory.end() || !arrowBone || arrowBone->getName().empty())
+                    {
+                        compatible = false;
+                        mLastDiagnostic = "NPC attached ammunition cannot resolve its authoritative item or attachment bone";
+                        return;
+                    }
+
+                    const VFS::Path::Normalized ammoModel = ammo->getClass().getCorrectedModel(*ammo);
+                    const std::optional<NifRender::StaticModelCacheResult> publishedAmmo
+                        = ensureModelPublished(*mSession, mVfs, ammoModel);
+                    if (!publishedAmmo)
+                    {
+                        compatible = false;
+                        mLastDiagnostic = "NPC attached ammunition is missing from the winning VFS or failed translation";
+                        return;
+                    }
+
+                    RenderCore::ModelHandle ammoModelHandle = publishedAmmo->model;
+                    std::string ammoGlowSignature;
+                    if (!ammo->getClass().getEnchantment(*ammo).empty())
+                    {
+                        const osg::Vec4f sourceColor = ammo->getClass().getEnchantmentColor(*ammo);
+                        const RenderCore::Color color{
+                            sourceColor.r(), sourceColor.g(), sourceColor.b(), sourceColor.a() };
+                        const NifRender::EnchantedGlowPublishResult glow = NifRender::publishEnchantedGlowVariant(
+                            mSession->world(), mSession->publisher(), mVfs, ammoModelHandle, color,
+                            Settings::shaders().mApplyLightingToEnvironmentMaps);
+                        if (!glow.available())
+                        {
+                            compatible = false;
+                            mLastDiagnostic = enchantedGlowDiagnostic(glow.status);
+                            return;
+                        }
+                        ammoModelHandle = glow.model;
+                        const RenderCore::ModelRecord* variant = mSession->world().get(ammoModelHandle);
+                        if (!variant)
+                        {
+                            compatible = false;
+                            mLastDiagnostic = "NPC enchanted ammunition variant returned a stale model handle";
+                            return;
+                        }
+                        ammoGlowSignature = ":glow=" + variant->sourceIdentity;
+                    }
+
+                    const bool ammoVisible = attachedAmmunition->getNodeMask() != 0u;
+                    parts.push_back({ ammoModelHandle, arrowBone->getName(), ammoVisible });
+                    signature += "\nammunition:" + std::string(ammoModel.value()) + ":" + arrowBone->getName() + ":"
+                        + (ammoVisible ? "1" : "0") + ammoGlowSignature;
+                }
 
                 auto entry = mComposedActors.find(*identity);
                 if (entry == mComposedActors.end() || entry->second.signature != signature
