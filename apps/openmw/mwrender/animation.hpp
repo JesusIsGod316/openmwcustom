@@ -383,6 +383,23 @@ namespace MWRender
         {
             return mAlpha != 1.0f || mActorFade != 1.0f;
         }
+        struct V4AttachedLightSource
+        {
+            osg::Vec3f worldPosition;
+            osg::Vec4f diffuse;
+            osg::Vec4f specular;
+            osg::Vec4f ambient;
+            float constantAttenuation = 1.0f;
+            float linearAttenuation = 0.0f;
+            float quadraticAttenuation = 0.0f;
+            float radius = 0.0f;
+            float actorFade = 1.0f;
+            bool carryable = false;
+        };
+
+        [[nodiscard]] std::vector<V4AttachedLightSource> captureV4AttachedLights(unsigned int frame) const;
+        [[nodiscard]] float getV4Alpha() const noexcept { return mAlpha; }
+        [[nodiscard]] float getV4ActorFade() const noexcept { return mActorFade; }
 
         /**
          * @brief Add an effect mesh attached to a bone or the insert scene node

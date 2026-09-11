@@ -478,6 +478,12 @@ namespace MWRender
             mComposedActors.clear();
             mComposedActorEpoch = mSession->world().epoch();
         }
+        if (mActorLightEpoch != mSession->world().epoch())
+        {
+            mActorLights.clear();
+            mActorLightEpoch = mSession->world().epoch();
+        }
+        std::set<std::string, std::less<>> currentActorLights;
         bool compatible = true;
         if (++mPoseTraversal == 0u)
             ++mPoseTraversal;
@@ -501,19 +507,6 @@ namespace MWRender
                 mLastDiagnostic = "active actor has a live magic/effect attachment";
                 return;
             }
-            if (animation.hasV4DynamicLightAttachments())
-            {
-                compatible = false;
-                mLastDiagnostic = "active actor has a live actor-local light attachment";
-                return;
-            }
-            if (animation.hasV4TransparencyOverride())
-            {
-                compatible = false;
-                mLastDiagnostic = "active actor requires a frame-driven transparency/fade override";
-                return;
-            }
-
             const std::optional<NifRender::StaticModelCacheResult> base
                 = ensureModelPublished(*mSession, mVfs, animation.getV4SourceModel());
             if (!base || !base->skeleton)
@@ -529,12 +522,6 @@ namespace MWRender
                 std::string signature(animation.getV4SourceModel().value());
                 for (const NpcAnimation::V4PartSource& part : npc->getV4PartSources())
                 {
-                    if (part.isLight)
-                    {
-                        compatible = false;
-                        mLastDiagnostic = "NPC carried-light attachment requires actor-local light publication";
-                        return;
-                    }
                     const std::optional<NifRender::StaticModelCacheResult> published
                         = ensureModelPublished(*mSession, mVfs, part.model);
                     if (!published)
@@ -887,8 +874,71 @@ namespace MWRender
             RenderCore::DynamicTransformInput transform;
             transform.instance = *handle;
             transform.transform = dynamic->transform;
+            transform.opacity = animation.getV4Alpha() * animation.getV4ActorFade();
             source.dynamicTransforms.push_back(std::move(transform));
+
+            const std::vector<Animation::V4AttachedLightSource> attachedLights
+                = animation.captureV4AttachedLights(mPoseTraversal);
+            const std::optional<RenderCore::ActiveCellSource> activeCell = attachedLights.empty()
+                ? std::optional<RenderCore::ActiveCellSource>{}
+                : (ptr.getCell() ? makeV4ActiveCellSource(*ptr.getCell()) : std::nullopt);
+            if (!attachedLights.empty() && !activeCell)
+            {
+                compatible = false;
+                mLastDiagnostic = "active actor-local lights have no active cell identity";
+                return;
+            }
+            for (std::size_t lightIndex = 0; lightIndex < attachedLights.size(); ++lightIndex)
+            {
+                const Animation::V4AttachedLightSource& attached = attachedLights[lightIndex];
+                RenderCore::CellLightSource light;
+                light.identity = *identity + ":actor-light:" + std::to_string(lightIndex);
+                light.cellIdentity = activeCell->identity;
+                light.light.position = { attached.worldPosition.x(), attached.worldPosition.y(),
+                    attached.worldPosition.z() };
+                light.light.diffuse = { attached.diffuse.r(), attached.diffuse.g(), attached.diffuse.b(),
+                    attached.diffuse.a() };
+                light.light.specular = { attached.specular.r(), attached.specular.g(), attached.specular.b(),
+                    attached.specular.a() };
+                light.light.ambient = { attached.ambient.r(), attached.ambient.g(), attached.ambient.b(),
+                    attached.ambient.a() };
+                light.light.constantAttenuation = attached.constantAttenuation;
+                light.light.linearAttenuation = attached.linearAttenuation;
+                light.light.quadraticAttenuation = attached.quadraticAttenuation;
+                light.light.effectiveRadius = attached.radius;
+                light.light.actorFade = attached.actorFade;
+                light.light.semanticFlags = RenderCore::lightSemanticFlag(RenderCore::LightSemanticFlag::Dynamic);
+                if (attached.carryable)
+                    light.light.semanticFlags |= RenderCore::lightSemanticFlag(RenderCore::LightSemanticFlag::Carryable);
+                const RenderCore::ActiveCellPublishResult published = mSession->cells().upsertLight(light);
+                if (published.status != RenderCore::ActiveCellPublishStatus::Applied
+                    && published.status != RenderCore::ActiveCellPublishStatus::AlreadyPresent)
+                {
+                    compatible = false;
+                    mLastDiagnostic = "actor-local light publication failed";
+                    return;
+                }
+                currentActorLights.insert(light.identity);
+            }
         });
+        if (compatible)
+        {
+            for (const std::string& identity : mActorLights)
+            {
+                if (currentActorLights.contains(identity))
+                    continue;
+                const RenderCore::ActiveCellPublishResult removed = mSession->cells().removeLight(identity);
+                if (removed.status != RenderCore::ActiveCellPublishStatus::Applied
+                    && removed.status != RenderCore::ActiveCellPublishStatus::NotFound)
+                {
+                    compatible = false;
+                    mLastDiagnostic = "stale actor-local light retirement failed";
+                    break;
+                }
+            }
+            if (compatible)
+                mActorLights = std::move(currentActorLights);
+        }
         if (!compatible)
         {
             source.dynamicTransforms.clear();

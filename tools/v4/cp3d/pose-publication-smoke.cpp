@@ -104,6 +104,7 @@ int main()
 
     DynamicTransformInput actorTransform;
     actorTransform.instance = *actor;
+    actorTransform.opacity = 0.375f;
     input.dynamicTransforms.push_back(actorTransform);
 
     SkeletonPoseInput pose;
@@ -124,7 +125,8 @@ int main()
             "first pose has cold history")
         || !require(first->morphWeights().size() == 1 && !first->morphWeights()[0].historyValid,
             "first morph has cold history")
-        || !require(first->dynamicTransforms().size() == 1 && !first->dynamicTransforms()[0].historyValid,
+        || !require(first->dynamicTransforms().size() == 1 && !first->dynamicTransforms()[0].historyValid
+                && first->dynamicTransforms()[0].opacity == 0.375f,
             "first actor transform has cold history"))
         return EXIT_FAILURE;
 

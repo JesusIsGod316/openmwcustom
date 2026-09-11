@@ -324,7 +324,8 @@ namespace RenderVsg
     StaticRealizationResult StaticAssetRealizer::realize(const RenderCore::RenderWorld& world,
         const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
         const MeshPayloadResolver& meshPayloadResolver,
-        std::span<const RenderCore::PopulationInstanceRecord> placements, glm::dvec3 placementOrigin) const
+        std::span<const RenderCore::PopulationInstanceRecord> placements, glm::dvec3 placementOrigin,
+        float opacityMultiplier) const
     {
         using namespace RenderCore;
 
@@ -376,7 +377,32 @@ namespace RenderVsg
         for (const StaticDrawPlan& draw : plan.draws)
         {
             const MeshRecord* mesh = world.get(draw.mesh);
-            const MaterialRecord* material = world.get(draw.material);
+            const MaterialRecord* publishedMaterial = world.get(draw.material);
+            if (!std::isfinite(opacityMultiplier) || opacityMultiplier < 0.0f || opacityMultiplier > 1.0f)
+            {
+                result.root = {};
+                result.diagnostics.emplace_back("Actor opacity multiplier is outside the normalized range");
+                return result;
+            }
+            MaterialRecord fadedMaterial;
+            const MaterialRecord* material = publishedMaterial;
+            GraphicsPipelineKey effectivePipeline = draw.pipeline;
+            if (publishedMaterial && opacityMultiplier < 1.0f)
+            {
+                fadedMaterial = *publishedMaterial;
+                fadedMaterial.alpha *= opacityMultiplier;
+                fadedMaterial.alphaBlendEnabled = true;
+                fadedMaterial.alphaMode = AlphaMode::Blend;
+                fadedMaterial.sourceBlend = BlendFactor::SourceAlpha;
+                fadedMaterial.destinationBlend = BlendFactor::OneMinusSourceAlpha;
+                fadedMaterial.blendEquation = BlendEquation::Add;
+                fadedMaterial.transparentSort = TransparentSortPolicy::Sorted;
+                material = &fadedMaterial;
+                effectivePipeline.fixedFunction.blend.enabled = true;
+                effectivePipeline.fixedFunction.blend.source = BlendFactor::SourceAlpha;
+                effectivePipeline.fixedFunction.blend.destination = BlendFactor::OneMinusSourceAlpha;
+                effectivePipeline.fixedFunction.blend.equation = BlendEquation::Add;
+            }
             const MeshPayload* resolvedPayload
                 = meshPayloadResolver ? meshPayloadResolver(draw.mesh, draw.node) : nullptr;
             if (!resolvedPayload && mesh)
@@ -652,7 +678,7 @@ namespace RenderVsg
                 }
             }
 
-            PipelineStateVisitor stateVisitor(draw.pipeline);
+            PipelineStateVisitor stateVisitor(effectivePipeline);
             config->accept(stateVisitor);
             mSharedObjects->share(config, [](const vsg::ref_ptr<vsg::GraphicsPipelineConfigurator>& shared) { shared->init(); });
 
@@ -689,7 +715,7 @@ namespace RenderVsg
             }
             result.root->addChild(node);
 
-            pipelineKeys.insert(draw.pipeline);
+            pipelineKeys.insert(effectivePipeline);
             materialKeys.insert(draw.materialRealization);
             ++result.stats.drawCount;
         }

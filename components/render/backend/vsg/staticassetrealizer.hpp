@@ -83,7 +83,7 @@ namespace RenderVsg
             const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
             const MeshPayloadResolver& meshPayloadResolver = {},
             std::span<const RenderCore::PopulationInstanceRecord> placements = {},
-            glm::dvec3 placementOrigin = {}) const;
+            glm::dvec3 placementOrigin = {}, float opacityMultiplier = 1.0f) const;
 
     private:
         vsg::ref_ptr<vsg::SharedObjects> mSharedObjects;

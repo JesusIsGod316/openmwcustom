@@ -17,6 +17,7 @@ namespace RenderCore
     {
         InstanceHandle instance;
         WorldTransform transform;
+        float opacity = 1.0f;
     };
 
     struct SkeletonPoseInput
@@ -350,6 +351,7 @@ namespace RenderCore
                 transform.current = inputTransform.transform;
                 transform.previous = transformContinuous ? previous->current : inputTransform.transform;
                 transform.historyValid = transformContinuous;
+                transform.opacity = inputTransform.opacity;
                 desc.dynamicTransforms.push_back(std::move(transform));
             }
 

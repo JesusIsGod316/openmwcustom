@@ -176,6 +176,7 @@ namespace RenderCore
         WorldTransform current;
         WorldTransform previous;
         bool historyValid = false;
+        float opacity = 1.0f;
     };
 
     // Evaluated actor state is published at the frame boundary instead of
@@ -426,7 +427,8 @@ namespace RenderCore
             {
                 const DynamicTransformState& transform = mDesc.dynamicTransforms[i];
                 if (!transform.instance.valid() || !transform.instanceRevision.valid() || !finite(transform.current)
-                    || !finite(transform.previous))
+                    || !finite(transform.previous) || !finite(transform.opacity) || transform.opacity < 0.0f
+                    || transform.opacity > 1.0f)
                     return false;
                 for (std::size_t j = i + 1; j < mDesc.dynamicTransforms.size(); ++j)
                 {

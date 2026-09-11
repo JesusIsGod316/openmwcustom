@@ -629,7 +629,8 @@ namespace RenderVsg
                 return found == deformed.end() ? nullptr : &found->second;
             };
             StaticRealizationResult realized = realizeStaticAssetConformant(
-                world, actor.model, *evaluatedAsset, mTextureResolver, mSharedObjects, resolve);
+                world, actor.model, *evaluatedAsset, mTextureResolver, mSharedObjects, resolve, {}, {},
+                transform->opacity);
             if (!realized.valid() || realized.stats.runtimeContextEffects != 0
                 || realized.stats.unsupportedTextureBindings != 0)
             {

@@ -1875,6 +1875,37 @@ namespace MWRender
         return mObjectRoot.get();
     }
 
+    std::vector<Animation::V4AttachedLightSource> Animation::captureV4AttachedLights(unsigned int frame) const
+    {
+        std::vector<V4AttachedLightSource> result;
+        const auto append = [&](const SceneUtil::LightSource* source, bool carryable) {
+            if (!source || source->getNodeMask() == 0u || source->getEmpty())
+                return;
+            const SceneUtil::Light* light = const_cast<SceneUtil::LightSource*>(source)->getLight(frame);
+            if (!light)
+                return;
+            osg::Vec3f position;
+            const osg::NodePathList paths = source->getParentalNodePaths();
+            if (!paths.empty())
+                position = position * osg::computeLocalToWorld(paths.front());
+            result.push_back(V4AttachedLightSource{
+                .worldPosition = position,
+                .diffuse = light->getDiffuse(),
+                .specular = light->getSpecular(),
+                .ambient = light->getAmbient(),
+                .constantAttenuation = light->getConstantAttenuation(),
+                .linearAttenuation = light->getLinearAttenuation(),
+                .quadraticAttenuation = light->getQuadraticAttenuation(),
+                .radius = source->getRadius(),
+                .actorFade = source->getActorFade(),
+                .carryable = carryable,
+            });
+        };
+        append(mExtraLightSource, true);
+        append(mGlowLight, false);
+        return result;
+    }
+
     void Animation::addSpellCastGlow(const osg::Vec4f& color, float glowDuration)
     {
         if (!mGlowUpdater || (mGlowUpdater->isDone() || (mGlowUpdater->isPermanentGlowUpdater() == true)))

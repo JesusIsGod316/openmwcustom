@@ -290,11 +290,13 @@ namespace RenderVsg
     StaticRealizationResult realizeStaticAssetConformant(const RenderCore::RenderWorld& world,
         RenderCore::ModelHandle modelHandle, const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
         vsg::ref_ptr<vsg::SharedObjects> sharedObjects, const MeshPayloadResolver& meshPayloadResolver,
-        std::span<const RenderCore::PopulationInstanceRecord> placements, glm::dvec3 placementOrigin)
+        std::span<const RenderCore::PopulationInstanceRecord> placements, glm::dvec3 placementOrigin,
+        float opacityMultiplier)
     {
         StaticAssetRealizer realizer(std::move(sharedObjects));
         StaticRealizationResult result
-            = realizer.realize(world, plan, textureResolver, meshPayloadResolver, placements, placementOrigin);
+            = realizer.realize(world, plan, textureResolver, meshPayloadResolver, placements, placementOrigin,
+                opacityMultiplier);
         if (!result.valid())
             return result;
 
@@ -363,7 +365,10 @@ namespace RenderVsg
                 bound = billboardDrawBound(*mesh->payload, boundary);
             }
 
-            switch (draw.sortPolicy)
+            const StaticDrawSortPolicy effectiveSort = opacityMultiplier < 1.0f
+                ? StaticDrawSortPolicy::BackToFront
+                : draw.sortPolicy;
+            switch (effectiveSort)
             {
                 case StaticDrawSortPolicy::Default:
                     routedRoot->addChild(drawNode);
