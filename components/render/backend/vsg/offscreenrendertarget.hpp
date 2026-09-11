@@ -5,6 +5,8 @@
 
 #include <vsg/core/ref_ptr.h>
 
+#include <optional>
+
 namespace vsg
 {
     class Device;
