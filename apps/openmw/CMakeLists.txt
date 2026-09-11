@@ -151,7 +151,11 @@ if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
     # openmw-lib uses CMake's plain target_link_libraries signature below.
     # Mixing the keyword and plain signatures is rejected at configure time.
     target_link_libraries(openmw-lib openmw-v4-vulkan-runtime)
-    target_compile_definitions(openmw-lib PRIVATE OPENMW_ENABLE_V4_VULKAN_RUNTIME=1)
+    # engine.hpp conditionally contains Vulkan runtime members, so this definition
+    # is part of openmw-lib's public C++ ABI. Every consumer that sees Engine must
+    # compile with the same layout; keeping it PRIVATE under-allocates Engine in
+    # main.cpp and corrupts the Windows process heap during construction.
+    target_compile_definitions(openmw-lib PUBLIC OPENMW_ENABLE_V4_VULKAN_RUNTIME=1)
 endif()
 
 if (MSVC)
