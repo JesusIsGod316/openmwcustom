@@ -9,17 +9,20 @@
 #include <components/vfs/pathutil.hpp>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstdint>
+#include <iomanip>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace NifRender
 {
-    inline constexpr VFS::Path::NormalizedView EnchantedGlowFirstFrame("textures/magicitem/caust00.dds");
+    inline constexpr std::size_t EnchantedGlowFrameCount = 32u;
 
     enum class EnchantedGlowPublishStatus : std::uint8_t
     {
@@ -46,6 +49,13 @@ namespace NifRender
 
     namespace enchanted_glow_detail
     {
+        [[nodiscard]] inline VFS::Path::Normalized framePath(std::size_t index)
+        {
+            std::ostringstream stream;
+            stream << "textures/magicitem/caust" << std::setw(2) << std::setfill('0') << index << ".dds";
+            return VFS::Path::Normalized(stream.str());
+        }
+
         [[nodiscard]] inline std::string colorIdentity(const RenderCore::Color& color)
         {
             std::ostringstream stream;
@@ -78,18 +88,41 @@ namespace NifRender
             return result;
         }
 
+        struct FrameResource
+        {
+            ResolvedVfsIdentity source;
+            RenderCore::TextureHandle handle;
+            bool reserved = false;
+        };
+
         struct MaterialVariant
         {
             RenderCore::MaterialHandle source;
             RenderCore::MaterialHandle replacement;
             RenderCore::MaterialRecord record;
         };
+
+        inline void cancelReservations(RenderCore::RenderWorld& world, RenderCore::ModelHandle model,
+            const std::vector<MaterialVariant>& materials,
+            const std::array<FrameResource, EnchantedGlowFrameCount>& frames) noexcept
+        {
+            if (model.valid())
+                world.cancel(model);
+            for (auto it = materials.rbegin(); it != materials.rend(); ++it)
+                world.cancel(it->replacement);
+            for (auto it = frames.rbegin(); it != frames.rend(); ++it)
+            {
+                if (it->reserved)
+                    world.cancel(it->handle);
+            }
+        }
     }
 
     // Publish one cached model/material variant that reproduces
-    // SceneUtil::addEnchantedGlow without importing OSG state. The first caustic
-    // frame is the neutral texture identity; the VSG compatibility backend owns
-    // the legacy 32-frame, 16 Hz runtime selection for this exact source family.
+    // SceneUtil::addEnchantedGlow without importing OSG state. All 32 legacy
+    // caustic frames are neutral texture resources in exact source order. The
+    // VSG compatibility backend chooses int(simulationTime * 16) % 32 without
+    // rebuilding the static scene or consulting the VFS at render time.
     [[nodiscard]] inline EnchantedGlowPublishResult publishEnchantedGlowVariant(RenderCore::RenderWorld& world,
         RenderCore::RenderWorldPublisher& publisher, const VFS::Manager& vfs, RenderCore::ModelHandle sourceModel,
         const RenderCore::Color& color)
@@ -98,18 +131,52 @@ namespace NifRender
         if (!sourceModel.valid() || !semantic_detail::finite(color))
             return {};
         const ModelRecord* source = world.get(sourceModel);
-        if (!source || !source->payload || !validModelPayloadStructure(*source->payload))
+        if (!source || source->sourceIdentity.empty() || source->contentIdentity.empty() || !source->payload
+            || !validModelPayloadStructure(*source->payload))
             return {};
-
-        const ResolvedVfsIdentity caustic = resolveTextureVfsIdentity(EnchantedGlowFirstFrame, vfs);
-        if (!caustic.valid())
-            return { EnchantedGlowPublishStatus::MissingTexture, {} };
 
         const std::string suffix = "#openmw-enchanted-glow:" + enchanted_glow_detail::colorIdentity(color);
         const std::string variantSourceIdentity = source->sourceIdentity + suffix;
         if (const std::optional<ModelHandle> existing
             = enchanted_glow_detail::findModelBySource(world, variantSourceIdentity))
             return { EnchantedGlowPublishStatus::Reused, *existing };
+
+        std::array<enchanted_glow_detail::FrameResource, EnchantedGlowFrameCount> frames;
+        for (std::size_t i = 0; i < frames.size(); ++i)
+        {
+            frames[i].source = resolveTextureVfsIdentity(enchanted_glow_detail::framePath(i), vfs);
+            if (!frames[i].source.valid())
+                return { EnchantedGlowPublishStatus::MissingTexture, {} };
+        }
+        for (std::size_t i = 0; i < frames.size(); ++i)
+        {
+            if (const std::optional<TextureHandle> existing
+                = enchanted_glow_detail::findTextureByContent(world, frames[i].source.contentIdentity))
+            {
+                frames[i].handle = *existing;
+                continue;
+            }
+            // Two source frames can legally contain identical bytes. Reuse a
+            // handle reserved earlier in this same unpublished batch so content
+            // identity remains the canonical logical texture key.
+            const auto duplicate = std::find_if(frames.begin(), frames.begin() + static_cast<std::ptrdiff_t>(i),
+                [&](const enchanted_glow_detail::FrameResource& value) {
+                    return value.source.contentIdentity == frames[i].source.contentIdentity;
+                });
+            if (duplicate != frames.begin() + static_cast<std::ptrdiff_t>(i))
+            {
+                frames[i].handle = duplicate->handle;
+                continue;
+            }
+            const std::optional<TextureHandle> reserved = world.reserveTexture();
+            if (!reserved)
+            {
+                enchanted_glow_detail::cancelReservations(world, {}, {}, frames);
+                return { EnchantedGlowPublishStatus::ReservationFailed, {} };
+            }
+            frames[i].handle = *reserved;
+            frames[i].reserved = true;
+        }
 
         std::vector<MaterialHandle> usedMaterials;
         for (const ModelNodeRecord& node : source->payload->nodes)
@@ -121,17 +188,6 @@ namespace NifRender
             }
         }
 
-        std::optional<TextureHandle> causticTexture
-            = enchanted_glow_detail::findTextureByContent(world, caustic.contentIdentity);
-        bool reservedTexture = false;
-        if (!causticTexture)
-        {
-            causticTexture = world.reserveTexture();
-            if (!causticTexture)
-                return { EnchantedGlowPublishStatus::ReservationFailed, {} };
-            reservedTexture = true;
-        }
-
         std::vector<enchanted_glow_detail::MaterialVariant> materials;
         materials.reserve(usedMaterials.size());
         for (const MaterialHandle materialHandle : usedMaterials)
@@ -139,28 +195,19 @@ namespace NifRender
             const MaterialRecord* baseMaterial = world.get(materialHandle);
             if (!baseMaterial)
             {
-                if (reservedTexture)
-                    world.cancel(*causticTexture);
-                for (const auto& material : materials)
-                    world.cancel(material.replacement);
+                enchanted_glow_detail::cancelReservations(world, {}, materials, frames);
                 return {};
             }
-            if (std::ranges::any_of(baseMaterial->textures,
+            if (std::any_of(baseMaterial->textures.begin(), baseMaterial->textures.end(),
                     [](const TextureBinding& binding) { return binding.role == TextureRole::Environment; }))
             {
-                if (reservedTexture)
-                    world.cancel(*causticTexture);
-                for (const auto& material : materials)
-                    world.cancel(material.replacement);
+                enchanted_glow_detail::cancelReservations(world, {}, materials, frames);
                 return { EnchantedGlowPublishStatus::ExistingEnvironmentBinding, {} };
             }
             const std::optional<MaterialHandle> replacement = world.reserveMaterial();
             if (!replacement)
             {
-                if (reservedTexture)
-                    world.cancel(*causticTexture);
-                for (const auto& material : materials)
-                    world.cancel(material.replacement);
+                enchanted_glow_detail::cancelReservations(world, {}, materials, frames);
                 return { EnchantedGlowPublishStatus::ReservationFailed, {} };
             }
 
@@ -169,24 +216,25 @@ namespace NifRender
             record.sourceIdentity = baseMaterial->sourceIdentity + suffix;
             record.environmentMapColor = color;
             record.environmentMapStrength = 1.0f;
-            TextureBinding binding;
-            binding.role = TextureRole::Environment;
-            binding.texture = *causticTexture;
-            binding.colorSpace = TextureColorSpace::Srgb;
-            binding.formatClass = TextureFormatClass::Color;
-            binding.sampler.wrapU = TextureWrap::Repeat;
-            binding.sampler.wrapV = TextureWrap::Repeat;
-            record.textures.push_back(std::move(binding));
+            record.textures.reserve(record.textures.size() + frames.size());
+            for (const auto& frame : frames)
+            {
+                TextureBinding binding;
+                binding.role = TextureRole::Environment;
+                binding.texture = frame.handle;
+                binding.colorSpace = TextureColorSpace::Srgb;
+                binding.formatClass = TextureFormatClass::Color;
+                binding.sampler.wrapU = TextureWrap::Repeat;
+                binding.sampler.wrapV = TextureWrap::Repeat;
+                record.textures.push_back(std::move(binding));
+            }
             materials.push_back({ materialHandle, *replacement, std::move(record) });
         }
 
         const std::optional<ModelHandle> variantModel = world.reserveModel();
         if (!variantModel)
         {
-            if (reservedTexture)
-                world.cancel(*causticTexture);
-            for (const auto& material : materials)
-                world.cancel(material.replacement);
+            enchanted_glow_detail::cancelReservations(world, {}, materials, frames);
             return { EnchantedGlowPublishStatus::ReservationFailed, {} };
         }
 
@@ -199,11 +247,7 @@ namespace NifRender
                     [&](const enchanted_glow_detail::MaterialVariant& value) { return value.source == material; });
                 if (replacement == materials.end())
                 {
-                    world.cancel(*variantModel);
-                    if (reservedTexture)
-                        world.cancel(*causticTexture);
-                    for (const auto& value : materials)
-                        world.cancel(value.replacement);
+                    enchanted_glow_detail::cancelReservations(world, *variantModel, materials, frames);
                     return {};
                 }
                 material = replacement->replacement;
@@ -218,32 +262,26 @@ namespace NifRender
 
         RenderWorldUpdateBatch batch(world.epoch(), publisher.nextSequence(), variantSourceIdentity);
         bool built = true;
-        if (reservedTexture)
+        for (const auto& frame : frames)
         {
+            if (!frame.reserved)
+                continue;
             TextureRecord texture;
-            texture.sourceIdentity = std::string(caustic.canonicalPath.value());
-            texture.contentIdentity = caustic.contentIdentity;
-            built = batch.add(CreateTexture{ *causticTexture, std::move(texture) });
+            texture.sourceIdentity = std::string(frame.source.canonicalPath.value());
+            texture.contentIdentity = frame.source.contentIdentity;
+            built = built && batch.add(CreateTexture{ frame.handle, std::move(texture) });
         }
         for (auto& material : materials)
             built = built && batch.add(CreateMaterial{ material.replacement, std::move(material.record) });
         built = built && batch.add(CreateModel{ *variantModel, std::move(model) });
         if (!built || !batch.seal())
         {
-            world.cancel(*variantModel);
-            if (reservedTexture)
-                world.cancel(*causticTexture);
-            for (const auto& material : materials)
-                world.cancel(material.replacement);
+            enchanted_glow_detail::cancelReservations(world, *variantModel, materials, frames);
             return { EnchantedGlowPublishStatus::BatchBuildFailed, {} };
         }
         if (publisher.apply(batch) != PublishStatus::Applied)
         {
-            world.cancel(*variantModel);
-            if (reservedTexture)
-                world.cancel(*causticTexture);
-            for (const auto& material : materials)
-                world.cancel(material.replacement);
+            enchanted_glow_detail::cancelReservations(world, *variantModel, materials, frames);
             return { EnchantedGlowPublishStatus::PublishRejected, {} };
         }
         return { EnchantedGlowPublishStatus::Published, *variantModel };
