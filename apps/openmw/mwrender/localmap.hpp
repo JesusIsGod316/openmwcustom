@@ -180,6 +180,7 @@ namespace MWRender
             std::string mNativeLogicalIdentity;
             std::string mNativeMapTextureName;
             std::string mNativeFogTextureName;
+            bool mNativeCpuOnly = false;
             bool mNativeMapRequested = false;
             bool mNativeMapNeedsRender = false;
             bool mNativeMapReady = false;
