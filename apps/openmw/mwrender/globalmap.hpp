@@ -1,8 +1,11 @@
 #ifndef GAME_RENDER_GLOBALMAP_H
 #define GAME_RENDER_GLOBALMAP_H
 
+#include <cstdint>
 #include <map>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <osg/ref_ptr>
@@ -44,6 +47,19 @@ namespace MWRender
         void worldPosToImageSpace(float x, float z, float& imageX, float& imageY);
 
         void exploreCell(int cellX, int cellY, osg::ref_ptr<osg::Texture2D> localMapTexture);
+
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        // Explicit Vulkan keeps global-map composition CPU/save authoritative:
+        // local-map RGBA readbacks are resampled into the same overlay image
+        // saved by OpenMW, while MyGUI receives native VSG textures by name.
+        [[nodiscard]] bool exploreCellNative(int cellX, int cellY, std::span<const std::uint8_t> localMapRgba,
+            int sourceWidth, int sourceHeight);
+        [[nodiscard]] bool publishNativeTextures();
+        [[nodiscard]] std::string_view nativeBaseTextureName() const noexcept;
+        [[nodiscard]] std::string_view nativeOverlayTextureName() const noexcept;
+        void clearNative();
+        void readNative(ESM::GlobalMap& map);
+#endif
 
         /// Clears the overlay
         void clear();
@@ -129,6 +145,12 @@ namespace MWRender
         int mHeight;
 
         int mMinX, mMaxX, mMinY, mMaxY;
+
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        std::uint64_t mNativeOverlayRevision = 1;
+        std::uint64_t mNativePublishedOverlayRevision = 0;
+        bool mNativeBasePublished = false;
+#endif
     };
 
 }
