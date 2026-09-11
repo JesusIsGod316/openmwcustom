@@ -21,6 +21,8 @@
 namespace RenderVsg
 {
     inline constexpr std::size_t EnchantedEnvironmentFrameCount = 32u;
+    inline constexpr std::uint32_t EnchantedEnvironmentTextureBinding = 14u;
+    inline constexpr std::uint32_t EnchantedEnvironmentUniformBinding = 15u;
 
     struct alignas(16) EnchantedEnvironmentUniform
     {
@@ -90,8 +92,8 @@ namespace RenderVsg
                 return false;
             if (!insertAfterOnce(source, "#ifdef VSG_SPECULAR_MAP\nlayout(set = MATERIAL_DESCRIPTOR_SET, binding = 5) uniform sampler2D specularMap;\n#endif\n",
                     "#ifdef OPENMW_ENCHANTED_ENVIRONMENT\n"
-                    "layout(set = MATERIAL_DESCRIPTOR_SET, binding = 6) uniform sampler2D openmwEnvironmentMaps[32];\n"
-                    "layout(set = MATERIAL_DESCRIPTOR_SET, binding = 13) uniform OpenMwEnvironmentEffectData\n"
+                    "layout(set = MATERIAL_DESCRIPTOR_SET, binding = 14) uniform sampler2D openmwEnvironmentMaps[32];\n"
+                    "layout(set = MATERIAL_DESCRIPTOR_SET, binding = 15) uniform OpenMwEnvironmentEffectData\n"
                     "{\n"
                     "    vec4 colorStrength;\n"
                     "} openmwEnvironmentEffect;\n"
@@ -150,6 +152,17 @@ namespace RenderVsg
         if (!result)
             return {};
 
+        // Stock Phong owns the rest of material set 1. Keep the CP4F facet on
+        // dedicated high bindings and fail rather than constructing duplicate
+        // Vulkan descriptor bindings if the pinned contract ever expands there.
+        for (const vsg::DescriptorBinding& binding : result->descriptorBindings)
+        {
+            if (binding.set == 1u
+                && (binding.binding == EnchantedEnvironmentTextureBinding
+                    || binding.binding == EnchantedEnvironmentUniformBinding))
+                return {};
+        }
+
         bool vertexPatched = false;
         bool fragmentPatched = false;
         for (vsg::ref_ptr<vsg::ShaderStage>& stage : result->stages)
@@ -181,11 +194,12 @@ namespace RenderVsg
         if (!vertexPatched || !fragmentPatched)
             return {};
 
-        result->addDescriptorBinding("openmwEnvironmentMaps", "OPENMW_ENCHANTED_ENVIRONMENT", 1, 6,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<std::uint32_t>(EnchantedEnvironmentFrameCount),
-            VK_SHADER_STAGE_FRAGMENT_BIT, {}, vsg::CoordinateSpace::sRGB);
-        result->addDescriptorBinding("openmwEnvironmentEffect", "OPENMW_ENCHANTED_ENVIRONMENT", 1, 13,
-            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+        result->addDescriptorBinding("openmwEnvironmentMaps", "OPENMW_ENCHANTED_ENVIRONMENT", 1,
+            EnchantedEnvironmentTextureBinding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            static_cast<std::uint32_t>(EnchantedEnvironmentFrameCount), VK_SHADER_STAGE_FRAGMENT_BIT, {},
+            vsg::CoordinateSpace::sRGB);
+        result->addDescriptorBinding("openmwEnvironmentEffect", "OPENMW_ENCHANTED_ENVIRONMENT", 1,
+            EnchantedEnvironmentUniformBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
             EnchantedEnvironmentUniformValue::create());
         result->optionalDefines.insert("OPENMW_ENCHANTED_ENVIRONMENT");
         // The base compatibility builder deliberately has no inherited stock
