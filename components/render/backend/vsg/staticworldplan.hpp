@@ -101,11 +101,18 @@ namespace RenderVsg
         if (!model || !model->revision.valid())
             return std::nullopt;
 
-        // Graphic herbalism is reference state, not model state. Derive the
-        // realization option from this exact instance so two organic containers
-        // sharing one model may legitimately select different switch children.
-        options.herbalismHarvested
-            = (instance->semanticFlags & RenderCore::HerbalismHarvestedSemanticFlag) != 0;
+        // OpenMW's named-switch callbacks are enabled by exact root user
+        // descriptions, not node names alone. The source adapter publishes those
+        // model-global capabilities on every placement so planning can stay
+        // backend-neutral. Graphic herbalism additionally carries per-reference
+        // harvested state.
+        const bool nightDayCapable
+            = (instance->semanticFlags & RenderCore::NightDaySwitchCapabilitySemanticFlag) != 0;
+        const bool herbalismCapable
+            = (instance->semanticFlags & RenderCore::HerbalismSwitchCapabilitySemanticFlag) != 0;
+        options.dayNightSwitchesEnabled = options.dayNightSwitchesEnabled && nightDayCapable;
+        options.herbalismHarvested = herbalismCapable
+            && (instance->semanticFlags & RenderCore::HerbalismHarvestedSemanticFlag) != 0;
         std::optional<StaticAssetPlan> asset = buildStaticAssetPlan(world, *instance->model, options);
         if (!asset)
             return std::nullopt;
@@ -151,15 +158,28 @@ namespace RenderVsg
         const RenderCore::ModelPopulationRecord& population, StaticPlanOptions options = {})
     {
         options.includeDeformableMeshes = false;
-        // Population groups share one immutable model draw plan. Per-reference
-        // herbalism state is intentionally unavailable here; interactive
-        // useAnim references stay individually addressable instead.
-        options.herbalismHarvested = false;
         const RenderCore::ChunkRecord* chunk = world.get(chunkHandle);
         const RenderCore::ModelRecord* model = world.get(population.model);
         if (!chunk || !chunk->revision.valid() || !chunk->population || population.instances.empty() || !model
             || !model->revision.valid())
             return std::nullopt;
+
+        // One population group has exactly one model realization. Capability
+        // bits must therefore agree for every placement; disagreement is a
+        // producer bug and fails closed. Per-reference harvested state cannot be
+        // represented by this grouped path and is likewise rejected.
+        constexpr std::uint64_t capabilityMask = RenderCore::NightDaySwitchCapabilitySemanticFlag
+            | RenderCore::HerbalismSwitchCapabilitySemanticFlag;
+        const std::uint64_t capabilities = population.instances.front().semanticFlags & capabilityMask;
+        for (const RenderCore::PopulationInstanceRecord& placement : population.instances)
+        {
+            if ((placement.semanticFlags & capabilityMask) != capabilities
+                || (placement.semanticFlags & RenderCore::HerbalismHarvestedSemanticFlag) != 0)
+                return std::nullopt;
+        }
+        options.dayNightSwitchesEnabled = options.dayNightSwitchesEnabled
+            && (capabilities & RenderCore::NightDaySwitchCapabilitySemanticFlag) != 0;
+        options.herbalismHarvested = false;
 
         std::optional<StaticAssetPlan> asset = buildStaticAssetPlan(world, population.model, options);
         if (!asset)
