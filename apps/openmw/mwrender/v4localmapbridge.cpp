@@ -1,5 +1,6 @@
 #include "v4enginerenderbridge.hpp"
 
+#include "globalmap.hpp"
 #include "localmap.hpp"
 
 #include <components/render/backend/vsg/vsgruntimehost.hpp>
@@ -293,6 +294,9 @@ namespace MWRender
                 entry.fogRevision = surface.fogRevision;
             }
         }
+
+        if (GlobalMap* const globalMap = GlobalMap::activeInstance())
+            globalMap->flushNativeExploration();
         return result;
     }
 }
