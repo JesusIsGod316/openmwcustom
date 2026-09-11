@@ -31,6 +31,9 @@
 
 #include "../mwworld/esmstore.hpp"
 
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+#include "localmap.hpp"
+#endif
 #include "vismask.hpp"
 
 namespace
@@ -120,6 +123,14 @@ namespace
         std::string data = ostream.str();
         return std::vector<char>(data.begin(), data.end());
     }
+
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+    [[nodiscard]] bool nativeGlobalMapRoute() noexcept
+    {
+        const MWRender::LocalMap* const localMap = MWRender::LocalMap::activeInstance();
+        return localMap && localMap->nativeAuxiliaryRouteEnabled();
+    }
+#endif
 }
 
 namespace MWRender
@@ -419,6 +430,15 @@ namespace MWRender
     {
         ensureLoaded();
 
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        if (nativeGlobalMapRoute())
+        {
+            mNativePendingExploredCells.emplace(cellX, cellY);
+            flushNativeExploration();
+            return;
+        }
+#endif
+
         if (!localMapTexture)
             return;
 
@@ -437,6 +457,14 @@ namespace MWRender
     void GlobalMap::clear()
     {
         ensureLoaded();
+
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        if (nativeGlobalMapRoute())
+        {
+            clearNative();
+            return;
+        }
+#endif
 
         memset(mOverlayImage->data(), 0, mOverlayImage->getTotalSizeInBytes());
 
@@ -487,6 +515,14 @@ namespace MWRender
     void GlobalMap::read(ESM::GlobalMap& map)
     {
         ensureLoaded();
+
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        if (nativeGlobalMapRoute())
+        {
+            readNative(map);
+            return;
+        }
+#endif
 
         const ESM::GlobalMap::Bounds& bounds = map.mBounds;
 
@@ -580,12 +616,20 @@ namespace MWRender
     osg::ref_ptr<osg::Texture2D> GlobalMap::getBaseTexture()
     {
         ensureLoaded();
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        if (nativeGlobalMapRoute())
+            (void)publishNativeTextures();
+#endif
         return mBaseTexture;
     }
 
     osg::ref_ptr<osg::Texture2D> GlobalMap::getOverlayTexture()
     {
         ensureLoaded();
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        if (nativeGlobalMapRoute())
+            (void)publishNativeTextures();
+#endif
         return mOverlayTexture;
     }
 
@@ -600,7 +644,11 @@ namespace MWRender
             mAlphaTexture = mWorkItem->mAlphaTexture;
             mOverlayTexture = mWorkItem->mOverlayTexture;
 
-            requestOverlayTextureUpdate(0, 0, mWidth, mHeight, osg::ref_ptr<osg::Texture2D>(), true, false);
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+            if (!nativeGlobalMapRoute())
+#endif
+                requestOverlayTextureUpdate(
+                    0, 0, mWidth, mHeight, osg::ref_ptr<osg::Texture2D>(), true, false);
 
             mWorkItem = nullptr;
         }
