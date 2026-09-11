@@ -1,9 +1,13 @@
 #ifndef GAME_RENDER_LOCALMAP_H
 #define GAME_RENDER_LOCALMAP_H
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <set>
+#include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include <MyGUI_Types.h>
@@ -40,6 +44,33 @@ namespace MWRender
     class LocalMap
     {
     public:
+        struct NativeMapSurface
+        {
+            std::uint32_t stableSlot = 0;
+            std::string_view logicalIdentity;
+            std::string_view mapTextureName;
+            std::string_view fogTextureName;
+            int segmentX = 0;
+            int segmentY = 0;
+            int resolution = 0;
+            int worldSize = 0;
+            float centerX = 0.f;
+            float centerY = 0.f;
+            std::array<double, 3> upVector{ 0.0, 1.0, 0.0 };
+            float zMin = 0.f;
+            float zMax = 0.f;
+            bool needsRender = false;
+            std::span<const std::uint8_t> fogRgba;
+            std::uint64_t fogRevision = 0;
+        };
+
+        // V4 configures the neutral native-auxiliary route before LocalMap is
+        // constructed. OpenGL never enables it, so AUTO remains entirely on the
+        // established OSG RTT path. The active pointer is non-owning and exists
+        // only to let the backend bridge consume logical map-surface requests.
+        static void configureNativeAuxiliaryRoute(bool enabled) noexcept;
+        [[nodiscard]] static LocalMap* activeInstance() noexcept;
+
         LocalMap(osg::Group* root);
         ~LocalMap();
 
@@ -62,6 +93,13 @@ namespace MWRender
         osg::ref_ptr<osg::Texture2D> getMapTexture(int x, int y);
 
         osg::ref_ptr<osg::Texture2D> getFogOfWarTexture(int x, int y);
+
+        [[nodiscard]] bool nativeAuxiliaryRouteEnabled() const noexcept { return mNativeAuxiliaryRoute; }
+        [[nodiscard]] std::vector<NativeMapSurface> nativeMapSurfaces() const;
+        [[nodiscard]] bool markNativeMapRendered(std::uint32_t stableSlot) noexcept;
+        [[nodiscard]] bool markNativeFogPublished(std::uint32_t stableSlot, std::uint64_t revision) noexcept;
+        [[nodiscard]] std::string_view nativeMapTextureName(int x, int y) const noexcept;
+        [[nodiscard]] std::string_view nativeFogTextureName(int x, int y) const noexcept;
 
         /**
          * Removes cameras that have already been rendered. Should be called every frame to ensure that
@@ -132,6 +170,22 @@ namespace MWRender
             osg::ref_ptr<osg::Texture2D> mMapTexture;
             osg::ref_ptr<osg::Texture2D> mFogOfWarTexture;
             osg::ref_ptr<osg::Image> mFogOfWarImage;
+
+            std::uint32_t mNativeStableSlot = 0;
+            std::string mNativeLogicalIdentity;
+            std::string mNativeMapTextureName;
+            std::string mNativeFogTextureName;
+            float mNativeCenterX = 0.f;
+            float mNativeCenterY = 0.f;
+            std::array<double, 3> mNativeUpVector{ 0.0, 1.0, 0.0 };
+            float mNativeZMin = 0.f;
+            float mNativeZMax = 0.f;
+            bool mNativeMapRequested = false;
+            bool mNativeMapNeedsRender = false;
+            bool mNativeMapReady = false;
+            bool mNativeFogReady = false;
+            std::uint64_t mFogRevision = 0;
+            std::uint64_t mPublishedFogRevision = 0;
         };
 
         typedef std::map<std::pair<int, int>, MapSegment> SegmentMap;
@@ -154,12 +208,15 @@ namespace MWRender
         void requestExteriorMap(const MWWorld::CellStore* cell, MapSegment& segment);
         void requestInteriorMap(const MWWorld::CellStore* cell);
 
-        void setupRenderToTexture(
-            int segmentX, int segmentY, float left, float top, const osg::Vec3d& upVector, float zmin, float zmax);
+        void setupRenderToTexture(int segmentX, int segmentY, float left, float top, const osg::Vec3d& upVector,
+            float zmin, float zmax, std::string_view logicalCellIdentity);
+        [[nodiscard]] const MapSegment* findSegment(int x, int y) const noexcept;
+        [[nodiscard]] MapSegment* findNativeSegment(std::uint32_t stableSlot) noexcept;
 
         osg::BoundingBox mBounds;
         osg::Vec2f mCenter;
         bool mInterior;
+        bool mNativeAuxiliaryRoute = false;
 
         std::uint8_t getExteriorNeighbourFlags(int cellX, int cellY) const;
     };
