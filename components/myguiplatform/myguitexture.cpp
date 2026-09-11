@@ -23,7 +23,8 @@ namespace MyGUIPlatform
     }
 
     OSGTexture::OSGTexture(osg::Texture2D* texture, osg::StateSet* injectState)
-        : mImageManager(nullptr)
+        : mName(texture->getName())
+        , mImageManager(nullptr)
         , mTexture(texture)
         , mInjectState(injectState)
         , mFormat(MyGUI::PixelFormat::Unknow)
