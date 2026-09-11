@@ -7,6 +7,11 @@
 #include <osg/Image>
 #include <osg/Node>
 
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+#include <MyGUI_RenderManager.h>
+#include <components/vsgmygui/rendermanager.hpp>
+#endif
+
 #include "../mwbase/environment.hpp"
 #include "../mwbase/world.hpp"
 
@@ -88,7 +93,17 @@ namespace MWRender
     {
         if (!owner)
             return;
-        owner->mNativeAuxiliaryRoute = sNativeAuxiliaryRoute;
+
+        bool enabled = sNativeAuxiliaryRoute;
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        // LocalMap is constructed after WindowManager has installed its actual
+        // MyGUI platform. Detecting the concrete renderer here makes explicit
+        // Vulkan native from the first HUD/map update while an AUTO/OpenGL route
+        // in the same V4-capable executable remains entirely on OSG.
+        enabled = dynamic_cast<VsgMyGui::RenderManager*>(&MyGUI::RenderManager::getInstance()) != nullptr;
+#endif
+        sNativeAuxiliaryRoute = enabled;
+        owner->mNativeAuxiliaryRoute = enabled;
         sActiveLocalMap = owner;
     }
 
