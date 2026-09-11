@@ -125,11 +125,11 @@ namespace NifRender
     // VSG compatibility backend chooses int(simulationTime * 16) % 32 without
     // rebuilding the static scene or consulting the VFS at render time.
     //
-    // Current CP4F shader realization implements the established post-light
-    // environment contribution. OpenMW's optional "apply lighting to environment
-    // maps" mode moves the contribution before lighting; until that equation is
-    // represented exactly, reject it here rather than publishing a semantically
-    // indistinguishable variant that Vulkan would render incorrectly.
+    // The legacy "apply lighting to environment maps" setting changes whether
+    // the environment contribution is added to the sampled surface before the
+    // lighting equation or added to the lit result afterward. Preserve that as
+    // MaterialRecord::environmentMapPreLight so backend realization never has
+    // to infer settings state from provenance or shader-specific identities.
     [[nodiscard]] inline EnchantedGlowPublishResult publishEnchantedGlowVariant(RenderCore::RenderWorld& world,
         RenderCore::RenderWorldPublisher& publisher, const VFS::Manager& vfs, RenderCore::ModelHandle sourceModel,
         const RenderCore::Color& color, bool applyLightingToEnvironmentMaps = false)
@@ -137,16 +137,15 @@ namespace NifRender
         using namespace RenderCore;
         if (!sourceModel.valid() || !semantic_detail::finite(color))
             return {};
-        if (applyLightingToEnvironmentMaps)
-            return { EnchantedGlowPublishStatus::UnsupportedLightingOrder, {} };
         const ModelRecord* source = world.get(sourceModel);
         if (!source || source->sourceIdentity.empty() || source->contentIdentity.empty() || !source->payload
             || !validModelPayloadStructure(*source->payload))
             return {};
 
-        const std::string suffix = "#openmw-enchanted-glow-postlight:"
-            + enchanted_glow_detail::colorIdentity(color);
-        const std::string variantSourceIdentity = source->sourceIdentity + suffix;
+        const std::string suffix = applyLightingToEnvironmentMaps ? "#openmw-enchanted-glow-prelight:"
+                                                                   : "#openmw-enchanted-glow-postlight:";
+        const std::string variantSuffix = suffix + enchanted_glow_detail::colorIdentity(color);
+        const std::string variantSourceIdentity = source->sourceIdentity + variantSuffix;
         if (const std::optional<ModelHandle> existing
             = enchanted_glow_detail::findModelBySource(world, variantSourceIdentity))
             return { EnchantedGlowPublishStatus::Reused, *existing };
@@ -223,9 +222,10 @@ namespace NifRender
 
             MaterialRecord record = *baseMaterial;
             record.revision = InitialResourceRevision;
-            record.sourceIdentity = baseMaterial->sourceIdentity + suffix;
+            record.sourceIdentity = baseMaterial->sourceIdentity + variantSuffix;
             record.environmentMapColor = color;
             record.environmentMapStrength = 1.0f;
+            record.environmentMapPreLight = applyLightingToEnvironmentMaps;
             record.textures.reserve(record.textures.size() + frames.size());
             for (const auto& frame : frames)
             {
@@ -267,7 +267,7 @@ namespace NifRender
         ModelRecord model = *source;
         model.revision = InitialResourceRevision;
         model.sourceIdentity = variantSourceIdentity;
-        model.contentIdentity = source->contentIdentity + suffix;
+        model.contentIdentity = source->contentIdentity + variantSuffix;
         model.payload = std::move(payload);
 
         RenderWorldUpdateBatch batch(world.epoch(), publisher.nextSequence(), variantSourceIdentity);
