@@ -19,7 +19,9 @@
 #include <vsg/core/ref_ptr.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -83,6 +85,13 @@ namespace RenderVsg
     class VsgRuntimeHost final : public RenderCore::SemanticRenderer
     {
     public:
+        struct AuxiliaryRgba8Readback
+        {
+            RenderCore::RenderTargetHandle target;
+            RenderCore::Extent2D extent;
+            std::vector<std::uint8_t> rgba;
+        };
+
         VsgRuntimeHost(vsg::ref_ptr<SdlVulkanWindow> window, StaticTextureResolver textureResolver,
             VsgRuntimeHostOptions options = {});
         ~VsgRuntimeHost() override;
@@ -100,6 +109,11 @@ namespace RenderVsg
         [[nodiscard]] VsgMyGui::RenderManager* guiRenderer() noexcept { return mGuiRenderer; }
         [[nodiscard]] vsg::ref_ptr<vsg::ImageView> auxiliaryColorImage(
             RenderCore::RenderTargetHandle target) const noexcept;
+        // Map persistence is intentionally a rare, explicit readback rather than
+        // a per-frame synchronization point. All requested RGBA8 targets are
+        // transitioned, copied and restored in one graphics-queue submission.
+        [[nodiscard]] std::optional<std::vector<AuxiliaryRgba8Readback>> readbackAuxiliaryRgba8(
+            std::span<const RenderCore::RenderTargetHandle> targets);
         // Explicit retirement is required for long-lived logical map slots: a
         // sampled target stays native to VSG until its producer retires that
         // logical surface. Retirement synchronizes before removing the command
