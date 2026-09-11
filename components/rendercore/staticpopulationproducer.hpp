@@ -82,7 +82,12 @@ namespace RenderCore
                     : StaticPopulationPublishStatus::InvalidSource;
             }
             std::string identity = source.identity;
-            mCells.emplace(std::move(identity), Cell{ std::move(source) });
+            mCells.emplace(std::move(identity), Cell{
+                                                    .source = std::move(source),
+                                                    .instances = {},
+                                                    .handle = std::nullopt,
+                                                    .dirty = false,
+                                                });
             return StaticPopulationPublishStatus::Applied;
         }
 

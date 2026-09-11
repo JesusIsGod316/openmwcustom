@@ -166,6 +166,9 @@ namespace RenderVsg
             .placements = population.instances,
             .options = options,
             .asset = std::move(*asset),
+            .meshes = {},
+            .materials = {},
+            .textures = {},
         };
         const auto addUnique = []<class Handle>(std::vector<StaticResourceDependency<Handle>>& dependencies,
                                    Handle dependency, RenderCore::ResourceRevision revision) {

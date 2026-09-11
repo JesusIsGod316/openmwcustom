@@ -60,10 +60,10 @@ int main()
     RenderCore::StaticPopulationProducer producer(world, publisher);
     const RenderCore::ModelHandle model = publishModel(world, publisher);
     if (!require(model.valid(), "model publication")
-        || !require(producer.addCell({ .identity = "cell:0,0", .worldspaceIdentity = "world" })
+        || !require(producer.addCell({ .identity = "cell:0,0", .worldspaceIdentity = "world", .bounds = {} })
                 == RenderCore::StaticPopulationPublishStatus::Applied,
             "cell staging")
-        || !require(producer.addCell({ .identity = "cell:0,0", .worldspaceIdentity = "world" })
+        || !require(producer.addCell({ .identity = "cell:0,0", .worldspaceIdentity = "world", .bounds = {} })
                 == RenderCore::StaticPopulationPublishStatus::AlreadyPresent,
             "idempotent cell retry"))
         return EXIT_FAILURE;
