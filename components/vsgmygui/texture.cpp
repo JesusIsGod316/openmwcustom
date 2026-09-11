@@ -1,7 +1,7 @@
 #include "texture.hpp"
 
-#include <stdexcept>
 #include <atomic>
+#include <stdexcept>
 
 #include <components/debug/debuglog.hpp>
 
@@ -11,7 +11,6 @@ namespace VsgMyGui
     {
         std::atomic_uint64_t sNextTextureIdentity{ 1 };
 
-        // Bytes per pixel MyGUI hands us for each source format.
         size_t elemBytes(MyGUI::PixelFormat format)
         {
             switch (format.getValue())
@@ -43,18 +42,24 @@ namespace VsgMyGui
         const size_t nb = elemBytes(format);
         if (nb == 0)
             throw std::runtime_error("VsgMyGui::Texture: unsupported pixel format");
+        if (width <= 0 || height <= 0)
+            throw std::runtime_error("VsgMyGui::Texture: invalid manual texture extent");
         mWidth = width;
         mHeight = height;
         mFormat = format;
         mUsage = usage;
         mNumElemBytes = nb;
-        mData = {}; // filled on unlock()
+        mData = {};
+        mImageView = {};
+        mLockBuffer.clear();
+        mLocked = false;
         ++mRevision;
     }
 
     void Texture::destroy()
     {
         mData = {};
+        mImageView = {};
         mLockBuffer.clear();
         mLocked = false;
         mFormat = MyGUI::PixelFormat::Unknow;
@@ -66,6 +71,8 @@ namespace VsgMyGui
 
     void* Texture::lock(MyGUI::TextureUsage /*access*/)
     {
+        if (mImageView)
+            throw std::runtime_error("VsgMyGui::Texture: external render-target images are read-only to MyGUI");
         if (mWidth <= 0 || mHeight <= 0 || mNumElemBytes == 0)
             throw std::runtime_error("VsgMyGui::Texture: lock() before createManual()");
         if (mLocked)
@@ -80,7 +87,6 @@ namespace VsgMyGui
         if (!mLocked)
             throw std::runtime_error("VsgMyGui::Texture: unlock() without lock()");
 
-        // Expand the source pixels into RGBA8. GL sampled L8/L8A8 as (L,L,L,1)/(L,L,L,A); we bake that here.
         auto rgba = vsg::ubvec4Array2D::create(mWidth, mHeight, vsg::Data::Properties(VK_FORMAT_R8G8B8A8_UNORM));
         const uint8_t* src = mLockBuffer.data();
         for (int y = 0; y < mHeight; ++y)
@@ -91,16 +97,16 @@ namespace VsgMyGui
                 vsg::ubvec4 out(255, 255, 255, 255);
                 switch (mNumElemBytes)
                 {
-                    case 1: // L8
+                    case 1:
                         out = vsg::ubvec4(p[0], p[0], p[0], 255);
                         break;
-                    case 2: // L8A8
+                    case 2:
                         out = vsg::ubvec4(p[0], p[0], p[0], p[1]);
                         break;
-                    case 3: // R8G8B8
+                    case 3:
                         out = vsg::ubvec4(p[0], p[1], p[2], 255);
                         break;
-                    default: // R8G8B8A8
+                    default:
                         out = vsg::ubvec4(p[0], p[1], p[2], p[3]);
                         break;
                 }
@@ -108,6 +114,7 @@ namespace VsgMyGui
             }
         }
         mData = rgba;
+        mImageView = {};
         ++mRevision;
         mLockBuffer.clear();
         mLocked = false;
@@ -115,13 +122,36 @@ namespace VsgMyGui
 
     void Texture::setData(vsg::ref_ptr<vsg::Data> data)
     {
-        mData = data;
+        mData = std::move(data);
+        mImageView = {};
         ++mRevision;
         mUsage = MyGUI::TextureUsage::Static;
         mFormat = MyGUI::PixelFormat::R8G8B8A8;
         mNumElemBytes = 4;
-        mWidth = data ? static_cast<int>(data->width()) : 0;
-        mHeight = data ? static_cast<int>(data->height()) : 0;
+        mWidth = mData ? static_cast<int>(mData->width()) : 0;
+        mHeight = mData ? static_cast<int>(mData->height()) : 0;
+        mLockBuffer.clear();
+        mLocked = false;
+    }
+
+    void Texture::setImageView(
+        vsg::ref_ptr<vsg::ImageView> imageView, int width, int height, MyGUI::PixelFormat format)
+    {
+        if (!imageView || width <= 0 || height <= 0)
+            throw std::runtime_error("VsgMyGui::Texture: invalid external Vulkan image");
+        const size_t nb = elemBytes(format);
+        if (nb == 0)
+            throw std::runtime_error("VsgMyGui::Texture: unsupported external image pixel format");
+        mData = {};
+        mImageView = std::move(imageView);
+        mWidth = width;
+        mHeight = height;
+        mFormat = format;
+        mUsage = MyGUI::TextureUsage::Static;
+        mNumElemBytes = nb;
+        mLockBuffer.clear();
+        mLocked = false;
+        ++mRevision;
     }
 
     void Texture::loadFromFile(const std::string& fname)
@@ -129,6 +159,7 @@ namespace VsgMyGui
         mUsage = MyGUI::TextureUsage::Static;
         mFormat = MyGUI::PixelFormat::R8G8B8A8;
         mNumElemBytes = 4;
+        mImageView = {};
 
         vsg::ref_ptr<vsg::Data> decoded = mDecoder ? mDecoder(fname) : vsg::ref_ptr<vsg::Data>{};
         if (decoded)
@@ -140,8 +171,6 @@ namespace VsgMyGui
             return;
         }
 
-        // No decoder, or the file couldn't be decoded: a 2x2 magenta placeholder so the widget is visibly
-        // "missing texture" rather than aborting GUI setup.
         Log(Debug::Warning) << "VsgMyGui::Texture: could not decode '" << fname << "' — using placeholder";
         mWidth = mHeight = 2;
         auto rgba = vsg::ubvec4Array2D::create(2, 2, vsg::Data::Properties(VK_FORMAT_R8G8B8A8_UNORM));
