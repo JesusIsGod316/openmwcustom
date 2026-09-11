@@ -15,6 +15,7 @@
 #include <components/render/backend/vsg/vsgsemanticsession.hpp>
 #include <components/vfs/manager.hpp>
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -57,14 +58,25 @@ namespace MWRender
         {
             if (modelPath.empty())
                 return false;
-            return Misc::ResourceHelpers::correctActorModelPath(modelPath, &vfs) != modelPath;
+            const VFS::Path::Normalized corrected = Misc::ResourceHelpers::correctActorModelPath(modelPath, &vfs);
+            return corrected.view() != modelPath.value();
+        }
+
+        [[nodiscard]] bool requiresModelPlayback(const RenderCore::ModelRecord& model) noexcept
+        {
+            if (!RenderCore::validModelDynamicRequirements(model.dynamicRequirements)
+                || model.dynamicRequirements != 0 || !model.payload)
+                return true;
+            return std::any_of(model.payload->nodes.begin(), model.payload->nodes.end(),
+                [](const RenderCore::ModelNodeRecord& node) { return node.controllerFlags != 0; });
         }
 
         // makeV4StaticInstanceSource intentionally rejects every useAnim() class.
         // This narrowly-scoped companion is called only after publishObject has
         // proved that the winning model has neither an external animation source
-        // nor any neutral dynamic model requirement. Reference translation,
-        // rotation and scale remain live and objectChanged() republishes them.
+        // nor any neutral controller/effect/deformation playback requirement.
+        // Reference translation, rotation and scale remain live and objectChanged()
+        // republishes them.
         [[nodiscard]] std::optional<RenderCore::StaticInstanceSource> makeControllerFreeAnimatedInstanceSource(
             const MWWorld::Ptr& ptr, RenderCore::ModelHandle model, RenderCore::AxisAlignedBounds localBounds)
         {
@@ -306,10 +318,10 @@ namespace MWRender
         const RenderCore::ModelRecord* modelRecord = mSession->world().get(*model);
         if (!modelRecord)
             throw std::runtime_error("V4 static model cache returned a stale model handle");
-        if (animatedClass && modelRecord->dynamicRequirements != 0)
+        if (requiresModelPlayback(*modelRecord))
         {
             throw std::runtime_error(
-                "V4 scene lifecycle encountered an animated-class model with controller/deformation requirements before model-animation compatibility is available: "
+                "V4 scene lifecycle encountered a non-actor model with controller/effect/deformation playback requirements before model-animation compatibility is available: "
                 + modelPath.value());
         }
 
