@@ -36,7 +36,7 @@ namespace MWRender
                     ? "authoritative actor state could not produce a compatible V4 frame"
                     : mBridge.lastDiagnostic());
 
-        const RenderCore::RenderFrameResult result = mBridge.renderMainFrame(*source);
+        const RenderCore::RenderFrameResult result = mBridge.renderMainFrameWithNativeLocalMap(*source);
         mLastDiagnostic = mBridge.lastDiagnostic();
         if (result == RenderCore::RenderFrameResult::Failed)
             return fail(mLastDiagnostic.empty() ? "V4 render bridge rejected the main frame" : mLastDiagnostic);
