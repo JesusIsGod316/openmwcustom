@@ -1,9 +1,13 @@
 #ifndef OPENMW_MWWORLD_PROJECTILEMANAGER_H
 #define OPENMW_MWWORLD_PROJECTILEMANAGER_H
 
+#include <cstddef>
 #include <string>
+#include <vector>
 
 #include <osg/PositionAttitudeTransform>
+#include <osg/Quat>
+#include <osg/Vec3f>
 #include <osg/ref_ptr>
 
 #include <components/esm3/effectlist.hpp>
@@ -26,7 +30,6 @@ namespace Loading
 namespace osg
 {
     class Group;
-    class Quat;
 }
 
 namespace Resource
@@ -42,12 +45,26 @@ namespace MWRender
 
 namespace MWWorld
 {
+    struct V4PhysicalProjectileSnapshot
+    {
+        int runtimeId = 0;
+        ESM::RefId projectileId;
+        osg::Vec3f position;
+        osg::Quat orientation;
+    };
+
+    struct V4ProjectileFrameSnapshot
+    {
+        std::vector<V4PhysicalProjectileSnapshot> physicalProjectiles;
+        std::size_t liveMagicBoltCount = 0;
+    };
 
     class ProjectileManager
     {
     public:
         ProjectileManager(osg::Group* parent, Resource::ResourceSystem* resourceSystem,
             MWRender::RenderingManager* rendering, MWPhysics::PhysicsSystem* physics);
+        ~ProjectileManager();
 
         /// If caster is an actor, the actor's facing orientation is used. Otherwise fallbackDirection is used.
         void launchMagicBolt(const ESM::RefId& spellId, const MWWorld::Ptr& caster, const osg::Vec3f& fallbackDirection,
@@ -69,6 +86,11 @@ namespace MWWorld
         bool readRecord(ESM::ESMReader& reader, uint32_t type);
         size_t countSavedGameRecords() const;
         void saveLoaded(const ESM::ESMReader& reader);
+
+        // Read-only bridge state for the explicit V4 renderer. Simulation,
+        // collision, hit resolution, save state, sounds, and legacy visual
+        // evaluation remain owned exclusively by ProjectileManager.
+        [[nodiscard]] V4ProjectileFrameSnapshot captureV4FrameState() const;
 
     private:
         osg::ref_ptr<osg::Group> mParent;
@@ -142,6 +164,10 @@ namespace MWWorld
         ProjectileManager(const ProjectileManager&);
     };
 
+    // The game owns exactly one live ProjectileManager. This accessor does not
+    // duplicate projectile state; it only snapshots the authoritative owner on
+    // the main thread for V4 publication.
+    [[nodiscard]] V4ProjectileFrameSnapshot captureV4ProjectileFrameState();
 }
 
 #endif
