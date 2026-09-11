@@ -99,7 +99,7 @@ int main()
         || !require(rewettedReflection->outputTarget == reflectionTarget
                 && rewettedRefraction->outputTarget == refractionTarget,
             "persistent water target identities changed across a dry-cell transition")
-        || !require(!rewettedReflection->historyValid() && !rewettedRefraction->historyValid(),
+        || !require(!rewettedReflection->historyValid && !rewettedRefraction->historyValid,
             "non-temporal water views incorrectly inherited temporal history"))
         return EXIT_FAILURE;
 
