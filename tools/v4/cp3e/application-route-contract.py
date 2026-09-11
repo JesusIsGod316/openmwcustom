@@ -3,7 +3,8 @@
 
 This is deliberately structural: production compilation remains the Windows
 gate, while this catches accidental loss of the explicit Vulkan route, the
-OpenGL control, GUI injection, lifecycle ownership, and headless OSG boundary.
+OpenGL control, GUI injection, lifecycle ownership, headless OSG boundary, and
+public compile-definition propagation required by Engine's conditional ABI.
 """
 
 from pathlib import Path
@@ -33,6 +34,10 @@ require(
     "mV4RenderBridge->takeSceneRenderLifecycle()",
     "presentVulkanFrame(frametime, false)",
     "mViewer->updateTraversal();",
+)
+require(
+    "apps/openmw/CMakeLists.txt",
+    "target_compile_definitions(openmw-lib PUBLIC OPENMW_ENABLE_V4_VULKAN_RUNTIME=1)",
 )
 require(
     "components/rendercore/backendselection.hpp",
