@@ -1,6 +1,7 @@
 #include "vsgruntimehost.hpp"
 
 #include "dynamicactorplan.hpp"
+#include "immediateeffectrealizer.hpp"
 #include "legacymaterialshader.hpp"
 #include "populationvisibility.hpp"
 #include "staticassetconformance.hpp"
@@ -649,6 +650,24 @@ namespace RenderVsg
             const bool castsShadow = mOptions.shadows.actorCasters
                 && hasSemanticFlag(actor.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster);
             nextRoot->addChild(maskedNode(placementMask(castsShadow, actor.semanticFlags), std::move(placed)));
+        }
+
+        for (const RenderCore::ImmediateEffectDraw& effect : frame.immediateEffectDraws())
+        {
+            ImmediateEffectRealization realized
+                = realizeImmediateEffectDraw(effect, mTextureResolver, mSharedObjects);
+            if (!realized.valid())
+            {
+                mLastDiagnostic = realized.diagnostic.empty()
+                    ? "evaluated gameplay effect could not be realized by the VSG compatibility path"
+                    : realized.diagnostic;
+                return false;
+            }
+            auto placed = vsg::MatrixTransform::create(toVsgMatrix(effect.worldTransform));
+            placed->addChild(realized.root);
+            const bool castsShadow
+                = hasSemanticFlag(effect.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster);
+            nextRoot->addChild(maskedNode(placementMask(castsShadow, effect.semanticFlags), std::move(placed)));
         }
         if (!compileForViewer(*mViewer, nextRoot))
         {
