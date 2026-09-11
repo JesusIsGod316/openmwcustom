@@ -71,6 +71,12 @@ namespace MWRender
         [[nodiscard]] std::unique_ptr<MWWorld::SceneRenderLifecycle> takeSceneRenderLifecycle();
         [[nodiscard]] bool sceneRenderLifecycleTaken() const noexcept { return mLifecycleTaken; }
 
+        [[nodiscard]] bool configureNamedSwitchState(
+            RenderCore::NightDaySwitchState state, bool dayNightSwitchesEnabled) noexcept
+        {
+            return mSession && mSession->configureNamedSwitchState(state, dayNightSwitchesEnabled);
+        }
+
         [[nodiscard]] std::optional<RenderCore::Extent2D> outputExtent() const noexcept;
         [[nodiscard]] SDL_Window* sdlWindow() const noexcept;
         [[nodiscard]] std::unique_ptr<MyGUIPlatform::PlatformBase> createGuiPlatform(
