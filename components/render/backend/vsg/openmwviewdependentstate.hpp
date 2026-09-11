@@ -25,7 +25,11 @@ namespace RenderVsg
     inline constexpr std::uint32_t OpenMwLocalLightDescriptorBinding = 5;
     inline constexpr std::uint32_t OpenMwEnvironmentDescriptorBinding = 6;
     inline constexpr std::size_t OpenMwLocalLightVec4Stride = 5;
-    inline constexpr std::size_t OpenMwEnvironmentVec4Count = 8;
+    // The ninth vec4 is backend temporal compatibility state. Its x component
+    // carries the exact legacy enchanted-caustic frame index for the current
+    // VSG FrameStamp; the existing environment values remain byte-for-byte in
+    // their original slots.
+    inline constexpr std::size_t OpenMwEnvironmentVec4Count = 9;
 
     using OpenMwEnvironmentValues = std::array<vsg::vec4, OpenMwEnvironmentVec4Count>;
 
