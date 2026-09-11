@@ -168,13 +168,28 @@ namespace MWRender
     void LocalMap::setupRenderToTexture(
         int segmentX, int segmentY, float left, float top, const osg::Vec3d& upVector, float zmin, float zmax)
     {
+        MapSegment& segment = mInterior ? mInteriorSegments[std::make_pair(segmentX, segmentY)]
+                                        : mExteriorSegments[std::make_pair(segmentX, segmentY)];
+        if (mNativeAuxiliaryRoute)
+        {
+            // Explicit Vulkan consumes the logical map request through the VSG
+            // auxiliary-view path. Keep only CPU/save-owned state here: no OSG
+            // RTT, texture object or PBO is created on the native renderer.
+            segment.mNativeCpuOnly = true;
+            segment.mMapTexture = nullptr;
+            segment.mNativeObservedMapTexture = nullptr;
+            segment.mNativeMapRequested = true;
+            segment.mNativeMapNeedsRender = true;
+            segment.mNativeMapReady = false;
+            segment.mNativeMapRgba.clear();
+            return;
+        }
+
+        segment.mNativeCpuOnly = false;
         mLocalMapRTTs.emplace_back(
             new LocalMapRenderToTexture(mSceneRoot, mMapResolution, mMapWorldSize, left, top, upVector, zmin, zmax));
 
         mRoot->addChild(mLocalMapRTTs.back());
-
-        MapSegment& segment = mInterior ? mInteriorSegments[std::make_pair(segmentX, segmentY)]
-                                        : mExteriorSegments[std::make_pair(segmentX, segmentY)];
         segment.mMapTexture = static_cast<osg::Texture2D*>(mLocalMapRTTs.back()->getColorTexture(nullptr));
     }
 
@@ -529,7 +544,8 @@ namespace MWRender
                 auto& segments(mInterior ? mInteriorSegments : mExteriorSegments);
                 MapSegment& segment = segments[std::make_pair(texX, texY)];
 
-                if (!segment.mFogOfWarImage || !segment.mMapTexture)
+                const bool mapAvailable = mNativeAuxiliaryRoute ? segment.mNativeMapRequested : segment.mMapTexture.valid();
+                if (!segment.mFogOfWarImage || !mapAvailable)
                     continue;
 
                 std::uint32_t* data = reinterpret_cast<std::uint32_t*>(segment.mFogOfWarImage->data());
@@ -579,7 +595,8 @@ namespace MWRender
         for (const auto& [flag, dx, dy] : flags)
         {
             auto it = mExteriorSegments.find(std::pair(cellX + dx, cellY + dy));
-            if (it != mExteriorSegments.end() && it->second.mMapTexture)
+            if (it != mExteriorSegments.end()
+                && (mNativeAuxiliaryRoute ? it->second.mNativeMapRequested : it->second.mMapTexture.valid()))
                 result |= flag;
         }
         return result;
@@ -593,7 +610,7 @@ namespace MWRender
 
     void LocalMap::MapSegment::createFogOfWarTexture()
     {
-        if (mFogOfWarTexture)
+        if (mNativeCpuOnly || mFogOfWarTexture)
             return;
         mFogOfWarTexture = new osg::Texture2D;
         // TODO: synchronize access? for now, the worst that could happen is the draw thread jumping a frame ahead.
@@ -609,8 +626,10 @@ namespace MWRender
     void LocalMap::MapSegment::initFogOfWar()
     {
         mFogOfWarImage = new osg::Image;
-        // Assign a PixelBufferObject for asynchronous transfer of data to the GPU
-        mFogOfWarImage->setPixelBufferObject(new osg::PixelBufferObject);
+        // OpenGL uses a PBO for asynchronous upload. Explicit Vulkan keeps this
+        // image CPU-only; VSG/MyGUI receives the bytes through the native bridge.
+        if (!mNativeCpuOnly)
+            mFogOfWarImage->setPixelBufferObject(new osg::PixelBufferObject);
         mFogOfWarImage->allocateImage(sFogOfWarResolution, sFogOfWarResolution, 1, GL_RGBA, GL_UNSIGNED_BYTE);
         assert(mFogOfWarImage->isDataContiguous());
         std::vector<uint32_t> data;
