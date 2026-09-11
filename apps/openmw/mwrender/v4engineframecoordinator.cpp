@@ -4,6 +4,12 @@
 #include "v4enginerenderbridge.hpp"
 #include "v4semanticsource.hpp"
 
+#include "../mwbase/environment.hpp"
+#include "../mwbase/world.hpp"
+
+#include <components/rendercore/namedvisualsemantics.hpp>
+#include <components/settings/values.hpp>
+
 #include <optional>
 #include <utility>
 
@@ -21,6 +27,27 @@ namespace MWRender
             mLastDiagnostic = "V4 output surface is hidden, minimized, or temporarily has no pixel extent";
             return RenderCore::RenderFrameResult::Skipped;
         }
+
+        MWBase::World* const world = MWBase::Environment::get().getWorld();
+        if (!world)
+            return fail("authoritative world state is unavailable for named visual switch capture");
+        RenderCore::NightDaySwitchState nightDayState;
+        switch (world->getNightDayMode())
+        {
+            case 0:
+                nightDayState = RenderCore::NightDaySwitchState::Default;
+                break;
+            case 1:
+                nightDayState = RenderCore::NightDaySwitchState::ExteriorNight;
+                break;
+            case 2:
+                nightDayState = RenderCore::NightDaySwitchState::InteriorDay;
+                break;
+            default:
+                return fail("authoritative weather state produced an invalid NightDaySwitch mode");
+        }
+        if (!mBridge.configureNamedSwitchState(nightDayState, Settings::game().mDayNightSwitches))
+            return fail("V4 renderer rejected the authoritative NightDaySwitch state");
 
         if (!mBridge.synchronizeExteriorTerrain(rendering, cell))
             return fail(mBridge.lastDiagnostic().empty()
