@@ -8,10 +8,12 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <optional>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace MWRender
 {
@@ -176,6 +178,8 @@ namespace MWRender
         input.morphWeights = source.morphWeights;
         input.invalidateHistory = source.invalidateHistory || mGuiOnlyFramePresented;
 
+        std::vector<RenderCore::RenderTargetHandle> renderedMapTargets;
+        renderedMapTargets.reserve(surfaces.size());
         for (const LocalMap::NativeMapSurface& surface : surfaces)
         {
             if (!surface.needsRender)
@@ -202,6 +206,7 @@ namespace MWRender
             // though first publication is intentionally delayed until Presented.
             request.sampledByMain = true;
             request.stableSlot = surface.stableSlot;
+            renderedMapTargets.push_back(localMapTarget(surface.stableSlot));
             input.auxiliaryViews.push_back(std::move(request));
         }
 
@@ -214,12 +219,26 @@ namespace MWRender
         if (!localMap)
             return result;
 
+        std::optional<std::vector<RenderVsg::VsgRuntimeHost::AuxiliaryRgba8Readback>> mapReadbacks;
+        if (!renderedMapTargets.empty())
+        {
+            mapReadbacks = host.readbackAuxiliaryRgba8(renderedMapTargets);
+            if (!mapReadbacks || mapReadbacks->size() != renderedMapTargets.size())
+            {
+                mLastDiagnostic = host.lastDiagnostic().empty()
+                    ? "presented native local-map targets could not be retained for global-map persistence"
+                    : host.lastDiagnostic();
+                return RenderCore::RenderFrameResult::Failed;
+            }
+        }
+
         for (const LocalMap::NativeMapSurface& surface : surfaces)
         {
             NativeMapUiEntry& entry = mNativeMapUiEntries.at(surface.stableSlot);
             if (surface.needsRender)
             {
-                const vsg::ref_ptr<vsg::ImageView> image = host.auxiliaryColorImage(localMapTarget(surface.stableSlot));
+                const RenderCore::RenderTargetHandle target = localMapTarget(surface.stableSlot);
+                const vsg::ref_ptr<vsg::ImageView> image = host.auxiliaryColorImage(target);
                 if (!image || !gui
                     || !gui->setExternalTexture(std::string(surface.mapTextureName), image, surface.resolution,
                         surface.resolution))
@@ -231,6 +250,17 @@ namespace MWRender
                 if (!localMap->markNativeMapRendered(surface.stableSlot))
                 {
                     mLastDiagnostic = "presented native local-map target lost its logical LocalMap segment";
+                    return RenderCore::RenderFrameResult::Failed;
+                }
+
+                auto readback = std::find_if(mapReadbacks->begin(), mapReadbacks->end(),
+                    [&](const auto& value) { return value.target == target; });
+                const RenderCore::Extent2D expected{ static_cast<std::uint32_t>(surface.resolution),
+                    static_cast<std::uint32_t>(surface.resolution) };
+                if (readback == mapReadbacks->end() || readback->extent != expected
+                    || !localMap->storeNativeMapRgba(surface.stableSlot, std::move(readback->rgba)))
+                {
+                    mLastDiagnostic = "presented native local-map readback did not match its logical segment";
                     return RenderCore::RenderFrameResult::Failed;
                 }
             }
