@@ -100,6 +100,9 @@ namespace MWRender
         [[nodiscard]] std::vector<NativeMapSurface> nativeMapSurfaces();
         [[nodiscard]] bool markNativeMapRendered(std::uint32_t stableSlot) noexcept;
         [[nodiscard]] bool markNativeFogPublished(std::uint32_t stableSlot, std::uint64_t revision) noexcept;
+        [[nodiscard]] bool storeNativeMapRgba(std::uint32_t stableSlot, std::vector<std::uint8_t> rgba) noexcept;
+        [[nodiscard]] std::span<const std::uint8_t> nativeMapRgba(int x, int y) const noexcept;
+        [[nodiscard]] int nativeMapResolution() const noexcept { return mMapResolution; }
         [[nodiscard]] std::string_view nativeMapTextureName(int x, int y) const noexcept;
         [[nodiscard]] std::string_view nativeFogTextureName(int x, int y) const noexcept;
 
@@ -182,6 +185,7 @@ namespace MWRender
             bool mNativeMapReady = false;
             bool mNativeFogReady = false;
             const osg::Texture2D* mNativeObservedMapTexture = nullptr;
+            std::vector<std::uint8_t> mNativeMapRgba;
             std::uint64_t mNativeFogContentHash = 0;
             std::uint64_t mFogRevision = 0;
             std::uint64_t mPublishedFogRevision = 0;
