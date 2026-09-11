@@ -1,7 +1,9 @@
 #ifndef OPENMW_COMPONENTS_VSGMYGUI_RENDERMANAGER_H
 #define OPENMW_COMPONENTS_VSGMYGUI_RENDERMANAGER_H
 
+#include <cstdint>
 #include <map>
+#include <span>
 #include <string>
 
 #include <MyGUI_RenderManager.h>
@@ -48,6 +50,16 @@ namespace VsgMyGui
         // texture revision so persistent overlay descriptor sets are rebuilt exactly once.
         Texture* setExternalTexture(const std::string& name, vsg::ref_ptr<vsg::ImageView> imageView,
             int width, int height, MyGUI::PixelFormat format = MyGUI::PixelFormat::R8G8B8A8);
+
+        // Publish CPU-authored RGBA8 content without passing an OSG texture across
+        // the VSG/MyGUI boundary. Used by persistent overlays such as local-map
+        // fog-of-war whose authoritative state remains CPU/save-game owned.
+        Texture* setRgba8Texture(const std::string& name, std::span<const std::uint8_t> rgba, int width, int height);
+
+        // Remove a named native texture and invalidate every raw cache reference
+        // before erasing it. This is required when persistent auxiliary surfaces
+        // retire so revisit churn cannot grow the UI texture registry forever.
+        bool removeTexture(const std::string& name) noexcept;
 
         void forgetTexture(const Texture* texture);
         void setViewSize(int width, int height) override;
