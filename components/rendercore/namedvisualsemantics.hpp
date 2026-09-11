@@ -22,10 +22,13 @@ namespace RenderCore
             || value == NightDaySwitchState::InteriorDay;
     }
 
-    // Per-reference graphic-herbalism state. InstanceRecord::semanticFlags is
-    // already the neutral per-instance semantic extension field; reserve the
-    // high bit here rather than conflating this visual state with view/caster
-    // classification bits in InstanceSemanticFlag.
+    // These high semantic bits carry source capability/state across the neutral
+    // instance/population contract. OpenMW only activates the named switches
+    // when the NIF root has the matching user-description label; node names by
+    // themselves are insufficient. Dense placements sharing a model therefore
+    // carry the same capability bits, while harvested state remains per reference.
+    inline constexpr std::uint64_t NightDaySwitchCapabilitySemanticFlag = std::uint64_t{ 1 } << 61u;
+    inline constexpr std::uint64_t HerbalismSwitchCapabilitySemanticFlag = std::uint64_t{ 1 } << 62u;
     inline constexpr std::uint64_t HerbalismHarvestedSemanticFlag = std::uint64_t{ 1 } << 63u;
 }
 
