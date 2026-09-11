@@ -3,9 +3,11 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <osg/ref_ptr>
@@ -52,6 +54,8 @@ namespace MWRender
         // Explicit Vulkan keeps global-map composition CPU/save authoritative:
         // local-map RGBA readbacks are resampled into the same overlay image
         // saved by OpenMW, while MyGUI receives native VSG textures by name.
+        [[nodiscard]] static GlobalMap* activeInstance() noexcept;
+        void flushNativeExploration();
         [[nodiscard]] bool exploreCellNative(int cellX, int cellY, std::span<const std::uint8_t> localMapRgba,
             int sourceWidth, int sourceHeight);
         [[nodiscard]] bool publishNativeTextures();
@@ -147,6 +151,17 @@ namespace MWRender
         int mMinX, mMaxX, mMinY, mMaxY;
 
 #if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        struct NativeRegistration
+        {
+            explicit NativeRegistration(GlobalMap* owner) noexcept;
+            ~NativeRegistration();
+            NativeRegistration(const NativeRegistration&) = delete;
+            NativeRegistration& operator=(const NativeRegistration&) = delete;
+            GlobalMap* mOwner = nullptr;
+        };
+
+        NativeRegistration mNativeRegistration{ this };
+        std::set<std::pair<int, int>> mNativePendingExploredCells;
         std::uint64_t mNativeOverlayRevision = 1;
         std::uint64_t mNativePublishedOverlayRevision = 0;
         bool mNativeBasePublished = false;
