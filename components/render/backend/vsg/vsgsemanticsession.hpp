@@ -54,6 +54,7 @@ namespace RenderVsg
         RenderCore::ActiveCellProducer mCells;
         RenderCore::StaticPopulationProducer mPopulations;
         RenderCore::SingleViewFrameProducer mFrames;
+        RenderCore::SingleViewFrameInput::DerivedShadowViews mShadowViews;
         std::string mLastDiagnostic;
         bool mHealthy = true;
         std::unique_ptr<VsgRuntimeBootstrap> mBootstrap;

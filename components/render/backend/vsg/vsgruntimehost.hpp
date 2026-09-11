@@ -101,6 +101,8 @@ namespace RenderVsg
         [[nodiscard]] bool synchronizeGui();
         [[nodiscard]] const RenderCore::FrameView* selectMainView(
             const RenderCore::FrameRenderState& frame) const noexcept;
+        [[nodiscard]] bool shadowViewFamilyCompatible(
+            const RenderCore::FrameRenderState& frame) const noexcept;
         RenderCore::RenderFrameResult finish(
             RenderCore::RenderFrameResult result, std::string diagnostic = {});
 

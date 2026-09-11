@@ -105,6 +105,8 @@ namespace MWRender
         [[nodiscard]] float getCloudBlendFactor() const noexcept { return mCloudBlendFactor; }
         [[nodiscard]] float getCloudSpeed() const noexcept { return mCloudSpeed; }
         [[nodiscard]] float getNightSkyFactor() const noexcept { return mStarsOpacity; }
+        [[nodiscard]] bool isSunVisible() const noexcept { return mSunVisible; }
+        [[nodiscard]] const osg::Vec4f& getSunDiscColor() const noexcept { return mSunDiscColor; }
 
         void setSunglare(bool enabled);
 
@@ -199,6 +201,8 @@ namespace MWRender
 
         bool mEnabled;
         bool mSunglareEnabled;
+        bool mSunVisible;
+        osg::Vec4f mSunDiscColor;
 
         float mPrecipitationAlpha;
         bool mDirtyParticlesEffect;

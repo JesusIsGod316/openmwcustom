@@ -262,6 +262,8 @@ namespace MWRender
         , mBaseWindSpeed(0.f)
         , mEnabled(true)
         , mSunglareEnabled(true)
+        , mSunVisible(true)
+        , mSunDiscColor(1.f, 1.f, 1.f, 1.f)
         , mPrecipitationAlpha(0.f)
         , mDirtyParticlesEffect(false)
     {
@@ -827,6 +829,7 @@ namespace MWRender
         mSecunda->adjustTransparency(weather.mGlareView);
 
         mSun->setColor(weather.mSunDiscColor);
+        mSunDiscColor = weather.mSunDiscColor;
         mSun->adjustTransparency(weather.mGlareView * weather.mSunDiscColor.a());
 
         float nextStarsOpacity = weather.mNightFade * weather.mGlareView;
@@ -864,6 +867,7 @@ namespace MWRender
             return;
 
         mSun->setVisible(true);
+        mSunVisible = true;
     }
 
     void SkyManager::sunDisable()
@@ -872,6 +876,7 @@ namespace MWRender
             return;
 
         mSun->setVisible(false);
+        mSunVisible = false;
     }
 
     void SkyManager::setStormParticleDirection(const osg::Vec3f& direction)

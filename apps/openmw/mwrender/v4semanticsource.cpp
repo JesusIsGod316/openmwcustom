@@ -347,6 +347,8 @@ namespace MWRender
             if (const SkyManager* sky = rendering.getSkyManager())
             {
                 result.skyColor = toColor(sky->getSkyColor());
+                result.sunDiscColor = toColor(sky->getSunDiscColor());
+                result.sunVisible = sky->isSunVisible();
                 result.nightSkyFactor = std::clamp(sky->getNightSkyFactor(), 0.0f, 1.0f);
                 result.cloudBlendFactor = std::clamp(sky->getCloudBlendFactor(), 0.0f, 1.0f);
                 result.cloudSpeed = sky->getCloudSpeed();

@@ -23,6 +23,7 @@
 #include <vsg/utils/SharedObjects.h>
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -95,7 +96,8 @@ namespace RenderVsg
         if (options.shadows.enabled
             && (options.shadows.cascadeCount == 0 || options.shadows.cascadeCount > 8
                 || options.shadows.mapResolution < 256 || options.shadows.mapResolution > 4096
-                || options.shadows.maximumDistance <= 0.0 || options.shadows.depthBias < 0.0
+                || options.shadows.maximumDistance <= 0.0
+                || options.shadows.maximumDistance > std::numeric_limits<float>::max() || options.shadows.depthBias < 0.0
                 || options.shadows.splitLambda < 0.0 || options.shadows.splitLambda > 1.0))
             throw std::invalid_argument("VsgRuntimeHost received unsafe or invalid CP4D shadow settings");
 
@@ -191,6 +193,25 @@ namespace RenderVsg
             || !frame.renderPasses().front().present)
             return nullptr;
         return &frame.views().front();
+    }
+
+    bool VsgRuntimeHost::shadowViewFamilyCompatible(const RenderCore::FrameRenderState& frame) const noexcept
+    {
+        const bool expected = mOptions.shadows.enabled && frame.environment().shadowsEnabled;
+        if (!expected)
+            return frame.derivedViewFamilies().empty();
+        if (frame.derivedViewFamilies().size() != 1)
+            return false;
+        const RenderCore::DerivedViewFamilyDesc& family = frame.derivedViewFamilies().front();
+        const RenderCore::FrameView* const mainView = selectMainView(frame);
+        return mainView && family.kind == RenderCore::ViewKind::Shadow && family.sourceView == mainView->identity
+            && family.viewCount == mOptions.shadows.cascadeCount
+            && family.extent.width == mOptions.shadows.mapResolution
+            && family.extent.height == mOptions.shadows.mapResolution
+            && family.maximumDistance == static_cast<float>(mOptions.shadows.maximumDistance)
+            && family.semanticIncludeMask
+                == RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::ShadowCaster)
+            && family.semanticExcludeMask == 0 && !family.transient;
     }
 
     bool VsgRuntimeHost::synchronizeStaticWorld(const RenderCore::RenderWorld& world)
@@ -578,6 +599,9 @@ namespace RenderVsg
         if (!mainView || mainView->extent != frame.renderExtent() || frame.renderExtent() != frame.outputExtent())
             return finish(RenderCore::RenderFrameResult::Failed,
                 "CP3C host requires one unmasked main view with equal render and output extents");
+        if (!shadowViewFamilyCompatible(frame))
+            return finish(RenderCore::RenderFrameResult::Failed,
+                "CP4D native shadow resources do not match the semantic derived-view family");
         if (!vsgProjectionCompatible(mainView->current.projection)
             || !vsgProjectionCompatible(mainView->previous.projection) || frame.jitter() != glm::vec2(0.0f)
             || frame.projectionOffset() != glm::vec2(0.0f))
@@ -620,7 +644,7 @@ namespace RenderVsg
         mSunLight->color.set(environment.sunDiffuse.r, environment.sunDiffuse.g, environment.sunDiffuse.b);
         mSunLight->intensity = environment.sunLightEnabled ? 1.0f : 0.0f;
         mSunLight->direction.set(environment.sunDirection.x, environment.sunDirection.y, environment.sunDirection.z);
-        mSkyBackdrop.update(environment);
+        mSkyBackdrop.update(environment, *mainView);
         if (mOptions.shadows.enabled)
         {
             if (environment.shadowsEnabled)

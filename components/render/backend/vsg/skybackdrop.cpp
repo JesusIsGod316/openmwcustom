@@ -47,6 +47,8 @@ layout(push_constant) uniform SkyParameters
     vec4 zenithColor;
     vec4 horizonColor;
     vec4 weather;
+    vec4 sunScreen;
+    vec4 sunColor;
 } sky;
 
 void main()
@@ -57,6 +59,9 @@ void main()
     const float stormWeight = clamp(sky.weather.y, 0.0, 1.0) * 0.18;
     const float precipitationWeight = clamp(sky.weather.z, 0.0, 1.0) * 0.10;
     color *= 1.0 - stormWeight - precipitationWeight;
+    const vec2 sunDelta = vec2((skyUv.x - sky.sunScreen.x) * sky.sunScreen.w, skyUv.y - sky.sunScreen.y);
+    const float sunDisc = (1.0 - smoothstep(0.018, 0.026, length(sunDelta))) * sky.sunScreen.z;
+    color = mix(color, sky.sunColor.rgb, sunDisc * clamp(sky.sunColor.a, 0.0, 1.0));
     outColor = vec4(color, 1.0);
 }
 )";
@@ -79,7 +84,7 @@ void main()
 
         auto pipelineLayout = vsg::PipelineLayout::create(vsg::DescriptorSetLayouts{},
             vsg::PushConstantRanges{ VkPushConstantRange{ VK_SHADER_STAGE_VERTEX_BIT, 0, 128 },
-                VkPushConstantRange{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 48 } });
+                VkPushConstantRange{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 80 } });
 
         auto rasterization = vsg::RasterizationState::create();
         rasterization->cullMode = VK_CULL_MODE_NONE;
@@ -97,11 +102,13 @@ void main()
         stateGroup->add(vsg::BindGraphicsPipeline::create(vsg::GraphicsPipeline::create(
             pipelineLayout, vsg::ShaderStages{ vertexShader, fragmentShader }, states)));
 
-        result.mParameters = vsg::vec4Array::create(3);
+        result.mParameters = vsg::vec4Array::create(5);
         result.mParameters->properties.dataVariance = vsg::DYNAMIC_DATA;
         (*result.mParameters)[0] = vsg::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         (*result.mParameters)[1] = vsg::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         (*result.mParameters)[2] = vsg::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        (*result.mParameters)[3] = vsg::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        (*result.mParameters)[4] = vsg::vec4(1.0f, 1.0f, 1.0f, 1.0f);
         stateGroup->add(vsg::PushConstants::create(VK_SHADER_STAGE_FRAGMENT_BIT, 0, result.mParameters.get()));
         stateGroup->addChild(vsg::Draw::create(3, 1, 0, 0));
 
@@ -115,18 +122,26 @@ void main()
         return mRoot;
     }
 
-    void SkyBackdrop::update(const RenderCore::FrameEnvironmentState& environment) noexcept
+    void SkyBackdrop::update(
+        const RenderCore::FrameEnvironmentState& environment, const RenderCore::FrameView& view) noexcept
     {
         if (!*this)
             return;
 
         mRoot->setAllChildren(environment.skyEnabled && !environment.interior);
-        const vsg::vec4 values[3]{ colorValue(environment.skyColor), colorValue(environment.fogColor),
+        const glm::vec4 sunView = view.current.view * glm::vec4(-environment.sunDirection, 0.0f);
+        const glm::vec4 sunClip = view.current.projection.matrix * sunView;
+        const bool sunInFront = environment.sunVisible && sunClip.w > 0.0001f;
+        const glm::vec2 sunNdc = sunInFront ? glm::vec2(sunClip) / sunClip.w : glm::vec2(0.0f);
+        const float aspect = static_cast<float>(view.extent.width) / static_cast<float>(view.extent.height);
+        const vsg::vec4 values[5]{ colorValue(environment.skyColor), colorValue(environment.fogColor),
             vsg::vec4(std::clamp(environment.nightSkyFactor, 0.0f, 1.0f), environment.storm ? 1.0f : 0.0f,
                 std::clamp(environment.precipitationIntensity, 0.0f, 1.0f),
-                std::clamp(environment.cloudBlendFactor, 0.0f, 1.0f)) };
+                std::clamp(environment.cloudBlendFactor, 0.0f, 1.0f)),
+            vsg::vec4(sunNdc.x * 0.5f + 0.5f, sunNdc.y * 0.5f + 0.5f, sunInFront ? 1.0f : 0.0f, aspect),
+            colorValue(environment.sunDiscColor) };
         bool changed = false;
-        for (std::size_t i = 0; i < 3; ++i)
+        for (std::size_t i = 0; i < 5; ++i)
         {
             changed = changed || (*mParameters)[i] != values[i];
             (*mParameters)[i] = values[i];

@@ -33,6 +33,14 @@ namespace RenderCore
 
     struct SingleViewFrameInput
     {
+        struct DerivedShadowViews
+        {
+            bool enabled = false;
+            std::uint32_t cascadeCount = 1;
+            Extent2D extent{ 2048, 2048 };
+            float maximumDistance = 1.0f;
+        };
+
         CameraState camera;
         Extent2D renderExtent;
         Extent2D outputExtent;
@@ -46,6 +54,7 @@ namespace RenderCore
         std::vector<SkeletonPoseInput> skeletonPoses;
         std::vector<MorphWeightInput> morphWeights;
         bool invalidateHistory = false;
+        DerivedShadowViews shadowViews;
     };
 
     // Small backend-neutral frame-boundary producer for the primary view. It
@@ -121,6 +130,20 @@ namespace RenderCore
                 .present = true,
             });
             desc.views.push_back(std::move(view));
+            if (input.shadowViews.enabled && input.environment.shadowsEnabled)
+            {
+                desc.derivedViewFamilies.push_back(DerivedViewFamilyDesc{
+                    .identity = ViewHandle::fromParts(1, 1),
+                    .sourceView = desc.views.front().identity,
+                    .kind = ViewKind::Shadow,
+                    .extent = input.shadowViews.extent,
+                    .viewCount = input.shadowViews.cascadeCount,
+                    .maximumDistance = input.shadowViews.maximumDistance,
+                    .semanticIncludeMask = semanticFlag(InstanceSemanticFlag::ShadowCaster),
+                    .semanticExcludeMask = 0,
+                    .transient = false,
+                });
+            }
 
             for (const DynamicTransformInput& inputTransform : input.dynamicTransforms)
             {

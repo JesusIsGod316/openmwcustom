@@ -41,7 +41,7 @@ require(
     "maskedNode(placementMask(castsShadow)",
     "populationWithinMaximumDistance(world, plan, mainView.current.worldPosition)",
     "environment.skyEnabled ? environment.skyColor : environment.fogColor",
-    "mSkyBackdrop.update(environment)",
+    "mSkyBackdrop.update(environment, *mainView)",
     "maskedNode(vsg::MASK_ALL & ~ShadowTraversalMask, mSkyBackdrop.node())",
 )
 require(
@@ -82,9 +82,12 @@ require(
 require(
     "components/rendercore/framerenderstate.hpp",
     "Color skyColor",
+    "Color sunDiscColor",
     "float precipitationIntensity",
     "glm::vec3 windDirection",
     "bool shadowsEnabled",
+    "struct DerivedViewFamilyDesc",
+    "std::vector<DerivedViewFamilyDesc> derivedViewFamilies",
 )
 require(
     "components/render/backend/vsg/openmwviewdependentstate.cpp",
@@ -94,11 +97,28 @@ require(
     "environment.shadowsEnabled",
 )
 require(
+    "components/rendercore/frameproducer.hpp",
+    "struct DerivedShadowViews",
+    "desc.derivedViewFamilies.push_back(DerivedViewFamilyDesc",
+    "semanticFlag(InstanceSemanticFlag::ShadowCaster)",
+)
+require(
+    "components/render/backend/vsg/vsgsemanticsession.cpp",
+    "routedInput.shadowViews = mShadowViews",
+)
+require(
+    "components/render/backend/vsg/vsgruntimehost.cpp",
+    "shadowViewFamilyCompatible(frame)",
+    "native shadow resources do not match the semantic derived-view family",
+)
+require(
     "apps/openmw/mwrender/v4semanticsource.cpp",
     "sky->getCloudBlendFactor()",
     "sky->getPrecipitationAlpha()",
     "sky->getStormDirection()",
     "result.skyEnabled = sky->isEnabled()",
+    "result.sunVisible = sky->isSunVisible()",
+    "result.sunDiscColor = toColor(sky->getSunDiscColor())",
 )
 
 print("CP4C/CP4D population and environment contracts: PASS")

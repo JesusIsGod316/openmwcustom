@@ -142,6 +142,23 @@ namespace RenderCore
         bool historyValid = false;
     };
 
+    // Some auxiliary cameras and targets are derived by the backend from a
+    // primary semantic view. A family keeps their ownership and limits in the
+    // neutral frame contract without pretending the game owns backend-specific
+    // cascade matrices or image allocations.
+    struct DerivedViewFamilyDesc
+    {
+        ViewHandle identity;
+        ViewHandle sourceView;
+        ViewKind kind = ViewKind::Shadow;
+        Extent2D extent;
+        std::uint32_t viewCount = 0;
+        float maximumDistance = 0.0f;
+        std::uint64_t semanticIncludeMask = ~std::uint64_t{ 0 };
+        std::uint64_t semanticExcludeMask = 0;
+        bool transient = true;
+    };
+
     struct DynamicTransformState
     {
         InstanceHandle instance;
@@ -205,6 +222,7 @@ namespace RenderCore
         glm::vec3 sunDirection{ 0.0f, 0.0f, -1.0f };
         Color sunDiffuse{ 1.0f, 1.0f, 1.0f, 1.0f };
         Color sunSpecular{ 1.0f, 1.0f, 1.0f, 1.0f };
+        Color sunDiscColor{ 1.0f, 1.0f, 1.0f, 1.0f };
         // Lighting and visible solar-disc/glare state are distinct. Interiors
         // retain authored directional lighting while hiding the sun itself.
         bool sunLightEnabled = true;
@@ -254,6 +272,7 @@ namespace RenderCore
         std::vector<RenderTargetDesc> renderTargets;
         std::vector<RenderPassDesc> renderPasses;
         std::vector<FrameView> views;
+        std::vector<DerivedViewFamilyDesc> derivedViewFamilies;
         std::vector<DynamicTransformState> dynamicTransforms;
         std::vector<SkeletonPoseState> skeletonPoses;
         std::vector<MorphWeightState> morphWeights;
@@ -289,6 +308,10 @@ namespace RenderCore
         }
         [[nodiscard]] const std::vector<RenderPassDesc>& renderPasses() const noexcept { return mDesc.renderPasses; }
         [[nodiscard]] const std::vector<FrameView>& views() const noexcept { return mDesc.views; }
+        [[nodiscard]] const std::vector<DerivedViewFamilyDesc>& derivedViewFamilies() const noexcept
+        {
+            return mDesc.derivedViewFamilies;
+        }
         [[nodiscard]] const std::vector<DynamicTransformState>& dynamicTransforms() const noexcept
         {
             return mDesc.dynamicTransforms;
@@ -337,6 +360,22 @@ namespace RenderCore
                 for (std::size_t j = i + 1; j < mDesc.views.size(); ++j)
                 {
                     if (view.viewIndex == mDesc.views[j].viewIndex || view.identity == mDesc.views[j].identity)
+                        return false;
+                }
+            }
+
+            for (std::size_t i = 0; i < mDesc.derivedViewFamilies.size(); ++i)
+            {
+                const DerivedViewFamilyDesc& family = mDesc.derivedViewFamilies[i];
+                if (!family.identity.valid() || !family.sourceView.valid() || !findView(family.sourceView)
+                    || family.kind == ViewKind::Main || !known(family.kind) || !family.extent.valid()
+                    || family.viewCount == 0 || family.viewCount > 32 || !finite(family.maximumDistance)
+                    || family.maximumDistance <= 0.0f
+                    || (family.semanticIncludeMask & family.semanticExcludeMask) != 0)
+                    return false;
+                for (std::size_t j = i + 1; j < mDesc.derivedViewFamilies.size(); ++j)
+                {
+                    if (family.identity == mDesc.derivedViewFamilies[j].identity)
                         return false;
                 }
             }
@@ -451,6 +490,13 @@ namespace RenderCore
         {
             return value == RenderTargetKind::Swapchain || value == RenderTargetKind::Offscreen
                 || value == RenderTargetKind::History;
+        }
+
+        [[nodiscard]] static bool known(ViewKind value) noexcept
+        {
+            return value == ViewKind::Main || value == ViewKind::Shadow || value == ViewKind::Reflection
+                || value == ViewKind::Refraction || value == ViewKind::Map || value == ViewKind::Preview
+                || value == ViewKind::PrecipitationOcclusion || value == ViewKind::Debug;
         }
 
         [[nodiscard]] static bool known(RenderTargetFormat value) noexcept
@@ -568,7 +614,8 @@ namespace RenderCore
             const bool fogRangeValid = !value.fogEnabled || (value.fogEnd > value.fogStart && value.fogEnd > 0.0f);
             return finite(value.ambient) && finite(value.fogColor) && finite(value.fogStart) && finite(value.fogEnd)
                 && fogModesValid && fogRangeValid && finite(value.sunDirection) && finite(value.sunDiffuse)
-                && finite(value.sunSpecular) && finite(value.skyColor) && finite(value.nightSkyFactor)
+                && finite(value.sunSpecular) && finite(value.sunDiscColor) && finite(value.skyColor)
+                && finite(value.nightSkyFactor)
                 && value.nightSkyFactor >= 0.0f && value.nightSkyFactor <= 1.0f && finite(value.cloudBlendFactor)
                 && value.cloudBlendFactor >= 0.0f && value.cloudBlendFactor <= 1.0f && finite(value.cloudSpeed)
                 && finite(value.windDirection) && finite(value.windSpeed) && value.windSpeed >= 0.0f

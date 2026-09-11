@@ -130,6 +130,32 @@ int main()
     if (!require(RenderCore::FrameRenderState(weather).valid(), "valid CP4D weather state rejected"))
         return EXIT_FAILURE;
 
+    weather.derivedViewFamilies.push_back(RenderCore::DerivedViewFamilyDesc{
+        .identity = RenderCore::ViewHandle::fromParts(8, 1),
+        .sourceView = weather.views.back().identity,
+        .kind = RenderCore::ViewKind::Shadow,
+        .extent = { 2048, 2048 },
+        .viewCount = 4,
+        .maximumDistance = 4096.0f,
+        .semanticIncludeMask = RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::ShadowCaster),
+        .semanticExcludeMask = 0,
+        .transient = false,
+    });
+    if (!require(RenderCore::FrameRenderState(weather).valid(), "valid derived shadow-view family rejected"))
+        return EXIT_FAILURE;
+
+    auto invalidShadowFamily = weather;
+    invalidShadowFamily.derivedViewFamilies.front().viewCount = 0;
+    if (!require(!RenderCore::FrameRenderState(invalidShadowFamily).valid(), "zero-cascade shadow family accepted"))
+        return EXIT_FAILURE;
+
+    invalidShadowFamily = weather;
+    invalidShadowFamily.derivedViewFamilies.front().semanticExcludeMask
+        = RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::ShadowCaster);
+    if (!require(!RenderCore::FrameRenderState(invalidShadowFamily).valid(),
+            "contradictory shadow semantic masks accepted"))
+        return EXIT_FAILURE;
+
     weather.environment.precipitationIntensity = 1.25f;
     if (!require(!RenderCore::FrameRenderState(weather).valid(), "out-of-range precipitation accepted"))
         return EXIT_FAILURE;

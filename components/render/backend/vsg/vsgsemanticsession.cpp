@@ -19,6 +19,9 @@ namespace RenderVsg
         , mModels(mWorld, mPublisher)
         , mCells(mWorld, mPublisher)
         , mPopulations(mWorld, mPublisher)
+        , mShadowViews{ options.host.shadows.enabled, options.host.shadows.cascadeCount,
+              { options.host.shadows.mapResolution, options.host.shadows.mapResolution },
+              static_cast<float>(options.host.shadows.maximumDistance) }
         , mBootstrap(VsgRuntimeBootstrap::create(std::move(textureResolver), std::move(options)))
     {
         if (!mBootstrap)
@@ -39,7 +42,9 @@ namespace RenderVsg
         if (populationStatus != RenderCore::StaticPopulationPublishStatus::Applied
             && populationStatus != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
             return fail("static population publication failed at the frame boundary");
-        std::optional<RenderCore::FrameRenderState> frame = mFrames.prepare(mWorld, input);
+        RenderCore::SingleViewFrameInput routedInput = input;
+        routedInput.shadowViews = mShadowViews;
+        std::optional<RenderCore::FrameRenderState> frame = mFrames.prepare(mWorld, routedInput);
         if (!frame)
             return fail("semantic frame producer rejected the engine frame input");
 

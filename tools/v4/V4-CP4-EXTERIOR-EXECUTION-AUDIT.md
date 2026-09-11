@@ -96,13 +96,14 @@ CP4C now has a production-shaped local implementation on top of the repaired, pa
 - Authored population maximum distance now changes only a persistent traversal switch. This avoids per-frame population
   graph or instance-buffer reconstruction; a zero rendering distance disables the population.
 
-This closes the first CP4C implementation checkpoint, not its runtime qualification. The transparent/billboard fallback
-must still be measured with dense modded populations, and the conservative cell/model visibility granularity can be
-refined only if complete-world profiling identifies it as a bottleneck.
+This closes CP4C implementation scope. The transparent/billboard fallback must still be measured with dense modded
+populations, and the conservative cell/model visibility granularity can be refined only if complete-world profiling
+identifies it as a bottleneck. Those are runtime qualification and later profile-led optimization obligations, not a
+reason to redesign the data-oriented population ownership established here.
 
-## CP4D implementation status
+## CP4D implementation checkpoint
 
-CP4D is in progress and is not yet a complete environment implementation:
+CP4D's architecture-complete, feature-bounded implementation is now closed for the combined checkpoint:
 
 - Frame state carries authoritative exterior fog, ambient light, sun direction and colours, weather sky colour, night
   factor, cloud blend/speed, wind, precipitation intensity, storm state, and frame-varying shadow policy.
@@ -114,10 +115,15 @@ CP4D is in progress and is not yet a complete environment implementation:
 - An enabled exterior OpenMW sky now drives a persistent full-screen Vulkan atmosphere backdrop, blending live weather
   sky and horizon/fog colours without rebuilding scene topology or swapchain-sized resources. The color-only node is
   excluded from native shadow traversal; disabled skies and interiors retain the fog-colour clear control path.
+- The authored weather sun visibility and disc colour now cross the neutral frame boundary and render as a camera-relative
+  backdrop disc independently of directional-light enablement.
+- Native cascaded shadows are represented by one bounded neutral derived-view family tied to the main view. The family
+  carries stable identity, count, extent, maximum distance and caster mask; the VSG host rejects any mismatch with its
+  native depth resources instead of silently executing an undeclared auxiliary route.
 
-Textured atmosphere, animated/blended clouds, sun and moons, precipitation geometry, and precipitation occlusion are not
-implemented yet. The native VSG shadow pre-render path also still needs an explicit semantic adapter to the common
-view/target/pass contract before CP4D can be called complete. Water remains fail-closed for CP4E.
+Exact legacy sky meshes/textures, animated cloud layers, moons, precipitation geometry/occlusion and shader-mod visual
+parity remain CP5 compatibility work. CP4D preserves their authoritative weather inputs and durable resource/view seams
+without embedding temporary OSG assets or a second ownership model. Water remains fail-closed for CP4E.
 
 ## Combined CP4C-CP4D build gate
 

@@ -22,7 +22,7 @@ namespace RenderVsg
 
         [[nodiscard]] explicit operator bool() const noexcept { return mRoot && mParameters; }
         [[nodiscard]] vsg::ref_ptr<vsg::Node> node() const noexcept;
-        void update(const RenderCore::FrameEnvironmentState& environment) noexcept;
+        void update(const RenderCore::FrameEnvironmentState& environment, const RenderCore::FrameView& view) noexcept;
 
     private:
         vsg::ref_ptr<vsg::Switch> mRoot;
