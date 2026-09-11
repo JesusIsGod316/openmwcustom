@@ -506,6 +506,11 @@ namespace RenderCore
         float emissiveMultiplier = 1.0f;
         float specularStrength = 1.0f;
         float environmentMapStrength = 0.0f;
+        // OpenMW's compatibility shader can apply the same environment effect
+        // either to the sampled surface before lighting or add it after lighting.
+        // Preserve that ordering as neutral material state; it is observable
+        // rendering semantics, not a Vulkan pipeline choice.
+        bool environmentMapPreLight = false;
         float alpha = 1.0f;
         float alphaCutoff = 0.5f;
         // alphaMode is a coarse pass-class hint. The booleans and compare op
