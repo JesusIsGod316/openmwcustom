@@ -82,7 +82,7 @@ namespace MWRender
         [[nodiscard]] std::unique_ptr<MyGUIPlatform::PlatformBase> createGuiPlatform(
             const std::filesystem::path& logName = {});
         [[nodiscard]] bool captureDynamicFrameState(const RenderingManager& rendering, V4MainFrameSource& source);
-        [[nodiscard]] bool synchronizeProjectiles();
+        [[nodiscard]] bool synchronizeProjectiles(V4MainFrameSource& source);
         [[nodiscard]] bool synchronizeExteriorTerrain(const RenderingManager& rendering, const MWWorld::Cell& cell);
         RenderCore::RenderFrameResult renderMainFrame(const V4MainFrameSource& source);
         // Production CP4F gameplay path. It preserves the established main
@@ -121,6 +121,7 @@ namespace MWRender
         std::set<std::string, std::less<>> mActorLights;
         RenderCore::WorldEpoch mActorLightEpoch;
         std::set<std::string, std::less<>> mProjectileInstances;
+        std::set<std::string, std::less<>> mProjectileLights;
         RenderCore::WorldEpoch mProjectileEpoch;
         std::set<std::string, std::less<>> mGroundcoverCells;
         RenderCore::WorldEpoch mGroundcoverEpoch;

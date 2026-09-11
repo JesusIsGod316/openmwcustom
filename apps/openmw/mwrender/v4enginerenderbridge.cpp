@@ -1,6 +1,7 @@
 #include "v4enginerenderbridge.hpp"
 
 #include "v4runtimeoptions.hpp"
+#include "v4effectcapture.hpp"
 #include "v4scenerenderlifecycle.hpp"
 #include "v4semanticsource.hpp"
 #include "v4terrainsource.hpp"
@@ -501,11 +502,27 @@ namespace MWRender
                 mLastDiagnostic = "active actor has no stable content identity";
                 return;
             }
-            if (animation.hasV4EffectAttachments())
+            if (animation.hasV4UpdateVfxAttachments())
             {
-                compatible = false;
-                mLastDiagnostic = "active actor has a live magic/effect attachment";
-                return;
+                osg::Group* const effectRoot = animation.getV4EffectRoot();
+                if (!effectRoot)
+                {
+                    compatible = false;
+                    mLastDiagnostic = "active actor effect attachment has no evaluated source root";
+                    return;
+                }
+                V4EffectCaptureResult captured
+                    = captureV4AttachedEffects(*effectRoot, "actor-effect:" + *identity);
+                if (!captured.valid())
+                {
+                    compatible = false;
+                    mLastDiagnostic = captured.diagnostic.empty()
+                        ? "active actor effect attachment could not produce evaluated V4 draws"
+                        : captured.diagnostic;
+                    return;
+                }
+                for (RenderCore::ImmediateEffectDraw& draw : captured.draws)
+                    source.immediateEffectDraws.push_back(std::move(draw));
             }
             const std::optional<NifRender::StaticModelCacheResult> base
                 = ensureModelPublished(*mSession, mVfs, animation.getV4SourceModel());
@@ -693,6 +710,28 @@ namespace MWRender
                 }
                 else
                     actorModel = entry->second.model;
+            }
+
+            if (const std::optional<osg::Vec4f> sourceColor = animation.getV4GlowColor())
+            {
+                const RenderCore::Color color{
+                    sourceColor->r(), sourceColor->g(), sourceColor->b(), sourceColor->a() };
+                const NifRender::EnchantedGlowPublishResult glow = NifRender::publishEnchantedGlowVariant(
+                    mSession->world(), mSession->publisher(), mVfs, actorModel, color,
+                    Settings::shaders().mApplyLightingToEnvironmentMaps, true);
+                if (!glow.available())
+                {
+                    compatible = false;
+                    mLastDiagnostic = "actor spell-cast glow publication failed: " + enchantedGlowDiagnostic(glow.status);
+                    return;
+                }
+                actorModel = glow.model;
+                if (!mSession->world().get(actorModel))
+                {
+                    compatible = false;
+                    mLastDiagnostic = "actor spell-cast glow variant returned a stale model handle";
+                    return;
+                }
             }
 
             std::optional<RenderCore::InstanceHandle> handle = mSession->cells().findInstance(*identity);
@@ -944,6 +983,7 @@ namespace MWRender
             source.dynamicTransforms.clear();
             source.skeletonPoses.clear();
             source.morphWeights.clear();
+            source.immediateEffectDraws.clear();
         }
         return compatible;
     }

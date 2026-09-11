@@ -653,6 +653,7 @@ namespace MWRender
             CapturedMaterial captured;
             if (!captureMaterial(path, particles.getStateSet(), captured, diagnostic))
                 return false;
+            captured.material.vertexColorMode = RenderCore::VertexColorMode::AmbientDiffuse;
             if (particles.getSortMode() == osgParticle::ParticleSystem::NO_SORT)
                 captured.material.transparentSort = RenderCore::TransparentSortPolicy::Unsorted;
             else if (captured.material.alphaBlendEnabled)

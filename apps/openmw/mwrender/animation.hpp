@@ -366,6 +366,7 @@ namespace MWRender
         osg::Group* getOrCreateObjectRoot();
 
         osg::Group* getObjectRoot();
+        osg::Group* getV4EffectRoot() const noexcept { return mInsert.get(); }
 
         // Transitional V4 producer access. The evaluated OSG skeleton remains
         // source-side; callers must copy it into renderer-neutral pose records.
