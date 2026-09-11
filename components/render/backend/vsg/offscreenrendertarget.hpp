@@ -14,24 +14,31 @@ namespace vsg
 
 namespace RenderVsg
 {
-    // Persistent color/depth target used by CP4E reflection, refraction, map,
-    // and preview views. Construction allocates once; frames only update the
-    // attached camera and clear state.
     struct OffscreenRenderTarget
     {
         vsg::ref_ptr<vsg::RenderGraph> renderGraph;
         vsg::ref_ptr<vsg::ImageView> color;
         vsg::ref_ptr<vsg::ImageView> depth;
         RenderCore::Extent2D extent;
+        RenderCore::RenderTargetFormat colorFormat = RenderCore::RenderTargetFormat::Rgba16Float;
+        std::optional<RenderCore::RenderTargetFormat> depthFormat = RenderCore::RenderTargetFormat::Depth32Float;
 
         [[nodiscard]] explicit operator bool() const noexcept
         {
-            return renderGraph && color && depth && extent.valid();
+            return renderGraph && color && extent.valid() && (!depthFormat || depth);
         }
     };
 
-    [[nodiscard]] OffscreenRenderTarget createOffscreenRenderTarget(
-        vsg::Device* device, RenderCore::Extent2D extent);
+    [[nodiscard]] OffscreenRenderTarget createOffscreenRenderTarget(vsg::Device* device,
+        RenderCore::Extent2D extent, RenderCore::RenderTargetFormat colorFormat,
+        std::optional<RenderCore::RenderTargetFormat> depthFormat);
+
+    [[nodiscard]] inline OffscreenRenderTarget createOffscreenRenderTarget(
+        vsg::Device* device, RenderCore::Extent2D extent)
+    {
+        return createOffscreenRenderTarget(device, extent, RenderCore::RenderTargetFormat::Rgba16Float,
+            RenderCore::RenderTargetFormat::Depth32Float);
+    }
 }
 
 #endif
