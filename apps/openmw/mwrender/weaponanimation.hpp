@@ -47,6 +47,15 @@ namespace MWRender
         /// @note If no weapon (or an invalid weapon) is equipped, this function is a no-op.
         void releaseArrow(MWWorld::Ptr actor, float attackStrength, float attackWindUp);
 
+        /// V4 semantic bridge: expose only the attachment that the authoritative
+        /// legacy weapon path actually owns. The bridge still derives model,
+        /// enchantment and attachment-bone semantics from gameplay/animation
+        /// state; it never traverses this node for rendering data.
+        [[nodiscard]] osg::Node* getAttachedAmmunitionNode() const noexcept
+        {
+            return mAmmunition ? mAmmunition->getNode() : nullptr;
+        }
+
         /// Add WeaponAnimation-related controllers to \a nodes and store the added controllers in \a map.
         void addControllers(const Animation::NodeMap& nodes,
             std::vector<std::pair<osg::ref_ptr<osg::Node>, osg::ref_ptr<osg::Callback>>>& map, osg::Node* objectRoot);
