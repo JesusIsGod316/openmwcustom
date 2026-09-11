@@ -68,6 +68,7 @@ layout(set = MATERIAL_DESCRIPTOR_SET, binding = 10) uniform LegacyMaterialData
     vec4 semantics;
     vec4 fogColor;
     vec4 effects;
+    vec4 ambientOverride;
 } material;
 
 layout(set = MATERIAL_DESCRIPTOR_SET, binding = 11) uniform TexCoordIndices
@@ -295,7 +296,10 @@ vec2 diffuseUv = vec2(0.0);
     for (int i = 0; i < numAmbientLights; ++i)
     {
         vec4 lightColor = lightData.values[lightDataIndex++];
-        color += surfaceColor.rgb * effectiveAmbient.rgb * lightColor.rgb * lightColor.a;
+        vec3 ambientLightColor = material.ambientOverride.w > 0.5
+            ? material.ambientOverride.rgb
+            : lightColor.rgb;
+        color += surfaceColor.rgb * effectiveAmbient.rgb * ambientLightColor * lightColor.a;
     }
 
     int shadowMapIndex = 0;
@@ -533,6 +537,8 @@ vec2 diffuseUv = vec2(0.0);
             && source.destinationBlend == RenderCore::BlendFactor::One;
         uniform.effects = vsg::vec4(static_cast<float>(source.fog.mode), source.fog.depth,
             additiveFog ? 1.0f : 0.0f, source.unlit ? 1.0f : 0.0f);
+        uniform.ambientOverride = vsg::vec4(source.ambientLightOverride.r, source.ambientLightOverride.g,
+            source.ambientLightOverride.b, source.ambientLightOverrideEnabled ? 1.0f : 0.0f);
         return result;
     }
 

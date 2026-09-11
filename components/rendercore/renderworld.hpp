@@ -449,6 +449,7 @@ namespace RenderCore
             if (!record.revision.valid() || !semantic_detail::finite(record.diffuse)
                 || !semantic_detail::finite(record.ambient) || !semantic_detail::finite(record.specular)
                 || !semantic_detail::finite(record.emission) || !semantic_detail::finite(record.environmentMapColor)
+                || !semantic_detail::finite(record.ambientLightOverride)
                 || !std::isfinite(record.shininess) || !std::isfinite(record.emissiveMultiplier)
                 || !std::isfinite(record.specularStrength) || !std::isfinite(record.environmentMapStrength)
                 || !std::isfinite(record.alpha) || !std::isfinite(record.alphaCutoff)

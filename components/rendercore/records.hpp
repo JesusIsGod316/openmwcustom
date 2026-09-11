@@ -502,6 +502,8 @@ namespace RenderCore
         Color specular{ 0.0f, 0.0f, 0.0f, 1.0f };
         Color emission{ 0.0f, 0.0f, 0.0f, 1.0f };
         Color environmentMapColor{ 1.0f, 1.0f, 1.0f, 1.0f };
+        bool ambientLightOverrideEnabled = false;
+        Color ambientLightOverride{ 1.0f, 1.0f, 1.0f, 1.0f };
         float shininess = 0.0f;
         float emissiveMultiplier = 1.0f;
         float specularStrength = 1.0f;

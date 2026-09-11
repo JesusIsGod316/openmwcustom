@@ -305,6 +305,16 @@ namespace MWRender
                         break;
                 }
             }
+            if (const osg::Uniform* ambient = state->getUniform("sun.ambient"))
+            {
+                osg::Vec4f value;
+                if (ambient->get(value))
+                {
+                    material.ambientLightOverrideEnabled = true;
+                    material.ambientLightOverride = toGlm(value);
+                }
+            }
+
             material.alpha = material.diffuse.a;
             if (const osg::Uniform* alpha = state->getUniform("alpha"))
             {

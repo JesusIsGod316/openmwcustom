@@ -41,9 +41,12 @@ namespace RenderVsg
         // x = MaterialFogMode, y = fog depth, z = additive-fog behavior,
         // w = legacy unlit/no-lighting material.
         vsg::vec4 effects{ 0.0f, 0.0f, 0.0f, 0.0f };
+        // xyz = per-draw replacement for the global/sun ambient term;
+        // w = override enabled. Local point-light ambient is intentionally separate.
+        vsg::vec4 ambientOverride{ 1.0f, 1.0f, 1.0f, 0.0f };
     };
 
-    static_assert(sizeof(LegacyMaterialUniform) == sizeof(vsg::vec4) * 8u);
+    static_assert(sizeof(LegacyMaterialUniform) == sizeof(vsg::vec4) * 9u);
     static_assert(alignof(LegacyMaterialUniform) >= 16u);
 
     using LegacyMaterialUniformValue = vsg::Value<LegacyMaterialUniform>;
