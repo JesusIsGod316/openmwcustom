@@ -18,6 +18,7 @@ set(OPENMW_V4_VSG_RUNTIME_SOURCES
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgruntimebootstrap.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgruntimehost.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/vsgsemanticsession.cpp"
+    "${CMAKE_SOURCE_DIR}/components/vsgmygui/externaltextures.cpp"
     "${CMAKE_SOURCE_DIR}/components/vsgmygui/platform.cpp"
     "${CMAKE_SOURCE_DIR}/components/vsgmygui/rendermanager.cpp"
     "${CMAKE_SOURCE_DIR}/components/vsgmygui/texture.cpp"
