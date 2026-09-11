@@ -1,38 +1,41 @@
-name: V4.0 CP4C-CP4D exterior populations and environment checkpoint
+name: V4.0 CP4E water and auxiliary views checkpoint
 
 on:
   workflow_dispatch:
+  push:
+    branches: [v4.0-cp4-exterior-foundation]
 
 concurrency:
-  group: v4-cp4cd-${{ github.ref }}
+  group: v4-cp4e-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   RouteContracts:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout exact CP4C-CP4D head
+      - name: Checkout exact CP4E head
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Verify repaired passing CP4B ancestry
+      - name: Verify consolidated CP4C-CP4D ancestry
         shell: bash
         run: |
           set -euo pipefail
-          CP4B_BASE=98cb43893dc740c9b35447821aa1fb3cbe9b1caf
-          git cat-file -e "${CP4B_BASE}^{commit}"
-          test "$(git merge-base "${CP4B_BASE}" HEAD)" = "${CP4B_BASE}"
+          CP4CD_BASE=742d9b3b4ea869d8f8e1acf7988b18ee737f2dbf
+          git cat-file -e "${CP4CD_BASE}^{commit}"
+          test "$(git merge-base "${CP4CD_BASE}" HEAD)" = "${CP4CD_BASE}"
 
-      - name: Run retained and new source contracts
+      - name: Run retained and CP4E source contracts
         shell: bash
         run: |
           set -euo pipefail
           python3 tools/v4/cp3e/application-route-contract.py
           python3 tools/v4/cp4/streaming-contract.py
           python3 tools/v4/cp4/population-environment-contract.py
+          python3 tools/v4/cp4/water-environment-contract.py
           python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
-          git diff --check 98cb43893dc740c9b35447821aa1fb3cbe9b1caf HEAD -- . \
+          git diff --check 742d9b3b4ea869d8f8e1acf7988b18ee737f2dbf HEAD -- . \
             ':(exclude)V3-applied-source.patch' \
             ':(exclude)V3-applied-source-stat.txt' \
             ':(exclude)V3-BUILD-IDENTITY.txt' \
@@ -66,13 +69,14 @@ jobs:
           git -C /tmp/mygui-3.4.3 fetch --depth 1 origin "${MYGUI_COMMIT}"
           git -C /tmp/mygui-3.4.3 checkout --detach FETCH_HEAD
 
-      - name: Strict-compile CP4 render contracts
+      - name: Strict-compile CP4E render contracts
         shell: bash
         run: |
           set -euo pipefail
           neutral=(-std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthread -I.)
           for source in \
             tools/v4/cp4/frame-route-smoke.cpp \
+            tools/v4/cp4/water-auxiliary-smoke.cpp \
             tools/v4/cp4/terrain-chunk-smoke.cpp \
             tools/v4/cp4/terrain-streaming-smoke.cpp \
             tools/v4/cp4/static-population-smoke.cpp; do
@@ -83,11 +87,15 @@ jobs:
           backend=(-std=c++20 -O1 -Wall -Wextra -Wpedantic -Werror -I. \
             -isystem /tmp/vsg-1.1.15/include -isystem /tmp/vsg-1.1.15-build/include \
             -isystem /tmp/mygui-3.4.3/MyGUIEngine/include)
-          g++ "${backend[@]}" -c components/render/backend/vsg/staticassetrealizer.cpp -o /tmp/staticassetrealizer.o
-          g++ "${backend[@]}" -c components/render/backend/vsg/staticassetconformance.cpp -o /tmp/staticassetconformance.o
-          g++ "${backend[@]}" -c components/render/backend/vsg/openmwviewdependentstate.cpp -o /tmp/openmwviewdependentstate.o
-          g++ "${backend[@]}" -c components/render/backend/vsg/skybackdrop.cpp -o /tmp/skybackdrop.o
-          g++ "${backend[@]}" -c components/render/backend/vsg/vsgruntimehost.cpp -o /tmp/vsgruntimehost.o
+          for source in \
+            components/render/backend/vsg/offscreenrendertarget.cpp \
+            components/render/backend/vsg/watersurface.cpp \
+            components/render/backend/vsg/openmwviewdependentstate.cpp \
+            components/render/backend/vsg/legacymaterialshader.cpp \
+            components/render/backend/vsg/skybackdrop.cpp \
+            components/render/backend/vsg/vsgruntimehost.cpp; do
+            g++ "${backend[@]}" -c "${source}" -o "/tmp/$(basename "${source}" .cpp).o"
+          done
 
   OpenGLControlWindows:
     uses: ./.github/workflows/windows.yml

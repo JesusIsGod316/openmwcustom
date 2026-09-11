@@ -130,6 +130,15 @@ int main()
     if (!require(RenderCore::FrameRenderState(weather).valid(), "valid CP4D weather state rejected"))
         return EXIT_FAILURE;
 
+    auto clipped = valid;
+    clipped.views.front().clipPlane
+        = RenderCore::WorldClipPlane{ glm::vec3(0.0f, 0.0f, 1.0f), -12.0 };
+    if (!require(RenderCore::FrameRenderState(clipped).valid(), "normalized world clip plane rejected"))
+        return EXIT_FAILURE;
+    clipped.views.front().clipPlane->normal.z = 0.5f;
+    if (!require(!RenderCore::FrameRenderState(clipped).valid(), "non-normalized world clip plane accepted"))
+        return EXIT_FAILURE;
+
     weather.derivedViewFamilies.push_back(RenderCore::DerivedViewFamilyDesc{
         .identity = RenderCore::ViewHandle::fromParts(8, 1),
         .sourceView = weather.views.back().identity,

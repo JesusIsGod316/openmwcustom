@@ -296,9 +296,7 @@ namespace MWRender
             const RenderingManager& rendering, const MWWorld::Cell& cell, const FogState& fog, bool underwater,
             float nightEyeFactor)
         {
-            // CP4A deliberately renders LAND before CP4D sky/weather and CP4E
-            // water. Underwater cannot be represented correctly by this slice.
-            if ((!cell.isExterior() && !cell.isQuasiExterior()) || underwater || !std::isfinite(nightEyeFactor)
+            if ((!cell.isExterior() && !cell.isQuasiExterior()) || !std::isfinite(nightEyeFactor)
                 || fog.underwater != underwater)
                 return std::nullopt;
 
@@ -348,7 +346,7 @@ namespace MWRender
             {
                 result.skyColor = toColor(sky->getSkyColor());
                 result.sunDiscColor = toColor(sky->getSunDiscColor());
-                result.sunVisible = sky->isSunVisible();
+                result.sunVisible = sky->isSunVisible() && !underwater;
                 result.nightSkyFactor = std::clamp(sky->getNightSkyFactor(), 0.0f, 1.0f);
                 result.cloudBlendFactor = std::clamp(sky->getCloudBlendFactor(), 0.0f, 1.0f);
                 result.cloudSpeed = sky->getCloudSpeed();
@@ -364,11 +362,11 @@ namespace MWRender
                 // The first CP4D visual slice uses the authored weather sky
                 // colour as a Vulkan backdrop. Textured atmosphere, clouds and
                 // celestial bodies remain independently additive later facets.
-                result.skyEnabled = sky->isEnabled();
+                result.skyEnabled = sky->isEnabled() && !underwater;
             }
-            result.waterEnabled = false;
+            result.waterEnabled = cell.hasWater();
             result.waterHeight = cell.hasWater() ? cell.getWaterHeight() : 0.0;
-            result.underwater = false;
+            result.underwater = underwater;
             return result;
         }
     }

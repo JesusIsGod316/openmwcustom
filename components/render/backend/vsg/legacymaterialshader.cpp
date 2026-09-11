@@ -112,6 +112,8 @@ layout(set = VIEW_DESCRIPTOR_SET, binding = 6) uniform OpenMwEnvironmentData
     vec4 wind;
     // x=precipitation enabled, y=storm, z=sky enabled, w=shadows enabled.
     vec4 weatherFlags;
+    // Eye-space retained half-space; a zero normal disables clipping.
+    vec4 clipPlane;
 } openmwEnvironment;
 
 layout(location = 0) in vec3 eyePos;
@@ -228,12 +230,16 @@ void main()
     else if (vertexColorMode == 1)
         effectiveEmission = vertexColor;
 
-    vec2 diffuseUv = vec2(0.0);
+vec2 diffuseUv = vec2(0.0);
 #ifdef VSG_POINT_SPRITE
     diffuseUv = gl_PointCoord.xy;
 #elif defined(VSG_DIFFUSE_MAP)
     diffuseUv = texCoord[texCoordIndices.diffuseMap].st;
 #endif
+
+    if (dot(openmwEnvironment.clipPlane.xyz, openmwEnvironment.clipPlane.xyz) > 0.25
+        && dot(openmwEnvironment.clipPlane, vec4(eyePos, 1.0)) < 0.0)
+        discard;
 
     vec4 surfaceColor = vec4(1.0);
 #ifdef VSG_DIFFUSE_MAP

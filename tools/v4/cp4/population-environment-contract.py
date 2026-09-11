@@ -38,7 +38,7 @@ require(
     "mStaticPopulationResidency.markSubmitted(frame.frameId())",
     "vsg::HardShadows::create(options.shadows.cascadeCount)",
     "shadowSettingsOverride[mSunLight]",
-    "maskedNode(placementMask(castsShadow)",
+    "maskedNode(placementMask(castsShadow,",
     "populationWithinMaximumDistance(world, plan, mainView.current.worldPosition)",
     "environment.skyEnabled ? environment.skyColor : environment.fogColor",
     "mSkyBackdrop.update(environment, *mainView)",
@@ -47,7 +47,7 @@ require(
 require(
     "components/render/backend/vsg/skybackdrop.cpp",
     "vsg::DynamicState::create(VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR)",
-    "mRoot->setAllChildren(environment.skyEnabled && !environment.interior)",
+    "mRoot->setAllChildren(environment.skyEnabled && !environment.interior && !environment.underwater)",
     "vsg::PushConstants::create(VK_SHADER_STAGE_FRAGMENT_BIT, 0, result.mParameters.get())",
     "depth->depthWriteEnable = VK_FALSE",
 )
@@ -116,8 +116,8 @@ require(
     "sky->getCloudBlendFactor()",
     "sky->getPrecipitationAlpha()",
     "sky->getStormDirection()",
-    "result.skyEnabled = sky->isEnabled()",
-    "result.sunVisible = sky->isSunVisible()",
+    "result.skyEnabled = sky->isEnabled() && !underwater",
+    "result.sunVisible = sky->isSunVisible() && !underwater",
     "result.sunDiscColor = toColor(sky->getSunDiscColor())",
 )
 

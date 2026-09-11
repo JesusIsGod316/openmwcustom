@@ -55,6 +55,7 @@ namespace RenderVsg
         RenderCore::StaticPopulationProducer mPopulations;
         RenderCore::SingleViewFrameProducer mFrames;
         RenderCore::SingleViewFrameInput::DerivedShadowViews mShadowViews;
+        RenderCore::SingleViewFrameInput::WaterViews mWaterViews;
         std::string mLastDiagnostic;
         bool mHealthy = true;
         std::unique_ptr<VsgRuntimeBootstrap> mBootstrap;

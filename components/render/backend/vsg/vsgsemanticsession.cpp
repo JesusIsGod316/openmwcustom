@@ -22,6 +22,10 @@ namespace RenderVsg
         , mShadowViews{ options.host.shadows.enabled, options.host.shadows.cascadeCount,
               { options.host.shadows.mapResolution, options.host.shadows.mapResolution },
               static_cast<float>(options.host.shadows.maximumDistance) }
+        , mWaterViews{ options.host.water.enabled && (options.host.water.reflection || options.host.water.refraction),
+              options.host.water.reflection, options.host.water.refraction,
+              { options.host.water.targetSize, options.host.water.targetSize }, options.host.water.reflectionLodScale,
+              options.host.water.refractionLodScale }
         , mBootstrap(VsgRuntimeBootstrap::create(std::move(textureResolver), std::move(options)))
     {
         if (!mBootstrap)
@@ -44,6 +48,7 @@ namespace RenderVsg
             return fail("static population publication failed at the frame boundary");
         RenderCore::SingleViewFrameInput routedInput = input;
         routedInput.shadowViews = mShadowViews;
+        routedInput.waterViews = mWaterViews;
         std::optional<RenderCore::FrameRenderState> frame = mFrames.prepare(mWorld, routedInput);
         if (!frame)
             return fail("semantic frame producer rejected the engine frame input");

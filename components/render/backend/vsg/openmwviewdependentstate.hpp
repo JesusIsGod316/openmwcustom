@@ -25,12 +25,12 @@ namespace RenderVsg
     inline constexpr std::uint32_t OpenMwLocalLightDescriptorBinding = 5;
     inline constexpr std::uint32_t OpenMwEnvironmentDescriptorBinding = 6;
     inline constexpr std::size_t OpenMwLocalLightVec4Stride = 5;
-    inline constexpr std::size_t OpenMwEnvironmentVec4Count = 7;
+    inline constexpr std::size_t OpenMwEnvironmentVec4Count = 8;
 
     using OpenMwEnvironmentValues = std::array<vsg::vec4, OpenMwEnvironmentVec4Count>;
 
     [[nodiscard]] OpenMwEnvironmentValues packOpenMwEnvironment(const RenderCore::FrameEnvironmentState& environment,
-        const RenderCore::ProjectionState& projection) noexcept;
+        const RenderCore::ProjectionState& projection, const glm::vec4& eyeClipPlane = {}) noexcept;
 
     // Extends VSG's supported per-view descriptor lifetime instead of creating
     // a parallel descriptor binder. Ambient/directional/shadow ownership stays
@@ -48,6 +48,8 @@ namespace RenderVsg
         void setRadiusFadeEnabled(bool enabled) noexcept { mRadiusFadeEnabled = enabled; }
         void setEnvironment(const RenderCore::FrameEnvironmentState& environment,
             const RenderCore::ProjectionState& projection) noexcept;
+        void setClipPlane(
+            const std::optional<RenderCore::WorldClipPlane>& clipPlane, const RenderCore::CameraState& camera) noexcept;
 
         [[nodiscard]] std::size_t localLightCount() const noexcept { return mPlan.lights.size(); }
 
@@ -59,6 +61,7 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::BufferInfo> mOpenMwEnvironmentBufferInfo;
         RenderCore::FrameEnvironmentState mEnvironment;
         RenderCore::ProjectionState mProjection;
+        glm::vec4 mEyeClipPlane{};
         bool mRadiusFadeEnabled = true;
     };
 }

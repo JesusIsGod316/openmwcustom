@@ -125,6 +125,15 @@ namespace RenderCore
         ProjectionState projection;
     };
 
+    // World-space half-space retained by an auxiliary view. The normal is
+    // normalized and the kept side satisfies dot(normal, position) + distance
+    // >= 0. Backends may realize this as a clip plane or an oblique projection.
+    struct WorldClipPlane
+    {
+        glm::vec3 normal{ 0.0f, 0.0f, 1.0f };
+        double distance = 0.0;
+    };
+
     struct FrameView
     {
         ViewHandle identity;
@@ -137,6 +146,7 @@ namespace RenderCore
         float lodScale = 1.0f;
         std::uint64_t semanticIncludeMask = ~std::uint64_t{ 0 };
         std::uint64_t semanticExcludeMask = 0;
+        std::optional<WorldClipPlane> clipPlane;
         HistoryEpoch historyEpoch = InitialHistoryEpoch;
         bool temporal = false;
         bool historyValid = false;
@@ -353,9 +363,11 @@ namespace RenderCore
             for (std::size_t i = 0; i < mDesc.views.size(); ++i)
             {
                 const FrameView& view = mDesc.views[i];
-                if (!view.identity.valid() || !view.outputTarget.valid() || !findTarget(view.outputTarget)
+                const RenderTargetDesc* const output = findTarget(view.outputTarget);
+                if (!view.identity.valid() || !view.outputTarget.valid() || !output
                     || !view.extent.valid() || !view.historyEpoch.valid() || !finite(view.lodScale)
-                    || view.lodScale <= 0.0f || !finite(view.current) || !finite(view.previous))
+                    || view.lodScale <= 0.0f || !finite(view.current) || !finite(view.previous)
+                    || (view.clipPlane && !finite(*view.clipPlane)))
                     return false;
                 for (std::size_t j = i + 1; j < mDesc.views.size(); ++j)
                 {
@@ -593,6 +605,12 @@ namespace RenderCore
         {
             return finite(value.worldPosition) && finite(value.worldOrientation) && finite(value.view)
                 && finite(value.projection);
+        }
+
+        [[nodiscard]] static bool finite(const WorldClipPlane& value) noexcept
+        {
+            const float length = glm::length(value.normal);
+            return finite(value.normal) && finite(value.distance) && length > 0.999f && length < 1.001f;
         }
 
         [[nodiscard]] static bool finite(const ProjectionState& value) noexcept
