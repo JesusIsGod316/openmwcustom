@@ -257,6 +257,30 @@ namespace RenderVsg
         return found == mAuxiliaryViews.end() ? vsg::ref_ptr<vsg::ImageView>{} : found->target.color;
     }
 
+    bool VsgRuntimeHost::retireAuxiliarySurface(RenderCore::RenderTargetHandle target)
+    {
+        const auto found = std::find_if(mAuxiliaryViews.begin(), mAuxiliaryViews.end(),
+            [&](const AuxiliaryViewRuntime& value) { return value.targetIdentity == target; });
+        if (found == mAuxiliaryViews.end())
+            return true;
+        if (!mCommandGraph || !found->target.renderGraph)
+        {
+            mLastDiagnostic = "persistent auxiliary target retirement found an invalid command graph";
+            return false;
+        }
+
+        waitIdle();
+        const auto graph = std::find(mCommandGraph->children.begin(), mCommandGraph->children.end(), found->target.renderGraph);
+        if (graph == mCommandGraph->children.end())
+        {
+            mLastDiagnostic = "persistent auxiliary target retirement could not resolve its command graph child";
+            return false;
+        }
+        mCommandGraph->children.erase(graph);
+        mAuxiliaryViews.erase(found);
+        return true;
+    }
+
     const RenderCore::FrameView* VsgRuntimeHost::selectMainView(
         const RenderCore::FrameRenderState& frame) const noexcept
     {
@@ -737,7 +761,8 @@ namespace RenderVsg
                 return false;
             }
             const std::uint64_t pixels = static_cast<std::uint64_t>(view.extent.width) * view.extent.height;
-            if (pixels == 0 || requestedPixels > MaximumAuxiliaryPixels - std::min(pixels, MaximumAuxiliaryPixels))
+            if (pixels == 0 || pixels > MaximumAuxiliaryPixels
+                || requestedPixels > MaximumAuxiliaryPixels - pixels)
             {
                 mLastDiagnostic = "auxiliary view pixels exceed the bounded CP4F target budget";
                 return false;
@@ -782,6 +807,25 @@ namespace RenderVsg
                     mLastDiagnostic = "persistent auxiliary target pool is exhausted";
                     return false;
                 }
+                std::uint64_t residentPixels = 0;
+                for (const AuxiliaryViewRuntime& resident : mAuxiliaryViews)
+                {
+                    const std::uint64_t residentSurfacePixels
+                        = static_cast<std::uint64_t>(resident.target.extent.width) * resident.target.extent.height;
+                    if (residentSurfacePixels > MaximumAuxiliaryPixels
+                        || residentPixels > MaximumAuxiliaryPixels - residentSurfacePixels)
+                    {
+                        mLastDiagnostic = "persistent auxiliary target residency exceeds the bounded CP4F pixel budget";
+                        return false;
+                    }
+                    residentPixels += residentSurfacePixels;
+                }
+                if (residentPixels > MaximumAuxiliaryPixels - pixels)
+                {
+                    mLastDiagnostic = "persistent auxiliary target pixel budget is exhausted";
+                    return false;
+                }
+
                 waitIdle();
                 AuxiliaryViewRuntime created;
                 created.identity = view.identity;
@@ -809,7 +853,9 @@ namespace RenderVsg
                 created.view->viewDependentState = created.state;
                 created.view->addChild(mAmbientLight);
                 created.view->addChild(mSunLight);
-                created.view->addChild(mSceneRoot);
+                created.view->addChild(view.kind == RenderCore::ViewKind::Map ? mStaticRoot : mSceneRoot);
+                if (view.kind == RenderCore::ViewKind::Map && mWaterSurface)
+                    created.view->addChild(mWaterSurface.node());
                 created.view->bins = createStaticConformanceBins();
                 created.target.renderGraph->addChild(created.view);
                 if (!compileForViewer(*mViewer, created.target.renderGraph))
