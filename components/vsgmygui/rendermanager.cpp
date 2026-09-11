@@ -159,7 +159,10 @@ namespace VsgMyGui
 
     bool RenderManager::checkTexture(MyGUI::ITexture* texture)
     {
-        return texture == nullptr || dynamic_cast<Texture*>(texture) != nullptr;
+        if (!texture || dynamic_cast<Texture*>(texture))
+            return true;
+        const std::string& name = texture->getName();
+        return !name.empty() && mTextures.contains(name);
     }
 
     void RenderManager::forgetTexture(const Texture* texture)
@@ -198,13 +201,22 @@ namespace VsgMyGui
         batch.texture = dynamic_cast<Texture*>(texture);
         if (texture && !batch.texture)
         {
-            if (!mWarnedForeignTexture)
+            const std::string& alias = texture->getName();
+            if (!alias.empty())
             {
-                Log(Debug::Warning) << "VsgMyGui: skipping a foreign render-target texture; "
-                                       "CP4E auxiliary surfaces must be published through the native VSG image bridge";
-                mWarnedForeignTexture = true;
+                if (auto native = mTextures.find(alias); native != mTextures.end())
+                    batch.texture = &native->second;
             }
-            return;
+            if (!batch.texture)
+            {
+                if (!mWarnedForeignTexture)
+                {
+                    Log(Debug::Warning) << "VsgMyGui: skipping an unresolved foreign render-target texture; "
+                                           "native auxiliary surfaces must be published before an alias is rendered";
+                    mWarnedForeignTexture = true;
+                }
+                return;
+            }
         }
         batch.count = static_cast<uint32_t>(count);
         mBatches.push_back(std::move(batch));
