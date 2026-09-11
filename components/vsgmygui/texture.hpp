@@ -52,7 +52,7 @@ namespace VsgMyGui
         // imageView() for a VSG-owned render target already resident on the GPU.
         vsg::ref_ptr<vsg::Data> data() const { return mData; }
         vsg::ref_ptr<vsg::ImageView> imageView() const { return mImageView; }
-        bool externalImage() const noexcept { return mImageView.valid(); }
+        bool externalImage() const noexcept { return static_cast<bool>(mImageView); }
         std::uint64_t identity() const noexcept { return mIdentity; }
         std::uint64_t revision() const noexcept { return mRevision; }
 
