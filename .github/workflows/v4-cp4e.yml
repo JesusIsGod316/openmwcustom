@@ -3,7 +3,7 @@ name: V4.0 CP4E water and auxiliary views checkpoint
 on:
   workflow_dispatch:
   push:
-    branches: [v4.0-cp4-exterior-foundation]
+    branches: [v4.0-cp4e-completion-real]
 
 concurrency:
   group: v4-cp4e-${{ github.ref }}
@@ -18,13 +18,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify consolidated CP4C-CP4D ancestry
+      - name: Verify repaired CP4 ancestry
         shell: bash
         run: |
           set -euo pipefail
-          CP4CD_BASE=742d9b3b4ea869d8f8e1acf7988b18ee737f2dbf
-          git cat-file -e "${CP4CD_BASE}^{commit}"
-          test "$(git merge-base "${CP4CD_BASE}" HEAD)" = "${CP4CD_BASE}"
+          CP4_BASE=818248e005655e9cbbcbf715d75f5656be8ba301
+          git cat-file -e "${CP4_BASE}^{commit}"
+          test "$(git merge-base "${CP4_BASE}" HEAD)" = "${CP4_BASE}"
 
       - name: Run retained and CP4E source contracts
         shell: bash
@@ -35,14 +35,14 @@ jobs:
           python3 tools/v4/cp4/population-environment-contract.py
           python3 tools/v4/cp4/water-environment-contract.py
           python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
-          git diff --check 742d9b3b4ea869d8f8e1acf7988b18ee737f2dbf HEAD -- . \
+          git diff --check 818248e005655e9cbbcbf715d75f5656be8ba301 HEAD -- . \
             ':(exclude)V3-applied-source.patch' \
             ':(exclude)V3-applied-source-stat.txt' \
             ':(exclude)V3-BUILD-IDENTITY.txt' \
             ':(exclude)V3-LAB-README.txt'
 
       - name: Install strict compile dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglm-dev libvulkan-dev python3-yaml
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglm-dev libvulkan-dev python3-yaml glslang-tools
 
       - name: Parse workflow YAML
         run: |
@@ -69,6 +69,28 @@ jobs:
           git -C /tmp/mygui-3.4.3 fetch --depth 1 origin "${MYGUI_COMMIT}"
           git -C /tmp/mygui-3.4.3 checkout --detach FETCH_HEAD
 
+      - name: Compile CP4E water shaders
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          source = Path('components/render/backend/vsg/watersurface.cpp').read_text(encoding='utf-8')
+          shaders = {
+              'WaterVertexSource': Path('/tmp/cp4e-water.vert'),
+              'WaterFragmentSource': Path('/tmp/cp4e-water.frag'),
+          }
+          for symbol, output in shaders.items():
+              match = re.search(rf'constexpr const char\* {symbol} = R"\((.*?)\)";', source, re.DOTALL)
+              if not match:
+                  raise SystemExit(f'could not extract {symbol}')
+              output.write_text(match.group(1), encoding='utf-8')
+          PY
+          glslangValidator -V /tmp/cp4e-water.vert -o /tmp/cp4e-water.vert.spv
+          glslangValidator -V /tmp/cp4e-water.frag -o /tmp/cp4e-water.frag.spv
+
       - name: Strict-compile CP4E render contracts
         shell: bash
         run: |
@@ -93,6 +115,8 @@ jobs:
             components/render/backend/vsg/openmwviewdependentstate.cpp \
             components/render/backend/vsg/legacymaterialshader.cpp \
             components/render/backend/vsg/skybackdrop.cpp \
+            components/vsgmygui/texture.cpp \
+            components/vsgmygui/rendermanager.cpp \
             components/render/backend/vsg/vsgruntimehost.cpp; do
             g++ "${backend[@]}" -c "${source}" -o "/tmp/$(basename "${source}" .cpp).o"
           done
