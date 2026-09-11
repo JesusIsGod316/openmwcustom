@@ -117,6 +117,7 @@ file(GLOB UNITTEST_SRC_FILES
     rendercore/modelassets.cpp
     rendercore/renderworld.cpp
     rendercore/semanticassets.cpp
+    rendercore/namedvisualsemantics.cpp
     rendercore/staticpopulationproducer.cpp
     rendercore/terrainchunkproducer.cpp
     rendercore/terrainpreparationservice.cpp
