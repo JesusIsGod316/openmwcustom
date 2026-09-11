@@ -5,6 +5,7 @@
 
 #include <vsg/core/Data.h>
 #include <vsg/core/ref_ptr.h>
+#include <vsg/io/Logger.h>
 #include <vsg/nodes/Group.h>
 #include <vsg/utils/SharedObjects.h>
 
