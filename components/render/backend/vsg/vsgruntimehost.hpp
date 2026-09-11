@@ -14,6 +14,7 @@
 #include "uipipeline.hpp"
 #include "watersurface.hpp"
 
+#include <components/rendercore/namedvisualsemantics.hpp>
 #include <components/rendercore/renderer.hpp>
 
 #include <vsg/core/ref_ptr.h>
@@ -100,6 +101,16 @@ namespace RenderVsg
         RenderCore::RenderFrameResult renderFrame(
             const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame) override;
         void waitIdle() override;
+
+        [[nodiscard]] bool configureNamedSwitchState(
+            RenderCore::NightDaySwitchState state, bool dayNightSwitchesEnabled) noexcept
+        {
+            if (!RenderCore::validNightDaySwitchState(state))
+                return false;
+            mOptions.staticPlan.nightDaySwitchState = state;
+            mOptions.staticPlan.dayNightSwitchesEnabled = dayNightSwitchesEnabled;
+            return true;
+        }
 
         [[nodiscard]] std::size_t residentStaticInstanceCount() const noexcept;
         [[nodiscard]] std::size_t pendingRetirementCount() const noexcept;
