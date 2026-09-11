@@ -100,6 +100,11 @@ namespace RenderVsg
         [[nodiscard]] VsgMyGui::RenderManager* guiRenderer() noexcept { return mGuiRenderer; }
         [[nodiscard]] vsg::ref_ptr<vsg::ImageView> auxiliaryColorImage(
             RenderCore::RenderTargetHandle target) const noexcept;
+        // Explicit retirement is required for long-lived logical map slots: a
+        // sampled target stays native to VSG until its producer retires that
+        // logical surface. Retirement synchronizes before removing the command
+        // graph so no in-flight submission can retain freed target resources.
+        [[nodiscard]] bool retireAuxiliarySurface(RenderCore::RenderTargetHandle target);
         [[nodiscard]] const std::string& lastDiagnostic() const noexcept { return mLastDiagnostic; }
 
     private:
