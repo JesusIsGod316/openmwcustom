@@ -52,8 +52,13 @@ namespace RenderVsg
             || (requestedDepthFormat && *requestedDepthFormat != RenderCore::RenderTargetFormat::Depth32Float))
             return result;
 
+        // Persistent auxiliary surfaces can be sampled by MyGUI and, for map
+        // persistence, copied to a host-visible staging buffer after GPU
+        // completion. TRANSFER_SRC does not change the normal render/sampled
+        // lifetime; it only makes the explicit readback path legal.
         result.color = createAttachment(device, extent, colorVk,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
         if (!result.color)
             return {};
 
