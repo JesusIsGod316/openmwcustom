@@ -1,3 +1,4 @@
+#include "enchantedmaterialshader.hpp"
 #include "legacymaterialshader.hpp"
 #include "staticassetrealizer.hpp"
 
@@ -344,6 +345,7 @@ namespace RenderVsg
             result.diagnostics.emplace_back("OpenMW legacy compatibility ShaderSet is unavailable");
             return result;
         }
+        vsg::ref_ptr<vsg::ShaderSet> enchantedShaderSet;
 
         vsg::ref_ptr<vsg::vec3Array> instanceTranslations;
         vsg::ref_ptr<vsg::vec4Array> instanceRotations;
@@ -415,7 +417,34 @@ namespace RenderVsg
                 return result;
             }
 
-            auto config = vsg::GraphicsPipelineConfigurator::create(legacyShaderSet);
+            const std::size_t environmentBindingCount = static_cast<std::size_t>(std::count_if(
+                material->textures.begin(), material->textures.end(),
+                [](const TextureBinding& binding) { return binding.role == TextureRole::Environment; }));
+            const bool enchantedEnvironment
+                = environmentBindingCount == EnchantedEnvironmentFrameCount;
+            if (environmentBindingCount != 0u && !enchantedEnvironment)
+            {
+                result.stats.unsupportedTextureBindings += static_cast<std::uint32_t>(environmentBindingCount);
+                result.diagnostics.emplace_back(
+                    "Legacy authored environment maps remain fail-closed; only the exact 32-frame enchanted caustic sequence is realized by CP4F");
+            }
+
+            vsg::ref_ptr<vsg::ShaderSet> shaderSet = legacyShaderSet;
+            if (enchantedEnvironment)
+            {
+                if (!enchantedShaderSet)
+                    enchantedShaderSet = createEnchantedLegacyCompatibilityShaderSet();
+                if (!enchantedShaderSet)
+                {
+                    result.root = {};
+                    result.diagnostics.emplace_back(
+                        "OpenMW enchanted legacy compatibility ShaderSet could not be constructed from the pinned VSG contract");
+                    return result;
+                }
+                shaderSet = enchantedShaderSet;
+            }
+
+            auto config = vsg::GraphicsPipelineConfigurator::create(shaderSet);
             if (!config)
             {
                 result.root = {};
@@ -509,20 +538,13 @@ namespace RenderVsg
             if (draw.billboard)
                 ++result.stats.billboardDraws;
 
-            for (std::size_t bindingIndex = 0; bindingIndex < material->textures.size(); ++bindingIndex)
-            {
-                const TextureBinding& binding = material->textures[bindingIndex];
-                const auto descriptor = descriptorName(binding.role);
-                if (!descriptor)
-                {
-                    ++result.stats.unsupportedTextureBindings;
-                    continue;
-                }
+            const auto realizeBinding = [&](std::size_t bindingIndex, vsg::ref_ptr<vsg::Data>& data,
+                                            vsg::ref_ptr<vsg::Sampler>& sampler) -> bool {
                 if (bindingIndex >= draw.textures.size() || bindingIndex >= draw.samplers.size())
                 {
                     result.root = {};
                     result.diagnostics.emplace_back("Static plan texture/sampler arrays do not match material binding order");
-                    return result;
+                    return false;
                 }
 
                 const TextureRealizationKey& textureKey = draw.textures[bindingIndex];
@@ -532,10 +554,9 @@ namespace RenderVsg
                 {
                     result.root = {};
                     result.diagnostics.emplace_back("Published texture vanished before VSG realization");
-                    return result;
+                    return false;
                 }
 
-                vsg::ref_ptr<vsg::Data> data;
                 if (auto found = textureCache.find(textureKey); found != textureCache.end())
                 {
                     data = found->second.data;
@@ -548,15 +569,15 @@ namespace RenderVsg
                     {
                         result.root = {};
                         std::ostringstream message;
-                        message << "Texture resolver failed for published texture handle slot=" << textureKey.view.texture.slot();
+                        message << "Texture resolver failed for published texture handle slot="
+                                << textureKey.view.texture.slot();
                         result.diagnostics.push_back(message.str());
-                        return result;
+                        return false;
                     }
                     textureCache.emplace(textureKey, TextureCacheEntry{ data });
                     ++result.stats.textureLoads;
                 }
 
-                vsg::ref_ptr<vsg::Sampler> sampler;
                 if (auto found = samplerCache.find(samplerKey); found != samplerCache.end())
                     sampler = found->second;
                 else
@@ -566,6 +587,62 @@ namespace RenderVsg
                     samplerCache.emplace(samplerKey, sampler);
                 }
 
+                textureKeys.insert(textureKey);
+                samplerKeys.insert(samplerKey);
+                return true;
+            };
+
+            if (enchantedEnvironment)
+            {
+                if (!config->assignDescriptor(
+                        "openmwEnvironmentEffect", makeEnchantedEnvironmentMaterial(*material)))
+                {
+                    result.root = {};
+                    result.diagnostics.emplace_back(
+                        "Enchanted compatibility shader rejected its environment color descriptor");
+                    return result;
+                }
+
+                vsg::ImageInfoList frames;
+                frames.reserve(EnchantedEnvironmentFrameCount);
+                for (std::size_t bindingIndex = 0; bindingIndex < material->textures.size(); ++bindingIndex)
+                {
+                    if (material->textures[bindingIndex].role != TextureRole::Environment)
+                        continue;
+                    vsg::ref_ptr<vsg::Data> data;
+                    vsg::ref_ptr<vsg::Sampler> sampler;
+                    if (!realizeBinding(bindingIndex, data, sampler))
+                        return result;
+                    frames.push_back(vsg::ImageInfo::create(sampler, data));
+                }
+                if (frames.size() != EnchantedEnvironmentFrameCount
+                    || !config->assignTexture("openmwEnvironmentMaps", frames))
+                {
+                    result.root = {};
+                    result.diagnostics.emplace_back(
+                        "Enchanted compatibility shader rejected the exact 32-frame caustic descriptor array");
+                    return result;
+                }
+            }
+
+            for (std::size_t bindingIndex = 0; bindingIndex < material->textures.size(); ++bindingIndex)
+            {
+                const TextureBinding& binding = material->textures[bindingIndex];
+                if (enchantedEnvironment && binding.role == TextureRole::Environment)
+                    continue;
+                const auto descriptor = descriptorName(binding.role);
+                if (!descriptor)
+                {
+                    // Non-sequence Environment bindings deliberately arrive here
+                    // and retain the CP3B fail-closed behavior.
+                    ++result.stats.unsupportedTextureBindings;
+                    continue;
+                }
+
+                vsg::ref_ptr<vsg::Data> data;
+                vsg::ref_ptr<vsg::Sampler> sampler;
+                if (!realizeBinding(bindingIndex, data, sampler))
+                    return result;
                 if (!config->assignTexture(*descriptor, data, sampler))
                 {
                     result.root = {};
@@ -573,9 +650,6 @@ namespace RenderVsg
                         std::string("Legacy compatibility ShaderSet rejected texture descriptor ") + *descriptor);
                     return result;
                 }
-
-                textureKeys.insert(textureKey);
-                samplerKeys.insert(samplerKey);
             }
 
             PipelineStateVisitor stateVisitor(draw.pipeline);
