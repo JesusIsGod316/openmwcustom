@@ -149,7 +149,7 @@ namespace MWGui
                 return;
             }
         }
-        throw std::runtime_error("can't find marker to update");
+        throw std::runtime_error("can't find marker to delete");
     }
 
     void CustomMarkerCollection::clear()
@@ -458,6 +458,12 @@ namespace MWGui
                 entry.mMapWidget->setPosition(*position);
                 entry.mFogWidget->setPosition(*position);
             }
+            // Native CP4F map surfaces bind by MyGUI texture name rather than
+            // through an OSG ITexture wrapper. Clear both binding modes when a
+            // widget entry is recycled so cell retirement/revisit cannot retain
+            // a stale native image.
+            entry.mMapWidget->setImageTexture({});
+            entry.mFogWidget->setImageTexture({});
             entry.mMapWidget->setRenderItemTexture(nullptr);
             entry.mFogWidget->setRenderItemTexture(nullptr);
             entry.mMapTexture.reset();
@@ -613,10 +619,58 @@ namespace MWGui
     void LocalMapBase::updateRequiredMaps()
     {
         bool needRedraw = false;
+        const bool nativeMap = mLocalMapRender->nativeAuxiliaryRouteEnabled();
         for (MapEntry& entry : mMaps)
         {
             if (!entry.mMapWidget->getVisible() || widgetCropped(entry.mMapWidget, mLocalMap))
                 continue;
+
+            if (nativeMap)
+            {
+                if (!entry.mMapTexture)
+                {
+                    std::string_view textureName
+                        = mLocalMapRender->nativeMapTextureName(entry.mCellX, entry.mCellY);
+                    if (textureName.empty() && mActiveCell->isExterior())
+                    {
+                        requestMapRender(&MWBase::Environment::get().getWorldModel()->getExterior(
+                            ESM::ExteriorCellLocation(
+                                entry.mCellX, entry.mCellY, ESM::Cell::sDefaultWorldspaceId)));
+                        textureName = mLocalMapRender->nativeMapTextureName(entry.mCellX, entry.mCellY);
+                    }
+                    if (!textureName.empty())
+                    {
+                        // Bind by MyGUI name. The VSG renderer owns this name and
+                        // its ImageView; the empty OSGTexture is only a local UI
+                        // readiness sentinel and is never submitted to MyGUI.
+                        entry.mMapWidget->setImageTexture(textureName);
+                        entry.mMapTexture
+                            = std::make_unique<MyGUIPlatform::OSGTexture>(std::string(), nullptr);
+                        entry.mMapWidget->getSubWidgetMain()->_setUVSet(MyGUI::FloatRect(0.f, 1.f, 1.f, 0.f));
+                        needRedraw = true;
+                    }
+                }
+
+                if (!entry.mFogTexture && mFogOfWarToggled && mFogOfWarEnabled)
+                {
+                    const std::string_view fogName
+                        = mLocalMapRender->nativeFogTextureName(entry.mCellX, entry.mCellY);
+                    if (!fogName.empty())
+                    {
+                        entry.mFogWidget->setImageTexture(fogName);
+                        entry.mFogTexture
+                            = std::make_unique<MyGUIPlatform::OSGTexture>(std::string(), nullptr);
+                        entry.mFogWidget->getSubWidgetMain()->_setUVSet(MyGUI::FloatRect(0.f, 0.f, 1.f, 1.f));
+                        needRedraw = true;
+                        // Newly uncovered chunk, make sure to draw door markers
+                        // right away instead of waiting for a cell transition.
+                        mNeedDoorMarkersUpdate = true;
+                    }
+                    else
+                        entry.mFogWidget->setImageTexture("black");
+                }
+                continue;
+            }
 
             if (!entry.mMapTexture)
             {
