@@ -5,6 +5,8 @@
 
 #include <vsg/core/Data.h>
 #include <vsg/core/ref_ptr.h>
+#include <vsg/nodes/Group.h>
+#include <vsg/utils/SharedObjects.h>
 
 #include <glm/vec3.hpp>
 
@@ -13,12 +15,6 @@
 #include <span>
 #include <string>
 #include <vector>
-
-namespace vsg
-{
-    class Group;
-    class SharedObjects;
-}
 
 namespace RenderVsg
 {
