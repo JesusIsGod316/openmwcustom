@@ -58,6 +58,10 @@ int main()
     geometry.mesh = *mesh;
     geometry.materials = { *material };
     partPayload->nodes.push_back(geometry);
+    ModelNodeRecord arrowBone;
+    arrowBone.name = "ArrowBone";
+    arrowBone.parent = ModelNodeIndex{ 0u };
+    partPayload->nodes.push_back(arrowBone);
     partPayload->roots.push_back(ModelNodeIndex{ 0u });
     const auto part = world.reserveModel();
     ModelRecord partRecord;
@@ -68,11 +72,42 @@ int main()
     const NifRender::ComposedActorModel composed = NifRender::composeActorModel(world, *base, *skeleton,
         { NifRender::ActorPartModelSource{ *part, "bip01 hand", true } }, "actor:npc");
     assert(composed.valid());
-    assert(composed.record.payload->nodes.size() == 4u);
+    assert(composed.record.payload->nodes.size() == 5u);
     assert(composed.record.payload->nodes[2].parent == ModelNodeIndex{ 1u });
     assert(composed.record.payload->nodes[3].mesh == mesh);
+    assert(composed.record.payload->nodes[4].parent == ModelNodeIndex{ 2u });
     assert(composed.record.dynamicRequirements
         == modelDynamicRequirement(ModelDynamicRequirement::NodeEffect));
+
+    auto ammoPayload = std::make_shared<ModelPayload>();
+    ModelNodeRecord ammoRoot;
+    ammoRoot.name = "ammo root";
+    ammoPayload->nodes.push_back(ammoRoot);
+    ModelNodeRecord ammoGeometry;
+    ammoGeometry.name = "ammo geometry";
+    ammoGeometry.parent = ModelNodeIndex{ 0u };
+    ammoGeometry.kind = ModelNodeKind::Geometry;
+    ammoGeometry.mesh = *mesh;
+    ammoGeometry.materials = { *material };
+    ammoPayload->nodes.push_back(ammoGeometry);
+    ammoPayload->roots.push_back(ModelNodeIndex{ 0u });
+    const auto ammo = world.reserveModel();
+    ModelRecord ammoRecord;
+    ammoRecord.payload = ammoPayload;
+    assert(ammo && world.commit(*ammo, std::move(ammoRecord)));
+
+    // Crossbow bolts use a weapon-local ArrowBone when the actor skeleton does
+    // not provide one. The composer must be able to resolve a later attachment
+    // against nodes copied by an earlier equipment part, not just base bones.
+    const NifRender::ComposedActorModel withAmmo = NifRender::composeActorModel(world, *base, *skeleton,
+        { NifRender::ActorPartModelSource{ *part, "bip01 hand", true },
+            NifRender::ActorPartModelSource{ *ammo, "ArrowBone", true } },
+        "actor:npc:ammo");
+    assert(withAmmo.valid());
+    assert(withAmmo.record.payload->nodes.size() == 7u);
+    assert(withAmmo.record.payload->nodes[4].name == "ArrowBone");
+    assert(withAmmo.record.payload->nodes[5].parent == ModelNodeIndex{ 4u });
+    assert(withAmmo.record.payload->nodes[6].mesh == mesh);
 
     const NifRender::ComposedActorModel missing = NifRender::composeActorModel(world, *base, *skeleton,
         { NifRender::ActorPartModelSource{ *part, "missing bone", true } }, "actor:bad");
