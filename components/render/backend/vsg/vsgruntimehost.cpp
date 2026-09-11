@@ -53,11 +53,19 @@ namespace RenderVsg
         constexpr vsg::Mask ShadowTraversalMask = 0x1;
         constexpr vsg::Mask ReflectionTraversalMask = 0x2;
         constexpr vsg::Mask RefractionTraversalMask = 0x4;
+        constexpr std::size_t MaximumAuxiliaryViews = 64;
+        constexpr std::uint64_t MaximumAuxiliaryPixels = 64ull * 512ull * 512ull;
 
         [[nodiscard]] bool hasSemanticFlag(
             std::uint64_t flags, RenderCore::InstanceSemanticFlag flag) noexcept
         {
             return (flags & RenderCore::semanticFlag(flag)) != 0;
+        }
+
+        [[nodiscard]] bool isGenericAuxiliaryView(RenderCore::ViewKind kind) noexcept
+        {
+            return kind == RenderCore::ViewKind::Map || kind == RenderCore::ViewKind::Preview
+                || kind == RenderCore::ViewKind::Debug;
         }
 
         [[nodiscard]] vsg::Mask placementMask(bool castsShadow, std::uint64_t semanticFlags) noexcept
@@ -188,13 +196,13 @@ namespace RenderVsg
         mView->bins = createStaticConformanceBins();
         mRenderGraph = vsg::RenderGraph::create(mWindow);
         mRenderGraph->addChild(mView);
-        auto commandGraph = vsg::CommandGraph::create(mWindow);
+        mCommandGraph = vsg::CommandGraph::create(mWindow);
         if (mReflectionView)
-            commandGraph->addChild(mReflectionView->target.renderGraph);
+            mCommandGraph->addChild(mReflectionView->target.renderGraph);
         if (mRefractionView)
-            commandGraph->addChild(mRefractionView->target.renderGraph);
-        commandGraph->addChild(mRenderGraph);
-        mViewer->assignRecordAndSubmitTaskAndPresentation({ commandGraph });
+            mCommandGraph->addChild(mRefractionView->target.renderGraph);
+        mCommandGraph->addChild(mRenderGraph);
+        mViewer->assignRecordAndSubmitTaskAndPresentation({ mCommandGraph });
         auto resourceHints = vsg::ResourceHints::create();
         if (options.shadows.enabled)
         {
@@ -225,9 +233,11 @@ namespace RenderVsg
             mSceneRoot->children.clear();
         if (mMainOnlyRoot)
             mMainOnlyRoot->children.clear();
+        mAuxiliaryViews.clear();
         mReflectionView.reset();
         mRefractionView.reset();
         mRenderGraph = {};
+        mCommandGraph = {};
         mOpenMwViewState = {};
         mView = {};
         mViewer = {};
@@ -237,6 +247,14 @@ namespace RenderVsg
     RenderCore::RenderBackendKind VsgRuntimeHost::backendKind() const noexcept
     {
         return RenderCore::RenderBackendKind::VsgVulkan;
+    }
+
+    vsg::ref_ptr<vsg::ImageView> VsgRuntimeHost::auxiliaryColorImage(
+        RenderCore::RenderTargetHandle target) const noexcept
+    {
+        const auto found = std::find_if(mAuxiliaryViews.begin(), mAuxiliaryViews.end(),
+            [&](const AuxiliaryViewRuntime& value) { return value.targetIdentity == target; });
+        return found == mAuxiliaryViews.end() ? vsg::ref_ptr<vsg::ImageView>{} : found->target.color;
     }
 
     const RenderCore::FrameView* VsgRuntimeHost::selectMainView(
@@ -275,7 +293,7 @@ namespace RenderVsg
                 reflection = &view;
             else if (view.kind == RenderCore::ViewKind::Refraction && !refraction)
                 refraction = &view;
-            else
+            else if (!isGenericAuxiliaryView(view.kind))
                 return false;
         }
         const bool water = frame.environment().waterEnabled;
@@ -308,8 +326,6 @@ namespace RenderVsg
         };
         return validView(reflection, RenderCore::ViewKind::Reflection, mOptions.water.reflectionLodScale)
             && validView(refraction, RenderCore::ViewKind::Refraction, mOptions.water.refractionLodScale)
-            && frame.views().size() == 1 + static_cast<std::size_t>(expectReflection)
-                    + static_cast<std::size_t>(expectRefraction)
             && frame.renderTargets().size() == frame.views().size()
             && frame.renderPasses().size() == frame.views().size();
     }
@@ -632,9 +648,15 @@ namespace RenderVsg
 
     bool VsgRuntimeHost::synchronizeLocalLights(const RenderCore::RenderWorld& world)
     {
-        const bool allCurrent = mOpenMwViewState->localLightsCurrent(world)
+        bool allCurrent = mOpenMwViewState->localLightsCurrent(world)
             && (!mReflectionView || mReflectionView->state->localLightsCurrent(world))
             && (!mRefractionView || mRefractionView->state->localLightsCurrent(world));
+        for (const AuxiliaryViewRuntime& auxiliary : mAuxiliaryViews)
+        {
+            if (auxiliary.active && auxiliary.kind != RenderCore::ViewKind::Map
+                && !auxiliary.state->localLightsCurrent(world))
+                allCurrent = false;
+        }
         if (allCurrent)
             return true;
 
@@ -664,10 +686,180 @@ namespace RenderVsg
         }
         if (!mOpenMwViewState->setLocalLights(plan)
             || (mReflectionView && !mReflectionView->state->setLocalLights(plan))
-            || (mRefractionView && !mRefractionView->state->setLocalLights(std::move(plan))))
+            || (mRefractionView && !mRefractionView->state->setLocalLights(plan)))
         {
             mLastDiagnostic = "OpenMW view state rejected its prepared local light buffer";
             return false;
+        }
+        for (AuxiliaryViewRuntime& auxiliary : mAuxiliaryViews)
+        {
+            if (auxiliary.active && auxiliary.kind != RenderCore::ViewKind::Map
+                && !auxiliary.state->setLocalLights(plan))
+            {
+                mLastDiagnostic = "auxiliary OpenMW view state rejected its prepared local light buffer";
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool VsgRuntimeHost::synchronizeAuxiliaryViews(const RenderCore::FrameRenderState& frame)
+    {
+        for (AuxiliaryViewRuntime& runtime : mAuxiliaryViews)
+        {
+            runtime.active = false;
+            if (runtime.target.renderGraph)
+                runtime.target.renderGraph->mask = vsg::MASK_OFF;
+            if (runtime.view)
+                runtime.view->mask = vsg::MASK_OFF;
+        }
+
+        std::size_t requestedCount = 0;
+        std::uint64_t requestedPixels = 0;
+        const RenderCore::RenderPassDesc* const present = [&]() -> const RenderCore::RenderPassDesc* {
+            const auto found = std::find_if(frame.renderPasses().begin(), frame.renderPasses().end(),
+                [](const RenderCore::RenderPassDesc& pass) { return pass.present; });
+            return found == frame.renderPasses().end() ? nullptr : &*found;
+        }();
+        if (!present)
+        {
+            mLastDiagnostic = "auxiliary view validation could not resolve the main present pass";
+            return false;
+        }
+
+        for (const RenderCore::FrameView& view : frame.views())
+        {
+            if (!isGenericAuxiliaryView(view.kind))
+                continue;
+            if (++requestedCount > MaximumAuxiliaryViews)
+            {
+                mLastDiagnostic = "auxiliary view count exceeds the bounded CP4F target pool";
+                return false;
+            }
+            const std::uint64_t pixels = static_cast<std::uint64_t>(view.extent.width) * view.extent.height;
+            if (pixels == 0 || requestedPixels > MaximumAuxiliaryPixels - std::min(pixels, MaximumAuxiliaryPixels))
+            {
+                mLastDiagnostic = "auxiliary view pixels exceed the bounded CP4F target budget";
+                return false;
+            }
+            requestedPixels += pixels;
+
+            const auto target = std::find_if(frame.renderTargets().begin(), frame.renderTargets().end(),
+                [&](const RenderCore::RenderTargetDesc& value) { return value.identity == view.outputTarget; });
+            const auto pass = std::find_if(frame.renderPasses().begin(), frame.renderPasses().end(),
+                [&](const RenderCore::RenderPassDesc& value) { return value.view && *value.view == view.identity; });
+            if (target == frame.renderTargets().end() || pass == frame.renderPasses().end()
+                || target->kind != RenderCore::RenderTargetKind::Offscreen || target->extent != view.extent
+                || target->sampleCount != 1 || target->transient || target->historyValid || view.temporal
+                || view.historyValid || view.semanticIncludeMask != ~std::uint64_t{ 0 }
+                || view.semanticExcludeMask != 0 || pass->present || pass->output != view.outputTarget
+                || !pass->inputs.empty() || !pass->dependencies.empty()
+                || !vsgProjectionCompatible(view.current.projection)
+                || !vsgProjectionCompatible(view.previous.projection)
+                || (target->colorFormat != RenderCore::RenderTargetFormat::Rgba8Srgb
+                    && target->colorFormat != RenderCore::RenderTargetFormat::Rgba16Float)
+                || (target->depthFormat && *target->depthFormat != RenderCore::RenderTargetFormat::Depth32Float))
+            {
+                mLastDiagnostic = "generic auxiliary view is outside the bounded CP4F Vulkan contract";
+                return false;
+            }
+            const bool inputListed = std::find(present->inputs.begin(), present->inputs.end(), view.outputTarget)
+                != present->inputs.end();
+            const bool dependencyListed = std::find(present->dependencies.begin(), present->dependencies.end(), pass->identity)
+                != present->dependencies.end();
+            if (inputListed != dependencyListed)
+            {
+                mLastDiagnostic = "auxiliary target sampling dependency is incomplete";
+                return false;
+            }
+
+            auto runtime = std::find_if(mAuxiliaryViews.begin(), mAuxiliaryViews.end(),
+                [&](const AuxiliaryViewRuntime& value) { return value.identity == view.identity; });
+            if (runtime == mAuxiliaryViews.end())
+            {
+                if (mAuxiliaryViews.size() >= MaximumAuxiliaryViews)
+                {
+                    mLastDiagnostic = "persistent auxiliary target pool is exhausted";
+                    return false;
+                }
+                waitIdle();
+                AuxiliaryViewRuntime created;
+                created.identity = view.identity;
+                created.targetIdentity = view.outputTarget;
+                created.kind = view.kind;
+                created.colorFormat = target->colorFormat;
+                created.depthFormat = target->depthFormat;
+                created.target = createOffscreenRenderTarget(mWindow->getOrCreateDevice(), view.extent,
+                    target->colorFormat, target->depthFormat);
+                if (!created.target)
+                {
+                    mLastDiagnostic = "Vulkan auxiliary offscreen target allocation failed";
+                    return false;
+                }
+                created.camera = FrameCameraObjects::create(view);
+                created.view = vsg::View::create(
+                    created.camera.camera, vsg::ref_ptr<vsg::Node>{}, vsg::RECORD_LIGHTS);
+                created.state = OpenMwViewDependentState::create(created.view.get());
+                created.state->shaderSet = createLegacyCompatibilityShaderSet();
+                if (!created.state->shaderSet)
+                {
+                    mLastDiagnostic = "Vulkan auxiliary view could not create the OpenMW shader contract";
+                    return false;
+                }
+                created.view->viewDependentState = created.state;
+                created.view->addChild(mAmbientLight);
+                created.view->addChild(mSunLight);
+                created.view->addChild(mSceneRoot);
+                created.view->bins = createStaticConformanceBins();
+                created.target.renderGraph->addChild(created.view);
+                if (!compileForViewer(*mViewer, created.target.renderGraph))
+                {
+                    mLastDiagnostic = "incremental Vulkan auxiliary view compilation failed";
+                    return false;
+                }
+                // Water targets are already before the swapchain graph. Insert
+                // generic sampled surfaces immediately before the main graph so
+                // their final shader-read layout is established before MyGUI.
+                mCommandGraph->children.insert(mCommandGraph->children.end() - 1, created.target.renderGraph);
+                mAuxiliaryViews.push_back(std::move(created));
+                runtime = std::prev(mAuxiliaryViews.end());
+            }
+            else if (runtime->targetIdentity != view.outputTarget || runtime->kind != view.kind
+                || runtime->target.extent != view.extent || runtime->colorFormat != target->colorFormat
+                || runtime->depthFormat != target->depthFormat)
+            {
+                mLastDiagnostic = "auxiliary view identity changed target shape; restart is required to preserve sampled-image lifetime";
+                return false;
+            }
+
+            runtime->active = true;
+            runtime->target.renderGraph->mask = vsg::MASK_ALL;
+            runtime->view->mask = vsg::MASK_ALL;
+            runtime->camera.update(view);
+            runtime->view->LODScale = view.lodScale;
+            RenderCore::FrameEnvironmentState auxiliaryEnvironment = frame.environment();
+            if (view.kind == RenderCore::ViewKind::Map)
+            {
+                auxiliaryEnvironment.ambient = { 0.3f, 0.3f, 0.3f, 1.0f };
+                auxiliaryEnvironment.fogEnabled = false;
+                auxiliaryEnvironment.sunDiffuse = { 0.7f, 0.7f, 0.7f, 1.0f };
+                auxiliaryEnvironment.sunSpecular = { 0.0f, 0.0f, 0.0f, 0.0f };
+                auxiliaryEnvironment.sunLightEnabled = true;
+                auxiliaryEnvironment.sunVisible = false;
+                auxiliaryEnvironment.shadowsEnabled = false;
+                auxiliaryEnvironment.clusteredLocalLighting = false;
+                auxiliaryEnvironment.skyEnabled = false;
+                auxiliaryEnvironment.waterEnabled = false;
+                auxiliaryEnvironment.underwater = false;
+            }
+            runtime->state->setRadiusFadeEnabled(auxiliaryEnvironment.localLightRadiusFade);
+            runtime->state->setEnvironment(auxiliaryEnvironment, view.current.projection);
+            runtime->state->setClipPlane(view.clipPlane, view.current);
+            const RenderCore::Color clear = view.kind == RenderCore::ViewKind::Map
+                ? RenderCore::Color{ 0.0f, 0.0f, 0.0f, 1.0f }
+                : (auxiliaryEnvironment.skyEnabled ? auxiliaryEnvironment.skyColor : auxiliaryEnvironment.fogColor);
+            runtime->target.renderGraph->setClearValues(
+                { { clear.r, clear.g, clear.b, clear.a } }, { 0.0f, 0 });
         }
         return true;
     }
@@ -739,6 +931,8 @@ namespace RenderVsg
             || frame.projectionOffset() != glm::vec2(0.0f))
             return finish(RenderCore::RenderFrameResult::Failed,
                 "CP3C host requires explicit reversed zero-to-one/down-Y projection and no temporal jitter");
+        if (!synchronizeAuxiliaryViews(frame))
+            return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
         const VkExtent2D desiredExtent{ frame.outputExtent().width, frame.outputExtent().height };
         const auto extentMatches = [&] {
             const VkExtent2D actual = mWindow->extent2D();
