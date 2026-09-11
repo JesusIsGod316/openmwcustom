@@ -153,6 +153,7 @@ namespace RenderVsg
             RenderCore::RenderTargetFormat colorFormat = RenderCore::RenderTargetFormat::Rgba8Srgb;
             std::optional<RenderCore::RenderTargetFormat> depthFormat = RenderCore::RenderTargetFormat::Depth32Float;
             OffscreenRenderTarget target;
+            vsg::ref_ptr<vsg::Switch> commandVisibility;
             FrameCameraObjects camera;
             vsg::ref_ptr<vsg::View> view;
             vsg::ref_ptr<OpenMwViewDependentState> state;

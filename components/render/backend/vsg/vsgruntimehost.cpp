@@ -264,14 +264,15 @@ namespace RenderVsg
             [&](const AuxiliaryViewRuntime& value) { return value.targetIdentity == target; });
         if (found == mAuxiliaryViews.end())
             return true;
-        if (!mCommandGraph || !found->target.renderGraph)
+        if (!mCommandGraph || !found->target.renderGraph || !found->commandVisibility)
         {
             mLastDiagnostic = "persistent auxiliary target retirement found an invalid command graph";
             return false;
         }
 
         waitIdle();
-        const auto graph = std::find(mCommandGraph->children.begin(), mCommandGraph->children.end(), found->target.renderGraph);
+        const auto graph = std::find(
+            mCommandGraph->children.begin(), mCommandGraph->children.end(), found->commandVisibility);
         if (graph == mCommandGraph->children.end())
         {
             mLastDiagnostic = "persistent auxiliary target retirement could not resolve its command graph child";
@@ -752,8 +753,8 @@ namespace RenderVsg
         for (AuxiliaryViewRuntime& runtime : mAuxiliaryViews)
         {
             runtime.active = false;
-            if (runtime.target.renderGraph)
-                runtime.target.renderGraph->mask = vsg::MASK_OFF;
+            if (runtime.commandVisibility)
+                runtime.commandVisibility->setAllChildren(false);
             if (runtime.view)
                 runtime.view->mask = vsg::MASK_OFF;
         }
@@ -860,6 +861,13 @@ namespace RenderVsg
                     mLastDiagnostic = "Vulkan auxiliary offscreen target allocation failed";
                     return false;
                 }
+                created.commandVisibility = vsg::Switch::create();
+                if (!created.commandVisibility)
+                {
+                    mLastDiagnostic = "Vulkan auxiliary view could not create its command visibility switch";
+                    return false;
+                }
+                created.commandVisibility->addChild(false, created.target.renderGraph);
                 created.camera = FrameCameraObjects::create(view);
                 created.view = vsg::View::create(
                     created.camera.camera, vsg::ref_ptr<vsg::Node>{}, vsg::RECORD_LIGHTS);
@@ -923,7 +931,7 @@ namespace RenderVsg
                 // Water targets are already before the swapchain graph. Insert
                 // generic sampled surfaces immediately before the main graph so
                 // their final shader-read layout is established before MyGUI.
-                mCommandGraph->children.insert(mCommandGraph->children.end() - 1, created.target.renderGraph);
+                mCommandGraph->children.insert(mCommandGraph->children.end() - 1, created.commandVisibility);
                 mAuxiliaryViews.push_back(std::move(created));
                 runtime = std::prev(mAuxiliaryViews.end());
             }
@@ -935,8 +943,13 @@ namespace RenderVsg
                 return false;
             }
 
+            if (!runtime->commandVisibility)
+            {
+                mLastDiagnostic = "persistent auxiliary view lost its command visibility switch";
+                return false;
+            }
             runtime->active = true;
-            runtime->target.renderGraph->mask = vsg::MASK_ALL;
+            runtime->commandVisibility->setAllChildren(true);
             runtime->view->mask = vsg::MASK_ALL;
             runtime->camera.update(view);
             runtime->view->LODScale = view.lodScale;
