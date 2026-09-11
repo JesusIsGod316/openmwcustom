@@ -2,10 +2,13 @@
 #include <components/rendercore/namedvisualsemantics.hpp>
 #include <components/rendercore/records.hpp>
 #include <components/rendercore/renderworld.hpp>
+#include <components/rendercore/staticpopulationproducer.hpp>
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <memory>
+#include <string>
 #include <string_view>
 
 namespace
@@ -38,8 +41,8 @@ namespace
         auto payload = std::make_shared<RenderCore::ModelPayload>();
         RenderCore::ModelNodeRecord root;
         root.name = std::string(name);
-        root.kind = RenderCore::ModelNodeKind::Switch;
         root.sourceRecordId = 0u;
+        root.kind = RenderCore::ModelNodeKind::Switch;
         if (childCount != 0)
             root.activeSwitchChild = RenderCore::ModelNodeIndex{ 1u };
         payload->nodes.push_back(std::move(root));
@@ -142,6 +145,53 @@ namespace
         EXPECT_TRUE(plan->options.herbalismHarvested);
         ASSERT_EQ(plan->asset.draws.size(), 1u);
         EXPECT_EQ(plan->asset.draws.front().node, RenderCore::ModelNodeIndex{ 2u });
+    }
+
+    TEST(RenderCoreNamedVisualSemantics, PopulationRejectsMixedCapabilitiesAndHarvestedPlacements)
+    {
+        RenderCore::RenderWorld world;
+        RenderCore::RenderWorldPublisher publisher(world);
+        RenderCore::StaticPopulationProducer producer(world, publisher);
+        const PublishedSwitch scene = publishSwitch(world, "NightDaySwitch", 3u);
+        ASSERT_TRUE(scene.model.valid());
+        ASSERT_EQ(producer.addCell({ .identity = "cell:0,0", .worldspaceIdentity = "world" }),
+            RenderCore::StaticPopulationPublishStatus::Applied);
+
+        RenderCore::StaticPopulationInstanceSource first;
+        first.identity = "ref:first";
+        first.cellIdentity = "cell:0,0";
+        first.model = scene.model;
+        first.semanticFlags |= RenderCore::NightDaySwitchCapabilitySemanticFlag;
+        ASSERT_EQ(producer.upsert(first), RenderCore::StaticPopulationPublishStatus::Applied);
+
+        RenderCore::StaticPopulationInstanceSource second = first;
+        second.identity = "ref:second";
+        second.semanticFlags &= ~RenderCore::NightDaySwitchCapabilitySemanticFlag;
+        ASSERT_EQ(producer.upsert(second), RenderCore::StaticPopulationPublishStatus::Applied);
+        ASSERT_EQ(producer.flush(), RenderCore::StaticPopulationPublishStatus::Applied);
+
+        RenderCore::ChunkHandle chunk;
+        const RenderCore::ChunkRecord* chunkRecord = nullptr;
+        world.forEachChunk([&](RenderCore::ChunkHandle handle, const RenderCore::ChunkRecord& record) {
+            chunk = handle;
+            chunkRecord = &record;
+        });
+        ASSERT_TRUE(chunk.valid());
+        ASSERT_NE(chunkRecord, nullptr);
+        ASSERT_NE(chunkRecord->population, nullptr);
+        ASSERT_EQ(chunkRecord->population->groups.size(), 1u);
+
+        RenderVsg::StaticPlanOptions options;
+        options.dayNightSwitchesEnabled = true;
+        EXPECT_FALSE(RenderVsg::buildStaticPopulationPlan(
+            world, chunk, chunkRecord->population->groups.front(), options));
+
+        RenderCore::PopulationInstanceRecord harvested = chunkRecord->population->groups.front().instances.front();
+        harvested.semanticFlags |= RenderCore::HerbalismSwitchCapabilitySemanticFlag
+            | RenderCore::HerbalismHarvestedSemanticFlag;
+        RenderCore::ModelPopulationRecord harvestedGroup = chunkRecord->population->groups.front();
+        harvestedGroup.instances.assign(2u, harvested);
+        EXPECT_FALSE(RenderVsg::buildStaticPopulationPlan(world, chunk, harvestedGroup, options));
     }
 
     TEST(RenderCoreNamedVisualSemantics, InvalidNightDayStateFailsClosed)
