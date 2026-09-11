@@ -24,6 +24,16 @@ require(
     "ViewKind::Reflection",
     "ViewKind::Refraction",
     "struct AuxiliaryView",
+    "ViewKind::Map",
+    "ViewKind::Preview",
+    "sampledByMain",
+)
+require(
+    "components/render/backend/vsg/offscreenrendertarget.cpp",
+    "RenderTargetFormat::Rgba8Srgb",
+    "RenderTargetFormat::Rgba16Float",
+    "VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT",
+    "VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL",
 )
 require(
     "components/render/backend/vsg/vsgruntimehost.cpp",
@@ -32,11 +42,31 @@ require(
     "ReflectionTraversalMask",
     "RefractionTraversalMask",
     "mWaterSurface.update",
+    "mGuiRetirements.queue",
 )
 require(
     "components/render/backend/vsg/runtime-sources.cmake",
     "offscreenrendertarget.cpp",
     "watersurface.cpp",
+)
+require(
+    "components/vsgmygui/texture.hpp",
+    "vsg::ref_ptr<vsg::ImageView>",
+    "setImageView",
+    "revision()",
+)
+require(
+    "components/vsgmygui/rendermanager.hpp",
+    "setExternalTexture",
+    "textureIdentity",
+    "textureRevision",
+)
+require(
+    "components/vsgmygui/rendermanager.cpp",
+    "VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL",
+    "texture->identity()",
+    "texture->revision()",
+    "overlayStructureChanged",
 )
 require(
     "apps/openmw/mwrender/v4runtimeoptions.cpp",
