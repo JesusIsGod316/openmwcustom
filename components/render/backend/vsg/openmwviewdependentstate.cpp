@@ -8,9 +8,12 @@
 #include <vsg/state/DescriptorBuffer.h>
 #include <vsg/state/DescriptorSet.h>
 #include <vsg/state/DescriptorSetLayout.h>
+#include <vsg/ui/FrameStamp.h>
 #include <vsg/vk/ResourceRequirements.h>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -32,7 +35,8 @@ namespace RenderVsg
                 environment.windSpeed),
             vsg::vec4(environment.precipitationEnabled ? 1.0f : 0.0f, environment.storm ? 1.0f : 0.0f,
                 environment.skyEnabled ? 1.0f : 0.0f, environment.shadowsEnabled ? 1.0f : 0.0f),
-            vsg::vec4(eyeClipPlane.x, eyeClipPlane.y, eyeClipPlane.z, eyeClipPlane.w) };
+            vsg::vec4(eyeClipPlane.x, eyeClipPlane.y, eyeClipPlane.z, eyeClipPlane.w),
+            vsg::vec4(0.0f) };
     }
 
     OpenMwViewDependentState::OpenMwViewDependentState(vsg::View* view)
@@ -113,8 +117,29 @@ namespace RenderVsg
         vsg::ViewDependentState::traverse(traversal);
         if (mOpenMwEnvironmentData)
         {
-            const OpenMwEnvironmentValues values
+            OpenMwEnvironmentValues values
                 = packOpenMwEnvironment(mEnvironment, mProjection, mEyeClipPlane);
+            if (const vsg::FrameStamp* frameStamp = traversal.getFrameStamp())
+            {
+                const double time = frameStamp->simulationTime;
+                if (std::isfinite(time) && time >= 0.0)
+                {
+                    // SceneUtil::GlowUpdater uses exactly
+                    // static_cast<int>(simulationTime * 16) % 32. Keep that
+                    // arithmetic while it is representable by int; sessions
+                    // beyond that range use the mathematically equivalent
+                    // bounded phase without invoking signed-overflow UB.
+                    int frameIndex = 0;
+                    constexpr double exactLimit
+                        = static_cast<double>(std::numeric_limits<int>::max()) / 16.0;
+                    if (time <= exactLimit)
+                        frameIndex = static_cast<int>(time * 16.0) % 32;
+                    else
+                        frameIndex = static_cast<int>(std::fmod(time * 16.0, 32.0));
+                    values.back().x = static_cast<float>(frameIndex);
+                }
+            }
+
             bool environmentChanged = false;
             auto environmentOutput = mOpenMwEnvironmentData->begin();
             for (const vsg::vec4& value : values)
