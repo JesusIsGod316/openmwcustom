@@ -16,6 +16,7 @@
 #include <components/nif/extra.hpp>
 #include <components/nif/niffile.hpp>
 #include <components/nif/node.hpp>
+#include <components/nifrender/enchantedglow.hpp>
 #include <components/nifrender/niftranslator.hpp>
 #include <components/render/backend/vsg/vsgsemanticsession.hpp>
 #include <components/rendercore/namedvisualsemantics.hpp>
@@ -46,6 +47,33 @@ namespace MWRender
         {
             return std::runtime_error(
                 std::string("V4 scene lifecycle ") + operation + " failed with status " + std::to_string(status));
+        }
+
+        [[nodiscard]] std::runtime_error enchantedGlowError(NifRender::EnchantedGlowPublishStatus status)
+        {
+            using Status = NifRender::EnchantedGlowPublishStatus;
+            switch (status)
+            {
+                case Status::MissingTexture:
+                    return std::runtime_error(
+                        "V4 enchanted world reference is missing one or more canonical caustic texture frames");
+                case Status::ExistingEnvironmentBinding:
+                    return std::runtime_error(
+                        "V4 enchanted world reference also owns an authored environment map; combined semantics remain fail-closed");
+                case Status::UnsupportedLightingOrder:
+                    return std::runtime_error(
+                        "V4 enchanted glow requires the pre-light environment-map compatibility facet because Apply Lighting to Environment Maps is enabled");
+                case Status::ReservationFailed:
+                case Status::BatchBuildFailed:
+                case Status::PublishRejected:
+                case Status::InvalidSource:
+                    return publicationError("enchanted world-reference variant publication",
+                        static_cast<unsigned int>(status));
+                case Status::Published:
+                case Status::Reused:
+                    break;
+            }
+            return std::runtime_error("V4 enchanted world-reference variant publication returned an invalid status");
         }
 
         [[nodiscard]] bool isLight(const MWWorld::Ptr& ptr) noexcept
@@ -396,6 +424,26 @@ namespace MWRender
             throw std::runtime_error(
                 "V4 scene lifecycle encountered a non-actor model with controller/effect/deformation playback requirements before model-animation compatibility is available: "
                 + modelIdentity);
+        }
+
+        // SceneUtil::addEnchantedGlow is reference state, not immutable model
+        // state. Keep the shared translated source model untouched and bind this
+        // one reference to a cached material/model variant derived from gameplay
+        // enchantment data. Exterior populations naturally split by variant
+        // model handle, preserving instancing for references with matching RGB.
+        if (!ptr.getClass().getEnchantment(ptr).empty())
+        {
+            const osg::Vec4f sourceColor = ptr.getClass().getEnchantmentColor(ptr);
+            const RenderCore::Color color{ sourceColor.r(), sourceColor.g(), sourceColor.b(), sourceColor.a() };
+            const NifRender::EnchantedGlowPublishResult glow = NifRender::publishEnchantedGlowVariant(
+                mSession->world(), mSession->publisher(), mVfs, *model, color,
+                Settings::shaders().mApplyLightingToEnvironmentMaps);
+            if (!glow.available())
+                throw enchantedGlowError(glow.status);
+            model = glow.model;
+            modelRecord = mSession->world().get(*model);
+            if (!modelRecord)
+                throw std::runtime_error("V4 enchanted world-reference variant returned a stale model handle");
         }
 
         std::optional<RenderCore::StaticInstanceSource> source = animatedClass
