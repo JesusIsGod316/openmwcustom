@@ -13,6 +13,7 @@
 #include <components/rendercore/terrainpreparationservice.hpp>
 #include <components/rendercore/terrainresidencyplanner.hpp>
 
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -21,6 +22,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace VFS
 {
@@ -80,6 +82,10 @@ namespace MWRender
         [[nodiscard]] bool captureDynamicFrameState(const RenderingManager& rendering, V4MainFrameSource& source);
         [[nodiscard]] bool synchronizeExteriorTerrain(const RenderingManager& rendering, const MWWorld::Cell& cell);
         RenderCore::RenderFrameResult renderMainFrame(const V4MainFrameSource& source);
+        // Production CP4F gameplay path. It preserves the established main
+        // frame semantics while adding backend-neutral LocalMap auxiliary views
+        // and native VSG/MyGUI publication/retirement around the same session.
+        RenderCore::RenderFrameResult renderMainFrameWithNativeLocalMap(const V4MainFrameSource& source);
         RenderCore::RenderFrameResult renderGuiFrame(double simulationTime, double frameDelta);
         void stopBackgroundPreparation();
         void waitIdle();
@@ -111,6 +117,16 @@ namespace MWRender
         RenderCore::WorldEpoch mComposedActorEpoch;
         std::set<std::string, std::less<>> mGroundcoverCells;
         RenderCore::WorldEpoch mGroundcoverEpoch;
+
+        struct NativeMapUiEntry
+        {
+            std::string logicalIdentity;
+            std::string mapTextureName;
+            std::string fogTextureName;
+            bool mapPublished = false;
+            std::uint64_t fogRevision = 0;
+        };
+        std::map<std::uint32_t, NativeMapUiEntry> mNativeMapUiEntries;
     };
 }
 
