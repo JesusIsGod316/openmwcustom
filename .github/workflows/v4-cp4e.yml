@@ -95,7 +95,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          neutral=(-std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthread -I.)
+          # frameproducer.hpp uses designated aggregate initialization where
+          # omitted vector fields intentionally default-empty. Keep every other
+          # warning fatal while ignoring only GCC's aggregate-noise diagnostic.
+          neutral=(-std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -Wno-missing-field-initializers -pthread -I.)
           for source in \
             tools/v4/cp4/frame-route-smoke.cpp \
             tools/v4/cp4/water-auxiliary-smoke.cpp \
