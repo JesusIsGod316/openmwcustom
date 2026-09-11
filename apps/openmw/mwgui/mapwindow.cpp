@@ -244,6 +244,7 @@ namespace MWGui
             {
                 entry.mFogWidget->setImageTexture({});
                 entry.mFogTexture.reset();
+                entry.mNativeFogBound = false;
             }
         }
 
@@ -468,6 +469,8 @@ namespace MWGui
             entry.mFogWidget->setRenderItemTexture(nullptr);
             entry.mMapTexture.reset();
             entry.mFogTexture.reset();
+            entry.mNativeMapBound = false;
+            entry.mNativeFogBound = false;
         };
 
         std::size_t usedEntries = 0;
@@ -627,7 +630,7 @@ namespace MWGui
 
             if (nativeMap)
             {
-                if (!entry.mMapTexture)
+                if (!entry.mNativeMapBound)
                 {
                     std::string_view textureName
                         = mLocalMapRender->nativeMapTextureName(entry.mCellX, entry.mCellY);
@@ -641,25 +644,23 @@ namespace MWGui
                     if (!textureName.empty())
                     {
                         // Bind by MyGUI name. The VSG renderer owns this name and
-                        // its ImageView; the empty OSGTexture is only a local UI
-                        // readiness sentinel and is never submitted to MyGUI.
+                        // its ImageView; no foreign OSG texture object participates
+                        // in the native auxiliary-surface path.
                         entry.mMapWidget->setImageTexture(textureName);
-                        entry.mMapTexture
-                            = std::make_unique<MyGUIPlatform::OSGTexture>(std::string(), nullptr);
+                        entry.mNativeMapBound = true;
                         entry.mMapWidget->getSubWidgetMain()->_setUVSet(MyGUI::FloatRect(0.f, 1.f, 1.f, 0.f));
                         needRedraw = true;
                     }
                 }
 
-                if (!entry.mFogTexture && mFogOfWarToggled && mFogOfWarEnabled)
+                if (!entry.mNativeFogBound && mFogOfWarToggled && mFogOfWarEnabled)
                 {
                     const std::string_view fogName
                         = mLocalMapRender->nativeFogTextureName(entry.mCellX, entry.mCellY);
                     if (!fogName.empty())
                     {
                         entry.mFogWidget->setImageTexture(fogName);
-                        entry.mFogTexture
-                            = std::make_unique<MyGUIPlatform::OSGTexture>(std::string(), nullptr);
+                        entry.mNativeFogBound = true;
                         entry.mFogWidget->getSubWidgetMain()->_setUVSet(MyGUI::FloatRect(0.f, 0.f, 1.f, 1.f));
                         needRedraw = true;
                         // Newly uncovered chunk, make sure to draw door markers

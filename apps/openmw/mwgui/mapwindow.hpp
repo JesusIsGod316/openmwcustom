@@ -141,6 +141,8 @@ namespace MWGui
             MyGUI::ImageBox* mFogWidget;
             std::unique_ptr<MyGUI::ITexture> mMapTexture;
             std::unique_ptr<MyGUI::ITexture> mFogTexture;
+            bool mNativeMapBound = false;
+            bool mNativeFogBound = false;
             int mCellX;
             int mCellY;
         };
