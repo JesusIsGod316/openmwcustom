@@ -2,6 +2,8 @@
 
 #if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
 
+#include "localmap.hpp"
+
 #include <MyGUI_RenderManager.h>
 
 #include <components/debug/debuglog.hpp>
@@ -22,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 
@@ -31,6 +34,7 @@ namespace MWRender
     {
         constexpr std::string_view NativeBaseTextureName = "openmw-v4-global-map-base";
         constexpr std::string_view NativeOverlayTextureName = "openmw-v4-global-map-overlay";
+        GlobalMap* sActiveGlobalMap = nullptr;
 
         [[nodiscard]] std::uint8_t toByte(float value) noexcept
         {
@@ -116,10 +120,55 @@ namespace MWRender
         }
     }
 
+    GlobalMap::NativeRegistration::NativeRegistration(GlobalMap* owner) noexcept
+        : mOwner(owner)
+    {
+        sActiveGlobalMap = owner;
+    }
+
+    GlobalMap::NativeRegistration::~NativeRegistration()
+    {
+        if (sActiveGlobalMap == mOwner)
+            sActiveGlobalMap = nullptr;
+    }
+
+    GlobalMap* GlobalMap::activeInstance() noexcept
+    {
+        return sActiveGlobalMap;
+    }
+
+    void GlobalMap::flushNativeExploration()
+    {
+        LocalMap* const localMap = LocalMap::activeInstance();
+        if (!localMap || !localMap->nativeAuxiliaryRouteEnabled())
+            return;
+        const int resolution = localMap->nativeMapResolution();
+        if (resolution <= 0)
+            return;
+
+        for (auto it = mNativePendingExploredCells.begin(); it != mNativePendingExploredCells.end();)
+        {
+            const auto [cellX, cellY] = *it;
+            const std::span<const std::uint8_t> rgba = localMap->nativeMapRgba(cellX, cellY);
+            if (rgba.empty())
+            {
+                ++it;
+                continue;
+            }
+            if (!exploreCellNative(cellX, cellY, rgba, resolution, resolution))
+            {
+                ++it;
+                continue;
+            }
+            it = mNativePendingExploredCells.erase(it);
+        }
+    }
+
     bool GlobalMap::publishNativeTextures()
     {
         ensureLoaded();
-        if (!mBaseTexture || !mBaseTexture->getImage() || !mOverlayImage || mWidth <= 0 || mHeight <= 0)
+        if (!mBaseTexture || !mBaseTexture->getImage() || !mOverlayImage || !mOverlayTexture || mWidth <= 0
+            || mHeight <= 0)
             return false;
 
         auto* const renderer = dynamic_cast<VsgMyGui::RenderManager*>(&MyGUI::RenderManager::getInstance());
@@ -146,6 +195,12 @@ namespace MWRender
                 return false;
             mNativePublishedOverlayRevision = mNativeOverlayRevision;
         }
+
+        // Existing MapWindow code still owns MyGUI::ITexture wrappers on both
+        // backends. On Vulkan these OSG objects are never sampled: their names
+        // are aliases resolved by VsgMyGui to the native textures above.
+        mBaseTexture->setName(std::string(NativeBaseTextureName));
+        mOverlayTexture->setName(std::string(NativeOverlayTextureName));
         return true;
     }
 
@@ -210,6 +265,7 @@ namespace MWRender
     void GlobalMap::clearNative()
     {
         ensureLoaded();
+        mNativePendingExploredCells.clear();
         if (!mOverlayImage || !mOverlayImage->data())
             return;
         std::memset(mOverlayImage->data(), 0, mOverlayImage->getTotalSizeInBytes());
@@ -223,6 +279,7 @@ namespace MWRender
     void GlobalMap::readNative(ESM::GlobalMap& map)
     {
         ensureLoaded();
+        mNativePendingExploredCells.clear();
         if (!mOverlayImage || !mOverlayImage->data())
             return;
 
