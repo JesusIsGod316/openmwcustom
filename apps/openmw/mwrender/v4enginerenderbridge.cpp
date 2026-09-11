@@ -12,9 +12,11 @@
 
 #include "../mwworld/cell.hpp"
 #include "../mwworld/class.hpp"
+#include "../mwworld/inventorystore.hpp"
 
 #include <components/nif/niffile.hpp>
 #include <components/nifrender/actormodelcomposer.hpp>
+#include <components/nifrender/enchantedglow.hpp>
 #include <components/nifrender/niftranslator.hpp>
 #include <components/sceneutil/morphgeometry.hpp>
 #include <components/sceneutil/skeleton.hpp>
@@ -87,6 +89,32 @@ namespace MWRender
             const NifRender::TranslationBundle bundle = NifRender::translateStaticNif(Nif::FileView(nifFile), vfs);
             const NifRender::StaticModelCacheResult published = session.models().publish(bundle);
             return published.available() ? std::optional<NifRender::StaticModelCacheResult>(published) : std::nullopt;
+        }
+
+        [[nodiscard]] std::string enchantedGlowDiagnostic(NifRender::EnchantedGlowPublishStatus status)
+        {
+            using Status = NifRender::EnchantedGlowPublishStatus;
+            switch (status)
+            {
+                case Status::MissingTexture:
+                    return "NPC enchanted equipment is missing one or more canonical caustic texture frames";
+                case Status::ExistingEnvironmentBinding:
+                    return "NPC enchanted equipment also owns an authored environment map; combined semantics remain fail-closed";
+                case Status::UnsupportedLightingOrder:
+                    return "NPC enchanted equipment requires the pre-light environment-map compatibility facet because Apply Lighting to Environment Maps is enabled";
+                case Status::ReservationFailed:
+                    return "NPC enchanted equipment glow resource reservation failed";
+                case Status::BatchBuildFailed:
+                    return "NPC enchanted equipment glow update batch could not be built";
+                case Status::PublishRejected:
+                    return "NPC enchanted equipment glow publication was rejected";
+                case Status::InvalidSource:
+                    return "NPC enchanted equipment glow source is invalid";
+                case Status::Published:
+                case Status::Reused:
+                    break;
+            }
+            return "NPC enchanted equipment glow publication returned an invalid status";
         }
 
         class MorphCollector final : public osg::NodeVisitor
@@ -501,12 +529,10 @@ namespace MWRender
                 std::string signature(animation.getV4SourceModel().value());
                 for (const NpcAnimation::V4PartSource& part : npc->getV4PartSources())
                 {
-                    if (part.isLight || part.enchantedGlow)
+                    if (part.isLight)
                     {
                         compatible = false;
-                        mLastDiagnostic = part.isLight
-                            ? "NPC carried-light attachment requires actor-local light publication"
-                            : "NPC enchanted equipment requires dynamic glow material publication";
+                        mLastDiagnostic = "NPC carried-light attachment requires actor-local light publication";
                         return;
                     }
                     const std::optional<NifRender::StaticModelCacheResult> published
@@ -517,9 +543,47 @@ namespace MWRender
                         mLastDiagnostic = "NPC part is missing from the winning VFS or failed translation";
                         return;
                     }
-                    parts.push_back({ published->model, part.boneName, part.visible });
+
+                    RenderCore::ModelHandle partModel = published->model;
+                    std::string glowSignature;
+                    if (part.enchantedGlow)
+                    {
+                        const int slot = npc->getV4PartSlot(part.type);
+                        MWWorld::InventoryStore& inventory = ptr.getClass().getInventoryStore(ptr);
+                        const auto item = slot >= 0 ? inventory.getSlot(slot) : inventory.end();
+                        if (item == inventory.end() || item->getClass().getEnchantment(*item).empty())
+                        {
+                            compatible = false;
+                            mLastDiagnostic = "NPC enchanted part cannot resolve its authoritative equipped item";
+                            return;
+                        }
+                        const osg::Vec4f sourceColor = item->getClass().getEnchantmentColor(*item);
+                        const RenderCore::Color color{
+                            sourceColor.r(), sourceColor.g(), sourceColor.b(), sourceColor.a() };
+                        const NifRender::EnchantedGlowPublishResult glow = NifRender::publishEnchantedGlowVariant(
+                            mSession->world(), mSession->publisher(), mVfs, partModel, color,
+                            Settings::shaders().mApplyLightingToEnvironmentMaps);
+                        if (!glow.available())
+                        {
+                            compatible = false;
+                            mLastDiagnostic = enchantedGlowDiagnostic(glow.status);
+                            return;
+                        }
+                        partModel = glow.model;
+                        const RenderCore::ModelRecord* variant = mSession->world().get(partModel);
+                        if (!variant)
+                        {
+                            compatible = false;
+                            mLastDiagnostic = "NPC enchanted part variant returned a stale model handle";
+                            return;
+                        }
+                        glowSignature = ":glow=" + variant->sourceIdentity;
+                    }
+
+                    parts.push_back({ partModel, part.boneName, part.visible });
                     signature += "\n" + std::to_string(static_cast<unsigned int>(part.type)) + ":"
-                        + std::string(part.model.value()) + ":" + part.boneName + ":" + (part.visible ? "1" : "0");
+                        + std::string(part.model.value()) + ":" + part.boneName + ":" + (part.visible ? "1" : "0")
+                        + glowSignature;
                 }
                 if (!compatible)
                     return;
