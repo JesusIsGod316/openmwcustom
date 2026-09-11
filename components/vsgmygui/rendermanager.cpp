@@ -1,7 +1,7 @@
 #include "rendermanager.hpp"
 
-#include <cstring>
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -16,8 +16,6 @@ namespace VsgMyGui
 {
     namespace
     {
-        // MyGUI's vertex buffer: a plain CPU run of MyGUI::Vertex that MyGUI fills via lock(). We copy out of it in
-        // doRender, so unlock() has nothing to flush.
         class VertexBuffer final : public MyGUI::IVertexBuffer
         {
         public:
@@ -38,6 +36,17 @@ namespace VsgMyGui
             std::vector<uint8_t> mData;
             size_t mNeedCount = 0;
         };
+
+        vsg::ref_ptr<vsg::ImageInfo> imageInfoFor(
+            const RenderVsg::UiPipeline& pipeline, const Texture* texture)
+        {
+            if (texture && texture->imageView())
+                return vsg::ImageInfo::create(
+                    pipeline.sampler, texture->imageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            vsg::ref_ptr<vsg::Data> data
+                = (texture && texture->data()) ? texture->data() : pipeline.whiteTexture;
+            return vsg::ImageInfo::create(pipeline.sampler, data, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
     }
 
     RenderManager::RenderManager(const RenderVsg::UiPipeline& pipeline, ImageDecoder decoder)
@@ -49,6 +58,8 @@ namespace VsgMyGui
         mInfo.maximumDepth = 1;
     }
 
+    RenderManager::~RenderManager() = default;
+
     void RenderManager::initialise(int viewW, int viewH)
     {
         setViewSizePixels(viewW, viewH);
@@ -57,19 +68,17 @@ namespace VsgMyGui
 
     void RenderManager::shutdown()
     {
+        mDsCache.clear();
+        mSlots.clear();
         mTextures.clear();
         mBatches.clear();
         mIsInitialise = false;
     }
 
-    RenderManager::~RenderManager() {} // mTextures owns its Textures by value; nothing to free manually
-
     void RenderManager::setViewSizePixels(int width, int height)
     {
-        if (width < 1)
-            width = 1;
-        if (height < 1)
-            height = 1;
+        width = std::max(width, 1);
+        height = std::max(height, 1);
         mViewSize.set(width, height);
         mInfo.maximumDepth = 1;
         mInfo.hOffset = 0;
@@ -82,7 +91,7 @@ namespace VsgMyGui
     void RenderManager::setViewSize(int width, int height)
     {
         setViewSizePixels(width, height);
-        onResizeView(mViewSize); // notifies MyGUI's layers (only meaningful once MyGUI::Gui is live — P1.2)
+        onResizeView(mViewSize);
     }
 
     bool RenderManager::isFormatSupported(MyGUI::PixelFormat /*format*/, MyGUI::TextureUsage /*usage*/)
@@ -102,15 +111,36 @@ namespace VsgMyGui
 
     MyGUI::ITexture* RenderManager::createTexture(const std::string& name)
     {
+        if (auto existing = mTextures.find(name); existing != mTextures.end())
+            forgetTexture(&existing->second);
         auto [it, inserted] = mTextures.insert_or_assign(name, Texture(name));
         it->second.setDecoder(mDecoder);
         (void)inserted;
         return &it->second;
     }
 
+    Texture* RenderManager::setExternalTexture(const std::string& name, vsg::ref_ptr<vsg::ImageView> imageView,
+        int width, int height, MyGUI::PixelFormat format)
+    {
+        if (name.empty())
+            return nullptr;
+        auto it = mTextures.find(name);
+        if (it == mTextures.end())
+        {
+            auto [created, inserted] = mTextures.emplace(name, Texture(name));
+            (void)inserted;
+            created->second.setDecoder(mDecoder);
+            it = created;
+        }
+        else
+            forgetTexture(&it->second);
+        it->second.setImageView(std::move(imageView), width, height, format);
+        return &it->second;
+    }
+
     void RenderManager::destroyTexture(MyGUI::ITexture* texture)
     {
-        if (texture == nullptr)
+        if (!texture)
             return;
         forgetTexture(dynamic_cast<const Texture*>(texture));
         mTextures.erase(texture->getName());
@@ -127,9 +157,9 @@ namespace VsgMyGui
         return tex;
     }
 
-    bool RenderManager::checkTexture(MyGUI::ITexture* /*texture*/)
+    bool RenderManager::checkTexture(MyGUI::ITexture* texture)
     {
-        return true;
+        return texture == nullptr || dynamic_cast<Texture*>(texture) != nullptr;
     }
 
     void RenderManager::forgetTexture(const Texture* texture)
@@ -155,26 +185,23 @@ namespace VsgMyGui
 
     void RenderManager::doRender(MyGUI::IVertexBuffer* buffer, MyGUI::ITexture* texture, size_t count)
     {
-        if (buffer == nullptr || count == 0)
+        if (!buffer || count == 0)
             return;
         auto* vb = static_cast<VertexBuffer*>(buffer);
         const size_t bytes = count * sizeof(MyGUI::Vertex);
         if (vb->byteSize() < bytes)
-            return; // not locked/filled this frame
+            return;
 
         Batch batch;
         batch.vertices = vsg::ubyteArray::create(bytes);
         std::memcpy(batch.vertices->dataPointer(), vb->bytes(), bytes);
-        // Checked cast: widgets can carry a texture created by a different backend (InventoryWindow's avatar
-        // hands MyGUI an OSG-backed ITexture). Those aren't ours — fall back to the white texture in
-        // buildOverlayNode rather than reinterpreting a foreign object as a VsgMyGui::Texture.
         batch.texture = dynamic_cast<Texture*>(texture);
         if (texture && !batch.texture)
         {
             if (!mWarnedForeignTexture)
             {
-                Log(Debug::Warning) << "VsgMyGui: skipping an OSG or foreign render-target texture; "
-                                       "cross-API map, preview, save and video views are not implemented";
+                Log(Debug::Warning) << "VsgMyGui: skipping a foreign render-target texture; "
+                                       "CP4E auxiliary surfaces must be published through the native VSG image bridge";
                 mWarnedForeignTexture = true;
             }
             return;
@@ -189,20 +216,18 @@ namespace VsgMyGui
             return {};
 
         auto root = vsg::Group::create();
-        for (const Batch& b : mBatches)
+        for (const Batch& batch : mBatches)
         {
-            vsg::ref_ptr<vsg::Data> tex = (b.texture && b.texture->data()) ? b.texture->data() : mPipeline.whiteTexture;
-            auto info = vsg::ImageInfo::create(mPipeline.sampler, tex, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            auto info = imageInfoFor(mPipeline, batch.texture);
             auto image = vsg::DescriptorImage::create(info, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
             auto ds = vsg::DescriptorSet::create(mPipeline.descriptorSetLayout, vsg::Descriptors{ image });
             auto bindDs
                 = vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, mPipeline.pipelineLayout, 0, ds);
-
             auto sg = vsg::StateGroup::create();
             sg->add(mPipeline.bindPipeline);
             sg->add(bindDs);
-            sg->addChild(vsg::BindVertexBuffers::create(0, vsg::DataList{ b.vertices }));
-            sg->addChild(vsg::Draw::create(b.count, 1, 0, 0));
+            sg->addChild(vsg::BindVertexBuffers::create(0, vsg::DataList{ batch.vertices }));
+            sg->addChild(vsg::Draw::create(batch.count, 1, 0, 0));
             root->addChild(sg);
         }
         return root;
@@ -211,7 +236,7 @@ namespace VsgMyGui
     void RenderManager::collect()
     {
         begin();
-        onRenderToTarget(this, true); // MyGUI walks its layers → doRender per batch (requires MyGUI::Gui)
+        onRenderToTarget(this, true);
         end();
     }
 
@@ -225,7 +250,7 @@ namespace VsgMyGui
     {
         constexpr uint32_t kInitialVertsPerSlot = 4096;
 
-        [[nodiscard]] uint32_t slotCapacity(uint32_t required)
+        uint32_t slotCapacity(uint32_t required)
         {
             uint32_t result = kInitialVertsPerSlot;
             while (result < required && result <= std::numeric_limits<uint32_t>::max() / 2)
@@ -243,41 +268,39 @@ namespace VsgMyGui
         auto root = vsg::Group::create();
         for (size_t i = 0; i < mBatches.size(); ++i)
         {
-            const Batch& b = mBatches[i];
+            const Batch& batch = mBatches[i];
             Slot slot;
-            slot.texture = b.texture;
-            const TextureKey key = textureKey(b.texture);
+            slot.texture = batch.texture;
+            const TextureKey key = textureKey(batch.texture);
             slot.textureIdentity = key.first;
             slot.textureRevision = key.second;
-            // Reuse a pooled DYNAMIC buffer for this slot index (allocated + GPU-compiled once, then reused across
-            // rebuilds) rather than allocating a fresh one each rebuild — the fresh-alloc path was the leak.
-            if (i >= mVertPool.size() || mVertPoolCapacities[i] < b.count)
+            if (i >= mVertPool.size() || mVertPoolCapacities[i] < batch.count)
             {
-                const uint32_t capacity = slotCapacity(b.count);
-                auto buf = vsg::ubyteArray::create(capacity * sizeof(MyGUI::Vertex));
-                buf->properties.dataVariance = vsg::DYNAMIC_DATA; // dirty() re-uploads without recompiling
+                const uint32_t capacity = slotCapacity(batch.count);
+                auto buffer = vsg::ubyteArray::create(capacity * sizeof(MyGUI::Vertex));
+                buffer->properties.dataVariance = vsg::DYNAMIC_DATA;
                 if (i >= mVertPool.size())
                 {
-                    mVertPool.push_back(buf);
+                    mVertPool.push_back(buffer);
                     mVertPoolCapacities.push_back(capacity);
                 }
                 else
                 {
-                    mVertPool[i] = buf;
+                    mVertPool[i] = buffer;
                     mVertPoolCapacities[i] = capacity;
                 }
             }
             slot.verts = mVertPool[i];
             slot.capacity = mVertPoolCapacities[i];
-            const uint32_t n = b.count;
-            if (b.vertices && n > 0)
-                std::memcpy(slot.verts->dataPointer(), b.vertices->dataPointer(), n * sizeof(MyGUI::Vertex));
-            slot.verts->dirty(); // pooled buffer already compiled → mark for re-upload
-            slot.draw = vsg::Draw::create(n, 1, 0, 0);
+            const uint32_t count = batch.count;
+            if (batch.vertices && count > 0)
+                std::memcpy(slot.verts->dataPointer(), batch.vertices->dataPointer(), count * sizeof(MyGUI::Vertex));
+            slot.verts->dirty();
+            slot.draw = vsg::Draw::create(count, 1, 0, 0);
 
             auto sg = vsg::StateGroup::create();
             sg->add(mPipeline.bindPipeline);
-            sg->add(bindDescriptorSetFor(b.texture)); // cached per texture → compile is a no-op
+            sg->add(bindDescriptorSetFor(batch.texture));
             sg->addChild(vsg::BindVertexBuffers::create(0, vsg::DataList{ slot.verts }));
             sg->addChild(slot.draw);
             root->addChild(sg);
@@ -288,19 +311,14 @@ namespace VsgMyGui
 
     vsg::ref_ptr<vsg::BindDescriptorSet> RenderManager::bindDescriptorSetFor(const Texture* texture)
     {
-        // One compiled descriptor set (bind command) per texture identity, cached so overlay rebuilds reference the
-        // already-compiled resource instead of allocating a new one each frame. Evicted in create/destroyTexture when
-        // the underlying image changes, so a cached entry never points at stale texture data.
         const TextureKey key = textureKey(texture);
         if (auto it = mDsCache.find(key); it != mDsCache.end())
             return it->second;
         if (key.first != 0)
-        {
             std::erase_if(mDsCache,
                 [&key](const auto& value) { return value.first.first == key.first && value.first != key; });
-        }
-        vsg::ref_ptr<vsg::Data> tex = (texture && texture->data()) ? texture->data() : mPipeline.whiteTexture;
-        auto info = vsg::ImageInfo::create(mPipeline.sampler, tex, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        auto info = imageInfoFor(mPipeline, texture);
         auto image = vsg::DescriptorImage::create(info, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
         auto ds = vsg::DescriptorSet::create(mPipeline.descriptorSetLayout, vsg::Descriptors{ image });
         auto bindDs = vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, mPipeline.pipelineLayout, 0, ds);
@@ -315,7 +333,6 @@ namespace VsgMyGui
 
     void RenderManager::updatePersistentOverlay()
     {
-        // Leave last frame's overlay untouched if the batch structure changed (widget set / atlas differs).
         if (mSlots.empty() || mBatches.size() != mSlots.size())
         {
             if (!mWarnedStructure && !mSlots.empty())
@@ -330,24 +347,20 @@ namespace VsgMyGui
         {
             const TextureKey key = textureKey(mBatches[i].texture);
             if (key.first != mSlots[i].textureIdentity || key.second != mSlots[i].textureRevision)
-                continue; // texture identity changed → don't feed it through a stale descriptor
-            const uint32_t n = mBatches[i].count;
-            if (mBatches[i].vertices && n > 0)
+                continue;
+            const uint32_t count = mBatches[i].count;
+            if (mBatches[i].vertices && count > 0)
             {
-                std::memcpy(
-                    mSlots[i].verts->dataPointer(), mBatches[i].vertices->dataPointer(), n * sizeof(MyGUI::Vertex));
+                std::memcpy(mSlots[i].verts->dataPointer(), mBatches[i].vertices->dataPointer(),
+                    count * sizeof(MyGUI::Vertex));
                 mSlots[i].verts->dirty();
             }
-            mSlots[i].draw->vertexCount = n;
+            mSlots[i].draw->vertexCount = count;
         }
     }
 
     bool RenderManager::overlayStructureChanged() const
     {
-        // A different number of batches, or a batch bound to a different texture than its slot's descriptor was built
-        // for, means an in-place refresh can't represent the new frame — the host must rebuild the node. The rebuild is
-        // cheap and non-leaking: buildPersistentOverlay reuses cached descriptor sets + pooled vertex buffers, so
-        // compileManager->compile() allocates nothing. (The game HUD reorders batches most frames, so this is common.)
         if (mBatches.size() != mSlots.size())
             return true;
         for (size_t i = 0; i < mSlots.size(); ++i)
@@ -363,13 +376,12 @@ namespace VsgMyGui
 
     vsg::ref_ptr<vsg::Node> buildSelfTest(RenderManager& rm)
     {
-        // 1) A generated checkerboard via createManual + lock/unlock — the exact upload path MyGUI uses for font
-        //    atlases and dynamic images. Proves createManual + the RGBA expansion + GPU sampling end-to-end.
         constexpr int ts = 64;
         auto* tex = static_cast<Texture*>(rm.createTexture("__vsgmygui_selftest"));
         tex->createManual(ts, ts, MyGUI::TextureUsage::Static, MyGUI::PixelFormat::R8G8B8A8);
         auto* px = static_cast<uint8_t*>(tex->lock(MyGUI::TextureUsage::Static));
         for (int y = 0; y < ts; ++y)
+        {
             for (int x = 0; x < ts; ++x)
             {
                 const bool c = (((x / 8) + (y / 8)) & 1) != 0;
@@ -379,10 +391,9 @@ namespace VsgMyGui
                 p[2] = c ? 45 : 130;
                 p[3] = 255;
             }
+        }
         tex->unlock();
 
-        // 2) A MyGUI::VertexBuffer holding a textured quad in clip space (MyGUI's GL Y-up convention; the UI shader
-        //    flips Y). White vertex colour so the checkerboard shows unmodified.
         auto* buffer = rm.createVertexBuffer();
         buffer->setVertexCount(6);
         MyGUI::Vertex* v = buffer->lock();
@@ -403,11 +414,9 @@ namespace VsgMyGui
         set(v[5], 0.30f, 0.85f, white, 0.f, 1.f);
         buffer->unlock();
 
-        // 3) Drive the render path exactly as MyGUI would.
         rm.begin();
         rm.doRender(buffer, tex, 6);
         rm.end();
-
         auto node = rm.buildOverlayNode();
         rm.destroyVertexBuffer(buffer);
         return node;
