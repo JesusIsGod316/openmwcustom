@@ -4,15 +4,20 @@
 
 #include "../mwworld/cellstore.hpp"
 #include "../mwworld/class.hpp"
+#include "../mwworld/containerstore.hpp"
 #include "../mwworld/ptr.hpp"
 
-#include <components/misc/convert.hpp>
-#include <components/misc/resourcehelpers.hpp>
+#include <components/esm3/loadcont.hpp>
 #include <components/esm3/loadligh.hpp>
 #include <components/esm4/loadligh.hpp>
+#include <components/misc/constants.hpp>
+#include <components/misc/convert.hpp>
+#include <components/misc/resourcehelpers.hpp>
 #include <components/nif/niffile.hpp>
 #include <components/nifrender/niftranslator.hpp>
 #include <components/render/backend/vsg/vsgsemanticsession.hpp>
+#include <components/rendercore/namedvisualsemantics.hpp>
+#include <components/settings/values.hpp>
 #include <components/vfs/manager.hpp>
 
 #include <algorithm>
@@ -71,6 +76,13 @@ namespace MWRender
                 [](const RenderCore::ModelNodeRecord& node) { return node.controllerFlags != 0; });
         }
 
+        [[nodiscard]] bool hasNamedNode(const RenderCore::ModelRecord& model, std::string_view name) noexcept
+        {
+            return model.payload
+                && std::any_of(model.payload->nodes.begin(), model.payload->nodes.end(),
+                    [&](const RenderCore::ModelNodeRecord& node) { return node.name == name; });
+        }
+
         // makeV4StaticInstanceSource intentionally rejects every useAnim() class.
         // This narrowly-scoped companion is called only after publishObject has
         // proved that the winning model has neither an external animation source
@@ -101,6 +113,22 @@ namespace MWRender
             result.transform.scale = { scale, scale, scale };
             result.localBounds = localBounds;
             return result;
+        }
+
+        void applyReferenceVisualSemantics(const MWWorld::Ptr& ptr, const RenderCore::ModelRecord& model,
+            RenderCore::StaticInstanceSource& source)
+        {
+            if (!Settings::game().mGraphicHerbalism || ptr.getType() != ESM::Container::sRecordId
+                || ptr.getRefData().getCustomData() == nullptr || !hasNamedNode(model, Constants::HerbalismLabel))
+                return;
+
+            const MWWorld::LiveCellRef<ESM::Container>* ref = ptr.get<ESM::Container>();
+            if (!ref || !ref->mBase || !(ref->mBase->mFlags & ESM::Container::Organic))
+                return;
+
+            const MWWorld::ContainerStore& store = ptr.getClass().getContainerStore(ptr);
+            if (!store.hasVisibleItems())
+                source.semanticFlags |= RenderCore::HerbalismHarvestedSemanticFlag;
         }
     }
 
@@ -325,12 +353,18 @@ namespace MWRender
                 + modelPath.value());
         }
 
-        const std::optional<RenderCore::StaticInstanceSource> source = animatedClass
+        std::optional<RenderCore::StaticInstanceSource> source = animatedClass
             ? makeControllerFreeAnimatedInstanceSource(ptr, *model, modelRecord->bounds)
             : makeV4StaticInstanceSource(ptr, *model, modelRecord->bounds);
         if (!source)
             throw std::runtime_error("V4 scene lifecycle rejected an eligible static/reference-animated object");
-        if (ptr.getCell()->getCell()->isExterior())
+        applyReferenceVisualSemantics(ptr, *modelRecord, *source);
+
+        // Dense immutable exterior statics keep the data-oriented population
+        // path. Interactive/useAnim references stay individually addressable so
+        // live door transforms and per-reference switch state cannot be collapsed
+        // into one model-global population realization.
+        if (ptr.getCell()->getCell()->isExterior() && !animatedClass)
         {
             const RenderCore::ActiveCellPublishResult removed = mSession->cells().removeInstance(source->identity);
             if (removed.status != RenderCore::ActiveCellPublishStatus::Applied
