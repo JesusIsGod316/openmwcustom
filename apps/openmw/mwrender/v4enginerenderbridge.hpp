@@ -119,6 +119,8 @@ namespace MWRender
         RenderCore::WorldEpoch mComposedActorEpoch;
         std::set<std::string, std::less<>> mActorLights;
         RenderCore::WorldEpoch mActorLightEpoch;
+        std::set<std::string, std::less<>> mProjectileInstances;
+        RenderCore::WorldEpoch mProjectileEpoch;
         std::set<std::string, std::less<>> mGroundcoverCells;
         RenderCore::WorldEpoch mGroundcoverEpoch;
 
