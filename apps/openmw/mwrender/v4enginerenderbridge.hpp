@@ -7,6 +7,7 @@
 #include "../mwworld/scenerenderlifecycle.hpp"
 
 #include <components/render/backend/vsg/vsgruntimebootstrap.hpp>
+#include <components/render/backend/vsg/vsgsemanticsession.hpp>
 #include <components/rendercore/frameproducer.hpp>
 #include <components/rendercore/renderer.hpp>
 #include <components/rendercore/terrainchunkproducer.hpp>
@@ -35,11 +36,6 @@ namespace MyGUIPlatform
 }
 
 struct SDL_Window;
-
-namespace RenderVsg
-{
-    class VsgSemanticSession;
-}
 
 namespace MWWorld
 {
