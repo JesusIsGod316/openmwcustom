@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_STATICASSETPLAN_H
 
 #include <components/rendercore/lodselection.hpp>
+#include <components/rendercore/namedvisualsemantics.hpp>
 #include <components/rendercore/realizationkeys.hpp>
 #include <components/rendercore/renderworld.hpp>
 #include <components/rendercore/texturerealization.hpp>
@@ -18,6 +19,9 @@ namespace RenderVsg
     {
         float lodEyeDistance = 0.0f;
         bool showMarkers = false;
+        bool dayNightSwitchesEnabled = false;
+        RenderCore::NightDaySwitchState nightDaySwitchState = RenderCore::NightDaySwitchState::Default;
+        bool herbalismHarvested = false;
         // Explicit CP3D opt-in. The static world never enables this; actor
         // realization uses it so rigid equipment and deformable body parts
         // retain one authored traversal/material order.
@@ -195,7 +199,8 @@ namespace RenderVsg
         const ModelRecord* model = world.get(modelHandle);
         if (!model || !model->payload || !validModelPayloadStructure(*model->payload)
             || !validModelDynamicRequirements(model->dynamicRequirements)
-            || model->dynamicRequirements != 0 || !semantic_detail::finite(options.lodEyeDistance))
+            || model->dynamicRequirements != 0 || !semantic_detail::finite(options.lodEyeDistance)
+            || !validNightDaySwitchState(options.nightDaySwitchState))
             return std::nullopt;
 
         const ModelPayload& payload = *model->payload;
@@ -345,9 +350,27 @@ namespace RenderVsg
 
             if (node.kind == ModelNodeKind::Switch)
             {
-                for (const ModelNodeIndex child : children[index.value()])
+                std::optional<ModelNodeIndex> selected = node.activeSwitchChild;
+                const auto& switchChildren = children[index.value()];
+                if (options.dayNightSwitchesEnabled && node.name == "NightDaySwitch")
                 {
-                    if (node.activeSwitchChild && child == *node.activeSwitchChild)
+                    if (switchChildren.empty())
+                        return false;
+                    std::size_t stateIndex = static_cast<std::size_t>(options.nightDaySwitchState);
+                    if (stateIndex >= switchChildren.size())
+                        stateIndex = 0;
+                    selected = switchChildren[stateIndex];
+                }
+                else if (options.herbalismHarvested && node.name == "HerbalismSwitch")
+                {
+                    if (switchChildren.size() < 2)
+                        return false;
+                    selected = switchChildren[1];
+                }
+
+                for (const ModelNodeIndex child : switchChildren)
+                {
+                    if (selected && child == *selected)
                     {
                         if (!self(self, child, state))
                             return false;
