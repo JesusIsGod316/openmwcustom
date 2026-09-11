@@ -3,7 +3,7 @@ name: V4.0 CP4E water and auxiliary views checkpoint
 on:
   workflow_dispatch:
   push:
-    branches: [v4.0-cp4-exterior-foundation, v4.0-cp4e-water-integration]
+    branches: [v4.0-cp4-exterior-foundation]
 
 concurrency:
   group: v4-cp4e-${{ github.ref }}
