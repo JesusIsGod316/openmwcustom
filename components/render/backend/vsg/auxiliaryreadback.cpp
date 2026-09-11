@@ -38,8 +38,8 @@ namespace RenderVsg
         for (std::size_t index = 0; index < targets.size(); ++index)
         {
             const RenderCore::RenderTargetHandle identity = targets[index];
-            if (std::find(targets.begin(), targets.begin() + static_cast<std::ptrdiff_t>(index), identity)
-                != targets.begin() + static_cast<std::ptrdiff_t>(index))
+            const auto priorEnd = targets.begin() + static_cast<std::ptrdiff_t>(index);
+            if (std::find(targets.begin(), priorEnd, identity) != priorEnd)
             {
                 mLastDiagnostic = "auxiliary RGBA readback contains a duplicate target";
                 return std::nullopt;
@@ -120,7 +120,13 @@ namespace RenderVsg
             mLastDiagnostic = "auxiliary RGBA readback has no Vulkan physical device";
             return std::nullopt;
         }
-        const std::uint32_t queueFamilyIndex = physicalDevice->getQueueFamily(VK_QUEUE_GRAPHICS_BIT);
+        const int queueFamily = physicalDevice->getQueueFamily(VK_QUEUE_GRAPHICS_BIT);
+        if (queueFamily < 0)
+        {
+            mLastDiagnostic = "auxiliary RGBA readback could not resolve a graphics queue family";
+            return std::nullopt;
+        }
+        const std::uint32_t queueFamilyIndex = static_cast<std::uint32_t>(queueFamily);
         vsg::ref_ptr<vsg::Queue> queue = device->getQueue(queueFamilyIndex);
         if (!queue)
         {
