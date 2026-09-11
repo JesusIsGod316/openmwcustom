@@ -37,6 +37,12 @@ namespace RenderVsg
         [[nodiscard]] VsgRuntimeBootstrap& bootstrap() noexcept { return *mBootstrap; }
         [[nodiscard]] const VsgRuntimeBootstrap& bootstrap() const noexcept { return *mBootstrap; }
 
+        [[nodiscard]] bool configureNamedSwitchState(
+            RenderCore::NightDaySwitchState state, bool dayNightSwitchesEnabled) noexcept
+        {
+            return mBootstrap && mBootstrap->renderer().configureNamedSwitchState(state, dayNightSwitchesEnabled);
+        }
+
         RenderCore::RenderFrameResult renderFrame(const RenderCore::SingleViewFrameInput& input);
         [[nodiscard]] bool resetWorld();
         void waitIdle();
