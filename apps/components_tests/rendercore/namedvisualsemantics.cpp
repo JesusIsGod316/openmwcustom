@@ -19,6 +19,15 @@ namespace
         RenderCore::InstanceHandle instance;
     };
 
+    bool advanceInstanceRevision(RenderCore::InstanceRecord& record)
+    {
+        const auto next = RenderCore::advanceMonotonic(record.revision);
+        if (!next)
+            return false;
+        record.revision = *next;
+        return true;
+    }
+
     PublishedSwitch publishSwitch(RenderCore::RenderWorld& world, std::string_view name, std::size_t childCount)
     {
         const auto mesh = world.reserveMesh();
@@ -92,6 +101,7 @@ namespace
 
         RenderCore::InstanceRecord placed = *world.get(scene.instance);
         placed.semanticFlags |= RenderCore::NightDaySwitchCapabilitySemanticFlag;
+        ASSERT_TRUE(advanceInstanceRevision(placed));
         ASSERT_TRUE(world.update(scene.instance, placed));
 
         RenderVsg::StaticPlanOptions options;
@@ -114,6 +124,7 @@ namespace
         ASSERT_TRUE(shortScene.instance.valid());
         RenderCore::InstanceRecord shortPlaced = *shortWorld.get(shortScene.instance);
         shortPlaced.semanticFlags |= RenderCore::NightDaySwitchCapabilitySemanticFlag;
+        ASSERT_TRUE(advanceInstanceRevision(shortPlaced));
         ASSERT_TRUE(shortWorld.update(shortScene.instance, shortPlaced));
         plan = RenderVsg::buildStaticInstancePlan(shortWorld, shortScene.instance, options);
         ASSERT_TRUE(plan);
@@ -129,6 +140,7 @@ namespace
 
         RenderCore::InstanceRecord placed = *world.get(scene.instance);
         placed.semanticFlags = RenderCore::HerbalismHarvestedSemanticFlag;
+        ASSERT_TRUE(advanceInstanceRevision(placed));
         ASSERT_TRUE(world.update(scene.instance, placed));
 
         auto plan = RenderVsg::buildStaticInstancePlan(world, scene.instance);
@@ -139,6 +151,7 @@ namespace
 
         placed = *world.get(scene.instance);
         placed.semanticFlags |= RenderCore::HerbalismSwitchCapabilitySemanticFlag;
+        ASSERT_TRUE(advanceInstanceRevision(placed));
         ASSERT_TRUE(world.update(scene.instance, placed));
         plan = RenderVsg::buildStaticInstancePlan(world, scene.instance);
         ASSERT_TRUE(plan);
@@ -171,12 +184,9 @@ namespace
         ASSERT_EQ(producer.flush(), RenderCore::StaticPopulationPublishStatus::Applied);
 
         RenderCore::ChunkHandle chunk;
-        const RenderCore::ChunkRecord* chunkRecord = nullptr;
-        world.forEachChunk([&](RenderCore::ChunkHandle handle, const RenderCore::ChunkRecord& record) {
-            chunk = handle;
-            chunkRecord = &record;
-        });
+        world.forEachChunk([&](RenderCore::ChunkHandle handle, const RenderCore::ChunkRecord&) { chunk = handle; });
         ASSERT_TRUE(chunk.valid());
+        const RenderCore::ChunkRecord* chunkRecord = world.get(chunk);
         ASSERT_NE(chunkRecord, nullptr);
         ASSERT_NE(chunkRecord->population, nullptr);
         ASSERT_EQ(chunkRecord->population->groups.size(), 1u);
@@ -201,6 +211,7 @@ namespace
         ASSERT_TRUE(scene.instance.valid());
         RenderCore::InstanceRecord placed = *world.get(scene.instance);
         placed.semanticFlags |= RenderCore::NightDaySwitchCapabilitySemanticFlag;
+        ASSERT_TRUE(advanceInstanceRevision(placed));
         ASSERT_TRUE(world.update(scene.instance, placed));
 
         RenderVsg::StaticPlanOptions options;
