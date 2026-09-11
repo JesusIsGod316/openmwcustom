@@ -512,7 +512,7 @@ namespace MWRender
                     return;
                 }
                 V4EffectCaptureResult captured
-                    = captureV4AttachedEffects(*effectRoot, "actor-effect:" + *identity);
+                    = captureV4AttachedEffects(*effectRoot, "actor-effect:" + *identity, mVfs);
                 if (!captured.valid())
                 {
                     compatible = false;

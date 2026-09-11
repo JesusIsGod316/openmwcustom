@@ -4,6 +4,7 @@
 #include "animation.hpp"
 
 #include <components/rendercore/effectframe.hpp>
+#include <components/nifrender/vfsidentity.hpp>
 #include <components/sceneutil/material.hpp>
 #include <components/sceneutil/texturetype.hpp>
 
@@ -270,7 +271,7 @@ namespace MWRender
         };
 
         [[nodiscard]] inline bool captureMaterial(const osg::NodePath& path, const osg::StateSet* drawableState,
-            CapturedMaterial& out, std::string& diagnostic)
+            const VFS::Manager& vfs, CapturedMaterial& out, std::string& diagnostic)
         {
             using namespace RenderCore;
             const osg::ref_ptr<osg::StateSet> state = effectiveState(path, drawableState);
@@ -450,10 +451,18 @@ namespace MWRender
                     typeName = type->getName();
                 const TextureRole role = textureRole(typeName);
 
+                const NifRender::ResolvedVfsIdentity resolved
+                    = NifRender::resolveTextureVfsIdentity(VFS::Path::NormalizedView(image->getFileName()), vfs);
+                if (!resolved.valid())
+                {
+                    diagnostic = "evaluated effect texture could not resolve its winning VFS content identity";
+                    return false;
+                }
+
                 EffectTextureSnapshot snapshot;
                 snapshot.texture.revision = InitialResourceRevision;
-                snapshot.texture.sourceIdentity = image->getFileName();
-                snapshot.texture.contentIdentity = image->getFileName();
+                snapshot.texture.sourceIdentity = std::string(resolved.canonicalPath.value());
+                snapshot.texture.contentIdentity = resolved.contentIdentity;
                 snapshot.texture.width = static_cast<std::uint32_t>(image->s());
                 snapshot.texture.height = static_cast<std::uint32_t>(image->t());
                 snapshot.texture.mipmapped = image->getNumMipmapLevels() > 1;
@@ -549,7 +558,8 @@ namespace MWRender
         }
 
         [[nodiscard]] inline bool captureGeometry(const osg::Geometry& geometry, const osg::NodePath& path,
-            std::string identity, RenderCore::ImmediateEffectDraw& draw, std::string& diagnostic)
+            const VFS::Manager& vfs, std::string identity, RenderCore::ImmediateEffectDraw& draw,
+            std::string& diagnostic)
         {
             const auto* positions = dynamic_cast<const osg::Vec3Array*>(geometry.getVertexArray());
             if (!positions || positions->empty())
@@ -599,7 +609,7 @@ namespace MWRender
             }
 
             CapturedMaterial captured;
-            if (!captureMaterial(path, geometry.getStateSet(), captured, diagnostic))
+            if (!captureMaterial(path, geometry.getStateSet(), vfs, captured, diagnostic))
                 return false;
             draw.material = std::move(captured.material);
             draw.textures = std::move(captured.textures);
@@ -642,7 +652,7 @@ namespace MWRender
         }
 
         [[nodiscard]] inline bool captureParticleSystem(const osgParticle::ParticleSystem& particles,
-            const osg::NodePath& path, std::string_view identityPrefix,
+            const osg::NodePath& path, const VFS::Manager& vfs, std::string_view identityPrefix,
             std::vector<RenderCore::ImmediateEffectDraw>& draws, std::string& diagnostic)
         {
             if (particles.getUseShaders())
@@ -661,7 +671,7 @@ namespace MWRender
                 return false;
             }
             CapturedMaterial captured;
-            if (!captureMaterial(path, particles.getStateSet(), captured, diagnostic))
+            if (!captureMaterial(path, particles.getStateSet(), vfs, captured, diagnostic))
                 return false;
             captured.material.vertexColorMode = RenderCore::VertexColorMode::AmbientDiffuse;
             if (particles.getSortMode() == osgParticle::ParticleSystem::NO_SORT)
@@ -781,10 +791,11 @@ namespace MWRender
         class CaptureVisitor final : public osg::NodeVisitor
         {
         public:
-            CaptureVisitor(std::string identityPrefix, bool wholeSubtree)
+            CaptureVisitor(std::string identityPrefix, bool wholeSubtree, const VFS::Manager& vfs)
                 : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN)
                 , mIdentityPrefix(std::move(identityPrefix))
                 , mWholeSubtree(wholeSubtree)
+                , mVfs(vfs)
                 , mDepth(wholeSubtree ? 1u : 0u)
             {
             }
@@ -798,8 +809,8 @@ namespace MWRender
                 {
                     if (const auto* particles = dynamic_cast<const osgParticle::ParticleSystem*>(&node))
                     {
-                        if (!captureParticleSystem(*particles, getNodePath(), nextIdentity("system"), mResult.draws,
-                                mResult.diagnostic))
+                        if (!captureParticleSystem(*particles, getNodePath(), mVfs, nextIdentity("system"),
+                                mResult.draws, mResult.diagnostic))
                             return;
                     }
                 }
@@ -822,14 +833,14 @@ namespace MWRender
                         if (auto* geometry = dynamic_cast<osg::Geometry*>(drawable))
                         {
                             RenderCore::ImmediateEffectDraw draw;
-                            if (!captureGeometry(*geometry, getNodePath(), nextIdentity("geometry"), draw,
+                            if (!captureGeometry(*geometry, getNodePath(), mVfs, nextIdentity("geometry"), draw,
                                     mResult.diagnostic))
                                 break;
                             mResult.draws.push_back(std::move(draw));
                         }
                         else if (auto* particles = dynamic_cast<osgParticle::ParticleSystem*>(drawable))
                         {
-                            if (!captureParticleSystem(*particles, getNodePath(), nextIdentity("system"),
+                            if (!captureParticleSystem(*particles, getNodePath(), mVfs, nextIdentity("system"),
                                     mResult.draws, mResult.diagnostic))
                                 break;
                         }
@@ -851,6 +862,7 @@ namespace MWRender
 
             std::string mIdentityPrefix;
             bool mWholeSubtree = false;
+            const VFS::Manager& mVfs;
             std::size_t mDepth = 0;
             std::size_t mOrdinal = 0;
             V4EffectCaptureResult mResult;
@@ -858,17 +870,17 @@ namespace MWRender
     }
 
     [[nodiscard]] inline V4EffectCaptureResult captureV4AttachedEffects(
-        osg::Node& animationRoot, std::string identityPrefix)
+        osg::Node& animationRoot, std::string identityPrefix, const VFS::Manager& vfs)
     {
-        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), false);
+        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), false, vfs);
         animationRoot.accept(visitor);
         return visitor.take();
     }
 
     [[nodiscard]] inline V4EffectCaptureResult captureV4WholeEffectSubtree(
-        osg::Node& root, std::string identityPrefix)
+        osg::Node& root, std::string identityPrefix, const VFS::Manager& vfs)
     {
-        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), true);
+        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), true, vfs);
         root.accept(visitor);
         return visitor.take();
     }

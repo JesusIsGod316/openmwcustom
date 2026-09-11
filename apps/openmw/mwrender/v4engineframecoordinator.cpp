@@ -171,7 +171,7 @@ namespace MWRender
                 return false;
             }
             V4EffectCaptureResult captured = captureV4WholeEffectSubtree(
-                *bolt.effectRoot, "magic-projectile:" + std::to_string(bolt.runtimeId));
+                *bolt.effectRoot, "magic-projectile:" + std::to_string(bolt.runtimeId), mVfs);
             if (!captured.valid())
             {
                 mLastDiagnostic = captured.diagnostic.empty()
