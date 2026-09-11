@@ -1,0 +1,45 @@
+name: V4 CP4F pinned VSG auxiliary switch repair
+
+on:
+  push:
+    branches:
+      - v4.0-cp4f-exterior-closeout
+    paths:
+      - .github/cp4f-repairs/apply_aux_switch_repair.py
+      - .github/workflows/v4-cp4f-vsg-switch-repair.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply-aux-switch-repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+        with:
+          ref: v4.0-cp4f-exterior-closeout
+          fetch-depth: 0
+
+      - name: Apply guarded pinned-VSG repair
+        run: python3 .github/cp4f-repairs/apply_aux_switch_repair.py
+
+      - name: Source hygiene
+        shell: bash
+        run: |
+          git diff --check
+          git status --short
+
+      - name: Commit guarded edits
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No source changes were required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add components/render/backend/vsg/vsgruntimehost.hpp components/render/backend/vsg/vsgruntimehost.cpp
+          git commit -m "CP4F: wrap auxiliary render graphs in VSG switches"
+          git push origin HEAD:v4.0-cp4f-exterior-closeout
