@@ -73,6 +73,46 @@ int main()
             "water and map targets remain resident"))
         return EXIT_FAILURE;
 
+    const RenderCore::RenderTargetHandle reflectionTarget = reflection->outputTarget;
+    const RenderCore::RenderTargetHandle refractionTarget = refraction->outputTarget;
+
+    auto dry = input;
+    dry.environment.waterEnabled = false;
+    dry.environment.waterHeight = 0.0;
+    const auto dryFrame = producer.produce(world, dry);
+    if (!require(dryFrame && dryFrame->valid(), "water-disable transition rejected")
+        || !require(!findView(*dryFrame, RenderCore::ViewKind::Reflection)
+                && !findView(*dryFrame, RenderCore::ViewKind::Refraction),
+            "disabled water still emitted reflection/refraction work")
+        || !require(findView(*dryFrame, RenderCore::ViewKind::Map) != nullptr,
+            "generic map view was incorrectly tied to water enable state")
+        || !require(dryFrame->historyValid(), "water-disable transition invalidated unrelated main-view history"))
+        return EXIT_FAILURE;
+
+    const auto rewetted = producer.produce(world, input);
+    const RenderCore::FrameView* rewettedReflection
+        = rewetted ? findView(*rewetted, RenderCore::ViewKind::Reflection) : nullptr;
+    const RenderCore::FrameView* rewettedRefraction
+        = rewetted ? findView(*rewetted, RenderCore::ViewKind::Refraction) : nullptr;
+    if (!require(rewetted && rewetted->valid(), "water re-enable transition rejected")
+        || !require(rewettedReflection && rewettedRefraction, "water views did not return after re-enable")
+        || !require(rewettedReflection->outputTarget == reflectionTarget
+                && rewettedRefraction->outputTarget == refractionTarget,
+            "persistent water target identities changed across a dry-cell transition")
+        || !require(!rewettedReflection->historyValid() && !rewettedRefraction->historyValid(),
+            "non-temporal water views incorrectly inherited temporal history"))
+        return EXIT_FAILURE;
+
+    auto sampled = input;
+    sampled.auxiliaryViews.front().sampledByMain = true;
+    const auto sampledFrame = producer.prepare(world, sampled);
+    if (!require(sampledFrame && sampledFrame->valid(), "sampled generic auxiliary view rejected")
+        || !require(sampledFrame->renderPasses().back().present
+                && sampledFrame->renderPasses().back().dependencies.size() == 3
+                && sampledFrame->renderPasses().back().inputs.size() == 3,
+            "sampled map target was not ordered before the main pass"))
+        return EXIT_FAILURE;
+
     auto invalid = input;
     invalid.waterViews.reflection = false;
     invalid.waterViews.refraction = false;
