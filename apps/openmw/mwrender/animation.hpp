@@ -375,6 +375,13 @@ namespace MWRender
         {
             return mHasMagicEffects || mGlowUpdater.valid();
         }
+        [[nodiscard]] bool hasV4UpdateVfxAttachments() const noexcept { return mHasMagicEffects; }
+        [[nodiscard]] std::optional<osg::Vec4f> getV4GlowColor() const noexcept
+        {
+            if (!mGlowUpdater || mGlowUpdater->isDone())
+                return std::nullopt;
+            return mGlowUpdater->getColor();
+        }
         [[nodiscard]] bool hasV4DynamicLightAttachments() const noexcept
         {
             return mGlowLight.valid() || mExtraLightSource.valid();

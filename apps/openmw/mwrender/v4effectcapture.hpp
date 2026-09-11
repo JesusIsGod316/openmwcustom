@@ -13,6 +13,7 @@
 #include <osg/CullFace>
 #include <osg/Depth>
 #include <osg/Geometry>
+#include <osg/GL>
 #include <osg/NodeVisitor>
 #include <osg/PolygonMode>
 #include <osg/StateSet>
@@ -196,7 +197,7 @@ namespace MWRender
         [[nodiscard]] inline osg::ref_ptr<osg::StateSet> effectiveState(
             const osg::NodePath& path, const osg::StateSet* drawable = nullptr)
         {
-            auto result = osg::StateSet::create();
+            osg::ref_ptr<osg::StateSet> result = new osg::StateSet;
             for (const osg::Node* node : path)
             {
                 if (node && node->getStateSet())
@@ -634,9 +635,28 @@ namespace MWRender
             const osg::NodePath& path, std::string_view identityPrefix,
             std::vector<RenderCore::ImmediateEffectDraw>& draws, std::string& diagnostic)
         {
+            if (particles.getUseShaders())
+            {
+                diagnostic = "shader-evaluated particle system requires a CPU-equivalent V4 effect facet";
+                return false;
+            }
+            if (particles.getSortMode() == osgParticle::ParticleSystem::SORT_FRONT_TO_BACK)
+            {
+                diagnostic = "front-to-back particle sorting is outside the evaluated V4 effect contract";
+                return false;
+            }
+            if (particles.getVisibilityDistance() > 0.0)
+            {
+                diagnostic = "particle visibility-distance culling requires an explicit V4 effect facet";
+                return false;
+            }
             CapturedMaterial captured;
             if (!captureMaterial(path, particles.getStateSet(), captured, diagnostic))
                 return false;
+            if (particles.getSortMode() == osgParticle::ParticleSystem::NO_SORT)
+                captured.material.transparentSort = RenderCore::TransparentSortPolicy::Unsorted;
+            else if (captured.material.alphaBlendEnabled)
+                captured.material.transparentSort = RenderCore::TransparentSortPolicy::Sorted;
             const osg::ref_ptr<osg::StateSet> state = effectiveState(path, particles.getStateSet());
             const glm::mat4 systemWorld = toGlm(osg::computeLocalToWorld(path));
             if (!finite(systemWorld))

@@ -8,6 +8,7 @@
 #include <osg/PositionAttitudeTransform>
 #include <osg/Quat>
 #include <osg/Vec3f>
+#include <osg/Vec4f>
 #include <osg/ref_ptr>
 
 #include <components/esm3/effectlist.hpp>
@@ -53,10 +54,17 @@ namespace MWWorld
         osg::Quat orientation;
     };
 
+    struct V4MagicBoltSnapshot
+    {
+        int runtimeId = 0;
+        osg::ref_ptr<osg::PositionAttitudeTransform> effectRoot;
+        osg::Vec4f lightDiffuse;
+    };
+
     struct V4ProjectileFrameSnapshot
     {
         std::vector<V4PhysicalProjectileSnapshot> physicalProjectiles;
-        std::size_t liveMagicBoltCount = 0;
+        std::vector<V4MagicBoltSnapshot> magicBolts;
     };
 
     class ProjectileManager

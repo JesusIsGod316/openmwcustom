@@ -852,10 +852,16 @@ namespace MWWorld
                 .orientation = projectile.mNode->getAttitude(),
             });
         }
+        result.magicBolts.reserve(mMagicBolts.size());
         for (const MagicBoltState& bolt : mMagicBolts)
         {
-            if (!bolt.mToDelete)
-                ++result.liveMagicBoltCount;
+            if (bolt.mToDelete || !bolt.mNode)
+                continue;
+            result.magicBolts.push_back(V4MagicBoltSnapshot{
+                .runtimeId = bolt.mProjectileId,
+                .effectRoot = bolt.mNode,
+                .lightDiffuse = getMagicBoltLightDiffuseColor(bolt.mEffects),
+            });
         }
         return result;
     }

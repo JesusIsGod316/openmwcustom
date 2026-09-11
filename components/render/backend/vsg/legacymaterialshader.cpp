@@ -283,8 +283,9 @@ vec2 diffuseUv = vec2(0.0);
     vec3 vd = normalize(viewDir);
     vec3 color = vec3(0.0);
     const float intensityMinimum = 0.001;
+    const bool materialUnlit = material.effects.w > 0.5;
 
-    vec4 lightNums = lightData.values[0];
+    vec4 lightNums = materialUnlit ? vec4(0.0) : lightData.values[0];
     int numAmbientLights = int(lightNums[0]);
     int numDirectionalLights = int(lightNums[1]);
     int numPointLights = int(lightNums[2]);
@@ -358,7 +359,9 @@ vec2 diffuseUv = vec2(0.0);
         }
     }
 
-    int openmwPointLightCount = min(int(openmwLocalLights.header.x), openmwLocalLights.values.length() / 5);
+    int openmwPointLightCount = materialUnlit
+        ? 0
+        : min(int(openmwLocalLights.header.x), openmwLocalLights.values.length() / 5);
     for (int i = 0; i < openmwPointLightCount; ++i)
     {
         int base = i * 5;
@@ -450,7 +453,15 @@ vec2 diffuseUv = vec2(0.0);
     // Material/vertex emission is part of the legacy textured lighting equation
     // and retains the authored emissive multiplier. Glow/emissive-map RGB is a
     // separate additive stage in V3.25.
-    outColor.rgb = color * ambientOcclusion + surfaceColor.rgb * effectiveEmission.rgb * emissiveMultiplier;
+    if (materialUnlit)
+    {
+        vec3 unlitColor = vertexColorMode == 1
+            ? effectiveEmission.rgb * emissiveMultiplier
+            : effectiveDiffuse.rgb;
+        outColor.rgb = surfaceColor.rgb * unlitColor;
+    }
+    else
+        outColor.rgb = color * ambientOcclusion + surfaceColor.rgb * effectiveEmission.rgb * emissiveMultiplier;
 #ifdef VSG_EMISSIVE_MAP
     outColor.rgb += texture(emissiveMap, texCoord[texCoordIndices.emissiveMap].st).rgb;
 #endif
@@ -521,7 +532,7 @@ vec2 diffuseUv = vec2(0.0);
             && source.sourceBlend == RenderCore::BlendFactor::SourceAlpha
             && source.destinationBlend == RenderCore::BlendFactor::One;
         uniform.effects = vsg::vec4(static_cast<float>(source.fog.mode), source.fog.depth,
-            additiveFog ? 1.0f : 0.0f, 0.0f);
+            additiveFog ? 1.0f : 0.0f, source.unlit ? 1.0f : 0.0f);
         return result;
     }
 

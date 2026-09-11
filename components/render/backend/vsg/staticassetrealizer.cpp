@@ -536,12 +536,6 @@ namespace RenderVsg
             }
             config->assignDescriptor("texCoordIndices", makeTexCoordIndices(*material));
 
-            if (material->unlit)
-            {
-                ++result.stats.runtimeContextEffects;
-                result.diagnostics.emplace_back(
-                    "Legacy unlit material requires a dedicated compatibility shader variant");
-            }
             if (material->textureApply != TextureApplyMode::Modulate)
             {
                 ++result.stats.runtimeContextEffects;

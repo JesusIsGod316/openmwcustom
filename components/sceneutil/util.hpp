@@ -32,6 +32,8 @@ namespace SceneUtil
 
         bool isDone();
 
+        [[nodiscard]] const osg::Vec4f& getColor() const noexcept { return mColor; }
+
         void setColor(const osg::Vec4f& color);
 
         void setDuration(float duration);

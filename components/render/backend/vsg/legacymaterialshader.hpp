@@ -38,7 +38,8 @@ namespace RenderVsg
         vsg::vec4 semantics{ 0.0f, 0.0f, 7.0f, 0.0f };
         // xyz = NiFogProperty override color; w is reserved.
         vsg::vec4 fogColor{ 0.0f, 0.0f, 0.0f, 1.0f };
-        // x = MaterialFogMode, y = fog depth, z = additive-fog behavior.
+        // x = MaterialFogMode, y = fog depth, z = additive-fog behavior,
+        // w = legacy unlit/no-lighting material.
         vsg::vec4 effects{ 0.0f, 0.0f, 0.0f, 0.0f };
     };
 

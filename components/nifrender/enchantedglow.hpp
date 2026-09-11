@@ -132,7 +132,8 @@ namespace NifRender
     // to infer settings state from provenance or shader-specific identities.
     [[nodiscard]] inline EnchantedGlowPublishResult publishEnchantedGlowVariant(RenderCore::RenderWorld& world,
         RenderCore::RenderWorldPublisher& publisher, const VFS::Manager& vfs, RenderCore::ModelHandle sourceModel,
-        const RenderCore::Color& color, bool applyLightingToEnvironmentMaps = false)
+        const RenderCore::Color& color, bool applyLightingToEnvironmentMaps = false,
+        bool replaceExistingEnvironment = false)
     {
         using namespace RenderCore;
         if (!sourceModel.valid() || !semantic_detail::finite(color))
@@ -142,8 +143,10 @@ namespace NifRender
             || !validModelPayloadStructure(*source->payload))
             return {};
 
-        const std::string suffix = applyLightingToEnvironmentMaps ? "#openmw-enchanted-glow-prelight:"
-                                                                   : "#openmw-enchanted-glow-postlight:";
+        std::string suffix = applyLightingToEnvironmentMaps ? "#openmw-enchanted-glow-prelight:"
+                                                            : "#openmw-enchanted-glow-postlight:";
+        if (replaceExistingEnvironment)
+            suffix += "override-r" + std::to_string(source->revision.value()) + ":";
         const std::string variantSuffix = suffix + enchanted_glow_detail::colorIdentity(color);
         const std::string variantSourceIdentity = source->sourceIdentity + variantSuffix;
         if (const std::optional<ModelHandle> existing
@@ -207,8 +210,9 @@ namespace NifRender
                 enchanted_glow_detail::cancelReservations(world, {}, materials, frames);
                 return {};
             }
-            if (std::any_of(baseMaterial->textures.begin(), baseMaterial->textures.end(),
-                    [](const TextureBinding& binding) { return binding.role == TextureRole::Environment; }))
+            const bool hasExistingEnvironment = std::any_of(baseMaterial->textures.begin(), baseMaterial->textures.end(),
+                [](const TextureBinding& binding) { return binding.role == TextureRole::Environment; });
+            if (hasExistingEnvironment && !replaceExistingEnvironment)
             {
                 enchanted_glow_detail::cancelReservations(world, {}, materials, frames);
                 return { EnchantedGlowPublishStatus::ExistingEnvironmentBinding, {} };
@@ -221,6 +225,14 @@ namespace NifRender
             }
 
             MaterialRecord record = *baseMaterial;
+            if (replaceExistingEnvironment)
+            {
+                record.textures.erase(std::remove_if(record.textures.begin(), record.textures.end(),
+                                          [](const TextureBinding& binding) {
+                                              return binding.role == TextureRole::Environment;
+                                          }),
+                    record.textures.end());
+            }
             record.revision = InitialResourceRevision;
             record.sourceIdentity = baseMaterial->sourceIdentity + variantSuffix;
             record.environmentMapColor = color;
