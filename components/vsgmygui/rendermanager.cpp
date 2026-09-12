@@ -69,8 +69,6 @@ namespace VsgMyGui
         mSlots.clear();
         mTextures.clear();
         mBatches.clear();
-        mVertPool.clear();
-        mVertPoolCapacities.clear();
         mIsInitialise = false;
     }
 
@@ -278,30 +276,14 @@ namespace VsgMyGui
             return {};
 
         auto root = vsg::Group::create();
-        for (size_t i = 0; i < mBatches.size(); ++i)
+        for (const Batch& batch : mBatches)
         {
-            const Batch& batch = mBatches[i];
             Slot slot;
             slot.textureIdentity = batch.texture.identity;
             slot.textureRevision = batch.texture.revision;
-            if (i >= mVertPool.size() || mVertPoolCapacities[i] < batch.count)
-            {
-                const uint32_t capacity = slotCapacity(batch.count);
-                auto buffer = vsg::ubyteArray::create(capacity * sizeof(MyGUI::Vertex));
-                buffer->properties.dataVariance = vsg::DYNAMIC_DATA;
-                if (i >= mVertPool.size())
-                {
-                    mVertPool.push_back(buffer);
-                    mVertPoolCapacities.push_back(capacity);
-                }
-                else
-                {
-                    mVertPool[i] = buffer;
-                    mVertPoolCapacities[i] = capacity;
-                }
-            }
-            slot.verts = mVertPool[i];
-            slot.capacity = mVertPoolCapacities[i];
+            slot.capacity = slotCapacity(batch.count);
+            slot.verts = vsg::ubyteArray::create(slot.capacity * sizeof(MyGUI::Vertex));
+            slot.verts->properties.dataVariance = vsg::DYNAMIC_DATA;
             const uint32_t count = batch.count;
             if (batch.vertices && count > 0)
                 std::memcpy(slot.verts->dataPointer(), batch.vertices->dataPointer(), count * sizeof(MyGUI::Vertex));
