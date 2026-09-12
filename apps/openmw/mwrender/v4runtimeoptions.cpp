@@ -3,11 +3,27 @@
 #include <components/settings/values.hpp>
 
 #include <algorithm>
+#include <cstdlib>
 
 namespace MWRender
 {
     RenderVsg::VsgRuntimeBootstrapOptions makeV4RuntimeBootstrapOptions()
     {
+        // The explicit Vulkan route intentionally keeps the legacy OSG viewer
+        // headless. OSG's IncrementalCompileOperation is a GraphicsOperation
+        // serviced by OpenGL graphics contexts; with no contexts its compile-set
+        // queue can only grow. Reuse OpenMW's established precompile kill switch
+        // before RenderingManager is constructed so semantic-source OSG work does
+        // not retain an unserviceable GL compile backlog during Vulkan gameplay.
+        if (std::getenv("OPENMW_DONT_PRECOMPILE") == nullptr)
+        {
+#if defined(_WIN32)
+            _putenv_s("OPENMW_DONT_PRECOMPILE", "1");
+#else
+            setenv("OPENMW_DONT_PRECOMPILE", "1", 1);
+#endif
+        }
+
         RenderVsg::VsgRuntimeBootstrapOptions result;
         result.title = "OpenMW";
         result.width = static_cast<std::uint32_t>(Settings::video().mResolutionX);
