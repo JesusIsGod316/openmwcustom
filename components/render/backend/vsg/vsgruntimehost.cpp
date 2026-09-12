@@ -1019,9 +1019,14 @@ namespace RenderVsg
         auto nextRoot = vsg::Group::create();
         if (overlay)
             nextRoot->addChild(overlay);
-        if (!compileForViewer(*mViewer, nextRoot))
+        if (!mView || !compileForViewerView(*mViewer, *mView, nextRoot))
         {
-            mLastDiagnostic = "incremental VSG MyGUI compilation failed before overlay publication";
+            mLastDiagnostic = "incremental VSG MyGUI main-view compilation failed before overlay publication";
+            return false;
+        }
+        if (overlay && mGuiRenderer->batchCount() != 0 && !mUiPipeline.realizedForView(mView->viewID))
+        {
+            mLastDiagnostic = "VSG MyGUI main-view graphics pipeline was not realized before overlay publication";
             return false;
         }
         if (mGuiLastUse && mGuiPublishedRoot)
