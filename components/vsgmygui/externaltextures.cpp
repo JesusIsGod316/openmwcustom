@@ -29,34 +29,14 @@ namespace VsgMyGui
             created->second.setDecoder(mDecoder);
             it = created;
         }
-        else
-            forgetTexture(&it->second);
         it->second.setData(std::move(data));
         return &it->second;
     }
 
     bool RenderManager::removeTexture(const std::string& name) noexcept
     {
-        const auto found = mTextures.find(name);
-        if (found == mTextures.end())
-            return true;
-
-        const Texture* const texture = &found->second;
-        forgetTexture(texture);
-        for (Batch& batch : mBatches)
-        {
-            if (batch.texture == texture)
-                batch.texture = nullptr;
-        }
-        for (Slot& slot : mSlots)
-        {
-            if (slot.texture != texture)
-                continue;
-            slot.texture = nullptr;
-            slot.textureIdentity = 0;
-            slot.textureRevision = 0;
-        }
-        mTextures.erase(found);
-        return true;
+        // Collected batches snapshot identity/revision plus strong VSG backing references,
+        // so erasing the registry entry cannot invalidate an in-flight or retired overlay graph.
+        return mTextures.erase(name) <= 1;
     }
 }
