@@ -61,6 +61,9 @@ namespace VsgMyGui
     void RenderManager::initialise(int viewW, int viewH)
     {
         setViewSizePixels(viewW, viewH);
+        // Match the established OpenGL and upstream Vulkan MyGUI backends: individual RenderItems start
+        // out-of-date and materialize themselves on first use. A full forced update is reserved for resize.
+        mUpdate = false;
         mIsInitialise = true;
     }
 
@@ -69,6 +72,9 @@ namespace VsgMyGui
         mSlots.clear();
         mTextures.clear();
         mBatches.clear();
+        // Deliberately retain mVertexBuffers until RenderManager destruction. MyGUI RenderItem keeps raw
+        // IVertexBuffer pointers and may tear layer ownership down during transitional/loading-screen presents.
+        mUpdate = false;
         mIsInitialise = false;
     }
 
@@ -89,6 +95,7 @@ namespace VsgMyGui
     {
         setViewSizePixels(width, height);
         onResizeView(mViewSize);
+        mUpdate = true;
     }
 
     bool RenderManager::isFormatSupported(MyGUI::PixelFormat /*format*/, MyGUI::TextureUsage /*usage*/)
@@ -98,12 +105,25 @@ namespace VsgMyGui
 
     MyGUI::IVertexBuffer* RenderManager::createVertexBuffer()
     {
-        return new VertexBuffer();
+        auto buffer = std::make_unique<VertexBuffer>();
+        MyGUI::IVertexBuffer* const result = buffer.get();
+        mVertexBuffers.push_back(std::move(buffer));
+        return result;
     }
 
     void RenderManager::destroyVertexBuffer(MyGUI::IVertexBuffer* buffer)
     {
-        delete buffer;
+        if (!buffer)
+            return;
+
+        // MyGUI owns RenderItem through raw layer pointers and calls this hook from RenderItem destruction.
+        // Do not immediately free the backend object: synchronous loading-screen GUI-only presents can traverse
+        // a transitional layer snapshot. Keeping the small CPU staging buffers alive until RenderManager teardown
+        // makes those raw references lifetime-safe without extending any VSG/GPU resource lifetime.
+        const auto owned = std::find_if(mVertexBuffers.begin(), mVertexBuffers.end(),
+            [buffer](const std::unique_ptr<MyGUI::IVertexBuffer>& candidate) { return candidate.get() == buffer; });
+        if (owned == mVertexBuffers.end())
+            Log(Debug::Warning) << "VsgMyGui: ignoring destruction request for an unowned vertex buffer";
     }
 
     MyGUI::ITexture* RenderManager::createTexture(const std::string& name)
@@ -246,8 +266,9 @@ namespace VsgMyGui
     void RenderManager::collect()
     {
         begin();
-        onRenderToTarget(this, true);
+        onRenderToTarget(this, mUpdate);
         end();
+        mUpdate = false;
     }
 
     vsg::ref_ptr<vsg::Node> RenderManager::collectDrawCalls()
