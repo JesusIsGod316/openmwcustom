@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
-          CP4F_SOURCE=be9c9d455a8180cdd27a5bed6ddef83daba2bd2d
+          CP4F_SOURCE=d87fc74fc917e817b8181f15181a628f5dc08dc6
           git cat-file -e "${CP4E_BASE}^{commit}"
           git cat-file -e "${CP4F_SOURCE}^{commit}"
           test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
@@ -62,6 +62,7 @@ jobs:
             components/render/backend/vsg/auxiliaryreadback.cpp \
             components/render/backend/vsg/enchantedmaterialshader.hpp \
             components/render/backend/vsg/uipipeline.cpp \
+            components/render/backend/vsg/uipipeline.hpp \
             components/render/backend/vsg/vsgruntimehost.cpp \
             components/render/backend/vsg/vsgruntimehost.hpp \
             components/render/backend/vsg/vsgsubmission.hpp \
@@ -79,6 +80,11 @@ jobs:
           grep -F 'OPENMW_DONT_PRECOMPILE' apps/openmw/mwrender/v4runtimeoptions.cpp
           grep -F 'reusesTrackedFence' components/render/backend/vsg/vsgsubmission.hpp
           grep -F 'VK_ERROR_OUT_OF_DATE_KHR' components/render/backend/vsg/vsgsubmission.hpp
+          grep -F 'context.viewID == viewId' components/render/backend/vsg/vsgsubmission.hpp
+          grep -F 'vsg::DynamicState::create(VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR)' components/render/backend/vsg/uipipeline.cpp
+          grep -F 'validated_vk(viewId)' components/render/backend/vsg/uipipeline.hpp
+          grep -F 'compileForViewerView(*mViewer, *mView, nextRoot)' components/render/backend/vsg/vsgruntimehost.cpp
+          grep -F 'VSG MyGUI main-view graphics pipeline was not realized before overlay publication' components/render/backend/vsg/vsgruntimehost.cpp
           grep -F 'mDynamicPublishedRoot' components/render/backend/vsg/vsgruntimehost.cpp
           grep -F 'mGuiPublishedRoot' components/render/backend/vsg/vsgruntimehost.cpp
           grep -F 'Vulkan auxiliary view could not resolve the main command-graph slot' components/render/backend/vsg/vsgruntimehost.cpp
@@ -192,6 +198,7 @@ jobs:
             components/render/backend/vsg/openmwviewdependentstate.cpp \
             components/render/backend/vsg/legacymaterialshader.cpp \
             components/render/backend/vsg/skybackdrop.cpp \
+            components/render/backend/vsg/uipipeline.cpp \
             components/vsgmygui/texture.cpp \
             components/vsgmygui/rendermanager.cpp \
             components/vsgmygui/externaltextures.cpp \
