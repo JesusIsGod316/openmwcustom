@@ -3,8 +3,10 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <span>
 #include <string>
+#include <vector>
 
 #include <MyGUI_RenderManager.h>
 
@@ -102,6 +104,11 @@ namespace VsgMyGui
         MyGUI::RenderTargetInfo mInfo;
         MyGUI::VertexColourType mVertexFormat;
         bool mIsInitialise = false;
+        bool mUpdate = false;
+        // MyGUI RenderItem stores a raw IVertexBuffer*. Loading-screen GUI-only presents can overlap
+        // transitional layer ownership, so keep every backend buffer alive until the RenderManager itself dies.
+        // destroyVertexBuffer() only retires MyGUI's logical ownership; physical storage is released here later.
+        std::vector<std::unique_ptr<MyGUI::IVertexBuffer>> mVertexBuffers;
         std::map<std::string, Texture> mTextures;
         std::vector<Batch> mBatches;
         vsg::ref_ptr<vsg::BindDescriptorSet> bindDescriptorSetFor(const TextureSnapshot& texture);
