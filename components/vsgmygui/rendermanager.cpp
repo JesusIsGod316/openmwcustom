@@ -167,10 +167,11 @@ namespace VsgMyGui
 
     void RenderManager::forgetTexture(const Texture* texture)
     {
-        if (!texture)
-            return;
-        const std::uint64_t identity = texture->identity();
-        std::erase_if(mDsCache, [identity](const auto& value) { return value.first.first == identity; });
+        // Descriptor sets are owned by the persistent overlay graph that uses them and are retired with that graph.
+        // Do not maintain a second cross-overlay descriptor cache: real Vulkan hardware exposed an invalid tree walk
+        // while pruning that cache during first-menu construction. Rebuilding descriptors only when the overlay graph
+        // itself changes is both bounded and keeps descriptor/image lifetime identical to the graph lifetime.
+        (void)texture;
     }
 
     void RenderManager::registerShader(
@@ -323,19 +324,13 @@ namespace VsgMyGui
 
     vsg::ref_ptr<vsg::BindDescriptorSet> RenderManager::bindDescriptorSetFor(const Texture* texture)
     {
-        const TextureKey key = textureKey(texture);
-        if (auto it = mDsCache.find(key); it != mDsCache.end())
-            return it->second;
-        if (key.first != 0)
-            std::erase_if(mDsCache,
-                [&key](const auto& value) { return value.first.first == key.first && value.first != key; });
-
+        // Persistent overlay rebuilds are already structural events. Let each rebuilt graph own fresh descriptor
+        // objects instead of sharing them through a mutable cross-overlay cache. The runtime retirement queue keeps
+        // the previous graph alive until GPU completion, so this also makes sampled-image lifetime explicit.
         auto info = imageInfoFor(mPipeline, texture);
         auto image = vsg::DescriptorImage::create(info, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
         auto ds = vsg::DescriptorSet::create(mPipeline.descriptorSetLayout, vsg::Descriptors{ image });
-        auto bindDs = vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, mPipeline.pipelineLayout, 0, ds);
-        mDsCache.emplace(key, bindDs);
-        return bindDs;
+        return vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, mPipeline.pipelineLayout, 0, ds);
     }
 
     RenderManager::TextureKey RenderManager::textureKey(const Texture* texture) noexcept
@@ -429,7 +424,7 @@ namespace VsgMyGui
         rm.begin();
         rm.doRender(buffer, tex, 6);
         rm.end();
-        auto node = rm.buildOverlayNode();
+        auto node = rm.buildPersistentOverlay();
         rm.destroyVertexBuffer(buffer);
         return node;
     }
