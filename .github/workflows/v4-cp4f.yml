@@ -26,11 +26,14 @@ jobs:
           set -euo pipefail
           CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
           CP4F_SOURCE=c804922fe7f5fdbcf81a672d3c686720fd18b10d
+          PRIOR_FAILED_GATE=2da5c7717e2f6322cba70b6f44843f5be065a0ff
           git cat-file -e "${CP4E_BASE}^{commit}"
           git cat-file -e "${CP4F_SOURCE}^{commit}"
+          git cat-file -e "${PRIOR_FAILED_GATE}^{commit}"
           test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
           test "$(git merge-base "${CP4F_SOURCE}" HEAD)" = "${CP4F_SOURCE}"
-          test "$(git rev-parse HEAD^)" = "${CP4F_SOURCE}"
+          test "$(git rev-parse HEAD^)" = "${PRIOR_FAILED_GATE}"
+          test "$(git rev-parse "${PRIOR_FAILED_GATE}^")" = "${CP4F_SOURCE}"
 
       - name: Run retained CP4 source contracts
         shell: bash
@@ -82,12 +85,16 @@ jobs:
           fi
           python3 - <<'PY'
           from pathlib import Path
+          import re
           source = Path('components/sdlutil/sdlinputwrapper.cpp').read_text(encoding='utf-8')
-          close_route = '''case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-                if (mWindowListener)
-                    mWindowListener->windowClosed();
-                break;'''
-          if close_route not in source:
+          close_route = re.compile(
+              r'case\s+SDL_EVENT_WINDOW_CLOSE_REQUESTED:\s*'
+              r'if\s*\(mWindowListener\)\s*'
+              r'mWindowListener->windowClosed\(\);\s*'
+              r'break;',
+              re.MULTILINE,
+          )
+          if not close_route.search(source):
               raise SystemExit('SDL window close request is not routed into the engine quit state')
           PY
           grep -F 'V4 Vulkan headless OSG route: legacy OpenGL post-processing presentation disabled' apps/openmw/mwrender/postprocessor.cpp
