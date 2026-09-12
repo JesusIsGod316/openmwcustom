@@ -261,9 +261,12 @@ namespace MWRender
         bool mNormalsSupported = false;
         bool mPrevPassLights = false;
 
-        int mGLSLVersion;
-        int mWidth;
-        int mHeight;
+        // These are consumed during construction before an OpenGL GraphicsContext is queried. Keep deterministic
+        // defaults so the headless VSG/Vulkan route never feeds indeterminate dimensions or GLSL capability state into
+        // CPU-side post-processing compatibility objects.
+        int mGLSLVersion = 0;
+        int mWidth = 1;
+        int mHeight = 1;
         int mSamples;
 
         osg::ref_ptr<Fx::StateUpdater> mStateUpdater;
