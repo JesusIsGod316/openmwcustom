@@ -140,9 +140,12 @@ namespace RenderVsg
     };
 
     // Exact VSG 1.1.15 fence bridge. pollBeforeRecordAndSubmit() must run after
-    // Viewer::advanceToNextFrame() and before Viewer::recordAndSubmit(), while a
-    // ring fence still denotes its old submission and before VSG resets it for
-    // reuse. No device-wide idle is required during normal mutation/streaming.
+    // Viewer::advanceToNextFrame() and before RecordAndSubmitTask::start() can
+    // reset the ring slot selected by that advance. A hidden/minimized frame can
+    // advance VSG's task ring without submitting, so the current ring slot is not
+    // necessarily the oldest logical submission. Detect reuse by fence identity
+    // and retire every completed logical frame before VSG is allowed to reset
+    // that fence. No device-wide idle is required during normal mutation/streaming.
     class VsgSubmissionCompletion
     {
     public:
@@ -155,13 +158,36 @@ namespace RenderVsg
             vsg::Viewer& viewer, std::uint64_t reuseWaitTimeout = std::numeric_limits<std::uint64_t>::max())
         {
             VsgCompletionPoll poll = pollReady();
-            if (poll.result != VK_SUCCESS || !mTracker.atCapacity())
+            if (poll.result != VK_SUCCESS)
                 return poll;
 
-            // VSG 1.1.15 will perform this same per-ring-slot wait in
-            // RecordAndSubmitTask::start(). Doing it just before that call lets
-            // us observe and retire the old logical submission before VSG resets
-            // and reuses its Fence object for the new frame.
+            bool reusesTrackedFence = false;
+            for (const auto& task : viewer.recordAndSubmitTasks)
+            {
+                const vsg::ref_ptr<vsg::Fence> current = task ? task->fence(0) : nullptr;
+                if (!current)
+                    continue;
+                for (const Submission& submission : mSubmissions)
+                {
+                    if (std::find(submission.fences.begin(), submission.fences.end(), current)
+                        != submission.fences.end())
+                    {
+                        reusesTrackedFence = true;
+                        break;
+                    }
+                }
+                if (reusesTrackedFence)
+                    break;
+            }
+
+            if (!reusesTrackedFence)
+                return poll;
+
+            // The selected VSG ring slot still represents a tracked logical
+            // submission. Wait for that exact slot before RecordAndSubmitTask::start()
+            // resets/reuses its Fence object. Queue order guarantees earlier
+            // submissions are also complete; pollReady() validates that rather
+            // than assuming it.
             poll.result = viewer.waitForFences(0, reuseWaitTimeout);
             if (poll.result != VK_SUCCESS)
                 return poll;
@@ -169,6 +195,27 @@ namespace RenderVsg
             if (afterWait.completedThrough)
                 poll.completedThrough = afterWait.completedThrough;
             poll.result = afterWait.result;
+            if (poll.result != VK_SUCCESS)
+                return poll;
+
+            // A waited current fence must no longer be represented by any
+            // tracked submission. If it is, allowing VSG to reset it would make
+            // the logical completion timeline alias a newer submission.
+            for (const auto& task : viewer.recordAndSubmitTasks)
+            {
+                const vsg::ref_ptr<vsg::Fence> current = task ? task->fence(0) : nullptr;
+                if (!current)
+                    continue;
+                for (const Submission& submission : mSubmissions)
+                {
+                    if (std::find(submission.fences.begin(), submission.fences.end(), current)
+                        != submission.fences.end())
+                    {
+                        poll.result = VK_ERROR_UNKNOWN;
+                        return poll;
+                    }
+                }
+            }
             return poll;
         }
 
