@@ -59,7 +59,7 @@ void main()
         }
     }
 
-    UiPipeline createUiPipeline(uint32_t viewportWidth, uint32_t viewportHeight)
+    UiPipeline createUiPipeline(uint32_t /*viewportWidth*/, uint32_t /*viewportHeight*/)
     {
         auto vertexShader
             = vsg::ShaderStage::create(VK_SHADER_STAGE_VERTEX_BIT, "main", std::string(kUiVertexSource));
@@ -110,10 +110,12 @@ void main()
         depth->depthTestEnable = VK_FALSE;
         depth->depthWriteEnable = VK_FALSE;
 
+        // Deliberately omit an explicit ViewportState. The UI lives inside the main VSG View, so the graphics pipeline
+        // inherits that View's default viewport/scissor. VSG's WindowResizeHandler updates the camera viewport and
+        // recompiles pipelines that inherit it; baking a private viewport here would leave MyGUI stuck at startup size.
         vsg::GraphicsPipelineStates states{
             vsg::VertexInputState::create(vertexBindings, vertexAttributes),
             vsg::InputAssemblyState::create(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST),
-            vsg::ViewportState::create(0, 0, viewportWidth, viewportHeight),
             rasterization,
             vsg::MultisampleState::create(),
             colorBlend,
