@@ -86,7 +86,7 @@ jobs:
             echo 'visibility-dependent post-submit presentation skip returned'
             exit 1
           fi
-          grep -F 'Persistent overlay rebuilds are already structural events.' components/vsgmygui/rendermanager.cpp
+          grep -F 'Each rebuilt overlay owns the exact sampled backing it was collected with.' components/vsgmygui/rendermanager.cpp
           grep -F 'auto node = rm.buildPersistentOverlay();' components/vsgmygui/rendermanager.cpp
           if grep -F 'std::erase_if(mDsCache' components/vsgmygui/rendermanager.cpp; then
             echo 'unsafe cross-overlay MyGUI descriptor-cache pruning returned'
