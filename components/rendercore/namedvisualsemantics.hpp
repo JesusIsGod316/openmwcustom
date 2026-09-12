@@ -5,10 +5,9 @@
 
 namespace RenderCore
 {
-    // Backend-neutral realization state for OpenMW's authored NightDaySwitch.
-    // The numeric values intentionally match MWWorld::NightDayMode and the
-    // legacy osg::Switch child indices: default/day = 0, exterior night = 1,
-    // and lit-interior day = 2.
+    // Backend-neutral realization state for the authored night/day switch.
+    // The numeric values preserve the shared authored-state ordering:
+    // default/day = 0, exterior night = 1, and lit-interior day = 2.
     enum class NightDaySwitchState : std::uint8_t
     {
         Default = 0,
