@@ -71,7 +71,7 @@ require(
     "components/render/backend/vsg/vsgruntimehost.cpp",
     "synchronizeGui()",
     "mGuiRetirements.queue",
-    "incremental VSG MyGUI compilation failed before overlay publication",
+    "incremental VSG MyGUI main-view compilation failed before overlay publication",
 )
 require(
     "apps/openmw/main.cpp",
