@@ -62,7 +62,7 @@ require(
 )
 require(
     "components/vsgmygui/rendermanager.cpp",
-    "skipping an unresolved foreign render-target texture",
+    "skipping unresolved foreign render-target texture",
     "setExternalTexture",
     "texture->identity()",
     "texture->revision()",
