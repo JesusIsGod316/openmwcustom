@@ -295,8 +295,10 @@ namespace MWRender
             }
         }
 
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
         if (GlobalMap* const globalMap = GlobalMap::activeInstance())
             globalMap->flushNativeExploration();
+#endif
         return result;
     }
 }
