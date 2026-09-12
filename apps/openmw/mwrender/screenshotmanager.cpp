@@ -1,8 +1,11 @@
 #include "screenshotmanager.hpp"
 
+#include <algorithm>
 #include <condition_variable>
+#include <cstring>
 #include <mutex>
 
+#include <components/debug/debuglog.hpp>
 #include <components/stereo/multiview.hpp>
 #include <components/stereo/stereomanager.hpp>
 
@@ -99,6 +102,26 @@ namespace MWRender
 
     void ScreenshotManager::screenshot(osg::Image* image, int w, int h)
     {
+        if (!image)
+            return;
+
+        osg::Camera* const viewerCamera = mViewer ? mViewer->getCamera() : nullptr;
+        if (!viewerCamera || !viewerCamera->getGraphicsContext())
+        {
+            // The explicit VSG/Vulkan route intentionally has no OSG/OpenGL graphics context. The legacy save-game
+            // thumbnail path used to enter renderingTraversals() and then wait forever for a GL draw callback that can
+            // never run. Keep save/load functional until native Vulkan screenshot readback is implemented by returning
+            // a valid deterministic placeholder image instead of entering the legacy draw path.
+            const int width = std::max(w, 1);
+            const int height = std::max(h, 1);
+            image->allocateImage(width, height, 1, GL_RGB, GL_UNSIGNED_BYTE);
+            if (image->data() && image->getTotalSizeInBytes() > 0)
+                std::memset(image->data(), 0, image->getTotalSizeInBytes());
+            Log(Debug::Warning)
+                << "V4 Vulkan headless OSG route: using placeholder save-game screenshot; native Vulkan readback is not yet available";
+            return;
+        }
+
         osg::Camera* camera = MWBase::Environment::get().getWorld()->getPostProcessor()->getHUDCamera();
         osg::ref_ptr<osg::Drawable> tempDrw = new osg::Drawable;
         tempDrw->setDrawCallback(new ReadImageFromFramebufferCallback(image, w, h));
