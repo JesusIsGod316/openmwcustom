@@ -37,15 +37,13 @@ namespace VsgMyGui
             size_t mNeedCount = 0;
         };
 
-        vsg::ref_ptr<vsg::ImageInfo> imageInfoFor(
-            const RenderVsg::UiPipeline& pipeline, const Texture* texture)
+        vsg::ref_ptr<vsg::ImageInfo> imageInfoFor(const RenderVsg::UiPipeline& pipeline,
+            const vsg::ref_ptr<vsg::Data>& data, const vsg::ref_ptr<vsg::ImageView>& imageView)
         {
-            if (texture && texture->imageView())
-                return vsg::ImageInfo::create(
-                    pipeline.sampler, texture->imageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            vsg::ref_ptr<vsg::Data> data
-                = (texture && texture->data()) ? texture->data() : pipeline.whiteTexture;
-            return vsg::ImageInfo::create(pipeline.sampler, data, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            if (imageView)
+                return vsg::ImageInfo::create(pipeline.sampler, imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            return vsg::ImageInfo::create(
+                pipeline.sampler, data ? data : pipeline.whiteTexture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
     }
 
@@ -68,10 +66,11 @@ namespace VsgMyGui
 
     void RenderManager::shutdown()
     {
-        mDsCache.clear();
         mSlots.clear();
         mTextures.clear();
         mBatches.clear();
+        mVertPool.clear();
+        mVertPoolCapacities.clear();
         mIsInitialise = false;
     }
 
@@ -111,8 +110,6 @@ namespace VsgMyGui
 
     MyGUI::ITexture* RenderManager::createTexture(const std::string& name)
     {
-        if (auto existing = mTextures.find(name); existing != mTextures.end())
-            forgetTexture(&existing->second);
         auto [it, inserted] = mTextures.insert_or_assign(name, Texture(name));
         it->second.setDecoder(mDecoder);
         (void)inserted;
@@ -132,8 +129,6 @@ namespace VsgMyGui
             created->second.setDecoder(mDecoder);
             it = created;
         }
-        else
-            forgetTexture(&it->second);
         it->second.setImageView(std::move(imageView), width, height, format);
         return &it->second;
     }
@@ -142,7 +137,6 @@ namespace VsgMyGui
     {
         if (!texture)
             return;
-        forgetTexture(dynamic_cast<const Texture*>(texture));
         mTextures.erase(texture->getName());
     }
 
@@ -165,15 +159,6 @@ namespace VsgMyGui
         return !name.empty() && mTextures.contains(name);
     }
 
-    void RenderManager::forgetTexture(const Texture* texture)
-    {
-        // Descriptor sets are owned by the persistent overlay graph that uses them and are retired with that graph.
-        // Do not maintain a second cross-overlay descriptor cache: real Vulkan hardware exposed an invalid tree walk
-        // while pruning that cache during first-menu construction. Rebuilding descriptors only when the overlay graph
-        // itself changes is both bounded and keeps descriptor/image lifetime identical to the graph lifetime.
-        (void)texture;
-    }
-
     void RenderManager::registerShader(
         const std::string& /*shaderName*/, const std::string& /*vertex*/, const std::string& /*fragment*/)
     {
@@ -187,6 +172,18 @@ namespace VsgMyGui
 
     void RenderManager::end() {}
 
+    RenderManager::TextureSnapshot RenderManager::snapshotTexture(const Texture* texture)
+    {
+        TextureSnapshot result;
+        if (!texture)
+            return result;
+        result.data = texture->data();
+        result.imageView = texture->imageView();
+        result.identity = texture->identity();
+        result.revision = texture->revision();
+        return result;
+    }
+
     void RenderManager::doRender(MyGUI::IVertexBuffer* buffer, MyGUI::ITexture* texture, size_t count)
     {
         if (!buffer || count == 0)
@@ -196,29 +193,31 @@ namespace VsgMyGui
         if (vb->byteSize() < bytes)
             return;
 
-        Batch batch;
-        batch.vertices = vsg::ubyteArray::create(bytes);
-        std::memcpy(batch.vertices->dataPointer(), vb->bytes(), bytes);
-        batch.texture = dynamic_cast<Texture*>(texture);
-        if (texture && !batch.texture)
+        const Texture* nativeTexture = dynamic_cast<Texture*>(texture);
+        if (texture && !nativeTexture)
         {
             const std::string& alias = texture->getName();
             if (!alias.empty())
             {
                 if (auto native = mTextures.find(alias); native != mTextures.end())
-                    batch.texture = &native->second;
+                    nativeTexture = &native->second;
             }
-            if (!batch.texture)
+            if (!nativeTexture)
             {
                 if (!mWarnedForeignTexture)
                 {
-                    Log(Debug::Warning) << "VsgMyGui: skipping an unresolved foreign render-target texture; "
-                                           "native auxiliary surfaces must be published before an alias is rendered";
+                    Log(Debug::Warning) << "VsgMyGui: skipping unresolved foreign render-target texture '"
+                                        << alias << "'; native auxiliary surfaces must be published before an alias is rendered";
                     mWarnedForeignTexture = true;
                 }
                 return;
             }
         }
+
+        Batch batch;
+        batch.vertices = vsg::ubyteArray::create(bytes);
+        std::memcpy(batch.vertices->dataPointer(), vb->bytes(), bytes);
+        batch.texture = snapshotTexture(nativeTexture);
         batch.count = static_cast<uint32_t>(count);
         mBatches.push_back(std::move(batch));
     }
@@ -231,7 +230,7 @@ namespace VsgMyGui
         auto root = vsg::Group::create();
         for (const Batch& batch : mBatches)
         {
-            auto info = imageInfoFor(mPipeline, batch.texture);
+            auto info = imageInfoFor(mPipeline, batch.texture.data, batch.texture.imageView);
             auto image = vsg::DescriptorImage::create(info, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
             auto ds = vsg::DescriptorSet::create(mPipeline.descriptorSetLayout, vsg::Descriptors{ image });
             auto bindDs
@@ -283,10 +282,8 @@ namespace VsgMyGui
         {
             const Batch& batch = mBatches[i];
             Slot slot;
-            slot.texture = batch.texture;
-            const TextureKey key = textureKey(batch.texture);
-            slot.textureIdentity = key.first;
-            slot.textureRevision = key.second;
+            slot.textureIdentity = batch.texture.identity;
+            slot.textureRevision = batch.texture.revision;
             if (i >= mVertPool.size() || mVertPoolCapacities[i] < batch.count)
             {
                 const uint32_t capacity = slotCapacity(batch.count);
@@ -317,25 +314,19 @@ namespace VsgMyGui
             sg->addChild(vsg::BindVertexBuffers::create(0, vsg::DataList{ slot.verts }));
             sg->addChild(slot.draw);
             root->addChild(sg);
-            mSlots.push_back(slot);
+            mSlots.push_back(std::move(slot));
         }
         return root;
     }
 
-    vsg::ref_ptr<vsg::BindDescriptorSet> RenderManager::bindDescriptorSetFor(const Texture* texture)
+    vsg::ref_ptr<vsg::BindDescriptorSet> RenderManager::bindDescriptorSetFor(const TextureSnapshot& texture)
     {
-        // Persistent overlay rebuilds are already structural events. Let each rebuilt graph own fresh descriptor
-        // objects instead of sharing them through a mutable cross-overlay cache. The runtime retirement queue keeps
-        // the previous graph alive until GPU completion, so this also makes sampled-image lifetime explicit.
-        auto info = imageInfoFor(mPipeline, texture);
+        // Each rebuilt overlay owns the exact sampled backing it was collected with.
+        // No mutable descriptor cache or raw MyGUI texture pointer crosses overlay lifetimes.
+        auto info = imageInfoFor(mPipeline, texture.data, texture.imageView);
         auto image = vsg::DescriptorImage::create(info, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
         auto ds = vsg::DescriptorSet::create(mPipeline.descriptorSetLayout, vsg::Descriptors{ image });
         return vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, mPipeline.pipelineLayout, 0, ds);
-    }
-
-    RenderManager::TextureKey RenderManager::textureKey(const Texture* texture) noexcept
-    {
-        return texture ? TextureKey{ texture->identity(), texture->revision() } : TextureKey{};
     }
 
     void RenderManager::updatePersistentOverlay()
@@ -352,8 +343,8 @@ namespace VsgMyGui
         }
         for (size_t i = 0; i < mSlots.size(); ++i)
         {
-            const TextureKey key = textureKey(mBatches[i].texture);
-            if (key.first != mSlots[i].textureIdentity || key.second != mSlots[i].textureRevision)
+            if (mBatches[i].texture.identity != mSlots[i].textureIdentity
+                || mBatches[i].texture.revision != mSlots[i].textureRevision)
                 continue;
             const uint32_t count = mBatches[i].count;
             if (mBatches[i].vertices && count > 0)
@@ -372,8 +363,8 @@ namespace VsgMyGui
             return true;
         for (size_t i = 0; i < mSlots.size(); ++i)
         {
-            const TextureKey key = textureKey(mBatches[i].texture);
-            if (key.first != mSlots[i].textureIdentity || key.second != mSlots[i].textureRevision)
+            if (mBatches[i].texture.identity != mSlots[i].textureIdentity
+                || mBatches[i].texture.revision != mSlots[i].textureRevision)
                 return true;
             if (mBatches[i].count > mSlots[i].capacity)
                 return true;
