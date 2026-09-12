@@ -3,8 +3,10 @@
 
 #include "framecompletion.hpp"
 
-#include <vsg/app/Viewer.h>
 #include <vsg/app/Presentation.h>
+#include <vsg/app/View.h>
+#include <vsg/app/Viewer.h>
+#include <vsg/vk/Context.h>
 #include <vsg/vk/Fence.h>
 #include <vsg/vk/Queue.h>
 #include <vsg/vk/Swapchain.h>
@@ -310,6 +312,23 @@ namespace RenderVsg
         if (!viewer.compileManager || !object)
             return {};
         vsg::CompileResult result = viewer.compileManager->compile(std::move(object));
+        if (result && result.requiresViewerUpdate(&viewer))
+            vsg::updateViewer(viewer, result);
+        return result;
+    }
+
+    // Main-view-only publications such as MyGUI must not materialize their
+    // graphics pipelines against reflection, refraction, shadow or auxiliary
+    // render passes that will never record them. CompileManager owns all live
+    // contexts, so select the exact VSG View identity before publication.
+    [[nodiscard]] inline vsg::CompileResult compileForViewerView(
+        vsg::Viewer& viewer, const vsg::View& view, vsg::ref_ptr<vsg::Object> object)
+    {
+        if (!viewer.compileManager || !object)
+            return {};
+        const std::uint32_t viewId = view.viewID;
+        vsg::CompileResult result = viewer.compileManager->compile(std::move(object),
+            [viewId](vsg::Context& context) { return context.viewID == viewId; });
         if (result && result.requiresViewerUpdate(&viewer))
             vsg::updateViewer(viewer, result);
         return result;
