@@ -120,15 +120,8 @@ namespace RenderVsg
         [[nodiscard]] VsgMyGui::RenderManager* guiRenderer() noexcept { return mGuiRenderer; }
         [[nodiscard]] vsg::ref_ptr<vsg::ImageView> auxiliaryColorImage(
             RenderCore::RenderTargetHandle target) const noexcept;
-        // Map persistence is intentionally a rare, explicit readback rather than
-        // a per-frame synchronization point. All requested RGBA8 targets are
-        // transitioned, copied and restored in one graphics-queue submission.
         [[nodiscard]] std::optional<std::vector<AuxiliaryRgba8Readback>> readbackAuxiliaryRgba8(
             std::span<const RenderCore::RenderTargetHandle> targets);
-        // Explicit retirement is required for long-lived logical map slots: a
-        // sampled target stays native to VSG until its producer retires that
-        // logical surface. Retirement synchronizes before removing the command
-        // graph so no in-flight submission can retain freed target resources.
         [[nodiscard]] bool retireAuxiliarySurface(RenderCore::RenderTargetHandle target);
         [[nodiscard]] const std::string& lastDiagnostic() const noexcept { return mLastDiagnostic; }
 
@@ -157,9 +150,6 @@ namespace RenderVsg
             FrameCameraObjects camera;
             vsg::ref_ptr<vsg::View> view;
             vsg::ref_ptr<OpenMwViewDependentState> state;
-            // Map views reproduce the legacy local-map lighting contract rather
-            // than borrowing the live gameplay sun/ambient objects. The simple
-            // water surface likewise has no reflection/refraction dependency.
             vsg::ref_ptr<vsg::AmbientLight> ambientLight;
             vsg::ref_ptr<vsg::DirectionalLight> sunLight;
             WaterSurface waterSurface;
@@ -191,7 +181,10 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::Group> mSceneRoot;
         vsg::ref_ptr<vsg::Group> mStaticRoot;
         vsg::ref_ptr<vsg::Group> mDynamicRoot;
+        // Stable holder attached to the main view plus separately-owned published
+        // content. Replacing GUI content never relies on child ordering in mMainOnlyRoot.
         vsg::ref_ptr<vsg::Group> mGuiRoot;
+        vsg::ref_ptr<vsg::Group> mGuiPublishedRoot;
         vsg::ref_ptr<vsg::Group> mMainOnlyRoot;
         vsg::ref_ptr<vsg::View> mView;
         vsg::ref_ptr<OpenMwViewDependentState> mOpenMwViewState;
