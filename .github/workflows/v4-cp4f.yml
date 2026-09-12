@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
-          CP4F_SOURCE=86c30192cc063ab7e4c821ca46c402cafbe2fb82
+          CP4F_SOURCE=2da72a7169df5b632e381d4628be55a068ea2396
           git cat-file -e "${CP4E_BASE}^{commit}"
           git cat-file -e "${CP4F_SOURCE}^{commit}"
           test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
@@ -48,6 +48,9 @@ jobs:
           set -euo pipefail
           for path in \
             apps/openmw/mwrender/postprocessor.cpp \
+            apps/openmw/mwrender/postprocessor.hpp \
+            apps/openmw/mwrender/screenshotmanager.cpp \
+            apps/openmw/mwinput/actionmanager.cpp \
             apps/openmw/mwrender/v4effectcapture.hpp \
             apps/openmw/mwrender/v4localmapbridge.cpp \
             apps/openmw/mwrender/localmapnative.cpp \
@@ -63,6 +66,10 @@ jobs:
 
           grep -F 'V4 Vulkan headless OSG route: legacy OpenGL post-processing presentation disabled' apps/openmw/mwrender/postprocessor.cpp
           grep -F 'if (gc == nullptr)' apps/openmw/mwrender/postprocessor.cpp
+          grep -F 'int mWidth = 1;' apps/openmw/mwrender/postprocessor.hpp
+          grep -F 'using placeholder save-game screenshot' apps/openmw/mwrender/screenshotmanager.cpp
+          grep -F 'Screenshot capture is not yet available on the V4 Vulkan renderer.' apps/openmw/mwinput/actionmanager.cpp
+          grep -F 'legacy OpenGL post-processing debug HUD is unavailable on the V4 Vulkan renderer.' apps/openmw/mwinput/actionmanager.cpp
           grep -F 'captureV4WholeEffectSubtree' apps/openmw/mwrender/v4effectcapture.hpp
           grep -F 'soft-particle opaque-depth sampling' apps/openmw/mwrender/v4effectcapture.hpp
           grep -F 'post-process distortion target' apps/openmw/mwrender/v4effectcapture.hpp
