@@ -194,6 +194,21 @@ namespace MWRender
         mInternalTechniques.push_back(std::move(distortion));
 
         osg::GraphicsContext* gc = viewer->getCamera()->getGraphicsContext();
+        if (gc == nullptr)
+        {
+            // The explicit VSG/Vulkan route intentionally retains an OSG viewer for gameplay update and semantic
+            // extraction without ever creating an OpenGL graphics context. Keep the legacy postprocessor object alive
+            // for existing CPU-side state consumers, but do not initialize or attach its OpenGL presentation path.
+            mWidth = std::max(1, static_cast<int>(Settings::video().mResolutionX));
+            mHeight = std::max(1, static_cast<int>(Settings::video().mResolutionY));
+            mGLSLVersion = 0;
+            mUBO = false;
+            mNormalsSupported = false;
+            mUsePostProcessing = false;
+            mStateUpdater = new Fx::StateUpdater(false);
+            Log(Debug::Info) << "V4 Vulkan headless OSG route: legacy OpenGL post-processing presentation disabled";
+            return;
+        }
         osg::GLExtensions* ext = gc->getState()->get<osg::GLExtensions>();
 
         mWidth = gc->getTraits()->width;
