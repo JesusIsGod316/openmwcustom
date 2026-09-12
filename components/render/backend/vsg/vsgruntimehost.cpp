@@ -230,6 +230,12 @@ namespace RenderVsg
     VsgRuntimeHost::~VsgRuntimeHost()
     {
         waitIdle();
+        if (mDynamicRoot)
+            mDynamicRoot->children.clear();
+        if (mGuiRoot)
+            mGuiRoot->children.clear();
+        mDynamicPublishedRoot = {};
+        mGuiPublishedRoot = {};
         if (mSceneRoot)
             mSceneRoot->children.clear();
         if (mMainOnlyRoot)
@@ -676,17 +682,23 @@ namespace RenderVsg
             return false;
         }
 
-        if (mDynamicLastUse)
+        if (mDynamicLastUse && mDynamicPublishedRoot)
         {
             mDynamicRetirements.reserveAdditional(1);
-            if (!mDynamicRetirements.queue(*mDynamicLastUse, mDynamicRoot))
+            if (!mDynamicRetirements.queue(*mDynamicLastUse, mDynamicPublishedRoot))
             {
                 mLastDiagnostic = "previous dynamic actor graph could not be retained through GPU completion";
                 return false;
             }
         }
-        mDynamicRoot = std::move(nextRoot);
-        mSceneRoot->children[1] = mDynamicRoot;
+        if (!mDynamicRoot)
+        {
+            mLastDiagnostic = "stable dynamic publication holder is missing";
+            return false;
+        }
+        mDynamicRoot->children.clear();
+        mDynamicRoot->addChild(nextRoot);
+        mDynamicPublishedRoot = std::move(nextRoot);
         mDynamicLastUse.reset();
         return true;
     }
@@ -929,9 +941,17 @@ namespace RenderVsg
                     return false;
                 }
                 // Water targets are already before the swapchain graph. Insert
-                // generic sampled surfaces immediately before the main graph so
-                // their final shader-read layout is established before MyGUI.
-                mCommandGraph->children.insert(mCommandGraph->children.end() - 1, created.commandVisibility);
+                // generic sampled surfaces immediately before the exact main graph so
+                // their final shader-read layout is established before MyGUI without
+                // relying on incidental command-graph child ordering.
+                const auto mainGraph = std::find(
+                    mCommandGraph->children.begin(), mCommandGraph->children.end(), mRenderGraph);
+                if (mainGraph == mCommandGraph->children.end())
+                {
+                    mLastDiagnostic = "Vulkan auxiliary view could not resolve the main command-graph slot";
+                    return false;
+                }
+                mCommandGraph->children.insert(mainGraph, created.commandVisibility);
                 mAuxiliaryViews.push_back(std::move(created));
                 runtime = std::prev(mAuxiliaryViews.end());
             }
@@ -1004,17 +1024,23 @@ namespace RenderVsg
             mLastDiagnostic = "incremental VSG MyGUI compilation failed before overlay publication";
             return false;
         }
-        if (mGuiLastUse)
+        if (mGuiLastUse && mGuiPublishedRoot)
         {
             mGuiRetirements.reserveAdditional(1);
-            if (!mGuiRetirements.queue(*mGuiLastUse, mGuiRoot))
+            if (!mGuiRetirements.queue(*mGuiLastUse, mGuiPublishedRoot))
             {
                 mLastDiagnostic = "previous MyGUI graph could not be retained through GPU completion";
                 return false;
             }
         }
-        mGuiRoot = std::move(nextRoot);
-        mMainOnlyRoot->children.back() = mGuiRoot;
+        if (!mGuiRoot)
+        {
+            mLastDiagnostic = "stable MyGUI publication holder is missing";
+            return false;
+        }
+        mGuiRoot->children.clear();
+        mGuiRoot->addChild(nextRoot);
+        mGuiPublishedRoot = std::move(nextRoot);
         mGuiLastUse.reset();
         return true;
     }
@@ -1025,7 +1051,7 @@ namespace RenderVsg
         mLastDiagnostic.clear();
         if (!frame.valid() || !RenderCore::frameCompatibleWithWorld(world, frame))
             return finish(RenderCore::RenderFrameResult::Failed, "invalid or stale semantic frame state");
-        if (!frame.dynamicMaterials().empty())
+        if (frame.dynamicMaterials().empty() == false)
             return finish(
                 RenderCore::RenderFrameResult::Failed, "dynamic materials require a later compatibility facet");
         if (frame.environment().waterEnabled && !mOptions.water.enabled)
@@ -1051,6 +1077,14 @@ namespace RenderVsg
             || frame.projectionOffset() != glm::vec2(0.0f))
             return finish(RenderCore::RenderFrameResult::Failed,
                 "CP3C host requires explicit reversed zero-to-one/down-Y projection and no temporal jitter");
+
+        // VSG skips swapchain acquisition for invisible windows, but its record/submit
+        // task still owns the window and can otherwise reuse the previous image's
+        // image-available semaphore. Never submit a frame while SDL reports the
+        // Vulkan window hidden or minimized.
+        if (!mWindow->visible())
+            return finish(RenderCore::RenderFrameResult::Skipped, "SDL Vulkan window is hidden or minimized");
+
         if (!synchronizeAuxiliaryViews(frame))
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
         const VkExtent2D desiredExtent{ frame.outputExtent().width, frame.outputExtent().height };
@@ -1065,6 +1099,12 @@ namespace RenderVsg
                 RenderCore::RenderFrameResult::Skipped, "SDL pixel extent is not ready for the requested output");
         if (!mViewer->advanceToNextFrame(frame.simulationTime()))
             return finish(RenderCore::RenderFrameResult::Skipped, "VSG could not acquire the next swapchain frame");
+        // advanceToNextFrame() polls SDL/VSG events before acquisition. A minimize
+        // event can therefore make the window invisible after the pre-check and
+        // cause VSG to skip acquisition while still returning a valid frame. Stop
+        // here before RecordAndSubmitTask can consume a stale acquire semaphore.
+        if (!mWindow->visible())
+            return finish(RenderCore::RenderFrameResult::Skipped, "SDL Vulkan window became hidden or minimized");
 
         const VsgCompletionPoll completion = mCompletion.pollBeforeRecordAndSubmit(*mViewer);
         if (completion.result != VK_SUCCESS)
