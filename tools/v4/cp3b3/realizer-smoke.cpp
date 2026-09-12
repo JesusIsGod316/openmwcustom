@@ -202,8 +202,8 @@ int main()
     const RenderVsg::StaticRealizationResult unsupportedRealized
         = realizer.realize(world, *unsupportedPlan, resolver);
     require(unsupportedRealized.valid(), "unsupported semantic realization should remain inspectable");
-    require(unsupportedRealized.stats.runtimeContextEffects == 3u,
-        "unlit/texture-apply/static-UV gaps must each fail closed while emissive vertex color remains supported");
+    require(unsupportedRealized.stats.runtimeContextEffects == 2u,
+        "texture-apply/static-UV gaps must each fail closed while unlit and emissive vertex color remain supported");
 
     RenderVsg::StaticTextureDecoder decoder;
     TextureRecord warningRecord;
