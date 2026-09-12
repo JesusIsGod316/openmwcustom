@@ -30,7 +30,14 @@ namespace RenderVsg
 
         [[nodiscard]] bool success() const noexcept
         {
-            return submit == VK_SUCCESS && (present == VK_SUCCESS || present == VK_SUBOPTIMAL_KHR);
+            // Once queue submission succeeded, OUT_OF_DATE/full-screen-loss are
+            // swapchain transition results rather than semantic-frame failures.
+            // Treat the rendered frame as consumed so frame IDs/lifetimes remain
+            // monotonic; the next extent/acquire pass rebuilds the swapchain.
+            return submit == VK_SUCCESS
+                && (present == VK_SUCCESS || present == VK_SUBOPTIMAL_KHR
+                    || present == VK_ERROR_OUT_OF_DATE_KHR
+                    || present == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT);
         }
     };
 
@@ -61,7 +68,7 @@ namespace RenderVsg
             if (!window)
                 return VK_ERROR_INITIALIZATION_FAILED;
             const std::size_t imageIndex = window->imageIndex();
-            if (!window->visible() || imageIndex >= window->numFrames())
+            if (imageIndex >= window->numFrames())
                 continue;
             const vsg::ref_ptr<vsg::Swapchain> swapchain = window->getOrCreateSwapchain();
             const vsg::ref_ptr<vsg::Semaphore>& renderFinished = window->frame(imageIndex).renderFinishedSemaphore;
@@ -71,8 +78,11 @@ namespace RenderVsg
             imageIndices.push_back(static_cast<std::uint32_t>(imageIndex));
             semaphores.push_back(renderFinished->vk());
         }
+        // A successful frame advance in the production host owns one acquired
+        // swapchain image. If that invariant is lost, fail closed rather than
+        // reporting a presentation that never consumed renderFinished.
         if (swapchains.empty())
-            return VK_SUCCESS;
+            return VK_ERROR_INITIALIZATION_FAILED;
 
         VkPresentInfoKHR info{};
         info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -128,7 +138,9 @@ namespace RenderVsg
                 return result;
             }
             result.present = presentChecked(*presentation);
-            if (result.present != VK_SUCCESS && result.present != VK_SUBOPTIMAL_KHR)
+            if (result.present != VK_SUCCESS && result.present != VK_SUBOPTIMAL_KHR
+                && result.present != VK_ERROR_OUT_OF_DATE_KHR
+                && result.present != VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT)
                 return result;
         }
         return result;
