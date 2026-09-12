@@ -269,6 +269,8 @@ namespace SDLUtil
                 updateMouseSettings();
                 break;
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+                if (mWindowListener)
+                    mWindowListener->windowClosed();
                 break;
             case SDL_EVENT_WINDOW_SHOWN:
             case SDL_EVENT_WINDOW_RESTORED:
@@ -310,7 +312,7 @@ namespace SDLUtil
     }
 
     /// \brief Set the mouse to relative positioning. Doesn't move the cursor
-    ///        and disables mouse acceleration.
+    ///        and disables mouse acceleration
     void InputWrapper::setMouseRelative(bool relative)
     {
         mWantRelative = relative;
