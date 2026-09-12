@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
-          CP4F_SOURCE=0876f3098599d31a972fe721063134d0221deb0f
+          CP4F_SOURCE=6d8e9a37bd9bb4f806d226854cecbbe07e87ce09
           git cat-file -e "${CP4E_BASE}^{commit}"
           git cat-file -e "${CP4F_SOURCE}^{commit}"
           test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
@@ -67,6 +67,7 @@ jobs:
             components/render/backend/vsg/vsgruntimehost.hpp \
             components/render/backend/vsg/vsgsubmission.hpp \
             components/vsgmygui/rendermanager.cpp \
+            components/vsgmygui/rendermanager.hpp \
             components/vsgmygui/externaltextures.cpp; do
             test -f "${path}"
           done
@@ -94,6 +95,17 @@ jobs:
           fi
           grep -F 'Each rebuilt overlay owns the exact sampled backing it was collected with.' components/vsgmygui/rendermanager.cpp
           grep -F 'auto node = rm.buildPersistentOverlay();' components/vsgmygui/rendermanager.cpp
+          grep -F 'onRenderToTarget(this, mUpdate)' components/vsgmygui/rendermanager.cpp
+          grep -F 'mVertexBuffers.push_back(std::move(buffer))' components/vsgmygui/rendermanager.cpp
+          grep -F 'std::vector<std::unique_ptr<MyGUI::IVertexBuffer>> mVertexBuffers;' components/vsgmygui/rendermanager.hpp
+          if grep -F 'onRenderToTarget(this, true)' components/vsgmygui/rendermanager.cpp; then
+            echo 'forced full MyGUI render-item relock returned'
+            exit 1
+          fi
+          if grep -F 'delete buffer;' components/vsgmygui/rendermanager.cpp; then
+            echo 'immediate MyGUI vertex-buffer destruction returned'
+            exit 1
+          fi
           if grep -F 'std::erase_if(mDsCache' components/vsgmygui/rendermanager.cpp; then
             echo 'unsafe cross-overlay MyGUI descriptor-cache pruning returned'
             exit 1
