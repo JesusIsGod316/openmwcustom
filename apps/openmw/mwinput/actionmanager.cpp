@@ -122,7 +122,11 @@ namespace MWInput
                 windowManager->toggleDebugWindow();
                 break;
             case A_TogglePostProcessorHUD:
-                windowManager->togglePostProcessorHud();
+                if (mViewer && mViewer->getCamera() && mViewer->getCamera()->getGraphicsContext())
+                    windowManager->togglePostProcessorHud();
+                else
+                    windowManager->messageBox(
+                        "The legacy OpenGL post-processing debug HUD is unavailable on the V4 Vulkan renderer.");
                 break;
             case A_QuickSave:
                 quickSave();
@@ -168,6 +172,12 @@ namespace MWInput
 
     void ActionManager::screenshot()
     {
+        if (!mViewer || !mViewer->getCamera() || !mViewer->getCamera()->getGraphicsContext())
+        {
+            MWBase::Environment::get().getWindowManager()->messageBox(
+                "Screenshot capture is not yet available on the V4 Vulkan renderer. Use an external capture tool for this checkpoint.");
+            return;
+        }
         mScreenCaptureHandler->setFramesToCapture(1);
         mScreenCaptureHandler->captureNextFrame(*mViewer);
     }
