@@ -16,6 +16,7 @@
 #include <osg/Geometry>
 #include <osg/FrontFace>
 #include <osg/GL>
+#include <osg/Geode>
 #include <osg/NodeVisitor>
 #include <osg/PolygonMode>
 #include <osg/Stencil>
@@ -526,8 +527,9 @@ namespace MWRender
                     typeName = type->getName();
                 const TextureRole role = textureRole(typeName);
 
+                const VFS::Path::Normalized texturePath(image->getFileName());
                 const NifRender::ResolvedVfsIdentity resolved
-                    = NifRender::resolveTextureVfsIdentity(VFS::Path::NormalizedView(image->getFileName()), vfs);
+                    = NifRender::resolveTextureVfsIdentity(texturePath, vfs);
                 if (!resolved.valid())
                 {
                     diagnostic = "evaluated effect texture could not resolve its winning VFS content identity";
