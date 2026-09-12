@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
-          CP4F_SOURCE=1fb8a7f79e92c627087efc61030652cb5b71d9fb
+          CP4F_SOURCE=b40a667d61088570a0e8fbdc73b6661dbd6c8b0b
           git cat-file -e "${CP4E_BASE}^{commit}"
           git cat-file -e "${CP4F_SOURCE}^{commit}"
           test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
@@ -101,6 +101,8 @@ jobs:
           grep -F 'auto node = rm.buildPersistentOverlay();' components/vsgmygui/rendermanager.cpp
           grep -F 'onRenderToTarget(this, mUpdate)' components/vsgmygui/rendermanager.cpp
           grep -F 'mVertexBuffers.push_back(std::move(buffer))' components/vsgmygui/rendermanager.cpp
+          grep -F 'This is correctness-first: it intentionally gives up the in-place UI update optimization.' components/vsgmygui/rendermanager.cpp
+          grep -F 'Mutable in-place overlay updates are quarantined.' components/vsgmygui/rendermanager.cpp
           grep -F 'std::vector<std::unique_ptr<MyGUI::IVertexBuffer>> mVertexBuffers;' components/vsgmygui/rendermanager.hpp
           if grep -F 'onRenderToTarget(this, true)' components/vsgmygui/rendermanager.cpp; then
             echo 'forced full MyGUI render-item relock returned'
