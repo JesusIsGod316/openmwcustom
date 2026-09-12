@@ -102,7 +102,7 @@ namespace MWWorld
         // lifecycle observer, so republish the same reference through its
         // backend-neutral objectChanged seam. OpenGL has no lifecycle observer
         // here and remains unchanged.
-        if (auto* concreteWorld = dynamic_cast<MWWorld::World*>(world))
+        if (auto* concreteWorld = dynamic_cast<MWWorld::World*>(&*world))
             concreteWorld->getWorldScene().notifyObjectChanged(target);
     }
 }
