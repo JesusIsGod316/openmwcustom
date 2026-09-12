@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <limits>
 #include <utility>
 #include <vector>
 
@@ -277,49 +276,14 @@ namespace VsgMyGui
         return buildOverlayNode();
     }
 
-    namespace
-    {
-        constexpr uint32_t kInitialVertsPerSlot = 4096;
-
-        uint32_t slotCapacity(uint32_t required)
-        {
-            uint32_t result = kInitialVertsPerSlot;
-            while (result < required && result <= std::numeric_limits<uint32_t>::max() / 2)
-                result *= 2;
-            return std::max(result, required);
-        }
-    }
-
     vsg::ref_ptr<vsg::Node> RenderManager::buildPersistentOverlay()
     {
-        mSlots.clear();
-        if (!mPipeline)
-            return {};
-
-        auto root = vsg::Group::create();
-        for (const Batch& batch : mBatches)
-        {
-            Slot slot;
-            slot.textureIdentity = batch.texture.identity;
-            slot.textureRevision = batch.texture.revision;
-            slot.capacity = slotCapacity(batch.count);
-            slot.verts = vsg::ubyteArray::create(slot.capacity * sizeof(MyGUI::Vertex));
-            slot.verts->properties.dataVariance = vsg::DYNAMIC_DATA;
-            const uint32_t count = batch.count;
-            if (batch.vertices && count > 0)
-                std::memcpy(slot.verts->dataPointer(), batch.vertices->dataPointer(), count * sizeof(MyGUI::Vertex));
-            slot.verts->dirty();
-            slot.draw = vsg::Draw::create(count, 1, 0, 0);
-
-            auto sg = vsg::StateGroup::create();
-            sg->add(mPipeline.bindPipeline);
-            sg->add(bindDescriptorSetFor(batch.texture));
-            sg->addChild(vsg::BindVertexBuffers::create(0, vsg::DataList{ slot.verts }));
-            sg->addChild(slot.draw);
-            root->addChild(sg);
-            mSlots.push_back(std::move(slot));
-        }
-        return root;
+        // Hardware crash evidence from CP4F Run20 showed the mutable sidecar slot path retiring a corrupted
+        // vsg::Draw ref_ptr while the previous GUI generation was still in the publication/retirement pipeline.
+        // Until a proper frame-indexed dynamic-buffer ring is introduced, build an immutable graph from the
+        // freshly collected batches and let VsgRuntimeHost retire the previously published root by completed frame.
+        // This is correctness-first: it intentionally gives up the in-place UI update optimization.
+        return buildOverlayNode();
     }
 
     vsg::ref_ptr<vsg::BindDescriptorSet> RenderManager::bindDescriptorSetFor(const TextureSnapshot& texture)
@@ -334,45 +298,16 @@ namespace VsgMyGui
 
     void RenderManager::updatePersistentOverlay()
     {
-        if (mSlots.empty() || mBatches.size() != mSlots.size())
-        {
-            if (!mWarnedStructure && !mSlots.empty())
-            {
-                Log(Debug::Warning) << "VsgMyGui: overlay batch structure changed (" << mSlots.size() << " -> "
-                                    << mBatches.size() << "); overlay frozen at its previous state";
-                mWarnedStructure = true;
-            }
-            return;
-        }
-        for (size_t i = 0; i < mSlots.size(); ++i)
-        {
-            if (mBatches[i].texture.identity != mSlots[i].textureIdentity
-                || mBatches[i].texture.revision != mSlots[i].textureRevision)
-                continue;
-            const uint32_t count = mBatches[i].count;
-            if (mBatches[i].vertices && count > 0)
-            {
-                std::memcpy(mSlots[i].verts->dataPointer(), mBatches[i].vertices->dataPointer(),
-                    count * sizeof(MyGUI::Vertex));
-                mSlots[i].verts->dirty();
-            }
-            mSlots[i].draw->vertexCount = count;
-        }
+        // Mutable in-place overlay updates are quarantined. synchronizeGui() is forced through a fresh immutable
+        // overlay generation by overlayStructureChanged(), so no CPU-side VSG Draw/Data object is modified while
+        // an earlier submission can still reference it.
     }
 
     bool RenderManager::overlayStructureChanged() const
     {
-        if (mBatches.size() != mSlots.size())
-            return true;
-        for (size_t i = 0; i < mSlots.size(); ++i)
-        {
-            if (mBatches[i].texture.identity != mSlots[i].textureIdentity
-                || mBatches[i].texture.revision != mSlots[i].textureRevision)
-                return true;
-            if (mBatches[i].count > mSlots[i].capacity)
-                return true;
-        }
-        return false;
+        // Always publish a fresh immutable GUI generation. This also handles transitions to an empty GUI correctly:
+        // the runtime publishes an empty root and retires the previous generation instead of leaving stale UI visible.
+        return true;
     }
 
     vsg::ref_ptr<vsg::Node> buildSelfTest(RenderManager& rm)
