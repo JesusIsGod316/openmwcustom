@@ -104,8 +104,6 @@ namespace VsgMyGui
         bool mIsInitialise = false;
         std::map<std::string, Texture> mTextures;
         std::vector<Batch> mBatches;
-        std::vector<vsg::ref_ptr<vsg::ubyteArray>> mVertPool;
-        std::vector<std::uint32_t> mVertPoolCapacities;
         vsg::ref_ptr<vsg::BindDescriptorSet> bindDescriptorSetFor(const TextureSnapshot& texture);
         static TextureSnapshot snapshotTexture(const Texture* texture);
     };
