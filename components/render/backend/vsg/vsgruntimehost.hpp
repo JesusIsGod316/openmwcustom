@@ -180,7 +180,11 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::Viewer> mViewer;
         vsg::ref_ptr<vsg::Group> mSceneRoot;
         vsg::ref_ptr<vsg::Group> mStaticRoot;
+        // Stable holder attached to the shared scene plus separately-owned published
+        // dynamic content. Replacement never mutates mSceneRoot child ordering and
+        // the old generation stays strongly owned through frame-safe retirement.
         vsg::ref_ptr<vsg::Group> mDynamicRoot;
+        vsg::ref_ptr<vsg::Group> mDynamicPublishedRoot;
         // Stable holder attached to the main view plus separately-owned published
         // content. Replacing GUI content never relies on child ordering in mMainOnlyRoot.
         vsg::ref_ptr<vsg::Group> mGuiRoot;
