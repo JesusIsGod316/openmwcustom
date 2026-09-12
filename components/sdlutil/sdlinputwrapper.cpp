@@ -160,7 +160,7 @@ namespace SDLUtil
                     break;
                 case SDL_EVENT_GAMEPAD_BUTTON_UP:
                     if (mConListener)
-                        mConListener->buttonReleased(evt.gbutton);
+                        mConListener->buttonReleased(1, evt.gbutton);
                     break;
                 case SDL_EVENT_GAMEPAD_AXIS_MOTION:
                     if (mConListener)
