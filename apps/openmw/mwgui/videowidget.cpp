@@ -1,5 +1,6 @@
 #include "videowidget.hpp"
 
+#include <cstdint>
 #include <cstring>
 #include <limits>
 
@@ -56,6 +57,7 @@ namespace MWGui
                 static_cast<std::uint32_t>(height), vsg::Data::Properties(VK_FORMAT_R8G8B8A8_UNORM));
             if (!rgba || !rgba->dataPointer())
                 return false;
+            rgba->properties.origin = vsg::TOP_LEFT;
             std::memcpy(rgba->dataPointer(), image->data(), byteCount);
             target.setData(std::move(rgba));
             return true;
