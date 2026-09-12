@@ -12,6 +12,7 @@
 #include <components/debug/debuglog.hpp>
 #include <components/debug/v36luaaddscripttrace.hpp>
 #include <components/files/conversion.hpp>
+#include <components/settings/values.hpp>
 #include <components/vfs/manager.hpp>
 
 #include "luastateptr.hpp"
@@ -63,6 +64,11 @@ namespace LuaUtil
     static const std::string safePackages[] = { "coroutine", "math", "string", "table", "utf8" };
 
     static constexpr int64_t countHookStep = 1000;
+
+    static bool isExplicitVulkanBackend()
+    {
+        return Settings::video().mRendererBackend.get() == "vulkan";
+    }
 
     bool LuaState::sProfilerEnabled = true;
 
@@ -172,6 +178,16 @@ namespace LuaUtil
 
     LuaStatePtr LuaState::createLuaRuntime(LuaState* luaState)
     {
+        if (isExplicitVulkanBackend() && !luaState->mSettings.mInstructionProfilerEnabled && sProfilerEnabled)
+        {
+            // V4 Vulkan correctness quarantine: the V3.20 recorder kept the tracking allocator enabled even when
+            // ordinary Lua profiling was off. Run the native Lua allocator on the Vulkan path unless the user
+            // explicitly requested the stock Lua profiler. The recorder is diagnostic-only and can be revisited
+            // after Vulkan runtime acceptance.
+            sProfilerEnabled = false;
+            Log(Debug::Info) << "V4 Vulkan: disabling legacy V3 Lua tracking allocator";
+        }
+
         if (sProfilerEnabled)
         {
             Log(Debug::Info) << "Initializing LuaUtil::LuaState with profiler";
@@ -475,6 +491,12 @@ namespace LuaUtil
 
     std::size_t LuaState::precompileConfiguredScripts()
     {
+        if (isExplicitVulkanBackend())
+        {
+            Log(Debug::Info) << "V4 Vulkan: bypassing V3.12 Lua configured-script precompile";
+            return 0;
+        }
+
         std::size_t compiled = 0;
         protectedCall([&](LuaView&) {
             for (std::size_t i = 0; i < mConf->size(); ++i)
@@ -503,6 +525,11 @@ namespace LuaUtil
     {
         if (mode <= 0)
             return 0;
+        if (isExplicitVulkanBackend())
+        {
+            Log(Debug::Info) << "V4 Vulkan: bypassing V3.14 Lua dependency precompile";
+            return 0;
+        }
 
         std::size_t compiled = 0;
         protectedCall([&](LuaView&) {
