@@ -160,7 +160,7 @@ namespace SDLUtil
                     break;
                 case SDL_EVENT_GAMEPAD_BUTTON_UP:
                     if (mConListener)
-                        mConListener->buttonReleased(1, evt.gbutton);
+                        mConListener->buttonReleased(evt.gbutton);
                     break;
                 case SDL_EVENT_GAMEPAD_AXIS_MOTION:
                     if (mConListener)
@@ -312,7 +312,7 @@ namespace SDLUtil
     }
 
     /// \brief Set the mouse to relative positioning. Doesn't move the cursor
-    ///        and disables mouse acceleration
+    ///        and disables mouse acceleration.
     void InputWrapper::setMouseRelative(bool relative)
     {
         mWantRelative = relative;
