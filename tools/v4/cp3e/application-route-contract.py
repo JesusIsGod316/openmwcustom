@@ -66,7 +66,19 @@ require(
     "setExternalTexture",
     "texture->identity()",
     "texture->revision()",
+    "onRenderToTarget(this, mUpdate)",
+    "mVertexBuffers.push_back(std::move(buffer))",
+    "ignoring destruction request for an unowned vertex buffer",
 )
+require(
+    "components/vsgmygui/rendermanager.hpp",
+    "bool mUpdate = false;",
+    "std::vector<std::unique_ptr<MyGUI::IVertexBuffer>> mVertexBuffers;",
+)
+if "onRenderToTarget(this, true)" in text("components/vsgmygui/rendermanager.cpp"):
+    raise SystemExit("components/vsgmygui/rendermanager.cpp: forced full MyGUI relock returned")
+if "delete buffer;" in text("components/vsgmygui/rendermanager.cpp"):
+    raise SystemExit("components/vsgmygui/rendermanager.cpp: immediate MyGUI vertex-buffer destruction returned")
 require(
     "components/render/backend/vsg/vsgruntimehost.cpp",
     "synchronizeGui()",
