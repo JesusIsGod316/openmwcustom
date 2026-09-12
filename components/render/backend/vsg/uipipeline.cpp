@@ -110,9 +110,10 @@ void main()
         depth->depthTestEnable = VK_FALSE;
         depth->depthWriteEnable = VK_FALSE;
 
-        // Deliberately omit an explicit ViewportState. The UI lives inside the main VSG View, so the graphics pipeline
-        // inherits that View's default viewport/scissor. VSG's WindowResizeHandler updates the camera viewport and
-        // recompiles pipelines that inherit it; baking a private viewport here would leave MyGUI stuck at startup size.
+        // Deliberately omit an explicit ViewportState. The UI lives inside the main VSG View and declares
+        // viewport/scissor dynamic, so RenderGraph's live main-view viewport owns both state and resize updates.
+        // Baking a private static viewport here would leave MyGUI stuck at startup size and would conflict with
+        // the dynamic viewport commands emitted by the shared main render graph.
         vsg::GraphicsPipelineStates states{
             vsg::VertexInputState::create(vertexBindings, vertexAttributes),
             vsg::InputAssemblyState::create(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST),
@@ -120,6 +121,7 @@ void main()
             vsg::MultisampleState::create(),
             colorBlend,
             depth,
+            vsg::DynamicState::create(VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR),
         };
 
         auto sampler = vsg::Sampler::create();
