@@ -27,6 +27,12 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::Data> whiteTexture; // 1×1 white — solid quads show their vertex colour
 
         explicit operator bool() const { return bindPipeline.valid(); }
+
+        [[nodiscard]] bool realizedForView(std::uint32_t viewId) const noexcept
+        {
+            return bindPipeline && bindPipeline->pipeline
+                && bindPipeline->pipeline->validated_vk(viewId) != VK_NULL_HANDLE;
+        }
     };
 
     // viewportWidth/Height must match the swapchain pixel extent. Returns an empty UiPipeline if shader
