@@ -267,7 +267,8 @@ namespace MWInput
         if (MWBase::Environment::get().getWindowManager()->isGuiMode())
         {
             bool joystickUsed = MWBase::Environment::get().getInputManager()->joystickLastUsed();
-            if (!(SDL_GetKeyboardFocus() != nullptr && SDL_TextInputActive(SDL_GetKeyboardFocus()))) && !mBindingsManager->isLeftOrRightButton(A_Activate, joystickUsed))
+            if (!(SDL_GetKeyboardFocus() != nullptr && SDL_TextInputActive(SDL_GetKeyboardFocus()))
+                && !mBindingsManager->isLeftOrRightButton(A_Activate, joystickUsed))
                 MWBase::Environment::get().getWindowManager()->injectKeyPress(MyGUI::KeyCode::Return, 0, false);
         }
         else if (MWBase::Environment::get().getInputManager()->getControlSwitch("playercontrols"))
