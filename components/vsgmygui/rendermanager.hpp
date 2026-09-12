@@ -46,8 +46,7 @@ namespace VsgMyGui
         bool checkTexture(MyGUI::ITexture* texture) override;
 
         // Publish or replace a named, sampled VSG image as a native MyGUI texture. The render target stays owned by
-        // the VSG runtime; MyGUI only retains the ImageView and never locks or writes it. Replacing the image bumps the
-        // texture revision so persistent overlay descriptor sets are rebuilt exactly once.
+        // the VSG runtime; collected GUI batches retain a strong ImageView reference instead of a raw Texture pointer.
         Texture* setExternalTexture(const std::string& name, vsg::ref_ptr<vsg::ImageView> imageView,
             int width, int height, MyGUI::PixelFormat format = MyGUI::PixelFormat::R8G8B8A8);
 
@@ -56,12 +55,10 @@ namespace VsgMyGui
         // fog-of-war whose authoritative state remains CPU/save-game owned.
         Texture* setRgba8Texture(const std::string& name, std::span<const std::uint8_t> rgba, int width, int height);
 
-        // Remove a named native texture and invalidate every raw cache reference
-        // before erasing it. This is required when persistent auxiliary surfaces
-        // retire so revisit churn cannot grow the UI texture registry forever.
+        // Remove a named native texture. Already-collected overlay graphs own
+        // strong VSG backing references and remain valid until frame-safe retirement.
         bool removeTexture(const std::string& name) noexcept;
 
-        void forgetTexture(const Texture* texture);
         void setViewSize(int width, int height) override;
         void registerShader(const std::string& shaderName, const std::string& vertexProgramFile,
             const std::string& fragmentProgramFile) override;
@@ -72,10 +69,18 @@ namespace VsgMyGui
         const MyGUI::RenderTargetInfo& getInfo() const override { return mInfo; }
 
     private:
+        struct TextureSnapshot
+        {
+            vsg::ref_ptr<vsg::Data> data;
+            vsg::ref_ptr<vsg::ImageView> imageView;
+            std::uint64_t identity = 0;
+            std::uint64_t revision = 0;
+        };
+
         struct Batch
         {
             vsg::ref_ptr<vsg::ubyteArray> vertices;
-            Texture* texture = nullptr;
+            TextureSnapshot texture;
             uint32_t count = 0;
         };
 
@@ -83,7 +88,6 @@ namespace VsgMyGui
         {
             vsg::ref_ptr<vsg::ubyteArray> verts;
             vsg::ref_ptr<vsg::Draw> draw;
-            const Texture* texture = nullptr;
             std::uint64_t textureIdentity = 0;
             std::uint64_t textureRevision = 0;
             std::uint32_t capacity = 0;
@@ -100,12 +104,10 @@ namespace VsgMyGui
         bool mIsInitialise = false;
         std::map<std::string, Texture> mTextures;
         std::vector<Batch> mBatches;
-        using TextureKey = std::pair<std::uint64_t, std::uint64_t>;
-        std::map<TextureKey, vsg::ref_ptr<vsg::BindDescriptorSet>> mDsCache;
         std::vector<vsg::ref_ptr<vsg::ubyteArray>> mVertPool;
         std::vector<std::uint32_t> mVertPoolCapacities;
-        vsg::ref_ptr<vsg::BindDescriptorSet> bindDescriptorSetFor(const Texture* texture);
-        static TextureKey textureKey(const Texture* texture) noexcept;
+        vsg::ref_ptr<vsg::BindDescriptorSet> bindDescriptorSetFor(const TextureSnapshot& texture);
+        static TextureSnapshot snapshotTexture(const Texture* texture);
     };
 
     vsg::ref_ptr<vsg::Node> buildSelfTest(RenderManager& rm);
