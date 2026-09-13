@@ -53,8 +53,11 @@ namespace MWGui
                 return false;
             }
 
+            // FFmpeg's RGBA output is display-color data. Sample it through an
+            // sRGB image view so the Vulkan UI shader receives linear RGB before
+            // modulation and the sRGB swapchain applies the output transfer once.
             auto rgba = vsg::ubvec4Array2D::create(static_cast<std::uint32_t>(width),
-                static_cast<std::uint32_t>(height), vsg::Data::Properties(VK_FORMAT_R8G8B8A8_UNORM));
+                static_cast<std::uint32_t>(height), vsg::Data::Properties(VK_FORMAT_R8G8B8A8_SRGB));
             if (!rgba || !rgba->dataPointer())
                 return false;
             rgba->properties.origin = vsg::TOP_LEFT;

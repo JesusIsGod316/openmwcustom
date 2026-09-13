@@ -48,7 +48,8 @@ require(video, "updateVulkanVideoTexture", "Vulkan video bridge")
 require(video, "dynamic_cast<VsgMyGui::RenderManager*>", "Vulkan backend selection")
 require(video, "std::make_unique<VsgMyGui::Texture>", "native video texture")
 require(video, "target.setData(std::move(rgba))", "native decoded-frame publication")
-require(video, "VK_FORMAT_R8G8B8A8_UNORM", "decoded video format")
+require(video, "VK_FORMAT_R8G8B8A8_SRGB", "decoded video color-space format")
+forbid(video, "VK_FORMAT_R8G8B8A8_UNORM", "gamma-incorrect decoded video format")
 require(video, "rgba->properties.origin = vsg::TOP_LEFT", "decoded video orientation")
 require(video, "V4 Vulkan video bridge: publishing decoded RGBA8 frames", "runtime video-route diagnostic")
 
@@ -92,8 +93,8 @@ require(loading, "mPresentCallback();", "Vulkan loading-screen present")
 
 # Static menu fallback, button images, font atlases and the black letterbox texture
 # all resolve through the active MyGUI RenderManager. Under Vulkan that is
-# VsgMyGui::RenderManager, whose VFS decoder returns TOP_LEFT VSG data and whose
-# manual textures are native VSG data after unlock().
+# VsgMyGui::RenderManager. File-backed color imagery must decode as sRGB while
+# manual coverage/dynamic textures retain their explicit UNORM path.
 require(menu, 'mBackground->setBackgroundImage("textures\\\\menu_morrowind.dds", true, stretch)',
         "static main-menu fallback")
 require(menu, 'button->setProperty("ImageNormal", "textures\\\\menu_" + buttonId + ".dds")',
@@ -111,6 +112,7 @@ require(texture, "mData = rgba;", "manual MyGUI texture VSG publication")
 require(render, "MyGUI::ITexture* tex = createTexture(name);", "VSG VFS texture allocation")
 require(render, "tex->loadFromFile(name);", "VSG VFS texture decode")
 require(decoder, "vsgXchange::images::create()", "VSG MyGUI image decoder")
+require(decoder, 'options->setValue("image_format", vsg::CoordinateSpace::sRGB)', "VSG MyGUI sRGB image decode")
 require(decoder, "data->properties.origin = vsg::TOP_LEFT", "VSG MyGUI image orientation")
 
 # Menu buttons, text, loading wallpaper and video are composited through the same

@@ -2,8 +2,8 @@
 
 #include <components/vfs/manager.hpp>
 
-#include <vsg/core/CoordinateSpace.h>
 #include <vsg/io/Options.h>
+#include <vsg/utils/CoordinateSpace.h>
 #include <vsgXchange/images.h>
 
 #include <algorithm>
