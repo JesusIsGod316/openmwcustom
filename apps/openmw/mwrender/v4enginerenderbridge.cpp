@@ -150,6 +150,79 @@ namespace MWRender
             std::vector<SceneUtil::MorphGeometry*> morphs;
         };
 
+        // Whole-object compatibility capture must not absorb attached UpdateVfx
+        // subtrees. Those subtrees carry Effect semantics and are captured in a
+        // second pass below. Keeping this filter local to the object bridge also
+        // leaves the established actor-effect capture path unchanged.
+        class AnimatedObjectCaptureVisitor final : public osg::NodeVisitor
+        {
+        public:
+            AnimatedObjectCaptureVisitor(std::string identityPrefix, const VFS::Manager& vfs)
+                : osg::NodeVisitor(TRAVERSE_ACTIVE_CHILDREN)
+                , mIdentityPrefix(std::move(identityPrefix))
+                , mVfs(vfs)
+            {
+            }
+
+            void apply(osg::Node& node) override
+            {
+                if (nestedEffectRoot(node))
+                    return;
+                if (const auto* particles = dynamic_cast<const osgParticle::ParticleSystem*>(&node))
+                {
+                    if (!v4_effect_detail::captureParticleSystem(*particles, getNodePath(), mVfs,
+                            nextIdentity("system"), mResult.draws, mResult.diagnostic))
+                        return;
+                }
+                if (mResult.valid())
+                    traverse(node);
+            }
+
+            void apply(osg::Geode& geode) override
+            {
+                if (nestedEffectRoot(geode))
+                    return;
+                for (unsigned int i = 0; i < geode.getNumDrawables() && mResult.valid(); ++i)
+                {
+                    osg::Drawable* drawable = geode.getDrawable(i);
+                    if (auto* geometry = dynamic_cast<osg::Geometry*>(drawable))
+                    {
+                        RenderCore::ImmediateEffectDraw draw;
+                        if (!v4_effect_detail::captureGeometry(*geometry, getNodePath(), mVfs,
+                                nextIdentity("geometry"), draw, mResult.diagnostic))
+                            break;
+                        mResult.draws.push_back(std::move(draw));
+                    }
+                    else if (auto* particles = dynamic_cast<osgParticle::ParticleSystem*>(drawable))
+                    {
+                        if (!v4_effect_detail::captureParticleSystem(*particles, getNodePath(), mVfs,
+                                nextIdentity("system"), mResult.draws, mResult.diagnostic))
+                            break;
+                    }
+                }
+                if (mResult.valid())
+                    traverse(geode);
+            }
+
+            [[nodiscard]] V4EffectCaptureResult take() { return std::move(mResult); }
+
+        private:
+            [[nodiscard]] bool nestedEffectRoot(const osg::Node& node) const noexcept
+            {
+                return getNodePath().size() > 1u && v4_effect_detail::isEffectRoot(node);
+            }
+
+            [[nodiscard]] std::string nextIdentity(std::string_view kind)
+            {
+                return mIdentityPrefix + ":" + std::string(kind) + ":" + std::to_string(mOrdinal++);
+            }
+
+            std::string mIdentityPrefix;
+            const VFS::Manager& mVfs;
+            std::size_t mOrdinal = 0;
+            V4EffectCaptureResult mResult;
+        };
+
         [[nodiscard]] std::string modelDynamicRequirementDiagnostic(std::uint32_t requirements)
         {
             using RenderCore::ModelDynamicRequirement;
@@ -322,9 +395,6 @@ namespace MWRender
                         + std::to_string(resident.gridX) + "," + std::to_string(resident.gridY));
             }
 
-            // File merge/density filtering is deterministic but currently
-            // synchronous. Bound new work per frame until it moves onto the
-            // CP4 preparation service, preventing a nine-cell entry spike.
             constexpr std::size_t maxNewCellsPerFrame = 1;
             std::size_t newCells = 0;
             for (const RenderCore::TerrainResidencyCell& resident : residency)
@@ -485,16 +555,22 @@ namespace MWRender
     bool V4EngineRenderBridge::captureDynamicFrameState(const RenderingManager& rendering, V4MainFrameSource& source)
     {
         mLastDiagnostic.clear();
-        if (mComposedActorEpoch != mSession->world().epoch())
+        const RenderCore::WorldEpoch worldEpoch = mSession->world().epoch();
+        if (mEvaluatedObjectPlaybackEpoch != worldEpoch)
+        {
+            mEvaluatedObjectPlayback.clear();
+            mEvaluatedObjectPlaybackEpoch = worldEpoch;
+        }
+        if (mComposedActorEpoch != worldEpoch)
         {
             mForcedActorSkeletons.clear();
             mComposedActors.clear();
-            mComposedActorEpoch = mSession->world().epoch();
+            mComposedActorEpoch = worldEpoch;
         }
-        if (mActorLightEpoch != mSession->world().epoch())
+        if (mActorLightEpoch != worldEpoch)
         {
             mActorLights.clear();
-            mActorLightEpoch = mSession->world().epoch();
+            mActorLightEpoch = worldEpoch;
         }
         std::set<std::string, std::less<>> currentActorLights;
         bool compatible = true;
@@ -517,18 +593,25 @@ namespace MWRender
                 bool needsEvaluatedCapture = ptr.getClass().useAnim();
                 if (!needsEvaluatedCapture)
                 {
-                    const std::optional<NifRender::StaticModelCacheResult> published
-                        = ensureModelPublished(*mSession, mVfs, modelPath);
-                    const RenderCore::ModelRecord* model
-                        = published ? mSession->world().get(published->model) : nullptr;
-                    if (!published || !model)
+                    const auto cached = mEvaluatedObjectPlayback.find(modelPath.value());
+                    if (cached != mEvaluatedObjectPlayback.end())
+                        needsEvaluatedCapture = cached->second;
+                    else
                     {
-                        compatible = false;
-                        mLastDiagnostic = "evaluated non-actor model could not resolve its canonical V4 model state: "
-                            + modelPath.value();
-                        return;
+                        const std::optional<NifRender::StaticModelCacheResult> published
+                            = ensureModelPublished(*mSession, mVfs, modelPath);
+                        const RenderCore::ModelRecord* model
+                            = published ? mSession->world().get(published->model) : nullptr;
+                        if (!published || !model)
+                        {
+                            compatible = false;
+                            mLastDiagnostic = "evaluated non-actor model could not resolve its canonical V4 model state: "
+                                + modelPath.value();
+                            return;
+                        }
+                        needsEvaluatedCapture = requiresModelPlayback(*model);
+                        mEvaluatedObjectPlayback.emplace(std::string(modelPath.value()), needsEvaluatedCapture);
                     }
-                    needsEvaluatedCapture = requiresModelPlayback(*model);
                 }
                 if (!needsEvaluatedCapture)
                     return;
@@ -549,21 +632,34 @@ namespace MWRender
                     return;
                 }
 
-                // Whole-object compatibility capture deliberately follows only
-                // active children. OpenMW's evaluated Switch/node-mask state is
-                // observable animation behavior; traversing all children would
-                // resurrect hidden controller branches and mod-authored states.
-                v4_effect_detail::CaptureVisitor visitor("animated-object:" + *identity, true, mVfs);
-                visitor.setTraversalMode(osg::NodeVisitor::TRAVERSE_ACTIVE_CHILDREN);
-                evaluatedRoot->accept(visitor);
-                V4EffectCaptureResult captured = visitor.take();
-                if (!captured.valid())
+                AnimatedObjectCaptureVisitor objectVisitor("animated-object:" + *identity, mVfs);
+                evaluatedRoot->accept(objectVisitor);
+                V4EffectCaptureResult capturedObject = objectVisitor.take();
+                if (!capturedObject.valid())
                 {
                     compatible = false;
-                    mLastDiagnostic = captured.diagnostic.empty()
+                    mLastDiagnostic = capturedObject.diagnostic.empty()
                         ? "evaluated non-actor object could not produce native Vulkan compatibility draws: " + *identity
-                        : "evaluated non-actor object " + *identity + ": " + captured.diagnostic;
+                        : "evaluated non-actor object " + *identity + ": " + capturedObject.diagnostic;
                     return;
+                }
+
+                std::optional<V4EffectCaptureResult> capturedEffects;
+                if (animation.hasV4UpdateVfxAttachments())
+                {
+                    v4_effect_detail::CaptureVisitor effectVisitor("animated-object-effect:" + *identity, false, mVfs);
+                    effectVisitor.setTraversalMode(osg::NodeVisitor::TRAVERSE_ACTIVE_CHILDREN);
+                    evaluatedRoot->accept(effectVisitor);
+                    capturedEffects.emplace(effectVisitor.take());
+                    if (!capturedEffects->valid())
+                    {
+                        compatible = false;
+                        mLastDiagnostic = capturedEffects->diagnostic.empty()
+                            ? "evaluated non-actor attached effect could not produce native Vulkan compatibility draws: "
+                                + *identity
+                            : "evaluated non-actor attached effect " + *identity + ": " + capturedEffects->diagnostic;
+                        return;
+                    }
                 }
 
                 constexpr std::uint64_t worldObjectFlags
@@ -571,10 +667,15 @@ namespace MWRender
                     | RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::ShadowCaster)
                     | RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::ReflectionEligible)
                     | RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::RefractionEligible);
-                for (RenderCore::ImmediateEffectDraw& draw : captured.draws)
+                for (RenderCore::ImmediateEffectDraw& draw : capturedObject.draws)
                 {
                     draw.semanticFlags = worldObjectFlags;
                     source.immediateEffectDraws.push_back(std::move(draw));
+                }
+                if (capturedEffects)
+                {
+                    for (RenderCore::ImmediateEffectDraw& draw : capturedEffects->draws)
+                        source.immediateEffectDraws.push_back(std::move(draw));
                 }
                 return;
             }
