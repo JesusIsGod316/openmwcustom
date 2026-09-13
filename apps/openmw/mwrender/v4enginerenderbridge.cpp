@@ -24,6 +24,7 @@
 
 #include <components/misc/strings/lower.hpp>
 #include <components/misc/convert.hpp>
+#include <components/misc/resourcehelpers.hpp>
 #include <components/settings/values.hpp>
 #include <components/vfs/manager.hpp>
 #include <components/vsgmygui/platform.hpp>
@@ -41,6 +42,7 @@
 #include <cmath>
 #include <cstddef>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -90,6 +92,15 @@ namespace MWRender
             const NifRender::TranslationBundle bundle = NifRender::translateStaticNif(Nif::FileView(nifFile), vfs);
             const NifRender::StaticModelCacheResult published = session.models().publish(bundle);
             return published.available() ? std::optional<NifRender::StaticModelCacheResult>(published) : std::nullopt;
+        }
+
+        [[nodiscard]] bool requiresModelPlayback(const RenderCore::ModelRecord& model) noexcept
+        {
+            if (!RenderCore::validModelDynamicRequirements(model.dynamicRequirements)
+                || model.dynamicRequirements != 0 || !model.payload)
+                return true;
+            return std::any_of(model.payload->nodes.begin(), model.payload->nodes.end(),
+                [](const RenderCore::ModelNodeRecord& node) { return node.controllerFlags != 0; });
         }
 
         [[nodiscard]] std::string enchantedGlowDiagnostic(NifRender::EnchantedGlowPublishStatus status)
@@ -493,8 +504,80 @@ namespace MWRender
             if (!compatible)
                 return;
             const MWWorld::Ptr ptr = animation.getPtr();
-            if (ptr.isEmpty() || !ptr.getClass().isActor() || !ptr.getRefData().isEnabled())
+            if (ptr.isEmpty() || !ptr.getRefData().isEnabled())
                 return;
+
+            if (!ptr.getClass().isActor())
+            {
+                const VFS::Path::Normalized modelPath = ptr.getClass().getCorrectedModel(ptr);
+                if (modelPath.empty() || Misc::ResourceHelpers::isHiddenMarker(ptr.getCellRef().getRefId()))
+                    return;
+
+                bool needsEvaluatedCapture = ptr.getClass().useAnim();
+                if (!needsEvaluatedCapture)
+                {
+                    const std::optional<NifRender::StaticModelCacheResult> published
+                        = ensureModelPublished(*mSession, mVfs, modelPath);
+                    const RenderCore::ModelRecord* model
+                        = published ? mSession->world().get(published->model) : nullptr;
+                    if (!published || !model)
+                    {
+                        compatible = false;
+                        mLastDiagnostic = "evaluated non-actor model could not resolve its canonical V4 model state: "
+                            + modelPath.value();
+                        return;
+                    }
+                    needsEvaluatedCapture = requiresModelPlayback(*model);
+                }
+                if (!needsEvaluatedCapture)
+                    return;
+
+                const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
+                if (!identity)
+                {
+                    compatible = false;
+                    mLastDiagnostic = "evaluated non-actor object has no stable content identity";
+                    return;
+                }
+                osg::Group* const evaluatedRoot = animation.getV4EffectRoot();
+                if (!evaluatedRoot)
+                {
+                    compatible = false;
+                    mLastDiagnostic = "evaluated non-actor object has no authoritative OpenMW animation root: "
+                        + *identity;
+                    return;
+                }
+
+                // Whole-object compatibility capture deliberately follows only
+                // active children. OpenMW's evaluated Switch/node-mask state is
+                // observable animation behavior; traversing all children would
+                // resurrect hidden controller branches and mod-authored states.
+                v4_effect_detail::CaptureVisitor visitor("animated-object:" + *identity, true, mVfs);
+                visitor.setTraversalMode(osg::NodeVisitor::TRAVERSE_ACTIVE_CHILDREN);
+                evaluatedRoot->accept(visitor);
+                V4EffectCaptureResult captured = visitor.take();
+                if (!captured.valid())
+                {
+                    compatible = false;
+                    mLastDiagnostic = captured.diagnostic.empty()
+                        ? "evaluated non-actor object could not produce native Vulkan compatibility draws: " + *identity
+                        : "evaluated non-actor object " + *identity + ": " + captured.diagnostic;
+                    return;
+                }
+
+                constexpr std::uint64_t worldObjectFlags
+                    = RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::OrdinaryWorld)
+                    | RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::ShadowCaster)
+                    | RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::ReflectionEligible)
+                    | RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::RefractionEligible);
+                for (RenderCore::ImmediateEffectDraw& draw : captured.draws)
+                {
+                    draw.semanticFlags = worldObjectFlags;
+                    source.immediateEffectDraws.push_back(std::move(draw));
+                }
+                return;
+            }
+
             const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
             if (!identity)
             {

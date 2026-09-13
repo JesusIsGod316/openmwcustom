@@ -2,6 +2,7 @@
 
 #include <components/vfs/manager.hpp>
 
+#include <vsg/core/CoordinateSpace.h>
 #include <vsg/io/Options.h>
 #include <vsgXchange/images.h>
 
@@ -29,6 +30,13 @@ namespace VsgMyGui
 
             auto options = vsg::Options::create();
             options->extensionHint = extension;
+            // MyGUI's file-backed images are authored color assets. Ask the
+            // decoder to preserve them as sRGB so Vulkan sampling performs the
+            // required transfer to linear before UI modulation and the sRGB
+            // swapchain does not re-encode already-gamma-space values.
+            // Manual MyGUI textures (glyph/coverage/dynamic uploads) retain their
+            // explicit UNORM allocation path and are intentionally unaffected.
+            options->setValue("image_format", vsg::CoordinateSpace::sRGB);
             vsg::ref_ptr<vsg::Object> decoded = images->read(*stream, options);
             auto* data = decoded ? dynamic_cast<vsg::Data*>(decoded.get()) : nullptr;
             if (!data || !data->dataAvailable() || data->width() == 0 || data->height() == 0)

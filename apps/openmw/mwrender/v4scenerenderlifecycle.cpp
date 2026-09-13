@@ -108,21 +108,6 @@ namespace MWRender
             return result;
         }
 
-        // useAnim() is a class capability, not proof that this particular
-        // reference actually has a playable model animation. Objects::insertModel
-        // only attaches an external animation source when x<model>.kf exists.
-        // Keep that exact distinction at the semantic boundary: controller-free
-        // instances may use the immutable model plus live reference transform,
-        // while an authored external animation remains fail-closed.
-        [[nodiscard]] bool hasExternalAnimationSource(
-            VFS::Path::NormalizedView modelPath, const VFS::Manager& vfs)
-        {
-            if (modelPath.empty())
-                return false;
-            const VFS::Path::Normalized corrected = Misc::ResourceHelpers::correctActorModelPath(modelPath, &vfs);
-            return corrected.view() != modelPath.value();
-        }
-
         [[nodiscard]] bool requiresModelPlayback(const RenderCore::ModelRecord& model) noexcept
         {
             if (!RenderCore::validModelDynamicRequirements(model.dynamicRequirements)
@@ -130,38 +115,6 @@ namespace MWRender
                 return true;
             return std::any_of(model.payload->nodes.begin(), model.payload->nodes.end(),
                 [](const RenderCore::ModelNodeRecord& node) { return node.controllerFlags != 0; });
-        }
-
-        // makeV4StaticInstanceSource intentionally rejects every useAnim() class.
-        // This narrowly-scoped companion is called only after publishObject has
-        // proved that the winning model has neither an external animation source
-        // nor any neutral controller/effect/deformation playback requirement.
-        // Reference translation, rotation and scale remain live and objectChanged()
-        // republishes them.
-        [[nodiscard]] std::optional<RenderCore::StaticInstanceSource> makeControllerFreeAnimatedInstanceSource(
-            const MWWorld::Ptr& ptr, RenderCore::ModelHandle model, RenderCore::AxisAlignedBounds localBounds)
-        {
-            if (ptr.isEmpty() || !ptr.getCell() || !model.valid() || !ptr.getRefData().isEnabled()
-                || ptr.getClass().isActor() || !ptr.getClass().useAnim())
-                return std::nullopt;
-            const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
-            const std::optional<RenderCore::ActiveCellSource> cell = makeV4ActiveCellSource(*ptr.getCell());
-            if (!identity || !cell)
-                return std::nullopt;
-
-            const ESM::Position& position = ptr.getRefData().getPosition();
-            const osg::Quat rotation = Misc::Convert::makeOsgQuat(position);
-            const float scale = ptr.getCellRef().getScale();
-            RenderCore::StaticInstanceSource result;
-            result.identity = *identity;
-            result.cellIdentity = cell->identity;
-            result.model = model;
-            result.transform.translation = { position.pos[0], position.pos[1], position.pos[2] };
-            result.transform.rotation = { static_cast<float>(rotation.w()), static_cast<float>(rotation.x()),
-                static_cast<float>(rotation.y()), static_cast<float>(rotation.z()) };
-            result.transform.scale = { scale, scale, scale };
-            result.localBounds = localBounds;
-            return result;
         }
 
         void applyReferenceVisualSemantics(const MWWorld::Ptr& ptr, std::uint64_t modelCapabilities,
@@ -370,12 +323,29 @@ namespace MWRender
         if (modelPath.empty() || Misc::ResourceHelpers::isHiddenMarker(ptr.getCellRef().getRefId()))
             return;
 
+        const auto retirePersistentObject = [&]() {
+            if (!identity)
+                throw std::runtime_error("V4 evaluated non-actor object has no stable content identity");
+            const RenderCore::ActiveCellPublishResult instance = mSession->cells().removeInstance(*identity);
+            if (instance.status != RenderCore::ActiveCellPublishStatus::Applied
+                && instance.status != RenderCore::ActiveCellPublishStatus::NotFound)
+                throw publicationError("evaluated object static retirement", static_cast<unsigned int>(instance.status));
+            const RenderCore::StaticPopulationPublishStatus population = mSession->populations().remove(*identity);
+            if (!accepted(population))
+                throw publicationError(
+                    "evaluated object population retirement", static_cast<unsigned int>(population));
+        };
+
+        // OpenMW's existing Animation/ObjectAnimation graph remains the
+        // authoritative evaluator for useAnim() objects, including external KF
+        // sources supplied by mods. Do not publish a second frozen V4 instance;
+        // V4EngineRenderBridge snapshots the evaluated source graph into neutral
+        // frame draws after the update traversal instead.
         const bool animatedClass = ptr.getClass().useAnim();
-        if (animatedClass && hasExternalAnimationSource(modelPath, mVfs))
+        if (animatedClass)
         {
-            throw std::runtime_error(
-                "V4 scene lifecycle encountered an object with an external animation source before model-animation compatibility is available: "
-                + modelPath.value());
+            retirePersistentObject();
+            return;
         }
 
         const std::string modelIdentity = modelPath.value();
@@ -421,9 +391,11 @@ namespace MWRender
             throw std::runtime_error("V4 static model cache returned a stale model handle");
         if (requiresModelPlayback(*modelRecord))
         {
-            throw std::runtime_error(
-                "V4 scene lifecycle encountered a non-actor model with controller/effect/deformation playback requirements before model-animation compatibility is available: "
-                + modelIdentity);
+            // Some non-useAnim classes can still receive authored embedded
+            // controller/effect/deformation state. Route those through the same
+            // evaluated compatibility seam instead of silently freezing them.
+            retirePersistentObject();
+            return;
         }
 
         // SceneUtil::addEnchantedGlow is reference state, not immutable model
@@ -446,18 +418,17 @@ namespace MWRender
                 throw std::runtime_error("V4 enchanted world-reference variant returned a stale model handle");
         }
 
-        std::optional<RenderCore::StaticInstanceSource> source = animatedClass
-            ? makeControllerFreeAnimatedInstanceSource(ptr, *model, modelRecord->bounds)
-            : makeV4StaticInstanceSource(ptr, *model, modelRecord->bounds);
+        std::optional<RenderCore::StaticInstanceSource> source
+            = makeV4StaticInstanceSource(ptr, *model, modelRecord->bounds);
         if (!source)
-            throw std::runtime_error("V4 scene lifecycle rejected an eligible static/reference-animated object");
+            throw std::runtime_error("V4 scene lifecycle rejected an eligible static object");
         applyReferenceVisualSemantics(ptr, visualCapabilities, *source);
 
         // Dense immutable exterior statics keep the data-oriented population
-        // path. Interactive/useAnim references stay individually addressable so
-        // live door transforms and per-reference switch state cannot be collapsed
-        // into one model-global population realization.
-        if (ptr.getCell()->getCell()->isExterior() && !animatedClass)
+        // path. Evaluated animated references never reach this branch: they stay
+        // individually authoritative on the OpenMW animation side and are copied
+        // into neutral frame state by V4EngineRenderBridge.
+        if (ptr.getCell()->getCell()->isExterior())
         {
             const RenderCore::ActiveCellPublishResult removed = mSession->cells().removeInstance(source->identity);
             if (removed.status != RenderCore::ActiveCellPublishStatus::Applied
