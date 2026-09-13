@@ -5,11 +5,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+
+#include <glm/gtc/matrix_inverse.hpp>
 
 namespace NifRender
 {
@@ -19,6 +22,111 @@ namespace NifRender
         std::string attachmentBone;
         bool visible = true;
     };
+
+    struct ForcedActorSkeleton
+    {
+        RenderCore::SkeletonRecord record;
+        std::string diagnostic;
+
+        [[nodiscard]] bool valid() const noexcept { return record.payload && diagnostic.empty(); }
+    };
+
+    // OpenMW can force an actor skeleton around a base NIF even when that NIF
+    // contains no skinned geometry. Static NIF translation intentionally only
+    // emits skin-required bones, so reproduce the source-side forced-skeleton
+    // contract from the immutable model hierarchy when an actor needs it.
+    //
+    // Bone candidates are named ordinary transform nodes. Their hierarchy is
+    // collapsed across non-bone ancestors exactly like the normal NIF skeleton
+    // translator, and all names are case-folded to match OpenMW's bone lookup.
+    // Ambiguous names or non-invertible bind transforms remain fail-closed.
+    [[nodiscard]] inline ForcedActorSkeleton buildForcedActorSkeleton(
+        const RenderCore::ModelRecord& base, std::string sourceIdentity = {})
+    {
+        using namespace RenderCore;
+        ForcedActorSkeleton result;
+        if (!base.payload || !validModelPayloadStructure(*base.payload))
+        {
+            result.diagnostic = "forced actor skeleton requires a valid base model payload";
+            return result;
+        }
+
+        const auto foldName = [](std::string_view value) {
+            std::string folded(value);
+            std::transform(folded.begin(), folded.end(), folded.begin(),
+                [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+            return folded;
+        };
+
+        auto payload = std::make_shared<SkeletonPayload>();
+        std::vector<std::optional<std::size_t>> modelToBone(base.payload->nodes.size());
+        std::vector<glm::mat4> globalBind;
+        std::unordered_map<std::string, std::size_t> names;
+
+        for (std::size_t modelNode = 0; modelNode < base.payload->nodes.size(); ++modelNode)
+        {
+            const ModelNodeRecord& source = base.payload->nodes[modelNode];
+            if (source.kind != ModelNodeKind::Transform || source.name.empty())
+                continue;
+
+            const std::string folded = foldName(source.name);
+            if (!names.emplace(folded, payload->bones.size()).second)
+            {
+                result.diagnostic = "forced actor skeleton has an ambiguous case-insensitive bone name: " + source.name;
+                return result;
+            }
+
+            std::vector<std::size_t> path;
+            std::optional<std::size_t> parentBone;
+            ModelNodeIndex cursor{ static_cast<std::uint32_t>(modelNode) };
+            while (cursor.valid())
+            {
+                const std::size_t index = cursor.value();
+                if (index != modelNode && modelToBone[index])
+                {
+                    parentBone = modelToBone[index];
+                    break;
+                }
+                path.push_back(index);
+                cursor = base.payload->nodes[index].parent;
+            }
+
+            glm::mat4 bindLocal(1.0f);
+            for (auto it = path.rbegin(); it != path.rend(); ++it)
+                bindLocal *= base.payload->nodes[*it].localTransform;
+            const glm::mat4 global = parentBone ? globalBind[*parentBone] * bindLocal : bindLocal;
+            const float determinant = glm::determinant(global);
+            if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-8f)
+            {
+                result.diagnostic = "forced actor skeleton contains a non-invertible bind transform at bone: "
+                    + source.name;
+                return result;
+            }
+
+            BoneRecord bone;
+            bone.name = folded;
+            bone.parent = parentBone ? static_cast<std::int32_t>(*parentBone) : -1;
+            bone.bindLocal = bindLocal;
+            bone.inverseBind = glm::inverse(global);
+            modelToBone[modelNode] = payload->bones.size();
+            payload->bones.push_back(std::move(bone));
+            globalBind.push_back(global);
+        }
+
+        if (!validSkeletonPayload(*payload))
+        {
+            result.diagnostic = payload->bones.empty()
+                ? "forced actor skeleton found no named transform bones in the base model"
+                : "forced actor skeleton violates the neutral skeleton contract";
+            return result;
+        }
+
+        if (sourceIdentity.empty())
+            sourceIdentity = base.sourceIdentity + "#forced-actor-skeleton";
+        result.record.sourceIdentity = std::move(sourceIdentity);
+        result.record.payload = std::move(payload);
+        return result;
+    }
 
     struct ComposedActorModel
     {
