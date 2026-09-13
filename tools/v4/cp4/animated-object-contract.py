@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import re
 
 
 def source(path: str) -> str:
@@ -23,6 +22,7 @@ def forbid(text: str, token: str, label: str) -> None:
 lifecycle = source("apps/openmw/mwrender/v4scenerenderlifecycle.cpp")
 bridge = source("apps/openmw/mwrender/v4enginerenderbridge.cpp")
 effects = source("apps/openmw/mwrender/v4effectcapture.hpp")
+effect_frame = source("components/rendercore/effectframe.hpp")
 objects = source("apps/openmw/mwrender/objects.cpp")
 animation = source("apps/openmw/mwrender/animation.cpp")
 engine = source("apps/openmw/engine.cpp")
@@ -41,21 +41,41 @@ require(lifecycle, "const bool animatedClass = ptr.getClass().useAnim();", "anim
 require(lifecycle, "retirePersistentObject();", "frozen static retirement")
 require(lifecycle, "requiresModelPlayback(*modelRecord)", "embedded controller routing")
 
-# The Vulkan frame boundary must snapshot the evaluated graph using active-child
+# Non-useAnim objects still need one canonical model inspection to detect embedded
+# controllers, but that decision is model-content stable for a world epoch. Do not
+# redo NIF translation/model lookup for every animated-frame snapshot.
+require(bridge, "mEvaluatedObjectPlaybackEpoch != worldEpoch", "playback cache epoch invalidation")
+require(bridge, "mEvaluatedObjectPlayback.clear();", "playback cache reset")
+require(bridge, "mEvaluatedObjectPlayback.find(modelPath.value())", "playback cache lookup")
+require(bridge, "mEvaluatedObjectPlayback.emplace(std::string(modelPath.value()), needsEvaluatedCapture)",
+        "playback cache population")
+
+# The Vulkan frame boundary snapshots the evaluated graph using active-child
 # traversal, otherwise inactive osg::Switch branches and visibility animation
-# would be resurrected. The result is renderer-neutral ImmediateEffectDraw data;
-# OSG is an evaluator/source here, never a Vulkan presentation backend.
-require(bridge, "if (!ptr.getClass().isActor())", "non-actor frame capture")
-require(bridge, "needsEvaluatedCapture = ptr.getClass().useAnim()", "useAnim evaluated capture")
-require(bridge, 'v4_effect_detail::CaptureVisitor visitor("animated-object:" + *identity, true, mVfs)',
+# would be resurrected. Attached UpdateVfx subtrees are deliberately excluded
+# from the ordinary-world pass and captured separately so their Effect semantics
+# are not overwritten with shadow-casting world-object flags.
+require(bridge, "class AnimatedObjectCaptureVisitor final", "filtered evaluated object capture")
+require(bridge, "osg::NodeVisitor(TRAVERSE_ACTIVE_CHILDREN)", "animated switch/visibility preservation")
+require(bridge, "nestedEffectRoot", "attached-effect exclusion")
+require(bridge, "v4_effect_detail::isEffectRoot(node)", "UpdateVfx root classification")
+require(bridge, 'AnimatedObjectCaptureVisitor objectVisitor("animated-object:" + *identity, mVfs)',
         "evaluated object neutral capture")
-require(bridge, "visitor.setTraversalMode(osg::NodeVisitor::TRAVERSE_ACTIVE_CHILDREN)",
-        "animated switch/visibility preservation")
+require(bridge, 'v4_effect_detail::CaptureVisitor effectVisitor("animated-object-effect:" + *identity, false, mVfs)',
+        "separate attached-effect capture")
+require(bridge, "effectVisitor.setTraversalMode(osg::NodeVisitor::TRAVERSE_ACTIVE_CHILDREN)",
+        "attached-effect active-child traversal")
+require(bridge, "draw.semanticFlags = worldObjectFlags", "world semantics limited to object draw pass")
+require(bridge, "for (RenderCore::ImmediateEffectDraw& draw : capturedEffects->draws)",
+        "attached effects published without world semantic overwrite")
 require(bridge, "source.immediateEffectDraws.push_back(std::move(draw))", "neutral frame publication")
 require(bridge, "InstanceSemanticFlag::OrdinaryWorld", "animated world-object semantic classification")
 require(bridge, "InstanceSemanticFlag::ShadowCaster", "animated world-object shadow eligibility")
 require(bridge, "InstanceSemanticFlag::ReflectionEligible", "animated world-object reflection eligibility")
 require(bridge, "InstanceSemanticFlag::RefractionEligible", "animated world-object refraction eligibility")
+forbid(bridge, 'v4_effect_detail::CaptureVisitor visitor("animated-object:" + *identity, true, mVfs)',
+       "unfiltered whole-object/effect semantic mixing")
+require(effect_frame, "semanticFlag(InstanceSemanticFlag::Effect)", "default attached-effect semantic classification")
 require(effects, "captureV4WholeEffectSubtree", "evaluated OSG-to-neutral compatibility seam")
 require(effects, "evaluated effect requires soft-particle opaque-depth sampling", "soft-particle fail-closed guard")
 require(effects, "evaluated effect requires the post-process distortion target", "distortion fail-closed guard")
