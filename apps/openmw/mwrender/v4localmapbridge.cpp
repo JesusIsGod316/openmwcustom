@@ -177,6 +177,7 @@ namespace MWRender
         input.dynamicTransforms = source.dynamicTransforms;
         input.skeletonPoses = source.skeletonPoses;
         input.morphWeights = source.morphWeights;
+        input.immediateEffectDraws = source.immediateEffectDraws;
         input.invalidateHistory = source.invalidateHistory || mGuiOnlyFramePresented;
 
         std::vector<RenderCore::RenderTargetHandle> renderedMapTargets;
