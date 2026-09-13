@@ -118,6 +118,7 @@ namespace MWRender
         };
         std::map<std::string, bool, std::less<>> mEvaluatedObjectPlayback;
         RenderCore::WorldEpoch mEvaluatedObjectPlaybackEpoch;
+        std::map<std::string, RenderCore::SkeletonHandle, std::less<>> mForcedActorSkeletons;
         std::map<std::string, ComposedActorEntry, std::less<>> mComposedActors;
         RenderCore::WorldEpoch mComposedActorEpoch;
         std::set<std::string, std::less<>> mActorLights;
