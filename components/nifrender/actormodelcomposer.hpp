@@ -163,6 +163,17 @@ namespace NifRender
             return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(),
                 [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); });
         };
+        const auto startsFolded = [](std::string_view value, std::string_view prefix) {
+            return value.size() >= prefix.size()
+                && std::equal(prefix.begin(), prefix.end(), value.begin(),
+                    [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); });
+        };
+        const auto filterMatches = [&](std::string_view name, std::string_view filter) {
+            if (startsFolded(name, filter))
+                return true;
+            constexpr std::string_view triPrefix = "tri ";
+            return startsFolded(name, triPrefix) && startsFolded(name.substr(triPrefix.size()), filter);
+        };
         const auto isBone = [&](std::string_view name) {
             return std::any_of(skeleton->payload->bones.begin(), skeleton->payload->bones.end(),
                 [&](const BoneRecord& bone) { return equalFolded(bone.name, name); });
@@ -226,6 +237,117 @@ namespace NifRender
                 result.diagnostic = "NPC part cannot resolve its published model or attachment bone";
                 return result;
             }
+
+            // SceneUtil::attach has two materially different paths. A template
+            // containing RigGeometry is treated as a Skeleton: CopyRigVisitor
+            // copies only the filtered rig subtree into the master actor root,
+            // and that rig resolves its bone names against the master skeleton.
+            // It does not attach a complete donor skeleton below attachmentBone.
+            // Preserve that exact ownership split here for neutral skinned parts.
+            bool hasSkinnedGeometry = false;
+            for (const ModelNodeRecord& node : model->payload->nodes)
+            {
+                const MeshRecord* mesh = node.mesh ? world.get(*node.mesh) : nullptr;
+                if (mesh && mesh->skin)
+                {
+                    hasSkinnedGeometry = true;
+                    break;
+                }
+            }
+
+            if (hasSkinnedGeometry)
+            {
+                const auto hasMatchingRig = [&](std::string_view filter) {
+                    for (const ModelNodeRecord& node : model->payload->nodes)
+                    {
+                        const MeshRecord* mesh = node.mesh ? world.get(*node.mesh) : nullptr;
+                        if (mesh && mesh->skin && filterMatches(node.name, filter))
+                            return true;
+                    }
+                    return false;
+                };
+
+                std::string_view filter = part.attachmentBone;
+                // NpcAnimation's sole filter/attachment exception is hair:
+                // attach to Head, filter by Hair. V4PartSource currently carries
+                // the attachment bone but not the filter, so recover that exact
+                // source behavior when the model has no Head rig and does have a
+                // Hair rig. Normal head models keep the ordinary Head filter.
+                if (!hasMatchingRig(filter) && equalFolded(part.attachmentBone, "Head") && hasMatchingRig("Hair"))
+                    filter = "Hair";
+
+                std::vector<bool> selected(model->payload->nodes.size(), false);
+                bool selectedRig = false;
+                for (std::size_t i = 0; i < model->payload->nodes.size(); ++i)
+                {
+                    const ModelNodeRecord& source = model->payload->nodes[i];
+                    const MeshRecord* mesh = source.mesh ? world.get(*source.mesh) : nullptr;
+                    if (!mesh || !mesh->skin || !filterMatches(source.name, filter))
+                        continue;
+
+                    selectedRig = true;
+                    for (const SkinBoneBinding& binding : mesh->skin->bones)
+                    {
+                        if (!isBone(binding.name))
+                        {
+                            result.diagnostic = "NPC part skin references a bone absent from the base skeleton";
+                            return result;
+                        }
+                    }
+
+                    selected[i] = true;
+                    ModelNodeIndex cursor = source.parent;
+                    while (cursor.valid())
+                    {
+                        const ModelNodeRecord& parent = model->payload->nodes[cursor.value()];
+                        if (!filterMatches(parent.name, filter))
+                            break;
+                        selected[cursor.value()] = true;
+                        cursor = parent.parent;
+                    }
+                }
+
+                // CopyRigVisitor returns a valid but empty handle if the Skeleton
+                // contains no rig matching the requested filter. Mirror that
+                // compatibility behavior rather than turning a source-side no-op
+                // into a V4-only fatal error.
+                if (!selectedRig)
+                    continue;
+
+                std::vector<ModelNodeIndex> remap(model->payload->nodes.size());
+                for (std::size_t i = 0; i < model->payload->nodes.size(); ++i)
+                {
+                    if (!selected[i])
+                        continue;
+
+                    const ModelNodeRecord& source = model->payload->nodes[i];
+                    if (source.kind == ModelNodeKind::Switch || source.kind == ModelNodeKind::Lod)
+                    {
+                        result.diagnostic = "NPC part switch/LOD composition requires an explicit remapping facet";
+                        return result;
+                    }
+
+                    ModelNodeRecord node = source;
+                    if (source.parent.valid() && selected[source.parent.value()])
+                        node.parent = remap[source.parent.value()];
+                    else
+                        node.parent = ModelNodeIndex{};
+                    if (!part.visible)
+                        node.flags |= modelNodeFlag(ModelNodeFlag::Hidden);
+
+                    remap[i] = ModelNodeIndex{ static_cast<std::uint32_t>(payload->nodes.size()) };
+                    if (!node.parent.valid())
+                        payload->roots.push_back(remap[i]);
+                    payload->nodes.push_back(std::move(node));
+                }
+                continue;
+            }
+
+            // Non-skeleton attachments keep the historical rigid path: clone the
+            // complete part model under the requested attachment bone. BoneOffset,
+            // left-side reflection and light attitude remain separate rigid-part
+            // compatibility facets and are intentionally not conflated with the
+            // skinned body-part repair above.
             for (const ModelNodeRecord& node : model->payload->nodes)
             {
                 const MeshRecord* mesh = node.mesh ? world.get(*node.mesh) : nullptr;
