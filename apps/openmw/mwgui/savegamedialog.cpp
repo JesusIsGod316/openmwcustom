@@ -221,7 +221,7 @@ namespace MWGui
 
             ESM::EpochTimeStamp currentDate = timeManager.getEpochTimeStamp();
             std::string daysPassed
-                = Misc::StringUtils::format("#{Calendar:day} %i", timeManager.getTimeManager()->getTimeStamp().getDay());
+                = Misc::StringUtils::format("#{Calendar:day} %i", timeManager.getTimeStamp().getDay());
             std::string_view formattedHour(pm ? "#{Calendar:pm}" : "#{Calendar:am}");
             std::string autoFilename = Misc::StringUtils::format(
                 "%s - %i %s %i %s", daysPassed, currentDate.mDay, month, hour, formattedHour);
