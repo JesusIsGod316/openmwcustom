@@ -7,8 +7,10 @@
 #include <MyGUI_ImageBox.h>
 #include <MyGUI_InputManager.h>
 #include <MyGUI_LanguageManager.h>
+#include <MyGUI_RenderManager.h>
 #include <MyGUI_UString.h>
 
+#include <osg/Image>
 #include <osg/Texture2D>
 #include <osgDB/ReadFile>
 
@@ -22,6 +24,11 @@
 #include <components/misc/timeconvert.hpp>
 #include <components/myguiplatform/myguitexture.hpp>
 #include <components/settings/values.hpp>
+
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+#include <components/vsgmygui/rendermanager.hpp>
+#include <components/vsgmygui/texture.hpp>
+#endif
 
 #include "../mwbase/environment.hpp"
 #include "../mwbase/statemanager.hpp"
@@ -37,6 +44,55 @@
 
 namespace MWGui
 {
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+    namespace
+    {
+        std::unique_ptr<MyGUI::ITexture> makeVulkanSaveScreenshotTexture(const osg::Image& image)
+        {
+            if (!image.data() || image.s() <= 0 || image.t() <= 0 || image.r() != 1
+                || image.getDataType() != GL_UNSIGNED_BYTE)
+                return {};
+
+            const GLenum format = image.getPixelFormat();
+            const int width = image.s();
+            const int height = image.t();
+            auto rgba = vsg::ubvec4Array2D::create(static_cast<std::uint32_t>(width),
+                static_cast<std::uint32_t>(height), vsg::Data::Properties(VK_FORMAT_R8G8B8A8_UNORM));
+            if (!rgba)
+                return {};
+
+            for (int y = 0; y < height; ++y)
+            {
+                const int sourceY = height - 1 - y;
+                for (int x = 0; x < width; ++x)
+                {
+                    const unsigned char* pixel = image.data(x, sourceY);
+                    if (!pixel)
+                        return {};
+                    vsg::ubvec4 value(0, 0, 0, 255);
+                    switch (format)
+                    {
+                        case GL_RGB: value = vsg::ubvec4(pixel[0], pixel[1], pixel[2], 255); break;
+                        case GL_RGBA: value = vsg::ubvec4(pixel[0], pixel[1], pixel[2], pixel[3]); break;
+                        case GL_BGR: value = vsg::ubvec4(pixel[2], pixel[1], pixel[0], 255); break;
+                        case GL_BGRA: value = vsg::ubvec4(pixel[2], pixel[1], pixel[0], pixel[3]); break;
+                        case GL_LUMINANCE: value = vsg::ubvec4(pixel[0], pixel[0], pixel[0], 255); break;
+                        case GL_LUMINANCE_ALPHA:
+                            value = vsg::ubvec4(pixel[0], pixel[0], pixel[0], pixel[1]);
+                            break;
+                        default: return {};
+                    }
+                    (*rgba)(x, y) = value;
+                }
+            }
+            rgba->properties.origin = vsg::TOP_LEFT;
+            auto texture = std::make_unique<VsgMyGui::Texture>("__openmw_savegame_screenshot_rgba8");
+            texture->setData(std::move(rgba));
+            return texture;
+        }
+    }
+#endif
+
     SaveGameDialog::SaveGameDialog()
         : WindowModal("openmw_savegame_dialog.layout")
         , mSaving(true)
@@ -165,7 +221,7 @@ namespace MWGui
 
             ESM::EpochTimeStamp currentDate = timeManager.getEpochTimeStamp();
             std::string daysPassed
-                = Misc::StringUtils::format("#{Calendar:day} %i", timeManager.getTimeStamp().getDay());
+                = Misc::StringUtils::format("#{Calendar:day} %i", timeManager.getTimeManager()->getTimeStamp().getDay());
             std::string_view formattedHour(pm ? "#{Calendar:pm}" : "#{Calendar:am}");
             std::string autoFilename = Misc::StringUtils::format(
                 "%s - %i %s %i %s", daysPassed, currentDate.mDay, month, hour, formattedHour);
@@ -484,7 +540,8 @@ namespace MWGui
         // Reset the image for the case we're unable to recover a screenshot
         mScreenshotTexture.reset();
         mScreenshot->setRenderItemTexture(nullptr);
-        // The widget is Y-down, the screenshot is Y-up, so this UV is inverted
+        // The legacy OSG screenshot is Y-up. The Vulkan native path flips rows
+        // into TOP_LEFT data below and therefore restores the normal MyGUI UVs.
         mScreenshot->getSubWidgetMain()->_setUVSet(MyGUI::FloatRect(0.f, 1.f, 1.f, 0.f));
 
         // Decode screenshot
@@ -512,6 +569,22 @@ namespace MWGui
                               << result.status();
             return;
         }
+
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        if (dynamic_cast<VsgMyGui::RenderManager*>(&MyGUI::RenderManager::getInstance()))
+        {
+            osg::Image* const image = result.getImage();
+            mScreenshotTexture = image ? makeVulkanSaveScreenshotTexture(*image) : nullptr;
+            if (!mScreenshotTexture)
+            {
+                Log(Debug::Error) << "Failed to publish savegame screenshot through native Vulkan MyGUI";
+                return;
+            }
+            mScreenshot->getSubWidgetMain()->_setUVSet(MyGUI::FloatRect(0.f, 0.f, 1.f, 1.f));
+            mScreenshot->setRenderItemTexture(mScreenshotTexture.get());
+            return;
+        }
+#endif
 
         osg::ref_ptr<osg::Texture2D> texture(new osg::Texture2D);
         texture->setImage(result.getImage());
