@@ -27,172 +27,150 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          def replace_once(path: Path, old: str, new: str) -> None:
-              text = path.read_text()
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{path}: expected one repair target, found {count}")
-              path.write_text(text.replace(old, new, 1))
-
           bridge = Path("apps/openmw/mwrender/v4enginerenderbridge.cpp")
-          replace_once(
-              bridge,
-              '''        if (mComposedActorEpoch != mSession->world().epoch())
-          {
-              mComposedActors.clear();
-              mComposedActorEpoch = mSession->world().epoch();
-          }
-          ''',
-              '''        if (mComposedActorEpoch != mSession->world().epoch())
-          {
-              mForcedActorSkeletons.clear();
-              mComposedActors.clear();
-              mComposedActorEpoch = mSession->world().epoch();
-          }
-          ''')
+          text = bridge.read_text()
 
-          replace_once(
-              bridge,
-              '''            const std::optional<NifRender::StaticModelCacheResult> base
-                  = ensureModelPublished(*mSession, mVfs, animation.getV4SourceModel());
-              if (!base || !base->skeleton)
-              {
-                  compatible = false;
-                  mLastDiagnostic = "active actor source model has no publishable canonical skeleton";
-                  return;
-              }
-              RenderCore::ModelHandle actorModel = base->model;
-          ''',
-              '''            const std::optional<NifRender::StaticModelCacheResult> base
-                  = ensureModelPublished(*mSession, mVfs, animation.getV4SourceModel());
-              if (!base)
-              {
-                  compatible = false;
-                  mLastDiagnostic = "active actor source model could not be published";
-                  return;
-              }
-              const RenderCore::ModelRecord* const baseRecord = mSession->world().get(base->model);
-              if (!baseRecord || !baseRecord->payload)
-              {
-                  compatible = false;
-                  mLastDiagnostic = "active actor source model has no current canonical model payload";
-                  return;
-              }
+          epoch_anchor = "            mComposedActors.clear();"
+          if text.count(epoch_anchor) != 1:
+              raise SystemExit(f"bridge epoch anchor count={text.count(epoch_anchor)}")
+          text = text.replace(
+              epoch_anchor,
+              "            mForcedActorSkeletons.clear();\n" + epoch_anchor,
+              1,
+          )
 
-              std::optional<RenderCore::SkeletonHandle> actorSkeleton = base->skeleton;
-              if (!actorSkeleton)
-              {
-                  const std::string skeletonIdentity(animation.getV4SourceModel().value());
-                  const auto cached = mForcedActorSkeletons.find(skeletonIdentity);
-                  if (cached != mForcedActorSkeletons.end() && mSession->world().get(cached->second))
-                      actorSkeleton = cached->second;
-                  else
-                  {
-                      NifRender::ForcedActorSkeleton forced = NifRender::buildForcedActorSkeleton(
-                          *baseRecord, "runtime:forced-actor-skeleton:" + skeletonIdentity);
-                      if (!forced.valid())
-                      {
-                          compatible = false;
-                          mLastDiagnostic = "active actor source model cannot reproduce OpenMW's forced skeleton: "
-                              + forced.diagnostic;
-                          return;
-                      }
-                      const std::optional<RenderCore::SkeletonHandle> reserved
-                          = mSession->world().reserveSkeleton();
-                      if (!reserved)
-                      {
-                          compatible = false;
-                          mLastDiagnostic = "forced actor skeleton handle reservation failed";
-                          return;
-                      }
-                      RenderCore::RenderWorldUpdateBatch batch(mSession->world().epoch(),
-                          mSession->publisher().nextSequence(), forced.record.sourceIdentity);
-                      if (!batch.add(RenderCore::CreateSkeleton{ *reserved, std::move(forced.record) })
-                          || !batch.seal()
-                          || mSession->publisher().apply(batch) != RenderCore::PublishStatus::Applied)
-                      {
-                          mSession->world().cancel(*reserved);
-                          compatible = false;
-                          mLastDiagnostic = "forced actor skeleton publication failed";
-                          return;
-                      }
-                      mForcedActorSkeletons.insert_or_assign(skeletonIdentity, *reserved);
-                      actorSkeleton = *reserved;
-                  }
-              }
-              RenderCore::ModelHandle actorModel = base->model;
-          ''')
+          actor_start = text.index(
+              "            const std::optional<NifRender::StaticModelCacheResult> base\n"
+              "                = ensureModelPublished(*mSession, mVfs, animation.getV4SourceModel());"
+          )
+          actor_end_anchor = "            RenderCore::ModelHandle actorModel = base->model;"
+          actor_end = text.index(actor_end_anchor, actor_start) + len(actor_end_anchor)
+          actor_replacement = "\n".join([
+              "            const std::optional<NifRender::StaticModelCacheResult> base",
+              "                = ensureModelPublished(*mSession, mVfs, animation.getV4SourceModel());",
+              "            if (!base)",
+              "            {",
+              "                compatible = false;",
+              "                mLastDiagnostic = \"active actor source model could not be published\";",
+              "                return;",
+              "            }",
+              "            const RenderCore::ModelRecord* const baseRecord = mSession->world().get(base->model);",
+              "            if (!baseRecord || !baseRecord->payload)",
+              "            {",
+              "                compatible = false;",
+              "                mLastDiagnostic = \"active actor source model has no current canonical model payload\";",
+              "                return;",
+              "            }",
+              "",
+              "            std::optional<RenderCore::SkeletonHandle> actorSkeleton = base->skeleton;",
+              "            if (!actorSkeleton)",
+              "            {",
+              "                const std::string skeletonIdentity(animation.getV4SourceModel().value());",
+              "                const auto cached = mForcedActorSkeletons.find(skeletonIdentity);",
+              "                if (cached != mForcedActorSkeletons.end() && mSession->world().get(cached->second))",
+              "                    actorSkeleton = cached->second;",
+              "                else",
+              "                {",
+              "                    NifRender::ForcedActorSkeleton forced = NifRender::buildForcedActorSkeleton(",
+              "                        *baseRecord, \"runtime:forced-actor-skeleton:\" + skeletonIdentity);",
+              "                    if (!forced.valid())",
+              "                    {",
+              "                        compatible = false;",
+              "                        mLastDiagnostic = \"active actor source model cannot reproduce OpenMW's forced skeleton: \"",
+              "                            + forced.diagnostic;",
+              "                        return;",
+              "                    }",
+              "                    const std::optional<RenderCore::SkeletonHandle> reserved",
+              "                        = mSession->world().reserveSkeleton();",
+              "                    if (!reserved)",
+              "                    {",
+              "                        compatible = false;",
+              "                        mLastDiagnostic = \"forced actor skeleton handle reservation failed\";",
+              "                        return;",
+              "                    }",
+              "                    RenderCore::RenderWorldUpdateBatch batch(mSession->world().epoch(),",
+              "                        mSession->publisher().nextSequence(), forced.record.sourceIdentity);",
+              "                    if (!batch.add(RenderCore::CreateSkeleton{ *reserved, std::move(forced.record) })",
+              "                        || !batch.seal()",
+              "                        || mSession->publisher().apply(batch) != RenderCore::PublishStatus::Applied)",
+              "                    {",
+              "                        mSession->world().cancel(*reserved);",
+              "                        compatible = false;",
+              "                        mLastDiagnostic = \"forced actor skeleton publication failed\";",
+              "                        return;",
+              "                    }",
+              "                    mForcedActorSkeletons.insert_or_assign(skeletonIdentity, *reserved);",
+              "                    actorSkeleton = *reserved;",
+              "                }",
+              "            }",
+              "            RenderCore::ModelHandle actorModel = base->model;",
+          ])
+          text = text[:actor_start] + actor_replacement + text[actor_end:]
 
-          replace_once(
-              bridge,
-              '''                    NifRender::ComposedActorModel composed = NifRender::composeActorModel(
-                          mSession->world(), base->model, *base->skeleton, parts, "runtime:npc:" + *identity);
-          ''',
-              '''                    NifRender::ComposedActorModel composed = NifRender::composeActorModel(
-                          mSession->world(), base->model, *actorSkeleton, parts, "runtime:npc:" + *identity);
-          ''')
+          compose_old = "mSession->world(), base->model, *base->skeleton, parts, \"runtime:npc:\" + *identity);"
+          compose_new = "mSession->world(), base->model, *actorSkeleton, parts, \"runtime:npc:\" + *identity);"
+          if text.count(compose_old) != 1:
+              raise SystemExit(f"compose skeleton anchor count={text.count(compose_old)}")
+          text = text.replace(compose_old, compose_new, 1)
 
-          replace_once(
-              bridge,
-              '''            if (!bound || bound->model != actorModel || bound->skeleton != base->skeleton)
-              {
-                  const RenderCore::ModelRecord* modelRecord = mSession->world().get(actorModel);
-                  const std::optional<RenderCore::DynamicInstanceSource> dynamic = modelRecord
-                      ? makeV4DynamicInstanceSource(ptr, actorModel, *base->skeleton, modelRecord->bounds)
-                      : std::nullopt;
-          ''',
-              '''            if (!bound || bound->model != actorModel || bound->skeleton != actorSkeleton)
-              {
-                  const RenderCore::ModelRecord* modelRecord = mSession->world().get(actorModel);
-                  const std::optional<RenderCore::DynamicInstanceSource> dynamic = modelRecord
-                      ? makeV4DynamicInstanceSource(ptr, actorModel, *actorSkeleton, modelRecord->bounds)
-                      : std::nullopt;
-          ''')
+          compare_old = "bound->skeleton != base->skeleton"
+          if text.count(compare_old) != 1:
+              raise SystemExit(f"instance skeleton compare anchor count={text.count(compare_old)}")
+          text = text.replace(compare_old, "bound->skeleton != actorSkeleton", 1)
+
+          source_old = "makeV4DynamicInstanceSource(ptr, actorModel, *base->skeleton, modelRecord->bounds)"
+          if text.count(source_old) != 1:
+              raise SystemExit(f"dynamic source skeleton anchor count={text.count(source_old)}")
+          text = text.replace(
+              source_old,
+              "makeV4DynamicInstanceSource(ptr, actorModel, *actorSkeleton, modelRecord->bounds)",
+              1,
+          )
+          bridge.write_text(text)
 
           engine = Path("apps/openmw/engine.cpp")
-          replace_once(
-              engine,
-              '''    MWRender::RenderingManager* rendering = mWorld ? mWorld->getRenderingManager() : nullptr;
-              MWWorld::CellStore* current = rendering ? mWorld->getWorldScene().getCurrentCell() : nullptr;
-              if (rendering && current && current->getCell() && mV4RenderBridge->sceneRenderLifecycleTaken())
-              {
-                  result = mV4FrameCoordinator->render(
-                      *rendering, *current->getCell(), simulationTime, frameDelta, invalidateHistory);
-              }
-              else
-                  result = mV4RenderBridge->renderGuiFrame(simulationTime, frameDelta);
-          ''',
-              '''    MWRender::RenderingManager* rendering = mWorld ? mWorld->getRenderingManager() : nullptr;
-              MWWorld::CellStore* current = rendering ? mWorld->getWorldScene().getCurrentCell() : nullptr;
-              const bool lifecycleReady = mV4RenderBridge->sceneRenderLifecycleTaken();
-              const bool gameplayRunning
-                  = mStateManager && mStateManager->getState() == MWBase::StateManager::State_Running;
-
-              // New-game transitions can establish the authoritative player cell
-              // before WorldScene::mCurrentCell catches up. Do not silently keep
-              // presenting a GUI-only black frame when the player already owns a
-              // valid gameplay cell; use the same CellStore as the gameplay route.
-              if (rendering && lifecycleReady && gameplayRunning && (!current || !current->getCell()))
-              {
-                  const MWWorld::Ptr player = mWorld->getPlayerPtr();
-                  if (!player.isEmpty() && player.getCell() && player.getCell()->getCell())
-                      current = player.getCell();
-              }
-
-              if (rendering && current && current->getCell() && lifecycleReady)
-              {
-                  result = mV4FrameCoordinator->render(
-                      *rendering, *current->getCell(), simulationTime, frameDelta, invalidateHistory);
-              }
-              else
-                  result = mV4RenderBridge->renderGuiFrame(simulationTime, frameDelta);
-          ''')
+          text = engine.read_text()
+          route_start = text.index(
+              "    MWRender::RenderingManager* rendering = mWorld ? mWorld->getRenderingManager() : nullptr;\n"
+              "    MWWorld::CellStore* current = rendering ? mWorld->getWorldScene().getCurrentCell() : nullptr;"
+          )
+          route_end = text.index("\n\n    if (result == RenderCore::RenderFrameResult::Failed)", route_start)
+          route_replacement = "\n".join([
+              "    MWRender::RenderingManager* rendering = mWorld ? mWorld->getRenderingManager() : nullptr;",
+              "    MWWorld::CellStore* current = rendering ? mWorld->getWorldScene().getCurrentCell() : nullptr;",
+              "    const bool lifecycleReady = mV4RenderBridge->sceneRenderLifecycleTaken();",
+              "    const bool gameplayRunning",
+              "        = mStateManager && mStateManager->getState() == MWBase::StateManager::State_Running;",
+              "",
+              "    // New-game transitions can establish the authoritative player cell",
+              "    // before WorldScene::mCurrentCell catches up. Do not silently keep",
+              "    // presenting a GUI-only black frame when the player already owns a",
+              "    // valid gameplay cell; use the same CellStore as the gameplay route.",
+              "    if (rendering && lifecycleReady && gameplayRunning && (!current || !current->getCell()))",
+              "    {",
+              "        const MWWorld::Ptr player = mWorld->getPlayerPtr();",
+              "        if (!player.isEmpty() && player.getCell() && player.getCell()->getCell())",
+              "            current = player.getCell();",
+              "    }",
+              "",
+              "    if (rendering && current && current->getCell() && lifecycleReady)",
+              "    {",
+              "        result = mV4FrameCoordinator->render(",
+              "            *rendering, *current->getCell(), simulationTime, frameDelta, invalidateHistory);",
+              "    }",
+              "    else",
+              "        result = mV4RenderBridge->renderGuiFrame(simulationTime, frameDelta);",
+          ])
+          text = text[:route_start] + route_replacement + text[route_end:]
+          engine.write_text(text)
           PY
 
           git diff --check
           grep -F 'mForcedActorSkeletons.clear();' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'buildForcedActorSkeleton' apps/openmw/mwrender/v4enginerenderbridge.cpp
+          grep -F '*actorSkeleton, parts' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'player.getCell()->getCell()' apps/openmw/engine.cpp
+          ! grep -F 'active actor source model has no publishable canonical skeleton' apps/openmw/mwrender/v4enginerenderbridge.cpp
 
           git config user.name 'Chance'
           git config user.email 'l.s.chance2000@gmail.com'
