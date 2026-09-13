@@ -5,7 +5,6 @@
 #include <MyGUI_RenderManager.h>
 #include <MyGUI_TextBox.h>
 
-#include <components/misc/frameratelimiter.hpp>
 #include <components/settings/values.hpp>
 #include <components/vfs/manager.hpp>
 #include <components/vfs/pathutil.hpp>
@@ -26,36 +25,7 @@
 
 namespace MWGui
 {
-    void MenuVideo::run()
-    {
-        Misc::FrameRateLimiter frameRateLimiter
-            = Misc::makeFrameRateLimiter(MWBase::Environment::get().getFrameRateLimit());
-        const MWBase::WindowManager& windowManager = *MWBase::Environment::get().getWindowManager();
-        bool paused = false;
-        while (mRunning)
-        {
-            if (windowManager.isWindowVisible())
-            {
-                if (paused)
-                {
-                    mVideo->resume();
-                    paused = false;
-                }
-                // If finished playing, start again
-                if (!mVideo->update())
-                    mVideo->playVideo("video\\menu_background.bik");
-            }
-            else if (!paused)
-            {
-                paused = true;
-                mVideo->pause();
-            }
-            frameRateLimiter.limit();
-        }
-    }
-
     MenuVideo::MenuVideo(const VFS::Manager* vfs)
-        : mRunning(true)
     {
         // Use black background to correct aspect ratio
         mVideoBackground = MyGUI::Gui::getInstance().createWidgetReal<MyGUI::ImageBox>(
@@ -67,7 +37,6 @@ namespace MWGui
         mVideo->setVFS(vfs);
 
         mVideo->playVideo("video\\menu_background.bik");
-        mThread = std::thread([this] { run(); });
     }
 
     void MenuVideo::resize(int screenWidth, int screenHeight)
@@ -80,14 +49,20 @@ namespace MWGui
 
     void MenuVideo::commitFrame()
     {
-        if (mVideo)
-            mVideo->commitFrame();
+        if (!mVideo)
+            return;
+
+        // The FFmpeg player already owns its decode/parse workers. Keep the
+        // VideoWidget, MyGUI texture publication and loop restart on the UI
+        // thread so a menu-background loop can never mutate MyGUI while the
+        // Vulkan renderer is collecting the same widget tree.
+        if (!mVideo->update())
+            mVideo->playVideo("video\\menu_background.bik");
+        mVideo->commitFrame();
     }
 
     MenuVideo::~MenuVideo()
     {
-        mRunning = false;
-        mThread.join();
         try
         {
             MyGUI::Gui::getInstance().destroyWidget(mVideoBackground);
