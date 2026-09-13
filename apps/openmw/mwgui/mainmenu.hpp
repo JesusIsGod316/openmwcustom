@@ -3,7 +3,6 @@
 
 #include <memory>
 #include <optional>
-#include <thread>
 
 #include "savegamedialog.hpp"
 #include "windowbase.hpp"
@@ -27,10 +26,6 @@ namespace MWGui
     {
         MyGUI::ImageBox* mVideoBackground;
         VideoWidget* mVideo;
-        std::thread mThread;
-        bool mRunning;
-
-        void run();
 
     public:
         MenuVideo(const VFS::Manager* vfs);
