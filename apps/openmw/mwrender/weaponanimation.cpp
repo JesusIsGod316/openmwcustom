@@ -198,13 +198,18 @@ namespace MWRender
 
     void WeaponAnimation::configureControllers(float characterPitchRadians)
     {
-        if (mPitchFactor == 0.f || characterPitchRadians == 0.f)
+        float pitchFactor = mPitchFactor;
+        const float additionalPitchFactor = getAdditionalPitchFactor();
+        if (additionalPitchFactor > pitchFactor)
+            pitchFactor = additionalPitchFactor;
+
+        if (pitchFactor == 0.f || characterPitchRadians == 0.f)
         {
             setControllerEnabled(false);
             return;
         }
 
-        float pitch = characterPitchRadians * mPitchFactor;
+        float pitch = characterPitchRadians * pitchFactor;
         osg::Quat rotate(pitch / 2, osg::Vec3f(-1, 0, 0));
         setControllerRotate(rotate);
         setControllerEnabled(true);
