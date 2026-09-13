@@ -51,6 +51,13 @@ require(video, "VK_FORMAT_R8G8B8A8_UNORM", "decoded video format")
 require(video, "rgba->properties.origin = vsg::TOP_LEFT", "decoded video orientation")
 require(video, "V4 Vulkan video bridge: publishing decoded RGBA8 frames", "runtime video-route diagnostic")
 
+# MyGUI RenderItem stores a raw ITexture pointer. Replaying the startup logo or
+# looping menu video must therefore retain the same native Texture object and
+# replace only its revisioned VSG data backing.
+require(video, "auto* nativeTexture = dynamic_cast<VsgMyGui::Texture*>(mTexture.get())", "stable native video texture")
+require(video, "mTexture = std::move(created);", "initial native video texture ownership")
+forbid(video, "mTexture = std::make_unique<VsgMyGui::Texture>", "per-play native video texture replacement")
+
 # Startup/company/logo/credits videos are synchronous MyGUI presentation. The
 # committed FFmpeg frame must be published before the Vulkan GUI-only present.
 require(window, "mVideoWidget->commitFrame();", "startup video commit")
