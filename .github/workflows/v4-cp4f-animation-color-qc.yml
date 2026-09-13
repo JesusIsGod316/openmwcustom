@@ -1,0 +1,81 @@
+name: V4.0 CP4F animation/color QC checkpoint
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [v4.0-cp4f-exterior-closeout]
+    paths:
+      - .github/workflows/v4-cp4f-animation-color-qc.yml
+
+concurrency:
+  group: v4-cp4f-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  RouteContracts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact CP4F QC gate head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact source checkpoint and CP4E ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
+          CP4F_SOURCE=6e66ecd35328576481b6d72dcb2dbc0f5a06cd78
+          git cat-file -e "${CP4E_BASE}^{commit}"
+          git cat-file -e "${CP4F_SOURCE}^{commit}"
+          test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
+          test "$(git merge-base "${CP4F_SOURCE}" HEAD)" = "${CP4F_SOURCE}"
+          test "$(git rev-parse HEAD^)" = "${CP4F_SOURCE}"
+
+      - name: Run retained CP4 and new QC source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/v4/cp3e/application-route-contract.py
+          python3 tools/v4/cp4/streaming-contract.py
+          python3 tools/v4/cp4/population-environment-contract.py
+          python3 tools/v4/cp4/water-environment-contract.py
+          python3 tools/v4/cp4/video-ui-contract.py
+          python3 tools/v4/cp4/animated-object-contract.py
+          python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+          grep -F 'visitor.setTraversalMode(osg::NodeVisitor::TRAVERSE_ACTIVE_CHILDREN)' apps/openmw/mwrender/v4enginerenderbridge.cpp
+          grep -F 'animated-object:' apps/openmw/mwrender/v4enginerenderbridge.cpp
+          grep -F 'options->setValue("image_format", vsg::CoordinateSpace::sRGB)' components/vsgmygui/vfsimagedecoder.cpp
+          grep -F 'VK_FORMAT_R8G8B8A8_SRGB' apps/openmw/mwgui/videowidget.cpp
+          if grep -F 'external animation source before model-animation compatibility is available' apps/openmw/mwrender/v4scenerenderlifecycle.cpp; then
+            echo 'obsolete external-animation rejection returned'
+            exit 1
+          fi
+          git diff --check 161568af75c54fb0c445e258fa235c304b27fc8d HEAD -- . \
+            ':(exclude)V3-applied-source.patch' \
+            ':(exclude)V3-applied-source-stat.txt' \
+            ':(exclude)V3-BUILD-IDENTITY.txt' \
+            ':(exclude)V3-LAB-README.txt'
+
+      - name: Parse workflow YAML
+        run: |
+          python3 - <<'PY'
+          import pathlib, yaml
+          for path in pathlib.Path('.github/workflows').glob('*.yml'):
+              yaml.safe_load(path.read_text(encoding='utf-8'))
+          print('workflow YAML parse: PASS')
+          PY
+
+  OpenGLControlWindows:
+    needs: RouteContracts
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
+
+  RuntimeVulkanWindows:
+    needs: RouteContracts
+    uses: ./.github/workflows/v4-cp3b3.yml
+    with:
+      force_run: true
