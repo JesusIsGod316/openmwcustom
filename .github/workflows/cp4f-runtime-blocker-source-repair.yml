@@ -18,162 +18,127 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Apply bounded CP4F source repair
+      - name: Apply bounded CP4F runtime blocker repair
         shell: bash
         run: |
           set -euo pipefail
           git fetch origin v4.0-cp4f-exterior-closeout
           git checkout -B cp4f-runtime-repair origin/v4.0-cp4f-exterior-closeout
+          expected=8335f60b3ba9b834f5cbdf4f9467de6fc201d6e0
+          actual="$(git rev-parse HEAD)"
+          if [ "$actual" != "$expected" ]; then
+            echo "Target branch moved: expected $expected, got $actual" >&2
+            exit 2
+          fi
+
+          # The 65d runtime log proves New Game failed inside startNewGame() on
+          # actor skeleton publication before normal gameplay presentation. Drop
+          # the speculative player-cell presentation fallback and retain only the
+          # evidence-backed forced-skeleton repair from the same commit.
+          git checkout HEAD^ -- apps/openmw/engine.cpp
+
           python3 - <<'PY'
           from pathlib import Path
 
-          bridge = Path("apps/openmw/mwrender/v4enginerenderbridge.cpp")
-          text = bridge.read_text()
+          def replace_once(path: Path, old: str, new: str) -> None:
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one repair target, found {count}")
+              path.write_text(text.replace(old, new, 1))
 
-          epoch_anchor = "            mComposedActors.clear();"
-          if text.count(epoch_anchor) != 1:
-              raise SystemExit(f"bridge epoch anchor count={text.count(epoch_anchor)}")
-          text = text.replace(
-              epoch_anchor,
-              "            mForcedActorSkeletons.clear();\n" + epoch_anchor,
-              1,
+          actor = Path("components/nifrender/actormodelcomposer.hpp")
+          replace_once(
+              actor,
+              """    // translator, and all names are case-folded to match OpenMW's bone lookup.\n    // Ambiguous names or non-invertible bind transforms remain fail-closed.\n""",
+              """    // translator, and all names are case-folded to match OpenMW's bone lookup.\n    // OpenMW's source Skeleton cache keeps the first case-insensitive name match,\n    // so duplicate named transforms are skipped here rather than rejected.\n    // Non-invertible transforms remain fail-closed.\n""",
+          )
+          replace_once(
+              actor,
+              """            const std::string folded = foldName(source.name);\n            if (!names.emplace(folded, payload->bones.size()).second)\n            {\n                result.diagnostic = \"forced actor skeleton has an ambiguous case-insensitive bone name: \" + source.name;\n                return result;\n            }\n\n""",
+              """            const std::string folded = foldName(source.name);\n            // SceneUtil::Skeleton::InitBoneCacheVisitor uses unordered_map::emplace,\n            // which gives OpenMW first-match semantics for duplicate names. Match\n            // that behavior so mod-authored duplicate transforms do not become a\n            // V4-only incompatibility. Descendants still fold through this skipped\n            // transform while searching for the nearest retained parent bone.\n            if (names.find(folded) != names.end())\n                continue;\n            names.emplace(folded, payload->bones.size());\n\n""",
           )
 
-          actor_start = text.index(
-              "            const std::optional<NifRender::StaticModelCacheResult> base\n"
-              "                = ensureModelPublished(*mSession, mVfs, animation.getV4SourceModel());"
+          header = Path("components/lua/luastate.hpp")
+          replace_once(
+              header,
+              """        sol::protected_function_result runInNewSandbox(const VFS::Path::Normalized& path,\n            const std::string& envName = \"unnamed\", const std::map<std::string, sol::main_object>& packages = {},\n            const sol::main_object& hiddenData = sol::nil, const sol::main_table* packagePrototype = nullptr);\n""",
+              """        sol::protected_function_result runInNewSandbox(const VFS::Path::Normalized& path,\n            const std::string& envName = \"unnamed\", const std::map<std::string, sol::main_object>& packages = {},\n            const sol::main_object& hiddenData = sol::nil, const sol::main_table* packagePrototype = nullptr,\n            ScriptId scriptId = {});\n""",
           )
-          actor_end_anchor = "            RenderCore::ModelHandle actorModel = base->model;"
-          actor_end = text.index(actor_end_anchor, actor_start) + len(actor_end_anchor)
-          actor_replacement = "\n".join([
-              "            const std::optional<NifRender::StaticModelCacheResult> base",
-              "                = ensureModelPublished(*mSession, mVfs, animation.getV4SourceModel());",
-              "            if (!base)",
-              "            {",
-              "                compatible = false;",
-              "                mLastDiagnostic = \"active actor source model could not be published\";",
-              "                return;",
-              "            }",
-              "            const RenderCore::ModelRecord* const baseRecord = mSession->world().get(base->model);",
-              "            if (!baseRecord || !baseRecord->payload)",
-              "            {",
-              "                compatible = false;",
-              "                mLastDiagnostic = \"active actor source model has no current canonical model payload\";",
-              "                return;",
-              "            }",
-              "",
-              "            std::optional<RenderCore::SkeletonHandle> actorSkeleton = base->skeleton;",
-              "            if (!actorSkeleton)",
-              "            {",
-              "                const std::string skeletonIdentity(animation.getV4SourceModel().value());",
-              "                const auto cached = mForcedActorSkeletons.find(skeletonIdentity);",
-              "                if (cached != mForcedActorSkeletons.end() && mSession->world().get(cached->second))",
-              "                    actorSkeleton = cached->second;",
-              "                else",
-              "                {",
-              "                    NifRender::ForcedActorSkeleton forced = NifRender::buildForcedActorSkeleton(",
-              "                        *baseRecord, \"runtime:forced-actor-skeleton:\" + skeletonIdentity);",
-              "                    if (!forced.valid())",
-              "                    {",
-              "                        compatible = false;",
-              "                        mLastDiagnostic = \"active actor source model cannot reproduce OpenMW's forced skeleton: \"",
-              "                            + forced.diagnostic;",
-              "                        return;",
-              "                    }",
-              "                    const std::optional<RenderCore::SkeletonHandle> reserved",
-              "                        = mSession->world().reserveSkeleton();",
-              "                    if (!reserved)",
-              "                    {",
-              "                        compatible = false;",
-              "                        mLastDiagnostic = \"forced actor skeleton handle reservation failed\";",
-              "                        return;",
-              "                    }",
-              "                    RenderCore::RenderWorldUpdateBatch batch(mSession->world().epoch(),",
-              "                        mSession->publisher().nextSequence(), forced.record.sourceIdentity);",
-              "                    if (!batch.add(RenderCore::CreateSkeleton{ *reserved, std::move(forced.record) })",
-              "                        || !batch.seal()",
-              "                        || mSession->publisher().apply(batch) != RenderCore::PublishStatus::Applied)",
-              "                    {",
-              "                        mSession->world().cancel(*reserved);",
-              "                        compatible = false;",
-              "                        mLastDiagnostic = \"forced actor skeleton publication failed\";",
-              "                        return;",
-              "                    }",
-              "                    mForcedActorSkeletons.insert_or_assign(skeletonIdentity, *reserved);",
-              "                    actorSkeleton = *reserved;",
-              "                }",
-              "            }",
-              "            RenderCore::ModelHandle actorModel = base->model;",
-          ])
-          text = text[:actor_start] + actor_replacement + text[actor_end:]
 
-          compose_old = "mSession->world(), base->model, *base->skeleton, parts, \"runtime:npc:\" + *identity);"
-          compose_new = "mSession->world(), base->model, *actorSkeleton, parts, \"runtime:npc:\" + *identity);"
-          if text.count(compose_old) != 1:
-              raise SystemExit(f"compose skeleton anchor count={text.count(compose_old)}")
-          text = text.replace(compose_old, compose_new, 1)
-
-          compare_old = "bound->skeleton != base->skeleton"
-          if text.count(compare_old) != 1:
-              raise SystemExit(f"instance skeleton compare anchor count={text.count(compare_old)}")
-          text = text.replace(compare_old, "bound->skeleton != actorSkeleton", 1)
-
-          source_old = "makeV4DynamicInstanceSource(ptr, actorModel, *base->skeleton, modelRecord->bounds)"
-          if text.count(source_old) != 1:
-              raise SystemExit(f"dynamic source skeleton anchor count={text.count(source_old)}")
-          text = text.replace(
-              source_old,
-              "makeV4DynamicInstanceSource(ptr, actorModel, *actorSkeleton, modelRecord->bounds)",
-              1,
+          state = Path("components/lua/luastate.cpp")
+          replace_once(
+              state,
+              """    sol::protected_function_result LuaState::runInNewSandbox(const VFS::Path::Normalized& path,\n        const std::string& envName, const std::map<std::string, sol::main_object>& packages,\n        const sol::main_object& hiddenData, const sol::main_table* packagePrototype)\n""",
+              """    sol::protected_function_result LuaState::runInNewSandbox(const VFS::Path::Normalized& path,\n        const std::string& envName, const std::map<std::string, sol::main_object>& packages,\n        const sol::main_object& hiddenData, const sol::main_table* packagePrototype, ScriptId scriptId)\n""",
           )
-          bridge.write_text(text)
-
-          engine = Path("apps/openmw/engine.cpp")
-          text = engine.read_text()
-          route_start = text.index(
-              "    MWRender::RenderingManager* rendering = mWorld ? mWorld->getRenderingManager() : nullptr;\n"
-              "    MWWorld::CellStore* current = rendering ? mWorld->getWorldScene().getCurrentCell() : nullptr;"
+          replace_once(
+              state,
+              """        ScriptId scriptId;\n        if (hiddenData.is<sol::table>())\n            scriptId = hiddenData.as<sol::table>()\n                           .get<sol::optional<ScriptId>>(ScriptsContainer::sScriptIdKey)\n                           .value_or(ScriptId{});\n\n""",
+              """        // The owning ScriptsContainer passes ScriptId directly from C++. Do not\n        // round-trip this engine pointer/index pair through Lua userdata here:\n        // malformed or nil userdata can make sol's unchecked as_value getter\n        // dereference a null pointer before Lua can report a normal type error.\n\n""",
           )
-          route_end = text.index("\n\n    if (result == RenderCore::RenderFrameResult::Failed)", route_start)
-          route_replacement = "\n".join([
-              "    MWRender::RenderingManager* rendering = mWorld ? mWorld->getRenderingManager() : nullptr;",
-              "    MWWorld::CellStore* current = rendering ? mWorld->getWorldScene().getCurrentCell() : nullptr;",
-              "    const bool lifecycleReady = mV4RenderBridge->sceneRenderLifecycleTaken();",
-              "    const bool gameplayRunning",
-              "        = mStateManager && mStateManager->getState() == MWBase::StateManager::State_Running;",
-              "",
-              "    // New-game transitions can establish the authoritative player cell",
-              "    // before WorldScene::mCurrentCell catches up. Do not silently keep",
-              "    // presenting a GUI-only black frame when the player already owns a",
-              "    // valid gameplay cell; use the same CellStore as the gameplay route.",
-              "    if (rendering && lifecycleReady && gameplayRunning && (!current || !current->getCell()))",
-              "    {",
-              "        const MWWorld::Ptr player = mWorld->getPlayerPtr();",
-              "        if (!player.isEmpty() && player.getCell() && player.getCell()->getCell())",
-              "            current = player.getCell();",
-              "    }",
-              "",
-              "    if (rendering && current && current->getCell() && lifecycleReady)",
-              "    {",
-              "        result = mV4FrameCoordinator->render(",
-              "            *rendering, *current->getCell(), simulationTime, frameDelta, invalidateHistory);",
-              "    }",
-              "    else",
-              "        result = mV4RenderBridge->renderGuiFrame(simulationTime, frameDelta);",
-          ])
-          text = text[:route_start] + route_replacement + text[route_end:]
-          engine.write_text(text)
+
+          container = Path("components/lua/scriptscontainer.cpp")
+          replace_once(
+              container,
+              """            sol::object scriptOutput\n                = mLua.runInNewSandbox(path, debugName, mAPI, script.mHiddenData, packagePrototype);\n""",
+              """            sol::object scriptOutput = mLua.runInNewSandbox(\n                path, debugName, mAPI, script.mHiddenData, packagePrototype, ScriptId{ this, scriptId });\n""",
+          )
+
+          contract = Path("tools/v4/cp4/runtime-blocker-contract.py")
+          contract.write_text(r'''#!/usr/bin/env python3
+from pathlib import Path
+
+root = Path(__file__).resolve().parents[3]
+actor = (root / "components/nifrender/actormodelcomposer.hpp").read_text()
+state_hpp = (root / "components/lua/luastate.hpp").read_text()
+state_cpp = (root / "components/lua/luastate.cpp").read_text()
+container = (root / "components/lua/scriptscontainer.cpp").read_text()
+engine = (root / "apps/openmw/engine.cpp").read_text()
+bridge = (root / "apps/openmw/mwrender/v4enginerenderbridge.cpp").read_text()
+
+required = {
+    "forced actor skeleton helper": "buildForcedActorSkeleton" in actor,
+    "first-match duplicate actor bones": "if (names.find(folded) != names.end())\n                continue;" in actor,
+    "direct sandbox ScriptId parameter": "ScriptId scriptId = {}" in state_hpp,
+    "direct container ScriptId handoff": "ScriptId{ this, scriptId }" in container,
+    "runtime forced skeleton publication": "runtime:forced-actor-skeleton:" in bridge,
+}
+for label, ok in required.items():
+    if not ok:
+        raise SystemExit(f"FAIL: missing {label}")
+
+forbidden = {
+    "V4-only duplicate-bone rejection": "ambiguous case-insensitive bone name" in actor,
+    "unsafe ScriptId Lua userdata recovery": ".get<sol::optional<ScriptId>>(ScriptsContainer::sScriptIdKey)" in state_cpp,
+    "speculative new-game player-cell fallback": "New-game transitions can establish the authoritative player cell" in engine,
+    "old actor canonical-skeleton hard reject": "active actor source model has no publishable canonical skeleton" in bridge,
+}
+for label, present in forbidden.items():
+    if present:
+        raise SystemExit(f"FAIL: {label} remains")
+
+print("CP4F runtime blocker contract: PASS")
+''')
           PY
 
+          python3 tools/v4/cp4/runtime-blocker-contract.py
+          python3 tools/v4/cp4/animated-object-contract.py
+          python3 tools/v4/cp4/fullbody-first-person-contract.py
+          python3 tools/v4/cp4/video-ui-contract.py
           git diff --check
-          grep -F 'mForcedActorSkeletons.clear();' apps/openmw/mwrender/v4enginerenderbridge.cpp
-          grep -F 'buildForcedActorSkeleton' apps/openmw/mwrender/v4enginerenderbridge.cpp
-          grep -F '*actorSkeleton, parts' apps/openmw/mwrender/v4enginerenderbridge.cpp
-          grep -F 'player.getCell()->getCell()' apps/openmw/engine.cpp
-          ! grep -F 'active actor source model has no publishable canonical skeleton' apps/openmw/mwrender/v4enginerenderbridge.cpp
+
+          echo "runInNewSandbox call sites after repair:"
+          grep -R --exclude-dir=.git -n 'runInNewSandbox' components apps tools | head -100
 
           git config user.name 'Chance'
           git config user.email 'l.s.chance2000@gmail.com'
-          git add apps/openmw/mwrender/v4enginerenderbridge.cpp apps/openmw/engine.cpp
-          git commit -m 'CP4F: repair forced actor skeleton and new-game cell route [skip ci]'
+          git add \
+            apps/openmw/engine.cpp \
+            components/nifrender/actormodelcomposer.hpp \
+            components/lua/luastate.hpp \
+            components/lua/luastate.cpp \
+            components/lua/scriptscontainer.cpp \
+            tools/v4/cp4/runtime-blocker-contract.py
+          git commit -m 'CP4F: harden actor skeleton and Lua sandbox startup [skip ci]'
           git push origin HEAD:v4.0-cp4f-exterior-closeout
