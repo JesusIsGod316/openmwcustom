@@ -197,6 +197,9 @@ struct VideoState {
     PacketQueue videoq;
     SwsContext*  sws_context;
     int sws_context_w, sws_context_h;
+    AVPixelFormat sws_context_format;
+    AVColorRange sws_context_range;
+    AVColorSpace sws_context_space;
     std::array<VideoPicture, VIDEO_PICTURE_QUEUE_SIZE+1> pictq;  // allocate one extra to make sure we do not overwrite the osg::Image currently set on the texture
     int pictq_size;
     unsigned long pictq_rindex, pictq_windex;

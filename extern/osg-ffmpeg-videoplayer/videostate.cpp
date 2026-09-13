@@ -20,6 +20,7 @@ extern "C"
 {
     #include <libavcodec/avcodec.h>
     #include <libavformat/avformat.h>
+    #include <libavutil/pixdesc.h>
     #include <libswscale/swscale.h>
     #include <libavutil/time.h>
 }
@@ -49,6 +50,53 @@ namespace
 {
     const int MAX_AUDIOQ_SIZE = (5 * 16 * 1024);
     const int MAX_VIDEOQ_SIZE = (5 * 256 * 1024);
+
+    AVColorRange sourceColorRange(const AVFrame& frame, const AVCodecContext& codec)
+    {
+        if (frame.color_range != AVCOL_RANGE_UNSPECIFIED)
+            return frame.color_range;
+        if (codec.color_range != AVCOL_RANGE_UNSPECIFIED)
+            return codec.color_range;
+
+        const auto format = static_cast<AVPixelFormat>(frame.format);
+        const AVPixFmtDescriptor* const descriptor = av_pix_fmt_desc_get(format);
+        if (descriptor && (descriptor->flags & AV_PIX_FMT_FLAG_RGB) != 0)
+            return AVCOL_RANGE_JPEG;
+
+        // FFmpeg 3.x did not publish Bink's range metadata. Match the modern
+        // decoder's bitstream rule: Bink version 'k' is full-range; all earlier
+        // versions are limited-range. Other unspecified YUV inputs retain
+        // libswscale's established limited-range default.
+        if (codec.codec_id == AV_CODEC_ID_BINKVIDEO)
+            return (codec.codec_tag >> 24) == 'k' ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+        return AVCOL_RANGE_MPEG;
+    }
+
+    AVColorSpace sourceColorSpace(const AVFrame& frame, const AVCodecContext& codec)
+    {
+        return frame.colorspace != AVCOL_SPC_UNSPECIFIED ? frame.colorspace : codec.colorspace;
+    }
+
+    int swscaleColorSpace(AVColorSpace space)
+    {
+        switch (space)
+        {
+            case AVCOL_SPC_BT709: return SWS_CS_ITU709;
+            case AVCOL_SPC_FCC: return SWS_CS_FCC;
+            case AVCOL_SPC_BT470BG:
+            case AVCOL_SPC_SMPTE170M: return SWS_CS_ITU601;
+            case AVCOL_SPC_SMPTE240M: return SWS_CS_SMPTE240M;
+            case AVCOL_SPC_BT2020_NCL:
+            case AVCOL_SPC_BT2020_CL: return SWS_CS_BT2020;
+            default: return SWS_CS_DEFAULT;
+        }
+    }
+
+    bool isRgbFormat(AVPixelFormat format)
+    {
+        const AVPixFmtDescriptor* const descriptor = av_pix_fmt_desc_get(format);
+        return descriptor && (descriptor->flags & AV_PIX_FMT_FLAG_RGB) != 0;
+    }
 
     struct AVPacketUnref
     {
@@ -92,7 +140,8 @@ VideoState::VideoState()
     , audio_st(nullptr)
     , video_st(nullptr), frame_last_pts(0.0)
     , video_clock(0.0), sws_context(nullptr)
-    , sws_context_w(0), sws_context_h(0)
+    , sws_context_w(0), sws_context_h(0), sws_context_format(AV_PIX_FMT_NONE)
+    , sws_context_range(AVCOL_RANGE_UNSPECIFIED), sws_context_space(AVCOL_SPC_UNSPECIFIED)
     , pictq_size(0), pictq_rindex(0), pictq_windex(0)
     , mSeekRequested(false)
     , mSeekPos(0)
@@ -403,17 +452,38 @@ int VideoState::queue_picture(const AVFrame &pFrame, double pts)
     // matches a commonly used format (ie YUV420P)
     const int w = pFrame.width;
     const int h = pFrame.height;
-    if(this->sws_context == nullptr || this->sws_context_w != w || this->sws_context_h != h)
+    const auto sourceFormat = static_cast<AVPixelFormat>(pFrame.format);
+    const AVColorRange sourceRange = sourceColorRange(pFrame, *this->video_ctx);
+    const AVColorSpace sourceSpace = sourceColorSpace(pFrame, *this->video_ctx);
+    if(this->sws_context == nullptr || this->sws_context_w != w || this->sws_context_h != h
+        || this->sws_context_format != sourceFormat || this->sws_context_range != sourceRange
+        || this->sws_context_space != sourceSpace)
     {
         if (this->sws_context != nullptr)
             sws_freeContext(this->sws_context);
-        this->sws_context = sws_getContext(w, h, this->video_ctx->pix_fmt,
+        this->sws_context = sws_getContext(w, h, sourceFormat,
                                            w, h, AV_PIX_FMT_RGBA, SWS_BICUBIC,
                                            nullptr, nullptr, nullptr);
         if(this->sws_context == nullptr)
             throw std::runtime_error("Cannot initialize the conversion context!\n");
+
+        const int swsSpace = swscaleColorSpace(sourceSpace);
+        const int* coefficients = sws_getCoefficients(swsSpace);
+        const int sourceIsFullRange = sourceRange == AVCOL_RANGE_JPEG ? 1 : 0;
+        if (!isRgbFormat(sourceFormat)
+            && (!coefficients || sws_setColorspaceDetails(this->sws_context, coefficients, sourceIsFullRange,
+                                      coefficients, 1, 0, 1 << 16, 1 << 16)
+                    < 0))
+        {
+            sws_freeContext(this->sws_context);
+            this->sws_context = nullptr;
+            throw std::runtime_error("Cannot apply the decoded video's color conversion metadata!\n");
+        }
         this->sws_context_w = w;
         this->sws_context_h = h;
+        this->sws_context_format = sourceFormat;
+        this->sws_context_range = sourceRange;
+        this->sws_context_space = sourceSpace;
     }
 
     vp->pts = pts;
@@ -421,7 +491,7 @@ int VideoState::queue_picture(const AVFrame &pFrame, double pts)
         return -1;
 
     sws_scale(this->sws_context, pFrame.data, pFrame.linesize,
-              0, this->video_ctx->height, vp->rgbaFrame->data, vp->rgbaFrame->linesize);
+              0, h, vp->rgbaFrame->data, vp->rgbaFrame->linesize);
 
     // now we inform our display thread that we have a pic ready
     this->pictq_windex = (this->pictq_windex+1) % this->pictq.size();

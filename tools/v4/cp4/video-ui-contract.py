@@ -39,6 +39,8 @@ render = source("components/vsgmygui/rendermanager.cpp")
 texture = source("components/vsgmygui/texture.cpp")
 decoder = source("components/vsgmygui/vfsimagedecoder.cpp")
 ui = source("components/render/backend/vsg/uipipeline.cpp")
+video_state = source("extern/osg-ffmpeg-videoplayer/videostate.cpp")
+video_state_header = source("extern/osg-ffmpeg-videoplayer/include/osg-ffmpeg-videoplayer/videostate.hpp")
 engine = source("apps/openmw/engine.cpp")
 
 # The FFmpeg decoder may remain OSG-backed internally during migration, but an
@@ -126,6 +128,38 @@ require(ui, "srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA", "MyGUI source alp
 require(ui, "dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA", "MyGUI destination alpha")
 require(ui, "depth->depthTestEnable = VK_FALSE", "MyGUI depth-test disable")
 require(ui, "depth->depthWriteEnable = VK_FALSE", "MyGUI depth-write disable")
+
+# MyGUI stores display-referred colours in its packed vertex bytes. Unlike an
+# sRGB image view, a Vulkan UNORM vertex attribute has no automatic transfer
+# decode, so the shader must perform the exact piecewise sRGB decode before
+# linear texture modulation. Alpha remains linear coverage.
+require(ui, "lessThanEqual(value, vec3(0.04045))", "MyGUI vertex sRGB cutoff")
+require(ui, "value / 12.92", "MyGUI vertex sRGB linear segment")
+require(ui, "vec3(2.4)", "MyGUI vertex sRGB power segment")
+require(ui, "srgbToLinear(fragColor.rgb)", "MyGUI vertex colour transfer")
+forbid(ui, "pow(color, 1.0 / 2.2)", "arbitrary UI gamma correction")
+forbid(ui, "pow(color, 2.2)", "arbitrary UI gamma correction")
+
+# FFmpeg owns decoded frame metadata. Rebuild the cached scaler whenever the
+# per-frame format/range/matrix changes, apply those semantics through
+# libswscale, and retain modern FFmpeg's exact Bink fallback for old supported
+# FFmpeg releases that left Bink range unspecified.
+require(video_state, "frame.color_range", "decoded-frame range metadata")
+require(video_state, "frame.colorspace", "decoded-frame matrix metadata")
+require(video_state, "static_cast<AVPixelFormat>(pFrame.format)", "decoded-frame pixel format")
+require(video_state, "codec.codec_id == AV_CODEC_ID_BINKVIDEO", "Bink range fallback scope")
+require(video_state, "(codec.codec_tag >> 24) == 'k' ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG",
+        "Bink bitstream range fallback")
+require(video_state, "sws_getCoefficients(swsSpace)", "libswscale matrix selection")
+require(video_state, "sws_setColorspaceDetails", "libswscale range and matrix application")
+require(video_state, "coefficients, 1, 0, 1 << 16, 1 << 16", "full-range RGBA neutral adjustments")
+require(video_state, "AV_PIX_FMT_FLAG_RGB", "RGB full-range and matrix-bypass classification")
+require(video_state, "!isRgbFormat(sourceFormat)", "YUV-only matrix application")
+require(video_state, "0, h, vp->rgbaFrame->data", "decoded-frame height conversion")
+require(video_state_header, "AVPixelFormat sws_context_format", "scaler pixel-format cache key")
+require(video_state_header, "AVColorRange sws_context_range", "scaler range cache key")
+require(video_state_header, "AVColorSpace sws_context_space", "scaler matrix cache key")
+forbid(video_state, "sws_getContext(w, h, this->video_ctx->pix_fmt", "codec-global scaler format")
 
 # Keep fail-closed handling for genuinely unresolved OSG/foreign render-target
 # textures. Video compatibility must not be implemented by silently accepting

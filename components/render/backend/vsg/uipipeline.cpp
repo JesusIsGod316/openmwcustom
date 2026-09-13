@@ -38,9 +38,22 @@ layout(set = 0, binding = 0) uniform sampler2D tex;
 
 layout(location = 0) out vec4 outColor;
 
+vec3 srgbToLinear(vec3 value)
+{
+    vec3 low = value / 12.92;
+    vec3 high = pow((value + 0.055) / 1.055, vec3(2.4));
+    return mix(high, low, lessThanEqual(value, vec3(0.04045)));
+}
+
 void main()
 {
-    outColor = texture(tex, fragUV) * fragColor;
+    // MyGUI colours are authored display-referred byte values, just like its
+    // file-backed colour textures. The vertex attribute itself is UNORM (not
+    // an image, so Vulkan cannot apply an sRGB decode). Decode RGB explicitly
+    // before modulation; alpha remains linear coverage. This is the defined
+    // sRGB transfer, not a visual gamma adjustment.
+    vec4 modulation = vec4(srgbToLinear(fragColor.rgb), fragColor.a);
+    outColor = texture(tex, fragUV) * modulation;
 }
 )";
 
