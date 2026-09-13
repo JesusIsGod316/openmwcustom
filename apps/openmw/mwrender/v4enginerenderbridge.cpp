@@ -487,6 +487,7 @@ namespace MWRender
         mLastDiagnostic.clear();
         if (mComposedActorEpoch != mSession->world().epoch())
         {
+            mForcedActorSkeletons.clear();
             mComposedActors.clear();
             mComposedActorEpoch = mSession->world().epoch();
         }
@@ -609,11 +610,60 @@ namespace MWRender
             }
             const std::optional<NifRender::StaticModelCacheResult> base
                 = ensureModelPublished(*mSession, mVfs, animation.getV4SourceModel());
-            if (!base || !base->skeleton)
+            if (!base)
             {
                 compatible = false;
-                mLastDiagnostic = "active actor source model has no publishable canonical skeleton";
+                mLastDiagnostic = "active actor source model could not be published";
                 return;
+            }
+            const RenderCore::ModelRecord* const baseRecord = mSession->world().get(base->model);
+            if (!baseRecord || !baseRecord->payload)
+            {
+                compatible = false;
+                mLastDiagnostic = "active actor source model has no current canonical model payload";
+                return;
+            }
+
+            std::optional<RenderCore::SkeletonHandle> actorSkeleton = base->skeleton;
+            if (!actorSkeleton)
+            {
+                const std::string skeletonIdentity(animation.getV4SourceModel().value());
+                const auto cached = mForcedActorSkeletons.find(skeletonIdentity);
+                if (cached != mForcedActorSkeletons.end() && mSession->world().get(cached->second))
+                    actorSkeleton = cached->second;
+                else
+                {
+                    NifRender::ForcedActorSkeleton forced = NifRender::buildForcedActorSkeleton(
+                        *baseRecord, "runtime:forced-actor-skeleton:" + skeletonIdentity);
+                    if (!forced.valid())
+                    {
+                        compatible = false;
+                        mLastDiagnostic = "active actor source model cannot reproduce OpenMW's forced skeleton: "
+                            + forced.diagnostic;
+                        return;
+                    }
+                    const std::optional<RenderCore::SkeletonHandle> reserved
+                        = mSession->world().reserveSkeleton();
+                    if (!reserved)
+                    {
+                        compatible = false;
+                        mLastDiagnostic = "forced actor skeleton handle reservation failed";
+                        return;
+                    }
+                    RenderCore::RenderWorldUpdateBatch batch(mSession->world().epoch(),
+                        mSession->publisher().nextSequence(), forced.record.sourceIdentity);
+                    if (!batch.add(RenderCore::CreateSkeleton{ *reserved, std::move(forced.record) })
+                        || !batch.seal()
+                        || mSession->publisher().apply(batch) != RenderCore::PublishStatus::Applied)
+                    {
+                        mSession->world().cancel(*reserved);
+                        compatible = false;
+                        mLastDiagnostic = "forced actor skeleton publication failed";
+                        return;
+                    }
+                    mForcedActorSkeletons.insert_or_assign(skeletonIdentity, *reserved);
+                    actorSkeleton = *reserved;
+                }
             }
             RenderCore::ModelHandle actorModel = base->model;
             if (auto* npc = dynamic_cast<NpcAnimation*>(&animation))
@@ -735,7 +785,7 @@ namespace MWRender
                     || !mSession->world().get(entry->second.model))
                 {
                     NifRender::ComposedActorModel composed = NifRender::composeActorModel(
-                        mSession->world(), base->model, *base->skeleton, parts, "runtime:npc:" + *identity);
+                        mSession->world(), base->model, *actorSkeleton, parts, "runtime:npc:" + *identity);
                     if (!composed.valid())
                     {
                         compatible = false;
@@ -819,11 +869,11 @@ namespace MWRender
 
             std::optional<RenderCore::InstanceHandle> handle = mSession->cells().findInstance(*identity);
             const RenderCore::InstanceRecord* bound = handle ? mSession->world().get(*handle) : nullptr;
-            if (!bound || bound->model != actorModel || bound->skeleton != base->skeleton)
+            if (!bound || bound->model != actorModel || bound->skeleton != actorSkeleton)
             {
                 const RenderCore::ModelRecord* modelRecord = mSession->world().get(actorModel);
                 const std::optional<RenderCore::DynamicInstanceSource> dynamic = modelRecord
-                    ? makeV4DynamicInstanceSource(ptr, actorModel, *base->skeleton, modelRecord->bounds)
+                    ? makeV4DynamicInstanceSource(ptr, actorModel, *actorSkeleton, modelRecord->bounds)
                     : std::nullopt;
                 if (!dynamic)
                 {

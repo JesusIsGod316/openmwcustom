@@ -1594,7 +1594,22 @@ void OMW::Engine::presentVulkanFrame(float frameDelta, bool invalidateHistory)
     RenderCore::RenderFrameResult result = RenderCore::RenderFrameResult::Skipped;
     MWRender::RenderingManager* rendering = mWorld ? mWorld->getRenderingManager() : nullptr;
     MWWorld::CellStore* current = rendering ? mWorld->getWorldScene().getCurrentCell() : nullptr;
-    if (rendering && current && current->getCell() && mV4RenderBridge->sceneRenderLifecycleTaken())
+    const bool lifecycleReady = mV4RenderBridge->sceneRenderLifecycleTaken();
+    const bool gameplayRunning
+        = mStateManager && mStateManager->getState() == MWBase::StateManager::State_Running;
+
+    // New-game transitions can establish the authoritative player cell
+    // before WorldScene::mCurrentCell catches up. Do not silently keep
+    // presenting a GUI-only black frame when the player already owns a
+    // valid gameplay cell; use the same CellStore as the gameplay route.
+    if (rendering && lifecycleReady && gameplayRunning && (!current || !current->getCell()))
+    {
+        const MWWorld::Ptr player = mWorld->getPlayerPtr();
+        if (!player.isEmpty() && player.getCell() && player.getCell()->getCell())
+            current = player.getCell();
+    }
+
+    if (rendering && current && current->getCell() && lifecycleReady)
     {
         result = mV4FrameCoordinator->render(
             *rendering, *current->getCell(), simulationTime, frameDelta, invalidateHistory);
