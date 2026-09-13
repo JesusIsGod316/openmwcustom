@@ -136,8 +136,8 @@ namespace LuaUtil
                     mV314PackagePrototype.emplace(mLua.makePackagePrototype(mAPI));
                 packagePrototype = &*mV314PackagePrototype;
             }
-            sol::object scriptOutput
-                = mLua.runInNewSandbox(path, debugName, mAPI, script.mHiddenData, packagePrototype);
+            sol::object scriptOutput = mLua.runInNewSandbox(
+                path, debugName, mAPI, script.mHiddenData, packagePrototype, ScriptId{ this, scriptId });
             if (scriptOutput == sol::nil)
                 return true;
             const auto v36HandlersStart = Debug::V3Diagnostics::Clock::now();

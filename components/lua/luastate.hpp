@@ -158,7 +158,8 @@ namespace LuaUtil
         //         (once per sandbox) with the argument 'hiddenData' the first time when requested.
         sol::protected_function_result runInNewSandbox(const VFS::Path::Normalized& path,
             const std::string& envName = "unnamed", const std::map<std::string, sol::main_object>& packages = {},
-            const sol::main_object& hiddenData = sol::nil, const sol::main_table* packagePrototype = nullptr);
+            const sol::main_object& hiddenData = sol::nil, const sol::main_table* packagePrototype = nullptr,
+            ScriptId scriptId = {});
 
         void dropScriptCache() { mCompiledScripts.clear(); }
 

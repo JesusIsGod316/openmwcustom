@@ -394,7 +394,7 @@ namespace LuaUtil
 
     sol::protected_function_result LuaState::runInNewSandbox(const VFS::Path::Normalized& path,
         const std::string& envName, const std::map<std::string, sol::main_object>& packages,
-        const sol::main_object& hiddenData, const sol::main_table* packagePrototype)
+        const sol::main_object& hiddenData, const sol::main_table* packagePrototype, ScriptId scriptId)
     {
         sol::protected_function script;
         {
@@ -411,11 +411,10 @@ namespace LuaUtil
         Debug::V36LuaAddScriptTrace::add(
             Debug::V36LuaAddScriptTrace::Phase::Environment, v36EnvironmentStart);
 
-        ScriptId scriptId;
-        if (hiddenData.is<sol::table>())
-            scriptId = hiddenData.as<sol::table>()
-                           .get<sol::optional<ScriptId>>(ScriptsContainer::sScriptIdKey)
-                           .value_or(ScriptId{});
+        // The owning ScriptsContainer passes ScriptId directly from C++. Do not
+        // round-trip this engine pointer/index pair through Lua userdata here:
+        // malformed or nil userdata can make sol's unchecked as_value getter
+        // dereference a null pointer before Lua can report a normal type error.
 
         auto maybeRunLoader = [&hiddenData, scriptId](const sol::object& package) -> sol::object {
             if (package.is<sol::function>())

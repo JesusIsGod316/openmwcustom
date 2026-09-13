@@ -39,7 +39,9 @@ namespace NifRender
     // Bone candidates are named ordinary transform nodes. Their hierarchy is
     // collapsed across non-bone ancestors exactly like the normal NIF skeleton
     // translator, and all names are case-folded to match OpenMW's bone lookup.
-    // Ambiguous names or non-invertible bind transforms remain fail-closed.
+    // OpenMW's source Skeleton cache keeps the first case-insensitive name match,
+    // so duplicate named transforms are skipped here rather than rejected.
+    // Non-invertible transforms remain fail-closed.
     [[nodiscard]] inline ForcedActorSkeleton buildForcedActorSkeleton(
         const RenderCore::ModelRecord& base, std::string sourceIdentity = {})
     {
@@ -70,11 +72,14 @@ namespace NifRender
                 continue;
 
             const std::string folded = foldName(source.name);
-            if (!names.emplace(folded, payload->bones.size()).second)
-            {
-                result.diagnostic = "forced actor skeleton has an ambiguous case-insensitive bone name: " + source.name;
-                return result;
-            }
+            // SceneUtil::Skeleton::InitBoneCacheVisitor uses unordered_map::emplace,
+            // which gives OpenMW first-match semantics for duplicate names. Match
+            // that behavior so mod-authored duplicate transforms do not become a
+            // V4-only incompatibility. Descendants still fold through this skipped
+            // transform while searching for the nearest retained parent bone.
+            if (names.find(folded) != names.end())
+                continue;
+            names.emplace(folded, payload->bones.size());
 
             std::vector<std::size_t> path;
             std::optional<std::size_t> parentBone;
