@@ -11,6 +11,8 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
+#include <unordered_map>
 
 namespace vsg
 {
@@ -58,6 +60,21 @@ namespace RenderVsg
         [[nodiscard]] std::size_t localLightCount() const noexcept { return mPlan.lights.size(); }
 
     private:
+        struct LocalLightTemporalState
+        {
+            RenderCore::LightModulation modulation = RenderCore::LightModulation::Constant;
+            std::uint32_t rngState = 1u;
+            float phase = 0.25f;
+            float brightness = 0.675f;
+            float ticksToAdvance = 0.0f;
+            double startTime = 0.0;
+            double lastTime = 0.0;
+            bool started = false;
+        };
+
+        [[nodiscard]] float evaluateLocalLightModulation(
+            const PackedLocalLightEntry& entry, double simulationTime) const noexcept;
+
         LocalLightBufferPlan mPlan;
         vsg::ref_ptr<vsg::vec4Array> mOpenMwLightData;
         vsg::ref_ptr<vsg::BufferInfo> mOpenMwLightBufferInfo;
@@ -66,6 +83,7 @@ namespace RenderVsg
         RenderCore::FrameEnvironmentState mEnvironment;
         RenderCore::ProjectionState mProjection;
         glm::vec4 mEyeClipPlane{};
+        mutable std::unordered_map<std::uint64_t, LocalLightTemporalState> mLocalLightTemporalStates;
         bool mRadiusFadeEnabled = true;
     };
 }
