@@ -103,14 +103,23 @@ namespace MWGui
 #if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
         if (dynamic_cast<VsgMyGui::RenderManager*>(&MyGUI::RenderManager::getInstance()))
         {
-            auto nativeTexture = std::make_unique<VsgMyGui::Texture>("__openmw_video_rgba8");
+            // Keep one native MyGUI texture object for this widget across movie
+            // changes and animated-menu loop restarts. MyGUI RenderItem stores a
+            // raw ITexture pointer, so stable object identity avoids a transient
+            // stale pointer while only the revisioned VSG image backing changes.
+            auto* nativeTexture = dynamic_cast<VsgMyGui::Texture*>(mTexture.get());
+            if (!nativeTexture)
+            {
+                auto created = std::make_unique<VsgMyGui::Texture>("__openmw_video_rgba8");
+                nativeTexture = created.get();
+                mTexture = std::move(created);
+            }
             if (!updateVulkanVideoTexture(*mPlayer, *nativeTexture))
             {
                 Log(Debug::Error) << "V4 Vulkan video bridge could not publish the first decoded frame for '" << video
                                   << "'";
                 return;
             }
-            mTexture = std::move(nativeTexture);
             Log(Debug::Info) << "V4 Vulkan video bridge: publishing decoded RGBA8 frames for '" << video << "'";
         }
         else
