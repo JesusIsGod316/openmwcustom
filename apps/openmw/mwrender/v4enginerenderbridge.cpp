@@ -74,10 +74,16 @@ namespace MWRender
         }
 
         [[nodiscard]] std::optional<NifRender::StaticModelCacheResult> ensureModelPublished(
-            RenderVsg::VsgSemanticSession& session, const VFS::Manager& vfs, VFS::Path::NormalizedView path)
+            RenderVsg::VsgSemanticSession& session, const VFS::Manager& vfs, VFS::Path::NormalizedView path,
+            std::string* failureDiagnostic = nullptr)
         {
-            if (path.empty())
+            const auto fail = [&](std::string message) -> std::optional<NifRender::StaticModelCacheResult> {
+                if (failureDiagnostic)
+                    *failureDiagnostic = std::move(message);
                 return std::nullopt;
+            };
+            if (path.empty())
+                return fail("model path is empty");
             if (const std::optional<RenderCore::ModelHandle> model = session.models().find(path.value()))
             {
                 return NifRender::StaticModelCacheResult{ NifRender::StaticModelCacheStatus::Reused,
@@ -85,13 +91,42 @@ namespace MWRender
             }
             const VFS::Path::Normalized normalized(path);
             if (!vfs.exists(normalized))
-                return std::nullopt;
-            Nif::NIFFile nifFile(normalized);
-            Nif::Reader reader(nifFile, nullptr);
-            reader.parse(vfs.get(normalized));
-            const NifRender::TranslationBundle bundle = NifRender::translateStaticNif(Nif::FileView(nifFile), vfs);
-            const NifRender::StaticModelCacheResult published = session.models().publish(bundle);
-            return published.available() ? std::optional<NifRender::StaticModelCacheResult>(published) : std::nullopt;
+                return fail("winning VFS has no file for '" + std::string(path.value()) + "'");
+            try
+            {
+                Nif::NIFFile nifFile(normalized);
+                Nif::Reader reader(nifFile, nullptr);
+                reader.parse(vfs.get(normalized));
+                const NifRender::TranslationBundle bundle
+                    = NifRender::translateStaticNif(Nif::FileView(nifFile), vfs);
+                const NifRender::StaticModelCacheResult published = session.models().publish(bundle);
+                if (published.available())
+                    return published;
+
+                std::string detail = "model '" + std::string(path.value()) + "' was rejected";
+                for (const NifRender::TranslationDiagnostic& diagnostic : bundle.diagnostics)
+                {
+                    if (diagnostic.severity != NifRender::DiagnosticSeverity::Error)
+                        continue;
+                    detail += " by translation [" + diagnostic.code + "]";
+                    if (diagnostic.sourceRecordId)
+                        detail += " record " + std::to_string(*diagnostic.sourceRecordId);
+                    if (!diagnostic.sourceRecordType.empty())
+                        detail += " (" + diagnostic.sourceRecordType + ")";
+                    if (!diagnostic.message.empty())
+                        detail += ": " + diagnostic.message;
+                    return fail(std::move(detail));
+                }
+                detail += " during cache publication (cache status "
+                    + std::to_string(static_cast<unsigned int>(published.status)) + ", publish status "
+                    + std::to_string(static_cast<unsigned int>(published.publishStatus)) + ")";
+                return fail(std::move(detail));
+            }
+            catch (const std::exception& error)
+            {
+                return fail("model '" + std::string(path.value()) + "' could not be parsed or translated: "
+                    + error.what());
+            }
         }
 
         [[nodiscard]] bool requiresModelPlayback(const RenderCore::ModelRecord& model) noexcept
@@ -773,12 +808,13 @@ namespace MWRender
                 std::string signature(animation.getV4SourceModel().value());
                 for (const NpcAnimation::V4PartSource& part : npc->getV4PartSources())
                 {
+                    std::string partFailure;
                     const std::optional<NifRender::StaticModelCacheResult> published
-                        = ensureModelPublished(*mSession, mVfs, part.model);
+                        = ensureModelPublished(*mSession, mVfs, part.model, &partFailure);
                     if (!published)
                     {
                         compatible = false;
-                        mLastDiagnostic = "NPC part is missing from the winning VFS or failed translation";
+                        mLastDiagnostic = "NPC part '" + std::string(part.model.value()) + "' failed: " + partFailure;
                         return;
                     }
 

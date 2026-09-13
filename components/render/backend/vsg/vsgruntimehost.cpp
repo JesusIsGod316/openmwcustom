@@ -27,6 +27,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -85,6 +86,16 @@ namespace RenderVsg
             auto result = vsg::Switch::create();
             result->addChild(mask, std::move(child));
             return result;
+        }
+
+        [[nodiscard]] std::string compileFailureDiagnostic(std::string_view subject, const vsg::CompileResult& result)
+        {
+            std::string diagnostic(subject);
+            diagnostic += " compilation failed before scene publication (result " + std::to_string(result.result)
+                + ")";
+            if (!result.message.empty())
+                diagnostic += ": " + result.message;
+            return diagnostic;
         }
     }
 
@@ -419,9 +430,14 @@ namespace RenderVsg
             const bool castsShadow = hasSemanticFlag(plan.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster)
                 && (terrain ? mOptions.shadows.terrainCasters : mOptions.shadows.objectCasters);
             placed->addChild(realized.root);
-            if (!compileForViewer(*mViewer, placed))
+            const vsg::CompileResult compileResult = compileForViewer(*mViewer, placed);
+            if (!compileResult)
             {
-                mLastDiagnostic = "incremental VSG compilation failed before scene publication";
+                const RenderCore::ModelRecord* model = world.get(plan.model);
+                const std::string subject = model && !model->sourceIdentity.empty()
+                    ? "incremental VSG model '" + model->sourceIdentity + "'"
+                    : "incremental VSG model";
+                mLastDiagnostic = compileFailureDiagnostic(subject, compileResult);
                 return false;
             }
             replacements.push_back(maskedNode(placementMask(castsShadow, plan.semanticFlags), std::move(placed)));
@@ -487,9 +503,15 @@ namespace RenderVsg
                         placementMask(castsShadow(placement), placement.semanticFlags), std::move(placed)));
                 }
             }
-            if (!compileForViewer(*mViewer, group))
+            const vsg::CompileResult compileResult = compileForViewer(*mViewer, group);
+            if (!compileResult)
             {
-                mLastDiagnostic = "incremental VSG population compilation failed before scene publication";
+                const RenderCore::ModelRecord* model = world.get(plan.model);
+                std::string subject = model && !model->sourceIdentity.empty()
+                    ? "incremental VSG population model '" + model->sourceIdentity + "'"
+                    : "incremental VSG population model";
+                subject += " with " + std::to_string(plan.placements.size()) + " placements";
+                mLastDiagnostic = compileFailureDiagnostic(subject, compileResult);
                 return false;
             }
             auto visibility = vsg::Switch::create();
@@ -676,9 +698,10 @@ namespace RenderVsg
                 = hasSemanticFlag(effect.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster);
             nextRoot->addChild(maskedNode(placementMask(castsShadow, effect.semanticFlags), std::move(placed)));
         }
-        if (!compileForViewer(*mViewer, nextRoot))
+        const vsg::CompileResult compileResult = compileForViewer(*mViewer, nextRoot);
+        if (!compileResult)
         {
-            mLastDiagnostic = "incremental VSG actor compilation failed before scene publication";
+            mLastDiagnostic = compileFailureDiagnostic("incremental VSG actor/effect graph", compileResult);
             return false;
         }
 

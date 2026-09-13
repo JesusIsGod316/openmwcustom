@@ -8,6 +8,8 @@ state_cpp = (root / 'components/lua/luastate.cpp').read_text()
 container = (root / 'components/lua/scriptscontainer.cpp').read_text()
 engine = (root / 'apps/openmw/engine.cpp').read_text()
 bridge = (root / 'apps/openmw/mwrender/v4enginerenderbridge.cpp').read_text()
+translator = (root / 'components/nifrender/niftranslator.cpp').read_text()
+osg_loader = (root / 'components/nifosg/nifloader.cpp').read_text()
 
 required = {
     'forced actor skeleton helper': 'buildForcedActorSkeleton' in actor,
@@ -15,6 +17,10 @@ required = {
     'direct sandbox ScriptId parameter': 'ScriptId scriptId = {}' in state_hpp,
     'direct container ScriptId handoff': 'ScriptId{ this, scriptId }' in container,
     'runtime forced skeleton publication': 'runtime:forced-actor-skeleton:' in bridge,
+    'canonical support-root classification': 'TranslationDisposition::Ignored' in translator,
+    'actor-part asset diagnostic': 'NPC part \'" + std::string(part.model.value()) + "\' failed:' in bridge,
+    'actor-part translation diagnostic': 'diagnostic.code' in bridge,
+    'canonical OSG root filter': 'dynamic_cast<const Nif::NiAVObject*>' in osg_loader,
 }
 for label, ok in required.items():
     if not ok:
@@ -25,6 +31,8 @@ forbidden = {
     'unsafe ScriptId Lua userdata recovery': '.get<sol::optional<ScriptId>>(ScriptsContainer::sScriptIdKey)' in state_cpp,
     'speculative new-game player-cell fallback': 'New-game transitions can establish the authoritative player cell' in engine,
     'old actor canonical-skeleton hard reject': 'active actor source model has no publishable canonical skeleton' in bridge,
+    'support-root translation rejection': 'root.not_avobject' in translator,
+    'opaque actor-part failure': 'NPC part is missing from the winning VFS or failed translation' in bridge,
 }
 for label, present in forbidden.items():
     if present:

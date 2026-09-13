@@ -34,7 +34,8 @@ require(
 require(
     "components/render/backend/vsg/vsgruntimehost.cpp",
     "mStaticPopulationResidency.prepare(world, worldPlan)",
-    "incremental VSG population compilation failed before scene publication",
+    "incremental VSG population model '",
+    "compileFailureDiagnostic(subject, compileResult)",
     "mStaticPopulationResidency.markSubmitted(frame.frameId())",
     "vsg::HardShadows::create(options.shadows.cascadeCount)",
     "shadowSettingsOverride[mSunLight]",

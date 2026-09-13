@@ -191,9 +191,12 @@ namespace
                 const auto* node = dynamic_cast<const Nif::NiAVObject*>(record);
                 if (node == nullptr)
                 {
-                    classify(*record, NifRender::TranslationDisposition::Unsupported);
-                    diagnose(*record, NifRender::DiagnosticSeverity::Error, "root.not_avobject",
-                        "NIF root is not an NiAVObject and cannot participate in the neutral model graph");
+                    // A root table may also contain support records such as
+                    // NiTriShapeData or NiSkinInstance. The canonical OSG and
+                    // Bullet loaders ignore those entries and render every
+                    // NiAVObject root; rejecting the whole file here made valid
+                    // Better Bodies actor parts fail before composition.
+                    classify(*record, NifRender::TranslationDisposition::Ignored);
                     continue;
                 }
 
