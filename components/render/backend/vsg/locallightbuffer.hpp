@@ -26,6 +26,10 @@ namespace RenderVsg
         // xyz = constant/linear/quadratic coefficients; w = actor fade.
         glm::vec4 attenuationFade{ 1.0f, 0.0f, 0.0f, 1.0f };
         // x = enabled, y = modulation enum, z/w = semantic flag halves.
+        // Modulation deliberately stays CPU-side: OpenMwViewDependentState
+        // resolves the legacy temporal controller before uploading the five
+        // vec4 shader payload, so every derived view observes one semantic light
+        // contract without widening the fragment storage layout.
         glm::uvec4 semantics{ 0u };
     };
 
@@ -87,11 +91,10 @@ namespace RenderVsg
         result.coordinateOrigin = coordinateOrigin;
         if (!source.valid())
             return result;
-        if (source.modulatedLights != 0)
-        {
-            result.status = LocalLightBufferStatus::UnsupportedModulation;
-            return result;
-        }
+        // Flicker/pulse semantics are retained in PackedLocalLight::semantics.y
+        // and resolved temporally by OpenMwViewDependentState. Do not reject or
+        // flatten them to constant light merely because the GPU payload itself
+        // contains only the already-evaluated diffuse/specular values.
         if (source.spotLights != 0)
         {
             result.status = LocalLightBufferStatus::UnsupportedSpotLight;
