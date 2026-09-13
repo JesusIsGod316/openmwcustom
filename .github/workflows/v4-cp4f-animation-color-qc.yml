@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
-          CP4F_SOURCE=6e66ecd35328576481b6d72dcb2dbc0f5a06cd78
+          CP4F_SOURCE=299d4bc81e6462b5e57bc97409b11063374c6d34
           git cat-file -e "${CP4E_BASE}^{commit}"
           git cat-file -e "${CP4F_SOURCE}^{commit}"
           test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
@@ -42,6 +42,7 @@ jobs:
           python3 tools/v4/cp4/water-environment-contract.py
           python3 tools/v4/cp4/video-ui-contract.py
           python3 tools/v4/cp4/animated-object-contract.py
+          python3 tools/v4/cp4/fullbody-first-person-contract.py
           python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
           grep -F 'visitor.setTraversalMode(osg::NodeVisitor::TRAVERSE_ACTIVE_CHILDREN)' apps/openmw/mwrender/v4enginerenderbridge.cpp
           grep -F 'animated-object:' apps/openmw/mwrender/v4enginerenderbridge.cpp
