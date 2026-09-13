@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import re
 
 
 def source(path: str) -> str:
@@ -14,10 +15,29 @@ def require(text: str, token: str, label: str) -> None:
         raise SystemExit(f"{label}: missing required source contract: {token}")
 
 
+def forbid(text: str, token: str, label: str) -> None:
+    if token in text:
+        raise SystemExit(f"{label}: forbidden source contract returned: {token}")
+
+
+def require_regex(text: str, pattern: str, label: str) -> re.Match[str]:
+    match = re.search(pattern, text, re.DOTALL | re.MULTILINE)
+    if not match:
+        raise SystemExit(f"{label}: required source pattern was not found")
+    return match
+
+
 video = source("apps/openmw/mwgui/videowidget.cpp")
 menu = source("apps/openmw/mwgui/mainmenu.cpp")
+menu_header = source("apps/openmw/mwgui/mainmenu.hpp")
 window = source("apps/openmw/mwgui/windowmanagerimp.cpp")
+loading = source("apps/openmw/mwgui/loadingscreen.cpp")
+background = source("apps/openmw/mwgui/backgroundimage.cpp")
+buttons = source("components/widgets/imagebutton.cpp")
+fonts = source("components/fontloader/fontloader.cpp")
 render = source("components/vsgmygui/rendermanager.cpp")
+texture = source("components/vsgmygui/texture.cpp")
+decoder = source("components/vsgmygui/vfsimagedecoder.cpp")
 engine = source("apps/openmw/engine.cpp")
 
 # The FFmpeg decoder may remain OSG-backed internally during migration, but an
@@ -31,24 +51,72 @@ require(video, "VK_FORMAT_R8G8B8A8_UNORM", "decoded video format")
 require(video, "rgba->properties.origin = vsg::TOP_LEFT", "decoded video orientation")
 require(video, "V4 Vulkan video bridge: publishing decoded RGBA8 frames", "runtime video-route diagnostic")
 
-# Both startup/credits videos and the animated main-menu background must flow
-# through VideoWidget, so one native bridge covers the two observed black-screen
-# points instead of maintaining a menu-only workaround.
+# Startup/company/logo/credits videos are synchronous MyGUI presentation. The
+# committed FFmpeg frame must be published before the Vulkan GUI-only present.
 require(window, "mVideoWidget->commitFrame();", "startup video commit")
 require(window, "mPresentCallback();", "startup Vulkan GUI-only present")
+require(engine, "presentCallback = [this] { presentVulkanFrame(0.0f, true); };", "engine Vulkan GUI present callback")
+
+# Animated main-menu playback used to run VideoWidget::update()/playVideo() from
+# a wrapper thread while the main thread called commitFrame() and MyGUI collected
+# the same widget tree. FFmpeg already owns decode workers; all VideoWidget/MyGUI
+# publication and loop restart must stay on the UI thread.
 require(menu, 'video/menu_background.bik', "animated menu asset detection")
-require(menu, 'mVideo->playVideo("video\\\\menu_background.bik")', "animated menu playback")
-require(menu, "mVideo->commitFrame();", "animated menu committed frame")
+commit = require_regex(menu, r"void\s+MenuVideo::commitFrame\(\)\s*\{(.*?)\n\s*\}", "animated menu UI-thread loop")
+commit_body = commit.group(1)
+require(commit_body, "mVideo->update()", "animated menu frame advance")
+require(commit_body, 'mVideo->playVideo("video\\\\menu_background.bik")', "animated menu loop restart")
+require(commit_body, "mVideo->commitFrame()", "animated menu committed frame")
+if not (commit_body.find("mVideo->update()") < commit_body.find("mVideo->playVideo") < commit_body.find("mVideo->commitFrame()")):
+    raise SystemExit("animated menu UI-thread loop: expected update -> loop restart -> commit ordering")
+forbid(menu, "MenuVideo::run", "animated menu background thread")
+forbid(menu, "mThread", "animated menu background thread")
+forbid(menu_header, "std::thread", "animated menu background thread")
+forbid(menu_header, "mRunning", "animated menu background thread")
+
+# Loading-screen wallpaper assets are ordinary MyGUI/VFS images on Vulkan. The
+# legacy OSG framebuffer-copy texture is reachable only when there is no Vulkan
+# present callback, so it must not contaminate the startup loading route.
+require(loading, "if (!mPresentCallback && !mShowWallpaper && mLastRenderTime < mLoadingOnTime)",
+        "loading-screen OSG capture quarantine")
+require(loading, "setupCopyFramebufferToTextureCallback();", "legacy loading-screen framebuffer copy")
+require(loading, "mPresentCallback();", "Vulkan loading-screen present")
+
+# Static menu fallback, button images, and font atlases all resolve through the
+# active MyGUI RenderManager. Under Vulkan that is VsgMyGui::RenderManager, whose
+# VFS decoder returns TOP_LEFT VSG data and whose manual textures are native VSG
+# data after unlock(). This covers menu_morrowind.dds, the normal/hover/pressed
+# button DDS set, version text, and loading-screen text/image composition.
+require(menu, 'mBackground->setBackgroundImage("textures\\\\menu_morrowind.dds", true, stretch)',
+        "static main-menu fallback")
+require(menu, 'button->setProperty("ImageNormal", "textures\\\\menu_" + buttonId + ".dds")',
+        "main-menu normal button texture")
+require(menu, 'button->setProperty("ImageHighlighted", "textures\\\\menu_" + buttonId + "_over.dds")',
+        "main-menu highlighted button texture")
+require(menu, 'button->setProperty("ImagePushed", "textures\\\\menu_" + buttonId + "_pressed.dds")',
+        "main-menu pressed button texture")
+require(background, "setImageTexture(image);", "background image active-render-manager route")
+require(buttons, "MyGUI::RenderManager::getInstance().getTexture(mImageNormal)", "button active-render-manager route")
+require(fonts, "MyGUI::RenderManager::getInstance().createTexture(bitmapPath)", "font atlas active-render-manager route")
+require(fonts, "texture->createManual", "font atlas native manual texture")
+require(texture, "mData = rgba;", "manual MyGUI texture VSG publication")
+require(render, "MyGUI::ITexture* tex = createTexture(name);", "VSG VFS texture allocation")
+require(render, "tex->loadFromFile(name);", "VSG VFS texture decode")
+require(decoder, "vsgXchange::images::create()", "VSG MyGUI image decoder")
+require(decoder, "data->properties.origin = vsg::TOP_LEFT", "VSG MyGUI image orientation")
 
 # Keep fail-closed handling for genuinely unresolved OSG/foreign render-target
 # textures. Video compatibility must not be implemented by silently accepting
 # arbitrary legacy GPU objects at the VSG/MyGUI boundary.
 require(render, "skipping unresolved foreign render-target texture", "foreign-texture fail-closed guard")
 
-# If the engine advertises this compatibility facet, the native video bridge is
-# part of the source-level minimum. Runtime acceptance remains a separate gate.
+# If the engine advertises this compatibility facet, the native video bridge and
+# source-level menu/loading composition proof are mandatory. Runtime acceptance
+# remains a separate hardware gate.
 if "RenderCompatibilityFacet::UiVideoAndComposition" in engine:
     require(video, "VsgMyGui::Texture", "advertised UI/video compatibility")
     require(video, "updateVulkanVideoTexture", "advertised UI/video compatibility")
+    require(menu, "mVideo->update()", "advertised animated-menu compatibility")
+    require(loading, "mPresentCallback();", "advertised loading-screen compatibility")
 
-print("V4 Vulkan video/menu source contract: PASS")
+print("V4 Vulkan startup/video/menu source contract: PASS")
