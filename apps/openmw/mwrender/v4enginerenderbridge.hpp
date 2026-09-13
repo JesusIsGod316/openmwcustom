@@ -116,6 +116,8 @@ namespace MWRender
             RenderCore::ModelHandle model;
             std::string signature;
         };
+        std::map<std::string, bool, std::less<>> mEvaluatedObjectPlayback;
+        RenderCore::WorldEpoch mEvaluatedObjectPlaybackEpoch;
         std::map<std::string, ComposedActorEntry, std::less<>> mComposedActors;
         RenderCore::WorldEpoch mComposedActorEpoch;
         std::set<std::string, std::less<>> mActorLights;
