@@ -38,6 +38,7 @@ fonts = source("components/fontloader/fontloader.cpp")
 render = source("components/vsgmygui/rendermanager.cpp")
 texture = source("components/vsgmygui/texture.cpp")
 decoder = source("components/vsgmygui/vfsimagedecoder.cpp")
+ui = source("components/render/backend/vsg/uipipeline.cpp")
 engine = source("apps/openmw/engine.cpp")
 
 # The FFmpeg decoder may remain OSG-backed internally during migration, but an
@@ -89,11 +90,10 @@ require(loading, "if (!mPresentCallback && !mShowWallpaper && mLastRenderTime < 
 require(loading, "setupCopyFramebufferToTextureCallback();", "legacy loading-screen framebuffer copy")
 require(loading, "mPresentCallback();", "Vulkan loading-screen present")
 
-# Static menu fallback, button images, and font atlases all resolve through the
-# active MyGUI RenderManager. Under Vulkan that is VsgMyGui::RenderManager, whose
-# VFS decoder returns TOP_LEFT VSG data and whose manual textures are native VSG
-# data after unlock(). This covers menu_morrowind.dds, the normal/hover/pressed
-# button DDS set, version text, and loading-screen text/image composition.
+# Static menu fallback, button images, font atlases and the black letterbox texture
+# all resolve through the active MyGUI RenderManager. Under Vulkan that is
+# VsgMyGui::RenderManager, whose VFS decoder returns TOP_LEFT VSG data and whose
+# manual textures are native VSG data after unlock().
 require(menu, 'mBackground->setBackgroundImage("textures\\\\menu_morrowind.dds", true, stretch)',
         "static main-menu fallback")
 require(menu, 'button->setProperty("ImageNormal", "textures\\\\menu_" + buttonId + ".dds")',
@@ -102,6 +102,7 @@ require(menu, 'button->setProperty("ImageHighlighted", "textures\\\\menu_" + but
         "main-menu highlighted button texture")
 require(menu, 'button->setProperty("ImagePushed", "textures\\\\menu_" + buttonId + "_pressed.dds")',
         "main-menu pressed button texture")
+require(window, 'MyGUI::RenderManager::getInstance().createTexture("black")', "video/menu black background texture")
 require(background, "setImageTexture(image);", "background image active-render-manager route")
 require(buttons, "MyGUI::RenderManager::getInstance().getTexture(mImageNormal)", "button active-render-manager route")
 require(fonts, "MyGUI::RenderManager::getInstance().createTexture(bitmapPath)", "font atlas active-render-manager route")
@@ -111,6 +112,18 @@ require(render, "MyGUI::ITexture* tex = createTexture(name);", "VSG VFS texture 
 require(render, "tex->loadFromFile(name);", "VSG VFS texture decode")
 require(decoder, "vsgXchange::images::create()", "VSG MyGUI image decoder")
 require(decoder, "data->properties.origin = vsg::TOP_LEFT", "VSG MyGUI image orientation")
+
+# Menu buttons, text, loading wallpaper and video are composited through the same
+# Vulkan UI pipeline. The source minimum is straight-alpha blending, no culling,
+# and no depth test/write, with MyGUI's packed ABGR vertex colour interpreted as
+# RGBA8. This is the composition contract needed by button edges and font atlases.
+require(ui, "VK_FORMAT_R8G8B8A8_UNORM, 12", "MyGUI vertex colour format")
+require(ui, "rasterization->cullMode = VK_CULL_MODE_NONE", "MyGUI two-sided composition")
+require(ui, "blendEnable = VK_TRUE", "MyGUI alpha blending")
+require(ui, "srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA", "MyGUI source alpha")
+require(ui, "dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA", "MyGUI destination alpha")
+require(ui, "depth->depthTestEnable = VK_FALSE", "MyGUI depth-test disable")
+require(ui, "depth->depthWriteEnable = VK_FALSE", "MyGUI depth-write disable")
 
 # Keep fail-closed handling for genuinely unresolved OSG/foreign render-target
 # textures. Video compatibility must not be implemented by silently accepting
@@ -125,5 +138,6 @@ if "RenderCompatibilityFacet::UiVideoAndComposition" in engine:
     require(video, "updateVulkanVideoTexture", "advertised UI/video compatibility")
     require(menu, "mVideo->update()", "advertised animated-menu compatibility")
     require(loading, "mPresentCallback();", "advertised loading-screen compatibility")
+    require(ui, "blendEnable = VK_TRUE", "advertised UI composition compatibility")
 
 print("V4 Vulkan startup/video/menu source contract: PASS")
