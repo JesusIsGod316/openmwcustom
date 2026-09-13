@@ -13,6 +13,25 @@
 
 namespace VsgMyGui
 {
+    namespace
+    {
+        [[nodiscard]] VkFormat srgbFormat(VkFormat format) noexcept
+        {
+            switch (format)
+            {
+                case VK_FORMAT_R8G8B8_UNORM: return VK_FORMAT_R8G8B8_SRGB;
+                case VK_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_SRGB;
+                case VK_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_SRGB;
+                case VK_FORMAT_BC1_RGB_UNORM_BLOCK: return VK_FORMAT_BC1_RGB_SRGB_BLOCK;
+                case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+                case VK_FORMAT_BC2_UNORM_BLOCK: return VK_FORMAT_BC2_SRGB_BLOCK;
+                case VK_FORMAT_BC3_UNORM_BLOCK: return VK_FORMAT_BC3_SRGB_BLOCK;
+                case VK_FORMAT_BC7_UNORM_BLOCK: return VK_FORMAT_BC7_SRGB_BLOCK;
+                default: return format;
+            }
+        }
+    }
+
     ImageDecoder makeVfsImageDecoder(const VFS::Manager& vfs)
     {
         auto images = vsgXchange::images::create();
@@ -41,6 +60,14 @@ namespace VsgMyGui
             auto* data = decoded ? dynamic_cast<vsg::Data*>(decoded.get()) : nullptr;
             if (!data || !data->dataAvailable() || data->width() == 0 || data->height() == 0)
                 return {};
+
+            // Some decoder paths, notably DDS block-compressed assets, preserve
+            // the source VkFormat even when image_format requests sRGB. MyGUI
+            // has no separate neutral texture-view color-space contract, so make
+            // the sampled image format authoritative here. This prevents an
+            // authored sRGB menu texture from being sampled as linear UNORM and
+            // then gamma-encoded a second time by the sRGB swapchain.
+            data->properties.format = srgbFormat(data->properties.format);
             data->properties.origin = vsg::TOP_LEFT;
             return vsg::ref_ptr<vsg::Data>(data);
         };
