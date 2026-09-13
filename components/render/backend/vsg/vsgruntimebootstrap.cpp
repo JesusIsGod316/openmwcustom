@@ -107,6 +107,12 @@ namespace RenderVsg
 
             auto traits = vsg::WindowTraits::create(options.width, options.height, options.title);
             traits->vulkanVersion = VK_API_VERSION_1_2;
+            // Make the CP4F display-transfer contract explicit instead of
+            // inheriting a VSG-version default. UI and ordinary color textures
+            // are sampled into linear space and the swapchain owns the final
+            // linear-to-sRGB display encoding.
+            traits->swapchainPreferences.surfaceFormat
+                = { VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
             traits->swapchainPreferences.presentMode = presentMode(options.presentMode);
             traits->deviceTypePreferences = {
                 VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
