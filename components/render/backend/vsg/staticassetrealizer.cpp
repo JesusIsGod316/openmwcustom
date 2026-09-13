@@ -1,4 +1,5 @@
 #include "enchantedmaterialshader.hpp"
+#include "legacybumpmaterialshader.hpp"
 #include "legacymaterialshader.hpp"
 #include "staticassetrealizer.hpp"
 
@@ -177,14 +178,33 @@ namespace RenderVsg
                 case RenderCore::TextureRole::Emissive: return "emissiveMap";
                 case RenderCore::TextureRole::Normal: return "normalMap";
                 case RenderCore::TextureRole::Specular: return "specularMap";
+                case RenderCore::TextureRole::Bump: return "openmwBumpMap";
                 case RenderCore::TextureRole::Dark:
                 case RenderCore::TextureRole::Decal:
                 case RenderCore::TextureRole::Environment:
-                case RenderCore::TextureRole::Bump:
                 case RenderCore::TextureRole::Gloss:
                 case RenderCore::TextureRole::Blend: return std::nullopt;
             }
             return std::nullopt;
+        }
+
+        [[nodiscard]] const char* textureRoleName(RenderCore::TextureRole role) noexcept
+        {
+            switch (role)
+            {
+                case RenderCore::TextureRole::Diffuse: return "Diffuse";
+                case RenderCore::TextureRole::Dark: return "Dark";
+                case RenderCore::TextureRole::Detail: return "Detail";
+                case RenderCore::TextureRole::Decal: return "Decal";
+                case RenderCore::TextureRole::Emissive: return "Emissive";
+                case RenderCore::TextureRole::Normal: return "Normal";
+                case RenderCore::TextureRole::Specular: return "Specular";
+                case RenderCore::TextureRole::Environment: return "Environment";
+                case RenderCore::TextureRole::Bump: return "Bump";
+                case RenderCore::TextureRole::Gloss: return "Gloss";
+                case RenderCore::TextureRole::Blend: return "Blend";
+            }
+            return "Unknown";
         }
 
         [[nodiscard]] vsg::ref_ptr<vsg::Sampler> createSampler(const RenderCore::SamplerRealizationKey& key)
@@ -346,7 +366,9 @@ namespace RenderVsg
             result.diagnostics.emplace_back("OpenMW legacy compatibility ShaderSet is unavailable");
             return result;
         }
+        vsg::ref_ptr<vsg::ShaderSet> legacyBumpShaderSet;
         vsg::ref_ptr<vsg::ShaderSet> enchantedShaderSet;
+        vsg::ref_ptr<vsg::ShaderSet> enchantedBumpShaderSet;
 
         vsg::ref_ptr<vsg::vec3Array> instanceTranslations;
         vsg::ref_ptr<vsg::vec4Array> instanceRotations;
@@ -443,6 +465,30 @@ namespace RenderVsg
                 return result;
             }
 
+            const std::size_t bumpBindingCount = static_cast<std::size_t>(std::count_if(
+                material->textures.begin(), material->textures.end(),
+                [](const TextureBinding& binding) { return binding.role == TextureRole::Bump; }));
+            if (bumpBindingCount > 1u || material->bumpParametersEnabled != (bumpBindingCount == 1u))
+            {
+                result.root = {};
+                result.diagnostics.emplace_back(
+                    "Legacy bump metadata does not match V3.25's single NiTexturingProperty BumpTexture contract");
+                return result;
+            }
+            const bool legacyBump = material->bumpParametersEnabled;
+            if (legacyBump)
+            {
+                const auto bumpBinding = std::find_if(material->textures.begin(), material->textures.end(),
+                    [](const TextureBinding& binding) { return binding.role == TextureRole::Bump; });
+                if (bumpBinding == material->textures.end() || bumpBinding->transform.uvSet >= payload.texCoordSets.size())
+                {
+                    result.root = {};
+                    result.diagnostics.emplace_back(
+                        "Legacy NiTexturingProperty bump stage references a texture-coordinate set absent from the published mesh");
+                    return result;
+                }
+            }
+
             const std::size_t environmentBindingCount = static_cast<std::size_t>(std::count_if(
                 material->textures.begin(), material->textures.end(),
                 [](const TextureBinding& binding) { return binding.role == TextureRole::Environment; }));
@@ -467,7 +513,34 @@ namespace RenderVsg
                         "OpenMW enchanted legacy compatibility ShaderSet could not be constructed from the pinned VSG contract");
                     return result;
                 }
-                shaderSet = enchantedShaderSet;
+                if (legacyBump)
+                {
+                    if (!enchantedBumpShaderSet)
+                        enchantedBumpShaderSet = createLegacyBumpCompatibilityShaderSet(enchantedShaderSet);
+                    if (!enchantedBumpShaderSet)
+                    {
+                        result.root = {};
+                        result.diagnostics.emplace_back(
+                            "OpenMW legacy bump+environment ShaderSet could not be constructed from the pinned compatibility contract");
+                        return result;
+                    }
+                    shaderSet = enchantedBumpShaderSet;
+                }
+                else
+                    shaderSet = enchantedShaderSet;
+            }
+            else if (legacyBump)
+            {
+                if (!legacyBumpShaderSet)
+                    legacyBumpShaderSet = createLegacyBumpCompatibilityShaderSet(legacyShaderSet);
+                if (!legacyBumpShaderSet)
+                {
+                    result.root = {};
+                    result.diagnostics.emplace_back(
+                        "OpenMW legacy bump ShaderSet could not be constructed from the pinned compatibility contract");
+                    return result;
+                }
+                shaderSet = legacyBumpShaderSet;
             }
 
             auto config = vsg::GraphicsPipelineConfigurator::create(shaderSet);
@@ -535,6 +608,14 @@ namespace RenderVsg
                 return result;
             }
             config->assignDescriptor("texCoordIndices", makeTexCoordIndices(*material));
+            if (legacyBump
+                && !config->assignDescriptor("openmwLegacyBump", makeLegacyBumpMaterial(*material)))
+            {
+                result.root = {};
+                result.diagnostics.emplace_back(
+                    "Legacy bump compatibility shader rejected the authored bump-matrix/luma descriptor");
+                return result;
+            }
 
             if (material->textureApply != TextureApplyMode::Modulate)
             {
@@ -549,10 +630,25 @@ namespace RenderVsg
                 result.diagnostics.emplace_back(
                     "Static texture transform is preserved in RenderCore but requires a dedicated compatibility shader variant");
             }
-            if (material->treeAnimation || material->refraction || material->softEffect || material->falloff
-                || material->bumpParametersEnabled)
+            if (material->treeAnimation)
             {
                 ++result.stats.runtimeContextEffects;
+                result.diagnostics.emplace_back("Legacy static material requires tree-animation compatibility semantics");
+            }
+            if (material->refraction)
+            {
+                ++result.stats.runtimeContextEffects;
+                result.diagnostics.emplace_back("Legacy static material requires refraction compatibility semantics");
+            }
+            if (material->softEffect)
+            {
+                ++result.stats.runtimeContextEffects;
+                result.diagnostics.emplace_back("Legacy static material requires soft-effect compatibility semantics");
+            }
+            if (material->falloff)
+            {
+                ++result.stats.runtimeContextEffects;
+                result.diagnostics.emplace_back("Legacy static material requires falloff compatibility semantics");
             }
 
             if (draw.billboard)
@@ -653,9 +749,12 @@ namespace RenderVsg
                 const auto descriptor = descriptorName(binding.role);
                 if (!descriptor)
                 {
-                    // Non-sequence Environment bindings deliberately arrive here
-                    // and retain the CP3B fail-closed behavior.
                     ++result.stats.unsupportedTextureBindings;
+                    if (binding.role != TextureRole::Environment)
+                    {
+                        result.diagnostics.emplace_back(std::string("Legacy static texture role remains fail-closed: ")
+                            + textureRoleName(binding.role));
+                    }
                     continue;
                 }
 
