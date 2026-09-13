@@ -25,15 +25,12 @@ jobs:
         run: |
           set -euo pipefail
           CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
-          CP4F_SOURCE=c804922fe7f5fdbcf81a672d3c686720fd18b10d
-          PRIOR_FAILED_GATE=2da5c7717e2f6322cba70b6f44843f5be065a0ff
+          CP4F_SOURCE=190c303cb4619897bfe81251a5e5b18cd45195c0
           git cat-file -e "${CP4E_BASE}^{commit}"
           git cat-file -e "${CP4F_SOURCE}^{commit}"
-          git cat-file -e "${PRIOR_FAILED_GATE}^{commit}"
           test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
           test "$(git merge-base "${CP4F_SOURCE}" HEAD)" = "${CP4F_SOURCE}"
-          test "$(git rev-parse HEAD^)" = "${PRIOR_FAILED_GATE}"
-          test "$(git rev-parse "${PRIOR_FAILED_GATE}^")" = "${CP4F_SOURCE}"
+          test "$(git rev-parse HEAD^)" = "${CP4F_SOURCE}"
 
       - name: Run retained CP4 source contracts
         shell: bash
@@ -43,6 +40,7 @@ jobs:
           python3 tools/v4/cp4/streaming-contract.py
           python3 tools/v4/cp4/population-environment-contract.py
           python3 tools/v4/cp4/water-environment-contract.py
+          python3 tools/v4/cp4/video-ui-contract.py
           python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
 
       - name: Verify CP4F source closeout surface
@@ -51,6 +49,13 @@ jobs:
           set -euo pipefail
           for path in \
             apps/openmw/engine.cpp \
+            apps/openmw/mwgui/videowidget.cpp \
+            apps/openmw/mwgui/videowidget.hpp \
+            apps/openmw/mwgui/mainmenu.cpp \
+            apps/openmw/mwgui/mainmenu.hpp \
+            apps/openmw/mwgui/windowmanagerimp.cpp \
+            apps/openmw/mwgui/loadingscreen.cpp \
+            apps/openmw/mwgui/backgroundimage.cpp \
             apps/openmw/mwrender/postprocessor.cpp \
             apps/openmw/mwrender/postprocessor.hpp \
             apps/openmw/mwrender/screenshotmanager.cpp \
@@ -60,6 +65,8 @@ jobs:
             apps/openmw/mwrender/v4localmapbridge.cpp \
             apps/openmw/mwrender/localmapnative.cpp \
             apps/openmw/mwrender/globalmapnative.cpp \
+            components/widgets/imagebutton.cpp \
+            components/fontloader/fontloader.cpp \
             components/sdlutil/sdlinputwrapper.cpp \
             components/lua/luastate.cpp \
             components/rendercore/effectframe.hpp \
@@ -72,6 +79,8 @@ jobs:
             components/render/backend/vsg/vsgruntimehost.cpp \
             components/render/backend/vsg/vsgruntimehost.hpp \
             components/render/backend/vsg/vsgsubmission.hpp \
+            components/vsgmygui/texture.cpp \
+            components/vsgmygui/vfsimagedecoder.cpp \
             components/vsgmygui/rendermanager.cpp \
             components/vsgmygui/rendermanager.hpp \
             components/vsgmygui/externaltextures.cpp; do
