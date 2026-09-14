@@ -36,8 +36,14 @@ namespace NifRender
     // emits skin-required bones, so reproduce the source-side forced-skeleton
     // contract from the immutable model hierarchy when an actor needs it.
     //
-    // Bone candidates are named ordinary transform nodes. Their hierarchy is
-    // collapsed across non-bone ancestors exactly like the normal NIF skeleton
+    // Bone candidates are named ordinary transform nodes without geometry or
+    // the legacy "Tri " attachment-filter prefix.
+    // Animation::getModelInstance(baseonly=true) runs CleanObjectRootVisitor,
+    // which removes each static NIF geometry container together with its sole
+    // drawable.  Those containers commonly have attachment-filter names such
+    // as "tri head", but they are not present in the evaluated actor skeleton
+    // and must not become V4-required bones. Their hierarchy is collapsed
+    // across non-bone ancestors exactly like the normal NIF skeleton
     // translator, and all names are case-folded to match OpenMW's bone lookup.
     // OpenMW's source Skeleton cache keeps the first case-insensitive name match,
     // so duplicate named transforms are skipped here rather than rejected.
@@ -59,6 +65,11 @@ namespace NifRender
                 [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
             return folded;
         };
+        const auto startsFolded = [](std::string_view value, std::string_view prefix) {
+            return value.size() >= prefix.size()
+                && std::equal(prefix.begin(), prefix.end(), value.begin(),
+                    [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); });
+        };
 
         auto payload = std::make_shared<SkeletonPayload>();
         std::vector<std::optional<std::size_t>> modelToBone(base.payload->nodes.size());
@@ -68,7 +79,12 @@ namespace NifRender
         for (std::size_t modelNode = 0; modelNode < base.payload->nodes.size(); ++modelNode)
         {
             const ModelNodeRecord& source = base.payload->nodes[modelNode];
-            if (source.kind != ModelNodeKind::Transform || source.name.empty())
+            // CopyRigVisitor treats "Tri <bone>" as a geometry/filter alias for
+            // <bone>.  The base-only cleanup removes those static render
+            // containers, so only the canonical unprefixed transform belongs
+            // to SceneUtil::Skeleton's evaluated bone cache.
+            if (source.kind != ModelNodeKind::Transform || source.name.empty() || source.mesh
+                || startsFolded(source.name, "tri "))
                 continue;
 
             // NifOsg::Loader::createNode deliberately realizes an identity,
@@ -340,6 +356,24 @@ namespace NifRender
                     }
 
                     ModelNodeRecord node = source;
+                    if (const MeshRecord* selectedMesh = node.mesh ? world.get(*node.mesh) : nullptr)
+                    {
+                        if (!selectedMesh->payload)
+                        {
+                            result.diagnostic = "NPC part '" + model->sourceIdentity
+                                + "' has a geometry without a mesh payload at " + node.name;
+                            return result;
+                        }
+                        for (const MeshSurface& surface : selectedMesh->payload->surfaces)
+                        {
+                            if (surface.materialSlot >= node.materials.size())
+                            {
+                                result.diagnostic = "NPC part '" + model->sourceIdentity
+                                    + "' has an unresolved inherited material at geometry " + node.name;
+                                return result;
+                            }
+                        }
+                    }
                     if (source.parent.valid() && selected[source.parent.value()])
                         node.parent = remap[source.parent.value()];
                     else
@@ -402,6 +436,24 @@ namespace NifRender
                 }
 
                 ModelNodeRecord node = source;
+                if (const MeshRecord* attachedMesh = node.mesh ? world.get(*node.mesh) : nullptr)
+                {
+                    if (!attachedMesh->payload)
+                    {
+                        result.diagnostic = "NPC part '" + model->sourceIdentity
+                            + "' has a geometry without a mesh payload at " + node.name;
+                        return result;
+                    }
+                    for (const MeshSurface& surface : attachedMesh->payload->surfaces)
+                    {
+                        if (surface.materialSlot >= node.materials.size())
+                        {
+                            result.diagnostic = "NPC part '" + model->sourceIdentity
+                                + "' has an unresolved inherited material at geometry " + node.name;
+                            return result;
+                        }
+                    }
+                }
                 node.parent = source.parent.valid() ? remap[source.parent.value()] : *attachment;
                 if (!node.parent.valid())
                 {

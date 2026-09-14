@@ -280,7 +280,16 @@ namespace MWLua
     void LuaManager::contentFilesLoaded()
     {
         initConfiguration(false);
-        mLua.setPackagePrototypeReuse(static_cast<bool>(Settings::cells().mV314LuaPackagePrototypeReuse));
+        const bool requestedPackagePrototypeReuse
+            = static_cast<bool>(Settings::cells().mV314LuaPackagePrototypeReuse);
+        const bool vulkanBackend = Settings::video().mRendererBackend.get() == "vulkan";
+        if (vulkanBackend && requestedPackagePrototypeReuse)
+            Log(Debug::Info) << "V4 Vulkan: bypassing V3.14 Lua package prototype reuse";
+        // Package prototypes are an independently switchable V3 optimization,
+        // not part of Lua's compatibility contract. Keep the known-good direct
+        // package population path on Vulkan while preserving the experiment for
+        // OpenGL control runs.
+        mLua.setPackagePrototypeReuse(requestedPackagePrototypeReuse && !vulkanBackend);
         if (static_cast<bool>(Settings::cells().mV312LuaPrecompile))
         {
             const std::size_t compiled = mLua.precompileConfiguredScripts();

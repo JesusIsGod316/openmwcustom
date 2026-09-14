@@ -57,6 +57,7 @@ namespace
         bool orbit = false;
         bool runtimeHost = false;
         bool water = false;
+        bool dumpModel = false;
         bool help = false;
     };
 
@@ -114,6 +115,7 @@ namespace
                "  --orbit                    Orbit 360 degrees around scene bounds over the render frame budget.\n"
                "  --runtime-host             Render through the CP3C semantic world/frame runtime host.\n"
                "  --water                    Exercise CP4E water reflection/refraction through the runtime host.\n"
+               "  --dump-model               Print published model-node and mesh identities.\n"
                "  --diagnostic-box           Add an unlit VSG reference box beside the NIF for GPU-path diagnosis.\n"
                "  --realize-only             Parse/translate/publish/plan/realize without opening a window.\n"
                "  --report-json <path>       Write CP3B4 machine-readable per-asset report JSON.\n"
@@ -154,6 +156,11 @@ namespace
             if (arg == "--water")
             {
                 options.water = true;
+                continue;
+            }
+            if (arg == "--dump-model")
+            {
+                options.dumpModel = true;
                 continue;
             }
 
@@ -238,6 +245,42 @@ namespace
                   << " modernPbrDraws=" << stats.modernPbrDraws << '\n';
         for (const std::string& diagnostic : result.realization.diagnostics)
             std::cout << "realization: " << diagnostic << '\n';
+    }
+
+    void printModel(const RenderVsg::StaticNifConformanceResult& result, const RenderCore::RenderWorld& world)
+    {
+        const RenderCore::ModelRecord* const model = world.get(result.model);
+        if (!model || !model->payload)
+        {
+            std::cout << "Published model is unavailable\n";
+            return;
+        }
+        std::cout << "Published model nodes=" << model->payload->nodes.size() << '\n';
+        for (std::size_t i = 0; i < model->payload->nodes.size(); ++i)
+        {
+            const RenderCore::ModelNodeRecord& node = model->payload->nodes[i];
+            std::cout << "node=" << i << " parent=";
+            if (node.parent.valid())
+                std::cout << node.parent.value();
+            else
+                std::cout << "root";
+            std::cout << " sourceRecord=";
+            if (node.sourceRecordId)
+                std::cout << *node.sourceRecordId;
+            else
+                std::cout << "none";
+            std::cout << " name='" << node.name << "'";
+            if (node.mesh)
+            {
+                const RenderCore::MeshRecord* const mesh = world.get(*node.mesh);
+                std::cout << " mesh=" << node.mesh->slot() << ':' << node.mesh->generation();
+                if (mesh)
+                    std::cout << " skinned=" << mesh->skinned << " morphed=" << mesh->morphed
+                              << " meshSource='" << mesh->sourceIdentity << "'";
+            }
+            std::cout << " materials=" << node.materials.size();
+            std::cout << '\n';
+        }
     }
 
     [[nodiscard]] int renderScene(vsg::ref_ptr<vsg::Node> scene, double cameraDistance, int frameLimit,
@@ -654,6 +697,8 @@ int main(int argc, char** argv)
         RenderVsg::StaticNifConformanceResult result
             = RenderVsg::realizeStaticNif(fileView, vfs, world, publisher, planOptions, sharedObjects);
         printResult(result);
+        if (options.dumpModel)
+            printModel(result, world);
         if (!options.reportJson.empty())
         {
             Cp3b4::writeAssetReport(options.reportJson, options.nifPath, result);

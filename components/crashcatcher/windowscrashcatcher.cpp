@@ -1,6 +1,7 @@
 #include "windowscrashcatcher.hpp"
 
 #include <cassert>
+#include <cstdlib>
 #include <cwchar>
 #include <sstream>
 #include <thread>
@@ -250,14 +251,15 @@ namespace Crash
         CrashSHM::Status monitorStatus = mShm->mMonitorStatus;
         shmUnlock();
 
-        if (monitorStatus == CrashSHM::Status::DumpedSuccessfully)
+        const bool suppressFatalDialog = std::getenv("OPENMW_SUPPRESS_FATAL_DIALOG") != nullptr;
+        if (!suppressFatalDialog && monitorStatus == CrashSHM::Status::DumpedSuccessfully)
         {
             std::string message = "OpenMW has encountered a fatal error.\nCrash dump saved to '"
                 + Misc::StringUtils::u8StringToString(getCrashDumpPath(*mShm).u8string())
                 + "'.\nPlease report this to https://gitlab.com/OpenMW/openmw/issues !";
             SDL_ShowSimpleMessageBox(0, "Fatal Error", message.c_str(), nullptr);
         }
-        else if (monitorStatus == CrashSHM::Status::Dumping)
+        else if (!suppressFatalDialog && monitorStatus == CrashSHM::Status::Dumping)
             SDL_ShowSimpleMessageBox(0, "Fatal Error", "Timed out while creating crash dump", nullptr);
     }
 

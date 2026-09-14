@@ -482,8 +482,14 @@ namespace Debug
         }
         catch (const std::exception& e)
         {
+            const bool suppressFatalDialog = [] {
+                const auto* const env = std::getenv("OPENMW_SUPPRESS_FATAL_DIALOG");
+                return env != nullptr && Misc::StringUtils::toNumeric<int>(env, 0) != 0;
+            }();
 #if (defined(__APPLE__) || defined(__linux) || defined(__unix) || defined(__posix))
-            if (!isatty(fileno(stdin)))
+            if (!suppressFatalDialog && !isatty(fileno(stdin)))
+#else
+            if (!suppressFatalDialog)
 #endif
                 SDL_ShowSimpleMessageBox(0, (std::string(appName) + ": Fatal error").c_str(), e.what(), nullptr);
 

@@ -606,7 +606,9 @@ namespace RenderVsg
         const DynamicActorWorldPlan plan = buildDynamicActorWorldPlan(world, mOptions.staticPlan);
         if (!plan.valid())
         {
-            mLastDiagnostic = "dynamic actor world contains an invalid model/skeleton dependency";
+            mLastDiagnostic = plan.diagnostic.empty()
+                ? "dynamic actor world contains an invalid model/skeleton dependency"
+                : "dynamic actor world contains an invalid model/skeleton dependency: " + plan.diagnostic;
             return false;
         }
 

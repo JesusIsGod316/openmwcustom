@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -193,15 +194,24 @@ namespace RenderVsg
     // allocate VSG objects, but hierarchy selection, resource identity and cache
     // key derivation remain testable without a Vulkan device or a source NIF.
     [[nodiscard]] inline std::optional<StaticAssetPlan> buildStaticAssetPlan(
-        const RenderCore::RenderWorld& world, RenderCore::ModelHandle modelHandle, StaticPlanOptions options = {})
+        const RenderCore::RenderWorld& world, RenderCore::ModelHandle modelHandle, StaticPlanOptions options = {},
+        std::string* diagnostic = nullptr)
     {
         using namespace RenderCore;
+        const auto reject = [&](std::string message) {
+            if (diagnostic && diagnostic->empty())
+                *diagnostic = std::move(message);
+            return false;
+        };
         const ModelRecord* model = world.get(modelHandle);
         if (!model || !model->payload || !validModelPayloadStructure(*model->payload)
             || !validModelDynamicRequirements(model->dynamicRequirements)
             || model->dynamicRequirements != 0 || !semantic_detail::finite(options.lodEyeDistance)
             || !validNightDaySwitchState(options.nightDaySwitchState))
+        {
+            reject("invalid model payload or static planning options");
             return std::nullopt;
+        }
 
         const ModelPayload& payload = *model->payload;
         std::vector<std::vector<ModelNodeIndex>> children(payload.nodes.size());
@@ -220,10 +230,10 @@ namespace RenderVsg
         static_plan_detail::LegacySortLoaderState sortState;
         const auto collectSort = [&](const auto& self, ModelNodeIndex index) -> bool {
             if (!index.valid() || index.value() >= payload.nodes.size())
-                return false;
+                return reject("sort traversal reached an invalid model node");
             const ModelNodeRecord& node = payload.nodes[index.value()];
             if (!static_plan_detail::applySortNode(node, sortState))
-                return false;
+                return reject("unsupported sort accumulator at node " + node.name);
 
             if (node.kind == ModelNodeKind::Geometry)
             {
@@ -233,10 +243,10 @@ namespace RenderVsg
                 {
                     const MaterialRecord* material = world.get(handle);
                     if (!material)
-                        return false;
+                        return reject("missing sort material at node " + node.name);
                     const auto policy = static_plan_detail::materialSortPolicy(sortState, *material);
                     if (!policy)
-                        return false;
+                        return reject("unsupported material sort policy at node " + node.name);
                     policies.push_back(*policy);
                 }
             }
@@ -258,7 +268,7 @@ namespace RenderVsg
         StaticAssetPlan plan;
         const auto visit = [&](const auto& self, ModelNodeIndex index, static_plan_detail::TraversalState inherited) -> bool {
             if (!index.valid() || index.value() >= payload.nodes.size())
-                return false;
+                return reject("draw traversal reached an invalid model node");
             const ModelNodeRecord& node = payload.nodes[index.value()];
 
             static_plan_detail::TraversalState state = inherited;
@@ -285,11 +295,11 @@ namespace RenderVsg
             if (node.kind == ModelNodeKind::Geometry)
             {
                 if (!node.mesh)
-                    return false;
+                    return reject("geometry node has no mesh: " + node.name);
                 const MeshRecord* mesh = world.get(*node.mesh);
                 if (!mesh || !mesh->payload || !validMeshPayload(*mesh->payload)
                     || mesh->surfaceCount != mesh->payload->surfaces.size())
-                    return false;
+                    return reject("geometry node has an invalid mesh payload: " + node.name);
 
                 if (mesh->skinned || mesh->morphed)
                 {
@@ -302,17 +312,17 @@ namespace RenderVsg
 
                 const auto& materialSortPolicies = nodeMaterialSortPolicies[index.value()];
                 if (materialSortPolicies.size() != node.materials.size())
-                    return false;
+                    return reject("geometry material sort count mismatch: " + node.name);
 
                 for (std::size_t surfaceIndex = 0; surfaceIndex < mesh->payload->surfaces.size(); ++surfaceIndex)
                 {
                     const MeshSurface& surface = mesh->payload->surfaces[surfaceIndex];
                     if (surface.materialSlot >= node.materials.size())
-                        return false;
+                        return reject("geometry surface material slot is out of range: " + node.name);
                     const MaterialHandle materialHandle = node.materials[surface.materialSlot];
                     const MaterialRecord* material = world.get(materialHandle);
                     if (!material)
-                        return false;
+                        return reject("geometry surface has a missing material: " + node.name);
 
                     StaticDrawPlan draw;
                     draw.node = index;
@@ -332,10 +342,10 @@ namespace RenderVsg
                         const TextureRecord* texture = world.get(binding.texture);
                         const std::optional<SamplerRealizationKey> sampler = makeSamplerRealizationKey(binding.sampler);
                         if (!texture || !sampler)
-                            return false;
+                            return reject("geometry material has a stale texture/sampler: " + node.name);
                         const TextureRealizationKey textureKey = makeTextureRealizationKey(binding, *texture);
                         if (!textureKey.valid())
-                            return false;
+                            return reject("geometry material has an invalid texture realization key: " + node.name);
                         draw.textures.push_back(textureKey);
                         draw.samplers.push_back(*sampler);
                     }
@@ -355,7 +365,7 @@ namespace RenderVsg
                 if (options.dayNightSwitchesEnabled && node.name == "NightDaySwitch")
                 {
                     if (switchChildren.empty())
-                        return false;
+                        return reject("NightDaySwitch has no children");
                     std::size_t stateIndex = static_cast<std::size_t>(options.nightDaySwitchState);
                     if (stateIndex >= switchChildren.size())
                         stateIndex = 0;
@@ -364,7 +374,7 @@ namespace RenderVsg
                 else if (options.herbalismHarvested && node.name == "HerbalismSwitch")
                 {
                     if (switchChildren.size() < 2)
-                        return false;
+                        return reject("HerbalismSwitch has fewer than two children");
                     selected = switchChildren[1];
                 }
 
@@ -384,7 +394,7 @@ namespace RenderVsg
             if (node.kind == ModelNodeKind::Lod)
             {
                 if (!node.lod)
-                    return false;
+                    return reject("LOD node has no selection record: " + node.name);
                 const std::optional<ModelNodeIndex> selected = selectModelLodChild(*node.lod, options.lodEyeDistance);
                 for (const ModelNodeIndex child : children[index.value()])
                 {

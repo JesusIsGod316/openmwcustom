@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace RenderVsg
@@ -38,6 +39,7 @@ namespace RenderVsg
         RenderCore::RenderWorldRevision worldRevision;
         std::vector<DynamicActorPlan> actors;
         std::uint32_t invalidActors = 0;
+        std::string diagnostic;
 
         [[nodiscard]] bool valid() const noexcept
         {
@@ -46,48 +48,54 @@ namespace RenderVsg
     };
 
     [[nodiscard]] inline std::optional<DynamicActorPlan> buildDynamicActorPlan(
-        const RenderCore::RenderWorld& world, RenderCore::InstanceHandle handle, StaticPlanOptions options = {})
+        const RenderCore::RenderWorld& world, RenderCore::InstanceHandle handle, StaticPlanOptions options = {},
+        std::string* diagnostic = nullptr)
     {
         using namespace RenderCore;
+        const auto fail = [&](std::string message) -> std::optional<DynamicActorPlan> {
+            if (diagnostic)
+                *diagnostic = std::move(message);
+            return std::nullopt;
+        };
         const InstanceRecord* instance = world.get(handle);
         if (!instance || !instance->revision.valid() || !instance->model || !instance->skeleton
             || instance->mesh.valid() || instance->attachment)
-            return std::nullopt;
+            return fail("invalid actor instance ownership");
         const ModelRecord* model = world.get(*instance->model);
         const SkeletonRecord* skeleton = world.get(*instance->skeleton);
         if (!model || !model->revision.valid() || !skeleton || !skeleton->revision.valid()
             || !skeleton->payload || !validSkeletonPayload(*skeleton->payload)
             || !validModelDynamicRequirements(model->dynamicRequirements)
             || model->dynamicRequirements != 0)
-            return std::nullopt;
+            return fail("invalid actor model/skeleton record: "
+                + (model ? model->sourceIdentity : std::string("<missing-model>")) + " / "
+                + (skeleton ? skeleton->sourceIdentity : std::string("<missing-skeleton>")));
 
         options.includeDeformableMeshes = true;
-        std::optional<StaticAssetPlan> asset = buildStaticAssetPlan(world, *instance->model, options);
+        std::string assetDiagnostic;
+        std::optional<StaticAssetPlan> asset
+            = buildStaticAssetPlan(world, *instance->model, options, &assetDiagnostic);
         if (!asset || asset->dynamicMeshesDeferred != 0)
-            return std::nullopt;
+            return fail("actor static-asset dependency planning failed for " + model->sourceIdentity
+                + (assetDiagnostic.empty() ? std::string{} : ": " + assetDiagnostic));
 
-        const auto equalFolded = [](std::string_view left, std::string_view right) {
-            return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(),
-                [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); });
-        };
-        const auto skeletonContains = [&](std::string_view name) {
-            return std::any_of(skeleton->payload->bones.begin(), skeleton->payload->bones.end(),
-                [&](const BoneRecord& bone) { return equalFolded(bone.name, name); });
-        };
+        // A composed actor can contain rigid hair/equipment subgraphs with
+        // model-local transform controllers. OpenMW attaches those subgraphs
+        // below a skeleton bone; it does not require each local controller
+        // target to be a bone in the external actor skeleton. During pose
+        // evaluation, matching names consume the actor pose and non-matching
+        // names retain their authored local transform.
         for (const ModelNodeRecord& node : model->payload->nodes)
         {
             const std::uint32_t unsupported = modelControllerFlag(ModelControllerFlag::Visibility)
                 | modelControllerFlag(ModelControllerFlag::Unsupported);
             if ((node.controllerFlags & unsupported) != 0)
-                return std::nullopt;
-            if ((node.controllerFlags & modelControllerFlag(ModelControllerFlag::Transform)) != 0
-                && !skeletonContains(node.name))
-                return std::nullopt;
+                return fail("actor node has unsupported visibility/controller semantics: " + node.name);
             if ((node.controllerFlags & modelControllerFlag(ModelControllerFlag::Morph)) != 0)
             {
                 const MeshRecord* mesh = node.mesh ? world.get(*node.mesh) : nullptr;
                 if (!mesh || !mesh->morphed)
-                    return std::nullopt;
+                    return fail("actor morph controller has no morphed mesh: " + node.name);
             }
         }
 
@@ -121,7 +129,7 @@ namespace RenderVsg
             const MeshRecord* mesh = world.get(draw.mesh);
             const MaterialRecord* material = world.get(draw.material);
             if (!mesh || !material)
-                return std::nullopt;
+                return fail("actor draw has a stale mesh/material dependency");
             hasDeformableMesh = hasDeformableMesh || mesh->skinned || mesh->morphed;
             addUnique(result.meshes, draw.mesh, mesh->revision);
             addUnique(result.materials, draw.material, material->revision);
@@ -129,12 +137,12 @@ namespace RenderVsg
             {
                 const TextureRecord* record = world.get(texture.view.texture);
                 if (!record)
-                    return std::nullopt;
+                    return fail("actor draw has a stale texture dependency");
                 addUnique(result.textures, texture.view.texture, record->revision);
             }
         }
         if (!hasDeformableMesh)
-            return std::nullopt;
+            return fail("actor model has no currently drawable skinned or morphed mesh: " + model->sourceIdentity);
         return result;
     }
 
@@ -178,11 +186,16 @@ namespace RenderVsg
         world.forEachInstance([&](RenderCore::InstanceHandle handle, const RenderCore::InstanceRecord& instance) {
             if (!instance.skeleton)
                 return;
-            std::optional<DynamicActorPlan> actor = buildDynamicActorPlan(world, handle, options);
+            std::string diagnostic;
+            std::optional<DynamicActorPlan> actor = buildDynamicActorPlan(world, handle, options, &diagnostic);
             if (actor)
                 result.actors.push_back(std::move(*actor));
             else
+            {
                 ++result.invalidActors;
+                if (result.diagnostic.empty())
+                    result.diagnostic = std::move(diagnostic);
+            }
         });
         return result;
     }

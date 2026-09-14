@@ -6,6 +6,7 @@
 #include <DbgHelp.h>
 
 #include <memory>
+#include <cstdlib>
 #include <thread>
 
 #include <SDL3/SDL.h>
@@ -19,6 +20,14 @@
 
 namespace Crash
 {
+    namespace
+    {
+        bool suppressFatalDialog()
+        {
+            return std::getenv("OPENMW_SUPPRESS_FATAL_DIALOG") != nullptr;
+        }
+    }
+
     std::unordered_map<HWINEVENTHOOK, CrashMonitor*> CrashMonitor::smEventHookOwners{};
 
     using IsHungAppWindowFn = BOOL(WINAPI*)(HWND hwnd);
@@ -221,7 +230,8 @@ namespace Crash
                 std::string message = "OpenMW has frozen.\nCrash dump saved to '"
                     + Misc::StringUtils::u8StringToString(getFreezeDumpPath(*mShm).u8string())
                     + "'.\nPlease report this to https://gitlab.com/OpenMW/openmw/issues !";
-                SDL_ShowSimpleMessageBox(0, "Fatal Error", message.c_str(), nullptr);
+                if (!suppressFatalDialog())
+                    SDL_ShowSimpleMessageBox(0, "Fatal Error", message.c_str(), nullptr);
             }
         }
         catch (...)
@@ -242,7 +252,8 @@ namespace Crash
             shmLock();
             mShm->mMonitorStatus = CrashSHM::Status::FailedDumping;
             shmUnlock();
-            SDL_ShowSimpleMessageBox(0, "Failed to create crash dump", message.c_str(), nullptr);
+            if (!suppressFatalDialog())
+                SDL_ShowSimpleMessageBox(0, "Failed to create crash dump", message.c_str(), nullptr);
         };
 
         DWORD processId = GetProcessId(mAppProcessHandle);

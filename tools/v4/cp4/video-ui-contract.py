@@ -66,7 +66,10 @@ forbid(video, "mTexture = std::make_unique<VsgMyGui::Texture>", "per-play native
 # committed FFmpeg frame must be published before the Vulkan GUI-only present.
 require(window, "mVideoWidget->commitFrame();", "startup video commit")
 require(window, "mPresentCallback();", "startup Vulkan GUI-only present")
-require(engine, "presentCallback = [this] { presentVulkanFrame(0.0f, true); };", "engine Vulkan GUI present callback")
+require(engine, "presentCallback = [this] { presentVulkanGuiFrame(); };", "engine Vulkan GUI present callback")
+require(engine, "void OMW::Engine::presentVulkanGuiFrame()", "engine GUI-only transition frame")
+forbid(engine, "presentCallback = [this] { presentVulkanFrame(0.0f, true); };",
+       "unsafe full-world capture from loading/video callback")
 
 # Animated main-menu playback used to run VideoWidget::update()/playVideo() from
 # a wrapper thread while the main thread called commitFrame() and MyGUI collected

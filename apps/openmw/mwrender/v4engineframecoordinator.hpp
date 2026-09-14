@@ -3,6 +3,9 @@
 
 #include <components/rendercore/renderer.hpp>
 
+#include "v4engineframesource.hpp"
+
+#include <optional>
 #include <string>
 
 namespace MWWorld
@@ -27,6 +30,13 @@ namespace MWRender
         {
         }
 
+        // Capture every live OpenMW/OSG value on the main thread before the Lua
+        // worker is released. presentPrepared() subsequently consumes only this
+        // backend-neutral snapshot and Vulkan-owned state.
+        RenderCore::RenderFrameResult prepare(const RenderingManager& rendering, const MWWorld::Cell& cell,
+            double simulationTime, double frameDelta, bool invalidateHistory = false);
+        RenderCore::RenderFrameResult presentPrepared();
+
         RenderCore::RenderFrameResult render(const RenderingManager& rendering, const MWWorld::Cell& cell,
             double simulationTime, double frameDelta, bool invalidateHistory = false);
 
@@ -37,6 +47,7 @@ namespace MWRender
         RenderCore::RenderFrameResult fail(std::string diagnostic);
 
         V4EngineRenderBridge& mBridge;
+        std::optional<V4MainFrameSource> mPreparedSource;
         std::string mLastDiagnostic;
         bool mHealthy = true;
     };

@@ -136,7 +136,7 @@ namespace NifRender
                 {
                     auto& node = bundle.model.nodes[i];
                     if (node.sourceRecordId && node.kind == RenderCore::ModelNodeKind::Geometry)
-                        mGeometryNodes.emplace(*node.sourceRecordId, &node);
+                        mGeometryNodes[*node.sourceRecordId].push_back(&node);
                 }
             }
 
@@ -166,7 +166,16 @@ namespace NifRender
 
                 const auto found = mGeometryNodes.find(static_cast<std::uint32_t>(node.mRecordIndex));
                 if (found != mGeometryNodes.end())
-                    translateGeometry(node, drawableProperties, inheritedState, *found->second);
+                {
+                    // NIF graphs can reference the same geometry record more
+                    // than once. Translation publishes one model node per graph
+                    // occurrence, so consume the matching nodes in traversal
+                    // order. A record-id-only map used to bind every occurrence
+                    // to the first node and left the rest without a material.
+                    std::size_t& next = mNextGeometryNode[found->first];
+                    if (next < found->second.size())
+                        translateGeometry(node, drawableProperties, inheritedState, *found->second[next++]);
+                }
 
                 const auto* group = dynamic_cast<const Nif::NiNode*>(&node);
                 if (group == nullptr)
@@ -271,7 +280,8 @@ namespace NifRender
             Nif::FileView mFile;
             TranslationBundle& mBundle;
             const VFS::Manager* mVfs = nullptr;
-            std::unordered_map<std::uint32_t, TranslatedModelNode*> mGeometryNodes;
+            std::unordered_map<std::uint32_t, std::vector<TranslatedModelNode*>> mGeometryNodes;
+            std::unordered_map<std::uint32_t, std::size_t> mNextGeometryNode;
         };
     }
 

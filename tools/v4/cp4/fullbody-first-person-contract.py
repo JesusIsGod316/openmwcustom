@@ -31,8 +31,13 @@ require(weapon_hpp, "virtual float getAdditionalPitchFactor() const { return 0.f
 require(weapon_cpp, "float pitchFactor = mPitchFactor;", "gameplay pitch ownership")
 require(weapon_cpp, "const float additionalPitchFactor = getAdditionalPitchFactor();",
         "view-specific pitch contribution")
-require(weapon_cpp, "if (additionalPitchFactor > pitchFactor)", "non-destructive pitch composition")
+require(weapon_cpp, "const bool usingAdditionalPitch = additionalPitchFactor > pitchFactor;",
+        "non-destructive pitch composition")
 require(weapon_cpp, "float pitch = characterPitchRadians * pitchFactor;", "composed spine pitch")
+require(weapon_cpp, "constexpr float maxAdditionalPitchRadians = 0.6108652382f;",
+        "FFPB anti-clipping pitch cap")
+require(weapon_cpp, "pitch = std::clamp(pitch, -maxAdditionalPitchRadians, maxAdditionalPitchRadians);",
+        "FFPB anti-clipping clamp")
 
 # Full-body first person must keep the existing third-person spine-controller skeleton path.
 require(npc_cpp, "else if (mViewMode == VM_Normal || mViewMode == VM_FirstPersonFullBody)",

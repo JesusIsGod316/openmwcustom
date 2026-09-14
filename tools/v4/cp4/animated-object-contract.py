@@ -77,13 +77,21 @@ forbid(bridge, 'v4_effect_detail::CaptureVisitor visitor("animated-object:" + *i
        "unfiltered whole-object/effect semantic mixing")
 require(effect_frame, "semanticFlag(InstanceSemanticFlag::Effect)", "default attached-effect semantic classification")
 require(effects, "captureV4WholeEffectSubtree", "evaluated OSG-to-neutral compatibility seam")
-require(effects, "evaluated effect requires soft-particle opaque-depth sampling", "soft-particle fail-closed guard")
-require(effects, "evaluated effect requires the post-process distortion target", "distortion fail-closed guard")
+require(effects, "softDepthFallback", "soft-particle compatibility fallback")
+require(effects, "distortionFallback", "distortion compatibility fallback")
+forbid(effects, "evaluated effect requires soft-particle opaque-depth sampling", "soft-particle world-load fatal")
+forbid(effects, "evaluated effect requires the post-process distortion target", "distortion world-load fatal")
 require(effects, "evaluated effect requires authored polygon-offset realization", "polygon-offset fail-closed guard")
 
 # Headless Vulkan still executes the OSG update traversal. That keeps OpenMW's
 # controller graph authoritative and current before V4 snapshots evaluated nodes.
 require(engine, "mViewer->updateTraversal();", "authoritative animation update traversal")
-require(engine, "presentVulkanFrame(frametime, false);", "Vulkan gameplay presentation")
+require(engine, "prepareVulkanFrame(frametime, false);", "Vulkan gameplay frame capture")
+require(engine, "presentPreparedVulkanFrame();", "Vulkan immutable gameplay presentation")
+if not (engine.index("mViewer->updateTraversal();")
+        < engine.index("prepareVulkanFrame(frametime, false);")
+        < engine.index("mLuaWorker->allowUpdate(frameStart, frameNumber, *stats);")
+        < engine.index("presentPreparedVulkanFrame();")):
+    raise SystemExit("Vulkan frame ownership: expected update -> capture -> Lua release -> presentation ordering")
 
 print("V4 evaluated non-actor/mod animation source contract: PASS")

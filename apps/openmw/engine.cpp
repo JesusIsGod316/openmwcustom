@@ -885,6 +885,16 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         }
     }
 
+    // The Vulkan route captures all mutable OpenMW/OSG state before releasing
+    // the Lua worker. Presentation below then overlaps Lua only with consumption
+    // of an immutable frame snapshot and Vulkan-owned backend state.
+    if (mUseVulkanRenderer)
+    {
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        prepareVulkanFrame(frametime, false);
+#endif
+    }
+
     // if there is a separate Lua thread, it starts the update now
     mLuaWorker->allowUpdate(frameStart, frameNumber, *stats);
 
@@ -894,7 +904,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         if (mUseVulkanRenderer)
         {
 #if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
-            presentVulkanFrame(frametime, false);
+            presentPreparedVulkanFrame();
 #endif
         }
         else
@@ -1443,7 +1453,11 @@ void OMW::Engine::prepareEngine()
     if (mUseVulkanRenderer)
     {
         guiPlatform = mV4RenderBridge->createGuiPlatform(mCfgMgr.getLogPath() / "MyGUI.log");
-        presentCallback = [this] { presentVulkanFrame(0.0f, true); };
+        // Loading screens and videos invoke this callback from inside world
+        // transitions, outside the stable main-frame boundary. Present only
+        // the current MyGUI tree here; capturing the partially-mutated world
+        // can publish incoherent actor/resource state to Vulkan.
+        presentCallback = [this] { presentVulkanGuiFrame(); };
     }
 #endif
     mWindowManager = std::make_unique<MWGui::WindowManager>(mWindow, mViewer, guiRoot, mResourceSystem.get(),
@@ -1583,24 +1597,52 @@ void OMW::Engine::prepareVirtualFileSystem()
 }
 
 #if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
-void OMW::Engine::presentVulkanFrame(float frameDelta, bool invalidateHistory)
+void OMW::Engine::prepareVulkanFrame(float frameDelta, bool invalidateHistory)
 {
     if (!mV4RenderBridge || !mV4FrameCoordinator)
-        throw std::logic_error("Vulkan frame presentation requested before route creation");
+        throw std::logic_error("Vulkan frame preparation requested before route creation");
 
-    const double simulationTime = mWorld && mWorld->getTimeManager()
+    mV4PreparedSimulationTime = mWorld && mWorld->getTimeManager()
         ? mWorld->getTimeManager()->getRenderingSimulationTime()
         : 0.0;
-    RenderCore::RenderFrameResult result = RenderCore::RenderFrameResult::Skipped;
+    mV4PreparedFrameDelta = frameDelta;
+    mV4PreparedSceneFrame = false;
+    mV4PreparedFrameSkipped = false;
+
     MWRender::RenderingManager* rendering = mWorld ? mWorld->getRenderingManager() : nullptr;
     MWWorld::CellStore* current = rendering ? mWorld->getWorldScene().getCurrentCell() : nullptr;
     if (rendering && current && current->getCell() && mV4RenderBridge->sceneRenderLifecycleTaken())
     {
-        result = mV4FrameCoordinator->render(
-            *rendering, *current->getCell(), simulationTime, frameDelta, invalidateHistory);
+        const RenderCore::RenderFrameResult result = mV4FrameCoordinator->prepare(
+            *rendering, *current->getCell(), mV4PreparedSimulationTime, frameDelta, invalidateHistory);
+        if (result == RenderCore::RenderFrameResult::Failed)
+        {
+            std::string diagnostic = mV4FrameCoordinator->lastDiagnostic();
+            if (diagnostic.empty())
+                diagnostic = mV4RenderBridge->lastDiagnostic();
+            throw std::runtime_error(
+                diagnostic.empty() ? "Vulkan renderer rejected application frame preparation" : diagnostic);
+        }
+        mV4PreparedSceneFrame = result == RenderCore::RenderFrameResult::Presented;
+        mV4PreparedFrameSkipped = result == RenderCore::RenderFrameResult::Skipped;
     }
-    else
-        result = mV4RenderBridge->renderGuiFrame(simulationTime, frameDelta);
+}
+
+void OMW::Engine::presentPreparedVulkanFrame()
+{
+    if (!mV4RenderBridge || !mV4FrameCoordinator)
+        throw std::logic_error("Vulkan frame presentation requested before route creation");
+
+    if (mV4PreparedFrameSkipped)
+    {
+        mV4PreparedFrameSkipped = false;
+        return;
+    }
+
+    const RenderCore::RenderFrameResult result = mV4PreparedSceneFrame
+        ? mV4FrameCoordinator->presentPrepared()
+        : mV4RenderBridge->renderGuiFrame(mV4PreparedSimulationTime, mV4PreparedFrameDelta);
+    mV4PreparedSceneFrame = false;
 
     if (result == RenderCore::RenderFrameResult::Failed)
     {
@@ -1609,6 +1651,29 @@ void OMW::Engine::presentVulkanFrame(float frameDelta, bool invalidateHistory)
             diagnostic = mV4RenderBridge->lastDiagnostic();
         throw std::runtime_error(
             diagnostic.empty() ? "Vulkan renderer rejected the application frame" : diagnostic);
+    }
+}
+
+void OMW::Engine::presentVulkanFrame(float frameDelta, bool invalidateHistory)
+{
+    prepareVulkanFrame(frameDelta, invalidateHistory);
+    presentPreparedVulkanFrame();
+}
+
+void OMW::Engine::presentVulkanGuiFrame()
+{
+    if (!mV4RenderBridge)
+        throw std::logic_error("Vulkan GUI presentation requested before route creation");
+
+    const double simulationTime = mWorld && mWorld->getTimeManager()
+        ? mWorld->getTimeManager()->getRenderingSimulationTime()
+        : 0.0;
+    const RenderCore::RenderFrameResult result = mV4RenderBridge->renderGuiFrame(simulationTime, 0.0);
+    if (result == RenderCore::RenderFrameResult::Failed)
+    {
+        const std::string& diagnostic = mV4RenderBridge->lastDiagnostic();
+        throw std::runtime_error(
+            diagnostic.empty() ? "Vulkan renderer rejected the transition GUI frame" : diagnostic);
     }
 }
 #endif

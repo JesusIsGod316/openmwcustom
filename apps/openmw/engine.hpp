@@ -214,8 +214,16 @@ namespace OMW
         void createWindow();
         void setWindowIcon();
 #if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        void prepareVulkanFrame(float frameDelta, bool invalidateHistory);
+        void presentPreparedVulkanFrame();
         void presentVulkanFrame(float frameDelta, bool invalidateHistory);
+        void presentVulkanGuiFrame();
 #endif
+
+        bool mV4PreparedSceneFrame = false;
+        bool mV4PreparedFrameSkipped = false;
+        double mV4PreparedSimulationTime = 0.0;
+        float mV4PreparedFrameDelta = 0.0f;
 
     public:
         Engine(Files::ConfigurationManager& configurationManager);

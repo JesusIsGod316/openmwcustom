@@ -297,21 +297,20 @@ namespace MWRender
             material.textureApply = textureApplyMode(path);
             material.unlit = noLightingShader(path);
 
-            // Soft effects require the opaque-depth texture sampled by the OSG
-            // shader visitor. The immediate-effect Vulkan path does not expose
-            // that sampled attachment yet, so reject this optional (default-off)
-            // setting rather than drawing hard intersections silently.
-            if (state->getUniform("particleSize") || state->getUniform("particleFade")
-                || state->getUniform("softFalloffDepth"))
-            {
-                diagnostic = "evaluated effect requires soft-particle opaque-depth sampling";
-                return false;
-            }
-            if (state->getUniform("distortionStrength") || state->getBinName() == "Distortion")
-            {
-                diagnostic = "evaluated effect requires the post-process distortion target";
-                return false;
-            }
+            // Vulkan's immediate-effect pass does not yet expose the opaque
+            // scene depth as a sampled texture or the OSG distortion target.
+            // Both are optional presentation refinements: preserve the
+            // evaluated particle geometry, texture, alpha and blend state and
+            // realize an ordinary transparent effect instead. This is the same
+            // safe visual fallback users get with soft particles/distortion
+            // disabled, and prevents an optional shader setting or mod-authored
+            // effect from aborting world publication.
+            const bool softDepthFallback = state->getUniform("particleSize")
+                || state->getUniform("particleFade") || state->getUniform("softFalloffDepth");
+            const bool distortionFallback
+                = state->getUniform("distortionStrength") || state->getBinName() == "Distortion";
+            static_cast<void>(softDepthFallback);
+            static_cast<void>(distortionFallback);
 
             if (const auto* source = dynamic_cast<const SceneUtil::Material*>(
                     state->getAttribute(osg::StateAttribute::MATERIAL)))

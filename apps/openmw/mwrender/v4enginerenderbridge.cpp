@@ -172,17 +172,25 @@ namespace MWRender
             {
             }
 
-            void apply(osg::Geode& geode) override
+            void apply(osg::Drawable& drawable) override
             {
-                for (unsigned int i = 0; i < geode.getNumDrawables(); ++i)
-                {
-                    if (auto* morph = dynamic_cast<SceneUtil::MorphGeometry*>(geode.getDrawable(i)))
-                        morphs.push_back(morph);
-                }
-                traverse(geode);
+                // Modern OpenMW's NIF loader publishes geometry directly as
+                // drawable nodes. Restricting this visitor to osg::Geode silently
+                // missed those MorphGeometry instances and made a valid one-morph
+                // NPC part look as if its evaluated attachment had no morphs.
+                if (auto* morph = dynamic_cast<SceneUtil::MorphGeometry*>(&drawable))
+                    morphs.push_back(morph);
+                traverse(drawable);
             }
 
             std::vector<SceneUtil::MorphGeometry*> morphs;
+        };
+
+        struct EvaluatedMorphSource
+        {
+            RenderCore::MeshHandle mesh;
+            SceneUtil::MorphGeometry* geometry = nullptr;
+            bool consumed = false;
         };
 
         // Whole-object compatibility capture must not absorb attached UpdateVfx
@@ -802,11 +810,61 @@ namespace MWRender
                 }
             }
             RenderCore::ModelHandle actorModel = base->model;
-            std::vector<osg::Node*> evaluatedPartRoots;
+            std::vector<EvaluatedMorphSource> evaluatedPartMorphs;
             if (auto* npc = dynamic_cast<NpcAnimation*>(&animation))
             {
                 std::vector<NifRender::ActorPartModelSource> parts;
                 std::string signature(animation.getV4SourceModel().value());
+                const auto bindEvaluatedMorphs = [&](RenderCore::ModelHandle partModel, osg::Node* evaluatedRoot,
+                                                     std::string_view diagnosticIdentity) {
+                    const RenderCore::ModelRecord* const partRecord = mSession->world().get(partModel);
+                    if (!partRecord || !partRecord->payload)
+                    {
+                        compatible = false;
+                        mLastDiagnostic = std::string(diagnosticIdentity) + " has no current model payload";
+                        return;
+                    }
+
+                    std::vector<RenderCore::MeshHandle> neutralMorphMeshes;
+                    bool hasSkinnedGeometry = false;
+                    for (const RenderCore::ModelNodeRecord& node : partRecord->payload->nodes)
+                    {
+                        const RenderCore::MeshRecord* const mesh
+                            = node.mesh ? mSession->world().get(*node.mesh) : nullptr;
+                        if (mesh && mesh->skin)
+                            hasSkinnedGeometry = true;
+                        if (mesh && mesh->morphed)
+                            neutralMorphMeshes.push_back(*node.mesh);
+                    }
+                    // SceneUtil::attach treats any template containing RigGeometry as a
+                    // skeleton and CopyRigVisitor copies only matching RigGeometry into
+                    // the actor. Standalone MorphGeometry siblings are deliberately not
+                    // part of that evaluated attachment. composeActorModel mirrors the
+                    // same selection, so those uncomposed morph meshes require no live
+                    // weight binding.
+                    if (hasSkinnedGeometry)
+                        return;
+                    if (neutralMorphMeshes.empty())
+                        return;
+                    if (!evaluatedRoot)
+                    {
+                        compatible = false;
+                        mLastDiagnostic = std::string(diagnosticIdentity) + " has no evaluated morph root";
+                        return;
+                    }
+
+                    MorphCollector collector;
+                    evaluatedRoot->accept(collector);
+                    if (collector.morphs.size() != neutralMorphMeshes.size())
+                    {
+                        compatible = false;
+                        mLastDiagnostic = std::string(diagnosticIdentity)
+                            + " evaluated morph topology does not match its published model";
+                        return;
+                    }
+                    for (std::size_t i = 0; i < neutralMorphMeshes.size(); ++i)
+                        evaluatedPartMorphs.push_back({ neutralMorphMeshes[i], collector.morphs[i], false });
+                };
                 for (const NpcAnimation::V4PartSource& part : npc->getV4PartSources())
                 {
                     std::string partFailure;
@@ -855,9 +913,11 @@ namespace MWRender
                         glowSignature = ":glow=" + variant->sourceIdentity;
                     }
 
+                    bindEvaluatedMorphs(partModel, part.evaluatedRoot,
+                        "NPC part '" + std::string(part.model.value()) + "'");
+                    if (!compatible)
+                        return;
                     parts.push_back({ partModel, part.boneName, part.visible });
-                    if (part.evaluatedRoot)
-                        evaluatedPartRoots.push_back(part.evaluatedRoot);
                     signature += "\n" + std::to_string(static_cast<unsigned int>(part.type)) + ":"
                         + std::string(part.model.value()) + ":" + part.boneName + ":" + (part.visible ? "1" : "0")
                         + glowSignature;
@@ -915,8 +975,11 @@ namespace MWRender
                     }
 
                     const bool ammoVisible = attachedAmmunition->getNodeMask() != 0u;
+                    bindEvaluatedMorphs(ammoModelHandle, attachedAmmunition,
+                        "NPC ammunition '" + std::string(ammoModel.value()) + "'");
+                    if (!compatible)
+                        return;
                     parts.push_back({ ammoModelHandle, arrowBone->getName(), ammoVisible });
-                    evaluatedPartRoots.push_back(attachedAmmunition);
                     signature += "\nammunition:" + std::string(ammoModel.value()) + ":" + arrowBone->getName() + ":"
                         + (ammoVisible ? "1" : "0") + ammoGlowSignature;
                 }
@@ -1080,7 +1143,8 @@ namespace MWRender
                 if (!sourceBone)
                 {
                     compatible = false;
-                    mLastDiagnostic = "evaluated actor skeleton is missing required bone " + bone.name;
+                    mLastDiagnostic = "evaluated actor skeleton is missing required bone " + bone.name
+                        + " from " + skeleton->sourceIdentity;
                     return;
                 }
                 evaluatedBones.push_back(sourceBone);
@@ -1120,22 +1184,14 @@ namespace MWRender
                     return;
                 }
                 MorphCollector collector;
-                if (dynamic_cast<NpcAnimation*>(&animation))
-                {
-                    // Capture only the same authoritative part handles used to
-                    // compose the V4 NPC model. The complete actor root also
-                    // owns unrelated attachment/effect subtrees, so comparing
-                    // or matching its whole MorphGeometry population is not a
-                    // valid correspondence rule.
-                    for (osg::Node* root : evaluatedPartRoots)
-                        root->accept(collector);
-                }
-                else
+                const bool npcActor = dynamic_cast<NpcAnimation*>(&animation) != nullptr;
+                if (!npcActor)
                     animation.getObjectRoot()->accept(collector);
 
-                // Match each rendered neutral morph node by OpenMW's stable
-                // name and occurrence order. The checks below remain fail-closed
-                // if a V4 draw has no evaluated source or required target.
+                // NPC composition reuses each exact published part mesh handle,
+                // so that handle is the authoritative correspondence key for its
+                // evaluated clone. Non-NPC actors retain stable name/occurrence
+                // matching against their single evaluated object root.
                 std::unordered_map<std::string, std::vector<SceneUtil::MorphGeometry*>> evaluatedByName;
                 for (SceneUtil::MorphGeometry* morph : collector.morphs)
                 {
@@ -1151,16 +1207,33 @@ namespace MWRender
                 for (std::size_t i = 0; i < morphNodes.size(); ++i)
                 {
                     const RenderCore::ModelNodeRecord& node = model->payload->nodes[morphNodes[i].first.value()];
-                    const std::string foldedName = Misc::StringUtils::lowerCase(node.name);
-                    const auto named = evaluatedByName.find(foldedName);
-                    const std::size_t occurrence = nameCursor[foldedName]++;
-                    if (node.name.empty() || named == evaluatedByName.end() || occurrence >= named->second.size())
+                    SceneUtil::MorphGeometry* evaluatedMorph = nullptr;
+                    if (npcActor)
+                    {
+                        const auto binding = std::find_if(evaluatedPartMorphs.begin(), evaluatedPartMorphs.end(),
+                            [&](const EvaluatedMorphSource& candidate) {
+                                return !candidate.consumed && node.mesh && candidate.mesh == *node.mesh;
+                            });
+                        if (binding != evaluatedPartMorphs.end())
+                        {
+                            binding->consumed = true;
+                            evaluatedMorph = binding->geometry;
+                        }
+                    }
+                    else
+                    {
+                        const std::string foldedName = Misc::StringUtils::lowerCase(node.name);
+                        const auto named = evaluatedByName.find(foldedName);
+                        const std::size_t occurrence = nameCursor[foldedName]++;
+                        if (!node.name.empty() && named != evaluatedByName.end() && occurrence < named->second.size())
+                            evaluatedMorph = named->second[occurrence];
+                    }
+                    if (!evaluatedMorph)
                     {
                         compatible = false;
-                        mLastDiagnostic = "evaluated actor morph nodes do not match translated node " + node.name;
+                        mLastDiagnostic = "evaluated actor morph source does not match translated node " + node.name;
                         return;
                     }
-                    const SceneUtil::MorphGeometry& evaluatedMorph = *named->second[occurrence];
                     if (!morphNodes[i].second->morphs)
                     {
                         compatible = false;
@@ -1173,13 +1246,13 @@ namespace MWRender
                     weights.modelNode = morphNodes[i].first;
                     for (const RenderCore::MorphTargetPayload& target : morphNodes[i].second->morphs->targets)
                     {
-                        if (target.sourceIndex >= evaluatedMorph.getMorphTargetList().size())
+                        if (target.sourceIndex >= evaluatedMorph->getMorphTargetList().size())
                         {
                             compatible = false;
                             mLastDiagnostic = "evaluated actor morph target count is incompatible with translated data";
                             return;
                         }
-                        weights.weights.push_back(evaluatedMorph.getMorphTarget(target.sourceIndex).getWeight());
+                        weights.weights.push_back(evaluatedMorph->getMorphTarget(target.sourceIndex).getWeight());
                     }
                     source.morphWeights.push_back(std::move(weights));
                 }

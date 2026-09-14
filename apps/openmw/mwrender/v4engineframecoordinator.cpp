@@ -223,9 +223,10 @@ namespace MWRender
         return true;
     }
 
-    RenderCore::RenderFrameResult V4EngineFrameCoordinator::render(const RenderingManager& rendering,
+    RenderCore::RenderFrameResult V4EngineFrameCoordinator::prepare(const RenderingManager& rendering,
         const MWWorld::Cell& cell, double simulationTime, double frameDelta, bool invalidateHistory)
     {
+        mPreparedSource.reset();
         if (!mHealthy)
             return RenderCore::RenderFrameResult::Failed;
 
@@ -276,11 +277,35 @@ namespace MWRender
                     ? "authoritative actor state could not produce a compatible V4 frame"
                     : mBridge.lastDiagnostic());
 
-        const RenderCore::RenderFrameResult result = mBridge.renderMainFrameWithNativeLocalMap(*source);
+        mPreparedSource = std::move(*source);
+        mLastDiagnostic.clear();
+        return RenderCore::RenderFrameResult::Presented;
+    }
+
+    RenderCore::RenderFrameResult V4EngineFrameCoordinator::presentPrepared()
+    {
+        if (!mHealthy)
+            return RenderCore::RenderFrameResult::Failed;
+        if (!mPreparedSource)
+            return fail("V4 frame presentation was requested without a prepared immutable frame");
+
+        V4MainFrameSource source = std::move(*mPreparedSource);
+        mPreparedSource.reset();
+        const RenderCore::RenderFrameResult result = mBridge.renderMainFrameWithNativeLocalMap(source);
         mLastDiagnostic = mBridge.lastDiagnostic();
         if (result == RenderCore::RenderFrameResult::Failed)
             return fail(mLastDiagnostic.empty() ? "V4 render bridge rejected the main frame" : mLastDiagnostic);
         return result;
+    }
+
+    RenderCore::RenderFrameResult V4EngineFrameCoordinator::render(const RenderingManager& rendering,
+        const MWWorld::Cell& cell, double simulationTime, double frameDelta, bool invalidateHistory)
+    {
+        const RenderCore::RenderFrameResult prepared
+            = prepare(rendering, cell, simulationTime, frameDelta, invalidateHistory);
+        if (prepared != RenderCore::RenderFrameResult::Presented)
+            return prepared;
+        return presentPrepared();
     }
 
     RenderCore::RenderFrameResult V4EngineFrameCoordinator::fail(std::string diagnostic)
