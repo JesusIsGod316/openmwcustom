@@ -113,6 +113,8 @@ require(fonts, "texture->createManual", "font atlas native manual texture")
 require(texture, "mData = rgba;", "manual MyGUI texture VSG publication")
 require(render, "MyGUI::ITexture* tex = createTexture(name);", "VSG VFS texture allocation")
 require(render, "tex->loadFromFile(name);", "VSG VFS texture decode")
+require(render, "onFrameEvent(std::chrono::duration<float>(now - mLastFrameTime).count())",
+        "Vulkan MyGUI controller/frame advance")
 require(decoder, "vsgXchange::images::create()", "VSG MyGUI image decoder")
 require(decoder, 'options->setValue("image_format", vsg::CoordinateSpace::sRGB)', "VSG MyGUI sRGB image decode")
 require(decoder, "data->properties.origin = vsg::TOP_LEFT", "VSG MyGUI image orientation")

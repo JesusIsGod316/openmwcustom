@@ -215,6 +215,7 @@ vec3 getNormal()
 void main()
 {
     const int vertexColorMode = int(material.semantics.x + 0.5);
+    const int textureApplyMode = int(material.fogColor.w + 0.5);
     vec4 effectiveDiffuse = material.diffuseColor;
     vec4 effectiveAmbient = material.ambientColor;
     vec4 effectiveEmission = material.emissiveColor;
@@ -238,6 +239,26 @@ vec2 diffuseUv = vec2(0.0);
     diffuseUv = texCoord[texCoordIndices.diffuseMap].st;
 #endif
 
+#ifdef VSG_DIFFUSE_MAP
+    // Canonical OpenMW only gives NiTexturingProperty::Hilight2 (value 4)
+    // distinct shader behavior: the diffuse alpha channel is an Oblivion-style
+    // height map. Replace, Decal and Hilight follow the ordinary legacy
+    // textured-lighting path, exactly as the current OSG ShaderVisitor does.
+    if (textureApplyMode == 4)
+    {
+        vec3 q1 = dFdx(eyePos);
+        vec3 q2 = dFdy(eyePos);
+        vec2 st1 = dFdx(diffuseUv);
+        vec2 st2 = dFdy(diffuseUv);
+        vec3 N = normalize(normalDir);
+        vec3 T = normalize(q1 * st2.t - q2 * st1.t);
+        vec3 B = -normalize(cross(N, T));
+        vec3 tangentEye = transpose(mat3(T, B, N)) * normalize(-eyePos);
+        float height = texture(diffuseMap, diffuseUv).a;
+        diffuseUv += tangentEye.xy * (height * 0.04 - 0.02);
+    }
+#endif
+
     if (dot(openmwEnvironment.clipPlane.xyz, openmwEnvironment.clipPlane.xyz) > 0.25
         && dot(openmwEnvironment.clipPlane, vec4(eyePos, 1.0)) < 0.0)
         discard;
@@ -250,6 +271,8 @@ vec2 diffuseUv = vec2(0.0);
 #else
     surfaceColor *= texture(diffuseMap, diffuseUv);
 #endif
+    if (textureApplyMode == 4)
+        surfaceColor.a = 1.0;
 #endif
 
     surfaceColor.a *= effectiveDiffuse.a;
@@ -532,6 +555,7 @@ vec2 diffuseUv = vec2(0.0);
             source.alphaTestEnabled ? 1.0f : 0.0f, static_cast<float>(source.alphaCompare),
             source.cullMode == RenderCore::CullMode::None ? 1.0f : 0.0f);
         uniform.fogColor = toVsg(source.fog.color);
+        uniform.fogColor.w = static_cast<float>(source.textureApply);
         const bool additiveFog = source.alphaBlendEnabled
             && source.sourceBlend == RenderCore::BlendFactor::SourceAlpha
             && source.destinationBlend == RenderCore::BlendFactor::One;

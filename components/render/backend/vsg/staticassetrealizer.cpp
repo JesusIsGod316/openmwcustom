@@ -617,12 +617,6 @@ namespace RenderVsg
                 return result;
             }
 
-            if (material->textureApply != TextureApplyMode::Modulate)
-            {
-                ++result.stats.runtimeContextEffects;
-                result.diagnostics.emplace_back(
-                    "Legacy non-Modulate texture apply mode requires a dedicated compatibility shader variant");
-            }
             if (std::ranges::any_of(material->textures,
                     [](const TextureBinding& binding) { return hasNonIdentityTextureTransform(binding.transform); }))
             {

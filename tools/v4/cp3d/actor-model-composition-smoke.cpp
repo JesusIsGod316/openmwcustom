@@ -8,6 +8,28 @@ int main()
     using namespace RenderCore;
     RenderWorld world;
 
+    // NifOsg realizes an identity/controller-free NIF root as osg::Group, so
+    // SceneUtil::Skeleton never exposes that structural name as a bone. The V4
+    // forced skeleton must make the same distinction while retaining its
+    // MatrixTransform descendants.
+    auto forcedPayload = std::make_shared<ModelPayload>();
+    ModelNodeRecord structuralRoot;
+    structuralRoot.name = "base_anim.nif";
+    forcedPayload->nodes.push_back(structuralRoot);
+    ModelNodeRecord forcedBone;
+    forcedBone.name = "Bip01";
+    forcedBone.parent = ModelNodeIndex{ 0u };
+    forcedBone.localTransform[3][2] = 1.0f;
+    forcedPayload->nodes.push_back(forcedBone);
+    forcedPayload->roots.push_back(ModelNodeIndex{ 0u });
+    ModelRecord forcedBase;
+    forcedBase.payload = forcedPayload;
+    const NifRender::ForcedActorSkeleton forced = NifRender::buildForcedActorSkeleton(forcedBase);
+    assert(forced.valid());
+    assert(forced.record.payload->bones.size() == 1u);
+    assert(forced.record.payload->bones.front().name == "bip01");
+    assert(forced.record.payload->bones.front().parent == -1);
+
     auto skeletonPayload = std::make_shared<SkeletonPayload>();
     BoneRecord root;
     root.name = "bip01";

@@ -18,7 +18,7 @@ namespace vsg
 namespace RenderVsg
 {
     // Backend-private uniform contract for the legacy/Gamebryo compatibility
-    // shader family. Eight vec4 slots keep the CPU/GPU layout explicit and
+    // shader family. Nine vec4 slots keep the CPU/GPU layout explicit and
     // stable: colors, scalar parameters, semantic selectors, and material fog.
     // RenderCore stays renderer agnostic and later material families may differ.
     struct alignas(16) LegacyMaterialUniform
@@ -36,8 +36,10 @@ namespace RenderVsg
         // w=two-sided lighting enabled. Values are exact small integers encoded
         // as floats to keep the std140 layout in tightly-defined vec4 slots.
         vsg::vec4 semantics{ 0.0f, 0.0f, 7.0f, 0.0f };
-        // xyz = NiFogProperty override color; w is reserved.
-        vsg::vec4 fogColor{ 0.0f, 0.0f, 0.0f, 1.0f };
+        // xyz = NiFogProperty override color; w = TextureApplyMode. The apply
+        // selector shares this slot because fog only consumes RGB and the
+        // values are exact small integers under std140.
+        vsg::vec4 fogColor{ 0.0f, 0.0f, 0.0f, 2.0f };
         // x = MaterialFogMode, y = fog depth, z = additive-fog behavior,
         // w = legacy unlit/no-lighting material.
         vsg::vec4 effects{ 0.0f, 0.0f, 0.0f, 0.0f };

@@ -163,8 +163,8 @@ int main()
         "reverse-depth decal bias must move toward the camera with positive factors");
 
     // The legacy compatibility path may publish only semantics it actually expresses.
-    // Exercise the remaining fail-closed counters so complete=true cannot silently bless
-    // static material behavior that still needs a dedicated compatibility variant.
+    // All NiTexturingProperty apply modes are now represented; exercise the
+    // remaining static-UV fail-closed counter independently.
     const auto unsupportedMaterial = world.reserveMaterial();
     require(unsupportedMaterial.has_value(), "failed to reserve unsupported semantic material");
     MaterialRecord unsupportedRecord;
@@ -202,8 +202,8 @@ int main()
     const RenderVsg::StaticRealizationResult unsupportedRealized
         = realizer.realize(world, *unsupportedPlan, resolver);
     require(unsupportedRealized.valid(), "unsupported semantic realization should remain inspectable");
-    require(unsupportedRealized.stats.runtimeContextEffects == 2u,
-        "texture-apply/static-UV gaps must each fail closed while unlit and emissive vertex color remain supported");
+    require(unsupportedRealized.stats.runtimeContextEffects == 1u,
+        "static-UV gap must fail closed while texture apply, unlit and emissive vertex color remain supported");
 
     RenderVsg::StaticTextureDecoder decoder;
     TextureRecord warningRecord;

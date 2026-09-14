@@ -69,6 +69,7 @@ int main()
     semanticMaterial.fog.mode = MaterialFogMode::Override;
     semanticMaterial.fog.color = { 0.6f, 0.5f, 0.4f, 1.0f };
     semanticMaterial.fog.depth = 0.25f;
+    semanticMaterial.textureApply = TextureApplyMode::Highlight2;
 
     auto uniform = RenderVsg::makeLegacyCompatibilityMaterial(semanticMaterial);
     require(static_cast<bool>(uniform), "failed to create legacy material uniform");
@@ -90,6 +91,7 @@ int main()
         "legacy semantic selectors changed");
     require(near(packed.fogColor.x, 0.6f) && near(packed.fogColor.y, 0.5f)
             && near(packed.fogColor.z, 0.4f)
+            && near(packed.fogColor.w, static_cast<float>(TextureApplyMode::Highlight2))
             && near(packed.effects.x, static_cast<float>(MaterialFogMode::Override))
             && near(packed.effects.y, 0.25f) && near(packed.effects.z, 0.0f),
         "legacy material fog override packing changed");
@@ -126,6 +128,10 @@ int main()
         "emissive vertex-color mode is absent from the legacy shader");
     require(source.find("surfaceColor.a *= effectiveDiffuse.a") != std::string_view::npos,
         "legacy vertex/material alpha selection is absent from the shader");
+    require(source.find("textureApplyMode == 4") != std::string_view::npos
+            && source.find("height * 0.04 - 0.02") != std::string_view::npos
+            && source.find("surfaceColor.a = 1.0") != std::string_view::npos,
+        "canonical Hilight2 diffuse-alpha parallax semantics are absent from the shader");
     require(source.find("surfaceColor.rgb *= texture(detailMap, texCoord[texCoordIndices.detailMap].st).rgb * 2.0")
             != std::string_view::npos,
         "legacy detail modulation is absent from the shader");

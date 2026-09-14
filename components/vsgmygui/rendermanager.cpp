@@ -63,6 +63,7 @@ namespace VsgMyGui
         // Match the established OpenGL and upstream Vulkan MyGUI backends: individual RenderItems start
         // out-of-date and materialize themselves on first use. A full forced update is reserved for resize.
         mUpdate = false;
+        mLastFrameTime = std::chrono::steady_clock::now();
         mIsInitialise = true;
     }
 
@@ -264,6 +265,15 @@ namespace VsgMyGui
 
     void RenderManager::collect()
     {
+        // The OSG backend advances MyGUI from its update traversal before
+        // collecting draw calls. VSG has no OSG update traversal, so do the
+        // equivalent here. Without this, controller-driven widget transitions
+        // (notably Settings TabControl page selection) accept input but remain
+        // visually frozen on their previous state.
+        const auto now = std::chrono::steady_clock::now();
+        if (mIsInitialise)
+            onFrameEvent(std::chrono::duration<float>(now - mLastFrameTime).count());
+        mLastFrameTime = now;
         begin();
         onRenderToTarget(this, mUpdate);
         end();

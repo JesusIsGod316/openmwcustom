@@ -14,6 +14,7 @@ osg_loader = (root / 'components/nifosg/nifloader.cpp').read_text()
 required = {
     'forced actor skeleton helper': 'buildForcedActorSkeleton' in actor,
     'first-match duplicate actor bones': 'if (names.find(folded) != names.end())\n                continue;' in actor,
+    'canonical structural actor root exclusion': 'const bool canonicalGroupRoot = !source.parent.valid()' in actor,
     'direct sandbox ScriptId parameter': 'ScriptId scriptId = {}' in state_hpp,
     'direct container ScriptId handoff': 'ScriptId{ this, scriptId }' in container,
     'runtime forced skeleton publication': 'runtime:forced-actor-skeleton:' in bridge,

@@ -1,6 +1,7 @@
 #ifndef OPENMW_COMPONENTS_VSGMYGUI_RENDERMANAGER_H
 #define OPENMW_COMPONENTS_VSGMYGUI_RENDERMANAGER_H
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -105,6 +106,7 @@ namespace VsgMyGui
         MyGUI::VertexColourType mVertexFormat;
         bool mIsInitialise = false;
         bool mUpdate = false;
+        std::chrono::steady_clock::time_point mLastFrameTime;
         // MyGUI RenderItem stores a raw IVertexBuffer*. Loading-screen GUI-only presents can overlap
         // transitional layer ownership, so keep every backend buffer alive until the RenderManager itself dies.
         // destroyVertexBuffer() only retires MyGUI's logical ownership; physical storage is released here later.

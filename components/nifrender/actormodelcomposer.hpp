@@ -71,6 +71,18 @@ namespace NifRender
             if (source.kind != ModelNodeKind::Transform || source.name.empty())
                 continue;
 
+            // NifOsg::Loader::createNode deliberately realizes an identity,
+            // controller-free NIF root as osg::Group rather than
+            // osg::MatrixTransform. SceneUtil::Skeleton's bone cache only
+            // indexes MatrixTransform nodes, so names such as base_anim.nif are
+            // structural model roots, not bones that the evaluated actor can
+            // resolve. Preserve that distinction in the forced neutral
+            // skeleton instead of manufacturing a V4-only required bone.
+            const bool canonicalGroupRoot = !source.parent.valid() && source.controllerFlags == 0
+                && source.localTransform == glm::mat4(1.0f);
+            if (canonicalGroupRoot)
+                continue;
+
             const std::string folded = foldName(source.name);
             // SceneUtil::Skeleton::InitBoneCacheVisitor uses unordered_map::emplace,
             // which gives OpenMW first-match semantics for duplicate names. Match
