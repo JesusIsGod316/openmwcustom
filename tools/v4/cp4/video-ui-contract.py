@@ -31,6 +31,7 @@ video = source("apps/openmw/mwgui/videowidget.cpp")
 menu = source("apps/openmw/mwgui/mainmenu.cpp")
 menu_header = source("apps/openmw/mwgui/mainmenu.hpp")
 window = source("apps/openmw/mwgui/windowmanagerimp.cpp")
+window_header = source("apps/openmw/mwgui/windowmanagerimp.hpp")
 loading = source("apps/openmw/mwgui/loadingscreen.cpp")
 background = source("apps/openmw/mwgui/backgroundimage.cpp")
 buttons = source("components/widgets/imagebutton.cpp")
@@ -70,6 +71,16 @@ require(engine, "presentCallback = [this] { presentVulkanGuiFrame(); };", "engin
 require(engine, "void OMW::Engine::presentVulkanGuiFrame()", "engine GUI-only transition frame")
 forbid(engine, "presentCallback = [this] { presentVulkanFrame(0.0f, true); };",
        "unsafe full-world capture from loading/video callback")
+
+# Escape is delivered from inside InputManager::update(). It must only request
+# a skip there; synchronous FFmpeg thread joins and decoder destruction happen
+# after the playback loop has unwound from input dispatch.
+require(window_header, "bool mVideoSkipRequested = false;", "deferred video skip state")
+require(window, "if (mVideoSkipRequested)\n                break;", "deferred video loop exit")
+require(window, 'Log(Debug::Info) << "Video skip requested";', "video skip boundary diagnostic")
+require(window, "mVideoSkipRequested = true;", "deferred video skip request")
+forbid(window, "if (key == MyGUI::KeyCode::Escape)\n            mVideoWidget->stop();",
+       "decoder teardown during input callback")
 
 # Animated main-menu playback used to run VideoWidget::update()/playVideo() from
 # a wrapper thread while the main thread called commitFrame() and MyGUI collected

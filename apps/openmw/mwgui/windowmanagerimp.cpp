@@ -2110,6 +2110,7 @@ namespace MWGui
 
     void WindowManager::playVideo(std::string_view name, bool allowSkipping, bool overrideSounds)
     {
+        mVideoSkipRequested = false;
         mVideoWidget->playVideo("video\\" + std::string{ name });
 
         mVideoWidget->eventKeyButtonPressed.clear();
@@ -2150,6 +2151,14 @@ namespace MWGui
 
             MWBase::Environment::get().getInputManager()->update(dt, true, false);
 
+            // Input delegates execute inside InputManager::update(). Do not
+            // close the player from the Escape delegate: VideoPlayer::close()
+            // joins FFmpeg's parse and video threads and tears down state that
+            // this loop is still using. Leave the loop first, then perform the
+            // synchronous teardown at the stable boundary below.
+            if (mVideoSkipRequested)
+                break;
+
             if (!mWindowVisible)
             {
                 mVideoWidget->pause();
@@ -2176,7 +2185,13 @@ namespace MWGui
 
             frameRateLimiter.limit();
         }
+        const auto videoCloseStart = std::chrono::steady_clock::now();
         mVideoWidget->stop();
+        const auto videoCloseDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - videoCloseStart);
+        Log(Debug::Info) << "Video playback " << (mVideoSkipRequested ? "skip" : "completion")
+                         << " decoder shutdown took " << videoCloseDuration.count() << " ms";
+        mVideoSkipRequested = false;
 
         MWBase::Environment::get().getSoundManager()->resumeSounds(MWSound::VideoPlayback);
 
@@ -2253,7 +2268,10 @@ namespace MWGui
     void WindowManager::onVideoKeyPressed(MyGUI::Widget* /*sender*/, MyGUI::KeyCode key, MyGUI::Char value)
     {
         if (key == MyGUI::KeyCode::Escape)
-            mVideoWidget->stop();
+        {
+            Log(Debug::Info) << "Video skip requested";
+            mVideoSkipRequested = true;
+        }
     }
 
     void WindowManager::updatePinnedWindows()

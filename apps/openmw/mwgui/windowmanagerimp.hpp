@@ -469,6 +469,7 @@ namespace MWGui
         std::unique_ptr<SoulgemDialog> mSoulgemDialog;
         MyGUI::ImageBox* mVideoBackground;
         VideoWidget* mVideoWidget;
+        bool mVideoSkipRequested = false;
         ScreenFader* mWerewolfFader;
         ScreenFader* mBlindnessFader;
         ScreenFader* mHitFader;
