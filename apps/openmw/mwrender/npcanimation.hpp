@@ -5,8 +5,10 @@
 #include "animation.hpp"
 #include "weaponanimation.hpp"
 
+#include <components/esm3/loadweap.hpp>
 #include <components/vfs/pathutil.hpp>
 
+#include "../mwmechanics/weapontype.hpp"
 #include "../mwworld/inventorystore.hpp"
 
 #include <array>
@@ -133,6 +135,20 @@ namespace MWRender
         void addControllers() override;
         bool isArrowAttached() const override;
         std::string getSheathedShieldMesh(const MWWorld::ConstPtr& shield) const override;
+
+        float getAdditionalPitchFactor() const override
+        {
+            if (mViewMode != VM_FirstPersonFullBody || !mAccurateAiming)
+                return 0.f;
+
+            int weaponType = ESM::Weapon::None;
+            MWMechanics::getActiveWeapon(mPtr, &weaponType);
+            if (weaponType == ESM::Weapon::None || weaponType == ESM::Weapon::Spell
+                || weaponType == ESM::Weapon::PickProbe)
+                return 0.f;
+
+            return MWMechanics::getWeaponType(weaponType)->mWeaponClass == ESM::WeaponType::Melee ? 1.f : 0.f;
+        }
 
     public:
         /**

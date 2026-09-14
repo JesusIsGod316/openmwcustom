@@ -1,5 +1,7 @@
 #include "weaponanimation.hpp"
 
+#include <algorithm>
+
 #include <osg/MatrixTransform>
 
 #include <components/resource/resourcesystem.hpp>
@@ -198,13 +200,29 @@ namespace MWRender
 
     void WeaponAnimation::configureControllers(float characterPitchRadians)
     {
-        if (mPitchFactor == 0.f || characterPitchRadians == 0.f)
+        float pitchFactor = mPitchFactor;
+        const float additionalPitchFactor = getAdditionalPitchFactor();
+        const bool usingAdditionalPitch = additionalPitchFactor > pitchFactor;
+        if (usingAdditionalPitch)
+            pitchFactor = additionalPitchFactor;
+
+        if (pitchFactor == 0.f || characterPitchRadians == 0.f)
         {
             setControllerEnabled(false);
             return;
         }
 
-        float pitch = characterPitchRadians * mPitchFactor;
+        float pitch = characterPitchRadians * pitchFactor;
+        if (usingAdditionalPitch)
+        {
+            // Full-body first-person melee uses the ordinary third-person skeleton. Near-vertical camera pitch can fold
+            // the chest, shoulders, and weapon back through the camera if we apply the entire look angle to that
+            // skeleton. Preserve 1:1 visual aiming through normal combat angles, but stop the visual-only correction
+            // before the upper body reaches those pathological poses. Hit direction remains owned by combat mechanics.
+            constexpr float maxAdditionalPitchRadians = 0.6108652382f; // 35 degrees
+            pitch = std::clamp(pitch, -maxAdditionalPitchRadians, maxAdditionalPitchRadians);
+        }
+
         osg::Quat rotate(pitch / 2, osg::Vec3f(-1, 0, 0));
         setControllerRotate(rotate);
         setControllerEnabled(true);
