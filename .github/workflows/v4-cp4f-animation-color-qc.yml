@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
-          CP4F_SOURCE=371ddc8d2bb00318e3725bd692d9d5e4a04bba44
+          CP4F_SOURCE=2702aed5545b0b2258c53551e56da75d83322d38
           git cat-file -e "${CP4E_BASE}^{commit}"
           git cat-file -e "${CP4F_SOURCE}^{commit}"
           test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
