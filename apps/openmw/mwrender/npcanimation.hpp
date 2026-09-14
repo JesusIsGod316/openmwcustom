@@ -41,6 +41,9 @@ namespace MWRender
             ESM::PartReferenceType type;
             VFS::Path::Normalized model;
             std::string boneName;
+            // Live evaluated attachment root corresponding to this exact part
+            // selection. Owned by NpcAnimation for the duration of capture.
+            osg::Node* evaluatedRoot = nullptr;
             bool visible = true;
             bool isLight = false;
             bool enchantedGlow = false;

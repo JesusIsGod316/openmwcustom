@@ -174,15 +174,15 @@ namespace RenderVsg
             switch (role)
             {
                 case RenderCore::TextureRole::Diffuse: return "diffuseMap";
+                case RenderCore::TextureRole::Dark: return "darkMap";
                 case RenderCore::TextureRole::Detail: return "detailMap";
+                case RenderCore::TextureRole::Decal: return "openmwDecalMap";
                 case RenderCore::TextureRole::Emissive: return "emissiveMap";
                 case RenderCore::TextureRole::Normal: return "normalMap";
                 case RenderCore::TextureRole::Specular: return "specularMap";
                 case RenderCore::TextureRole::Bump: return "openmwBumpMap";
-                case RenderCore::TextureRole::Dark:
-                case RenderCore::TextureRole::Decal:
+                case RenderCore::TextureRole::Gloss: return "openmwGlossMap";
                 case RenderCore::TextureRole::Environment:
-                case RenderCore::TextureRole::Gloss:
                 case RenderCore::TextureRole::Blend: return std::nullopt;
             }
             return std::nullopt;

@@ -1405,11 +1405,12 @@ namespace MWRender
         {
             if (!mObjectParts[i] || mV4PartModels[i].empty())
                 continue;
-            const osg::Node* node = mObjectParts[i]->getNode();
+            osg::Node* node = mObjectParts[i]->getNode();
             result.push_back(V4PartSource{
                 .type = static_cast<ESM::PartReferenceType>(i),
                 .model = mV4PartModels[i],
                 .boneName = mV4PartBones[i],
+                .evaluatedRoot = node,
                 .visible = node && node->getNodeMask() != 0u,
                 .isLight = mV4PartLights[i],
                 .enchantedGlow = mV4PartEnchanted[i],

@@ -16,7 +16,7 @@ namespace RenderVsg
     {
         constexpr std::string_view LegacyCompatibilityFragmentShader = R"glsl(#version 450
 #extension GL_ARB_separate_shader_objects : enable
-#pragma import_defines (VSG_TEXTURECOORD_0, VSG_TEXTURECOORD_1, VSG_TEXTURECOORD_2, VSG_TEXTURECOORD_3, VSG_POINT_SPRITE, VSG_DIFFUSE_MAP, VSG_GREYSCALE_DIFFUSE_MAP, VSG_DETAIL_MAP, VSG_EMISSIVE_MAP, VSG_LIGHTMAP_MAP, VSG_NORMAL_MAP, VSG_SPECULAR_MAP, SHADOWMAP_DEBUG)
+#pragma import_defines (VSG_TEXTURECOORD_0, VSG_TEXTURECOORD_1, VSG_TEXTURECOORD_2, VSG_TEXTURECOORD_3, VSG_POINT_SPRITE, VSG_DIFFUSE_MAP, VSG_GREYSCALE_DIFFUSE_MAP, VSG_DARK_MAP, VSG_DETAIL_MAP, VSG_DECAL_MAP, VSG_EMISSIVE_MAP, VSG_GLOSS_MAP, VSG_LIGHTMAP_MAP, VSG_NORMAL_MAP, VSG_SPECULAR_MAP, SHADOWMAP_DEBUG)
 
 #if defined(VSG_SHADOWS_PCSS) || defined(VSG_SHADOWS_SOFT)
 #error OpenMW legacy compatibility shader currently supports VSG hard shadows only; never silently downgrade a requested shadow mode
@@ -57,6 +57,18 @@ layout(set = MATERIAL_DESCRIPTOR_SET, binding = 4) uniform sampler2D emissiveMap
 #ifdef VSG_SPECULAR_MAP
 layout(set = MATERIAL_DESCRIPTOR_SET, binding = 5) uniform sampler2D specularMap;
 #endif
+#ifdef VSG_DARK_MAP
+// VSG Phong reserves binding/index slot 6 for mrMap. Legacy OpenMW has no
+// metallic/roughness stage, so the compatibility family owns that otherwise
+// unused slot as NiTexturingProperty::DarkTexture.
+layout(set = MATERIAL_DESCRIPTOR_SET, binding = 6) uniform sampler2D darkMap;
+#endif
+#ifdef VSG_DECAL_MAP
+layout(set = MATERIAL_DESCRIPTOR_SET, binding = 12) uniform sampler2D openmwDecalMap;
+#endif
+#ifdef VSG_GLOSS_MAP
+layout(set = MATERIAL_DESCRIPTOR_SET, binding = 13) uniform sampler2D openmwGlossMap;
+#endif
 
 layout(set = MATERIAL_DESCRIPTOR_SET, binding = 10) uniform LegacyMaterialData
 {
@@ -69,6 +81,7 @@ layout(set = MATERIAL_DESCRIPTOR_SET, binding = 10) uniform LegacyMaterialData
     vec4 fogColor;
     vec4 effects;
     vec4 ambientOverride;
+    vec4 textureCoordSets;
 } material;
 
 layout(set = MATERIAL_DESCRIPTOR_SET, binding = 11) uniform TexCoordIndices
@@ -275,6 +288,12 @@ vec2 diffuseUv = vec2(0.0);
         surfaceColor.a = 1.0;
 #endif
 
+#ifdef VSG_DARK_MAP
+    // Canonical OpenMW's legacy object shader multiplies the complete sampled
+    // RGBA after the diffuse sample and before material alpha/alpha testing.
+    surfaceColor *= texture(darkMap, texCoord[int(material.textureCoordSets.x + 0.5)].st);
+#endif
+
     surfaceColor.a *= effectiveDiffuse.a;
     if (material.semantics.y > 0.5
         && !alphaComparisonPass(surfaceColor.a, material.parameters.y, int(material.semantics.z + 0.5)))
@@ -284,6 +303,14 @@ vec2 diffuseUv = vec2(0.0);
     // OpenMW/V3.25 legacy detail stage: RGB modulation around neutral 0.5.
     // Stock VSG Phong alpha-mixes the detail sample, which is not equivalent.
     surfaceColor.rgb *= texture(detailMap, texCoord[texCoordIndices.detailMap].st).rgb * 2.0;
+#endif
+
+#ifdef VSG_DECAL_MAP
+    // Canonical compatibility/objects.frag blends decal RGB by decal alpha
+    // multiplied by the effective diffuse alpha; it does not replace surface alpha.
+    vec4 openmwDecal = texture(openmwDecalMap,
+        texCoord[int(material.textureCoordSets.y + 0.5)].st);
+    surfaceColor.rgb = mix(surfaceColor.rgb, openmwDecal.rgb, openmwDecal.a * effectiveDiffuse.a);
 #endif
 
     vec3 specularColor = material.specularColor.rgb;
@@ -563,6 +590,16 @@ vec2 diffuseUv = vec2(0.0);
             additiveFog ? 1.0f : 0.0f, source.unlit ? 1.0f : 0.0f);
         uniform.ambientOverride = vsg::vec4(source.ambientLightOverride.r, source.ambientLightOverride.g,
             source.ambientLightOverride.b, source.ambientLightOverrideEnabled ? 1.0f : 0.0f);
+        for (const RenderCore::TextureBinding& binding : source.textures)
+        {
+            const float uv = static_cast<float>(binding.transform.uvSet);
+            if (binding.role == RenderCore::TextureRole::Dark)
+                uniform.textureCoordSets.x = uv;
+            else if (binding.role == RenderCore::TextureRole::Decal)
+                uniform.textureCoordSets.y = uv;
+            else if (binding.role == RenderCore::TextureRole::Gloss)
+                uniform.textureCoordSets.z = uv;
+        }
         return result;
     }
 
@@ -617,6 +654,19 @@ vec2 diffuseUv = vec2(0.0);
         }
         if (!replacedMaterial)
             return {};
+
+        // Phong's ShaderSet does not expose a metallic/roughness image
+        // descriptor, leaving material binding 6 available for the legacy
+        // DarkTexture image. The OpenMW uniform carries its authored UV set.
+        result->addDescriptorBinding("darkMap", "VSG_DARK_MAP", 1u, 6u,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1u, VK_SHADER_STAGE_FRAGMENT_BIT, {},
+            vsg::CoordinateSpace::sRGB);
+        result->addDescriptorBinding("openmwDecalMap", "VSG_DECAL_MAP", 1u, 12u,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1u, VK_SHADER_STAGE_FRAGMENT_BIT, {},
+            vsg::CoordinateSpace::sRGB);
+        result->addDescriptorBinding("openmwGlossMap", "VSG_GLOSS_MAP", 1u, 13u,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1u, VK_SHADER_STAGE_FRAGMENT_BIT, {},
+            vsg::CoordinateSpace::LINEAR);
 
         // Deliberately do not copy base->variants. They contain stock Phong
         // fragment stages and would bypass the OpenMW compatibility source.

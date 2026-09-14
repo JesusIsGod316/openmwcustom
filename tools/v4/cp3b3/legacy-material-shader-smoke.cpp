@@ -128,6 +128,12 @@ int main()
         "emissive vertex-color mode is absent from the legacy shader");
     require(source.find("surfaceColor.a *= effectiveDiffuse.a") != std::string_view::npos,
         "legacy vertex/material alpha selection is absent from the shader");
+    require(source.find("surfaceColor *= texture(darkMap, texCoord[int(material.textureCoordSets.x + 0.5)].st)")
+            != std::string_view::npos,
+        "canonical DarkTexture RGBA modulation is absent from the shader");
+    require(source.find("openmwDecal.a * effectiveDiffuse.a") != std::string_view::npos
+            && source.find("surfaceColor.rgb = mix(surfaceColor.rgb, openmwDecal.rgb") != std::string_view::npos,
+        "canonical DecalTexture RGB/alpha blend semantics are absent from the shader");
     require(source.find("textureApplyMode == 4") != std::string_view::npos
             && source.find("height * 0.04 - 0.02") != std::string_view::npos
             && source.find("surfaceColor.a = 1.0") != std::string_view::npos,
@@ -214,6 +220,21 @@ int main()
     require(static_cast<bool>(materialBinding), "legacy ShaderSet lost its material binding");
     require(dynamic_cast<const RenderVsg::LegacyMaterialUniformValue*>(materialBinding.data.get()) != nullptr,
         "legacy ShaderSet material binding does not use the OpenMW compatibility uniform");
+    const auto& darkBinding = shaderSet->getDescriptorBinding("darkMap");
+    require(static_cast<bool>(darkBinding) && darkBinding.binding == 6u
+            && darkBinding.define == "VSG_DARK_MAP"
+            && darkBinding.coordinateSpace == vsg::CoordinateSpace::sRGB,
+        "legacy ShaderSet did not claim the reserved mrMap slot for DarkTexture");
+    const auto& decalBinding = shaderSet->getDescriptorBinding("openmwDecalMap");
+    require(static_cast<bool>(decalBinding) && decalBinding.binding == 12u
+            && decalBinding.define == "VSG_DECAL_MAP"
+            && decalBinding.coordinateSpace == vsg::CoordinateSpace::sRGB,
+        "legacy ShaderSet lost its canonical DecalTexture descriptor");
+    const auto& glossBinding = shaderSet->getDescriptorBinding("openmwGlossMap");
+    require(static_cast<bool>(glossBinding) && glossBinding.binding == 13u
+            && glossBinding.define == "VSG_GLOSS_MAP"
+            && glossBinding.coordinateSpace == vsg::CoordinateSpace::LINEAR,
+        "legacy ShaderSet lost its data-space GlossTexture descriptor");
 
     const vsg::ShaderStage* fragment = nullptr;
     for (const auto& stage : shaderSet->stages)
@@ -234,8 +255,8 @@ int main()
     require(compiler.compile(plainStages), "plain legacy compatibility shader variant failed GLSL compilation");
 
     auto texturedHints = vsg::ShaderCompileSettings::create();
-    texturedHints->defines = { "VSG_TEXTURECOORD_0", "VSG_DIFFUSE_MAP", "VSG_DETAIL_MAP", "VSG_EMISSIVE_MAP",
-        "VSG_NORMAL_MAP", "VSG_SPECULAR_MAP" };
+    texturedHints->defines = { "VSG_TEXTURECOORD_0", "VSG_DIFFUSE_MAP", "VSG_DARK_MAP", "VSG_DECAL_MAP",
+        "VSG_DETAIL_MAP", "VSG_EMISSIVE_MAP", "VSG_GLOSS_MAP", "VSG_NORMAL_MAP", "VSG_SPECULAR_MAP" };
     auto texturedStages = shaderSet->getShaderStages(texturedHints);
     require(compiler.compile(texturedStages), "textured legacy compatibility shader variant failed GLSL compilation");
 
@@ -263,6 +284,16 @@ int main()
     TextureBinding detail = diffuse;
     detail.role = TextureRole::Detail;
     semanticMaterial.textures.push_back(detail);
+    TextureBinding dark = diffuse;
+    dark.role = TextureRole::Dark;
+    semanticMaterial.textures.push_back(dark);
+    TextureBinding decal = diffuse;
+    decal.role = TextureRole::Decal;
+    semanticMaterial.textures.push_back(decal);
+    TextureBinding gloss = diffuse;
+    gloss.role = TextureRole::Gloss;
+    gloss.colorSpace = TextureColorSpace::Data;
+    semanticMaterial.textures.push_back(gloss);
     require(world.commit(*material, std::move(semanticMaterial)), "failed to commit legacy smoke material");
 
     auto meshPayload = std::make_shared<MeshPayload>();
@@ -324,11 +355,11 @@ int main()
             && realized.stats.modernPbrDraws == 0u,
         "legacy smoke draw escaped the compatibility shader family");
     require(realized.stats.unsupportedTextureBindings == 0u,
-        "supported diffuse/detail bindings were rejected");
+        "supported diffuse/dark/detail/decal/gloss bindings were rejected");
     require(realized.stats.runtimeContextEffects == 0u,
         "supported vertex-alpha/alpha-test/blend/two-sided material unexpectedly failed closed");
-    require(resolverCalls == 1u,
-        "shared diffuse/detail texture realization should resolve one identical texture view");
+    require(resolverCalls == 2u,
+        "shared sRGB and data-space legacy textures should resolve exactly two image views");
 
     const auto* transform = dynamic_cast<const vsg::MatrixTransform*>(realized.root->children.front().get());
     require(transform != nullptr && transform->children.size() == 1u,

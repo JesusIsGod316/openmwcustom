@@ -21,6 +21,7 @@ required = {
     'canonical support-root classification': 'TranslationDisposition::Ignored' in translator,
     'actor-part asset diagnostic': 'NPC part \'" + std::string(part.model.value()) + "\' failed:' in bridge,
     'actor-part translation diagnostic': 'diagnostic.code' in bridge,
+    'actor morph authoritative part roots': 'for (osg::Node* root : evaluatedPartRoots)' in bridge,
     'canonical OSG root filter': 'dynamic_cast<const Nif::NiAVObject*>' in osg_loader,
 }
 for label, ok in required.items():
@@ -34,6 +35,7 @@ forbidden = {
     'old actor canonical-skeleton hard reject': 'active actor source model has no publishable canonical skeleton' in bridge,
     'support-root translation rejection': 'root.not_avobject' in translator,
     'opaque actor-part failure': 'NPC part is missing from the winning VFS or failed translation' in bridge,
+    'invalid actor morph count equality': 'collector.morphs.size() != morphNodes.size()' in bridge,
 }
 for label, present in forbidden.items():
     if present:

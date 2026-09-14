@@ -802,6 +802,7 @@ namespace MWRender
                 }
             }
             RenderCore::ModelHandle actorModel = base->model;
+            std::vector<osg::Node*> evaluatedPartRoots;
             if (auto* npc = dynamic_cast<NpcAnimation*>(&animation))
             {
                 std::vector<NifRender::ActorPartModelSource> parts;
@@ -855,6 +856,8 @@ namespace MWRender
                     }
 
                     parts.push_back({ partModel, part.boneName, part.visible });
+                    if (part.evaluatedRoot)
+                        evaluatedPartRoots.push_back(part.evaluatedRoot);
                     signature += "\n" + std::to_string(static_cast<unsigned int>(part.type)) + ":"
                         + std::string(part.model.value()) + ":" + part.boneName + ":" + (part.visible ? "1" : "0")
                         + glowSignature;
@@ -913,6 +916,7 @@ namespace MWRender
 
                     const bool ammoVisible = attachedAmmunition->getNodeMask() != 0u;
                     parts.push_back({ ammoModelHandle, arrowBone->getName(), ammoVisible });
+                    evaluatedPartRoots.push_back(attachedAmmunition);
                     signature += "\nammunition:" + std::string(ammoModel.value()) + ":" + arrowBone->getName() + ":"
                         + (ammoVisible ? "1" : "0") + ammoGlowSignature;
                 }
@@ -1116,13 +1120,22 @@ namespace MWRender
                     return;
                 }
                 MorphCollector collector;
-                animation.getObjectRoot()->accept(collector);
-                if (collector.morphs.size() != morphNodes.size())
+                if (dynamic_cast<NpcAnimation*>(&animation))
                 {
-                    compatible = false;
-                    mLastDiagnostic = "evaluated actor morph geometry does not match its translated model";
-                    return;
+                    // Capture only the same authoritative part handles used to
+                    // compose the V4 NPC model. The complete actor root also
+                    // owns unrelated attachment/effect subtrees, so comparing
+                    // or matching its whole MorphGeometry population is not a
+                    // valid correspondence rule.
+                    for (osg::Node* root : evaluatedPartRoots)
+                        root->accept(collector);
                 }
+                else
+                    animation.getObjectRoot()->accept(collector);
+
+                // Match each rendered neutral morph node by OpenMW's stable
+                // name and occurrence order. The checks below remain fail-closed
+                // if a V4 draw has no evaluated source or required target.
                 std::unordered_map<std::string, std::vector<SceneUtil::MorphGeometry*>> evaluatedByName;
                 for (SceneUtil::MorphGeometry* morph : collector.morphs)
                 {

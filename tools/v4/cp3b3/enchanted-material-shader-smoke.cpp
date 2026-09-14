@@ -82,6 +82,7 @@ int main()
             && fragment->module->source.find("binding = 15) uniform OpenMwEnvironmentEffectData")
                 != std::string::npos
             && fragment->module->source.find("openmwEnvironment.temporalEffects.x") != std::string::npos
+            && fragment->module->source.find("openmwEnvEffect *= texture(openmwGlossMap") != std::string::npos
             && fragment->module->source.find("surfaceColor.rgb += openmwEnvEffect") != std::string::npos
             && fragment->module->source.find("outColor.rgb += openmwEnvEffect") != std::string::npos,
         "enchanted descriptor, clock, or pre/post-light realization is absent");
@@ -97,7 +98,7 @@ int main()
 
     auto normalHints = vsg::ShaderCompileSettings::create();
     normalHints->defines = { "OPENMW_ENCHANTED_ENVIRONMENT", "VSG_TEXTURECOORD_0", "VSG_DIFFUSE_MAP",
-        "VSG_NORMAL_MAP" };
+        "VSG_GLOSS_MAP", "VSG_NORMAL_MAP" };
     auto normalStages = shaderSet->getShaderStages(normalHints);
     require(compiler.compile(normalStages),
         "enchanted compatibility shader failed GLSL compilation with the per-fragment normal-map path");

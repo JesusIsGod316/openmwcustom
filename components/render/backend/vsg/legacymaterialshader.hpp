@@ -18,7 +18,7 @@ namespace vsg
 namespace RenderVsg
 {
     // Backend-private uniform contract for the legacy/Gamebryo compatibility
-    // shader family. Nine vec4 slots keep the CPU/GPU layout explicit and
+    // shader family. Ten vec4 slots keep the CPU/GPU layout explicit and
     // stable: colors, scalar parameters, semantic selectors, and material fog.
     // RenderCore stays renderer agnostic and later material families may differ.
     struct alignas(16) LegacyMaterialUniform
@@ -46,9 +46,12 @@ namespace RenderVsg
         // xyz = per-draw replacement for the global/sun ambient term;
         // w = override enabled. Local point-light ambient is intentionally separate.
         vsg::vec4 ambientOverride{ 1.0f, 1.0f, 1.0f, 0.0f };
+        // x=DarkTexture UV set, y=DecalTexture UV set, z=GlossTexture UV set.
+        // Values are exact small integers encoded as floats. w is reserved.
+        vsg::vec4 textureCoordSets{ 0.0f, 0.0f, 0.0f, 0.0f };
     };
 
-    static_assert(sizeof(LegacyMaterialUniform) == sizeof(vsg::vec4) * 9u);
+    static_assert(sizeof(LegacyMaterialUniform) == sizeof(vsg::vec4) * 10u);
     static_assert(alignof(LegacyMaterialUniform) >= 16u);
 
     using LegacyMaterialUniformValue = vsg::Value<LegacyMaterialUniform>;
