@@ -32,7 +32,8 @@ require(
     "mWindow = mV4RenderBridge->sdlWindow()",
     "if (!mUseVulkanRenderer)\n        createWindow();",
     "mV4RenderBridge->takeSceneRenderLifecycle()",
-    "presentVulkanFrame(frametime, false)",
+    "prepareVulkanFrame(frametime, false)",
+    "presentPreparedVulkanFrame();",
     "mViewer->updateTraversal();",
 )
 require(
