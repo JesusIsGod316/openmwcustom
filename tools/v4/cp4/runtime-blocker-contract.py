@@ -17,6 +17,9 @@ osg_loader = (root / 'components/nifosg/nifloader.cpp').read_text()
 debugging = (root / 'components/debug/debugging.cpp').read_text()
 runtime_host = (root / 'components/render/backend/vsg/vsgruntimehost.cpp').read_text()
 submission = (root / 'components/render/backend/vsg/vsgsubmission.hpp').read_text()
+camera = (root / 'apps/openmw/mwrender/camera.cpp').read_text()
+camera_hpp = (root / 'apps/openmw/mwrender/camera.hpp').read_text()
+semantic_source = (root / 'apps/openmw/mwrender/v4semanticsource.cpp').read_text()
 enchanted_glow = (root / 'components/nifrender/enchantedglow.hpp').read_text()
 slot_table = (root / 'components/rendercore/slottable.hpp').read_text()
 runtime_qc = (root / 'tools/v4/cp4/run-runtime-qc.ps1').read_text()
@@ -91,6 +94,11 @@ required = {
         and 'runtime-qc-summary.txt' in runtime_qc
         and 'openmw-crash.dmp' in runtime_qc
         and 'Unexpected destruction of LuaWorker' in runtime_qc,
+    'Vulkan camera uses current controller state without OSG render traversal':
+        'calculateViewMatrix() const' in camera_hpp
+        and 'osg::Matrixf Camera::calculateViewMatrix() const' in camera
+        and 'camera.calculateViewMatrix()' in semantic_source
+        and 'camera.getViewMatrix()' not in semantic_source,
     'enchanted model snapshots precede same-family reservation':
         enchanted_glow.index('const ModelRecord sourceRecord = *source;')
         < enchanted_glow.index('world.reserveModel()'),

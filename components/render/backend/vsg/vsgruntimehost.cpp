@@ -1230,7 +1230,6 @@ namespace RenderVsg
 
         std::uint64_t signature = 0;
         hashCombine(signature, frame.worldEpoch().value());
-        hashCombine(signature, frame.renderWorldRevision().value());
         hashCombine(signature, frame.views().size());
         hashCombine(signature, frame.renderTargets().size());
         hashCombine(signature, frame.renderPasses().size());
@@ -1239,6 +1238,7 @@ namespace RenderVsg
         hashCombine(signature, frame.morphWeights().size());
         hashCombine(signature, frame.immediateEffectDraws().size());
         hashCombine(signature, frame.environment().interior ? 1 : 0);
+        hashCombine(signature, glm::length(mainView.current.worldPosition) < 1e-3 ? 0 : 1);
         const bool initialSample = mStrictQcInitialFramesReported < 12;
         if (!initialSample && mStrictQcLastFrameSignature && *mStrictQcLastFrameSignature == signature)
             return;

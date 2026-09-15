@@ -145,6 +145,13 @@ namespace MWRender
 
     void Camera::updateCamera(osg::Camera* cam)
     {
+        mViewMatrix = calculateViewMatrix();
+        cam->setViewMatrix(mViewMatrix);
+        mProjectionMatrix = cam->getProjectionMatrix();
+    }
+
+    osg::Matrixf Camera::calculateViewMatrix() const
+    {
         osg::Quat orient = getOrient();
         osg::Vec3d forward = orient * osg::Vec3d(0, 1, 0);
         osg::Vec3d up = orient * osg::Vec3d(0, 0, 1);
@@ -160,9 +167,7 @@ namespace MWRender
             osg::Vec3d recalculatedTrackedPosition = calculateTrackedPosition();
             pos = calculateFirstPersonPosition(recalculatedTrackedPosition);
         }
-        cam->setViewMatrixAsLookAt(pos, pos + forward, up);
-        mViewMatrix = cam->getViewMatrix();
-        mProjectionMatrix = cam->getProjectionMatrix();
+        return osg::Matrixf::lookAt(pos, pos + forward, up);
     }
 
     void Camera::update(float duration, bool paused)

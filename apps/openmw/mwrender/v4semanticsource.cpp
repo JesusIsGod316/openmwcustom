@@ -380,7 +380,10 @@ namespace MWRender
             return std::nullopt;
 
         RenderCore::CameraState result;
-        result.view = toGlmView(camera.getViewMatrix());
+        // The V4 route does not run an OSG render traversal. Reconstruct the
+        // view from current gameplay-camera state instead of consuming the
+        // matrix cache normally refreshed by the OSG camera callback.
+        result.view = toGlmView(camera.calculateViewMatrix());
         const glm::mat4 cameraWorld = glm::inverse(result.view);
         result.worldPosition = glm::dvec3(cameraWorld[3]);
         result.worldOrientation = glm::normalize(glm::quat_cast(glm::mat3(cameraWorld)));

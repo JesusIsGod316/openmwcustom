@@ -121,6 +121,11 @@ namespace MWRender
 
         const osg::Matrixf& getViewMatrix() const { return mViewMatrix; }
         const osg::Matrixf& getProjectionMatrix() const { return mProjectionMatrix; }
+        // Build the current gameplay view directly from authoritative camera
+        // controller state. The Vulkan route has no OSG render traversal, so it
+        // must not depend on the render-camera callback having refreshed the
+        // cached matrix first.
+        [[nodiscard]] osg::Matrixf calculateViewMatrix() const;
 
     private:
         MWWorld::Ptr mTrackingPtr;
