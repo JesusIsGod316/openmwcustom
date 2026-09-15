@@ -82,6 +82,7 @@ namespace MWRender
         [[nodiscard]] std::unique_ptr<MyGUIPlatform::PlatformBase> createGuiPlatform(
             const std::filesystem::path& logName = {});
         [[nodiscard]] bool captureDynamicFrameState(const RenderingManager& rendering, V4MainFrameSource& source);
+        [[nodiscard]] bool prepareNativeLocalMapFrame();
         [[nodiscard]] bool prepareGuiFrame();
         [[nodiscard]] bool synchronizeProjectiles(V4MainFrameSource& source);
         [[nodiscard]] bool synchronizeExteriorTerrain(const RenderingManager& rendering, const MWWorld::Cell& cell);
@@ -139,6 +140,11 @@ namespace MWRender
             std::uint64_t fogRevision = 0;
         };
         std::map<std::uint32_t, NativeMapUiEntry> mNativeMapUiEntries;
+        struct NativeMapPreparedFrame;
+        // The concrete type lives beside the LocalMap bridge so this header does
+        // not expose LocalMap or VSG image details. A shared pointer permits the
+        // out-of-line bridge destructor to retain that incomplete type safely.
+        std::shared_ptr<NativeMapPreparedFrame> mPreparedNativeMapFrame;
     };
 }
 

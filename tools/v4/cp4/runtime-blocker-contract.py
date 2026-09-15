@@ -107,6 +107,13 @@ required = {
         and 'bool VsgRuntimeHost::prepareGui()' in runtime_host
         and 'mGuiPreparedRoot' in runtime_host_hpp
         and 'if (!mGuiPrepared && !prepareGui())' in runtime_host,
+    'native LocalMap publication precedes threaded Lua release':
+        'mBridge.prepareNativeLocalMapFrame()' in (root / 'apps/openmw/mwrender/v4engineframecoordinator.cpp').read_text()
+        and 'bool V4EngineRenderBridge::prepareNativeLocalMapFrame()' in (root / 'apps/openmw/mwrender/v4localmapbridge.cpp').read_text()
+        and 'LocalMap::activeInstance()' not in (root / 'apps/openmw/mwrender/v4localmapbridge.cpp').read_text().split(
+            'RenderCore::RenderFrameResult V4EngineRenderBridge::renderMainFrameWithNativeLocalMap', 1)[1]
+        and 'gui->setExternalTexture' not in (root / 'apps/openmw/mwrender/v4localmapbridge.cpp').read_text().split(
+            'RenderCore::RenderFrameResult V4EngineRenderBridge::renderMainFrameWithNativeLocalMap', 1)[1],
     'evaluated object capture visits direct drawable nodes':
         'void apply(osg::Drawable& drawable) override' in bridge
         and 'V4 strict QC evaluated object produced no draws' in bridge

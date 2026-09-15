@@ -276,6 +276,10 @@ namespace MWRender
             return fail(mBridge.lastDiagnostic().empty()
                     ? "authoritative actor state could not produce a compatible V4 frame"
                     : mBridge.lastDiagnostic());
+        if (!mBridge.prepareNativeLocalMapFrame())
+            return fail(mBridge.lastDiagnostic().empty()
+                    ? "mutable LocalMap state could not be captured before Lua worker release"
+                    : mBridge.lastDiagnostic());
         if (!mBridge.prepareGuiFrame())
             return fail(mBridge.lastDiagnostic().empty()
                     ? "mutable MyGUI state could not be captured before Lua worker release"
