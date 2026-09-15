@@ -19,6 +19,7 @@ runtime_host = (root / 'components/render/backend/vsg/vsgruntimehost.cpp').read_
 submission = (root / 'components/render/backend/vsg/vsgsubmission.hpp').read_text()
 enchanted_glow = (root / 'components/nifrender/enchantedglow.hpp').read_text()
 slot_table = (root / 'components/rendercore/slottable.hpp').read_text()
+runtime_qc = (root / 'tools/v4/cp4/run-runtime-qc.ps1').read_text()
 
 required = {
     'forced actor skeleton helper': 'buildForcedActorSkeleton' in actor,
@@ -76,6 +77,20 @@ required = {
     'pipeline census includes hidden shadow pre-render view':
         'mOpenMwViewState->shadowMaps.front()' in runtime_host
         and 'views.push_back({ "shadow", shadow.view })' in runtime_host,
+    'strict QC captures active view identities and frame transform evidence':
+        'OPENMW_V4_STRICT_QC' in runtime_host
+        and 'V4 strict QC active views=' in runtime_host
+        and 'cameraFromView=' in runtime_host
+        and 'viewOrthoError=' in runtime_host
+        and 'frame.dynamicTransforms().size()' in runtime_host,
+    'strict QC reports exact-view pipeline repair':
+        'V4 strict QC repairing ' in runtime_host
+        and 'active.view->viewID' in runtime_host,
+    'single-command runtime QC preserves diagnostic evidence':
+        'OPENMW_V4_STRICT_QC' in runtime_qc
+        and 'runtime-qc-summary.txt' in runtime_qc
+        and 'openmw-crash.dmp' in runtime_qc
+        and 'Unexpected destruction of LuaWorker' in runtime_qc,
     'enchanted model snapshots precede same-family reservation':
         enchanted_glow.index('const ModelRecord sourceRecord = *source;')
         < enchanted_glow.index('world.reserveModel()'),

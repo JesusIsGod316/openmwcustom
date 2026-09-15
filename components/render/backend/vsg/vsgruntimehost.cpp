@@ -8,6 +8,7 @@
 
 #include <components/vsgmygui/rendermanager.hpp>
 
+#include <components/debug/debuglog.hpp>
 #include <components/rendercore/deformation.hpp>
 
 #include <vsg/app/CommandGraph.h>
@@ -24,6 +25,8 @@
 #include <vsg/utils/SharedObjects.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -97,6 +100,41 @@ namespace RenderVsg
             if (!result.message.empty())
                 diagnostic += ": " + result.message;
             return diagnostic;
+        }
+
+        [[nodiscard]] bool strictQcEnabled() noexcept
+        {
+            const char* value = std::getenv("OPENMW_V4_STRICT_QC");
+            return value && value[0] != '\0' && value[0] != '0';
+        }
+
+        [[nodiscard]] std::string_view viewKindName(RenderCore::ViewKind kind) noexcept
+        {
+            switch (kind)
+            {
+                case RenderCore::ViewKind::Main:
+                    return "main";
+                case RenderCore::ViewKind::Shadow:
+                    return "shadow";
+                case RenderCore::ViewKind::Reflection:
+                    return "reflection";
+                case RenderCore::ViewKind::Refraction:
+                    return "refraction";
+                case RenderCore::ViewKind::Map:
+                    return "map";
+                case RenderCore::ViewKind::Preview:
+                    return "preview";
+                case RenderCore::ViewKind::PrecipitationOcclusion:
+                    return "precipitation-occlusion";
+                case RenderCore::ViewKind::Debug:
+                    return "debug";
+            }
+            return "unknown";
+        }
+
+        void hashCombine(std::uint64_t& seed, std::uint64_t value) noexcept
+        {
+            seed ^= value + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
         }
     }
 
@@ -1120,6 +1158,26 @@ namespace RenderVsg
                 views.push_back({ "shadow", shadow.view });
         }
 
+        if (strictQcEnabled())
+        {
+            std::uint64_t signature = 0;
+            std::ostringstream inventory;
+            inventory << "V4 strict QC active views=" << views.size();
+            for (const ActiveView& active : views)
+            {
+                if (!active.view)
+                    continue;
+                hashCombine(signature, active.view->viewID);
+                hashCombine(signature, std::hash<std::string_view>{}(active.family));
+                inventory << " [" << active.family << " vsg=" << active.view->viewID << ']';
+            }
+            if (!mStrictQcLastViewSignature || *mStrictQcLastViewSignature != signature)
+            {
+                Log(Debug::Info) << inventory.str();
+                mStrictQcLastViewSignature = signature;
+            }
+        }
+
         std::vector<std::string> unresolved;
         for (const ActiveView& active : views)
         {
@@ -1128,6 +1186,11 @@ namespace RenderVsg
             GraphicsPipelineAudit audit = auditGraphicsPipelinesForView(*active.view, *active.view);
             if (audit.valid())
                 continue;
+
+            if (strictQcEnabled())
+                Log(Debug::Warning) << "V4 strict QC repairing " << audit.unrealized.size()
+                                    << " unrealized pipeline(s) for " << active.family << " view "
+                                    << active.view->viewID;
 
             // A graph can acquire new immutable draws after a view's context was
             // introduced. Compile the exact active view once, then census it
@@ -1157,6 +1220,75 @@ namespace RenderVsg
             diagnostic << "; " << issue;
         mLastDiagnostic = diagnostic.str();
         return false;
+    }
+
+    void VsgRuntimeHost::reportStrictFrameDiagnostics(
+        const RenderCore::FrameRenderState& frame, const RenderCore::FrameView& mainView)
+    {
+        if (!strictQcEnabled())
+            return;
+
+        std::uint64_t signature = 0;
+        hashCombine(signature, frame.worldEpoch().value());
+        hashCombine(signature, frame.renderWorldRevision().value());
+        hashCombine(signature, frame.views().size());
+        hashCombine(signature, frame.renderTargets().size());
+        hashCombine(signature, frame.renderPasses().size());
+        hashCombine(signature, frame.dynamicTransforms().size());
+        hashCombine(signature, frame.skeletonPoses().size());
+        hashCombine(signature, frame.morphWeights().size());
+        hashCombine(signature, frame.immediateEffectDraws().size());
+        hashCombine(signature, frame.environment().interior ? 1 : 0);
+        const bool initialSample = mStrictQcInitialFramesReported < 12;
+        if (!initialSample && mStrictQcLastFrameSignature && *mStrictQcLastFrameSignature == signature)
+            return;
+        if (initialSample)
+            ++mStrictQcInitialFramesReported;
+        mStrictQcLastFrameSignature = signature;
+
+        const glm::dmat4 view(mainView.current.view);
+        const glm::dmat4 cameraWorld = glm::inverse(view);
+        const glm::dvec3 matrixCamera(cameraWorld[3]);
+        const double cameraDelta = glm::length(matrixCamera - mainView.current.worldPosition);
+        const glm::dvec3 x(view[0]);
+        const glm::dvec3 y(view[1]);
+        const glm::dvec3 z(view[2]);
+        const double orthogonalityError = std::max(
+            { std::abs(glm::dot(x, y)), std::abs(glm::dot(x, z)), std::abs(glm::dot(y, z)),
+                std::abs(glm::length(x) - 1.0), std::abs(glm::length(y) - 1.0),
+                std::abs(glm::length(z) - 1.0) });
+        const double determinant = glm::determinant(glm::dmat3(view));
+
+        double nearestDynamic = std::numeric_limits<double>::infinity();
+        double farthestDynamic = 0.0;
+        for (const RenderCore::DynamicTransformState& dynamic : frame.dynamicTransforms())
+        {
+            const double distance = glm::length(dynamic.current.translation - mainView.current.worldPosition);
+            nearestDynamic = std::min(nearestDynamic, distance);
+            farthestDynamic = std::max(farthestDynamic, distance);
+        }
+
+        std::ostringstream report;
+        report << "V4 strict QC frame=" << frame.frameId().value() << " world=" << frame.worldEpoch().value()
+               << '/' << frame.renderWorldRevision().value() << " main={semantic=" << mainView.identity.slot() << ':'
+               << mainView.identity.generation() << " vsg=" << (mView ? mView->viewID : 0) << " kind="
+               << viewKindName(mainView.kind) << " extent=" << mainView.extent.width << 'x' << mainView.extent.height
+               << " cameraAuthored=(" << mainView.current.worldPosition.x << ',' << mainView.current.worldPosition.y
+               << ',' << mainView.current.worldPosition.z << ") cameraFromView=(" << matrixCamera.x << ','
+               << matrixCamera.y << ',' << matrixCamera.z << ") cameraDelta=" << cameraDelta
+               << " viewDet=" << determinant << " viewOrthoError=" << orthogonalityError << "} graph={views="
+               << frame.views().size() << " targets=" << frame.renderTargets().size() << " passes="
+               << frame.renderPasses().size() << "} dynamic={transforms=" << frame.dynamicTransforms().size()
+               << " skeletons=" << frame.skeletonPoses().size() << " morphs=" << frame.morphWeights().size()
+               << " effects=" << frame.immediateEffectDraws().size();
+        if (!frame.dynamicTransforms().empty())
+            report << " nearest=" << nearestDynamic << " farthest=" << farthestDynamic;
+        report << "} environment={interior=" << frame.environment().interior << " sky="
+               << frame.environment().skyEnabled << " water=" << frame.environment().waterEnabled << "}";
+        Log(cameraDelta > 1.0 || orthogonalityError > 1e-3 || std::abs(std::abs(determinant) - 1.0) > 1e-3
+                ? Debug::Warning
+                : Debug::Info)
+            << report.str();
     }
 
     RenderCore::RenderFrameResult VsgRuntimeHost::renderFrame(
@@ -1191,6 +1323,8 @@ namespace RenderVsg
             || frame.projectionOffset() != glm::vec2(0.0f))
             return finish(RenderCore::RenderFrameResult::Failed,
                 "CP3C host requires explicit reversed zero-to-one/down-Y projection and no temporal jitter");
+
+        reportStrictFrameDiagnostics(frame, *mainView);
 
         // VSG skips swapchain acquisition for invisible windows, but its record/submit
         // task still owns the window and can otherwise reuse the previous image's

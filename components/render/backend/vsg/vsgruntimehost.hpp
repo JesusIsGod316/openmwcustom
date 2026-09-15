@@ -165,6 +165,8 @@ namespace RenderVsg
         [[nodiscard]] bool synchronizeAuxiliaryViews(const RenderCore::FrameRenderState& frame);
         [[nodiscard]] bool synchronizeGui();
         [[nodiscard]] bool ensureActiveGraphicsPipelinesRealized();
+        void reportStrictFrameDiagnostics(
+            const RenderCore::FrameRenderState& frame, const RenderCore::FrameView& mainView);
         [[nodiscard]] const RenderCore::FrameView* selectMainView(
             const RenderCore::FrameRenderState& frame) const noexcept;
         [[nodiscard]] bool shadowViewFamilyCompatible(
@@ -213,6 +215,9 @@ namespace RenderVsg
         VsgMyGui::RenderManager* mGuiRenderer = nullptr;
         VsgSubmissionCompletion mCompletion;
         std::string mLastDiagnostic;
+        std::optional<std::uint64_t> mStrictQcLastFrameSignature;
+        std::optional<std::uint64_t> mStrictQcLastViewSignature;
+        std::uint32_t mStrictQcInitialFramesReported = 0;
         bool mWaitedIdle = false;
     };
 }
