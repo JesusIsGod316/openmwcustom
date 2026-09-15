@@ -79,10 +79,14 @@ namespace MWRender
 
         virtual void showWeapon(bool show) = 0;
 
-        /// Optional view-specific pitch contribution. The default preserves the
-        /// stock third-person/ranged behavior exactly; specialized actor views
-        /// may add pitch without changing the gameplay-owned ranged factor.
+        /// Optional visual-only pitch target. The default preserves stock
+        /// behavior; actor animation views may request a contribution without
+        /// changing the gameplay-owned ranged/thrown pitch factor.
         virtual float getAdditionalPitchFactor() const { return 0.f; }
+
+        /// Smoothed visual-only pitch contribution. Kept separate from
+        /// mPitchFactor so stock ranged/thrown timing remains authoritative.
+        float mAdditionalPitchBlend;
 
         /// A relative factor (0-1) that decides if and how much the skeleton should be pitched
         /// to indicate the facing orientation of the character, for ranged weapon aiming.

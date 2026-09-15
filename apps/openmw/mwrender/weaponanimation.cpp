@@ -52,7 +52,8 @@ namespace MWRender
     }
 
     WeaponAnimation::WeaponAnimation()
-        : mPitchFactor(0)
+        : mAdditionalPitchBlend(0)
+        , mPitchFactor(0)
     {
     }
 
@@ -201,7 +202,26 @@ namespace MWRender
     void WeaponAnimation::configureControllers(float characterPitchRadians)
     {
         float pitchFactor = mPitchFactor;
-        const float additionalPitchFactor = getAdditionalPitchFactor();
+        const float additionalPitchTarget = std::clamp(getAdditionalPitchFactor(), 0.f, 1.f);
+
+        // The procedural melee layer used to snap from zero to full pitch as
+        // soon as the attack state became active, which made a visible full-
+        // body jerk in both FFPB and third person. Blend it independently of
+        // the authored ranged/thrown factor using real frame duration so the
+        // transition stays stable across frame rates and freezes while paused.
+        constexpr float additionalBlendInPerSecond = 8.f;
+        constexpr float additionalBlendOutPerSecond = 5.f;
+        const float frameDelta = std::clamp(MWBase::Environment::get().getFrameDuration(), 0.f, 0.05f);
+        const float blendRate = additionalPitchTarget > mAdditionalPitchBlend
+            ? additionalBlendInPerSecond
+            : additionalBlendOutPerSecond;
+        const float maxBlendStep = blendRate * frameDelta;
+        if (additionalPitchTarget > mAdditionalPitchBlend)
+            mAdditionalPitchBlend = std::min(additionalPitchTarget, mAdditionalPitchBlend + maxBlendStep);
+        else
+            mAdditionalPitchBlend = std::max(additionalPitchTarget, mAdditionalPitchBlend - maxBlendStep);
+
+        const float additionalPitchFactor = mAdditionalPitchBlend;
         const bool usingAdditionalPitch = additionalPitchFactor > pitchFactor;
         if (usingAdditionalPitch)
             pitchFactor = additionalPitchFactor;
@@ -215,11 +235,12 @@ namespace MWRender
         float pitch = characterPitchRadians * pitchFactor;
         if (usingAdditionalPitch)
         {
-            // Full-body first person melee uses the ordinary third-person skeleton. Near-vertical camera pitch can fold
-            // the chest, shoulders, and weapon back through the camera if we apply the entire look angle to that
-            // skeleton. Preserve 1:1 visual aiming through normal combat angles, but stop the visual-only correction
-            // before the upper body reaches those pathological poses. Hit direction remains owned by combat mechanics.
-            constexpr float maxAdditionalPitchRadians = 0.6108652382f; // 35 degrees
+            // Procedural melee pitch drives the ordinary third-person skeleton
+            // in FFPB and normal third person. Near-vertical look/aim angles can
+            // fold attack poses back through the FFPB camera, especially on
+            // broad chop/slash frames, so keep this visual-only correction in a
+            // conservative envelope. Hit direction remains owned by mechanics.
+            constexpr float maxAdditionalPitchRadians = 0.4886921906f; // 28 degrees
             pitch = std::clamp(pitch, -maxAdditionalPitchRadians, maxAdditionalPitchRadians);
         }
 

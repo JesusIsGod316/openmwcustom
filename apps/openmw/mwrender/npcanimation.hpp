@@ -141,7 +141,11 @@ namespace MWRender
 
         float getAdditionalPitchFactor() const override
         {
-            if (mViewMode != VM_FirstPersonFullBody || !mAccurateAiming)
+            // Procedural melee pitch is a visual animation layer shared by the
+            // full-body first-person view and the ordinary third-person actor
+            // skeleton. This deliberately covers NPCs as well as the player;
+            // combat hit/contact direction remains owned by mechanics.
+            if ((mViewMode != VM_Normal && mViewMode != VM_FirstPersonFullBody) || !mAccurateAiming)
                 return 0.f;
 
             int weaponType = ESM::Weapon::None;
