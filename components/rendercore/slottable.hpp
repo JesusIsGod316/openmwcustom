@@ -126,6 +126,10 @@ namespace RenderCore
             return handle;
         }
 
+        // Returned pointers remain valid only until the next operation that can
+        // grow or replace this table's storage (notably reserve() and assignment).
+        // Producers that reserve another handle of the same family must first
+        // take an owned payload snapshot.
         [[nodiscard]] Payload* get(Handle handle) noexcept
         {
             Slot* slot = resolveState(handle, State::Live);

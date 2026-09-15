@@ -142,13 +142,17 @@ namespace NifRender
         if (!source || source->sourceIdentity.empty() || source->contentIdentity.empty() || !source->payload
             || !validModelPayloadStructure(*source->payload))
             return {};
+        // SlotTable::reserveModel() may grow its vector and invalidate every
+        // pointer returned by world.get(ModelHandle). Keep an owned snapshot
+        // before any model reservation in this publication transaction.
+        const ModelRecord sourceRecord = *source;
 
         std::string suffix = applyLightingToEnvironmentMaps ? "#openmw-enchanted-glow-prelight:"
                                                             : "#openmw-enchanted-glow-postlight:";
         if (replaceExistingEnvironment)
-            suffix += "override-r" + std::to_string(source->revision.value()) + ":";
+            suffix += "override-r" + std::to_string(sourceRecord.revision.value()) + ":";
         const std::string variantSuffix = suffix + enchanted_glow_detail::colorIdentity(color);
-        const std::string variantSourceIdentity = source->sourceIdentity + variantSuffix;
+        const std::string variantSourceIdentity = sourceRecord.sourceIdentity + variantSuffix;
         if (const std::optional<ModelHandle> existing
             = enchanted_glow_detail::findModelBySource(world, variantSourceIdentity))
             return { EnchantedGlowPublishStatus::Reused, *existing };
@@ -191,7 +195,7 @@ namespace NifRender
         }
 
         std::vector<MaterialHandle> usedMaterials;
-        for (const ModelNodeRecord& node : source->payload->nodes)
+        for (const ModelNodeRecord& node : sourceRecord.payload->nodes)
         {
             for (const MaterialHandle material : node.materials)
             {
@@ -210,7 +214,10 @@ namespace NifRender
                 enchanted_glow_detail::cancelReservations(world, {}, materials, frames);
                 return {};
             }
-            const bool hasExistingEnvironment = std::any_of(baseMaterial->textures.begin(), baseMaterial->textures.end(),
+            // reserveMaterial() has the same pointer-invalidation contract as
+            // reserveModel(); copy before reserving the replacement slot.
+            MaterialRecord record = *baseMaterial;
+            const bool hasExistingEnvironment = std::any_of(record.textures.begin(), record.textures.end(),
                 [](const TextureBinding& binding) { return binding.role == TextureRole::Environment; });
             if (hasExistingEnvironment && !replaceExistingEnvironment)
             {
@@ -224,7 +231,6 @@ namespace NifRender
                 return { EnchantedGlowPublishStatus::ReservationFailed, {} };
             }
 
-            MaterialRecord record = *baseMaterial;
             if (replaceExistingEnvironment)
             {
                 record.textures.erase(std::remove_if(record.textures.begin(), record.textures.end(),
@@ -234,7 +240,7 @@ namespace NifRender
                     record.textures.end());
             }
             record.revision = InitialResourceRevision;
-            record.sourceIdentity = baseMaterial->sourceIdentity + variantSuffix;
+            record.sourceIdentity += variantSuffix;
             record.environmentMapColor = color;
             record.environmentMapStrength = 1.0f;
             record.environmentMapPreLight = applyLightingToEnvironmentMaps;
@@ -260,7 +266,7 @@ namespace NifRender
             return { EnchantedGlowPublishStatus::ReservationFailed, {} };
         }
 
-        auto payload = std::make_shared<ModelPayload>(*source->payload);
+        auto payload = std::make_shared<ModelPayload>(*sourceRecord.payload);
         for (ModelNodeRecord& node : payload->nodes)
         {
             for (MaterialHandle& material : node.materials)
@@ -276,10 +282,10 @@ namespace NifRender
             }
         }
 
-        ModelRecord model = *source;
+        ModelRecord model = sourceRecord;
         model.revision = InitialResourceRevision;
         model.sourceIdentity = variantSourceIdentity;
-        model.contentIdentity = source->contentIdentity + variantSuffix;
+        model.contentIdentity = sourceRecord.contentIdentity + variantSuffix;
         model.payload = std::move(payload);
 
         RenderWorldUpdateBatch batch(world.epoch(), publisher.nextSequence(), variantSourceIdentity);

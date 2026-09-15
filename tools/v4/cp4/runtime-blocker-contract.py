@@ -15,6 +15,10 @@ material_pass = (root / 'components/nifrender/materialpass.hpp').read_text()
 dynamic_actor = (root / 'components/render/backend/vsg/dynamicactorplan.hpp').read_text()
 osg_loader = (root / 'components/nifosg/nifloader.cpp').read_text()
 debugging = (root / 'components/debug/debugging.cpp').read_text()
+runtime_host = (root / 'components/render/backend/vsg/vsgruntimehost.cpp').read_text()
+submission = (root / 'components/render/backend/vsg/vsgsubmission.hpp').read_text()
+enchanted_glow = (root / 'components/nifrender/enchantedglow.hpp').read_text()
+slot_table = (root / 'components/rendercore/slottable.hpp').read_text()
 
 required = {
     'forced actor skeleton helper': 'buildForcedActorSkeleton' in actor,
@@ -55,6 +59,31 @@ required = {
         and '*found->second[next++]' in material_pass,
     'rigid actor controllers retain model-local transforms':
         'non-matching\n        // names retain their authored local transform' in dynamic_actor,
+    'late auxiliary framebuffer view registered before compilation':
+        'viewer.compileManager->add(framebuffer, view);' in submission
+        and 'compileForNewFramebufferView' in runtime_host,
+    'late auxiliary pipeline realization validated before publication':
+        'graphicsPipelinesRealizedForView' in runtime_host
+        and 'validated_vk(mViewId)' in submission,
+    'active view pipeline census precedes Vulkan submission':
+        runtime_host.index('ensureActiveGraphicsPipelinesRealized()')
+        < runtime_host.index('submitAndPresentChecked(*mViewer)'),
+    'pipeline census reports every unresolved active pipeline':
+        'for (const std::string& issue : unresolved)' in runtime_host
+        and 'mAudit.unrealized.push_back' in submission,
+    'pipeline census attempts exact-view repair before failing':
+        'compileForViewerView(*mViewer, *active.view, active.view)' in runtime_host,
+    'pipeline census includes hidden shadow pre-render view':
+        'mOpenMwViewState->shadowMaps.front()' in runtime_host
+        and 'views.push_back({ "shadow", shadow.view })' in runtime_host,
+    'enchanted model snapshots precede same-family reservation':
+        enchanted_glow.index('const ModelRecord sourceRecord = *source;')
+        < enchanted_glow.index('world.reserveModel()'),
+    'enchanted materials snapshot before replacement reservation':
+        enchanted_glow.index('MaterialRecord record = *baseMaterial;')
+        < enchanted_glow.index('world.reserveMaterial()'),
+    'slot-table borrowed pointer invalidation documented':
+        'Producers that reserve another handle of the same family must first' in slot_table,
 }
 for label, ok in required.items():
     if not ok:
@@ -71,6 +100,8 @@ forbidden = {
     'cross-part actor morph name matching': 'evaluated actor morph nodes do not match translated node' in bridge,
     'Vulkan threaded Lua worker quarantine': 'V4 Vulkan: bypassing the threaded Lua worker' in lua_worker_cpp,
     'rigid attachment controller skeleton rejection': 'animated actor node is absent from its skeleton' in dynamic_actor,
+    'late auxiliary graph compiled only against stale viewer contexts':
+        'compileForViewer(*mViewer, created.target.renderGraph)' in runtime_host,
 }
 for label, present in forbidden.items():
     if present:

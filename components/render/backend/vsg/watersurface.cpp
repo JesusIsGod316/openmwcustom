@@ -156,8 +156,10 @@ void main()
             vsg::DynamicState::create(VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR) };
 
         auto stateGroup = vsg::StateGroup::create();
-        stateGroup->add(vsg::BindGraphicsPipeline::create(vsg::GraphicsPipeline::create(
-            pipelineLayout, vsg::ShaderStages{ vertexShader, fragmentShader }, states)));
+        auto pipeline = vsg::GraphicsPipeline::create(
+            pipelineLayout, vsg::ShaderStages{ vertexShader, fragmentShader }, states);
+        pipeline->setValue("openmw.pipeline.family", "water-surface");
+        stateGroup->add(vsg::BindGraphicsPipeline::create(std::move(pipeline)));
         auto descriptorSet = vsg::DescriptorSet::create(descriptorLayout,
             vsg::Descriptors{
                 vsg::DescriptorImage::create(imageInfo(sampler, reflection, { 80, 110, 140, 255 }), 0, 0,

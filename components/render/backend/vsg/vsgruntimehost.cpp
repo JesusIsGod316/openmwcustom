@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -960,9 +961,23 @@ namespace RenderVsg
                 }
                 created.view->bins = createStaticConformanceBins();
                 created.target.renderGraph->addChild(created.view);
-                if (!compileForViewer(*mViewer, created.target.renderGraph))
+                if (!created.target.renderGraph->framebuffer)
                 {
-                    mLastDiagnostic = "incremental Vulkan auxiliary view compilation failed";
+                    mLastDiagnostic = "Vulkan auxiliary view has no framebuffer compilation context";
+                    return false;
+                }
+                const vsg::CompileResult auxiliaryCompile = compileForNewFramebufferView(*mViewer,
+                    *created.target.renderGraph->framebuffer, created.view, created.target.renderGraph);
+                if (!auxiliaryCompile)
+                {
+                    mLastDiagnostic = compileFailureDiagnostic(
+                        "incremental Vulkan auxiliary framebuffer/view graph", auxiliaryCompile);
+                    return false;
+                }
+                if (!graphicsPipelinesRealizedForView(*created.target.renderGraph, *created.view))
+                {
+                    mLastDiagnostic
+                        = "Vulkan auxiliary view compilation left a graphics pipeline unrealized for its view id";
                     return false;
                 }
                 // Water targets are already before the swapchain graph. Insert
@@ -1073,6 +1088,75 @@ namespace RenderVsg
         mGuiPublishedRoot = std::move(nextRoot);
         mGuiLastUse.reset();
         return true;
+    }
+
+    bool VsgRuntimeHost::ensureActiveGraphicsPipelinesRealized()
+    {
+        struct ActiveView
+        {
+            std::string_view family;
+            vsg::ref_ptr<vsg::View> view;
+        };
+
+        std::vector<ActiveView> views;
+        views.push_back({ "main", mView });
+        if (mReflectionView && mReflectionView->view->mask != vsg::MASK_OFF)
+            views.push_back({ "reflection", mReflectionView->view });
+        if (mRefractionView && mRefractionView->view->mask != vsg::MASK_OFF)
+            views.push_back({ "refraction", mRefractionView->view });
+        for (const AuxiliaryViewRuntime& auxiliary : mAuxiliaryViews)
+        {
+            if (auxiliary.active && auxiliary.view && auxiliary.view->mask != vsg::MASK_OFF)
+                views.push_back({ "auxiliary", auxiliary.view });
+        }
+        // ViewDependentState records cascaded shadows through a hidden
+        // pre-render CommandGraph. Those Views are not children of
+        // mCommandGraph, but they record the same scene with a distinct shared
+        // viewID and therefore require their own pipeline implementations.
+        if (mOpenMwViewState && !mOpenMwViewState->shadowMaps.empty())
+        {
+            const auto& shadow = mOpenMwViewState->shadowMaps.front();
+            if (shadow.view && shadow.view->mask != vsg::MASK_OFF)
+                views.push_back({ "shadow", shadow.view });
+        }
+
+        std::vector<std::string> unresolved;
+        for (const ActiveView& active : views)
+        {
+            if (!active.view)
+                continue;
+            GraphicsPipelineAudit audit = auditGraphicsPipelinesForView(*active.view, *active.view);
+            if (audit.valid())
+                continue;
+
+            // A graph can acquire new immutable draws after a view's context was
+            // introduced. Compile the exact active view once, then census it
+            // again before record traversal reaches VSG's unchecked vk(viewID).
+            const vsg::CompileResult repair = compileForViewerView(*mViewer, *active.view, active.view);
+            if (repair)
+                audit = auditGraphicsPipelinesForView(*active.view, *active.view);
+            if (audit.valid())
+                continue;
+
+            for (const std::string& issue : audit.unrealized)
+            {
+                std::ostringstream message;
+                message << active.family << ": " << issue;
+                if (!repair)
+                    message << " (compile result " << repair.result << ": " << repair.message << ')';
+                unresolved.push_back(message.str());
+            }
+        }
+
+        if (unresolved.empty())
+            return true;
+        std::ostringstream diagnostic;
+        diagnostic << "Vulkan pre-submit pipeline census found " << unresolved.size()
+                   << " unrealized active pipeline(s)";
+        for (const std::string& issue : unresolved)
+            diagnostic << "; " << issue;
+        mLastDiagnostic = diagnostic.str();
+        return false;
     }
 
     RenderCore::RenderFrameResult VsgRuntimeHost::renderFrame(
@@ -1203,6 +1287,8 @@ namespace RenderVsg
             || !synchronizeGui())
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
 
+        if (!ensureActiveGraphicsPipelinesRealized())
+            return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
         mViewer->update();
         const VsgSubmitPresentResult submission = submitAndPresentChecked(*mViewer);
         if (submission.submit != VK_SUCCESS)

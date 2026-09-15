@@ -164,6 +164,7 @@ namespace RenderVsg
         [[nodiscard]] bool synchronizeLocalLights(const RenderCore::RenderWorld& world);
         [[nodiscard]] bool synchronizeAuxiliaryViews(const RenderCore::FrameRenderState& frame);
         [[nodiscard]] bool synchronizeGui();
+        [[nodiscard]] bool ensureActiveGraphicsPipelinesRealized();
         [[nodiscard]] const RenderCore::FrameView* selectMainView(
             const RenderCore::FrameRenderState& frame) const noexcept;
         [[nodiscard]] bool shadowViewFamilyCompatible(

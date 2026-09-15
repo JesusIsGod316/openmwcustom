@@ -776,6 +776,15 @@ namespace RenderVsg
                 result.diagnostics.emplace_back("GraphicsPipelineConfigurator could not copy state into draw StateGroup");
                 return result;
             }
+            for (const vsg::ref_ptr<vsg::StateCommand>& stateCommand : stateGroup->stateCommands)
+            {
+                auto bindPipeline = stateCommand.cast<vsg::BindGraphicsPipeline>();
+                if (!bindPipeline || !bindPipeline->pipeline)
+                    continue;
+                bindPipeline->pipeline->setValue("openmw.pipeline.family", "legacy-static");
+                bindPipeline->pipeline->setValue("openmw.pipeline.source",
+                    mesh->sourceIdentity + " | " + material->sourceIdentity);
+            }
             stateGroup->prototypeArrayState = config->getSuitableArrayState();
 
             auto indices = vsg::uintArray::create(payload.indices.size());

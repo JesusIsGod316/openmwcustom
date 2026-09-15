@@ -6,6 +6,9 @@
 #include <vsg/app/Presentation.h>
 #include <vsg/app/View.h>
 #include <vsg/app/Viewer.h>
+#include <vsg/core/ConstVisitor.h>
+#include <vsg/state/GraphicsPipeline.h>
+#include <vsg/vk/Framebuffer.h>
 #include <vsg/vk/Context.h>
 #include <vsg/vk/Fence.h>
 #include <vsg/vk/Queue.h>
@@ -17,6 +20,9 @@
 #include <deque>
 #include <limits>
 #include <optional>
+#include <sstream>
+#include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace RenderVsg
@@ -24,6 +30,75 @@ namespace RenderVsg
     // VSG 1.1.15 Viewer::assignRecordAndSubmitTaskAndPresentation() constructs
     // RecordAndSubmitTask with this hard-coded buffer count.
     inline constexpr std::size_t VsgRecordAndSubmitRingSize = 3;
+
+    struct GraphicsPipelineAudit
+    {
+        std::size_t bindings = 0;
+        std::vector<std::string> unrealized;
+
+        [[nodiscard]] bool valid() const noexcept { return unrealized.empty(); }
+    };
+
+    class GraphicsPipelineViewValidator final : public vsg::ConstVisitor
+    {
+    public:
+        explicit GraphicsPipelineViewValidator(std::uint32_t viewId)
+            : mViewId(viewId)
+        {
+        }
+
+        using vsg::ConstVisitor::apply;
+
+        void apply(const vsg::Object& object) override
+        {
+            object.traverse(*this);
+        }
+
+        void apply(const vsg::BindGraphicsPipeline& bind) override
+        {
+            ++mAudit.bindings;
+            const void* identity = bind.pipeline.get();
+            if ((!bind.pipeline || bind.pipeline->validated_vk(mViewId) == VK_NULL_HANDLE)
+                && mReported.insert(identity).second)
+            {
+                std::string family = "unlabelled";
+                std::string source;
+                if (bind.pipeline)
+                {
+                    (void)bind.pipeline->getValue("openmw.pipeline.family", family);
+                    (void)bind.pipeline->getValue("openmw.pipeline.source", source);
+                }
+                std::ostringstream message;
+                message << family;
+                if (!source.empty())
+                    message << " [" << source << ']';
+                message << " pipeline=" << identity << " view=" << mViewId;
+                mAudit.unrealized.push_back(message.str());
+            }
+            bind.traverse(*this);
+        }
+
+        [[nodiscard]] GraphicsPipelineAudit take() { return std::move(mAudit); }
+
+    private:
+        std::uint32_t mViewId;
+        GraphicsPipelineAudit mAudit;
+        std::unordered_set<const void*> mReported;
+    };
+
+    [[nodiscard]] inline GraphicsPipelineAudit auditGraphicsPipelinesForView(
+        const vsg::Object& object, const vsg::View& view)
+    {
+        GraphicsPipelineViewValidator validator(view.viewID);
+        object.accept(validator);
+        return validator.take();
+    }
+
+    [[nodiscard]] inline bool graphicsPipelinesRealizedForView(
+        const vsg::Object& object, const vsg::View& view)
+    {
+        return auditGraphicsPipelinesForView(object, view).valid();
+    }
 
     struct VsgSubmitPresentResult
     {
@@ -332,6 +407,20 @@ namespace RenderVsg
         if (result && result.requiresViewerUpdate(&viewer))
             vsg::updateViewer(viewer, result);
         return result;
+    }
+
+    // A framebuffer/view introduced after Viewer::compile() is absent from the
+    // CompileManager's persistent contexts. Register it before compiling the
+    // graph; otherwise CompileTraversal skips that View and VSG's unchecked
+    // GraphicsPipeline::vk(viewID) dereferences an empty implementation during
+    // the first record traversal.
+    [[nodiscard]] inline vsg::CompileResult compileForNewFramebufferView(vsg::Viewer& viewer,
+        vsg::Framebuffer& framebuffer, vsg::ref_ptr<vsg::View> view, vsg::ref_ptr<vsg::Object> object)
+    {
+        if (!viewer.compileManager || !view || !object)
+            return {};
+        viewer.compileManager->add(framebuffer, view);
+        return compileForViewerView(viewer, *view, std::move(object));
     }
 }
 

@@ -99,8 +99,10 @@ void main()
             vsg::DynamicState::create(VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR) };
 
         auto stateGroup = vsg::StateGroup::create();
-        stateGroup->add(vsg::BindGraphicsPipeline::create(vsg::GraphicsPipeline::create(
-            pipelineLayout, vsg::ShaderStages{ vertexShader, fragmentShader }, states)));
+        auto pipeline = vsg::GraphicsPipeline::create(
+            pipelineLayout, vsg::ShaderStages{ vertexShader, fragmentShader }, states);
+        pipeline->setValue("openmw.pipeline.family", "sky-backdrop");
+        stateGroup->add(vsg::BindGraphicsPipeline::create(std::move(pipeline)));
 
         result.mParameters = vsg::vec4Array::create(5);
         result.mParameters->properties.dataVariance = vsg::DYNAMIC_DATA;

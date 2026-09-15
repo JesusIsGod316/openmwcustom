@@ -157,6 +157,8 @@ void main()
         result.whiteTexture = white;
         result.bindPipeline = vsg::BindGraphicsPipeline::create(
             vsg::GraphicsPipeline::create(pipelineLayout, vsg::ShaderStages{ vertexShader, fragmentShader }, states));
+        if (result.bindPipeline && result.bindPipeline->pipeline)
+            result.bindPipeline->pipeline->setValue("openmw.pipeline.family", "mygui-overlay");
         return result;
     }
 
