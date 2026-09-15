@@ -47,27 +47,33 @@ if (-not [string]::IsNullOrWhiteSpace($OsgLibraryPath)) {
     $env:OSG_LIBRARY_PATH = $OsgLibraryPath
 }
 
-$quoteArgument = {
-    param([string] $Value)
-    '"' + $Value.Replace('"', '\"') + '"'
-}
-$arguments = @(
-    '--user-data=' + (& $quoteArgument $UserData),
-    '--config=' + (& $quoteArgument $Config),
-    '--no-grab'
-)
+$arguments = [System.Collections.Generic.List[string]]::new()
+$arguments.Add('--user-data')
+$arguments.Add($UserData)
+$arguments.Add('--config')
+$arguments.Add($Config)
+$arguments.Add('--no-grab')
 if ($Mode -eq 'Save') {
-    $arguments += @('--skip-menu', '--load-savegame=' + (& $quoteArgument $Save))
+    $arguments.Add('--skip-menu')
+    $arguments.Add('--load-savegame')
+    $arguments.Add($Save)
 } else {
-    $arguments += @('--skip-menu', '--new-game')
+    $arguments.Add('--skip-menu')
+    $arguments.Add('--new-game')
 }
-$argumentLine = $arguments -join ' '
 
 $start = Get-Date
 $timedOut = $false
 $exitCode = $null
 try {
-    $process = Start-Process -FilePath $Executable -ArgumentList $argumentLine -WorkingDirectory (Split-Path $Executable) -PassThru
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Executable
+    $startInfo.WorkingDirectory = Split-Path $Executable
+    $startInfo.UseShellExecute = $false
+    foreach ($argument in $arguments) {
+        $startInfo.ArgumentList.Add($argument)
+    }
+    $process = [System.Diagnostics.Process]::Start($startInfo)
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
         $timedOut = $true
         Stop-Process -Id $process.Id
