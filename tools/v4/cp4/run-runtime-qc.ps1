@@ -47,18 +47,27 @@ if (-not [string]::IsNullOrWhiteSpace($OsgLibraryPath)) {
     $env:OSG_LIBRARY_PATH = $OsgLibraryPath
 }
 
-$arguments = @('--user-data', $UserData, '--config', $Config, '--no-grab')
+$quoteArgument = {
+    param([string] $Value)
+    '"' + $Value.Replace('"', '\"') + '"'
+}
+$arguments = @(
+    '--user-data=' + (& $quoteArgument $UserData),
+    '--config=' + (& $quoteArgument $Config),
+    '--no-grab'
+)
 if ($Mode -eq 'Save') {
-    $arguments += @('--skip-menu', '--load-savegame', $Save)
+    $arguments += @('--skip-menu', '--load-savegame=' + (& $quoteArgument $Save))
 } else {
     $arguments += @('--skip-menu', '--new-game')
 }
+$argumentLine = $arguments -join ' '
 
 $start = Get-Date
 $timedOut = $false
 $exitCode = $null
 try {
-    $process = Start-Process -FilePath $Executable -ArgumentList $arguments -WorkingDirectory (Split-Path $Executable) -PassThru
+    $process = Start-Process -FilePath $Executable -ArgumentList $argumentLine -WorkingDirectory (Split-Path $Executable) -PassThru
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
         $timedOut = $true
         Stop-Process -Id $process.Id
