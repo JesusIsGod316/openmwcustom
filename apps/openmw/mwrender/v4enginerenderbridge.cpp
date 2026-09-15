@@ -1357,6 +1357,23 @@ namespace MWRender
         return compatible;
     }
 
+    bool V4EngineRenderBridge::prepareGuiFrame()
+    {
+        mLastDiagnostic.clear();
+        if (!mSession)
+        {
+            mLastDiagnostic = "V4 GUI preparation has no semantic session";
+            return false;
+        }
+        RenderVsg::VsgRuntimeHost& host = mSession->bootstrap().renderer();
+        if (host.prepareGui())
+            return true;
+        mLastDiagnostic = host.lastDiagnostic().empty()
+            ? "Vulkan MyGUI state could not be captured before Lua worker release"
+            : host.lastDiagnostic();
+        return false;
+    }
+
     RenderCore::RenderFrameResult V4EngineRenderBridge::renderMainFrame(const V4MainFrameSource& source)
     {
         mLastDiagnostic.clear();

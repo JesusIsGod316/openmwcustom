@@ -1106,17 +1106,16 @@ namespace RenderVsg
         return true;
     }
 
-    bool VsgRuntimeHost::synchronizeGui()
+    bool VsgRuntimeHost::prepareGui()
     {
+        mGuiPreparedRoot = {};
+        mGuiPrepared = false;
         if (!mGuiRenderer)
-            return true;
-        mGuiRenderer->collect();
-        if (!mGuiRenderer->overlayStructureChanged())
         {
-            mGuiRenderer->updatePersistentOverlay();
+            mGuiPrepared = true;
             return true;
         }
-
+        mGuiRenderer->collect();
         vsg::ref_ptr<vsg::Node> overlay = mGuiRenderer->buildPersistentOverlay();
         auto nextRoot = vsg::Group::create();
         if (overlay)
@@ -1129,6 +1128,27 @@ namespace RenderVsg
         if (overlay && mGuiRenderer->batchCount() != 0 && !mUiPipeline.realizedForView(mView->viewID))
         {
             mLastDiagnostic = "VSG MyGUI main-view graphics pipeline was not realized before overlay publication";
+            return false;
+        }
+        mGuiPreparedRoot = std::move(nextRoot);
+        mGuiPrepared = true;
+        return true;
+    }
+
+    bool VsgRuntimeHost::synchronizeGui()
+    {
+        // GUI-only transition frames do not pass through the gameplay coordinator,
+        // so retain a safe synchronous fallback. Ordinary gameplay frames arrive
+        // with an immutable generation prepared before Lua was released.
+        if (!mGuiPrepared && !prepareGui())
+            return false;
+        mGuiPrepared = false;
+        vsg::ref_ptr<vsg::Group> nextRoot = std::move(mGuiPreparedRoot);
+        if (!mGuiRenderer)
+            return true;
+        if (!nextRoot)
+        {
+            mLastDiagnostic = "prepared MyGUI generation is missing";
             return false;
         }
         if (mGuiLastUse && mGuiPublishedRoot)

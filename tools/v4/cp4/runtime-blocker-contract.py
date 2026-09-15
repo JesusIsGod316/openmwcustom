@@ -16,6 +16,7 @@ dynamic_actor = (root / 'components/render/backend/vsg/dynamicactorplan.hpp').re
 osg_loader = (root / 'components/nifosg/nifloader.cpp').read_text()
 debugging = (root / 'components/debug/debugging.cpp').read_text()
 runtime_host = (root / 'components/render/backend/vsg/vsgruntimehost.cpp').read_text()
+runtime_host_hpp = (root / 'components/render/backend/vsg/vsgruntimehost.hpp').read_text()
 submission = (root / 'components/render/backend/vsg/vsgsubmission.hpp').read_text()
 camera = (root / 'apps/openmw/mwrender/camera.cpp').read_text()
 camera_hpp = (root / 'apps/openmw/mwrender/camera.hpp').read_text()
@@ -97,6 +98,15 @@ required = {
     'interactive runtime QC permits normal input capture':
         '[switch] $NoGrab' in runtime_qc
         and "if ($NoGrab)" in runtime_qc,
+    'runtime QC preserves configured log and dump directory':
+        '[string] $LogDirectory' in runtime_qc
+        and "$log = Join-Path $LogDirectory 'openmw.log'" in runtime_qc,
+    'Vulkan GUI snapshot precedes threaded Lua release':
+        'mBridge.prepareGuiFrame()' in (root / 'apps/openmw/mwrender/v4engineframecoordinator.cpp').read_text()
+        and 'prepareGuiFrame(frametime' not in engine
+        and 'bool VsgRuntimeHost::prepareGui()' in runtime_host
+        and 'mGuiPreparedRoot' in runtime_host_hpp
+        and 'if (!mGuiPrepared && !prepareGui())' in runtime_host,
     'evaluated object capture visits direct drawable nodes':
         'void apply(osg::Drawable& drawable) override' in bridge
         and 'V4 strict QC evaluated object produced no draws' in bridge

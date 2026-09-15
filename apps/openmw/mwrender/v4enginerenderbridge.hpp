@@ -82,6 +82,7 @@ namespace MWRender
         [[nodiscard]] std::unique_ptr<MyGUIPlatform::PlatformBase> createGuiPlatform(
             const std::filesystem::path& logName = {});
         [[nodiscard]] bool captureDynamicFrameState(const RenderingManager& rendering, V4MainFrameSource& source);
+        [[nodiscard]] bool prepareGuiFrame();
         [[nodiscard]] bool synchronizeProjectiles(V4MainFrameSource& source);
         [[nodiscard]] bool synchronizeExteriorTerrain(const RenderingManager& rendering, const MWWorld::Cell& cell);
         RenderCore::RenderFrameResult renderMainFrame(const V4MainFrameSource& source);

@@ -118,6 +118,9 @@ namespace RenderVsg
         void attachGuiRenderer(VsgMyGui::RenderManager* renderer) noexcept;
         void detachGuiRenderer(const VsgMyGui::RenderManager* renderer) noexcept;
         [[nodiscard]] VsgMyGui::RenderManager* guiRenderer() noexcept { return mGuiRenderer; }
+        // Snapshot and compile mutable MyGUI state before the application releases
+        // its Lua worker. renderFrame() only publishes this immutable generation.
+        [[nodiscard]] bool prepareGui();
         [[nodiscard]] vsg::ref_ptr<vsg::ImageView> auxiliaryColorImage(
             RenderCore::RenderTargetHandle target) const noexcept;
         [[nodiscard]] std::optional<std::vector<AuxiliaryRgba8Readback>> readbackAuxiliaryRgba8(
@@ -192,6 +195,7 @@ namespace RenderVsg
         // content. Replacing GUI content never relies on child ordering in mMainOnlyRoot.
         vsg::ref_ptr<vsg::Group> mGuiRoot;
         vsg::ref_ptr<vsg::Group> mGuiPublishedRoot;
+        vsg::ref_ptr<vsg::Group> mGuiPreparedRoot;
         vsg::ref_ptr<vsg::Group> mMainOnlyRoot;
         vsg::ref_ptr<vsg::View> mView;
         vsg::ref_ptr<OpenMwViewDependentState> mOpenMwViewState;
@@ -218,6 +222,7 @@ namespace RenderVsg
         std::optional<std::uint64_t> mStrictQcLastFrameSignature;
         std::optional<std::uint64_t> mStrictQcLastViewSignature;
         std::uint32_t mStrictQcInitialFramesReported = 0;
+        bool mGuiPrepared = false;
         bool mWaitedIdle = false;
     };
 }

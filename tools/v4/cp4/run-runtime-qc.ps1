@@ -10,6 +10,7 @@ param(
 
     [string] $Save,
     [string] $Config,
+    [string] $LogDirectory,
     [string] $OsgLibraryPath,
     [switch] $NoGrab,
     [ValidateRange(10, 300)]
@@ -27,6 +28,9 @@ if ($Mode -eq 'Save') {
 }
 if ([string]::IsNullOrWhiteSpace($Config)) {
     $Config = $UserData
+}
+if ([string]::IsNullOrWhiteSpace($LogDirectory)) {
+    $LogDirectory = $UserData
 }
 
 $null = New-Item -ItemType Directory -Force -Path $UserData
@@ -92,8 +96,8 @@ try {
     $env:VK_LOADER_LAYERS_DISABLE = $previousRtssDisable
 }
 
-$log = Join-Path $UserData 'openmw.log'
-$dump = Join-Path $UserData 'openmw-crash.dmp'
+$log = Join-Path $LogDirectory 'openmw.log'
+$dump = Join-Path $LogDirectory 'openmw-crash.dmp'
 if (Test-Path -LiteralPath $log) {
     Copy-Item -LiteralPath $log -Destination (Join-Path $evidence 'openmw.log')
 }
@@ -121,6 +125,7 @@ $summary = @(
     "mode=$Mode",
     "executable=$Executable",
     "save=$Save",
+    "logDirectory=$LogDirectory",
     "started=$($start.ToString('o'))",
     "timedOut=$timedOut",
     "exitCode=$exitCode",
