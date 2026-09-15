@@ -1,10 +1,13 @@
 #include "vsgruntimehost.hpp"
 
+#include <components/debug/debuglog.hpp>
+
 #include <vsg/all.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <vector>
 
@@ -177,6 +180,35 @@ namespace RenderVsg
             image.extent = value.extent;
             image.rgba.resize(value.byteCount);
             std::memcpy(image.rgba.data(), mapped->dataPointer(), value.byteCount);
+            const char* strictQc = std::getenv("OPENMW_V4_STRICT_QC");
+            if (strictQc && strictQc[0] != '\0' && strictQc[0] != '0')
+            {
+                std::size_t coloredPixels = 0;
+                std::uint8_t minimumRgb = std::numeric_limits<std::uint8_t>::max();
+                std::uint8_t maximumRgb = 0;
+                std::uint64_t checksum = 1469598103934665603ull;
+                for (std::size_t byteOffset = 0; byteOffset < image.rgba.size(); byteOffset += 4u)
+                {
+                    const std::uint8_t red = image.rgba[byteOffset];
+                    const std::uint8_t green = image.rgba[byteOffset + 1u];
+                    const std::uint8_t blue = image.rgba[byteOffset + 2u];
+                    if (red != 0 || green != 0 || blue != 0)
+                        ++coloredPixels;
+                    minimumRgb = std::min({ minimumRgb, red, green, blue });
+                    maximumRgb = std::max({ maximumRgb, red, green, blue });
+                    for (std::size_t channel = 0; channel < 4u; ++channel)
+                    {
+                        checksum ^= image.rgba[byteOffset + channel];
+                        checksum *= 1099511628211ull;
+                    }
+                }
+                Log(coloredPixels == 0 ? Debug::Warning : Debug::Info)
+                    << "V4 strict QC auxiliary readback target=" << image.target.slot() << ':'
+                    << image.target.generation() << " extent=" << image.extent.width << 'x' << image.extent.height
+                    << " coloredPixels=" << coloredPixels << '/' << (image.rgba.size() / 4u)
+                    << " rgbRange=" << static_cast<unsigned int>(minimumRgb) << '-'
+                    << static_cast<unsigned int>(maximumRgb) << " checksum=" << checksum;
+            }
             result.push_back(std::move(image));
         }
         return result;

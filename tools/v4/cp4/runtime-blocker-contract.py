@@ -94,6 +94,17 @@ required = {
         and 'runtime-qc-summary.txt' in runtime_qc
         and 'openmw-crash.dmp' in runtime_qc
         and 'Unexpected destruction of LuaWorker' in runtime_qc,
+    'interactive runtime QC permits normal input capture':
+        '[switch] $NoGrab' in runtime_qc
+        and "if ($NoGrab)" in runtime_qc,
+    'evaluated object capture visits direct drawable nodes':
+        'void apply(osg::Drawable& drawable) override' in bridge
+        and 'V4 strict QC evaluated object produced no draws' in bridge
+        and 'void apply(osg::Drawable& drawable) override' in (root / 'apps/openmw/mwrender/v4effectcapture.hpp').read_text(),
+    'strict QC reports auxiliary camera and readback content':
+        'V4 strict QC auxiliary kind=' in runtime_host
+        and 'staticChildren=' in runtime_host
+        and 'V4 strict QC auxiliary readback target=' in (root / 'components/render/backend/vsg/auxiliaryreadback.cpp').read_text(),
     'Vulkan camera uses current controller state without OSG render traversal':
         'calculateViewMatrix() const' in camera_hpp
         and 'osg::Matrixf Camera::calculateViewMatrix() const' in camera

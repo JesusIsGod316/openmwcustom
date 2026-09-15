@@ -1051,6 +1051,30 @@ namespace RenderVsg
             runtime->view->mask = vsg::MASK_ALL;
             runtime->camera.update(view);
             runtime->view->LODScale = view.lodScale;
+            if (strictQcEnabled())
+            {
+                const glm::dmat4 authoredView(view.current.view);
+                const glm::dvec3 matrixCamera(glm::inverse(authoredView)[3]);
+                const glm::dvec3 x(authoredView[0]);
+                const glm::dvec3 y(authoredView[1]);
+                const glm::dvec3 z(authoredView[2]);
+                const double orthogonalityError = std::max(
+                    { std::abs(glm::dot(x, y)), std::abs(glm::dot(x, z)), std::abs(glm::dot(y, z)),
+                        std::abs(glm::length(x) - 1.0), std::abs(glm::length(y) - 1.0),
+                        std::abs(glm::length(z) - 1.0) });
+                Log(Debug::Info) << "V4 strict QC auxiliary kind=" << viewKindName(view.kind)
+                                 << " semantic=" << view.identity.slot() << ':' << view.identity.generation()
+                                 << " vsg=" << runtime->view->viewID << " target=" << view.outputTarget.slot()
+                                 << ':' << view.outputTarget.generation() << " extent=" << view.extent.width << 'x'
+                                 << view.extent.height << " cameraAuthored=(" << view.current.worldPosition.x << ','
+                                 << view.current.worldPosition.y << ',' << view.current.worldPosition.z
+                                 << ") cameraFromView=(" << matrixCamera.x << ',' << matrixCamera.y << ','
+                                 << matrixCamera.z << ") cameraDelta="
+                                 << glm::length(matrixCamera - view.current.worldPosition) << " viewDet="
+                                 << glm::determinant(glm::dmat3(authoredView)) << " viewOrthoError="
+                                 << orthogonalityError << " staticChildren="
+                                 << (mStaticRoot ? mStaticRoot->children.size() : 0u);
+            }
             RenderCore::FrameEnvironmentState auxiliaryEnvironment = frame.environment();
             if (view.kind == RenderCore::ViewKind::Map)
             {

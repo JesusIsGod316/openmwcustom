@@ -925,29 +925,39 @@ namespace MWRender
                 const bool entered = !mWholeSubtree && isEffectRoot(geode);
                 if (entered)
                     ++mDepth;
+                if (mResult.valid())
+                    traverse(geode);
+                if (entered)
+                    --mDepth;
+            }
+
+            void apply(osg::Drawable& drawable) override
+            {
+                const bool entered = !mWholeSubtree && isEffectRoot(drawable);
+                if (entered)
+                    ++mDepth;
                 if (mDepth != 0)
                 {
-                    for (unsigned int i = 0; i < geode.getNumDrawables() && mResult.valid(); ++i)
+                    if (auto* geometry = dynamic_cast<osg::Geometry*>(&drawable))
                     {
-                        osg::Drawable* drawable = geode.getDrawable(i);
-                        if (auto* geometry = dynamic_cast<osg::Geometry*>(drawable))
-                        {
-                            RenderCore::ImmediateEffectDraw draw;
-                            if (!captureGeometry(*geometry, getNodePath(), mVfs, nextIdentity("geometry"), draw,
-                                    mResult.diagnostic))
-                                break;
+                        RenderCore::ImmediateEffectDraw draw;
+                        if (captureGeometry(*geometry, getNodePath(), mVfs, nextIdentity("geometry"), draw,
+                                mResult.diagnostic))
                             mResult.draws.push_back(std::move(draw));
-                        }
-                        else if (auto* particles = dynamic_cast<osgParticle::ParticleSystem*>(drawable))
+                    }
+                    else if (auto* particles = dynamic_cast<osgParticle::ParticleSystem*>(&drawable))
+                    {
+                        if (!captureParticleSystem(*particles, getNodePath(), mVfs, nextIdentity("system"),
+                                mResult.draws, mResult.diagnostic))
                         {
-                            if (!captureParticleSystem(*particles, getNodePath(), mVfs, nextIdentity("system"),
-                                    mResult.draws, mResult.diagnostic))
-                                break;
+                            if (entered)
+                                --mDepth;
+                            return;
                         }
                     }
                 }
                 if (mResult.valid())
-                    traverse(geode);
+                    traverse(drawable);
                 if (entered)
                     --mDepth;
             }

@@ -11,6 +11,7 @@ param(
     [string] $Save,
     [string] $Config,
     [string] $OsgLibraryPath,
+    [switch] $NoGrab,
     [ValidateRange(10, 300)]
     [int] $TimeoutSeconds = 60,
     [string] $EvidenceRoot
@@ -52,7 +53,9 @@ $arguments.Add('--user-data')
 $arguments.Add($UserData)
 $arguments.Add('--config')
 $arguments.Add($Config)
-$arguments.Add('--no-grab')
+if ($NoGrab) {
+    $arguments.Add('--no-grab')
+}
 if ($Mode -eq 'Save') {
     $arguments.Add('--skip-menu')
     $arguments.Add('--load-savegame')

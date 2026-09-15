@@ -22,6 +22,8 @@
 #include <components/sceneutil/morphgeometry.hpp>
 #include <components/sceneutil/skeleton.hpp>
 
+#include <components/debug/debuglog.hpp>
+
 #include <components/misc/strings/lower.hpp>
 #include <components/misc/convert.hpp>
 #include <components/misc/resourcehelpers.hpp>
@@ -41,6 +43,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -225,26 +228,29 @@ namespace MWRender
             {
                 if (nestedEffectRoot(geode))
                     return;
-                for (unsigned int i = 0; i < geode.getNumDrawables() && mResult.valid(); ++i)
-                {
-                    osg::Drawable* drawable = geode.getDrawable(i);
-                    if (auto* geometry = dynamic_cast<osg::Geometry*>(drawable))
-                    {
-                        RenderCore::ImmediateEffectDraw draw;
-                        if (!v4_effect_detail::captureGeometry(*geometry, getNodePath(), mVfs,
-                                nextIdentity("geometry"), draw, mResult.diagnostic))
-                            break;
-                        mResult.draws.push_back(std::move(draw));
-                    }
-                    else if (auto* particles = dynamic_cast<osgParticle::ParticleSystem*>(drawable))
-                    {
-                        if (!v4_effect_detail::captureParticleSystem(*particles, getNodePath(), mVfs,
-                                nextIdentity("system"), mResult.draws, mResult.diagnostic))
-                            break;
-                    }
-                }
                 if (mResult.valid())
                     traverse(geode);
+            }
+
+            void apply(osg::Drawable& drawable) override
+            {
+                if (nestedEffectRoot(drawable))
+                    return;
+                if (auto* geometry = dynamic_cast<osg::Geometry*>(&drawable))
+                {
+                    RenderCore::ImmediateEffectDraw draw;
+                    if (v4_effect_detail::captureGeometry(*geometry, getNodePath(), mVfs,
+                            nextIdentity("geometry"), draw, mResult.diagnostic))
+                        mResult.draws.push_back(std::move(draw));
+                }
+                else if (auto* particles = dynamic_cast<osgParticle::ParticleSystem*>(&drawable))
+                {
+                    if (!v4_effect_detail::captureParticleSystem(*particles, getNodePath(), mVfs,
+                            nextIdentity("system"), mResult.draws, mResult.diagnostic))
+                        return;
+                }
+                if (mResult.valid())
+                    traverse(drawable);
             }
 
             [[nodiscard]] V4EffectCaptureResult take() { return std::move(mResult); }
@@ -685,6 +691,13 @@ namespace MWRender
                         ? "evaluated non-actor object could not produce native Vulkan compatibility draws: " + *identity
                         : "evaluated non-actor object " + *identity + ": " + capturedObject.diagnostic;
                     return;
+                }
+                if (capturedObject.draws.empty())
+                {
+                    const char* strictQc = std::getenv("OPENMW_V4_STRICT_QC");
+                    if (strictQc && strictQc[0] != '\0' && strictQc[0] != '0')
+                        Log(Debug::Warning) << "V4 strict QC evaluated object produced no draws identity="
+                                            << *identity << " model=" << modelPath.value();
                 }
 
                 std::optional<V4EffectCaptureResult> capturedEffects;
