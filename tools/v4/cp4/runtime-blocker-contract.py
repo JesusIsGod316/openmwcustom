@@ -100,7 +100,9 @@ required = {
         and "if ($NoGrab)" in runtime_qc,
     'runtime QC preserves configured log and dump directory':
         '[string] $LogDirectory' in runtime_qc
-        and "$log = Join-Path $LogDirectory 'openmw.log'" in runtime_qc,
+        and "$log = Join-Path $LogDirectory 'openmw.log'" in runtime_qc
+        and "Move-Item -LiteralPath $dump" in runtime_qc
+        and "preexisting-openmw-crash.dmp" in runtime_qc,
     'Vulkan GUI snapshot precedes threaded Lua release':
         'mBridge.prepareGuiFrame()' in (root / 'apps/openmw/mwrender/v4engineframecoordinator.cpp').read_text()
         and 'prepareGuiFrame(frametime' not in engine

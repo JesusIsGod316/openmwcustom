@@ -655,6 +655,15 @@ vec2 diffuseUv = vec2(0.0);
         if (!replacedMaterial)
             return {};
 
+        // VSG 1.1.15's Phong ShaderSet source supports a specular image, but
+        // does not publish its descriptor binding. Register it explicitly so
+        // legacy NIF SpecularTexture data can select the compatibility path.
+        // RGB is authored color data; the alpha channel remains the legacy
+        // 0..255 shininess source because sRGB decoding does not alter alpha.
+        result->addDescriptorBinding("specularMap", "VSG_SPECULAR_MAP", 1u, 5u,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1u, VK_SHADER_STAGE_FRAGMENT_BIT, {},
+            vsg::CoordinateSpace::sRGB);
+
         // Phong's ShaderSet does not expose a metallic/roughness image
         // descriptor, leaving material binding 6 available for the legacy
         // DarkTexture image. The OpenMW uniform carries its authored UV set.

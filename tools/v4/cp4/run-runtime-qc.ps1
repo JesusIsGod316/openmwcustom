@@ -41,6 +41,14 @@ if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
 $evidence = Join-Path $EvidenceRoot "$timestamp-$($Mode.ToLowerInvariant())"
 $null = New-Item -ItemType Directory -Force -Path $evidence
 
+# OpenMW's crash writer does not replace an existing dump. Preserve the old
+# artifact with this run's evidence and clear only the exact configured dump
+# slot so an access violation cannot be misdiagnosed from stale crash data.
+$dump = Join-Path $LogDirectory 'openmw-crash.dmp'
+if (Test-Path -LiteralPath $dump) {
+    Move-Item -LiteralPath $dump -Destination (Join-Path $evidence 'preexisting-openmw-crash.dmp')
+}
+
 $previousStrictQc = $env:OPENMW_V4_STRICT_QC
 $previousSuppressDialog = $env:OPENMW_SUPPRESS_FATAL_DIALOG
 $previousOsgLibraryPath = $env:OSG_LIBRARY_PATH
@@ -97,7 +105,6 @@ try {
 }
 
 $log = Join-Path $LogDirectory 'openmw.log'
-$dump = Join-Path $LogDirectory 'openmw-crash.dmp'
 if (Test-Path -LiteralPath $log) {
     Copy-Item -LiteralPath $log -Destination (Join-Path $evidence 'openmw.log')
 }

@@ -220,6 +220,11 @@ int main()
     require(static_cast<bool>(materialBinding), "legacy ShaderSet lost its material binding");
     require(dynamic_cast<const RenderVsg::LegacyMaterialUniformValue*>(materialBinding.data.get()) != nullptr,
         "legacy ShaderSet material binding does not use the OpenMW compatibility uniform");
+    const auto& specularBinding = shaderSet->getDescriptorBinding("specularMap");
+    require(static_cast<bool>(specularBinding) && specularBinding.binding == 5u
+            && specularBinding.define == "VSG_SPECULAR_MAP"
+            && specularBinding.coordinateSpace == vsg::CoordinateSpace::sRGB,
+        "legacy ShaderSet lost its V3.25 specular-map descriptor");
     const auto& darkBinding = shaderSet->getDescriptorBinding("darkMap");
     require(static_cast<bool>(darkBinding) && darkBinding.binding == 6u
             && darkBinding.define == "VSG_DARK_MAP"
