@@ -17,12 +17,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api --allow-escape-sequences repos/JesusIsGod316/openmwcustom/actions/jobs/106941952125/logs > "$RUNNER_TEMP/prior-job.log"
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/JesusIsGod316/openmwcustom/actions/jobs/106941952125/logs > "$RUNNER_TEMP/prior-job.log"
           python3 - <<'PY'
           import os, pathlib, re
-          rows=(pathlib.Path(os.environ['RUNNER_TEMP'])/'prior-job.log').read_text().splitlines()
-          start=next(i for i,line in enumerate(rows) if 'cp4f-package-config' in line)
-          text=re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', '\n'.join(rows[max(0,start-5):min(len(rows),start+90)])+'\n')
+          raw=(pathlib.Path(os.environ['RUNNER_TEMP'])/'prior-job.log').read_bytes()
+          rows=raw.decode('utf-8',errors='replace').splitlines()
+          hits=[i for i,line in enumerate(rows) if 'cp4f-package-config' in line]
+          start=hits[-1] if hits else max(0,len(rows)-180)
+          text='Log bytes: '+str(len(raw))+'\nHead: '+repr(raw[:180])+'\n'
+          text+=re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', '\n'.join(rows[max(0,start-5):min(len(rows),start+90)])+'\n')
           pathlib.Path('CP4F-PACKAGE-FAILURE-EXTRACT.txt').write_text(text)
           print(text)
           PY
