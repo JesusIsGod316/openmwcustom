@@ -1,4 +1,4 @@
-name: V4.0 CP4F ownership diagnostics repair QC
+name: V4.0 CP4F combined memory and terrain repair QC
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
-          CP4F_SOURCE=ac54889c01e97f5068bae89d5de893f562823815
+          CP4F_SOURCE=62a23cba8546827cb4c1fb85a5096dd2ce80ff59
           git cat-file -e "${CP4E_BASE}^{commit}"
           git cat-file -e "${CP4F_SOURCE}^{commit}"
           test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
@@ -49,6 +49,8 @@ jobs:
           python3 tools/v4/cp4/test-runtime-diagnostics.py
           python3 tools/v4/cp4/test-diagnostic-linkage.py
           python3 tools/v4/cp4/test-diagnostic-header-boundary.py
+          python3 tools/v4/cp4/test-host-memory-integration.py
+          python3 tools/v4/cp4/test-diagnostic-config.py
           grep -F 'OPENMW_ENABLE_V4_VULKAN_RUNTIME=1' tools/v4/cp3b3/OpenMWRealNifTool.cmake
           grep -F 'openmw-v4-runtime-diagnostics-tests' apps/openmw/CMakeLists.txt
           git diff --exit-code c6b2ad8b87a989fb7630c69617673e179d81dbcb HEAD -- apps/openmw/mwlua/worker.cpp apps/openmw/mwlua/worker.hpp components/settings/ramcache.hpp components/settings/v36profile.hpp
