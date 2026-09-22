@@ -1,0 +1,169 @@
+name: CP4F combined rendering source and pixel validation
+on:
+  push:
+    branches: [v4.0-cp4f-rendering-repair-20260922]
+    paths: [.github/workflows/v4-cp4f-render-validation.yml]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Recover exact reviewed rendering source bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git merge-base 570289804810174724e7e534600f0831d0e9ae67 HEAD)" = 570289804810174724e7e534600f0831d0e9ae67
+          mkdir -p "$RUNNER_TEMP/render-validation"
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'render-validation'
+          shas=['779ead1a0912a903db72434c2e0c964c5a3c2892','aeeca939e1a4b6d214c3a257044c44205903a576','23e680fdd714b3e19be0d396b5b7788c4bd262fc','34816135a3a8c8770da5172661f17e5b7a0e4613','a1a869e99f16b044c2bf56223feaee6a35b78533','2358ff4cbd857ce53cbbed060baa0dcf0c5eb665','963a2d52f6398df5a619eaf79e0c358ed47bc5e3']
+          packed=bytearray()
+          for sha in shas:
+              req=urllib.request.Request('https://api.github.com/repos/JesusIsGod316/openmwcustom/git/blobs/'+sha,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+              with urllib.request.urlopen(req,timeout=45) as response: obj=json.load(response)
+              data=base64.b64decode(obj['content'])
+              assert hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()==sha
+              packed.extend(data)
+          patch=lzma.decompress(packed)
+          assert len(patch)==213283
+          assert hashlib.sha256(patch).hexdigest()=='1b8f56307b4281a3ddc0c8a677be98881696a198d7a9e88150fc521482d53781'
+          paths=[line.split(' b/',1)[1] for line in patch.decode().splitlines() if line.startswith('diff --git ')]
+          assert len(paths)==53 and len(set(paths))==53
+          assert all(p.startswith(('apps/openmw/','components/','tools/v4/cp4/')) and '..' not in p and '/mwlua/' not in p for p in paths)
+          (out/'rendering.patch').write_bytes(patch)
+          (out/'paths.txt').write_text('\n'.join(paths)+'\n')
+          subprocess.run(['git','apply','--check',str(out/'rendering.patch')],check=True)
+          subprocess.run(['git','apply',str(out/'rendering.patch')],check=True)
+          print('Exact 53-file rendering patch verified and applied')
+          PY
+      - name: Install native test dependencies and software Vulkan
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y ninja-build libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers libopenscenegraph-dev libglm-dev libbullet-dev libboost-all-dev libluajit-5.1-dev libpng-dev libsqlite3-dev libyaml-cpp-dev librecast-dev libopenal-dev libavcodec-dev libavformat-dev libswscale-dev libswresample-dev libfreetype-dev qt6-base-dev python3-yaml
+      - name: Retrieve verified pinned offline renderer SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 -H "Authorization: Bearer $GH_TOKEN" -o "$RUNNER_TEMP/render-sdk.zip" https://api.github.com/repos/JesusIsGod316/openmwcustom/actions/artifacts/10721042331/zip
+          echo "759107248040e002f5f4a7d2bed00082b6a7e9e3afc1ddb0076cf247204e0  $RUNNER_TEMP/render-sdk.zip" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/render-sdk"
+          unzip -q "$RUNNER_TEMP/render-sdk.zip" -d "$RUNNER_TEMP/render-sdk"
+          tar -xzf "$RUNNER_TEMP/render-sdk/cp4f-render-test-deps.tar.gz" -C "$RUNNER_TEMP/render-sdk"
+          cat "$RUNNER_TEMP/render-sdk/identities.txt"
+          echo "CP4F_RENDER_SDK=$RUNNER_TEMP/render-sdk" >> "$GITHUB_ENV"
+          icd=$(find /usr/share/vulkan/icd.d -maxdepth 1 -name 'lvp_icd*.json' -print -quit)
+          test -n "$icd"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+      - name: Compile optimized real renderer and CPU capture fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/render-validation"
+          for header in legacymaterialshader.hpp legacybumpmaterialshader.hpp enchantedmaterialshader.hpp; do
+            path="components/render/backend/vsg/$header"
+            mkdir -p "$out/baseline/$(dirname "$path")"
+            git show "570289804810174724e7e534600f0831d0e9ae67:$path" > "$out/baseline/$path"
+          done
+          cmake -S tools/v4/cp4/rendering-tests -B "$out/build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCP4F_RENDER_SDK="$CP4F_RENDER_SDK" -DCP4F_UNIFORM_BASELINE_INCLUDE="$out/baseline" 2>&1 | tee "$out/configure.log"
+          cmake --build "$out/build" --parallel 3 2>&1 | tee "$out/build.log"
+          ctest --test-dir "$out/build" --output-on-failure 2>&1 | tee "$out/cpu.log"
+          set +e
+          "$out/build/rendering-uniforms-baseline" > "$out/uniform-baseline.log" 2>&1
+          result=$?
+          set -e
+          test "$result" = 1
+          grep -F 'VSG uniform Value requests unsupported host over-alignment' "$out/uniform-baseline.log"
+      - name: Execute production shader pixels and old-path comparison failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/render-validation"
+          bash tools/v4/cp4/run-rendering-pixel-tests.sh "$out/build/rendering-pixels" "$out/pixels" 2>&1 | tee "$out/pixel-summary.log"
+      - name: Run sanitized production capture fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/render-validation"
+          cmake -S tools/v4/cp4/rendering-tests -B "$out/sanitized" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCP4F_RENDER_SDK="$CP4F_RENDER_SDK" -DCP4F_CAPTURE_SANITIZERS=ON > "$out/sanitized-configure.log"
+          cmake --build "$out/sanitized" --target rendering-capture --parallel 3 2>&1 | tee "$out/sanitized-build.log"
+          ASAN_OPTIONS=detect_leaks=1 "$out/sanitized/rendering-capture" 2>&1 | tee "$out/sanitized-capture.log"
+      - name: Retain memory ownership UV recorder and launcher regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/render-validation"
+          bash tools/v4/cp4/run-host-memory-tests.sh "$out/host" 2>&1 | tee "$out/host.log"
+          bash tools/v4/cp4/run-effect-uv-tests.sh "$out/uv" 2>&1 | tee "$out/uv.log"
+          bash tools/v4/cp4/run-runtime-diagnostics-tests.sh "$out/recorder" 2>&1 | tee "$out/recorder.log"
+          python3 tools/v4/cp4/test-gameplay-diagnostics.py 2>&1 | tee "$out/gameplay.log"
+          python3 tools/v4/cp4/test-diagnostic-config.py 2>&1 | tee "$out/config-tests.log"
+          python3 tools/v4/cp4/test-diagnostic-linkage.py 2>&1 | tee "$out/linkage.log"
+          python3 tools/v4/cp4/test-diagnostic-header-boundary.py 2>&1 | tee "$out/header-boundary.log"
+      - name: Compile actual modified engine and renderer translation units
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/v4/cp4/run-rendering-syntax.sh "$CP4F_RENDER_SDK" 2>&1 | tee "$RUNNER_TEMP/render-validation/syntax.log"
+      - name: Preserve source and integration contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in tools/v4/cp3e/application-route-contract.py tools/v4/cp4/streaming-contract.py tools/v4/cp4/population-environment-contract.py tools/v4/cp4/water-environment-contract.py tools/v4/cp4/video-ui-contract.py tools/v4/cp4/animated-object-contract.py tools/v4/cp4/fullbody-first-person-contract.py tools/v4/cp4/runtime-blocker-contract.py tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py tools/v4/cp4/test-host-memory-integration.py tools/v4/cp4/rendering-contract.py; do
+            python3 "$path"
+          done
+          git diff --exit-code 570289804810174724e7e534600f0831d0e9ae67 -- apps/openmw/mwlua/worker.cpp apps/openmw/mwlua/worker.hpp components/settings/ramcache.hpp components/settings/v36profile.hpp components/misc/hostmemory.cpp components/misc/hostmemory.hpp apps/openmw/mwworld/cellpreloader.cpp
+          python3 - <<'PY'
+          import pathlib,yaml
+          for path in pathlib.Path('.github/workflows').glob('*.yml'): yaml.safe_load(path.read_text())
+          print('Workflow YAML: PASS')
+          PY
+          git diff --check
+      - name: Commit only independently validated implementation paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/render-validation"
+          while IFS= read -r path; do git add -- "$path"; done < "$out/paths.txt"
+          test "$(git diff --cached --name-only | wc -l)" = 53
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'CP4F: validate native preview sky water optics and material rendering repair'
+          git push origin HEAD:v4.0-cp4f-rendering-repair-20260922
+          git rev-parse HEAD > "$out/source-sha.txt"
+          git diff-tree --no-commit-id --raw -r HEAD > "$out/source-blobs.txt"
+          python3 - <<'PY'
+          import json,os,pathlib,subprocess
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'render-validation'
+          entries=[]
+          for path in (out/'paths.txt').read_text().splitlines():
+              mode,kind,sha,_=subprocess.check_output(['git','ls-tree','HEAD','--',path],text=True).split(maxsplit=3)
+              entries.append(dict(path=path,mode=mode,type=kind,sha=sha))
+          (out/'source-blobs.json').write_text(json.dumps(entries,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cp4f-rendering-validation-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/render-validation/*.log
+            ${{ runner.temp }}/render-validation/*.patch
+            ${{ runner.temp }}/render-validation/*.json
+            ${{ runner.temp }}/render-validation/*.txt
+            ${{ runner.temp }}/render-validation/pixels/*.log
+            ${{ runner.temp }}/render-validation/build/Testing/Temporary/LastTest.log
+            ${{ runner.temp }}/render-validation/recorder/*.jsonl
+          retention-days: 14
+          if-no-files-found: error
