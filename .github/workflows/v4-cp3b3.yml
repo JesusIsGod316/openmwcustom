@@ -213,11 +213,11 @@ jobs:
           $buildExit = $LASTEXITCODE
           if ($buildExit -ne 0) { exit $buildExit }
 
-      - name: Build evaluated-effect recovery regression targets
+      - name: Build evaluated-effect and ownership diagnostic regression targets
         shell: pwsh
         run: |
           $log = "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/effect-recovery-build.log"
-          cmake --build "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" --target openmw-v4-effect-uv-tests openmw-v4-effect-capture-tests --verbose 2>&1 | Tee-Object -FilePath $log
+          cmake --build "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" --target openmw-v4-effect-uv-tests openmw-v4-effect-capture-tests openmw-v4-runtime-diagnostics-tests --verbose 2>&1 | Tee-Object -FilePath $log
           $buildExit = $LASTEXITCODE
           if ($buildExit -ne 0) { exit $buildExit }
 
@@ -235,8 +235,10 @@ jobs:
           $env:PATH = $runtimePath
           & "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/openmw.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "build-tree Vulkan openmw.exe --version failed with $LASTEXITCODE" }
-          ctest --test-dir "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" -C RelWithDebInfo -R '^openmw-v4-effect-(uv|capture)-tests$' --output-on-failure
-          if ($LASTEXITCODE -ne 0) { throw "evaluated-effect recovery regressions failed with $LASTEXITCODE" }
+          ctest --test-dir "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" -C RelWithDebInfo -R '^(openmw-v4-effect-(uv|capture)-tests|openmw-v4-runtime-diagnostics-(off|standard|focused))$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "effect/ownership recovery regressions failed with $LASTEXITCODE" }
+          python tools/v4/cp4/test-runtime-diagnostics.py --capture-directory "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/runtime-diagnostic-evidence"
+          if ($LASTEXITCODE -ne 0) { throw "native diagnostic output/report contract failed with $LASTEXITCODE" }
 
       - name: Stage CP3B4 local conformance package
         shell: pwsh
@@ -278,6 +280,11 @@ jobs:
           $openmwExe = Get-ChildItem -LiteralPath $stage -Recurse -File -Filter openmw.exe | Select-Object -First 1
           if ($null -eq $openmwExe) { throw 'Installed Vulkan package is missing openmw.exe' }
           $runtime = $openmwExe.Directory.FullName
+          foreach ($helper in @('gameplay-diagnostics.py', 'runtime-diagnostics.py', 'shader_resources.py', 'run-runtime-qc.ps1', 'run-memory-qc.ps1', 'RUNTIME-DIAGNOSTICS.md')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $runtime $helper) -PathType Leaf)) {
+              throw "Installed runtime package is missing diagnostic helper: $helper"
+            }
+          }
           $provenance = [System.Collections.Generic.List[string]]::new()
           $provenance.Add('source,sha256,file') | Out-Null
 
@@ -330,11 +337,13 @@ jobs:
             Copy-Item -LiteralPath $osgPlugins -Destination $runtime -Recurse -Force
           }
           @(
-            'OpenMW V4 CP3E Vulkan test checkpoint',
+            'OpenMW V4 CP4F ownership diagnostics test checkpoint',
             "commit=${{ github.sha }}",
             'renderer_selection=vulkan must be requested explicitly',
             'automatic_renderer=opengl until all compatibility facets qualify',
             'runtime_status=experimental smoke-test only',
+            'diagnostics=optional off/standard/focused; caching unchanged',
+            'manual_test=isolated New Game only; no regular saves',
             ''
           ) | Set-Content -LiteralPath (Join-Path $runtime 'CP3E-TEST-IDENTITY.txt') -Encoding Ascii
           $manifestPath = Join-Path $runtime 'CP3E-PACKAGE-SHA256.txt'
@@ -363,6 +372,14 @@ jobs:
           & $openmwExe.FullName --version
           if ($LASTEXITCODE -ne 0) { throw "staged Vulkan openmw.exe --version failed with $LASTEXITCODE" }
 
+      - name: Preserve matching Vulkan production symbols
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: openmw-v4-cp4f-vulkan-symbols-${{ github.sha }}
+          path: ${{ github.workspace }}/build-v4-cp3b3-real-nif/openmw.pdb
+          if-no-files-found: ignore
+
       - name: Store CP3B3 configure/build evidence
         if: always()
         uses: actions/upload-artifact@v6
@@ -378,4 +395,5 @@ jobs:
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/openmw-v4-link-output.log
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/effect-recovery-build.log
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/Testing/Temporary/LastTest.log
+            ${{ github.workspace }}/build-v4-cp3b3-real-nif/runtime-diagnostic-evidence/*.jsonl
           if-no-files-found: ignore
