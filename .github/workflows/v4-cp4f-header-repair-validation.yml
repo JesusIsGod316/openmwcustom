@@ -1,0 +1,117 @@
+name: CP4F diagnostic header boundary validation
+on:
+  push:
+    branches: [v4.0-cp4f-header-boundary-repair-20260922]
+    paths: [.github/workflows/v4-cp4f-header-repair-validation.yml]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 2af99ff87e399772497b1d1999e0b054a5911f8f
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Materialize and verify exact reviewed patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/header-validation"
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'header-validation'
+          packed = bytearray()
+          for sha in ['5a625fbba56b10a795177b7d23f6b5fb72918e0d','651a71abd46c5c3c70e71e7391e10e2e5a1568e2','9ca59e78996175788727a19479e7e2a5714e7983']:
+              request = urllib.request.Request('https://api.github.com/repos/JesusIsGod316/openmwcustom/git/blobs/'+sha, headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+              with urllib.request.urlopen(request,timeout=30) as response: item=json.load(response)
+              data=base64.b64decode(item['content'])
+              assert hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()==sha
+              packed.extend(data)
+          patch=lzma.decompress(packed)
+          assert hashlib.sha256(patch).hexdigest()=='e6bf84acaa89b1261847f23493ae81ae606399cae44620114983e0de9f807069'
+          path=out/'repair.patch';path.write_bytes(patch)
+          subprocess.run(['git','apply','--unidiff-zero','--check',str(path)],check=True)
+          subprocess.run(['git','apply','--unidiff-zero',str(path)],check=True)
+          subprocess.run(['git','add','-A'],check=True)
+          tree=subprocess.check_output(['git','write-tree'],text=True).strip()
+          assert tree=='9e4d03d659d24aa5ef92ccaa2a5a16eeb9d36ea9',tree
+          print('Exact source tree verified:',tree)
+          PY
+      - name: Install real OSG GLM and Qt headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libopenscenegraph-dev libglm-dev qt6-base-dev python3-yaml
+      - name: Test clean and native Qt consumers in both include orders
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/header-validation"
+          python3 tools/v4/cp4/test-diagnostic-header-boundary.py --baseline HEAD --output "$out" | tee "$out/header-controls.log"
+          cmake -S tools/v4/cp4/diagnostic-header-tests -B "$out/headers" -D CMAKE_BUILD_TYPE=RelWithDebInfo -D OPENMW_DIAGNOSTIC_TEST_REAL_QT=ON 2>&1 | tee "$out/header-configure.log"
+          cmake --build "$out/headers" --parallel 2 2>&1 | tee "$out/header-build.log"
+          ctest --test-dir "$out/headers" --output-on-failure 2>&1 | tee "$out/header-tests.log"
+      - name: Recheck diagnostics sanitizers and retained contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/header-validation"
+          bash tools/v4/cp4/run-runtime-diagnostics-tests.sh "$out/native" 2>&1 | tee "$out/native.log"
+          OPENMW_UV_TEST_SANITIZERS=1 ASAN_OPTIONS=detect_leaks=1 bash tools/v4/cp4/run-runtime-diagnostics-tests.sh "$out/sanitized" 2>&1 | tee "$out/sanitized.log"
+          bash tools/v4/cp4/run-effect-uv-tests.sh "$out/uv" 2>&1 | tee "$out/uv.log"
+          python3 tools/v4/cp4/test-gameplay-diagnostics.py 2>&1 | tee "$out/gameplay.log"
+          python3 tools/v4/cp4/test-diagnostic-linkage.py 2>&1 | tee "$out/linkage.log"
+          for script in tools/v4/cp3e/application-route-contract.py tools/v4/cp4/streaming-contract.py tools/v4/cp4/population-environment-contract.py tools/v4/cp4/water-environment-contract.py tools/v4/cp4/video-ui-contract.py tools/v4/cp4/animated-object-contract.py tools/v4/cp4/fullbody-first-person-contract.py tools/v4/cp4/runtime-blocker-contract.py tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py; do
+            python3 "$script"
+          done | tee "$out/contracts.log"
+          python3 - <<'PY'
+          import pathlib,yaml
+          for path in pathlib.Path('.github/workflows').glob('*.yml'): yaml.safe_load(path.read_text())
+          print('Workflow YAML parse PASS')
+          PY
+          git diff --check --cached
+          git diff --exit-code
+      - name: Preserve verified source blobs without changing a production ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64,hashlib,json,os,pathlib,subprocess,urllib.request
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'header-validation'
+          paths=subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines()
+          assert len(paths)==28,paths
+          def post(endpoint,payload):
+              req=urllib.request.Request('https://api.github.com/repos/JesusIsGod316/openmwcustom/git/'+endpoint,data=json.dumps(payload).encode(),headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'},method='POST')
+              with urllib.request.urlopen(req,timeout=30) as response: return json.load(response)
+          entries=[]
+          for path in paths:
+              raw=pathlib.Path(path).read_bytes()
+              expected=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+              item=post('blobs',{'content':base64.b64encode(raw).decode(),'encoding':'base64'})
+              assert item['sha']==expected,(path,item['sha'],expected)
+              entries.append({'path':path,'mode':'100644','type':'blob','sha':expected})
+          result=post('trees',{'base_tree':'697379e7e27367575c039d494585dbec9d85e803','tree':entries})
+          assert result['sha']=='9e4d03d659d24aa5ef92ccaa2a5a16eeb9d36ea9',result['sha']
+          (out/'source-tree.json').write_text(json.dumps({'tree':result['sha'],'entries':entries},indent=2))
+          print('All tested source blobs preserved; source tree',result['sha'],'; no production ref changed')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cp4f-header-boundary-validation-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/header-validation/*.log
+            ${{ runner.temp }}/header-validation/*.json
+            ${{ runner.temp }}/header-validation/*.patch
+            ${{ runner.temp }}/header-validation/headers/CMakeCache.txt
+            ${{ runner.temp }}/header-validation/headers/Testing/Temporary/LastTest.log
+            ${{ runner.temp }}/header-validation/native/*.jsonl
+            ${{ runner.temp }}/header-validation/sanitized/*.jsonl
+          retention-days: 14
+          if-no-files-found: error
