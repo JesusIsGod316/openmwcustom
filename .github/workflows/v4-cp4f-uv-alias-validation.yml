@@ -1,0 +1,123 @@
+name: CP4F UV stream sharing validation
+on:
+  push:
+    branches: [v4.0-cp4f-uv-alias-repair-20260922]
+    paths: [.github/workflows/v4-cp4f-uv-alias-validation.yml]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Apply exact reviewed three-file patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git merge-base e26a825f671143d161ab688a0e3b997dd6b420ba HEAD)" = e26a825f671143d161ab688a0e3b997dd6b420ba
+          mkdir -p "$RUNNER_TEMP/uv-alias-evidence"
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'uv-alias-evidence'
+          sha = '66a0092f538f9f6605bb3891b357bd0dd1419ad5'
+          request = urllib.request.Request('https://api.github.com/repos/JesusIsGod316/openmwcustom/git/blobs/' + sha,
+              headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+          with urllib.request.urlopen(request, timeout=30) as response: payload = json.load(response)
+          packed = base64.b64decode(payload['content'])
+          assert hashlib.sha1(b'blob ' + str(len(packed)).encode() + b'\0' + packed).hexdigest() == sha
+          patch = lzma.decompress(packed)
+          assert hashlib.sha256(patch).hexdigest() == 'e5160b53a28208234ef9835ea886847b57b81d5a6019fb6900c6016ff251b37b'
+          expected = {'apps/openmw/mwrender/v4effectuv.hpp': '5a531449bdf370f16d6e22adb9c270e182efaf8a',
+              'components/render/backend/vsg/staticassetrealizer.cpp': '7273098f203b83ff6ff39f47ffbaceacadcbc600',
+              'tools/v4/cp4/effect-uv-tests.cpp': '2509e59b9b3d77217dbc25a348842c4841a97561'}
+          paths = [line.split(' b/', 1)[1] for line in patch.decode().splitlines() if line.startswith('diff --git ')]
+          assert sorted(paths) == sorted(expected)
+          target = out / 'uv-alias.patch'; target.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', str(target)], check=True)
+          subprocess.run(['git', 'apply', str(target)], check=True)
+          for path, identity in expected.items():
+              assert subprocess.check_output(['git', 'hash-object', path], text=True).strip() == identity, path
+          (out / 'expected-blobs.json').write_text(json.dumps(expected, indent=2))
+          print('Patch and all three resulting source blobs verified')
+          PY
+      - name: Install real OSG and GLM dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libopenscenegraph-dev libglm-dev python3-yaml
+      - name: Prove baseline duplication failure with new cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/uv-alias-evidence"
+          header=apps/openmw/mwrender/v4effectuv.hpp
+          cp "$header" "$out/repaired-header.hpp"
+          trap 'cp "$out/repaired-header.hpp" "$header"' EXIT
+          git show e26a825f671143d161ab688a0e3b997dd6b420ba:"$header" > "$header"
+          if bash tools/v4/cp4/run-effect-uv-tests.sh "$out/baseline" > "$out/baseline.log" 2>&1; then
+            cat "$out/baseline.log"
+            echo 'Baseline unexpectedly passed duplication regressions' >&2
+            exit 1
+          fi
+          cat "$out/baseline.log"
+          grep -Fx '13/20 effect UV tests passed' "$out/baseline.log"
+          test "$(grep -c '^FAIL ' "$out/baseline.log")" -eq 7
+      - name: Test corrected UV capture and sanitizers
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/uv-alias-evidence"
+          bash tools/v4/cp4/run-effect-uv-tests.sh "$out/repaired" 2>&1 | tee "$out/repaired.log"
+          OPENMW_UV_TEST_SANITIZERS=1 ASAN_OPTIONS=detect_leaks=1 bash tools/v4/cp4/run-effect-uv-tests.sh "$out/sanitized" 2>&1 | tee "$out/sanitized.log"
+          bash tools/v4/cp4/run-runtime-diagnostics-tests.sh "$out/recorder" 2>&1 | tee "$out/recorder.log"
+          python3 tools/v4/cp4/test-gameplay-diagnostics.py 2>&1 | tee "$out/gameplay.log"
+      - name: Check retained contracts and unchanged controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in tools/v4/cp3e/application-route-contract.py tools/v4/cp4/streaming-contract.py tools/v4/cp4/population-environment-contract.py tools/v4/cp4/water-environment-contract.py tools/v4/cp4/video-ui-contract.py tools/v4/cp4/animated-object-contract.py tools/v4/cp4/fullbody-first-person-contract.py tools/v4/cp4/runtime-blocker-contract.py tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py tools/v4/cp4/test-diagnostic-linkage.py; do
+            python3 "$script"
+          done
+          git diff --exit-code e26a825f671143d161ab688a0e3b997dd6b420ba -- apps/openmw/mwlua/worker.cpp apps/openmw/mwlua/worker.hpp components/settings/ramcache.hpp components/settings/v36profile.hpp
+          python3 - <<'PY'
+          import pathlib, yaml
+          for path in pathlib.Path('.github/workflows').glob('*.yml'): yaml.safe_load(path.read_text())
+          print('Workflow YAML: PASS')
+          PY
+          git diff --check
+      - name: Publish validated source on isolated branch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/uv-alias-evidence"
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'uv-alias-evidence'
+          expected = json.loads((out / 'expected-blobs.json').read_text())
+          for path, identity in expected.items():
+              assert subprocess.check_output(['git', 'hash-object', path], text=True).strip() == identity
+              subprocess.run(['git', 'add', '--', path], check=True)
+          assert sorted(subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines()) == sorted(expected)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'CP4F: preserve shared evaluated UV streams and report capacity failure provenance'
+          git push origin HEAD:v4.0-cp4f-uv-alias-repair-20260922
+          git rev-parse HEAD | tee "$out/source-sha.txt"
+          git diff-tree --no-commit-id --raw -r HEAD > "$out/source-blobs.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cp4f-uv-alias-validation-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/uv-alias-evidence/*.log
+            ${{ runner.temp }}/uv-alias-evidence/*.patch
+            ${{ runner.temp }}/uv-alias-evidence/*.json
+            ${{ runner.temp }}/uv-alias-evidence/*.txt
+          retention-days: 14
+          if-no-files-found: error
