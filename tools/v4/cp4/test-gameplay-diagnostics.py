@@ -145,13 +145,43 @@ class ReportTests(unittest.TestCase):
                 diagnostics.launch(args)
             command = start.call_args.args[0]
             self.assertEqual(command[0], str(exe))
-            self.assertEqual(len(command), 3)
+            self.assertEqual(len(command), 13)
             self.assertEqual(command[1], '--config')
+            self.assertEqual(command[2], str(user))
+            self.assertEqual(command[3], '--config')
+            self.assertEqual(command[5], '--user-data')
+            self.assertEqual(command[6], str(Path(command[4]) / 'user-data'))
+            self.assertEqual(command[7:9], ['--load-savegame', ''])
+            self.assertEqual(command[9:], ['--skip-menu=false', '--new-game=false', '--script-run', ''])
+            self.assertEqual(start.call_args.kwargs['env']['OPENMW_RUNTIME_DIAGNOSTICS'], 'standard')
+            self.assertTrue((Path(command[4]) / 'user-data').is_dir())
+            self.assertIn('user-data=', (Path(command[4]) / 'openmw.cfg').read_text())
+            self.assertTrue(Path(command[4]).with_suffix('.zip').is_file())
             for name in ('settings.cfg', 'openmw.cfg', 'openmw-crash.dmp'):
                 self.assertEqual((user / name).read_bytes(), b'original')
-            manifest = json.loads((Path(command[2]) / 'manifest.json').read_text())
+            manifest = json.loads((Path(command[4]) / 'manifest.json').read_text())
             self.assertEqual(manifest['state'], 'exited')
+            self.assertEqual(manifest['diagnostics'], 'standard')
+            self.assertFalse(manifest['regular_saves_copied'])
             self.assertTrue(manifest['original_config_unchanged']['settings.cfg'])
+            import zipfile
+            with zipfile.ZipFile(Path(command[4]).with_suffix('.zip')) as bundle:
+                self.assertTrue(set(bundle.namelist()).issubset({
+                    'manifest.json', 'console.log', 'openmw.log', 'gameplay.jsonl', 'runtime.jsonl',
+                    'report.md', 'report.json', 'memory-report.md', 'memory-report.json'}))
+                self.assertIn('memory-report.json', bundle.namelist())
+
+    def test_packaged_helper_does_not_inspect_parent_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertIsNone(diagnostics.source_checkout(root / 'gameplay-diagnostics.py'))
+            self.assertIsNone(diagnostics.source_checkout(Path('/gameplay-diagnostics.py')))
+            source_file = root / 'tools/v4/cp4/gameplay-diagnostics.py'
+            source_file.parent.mkdir(parents=True)
+            source_file.touch()
+            self.assertIsNone(diagnostics.source_checkout(source_file))
+            (root / '.git').mkdir()
+            self.assertEqual(diagnostics.source_checkout(source_file), root.resolve())
 
     def test_launch_refuses_missing_shader_package_before_starting(self):
         with tempfile.TemporaryDirectory() as directory:

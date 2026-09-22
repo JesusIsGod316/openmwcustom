@@ -3,6 +3,8 @@
 
 #include "dynamicactorplan.hpp"
 #include "allocationdiagnostics.hpp"
+#include <bit>
+#include "runtimememorydiagnostics.hpp"
 #include "immediateeffectrealizer.hpp"
 #include "legacymaterialshader.hpp"
 #include "populationvisibility.hpp"
@@ -863,7 +865,7 @@ namespace RenderVsg
                 return false;
             }
             resident.placement->matrix = toVsgMatrix(staticInstancePlacementMatrix(transform->current));
-            if (Debug::GameplayDiagnostics::sampling() && diagnosticActors++ < 16)
+            if (Debug::GameplayDiagnostics::detailedSampling() && diagnosticActors++ < 16)
             {
                 // Compare the CPU deformation with its actual resident streams.
                 // Bounded vertex samples, not a pixel or full mesh parity claim.
@@ -913,8 +915,11 @@ namespace RenderVsg
             // Acquire only a fence-completed version. Retaining an old graph
             // alone does not make overwriting its shared arrays/placement safe.
             auto& resident = mImmediateEffectResidents.acquire(effect.identity);
-            if (resident.published && immediateEffectLayoutMatches(resident.contract, effect,
+            const auto mismatch = resident.published
+                ? immediateEffectLayoutMismatch(resident.contract, effect,
                     std::getenv("OPENMW_V4_IMMUTABLE_EFFECT_BOUNDS") != nullptr)
+                : ImmediateEffectMismatch::NoCompletedResident;
+            if (mismatch == ImmediateEffectMismatch::None
                 && updateImmediateEffectRealization(effect, resident.mutableDraws))
             {
                 // The reuse predicate already proved the immutable contract
@@ -926,6 +931,36 @@ namespace RenderVsg
                 continue;
             }
 
+            if (Debug::RuntimeDiagnostics::enabled())
+            {
+                const auto reason = mismatch == ImmediateEffectMismatch::None ? ImmediateEffectMismatch::StreamUpdate : mismatch;
+                ++mEffectRebuildReasons[static_cast<std::size_t>(reason)];
+                if (mEffectDiagnosticExamples)
+                {
+                    --mEffectDiagnosticExamples;
+                    Debug::RuntimeDiagnostics::emit("effect_rebuild", immediateEffectMismatchName(reason), effect.identity, {
+                        {"old_vertices", resident.contract.mesh.positions.size()}, {"new_vertices", effect.mesh.positions.size()},
+                        {"old_indices", resident.contract.mesh.indices.size()}, {"new_indices", effect.mesh.indices.size()},
+                        {"old_textures", resident.contract.textures.size()}, {"new_textures", effect.textures.size()},
+                        {"completed_frame", mCompletedThrough ? mCompletedThrough->value() : 0} });
+                    if (reason == ImmediateEffectMismatch::Material)
+                        Debug::RuntimeDiagnostics::emit("effect_material_delta", "float32_bit_patterns", effect.identity, {
+                            {"old_alpha", std::bit_cast<std::uint32_t>(resident.contract.material.alpha)},
+                            {"new_alpha", std::bit_cast<std::uint32_t>(effect.material.alpha)},
+                            {"diffuse_changed", resident.contract.material.diffuse != effect.material.diffuse},
+                            {"emission_changed", resident.contract.material.emission != effect.material.emission},
+                            {"specular_changed", resident.contract.material.specular != effect.material.specular},
+                            {"ambient_changed", resident.contract.material.ambient != effect.material.ambient},
+                            {"source_identity_changed", resident.contract.material.sourceIdentity != effect.material.sourceIdentity},
+                            {"texture_bindings_changed", resident.contract.material.textures != effect.material.textures}});
+                    if (!effect.textures.empty())
+                        Debug::RuntimeDiagnostics::emit("effect_texture", "first_stage_example", effect.textures.front().texture.sourceIdentity,
+                            {{"role", static_cast<std::uint64_t>(effect.textures.front().binding.role)},
+                                {"uv_set", effect.textures.front().binding.transform.uvSet},
+                                {"color_space", static_cast<std::uint64_t>(effect.textures.front().binding.colorSpace)},
+                                {"width", effect.textures.front().texture.width}, {"height", effect.textures.front().texture.height}});
+                }
+            }
             ImmediateEffectRealization realized
                 = realizeImmediateEffectDraw(effect, mTextureResolver, frameSharedObjects);
             if (!realized.valid())
@@ -952,7 +987,7 @@ namespace RenderVsg
                              << " retained=" << mImmediateEffectResidents.size();
         // Keep graph censuses sparse even when a busy exterior rebuilds many
         // effects every frame. Failures always get a separate final census.
-        const bool allocationDiagnostic = Debug::GameplayDiagnostics::sampling();
+        const bool allocationDiagnostic = Debug::GameplayDiagnostics::detailedSampling();
         if (allocationDiagnostic)
             Debug::GameplayDiagnostics::emit("dynamic_allocation", {{"phase", "before"},
                 {"summary", allocationSummary(*nextRoot, *mWindow->getOrCreateDevice())}}, true);
@@ -1527,6 +1562,67 @@ namespace RenderVsg
         return false;
     }
 
+    void VsgRuntimeHost::reportRuntimeMemory(
+        const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame) noexcept
+    {
+        if (!mRuntimeDiagnosticSampler.due()) return;
+        const auto start = Debug::RuntimeDiagnostics::nowUs();
+        mEffectDiagnosticExamples = 8;
+        try
+        {
+            reportNeutralMemory(world);
+            reportVulkanMemory(*mWindow->getOrCreatePhysicalDevice(), *mWindow->getOrCreateDevice());
+            std::uint64_t effectBytes = 0, effectWritable = 0, effectInFlight = 0, selected = 0;
+            mImmediateEffectResidents.inspect([&](const auto&, const ImmediateEffectResident& resident,
+                bool chosen, bool writable, const auto&) {
+                effectBytes += meshCapacityBytes(resident.contract.mesh);
+                selected += chosen;
+                effectWritable += writable;
+                effectInFlight += !writable;
+            });
+            std::uint64_t actorWritable = 0, actorInFlight = 0;
+            mDynamicActorResidents.inspect([&](const auto&, const auto&, bool, bool writable, const auto&) {
+                actorWritable += writable; actorInFlight += !writable;
+            });
+            std::uint64_t frameBytes = 0;
+            for (const auto& draw : frame.immediateEffectDraws()) frameBytes += meshCapacityBytes(draw.mesh);
+            Debug::RuntimeDiagnostics::emit("resident_versions", "dynamic", "Before frame sync; completed slots retained for bounded reuse are normal", {
+                {"effect_versions", mImmediateEffectResidents.size()}, {"effect_writable", effectWritable},
+                {"effect_in_flight", effectInFlight}, {"effect_selected_previous", selected},
+                {"effect_contract_mesh_capacity_bytes", effectBytes}, {"frame_effect_mesh_capacity_bytes", frameBytes},
+                {"actor_versions", mDynamicActorResidents.size()}, {"actor_writable", actorWritable},
+                {"actor_in_flight", actorInFlight}, {"completed_frame", mCompletedThrough ? mCompletedThrough->value() : 0},
+                {"static_instances", residentStaticInstanceCount()} });
+            const auto retirement = [&](const char* name, const auto& queue, std::uint64_t released) {
+                std::uint64_t oldest = 0, completed = 0;
+                queue.inspect([&](RenderCore::FrameId lastUse, const auto&) {
+                    if (!oldest || lastUse.value() < oldest) oldest = lastUse.value();
+                    completed += mCompletedThrough && lastUse <= *mCompletedThrough;
+                });
+                Debug::RuntimeDiagnostics::emit("retirement", name, "Before completion collection; graph roots, not unique allocation bytes", {
+                    {"pending_roots", queue.size()}, {"oldest_last_use_frame", oldest},
+                    {"completed_roots_pending_collection", completed}, {"released_roots", released},
+                    {"completed_frame", mCompletedThrough ? mCompletedThrough->value() : 0} });
+            };
+            retirement("dynamic", mDynamicRetirements, mDiagnosticReleasedDynamic);
+            retirement("gui", mGuiRetirements, mDiagnosticReleasedGui);
+            for (std::size_t i = 0; i < mEffectRebuildReasons.size(); ++i)
+                if (mEffectRebuildReasons[i])
+                    Debug::RuntimeDiagnostics::emit("effect_rebuild_count", immediateEffectMismatchName(static_cast<ImmediateEffectMismatch>(i)), {},
+                        {{"count", mEffectRebuildReasons[i]}});
+            for (const auto& auxiliary : mAuxiliaryViews)
+                Debug::RuntimeDiagnostics::emit("auxiliary", "vsg_target", {}, {
+                    {"target_slot", auxiliary.targetIdentity.slot()}, {"target_generation", auxiliary.targetIdentity.generation()},
+                    {"kind", static_cast<std::uint64_t>(auxiliary.kind)}, {"active", auxiliary.active},
+                    {"width", auxiliary.target.extent.width}, {"height", auxiliary.target.extent.height},
+                    {"semantic_color_format", static_cast<std::uint64_t>(auxiliary.colorFormat)},
+                    {"image_present", static_cast<bool>(auxiliary.target.color)}});
+            Debug::RuntimeDiagnostics::emit("probe_cost", "vsg_memory", "Counts and payload capacity, not GPU execution time",
+                {{"elapsed_us", Debug::RuntimeDiagnostics::nowUs() - start}});
+        }
+        catch (...) { Debug::RuntimeDiagnostics::emit("coverage", "vsg_memory", "snapshot unavailable", {{"available", 0}}); }
+    }
+
     void VsgRuntimeHost::reportStrictFrameDiagnostics(
         const RenderCore::FrameRenderState& frame, const RenderCore::FrameView& mainView)
     {
@@ -1647,6 +1743,7 @@ namespace RenderVsg
                 "CP3C host requires explicit reversed zero-to-one/down-Y projection and no temporal jitter");
 
         reportStrictFrameDiagnostics(frame, *mainView);
+        reportRuntimeMemory(world, frame);
 
         // VSG skips swapchain acquisition for invisible windows, but its record/submit
         // task still owns the window and can otherwise reuse the previous image's
@@ -1691,8 +1788,13 @@ namespace RenderVsg
             } // destruction releases fence-completed graphs before cache pruning
             if (releasedStatic)
                 mSharedObjects->prune();
-            (void)mDynamicRetirements.collect(*completion.completedThrough);
-            (void)mGuiRetirements.collect(*completion.completedThrough);
+            const auto releasedDynamic = mDynamicRetirements.collect(*completion.completedThrough).size();
+            const auto releasedGui = mGuiRetirements.collect(*completion.completedThrough).size();
+            if (Debug::RuntimeDiagnostics::enabled())
+            {
+                mDiagnosticReleasedDynamic += releasedDynamic;
+                mDiagnosticReleasedGui += releasedGui;
+            }
         }
         if (!mCompletion.canRegisterSubmission(frame.frameId()))
             return finish(RenderCore::RenderFrameResult::Failed, "semantic frame id is not submit-safe");

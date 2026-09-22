@@ -1,12 +1,12 @@
 """Bounded manual CP4F capture and multi-finding report. Never kills the game.
 
 The launch uses a private writable config/log directory layered over the normal
-configuration. Save selection/user-data stays unchanged; this tool never writes
-or deletes a save. It waits for natural exit, then summarizes the evidence.
+configuration. User-data is isolated too; regular saves are not exposed by this
+launch profile. No saves are read, copied, or deleted by the helper. It waits for natural exit, then summarizes the evidence.
 The report subcommand also works on an interrupted/running capture.
 """
 import argparse
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
@@ -25,6 +25,17 @@ def sha256(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def source_checkout(script_path):
+    """Only inspect a real source checkout, never an installed game's ancestors."""
+    path = Path(script_path).resolve()
+    if len(path.parents) < 4:
+        return None
+    root = path.parents[3]
+    if path != root / 'tools' / 'v4' / 'cp4' / 'gameplay-diagnostics.py' or not (root / '.git').exists():
+        return None
+    return root
+
+
 def analyze(path):
     counts = Counter()
     stages = defaultdict(list)
@@ -38,7 +49,7 @@ def analyze(path):
     findings = []
     frames = set()
     last = None
-    with Path(path).open(encoding='utf-8') as stream:
+    with Path(path).open(encoding='utf-8', errors='replace') as stream:
         for line in stream:
             try:
                 row = json.loads(line)
@@ -146,18 +157,19 @@ def report(directory):
     trace = directory / 'gameplay.jsonl'
     result = analyze(trace) if trace.exists() else {'findings': ['CAPTURE FAILURE: no gameplay trace was produced.'], 'counts': {}, 'inclusive_stage_timings': {}}
     log = directory / 'openmw.log'
-    selected = []
+    selected = deque(maxlen=120)
     log_failures = set()
     loading_seen = False
     error_lines = 0
     if log.exists():
-        for line in log.read_text(encoding='utf-8', errors='replace').splitlines():
-            loading_seen |= 'Loading cell ' in line
-            error_lines += int(' E]' in line)
-            if any(term in line for term in ('Fatal error:', 'V4 frame failure:')):
-                log_failures.add(line.split('] ', 1)[-1])
-            if any(term in line for term in (' E]', 'Renderer backend:', 'Loading cell ', 'Quitting peacefully', 'Failed to load', 'Vulkan record/submit')):
-                selected.append(line)
+        with log.open(encoding='utf-8', errors='replace') as stream:
+            for line in stream:
+                loading_seen |= 'Loading cell ' in line
+                error_lines += int(' E]' in line)
+                if any(term in line for term in ('Fatal error:', 'V4 frame failure:')) and len(log_failures) < 128:
+                    log_failures.add(line.rstrip().split('] ', 1)[-1])
+                if any(term in line for term in (' E]', 'Renderer backend:', 'Loading cell ', 'Quitting peacefully', 'Failed to load', 'Vulkan record/submit')):
+                    selected.append(line.rstrip())
     result['findings'].extend('RUNTIME FAILURE (game log): ' + message for message in sorted(log_failures))
     if error_lines:
         result['findings'].append(f'LOG ERRORS: {error_lines} error-level lines; these include potentially unrelated script/configuration errors. See selected log; not all are fatal.')
@@ -169,13 +181,16 @@ def report(directory):
             status = json.loads(manifest.read_text(encoding='utf-8'))
             result['run_state'] = status.get('state', 'unknown')
             result['exit_code'] = status.get('exit_code')
+            if status.get('diagnostics') == 'standard':
+                result['findings'] = [f for f in result['findings'] if not f.startswith('COVERAGE GAP: no actor pose samples')]
+                result['findings'].append('STANDARD COVERAGE: detailed actor geometry/pose fingerprints are intentionally omitted; use focused mode for those checks.')
             if status.get('exit_code') not in (None, 0):
                 result['findings'].append(f"RUN FAILED: executable exit code {status['exit_code']}; no observed frame invariant violation is not a pass.")
             elif status.get('state') != 'exited':
                 result['findings'].append('RUN INCOMPLETE: collector has not recorded process exit.')
         except (ValueError, OSError, AttributeError):
             result['findings'].append('CAPTURE WARNING: unreadable/incomplete run manifest.')
-    result['selected_log_lines'] = selected[-120:]
+    result['selected_log_lines'] = list(selected)
     (directory / 'report.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     text = ['# CP4F gameplay diagnostic report', '',
             'Observational, sparsely sampled run. Not a benchmark or a complete compatibility pass.', '',
@@ -190,9 +205,14 @@ def report(directory):
     for sample in result.get('terrain_preload_work', []):
         text.append(f"- Terrain: queued {sample['queue_ms']:.3f} ms, worker {sample['work_ms']:.3f} ms, "
                     f"views {sample['views']}, aborted {sample['aborted']} (overlaps terrain wait).")
-    text += ['', '## Selected game log', '', '```text', *selected[-120:], '```', '',
+    text += ['', '## Selected game log', '', '```text', *list(selected), '```', '',
              'Remaining coverage: full canonical-to-neutral skin-space equivalence, GPU-side buffer contents, pixels, texture semantics, map output, and long-duration memory budgets require separate checks.']
     (directory / 'report.md').write_text('\n'.join(text) + '\n', encoding='utf-8')
+    runtime_spec = importlib.util.spec_from_file_location('runtime_diagnostics', Path(__file__).with_name('runtime-diagnostics.py'))
+    if Path(runtime_spec.origin).exists():
+        runtime_module = importlib.util.module_from_spec(runtime_spec)
+        runtime_spec.loader.exec_module(runtime_module)
+        runtime_module.report(directory)
     return result
 
 
@@ -208,9 +228,15 @@ def launch(args):
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     evidence = root / (stamp + '-gameplay-' + str(os.getpid()))
     evidence.mkdir(parents=True, exist_ok=False)
-    # An empty final config layer retains all earlier content paths/plugins.
-    # Only writable config/log/storage is isolated; normal saves remain available.
-    (evidence / 'openmw.cfg').write_text('# Diagnostic writable config layer; inherit normal content.\n', encoding='utf-8')
+    # Preserve normal content, while isolating writable state and saves.
+    private_data = evidence / 'user-data'
+    private_data.mkdir()
+    path_text = private_data.as_posix()
+    if any(ch in path_text for ch in ('\n', '\r', '"')):
+        raise ValueError('Diagnostic user-data path contains unsupported configuration characters')
+    (evidence / 'openmw.cfg').write_text(
+        '# Diagnostic writable layer; inherit normal content and cache policy.\n'
+        + f'user-data="{path_text}"\n', encoding='utf-8')
     fingerprints = {}
     for name in ('settings.cfg', 'input_v3.xml', 'shaders.yaml', 'global_storage.bin', 'player_storage.bin'):
         path = user / name
@@ -221,7 +247,12 @@ def launch(args):
         if (user / name).exists():
             shutil.copy2(user / name, evidence / ('original-' + name))
     env = os.environ.copy()
-    env['OPENMW_GAMEPLAY_DIAGNOSTICS'] = '1'
+    selected_mode = getattr(args, 'diagnostics', 'standard')
+    if selected_mode not in ('off', 'standard', 'focused'):
+        raise ValueError('Invalid runtime diagnostic mode')
+    env['OPENMW_RUNTIME_DIAGNOSTICS'] = selected_mode
+    env['OPENMW_RUNTIME_DIAGNOSTICS_FILE'] = str(evidence / 'runtime.jsonl')
+    env['OPENMW_GAMEPLAY_DIAGNOSTICS'] = '0' if selected_mode == 'off' else '1'
     env['OPENMW_GAMEPLAY_DIAGNOSTICS_FILE'] = str(evidence / 'gameplay.jsonl')
     # Do not enable the older per-frame strict logger or GPU validation by
     # default: they have distinct overhead. Record any inherited controls.
@@ -229,15 +260,21 @@ def launch(args):
         env['PATH'] = os.pathsep.join(args.dll_directory + [env.get('PATH', '')])
     if args.osg_library_path:
         env['OSG_LIBRARY_PATH'] = args.osg_library_path
-    command = [str(exe), '--config', str(evidence)]
+    # Command-line values outrank any inherited config's autoload/startup script.
+    command = [str(exe), '--config', str(user), '--config', str(evidence),
+               '--user-data', str(private_data), '--load-savegame', '',
+               '--skip-menu=false', '--new-game=false', '--script-run', '']
     manifest = {'started_utc': datetime.now(timezone.utc).isoformat(), 'executable': str(exe),
                 'sha256': sha256(exe), 'shader_package': shader_package, 'command': command, 'cwd': str(exe.parent),
                 'source_head': args.source_head, 'source_diff_sha256': args.source_diff_sha256,
                 'original_config_hashes': fingerprints,
                 'controls': {k: v for k, v in env.items() if k.startswith(('OPENMW_', 'VK_')) or k == 'OSG_LIBRARY_PATH'},
-                'dll_directories': args.dll_directory, 'state': 'starting', 'evidence': str(evidence)}
-    source_root = Path(__file__).resolve().parents[3]
+                'dll_directories': args.dll_directory, 'state': 'starting', 'evidence': str(evidence),
+                'diagnostics': selected_mode, 'isolated_user_data': str(private_data), 'regular_saves_copied': False}
+    source_root = source_checkout(__file__)
     try:
+        if source_root is None:
+            raise OSError('Installed diagnostic helper has no source checkout')
         changed = subprocess.check_output(['git', 'ls-files', '-m', '-o', '--exclude-standard', '-z'], cwd=source_root)
         paths = sorted(set(p for p in changed.decode('utf-8').split('\0') if p))
         manifest['source_root'] = str(source_root)
@@ -266,6 +303,14 @@ def launch(args):
             name: (user / name).exists() and sha256(user / name) == digest for name, digest in fingerprints.items()}
         save_manifest()
         report(evidence)
+        # Evidence only: never package saves, asset files, storage or original configs.
+        import zipfile
+        with zipfile.ZipFile(evidence.with_suffix('.zip'), 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as bundle:
+            for name in ('manifest.json', 'console.log', 'openmw.log', 'gameplay.jsonl', 'runtime.jsonl',
+                         'report.md', 'report.json', 'memory-report.md', 'memory-report.json'):
+                path = evidence / name
+                if path.is_file():
+                    bundle.write(path, arcname=name)
 
 
 def main():
@@ -279,6 +324,7 @@ def main():
     run.add_argument('--evidence-root', required=True)
     run.add_argument('--dll-directory', action='append', default=[])
     run.add_argument('--osg-library-path')
+    run.add_argument('--diagnostics', choices=('off', 'standard', 'focused'), default='standard')
     run.add_argument('--source-head', default='unrecorded')
     run.add_argument('--source-diff-sha256', default='unrecorded')
     args = parser.parse_args()

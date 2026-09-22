@@ -201,6 +201,13 @@ namespace Resource
         mInstanceCache->clear();
     }
 
+    void BulletShapeManager::reportRuntimeDiagnostics(double referenceTime) const noexcept
+    {
+        if (!mDiagnosticSampler.due()) return;
+        mCache->reportRuntimeDiagnostics("collision_shapes", referenceTime, mExpiryDelay);
+        mInstanceCache->reportRuntimeDiagnostics("collision_shape_instances", mInstanceCacheKeep);
+    }
+
     void BulletShapeManager::reportStats(unsigned int frameNumber, osg::Stats* stats) const
     {
         Resource::reportStats("Shape", frameNumber, mCache->getStats(), *stats);

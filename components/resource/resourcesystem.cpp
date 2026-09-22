@@ -93,7 +93,10 @@ namespace Resource
             Debug::V3Diagnostics::resourceWriter(), "resource_cache_update", "all_managers", 0.5);
         for (std::vector<BaseResourceManager*>::iterator it = mResourceManagers.begin(); it != mResourceManagers.end();
              ++it)
+        {
             (*it)->updateCache(referenceTime);
+            (*it)->reportRuntimeDiagnostics(referenceTime);
+        }
     }
 
     void ResourceSystem::clearCache()

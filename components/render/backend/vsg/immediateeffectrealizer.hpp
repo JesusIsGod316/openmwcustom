@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_IMMEDIATEEFFECTREALIZER_H
 
 #include "staticassetconformance.hpp"
+#include "immediateeffectcontract.hpp"
 
 #include <components/rendercore/effectframe.hpp>
 #include <components/rendercore/renderworld.hpp>
@@ -156,49 +157,6 @@ namespace RenderVsg
         result.root = std::move(realized.root);
         result.mutableDraws = std::move(realized.mutableDraws);
         return result;
-    }
-
-    [[nodiscard]] inline bool immediateEffectLayoutMatches(
-        const RenderCore::ImmediateEffectDraw& resident, const RenderCore::ImmediateEffectDraw& current,
-        bool immutableBoundsControl = false) noexcept
-    {
-        // Only streams updated below may differ. Matching sizes alone does not
-        // make a resident index buffer, descriptor, uniform or bound current.
-        // Defaulted semantic equality also includes future material fields.
-        if (resident.identity != current.identity || resident.billboard != current.billboard
-            || (immutableBoundsControl && (resident.bounds.minimum != current.bounds.minimum
-                || resident.bounds.maximum != current.bounds.maximum))
-            || resident.material != current.material
-            || resident.semanticFlags != current.semanticFlags
-            || resident.mesh.indices != current.mesh.indices
-            || resident.mesh.tangents != current.mesh.tangents || resident.mesh.bitangents != current.mesh.bitangents
-            || resident.mesh.positions.size() != current.mesh.positions.size()
-            || resident.mesh.normals.size() != current.mesh.normals.size()
-            || resident.mesh.colors.size() != current.mesh.colors.size()
-            || resident.mesh.texCoordSets.size() != current.mesh.texCoordSets.size()
-            || resident.mesh.surfaces.size() != current.mesh.surfaces.size()
-            || resident.textures.size() != current.textures.size())
-            return false;
-        for (std::size_t i = 0; i < resident.mesh.texCoordSets.size(); ++i)
-        {
-            if (resident.mesh.texCoordSets[i].size() != current.mesh.texCoordSets[i].size())
-                return false;
-        }
-        for (std::size_t i = 0; i < resident.mesh.surfaces.size(); ++i)
-        {
-            const auto& left = resident.mesh.surfaces[i];
-            const auto& right = current.mesh.surfaces[i];
-            if (left.topology != right.topology || left.firstIndex != right.firstIndex
-                || left.indexCount != right.indexCount || left.materialSlot != right.materialSlot)
-                return false;
-        }
-        for (std::size_t i = 0; i < resident.textures.size(); ++i)
-        {
-            if (resident.textures[i].texture != current.textures[i].texture
-                || resident.textures[i].binding != current.textures[i].binding)
-                return false;
-        }
-        return true;
     }
 
     [[nodiscard]] inline bool updateImmediateEffectRealization(const RenderCore::ImmediateEffectDraw& draw,

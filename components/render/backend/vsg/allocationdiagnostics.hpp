@@ -18,22 +18,24 @@ namespace RenderVsg
         std::unordered_set<const vsg::Image*> images;
         std::unordered_set<const vsg::Data*> imageData;
         std::unordered_set<const vsg::BufferInfo*> buffers;
+        std::unordered_set<const vsg::Data*> bufferData, pendingBufferData, pendingImageData;
         std::uint64_t imageBytes = 0, bufferBytes = 0, pendingImageBytes = 0;
         std::uint64_t pendingBufferBytes = 0;
         for (const auto& info : collect.requirements.imageInfos)
         {
             const auto* image = info->imageView->image.get();
             if (!images.insert(image).second || !image->data) continue;
-            imageData.insert(image->data.get());
-            imageBytes += image->data->dataSize();
-            if (!image->getDeviceMemory(device.deviceID)) pendingImageBytes += image->data->dataSize();
+            if (imageData.insert(image->data.get()).second) imageBytes += image->data->dataSize();
+            if (!image->getDeviceMemory(device.deviceID) && pendingImageData.insert(image->data.get()).second)
+                pendingImageBytes += image->data->dataSize();
         }
         for (const auto& [properties, infos] : collect.requirements.bufferInfos)
             for (const auto& info : infos)
                 if (buffers.insert(info.get()).second && info->data)
                 {
-                    bufferBytes += info->data->dataSize();
-                    if (!info->buffer) pendingBufferBytes += info->data->dataSize();
+                    if (bufferData.insert(info->data.get()).second) bufferBytes += info->data->dataSize();
+                    if (!info->buffer && pendingBufferData.insert(info->data.get()).second)
+                        pendingBufferBytes += info->data->dataSize();
                 }
         std::ostringstream out;
         out << "images=" << images.size() << " unique_image_payloads=" << imageData.size()

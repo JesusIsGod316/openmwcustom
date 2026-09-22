@@ -1303,7 +1303,7 @@ namespace MWRender
                         return;
                     }
                 }
-                if (Debug::GameplayDiagnostics::sampling() && source.skeletonPoses.size() < 16)
+                if (Debug::GameplayDiagnostics::detailedSampling() && source.skeletonPoses.size() < 16)
                     Debug::GameplayDiagnostics::emit("actor_pose",
                         { { "actor",
                               std::to_string(mSession->world().epoch().value()) + ":" + std::to_string(handle->slot())

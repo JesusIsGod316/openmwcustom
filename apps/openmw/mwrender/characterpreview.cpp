@@ -1,3 +1,4 @@
+#include <components/debug/runtimediagnostics.hpp>
 #include "characterpreview.hpp"
 
 #include <cmath>
@@ -345,6 +346,12 @@ namespace MWRender
 
     void CharacterPreview::redraw()
     {
+        static Debug::RuntimeDiagnostics::Sampler sampler;
+        if (sampler.due())
+            Debug::RuntimeDiagnostics::emit("preview", "legacy_character_rtt", "redraw requested", {
+                {"instance", reinterpret_cast<std::uintptr_t>(this)},
+                {"width", static_cast<std::uint64_t>(getTextureWidth())},
+                {"height", static_cast<std::uint64_t>(getTextureHeight())}});
         mRTTNode->setNodeMask(Mask_RenderToTexture);
         mDrawOnceCallback->redrawNextFrame();
     }

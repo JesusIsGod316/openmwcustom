@@ -191,12 +191,12 @@ namespace MWWorld
             , mWorld(world)
             , mPreloadPositions(preloadPositions.begin(), preloadPositions.end())
         {
-            if (Debug::GameplayDiagnostics::enabled()) mQueued = Debug::GameplayDiagnostics::Clock::now();
+            if (Debug::GameplayDiagnostics::enabled() || Debug::RuntimeDiagnostics::enabled()) mQueued = Debug::GameplayDiagnostics::Clock::now();
         }
 
         void doWork() override
         {
-            const bool measure = Debug::GameplayDiagnostics::enabled();
+            const bool measure = Debug::GameplayDiagnostics::enabled() || Debug::RuntimeDiagnostics::enabled();
             const auto start = measure ? Debug::GameplayDiagnostics::Clock::now()
                                        : Debug::GameplayDiagnostics::Clock::time_point{};
             if (measure) mQueueMs = std::chrono::duration<double, std::milli>(start - mQueued).count();
@@ -208,6 +208,12 @@ namespace MWWorld
             }
             if (measure) mWorkMs = std::chrono::duration<double, std::milli>(
                 Debug::GameplayDiagnostics::Clock::now() - start).count();
+            if (Debug::RuntimeDiagnostics::enabled())
+                Debug::RuntimeDiagnostics::emit("terrain_job", "legacy_terrain_preload", {}, {
+                    {"job", reinterpret_cast<std::uintptr_t>(this)},
+                    {"queue_us", static_cast<std::uint64_t>((std::max)(0.0, mQueueMs.load()) * 1000)},
+                    {"work_us", static_cast<std::uint64_t>((std::max)(0.0, mWorkMs.load()) * 1000)},
+                    {"views", mPreloadPositions.size()}, {"aborted", mAbort.load()} });
             mLoadingReporter.complete();
         }
 
@@ -215,6 +221,10 @@ namespace MWWorld
 
         void wait(Loading::Listener& listener) const
         {
+            Debug::RuntimeDiagnostics::Operation runtimeOperation("required_terrain_wait");
+            if (Debug::RuntimeDiagnostics::enabled())
+                Debug::RuntimeDiagnostics::emit("wait_dependency", "required_terrain_wait", {},
+                    {{"job", reinterpret_cast<std::uintptr_t>(this)}, {"views", mPreloadPositions.size()}});
             Debug::GameplayDiagnostics::Operation operation("terrain_wait");
             mLoadingReporter.wait(listener);
             if (Debug::GameplayDiagnostics::enabled())
@@ -364,6 +374,20 @@ namespace MWWorld
 
     void CellPreloader::updateCache(double timestamp)
     {
+        if (mDiagnosticSampler.due())
+        {
+            std::uint64_t done = 0;
+            for (const auto& [cell, entry] : mPreloadCells)
+                if (entry.mWorkItem && entry.mWorkItem->isDone()) ++done;
+            Debug::RuntimeDiagnostics::emit("preload_cache", "cell_preloader", {}, {
+                {"entries", mPreloadCells.size()}, {"completed", done}, {"added", mAdded},
+                {"expired", mExpired}, {"evicted", mEvicted}, {"loaded", mLoaded},
+                {"minimum", mMinCacheSize}, {"maximum", mMaxCacheSize},
+                {"expiry_seconds", static_cast<std::uint64_t>((std::max)(0.0, mExpiryDelay))},
+                {"terrain_views", mTerrainViews.size()}, {"terrain_targets", mTerrainPreloadPositions.size()},
+                {"terrain_job_pending", mTerrainPreloadItem && !mTerrainPreloadItem->isDone()},
+                {"resource_sweep_pending", mUpdateCacheItem && !mUpdateCacheItem->isDone()} });
+        }
         for (PreloadMap::iterator it = mPreloadCells.begin(); it != mPreloadCells.end();)
         {
             if (mPreloadCells.size() >= mMinCacheSize && it->second.mTimeStamp < timestamp - mExpiryDelay)

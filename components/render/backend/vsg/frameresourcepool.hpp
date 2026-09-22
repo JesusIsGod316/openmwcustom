@@ -107,6 +107,16 @@ namespace RenderVsg
             return count;
         }
 
+        // Borrowed, read-only observation on the pool owner thread. Does not
+        // acquire a version, mark it selected, or advance completion.
+        template <class Fn>
+        void inspect(Fn&& fn) const
+        {
+            for (const auto& [identity, versions] : mObjects)
+                for (const auto& version : versions)
+                    fn(identity, version.object, version.selected, writable(version), version.lastUse);
+        }
+
     private:
         struct Version
         {

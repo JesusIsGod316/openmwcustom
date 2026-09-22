@@ -1,3 +1,4 @@
+#include <components/debug/runtimeprocessmemory.hpp>
 #include "engine.hpp"
 #include <components/debug/gameplaydiagnostics.hpp>
 
@@ -282,6 +283,8 @@ void OMW::Engine::executeLocalScripts()
 
 bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 {
+    if (Debug::RuntimeDiagnostics::enabled())
+        Debug::RuntimeDiagnostics::currentFrame.store(frameNumber, std::memory_order_relaxed);
     Debug::GameplayDiagnostics::Frame gameplayDiagnostic(frameNumber, mUseVulkanRenderer, mViewer->done());
     const osg::Timer_t frameStart = mViewer->getStartTick();
     const osg::Timer* const timer = osg::Timer::instance();
@@ -1351,6 +1354,27 @@ void OMW::Engine::prepareEngine()
         throw std::logic_error("Vulkan route did not provide its SDL window");
 
     const float effectiveResourceCacheExpiry = Settings::RamCache::cacheExpiryDelay();
+    if (Debug::RuntimeDiagnostics::enabled())
+    {
+        Debug::RuntimeDiagnostics::processProbe.store(&Debug::RuntimeDiagnostics::sampleProcessMemory, std::memory_order_release);
+        Debug::RuntimeDiagnostics::emit("configuration", "effective_cache_policy", Settings::RamCache::name(), {
+            {"vulkan", mUseVulkanRenderer}, {"profile_v36", Settings::V36Profile::enabled()},
+            {"ram_overdrive", Settings::V36Profile::ramOverdriveEnabled()},
+            {"expiry_seconds", static_cast<std::uint64_t>(effectiveResourceCacheExpiry)},
+            {"preload_min", static_cast<std::uint64_t>(Settings::RamCache::preloadCellCacheMin())},
+            {"preload_max", static_cast<std::uint64_t>(Settings::RamCache::preloadCellCacheMax())},
+            {"preload_expiry_seconds", static_cast<std::uint64_t>(Settings::RamCache::preloadCellExpiryDelay())},
+            {"parsed_nif_retention", Settings::RamCache::retainNifFiles()},
+            {"shape_pool_limit", Settings::RamCache::shapeInstancePoolSize()},
+            {"prepared_instances", static_cast<bool>(Settings::cells().mV3PreparedInstanceCache)},
+            {"prepared_instance_limit", static_cast<std::uint64_t>(static_cast<int>(Settings::cells().mV3PreparedInstanceCacheMax))},
+            {"mode_focused", Debug::RuntimeDiagnostics::mode() == Debug::RuntimeDiagnostics::Mode::Focused} });
+        Debug::RuntimeDiagnostics::emit("configuration", "configured_cache_inputs", std::string(Settings::cells().mRamCacheMode), {
+            {"configured_preload_min", static_cast<std::uint64_t>(static_cast<int>(Settings::cells().mPreloadCellCacheMin))},
+            {"configured_preload_max", static_cast<std::uint64_t>(static_cast<int>(Settings::cells().mPreloadCellCacheMax))},
+            {"v36_disable_overdrive", static_cast<bool>(Settings::cells().mV36DisableRamOverdrive)} });
+        Debug::RuntimeDiagnostics::emit("coverage", "accounting", "Known payload/capacity only; not total heap or VRAM. Refcounts are retention observations, not proof of active use.", {{"complete_process_attribution", 0}});
+    }
     Log(Debug::Info) << "V3 RAM cache mode: " << Settings::RamCache::name()
                      << " resource expiry=" << effectiveResourceCacheExpiry << "s"
                      << " preload min/max=" << Settings::RamCache::preloadCellCacheMin() << "/"

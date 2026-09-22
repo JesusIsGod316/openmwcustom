@@ -308,6 +308,20 @@ endif()
 
 if (WIN32 AND BUILD_OPENMW)
     INSTALL(TARGETS openmw RUNTIME DESTINATION ".")
+    # Optional manual diagnostics travel with both optimized backend builds.
+    # They never run during install, never change cache policy, and never load a save.
+    INSTALL(FILES
+        ../../tools/v4/cp4/gameplay-diagnostics.py
+        ../../tools/v4/cp4/runtime-diagnostics.py
+        ../../tools/v4/cp4/shader_resources.py
+        ../../tools/v4/cp4/run-runtime-qc.ps1
+        ../../tools/v4/cp4/run-memory-qc.ps1
+        ../../tools/v4/cp4/RUNTIME-DIAGNOSTICS.md
+        DESTINATION ".")
+endif()
+
+if (WIN32)
+    target_link_libraries(openmw-lib PRIVATE psapi)
 endif()
 
 if (OPENMW_V4_BUILD_RECOVERY_TESTS)
@@ -323,6 +337,15 @@ if (OPENMW_V4_BUILD_RECOVERY_TESTS)
     add_executable(openmw-v4-effect-uv-tests ../../tools/v4/cp4/effect-uv-tests.cpp)
     target_link_libraries(openmw-v4-effect-uv-tests PRIVATE openmw-lib)
     add_test(NAME openmw-v4-effect-uv-tests COMMAND openmw-v4-effect-uv-tests)
+    add_executable(openmw-v4-runtime-diagnostics-tests ../../tools/v4/cp4/runtime-diagnostics-tests.cpp)
+    target_link_libraries(openmw-v4-runtime-diagnostics-tests PRIVATE openmw-lib)
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/runtime-diagnostic-evidence")
+    foreach(diagnostic_mode off standard focused)
+        add_test(NAME openmw-v4-runtime-diagnostics-${diagnostic_mode}
+            COMMAND openmw-v4-runtime-diagnostics-tests ${diagnostic_mode})
+        set_tests_properties(openmw-v4-runtime-diagnostics-${diagnostic_mode} PROPERTIES ENVIRONMENT
+            "OPENMW_RUNTIME_DIAGNOSTICS=${diagnostic_mode};OPENMW_RUNTIME_DIAGNOSTICS_FILE=${CMAKE_BINARY_DIR}/runtime-diagnostic-evidence/${diagnostic_mode}.jsonl;OPENMW_GAMEPLAY_DIAGNOSTICS_FILE=${CMAKE_BINARY_DIR}/runtime-diagnostic-evidence/${diagnostic_mode}-gameplay.jsonl")
+    endforeach()
     # Explicit GPU gate: creates a short-lived Vulkan window. Run manually on a
     # graphics-capable host, rather than making headless CTest require a display.
     add_executable(openmw-v4-gui-isolation-tests ../../tools/v4/cp4/gui-isolation-tests.cpp)

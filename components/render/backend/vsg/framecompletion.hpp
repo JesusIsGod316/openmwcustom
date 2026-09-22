@@ -103,6 +103,12 @@ namespace RenderVsg
             mEntries.reserve(mEntries.size() + count);
         }
 
+        template <class Fn>
+        void inspect(Fn&& fn) const
+        {
+            for (const auto& entry : mEntries) fn(entry.lastUseFrame, entry.object);
+        }
+
     private:
         struct Entry
         {

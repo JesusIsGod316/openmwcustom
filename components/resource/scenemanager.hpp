@@ -227,6 +227,7 @@ namespace Resource
         void clearCache() override;
 
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
+        void reportRuntimeDiagnostics(double referenceTime) const noexcept override;
 
         void setSupportsNormalsRT(bool supports) { mSupportsNormalsRT = supports; }
         bool getSupportsNormalsRT() const { return mSupportsNormalsRT; }

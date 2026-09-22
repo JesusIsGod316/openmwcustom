@@ -48,6 +48,7 @@ namespace Resource
         void clearCache() override;
 
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
+        void reportRuntimeDiagnostics(double referenceTime) const noexcept override;
 
     private:
         osg::ref_ptr<BulletShapeInstance> createInstance(VFS::Path::NormalizedView name);

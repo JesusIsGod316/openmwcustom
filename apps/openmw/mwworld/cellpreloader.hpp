@@ -2,6 +2,7 @@
 #define OPENMW_MWWORLD_CELLPRELOADER_H
 
 #include "positioncellgrid.hpp"
+#include <components/debug/runtimediagnostics.hpp>
 
 #include <components/sceneutil/workqueue.hpp>
 
@@ -91,6 +92,7 @@ namespace MWWorld
 
     private:
         void clearAllTasks();
+        Debug::RuntimeDiagnostics::Sampler mDiagnosticSampler;
 
         Resource::ResourceSystem* mResourceSystem;
         Resource::BulletShapeManager* mBulletShapeManager;
