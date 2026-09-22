@@ -177,6 +177,7 @@ jobs:
             -D LuaJit_LIBRARY="$openmwDeps/installed/x64-windows/lib/lua51.lib" `
             -D BUILD_OPENMW=ON `
             -D OPENMW_ENABLE_V4_VULKAN_RUNTIME=ON `
+            -D OPENMW_V4_BUILD_RECOVERY_TESTS=ON `
             -D BUILD_LAUNCHER=OFF `
             -D BUILD_WIZARD=OFF `
             -D BUILD_MWINIIMPORTER=OFF `
@@ -212,6 +213,14 @@ jobs:
           $buildExit = $LASTEXITCODE
           if ($buildExit -ne 0) { exit $buildExit }
 
+      - name: Build evaluated-effect recovery regression targets
+        shell: pwsh
+        run: |
+          $log = "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/effect-recovery-build.log"
+          cmake --build "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" --target openmw-v4-effect-uv-tests openmw-v4-effect-capture-tests --verbose 2>&1 | Tee-Object -FilePath $log
+          $buildExit = $LASTEXITCODE
+          if ($buildExit -ne 0) { exit $buildExit }
+
       - name: Validate production executable before packaging
         shell: pwsh
         run: |
@@ -226,6 +235,8 @@ jobs:
           $env:PATH = $runtimePath
           & "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/openmw.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "build-tree Vulkan openmw.exe --version failed with $LASTEXITCODE" }
+          ctest --test-dir "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" -C RelWithDebInfo -R '^openmw-v4-effect-(uv|capture)-tests$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "evaluated-effect recovery regressions failed with $LASTEXITCODE" }
 
       - name: Stage CP3B4 local conformance package
         shell: pwsh
@@ -365,4 +376,6 @@ jobs:
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/.ninja_log
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/build-output.log
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/openmw-v4-link-output.log
+            ${{ github.workspace }}/build-v4-cp3b3-real-nif/effect-recovery-build.log
+            ${{ github.workspace }}/build-v4-cp3b3-real-nif/Testing/Temporary/LastTest.log
           if-no-files-found: ignore

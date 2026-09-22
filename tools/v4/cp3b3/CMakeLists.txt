@@ -27,6 +27,10 @@ target_link_libraries(openmw_cp3b3_vsg PUBLIC glm::glm Vulkan::Vulkan vsg::vsg v
 target_compile_features(openmw_cp3b3_vsg PUBLIC cxx_std_20)
 
 if(MSVC)
+    # The production build permits standard CRT calls (top-level C4996 policy).
+    # Keep /WX: suppress only the CRT secure-overload deprecation, including
+    # inline backend headers compiled by this target's smoke-test consumers.
+    target_compile_definitions(openmw_cp3b3_vsg PUBLIC _CRT_SECURE_NO_WARNINGS)
     target_compile_options(openmw_cp3b3_vsg PRIVATE /W4 /WX /permissive-)
 else()
     target_compile_options(openmw_cp3b3_vsg PRIVATE -Wall -Wextra -Wpedantic -Werror)
