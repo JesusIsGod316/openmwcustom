@@ -1,0 +1,95 @@
+name: CP4F guarded UV repair validation
+on:
+  push:
+    branches: [v4.0-cp4f-uv-repair-20260922]
+    paths:
+      - .github/workflows/v4-cp4f-uv-apply.yml
+      - .github/cp4f-repairs/effect-uv.patch.gz.b64
+permissions:
+  contents: write
+jobs:
+  validate-source-repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify baseline and exact patch bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=9a29f75410b341b786c052dc742e0fb7367fe008
+          test "$(git merge-base "$base" HEAD)" = "$base"
+          python3 - <<'PY'
+          import base64, gzip, hashlib, pathlib, subprocess
+          encoded = pathlib.Path('.github/cp4f-repairs/effect-uv.patch.gz.b64').read_text().strip()
+          # Undo one known transport transcription; the decoded digest remains mandatory.
+          encoded = encoded.replace('SZyutnYqjDRamax', 'SZyutnYqDRamax')
+          patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+          expected = '16af330ca824a880e0b87f914531cb155b483709bbb9673a80f8f1081434c748'
+          if hashlib.sha256(patch).hexdigest() != expected:
+              raise SystemExit('Patch digest mismatch; refusing all source changes')
+          paths = [
+              '.github/workflows/v4-cp3b3.yml', 'apps/openmw/CMakeLists.txt',
+              'apps/openmw/mwrender/v4effectcapture.hpp', 'apps/openmw/mwrender/v4effectuv.hpp',
+              'apps/openmw/mwrender/v4enginerenderbridge.cpp', 'tools/v4/cp3b3/CMakeLists.txt',
+              'tools/v4/cp4/UV-REPAIR-2026-09-22.md', 'tools/v4/cp4/effect-uv-tests.cpp',
+              'tools/v4/cp4/run-effect-uv-tests.sh',
+          ]
+          actual = [line.split(' b/', 1)[1] for line in patch.decode().splitlines() if line.startswith('diff --git ')]
+          if sorted(actual) != sorted(paths):
+              raise SystemExit('Patch path allowlist mismatch')
+          pathlib.Path('/tmp/cp4f-uv-repair.patch').write_bytes(patch)
+          pathlib.Path('/tmp/cp4f-uv-paths.txt').write_text('\n'.join(paths) + '\n')
+          subprocess.run(['git', 'apply', '--check', '/tmp/cp4f-uv-repair.patch'], check=True)
+          subprocess.run(['git', 'apply', '/tmp/cp4f-uv-repair.patch'], check=True)
+          print('Exact guarded source patch applied:', expected)
+          PY
+      - name: Install real CPU regression dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libopenscenegraph-dev libglm-dev python3-yaml
+      - name: Compile and run focused UV regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/v4/cp4/run-effect-uv-tests.sh "$RUNNER_TEMP/effect-uv" | tee /tmp/effect-uv-tests.log
+          OPENMW_UV_TEST_SANITIZERS=1 ASAN_OPTIONS=detect_leaks=1 bash tools/v4/cp4/run-effect-uv-tests.sh "$RUNNER_TEMP/effect-uv-sanitized" | tee /tmp/effect-uv-sanitized.log
+      - name: Validate integration contracts and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          for contract in tools/v4/cp3e/application-route-contract.py tools/v4/cp4/streaming-contract.py tools/v4/cp4/population-environment-contract.py tools/v4/cp4/water-environment-contract.py tools/v4/cp4/video-ui-contract.py tools/v4/cp4/animated-object-contract.py tools/v4/cp4/fullbody-first-person-contract.py tools/v4/cp4/runtime-blocker-contract.py tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py; do
+            python3 "$contract"
+          done
+          python3 tools/v4/cp4/test-gameplay-diagnostics.py
+          python3 - <<'PY'
+          import pathlib, yaml
+          for path in pathlib.Path('.github/workflows').glob('*.yml'):
+              yaml.safe_load(path.read_text())
+          print('All workflow YAML parsed')
+          PY
+          git diff --check
+      - name: Commit only validated source paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r path; do git add -- "$path"; done < /tmp/cp4f-uv-paths.txt
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'CP4F: preserve native evaluated UV streams and repair MSVC conformance gate'
+          git push origin HEAD:v4.0-cp4f-uv-repair-20260922
+          git rev-parse HEAD | tee /tmp/cp4f-validated-source-sha.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cp4f-uv-focused-validation-${{ github.sha }}
+          path: |
+            /tmp/effect-uv-tests.log
+            /tmp/effect-uv-sanitized.log
+            /tmp/cp4f-validated-source-sha.txt
+            /tmp/cp4f-uv-repair.patch
+          retention-days: 14
+          if-no-files-found: ignore
