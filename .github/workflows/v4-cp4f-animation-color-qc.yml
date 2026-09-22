@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
-          CP4F_SOURCE=f50c9adce36be8ab8f72cede28abf7d9e5679bf6
+          CP4F_SOURCE=ac54889c01e97f5068bae89d5de893f562823815
           git cat-file -e "${CP4E_BASE}^{commit}"
           git cat-file -e "${CP4F_SOURCE}^{commit}"
           test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
@@ -69,7 +69,6 @@ jobs:
           git diff --check 161568af75c54fb0c445e258fa235c304b27fc8d HEAD -- . \
             ':(exclude)V3-applied-source.patch' \
             ':(exclude)V3-applied-source-stat.txt' \
-            ':(exclude)V3-BUILD-IDENTITY.txt' \
             ':(exclude)V3-LAB-README.txt'
 
       - name: Parse workflow YAML
