@@ -72,9 +72,11 @@ required = {
         'system->setFreezeOnCull(false)' in update_only
         and 'it->first->setFreezeOnCull(it->second)' in update_only
         and 'setFrozen(' not in update_only,
-    'Vulkan extra legacy frontload bypass leaves normal current-grid preload in place':
+    'renderer-specific terrain preparation retains independent legacy controls':
         scene.count('!mRenderLifecycle || mRenderLifecycle->usesLegacyTerrainFrontload()') == 2
         and 'OPENMW_V4_LEGACY_TERRAIN_FRONTLOAD' in lifecycle
+        and 'OPENMW_V4_LEGACY_TERRAIN_PRELOAD_CONTROL' in lifecycle
+        and 'mPreloader->usesLegacyTerrain()' in scene
         and 'preloadTerrain(pos, playerCellIndex.mWorldspace, true)' in scene
         and 'mRendering.getPagedRefnums(newGrid, mPagedRefs)' in scene,
     'loading diagnostics separate insertion navigation and terrain':

@@ -1,5 +1,6 @@
 // Match the failing game include boundary before any other platform headers.
 #include <components/debug/runtimeprocessmemory.hpp>
+#include <components/misc/hostmemory.hpp>
 #if defined(near) || defined(far) || defined(_WINDOWS_) || defined(_INC_WINDOWS)
 #error "Public process-memory header leaked the Windows SDK"
 #endif
@@ -9,6 +10,7 @@
 #endif
 #include <components/debug/runtimediagnostics.hpp>
 #include <components/debug/gameplaydiagnostics.hpp>
+#include <components/resource/hostmemorybudget.hpp>
 #if defined(OPENMW_TEST_KEYWORDS) && defined(OPENMW_TEST_KEYWORDS_AFTER)
 #include "test-keywords.hpp"
 #endif
@@ -58,6 +60,8 @@ int main()
     // Reference and call the out-of-line implementation to test linkage too.
     auto* probe = &Debug::RuntimeDiagnostics::sampleProcessMemory;
     probe();
+    const auto hostMemory = Misc::queryHostMemoryStatus();
+    if (hostMemory.physicalValid && hostMemory.physicalAvailable > hostMemory.physicalTotal) return 3;
     Debug::RuntimeDiagnostics::recordEvent("header_test", "consumer", {}, {{"value", 1}});
     Debug::GameplayDiagnostics::recordEvent("header_test", {{"value", "1"}}, true);
     return 0;

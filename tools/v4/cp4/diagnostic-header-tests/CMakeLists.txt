@@ -8,7 +8,9 @@ if(OPENMW_DIAGNOSTIC_TEST_REAL_QT)
     find_package(Qt6 REQUIRED COMPONENTS Core)
 endif()
 
-add_library(process-probe STATIC "${OPENMW_ROOT}/components/debug/runtimeprocessmemory.cpp")
+add_library(process-probe STATIC
+    "${OPENMW_ROOT}/components/debug/runtimeprocessmemory.cpp"
+    "${OPENMW_ROOT}/components/misc/hostmemory.cpp")
 target_include_directories(process-probe PUBLIC "${OPENMW_ROOT}")
 target_compile_features(process-probe PUBLIC cxx_std_20)
 target_link_libraries(process-probe PUBLIC Threads::Threads)
@@ -48,3 +50,10 @@ foreach(variant IN LISTS variants)
     set_tests_properties(${target} PROPERTIES ENVIRONMENT
         "OPENMW_RUNTIME_DIAGNOSTICS=off;OPENMW_GAMEPLAY_DIAGNOSTICS=0")
 endforeach()
+
+# Compile and execute the real platform probe and budget policy before the full
+# engine build. No OSG, Vulkan or game data is required for this target.
+add_executable(host-memory-policy "${OPENMW_ROOT}/tools/v4/cp4/host-memory-tests.cpp")
+target_link_libraries(host-memory-policy PRIVATE process-probe)
+strict_warnings(host-memory-policy)
+add_test(NAME host-memory-policy COMMAND host-memory-policy)

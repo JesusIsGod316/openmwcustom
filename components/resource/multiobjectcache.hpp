@@ -27,6 +27,7 @@ namespace Resource
     {
     public:
         void removeUnreferencedObjectsInCache(std::size_t keepUnreferenced = 0);
+        std::size_t trimUnused(std::size_t maximum, std::size_t maxScan = 4096);
 
         /** Remove all objects from the cache. */
         void clear();
@@ -46,10 +47,13 @@ namespace Resource
         typedef std::multimap<VFS::Path::Normalized, osg::ref_ptr<osg::Object>, std::less<>> ObjectCacheMap;
 
         ObjectCacheMap mObjectCache;
+        // All erasing operations repair this iterator while holding the mutex.
+        ObjectCacheMap::iterator mTrimNext = mObjectCache.end();
         mutable std::mutex mObjectCacheMutex;
         std::size_t mGet = 0;
         std::size_t mHit = 0;
         std::size_t mExpired = 0;
+        std::size_t mPressureTrimmed = 0;
     };
 
 }

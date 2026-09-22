@@ -26,6 +26,7 @@ namespace Resource
         mImageManager = std::make_unique<ImageManager>(vfs, expiryDelay);
         mSceneManager = std::make_unique<SceneManager>(
             vfs, mImageManager.get(), mNifFileManager.get(), mBgsmFileManager.get(), expiryDelay);
+        mSceneManager->setHostMemoryBudget(&mHostMemoryBudget);
         mKeyframeManager = std::make_unique<KeyframeManager>(vfs, mSceneManager.get(), expiryDelay, encoder);
         mAnimBlendRulesManager = std::make_unique<AnimBlendRulesManager>(vfs, expiryDelay);
 
@@ -96,6 +97,31 @@ namespace Resource
         {
             (*it)->updateCache(referenceTime);
             (*it)->reportRuntimeDiagnostics(referenceTime);
+        }
+        const auto pressure = mHostMemoryBudget.pressure();
+        if (pressure != HostMemoryPressure::Normal)
+        {
+            const std::size_t maximum = pressure == HostMemoryPressure::Critical ? 512 : 128;
+            std::size_t removed = 0;
+            // Retaining owners (paging, collision, etc.) first, then templates
+            // and shared state, and finally images. Never clear a live graph.
+            for (BaseResourceManager* manager : mResourceManagers)
+                if (manager != mSceneManager.get() && manager != mImageManager.get())
+                    removed += manager->trimCache(maximum);
+            removed += mSceneManager->trimCache(maximum);
+            removed += mImageManager->trimCache(maximum);
+            if (Debug::RuntimeDiagnostics::enabled())
+            {
+                const auto memory = mHostMemoryBudget.snapshot();
+                const auto limits = HostMemoryPolicy::limits(memory.physicalTotal);
+                Debug::RuntimeDiagnostics::recordEvent("host_memory_trim", "optional_resource_owners", {}, {
+                    {"pressure", static_cast<std::uint64_t>(pressure)}, {"removed_entries", removed},
+                    {"per_owner_limit", maximum}, {"physical_valid", memory.physicalValid},
+                    {"physical_available_bytes", memory.physicalAvailable},
+                    {"private_commit_bytes", memory.privateCommit}, {"process_valid", memory.processValid},
+                    {"commit_available_bytes", memory.commitAvailable}, {"commit_valid", memory.commitValid},
+                    {"reserve_bytes", limits.reserve}, {"private_soft_bytes", limits.privateSoft}});
+            }
         }
     }
 

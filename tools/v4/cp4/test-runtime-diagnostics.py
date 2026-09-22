@@ -17,6 +17,21 @@ class RuntimeReportTests(unittest.TestCase):
             path.write_text(''.join(json.dumps(dict(schema=2, time_us=i*1000000, **row))+'\n' for i, row in enumerate(rows))+tail, encoding='utf-8')
             return diag.analyze(path)
 
+    def test_pressure_trim_counts_are_not_reclaimed_byte_claims(self):
+        result = self.analyze([dict(type='host_memory_trim', owner='owners', removed_entries=7),
+                               dict(type='host_memory_trim', owner='owners', removed_entries=3)])
+        self.assertEqual(result['counts']['cache_entries_trimmed'], 10)
+        self.assertTrue(any('not a count of unique assets or bytes' in s for s in result['findings']))
+
+    def test_pressure_probe_validity_remains_separate(self):
+        result = self.analyze([dict(type='host_memory_trim', owner='owners', removed_entries=1,
+            physical_valid=0, physical_available_bytes=0, process_valid=0, private_commit_bytes=0,
+            commit_valid=0, commit_available_bytes=0)])
+        entry = next(e for e in result['series'] if e['type'] == 'host_memory_trim')
+        self.assertNotIn('physical_available_bytes', entry['peak'])
+        self.assertNotIn('private_commit_bytes', entry['peak'])
+        self.assertNotIn('commit_available_bytes', entry['peak'])
+
     def test_missing_and_empty_are_not_passes(self):
         result = self.analyze([])
         self.assertTrue(any('CAPTURE FAILURE' in f for f in result['findings']))

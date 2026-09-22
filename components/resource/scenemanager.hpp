@@ -39,6 +39,7 @@ namespace Resource
     class NifFileManager;
     class BgsmFileManager;
     class SharedStateManager;
+    class HostMemoryBudget;
 }
 
 namespace osgUtil
@@ -225,6 +226,8 @@ namespace Resource
         void updateCache(double referenceTime) override;
 
         void clearCache() override;
+        std::size_t trimCache(std::size_t maximum) override;
+        void setHostMemoryBudget(HostMemoryBudget* budget) { mHostMemoryBudget = budget; }
 
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
         void reportRuntimeDiagnostics(double referenceTime) const noexcept override;
@@ -262,6 +265,7 @@ namespace Resource
 
         osg::ref_ptr<Resource::SharedStateManager> mSharedStateManager;
 
+        HostMemoryBudget* mHostMemoryBudget = nullptr;
         Resource::ImageManager* mImageManager;
         Resource::NifFileManager* mNifFileManager;
         Resource::BgsmFileManager* mBgsmFileManager;

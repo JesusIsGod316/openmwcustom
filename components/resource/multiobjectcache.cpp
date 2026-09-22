@@ -1,5 +1,7 @@
 #include "multiobjectcache.hpp"
 
+#include <algorithm>
+#include <utility>
 #include <vector>
 
 #include <osg/Object>
@@ -27,6 +29,7 @@ namespace Resource
                         continue;
                     }
                     objectsToRemove.push_back(oitr->second);
+                    if (mTrimNext == oitr) ++mTrimNext;
                     mObjectCache.erase(oitr++);
                     ++mExpired;
                 }
@@ -41,10 +44,34 @@ namespace Resource
         objectsToRemove.clear();
     }
 
+    std::size_t MultiObjectCache::trimUnused(std::size_t maximum, std::size_t maxScan)
+    {
+        if (maximum == 0 || maxScan == 0) return 0;
+        std::vector<osg::ref_ptr<osg::Object>> release;
+        release.reserve((std::min)(maximum, maxScan));
+        {
+            std::lock_guard lock(mObjectCacheMutex);
+            if (mTrimNext == mObjectCache.end()) mTrimNext = mObjectCache.begin();
+            std::size_t scanned = 0;
+            while (mTrimNext != mObjectCache.end() && scanned++ < maxScan && release.size() < maximum)
+            {
+                auto it = mTrimNext++;
+                if (it->second && it->second->referenceCount() == 1)
+                {
+                    release.push_back(std::move(it->second));
+                    mObjectCache.erase(it);
+                    ++mPressureTrimmed;
+                }
+            }
+        }
+        return release.size();
+    }
+
     void MultiObjectCache::clear()
     {
         std::lock_guard<std::mutex> lock(mObjectCacheMutex);
         mObjectCache.clear();
+        mTrimNext = mObjectCache.end();
     }
 
     void MultiObjectCache::addEntryToObjectCache(VFS::Path::NormalizedView filename, osg::Object* object)
@@ -66,6 +93,7 @@ namespace Resource
         if (it != mObjectCache.end())
         {
             osg::ref_ptr<osg::Object> object = std::move(it->second);
+            if (mTrimNext == it) ++mTrimNext;
             mObjectCache.erase(it);
             ++mHit;
             return object;
@@ -101,7 +129,7 @@ namespace Resource
                 if (value && value->referenceCount() > 1) ++external;
             Debug::RuntimeDiagnostics::recordEvent("cache_pool", owner, "Object counts; payload bytes unmeasured", {
                 {"entries", mObjectCache.size()}, {"lookups", mGet}, {"hits", mHit}, {"expired", mExpired},
-                {"external_refs", external}, {"keep_unreferenced_limit", limit}, {"payload_measured", 0}});
+                {"pressure_trimmed", mPressureTrimmed}, {"external_refs", external}, {"keep_unreferenced_limit", limit}, {"payload_measured", 0}});
         }
         catch (...) { Debug::RuntimeDiagnostics::recordEvent("coverage", owner, "pool census unavailable", {{"available", 0}}); }
     }

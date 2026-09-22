@@ -184,6 +184,8 @@ def report(directory):
             if status.get('diagnostics') == 'standard':
                 result['findings'] = [f for f in result['findings'] if not f.startswith('COVERAGE GAP: no actor pose samples')]
                 result['findings'].append('STANDARD COVERAGE: detailed actor geometry/pose fingerprints are intentionally omitted; use focused mode for those checks.')
+            if status.get('startup_refused'):
+                result['findings'].append('STARTUP REFUSED: a startup/load failure was recorded, even if the process returned zero.')
             if status.get('exit_code') not in (None, 0):
                 result['findings'].append(f"RUN FAILED: executable exit code {status['exit_code']}; no observed frame invariant violation is not a pass.")
             elif status.get('state') != 'exited':
@@ -223,29 +225,33 @@ def launch(args):
     spec.loader.exec_module(shader_resources)
     # Refuse an incomplete build before starting the game or changing any config.
     shader_package = shader_resources.verify(exe.parent / 'resources' / 'shaders')
-    user = Path(args.user_config).resolve(strict=True)
-    root = Path(args.evidence_root).resolve()
+    config_spec = importlib.util.spec_from_file_location('diagnosticconfig', Path(__file__).with_name('diagnosticconfig.py'))
+    config = importlib.util.module_from_spec(config_spec)
+    config_spec.loader.exec_module(config)
+    user = Path(args.user_config or config.normal_default()).resolve(strict=True)
+    source_head = config.package_identity(exe, args.source_head)
+    active_config, chain_hashes = config.inspect_chain(exe.parent, user, config.normal_default().resolve())
+    root = Path(args.evidence_root or exe.parent / 'Test-Results').resolve()
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     evidence = root / (stamp + '-gameplay-' + str(os.getpid()))
     evidence.mkdir(parents=True, exist_ok=False)
-    # Preserve normal content, while isolating writable state and saves.
     private_data = evidence / 'user-data'
     private_data.mkdir()
-    path_text = private_data.as_posix()
-    if any(ch in path_text for ch in ('\n', '\r', '"')):
-        raise ValueError('Diagnostic user-data path contains unsupported configuration characters')
     (evidence / 'openmw.cfg').write_text(
-        '# Diagnostic writable layer; inherit normal content and cache policy.\n'
-        + f'user-data="{path_text}"\n', encoding='utf-8')
-    fingerprints = {}
-    for name in ('settings.cfg', 'input_v3.xml', 'shaders.yaml', 'global_storage.bin', 'player_storage.bin'):
-        path = user / name
-        if path.exists():
-            shutil.copy2(path, evidence / name)
-            fingerprints[name] = sha256(path)
-    for name in ('openmw.cfg', 'settings.cfg'):
-        if (user / name).exists():
-            shutil.copy2(user / name, evidence / ('original-' + name))
+        '# Private diagnostic layer: no repeated content or autoload.\n'
+        + 'user-data=' + config.quoted(private_data) + '\n', encoding='utf-8')
+    renderer = getattr(args, 'renderer', 'vulkan')
+    if renderer not in ('vulkan', 'opengl'):
+        raise ValueError('Invalid diagnostic renderer')
+    (evidence / 'settings.cfg').write_text(
+        '[Video]\nrenderer backend = ' + renderer + '\nrenderer fallback = false\n'
+        'resolution x = 1920\nresolution y = 1080\nwindow mode = 2\n', encoding='utf-8')
+    fingerprints = {name: sha256(user / name) for name in ('openmw.cfg', 'settings.cfg', *config.COPY_NAMES)
+                    if (user / name).is_file()}
+    for name in config.COPY_NAMES:
+        candidates = [directory / name for directory in active_config if (directory / name).is_file()]
+        if candidates:
+            shutil.copy2(candidates[-1], evidence / name)
     env = os.environ.copy()
     selected_mode = getattr(args, 'diagnostics', 'standard')
     if selected_mode not in ('off', 'standard', 'focused'):
@@ -260,14 +266,14 @@ def launch(args):
         env['PATH'] = os.pathsep.join(args.dll_directory + [env.get('PATH', '')])
     if args.osg_library_path:
         env['OSG_LIBRARY_PATH'] = args.osg_library_path
-    # Command-line values outrank any inherited config's autoload/startup script.
-    command = [str(exe), '--config', str(user), '--config', str(evidence),
-               '--user-data', str(private_data), '--load-savegame', '',
-               '--skip-menu=false', '--new-game=false', '--script-run', '']
+    # Override the default package config expansion, but preserve the selected
+    # user's ordered content chain exactly once. No empty load-savegame path.
+    command = config.build_command(exe, user, evidence)
     manifest = {'started_utc': datetime.now(timezone.utc).isoformat(), 'executable': str(exe),
                 'sha256': sha256(exe), 'shader_package': shader_package, 'command': command, 'cwd': str(exe.parent),
-                'source_head': args.source_head, 'source_diff_sha256': args.source_diff_sha256,
-                'original_config_hashes': fingerprints,
+                'source_head': source_head, 'source_diff_sha256': args.source_diff_sha256,
+                'original_config_hashes': fingerprints, 'original_chain_hashes': chain_hashes,
+                'launcher_revision': 'combined-repair-1', 'requested_renderer': renderer,
                 'controls': {k: v for k, v in env.items() if k.startswith(('OPENMW_', 'VK_')) or k == 'OSG_LIBRARY_PATH'},
                 'dll_directories': args.dll_directory, 'state': 'starting', 'evidence': str(evidence),
                 'diagnostics': selected_mode, 'isolated_user_data': str(private_data), 'regular_saves_copied': False}
@@ -285,7 +291,14 @@ def launch(args):
     def save_manifest():
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     save_manifest()
-    print(str(evidence), flush=True)
+    print('Private capture:', evidence, flush=True)
+    print(f'{renderer} / 1920x1080 / {selected_mode}. Choose NEW GAME only; no normal saves copied.', flush=True)
+    if getattr(args, 'prepare_only', False):
+        manifest['state'] = 'prepared_only'
+        save_manifest()
+        return
+    if getattr(args, 'confirm', False):
+        input('Close other OpenMW instances normally, then press Enter to launch this test: ')
     try:
         with (evidence / 'console.log').open('wb') as output:
             process = subprocess.Popen(command, cwd=exe.parent, env=env, stdout=output, stderr=subprocess.STDOUT)
@@ -301,16 +314,28 @@ def launch(args):
         manifest['finished_utc'] = datetime.now(timezone.utc).isoformat()
         manifest['original_config_unchanged'] = {
             name: (user / name).exists() and sha256(user / name) == digest for name, digest in fingerprints.items()}
+        manifest['original_chain_unchanged'] = {
+            name: Path(name).is_file() and sha256(name) == digest for name, digest in chain_hashes.items()}
+        log = evidence / 'openmw.log'
+        if log.is_file():
+            # Exit zero is not proof of a usable startup (config aborts use it).
+            with log.open(encoding='utf-8', errors='replace') as stream:
+                manifest['startup_refused'] = any('Aborting...' in line or 'Failed to start new game:' in line
+                                                 or 'Failed to load saved game:' in line for line in stream)
         save_manifest()
-        report(evidence)
+        try:
+            report(evidence)
+        except Exception:
+            (evidence / 'report-generation-error.txt').write_text(traceback.format_exc(), encoding='utf-8')
         # Evidence only: never package saves, asset files, storage or original configs.
         import zipfile
         with zipfile.ZipFile(evidence.with_suffix('.zip'), 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as bundle:
             for name in ('manifest.json', 'console.log', 'openmw.log', 'gameplay.jsonl', 'runtime.jsonl',
-                         'report.md', 'report.json', 'memory-report.md', 'memory-report.json'):
+                         'report.md', 'report.json', 'memory-report.md', 'memory-report.json', 'report-generation-error.txt'):
                 path = evidence / name
                 if path.is_file():
                     bundle.write(path, arcname=name)
+        print('Evidence ZIP:', evidence.with_suffix('.zip'), flush=True)
 
 
 def main():
@@ -319,9 +344,12 @@ def main():
     read = sub.add_parser('report')
     read.add_argument('directory')
     run = sub.add_parser('launch')
-    run.add_argument('--executable', required=True)
-    run.add_argument('--user-config', required=True)
-    run.add_argument('--evidence-root', required=True)
+    run.add_argument('--executable', default=str(Path(__file__).with_name('openmw.exe')))
+    run.add_argument('--user-config')
+    run.add_argument('--evidence-root')
+    run.add_argument('--renderer', choices=('vulkan', 'opengl'), default='vulkan')
+    run.add_argument('--confirm', action='store_true')
+    run.add_argument('--prepare-only', action='store_true')
     run.add_argument('--dll-directory', action='append', default=[])
     run.add_argument('--osg-library-path')
     run.add_argument('--diagnostics', choices=('off', 'standard', 'focused'), default='standard')

@@ -950,16 +950,19 @@ namespace MWWorld
         mRendering.setActiveGrid(newGrid);
 
         mPreloader->setTerrain(mRendering.getTerrain());
-        if (mRendering.pagingUnlockCache())
+        if (mPreloader->usesLegacyTerrain() && mRendering.pagingUnlockCache())
             mPreloader->abortTerrainPreloadExcept(nullptr);
         const bool v39NeedsInitialFrontload
             = (!mRenderLifecycle || mRenderLifecycle->usesLegacyTerrainFrontload())
             && static_cast<int>(Settings::cells().mV39FrontloadMode) > 0 && !mV39InitialFrontloadDone;
-        if (v39NeedsInitialFrontload
-            || !mPreloader->isTerrainLoaded(PositionCellGrid{ pos, newGrid }, mRendering.getReferenceTime()))
+        if (mPreloader->usesLegacyTerrain() && (v39NeedsInitialFrontload
+            || !mPreloader->isTerrainLoaded(PositionCellGrid{ pos, newGrid }, mRendering.getReferenceTime())))
             preloadTerrain(pos, playerCellIndex.mWorldspace, true);
         mPagedRefs.clear();
-        mRendering.getPagedRefnums(newGrid, mPagedRefs);
+        if (mPreloader->usesLegacyTerrain())
+            mRendering.getPagedRefnums(newGrid, mPagedRefs);
+        // Native terrain/static population is published by the V4 bridge.
+        // Never omit canonical objects based on an unused OSG paging batch.
 
         addPostponedPhysicsObjects();
 
@@ -1207,7 +1210,8 @@ namespace MWWorld
         , mRenderLifecycle(std::move(renderLifecycle))
     {
         mPreloader = std::make_unique<CellPreloader>(rendering.getResourceSystem(), physics->getShapeManager(),
-            rendering.getTerrain(), rendering.getLandManager());
+            rendering.getTerrain(), rendering.getLandManager(),
+            !mRenderLifecycle || mRenderLifecycle->usesLegacyTerrainPreload());
         mPreloader->setWorkQueue(mRendering.getWorkQueue());
         mPreloader->setExpiryDelay(Settings::RamCache::preloadCellExpiryDelay());
         mPreloader->setMinCacheSize(Settings::RamCache::preloadCellCacheMin());
@@ -1829,6 +1833,7 @@ namespace MWWorld
 
     void Scene::preloadTerrain(const osg::Vec3f& pos, ESM::RefId worldspace, bool sync)
     {
+        if (!mPreloader->usesLegacyTerrain()) return;
         Debug::GameplayDiagnostics::Operation diagnosticOperation("terrain_preload", sync ? "sync" : "async");
         if (mRendering.getTerrain()->getWorldspace() != worldspace)
             throw std::runtime_error("preloadTerrain can only work with the current exterior worldspace");

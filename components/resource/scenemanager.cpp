@@ -1,4 +1,5 @@
 #include "scenemanager.hpp"
+#include "hostmemorybudget.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -1111,6 +1112,8 @@ namespace Resource
 
     bool SceneManager::prepareInstance(VFS::Path::NormalizedView path)
     {
+        if (mHostMemoryBudget && mHostMemoryBudget->pressure() != HostMemoryPressure::Normal)
+            return false;
         if (!mPreparedInstanceEnabled.load(std::memory_order_acquire))
             return false;
 
@@ -1140,6 +1143,10 @@ namespace Resource
             return false;
         }
 
+        // A clone may finish after pressure rose or a trim invalidated its
+        // generation. Do not immediately repopulate the released pool.
+        if (mHostMemoryBudget && mHostMemoryBudget->pressure() != HostMemoryPressure::Normal)
+            return false;
         std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);
         if (generation != mPreparedInstanceGeneration || mPreparedInstanceLimit == 0
             || mPreparedInstanceCount >= mPreparedInstanceLimit)
@@ -1314,6 +1321,36 @@ namespace Resource
                     ++it;
             }
         }
+    }
+
+    std::size_t SceneManager::trimCache(std::size_t maximum)
+    {
+        std::vector<osg::ref_ptr<osg::Node>> release;
+        release.reserve(maximum);
+        {
+            std::lock_guard lock(mPreparedInstanceMutex);
+            ++mPreparedInstanceGeneration;
+            auto it = mPreparedInstances.begin();
+            while (it != mPreparedInstances.end() && release.size() < maximum)
+            {
+                while (!it->second.empty() && release.size() < maximum)
+                {
+                    release.push_back(std::move(it->second.front()));
+                    it->second.pop_front();
+                    --mPreparedInstanceCount;
+                }
+                if (it->second.empty()) it = mPreparedInstances.erase(it);
+                else ++it;
+            }
+        }
+        const auto prepared = release.size();
+        release.clear(); // outside the pool lock; drops TemplateRef owners first
+        const auto templates = ResourceManager::trimCache(maximum);
+        {
+            std::lock_guard lock(mSharedStateMutex);
+            mSharedStateManager->prune();
+        }
+        return prepared + templates;
     }
 
     void SceneManager::clearCache()

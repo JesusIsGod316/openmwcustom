@@ -18,8 +18,10 @@ namespace MWWorld
     public:
         virtual ~SceneRenderLifecycle() = default;
 
-        // Extra future-view preparation is renderer-specific. The current grid
-        // is still prepared for canonical paging/physics regardless of this flag.
+        // OSG terrain/paging render preparation is separate from LAND collision
+        // loading. A renderer with its own terrain producer can opt out without
+        // skipping cell activation, heightfields, navigation or actor state.
+        virtual bool usesLegacyTerrainPreload() const noexcept { return true; }
         virtual bool usesLegacyTerrainFrontload() const noexcept { return true; }
 
         virtual void cellActivated(const CellStore& cell) = 0;

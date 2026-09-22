@@ -1,6 +1,8 @@
 #ifndef OPENMW_COMPONENTS_RESOURCE_RESOURCESYSTEM_H
 #define OPENMW_COMPONENTS_RESOURCE_RESOURCESYSTEM_H
 
+#include "hostmemorybudget.hpp"
+
 #include <memory>
 #include <vector>
 
@@ -48,6 +50,10 @@ namespace Resource
         KeyframeManager* getKeyframeManager();
         AnimBlendRulesManager* getAnimBlendRulesManager();
 
+        // Configure once before workers start. Disabled preserves legacy policy.
+        void setHostMemoryBudgetEnabled(bool enabled) { mHostMemoryBudget.setEnabled(enabled); }
+        HostMemoryPressure hostMemoryPressure() { return mHostMemoryBudget.pressure(); }
+
         /// Indicates to each resource manager to clear the cache, i.e. to drop cached objects that are no longer
         /// referenced.
         /// @note May be called from any thread if you do not add or remove resource managers at that point.
@@ -76,6 +82,8 @@ namespace Resource
         void releaseGLObjects(osg::State* state);
 
     private:
+        // Outlives all managers that borrow it.
+        HostMemoryBudget mHostMemoryBudget;
         std::unique_ptr<SceneManager> mSceneManager;
         std::unique_ptr<ImageManager> mImageManager;
         std::unique_ptr<BgsmFileManager> mBgsmFileManager;

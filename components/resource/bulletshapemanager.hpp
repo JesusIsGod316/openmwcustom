@@ -44,6 +44,7 @@ namespace Resource
 
         /// @see ResourceManager::updateCache
         void updateCache(double referenceTime) override;
+        std::size_t trimCache(std::size_t maximum) override;
 
         void clearCache() override;
 
