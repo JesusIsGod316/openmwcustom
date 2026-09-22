@@ -226,11 +226,11 @@ jobs:
           $buildExit = $LASTEXITCODE
           if ($buildExit -ne 0) { exit $buildExit }
 
-      - name: Build evaluated-effect and ownership diagnostic regression targets
+      - name: Build combined repair and retained diagnostic regression targets
         shell: pwsh
         run: |
           $log = "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/effect-recovery-build.log"
-          cmake --build "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" --target openmw-v4-effect-uv-tests openmw-v4-effect-capture-tests openmw-v4-runtime-diagnostics-tests --verbose 2>&1 | Tee-Object -FilePath $log
+          cmake --build "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" --target openmw-v4-effect-uv-tests openmw-v4-effect-capture-tests openmw-v4-runtime-diagnostics-tests openmw-v4-host-memory-tests openmw-v4-cache-pressure-tests --verbose 2>&1 | Tee-Object -FilePath $log
           $buildExit = $LASTEXITCODE
           if ($buildExit -ne 0) { exit $buildExit }
 
@@ -248,7 +248,7 @@ jobs:
           $env:PATH = $runtimePath
           & "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/openmw.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "build-tree Vulkan openmw.exe --version failed with $LASTEXITCODE" }
-          ctest --test-dir "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" -C RelWithDebInfo -R '^(openmw-v4-effect-(uv|capture)-tests|openmw-v4-runtime-diagnostics-(off|standard|focused))$' --output-on-failure
+          ctest --test-dir "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" -C RelWithDebInfo -R '^(openmw-v4-effect-(uv|capture)-tests|openmw-v4-(host-memory|cache-pressure)-tests|openmw-v4-runtime-diagnostics-(off|standard|focused))$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "effect/ownership recovery regressions failed with $LASTEXITCODE" }
           python tools/v4/cp4/test-runtime-diagnostics.py --capture-directory "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/runtime-diagnostic-evidence"
           if ($LASTEXITCODE -ne 0) { throw "native diagnostic output/report contract failed with $LASTEXITCODE" }
@@ -293,7 +293,7 @@ jobs:
           $openmwExe = Get-ChildItem -LiteralPath $stage -Recurse -File -Filter openmw.exe | Select-Object -First 1
           if ($null -eq $openmwExe) { throw 'Installed Vulkan package is missing openmw.exe' }
           $runtime = $openmwExe.Directory.FullName
-          foreach ($helper in @('gameplay-diagnostics.py', 'runtime-diagnostics.py', 'shader_resources.py', 'run-runtime-qc.ps1', 'run-memory-qc.ps1', 'RUNTIME-DIAGNOSTICS.md')) {
+          foreach ($helper in @('gameplay-diagnostics.py', 'diagnosticconfig.py', 'Start-CP4F-Test.cmd', 'runtime-diagnostics.py', 'shader_resources.py', 'run-runtime-qc.ps1', 'run-memory-qc.ps1', 'RUNTIME-DIAGNOSTICS.md', 'HOST-MEMORY-TERRAIN-REPAIR.md')) {
             if (-not (Test-Path -LiteralPath (Join-Path $runtime $helper) -PathType Leaf)) {
               throw "Installed runtime package is missing diagnostic helper: $helper"
             }
@@ -350,12 +350,14 @@ jobs:
             Copy-Item -LiteralPath $osgPlugins -Destination $runtime -Recurse -Force
           }
           @(
-            'OpenMW V4 CP4F ownership diagnostics test checkpoint',
+            'OpenMW V4 CP4F combined memory and native-terrain repair checkpoint',
             "commit=${{ github.sha }}",
             'renderer_selection=vulkan must be requested explicitly',
             'automatic_renderer=opengl until all compatibility facets qualify',
             'runtime_status=experimental smoke-test only',
-            'diagnostics=optional off/standard/focused; caching unchanged',
+            'diagnostics=optional off/standard/focused; policy independent of recording',
+            'host_retention=pressure-aware optional ownership; legacy control available',
+            'terrain=native Vulkan preparation; legacy preload control available',
             'manual_test=isolated New Game only; no regular saves',
             ''
           ) | Set-Content -LiteralPath (Join-Path $runtime 'CP3E-TEST-IDENTITY.txt') -Encoding Ascii
@@ -369,6 +371,26 @@ jobs:
               $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
               "$hash  $relative"
             } | Set-Content -LiteralPath $manifestPath -Encoding Ascii
+
+      - name: Verify packaged starter without launching gameplay
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $openmwExe = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE/stage-v4-vulkan-openmw" -Recurse -File -Filter openmw.exe | Select-Object -First 1
+          if ($null -eq $openmwExe) { throw 'Missing installed production executable' }
+          $normal = "$env:RUNNER_TEMP/cp4f-package-fixture"
+          $evidence = "$env:RUNNER_TEMP/cp4f-package-prepare"
+          New-Item -ItemType Directory -Force $normal | Out-Null
+          '# Authored config fixture. No game content or saves.' | Set-Content -LiteralPath (Join-Path $normal 'openmw.cfg') -Encoding utf8
+          python -B (Join-Path $openmwExe.Directory.FullName 'gameplay-diagnostics.py') launch --executable $openmwExe.FullName --user-config $normal --evidence-root $evidence --source-head '${{ github.sha }}' --prepare-only
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged diagnostic preflight failed' }
+          $capture = Get-ChildItem -LiteralPath $evidence -Directory | Select-Object -First 1
+          $manifest = Get-Content -LiteralPath (Join-Path $capture.FullName 'manifest.json') -Raw | ConvertFrom-Json
+          if ($manifest.state -ne 'prepared_only' -or $manifest.source_head -ne '${{ github.sha }}') { throw 'Incorrect prepared identity' }
+          if ($manifest.command -contains '--load-savegame' -or $manifest.regular_saves_copied) { throw 'Unsafe startup arguments' }
+          if (-not ($manifest.command -contains '--replace=config')) { throw 'Missing config de-duplication' }
+          python tools/v4/cp4/test-diagnostic-config.py
+          if ($LASTEXITCODE -ne 0) { throw 'Windows launcher configuration tests failed' }
 
       - name: Upload runtime-complete V4 Vulkan OpenMW test package
         uses: actions/upload-artifact@v6
@@ -412,4 +434,5 @@ jobs:
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/effect-recovery-build.log
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/Testing/Temporary/LastTest.log
             ${{ github.workspace }}/build-v4-cp3b3-real-nif/runtime-diagnostic-evidence/*.jsonl
+            ${{ runner.temp }}/cp4f-package-prepare/**/manifest.json
           if-no-files-found: ignore
