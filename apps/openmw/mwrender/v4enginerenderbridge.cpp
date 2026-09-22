@@ -735,6 +735,7 @@ namespace MWRender
                     mLastDiagnostic = capturedObject.diagnostic.empty()
                         ? "evaluated non-actor object could not produce native Vulkan compatibility draws: " + *identity
                         : "evaluated non-actor object " + *identity + ": " + capturedObject.diagnostic;
+                    mLastDiagnostic += " [model=" + std::string(modelPath.value()) + "]";
                     return;
                 }
                 if (capturedObject.draws.empty())

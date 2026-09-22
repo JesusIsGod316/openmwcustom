@@ -320,6 +320,9 @@ if (OPENMW_V4_BUILD_RECOVERY_TESTS)
     add_executable(openmw-v4-effect-capture-tests ../../tools/v4/cp4/effect-capture-tests.cpp)
     target_link_libraries(openmw-v4-effect-capture-tests PRIVATE openmw-lib)
     add_test(NAME openmw-v4-effect-capture-tests COMMAND openmw-v4-effect-capture-tests)
+    add_executable(openmw-v4-effect-uv-tests ../../tools/v4/cp4/effect-uv-tests.cpp)
+    target_link_libraries(openmw-v4-effect-uv-tests PRIVATE openmw-lib)
+    add_test(NAME openmw-v4-effect-uv-tests COMMAND openmw-v4-effect-uv-tests)
     # Explicit GPU gate: creates a short-lived Vulkan window. Run manually on a
     # graphics-capable host, rather than making headless CTest require a display.
     add_executable(openmw-v4-gui-isolation-tests ../../tools/v4/cp4/gui-isolation-tests.cpp)

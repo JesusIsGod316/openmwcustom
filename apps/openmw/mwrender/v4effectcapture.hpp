@@ -2,6 +2,7 @@
 #define OPENMW_MWRENDER_V4EFFECTCAPTURE_H
 
 #include "animation.hpp"
+#include "v4effectuv.hpp"
 #include "vismask.hpp"
 
 #include <components/rendercore/effectframe.hpp>
@@ -730,27 +731,14 @@ namespace MWRender
             draw.material = std::move(captured.material);
             draw.textures = std::move(captured.textures);
 
-            const std::size_t textureSets = draw.textures.empty() ? 0u
-                : static_cast<std::size_t>(std::max_element(draw.textures.begin(), draw.textures.end(),
-                      [](const auto& left, const auto& right) {
-                          return left.binding.transform.uvSet < right.binding.transform.uvSet;
-                      })->binding.transform.uvSet + 1u);
-            draw.mesh.texCoordSets.resize(textureSets);
             const osg::ref_ptr<osg::StateSet> state = effectiveState(path, geometry.getStateSet());
-            for (std::size_t set = 0; set < textureSets; ++set)
+            if (!captureEffectTextureCoordinates(geometry, *state, draw, diagnostic))
             {
-                const auto* coords = dynamic_cast<const osg::Vec2Array*>(
-                    geometry.getTexCoordArray(static_cast<unsigned int>(set)));
-                if (!coords || coords->size() != positions->size())
-                {
-                    diagnostic = "evaluated effect textured geometry has no matching UV stream";
-                    return false;
-                }
-                auto& destination = draw.mesh.texCoordSets[set];
-                destination.reserve(coords->size());
-                for (const osg::Vec2f& coord : *coords)
-                    destination.emplace_back(coord.x(), coord.y());
-                applyTexMat(*state, static_cast<unsigned int>(set), destination);
+                diagnostic += " [capture=" + draw.identity + "]";
+                if (!path.empty() && path.back())
+                    diagnostic += " [source-drawable='" + path.back()->getName()
+                        + "', source-type=" + path.back()->className() + "]";
+                return false;
             }
 
             for (unsigned int i = 0; i < geometry.getNumPrimitiveSets(); ++i)
