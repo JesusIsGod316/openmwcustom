@@ -320,10 +320,6 @@ if (WIN32 AND BUILD_OPENMW)
         DESTINATION ".")
 endif()
 
-if (WIN32)
-    target_link_libraries(openmw-lib PRIVATE psapi)
-endif()
-
 if (OPENMW_V4_BUILD_RECOVERY_TESTS)
     if (NOT OPENMW_ENABLE_V4_VULKAN_RUNTIME)
         message(FATAL_ERROR "CP4F recovery tests require OPENMW_ENABLE_V4_VULKAN_RUNTIME")
