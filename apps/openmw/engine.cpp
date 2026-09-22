@@ -1,5 +1,5 @@
-#include <components/debug/runtimeprocessmemory.hpp>
 #include "engine.hpp"
+#include <components/debug/runtimeprocessmemory.hpp>
 #include <components/debug/gameplaydiagnostics.hpp>
 
 #include <cerrno>
@@ -804,7 +804,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         Debug::GameplayDiagnostics::Stage diagnostic("osg_update");
         mViewer->updateTraversal();
         if (Debug::GameplayDiagnostics::sampling())
-            Debug::GameplayDiagnostics::emit("osg_update", {{"viewer_done", std::to_string(mViewer->done())},
+            Debug::GameplayDiagnostics::recordEvent("osg_update", {{"viewer_done", std::to_string(mViewer->done())},
                 {"frame_stamp", std::to_string(mViewer->getFrameStamp()->getFrameNumber())}});
     }
 
@@ -1357,7 +1357,7 @@ void OMW::Engine::prepareEngine()
     if (Debug::RuntimeDiagnostics::enabled())
     {
         Debug::RuntimeDiagnostics::processProbe.store(&Debug::RuntimeDiagnostics::sampleProcessMemory, std::memory_order_release);
-        Debug::RuntimeDiagnostics::emit("configuration", "effective_cache_policy", Settings::RamCache::name(), {
+        Debug::RuntimeDiagnostics::recordEvent("configuration", "effective_cache_policy", Settings::RamCache::name(), {
             {"vulkan", mUseVulkanRenderer}, {"profile_v36", Settings::V36Profile::enabled()},
             {"ram_overdrive", Settings::V36Profile::ramOverdriveEnabled()},
             {"expiry_seconds", static_cast<std::uint64_t>(effectiveResourceCacheExpiry)},
@@ -1369,11 +1369,11 @@ void OMW::Engine::prepareEngine()
             {"prepared_instances", static_cast<bool>(Settings::cells().mV3PreparedInstanceCache)},
             {"prepared_instance_limit", static_cast<std::uint64_t>(static_cast<int>(Settings::cells().mV3PreparedInstanceCacheMax))},
             {"mode_focused", Debug::RuntimeDiagnostics::mode() == Debug::RuntimeDiagnostics::Mode::Focused} });
-        Debug::RuntimeDiagnostics::emit("configuration", "configured_cache_inputs", std::string(Settings::cells().mRamCacheMode), {
+        Debug::RuntimeDiagnostics::recordEvent("configuration", "configured_cache_inputs", std::string(Settings::cells().mRamCacheMode), {
             {"configured_preload_min", static_cast<std::uint64_t>(static_cast<int>(Settings::cells().mPreloadCellCacheMin))},
             {"configured_preload_max", static_cast<std::uint64_t>(static_cast<int>(Settings::cells().mPreloadCellCacheMax))},
             {"v36_disable_overdrive", static_cast<bool>(Settings::cells().mV36DisableRamOverdrive)} });
-        Debug::RuntimeDiagnostics::emit("coverage", "accounting", "Known payload/capacity only; not total heap or VRAM. Refcounts are retention observations, not proof of active use.", {{"complete_process_attribution", 0}});
+        Debug::RuntimeDiagnostics::recordEvent("coverage", "accounting", "Known payload/capacity only; not total heap or VRAM. Refcounts are retention observations, not proof of active use.", {{"complete_process_attribution", 0}});
     }
     Log(Debug::Info) << "V3 RAM cache mode: " << Settings::RamCache::name()
                      << " resource expiry=" << effectiveResourceCacheExpiry << "s"

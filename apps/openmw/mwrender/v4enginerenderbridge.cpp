@@ -1304,7 +1304,7 @@ namespace MWRender
                     }
                 }
                 if (Debug::GameplayDiagnostics::detailedSampling() && source.skeletonPoses.size() < 16)
-                    Debug::GameplayDiagnostics::emit("actor_pose",
+                    Debug::GameplayDiagnostics::recordEvent("actor_pose",
                         { { "actor",
                               std::to_string(mSession->world().epoch().value()) + ":" + std::to_string(handle->slot())
                                   + ":" + std::to_string(handle->generation()) },

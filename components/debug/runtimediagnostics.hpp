@@ -278,7 +278,7 @@ namespace Debug::RuntimeDiagnostics
         return instance.get();
     }
     using Fields = std::initializer_list<std::pair<std::string_view, std::uint64_t>>;
-    inline void emit(std::string_view type, std::string_view owner, std::string_view identity, Fields fields = {}) noexcept
+    inline void recordEvent(std::string_view type, std::string_view owner, std::string_view identity, Fields fields = {}) noexcept
     {
         if (!enabled()) return;
         const auto start = nowUs();
@@ -339,13 +339,13 @@ namespace Debug::RuntimeDiagnostics
             copyText(mName, name); copyText(mIdentity, identity);
             static std::atomic<std::uint64_t> sequence{ 0 };
             mId = ++sequence;
-            emit("work_begin", mName.data(), mIdentity.data(), {{"operation", mId}});
+            recordEvent("work_begin", mName.data(), mIdentity.data(), {{"operation", mId}});
         }
         Operation(const Operation&) = delete;
         Operation& operator=(const Operation&) = delete;
         ~Operation()
         {
-            if (mStart) emit("work_end", mName.data(), mIdentity.data(),
+            if (mStart) recordEvent("work_end", mName.data(), mIdentity.data(),
                 {{"operation", mId}, {"elapsed_us", nowUs() - mStart},
                     {"unwinding", std::uncaught_exceptions() > mExceptions}});
         }

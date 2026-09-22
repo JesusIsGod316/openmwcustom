@@ -519,7 +519,7 @@ namespace RenderVsg
             return static_cast<bool>(compileResult);
         };
         if (Debug::GameplayDiagnostics::sampling())
-            Debug::GameplayDiagnostics::emit("static_mutation", {
+            Debug::GameplayDiagnostics::recordEvent("static_mutation", {
                 {"instances", std::to_string(mutation.upserts.size())},
                 {"populations", std::to_string(populationMutation.upserts.size())},
                 {"population_new", std::to_string(populationMutation.newGroups)},
@@ -746,7 +746,7 @@ namespace RenderVsg
                 std::getenv("OPENMW_V4_REBUILD_ACTOR_PLANS_CONTROL") != nullptr);
         }();
         if (Debug::GameplayDiagnostics::sampling())
-            Debug::GameplayDiagnostics::emit("actor_plan_cache", {{"reused", std::to_string(mActorPlanCache.reused)},
+            Debug::GameplayDiagnostics::recordEvent("actor_plan_cache", {{"reused", std::to_string(mActorPlanCache.reused)},
                 {"rebuilt", std::to_string(mActorPlanCache.rebuilt)}});
         if (!plan.valid())
         {
@@ -897,7 +897,7 @@ namespace RenderVsg
                     }
                 }
                 const auto placement = staticInstancePlacementMatrix(transform->current);
-                Debug::GameplayDiagnostics::emit("actor_geometry", {{"actor", residentIdentity},
+                Debug::GameplayDiagnostics::recordEvent("actor_geometry", {{"actor", residentIdentity},
                     {"sample_hash", std::to_string(hash)}, {"vertices_in_checked_draws", std::to_string(vertices)},
                     {"sampled_vertices", std::to_string(sampled)}, {"stream_mismatches", std::to_string(mismatches)},
                     {"nonfinite", std::to_string(nonfinite)}, {"sample_max_abs", std::to_string(maxAbs)},
@@ -938,13 +938,13 @@ namespace RenderVsg
                 if (mEffectDiagnosticExamples)
                 {
                     --mEffectDiagnosticExamples;
-                    Debug::RuntimeDiagnostics::emit("effect_rebuild", immediateEffectMismatchName(reason), effect.identity, {
+                    Debug::RuntimeDiagnostics::recordEvent("effect_rebuild", immediateEffectMismatchName(reason), effect.identity, {
                         {"old_vertices", resident.contract.mesh.positions.size()}, {"new_vertices", effect.mesh.positions.size()},
                         {"old_indices", resident.contract.mesh.indices.size()}, {"new_indices", effect.mesh.indices.size()},
                         {"old_textures", resident.contract.textures.size()}, {"new_textures", effect.textures.size()},
                         {"completed_frame", mCompletedThrough ? mCompletedThrough->value() : 0} });
                     if (reason == ImmediateEffectMismatch::Material)
-                        Debug::RuntimeDiagnostics::emit("effect_material_delta", "float32_bit_patterns", effect.identity, {
+                        Debug::RuntimeDiagnostics::recordEvent("effect_material_delta", "float32_bit_patterns", effect.identity, {
                             {"old_alpha", std::bit_cast<std::uint32_t>(resident.contract.material.alpha)},
                             {"new_alpha", std::bit_cast<std::uint32_t>(effect.material.alpha)},
                             {"diffuse_changed", resident.contract.material.diffuse != effect.material.diffuse},
@@ -954,7 +954,7 @@ namespace RenderVsg
                             {"source_identity_changed", resident.contract.material.sourceIdentity != effect.material.sourceIdentity},
                             {"texture_bindings_changed", resident.contract.material.textures != effect.material.textures}});
                     if (!effect.textures.empty())
-                        Debug::RuntimeDiagnostics::emit("effect_texture", "first_stage_example", effect.textures.front().texture.sourceIdentity,
+                        Debug::RuntimeDiagnostics::recordEvent("effect_texture", "first_stage_example", effect.textures.front().texture.sourceIdentity,
                             {{"role", static_cast<std::uint64_t>(effect.textures.front().binding.role)},
                                 {"uv_set", effect.textures.front().binding.transform.uvSet},
                                 {"color_space", static_cast<std::uint64_t>(effect.textures.front().binding.colorSpace)},
@@ -989,7 +989,7 @@ namespace RenderVsg
         // effects every frame. Failures always get a separate final census.
         const bool allocationDiagnostic = Debug::GameplayDiagnostics::detailedSampling();
         if (allocationDiagnostic)
-            Debug::GameplayDiagnostics::emit("dynamic_allocation", {{"phase", "before"},
+            Debug::GameplayDiagnostics::recordEvent("dynamic_allocation", {{"phase", "before"},
                 {"summary", allocationSummary(*nextRoot, *mWindow->getOrCreateDevice())}}, true);
         const vsg::CompileResult compileResult = [&] {
             // Reused residents already own compiled resources in every live
@@ -1012,12 +1012,12 @@ namespace RenderVsg
             mLastDiagnostic = compileFailureDiagnostic("incremental VSG actor/effect graph", compileResult);
             const std::string allocations = allocationSummary(*nextRoot, *mWindow->getOrCreateDevice());
             Log(Debug::Error) << "V4 failed dynamic allocation: " << allocations;
-            Debug::GameplayDiagnostics::emit("dynamic_allocation", {{"phase", "failed"},
+            Debug::GameplayDiagnostics::recordEvent("dynamic_allocation", {{"phase", "failed"},
                 {"summary", allocations}}, true);
             return false;
         }
         if (allocationDiagnostic)
-            Debug::GameplayDiagnostics::emit("dynamic_allocation", {{"phase", "after"},
+            Debug::GameplayDiagnostics::recordEvent("dynamic_allocation", {{"phase", "after"},
                 {"summary", allocationSummary(*nextRoot, *mWindow->getOrCreateDevice())}}, true);
 
         if (mDynamicLastUse && mDynamicPublishedRoot)
@@ -1041,7 +1041,7 @@ namespace RenderVsg
         mImmediateEffectResidents.collectUnused();
         mDynamicActorResidents.collectUnused();
         if (Debug::GameplayDiagnostics::sampling())
-            Debug::GameplayDiagnostics::emit("residency", {{"actors_reused", std::to_string(reusedActors)},
+            Debug::GameplayDiagnostics::recordEvent("residency", {{"actors_reused", std::to_string(reusedActors)},
                 {"actors_rebuilt", std::to_string(rebuiltActors)}, {"actor_versions", std::to_string(mDynamicActorResidents.size())},
                 {"effects_reused", std::to_string(reusedEffects)}, {"effects_rebuilt", std::to_string(rebuiltEffects)},
                 {"effect_versions", std::to_string(mImmediateEffectResidents.size())}});
@@ -1586,7 +1586,7 @@ namespace RenderVsg
             });
             std::uint64_t frameBytes = 0;
             for (const auto& draw : frame.immediateEffectDraws()) frameBytes += meshCapacityBytes(draw.mesh);
-            Debug::RuntimeDiagnostics::emit("resident_versions", "dynamic", "Before frame sync; completed slots retained for bounded reuse are normal", {
+            Debug::RuntimeDiagnostics::recordEvent("resident_versions", "dynamic", "Before frame sync; completed slots retained for bounded reuse are normal", {
                 {"effect_versions", mImmediateEffectResidents.size()}, {"effect_writable", effectWritable},
                 {"effect_in_flight", effectInFlight}, {"effect_selected_previous", selected},
                 {"effect_contract_mesh_capacity_bytes", effectBytes}, {"frame_effect_mesh_capacity_bytes", frameBytes},
@@ -1599,7 +1599,7 @@ namespace RenderVsg
                     if (!oldest || lastUse.value() < oldest) oldest = lastUse.value();
                     completed += mCompletedThrough && lastUse <= *mCompletedThrough;
                 });
-                Debug::RuntimeDiagnostics::emit("retirement", name, "Before completion collection; graph roots, not unique allocation bytes", {
+                Debug::RuntimeDiagnostics::recordEvent("retirement", name, "Before completion collection; graph roots, not unique allocation bytes", {
                     {"pending_roots", queue.size()}, {"oldest_last_use_frame", oldest},
                     {"completed_roots_pending_collection", completed}, {"released_roots", released},
                     {"completed_frame", mCompletedThrough ? mCompletedThrough->value() : 0} });
@@ -1608,19 +1608,19 @@ namespace RenderVsg
             retirement("gui", mGuiRetirements, mDiagnosticReleasedGui);
             for (std::size_t i = 0; i < mEffectRebuildReasons.size(); ++i)
                 if (mEffectRebuildReasons[i])
-                    Debug::RuntimeDiagnostics::emit("effect_rebuild_count", immediateEffectMismatchName(static_cast<ImmediateEffectMismatch>(i)), {},
+                    Debug::RuntimeDiagnostics::recordEvent("effect_rebuild_count", immediateEffectMismatchName(static_cast<ImmediateEffectMismatch>(i)), {},
                         {{"count", mEffectRebuildReasons[i]}});
             for (const auto& auxiliary : mAuxiliaryViews)
-                Debug::RuntimeDiagnostics::emit("auxiliary", "vsg_target", {}, {
+                Debug::RuntimeDiagnostics::recordEvent("auxiliary", "vsg_target", {}, {
                     {"target_slot", auxiliary.targetIdentity.slot()}, {"target_generation", auxiliary.targetIdentity.generation()},
                     {"kind", static_cast<std::uint64_t>(auxiliary.kind)}, {"active", auxiliary.active},
                     {"width", auxiliary.target.extent.width}, {"height", auxiliary.target.extent.height},
                     {"semantic_color_format", static_cast<std::uint64_t>(auxiliary.colorFormat)},
                     {"image_present", static_cast<bool>(auxiliary.target.color)}});
-            Debug::RuntimeDiagnostics::emit("probe_cost", "vsg_memory", "Counts and payload capacity, not GPU execution time",
+            Debug::RuntimeDiagnostics::recordEvent("probe_cost", "vsg_memory", "Counts and payload capacity, not GPU execution time",
                 {{"elapsed_us", Debug::RuntimeDiagnostics::nowUs() - start}});
         }
-        catch (...) { Debug::RuntimeDiagnostics::emit("coverage", "vsg_memory", "snapshot unavailable", {{"available", 0}}); }
+        catch (...) { Debug::RuntimeDiagnostics::recordEvent("coverage", "vsg_memory", "snapshot unavailable", {{"available", 0}}); }
     }
 
     void VsgRuntimeHost::reportStrictFrameDiagnostics(
@@ -1867,7 +1867,7 @@ namespace RenderVsg
             return submitAndPresentChecked(*mViewer);
         }();
         if (Debug::GameplayDiagnostics::sampling())
-            Debug::GameplayDiagnostics::emit("submission", {{"submit", std::to_string(submission.submit)},
+            Debug::GameplayDiagnostics::recordEvent("submission", {{"submit", std::to_string(submission.submit)},
                 {"present", std::to_string(submission.present)}, {"frame_id", std::to_string(frame.frameId().value())}});
         if (submission.submit != VK_SUCCESS)
             return finish(RenderCore::RenderFrameResult::Failed,

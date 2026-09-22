@@ -93,17 +93,17 @@ namespace Resource
             std::unique_lock lock(mObjectCacheMutex, std::try_to_lock);
             if (!lock.owns_lock())
             {
-                Debug::RuntimeDiagnostics::emit("coverage", owner, "pool lock busy", {{"available", 0}});
+                Debug::RuntimeDiagnostics::recordEvent("coverage", owner, "pool lock busy", {{"available", 0}});
                 return;
             }
             std::uint64_t external = 0;
             for (const auto& [key, value] : mObjectCache)
                 if (value && value->referenceCount() > 1) ++external;
-            Debug::RuntimeDiagnostics::emit("cache_pool", owner, "Object counts; payload bytes unmeasured", {
+            Debug::RuntimeDiagnostics::recordEvent("cache_pool", owner, "Object counts; payload bytes unmeasured", {
                 {"entries", mObjectCache.size()}, {"lookups", mGet}, {"hits", mHit}, {"expired", mExpired},
                 {"external_refs", external}, {"keep_unreferenced_limit", limit}, {"payload_measured", 0}});
         }
-        catch (...) { Debug::RuntimeDiagnostics::emit("coverage", owner, "pool census unavailable", {{"available", 0}}); }
+        catch (...) { Debug::RuntimeDiagnostics::recordEvent("coverage", owner, "pool census unavailable", {{"available", 0}}); }
     }
 
     CacheStats MultiObjectCache::getStats() const

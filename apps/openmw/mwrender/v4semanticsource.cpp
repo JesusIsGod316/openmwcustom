@@ -391,7 +391,7 @@ namespace MWRender
         // matrix cache normally refreshed by the OSG camera callback.
         result.view = toGlmView(camera.calculateViewMatrix());
         if (Debug::GameplayDiagnostics::sampling())
-            Debug::GameplayDiagnostics::emit("camera", {
+            Debug::GameplayDiagnostics::recordEvent("camera", {
                 {"cached_view_delta", std::to_string(Debug::GameplayDiagnostics::matrixDifference(
                     camera.calculateViewMatrix(), camera.getViewMatrix()))}});
         const glm::mat4 cameraWorld = glm::inverse(result.view);

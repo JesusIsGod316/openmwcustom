@@ -326,7 +326,7 @@ namespace MWRender
             mLastDiagnostic = std::move(diagnostic);
             // Record before exception unwinding/fatal modal delays normal exit.
             Log(Debug::Error) << "V4 frame failure: " << mLastDiagnostic;
-            Debug::GameplayDiagnostics::emit("failure", {{"message", mLastDiagnostic}}, true);
+            Debug::GameplayDiagnostics::recordEvent("failure", {{"message", mLastDiagnostic}}, true);
         }
         return RenderCore::RenderFrameResult::Failed;
     }

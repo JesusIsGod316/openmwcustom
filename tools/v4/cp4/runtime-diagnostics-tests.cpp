@@ -217,13 +217,13 @@ int main(int argc, char** argv)
         require(sampler.due(100000000) == expected && !sampler.due(100000000), "sample limit violated");
     });
     test("buffered multiwriter capture never changes game state", [&] {
-        RD::emit("fixture", "tests", "first", {{"bytes", 42}});
+        RD::recordEvent("fixture", "tests", "first", {{"bytes", 42}});
         if (!RD::enabled()) { require(RD::recorder() == nullptr && RD::attempted == 0, "off created recorder"); return; }
         RD::sampleProcessMemory();
         try { RD::Operation operation("test_unwinding"); throw std::runtime_error("expected"); } catch (...) {}
         std::vector<std::thread> threads;
         for (unsigned i = 0; i < 4; ++i) threads.emplace_back([i] {
-            for (unsigned n = 0; n < 128; ++n) RD::emit("thread_fixture", "tests", {}, {{"thread", i}, {"sequence", n}});
+            for (unsigned n = 0; n < 128; ++n) RD::recordEvent("thread_fixture", "tests", {}, {{"thread", i}, {"sequence", n}});
         });
         for (auto& t : threads) t.join();
         require(RD::attempted >= 513, "attempt accounting missing");

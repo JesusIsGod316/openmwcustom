@@ -1338,13 +1338,13 @@ namespace Resource
         {
             std::unique_lock lock(mPreparedInstanceMutex, std::try_to_lock);
             if (lock.owns_lock())
-                Debug::RuntimeDiagnostics::emit("cache_pool", "prepared_instances", "Object counts; payload bytes unmeasured", {
+                Debug::RuntimeDiagnostics::recordEvent("cache_pool", "prepared_instances", "Object counts; payload bytes unmeasured", {
                     {"entries", mPreparedInstanceCount}, {"added", mPreparedInstanceAdded},
                     {"hits", mPreparedInstanceHits}, {"misses", mPreparedInstanceMisses},
                     {"rejected", mPreparedInstanceRejected}, {"payload_measured", 0}});
-            else Debug::RuntimeDiagnostics::emit("coverage", "prepared_instances", "cache lock busy", {{"available", 0}});
+            else Debug::RuntimeDiagnostics::recordEvent("coverage", "prepared_instances", "cache lock busy", {{"available", 0}});
         }
-        catch (...) { Debug::RuntimeDiagnostics::emit("coverage", "prepared_instances", "census unavailable", {{"available", 0}}); }
+        catch (...) { Debug::RuntimeDiagnostics::recordEvent("coverage", "prepared_instances", "census unavailable", {{"available", 0}}); }
     }
 
     void SceneManager::reportStats(unsigned int frameNumber, osg::Stats* stats) const

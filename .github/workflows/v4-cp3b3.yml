@@ -105,6 +105,19 @@ jobs:
 
       - uses: seanmiddleditch/gha-setup-ninja@master
 
+      - name: Reproduce old header failures and verify private Windows boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tools/v4/cp4/test-diagnostic-header-boundary.py --baseline 2af99ff87e399772497b1d1999e0b054a5911f8f --output build-diagnostic-headers-vulkan
+          if ($LASTEXITCODE -ne 0) { throw 'Baseline header collision controls failed' }
+          cmake -S tools/v4/cp4/diagnostic-header-tests -B build-diagnostic-headers-vulkan -G Ninja -D CMAKE_BUILD_TYPE=RelWithDebInfo
+          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic header configure failed' }
+          cmake --build build-diagnostic-headers-vulkan --verbose
+          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic header compile/link failed' }
+          ctest --test-dir build-diagnostic-headers-vulkan -C RelWithDebInfo --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic header regressions failed' }
+
       - name: Ensure pinned vcpkg baseline is available
         shell: pwsh
         run: |
@@ -386,6 +399,9 @@ jobs:
         with:
           name: openmw-v4-cp3b3-static-realization-logs-${{ github.sha }}
           path: |
+            ${{ github.workspace }}/build-diagnostic-headers-vulkan/CMakeCache.txt
+            ${{ github.workspace }}/build-diagnostic-headers-vulkan/Testing/Temporary/LastTest.log
+            ${{ github.workspace }}/build-diagnostic-headers-vulkan/baseline-*.log
             ${{ github.workspace }}/build-v4-cp3b3/CMakeCache.txt
             ${{ github.workspace }}/build-v4-cp3b3/.ninja_log
             ${{ github.workspace }}/build-v4-cp3b3/Testing/Temporary/LastTest.log

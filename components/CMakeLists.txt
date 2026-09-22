@@ -310,7 +310,7 @@ add_component_dir (stereo
     )
 
 add_component_dir (debug
-    debugging debuglog gldebug debugdraw writeflags
+    debugging debuglog gldebug debugdraw writeflags runtimeprocessmemory
     )
 
 IF(NOT WIN32 AND NOT APPLE)

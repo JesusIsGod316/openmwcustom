@@ -229,7 +229,7 @@ namespace Resource
                     std::unique_lock lock(mMutex, std::try_to_lock);
                     if (!lock.owns_lock())
                     {
-                        Debug::RuntimeDiagnostics::emit("coverage", owner, "cache lock busy", {{"available", 0}});
+                        Debug::RuntimeDiagnostics::recordEvent("coverage", owner, "cache lock busy", {{"available", 0}});
                         return;
                     }
                     stats = { mItems.size(), mGet, mHit, mExpired };
@@ -243,7 +243,7 @@ namespace Resource
                         census.add(name, item.mValue.get(), item.mLastUsage, referenceTime);
                     }
                 }
-                Debug::RuntimeDiagnostics::emit("cache", owner, {}, {
+                Debug::RuntimeDiagnostics::recordEvent("cache", owner, {}, {
                     {"instance", reinterpret_cast<std::uintptr_t>(this)}, {"entries", stats.mSize},
                     {"lookups", stats.mGet}, {"hits", stats.mHit}, {"expired", stats.mExpired},
                     {"expired_without_hit", neverHit}, {"sampled_entries", census.entries},
@@ -255,12 +255,12 @@ namespace Resource
                     {"expiry_us", expiryDelay > 0 ? static_cast<std::uint64_t>(expiryDelay * 1000000.0) : 0} });
                 if (Debug::RuntimeDiagnostics::mode() == Debug::RuntimeDiagnostics::Mode::Focused)
                     for (const auto& top : census.top)
-                        if (top.bytes) Debug::RuntimeDiagnostics::emit("cache_asset", owner, top.name.data(),
+                        if (top.bytes) Debug::RuntimeDiagnostics::recordEvent("cache_asset", owner, top.name.data(),
                             {{"known_payload_bytes", top.bytes}, {"external_ref_observed", top.external}});
-                Debug::RuntimeDiagnostics::emit("probe_cost", owner, "cache census", {
+                Debug::RuntimeDiagnostics::recordEvent("probe_cost", owner, "cache census", {
                     {"elapsed_us", Debug::RuntimeDiagnostics::nowUs() - start}, {"source_elements", census.sourceElements}});
             }
-            catch (...) { Debug::RuntimeDiagnostics::emit("coverage", owner, "cache census unavailable", {{"available", 0}}); }
+            catch (...) { Debug::RuntimeDiagnostics::recordEvent("coverage", owner, "cache census unavailable", {{"available", 0}}); }
         }
 
     protected:

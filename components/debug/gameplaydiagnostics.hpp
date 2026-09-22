@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -60,7 +61,7 @@ namespace Debug::GameplayDiagnostics
     }
 
     using Fields = std::initializer_list<std::pair<std::string_view, std::string>>;
-    inline void emit(std::string_view type, Fields fields = {}, bool independent = false) noexcept
+    inline void recordEvent(std::string_view type, Fields fields = {}, bool independent = false) noexcept
     {
         if (!sampling() && !(independent && enabled())) return;
         const bool detail = type == "actor_pose" || type == "actor_geometry" || type == "pick" || type == "camera";
@@ -80,7 +81,7 @@ namespace Debug::GameplayDiagnostics
                 Sink()
                 {
                     if (const char* path = std::getenv("OPENMW_GAMEPLAY_DIAGNOSTICS_FILE"))
-                        stream.open(std::filesystem::u8path(path), std::ios::app);
+                        stream.open(std::filesystem::path(std::u8string(path, path + std::strlen(path))), std::ios::app);
                 }
             };
             static Sink sink;
@@ -121,7 +122,7 @@ namespace Debug::GameplayDiagnostics
             identity = source;
             exceptions = std::uncaught_exceptions();
             start = Clock::now();
-            emit("operation_begin", {{"id", std::to_string(id)}, {"name", std::string(name)},
+            recordEvent("operation_begin", {{"id", std::to_string(id)}, {"name", std::string(name)},
                 {"identity", identity}}, true);
         }
         Operation(const Operation&) = delete;
@@ -129,7 +130,7 @@ namespace Debug::GameplayDiagnostics
         ~Operation()
         {
             if (!id) return;
-            emit("operation_end", {{"id", std::to_string(id)}, {"name", std::string(name)},
+            recordEvent("operation_end", {{"id", std::to_string(id)}, {"name", std::string(name)},
                 {"identity", identity}, {"unwinding", std::to_string(std::uncaught_exceptions() > exceptions)},
                 {"ms", std::to_string(std::chrono::duration<double, std::milli>(Clock::now() - start).count())}}, true);
         }
@@ -142,11 +143,11 @@ namespace Debug::GameplayDiagnostics
         int exceptions;
         explicit Stage(std::string_view value) : name(value), active(sampling()), exceptions(std::uncaught_exceptions())
         {
-            if (active) { start = Clock::now(); emit("stage_begin", {{"name", std::string(name)}}); }
+            if (active) { start = Clock::now(); recordEvent("stage_begin", {{"name", std::string(name)}}); }
         }
         ~Stage()
         {
-            if (active) emit("stage_end", {{"name", std::string(name)},
+            if (active) recordEvent("stage_end", {{"name", std::string(name)},
                 {"ms", std::to_string(std::chrono::duration<double, std::milli>(Clock::now() - start).count())},
                 {"unwinding", std::to_string(std::uncaught_exceptions() > exceptions)}});
         }
@@ -179,14 +180,14 @@ namespace Debug::GameplayDiagnostics
             if (active)
             {
                 start = Clock::now();
-                emit("frame_begin", {{"vulkan", std::to_string(vulkan)}, {"viewer_done", std::to_string(viewerDone)}});
+                recordEvent("frame_begin", {{"vulkan", std::to_string(vulkan)}, {"viewer_done", std::to_string(viewerDone)}});
             }
         }
         ~Frame()
         {
             if (active)
             {
-                emit("frame_end", {{"completed", std::to_string(completed)},
+                recordEvent("frame_end", {{"completed", std::to_string(completed)},
                     {"ms", std::to_string(std::chrono::duration<double, std::milli>(Clock::now() - start).count())},
                     {"skeleton_updates", std::to_string(context.skeletonUpdates)},
                     {"skeleton_skipped_cull", std::to_string(context.skeletonSkippedCull)},

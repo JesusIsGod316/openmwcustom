@@ -35,12 +35,12 @@ namespace RenderVsg
                 if (payloads.insert(mesh.payload.get()).second) bytes += meshCapacityBytes(*mesh.payload);
                 else ++duplicateReferences;
             });
-            Debug::RuntimeDiagnostics::emit("neutral_memory", "render_world", "Mesh vector capacities; skins/morphs/models/allocator metadata excluded", {
+            Debug::RuntimeDiagnostics::recordEvent("neutral_memory", "render_world", "Mesh vector capacities; skins/morphs/models/allocator metadata excluded", {
                 {"epoch", world.epoch().value()}, {"mesh_records", records}, {"unique_payloads", payloads.size()},
                 {"mesh_capacity_bytes", bytes}, {"shared_payload_refs", duplicateReferences},
                 {"unmeasured_after_limit", capped}, {"instances", world.instanceCount()}, {"chunks", world.chunkCount()} });
         }
-        catch (...) { Debug::RuntimeDiagnostics::emit("coverage", "render_world", "neutral census unavailable", {{"available", 0}}); }
+        catch (...) { Debug::RuntimeDiagnostics::recordEvent("coverage", "render_world", "neutral census unavailable", {{"available", 0}}); }
     }
     inline void reportVulkanMemory(vsg::PhysicalDevice& physical, vsg::Device& device) noexcept
     {
@@ -56,17 +56,17 @@ namespace RenderVsg
             for (std::uint32_t i = 0; i < properties.memoryProperties.memoryHeapCount; ++i)
             {
                 const auto& heap = properties.memoryProperties.memoryHeaps[i];
-                Debug::RuntimeDiagnostics::emit("vulkan_heap", "driver_estimate", {}, {
+                Debug::RuntimeDiagnostics::recordEvent("vulkan_heap", "driver_estimate", {}, {
                     {"heap", i}, {"budget_available", supported}, {"heap_size_bytes", heap.size},
                     {"device_local", (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0},
                     {"budget_bytes", budget.heapBudget[i]}, {"usage_bytes", budget.heapUsage[i]} });
             }
             if (auto pools = device.deviceMemoryBufferPools.ref_ptr())
-                Debug::RuntimeDiagnostics::emit("vsg_pool", "device_memory_pool", "Excludes allocations outside this VSG pool", {
+                Debug::RuntimeDiagnostics::recordEvent("vsg_pool", "device_memory_pool", "Excludes allocations outside this VSG pool", {
                     {"reserved_bytes", pools->computeMemoryTotalReserved()},
                     {"available_bytes", pools->computeMemoryTotalAvailable()} });
         }
-        catch (...) { Debug::RuntimeDiagnostics::emit("coverage", "vulkan_memory", "budget/pool query unavailable", {{"available", 0}}); }
+        catch (...) { Debug::RuntimeDiagnostics::recordEvent("coverage", "vulkan_memory", "budget/pool query unavailable", {{"available", 0}}); }
     }
 }
 #endif

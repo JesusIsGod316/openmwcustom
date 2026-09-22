@@ -155,3 +155,23 @@ API compile failure in run 35696837972 without altering OpenGL-only targets.
 Platform references: Microsoft PROCESS_MEMORY_COUNTERS_EX, GlobalMemoryStatusEx,
 GetPerformanceInfo; Khronos VkPhysicalDeviceMemoryBudgetPropertiesEXT. These APIs
 report distinct scopes, not a universal heap ownership breakdown.
+
+## Header-boundary repair after gate 2af99ff87e
+
+Run 35724155985 passed configuration and the real-NIF target, then failed in
+OpenMW-CS and the production Vulkan engine. Qt's empty `emit` macro collided
+with the recorder function name; Windows SDK `near`/`far` macros leaked from
+runtimeprocessmemory.hpp into Stereo::Manager::updateSettings.
+
+Diagnostic APIs are now named `recordEvent` (record names/schema unchanged).
+Windows headers and PSAPI calls live in runtimeprocessmemory.cpp, registered in
+shared components; the public header contains only the probe declaration.
+The legacy gameplay sink uses the same C++20 UTF-8 path construction as the
+runtime sink instead of deprecated u8path. Cache/reuse policies are unchanged.
+
+The independent diagnostic-header-tests CMake project compiles and links a
+clean consumer plus both Qt keyword include orders; real-Qt variants are
+explicitly enabled in the OpenGL Windows lane. The Vulkan lane reproduces both
+old collisions on actual baseline headers using MSVC/Windows SDK before testing
+the repaired public boundary. These checks run before expensive engine builds.
+They do not replace either full production build or runtime acceptance.

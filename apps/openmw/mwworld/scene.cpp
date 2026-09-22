@@ -1403,7 +1403,7 @@ namespace MWWorld
         }
 
         if (captureInsertion)
-            Debug::GameplayDiagnostics::emit("cell_insertion", {
+            Debug::GameplayDiagnostics::recordEvent("cell_insertion", {
                 {"cell", std::string(cell.getCell()->getDescription())},
                 {"refs", std::to_string(insertionStats.mTotalRefs)},
                 {"canonical_render_ms", std::to_string(insertionStats.mRenderMs)},

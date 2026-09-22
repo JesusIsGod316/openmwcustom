@@ -111,6 +111,32 @@ jobs:
 
     - uses: seanmiddleditch/gha-setup-ninja@master
 
+    - name: Compile diagnostic headers with native Qt before full build
+      if: ${{ inputs.tests }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $qt = "${{ github.workspace }}/deps/Qt/${{ env.QT_VER }}/msvc2019_64"
+        $env:PATH = "$qt/bin;$env:PATH"
+        python tools/v4/cp4/test-diagnostic-header-boundary.py
+        if ($LASTEXITCODE -ne 0) { throw 'Diagnostic header ownership contract failed' }
+        cmake -S tools/v4/cp4/diagnostic-header-tests -B build-diagnostic-headers-opengl -G Ninja -D CMAKE_BUILD_TYPE=RelWithDebInfo -D OPENMW_DIAGNOSTIC_TEST_REAL_QT=ON -D "CMAKE_PREFIX_PATH=$qt"
+        if ($LASTEXITCODE -ne 0) { throw 'Native Qt diagnostic header configure failed' }
+        cmake --build build-diagnostic-headers-opengl --verbose
+        if ($LASTEXITCODE -ne 0) { throw 'Native Qt diagnostic header compile/link failed' }
+        ctest --test-dir build-diagnostic-headers-opengl -C RelWithDebInfo --output-on-failure
+        if ($LASTEXITCODE -ne 0) { throw 'Native Qt diagnostic header regressions failed' }
+
+    - name: Preserve diagnostic header test evidence
+      if: ${{ always() && inputs.tests }}
+      uses: actions/upload-artifact@v6
+      with:
+        name: diagnostic-headers-opengl-${{ inputs.image }}-${{ github.sha }}
+        path: |
+          build-diagnostic-headers-opengl/CMakeCache.txt
+          build-diagnostic-headers-opengl/Testing/Temporary/LastTest.log
+        if-no-files-found: ignore
+
     - name: Configure OpenMW
       run: >
         cmake

@@ -348,7 +348,7 @@ namespace MWRender
     {
         static Debug::RuntimeDiagnostics::Sampler sampler;
         if (sampler.due())
-            Debug::RuntimeDiagnostics::emit("preview", "legacy_character_rtt", "redraw requested", {
+            Debug::RuntimeDiagnostics::recordEvent("preview", "legacy_character_rtt", "redraw requested", {
                 {"instance", reinterpret_cast<std::uintptr_t>(this)},
                 {"width", static_cast<std::uint64_t>(getTextureWidth())},
                 {"height", static_cast<std::uint64_t>(getTextureHeight())}});

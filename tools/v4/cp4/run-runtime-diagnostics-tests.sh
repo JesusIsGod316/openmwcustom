@@ -13,7 +13,7 @@ fi
 if [[ ${OPENMW_UV_TEST_SANITIZERS:-0} == 1 ]]; then
     flags+=(-O0 -g1 -fsanitize=address,undefined -fno-omit-frame-pointer)
 fi
-"${CXX:-c++}" "${flags[@]}" "$root/tools/v4/cp4/runtime-diagnostics-tests.cpp" "${libs[@]}" -o "$out/runtime-diagnostics-tests"
+"${CXX:-c++}" "${flags[@]}" "$root/tools/v4/cp4/runtime-diagnostics-tests.cpp" "$root/components/debug/runtimeprocessmemory.cpp" "${libs[@]}" -o "$out/runtime-diagnostics-tests"
 for mode in off standard focused; do
     OPENMW_RUNTIME_DIAGNOSTICS="$mode" OPENMW_RUNTIME_DIAGNOSTICS_FILE="$out/$mode.jsonl" \
         OPENMW_GAMEPLAY_DIAGNOSTICS_FILE="$out/$mode-gameplay.jsonl" "$out/runtime-diagnostics-tests" "$mode"

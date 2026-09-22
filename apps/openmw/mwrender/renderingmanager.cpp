@@ -1468,7 +1468,7 @@ namespace MWRender
         {
             const auto expected = mCamera->calculateViewMatrix();
             const auto& picking = mViewer->getCamera()->getViewMatrix();
-            Debug::GameplayDiagnostics::emit("pick", {
+            Debug::GameplayDiagnostics::recordEvent("pick", {
                 {"view_delta", std::to_string(Debug::GameplayDiagnostics::matrixDifference(expected, picking))},
                 {"view_hash", std::to_string(Debug::GameplayDiagnostics::fingerprint(picking.ptr(), sizeof(double) * 16))},
                 {"expected_hash", std::to_string(Debug::GameplayDiagnostics::fingerprint(expected.ptr(), sizeof(float) * 16))},

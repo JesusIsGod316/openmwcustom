@@ -209,7 +209,7 @@ namespace MWWorld
             if (measure) mWorkMs = std::chrono::duration<double, std::milli>(
                 Debug::GameplayDiagnostics::Clock::now() - start).count();
             if (Debug::RuntimeDiagnostics::enabled())
-                Debug::RuntimeDiagnostics::emit("terrain_job", "legacy_terrain_preload", {}, {
+                Debug::RuntimeDiagnostics::recordEvent("terrain_job", "legacy_terrain_preload", {}, {
                     {"job", reinterpret_cast<std::uintptr_t>(this)},
                     {"queue_us", static_cast<std::uint64_t>((std::max)(0.0, mQueueMs.load()) * 1000)},
                     {"work_us", static_cast<std::uint64_t>((std::max)(0.0, mWorkMs.load()) * 1000)},
@@ -223,12 +223,12 @@ namespace MWWorld
         {
             Debug::RuntimeDiagnostics::Operation runtimeOperation("required_terrain_wait");
             if (Debug::RuntimeDiagnostics::enabled())
-                Debug::RuntimeDiagnostics::emit("wait_dependency", "required_terrain_wait", {},
+                Debug::RuntimeDiagnostics::recordEvent("wait_dependency", "required_terrain_wait", {},
                     {{"job", reinterpret_cast<std::uintptr_t>(this)}, {"views", mPreloadPositions.size()}});
             Debug::GameplayDiagnostics::Operation operation("terrain_wait");
             mLoadingReporter.wait(listener);
             if (Debug::GameplayDiagnostics::enabled())
-                Debug::GameplayDiagnostics::emit("terrain_preload_work", {
+                Debug::GameplayDiagnostics::recordEvent("terrain_preload_work", {
                     {"queue_ms", std::to_string(mQueueMs.load())}, {"work_ms", std::to_string(mWorkMs.load())},
                     {"views", std::to_string(mPreloadPositions.size())},
                     {"aborted", std::to_string(mAbort.load())}}, true);
@@ -379,7 +379,7 @@ namespace MWWorld
             std::uint64_t done = 0;
             for (const auto& [cell, entry] : mPreloadCells)
                 if (entry.mWorkItem && entry.mWorkItem->isDone()) ++done;
-            Debug::RuntimeDiagnostics::emit("preload_cache", "cell_preloader", {}, {
+            Debug::RuntimeDiagnostics::recordEvent("preload_cache", "cell_preloader", {}, {
                 {"entries", mPreloadCells.size()}, {"completed", done}, {"added", mAdded},
                 {"expired", mExpired}, {"evicted", mEvicted}, {"loaded", mLoaded},
                 {"minimum", mMinCacheSize}, {"maximum", mMaxCacheSize},
