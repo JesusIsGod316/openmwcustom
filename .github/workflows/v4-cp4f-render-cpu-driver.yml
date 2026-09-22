@@ -1,0 +1,31 @@
+name: CP4F headless pixel test driver
+on:
+  push:
+    branches: [v4.0-cp4f-rendering-repair-20260922]
+    paths: [.github/workflows/v4-cp4f-render-cpu-driver.yml]
+permissions:
+  contents: read
+jobs:
+  driver:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Download Debian 13 software Vulkan package for offline tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cpu-driver"
+          docker run --rm -v "$RUNNER_TEMP/cpu-driver:/output" debian:13 bash -c '
+            set -euo pipefail
+            apt-get update -qq
+            cd /output
+            apt-cache policy mesa-vulkan-drivers libllvm19 > package-versions.txt
+            apt-get download mesa-vulkan-drivers libdrm2 libdrm-amdgpu1 libelf1t64 libzstd1 libz3-4 libedit2 libwayland-client0
+            sha256sum *.deb > SHA256SUMS
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cp4f-headless-pixel-driver
+          path: ${{ runner.temp }}/cpu-driver
+          retention-days: 7
+          if-no-files-found: error
