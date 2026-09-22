@@ -1,59 +1,109 @@
-name: CP4F interrupted diagnostics recovery
+name: CP4F recovered diagnostics validation
 on:
   push:
     branches: [v4.0-cp4f-diagnostics-recovery-20260922]
     paths: [.github/workflows/v4-cp4f-diagnostic-recovery.yml]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  recover:
+  validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: c6b2ad8b87a989fb7630c69617673e179d81dbcb
-          persist-credentials: false
-      - name: Preserve exact baseline and available uploaded patch objects
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Recover exact guarded source bytes
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/recovery"
-          git archive --format=tar HEAD | gzip -1 > "$RUNNER_TEMP/recovery/source.tar.gz"
-          git ls-tree -r HEAD > "$RUNNER_TEMP/recovery/source-tree.txt"
+          test "$(git merge-base c6b2ad8b87a989fb7630c69617673e179d81dbcb HEAD)" = c6b2ad8b87a989fb7630c69617673e179d81dbcb
+          mkdir -p "$RUNNER_TEMP/diagnostic-validation"
           python3 - <<'PY'
-          import base64, hashlib, json, lzma, os, pathlib, urllib.request, urllib.error
-          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'recovery'
-          shas = ['7522d172f481fd53befcd295625bec9701cfd8d1', 'f5a3894fdaa63d5fdee5cf6dc14ad879059ce8d2', 'deb95c57cc752bf04f7c4145e2b0fb3ea21c6782', 'b8e3657efdca8eda08ddcd7a6b28e44a952293fb', '88cb257e3a87623248c6418c350ebe9397b2f509']
-          packed = bytearray()
-          found = []
-          for i, sha in enumerate(shas):
-              req = urllib.request.Request('https://api.github.com/repos/JesusIsGod316/openmwcustom/git/blobs/' + sha, headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'], 'Accept':'application/vnd.github+json'})
-              try:
-                  with urllib.request.urlopen(req, timeout=30) as response:
-                      obj = json.load(response)
-              except urllib.error.HTTPError as error:
-                  if error.code != 404: raise
-                  print('Missing uploaded chunk', i, sha)
-                  break
-              data = base64.b64decode(obj['content'])
-              actual = hashlib.sha1(('blob '+str(len(data))+'\0').encode()+data).hexdigest()
-              if actual != sha: raise SystemExit('Blob mismatch')
-              (out / ('chunk-'+str(i)+'.bin')).write_bytes(data)
-              packed.extend(data)
-              found.append(sha)
-          decoder = lzma.LZMADecompressor()
-          raw = decoder.decompress(packed)
-          (out/'recovered.patch.partial').write_bytes(raw)
-          report = {'chunks':found, 'bytes':len(raw), 'complete':decoder.eof, 'sha256':hashlib.sha256(raw).hexdigest(), 'expected_sha256':'79777f9188248ef68a436d27fa5a4d4b956d4a0c96b41d70f6bfda51c02832f8'}
-          (out/'recovery.json').write_text(json.dumps(report,indent=2))
-          print(json.dumps(report,indent=2))
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'diagnostic-validation'
+          def blobs(shas):
+              packed = bytearray()
+              for sha in shas:
+                  req = urllib.request.Request('https://api.github.com/repos/JesusIsGod316/openmwcustom/git/blobs/' + sha, headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'], 'Accept':'application/vnd.github+json'})
+                  with urllib.request.urlopen(req, timeout=30) as response: obj = json.load(response)
+                  data = base64.b64decode(obj['content'])
+                  if hashlib.sha1(('blob '+str(len(data))+'\0').encode()+data).hexdigest() != sha:
+                      raise SystemExit('Blob mismatch')
+                  packed.extend(data)
+              return packed
+          recovered = lzma.LZMADecompressor().decompress(blobs(['7522d172f481fd53befcd295625bec9701cfd8d1', 'f5a3894fdaa63d5fdee5cf6dc14ad879059ce8d2', 'deb95c57cc752bf04f7c4145e2b0fb3ea21c6782']))
+          core = recovered[:recovered.rfind(b'\ndiff --git ')+1]
+          if hashlib.sha256(core).hexdigest() != '44c15e1d61372d11bd7aa04d0fb432d24f49932a3b644d54c52fb5b3bb6fe0d3':
+              raise SystemExit('Recovered core mismatch')
+          tail = lzma.decompress(blobs(['052bab5542f4ab5850078c81d0dc0d5b77a2efb5', '0553d31502d25c2da8f1e7eb624d2031bda8a775', 'd31e82cb86e854fa99123cf12ea8ca4df1f528fd', '9a8987e077977b504e777ee5fbdef512e10c4348']))
+          patch = core + tail
+          if hashlib.sha256(patch).hexdigest() != '2d6baaca4ae2933bef5d08e4943db001720c75a0c2d7012a8dff5b4de56ccf20':
+              raise SystemExit('Complete patch mismatch')
+          paths = [line.split(' b/',1)[1] for line in patch.decode().splitlines() if line.startswith('diff --git ')]
+          if len(paths) != 40 or len(set(paths)) != 40 or any(p.startswith('.github/') or '/mwlua/' in p or '..' in p for p in paths):
+              raise SystemExit('Unexpected patch paths')
+          (out/'diagnostics.patch').write_bytes(patch)
+          (out/'paths.txt').write_text('\n'.join(paths)+'\n')
+          subprocess.run(['git','apply','--check',str(out/'diagnostics.patch')],check=True)
+          subprocess.run(['git','apply',str(out/'diagnostics.patch')],check=True)
+          print('Exact 32-file core recovered; eight helper/test files restored; patch SHA256 verified.')
           PY
+      - name: Install real CPU-test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libopenscenegraph-dev libglm-dev python3-yaml
+      - name: Compile and test optimized recorder and sanitizers
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/diagnostic-validation"
+          bash tools/v4/cp4/run-runtime-diagnostics-tests.sh "$out/native" 2>&1 | tee "$out/native.log"
+          OPENMW_UV_TEST_SANITIZERS=1 ASAN_OPTIONS=detect_leaks=1 bash tools/v4/cp4/run-runtime-diagnostics-tests.sh "$out/sanitized" 2>&1 | tee "$out/sanitized.log"
+          bash tools/v4/cp4/run-effect-uv-tests.sh "$out/uv" 2>&1 | tee "$out/uv.log"
+          python3 tools/v4/cp4/test-gameplay-diagnostics.py 2>&1 | tee "$out/gameplay.log"
+      - name: Retained source and configuration contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in tools/v4/cp3e/application-route-contract.py tools/v4/cp4/streaming-contract.py tools/v4/cp4/population-environment-contract.py tools/v4/cp4/water-environment-contract.py tools/v4/cp4/video-ui-contract.py tools/v4/cp4/animated-object-contract.py tools/v4/cp4/fullbody-first-person-contract.py tools/v4/cp4/runtime-blocker-contract.py tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py; do
+            python3 "$script"
+          done
+          python3 - <<'PY'
+          import pathlib, yaml
+          for path in pathlib.Path('.github/workflows').glob('*.yml'): yaml.safe_load(path.read_text())
+          print('Workflow YAML parsed')
+          PY
+          git diff --check
+      - name: Commit only validated implementation paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/diagnostic-validation"
+          while IFS= read -r path; do git add -- "$path"; done < "$out/paths.txt"
+          test "$(git diff --cached --name-only | wc -l)" -eq 40
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'CP4F: add bounded ownership diagnostics and repair Vulkan adapter definitions'
+          git push origin HEAD:v4.0-cp4f-diagnostics-recovery-20260922
+          git rev-parse HEAD | tee "$out/source-sha.txt"
+          git diff-tree --no-commit-id --raw -r HEAD > "$out/source-blobs.txt"
+          git archive --format=tar HEAD | gzip -1 > "$out/validated-source.tar.gz"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: cp4f-interrupted-diagnostics-recovery
-          path: ${{ runner.temp }}/recovery/
-          retention-days: 7
+          name: cp4f-recovered-diagnostics-validation-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/diagnostic-validation/*.log
+            ${{ runner.temp }}/diagnostic-validation/*.json
+            ${{ runner.temp }}/diagnostic-validation/*.txt
+            ${{ runner.temp }}/diagnostic-validation/*.patch
+            ${{ runner.temp }}/diagnostic-validation/validated-source.tar.gz
+            ${{ runner.temp }}/diagnostic-validation/native/*.jsonl
+            ${{ runner.temp }}/diagnostic-validation/sanitized/*.jsonl
+          retention-days: 14
           if-no-files-found: error
