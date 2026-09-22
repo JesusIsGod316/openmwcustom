@@ -1,0 +1,35 @@
+name: CP4F pinned UV regression workspace
+on:
+  push:
+    branches: [v4.0-cp4f-uv-repair-20260922]
+    paths: [.github/workflows/v4-cp4f-uv-workspace.yml]
+permissions:
+  contents: read
+jobs:
+  source-workspace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 9a29f75410b341b786c052dc742e0fb7367fe008
+          persist-credentials: false
+      - name: Prepare exact source and real OSG CPU-test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 9a29f75410b341b786c052dc742e0fb7367fe008
+          mkdir -p "$RUNNER_TEMP/cp4f-uv-workspace/debs"
+          git archive --format=tar HEAD | gzip -1 > "$RUNNER_TEMP/cp4f-uv-workspace/source.tar.gz"
+          sudo apt-get update -qq
+          cd "$RUNNER_TEMP/cp4f-uv-workspace/debs"
+          apt-get download libopenscenegraph-dev libopenscenegraph161 libopenthreads-dev libopenthreads21 libglm-dev libglu1-mesa
+          cd ..
+          sha256sum source.tar.gz debs/*.deb > SHA256SUMS
+          printf '%s\n' 9a29f75410b341b786c052dc742e0fb7367fe008 > SOURCE_COMMIT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cp4f-uv-workspace-9a29f75410
+          path: ${{ runner.temp }}/cp4f-uv-workspace/
+          retention-days: 3
+          if-no-files-found: error
