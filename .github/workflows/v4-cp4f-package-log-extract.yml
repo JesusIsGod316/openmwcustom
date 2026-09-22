@@ -1,0 +1,33 @@
+name: CP4F prior package error extraction
+on:
+  push:
+    branches: [v4.0-cp4f-rendering-repair-20260922]
+    paths: [.github/workflows/v4-cp4f-package-log-extract.yml]
+permissions:
+  actions: read
+  contents: write
+jobs:
+  extract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract exact package failure from existing job log
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/JesusIsGod316/openmwcustom/actions/jobs/106941952125/logs > "$RUNNER_TEMP/prior-job.log"
+          python3 - <<'PY'
+          import os, pathlib
+          rows=(pathlib.Path(os.environ['RUNNER_TEMP'])/'prior-job.log').read_text().splitlines()
+          start=next(i for i,line in enumerate(rows) if 'cp4f-package-config' in line)
+          text='\n'.join(rows[max(0,start-5):min(len(rows),start+90)])+'\n'
+          pathlib.Path('CP4F-PACKAGE-FAILURE-EXTRACT.txt').write_text(text)
+          print(text)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add CP4F-PACKAGE-FAILURE-EXTRACT.txt
+          git commit -m 'CP4F: preserve exact prior packaging error excerpt'
+          git push
