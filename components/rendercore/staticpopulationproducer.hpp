@@ -308,6 +308,7 @@ namespace RenderCore
                 && left.localBounds.maximum == right.localBounds.maximum && left.lod.center == right.lod.center
                 && left.lod.minimumDistance == right.lod.minimumDistance
                 && left.lod.maximumDistance == right.lod.maximumDistance && left.lod.scale == right.lod.scale
+                && left.lod.smallFeatureEligible == right.lod.smallFeatureEligible
                 && left.semanticFlags == right.semanticFlags && left.lightingEnabled == right.lightingEnabled;
         }
 

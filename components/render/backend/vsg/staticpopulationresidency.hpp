@@ -37,6 +37,10 @@ namespace RenderVsg
         std::vector<StaticPopulationIdentity> orderedPopulations;
         std::vector<StaticPopulationPlan> upserts;
         std::vector<StaticPopulationIdentity> removals;
+        std::size_t newGroups = 0;
+        std::size_t changedChunks = 0;
+        std::size_t changedOptions = 0;
+        std::size_t staleDependencies = 0;
         bool valid = false;
     };
 
@@ -65,7 +69,7 @@ namespace RenderVsg
         }
 
         [[nodiscard]] StaticPopulationMutation prepare(
-            const RenderCore::RenderWorld& world, const StaticWorldPlan& plan)
+            const RenderCore::RenderWorld& world, const StaticWorldPlan& plan, bool coarseChunkInvalidation = false)
         {
             StaticPopulationMutation mutation;
             mutation.serial = ++mLastPreparedSerial;
@@ -87,8 +91,19 @@ namespace RenderVsg
                 }
                 mutation.orderedPopulations.push_back(identity);
                 const Resident* resident = find(identity);
-                if (!resident || resident->plan.chunkRevision != candidate.chunkRevision
-                    || resident->plan.options != candidate.options || !staticPopulationPlanCurrent(world, resident->plan))
+                if (!resident)
+                {
+                    ++mutation.newGroups;
+                    mutation.upserts.push_back(candidate);
+                    continue;
+                }
+                const bool chunkChanged = resident->plan.chunkRevision != candidate.chunkRevision;
+                const bool optionsChanged = resident->plan.options != candidate.options;
+                const bool dependenciesCurrent = staticPopulationPlanCurrent(world, resident->plan, !coarseChunkInvalidation);
+                mutation.changedChunks += chunkChanged;
+                mutation.changedOptions += optionsChanged;
+                mutation.staleDependencies += !dependenciesCurrent;
+                if ((coarseChunkInvalidation && chunkChanged) || optionsChanged || !dependenciesCurrent)
                     mutation.upserts.push_back(candidate);
             }
             for (const Resident& resident : mResidents)

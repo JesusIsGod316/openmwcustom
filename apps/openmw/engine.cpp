@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include <components/debug/gameplaydiagnostics.hpp>
 
 #include <cerrno>
 #include <chrono>
@@ -92,6 +93,7 @@
 #if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
 #include "mwrender/v4engineframecoordinator.hpp"
 #include "mwrender/v4enginerenderbridge.hpp"
+#include "mwrender/v4updateonlyviewer.hpp"
 #endif
 
 #include "mwdialogue/dialoguemanagerimp.hpp"
@@ -280,6 +282,7 @@ void OMW::Engine::executeLocalScripts()
 
 bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 {
+    Debug::GameplayDiagnostics::Frame gameplayDiagnostic(frameNumber, mUseVulkanRenderer, mViewer->done());
     const osg::Timer_t frameStart = mViewer->getStartTick();
     const osg::Timer* const timer = osg::Timer::instance();
     osg::Stats* const stats = mViewer->getViewerStats();
@@ -291,7 +294,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // Stop the background GC started at the previous frame's end.
         // Input handling can run Lua (the menu key does), so the state
         // must not be collected from this point on.
-        mLuaWorker->finishGc();
+        { Debug::GameplayDiagnostics::Stage diagnostic("lua_finish_gc"); mLuaWorker->finishGc(); }
 
         // update input
         {
@@ -365,6 +368,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update mechanics
         {
             ScopedProfile<UserStatsType::Mechanics> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::GameplayDiagnostics::Stage diagnostic("mechanics");
 
             if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
             {
@@ -382,6 +386,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update physics
         {
             ScopedProfile<UserStatsType::Physics> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::GameplayDiagnostics::Stage diagnostic("physics");
 
             if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
             {
@@ -392,6 +397,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update world
         {
             ScopedProfile<UserStatsType::World> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::GameplayDiagnostics::Stage diagnostic("world_update");
 
             if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
             {
@@ -792,12 +798,17 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
             }
         }
 
+        Debug::GameplayDiagnostics::Stage diagnostic("osg_update");
         mViewer->updateTraversal();
+        if (Debug::GameplayDiagnostics::sampling())
+            Debug::GameplayDiagnostics::emit("osg_update", {{"viewer_done", std::to_string(mViewer->done())},
+                {"frame_stamp", std::to_string(mViewer->getFrameStamp()->getFrameNumber())}});
     }
 
     // update focus object for GUI
     {
         ScopedProfile<UserStatsType::Focus> profile(frameStart, frameNumber, *timer, *stats);
+        Debug::GameplayDiagnostics::Stage diagnostic("focus");
         // V3.20 preserves the exact V3.19 fixed-cadence path by default. Optional
         // adaptive mode only adds an immediate refresh when the main camera's view or
         // projection contract changes. The configured cadence remains a hard maximum
@@ -891,6 +902,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
     if (mUseVulkanRenderer)
     {
 #if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        Debug::GameplayDiagnostics::Stage diagnostic("vulkan_capture");
         prepareVulkanFrame(frametime, false);
 #endif
     }
@@ -904,6 +916,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         if (mUseVulkanRenderer)
         {
 #if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+            Debug::GameplayDiagnostics::Stage diagnostic("vulkan_present");
             presentPreparedVulkanFrame();
 #endif
         }
@@ -913,12 +926,14 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 
     {
         Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(Debug::V3HitchTelemetry::FrameTailStage::LuaWait);
+        Debug::GameplayDiagnostics::Stage diagnostic("lua_wait");
         mLuaWorker->finishUpdate(frameStart, frameNumber, *stats);
     }
 
     // The Lua state is unused until the next frame starts: the worker collects
     // garbage through the frame tail and the framerate-limiter sleep.
     mLuaWorker->gc();
+    gameplayDiagnostic.completed = true;
 
     return true;
 }
@@ -1722,7 +1737,12 @@ void OMW::Engine::go()
 #endif
 
     // Setup viewer
-    mViewer = new osgViewer::Viewer;
+#if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+    if (mUseVulkanRenderer)
+        mViewer = new MWRender::V4UpdateOnlyViewer;
+    else
+#endif
+        mViewer = new osgViewer::Viewer;
     if (!mUseVulkanRenderer)
     {
         mViewer->getCamera()->getOrCreateStateSet()->removeAttribute(osg::StateAttribute::MATERIAL);
@@ -1800,12 +1820,12 @@ void OMW::Engine::go()
         mWindowManager->executeInConsole(mStartupScript);
     }
 
-    // Start the main rendering loop. The VSG/Vulkan route owns its own SDL/VSG presentation window;
-    // the retained OSG viewer is headless compatibility state and must not terminate Vulkan lifetime.
+    // The Vulkan CPU-only viewer does not infer shutdown from absent OSG windows.
+    // Both backends still honor an explicit viewer shutdown request.
     MWWorld::DateTimeManager& timeManager = *mWorld->getTimeManager();
     Misc::FrameRateLimiter frameRateLimiter = Misc::makeFrameRateLimiter(mEnvironment.getFrameRateLimit());
     const std::chrono::steady_clock::duration maxSimulationInterval(std::chrono::milliseconds(200));
-    while ((mUseVulkanRenderer || !mViewer->done()) && !mStateManager->hasQuitRequest())
+    while (!mViewer->done() && !mStateManager->hasQuitRequest())
     {
         const double dt = std::chrono::duration_cast<std::chrono::duration<double>>(
                               std::min(frameRateLimiter.getLastFrameDuration(), maxSimulationInterval))

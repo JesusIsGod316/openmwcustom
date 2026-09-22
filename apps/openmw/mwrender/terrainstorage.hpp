@@ -2,10 +2,13 @@
 #define MWRENDER_TERRAINSTORAGE_H
 
 #include <memory>
+#include <mutex>
 
 #include <components/esmterrain/storage.hpp>
 
 #include <components/resource/resourcesystem.hpp>
+
+namespace NifRender { class TextureIdentityCache; struct ResolvedVfsIdentity; }
 
 namespace MWRender
 {
@@ -33,11 +36,14 @@ namespace MWRender
         void getBounds(float& minX, float& maxX, float& minY, float& maxY, ESM::RefId worldspace) override;
 
         LandManager* getLandManager() const;
+        NifRender::ResolvedVfsIdentity resolveV4TextureIdentity(VFS::Path::NormalizedView path);
 
     private:
         std::unique_ptr<LandManager> mLandManager;
 
         Resource::ResourceSystem* mResourceSystem;
+        std::mutex mV4TextureIdentityMutex;
+        std::unique_ptr<NifRender::TextureIdentityCache> mV4TextureIdentities;
     };
 
 }

@@ -116,7 +116,17 @@ namespace RenderVsg
         // path. Synchronize once, then copy every requested surface in a single
         // short queue submission so N visible map cells do not cause N device
         // idle waits or N fence round trips.
-        waitIdle();
+        // Viewer::deviceWaitIdle() discards VkResult in the pinned VSG. If
+        // preceding rendering already lost the device, do not misattribute it
+        // to the subsequent map copy (or submit more work to that device).
+        const VkResult rendered = vkDeviceWaitIdle(device->vk());
+        if (rendered != VK_SUCCESS)
+        {
+            mLastDiagnostic = "GPU work failed before auxiliary RGBA readback with VkResult "
+                + std::to_string(rendered);
+            return std::nullopt;
+        }
+        mWaitedIdle = true;
         vsg::PhysicalDevice* const physicalDevice = device->getPhysicalDevice();
         if (!physicalDevice)
         {

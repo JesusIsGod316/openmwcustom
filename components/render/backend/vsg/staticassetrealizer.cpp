@@ -2,9 +2,11 @@
 #include "legacybumpmaterialshader.hpp"
 #include "legacymaterialshader.hpp"
 #include "staticassetrealizer.hpp"
+#include "livetextureimages.hpp"
 
 #include <vsg/all.h>
 #include <vsg/utils/GraphicsPipelineConfigurator.h>
+#include "viewpipelinebinding.hpp"
 #include <vsg/utils/ShaderSet.h>
 
 #include <algorithm>
@@ -182,8 +184,8 @@ namespace RenderVsg
                 case RenderCore::TextureRole::Specular: return "specularMap";
                 case RenderCore::TextureRole::Bump: return "openmwBumpMap";
                 case RenderCore::TextureRole::Gloss: return "openmwGlossMap";
-                case RenderCore::TextureRole::Environment:
-                case RenderCore::TextureRole::Blend: return std::nullopt;
+                case RenderCore::TextureRole::Blend: return "openmwTerrainBlendMap";
+                case RenderCore::TextureRole::Environment: return std::nullopt;
             }
             return std::nullopt;
         }
@@ -274,7 +276,8 @@ namespace RenderVsg
             {
                 state.depthTestEnable = key.fixedFunction.depthStencil.depthTest ? VK_TRUE : VK_FALSE;
                 state.depthWriteEnable = key.fixedFunction.depthStencil.depthWrite ? VK_TRUE : VK_FALSE;
-                state.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+                state.depthCompareOp = key.fixedFunction.depthStencil.equalDepth
+                    ? VK_COMPARE_OP_EQUAL : VK_COMPARE_OP_GREATER_OR_EQUAL;
                 state.stencilTestEnable = key.fixedFunction.depthStencil.stencilEnabled ? VK_TRUE : VK_FALSE;
                 if (state.stencilTestEnable)
                 {
@@ -336,6 +339,72 @@ namespace RenderVsg
         };
     }
 
+    bool updateDeformedAssetRealization(const RenderCore::RenderWorld& world,
+        const StaticAssetPlan& plan, const MeshPayloadResolver& resolve,
+        std::vector<StaticRealizationResult::MutableDrawStreams>& streams)
+    {
+        if (streams.size() != plan.draws.size())
+            return false;
+        std::vector<const RenderCore::MeshPayload*> payloads;
+        payloads.reserve(plan.draws.size());
+        for (std::size_t i = 0; i < plan.draws.size(); ++i)
+        {
+            const auto& draw = plan.draws[i];
+            const auto* mesh = world.get(draw.mesh);
+            const auto* payload = resolve ? resolve(draw.mesh, draw.node) : nullptr;
+            if (!payload && mesh)
+                payload = mesh->payload.get();
+            const auto& target = streams[i];
+            if (!payload || !target.positions || !target.normals || !target.transform
+                || target.positions->size() != payload->positions.size()
+                || target.normals->size() != payload->positions.size()
+                || (!payload->normals.empty() && payload->normals.size() != payload->positions.size()))
+                return false;
+            for (const auto& p : payload->positions)
+                if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
+                    return false;
+            for (const auto& n : payload->normals)
+                if (!std::isfinite(n.x) || !std::isfinite(n.y) || !std::isfinite(n.z))
+                    return false;
+            for (int col = 0; col < 4; ++col)
+                for (int row = 0; row < 4; ++row)
+                    if (!std::isfinite(draw.worldTransform[col][row]))
+                        return false;
+            payloads.push_back(payload);
+        }
+        for (std::size_t i = 0; i < streams.size(); ++i)
+        {
+            auto& target = streams[i];
+            const auto& payload = *payloads[i];
+            bool positionsChanged = false, normalsChanged = false;
+            for (std::size_t vertex = 0; vertex < payload.positions.size(); ++vertex)
+            {
+                const auto& p = payload.positions[vertex];
+                const vsg::vec3 position(p.x, p.y, p.z);
+                const auto normal = payload.normals.empty() ? glm::vec3(0, 0, 1) : payload.normals[vertex];
+                const vsg::vec3 n(normal.x, normal.y, normal.z);
+                if ((*target.positions)[vertex] != position)
+                {
+                    (*target.positions)[vertex] = position;
+                    positionsChanged = true;
+                }
+                if ((*target.normals)[vertex] != n)
+                {
+                    (*target.normals)[vertex] = n;
+                    normalsChanged = true;
+                }
+            }
+            if (positionsChanged)
+                target.positions->dirty();
+            if (normalsChanged)
+                target.normals->dirty();
+            target.transform->matrix = toVsg(plan.draws[i].worldTransform);
+            if (target.sorted)
+                target.sorted->bound = drawBound(payload, plan.draws[i].worldTransform);
+        }
+        return true;
+    }
+
     StaticAssetRealizer::StaticAssetRealizer(vsg::ref_ptr<vsg::SharedObjects> sharedObjects)
         : mSharedObjects(sharedObjects ? std::move(sharedObjects) : vsg::SharedObjects::create())
     {
@@ -345,7 +414,7 @@ namespace RenderVsg
         const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
         const MeshPayloadResolver& meshPayloadResolver,
         std::span<const RenderCore::PopulationInstanceRecord> placements, glm::dvec3 placementOrigin,
-        float opacityMultiplier) const
+        float opacityMultiplier, bool dynamicData) const
     {
         using namespace RenderCore;
 
@@ -553,6 +622,8 @@ namespace RenderVsg
 
             vsg::DataList arrays;
             auto positions = vsg::vec3Array::create(payload.positions.size());
+            if (dynamicData)
+                positions->properties.dataVariance = vsg::DYNAMIC_DATA;
             for (std::size_t i = 0; i < payload.positions.size(); ++i)
                 positions->set(i, vsg::vec3(payload.positions[i].x, payload.positions[i].y, payload.positions[i].z));
             if (!config->assignArray(arrays, "vsg_Vertex", VK_VERTEX_INPUT_RATE_VERTEX, positions))
@@ -573,6 +644,8 @@ namespace RenderVsg
             }
 
             auto normals = vsg::vec3Array::create(payload.positions.size());
+            if (dynamicData)
+                normals->properties.dataVariance = vsg::DYNAMIC_DATA;
             for (std::size_t i = 0; i < payload.positions.size(); ++i)
             {
                 const glm::vec3 normal = payload.normals.empty() ? glm::vec3(0.0f, 0.0f, 1.0f) : payload.normals[i];
@@ -580,15 +653,22 @@ namespace RenderVsg
             }
             config->assignArray(arrays, "vsg_Normal", VK_VERTEX_INPUT_RATE_VERTEX, normals);
 
+            std::vector<vsg::ref_ptr<vsg::vec2Array>> mutableTexCoords;
+            mutableTexCoords.reserve(payload.texCoordSets.size());
             for (std::size_t set = 0; set < payload.texCoordSets.size(); ++set)
             {
                 auto texCoords = vsg::vec2Array::create(payload.texCoordSets[set].size());
+                if (dynamicData)
+                    texCoords->properties.dataVariance = vsg::DYNAMIC_DATA;
                 for (std::size_t i = 0; i < payload.texCoordSets[set].size(); ++i)
                     texCoords->set(i, vsg::vec2(payload.texCoordSets[set][i].x, payload.texCoordSets[set][i].y));
                 config->assignArray(arrays, "vsg_TexCoord" + std::to_string(set), VK_VERTEX_INPUT_RATE_VERTEX, texCoords);
+                mutableTexCoords.push_back(std::move(texCoords));
             }
 
             auto colors = vsg::vec4Array::create(payload.positions.size());
+            if (dynamicData)
+                colors->properties.dataVariance = vsg::DYNAMIC_DATA;
             for (std::size_t i = 0; i < payload.positions.size(); ++i)
             {
                 const glm::vec4 color = usesVertexColors ? payload.colors[i] : glm::vec4(1.0f);
@@ -601,7 +681,8 @@ namespace RenderVsg
                 return result;
             }
 
-            if (!config->assignDescriptor("material", makeLegacyCompatibilityMaterial(*material)))
+            auto materialUniform = makeLegacyCompatibilityMaterial(*material);
+            if (!config->assignDescriptor("material", materialUniform))
             {
                 result.root = {};
                 result.diagnostics.emplace_back("Legacy compatibility shader rejected the OpenMW material descriptor");
@@ -723,7 +804,7 @@ namespace RenderVsg
                     vsg::ref_ptr<vsg::Sampler> sampler;
                     if (!realizeBinding(bindingIndex, data, sampler))
                         return result;
-                    frames.push_back(vsg::ImageInfo::create(sampler, data));
+                    frames.push_back(liveTextureImage(data, sampler));
                 }
                 if (frames.size() != EnchantedEnvironmentFrameCount
                     || !config->assignTexture("openmwEnvironmentMaps", frames))
@@ -738,6 +819,13 @@ namespace RenderVsg
             for (std::size_t bindingIndex = 0; bindingIndex < material->textures.size(); ++bindingIndex)
             {
                 const TextureBinding& binding = material->textures[bindingIndex];
+                if (binding.role == TextureRole::Blend && (!material->terrainLayer
+                        || binding.transform.uvSet != 1 || payload.texCoordSets.size() < 2))
+                {
+                    result.root = {};
+                    result.diagnostics.emplace_back("LAND blend binding requires a terrain layer and UV set 1");
+                    return result;
+                }
                 if (enchantedEnvironment && binding.role == TextureRole::Environment)
                     continue;
                 const auto descriptor = descriptorName(binding.role);
@@ -756,7 +844,12 @@ namespace RenderVsg
                 vsg::ref_ptr<vsg::Sampler> sampler;
                 if (!realizeBinding(bindingIndex, data, sampler))
                     return result;
-                if (!config->assignTexture(*descriptor, data, sampler))
+                if (material->terrainLayer && binding.role == TextureRole::Normal
+                    && (data->properties.format == VK_FORMAT_BC5_UNORM_BLOCK
+                        || data->properties.format == VK_FORMAT_R8G8_UNORM
+                        || data->properties.format == VK_FORMAT_R16G16_UNORM))
+                    materialUniform->value().textureCoordSets.w += 8.f;
+                if (!config->assignTexture(*descriptor, vsg::ImageInfoList{ liveTextureImage(data, sampler) }))
                 {
                     result.root = {};
                     result.diagnostics.emplace_back(
@@ -767,7 +860,12 @@ namespace RenderVsg
 
             PipelineStateVisitor stateVisitor(effectivePipeline);
             config->accept(stateVisitor);
-            mSharedObjects->share(config, [](const vsg::ref_ptr<vsg::GraphicsPipelineConfigurator>& shared) { shared->init(); });
+            mSharedObjects->share(config, [](const vsg::ref_ptr<vsg::GraphicsPipelineConfigurator>& shared) {
+                shared->init();
+                shared->graphicsPipeline->setValue("openmw.pipeline.family", "legacy-static");
+                shared->graphicsPipeline->setValue("openmw.pipeline.source", "shared legacy compatibility pipeline");
+                ViewPipelineBinding::prepareCache(*shared->graphicsPipeline);
+            });
 
             auto stateGroup = vsg::StateGroup::create();
             if (!config->copyTo(stateGroup, mSharedObjects))
@@ -776,13 +874,18 @@ namespace RenderVsg
                 result.diagnostics.emplace_back("GraphicsPipelineConfigurator could not copy state into draw StateGroup");
                 return result;
             }
-            for (const vsg::ref_ptr<vsg::StateCommand>& stateCommand : stateGroup->stateCommands)
+            for (vsg::ref_ptr<vsg::StateCommand>& stateCommand : stateGroup->stateCommands)
             {
                 auto bindPipeline = stateCommand.cast<vsg::BindGraphicsPipeline>();
                 if (!bindPipeline || !bindPipeline->pipeline)
                     continue;
-                bindPipeline->pipeline->setValue("openmw.pipeline.family", "legacy-static");
-                bindPipeline->pipeline->setValue("openmw.pipeline.source",
+                // copyTo already interns the immutable pipeline independently
+                // of the per-draw arrays. Do not mutate an interned binding or
+                // its comparison keys after that sharing boundary.
+                auto viewBinding = ViewPipelineBinding::create(bindPipeline->pipeline);
+                mSharedObjects->share(viewBinding);
+                stateCommand = viewBinding;
+                stateGroup->setValue("openmw.draw.source",
                     mesh->sourceIdentity + " | " + material->sourceIdentity);
             }
             stateGroup->prototypeArrayState = config->getSuitableArrayState();
@@ -804,11 +907,16 @@ namespace RenderVsg
             transform->addChild(stateGroup);
 
             vsg::ref_ptr<vsg::Node> node = transform;
+            vsg::ref_ptr<vsg::DepthSorted> sorted;
             if (material->transparentSort == TransparentSortPolicy::Sorted)
             {
-                node = vsg::DepthSorted::create(10, drawBound(payload, draw.worldTransform), transform);
+                sorted = vsg::DepthSorted::create(10, drawBound(payload, draw.worldTransform), transform);
+                node = sorted;
                 ++result.stats.sortedDrawCount;
             }
+            if (dynamicData)
+                result.mutableDraws.push_back({ std::move(positions), std::move(normals),
+                    std::move(mutableTexCoords), std::move(colors), transform, sorted });
             result.root->addChild(node);
 
             pipelineKeys.insert(effectivePipeline);

@@ -1,7 +1,9 @@
 #include "v4enginerenderbridge.hpp"
+#include <components/debug/gameplaydiagnostics.hpp>
 
 #include "v4runtimeoptions.hpp"
 #include "v4effectcapture.hpp"
+#include "v4rigidactorpose.hpp"
 #include "v4scenerenderlifecycle.hpp"
 #include "v4semanticsource.hpp"
 #include "v4terrainsource.hpp"
@@ -12,6 +14,7 @@
 #include "renderingmanager.hpp"
 
 #include "../mwworld/cell.hpp"
+#include "../mwworld/cellstore.hpp"
 #include "../mwworld/class.hpp"
 #include "../mwworld/inventorystore.hpp"
 
@@ -37,6 +40,7 @@
 #include <osg/NodeVisitor>
 
 #include <components/render/backend/vsg/vfstextureresolver.hpp>
+#include <components/nifrender/vfsidentity.hpp>
 #include <components/render/backend/vsg/vsgsemanticsession.hpp>
 
 #include <SDL3/SDL.h>
@@ -78,7 +82,7 @@ namespace MWRender
 
         [[nodiscard]] std::optional<NifRender::StaticModelCacheResult> ensureModelPublished(
             RenderVsg::VsgSemanticSession& session, const VFS::Manager& vfs, VFS::Path::NormalizedView path,
-            std::string* failureDiagnostic = nullptr)
+            NifRender::TextureIdentityCache* textureIdentities, std::string* failureDiagnostic = nullptr)
         {
             const auto fail = [&](std::string message) -> std::optional<NifRender::StaticModelCacheResult> {
                 if (failureDiagnostic)
@@ -97,11 +101,12 @@ namespace MWRender
                 return fail("winning VFS has no file for '" + std::string(path.value()) + "'");
             try
             {
+                Debug::GameplayDiagnostics::Operation modelDiagnostic("v4_model_load", std::string(path.value()));
                 Nif::NIFFile nifFile(normalized);
                 Nif::Reader reader(nifFile, nullptr);
                 reader.parse(vfs.get(normalized));
                 const NifRender::TranslationBundle bundle
-                    = NifRender::translateStaticNif(Nif::FileView(nifFile), vfs);
+                    = NifRender::translateStaticNif(Nif::FileView(nifFile), vfs, {}, textureIdentities);
                 const NifRender::StaticModelCacheResult published = session.models().publish(bundle);
                 if (published.available())
                     return published;
@@ -203,10 +208,12 @@ namespace MWRender
         class AnimatedObjectCaptureVisitor final : public osg::NodeVisitor
         {
         public:
-            AnimatedObjectCaptureVisitor(std::string identityPrefix, const VFS::Manager& vfs)
+            AnimatedObjectCaptureVisitor(std::string identityPrefix, const VFS::Manager& vfs,
+                NifRender::TextureIdentityCache* identities)
                 : osg::NodeVisitor(TRAVERSE_ACTIVE_CHILDREN)
                 , mIdentityPrefix(std::move(identityPrefix))
                 , mVfs(vfs)
+                , mTextureIdentities(identities)
             {
             }
 
@@ -217,7 +224,7 @@ namespace MWRender
                 if (const auto* particles = dynamic_cast<const osgParticle::ParticleSystem*>(&node))
                 {
                     if (!v4_effect_detail::captureParticleSystem(*particles, getNodePath(), mVfs,
-                            nextIdentity("system"), mResult.draws, mResult.diagnostic))
+                            nextIdentity("system"), mResult.draws, mResult.diagnostic, mTextureIdentities))
                         return;
                 }
                 if (mResult.valid())
@@ -236,17 +243,17 @@ namespace MWRender
             {
                 if (nestedEffectRoot(drawable))
                     return;
-                if (auto* geometry = dynamic_cast<osg::Geometry*>(&drawable))
+                if (auto* geometry = v4_effect_detail::evaluatedGeometry(drawable, *this, mResult.diagnostic))
                 {
                     RenderCore::ImmediateEffectDraw draw;
                     if (v4_effect_detail::captureGeometry(*geometry, getNodePath(), mVfs,
-                            nextIdentity("geometry"), draw, mResult.diagnostic))
+                            nextIdentity("geometry"), draw, mResult.diagnostic, mTextureIdentities))
                         mResult.draws.push_back(std::move(draw));
                 }
                 else if (auto* particles = dynamic_cast<osgParticle::ParticleSystem*>(&drawable))
                 {
                     if (!v4_effect_detail::captureParticleSystem(*particles, getNodePath(), mVfs,
-                            nextIdentity("system"), mResult.draws, mResult.diagnostic))
+                            nextIdentity("system"), mResult.draws, mResult.diagnostic, mTextureIdentities))
                         return;
                 }
                 if (mResult.valid())
@@ -268,6 +275,7 @@ namespace MWRender
 
             std::string mIdentityPrefix;
             const VFS::Manager& mVfs;
+            NifRender::TextureIdentityCache* mTextureIdentities;
             std::size_t mOrdinal = 0;
             V4EffectCaptureResult mResult;
         };
@@ -295,6 +303,31 @@ namespace MWRender
     std::unique_ptr<V4EngineRenderBridge> V4EngineRenderBridge::create(
         const VFS::Manager& vfs, RenderVsg::VsgRuntimeBootstrapOptions options)
     {
+        // Use the same winning VFS asset as native OpenMW water, decoded as
+        // normal data (never sRGB). The procedural path stays available for A/B.
+        if (options.host.water.enabled && !std::getenv("OPENMW_V4_PROCEDURAL_WATER_CONTROL"))
+        {
+            const auto identity = NifRender::resolveTextureVfsIdentity(
+                VFS::Path::NormalizedView("textures/omw/water_nm.png"), vfs);
+            if (identity.valid())
+            {
+                RenderCore::TextureRecord record;
+                record.sourceIdentity = std::string(identity.canonicalPath.value());
+                record.contentIdentity = identity.contentIdentity;
+                const RenderCore::TextureRealizationKey key{
+                    { RenderCore::TextureHandle::fromParts(0, 1), RenderCore::TextureColorSpace::Data,
+                        RenderCore::TextureFormatClass::Normal }, record.revision };
+                auto report = std::make_shared<RenderVsg::StaticTextureDecodeReport>();
+                RenderVsg::StaticTextureDecoder decoder({}, report);
+                auto data = decoder.decode(record, key, [&vfs](std::string_view path) {
+                    return vfs.find(VFS::Path::toNormalized(path));
+                });
+                if (data && report->warningFallbacks == 0)
+                    options.host.water.normalMap = std::move(data);
+            }
+            if (!options.host.water.normalMap)
+                Log(Debug::Warning) << "V4 water normal map unavailable; retaining procedural water";
+        }
         std::shared_ptr<RenderVsg::VsgSemanticSession> session(
             RenderVsg::VsgSemanticSession::create(RenderVsg::makeVfsStaticTextureResolver(vfs), std::move(options)));
         if (!session)
@@ -310,6 +343,7 @@ namespace MWRender
     V4EngineRenderBridge::V4EngineRenderBridge(
         const VFS::Manager& vfs, std::shared_ptr<RenderVsg::VsgSemanticSession> session)
         : mVfs(vfs)
+        , mTextureIdentities(vfs, std::getenv("OPENMW_V4_UNCACHED_TEXTURE_IDENTITIES") ? 0u : 4096u)
         , mSession(std::move(session))
         , mRouteStatus(std::make_shared<V4RenderRouteStatus>())
         , mTerrain(std::make_unique<RenderCore::TerrainChunkProducer>(mSession->world(), mSession->publisher()))
@@ -478,7 +512,7 @@ namespace MWRender
                 for (const auto& [modelPath, entries] : instances)
                 {
                     const std::optional<NifRender::StaticModelCacheResult> published
-                        = ensureModelPublished(*mSession, mVfs, modelPath);
+                        = ensureModelPublished(*mSession, mVfs, modelPath, &mTextureIdentities);
                     if (!published)
                     {
                         mLastDiagnostic = "groundcover model publication failed for " + modelPath.value();
@@ -603,7 +637,17 @@ namespace MWRender
 
     bool V4EngineRenderBridge::captureDynamicFrameState(const RenderingManager& rendering, V4MainFrameSource& source)
     {
+        Debug::GameplayDiagnostics::Stage diagnostic("dynamic_capture");
+        NifRender::TextureIdentityCache::CaptureScope textureSnapshot(mTextureIdentities);
         mLastDiagnostic.clear();
+        if (!mSession->healthy() || !mRouteStatus->healthy())
+        {
+            // A loading-frame error can be caught by a delayed Lua action. Do
+            // not mutate the partially transitioned world on the next capture
+            // or replace the original GPU error with a missing-actor error.
+            mLastDiagnostic = !mSession->healthy() ? mSession->lastDiagnostic() : mRouteStatus->firstDiagnostic();
+            return false;
+        }
         const RenderCore::WorldEpoch worldEpoch = mSession->world().epoch();
         if (mEvaluatedObjectPlaybackEpoch != worldEpoch)
         {
@@ -648,7 +692,7 @@ namespace MWRender
                     else
                     {
                         const std::optional<NifRender::StaticModelCacheResult> published
-                            = ensureModelPublished(*mSession, mVfs, modelPath);
+                            = ensureModelPublished(*mSession, mVfs, modelPath, &mTextureIdentities);
                         const RenderCore::ModelRecord* model
                             = published ? mSession->world().get(published->model) : nullptr;
                         if (!published || !model)
@@ -681,7 +725,8 @@ namespace MWRender
                     return;
                 }
 
-                AnimatedObjectCaptureVisitor objectVisitor("animated-object:" + *identity, mVfs);
+                AnimatedObjectCaptureVisitor objectVisitor("animated-object:" + *identity, mVfs, &mTextureIdentities);
+                objectVisitor.setTraversalNumber(mPoseTraversal);
                 evaluatedRoot->accept(objectVisitor);
                 V4EffectCaptureResult capturedObject = objectVisitor.take();
                 if (!capturedObject.valid())
@@ -703,8 +748,9 @@ namespace MWRender
                 std::optional<V4EffectCaptureResult> capturedEffects;
                 if (animation.hasV4UpdateVfxAttachments())
                 {
-                    v4_effect_detail::CaptureVisitor effectVisitor("animated-object-effect:" + *identity, false, mVfs);
+                    v4_effect_detail::CaptureVisitor effectVisitor("animated-object-effect:" + *identity, false, mVfs, &mTextureIdentities);
                     effectVisitor.setTraversalMode(osg::NodeVisitor::TRAVERSE_ACTIVE_CHILDREN);
+                    effectVisitor.setTraversalNumber(mPoseTraversal);
                     evaluatedRoot->accept(effectVisitor);
                     capturedEffects.emplace(effectVisitor.take());
                     if (!capturedEffects->valid())
@@ -753,7 +799,7 @@ namespace MWRender
                     return;
                 }
                 V4EffectCaptureResult captured
-                    = captureV4AttachedEffects(*effectRoot, "actor-effect:" + *identity, mVfs);
+                    = captureV4AttachedEffects(*effectRoot, "actor-effect:" + *identity, mVfs, &mTextureIdentities, mPoseTraversal);
                 if (!captured.valid())
                 {
                     compatible = false;
@@ -766,7 +812,7 @@ namespace MWRender
                     source.immediateEffectDraws.push_back(std::move(draw));
             }
             const std::optional<NifRender::StaticModelCacheResult> base
-                = ensureModelPublished(*mSession, mVfs, animation.getV4SourceModel());
+                = ensureModelPublished(*mSession, mVfs, animation.getV4SourceModel(), &mTextureIdentities);
             if (!base)
             {
                 compatible = false;
@@ -781,509 +827,597 @@ namespace MWRender
                 return;
             }
 
-            std::optional<RenderCore::SkeletonHandle> actorSkeleton = base->skeleton;
-            if (!actorSkeleton)
+            const bool particleActor = baseRecord->dynamicRequirements
+                == RenderCore::modelDynamicRequirement(RenderCore::ModelDynamicRequirement::ParticleSystem)
+                && std::getenv("OPENMW_V4_REJECT_PARTICLE_ACTORS") == nullptr;
+            if (particleActor)
             {
-                const std::string skeletonIdentity(animation.getV4SourceModel().value());
-                const auto cached = mForcedActorSkeletons.find(skeletonIdentity);
-                if (cached != mForcedActorSkeletons.end() && mSession->world().get(cached->second))
-                    actorSkeleton = cached->second;
-                else
+                osg::Node* root = animation.getV4EffectRoot();
+                if (!root)
                 {
-                    NifRender::ForcedActorSkeleton forced = NifRender::buildForcedActorSkeleton(
-                        *baseRecord, "runtime:forced-actor-skeleton:" + skeletonIdentity);
-                    if (!forced.valid())
-                    {
-                        compatible = false;
-                        mLastDiagnostic = "active actor source model cannot reproduce OpenMW's forced skeleton: "
-                            + forced.diagnostic;
-                        return;
-                    }
-                    const std::optional<RenderCore::SkeletonHandle> reserved
-                        = mSession->world().reserveSkeleton();
-                    if (!reserved)
-                    {
-                        compatible = false;
-                        mLastDiagnostic = "forced actor skeleton handle reservation failed";
-                        return;
-                    }
-                    RenderCore::RenderWorldUpdateBatch batch(mSession->world().epoch(),
-                        mSession->publisher().nextSequence(), forced.record.sourceIdentity);
-                    if (!batch.add(RenderCore::CreateSkeleton{ *reserved, std::move(forced.record) })
-                        || !batch.seal()
-                        || mSession->publisher().apply(batch) != RenderCore::PublishStatus::Applied)
-                    {
-                        mSession->world().cancel(*reserved);
-                        compatible = false;
-                        mLastDiagnostic = "forced actor skeleton publication failed";
-                        return;
-                    }
-                    mForcedActorSkeletons.insert_or_assign(skeletonIdentity, *reserved);
-                    actorSkeleton = *reserved;
-                }
-            }
-            RenderCore::ModelHandle actorModel = base->model;
-            std::vector<EvaluatedMorphSource> evaluatedPartMorphs;
-            if (auto* npc = dynamic_cast<NpcAnimation*>(&animation))
-            {
-                std::vector<NifRender::ActorPartModelSource> parts;
-                std::string signature(animation.getV4SourceModel().value());
-                const auto bindEvaluatedMorphs = [&](RenderCore::ModelHandle partModel, osg::Node* evaluatedRoot,
-                                                     std::string_view diagnosticIdentity) {
-                    const RenderCore::ModelRecord* const partRecord = mSession->world().get(partModel);
-                    if (!partRecord || !partRecord->payload)
-                    {
-                        compatible = false;
-                        mLastDiagnostic = std::string(diagnosticIdentity) + " has no current model payload";
-                        return;
-                    }
-
-                    std::vector<RenderCore::MeshHandle> neutralMorphMeshes;
-                    bool hasSkinnedGeometry = false;
-                    for (const RenderCore::ModelNodeRecord& node : partRecord->payload->nodes)
-                    {
-                        const RenderCore::MeshRecord* const mesh
-                            = node.mesh ? mSession->world().get(*node.mesh) : nullptr;
-                        if (mesh && mesh->skin)
-                            hasSkinnedGeometry = true;
-                        if (mesh && mesh->morphed)
-                            neutralMorphMeshes.push_back(*node.mesh);
-                    }
-                    // SceneUtil::attach treats any template containing RigGeometry as a
-                    // skeleton and CopyRigVisitor copies only matching RigGeometry into
-                    // the actor. Standalone MorphGeometry siblings are deliberately not
-                    // part of that evaluated attachment. composeActorModel mirrors the
-                    // same selection, so those uncomposed morph meshes require no live
-                    // weight binding.
-                    if (hasSkinnedGeometry)
-                        return;
-                    if (neutralMorphMeshes.empty())
-                        return;
-                    if (!evaluatedRoot)
-                    {
-                        compatible = false;
-                        mLastDiagnostic = std::string(diagnosticIdentity) + " has no evaluated morph root";
-                        return;
-                    }
-
-                    MorphCollector collector;
-                    evaluatedRoot->accept(collector);
-                    if (collector.morphs.size() != neutralMorphMeshes.size())
-                    {
-                        compatible = false;
-                        mLastDiagnostic = std::string(diagnosticIdentity)
-                            + " evaluated morph topology does not match its published model";
-                        return;
-                    }
-                    for (std::size_t i = 0; i < neutralMorphMeshes.size(); ++i)
-                        evaluatedPartMorphs.push_back({ neutralMorphMeshes[i], collector.morphs[i], false });
-                };
-                for (const NpcAnimation::V4PartSource& part : npc->getV4PartSources())
-                {
-                    std::string partFailure;
-                    const std::optional<NifRender::StaticModelCacheResult> published
-                        = ensureModelPublished(*mSession, mVfs, part.model, &partFailure);
-                    if (!published)
-                    {
-                        compatible = false;
-                        mLastDiagnostic = "NPC part '" + std::string(part.model.value()) + "' failed: " + partFailure;
-                        return;
-                    }
-
-                    RenderCore::ModelHandle partModel = published->model;
-                    std::string glowSignature;
-                    if (part.enchantedGlow)
-                    {
-                        const int slot = npc->getV4PartSlot(part.type);
-                        MWWorld::InventoryStore& inventory = ptr.getClass().getInventoryStore(ptr);
-                        const auto item = slot >= 0 ? inventory.getSlot(slot) : inventory.end();
-                        if (item == inventory.end() || item->getClass().getEnchantment(*item).empty())
-                        {
-                            compatible = false;
-                            mLastDiagnostic = "NPC enchanted part cannot resolve its authoritative equipped item";
-                            return;
-                        }
-                        const osg::Vec4f sourceColor = item->getClass().getEnchantmentColor(*item);
-                        const RenderCore::Color color{
-                            sourceColor.r(), sourceColor.g(), sourceColor.b(), sourceColor.a() };
-                        const NifRender::EnchantedGlowPublishResult glow = NifRender::publishEnchantedGlowVariant(
-                            mSession->world(), mSession->publisher(), mVfs, partModel, color,
-                            Settings::shaders().mApplyLightingToEnvironmentMaps);
-                        if (!glow.available())
-                        {
-                            compatible = false;
-                            mLastDiagnostic = enchantedGlowDiagnostic(glow.status);
-                            return;
-                        }
-                        partModel = glow.model;
-                        const RenderCore::ModelRecord* variant = mSession->world().get(partModel);
-                        if (!variant)
-                        {
-                            compatible = false;
-                            mLastDiagnostic = "NPC enchanted part variant returned a stale model handle";
-                            return;
-                        }
-                        glowSignature = ":glow=" + variant->sourceIdentity;
-                    }
-
-                    bindEvaluatedMorphs(partModel, part.evaluatedRoot,
-                        "NPC part '" + std::string(part.model.value()) + "'");
-                    if (!compatible)
-                        return;
-                    parts.push_back({ partModel, part.boneName, part.visible });
-                    signature += "\n" + std::to_string(static_cast<unsigned int>(part.type)) + ":"
-                        + std::string(part.model.value()) + ":" + part.boneName + ":" + (part.visible ? "1" : "0")
-                        + glowSignature;
-                }
-                if (!compatible)
+                    compatible = false;
+                    mLastDiagnostic = "particle actor has no evaluated root: " + *identity;
                     return;
-
-                if (osg::Node* attachedAmmunition = npc->getAttachedAmmunitionNode())
-                {
-                    MWWorld::InventoryStore& inventory = ptr.getClass().getInventoryStore(ptr);
-                    const auto ammo = inventory.getSlot(MWWorld::InventoryStore::Slot_Ammunition);
-                    osg::Group* const arrowBone = npc->getArrowBone();
-                    if (ammo == inventory.end() || !arrowBone || arrowBone->getName().empty())
-                    {
-                        compatible = false;
-                        mLastDiagnostic = "NPC attached ammunition cannot resolve its authoritative item or attachment bone";
-                        return;
-                    }
-
-                    const VFS::Path::Normalized ammoModel = ammo->getClass().getCorrectedModel(*ammo);
-                    const std::optional<NifRender::StaticModelCacheResult> publishedAmmo
-                        = ensureModelPublished(*mSession, mVfs, ammoModel);
-                    if (!publishedAmmo)
-                    {
-                        compatible = false;
-                        mLastDiagnostic = "NPC attached ammunition is missing from the winning VFS or failed translation";
-                        return;
-                    }
-
-                    RenderCore::ModelHandle ammoModelHandle = publishedAmmo->model;
-                    std::string ammoGlowSignature;
-                    if (!ammo->getClass().getEnchantment(*ammo).empty())
-                    {
-                        const osg::Vec4f sourceColor = ammo->getClass().getEnchantmentColor(*ammo);
-                        const RenderCore::Color color{
-                            sourceColor.r(), sourceColor.g(), sourceColor.b(), sourceColor.a() };
-                        const NifRender::EnchantedGlowPublishResult glow = NifRender::publishEnchantedGlowVariant(
-                            mSession->world(), mSession->publisher(), mVfs, ammoModelHandle, color,
-                            Settings::shaders().mApplyLightingToEnvironmentMaps);
-                        if (!glow.available())
-                        {
-                            compatible = false;
-                            mLastDiagnostic = enchantedGlowDiagnostic(glow.status);
-                            return;
-                        }
-                        ammoModelHandle = glow.model;
-                        const RenderCore::ModelRecord* variant = mSession->world().get(ammoModelHandle);
-                        if (!variant)
-                        {
-                            compatible = false;
-                            mLastDiagnostic = "NPC enchanted ammunition variant returned a stale model handle";
-                            return;
-                        }
-                        ammoGlowSignature = ":glow=" + variant->sourceIdentity;
-                    }
-
-                    const bool ammoVisible = attachedAmmunition->getNodeMask() != 0u;
-                    bindEvaluatedMorphs(ammoModelHandle, attachedAmmunition,
-                        "NPC ammunition '" + std::string(ammoModel.value()) + "'");
-                    if (!compatible)
-                        return;
-                    parts.push_back({ ammoModelHandle, arrowBone->getName(), ammoVisible });
-                    signature += "\nammunition:" + std::string(ammoModel.value()) + ":" + arrowBone->getName() + ":"
-                        + (ammoVisible ? "1" : "0") + ammoGlowSignature;
                 }
-
-                auto entry = mComposedActors.find(*identity);
-                if (entry == mComposedActors.end() || entry->second.signature != signature
-                    || !mSession->world().get(entry->second.model))
+                V4EffectCaptureResult captured = captureV4ParticleActor(
+                    *root, "particle-actor:" + *identity, mVfs, &mTextureIdentities, mPoseTraversal);
+                if (!captured.valid())
                 {
-                    NifRender::ComposedActorModel composed = NifRender::composeActorModel(
-                        mSession->world(), base->model, *actorSkeleton, parts, "runtime:npc:" + *identity);
-                    if (!composed.valid())
+                    compatible = false;
+                    mLastDiagnostic = "particle actor " + *identity + " ("
+                        + std::string(animation.getV4SourceModel().value()) + "): " + captured.diagnostic;
+                    return;
+                }
+                // A model change can move an existing actor into this route.
+                // Retire its persistent body before publishing evaluated draws.
+                if (mSession->cells().findInstance(*identity)
+                    && mSession->cells().removeInstance(*identity).status
+                        != RenderCore::ActiveCellPublishStatus::Applied)
+                {
+                    compatible = false;
+                    mLastDiagnostic = "particle actor persistent body retirement failed: " + *identity;
+                    return;
+                }
+                for (auto& draw : captured.draws)
+                    source.immediateEffectDraws.push_back(std::move(draw));
+            }
+            else
+            {
+                std::optional<RenderCore::SkeletonHandle> actorSkeleton = base->skeleton;
+                // A translated skin palette only includes skin-required bones. NPC
+                // equipment and body-part attachment nodes may not influence that
+                // base skin at all. Like OpenMW's base-only actor skeleton, retain
+                // all canonical transform bones and capture their evaluated poses.
+                // Non-NPC producers retain their existing translated-skeleton path.
+                if (!actorSkeleton || dynamic_cast<NpcAnimation*>(&animation) != nullptr)
+                {
+                    const std::string skeletonIdentity(animation.getV4SourceModel().value());
+                    const auto cached = mForcedActorSkeletons.find(skeletonIdentity);
+                    if (cached != mForcedActorSkeletons.end() && mSession->world().get(cached->second))
+                        actorSkeleton = cached->second;
+                    else
                     {
-                        compatible = false;
-                        mLastDiagnostic = composed.diagnostic;
-                        return;
-                    }
-
-                    RenderCore::ModelHandle composedHandle;
-                    RenderCore::RenderWorldUpdateBatch batch(
-                        mSession->world().epoch(), mSession->publisher().nextSequence(), "runtime:npc:" + *identity);
-                    if (entry == mComposedActors.end() || !mSession->world().get(entry->second.model))
-                    {
-                        const std::optional<RenderCore::ModelHandle> reserved = mSession->world().reserveModel();
+                        NifRender::ForcedActorSkeleton forced = NifRender::buildForcedActorSkeleton(
+                            *baseRecord, "runtime:forced-actor-skeleton:" + skeletonIdentity);
+                        if (!forced.valid())
+                        {
+                            compatible = false;
+                            mLastDiagnostic = "active actor source model cannot reproduce OpenMW's forced skeleton: "
+                                + forced.diagnostic;
+                            return;
+                        }
+                        const std::optional<RenderCore::SkeletonHandle> reserved = mSession->world().reserveSkeleton();
                         if (!reserved)
                         {
                             compatible = false;
-                            mLastDiagnostic = "NPC composite model handle reservation failed";
+                            mLastDiagnostic = "forced actor skeleton handle reservation failed";
                             return;
                         }
-                        composedHandle = *reserved;
-                        if (!batch.add(RenderCore::CreateModel{ composedHandle, std::move(composed.record) })
+                        RenderCore::RenderWorldUpdateBatch batch(mSession->world().epoch(),
+                            mSession->publisher().nextSequence(), forced.record.sourceIdentity);
+                        if (!batch.add(RenderCore::CreateSkeleton{ *reserved, std::move(forced.record) })
                             || !batch.seal()
                             || mSession->publisher().apply(batch) != RenderCore::PublishStatus::Applied)
                         {
-                            mSession->world().cancel(composedHandle);
+                            mSession->world().cancel(*reserved);
                             compatible = false;
-                            mLastDiagnostic = "NPC composite model publication failed";
+                            mLastDiagnostic = "forced actor skeleton publication failed";
                             return;
                         }
+                        mForcedActorSkeletons.insert_or_assign(skeletonIdentity, *reserved);
+                        actorSkeleton = *reserved;
+                    }
+                }
+                RenderCore::ModelHandle actorModel = base->model;
+                std::vector<EvaluatedMorphSource> evaluatedPartMorphs;
+                if (auto* npc = dynamic_cast<NpcAnimation*>(&animation))
+                {
+                    std::vector<NifRender::ActorPartModelSource> parts;
+                    std::string signature(animation.getV4SourceModel().value());
+                    const auto bindEvaluatedMorphs = [&](RenderCore::ModelHandle partModel, osg::Node* evaluatedRoot,
+                                                         std::string_view diagnosticIdentity) {
+                        const RenderCore::ModelRecord* const partRecord = mSession->world().get(partModel);
+                        if (!partRecord || !partRecord->payload)
+                        {
+                            compatible = false;
+                            mLastDiagnostic = std::string(diagnosticIdentity) + " has no current model payload";
+                            return;
+                        }
+
+                        std::vector<RenderCore::MeshHandle> neutralMorphMeshes;
+                        bool hasSkinnedGeometry = false;
+                        for (const RenderCore::ModelNodeRecord& node : partRecord->payload->nodes)
+                        {
+                            const RenderCore::MeshRecord* const mesh
+                                = node.mesh ? mSession->world().get(*node.mesh) : nullptr;
+                            if (mesh && mesh->skin)
+                                hasSkinnedGeometry = true;
+                            if (mesh && mesh->morphed)
+                                neutralMorphMeshes.push_back(*node.mesh);
+                        }
+                        // SceneUtil::attach treats any template containing RigGeometry as a
+                        // skeleton and CopyRigVisitor copies only matching RigGeometry into
+                        // the actor. Standalone MorphGeometry siblings are deliberately not
+                        // part of that evaluated attachment. composeActorModel mirrors the
+                        // same selection, so those uncomposed morph meshes require no live
+                        // weight binding.
+                        if (hasSkinnedGeometry)
+                            return;
+                        if (neutralMorphMeshes.empty())
+                            return;
+                        if (!evaluatedRoot)
+                        {
+                            compatible = false;
+                            mLastDiagnostic = std::string(diagnosticIdentity) + " has no evaluated morph root";
+                            return;
+                        }
+
+                        MorphCollector collector;
+                        evaluatedRoot->accept(collector);
+                        if (collector.morphs.size() != neutralMorphMeshes.size())
+                        {
+                            compatible = false;
+                            mLastDiagnostic = std::string(diagnosticIdentity)
+                                + " evaluated morph topology does not match its published model";
+                            return;
+                        }
+                        for (std::size_t i = 0; i < neutralMorphMeshes.size(); ++i)
+                            evaluatedPartMorphs.push_back({ neutralMorphMeshes[i], collector.morphs[i], false });
+                    };
+                    for (const NpcAnimation::V4PartSource& part : npc->getV4PartSources())
+                    {
+                        std::string partFailure;
+                        const std::optional<NifRender::StaticModelCacheResult> published
+                            = ensureModelPublished(*mSession, mVfs, part.model, &mTextureIdentities, &partFailure);
+                        if (!published)
+                        {
+                            compatible = false;
+                            mLastDiagnostic
+                                = "NPC part '" + std::string(part.model.value()) + "' failed: " + partFailure;
+                            return;
+                        }
+
+                        RenderCore::ModelHandle partModel = published->model;
+                        std::string glowSignature;
+                        if (part.enchantedGlow)
+                        {
+                            const int slot = npc->getV4PartSlot(part.type);
+                            MWWorld::InventoryStore& inventory = ptr.getClass().getInventoryStore(ptr);
+                            const auto item = slot >= 0 ? inventory.getSlot(slot) : inventory.end();
+                            if (item == inventory.end() || item->getClass().getEnchantment(*item).empty())
+                            {
+                                compatible = false;
+                                mLastDiagnostic = "NPC enchanted part cannot resolve its authoritative equipped item";
+                                return;
+                            }
+                            const osg::Vec4f sourceColor = item->getClass().getEnchantmentColor(*item);
+                            const RenderCore::Color color{ sourceColor.r(), sourceColor.g(), sourceColor.b(),
+                                sourceColor.a() };
+                            const NifRender::EnchantedGlowPublishResult glow
+                                = NifRender::publishEnchantedGlowVariant(mSession->world(), mSession->publisher(), mVfs,
+                                    partModel, color, Settings::shaders().mApplyLightingToEnvironmentMaps);
+                            if (!glow.available())
+                            {
+                                compatible = false;
+                                mLastDiagnostic = enchantedGlowDiagnostic(glow.status);
+                                return;
+                            }
+                            partModel = glow.model;
+                            const RenderCore::ModelRecord* variant = mSession->world().get(partModel);
+                            if (!variant)
+                            {
+                                compatible = false;
+                                mLastDiagnostic = "NPC enchanted part variant returned a stale model handle";
+                                return;
+                            }
+                            glowSignature = ":glow=" + variant->sourceIdentity;
+                        }
+
+                        bindEvaluatedMorphs(
+                            partModel, part.evaluatedRoot, "NPC part '" + std::string(part.model.value()) + "'");
+                        if (!compatible)
+                            return;
+                        parts.push_back({ partModel, part.boneName, part.visible, std::string(part.model.value()) });
+                        signature += "\n" + std::to_string(static_cast<unsigned int>(part.type)) + ":"
+                            + std::string(part.model.value()) + ":" + part.boneName + ":" + (part.visible ? "1" : "0")
+                            + glowSignature;
+                    }
+                    if (!compatible)
+                        return;
+
+                    if (osg::Node* attachedAmmunition = npc->getAttachedAmmunitionNode())
+                    {
+                        MWWorld::InventoryStore& inventory = ptr.getClass().getInventoryStore(ptr);
+                        const auto ammo = inventory.getSlot(MWWorld::InventoryStore::Slot_Ammunition);
+                        osg::Group* const arrowBone = npc->getArrowBone();
+                        if (ammo == inventory.end() || !arrowBone || arrowBone->getName().empty())
+                        {
+                            compatible = false;
+                            mLastDiagnostic
+                                = "NPC attached ammunition cannot resolve its authoritative item or attachment bone";
+                            return;
+                        }
+
+                        const VFS::Path::Normalized ammoModel = ammo->getClass().getCorrectedModel(*ammo);
+                        const std::optional<NifRender::StaticModelCacheResult> publishedAmmo
+                            = ensureModelPublished(*mSession, mVfs, ammoModel, &mTextureIdentities);
+                        if (!publishedAmmo)
+                        {
+                            compatible = false;
+                            mLastDiagnostic
+                                = "NPC attached ammunition is missing from the winning VFS or failed translation";
+                            return;
+                        }
+
+                        RenderCore::ModelHandle ammoModelHandle = publishedAmmo->model;
+                        std::string ammoGlowSignature;
+                        if (!ammo->getClass().getEnchantment(*ammo).empty())
+                        {
+                            const osg::Vec4f sourceColor = ammo->getClass().getEnchantmentColor(*ammo);
+                            const RenderCore::Color color{ sourceColor.r(), sourceColor.g(), sourceColor.b(),
+                                sourceColor.a() };
+                            const NifRender::EnchantedGlowPublishResult glow
+                                = NifRender::publishEnchantedGlowVariant(mSession->world(), mSession->publisher(), mVfs,
+                                    ammoModelHandle, color, Settings::shaders().mApplyLightingToEnvironmentMaps);
+                            if (!glow.available())
+                            {
+                                compatible = false;
+                                mLastDiagnostic = enchantedGlowDiagnostic(glow.status);
+                                return;
+                            }
+                            ammoModelHandle = glow.model;
+                            const RenderCore::ModelRecord* variant = mSession->world().get(ammoModelHandle);
+                            if (!variant)
+                            {
+                                compatible = false;
+                                mLastDiagnostic = "NPC enchanted ammunition variant returned a stale model handle";
+                                return;
+                            }
+                            ammoGlowSignature = ":glow=" + variant->sourceIdentity;
+                        }
+
+                        const bool ammoVisible = attachedAmmunition->getNodeMask() != 0u;
+                        bindEvaluatedMorphs(ammoModelHandle, attachedAmmunition,
+                            "NPC ammunition '" + std::string(ammoModel.value()) + "'");
+                        if (!compatible)
+                            return;
+                        parts.push_back(
+                            { ammoModelHandle, arrowBone->getName(), ammoVisible, std::string(ammoModel.value()) });
+                        signature += "\nammunition:" + std::string(ammoModel.value()) + ":" + arrowBone->getName() + ":"
+                            + (ammoVisible ? "1" : "0") + ammoGlowSignature;
+                    }
+
+                    auto entry = mComposedActors.find(*identity);
+                    if (entry == mComposedActors.end() || entry->second.signature != signature
+                        || !mSession->world().get(entry->second.model))
+                    {
+                        NifRender::ComposedActorModel composed = NifRender::composeActorModel(
+                            mSession->world(), base->model, *actorSkeleton, parts, "runtime:npc:" + *identity);
+                        if (!composed.valid())
+                        {
+                            compatible = false;
+                            mLastDiagnostic = "NPC '" + *identity + "' base='"
+                                + std::string(animation.getV4SourceModel().value()) + "' cell='"
+                                + std::string(ptr.getCell() ? ptr.getCell()->getCell()->getDescription() : "<none>")
+                                + "': " + composed.diagnostic;
+                            return;
+                        }
+
+                        RenderCore::ModelHandle composedHandle;
+                        RenderCore::RenderWorldUpdateBatch batch(mSession->world().epoch(),
+                            mSession->publisher().nextSequence(), "runtime:npc:" + *identity);
+                        if (entry == mComposedActors.end() || !mSession->world().get(entry->second.model))
+                        {
+                            const std::optional<RenderCore::ModelHandle> reserved = mSession->world().reserveModel();
+                            if (!reserved)
+                            {
+                                compatible = false;
+                                mLastDiagnostic = "NPC composite model handle reservation failed";
+                                return;
+                            }
+                            composedHandle = *reserved;
+                            if (!batch.add(RenderCore::CreateModel{ composedHandle, std::move(composed.record) })
+                                || !batch.seal()
+                                || mSession->publisher().apply(batch) != RenderCore::PublishStatus::Applied)
+                            {
+                                mSession->world().cancel(composedHandle);
+                                compatible = false;
+                                mLastDiagnostic = "NPC composite model publication failed";
+                                return;
+                            }
+                        }
+                        else
+                        {
+                            composedHandle = entry->second.model;
+                            const RenderCore::ModelRecord* current = mSession->world().get(composedHandle);
+                            const std::optional<RenderCore::ResourceRevision> revision
+                                = current ? RenderCore::advanceMonotonic(current->revision) : std::nullopt;
+                            if (!revision)
+                            {
+                                compatible = false;
+                                mLastDiagnostic = "NPC composite model revision exhausted";
+                                return;
+                            }
+                            composed.record.revision = *revision;
+                            if (!batch.add(RenderCore::UpdateModel{ composedHandle, std::move(composed.record) })
+                                || !batch.seal()
+                                || mSession->publisher().apply(batch) != RenderCore::PublishStatus::Applied)
+                            {
+                                compatible = false;
+                                mLastDiagnostic = "NPC equipment model replacement failed atomically";
+                                return;
+                            }
+                        }
+                        mComposedActors[*identity] = { composedHandle, std::move(signature) };
+                        actorModel = composedHandle;
                     }
                     else
+                        actorModel = entry->second.model;
+                }
+
+                if (const std::optional<osg::Vec4f> sourceColor = animation.getV4GlowColor())
+                {
+                    const RenderCore::Color color{ sourceColor->r(), sourceColor->g(), sourceColor->b(),
+                        sourceColor->a() };
+                    const NifRender::EnchantedGlowPublishResult glow
+                        = NifRender::publishEnchantedGlowVariant(mSession->world(), mSession->publisher(), mVfs,
+                            actorModel, color, Settings::shaders().mApplyLightingToEnvironmentMaps, true);
+                    if (!glow.available())
                     {
-                        composedHandle = entry->second.model;
-                        const RenderCore::ModelRecord* current = mSession->world().get(composedHandle);
-                        const std::optional<RenderCore::ResourceRevision> revision
-                            = current ? RenderCore::advanceMonotonic(current->revision) : std::nullopt;
-                        if (!revision)
-                        {
-                            compatible = false;
-                            mLastDiagnostic = "NPC composite model revision exhausted";
-                            return;
-                        }
-                        composed.record.revision = *revision;
-                        if (!batch.add(RenderCore::UpdateModel{ composedHandle, std::move(composed.record) })
-                            || !batch.seal()
-                            || mSession->publisher().apply(batch) != RenderCore::PublishStatus::Applied)
-                        {
-                            compatible = false;
-                            mLastDiagnostic = "NPC equipment model replacement failed atomically";
-                            return;
-                        }
+                        compatible = false;
+                        mLastDiagnostic
+                            = "actor spell-cast glow publication failed: " + enchantedGlowDiagnostic(glow.status);
+                        return;
                     }
-                    mComposedActors[*identity] = { composedHandle, std::move(signature) };
-                    actorModel = composedHandle;
+                    actorModel = glow.model;
+                    if (!mSession->world().get(actorModel))
+                    {
+                        compatible = false;
+                        mLastDiagnostic = "actor spell-cast glow variant returned a stale model handle";
+                        return;
+                    }
+                }
+
+                std::optional<RenderCore::InstanceHandle> handle = mSession->cells().findInstance(*identity);
+                const RenderCore::InstanceRecord* bound = handle ? mSession->world().get(*handle) : nullptr;
+                if (!bound || bound->model != actorModel || bound->skeleton != actorSkeleton)
+                {
+                    const RenderCore::ModelRecord* modelRecord = mSession->world().get(actorModel);
+                    const std::optional<RenderCore::DynamicInstanceSource> dynamic = modelRecord
+                        ? makeV4DynamicInstanceSource(ptr, actorModel, *actorSkeleton, modelRecord->bounds)
+                        : std::nullopt;
+                    if (!dynamic)
+                    {
+                        compatible = false;
+                        mLastDiagnostic = "active actor could not produce a dynamic instance source";
+                        return;
+                    }
+                    const RenderCore::ActiveCellPublishResult published
+                        = mSession->cells().upsertDynamicInstance(*dynamic);
+                    if (published.status != RenderCore::ActiveCellPublishStatus::Applied
+                        && published.status != RenderCore::ActiveCellPublishStatus::AlreadyPresent)
+                    {
+                        compatible = false;
+                        mLastDiagnostic = "active actor instance publication failed for " + *identity + " in cell "
+                            + dynamic->cellIdentity + " (status "
+                            + std::to_string(static_cast<unsigned int>(published.status)) + ", world status "
+                            + std::to_string(static_cast<unsigned int>(published.worldStatus)) + ")";
+                        return;
+                    }
+                    handle = published.instance.valid() ? std::optional<RenderCore::InstanceHandle>(published.instance)
+                                                        : mSession->cells().findInstance(*identity);
+                }
+                const RenderCore::InstanceRecord* instance = handle ? mSession->world().get(*handle) : nullptr;
+                const RenderCore::SkeletonRecord* skeleton
+                    = instance && instance->skeleton ? mSession->world().get(*instance->skeleton) : nullptr;
+                if (!handle || !instance || !skeleton || !skeleton->payload)
+                {
+                    compatible = false;
+                    mLastDiagnostic = "active actor has no current V4 instance/skeleton binding";
+                    return;
+                }
+
+                const RenderCore::ModelRecord* model
+                    = instance->model ? mSession->world().get(*instance->model) : nullptr;
+                if (!model || !model->payload)
+                {
+                    compatible = false;
+                    mLastDiagnostic = "active actor has no current V4 model payload";
+                    return;
+                }
+                if (model->dynamicRequirements != 0)
+                {
+                    compatible = false;
+                    mLastDiagnostic = modelDynamicRequirementDiagnostic(model->dynamicRequirements)
+                        + ": " + *identity + " (" + std::string(animation.getV4SourceModel().value())
+                        + ", requirements=" + std::to_string(model->dynamicRequirements) + ")";
+                    return;
+                }
+                std::vector<std::pair<RenderCore::ModelNodeIndex, const RenderCore::MeshRecord*>> morphNodes;
+                for (std::size_t nodeIndex = 0; nodeIndex < model->payload->nodes.size(); ++nodeIndex)
+                {
+                    const RenderCore::ModelNodeRecord& node = model->payload->nodes[nodeIndex];
+                    const RenderCore::MeshRecord* mesh = node.mesh ? mSession->world().get(*node.mesh) : nullptr;
+                    if (mesh && mesh->morphed)
+                        morphNodes.emplace_back(
+                            RenderCore::ModelNodeIndex{ static_cast<std::uint32_t>(nodeIndex) }, mesh);
+                }
+
+                SceneUtil::Skeleton* evaluated = animation.getSkeleton();
+                std::vector<glm::mat4> global;
+                if (!evaluated)
+                {
+                    const bool skinned = std::any_of(model->payload->nodes.begin(), model->payload->nodes.end(),
+                        [&](const RenderCore::ModelNodeRecord& node) {
+                            const auto* mesh = node.mesh ? mSession->world().get(*node.mesh) : nullptr;
+                            return mesh && mesh->skinned;
+                        });
+                    if (skinned || !animation.getObjectRoot()
+                        || !captureV4RigidActorPose(
+                            *animation.getObjectRoot(), *skeleton->payload, global, mLastDiagnostic))
+                    {
+                        compatible = false;
+                        if (mLastDiagnostic.empty())
+                            mLastDiagnostic = "actor cannot supply its evaluated pose";
+                        mLastDiagnostic
+                            += " actor=" + *identity + " model=" + std::string(animation.getV4SourceModel().value());
+                        return;
+                    }
                 }
                 else
-                    actorModel = entry->second.model;
-            }
-
-            if (const std::optional<osg::Vec4f> sourceColor = animation.getV4GlowColor())
-            {
-                const RenderCore::Color color{
-                    sourceColor->r(), sourceColor->g(), sourceColor->b(), sourceColor->a() };
-                const NifRender::EnchantedGlowPublishResult glow = NifRender::publishEnchantedGlowVariant(
-                    mSession->world(), mSession->publisher(), mVfs, actorModel, color,
-                    Settings::shaders().mApplyLightingToEnvironmentMaps, true);
-                if (!glow.available())
                 {
-                    compatible = false;
-                    mLastDiagnostic = "actor spell-cast glow publication failed: " + enchantedGlowDiagnostic(glow.status);
-                    return;
+                    std::vector<SceneUtil::Bone*> evaluatedBones;
+                    evaluatedBones.reserve(skeleton->payload->bones.size());
+                    for (const RenderCore::BoneRecord& bone : skeleton->payload->bones)
+                    {
+                        SceneUtil::Bone* sourceBone = evaluated->getBone(bone.name);
+                        if (!sourceBone)
+                        {
+                            compatible = false;
+                            mLastDiagnostic = "evaluated actor skeleton is missing required bone " + bone.name
+                                + " from " + skeleton->sourceIdentity;
+                            return;
+                        }
+                        evaluatedBones.push_back(sourceBone);
+                    }
+                    evaluated->updateBoneMatrices(mPoseTraversal);
+                    global.reserve(evaluatedBones.size());
+                    for (const SceneUtil::Bone* bone : evaluatedBones)
+                        global.push_back(toGlm(bone->mMatrixInSkeletonSpace));
                 }
-                actorModel = glow.model;
-                if (!mSession->world().get(actorModel))
-                {
-                    compatible = false;
-                    mLastDiagnostic = "actor spell-cast glow variant returned a stale model handle";
-                    return;
-                }
-            }
 
-            std::optional<RenderCore::InstanceHandle> handle = mSession->cells().findInstance(*identity);
-            const RenderCore::InstanceRecord* bound = handle ? mSession->world().get(*handle) : nullptr;
-            if (!bound || bound->model != actorModel || bound->skeleton != actorSkeleton)
-            {
-                const RenderCore::ModelRecord* modelRecord = mSession->world().get(actorModel);
-                const std::optional<RenderCore::DynamicInstanceSource> dynamic = modelRecord
-                    ? makeV4DynamicInstanceSource(ptr, actorModel, *actorSkeleton, modelRecord->bounds)
-                    : std::nullopt;
+                RenderCore::SkeletonPoseInput pose;
+                pose.instance = *handle;
+                pose.skeleton = *instance->skeleton;
+                pose.localTransforms.resize(global.size());
+                for (std::size_t i = 0; i < global.size(); ++i)
+                {
+                    const std::int32_t parent = skeleton->payload->bones[i].parent;
+                    pose.localTransforms[i]
+                        = parent < 0 ? global[i] : glm::inverse(global[static_cast<std::size_t>(parent)]) * global[i];
+                    if (!finite(pose.localTransforms[i]))
+                    {
+                        compatible = false;
+                        mLastDiagnostic = "evaluated actor pose contains a non-finite local transform";
+                        return;
+                    }
+                }
+                if (Debug::GameplayDiagnostics::sampling() && source.skeletonPoses.size() < 16)
+                    Debug::GameplayDiagnostics::emit("actor_pose",
+                        { { "actor",
+                              std::to_string(mSession->world().epoch().value()) + ":" + std::to_string(handle->slot())
+                                  + ":" + std::to_string(handle->generation()) },
+                            { "identity", *identity }, { "skeleton", skeleton->sourceIdentity },
+                            { "bones", std::to_string(global.size()) },
+                            { "global_hash",
+                                std::to_string(Debug::GameplayDiagnostics::fingerprint(
+                                    global.data(), global.size() * sizeof(glm::mat4))) },
+                            { "local_hash",
+                                std::to_string(Debug::GameplayDiagnostics::fingerprint(
+                                    pose.localTransforms.data(), pose.localTransforms.size() * sizeof(glm::mat4))) },
+                            { "pose_traversal", std::to_string(mPoseTraversal) } });
+                source.skeletonPoses.push_back(std::move(pose));
+
+                if (!morphNodes.empty())
+                {
+                    if (!animation.getObjectRoot())
+                    {
+                        compatible = false;
+                        mLastDiagnostic = "active actor morph source has no evaluated object root";
+                        return;
+                    }
+                    MorphCollector collector;
+                    const bool npcActor = dynamic_cast<NpcAnimation*>(&animation) != nullptr;
+                    if (!npcActor)
+                        animation.getObjectRoot()->accept(collector);
+
+                    // NPC composition reuses each exact published part mesh handle,
+                    // so that handle is the authoritative correspondence key for its
+                    // evaluated clone. Non-NPC actors retain stable name/occurrence
+                    // matching against their single evaluated object root.
+                    std::unordered_map<std::string, std::vector<SceneUtil::MorphGeometry*>> evaluatedByName;
+                    for (SceneUtil::MorphGeometry* morph : collector.morphs)
+                    {
+                        if (!morph || morph->getName().empty())
+                        {
+                            compatible = false;
+                            mLastDiagnostic = "evaluated actor morph geometry has no stable node name";
+                            return;
+                        }
+                        evaluatedByName[Misc::StringUtils::lowerCase(morph->getName())].push_back(morph);
+                    }
+                    std::unordered_map<std::string, std::size_t> nameCursor;
+                    for (std::size_t i = 0; i < morphNodes.size(); ++i)
+                    {
+                        const RenderCore::ModelNodeRecord& node = model->payload->nodes[morphNodes[i].first.value()];
+                        SceneUtil::MorphGeometry* evaluatedMorph = nullptr;
+                        if (npcActor)
+                        {
+                            const auto binding = std::find_if(evaluatedPartMorphs.begin(), evaluatedPartMorphs.end(),
+                                [&](const EvaluatedMorphSource& candidate) {
+                                    return !candidate.consumed && node.mesh && candidate.mesh == *node.mesh;
+                                });
+                            if (binding != evaluatedPartMorphs.end())
+                            {
+                                binding->consumed = true;
+                                evaluatedMorph = binding->geometry;
+                            }
+                        }
+                        else
+                        {
+                            const std::string foldedName = Misc::StringUtils::lowerCase(node.name);
+                            const auto named = evaluatedByName.find(foldedName);
+                            const std::size_t occurrence = nameCursor[foldedName]++;
+                            if (!node.name.empty() && named != evaluatedByName.end()
+                                && occurrence < named->second.size())
+                                evaluatedMorph = named->second[occurrence];
+                        }
+                        if (!evaluatedMorph)
+                        {
+                            compatible = false;
+                            mLastDiagnostic
+                                = "evaluated actor morph source does not match translated node " + node.name;
+                            return;
+                        }
+                        if (!morphNodes[i].second->morphs)
+                        {
+                            compatible = false;
+                            mLastDiagnostic = "translated actor morph node has no target payload";
+                            return;
+                        }
+                        RenderCore::MorphWeightInput weights;
+                        weights.instance = *handle;
+                        weights.mesh = *node.mesh;
+                        weights.modelNode = morphNodes[i].first;
+                        for (const RenderCore::MorphTargetPayload& target : morphNodes[i].second->morphs->targets)
+                        {
+                            if (target.sourceIndex >= evaluatedMorph->getMorphTargetList().size())
+                            {
+                                compatible = false;
+                                mLastDiagnostic
+                                    = "evaluated actor morph target count is incompatible with translated data";
+                                return;
+                            }
+                            weights.weights.push_back(evaluatedMorph->getMorphTarget(target.sourceIndex).getWeight());
+                        }
+                        source.morphWeights.push_back(std::move(weights));
+                    }
+                }
+
+                const std::optional<RenderCore::DynamicInstanceSource> dynamic = makeV4DynamicInstanceSource(
+                    animation.getPtr(), *instance->model, *instance->skeleton, instance->localBounds);
                 if (!dynamic)
                 {
                     compatible = false;
-                    mLastDiagnostic = "active actor could not produce a dynamic instance source";
+                    mLastDiagnostic = "active actor placement could not be captured";
                     return;
                 }
-                const RenderCore::ActiveCellPublishResult published = mSession->cells().upsertDynamicInstance(*dynamic);
-                if (published.status != RenderCore::ActiveCellPublishStatus::Applied
-                    && published.status != RenderCore::ActiveCellPublishStatus::AlreadyPresent)
-                {
-                    compatible = false;
-                    mLastDiagnostic = "active actor instance publication failed";
-                    return;
-                }
-                handle = published.instance.valid() ? std::optional<RenderCore::InstanceHandle>(published.instance)
-                                                    : mSession->cells().findInstance(*identity);
+                RenderCore::DynamicTransformInput transform;
+                transform.instance = *handle;
+                transform.transform = dynamic->transform;
+                transform.opacity = animation.getV4Alpha() * animation.getV4ActorFade();
+                source.dynamicTransforms.push_back(std::move(transform));
             }
-            const RenderCore::InstanceRecord* instance = handle ? mSession->world().get(*handle) : nullptr;
-            const RenderCore::SkeletonRecord* skeleton
-                = instance && instance->skeleton ? mSession->world().get(*instance->skeleton) : nullptr;
-            if (!handle || !instance || !skeleton || !skeleton->payload)
-            {
-                compatible = false;
-                mLastDiagnostic = "active actor has no current V4 instance/skeleton binding";
-                return;
-            }
-
-            const RenderCore::ModelRecord* model = instance->model ? mSession->world().get(*instance->model) : nullptr;
-            if (!model || !model->payload)
-            {
-                compatible = false;
-                mLastDiagnostic = "active actor has no current V4 model payload";
-                return;
-            }
-            if (model->dynamicRequirements != 0)
-            {
-                compatible = false;
-                mLastDiagnostic = modelDynamicRequirementDiagnostic(model->dynamicRequirements);
-                return;
-            }
-            std::vector<std::pair<RenderCore::ModelNodeIndex, const RenderCore::MeshRecord*>> morphNodes;
-            for (std::size_t nodeIndex = 0; nodeIndex < model->payload->nodes.size(); ++nodeIndex)
-            {
-                const RenderCore::ModelNodeRecord& node = model->payload->nodes[nodeIndex];
-                const RenderCore::MeshRecord* mesh = node.mesh ? mSession->world().get(*node.mesh) : nullptr;
-                if (mesh && mesh->morphed)
-                    morphNodes.emplace_back(RenderCore::ModelNodeIndex{ static_cast<std::uint32_t>(nodeIndex) }, mesh);
-            }
-
-            SceneUtil::Skeleton* evaluated = animation.getSkeleton();
-            if (!evaluated)
-            {
-                compatible = false;
-                mLastDiagnostic = "active actor has no evaluated OpenMW skeleton";
-                return;
-            }
-            std::vector<SceneUtil::Bone*> evaluatedBones;
-            evaluatedBones.reserve(skeleton->payload->bones.size());
-            for (const RenderCore::BoneRecord& bone : skeleton->payload->bones)
-            {
-                SceneUtil::Bone* sourceBone = evaluated->getBone(bone.name);
-                if (!sourceBone)
-                {
-                    compatible = false;
-                    mLastDiagnostic = "evaluated actor skeleton is missing required bone " + bone.name
-                        + " from " + skeleton->sourceIdentity;
-                    return;
-                }
-                evaluatedBones.push_back(sourceBone);
-            }
-            if (!compatible)
-                return;
-            evaluated->updateBoneMatrices(mPoseTraversal);
-            std::vector<glm::mat4> global;
-            global.reserve(evaluatedBones.size());
-            for (const SceneUtil::Bone* bone : evaluatedBones)
-                global.push_back(toGlm(bone->mMatrixInSkeletonSpace));
-
-            RenderCore::SkeletonPoseInput pose;
-            pose.instance = *handle;
-            pose.skeleton = *instance->skeleton;
-            pose.localTransforms.resize(global.size());
-            for (std::size_t i = 0; i < global.size(); ++i)
-            {
-                const std::int32_t parent = skeleton->payload->bones[i].parent;
-                pose.localTransforms[i]
-                    = parent < 0 ? global[i] : glm::inverse(global[static_cast<std::size_t>(parent)]) * global[i];
-                if (!finite(pose.localTransforms[i]))
-                {
-                    compatible = false;
-                    mLastDiagnostic = "evaluated actor pose contains a non-finite local transform";
-                    return;
-                }
-            }
-            source.skeletonPoses.push_back(std::move(pose));
-
-            if (!morphNodes.empty())
-            {
-                if (!animation.getObjectRoot())
-                {
-                    compatible = false;
-                    mLastDiagnostic = "active actor morph source has no evaluated object root";
-                    return;
-                }
-                MorphCollector collector;
-                const bool npcActor = dynamic_cast<NpcAnimation*>(&animation) != nullptr;
-                if (!npcActor)
-                    animation.getObjectRoot()->accept(collector);
-
-                // NPC composition reuses each exact published part mesh handle,
-                // so that handle is the authoritative correspondence key for its
-                // evaluated clone. Non-NPC actors retain stable name/occurrence
-                // matching against their single evaluated object root.
-                std::unordered_map<std::string, std::vector<SceneUtil::MorphGeometry*>> evaluatedByName;
-                for (SceneUtil::MorphGeometry* morph : collector.morphs)
-                {
-                    if (!morph || morph->getName().empty())
-                    {
-                        compatible = false;
-                        mLastDiagnostic = "evaluated actor morph geometry has no stable node name";
-                        return;
-                    }
-                    evaluatedByName[Misc::StringUtils::lowerCase(morph->getName())].push_back(morph);
-                }
-                std::unordered_map<std::string, std::size_t> nameCursor;
-                for (std::size_t i = 0; i < morphNodes.size(); ++i)
-                {
-                    const RenderCore::ModelNodeRecord& node = model->payload->nodes[morphNodes[i].first.value()];
-                    SceneUtil::MorphGeometry* evaluatedMorph = nullptr;
-                    if (npcActor)
-                    {
-                        const auto binding = std::find_if(evaluatedPartMorphs.begin(), evaluatedPartMorphs.end(),
-                            [&](const EvaluatedMorphSource& candidate) {
-                                return !candidate.consumed && node.mesh && candidate.mesh == *node.mesh;
-                            });
-                        if (binding != evaluatedPartMorphs.end())
-                        {
-                            binding->consumed = true;
-                            evaluatedMorph = binding->geometry;
-                        }
-                    }
-                    else
-                    {
-                        const std::string foldedName = Misc::StringUtils::lowerCase(node.name);
-                        const auto named = evaluatedByName.find(foldedName);
-                        const std::size_t occurrence = nameCursor[foldedName]++;
-                        if (!node.name.empty() && named != evaluatedByName.end() && occurrence < named->second.size())
-                            evaluatedMorph = named->second[occurrence];
-                    }
-                    if (!evaluatedMorph)
-                    {
-                        compatible = false;
-                        mLastDiagnostic = "evaluated actor morph source does not match translated node " + node.name;
-                        return;
-                    }
-                    if (!morphNodes[i].second->morphs)
-                    {
-                        compatible = false;
-                        mLastDiagnostic = "translated actor morph node has no target payload";
-                        return;
-                    }
-                    RenderCore::MorphWeightInput weights;
-                    weights.instance = *handle;
-                    weights.mesh = *node.mesh;
-                    weights.modelNode = morphNodes[i].first;
-                    for (const RenderCore::MorphTargetPayload& target : morphNodes[i].second->morphs->targets)
-                    {
-                        if (target.sourceIndex >= evaluatedMorph->getMorphTargetList().size())
-                        {
-                            compatible = false;
-                            mLastDiagnostic = "evaluated actor morph target count is incompatible with translated data";
-                            return;
-                        }
-                        weights.weights.push_back(evaluatedMorph->getMorphTarget(target.sourceIndex).getWeight());
-                    }
-                    source.morphWeights.push_back(std::move(weights));
-                }
-            }
-
-            const std::optional<RenderCore::DynamicInstanceSource> dynamic = makeV4DynamicInstanceSource(
-                animation.getPtr(), *instance->model, *instance->skeleton, instance->localBounds);
-            if (!dynamic)
-            {
-                compatible = false;
-                mLastDiagnostic = "active actor placement could not be captured";
-                return;
-            }
-            RenderCore::DynamicTransformInput transform;
-            transform.instance = *handle;
-            transform.transform = dynamic->transform;
-            transform.opacity = animation.getV4Alpha() * animation.getV4ActorFade();
-            source.dynamicTransforms.push_back(std::move(transform));
 
             const std::vector<Animation::V4AttachedLightSource> attachedLights
                 = animation.captureV4AttachedLights(mPoseTraversal);
@@ -1432,7 +1566,8 @@ namespace MWRender
         input.environment.skyEnabled = false;
         input.environment.sunLightEnabled = false;
         input.environment.sunVisible = false;
-        const RenderCore::RenderFrameResult result = mSession->renderFrame(input);
+        const RenderCore::RenderFrameResult result = std::getenv("OPENMW_V4_GUI_WORLD_CONTROL")
+            ? mSession->renderFrame(input) : mSession->renderGuiFrame(input);
         if (result == RenderCore::RenderFrameResult::Presented)
             mGuiOnlyFramePresented = true;
         mLastDiagnostic = mSession->lastDiagnostic();

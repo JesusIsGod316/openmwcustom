@@ -1,4 +1,5 @@
 #include "v4scenerenderlifecycle.hpp"
+#include <components/debug/gameplaydiagnostics.hpp>
 
 #include "v4semanticsource.hpp"
 
@@ -24,11 +25,18 @@
 #include <components/vfs/manager.hpp>
 
 #include <algorithm>
+#include <cstdlib>
 #include <stdexcept>
 #include <utility>
 
 namespace MWRender
 {
+    bool V4SceneRenderLifecycle::usesLegacyTerrainFrontload() const noexcept
+    {
+        // Independent same-executable control; never changes OpenGL behavior.
+        return std::getenv("OPENMW_V4_LEGACY_TERRAIN_FRONTLOAD") != nullptr;
+    }
+
     namespace
     {
         [[nodiscard]] bool accepted(RenderCore::ActiveCellPublishStatus status) noexcept
@@ -142,6 +150,7 @@ namespace MWRender
         : mSession(std::move(session))
         , mRouteStatus(std::move(routeStatus))
         , mVfs(vfs)
+        , mTextureIdentities(vfs)
     {
         if (!mSession || !mRouteStatus)
             throw std::invalid_argument("V4 scene lifecycle requires a semantic session and route status");
@@ -275,6 +284,7 @@ namespace MWRender
         try
         {
             mModelVisualCapabilities.clear();
+            mTextureIdentities.clear();
             if (!mSession->resetWorld())
                 recordFailure("V4 scene lifecycle failed to reset the semantic world");
         }
@@ -354,6 +364,7 @@ namespace MWRender
         std::optional<RenderCore::ModelHandle> model = mSession->models().find(modelIdentity);
         if (!model)
         {
+            Debug::GameplayDiagnostics::Operation modelDiagnostic("v4_model_load", modelIdentity);
             if (!mVfs.exists(modelPath))
                 throw std::runtime_error("V4 static model is missing from the winning VFS: " + modelIdentity);
 
@@ -363,7 +374,7 @@ namespace MWRender
             const Nif::FileView file(nifFile);
             visualCapabilities = inspectNamedVisualCapabilities(file);
             mModelVisualCapabilities.insert_or_assign(modelIdentity, visualCapabilities);
-            const NifRender::TranslationBundle bundle = NifRender::translateStaticNif(file, mVfs);
+            const NifRender::TranslationBundle bundle = NifRender::translateStaticNif(file, mVfs, {}, &mTextureIdentities);
             const NifRender::StaticModelCacheResult published = mSession->models().publish(bundle);
             if (!published.available())
                 throw publicationError("static model publication", static_cast<unsigned int>(published.status));

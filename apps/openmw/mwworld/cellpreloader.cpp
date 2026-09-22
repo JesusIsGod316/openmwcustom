@@ -8,6 +8,7 @@
 #include <osg/Stats>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/gameplaydiagnostics.hpp>
 #include <components/esm3/loadcell.hpp>
 #include <components/loadinglistener/reporter.hpp>
 #include <components/misc/constants.hpp>
@@ -190,22 +191,38 @@ namespace MWWorld
             , mWorld(world)
             , mPreloadPositions(preloadPositions.begin(), preloadPositions.end())
         {
+            if (Debug::GameplayDiagnostics::enabled()) mQueued = Debug::GameplayDiagnostics::Clock::now();
         }
 
         void doWork() override
         {
+            const bool measure = Debug::GameplayDiagnostics::enabled();
+            const auto start = measure ? Debug::GameplayDiagnostics::Clock::now()
+                                       : Debug::GameplayDiagnostics::Clock::time_point{};
+            if (measure) mQueueMs = std::chrono::duration<double, std::milli>(start - mQueued).count();
             for (unsigned int i = 0; i < mTerrainViews.size() && i < mPreloadPositions.size() && !mAbort; ++i)
             {
                 mTerrainViews[i]->reset();
                 mWorld->preload(mTerrainViews[i], mPreloadPositions[i].mPosition, mPreloadPositions[i].mCellBounds,
                     mAbort, mLoadingReporter);
             }
+            if (measure) mWorkMs = std::chrono::duration<double, std::milli>(
+                Debug::GameplayDiagnostics::Clock::now() - start).count();
             mLoadingReporter.complete();
         }
 
         void abort() override { mAbort = true; }
 
-        void wait(Loading::Listener& listener) const { mLoadingReporter.wait(listener); }
+        void wait(Loading::Listener& listener) const
+        {
+            Debug::GameplayDiagnostics::Operation operation("terrain_wait");
+            mLoadingReporter.wait(listener);
+            if (Debug::GameplayDiagnostics::enabled())
+                Debug::GameplayDiagnostics::emit("terrain_preload_work", {
+                    {"queue_ms", std::to_string(mQueueMs.load())}, {"work_ms", std::to_string(mWorkMs.load())},
+                    {"views", std::to_string(mPreloadPositions.size())},
+                    {"aborted", std::to_string(mAbort.load())}}, true);
+        }
 
     private:
         std::atomic<bool> mAbort;
@@ -213,6 +230,8 @@ namespace MWWorld
         Terrain::World* mWorld;
         std::vector<PositionCellGrid> mPreloadPositions;
         Loading::Reporter mLoadingReporter;
+        Debug::GameplayDiagnostics::Clock::time_point mQueued{};
+        std::atomic<double> mQueueMs{0}, mWorkMs{0};
     };
 
     /// Worker thread item: update the resource system's cache, effectively deleting unused entries.

@@ -7,15 +7,22 @@
 
 #include <osg/Array>
 #include <osg/PrimitiveSet>
+#include <osg/Image>
+#include <osg/Matrixf>
 
 #include <components/terrain/buffercache.hpp>
+#include <components/nifrender/vfsidentity.hpp>
+#include <components/esm/util.hpp>
 
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <string>
+#include <sstream>
+#include <stdexcept>
 
 namespace MWRender
 {
@@ -119,11 +126,101 @@ namespace MWRender
         result.stitchMask = request.stitchMask;
         result.transform.translation = { center.x() * cellWorldSize, center.y() * cellWorldSize, 0.0 };
         result.localBounds = bounds;
-        result.mesh = std::move(mesh);
+        result.mesh = mesh;
         result.material.diffuse = { 1.0f, 1.0f, 1.0f, 1.0f };
         result.material.ambient = result.material.diffuse;
         result.material.vertexColorMode = RenderCore::VertexColorMode::AmbientDiffuse;
         result.material.cullMode = RenderCore::CullMode::Back;
+        if (std::getenv("OPENMW_V4_GEOMETRY_ONLY_TERRAIN_CONTROL"))
+            return result;
+
+        std::vector<Terrain::LayerInfo> layers;
+        std::vector<osg::ref_ptr<osg::Image>> blendmaps;
+        storage.getBlendmaps(1.f, center, blendmaps, layers, worldspace);
+        const int tiles = storage.getTextureTileCount(1.f, worldspace);
+        if (tiles <= 0 || layers.empty() || (!blendmaps.empty() && blendmaps.size() != layers.size()))
+            throw std::runtime_error("Invalid LAND layer/blendmap set for " + request.identity);
+
+        // Same UV buffer and blendmap texmat as Terrain::ChunkManager/createPasses.
+        // Bake these immutable coordinates, not a per-frame texture-transform effect.
+        auto coordinates = indexCache.getUVBuffer(static_cast<unsigned int>(side));
+        osg::Matrixf blendMatrix;
+        if (!ESM::isEsm4Ext(worldspace))
+        {
+            const float count = static_cast<float>(tiles);
+            const float scale = count / (count + 1.f);
+            blendMatrix.preMultTranslate(osg::Vec3f(.5f, .5f, 0.f));
+            blendMatrix.preMultScale(osg::Vec3f(scale, scale, 1.f));
+            blendMatrix.preMultTranslate(osg::Vec3f(-.5f, -.5f, 0.f));
+            blendMatrix.preMultTranslate(osg::Vec3f(1.f / count / 4.f, -1.f / count / 4.f, 0.f));
+        }
+        mesh->texCoordSets.resize(2);
+        for (const auto& coordinate : *coordinates)
+        {
+            mesh->texCoordSets[0].emplace_back(coordinate.x() * tiles, coordinate.y() * tiles);
+            const auto blendUv = osg::Vec3f(coordinate.x(), coordinate.y(), 0.f) * blendMatrix;
+            mesh->texCoordSets[1].emplace_back(blendUv.x(), blendUv.y());
+        }
+
+        const auto externalTexture = [&](VFS::Path::NormalizedView path, RenderCore::TextureRole role) {
+            RenderCore::TerrainTextureSource source;
+            const auto identity = storage.resolveV4TextureIdentity(path);
+            source.texture.sourceIdentity = std::string(identity.canonicalPath.value());
+            source.texture.contentIdentity = identity.valid() ? identity.contentIdentity
+                : "missing-land-texture:" + source.texture.sourceIdentity;
+            source.binding.role = role;
+            source.binding.colorSpace = role == RenderCore::TextureRole::Normal
+                ? RenderCore::TextureColorSpace::Linear : RenderCore::TextureColorSpace::Srgb;
+            source.binding.formatClass = role == RenderCore::TextureRole::Normal
+                ? RenderCore::TextureFormatClass::Normal : RenderCore::TextureFormatClass::Color;
+            return source;
+        };
+        for (std::size_t i = 0; i < layers.size(); ++i)
+        {
+            const auto& layer = layers[i];
+            RenderCore::TerrainLayerSource source;
+            source.material = result.material;
+            source.material.terrainLayer = RenderCore::TerrainLayerSemantic{i == 0, layer.mSpecular, layer.mParallax};
+            source.textures.push_back(externalTexture(layer.mDiffuseMap, RenderCore::TextureRole::Diffuse));
+            if (!layer.mNormalMap.empty())
+                source.textures.push_back(externalTexture(layer.mNormalMap, RenderCore::TextureRole::Normal));
+            if (!blendmaps.empty())
+            {
+                const auto& image = blendmaps[i];
+                if (!image || image->s() <= 0 || image->t() <= 0 || image->getPixelFormat() != GL_ALPHA
+                    || image->getDataType() != GL_UNSIGNED_BYTE)
+                    throw std::runtime_error("Invalid LAND blend mask for " + request.identity);
+                RenderCore::TerrainTextureSource blend;
+                blend.texture.sourceIdentity = request.identity + ":blend:" + std::to_string(i);
+                blend.texture.width = static_cast<std::uint32_t>(image->s());
+                blend.texture.height = static_cast<std::uint32_t>(image->t());
+                blend.texture.mipmapped = false;
+                auto pixels = std::make_shared<RenderCore::TexturePixels>();
+                pixels->rgba8.reserve(std::size_t(image->s()) * image->t() * 4);
+                for (int y = 0; y < image->t(); ++y)
+                    for (int x = 0; x < image->s(); ++x)
+                        pixels->rgba8.insert(pixels->rgba8.end(), {255,255,255,*image->data(x,y)});
+                std::istringstream bytes(std::string(reinterpret_cast<const char*>(pixels->rgba8.data()),
+                    pixels->rgba8.size()), std::ios::in | std::ios::binary);
+                blend.texture.contentIdentity = "land-rgba8:" + std::to_string(image->s()) + "x"
+                    + std::to_string(image->t()) + ":" + NifRender::encodeOpenMwContentHash(
+                        Files::getHash(blend.texture.sourceIdentity, bytes));
+                blend.texture.pixels = std::move(pixels);
+                blend.binding.role = RenderCore::TextureRole::Blend;
+                blend.binding.colorSpace = RenderCore::TextureColorSpace::Linear;
+                blend.binding.formatClass = RenderCore::TextureFormatClass::Scalar;
+                blend.binding.transform.uvSet = 1;
+                blend.binding.sampler.wrapU = blend.binding.sampler.wrapV = RenderCore::TextureWrap::Clamp;
+                blend.binding.sampler.mipmapMode = RenderCore::TextureMipmapMode::None;
+                source.textures.push_back(std::move(blend));
+                source.material.alphaBlendEnabled = true;
+                source.material.alphaMode = RenderCore::AlphaMode::Blend;
+                source.material.sourceBlend = RenderCore::BlendFactor::SourceAlpha;
+                source.material.destinationBlend = i == 0 ? RenderCore::BlendFactor::Zero : RenderCore::BlendFactor::One;
+                source.material.transparentSort = RenderCore::TransparentSortPolicy::Unsorted;
+            }
+            result.layers.push_back(std::move(source));
+        }
         return result;
     }
 }

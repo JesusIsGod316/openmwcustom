@@ -12,6 +12,8 @@
 #include "../mwworld/projectilemanager.hpp"
 
 #include <components/nif/niffile.hpp>
+#include <components/debug/debuglog.hpp>
+#include <components/debug/gameplaydiagnostics.hpp>
 #include <components/nifrender/enchantedglow.hpp>
 #include <components/nifrender/niftranslator.hpp>
 #include <components/rendercore/namedvisualsemantics.hpp>
@@ -171,7 +173,7 @@ namespace MWRender
                 return false;
             }
             V4EffectCaptureResult captured = captureV4WholeEffectSubtree(
-                *bolt.effectRoot, "magic-projectile:" + std::to_string(bolt.runtimeId), mVfs);
+                *bolt.effectRoot, "magic-projectile:" + std::to_string(bolt.runtimeId), mVfs, &mTextureIdentities, mPoseTraversal);
             if (!captured.valid())
             {
                 mLastDiagnostic = captured.diagnostic.empty()
@@ -322,6 +324,9 @@ namespace MWRender
         {
             mHealthy = false;
             mLastDiagnostic = std::move(diagnostic);
+            // Record before exception unwinding/fatal modal delays normal exit.
+            Log(Debug::Error) << "V4 frame failure: " << mLastDiagnostic;
+            Debug::GameplayDiagnostics::emit("failure", {{"message", mLastDiagnostic}}, true);
         }
         return RenderCore::RenderFrameResult::Failed;
     }

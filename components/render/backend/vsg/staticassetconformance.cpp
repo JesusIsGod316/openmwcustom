@@ -291,12 +291,12 @@ namespace RenderVsg
         RenderCore::ModelHandle modelHandle, const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
         vsg::ref_ptr<vsg::SharedObjects> sharedObjects, const MeshPayloadResolver& meshPayloadResolver,
         std::span<const RenderCore::PopulationInstanceRecord> placements, glm::dvec3 placementOrigin,
-        float opacityMultiplier)
+        float opacityMultiplier, bool dynamicData)
     {
         StaticAssetRealizer realizer(std::move(sharedObjects));
         StaticRealizationResult result
             = realizer.realize(world, plan, textureResolver, meshPayloadResolver, placements, placementOrigin,
-                opacityMultiplier);
+                opacityMultiplier, dynamicData);
         if (!result.valid())
             return result;
 
@@ -350,8 +350,12 @@ namespace RenderVsg
                 return result;
             }
 
+            if (dynamicData)
+                result.mutableDraws[i].sorted = {}; // raw sort wrapper is discarded below
             vsg::ref_ptr<vsg::Node> drawNode = rawNode;
-            vsg::dsphere bound = staticDrawBound(*mesh->payload, glm::dmat4(draw.worldTransform));
+            const auto* evaluatedPayload = meshPayloadResolver ? meshPayloadResolver(draw.mesh, draw.node) : nullptr;
+            const auto& boundPayload = evaluatedPayload ? *evaluatedPayload : *mesh->payload;
+            vsg::dsphere bound = staticDrawBound(boundPayload, glm::dmat4(draw.worldTransform));
             if (boundaryStatus == BillboardBoundaryStatus::Present)
             {
                 auto parent = vsg::MatrixTransform::create(toVsg(boundary.parentWorld));
@@ -362,7 +366,11 @@ namespace RenderVsg
                 billboard->addChild(descendant);
                 parent->addChild(billboard);
                 drawNode = parent;
-                bound = billboardDrawBound(*mesh->payload, boundary);
+                // Billboard routing replaces the raw transform. Rebuild this
+                // uncommon path until a view-dependent mutable contract exists.
+                if (dynamicData)
+                    result.mutableDraws[i].transform = {};
+                bound = billboardDrawBound(boundPayload, boundary);
             }
 
             const StaticDrawSortPolicy effectiveSort = opacityMultiplier < 1.0f
@@ -378,9 +386,14 @@ namespace RenderVsg
                         vsg::Layer::create(StaticTraversalBinNumber, static_cast<double>(i), drawNode));
                     break;
                 case StaticDrawSortPolicy::BackToFront:
-                    routedRoot->addChild(vsg::DepthSorted::create(StaticBackToFrontBinNumber, bound, drawNode));
+                {
+                    auto sorted = vsg::DepthSorted::create(StaticBackToFrontBinNumber, bound, drawNode);
+                    if (dynamicData)
+                        result.mutableDraws[i].sorted = sorted;
+                    routedRoot->addChild(sorted);
                     ++result.stats.sortedDrawCount;
                     break;
+                }
             }
         }
 

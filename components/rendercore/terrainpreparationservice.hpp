@@ -216,7 +216,7 @@ namespace RenderCore
                         requiredReady = requiredReady && !request.required;
                         continue;
                     }
-                    const std::optional<std::uint64_t> bytes = terrainMeshPayloadBytes(*source->mesh);
+                    const std::optional<std::uint64_t> bytes = terrainChunkPayloadBytes(*source);
                     if (!bytes || *bytes > mLimits.maxPreparedBytes - result.preparedBytes)
                     {
                         result.failedIdentities.push_back(request.identity);

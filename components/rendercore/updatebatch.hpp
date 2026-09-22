@@ -4,6 +4,8 @@
 #include "renderworld.hpp"
 
 #include <cstdint>
+#include <cstdlib>
+#include <type_traits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -127,13 +129,37 @@ namespace RenderCore
                 // Payloads are immutable/shared where large; this shadow copy is a
                 // correctness baseline and may be replaced by an undo-log/COW commit
                 // without changing the batch contract before high-volume CP3C use.
+                const bool fullValidation = std::getenv("OPENMW_V4_FULL_WORLD_PUBLICATION") != nullptr;
+                // Light records own no heap data or cross-resource handles.
+                // Their validated single-operation commit is already atomic:
+                // validation/revision/handle checks precede a no-throw move.
+                // Do not copy and scan the entire world for every moving lamp.
+                static_assert(std::is_nothrow_move_constructible_v<LightRecord>
+                    && std::is_nothrow_move_assignable_v<LightRecord>);
+                if (!fullValidation && batch.operations().size() == 1)
+                {
+                    const auto lightResult = std::visit([&](const auto& value) -> std::optional<bool> {
+                        using T = std::decay_t<decltype(value)>;
+                        if constexpr (std::is_same_v<T, CreateLight> || std::is_same_v<T, UpdateLight>
+                            || std::is_same_v<T, RetireLight>)
+                            return applyOperation(mWorld, value);
+                        else
+                            return std::nullopt;
+                    }, batch.operations().front());
+                    if (lightResult)
+                    {
+                        if (!*lightResult) return PublishStatus::OperationRejected;
+                        mLastSequence = batch.sequence();
+                        return PublishStatus::Applied;
+                    }
+                }
                 RenderWorld candidate = mWorld;
                 for (const RenderWorldUpdateOperation& operation : batch.operations())
                 {
                     if (!std::visit([&candidate](const auto& value) { return applyOperation(candidate, value); }, operation))
                         return PublishStatus::OperationRejected;
                 }
-                if (!candidate.valid())
+                if (!candidate.validPublication(fullValidation))
                     return PublishStatus::InvariantFailure;
 
                 mWorld = std::move(candidate);

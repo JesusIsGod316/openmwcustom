@@ -59,9 +59,9 @@ require(bridge, "class AnimatedObjectCaptureVisitor final", "filtered evaluated 
 require(bridge, "osg::NodeVisitor(TRAVERSE_ACTIVE_CHILDREN)", "animated switch/visibility preservation")
 require(bridge, "nestedEffectRoot", "attached-effect exclusion")
 require(bridge, "v4_effect_detail::isEffectRoot(node)", "UpdateVfx root classification")
-require(bridge, 'AnimatedObjectCaptureVisitor objectVisitor("animated-object:" + *identity, mVfs)',
+require(bridge, 'AnimatedObjectCaptureVisitor objectVisitor("animated-object:" + *identity, mVfs, &mTextureIdentities)',
         "evaluated object neutral capture")
-require(bridge, 'v4_effect_detail::CaptureVisitor effectVisitor("animated-object-effect:" + *identity, false, mVfs)',
+require(bridge, 'v4_effect_detail::CaptureVisitor effectVisitor("animated-object-effect:" + *identity, false, mVfs, &mTextureIdentities)',
         "separate attached-effect capture")
 require(bridge, "effectVisitor.setTraversalMode(osg::NodeVisitor::TRAVERSE_ACTIVE_CHILDREN)",
         "attached-effect active-child traversal")
@@ -94,4 +94,8 @@ if not (engine.index("mViewer->updateTraversal();")
         < engine.index("presentPreparedVulkanFrame();")):
     raise SystemExit("Vulkan frame ownership: expected update -> capture -> Lua release -> presentation ordering")
 
+require(effects, "rig->evaluateGeometry(visitor.getTraversalNumber(), visitor.getNodePath())",
+        "canonical rig evaluation instead of rest-pose capture")
+require(effects, "morph->evaluateGeometry(visitor.getTraversalNumber())", "canonical morph evaluation")
+require(bridge, "objectVisitor.setTraversalNumber(mPoseTraversal)", "evaluated geometry frame identity")
 print("V4 evaluated non-actor/mod animation source contract: PASS")

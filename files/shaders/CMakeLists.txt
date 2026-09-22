@@ -88,8 +88,6 @@ set(SHADER_FILES
     core/lighting/cull.comp
 )
 
-copy_all_resource_files(${CMAKE_CURRENT_SOURCE_DIR} ${OPENMW_RESOURCES_ROOT} ${DDIRRELATIVE} "${SHADER_FILES}")
-
 # V3: apply the exact Rafael Enhanced PBR/OpenMW 0.52 shader overlay used by the
 # known-good CustomV2 installation. Keeping this as a deterministic archive lets
 # us verify that future builds receive the same resource payload byte-for-byte.
@@ -172,7 +170,35 @@ if (NOT _v3_raf_pbr_sha256 STREQUAL "6f42a686e2a6a9038bbd4a9e2d0d1be6d8812b9b3e6
     message(FATAL_ERROR "V3 Rafael PBR shader overlay checksum mismatch: ${_v3_raf_pbr_sha256}")
 endif()
 
-file(ARCHIVE_EXTRACT
-    INPUT "${_v3_raf_pbr_zip}"
-    DESTINATION "${OPENMW_RESOURCES_ROOT}/${DDIRRELATIVE}"
-)
+# Runtime assets are part of a usable build, including incremental builds whose
+# executable does not need relinking. Keep the pinned overlay and verify all
+# deployed bytes and shader dependencies, not just the source list.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(_shader_tool "${PROJECT_SOURCE_DIR}/tools/v4/cp4/shader_resources.py")
+set(_shader_list "${CMAKE_CURRENT_BINARY_DIR}/shader-base-files.txt")
+string(REPLACE ";" "\n" _shader_list_text "${SHADER_FILES}")
+file(WRITE "${_shader_list}" "${_shader_list_text}\n")
+get_generator_is_multi_config(_shader_multi_config)
+if (_shader_multi_config)
+    set(_shader_destination "${OPENMW_RESOURCES_ROOT}/$<CONFIG>/${DDIRRELATIVE}")
+    set(_shader_configurations ${CMAKE_CONFIGURATION_TYPES})
+else()
+    set(_shader_destination "${OPENMW_RESOURCES_ROOT}/${DDIRRELATIVE}")
+    set(_shader_configurations ".")
+endif()
+foreach(_shader_configuration IN LISTS _shader_configurations)
+    execute_process(COMMAND "${Python3_EXECUTABLE}" "${_shader_tool}" stage
+        --source "${CMAKE_CURRENT_SOURCE_DIR}" --base-list "${_shader_list}"
+        --overlay "${_v3_raf_pbr_zip}"
+        --destination "${OPENMW_RESOURCES_ROOT}/${_shader_configuration}/${DDIRRELATIVE}"
+        COMMAND_ERROR_IS_FATAL ANY)
+endforeach()
+add_custom_target(openmw-shader-resources
+    COMMAND "${Python3_EXECUTABLE}" "${_shader_tool}" stage
+        --source "${CMAKE_CURRENT_SOURCE_DIR}" --base-list "${_shader_list}"
+        --overlay "${_v3_raf_pbr_zip}" --destination "${_shader_destination}"
+    VERBATIM)
+add_test(NAME openmw-shader-package
+    COMMAND "${Python3_EXECUTABLE}" "${_shader_tool}" verify "${_shader_destination}")
+add_test(NAME openmw-shader-package-tests
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/v4/cp4/test-shader-resources.py")

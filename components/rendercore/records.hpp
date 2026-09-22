@@ -240,6 +240,7 @@ namespace RenderCore
         float rotation = 0.0f;
         std::uint32_t uvSet = 0;
         TextureTransformConvention convention = TextureTransformConvention::Direct;
+        friend bool operator==(const TextureTransform&, const TextureTransform&) = default;
     };
 
     struct SamplerSemantic
@@ -250,6 +251,7 @@ namespace RenderCore
         TextureWrap wrapU = TextureWrap::Repeat;
         TextureWrap wrapV = TextureWrap::Repeat;
         float maxAnisotropy = 0.0f;
+        friend bool operator==(const SamplerSemantic&, const SamplerSemantic&) = default;
     };
 
     struct TextureBinding
@@ -263,6 +265,7 @@ namespace RenderCore
         TextureFormatClass formatClass = TextureFormatClass::Unknown;
         TextureTransform transform;
         SamplerSemantic sampler;
+        friend bool operator==(const TextureBinding&, const TextureBinding&) = default;
     };
 
     struct MeshSurface
@@ -307,6 +310,11 @@ namespace RenderCore
     struct SkinPayload
     {
         glm::mat4 meshToSkeleton{ 1.0f };
+        // NIF skin data before donor-hierarchy cancellation. When present,
+        // deformation is geometry-local: resolve cancellation from the actual
+        // composed/posed model path and apply that path at draw time. Generic
+        // producers without this field retain their skeleton-space contract.
+        std::optional<glm::mat4> geometryBindTransform;
         std::string rootBoneName;
         std::vector<SkinBoneBinding> bones;
         // Exactly one influence list per source vertex. Empty lists are kept:
@@ -335,6 +343,7 @@ namespace RenderCore
     [[nodiscard]] inline bool validSkinPayload(const SkinPayload& skin, std::size_t vertexCount) noexcept
     {
         if (!semantic_detail::finite(skin.meshToSkeleton) || skin.bones.empty()
+            || (skin.geometryBindTransform && !semantic_detail::finite(*skin.geometryBindTransform))
             || skin.vertexInfluences.size() != vertexCount)
             return false;
         for (std::size_t i = 0; i < skin.bones.size(); ++i)
@@ -477,6 +486,7 @@ namespace RenderCore
         StencilOp fail = StencilOp::Keep;
         StencilOp depthFail = StencilOp::Keep;
         StencilOp pass = StencilOp::Keep;
+        friend bool operator==(const StencilSemantic&, const StencilSemantic&) = default;
     };
 
     enum class MaterialFogMode : std::uint8_t
@@ -491,6 +501,15 @@ namespace RenderCore
         MaterialFogMode mode = MaterialFogMode::Inherit;
         Color color{ 0.0f, 0.0f, 0.0f, 1.0f };
         float depth = 0.0f;
+        friend bool operator==(const MaterialFogSemantic&, const MaterialFogSemantic&) = default;
+    };
+
+    struct TerrainLayerSemantic
+    {
+        bool first = true;
+        bool specular = false; // diffuse alpha is specular intensity, not opacity
+        bool parallax = false; // normal alpha is height
+        friend bool operator==(const TerrainLayerSemantic&, const TerrainLayerSemantic&) = default;
     };
 
     struct MaterialRecord
@@ -535,6 +554,7 @@ namespace RenderCore
         bool unlit = false;
         bool depthTest = true;
         bool depthWrite = true;
+        std::optional<TerrainLayerSemantic> terrainLayer;
         // These are realized V3.25 rendering semantics, not raw NIF/BGSM schema
         // fields. Backend-specific implementation details (OSG state objects,
         // reversed-depth polygon-offset signs, effect helper nodes) deliberately
@@ -552,6 +572,14 @@ namespace RenderCore
         bool falloff = false;
         glm::vec4 falloffParams{ 0.0f };
         std::vector<TextureBinding> textures;
+        friend bool operator==(const MaterialRecord&, const MaterialRecord&) = default;
+    };
+
+    // Immutable producer-owned RGBA8 pixels (row zero corresponds to UV v=0).
+    // Procedural LAND blend masks cannot be recovered through a VFS filename.
+    struct TexturePixels
+    {
+        std::vector<std::uint8_t> rgba8;
     };
 
     struct TextureRecord
@@ -567,6 +595,8 @@ namespace RenderCore
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         bool mipmapped = true;
+        std::shared_ptr<const TexturePixels> pixels;
+        friend bool operator==(const TextureRecord&, const TextureRecord&) = default;
     };
 
     inline constexpr std::uint32_t InvalidModelNodeIndex = std::numeric_limits<std::uint32_t>::max();
@@ -638,6 +668,8 @@ namespace RenderCore
         CollisionOnly = 1u << 2,
         Marker = 1u << 3,
         ControllerTarget = 1u << 4,
+        // Canonical rigid left-side attachment state (SceneUtil::attach).
+        ClockwiseFrontFace = 1u << 5,
     };
 
     [[nodiscard]] constexpr std::uint32_t modelNodeFlag(ModelNodeFlag flag) noexcept

@@ -1,17 +1,19 @@
 #include "skybackdrop.hpp"
+#include "viewpipelinebinding.hpp"
 
 #include <vsg/commands/Draw.h>
 #include <vsg/core/Array.h>
 #include <vsg/nodes/StateGroup.h>
 #include <vsg/nodes/Switch.h>
+#include <vsg/state/BindDescriptorSet.h>
 #include <vsg/state/ColorBlendState.h>
 #include <vsg/state/DepthStencilState.h>
+#include <vsg/state/DescriptorBuffer.h>
 #include <vsg/state/DynamicState.h>
 #include <vsg/state/GraphicsPipeline.h>
 #include <vsg/state/InputAssemblyState.h>
 #include <vsg/state/MultisampleState.h>
 #include <vsg/state/PipelineLayout.h>
-#include <vsg/state/PushConstants.h>
 #include <vsg/state/RasterizationState.h>
 #include <vsg/state/ShaderStage.h>
 #include <vsg/state/VertexInputState.h>
@@ -42,7 +44,7 @@ void main()
 layout(location = 0) in vec2 skyUv;
 layout(location = 0) out vec4 outColor;
 
-layout(push_constant) uniform SkyParameters
+layout(set = 0, binding = 0, std140) uniform SkyParameters
 {
     vec4 zenithColor;
     vec4 horizonColor;
@@ -82,9 +84,11 @@ void main()
         if (!vertexShader || !fragmentShader)
             return result;
 
-        auto pipelineLayout = vsg::PipelineLayout::create(vsg::DescriptorSetLayouts{},
-            vsg::PushConstantRanges{ VkPushConstantRange{ VK_SHADER_STAGE_VERTEX_BIT, 0, 128 },
-                VkPushConstantRange{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 80 } });
+        auto descriptorLayout = vsg::DescriptorSetLayout::create(vsg::DescriptorSetLayoutBindings{
+            { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+        });
+        auto pipelineLayout = vsg::PipelineLayout::create(vsg::DescriptorSetLayouts{ descriptorLayout },
+            vsg::PushConstantRanges{ VkPushConstantRange{ VK_SHADER_STAGE_VERTEX_BIT, 0, 128 } });
 
         auto rasterization = vsg::RasterizationState::create();
         rasterization->cullMode = VK_CULL_MODE_NONE;
@@ -102,7 +106,7 @@ void main()
         auto pipeline = vsg::GraphicsPipeline::create(
             pipelineLayout, vsg::ShaderStages{ vertexShader, fragmentShader }, states);
         pipeline->setValue("openmw.pipeline.family", "sky-backdrop");
-        stateGroup->add(vsg::BindGraphicsPipeline::create(std::move(pipeline)));
+        stateGroup->add(ViewPipelineBinding::create(std::move(pipeline)));
 
         result.mParameters = vsg::vec4Array::create(5);
         result.mParameters->properties.dataVariance = vsg::DYNAMIC_DATA;
@@ -111,7 +115,11 @@ void main()
         (*result.mParameters)[2] = vsg::vec4(0.0f, 0.0f, 0.0f, 0.0f);
         (*result.mParameters)[3] = vsg::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         (*result.mParameters)[4] = vsg::vec4(1.0f, 1.0f, 1.0f, 1.0f);
-        stateGroup->add(vsg::PushConstants::create(VK_SHADER_STAGE_FRAGMENT_BIT, 0, result.mParameters.get()));
+        auto descriptorSet = vsg::DescriptorSet::create(descriptorLayout,
+            vsg::Descriptors{ vsg::DescriptorBuffer::create(
+                result.mParameters, 0, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) });
+        stateGroup->add(vsg::BindDescriptorSet::create(
+            VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, descriptorSet));
         stateGroup->addChild(vsg::Draw::create(3, 1, 0, 0));
 
         result.mRoot = vsg::Switch::create();

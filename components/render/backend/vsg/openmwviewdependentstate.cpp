@@ -86,7 +86,15 @@ namespace RenderVsg
         if (mOpenMwLightData)
             return;
 
-        vsg::ViewDependentState::init(requirements);
+        // Reflection/refraction/maps do not record shadow passes. Let VSG make
+        // its initialized one-pixel fallback, rather than reserving an array
+        // whose initial layout is only established by RECORD_SHADOW_MAPS.
+        const auto shadowRange = requirements.numShadowMapsRange;
+        if ((view->features & vsg::RECORD_SHADOW_MAPS) == 0)
+            requirements.numShadowMapsRange = {0, 0};
+        try { vsg::ViewDependentState::init(requirements); }
+        catch (...) { requirements.numShadowMapsRange = shadowRange; throw; }
+        requirements.numShadowMapsRange = shadowRange;
         if (!descriptorSet || !descriptorSetLayout)
             return;
         if (std::any_of(descriptorSetLayout->bindings.begin(), descriptorSetLayout->bindings.end(),
@@ -116,6 +124,16 @@ namespace RenderVsg
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER));
         descriptorSetLayout->bindings.push_back({ OpenMwEnvironmentDescriptorBinding,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr });
+
+        // VSG creates stock per-view state for its shadow cameras. Our shared
+        // legacy pipelines still bind the OpenMW view layout there, including
+        // bindings 5/6 (also required by alpha-tested shadow draws).
+        for (auto& shadow : shadowMaps)
+        {
+            auto state = OpenMwViewDependentState::create(shadow.view.get());
+            state->shaderSet = shaderSet;
+            shadow.view->viewDependentState = state;
+        }
     }
 
     bool OpenMwViewDependentState::setLocalLights(LocalLightBufferPlan plan)

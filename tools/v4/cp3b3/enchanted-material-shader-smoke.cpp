@@ -52,6 +52,12 @@ int main()
     require(shaderSet->optionalDefines.contains("OPENMW_ENCHANTED_ENVIRONMENT"),
         "enchanted ShaderSet lost its explicit feature define");
 
+    const auto& terrainBinding = shaderSet->getDescriptorBinding("openmwTerrainBlendMap");
+    require(static_cast<bool>(terrainBinding) && terrainBinding.set == 1u
+            && terrainBinding.binding != RenderVsg::EnchantedEnvironmentTextureBinding
+            && terrainBinding.binding != RenderVsg::EnchantedEnvironmentUniformBinding,
+        "terrain blend-mask binding aliases an enchanted-material descriptor");
+
     const auto& mapsBinding = shaderSet->getDescriptorBinding("openmwEnvironmentMaps");
     require(static_cast<bool>(mapsBinding)
             && mapsBinding.set == 1u

@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <components/nifrender/textureidentitycache.hpp>
 
 namespace RenderVsg
 {
@@ -40,6 +41,7 @@ namespace MWRender
         void objectChanged(const MWWorld::Ptr& ptr) override;
         void objectRemoving(const MWWorld::Ptr& ptr) noexcept override;
         void worldResetting() noexcept override;
+        bool usesLegacyTerrainFrontload() const noexcept override;
 
         [[nodiscard]] bool healthy() const noexcept { return mRouteStatus->healthy(); }
         [[nodiscard]] const std::string& lastDiagnostic() const noexcept
@@ -55,6 +57,7 @@ namespace MWRender
         std::shared_ptr<RenderVsg::VsgSemanticSession> mSession;
         std::shared_ptr<V4RenderRouteStatus> mRouteStatus;
         const VFS::Manager& mVfs;
+        NifRender::TextureIdentityCache mTextureIdentities;
         // Source capability metadata is model-global but deliberately remains
         // outside backend ownership. Cache it by normalized winning VFS path so
         // live door/reference updates never reparse the NIF merely to recover

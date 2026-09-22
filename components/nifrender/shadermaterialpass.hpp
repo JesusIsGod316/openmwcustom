@@ -328,7 +328,7 @@ namespace NifRender
     }
 
     [[nodiscard]] inline TextureIndex stageShaderTexture(const std::string& authoredPath, const VFS::Manager* vfs,
-        TranslationBundle& bundle, const Nif::Record& source)
+        TranslationBundle& bundle, const Nif::Record& source, TextureIdentityCache* identities = nullptr)
     {
         const std::optional<std::uint32_t> sourceRecordId
             = source.mRecordIndex == std::numeric_limits<unsigned int>::max()
@@ -342,8 +342,9 @@ namespace NifRender
             return {};
         }
 
-        const ResolvedVfsIdentity resolved
-            = resolveTextureVfsIdentity(VFS::Path::toNormalized(authoredPath), *vfs);
+        const auto path = VFS::Path::toNormalized(authoredPath);
+        const ResolvedVfsIdentity resolved = identities ? identities->resolve(path)
+            : resolveTextureVfsIdentity(path, *vfs);
         if (resolved.valid())
             return stageResolvedTexture(bundle, resolved, sourceRecordId);
 
@@ -370,12 +371,12 @@ namespace NifRender
 
     inline void applyExternalShaderMaterialNodeState(const ResolvedShaderMaterial& resolved,
         const Nif::BSShaderProperty& source, const VFS::Manager* vfs, TranslatedMaterial& material,
-        TranslationBundle& bundle)
+        TranslationBundle& bundle, TextureIdentityCache* identities = nullptr)
     {
         material.textures.clear();
         for (const ShaderTextureSource& texture : resolved.semantic.textures)
         {
-            const TextureIndex index = stageShaderTexture(texture.authoredPath, vfs, bundle, source);
+            const TextureIndex index = stageShaderTexture(texture.authoredPath, vfs, bundle, source, identities);
             appendShaderTextureBinding(
                 material, index, texture.interpretation, resolved.semantic.wrapS, resolved.semantic.wrapT);
         }
@@ -393,7 +394,8 @@ namespace NifRender
     }
 
     inline void applyBsTextureSet(const Nif::BSShaderTextureSet& textureSet, bool wrapS, bool wrapT,
-        const Nif::Record& source, const VFS::Manager* vfs, TranslatedMaterial& material, TranslationBundle& bundle)
+        const Nif::Record& source, const VFS::Manager* vfs, TranslatedMaterial& material, TranslationBundle& bundle,
+        TextureIdentityCache* identities = nullptr)
     {
         for (std::size_t stage = 0; stage < textureSet.mTextures.size(); ++stage)
         {
@@ -409,13 +411,13 @@ namespace NifRender
                 continue;
             }
 
-            const TextureIndex texture = stageShaderTexture(authoredPath, vfs, bundle, source);
+            const TextureIndex texture = stageShaderTexture(authoredPath, vfs, bundle, source, identities);
             appendShaderTextureBinding(material, texture, *interpretation, wrapS, wrapT);
         }
     }
 
     inline void applyInlineBsShaderNodeState(const Nif::BSShaderProperty& source, const VFS::Manager* vfs,
-        TranslatedMaterial& material, TranslationBundle& bundle)
+        TranslatedMaterial& material, TranslationBundle& bundle, TextureIdentityCache* identities = nullptr)
     {
         switch (source.mRecordType)
         {
@@ -425,7 +427,7 @@ namespace NifRender
                 material.textures.clear();
                 if (!property.mTextureSet.empty())
                     applyBsTextureSet(*property.mTextureSet.getPtr(), property.wrapS(), property.wrapT(), source, vfs,
-                        material, bundle);
+                        material, bundle, identities);
                 break;
             }
             case Nif::RC_BSLightingShaderProperty:
@@ -434,7 +436,7 @@ namespace NifRender
                 material.textures.clear();
                 if (!property.mTextureSet.empty())
                     applyBsTextureSet(*property.mTextureSet.getPtr(), property.wrapS(), property.wrapT(), source, vfs,
-                        material, bundle);
+                        material, bundle, identities);
                 if (property.doubleSided())
                     material.state.cullMode = RenderCore::CullMode::None;
                 material.state.depthTest = property.depthTest();
@@ -452,7 +454,7 @@ namespace NifRender
                 {
                     const ShaderTextureInterpretation interpretation{ RenderCore::TextureRole::Diffuse,
                         RenderCore::TextureColorSpace::Srgb, RenderCore::TextureFormatClass::Color };
-                    const TextureIndex texture = stageShaderTexture(property.mSourceTexture, vfs, bundle, source);
+                    const TextureIndex texture = stageShaderTexture(property.mSourceTexture, vfs, bundle, source, identities);
                     appendShaderTextureBinding(material, texture, interpretation, property.wrapS(), property.wrapT(),
                         makeBsEffectTextureTransform({ property.mUVOffset.x(), property.mUVOffset.y() },
                             { property.mUVScale.x(), property.mUVScale.y() }));
@@ -490,7 +492,7 @@ namespace NifRender
                 {
                     const ShaderTextureInterpretation interpretation{ RenderCore::TextureRole::Diffuse,
                         RenderCore::TextureColorSpace::Srgb, RenderCore::TextureFormatClass::Color };
-                    const TextureIndex texture = stageShaderTexture(property.mFilename, vfs, bundle, source);
+                    const TextureIndex texture = stageShaderTexture(property.mFilename, vfs, bundle, source, identities);
                     appendShaderTextureBinding(material, texture, interpretation, property.wrapS(), property.wrapT());
                 }
                 break;

@@ -99,6 +99,14 @@ int main()
     additiveMaterial.destinationBlend = BlendFactor::One;
     require(near(RenderVsg::makeLegacyCompatibilityMaterial(additiveMaterial)->value().effects.z, 1.0f),
         "source-alpha/one material no longer selects additive fog");
+    require(near(packed.textureCoordSets.w, 0.f), "ordinary material inherited LAND shader semantics");
+    additiveMaterial.terrainLayer = TerrainLayerSemantic{false, true, true};
+    const auto terrainUniform = RenderVsg::makeLegacyCompatibilityMaterial(additiveMaterial);
+    require(near(terrainUniform->value().textureCoordSets.w, 7.f)
+            && near(terrainUniform->value().effects.z, 0.f),
+        "LAND specular/height selectors or weighted fog packing changed");
+    require(makeFixedFunctionPipelineKey(additiveMaterial).depthStencil.equalDepth,
+        "later LAND layers lost equal-depth testing");
 
     FrameEnvironmentState environment;
     environment.fogColor = { 0.1f, 0.2f, 0.3f, 1.0f };

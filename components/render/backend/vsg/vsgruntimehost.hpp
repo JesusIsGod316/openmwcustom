@@ -2,7 +2,10 @@
 #define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_VSGRUNTIMEHOST_H
 
 #include "framecamera.hpp"
+#include "dynamicactorplan.hpp"
 #include "framecompletion.hpp"
+#include "frameresourcepool.hpp"
+#include "immediateeffectrealizer.hpp"
 #include "openmwviewdependentstate.hpp"
 #include "offscreenrendertarget.hpp"
 #include "sdlvulkanwindow.hpp"
@@ -10,7 +13,9 @@
 #include "staticassetrealizer.hpp"
 #include "staticpopulationresidency.hpp"
 #include "staticworldresidency.hpp"
+#include "staticworldsyncstate.hpp"
 #include "vsgsubmission.hpp"
+#include "viewcompilemanager.hpp"
 #include "uipipeline.hpp"
 #include "watersurface.hpp"
 
@@ -24,6 +29,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace vsg
@@ -75,6 +81,7 @@ namespace RenderVsg
             std::uint32_t targetSize = 512;
             float reflectionLodScale = 0.5f;
             float refractionLodScale = 0.5f;
+            vsg::ref_ptr<vsg::Data> normalMap;
         } water;
     };
 
@@ -100,6 +107,8 @@ namespace RenderVsg
         [[nodiscard]] RenderCore::RenderBackendKind backendKind() const noexcept override;
         RenderCore::RenderFrameResult renderFrame(
             const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame) override;
+        RenderCore::RenderFrameResult renderGuiFrame(
+            const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame);
         void waitIdle() override;
 
         [[nodiscard]] bool configureNamedSwitchState(
@@ -114,6 +123,10 @@ namespace RenderVsg
 
         [[nodiscard]] std::size_t residentStaticInstanceCount() const noexcept;
         [[nodiscard]] std::size_t pendingRetirementCount() const noexcept;
+        [[nodiscard]] std::size_t lastCompiledDynamicRootCount() const noexcept
+        {
+            return mLastCompiledDynamicRootCount;
+        }
         [[nodiscard]] const UiPipeline& uiPipeline() const noexcept { return mUiPipeline; }
         void attachGuiRenderer(VsgMyGui::RenderManager* renderer) noexcept;
         void detachGuiRenderer(const VsgMyGui::RenderManager* renderer) noexcept;
@@ -126,9 +139,15 @@ namespace RenderVsg
         [[nodiscard]] std::optional<std::vector<AuxiliaryRgba8Readback>> readbackAuxiliaryRgba8(
             std::span<const RenderCore::RenderTargetHandle> targets);
         [[nodiscard]] bool retireAuxiliarySurface(RenderCore::RenderTargetHandle target);
+        [[nodiscard]] std::size_t compilationContextCount()
+        {
+            return static_cast<ViewCompileManager&>(*mViewer->compileManager).contextCount();
+        }
         [[nodiscard]] const std::string& lastDiagnostic() const noexcept { return mLastDiagnostic; }
 
     private:
+        RenderCore::RenderFrameResult renderFrameImpl(
+            const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame, bool guiOnly);
         using StaticResident = vsg::ref_ptr<vsg::Node>;
         struct StaticPopulationResident
         {
@@ -156,7 +175,24 @@ namespace RenderVsg
             vsg::ref_ptr<vsg::AmbientLight> ambientLight;
             vsg::ref_ptr<vsg::DirectionalLight> sunLight;
             WaterSurface waterSurface;
+            std::unique_ptr<ViewCompileManager::Registration> compilation;
             bool active = false;
+        };
+        struct DynamicActorResident
+        {
+            RenderCore::WorldEpoch epoch;
+            std::optional<DynamicActorPlan> contract;
+            float opacity = 1.f;
+            vsg::ref_ptr<vsg::MatrixTransform> placement;
+            vsg::ref_ptr<vsg::Node> published;
+            std::vector<StaticRealizationResult::MutableDrawStreams> mutableDraws;
+        };
+        struct ImmediateEffectResident
+        {
+            RenderCore::ImmediateEffectDraw contract;
+            vsg::ref_ptr<vsg::MatrixTransform> placement;
+            vsg::ref_ptr<vsg::Node> published;
+            std::vector<StaticRealizationResult::MutableDrawStreams> mutableDraws;
         };
 
         [[nodiscard]] bool synchronizeStaticWorld(const RenderCore::RenderWorld& world);
@@ -180,11 +216,13 @@ namespace RenderVsg
             RenderCore::RenderFrameResult result, std::string diagnostic = {});
 
         VsgRuntimeHostOptions mOptions;
+        std::size_t mLastCompiledDynamicRootCount = 0;
         StaticTextureResolver mTextureResolver;
         vsg::ref_ptr<SdlVulkanWindow> mWindow;
         vsg::ref_ptr<vsg::SharedObjects> mSharedObjects;
         vsg::ref_ptr<vsg::Viewer> mViewer;
         vsg::ref_ptr<vsg::Group> mSceneRoot;
+        vsg::ref_ptr<vsg::Switch> mSceneVisibility;
         vsg::ref_ptr<vsg::Group> mStaticRoot;
         // Stable holder attached to the shared scene plus separately-owned published
         // dynamic content. Replacement never mutates mSceneRoot child ordering and
@@ -210,11 +248,16 @@ namespace RenderVsg
         WaterSurface mWaterSurface;
         FrameCameraObjects mCamera;
         StaticWorldResidency<StaticResident> mStaticResidency;
+        StaticWorldSyncState mStaticSyncState;
+        DynamicActorPlanCache mActorPlanCache;
         StaticPopulationResidency<StaticPopulationResident> mStaticPopulationResidency;
         FrameRetirementQueue<vsg::ref_ptr<vsg::Group>> mDynamicRetirements;
         FrameRetirementQueue<vsg::ref_ptr<vsg::Group>> mGuiRetirements;
         std::optional<RenderCore::FrameId> mDynamicLastUse;
         std::optional<RenderCore::FrameId> mGuiLastUse;
+        std::optional<RenderCore::FrameId> mCompletedThrough;
+        FrameResourcePool<ImmediateEffectResident> mImmediateEffectResidents{ VsgRecordAndSubmitRingSize };
+        FrameResourcePool<DynamicActorResident> mDynamicActorResidents{ VsgRecordAndSubmitRingSize };
         UiPipeline mUiPipeline;
         VsgMyGui::RenderManager* mGuiRenderer = nullptr;
         VsgSubmissionCompletion mCompletion;

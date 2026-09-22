@@ -7,10 +7,11 @@
 
 namespace NifRender
 {
-    TranslationBundle translateStaticNif(Nif::FileView file, const VFS::Manager& vfs, TranslatorOptions options)
+    TranslationBundle translateStaticNif(Nif::FileView file, const VFS::Manager& vfs, TranslatorOptions options,
+        TextureIdentityCache* textureIdentities)
     {
         TranslationBundle result = translateNif(file, options);
-        applyStaticMaterialPass(file, vfs, result);
+        applyStaticMaterialPass(file, vfs, result, textureIdentities);
         return result;
     }
 }

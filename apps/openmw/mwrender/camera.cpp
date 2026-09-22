@@ -1,4 +1,5 @@
 #include "camera.hpp"
+#include <components/debug/gameplaydiagnostics.hpp>
 
 #include <osg/Camera>
 
@@ -66,6 +67,7 @@ namespace
 
         void operator()(osg::Camera* cam, osg::NodeVisitor* nv)
         {
+            if (Debug::GameplayDiagnostics::sampling()) ++Debug::GameplayDiagnostics::context.cameraCallbacks;
             // traverse first to update animations, in case the camera is attached to an animated node
             traverse(cam, nv);
 

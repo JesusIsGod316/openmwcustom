@@ -51,7 +51,8 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::SharedObjects> sharedObjects = {},
         const MeshPayloadResolver& meshPayloadResolver = {},
         std::span<const RenderCore::PopulationInstanceRecord> placements = {},
-        glm::dvec3 placementOrigin = {}, float opacityMultiplier = 1.0f);
+        glm::dvec3 placementOrigin = {}, float opacityMultiplier = 1.0f,
+        bool dynamicData = false);
 }
 
 #endif

@@ -297,17 +297,40 @@ namespace RenderVsg
         return true;
     }
 
-    [[nodiscard]] inline bool staticPopulationPlanCurrent(
-        const RenderCore::RenderWorld& world, const StaticPopulationPlan& plan) noexcept
+    [[nodiscard]] inline bool equivalentPopulationPlacement(const RenderCore::PopulationInstanceRecord& left,
+        const RenderCore::PopulationInstanceRecord& right) noexcept
+    {
+        return left.sourceIdentity == right.sourceIdentity && left.transform.translation == right.transform.translation
+            && left.transform.rotation == right.transform.rotation && left.transform.scale == right.transform.scale
+            && left.localBounds.minimum == right.localBounds.minimum && left.localBounds.maximum == right.localBounds.maximum
+            && left.lod.center == right.lod.center && left.lod.minimumDistance == right.lod.minimumDistance
+            && left.lod.maximumDistance == right.lod.maximumDistance && left.lod.scale == right.lod.scale
+            && left.lod.smallFeatureEligible == right.lod.smallFeatureEligible
+            && left.semanticFlags == right.semanticFlags && left.lightingEnabled == right.lightingEnabled;
+    }
+
+    [[nodiscard]] inline bool staticPopulationPlanCurrent(const RenderCore::RenderWorld& world,
+        const StaticPopulationPlan& plan, bool allowUnchangedGroup = false) noexcept
     {
         const RenderCore::ChunkRecord* chunk = world.get(plan.chunk);
         const RenderCore::ModelRecord* model = world.get(plan.model);
-        if (!chunk || !model || chunk->revision != plan.chunkRevision || !chunk->population
+        if (!chunk || !model || (!allowUnchangedGroup && chunk->revision != plan.chunkRevision) || !chunk->population
             || model->revision != plan.modelRevision || chunk->kind != plan.kind)
             return false;
         const auto group = std::find_if(chunk->population->groups.begin(), chunk->population->groups.end(),
             [&](const RenderCore::ModelPopulationRecord& value) { return value.model == plan.model; });
         if (group == chunk->population->groups.end() || group->instances.size() != plan.placements.size())
+            return false;
+        // A cell revision covers ALL model groups. Live placement insertion or
+        // removal (including script-driven vegetation) must not rebuild every
+        // unrelated model in that cell. Compare exact authored inputs, not a
+        // hash or a tolerance. An unchanged group can retain its old packing
+        // origin: the root translation and packed transforms still describe
+        // the same absolute placements, even if the cell bounds have grown.
+        // Strict revision validation remains the default for new commits.
+        if (chunk->revision != plan.chunkRevision
+            && !std::equal(group->instances.begin(), group->instances.end(), plan.placements.begin(),
+                equivalentPopulationPlacement))
             return false;
         for (const auto& dependency : plan.meshes)
         {

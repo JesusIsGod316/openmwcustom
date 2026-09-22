@@ -62,6 +62,10 @@ namespace SceneUtil
 
         osg::ref_ptr<osg::Geometry> getSourceGeometry() const;
 
+        // Borrowed CPU-evaluated buffer: copy its arrays before another traversal.
+        // Call only after animation updates, on the same thread as cull/evaluation.
+        osg::Geometry* evaluateGeometry(unsigned int traversalNumber, const osg::NodePath& path);
+
         void accept(osg::NodeVisitor& nv) override;
         bool supports(const osg::PrimitiveFunctor&) const override { return true; }
         void accept(osg::PrimitiveFunctor&) const override;
@@ -106,8 +110,9 @@ namespace SceneUtil
 
         unsigned int mLastFrameNumber{ 0 };
         bool mBoundsFirstFrame{ true };
+        bool mGeometryEvaluated{ false };
 
-        bool initFromParentSkeleton(osg::NodeVisitor* nv);
+        bool initFromParentSkeleton(const osg::NodePath& path);
 
         void updateSkinToSkelMatrix(const osg::NodePath& nodePath);
     };

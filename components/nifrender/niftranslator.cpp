@@ -451,6 +451,17 @@ namespace
             const bool omitVisibleGeometry
                 = (!context.collisionOnly && hiddenWithoutController) || markerGeometry || shadowGeometry;
 
+            // Canonical NifOsg never installs a drawable morpher when geometry
+            // is omitted (legacy shadow proxies, editor markers, hidden meshes).
+            // Keep node/transform identity, but do not publish an unsatisfiable
+            // vertex-deformation requirement for geometry we did not translate.
+            if (sourceGeometry && omitVisibleGeometry)
+            {
+                node.controllerFlags &= ~RenderCore::modelControllerFlag(RenderCore::ModelControllerFlag::Morph);
+                if (node.controllerFlags == 0)
+                    node.flags &= ~RenderCore::modelNodeFlag(RenderCore::ModelNodeFlag::ControllerTarget);
+            }
+
             if (source.mRecordType == Nif::RC_NiParticles)
             {
                 mResult.model.dynamicRequirements |= RenderCore::modelDynamicRequirement(
@@ -646,6 +657,7 @@ namespace
 
             auto result = std::make_shared<RenderCore::SkinPayload>();
             result->meshToSkeleton = toGlm(data.mTransform);
+            result->geometryBindTransform = result->meshToSkeleton;
             if (!source.mRoot.empty())
                 result->rootBoneName = Misc::StringUtils::lowerCase(source.mRoot.getPtr()->mName);
             result->bones.reserve(source.mBones.size());
@@ -711,6 +723,9 @@ namespace
             auto result = std::make_shared<RenderCore::SkinPayload>();
             if (!source.mRoot.empty())
                 result->rootBoneName = Misc::StringUtils::lowerCase(source.mRoot.getPtr()->mName);
+            // BSSkinInstance has no NiSkinData overall transform. Canonical
+            // RigGeometry uses identity but still cancels the attached path.
+            result->geometryBindTransform = glm::mat4(1.0f);
             result->bones.reserve(source.mBones.size());
             result->vertexInfluences.resize(vertexCount);
             for (std::size_t boneIndex = 0; boneIndex < source.mBones.size(); ++boneIndex)

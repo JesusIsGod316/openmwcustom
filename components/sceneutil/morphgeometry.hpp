@@ -67,6 +67,10 @@ namespace SceneUtil
 
         osg::ref_ptr<osg::Geometry> getSourceGeometry() const;
 
+        // Borrowed CPU-evaluated buffer, using the same deformation as OpenGL cull.
+        // Copy arrays before another traversal; animation updates must be complete.
+        osg::Geometry* evaluateGeometry(unsigned int traversalNumber);
+
         void accept(osg::NodeVisitor& nv) override;
         bool supports(const osg::PrimitiveFunctor&) const override { return true; }
         void accept(osg::PrimitiveFunctor&) const override;
@@ -85,6 +89,7 @@ namespace SceneUtil
 
         unsigned int mLastFrameNumber;
         bool mDirty; // Have any morph targets changed?
+        bool mGeometryEvaluated = false;
 
         mutable bool mMorphedBoundingBox;
     };

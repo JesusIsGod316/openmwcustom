@@ -114,6 +114,9 @@ namespace RenderVsg
             traits->swapchainPreferences.surfaceFormat
                 = { VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
             traits->swapchainPreferences.presentMode = presentMode(options.presentMode);
+            // The sRGB presentation surface is a color attachment, not a
+            // storage image. Request only usage supported by this path.
+            traits->swapchainPreferences.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
             traits->deviceTypePreferences = {
                 VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
                 VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,

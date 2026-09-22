@@ -23,7 +23,8 @@ namespace RenderVsg
     {
     public:
         [[nodiscard]] static WaterSurface create(
-            vsg::ref_ptr<vsg::ImageView> reflection, vsg::ref_ptr<vsg::ImageView> refraction);
+            vsg::ref_ptr<vsg::ImageView> reflection, vsg::ref_ptr<vsg::ImageView> refraction,
+            vsg::ref_ptr<vsg::Data> normalMap = {});
 
         [[nodiscard]] explicit operator bool() const noexcept;
         [[nodiscard]] vsg::ref_ptr<vsg::Node> node() const noexcept;
@@ -36,6 +37,8 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::vec4Array> mParameters;
         bool mHasReflection = false;
         bool mHasRefraction = false;
+        bool mLegacyComposition = false;
+        bool mHasNormalMap = false;
     };
 }
 

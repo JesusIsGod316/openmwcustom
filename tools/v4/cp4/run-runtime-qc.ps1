@@ -5,7 +5,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $UserData,
 
-    [ValidateSet('Save', 'NewGame')]
+    [ValidateSet('Save', 'NewGame', 'Manual')]
     [string] $Mode = 'Save',
 
     [string] $Save,
@@ -15,11 +15,35 @@ param(
     [switch] $NoGrab,
     [ValidateRange(10, 300)]
     [int] $TimeoutSeconds = 60,
-    [string] $EvidenceRoot
+    [string] $EvidenceRoot,
+    [string] $PythonExecutable = 'python',
+    [string[]] $DllDirectory = @(),
+    [string] $SourceHead = 'unrecorded',
+    [string] $SourceDiffSha256 = 'unrecorded'
 )
 
 $ErrorActionPreference = 'Stop'
 $Executable = (Resolve-Path -LiteralPath $Executable).Path
+if ($Mode -eq 'Manual') {
+    # Keep manual tests on the same entry point but never apply the legacy
+    # timeout/kill policy or move the normal profile's crash dump.
+    if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
+        $EvidenceRoot = Join-Path $UserData 'runtime-qc-evidence'
+    }
+    $manualArgs = @((Join-Path $PSScriptRoot 'gameplay-diagnostics.py'), 'launch',
+        '--executable', $Executable, '--user-config', $UserData,
+        '--evidence-root', $EvidenceRoot, '--source-head', $SourceHead,
+        '--source-diff-sha256', $SourceDiffSha256)
+    foreach ($directory in $DllDirectory) { $manualArgs += @('--dll-directory', $directory) }
+    if ($OsgLibraryPath) { $manualArgs += @('--osg-library-path', $OsgLibraryPath) }
+    & $PythonExecutable @manualArgs
+    if ($LASTEXITCODE -ne 0) { throw "Manual diagnostic collector failed: $LASTEXITCODE" }
+    return
+}
+# The non-manual QC route must inspect the deployed package too, before moving
+# dumps or launching. Source/native tests cannot establish package completeness.
+& $PythonExecutable (Join-Path $PSScriptRoot 'shader_resources.py') verify (Join-Path (Split-Path $Executable) 'resources/shaders')
+if ($LASTEXITCODE -ne 0) { throw 'Shader package QC failed; runtime test not started.' }
 if ($Mode -eq 'Save' -and [string]::IsNullOrWhiteSpace($Save)) {
     throw '-Save is required in Save mode.'
 }

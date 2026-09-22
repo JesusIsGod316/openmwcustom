@@ -18,6 +18,10 @@ namespace MWWorld
     public:
         virtual ~SceneRenderLifecycle() = default;
 
+        // Extra future-view preparation is renderer-specific. The current grid
+        // is still prepared for canonical paging/physics regardless of this flag.
+        virtual bool usesLegacyTerrainFrontload() const noexcept { return true; }
+
         virtual void cellActivated(const CellStore& cell) = 0;
         virtual void cellDeactivating(const CellStore& cell) noexcept = 0;
         virtual void objectAdded(const Ptr& ptr) = 0;

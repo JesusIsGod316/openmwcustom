@@ -1,6 +1,7 @@
 #include "manager.hpp"
 
 #include <cassert>
+#include <limits>
 #include <stdexcept>
 
 #include <components/files/conversion.hpp>
@@ -20,6 +21,9 @@ namespace VFS
 
     void Manager::reset()
     {
+        if (mIndexGeneration == std::numeric_limits<std::uint64_t>::max())
+            throw std::overflow_error("VFS index generation exhausted");
+        ++mIndexGeneration;
         mIndex.clear();
         mArchives.clear();
     }
@@ -31,6 +35,9 @@ namespace VFS
 
     void Manager::buildIndex()
     {
+        if (mIndexGeneration == std::numeric_limits<std::uint64_t>::max())
+            throw std::overflow_error("VFS index generation exhausted");
+        ++mIndexGeneration;
         mIndex.clear();
 
         for (const auto& archive : mArchives)

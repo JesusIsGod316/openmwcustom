@@ -5,11 +5,14 @@
 #include "staticworldplan.hpp"
 
 #include <components/rendercore/framerenderstate.hpp>
+#include <components/rendercore/posedmodel.hpp>
 
 #include <algorithm>
 #include <cctype>
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace RenderVsg
@@ -95,7 +98,8 @@ namespace RenderVsg
             {
                 const MeshRecord* mesh = node.mesh ? world.get(*node.mesh) : nullptr;
                 if (!mesh || !mesh->morphed)
-                    return fail("actor morph controller has no morphed mesh: " + node.name);
+                    return fail("actor morph controller has no morphed mesh: " + node.name
+                        + " in " + model->sourceIdentity);
             }
         }
 
@@ -123,26 +127,35 @@ namespace RenderVsg
             if (std::find(dependencies.begin(), dependencies.end(), candidate) == dependencies.end())
                 dependencies.push_back(candidate);
         };
-        bool hasDeformableMesh = false;
-        for (const StaticDrawPlan& draw : result.asset.draws)
+        // Hidden/disabled nodes can affect material ordering and validation too.
+        // A cached plan must track them, not only its currently emitted draws.
+        for (const ModelNodeRecord& node : model->payload->nodes)
         {
-            const MeshRecord* mesh = world.get(draw.mesh);
-            const MaterialRecord* material = world.get(draw.material);
-            if (!mesh || !material)
-                return fail("actor draw has a stale mesh/material dependency");
-            hasDeformableMesh = hasDeformableMesh || mesh->skinned || mesh->morphed;
-            addUnique(result.meshes, draw.mesh, mesh->revision);
-            addUnique(result.materials, draw.material, material->revision);
-            for (const TextureRealizationKey& texture : draw.textures)
+            if (node.mesh)
             {
-                const TextureRecord* record = world.get(texture.view.texture);
-                if (!record)
-                    return fail("actor draw has a stale texture dependency");
-                addUnique(result.textures, texture.view.texture, record->revision);
+                const MeshRecord* mesh = world.get(*node.mesh);
+                if (!mesh) return fail("actor node has a stale mesh dependency");
+                addUnique(result.meshes, *node.mesh, mesh->revision);
+            }
+            for (const MaterialHandle materialHandle : node.materials)
+            {
+                const MaterialRecord* material = world.get(materialHandle);
+                if (!material) return fail("actor node has a stale material dependency");
+                addUnique(result.materials, materialHandle, material->revision);
+                for (const TextureBinding& binding : material->textures)
+                {
+                    const TextureRecord* record = world.get(binding.texture);
+                    if (!record) return fail("actor node has a stale texture dependency");
+                    addUnique(result.textures, binding.texture, record->revision);
+                }
             }
         }
-        if (!hasDeformableMesh)
-            return fail("actor model has no currently drawable skinned or morphed mesh: " + model->sourceIdentity);
+        // OpenMW actors can be assembled entirely from rigid geometry beneath
+        // animated transform bones (for example vanilla-style creatures). Their
+        // pose is applied by evaluateDynamicActorAssetPlan, not vertex skinning.
+        // Keep empty/unsupported asset rejection distinct from that valid case.
+        if (result.asset.draws.empty())
+            return fail("actor model has no currently drawable mesh: " + model->sourceIdentity);
         return result;
     }
 
@@ -200,9 +213,68 @@ namespace RenderVsg
         return result;
     }
 
+    // Cache only immutable planning, never evaluated poses or mutable GPU data.
+    // Entries own draw metadata, not mesh payload copies; removal/epoch changes
+    // prune them. Invalid dependencies always return to the full validator.
+    class DynamicActorPlanCache
+    {
+    public:
+        std::size_t rebuilt = 0;
+        std::size_t reused = 0;
+
+        [[nodiscard]] DynamicActorWorldPlan prepare(const RenderCore::RenderWorld& world,
+            StaticPlanOptions options = {}, bool rebuildControl = false)
+        {
+            if (mEpoch != world.epoch())
+                mPlans.clear();
+            mEpoch = world.epoch();
+            options.includeDeformableMeshes = true;
+            rebuilt = reused = 0;
+            DynamicActorWorldPlan result;
+            result.worldEpoch = world.epoch();
+            result.worldRevision = world.revision();
+            std::unordered_set<std::uint64_t> active;
+            world.forEachInstance([&](RenderCore::InstanceHandle handle, const RenderCore::InstanceRecord& instance) {
+                if (!instance.skeleton) return;
+                const std::uint64_t key = (std::uint64_t(handle.generation()) << 32u) | handle.slot();
+                active.insert(key);
+                auto found = mPlans.find(key);
+                if (!rebuildControl && found != mPlans.end() && found->second.options == options
+                    && dynamicActorPlanCurrent(world, found->second))
+                {
+                    ++reused;
+                    result.actors.push_back(found->second);
+                    return;
+                }
+                ++rebuilt;
+                std::string diagnostic;
+                auto plan = buildDynamicActorPlan(world, handle, options, &diagnostic);
+                if (plan)
+                {
+                    mPlans.insert_or_assign(key, *plan);
+                    result.actors.push_back(std::move(*plan));
+                }
+                else
+                {
+                    mPlans.erase(key);
+                    ++result.invalidActors;
+                    if (result.diagnostic.empty()) result.diagnostic = std::move(diagnostic);
+                }
+            });
+            std::erase_if(mPlans, [&](const auto& entry) { return !active.contains(entry.first); });
+            return result;
+        }
+
+        [[nodiscard]] std::size_t size() const noexcept { return mPlans.size(); }
+
+    private:
+        RenderCore::WorldEpoch mEpoch;
+        std::unordered_map<std::uint64_t, DynamicActorPlan> mPlans;
+    };
+
     [[nodiscard]] inline std::optional<StaticAssetPlan> evaluateDynamicActorAssetPlan(
         const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame,
-        const DynamicActorPlan& actor)
+        const DynamicActorPlan& actor, std::vector<glm::mat4>* evaluatedModelNodes = nullptr)
     {
         using namespace RenderCore;
         const ModelRecord* model = world.get(actor.model);
@@ -214,10 +286,6 @@ namespace RenderVsg
             || pose->current.size() != skeleton->payload->bones.size())
             return std::nullopt;
 
-        const auto equalFolded = [](std::string_view left, std::string_view right) {
-            return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(),
-                [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); });
-        };
         std::vector<glm::mat4> globalBones(pose->current.size());
         for (std::size_t i = 0; i < pose->current.size(); ++i)
         {
@@ -225,20 +293,7 @@ namespace RenderVsg
             globalBones[i] = parent < 0 ? pose->current[i]
                                         : globalBones[static_cast<std::size_t>(parent)] * pose->current[i];
         }
-        std::vector<glm::mat4> nodeWorld(model->payload->nodes.size());
-        for (std::size_t i = 0; i < model->payload->nodes.size(); ++i)
-        {
-            const ModelNodeRecord& node = model->payload->nodes[i];
-            const auto bone = std::find_if(skeleton->payload->bones.begin(), skeleton->payload->bones.end(),
-                [&](const BoneRecord& value) { return equalFolded(value.name, node.name); });
-            if (bone != skeleton->payload->bones.end())
-            {
-                nodeWorld[i] = globalBones[static_cast<std::size_t>(bone - skeleton->payload->bones.begin())];
-                continue;
-            }
-            nodeWorld[i] = node.parent.valid() ? nodeWorld[node.parent.value()] * node.localTransform
-                                               : node.localTransform;
-        }
+        auto nodeWorld = posedModelTransforms(*model->payload, *skeleton->payload, globalBones);
 
         StaticAssetPlan result = actor.asset;
         for (StaticDrawPlan& draw : result.draws)
@@ -246,10 +301,12 @@ namespace RenderVsg
             const MeshRecord* mesh = world.get(draw.mesh);
             if (!mesh || draw.node.value() >= nodeWorld.size())
                 return std::nullopt;
-            // Skinning produces skeleton-space vertices. Rigid and morph-only
-            // attachments retain their evaluated model-node placement.
-            draw.worldTransform = mesh->skinned ? glm::mat4(1.0f) : nodeWorld[draw.node.value()];
+            // NIF skinning retains geometry-local output just like RigGeometry.
+            // Only generic skeleton-space producers omit node placement.
+            const bool skeletonSpace = mesh->skinned && (!mesh->skin || !mesh->skin->geometryBindTransform);
+            draw.worldTransform = skeletonSpace ? glm::mat4(1.0f) : nodeWorld[draw.node.value()];
         }
+        if (evaluatedModelNodes) *evaluatedModelNodes = std::move(nodeWorld);
         return result;
     }
 }

@@ -8,6 +8,7 @@
 #include <BulletCollision/CollisionDispatch/btCollisionObject.h>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/gameplaydiagnostics.hpp>
 #include <components/debug/v3diagnostics.hpp>
 #include <components/debug/v32rendererprofiling.hpp>
 #include <components/debug/v3gpumemory.hpp>
@@ -319,6 +320,7 @@ namespace
         Loading::Listener* mLoadingListener;
 
         std::vector<MWWorld::Ptr> mToInsert;
+        double mProgressMs = 0.0;
 
         InsertVisitor(MWWorld::CellStore& cell, Loading::Listener* loadingListener);
 
@@ -360,7 +362,14 @@ namespace
             }
 
             if (mLoadingListener != nullptr)
+            {
+                const bool capture = Debug::GameplayDiagnostics::enabled();
+                const auto start = capture ? Debug::V3Diagnostics::Clock::now()
+                                           : Debug::V3Diagnostics::Clock::time_point{};
                 mLoadingListener->increaseProgress(1);
+                if (capture)
+                    mProgressMs += Debug::V3Diagnostics::elapsedMs(start);
+            }
         }
     }
 
@@ -681,6 +690,7 @@ namespace MWWorld
     void Scene::loadCell(CellStore& cell, Loading::Listener* loadingListener, bool respawn, const osg::Vec3f& position,
         const DetourNavigator::UpdateGuard* navigatorUpdateGuard)
     {
+        Debug::GameplayDiagnostics::Operation diagnosticOperation("load_cell", cell.getCell()->getDescription());
         Debug::V3Diagnostics::ScopedCsvTimer v3LoadTimer(
             Debug::V3Diagnostics::transitionWriter(), "load_cell", cell.getCell()->getDescription());
         using DetourNavigator::HeightfieldShape;
@@ -771,9 +781,15 @@ namespace MWWorld
             Log(Debug::Info) << "V3.2 restored " << v32RestoredObjects << " static render objects into "
                              << cell.getCell()->getDescription();
 
-        insertCell(cell, loadingListener, navigatorUpdateGuard);
+        {
+            Debug::GameplayDiagnostics::Operation operation("cell_insert_objects", cell.getCell()->getDescription());
+            insertCell(cell, loadingListener, navigatorUpdateGuard);
+        }
 
-        mRendering.addCell(&cell);
+        {
+            Debug::GameplayDiagnostics::Operation operation("cell_render_add", cell.getCell()->getDescription());
+            mRendering.addCell(&cell);
+        }
 
         MWBase::Environment::get().getWindowManager()->addCell(&cell);
         bool waterEnabled = cellVariant.hasWater() || cell.isExterior();
@@ -893,6 +909,7 @@ namespace MWWorld
 
     void Scene::changeCellGrid(const osg::Vec3f& pos, ESM::ExteriorCellLocation playerCellIndex, bool changeEvent)
     {
+        Debug::GameplayDiagnostics::Operation diagnosticOperation("change_cell_grid");
         Debug::V3Diagnostics::writeEvent("change_cell_grid", "exterior_grid");
         Debug::V3Diagnostics::TraceScope v3Trace("transition", "change_cell_grid", "exterior_grid", 0.1);
         Debug::V3Diagnostics::ScopedCsvTimer v3TransitionTimer(
@@ -936,7 +953,8 @@ namespace MWWorld
         if (mRendering.pagingUnlockCache())
             mPreloader->abortTerrainPreloadExcept(nullptr);
         const bool v39NeedsInitialFrontload
-            = static_cast<int>(Settings::cells().mV39FrontloadMode) > 0 && !mV39InitialFrontloadDone;
+            = (!mRenderLifecycle || mRenderLifecycle->usesLegacyTerrainFrontload())
+            && static_cast<int>(Settings::cells().mV39FrontloadMode) > 0 && !mV39InitialFrontloadDone;
         if (v39NeedsInitialFrontload
             || !mPreloader->isTerrainLoaded(PositionCellGrid{ pos, newGrid }, mRendering.getReferenceTime()))
             preloadTerrain(pos, playerCellIndex.mWorldspace, true);
@@ -1222,6 +1240,7 @@ namespace MWWorld
     void Scene::changeToInteriorCell(
         std::string_view cellName, const ESM::Position& position, bool adjustPlayerPos, bool changeEvent)
     {
+        Debug::GameplayDiagnostics::Operation diagnosticOperation("change_to_interior", cellName);
         Debug::V3Diagnostics::writeEvent("change_to_interior", cellName);
         Debug::V3Diagnostics::TraceScope v3Trace("transition", "change_to_interior", cellName, 0.1);
         Debug::V3Diagnostics::ScopedCsvTimer v3TransitionTimer(
@@ -1296,6 +1315,7 @@ namespace MWWorld
     void Scene::changeToExteriorCell(
         const ESM::RefId& extCellId, const ESM::Position& position, bool adjustPlayerPos, bool changeEvent)
     {
+        Debug::GameplayDiagnostics::Operation diagnosticOperation("change_to_exterior");
         Debug::V3Diagnostics::writeEvent("change_to_exterior");
         Debug::V3Diagnostics::TraceScope v3Trace("transition", "change_to_exterior", "exterior", 0.1);
         Debug::V3Diagnostics::ScopedCsvTimer v3TransitionTimer(
@@ -1344,7 +1364,10 @@ namespace MWWorld
 
         auto& insertionWriter = Debug::V3Diagnostics::insertionWriter();
         V3InsertionAccumulator insertionStats;
-        V3InsertionAccumulatorScope insertionScope(insertionWriter.enabled() ? &insertionStats : nullptr);
+        const bool captureInsertion = Debug::GameplayDiagnostics::enabled();
+        V3InsertionAccumulatorScope insertionScope(
+            (insertionWriter.enabled() || captureInsertion) ? &insertionStats : nullptr);
+        double neutralPublicationMs = 0.0;
 
         auto& v32RendererWriter = Debug::V3Diagnostics::v32RendererInsertionWriter();
         const bool v32RendererProfileEnabled
@@ -1356,20 +1379,41 @@ namespace MWWorld
         {
             Debug::V3Diagnostics::ScopedCsvTimer timer(
                 Debug::V3Diagnostics::transitionWriter(), "insert_render_physics", cell.getCell()->getDescription());
+            Debug::GameplayDiagnostics::Operation operation("cell_render_physics", cell.getCell()->getDescription());
             insertVisitor.insert(
                 [&](const MWWorld::Ptr& ptr) {
                     addObject(ptr, mWorld, mPagedRefs, *mPhysics, mRendering);
                     if (mRenderLifecycle)
+                    {
+                        const auto start = captureInsertion ? Debug::V3Diagnostics::Clock::now()
+                                                            : Debug::V3Diagnostics::Clock::time_point{};
                         mRenderLifecycle->objectAdded(ptr);
+                        if (captureInsertion)
+                            neutralPublicationMs += Debug::V3Diagnostics::elapsedMs(start);
+                    }
                 });
         }
         {
             Debug::V3Diagnostics::ScopedCsvTimer timer(
                 Debug::V3Diagnostics::transitionWriter(), "insert_nav", cell.getCell()->getDescription());
+            Debug::GameplayDiagnostics::Operation operation("cell_navigation", cell.getCell()->getDescription());
             insertVisitor.insert([&](const MWWorld::Ptr& ptr) {
                 addObject(ptr, mWorld, *mPhysics, mLowestPoint, isInterior, mNavigator, navigatorUpdateGuard);
             });
         }
+
+        if (captureInsertion)
+            Debug::GameplayDiagnostics::emit("cell_insertion", {
+                {"cell", std::string(cell.getCell()->getDescription())},
+                {"refs", std::to_string(insertionStats.mTotalRefs)},
+                {"canonical_render_ms", std::to_string(insertionStats.mRenderMs)},
+                {"physics_ms", std::to_string(insertionStats.mPhysicsMs)},
+                {"mechanics_ms", std::to_string(insertionStats.mMechanicsMs)},
+                {"particles_ms", std::to_string(insertionStats.mParticlesMs)},
+                {"lua_added_ms", std::to_string(insertionStats.mLuaAddedMs)},
+                {"navigation_ms", std::to_string(insertionStats.mNavMs)},
+                {"v4_publication_ms", std::to_string(neutralPublicationMs)},
+                {"progress_ms", std::to_string(insertVisitor.mProgressMs)}}, true);
 
         if (insertionWriter.enabled())
         {
@@ -1785,11 +1829,13 @@ namespace MWWorld
 
     void Scene::preloadTerrain(const osg::Vec3f& pos, ESM::RefId worldspace, bool sync)
     {
+        Debug::GameplayDiagnostics::Operation diagnosticOperation("terrain_preload", sync ? "sync" : "async");
         if (mRendering.getTerrain()->getWorldspace() != worldspace)
             throw std::runtime_error("preloadTerrain can only work with the current exterior worldspace");
 
         const int v39FrontloadMode = static_cast<int>(Settings::cells().mV39FrontloadMode);
-        const bool v39DoFrontload = sync && v39FrontloadMode > 0 && !mV39InitialFrontloadDone;
+        const bool v39DoFrontload = (!mRenderLifecycle || mRenderLifecycle->usesLegacyTerrainFrontload())
+            && sync && v39FrontloadMode > 0 && !mV39InitialFrontloadDone;
         const bool v310DoPostTransformFrontload
             = v39DoFrontload && static_cast<bool>(Settings::cells().mV310PreloadPostTransform);
         const bool v310DoFreshFrontload

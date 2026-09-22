@@ -3,10 +3,13 @@
 
 #include "staticassetplan.hpp"
 
+#include <vsg/core/Array.h>
 #include <vsg/core/Data.h>
 #include <vsg/core/ref_ptr.h>
 #include <vsg/io/Logger.h>
 #include <vsg/nodes/Group.h>
+#include <vsg/nodes/MatrixTransform.h>
+#include <vsg/nodes/DepthSorted.h>
 #include <vsg/utils/SharedObjects.h>
 
 #include <glm/vec3.hpp>
@@ -54,12 +57,29 @@ namespace RenderVsg
 
     struct StaticRealizationResult
     {
+        struct MutableDrawStreams
+        {
+            vsg::ref_ptr<vsg::vec3Array> positions;
+            vsg::ref_ptr<vsg::vec3Array> normals;
+            std::vector<vsg::ref_ptr<vsg::vec2Array>> texCoords;
+            vsg::ref_ptr<vsg::vec4Array> colors;
+            vsg::ref_ptr<vsg::MatrixTransform> transform;
+            vsg::ref_ptr<vsg::DepthSorted> sorted;
+        };
+
         vsg::ref_ptr<vsg::Group> root;
         StaticRealizationStats stats;
         std::vector<std::string> diagnostics;
+        std::vector<MutableDrawStreams> mutableDraws;
 
         [[nodiscard]] bool valid() const noexcept { return static_cast<bool>(root); }
     };
+
+    // Caller must validate immutable dependency revisions and acquire a
+    // fence-completed resident first. All destinations are checked before writes.
+    [[nodiscard]] bool updateDeformedAssetRealization(const RenderCore::RenderWorld& world,
+        const StaticAssetPlan& plan, const MeshPayloadResolver& resolve,
+        std::vector<StaticRealizationResult::MutableDrawStreams>& streams);
 
     // CP3B3 backend-private VSG realization. RenderCore remains VSG/Vulkan free;
     // the realizer consumes only published neutral records plus the deterministic
@@ -80,7 +100,8 @@ namespace RenderVsg
             const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
             const MeshPayloadResolver& meshPayloadResolver = {},
             std::span<const RenderCore::PopulationInstanceRecord> placements = {},
-            glm::dvec3 placementOrigin = {}, float opacityMultiplier = 1.0f) const;
+            glm::dvec3 placementOrigin = {}, float opacityMultiplier = 1.0f,
+            bool dynamicData = false) const;
 
     private:
         vsg::ref_ptr<vsg::SharedObjects> mSharedObjects;

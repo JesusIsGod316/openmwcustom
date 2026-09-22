@@ -76,6 +76,15 @@ require(
 )
 
 runtime = (ROOT / "components/render/backend/vsg/vsgruntimehost.cpp").read_text(encoding="utf-8")
+for filename, binding in (("watersurface.cpp", 2), ("skybackdrop.cpp", 0)):
+    shader = (ROOT / "components/render/backend/vsg" / filename).read_text(encoding="utf-8")
+    if "PushConstants::create" in shader or "VK_SHADER_STAGE_FRAGMENT_BIT, 0," in shader:
+        raise SystemExit(f"{filename} overlaps fragment parameters with VSG matrix push constants")
+    if f"binding = {binding}, std140" not in shader or "DescriptorBuffer::create" not in shader:
+        raise SystemExit(f"{filename} has no separate parameter uniform")
+require("components/render/backend/vsg/watersurface.cpp", "gl_FragCoord.xy * water.target.xy")
+require("components/render/backend/vsg/vsgruntimehost.cpp", "OPENMW_V4_BATCH_STATIC_UPLOADS",
+        "compileForViewer(*mViewer, pendingCompile)", "static_plan", "static_compile")
 if "water requires the CP4E environment compatibility facet" in runtime:
     raise SystemExit("CP4E retained the old unconditional water rejection")
 if "vsgopenmw" in runtime.lower():

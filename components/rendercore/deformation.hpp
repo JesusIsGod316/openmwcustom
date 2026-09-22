@@ -3,6 +3,7 @@
 
 #include "framerenderstate.hpp"
 #include "renderworld.hpp"
+#include "posedmodel.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -94,7 +95,7 @@ namespace RenderCore
     // Backend GPU skinning may consume the same immutable records later.
     [[nodiscard]] inline DeformedMeshPayload deformMesh(const RenderWorld& world, const FrameRenderState& frame,
         InstanceHandle instanceHandle, MeshHandle meshHandle, std::optional<ModelNodeIndex> modelNode = {},
-        bool previous = false)
+        bool previous = false, const std::vector<glm::mat4>* evaluatedModelNodes = nullptr)
     {
         DeformedMeshPayload result;
         const InstanceRecord* instance = world.get(instanceHandle);
@@ -152,6 +153,26 @@ namespace RenderCore
 
         const std::vector<glm::mat4>& local = previous ? pose->previous : pose->current;
         const std::vector<glm::mat4> global = deformation_detail::globalPose(*skeleton->payload, local);
+        glm::mat4 skinTransform = mesh->skin->meshToSkeleton;
+        if (mesh->skin->geometryBindTransform)
+        {
+            const ModelRecord* model = instance->model ? world.get(*instance->model) : nullptr;
+            if (!model || !model->payload || !modelNode || !modelNode->valid()
+                || modelNode->value() >= model->payload->nodes.size()
+                || model->payload->nodes[modelNode->value()].mesh != meshHandle)
+                return result;
+            // The actor planner can supply this frame's model transforms once
+            // for all parts. Never use current-frame nodes for previous poses.
+            std::vector<glm::mat4> localNodes;
+            if (!evaluatedModelNodes || previous)
+            {
+                localNodes = posedModelTransforms(*model->payload, *skeleton->payload, global);
+                evaluatedModelNodes = &localNodes;
+            }
+            const auto transform = geometrySkinTransform(*mesh->skin, *model->payload, *modelNode, *evaluatedModelNodes);
+            if (!transform) return result;
+            skinTransform = *transform;
+        }
         std::vector<glm::mat4> palette;
         palette.reserve(mesh->skin->bones.size());
         for (const SkinBoneBinding& binding : mesh->skin->bones)
@@ -165,7 +186,7 @@ namespace RenderCore
             }
             // Transpose OpenMW's row-vector RigGeometry order exactly:
             // inverseBind * boneInSkeleton * skinTransform.
-            palette.push_back(mesh->skin->meshToSkeleton * global[*index] * binding.inverseBind);
+            palette.push_back(global[*index] * binding.inverseBind);
         }
 
         for (std::size_t vertex = 0; vertex < result.positions.size(); ++vertex)
@@ -177,6 +198,11 @@ namespace RenderCore
             glm::mat4 blended(0.0f);
             for (const SkinInfluence& influence : influences)
                 blended += palette[influence.boneIndex] * influence.weight;
+
+            // Canonical RigGeometry blends only the affine 3x4 bone rows and
+            // keeps homogeneous w=1, even when authored weights do not sum to 1.
+            for (int column = 0; column != 4; ++column) blended[column][3] = column == 3 ? 1.f : 0.f;
+            blended = skinTransform * blended;
 
             result.positions[vertex] = glm::vec3(blended * glm::vec4(source.positions[vertex], 1.0f));
             if (!result.normals.empty())

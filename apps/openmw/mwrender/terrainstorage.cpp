@@ -1,4 +1,5 @@
 #include "terrainstorage.hpp"
+#include <components/nifrender/textureidentitycache.hpp>
 
 #include <components/esm3/loadland.hpp>
 #include <components/esm4/loadltex.hpp>
@@ -12,6 +13,13 @@
 
 namespace MWRender
 {
+    NifRender::ResolvedVfsIdentity TerrainStorage::resolveV4TextureIdentity(VFS::Path::NormalizedView path)
+    {
+        const std::lock_guard lock(mV4TextureIdentityMutex);
+        if (!mV4TextureIdentities)
+            mV4TextureIdentities = std::make_unique<NifRender::TextureIdentityCache>(*mResourceSystem->getVFS());
+        return mV4TextureIdentities->resolve(path);
+    }
 
     TerrainStorage::TerrainStorage(Resource::ResourceSystem* resourceSystem, std::string_view normalMapPattern,
         std::string_view normalHeightMapPattern, bool autoUseNormalMaps, std::string_view specularMapPattern,

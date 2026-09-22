@@ -15,6 +15,18 @@
 
 namespace RenderCore
 {
+    struct TerrainTextureSource
+    {
+        TextureRecord texture;
+        TextureBinding binding;
+    };
+
+    struct TerrainLayerSource
+    {
+        MaterialRecord material;
+        std::vector<TerrainTextureSource> textures;
+    };
+
     struct TerrainChunkSource
     {
         std::string identity;
@@ -27,10 +39,32 @@ namespace RenderCore
         AxisAlignedBounds localBounds;
         std::shared_ptr<const MeshPayload> mesh;
         MaterialRecord material;
+        std::vector<TerrainLayerSource> layers;
     };
 
     [[nodiscard]] inline bool validTerrainChunkSource(const TerrainChunkSource& source) noexcept
     {
+        for (std::size_t i = 0; i < source.layers.size(); ++i)
+        {
+            const auto& layer = source.layers[i];
+            if (!layer.material.terrainLayer || layer.material.terrainLayer->first != (i == 0)
+                || !layer.material.textures.empty())
+                return false;
+            unsigned diffuse = 0, blend = 0, normal = 0;
+            for (const auto& texture : layer.textures)
+            {
+                if (texture.texture.contentIdentity.empty() || texture.binding.texture.valid()) return false;
+                switch (texture.binding.role)
+                {
+                    case TextureRole::Diffuse: ++diffuse; break;
+                    case TextureRole::Normal: ++normal; break;
+                    case TextureRole::Blend: ++blend; break;
+                    default: return false;
+                }
+            }
+            if (diffuse != 1 || normal > 1 || blend != (source.layers.size() > 1 ? 1u : 0u)
+                || (layer.material.terrainLayer->parallax && normal != 1)) return false;
+        }
         return !source.identity.empty() && !source.worldspaceIdentity.empty() && source.mesh
             && validMeshPayload(*source.mesh) && !source.mesh->positions.empty() && !source.mesh->surfaces.empty()
             && semantic_detail::finite(source.localBounds.minimum)
@@ -81,6 +115,22 @@ namespace RenderCore
         return total;
     }
 
+    [[nodiscard]] inline std::optional<std::uint64_t> terrainChunkPayloadBytes(const TerrainChunkSource& source) noexcept
+    {
+        if (!source.mesh) return std::nullopt;
+        auto bytes = terrainMeshPayloadBytes(*source.mesh);
+        if (!bytes) return std::nullopt;
+        for (const auto& layer : source.layers)
+            for (const auto& texture : layer.textures)
+                if (texture.texture.pixels)
+                {
+                    const auto count = texture.texture.pixels->rgba8.size();
+                    if (count > std::numeric_limits<std::uint64_t>::max() - *bytes) return std::nullopt;
+                    *bytes += count;
+                }
+        return bytes;
+    }
+
     // CP4A uses the single-source wrapper for one current LAND surface. The
     // ordered set path is the CP4B ownership seam for active and predicted
     // chunks without changing resource identities or backend ownership.
@@ -126,7 +176,7 @@ namespace RenderCore
             {
                 if (mActive.contains(source.identity))
                     continue;
-                const std::optional<std::uint64_t> bytes = terrainMeshPayloadBytes(*source.mesh);
+                const std::optional<std::uint64_t> bytes = terrainChunkPayloadBytes(source);
                 if (!bytes || admittedChunks >= limits.maxNewChunks || *bytes > limits.maxNewMeshBytes - admittedBytes)
                     continue;
                 std::optional<Binding> binding = reserve(source);
@@ -216,7 +266,8 @@ namespace RenderCore
         {
             std::string identity;
             MeshHandle mesh;
-            MaterialHandle material;
+            std::vector<MaterialHandle> materials;
+            std::vector<std::vector<TextureHandle>> textures;
             ModelHandle model;
             ChunkHandle chunk;
             InstanceHandle instance;
@@ -274,10 +325,26 @@ namespace RenderCore
                 return std::nullopt;
             }
             result.mesh = *mesh;
-            result.material = *material;
+            result.materials.push_back(*material);
             result.model = *model;
             result.chunk = *chunk;
             result.instance = *instance;
+            for (std::size_t i = 0; i < source.layers.size(); ++i)
+            {
+                if (i != 0)
+                {
+                    auto handle = mWorld.reserveMaterial();
+                    if (!handle) { cancel(result); return std::nullopt; }
+                    result.materials.push_back(*handle);
+                }
+                auto& textures = result.textures.emplace_back();
+                for (std::size_t j = 0; j < source.layers[i].textures.size(); ++j)
+                {
+                    auto handle = mWorld.reserveTexture();
+                    if (!handle) { cancel(result); return std::nullopt; }
+                    textures.push_back(*handle);
+                }
+            }
             return result;
         }
 
@@ -286,7 +353,9 @@ namespace RenderCore
             mWorld.cancel(binding.instance);
             mWorld.cancel(binding.chunk);
             mWorld.cancel(binding.model);
-            mWorld.cancel(binding.material);
+            for (auto handle : binding.materials) mWorld.cancel(handle);
+            for (const auto& textures : binding.textures)
+                for (auto handle : textures) mWorld.cancel(handle);
             mWorld.cancel(binding.mesh);
         }
 
@@ -305,18 +374,31 @@ namespace RenderCore
             mesh.surfaceCount = static_cast<std::uint32_t>(source.mesh->surfaces.size());
             mesh.payload = source.mesh;
 
-            MaterialRecord material = source.material;
-            material.sourceIdentity = source.identity + ":material";
-
             auto modelPayload = std::make_shared<ModelPayload>();
-            ModelNodeRecord geometry;
-            geometry.name = "terrain";
-            geometry.sourceRecordId = 0;
-            geometry.kind = ModelNodeKind::Geometry;
-            geometry.mesh = binding.mesh;
-            geometry.materials.push_back(binding.material);
-            modelPayload->nodes.push_back(std::move(geometry));
-            modelPayload->roots.push_back(ModelNodeIndex{ 0 });
+            if (!batch.add(CreateMesh{ binding.mesh, std::move(mesh) })) return false;
+            for (std::size_t i = 0; i < binding.materials.size(); ++i)
+            {
+                MaterialRecord material = source.layers.empty() ? source.material : source.layers[i].material;
+                material.sourceIdentity = source.identity + ":material:" + std::to_string(i);
+                if (!source.layers.empty())
+                    for (std::size_t j = 0; j < source.layers[i].textures.size(); ++j)
+                    {
+                        const auto& texture = source.layers[i].textures[j];
+                        auto use = texture.binding;
+                        use.texture = binding.textures[i][j];
+                        if (!batch.add(CreateTexture{use.texture, texture.texture})) return false;
+                        material.textures.push_back(use);
+                    }
+                if (!batch.add(CreateMaterial{binding.materials[i], std::move(material)})) return false;
+                ModelNodeRecord geometry;
+                geometry.name = "terrain:layer:" + std::to_string(i);
+                geometry.sourceRecordId = static_cast<std::uint32_t>(i);
+                geometry.kind = ModelNodeKind::Geometry;
+                geometry.mesh = binding.mesh;
+                geometry.materials.push_back(binding.materials[i]);
+                modelPayload->nodes.push_back(std::move(geometry));
+                modelPayload->roots.push_back(ModelNodeIndex{static_cast<std::uint32_t>(i)});
+            }
             ModelRecord model;
             model.sourceIdentity = source.identity + ":model";
             model.bounds = source.localBounds;
@@ -343,23 +425,31 @@ namespace RenderCore
             instance.localBounds = source.localBounds;
             instance.semanticFlags = chunk.semanticFlags;
 
-            return batch.add(CreateMesh{ binding.mesh, std::move(mesh) })
-                && batch.add(CreateMaterial{ binding.material, std::move(material) })
-                && batch.add(CreateModel{ binding.model, std::move(model) })
+            return batch.add(CreateModel{ binding.model, std::move(model) })
                 && batch.add(CreateChunk{ binding.chunk, std::move(chunk) })
                 && batch.add(CreateInstance{ binding.instance, std::move(instance) });
         }
 
         [[nodiscard]] static bool addRetirement(RenderWorldUpdateBatch& batch, const Binding& binding)
         {
-            return batch.add(RetireInstance{ binding.instance }) && batch.add(RetireChunk{ binding.chunk })
-                && batch.add(RetireModel{ binding.model }) && batch.add(RetireMaterial{ binding.material })
-                && batch.add(RetireMesh{ binding.mesh });
+            if (!batch.add(RetireInstance{ binding.instance }) || !batch.add(RetireChunk{ binding.chunk })
+                || !batch.add(RetireModel{ binding.model })) return false;
+            for (auto handle : binding.materials)
+                if (!batch.add(RetireMaterial{handle})) return false;
+            for (const auto& textures : binding.textures)
+                for (auto handle : textures)
+                    if (!batch.add(RetireTexture{handle})) return false;
+            return batch.add(RetireMesh{ binding.mesh });
         }
 
         [[nodiscard]] bool live(const Binding& binding) const noexcept
         {
-            return mWorld.get(binding.mesh) && mWorld.get(binding.material) && mWorld.get(binding.model)
+            for (auto handle : binding.materials)
+                if (!mWorld.get(handle)) return false;
+            for (const auto& textures : binding.textures)
+                for (auto handle : textures)
+                    if (!mWorld.get(handle)) return false;
+            return mWorld.get(binding.mesh) && mWorld.get(binding.model)
                 && mWorld.get(binding.chunk) && mWorld.get(binding.instance);
         }
 

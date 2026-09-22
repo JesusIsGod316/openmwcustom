@@ -133,8 +133,50 @@ int main()
     auto underwater = input;
     underwater.environment.underwater = true;
     underwater.environment.skyEnabled = false;
-    if (!require(producer.prepare(world, underwater).has_value(), "underwater frame rejected"))
+    const auto underwaterFrame = producer.prepare(world, underwater);
+    if (!require(underwaterFrame.has_value(), "underwater frame rejected"))
         return EXIT_FAILURE;
+    for (const bool cave : {false, true})
+    {
+        underwater.environment.interior = cave;
+        const auto wetFrame = producer.prepare(world, underwater);
+        const auto* reflected = wetFrame ? findView(*wetFrame, RenderCore::ViewKind::Reflection) : nullptr;
+        const auto* refracted = wetFrame ? findView(*wetFrame, RenderCore::ViewKind::Refraction) : nullptr;
+        if (!require(reflected && refracted && reflected->clipPlane && refracted->clipPlane,
+                "underwater views missing")
+            || !require(reflected->clipPlane->normal.z == -1 && reflected->clipPlane->distance == 10,
+                "underwater reflection discarded the submerged scene")
+            || !require(refracted->clipPlane->normal.z == 1 && refracted->clipPlane->distance == -10,
+                "underwater refraction discarded the above-water scene"))
+            return EXIT_FAILURE;
+    }
+
+    // A point on the mirror plane must project to equal Y and opposite X in
+    // the right-handed reflected view, for translated/rotated/pitched cameras.
+    for (float yaw : {0.0f, 0.6f, 2.0f})
+    {
+        auto projectedInput = input;
+        const glm::vec3 eye(20,30,90);
+        const glm::vec3 forward(std::sin(yaw), std::cos(yaw), -0.3f);
+        projectedInput.camera.view = glm::lookAtRH(eye, eye + forward, glm::vec3(0,0,1));
+        const auto projected = producer.prepare(world, projectedInput);
+        const auto* reflected = projected ? findView(*projected, RenderCore::ViewKind::Reflection) : nullptr;
+        if (!require(reflected != nullptr, "projected reflection missing")) return EXIT_FAILURE;
+        for (float side : {-70.f, 70.f})
+        {
+            const glm::vec4 point(eye + forward * 300.f + glm::vec3(side,20.f,10.f), 1.f);
+            glm::vec4 planePoint = point; planePoint.z = 10.f;
+            const glm::vec4 mainEye = projectedInput.camera.view * planePoint;
+            const glm::vec4 reflectedEye = reflected->current.view * planePoint;
+            // Float lookAt rebuilds a unit forward vector at a translated eye.
+            // Compare relatively: the observed ~0.001 world-unit rounding at
+            // 330 units is far below a pixel and is not a handedness failure.
+            if (!require(glm::length(glm::vec3(mainEye.x + reflectedEye.x,
+                    mainEye.y - reflectedEye.y, mainEye.z - reflectedEye.z))
+                    < 0.00002f * glm::length(glm::vec3(mainEye)),
+                    "reflected-camera screen mapping changed")) return EXIT_FAILURE;
+        }
+    }
 
     std::cout << "V4 CP4E water/auxiliary route: PASS\n";
     return EXIT_SUCCESS;

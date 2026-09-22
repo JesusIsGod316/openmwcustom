@@ -1,6 +1,8 @@
 #include "vsgruntimehost.hpp"
+#include <components/debug/gameplaydiagnostics.hpp>
 
 #include "dynamicactorplan.hpp"
+#include "allocationdiagnostics.hpp"
 #include "immediateeffectrealizer.hpp"
 #include "legacymaterialshader.hpp"
 #include "populationvisibility.hpp"
@@ -12,6 +14,7 @@
 #include <components/rendercore/deformation.hpp>
 
 #include <vsg/app/CommandGraph.h>
+#include <vsg/io/DatabasePager.h>
 #include <vsg/app/RenderGraph.h>
 #include <vsg/app/View.h>
 #include <vsg/app/Viewer.h>
@@ -202,7 +205,9 @@ namespace RenderVsg
         mUiPipeline = createUiPipeline(std::max(1u, initialExtent.width), std::max(1u, initialExtent.height));
         if (!mUiPipeline)
             throw std::runtime_error("VsgRuntimeHost could not create its MyGUI pipeline");
-        mView->addChild(mSceneRoot);
+        mSceneVisibility = vsg::Switch::create();
+        mSceneVisibility->addChild(vsg::MASK_ALL, mSceneRoot);
+        mView->addChild(mSceneVisibility);
         const auto makeWaterView = [&](RenderCore::ViewKind kind) -> std::optional<WaterViewRuntime> {
             WaterViewRuntime result;
             RenderCore::FrameView initial = initialView();
@@ -237,14 +242,18 @@ namespace RenderVsg
 
         if (options.water.enabled)
             mWaterSurface = WaterSurface::create(mReflectionView ? mReflectionView->target.color : nullptr,
-                mRefractionView ? mRefractionView->target.color : nullptr);
+                mRefractionView ? mRefractionView->target.color : nullptr, options.water.normalMap);
         if (options.water.enabled && !mWaterSurface)
             throw std::runtime_error("VsgRuntimeHost could not create its CP4E water surface");
         if (mWaterSurface)
             mMainOnlyRoot->addChild(mWaterSurface.node());
-        mMainOnlyRoot->addChild(mGuiRoot);
+        // Disabling depth is insufficient: the world's deferred bins execute
+        // after ordinary View children and would paint over a direct GUI node.
+        static_assert(UiOverlayBinNumber > StaticBackToFrontBinNumber);
+        mMainOnlyRoot->addChild(createUiOverlayLayer(mGuiRoot));
         mView->addChild(mMainOnlyRoot);
         mView->bins = createStaticConformanceBins();
+        mView->bins.push_back(vsg::Bin::create(UiOverlayBinNumber, vsg::Bin::NO_SORT));
         mRenderGraph = vsg::RenderGraph::create(mWindow);
         mRenderGraph->addChild(mView);
         mCommandGraph = vsg::CommandGraph::create(mWindow);
@@ -264,6 +273,30 @@ namespace RenderVsg
         const vsg::CompileResult compile = mViewer->compile(resourceHints);
         if (!compile)
             throw std::runtime_error("VsgRuntimeHost initial graph compilation failed: " + compile.message);
+        // Viewer::compile initializes view-dependent shadow resources during
+        // resource collection. Discover persistent contexts only AFTER that
+        // step, otherwise shadow Views have not been allocated yet.
+        auto previousCompileManager = mViewer->compileManager;
+        auto compileManager = ViewCompileManager::create(*mViewer, resourceHints);
+        compileManager->resourceScavenger = previousCompileManager->resourceScavenger;
+        if (mViewer->instrumentation)
+            compileManager->assignInstrumentation(mViewer->instrumentation);
+        for (const auto& task : mViewer->recordAndSubmitTasks)
+            if (task->databasePager && task->databasePager->compileManager == previousCompileManager)
+                task->databasePager->compileManager = compileManager;
+        mViewer->compileManager = compileManager;
+        // VSG's viewer context discovery uses an ordinary visitor: masked-off
+        // water Views above are deliberately absent from it. Register their
+        // framebuffer contexts once while keeping rendering disabled until a
+        // frame actually requests water. Otherwise later exact-view compilation
+        // has no matching context and leaves exterior pipelines unrealized.
+        if (!std::getenv("OPENMW_V4_UNREGISTERED_WATER_VIEWS"))
+        {
+            if (mReflectionView)
+                mViewer->compileManager->add(*mReflectionView->target.renderGraph->framebuffer, mReflectionView->view);
+            if (mRefractionView)
+                mViewer->compileManager->add(*mRefractionView->target.renderGraph->framebuffer, mRefractionView->view);
+        }
     }
 
     void VsgRuntimeHost::attachGuiRenderer(VsgMyGui::RenderManager* renderer) noexcept
@@ -433,9 +466,19 @@ namespace RenderVsg
 
     bool VsgRuntimeHost::synchronizeStaticWorld(const RenderCore::RenderWorld& world)
     {
-        const StaticWorldPlan worldPlan = buildStaticWorldPlan(world, mOptions.staticPlan);
+        Debug::GameplayDiagnostics::Stage diagnostic("static_sync");
+        if (mStaticSyncState.unchanged(world, mOptions.staticPlan)
+            && !std::getenv("OPENMW_V4_REBUILD_STATIC_PLANS"))
+            return true;
+        const StaticWorldPlan worldPlan = [&] {
+            Debug::GameplayDiagnostics::Stage planning("static_plan");
+            return buildStaticWorldPlan(world, mOptions.staticPlan);
+        }();
         const StaticWorldMutation mutation = mStaticResidency.prepare(world, worldPlan);
-        const StaticPopulationMutation populationMutation = mStaticPopulationResidency.prepare(world, worldPlan);
+        const char* coarsePopulationControl = std::getenv("OPENMW_V4_COARSE_POPULATION_REBUILD_CONTROL");
+        const bool coarsePopulationInvalidation = coarsePopulationControl && std::string_view(coarsePopulationControl) == "1";
+        const StaticPopulationMutation populationMutation
+            = mStaticPopulationResidency.prepare(world, worldPlan, coarsePopulationInvalidation);
         if (!mutation.valid || !populationMutation.valid || mutation.simpleMeshInstancesDeferred != 0)
         {
             mLastDiagnostic = "static world contains invalid or not-yet-supported instance populations";
@@ -443,7 +486,46 @@ namespace RenderVsg
         }
         if (mutation.upserts.empty() && mutation.removals.empty() && populationMutation.upserts.empty()
             && populationMutation.removals.empty())
+        {
+            mStaticSyncState.synchronized();
             return true;
+        }
+
+        // This cache owns descriptors/configurators, not just cheap lookup keys.
+        // Prune only cache-exclusive objects; live and fence-retired graphs keep
+        // their own references. Never clear the live graph to recover memory.
+        mSharedObjects->prune();
+
+        // CompileManager::compile records transfers and waits for completion.
+        // Loading N placements must not perform N synchronous upload round trips.
+        // Keep new roots private until the complete batch has compiled successfully.
+        // Default-off until representative load-time testing demonstrates a
+        // benefit without a staging-memory regression. Same-executable control.
+        const char* batchMode = std::getenv("OPENMW_V4_BATCH_STATIC_UPLOADS");
+        const bool individualCompile = !batchMode || std::string_view(batchMode) != "1";
+        auto pendingCompile = vsg::Group::create();
+        auto prepareGraph = [&](vsg::ref_ptr<vsg::Node> graph, const std::string& subject) {
+            if (!individualCompile)
+            {
+                pendingCompile->addChild(std::move(graph));
+                return true;
+            }
+            Debug::GameplayDiagnostics::Stage compiling("static_compile");
+            const auto compileResult = compileForViewer(*mViewer, graph);
+            if (!compileResult)
+                mLastDiagnostic = compileFailureDiagnostic(subject, compileResult);
+            return static_cast<bool>(compileResult);
+        };
+        if (Debug::GameplayDiagnostics::sampling())
+            Debug::GameplayDiagnostics::emit("static_mutation", {
+                {"instances", std::to_string(mutation.upserts.size())},
+                {"populations", std::to_string(populationMutation.upserts.size())},
+                {"population_new", std::to_string(populationMutation.newGroups)},
+                {"population_chunk_changed", std::to_string(populationMutation.changedChunks)},
+                {"population_options_changed", std::to_string(populationMutation.changedOptions)},
+                {"population_stale_dependencies", std::to_string(populationMutation.staleDependencies)},
+                {"population_coarse_control", std::to_string(coarsePopulationInvalidation)},
+                {"individual_compile", std::to_string(individualCompile)} });
 
         std::vector<StaticResident> replacements;
         replacements.reserve(mutation.upserts.size());
@@ -469,14 +551,11 @@ namespace RenderVsg
             const bool castsShadow = hasSemanticFlag(plan.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster)
                 && (terrain ? mOptions.shadows.terrainCasters : mOptions.shadows.objectCasters);
             placed->addChild(realized.root);
-            const vsg::CompileResult compileResult = compileForViewer(*mViewer, placed);
-            if (!compileResult)
+            const RenderCore::ModelRecord* model = world.get(plan.model);
+            const std::string subject = model && !model->sourceIdentity.empty()
+                ? "incremental VSG model '" + model->sourceIdentity + "'" : "incremental VSG model";
+            if (!prepareGraph(placed, subject))
             {
-                const RenderCore::ModelRecord* model = world.get(plan.model);
-                const std::string subject = model && !model->sourceIdentity.empty()
-                    ? "incremental VSG model '" + model->sourceIdentity + "'"
-                    : "incremental VSG model";
-                mLastDiagnostic = compileFailureDiagnostic(subject, compileResult);
                 return false;
             }
             replacements.push_back(maskedNode(placementMask(castsShadow, plan.semanticFlags), std::move(placed)));
@@ -542,20 +621,31 @@ namespace RenderVsg
                         placementMask(castsShadow(placement), placement.semanticFlags), std::move(placed)));
                 }
             }
-            const vsg::CompileResult compileResult = compileForViewer(*mViewer, group);
-            if (!compileResult)
+            const RenderCore::ModelRecord* model = world.get(plan.model);
+            std::string subject = model && !model->sourceIdentity.empty()
+                ? "incremental VSG population model '" + model->sourceIdentity + "'"
+                : "incremental VSG population model";
+            subject += " with " + std::to_string(plan.placements.size()) + " placements";
+            if (!prepareGraph(group, subject))
             {
-                const RenderCore::ModelRecord* model = world.get(plan.model);
-                std::string subject = model && !model->sourceIdentity.empty()
-                    ? "incremental VSG population model '" + model->sourceIdentity + "'"
-                    : "incremental VSG population model";
-                subject += " with " + std::to_string(plan.placements.size()) + " placements";
-                mLastDiagnostic = compileFailureDiagnostic(subject, compileResult);
                 return false;
             }
             auto visibility = vsg::Switch::create();
             visibility->addChild(vsg::MASK_ALL, std::move(group));
             populationReplacements.push_back({ std::move(visibility) });
+        }
+
+        if (!pendingCompile->children.empty())
+        {
+            Debug::GameplayDiagnostics::Stage compiling("static_compile");
+            const auto result = compileForViewer(*mViewer, pendingCompile);
+            if (!result)
+            {
+                mLastDiagnostic = compileFailureDiagnostic("incremental VSG static batch ("
+                    + std::to_string(mutation.upserts.size()) + " instances, "
+                    + std::to_string(populationMutation.upserts.size()) + " populations)", result);
+                return false;
+            }
         }
 
         std::unordered_map<std::uint64_t, std::size_t> replacementIndices;
@@ -617,6 +707,9 @@ namespace RenderVsg
             return false;
         }
         mStaticRoot->children.swap(nextChildren);
+        nextChildren.clear(); // release the old traversal references before pruning
+        mSharedObjects->prune();
+        mStaticSyncState.synchronized();
         return true;
     }
 
@@ -642,7 +735,17 @@ namespace RenderVsg
     bool VsgRuntimeHost::synchronizeDynamicActors(
         const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame)
     {
-        const DynamicActorWorldPlan plan = buildDynamicActorWorldPlan(world, mOptions.staticPlan);
+        Debug::GameplayDiagnostics::Stage diagnostic("dynamic_realization");
+        unsigned diagnosticActors = 0;
+        unsigned reusedActors = 0, rebuiltActors = 0;
+        const DynamicActorWorldPlan plan = [&] {
+            Debug::GameplayDiagnostics::Stage planningDiagnostic("actor_plan");
+            return mActorPlanCache.prepare(world, mOptions.staticPlan,
+                std::getenv("OPENMW_V4_REBUILD_ACTOR_PLANS_CONTROL") != nullptr);
+        }();
+        if (Debug::GameplayDiagnostics::sampling())
+            Debug::GameplayDiagnostics::emit("actor_plan_cache", {{"reused", std::to_string(mActorPlanCache.reused)},
+                {"rebuilt", std::to_string(mActorPlanCache.rebuilt)}});
         if (!plan.valid())
         {
             mLastDiagnostic = plan.diagnostic.empty()
@@ -651,8 +754,28 @@ namespace RenderVsg
             return false;
         }
 
+        // New dynamic residents are created from their evaluated CPU state. Their configurators contain frame-owned arrays, so placing
+        // them in the host-wide SharedObjects cache retains every old frame and
+        // eventually exhausts device memory. Share only within this generation;
+        // persistent textures remain shared by mTextureResolver.
+        auto frameSharedObjects = vsg::SharedObjects::create();
+
+        // If the GPU has completed the current generation, detach it before
+        // reserving the replacement. This avoids a needless full-generation
+        // VRAM overlap while preserving retirement for genuinely in-flight work.
+        if (mDynamicPublishedRoot && mDynamicLastUse && mCompletedThrough
+            && *mDynamicLastUse <= *mCompletedThrough)
+        {
+            mDynamicRoot->children.clear();
+            mDynamicPublishedRoot = {};
+            mDynamicLastUse.reset();
+        }
+
         auto nextRoot = vsg::Group::create();
         nextRoot->children.reserve(plan.actors.size());
+        auto pendingCompile = vsg::Group::create();
+        mLastCompiledDynamicRootCount = 0;
+        mDynamicActorResidents.beginFrame(frame.frameId(), mCompletedThrough);
         for (const DynamicActorPlan& actor : plan.actors)
         {
             if (!actor.lightingEnabled)
@@ -667,7 +790,9 @@ namespace RenderVsg
                 mLastDiagnostic = "dynamic actor frame is missing its current world transform";
                 return false;
             }
-            const std::optional<StaticAssetPlan> evaluatedAsset = evaluateDynamicActorAssetPlan(world, frame, actor);
+            std::vector<glm::mat4> evaluatedModelNodes;
+            const std::optional<StaticAssetPlan> evaluatedAsset
+                = evaluateDynamicActorAssetPlan(world, frame, actor, &evaluatedModelNodes);
             if (!evaluatedAsset)
             {
                 mLastDiagnostic = "dynamic actor draw transforms rejected the evaluated skeleton pose";
@@ -681,7 +806,7 @@ namespace RenderVsg
                 if (!mesh || (!mesh->skinned && !mesh->morphed) || deformed.contains(draw.node.value()))
                     continue;
                 RenderCore::DeformedMeshPayload result
-                    = RenderCore::deformMesh(world, frame, actor.instance, draw.mesh, draw.node);
+                    = RenderCore::deformMesh(world, frame, actor.instance, draw.mesh, draw.node, false, &evaluatedModelNodes);
                 if (!result.ready() || !mesh->payload)
                 {
                     mLastDiagnostic = "dynamic actor CPU deformation rejected its evaluated pose or morph state";
@@ -699,33 +824,110 @@ namespace RenderVsg
                 const auto found = deformed.find(node.value());
                 return found == deformed.end() ? nullptr : &found->second;
             };
-            StaticRealizationResult realized = realizeStaticAssetConformant(
-                world, actor.model, *evaluatedAsset, mTextureResolver, mSharedObjects, resolve, {}, {},
-                transform->opacity);
-            if (!realized.valid() || realized.stats.runtimeContextEffects != 0
-                || realized.stats.unsupportedTextureBindings != 0)
+            const std::string residentIdentity = std::to_string(world.epoch().value()) + ":"
+                + std::to_string(actor.instance.slot()) + ":" + std::to_string(actor.instance.generation());
+            auto& resident = mDynamicActorResidents.acquire(residentIdentity);
+            const bool canReuse = !std::getenv("OPENMW_V4_REBUILD_ACTORS") && resident.published && resident.contract
+                && resident.epoch == world.epoch() && resident.opacity == transform->opacity
+                && dynamicActorPlanCurrent(world, *resident.contract);
+            if (!canReuse || !updateDeformedAssetRealization(world, *evaluatedAsset, resolve, resident.mutableDraws))
             {
-                mLastDiagnostic = realized.diagnostics.empty()
-                    ? "dynamic actor realization requires a not-yet-supported compatibility effect"
-                    : realized.diagnostics.front();
-                return false;
+                ++rebuiltActors;
+                StaticRealizationResult realized = realizeStaticAssetConformant(
+                    world, actor.model, *evaluatedAsset, mTextureResolver, frameSharedObjects, resolve, {}, {},
+                    transform->opacity, true);
+                if (!realized.valid() || realized.stats.runtimeContextEffects != 0
+                    || realized.stats.unsupportedTextureBindings != 0)
+                {
+                    mLastDiagnostic = realized.diagnostics.empty()
+                        ? "dynamic actor realization requires a not-yet-supported compatibility effect"
+                        : realized.diagnostics.front();
+                    return false;
+                }
+                auto placed = vsg::MatrixTransform::create();
+                placed->addChild(realized.root);
+                const bool castsShadow = mOptions.shadows.actorCasters
+                    && hasSemanticFlag(actor.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster);
+                resident.published = maskedNode(placementMask(castsShadow, actor.semanticFlags), placed);
+                resident.placement = std::move(placed);
+                resident.mutableDraws = std::move(realized.mutableDraws);
+                resident.contract = actor;
+                resident.epoch = world.epoch();
+                resident.opacity = transform->opacity;
+                pendingCompile->addChild(resident.published);
             }
+            else ++reusedActors;
             if (!dynamicActorPlanCurrent(world, actor))
             {
                 mLastDiagnostic = "dynamic actor changed while its frame graph was being realized";
                 return false;
             }
-            auto placed = vsg::MatrixTransform::create(toVsgMatrix(staticInstancePlacementMatrix(transform->current)));
-            placed->addChild(realized.root);
-            const bool castsShadow = mOptions.shadows.actorCasters
-                && hasSemanticFlag(actor.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster);
-            nextRoot->addChild(maskedNode(placementMask(castsShadow, actor.semanticFlags), std::move(placed)));
+            resident.placement->matrix = toVsgMatrix(staticInstancePlacementMatrix(transform->current));
+            if (Debug::GameplayDiagnostics::sampling() && diagnosticActors++ < 16)
+            {
+                // Compare the CPU deformation with its actual resident streams.
+                // Bounded vertex samples, not a pixel or full mesh parity claim.
+                std::uint64_t hash = 14695981039346656037ull;
+                std::size_t vertices = 0, sampled = 0, mismatches = 0, nonfinite = 0;
+                double maxAbs = 0;
+                for (std::size_t d = 0; d < evaluatedAsset->draws.size() && d < 64; ++d)
+                {
+                    const auto& draw = evaluatedAsset->draws[d];
+                    const auto* mesh = world.get(draw.mesh);
+                    const auto* payload = resolve(draw.mesh, draw.node);
+                    if (!payload && mesh) payload = mesh->payload.get();
+                    if (!payload) continue;
+                    vertices += payload->positions.size();
+                    const auto* target = d < resident.mutableDraws.size() ? resident.mutableDraws[d].positions.get() : nullptr;
+                    if (!target || target->size() != payload->positions.size()) ++mismatches;
+                    const std::size_t step = std::max<std::size_t>(1, (payload->positions.size() + 31) / 32);
+                    for (std::size_t v = 0; v < payload->positions.size(); v += step)
+                    {
+                        const auto& p = payload->positions[v];
+                        hash = (hash ^ Debug::GameplayDiagnostics::fingerprint(&p, sizeof(p))) * 1099511628211ull;
+                        ++sampled;
+                        for (int c = 0; c < 3; ++c)
+                        {
+                            if (!std::isfinite(p[c])) ++nonfinite;
+                            else maxAbs = std::max(maxAbs, std::abs(double(p[c])));
+                            if (target && v < target->size() && (*target)[v][c] != p[c]) ++mismatches;
+                        }
+                    }
+                }
+                const auto placement = staticInstancePlacementMatrix(transform->current);
+                Debug::GameplayDiagnostics::emit("actor_geometry", {{"actor", residentIdentity},
+                    {"sample_hash", std::to_string(hash)}, {"vertices_in_checked_draws", std::to_string(vertices)},
+                    {"sampled_vertices", std::to_string(sampled)}, {"stream_mismatches", std::to_string(mismatches)},
+                    {"nonfinite", std::to_string(nonfinite)}, {"sample_max_abs", std::to_string(maxAbs)},
+                    {"draws", std::to_string(evaluatedAsset->draws.size())},
+                    {"placement_hash", std::to_string(Debug::GameplayDiagnostics::fingerprint(&placement, sizeof(placement)))}});
+            }
+            nextRoot->addChild(resident.published);
         }
 
+        std::size_t reusedEffects = 0;
+        std::size_t rebuiltEffects = 0;
+        mImmediateEffectResidents.beginFrame(frame.frameId(), mCompletedThrough);
         for (const RenderCore::ImmediateEffectDraw& effect : frame.immediateEffectDraws())
         {
+            // Acquire only a fence-completed version. Retaining an old graph
+            // alone does not make overwriting its shared arrays/placement safe.
+            auto& resident = mImmediateEffectResidents.acquire(effect.identity);
+            if (resident.published && immediateEffectLayoutMatches(resident.contract, effect,
+                    std::getenv("OPENMW_V4_IMMUTABLE_EFFECT_BOUNDS") != nullptr)
+                && updateImmediateEffectRealization(effect, resident.mutableDraws))
+            {
+                // The reuse predicate already proved the immutable contract
+                // unchanged. Do not copy every mesh/texture snapshot again just
+                // to retain a pose that is represented by the mutable arrays.
+                resident.placement->matrix = toVsgMatrix(effect.worldTransform);
+                nextRoot->addChild(resident.published);
+                ++reusedEffects;
+                continue;
+            }
+
             ImmediateEffectRealization realized
-                = realizeImmediateEffectDraw(effect, mTextureResolver, mSharedObjects);
+                = realizeImmediateEffectDraw(effect, mTextureResolver, frameSharedObjects);
             if (!realized.valid())
             {
                 mLastDiagnostic = realized.diagnostic.empty()
@@ -737,14 +939,51 @@ namespace RenderVsg
             placed->addChild(realized.root);
             const bool castsShadow
                 = hasSemanticFlag(effect.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster);
-            nextRoot->addChild(maskedNode(placementMask(castsShadow, effect.semanticFlags), std::move(placed)));
+            auto published = maskedNode(placementMask(castsShadow, effect.semanticFlags), placed);
+            nextRoot->addChild(published);
+            resident = ImmediateEffectResident{ effect, std::move(placed), std::move(published),
+                std::move(realized.mutableDraws) };
+            pendingCompile->addChild(resident.published);
+            ++rebuiltEffects;
         }
-        const vsg::CompileResult compileResult = compileForViewer(*mViewer, nextRoot);
+        if (strictQcEnabled() && !frame.immediateEffectDraws().empty())
+            Log(Debug::Info) << "V4 strict QC effect residency reused=" << reusedEffects
+                             << " rebuilt=" << rebuiltEffects
+                             << " retained=" << mImmediateEffectResidents.size();
+        // Keep graph censuses sparse even when a busy exterior rebuilds many
+        // effects every frame. Failures always get a separate final census.
+        const bool allocationDiagnostic = Debug::GameplayDiagnostics::sampling();
+        if (allocationDiagnostic)
+            Debug::GameplayDiagnostics::emit("dynamic_allocation", {{"phase", "before"},
+                {"summary", allocationSummary(*nextRoot, *mWindow->getOrCreateDevice())}}, true);
+        const vsg::CompileResult compileResult = [&] {
+            // Reused residents already own compiled resources in every live
+            // context. TransferTask retains their dynamic buffer registrations
+            // and observes dirty() writes without another CompileManager walk.
+            // A newly registered view compiles its complete root separately.
+            auto compileRoot = std::getenv("OPENMW_V4_RECOMPILE_DYNAMIC_CONTROL") ? nextRoot : pendingCompile;
+            if (compileRoot->children.empty())
+            {
+                vsg::CompileResult empty;
+                empty.result = VK_SUCCESS;
+                return empty;
+            }
+            mLastCompiledDynamicRootCount = compileRoot->children.size();
+            Debug::GameplayDiagnostics::Stage compileDiagnostic("dynamic_compile");
+            return compileForViewer(*mViewer, compileRoot);
+        }();
         if (!compileResult)
         {
             mLastDiagnostic = compileFailureDiagnostic("incremental VSG actor/effect graph", compileResult);
+            const std::string allocations = allocationSummary(*nextRoot, *mWindow->getOrCreateDevice());
+            Log(Debug::Error) << "V4 failed dynamic allocation: " << allocations;
+            Debug::GameplayDiagnostics::emit("dynamic_allocation", {{"phase", "failed"},
+                {"summary", allocations}}, true);
             return false;
         }
+        if (allocationDiagnostic)
+            Debug::GameplayDiagnostics::emit("dynamic_allocation", {{"phase", "after"},
+                {"summary", allocationSummary(*nextRoot, *mWindow->getOrCreateDevice())}}, true);
 
         if (mDynamicLastUse && mDynamicPublishedRoot)
         {
@@ -764,6 +1003,13 @@ namespace RenderVsg
         mDynamicRoot->addChild(nextRoot);
         mDynamicPublishedRoot = std::move(nextRoot);
         mDynamicLastUse.reset();
+        mImmediateEffectResidents.collectUnused();
+        mDynamicActorResidents.collectUnused();
+        if (Debug::GameplayDiagnostics::sampling())
+            Debug::GameplayDiagnostics::emit("residency", {{"actors_reused", std::to_string(reusedActors)},
+                {"actors_rebuilt", std::to_string(rebuiltActors)}, {"actor_versions", std::to_string(mDynamicActorResidents.size())},
+                {"effects_reused", std::to_string(reusedEffects)}, {"effects_rebuilt", std::to_string(rebuiltEffects)},
+                {"effect_versions", std::to_string(mImmediateEffectResidents.size())}});
         return true;
     }
 
@@ -1004,8 +1250,18 @@ namespace RenderVsg
                     mLastDiagnostic = "Vulkan auxiliary view has no framebuffer compilation context";
                     return false;
                 }
-                const vsg::CompileResult auxiliaryCompile = compileForNewFramebufferView(*mViewer,
-                    *created.target.renderGraph->framebuffer, created.view, created.target.renderGraph);
+                // The registration owns exactly the contexts appended by VSG,
+                // including any nested shadow contexts. Its destructor removes
+                // them on retirement AND every unsuccessful publication path.
+                // Keep the old lifetime as an explicit, guarded regression control.
+                const bool retainContextControl = std::getenv("OPENMW_V4_RETAIN_AUXILIARY_CONTEXTS") != nullptr;
+                if (!retainContextControl)
+                    created.compilation = static_cast<ViewCompileManager&>(*mViewer->compileManager)
+                        .registerFramebufferView(*created.target.renderGraph->framebuffer, created.view);
+                const vsg::CompileResult auxiliaryCompile = retainContextControl
+                    ? compileForNewFramebufferView(*mViewer, *created.target.renderGraph->framebuffer,
+                        created.view, created.target.renderGraph)
+                    : compileForViewerView(*mViewer, *created.view, created.target.renderGraph);
                 if (!auxiliaryCompile)
                 {
                     mLastDiagnostic = compileFailureDiagnostic(
@@ -1260,8 +1516,13 @@ namespace RenderVsg
         std::ostringstream diagnostic;
         diagnostic << "Vulkan pre-submit pipeline census found " << unresolved.size()
                    << " unrealized active pipeline(s)";
-        for (const std::string& issue : unresolved)
-            diagnostic << "; " << issue;
+        // Keep the fatal dialog usable for a large exterior. The count remains
+        // exact, while a bounded representative set identifies the failed view.
+        const auto displayed = std::min<std::size_t>(unresolved.size(), 8);
+        for (std::size_t i = 0; i < displayed; ++i)
+            diagnostic << "; " << unresolved[i];
+        if (displayed < unresolved.size())
+            diagnostic << "; " << (unresolved.size() - displayed) << " additional pipeline(s) omitted";
         mLastDiagnostic = diagnostic.str();
         return false;
     }
@@ -1338,7 +1599,24 @@ namespace RenderVsg
     RenderCore::RenderFrameResult VsgRuntimeHost::renderFrame(
         const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame)
     {
+        return renderFrameImpl(world, frame, false);
+    }
+
+    RenderCore::RenderFrameResult VsgRuntimeHost::renderGuiFrame(
+        const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame)
+    {
+        return renderFrameImpl(world, frame, true);
+    }
+
+    RenderCore::RenderFrameResult VsgRuntimeHost::renderFrameImpl(
+        const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame, bool guiOnly)
+    {
         mLastDiagnostic.clear();
+        if (guiOnly && (frame.environment().skyEnabled || frame.environment().waterEnabled
+                || frame.environment().sunLightEnabled || frame.environment().shadowsEnabled
+                || frame.views().size() != 1 || !frame.skeletonPoses().empty()
+                || !frame.immediateEffectDraws().empty()))
+            return finish(RenderCore::RenderFrameResult::Failed, "GUI-only frame contains world rendering state");
         if (!frame.valid() || !RenderCore::frameCompatibleWithWorld(world, frame))
             return finish(RenderCore::RenderFrameResult::Failed, "invalid or stale semantic frame state");
         if (frame.dynamicMaterials().empty() == false)
@@ -1404,8 +1682,15 @@ namespace RenderVsg
                 "Vulkan completion polling failed with VkResult " + std::to_string(completion.result));
         if (completion.completedThrough)
         {
-            (void)mStaticResidency.collect(*completion.completedThrough);
-            (void)mStaticPopulationResidency.collect(*completion.completedThrough);
+            mCompletedThrough = completion.completedThrough;
+            bool releasedStatic = false;
+            {
+                auto instances = mStaticResidency.collect(*completion.completedThrough);
+                auto populations = mStaticPopulationResidency.collect(*completion.completedThrough);
+                releasedStatic = !instances.empty() || !populations.empty();
+            } // destruction releases fence-completed graphs before cache pruning
+            if (releasedStatic)
+                mSharedObjects->prune();
             (void)mDynamicRetirements.collect(*completion.completedThrough);
             (void)mGuiRetirements.collect(*completion.completedThrough);
         }
@@ -1460,22 +1745,37 @@ namespace RenderVsg
         // skies, while later atmosphere/cloud geometry can layer over this.
         const RenderCore::Color& clear = environment.skyEnabled ? environment.skyColor : environment.fogColor;
         mRenderGraph->setClearValues({ { clear.r, clear.g, clear.b, clear.a } });
-        if (!synchronizeLocalLights(world) || !synchronizeStaticWorld(world)
-            || !synchronizePopulationVisibility(world, *mainView) || !synchronizeDynamicActors(world, frame)
+        // Preserve existing resident ownership across GUI-only loading frames.
+        // Hiding the world must not retire/rebuild it or evaluate incomplete actors.
+        mSceneVisibility->setAllChildren(!guiOnly);
+        if ((!guiOnly && (!synchronizeLocalLights(world) || !synchronizeStaticWorld(world)
+                || !synchronizePopulationVisibility(world, *mainView) || !synchronizeDynamicActors(world, frame)))
             || !synchronizeGui())
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
 
-        if (!ensureActiveGraphicsPipelinesRealized())
+        const bool pipelinesReady = [&] {
+            Debug::GameplayDiagnostics::Stage pipelineDiagnostic("pipeline_audit");
+            return ensureActiveGraphicsPipelinesRealized();
+        }();
+        if (!pipelinesReady)
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
         mViewer->update();
-        const VsgSubmitPresentResult submission = submitAndPresentChecked(*mViewer);
+        const VsgSubmitPresentResult submission = [&] {
+            Debug::GameplayDiagnostics::Stage submitDiagnostic("submit_present");
+            return submitAndPresentChecked(*mViewer);
+        }();
+        if (Debug::GameplayDiagnostics::sampling())
+            Debug::GameplayDiagnostics::emit("submission", {{"submit", std::to_string(submission.submit)},
+                {"present", std::to_string(submission.present)}, {"frame_id", std::to_string(frame.frameId().value())}});
         if (submission.submit != VK_SUCCESS)
             return finish(RenderCore::RenderFrameResult::Failed,
                 "Vulkan record/submit failed with VkResult " + std::to_string(submission.submit));
         mWaitedIdle = false;
         if (!mCompletion.registerSubmission(*mViewer, frame.frameId())
+            || (!guiOnly && (!mImmediateEffectResidents.markSubmitted(frame.frameId())
+            || !mDynamicActorResidents.markSubmitted(frame.frameId())
             || !mStaticResidency.markSubmitted(frame.frameId())
-            || !mStaticPopulationResidency.markSubmitted(frame.frameId()))
+            || !mStaticPopulationResidency.markSubmitted(frame.frameId()))))
         {
             // Submission has already happened. Synchronize before returning so
             // an untracked in-flight frame can never make later destruction or
@@ -1484,7 +1784,8 @@ namespace RenderVsg
             return finish(RenderCore::RenderFrameResult::Failed,
                 "submitted frame could not be registered; device was synchronized for safety");
         }
-        mDynamicLastUse = frame.frameId();
+        if (!guiOnly)
+            mDynamicLastUse = frame.frameId();
         mGuiLastUse = frame.frameId();
         if (!submission.success())
             return finish(RenderCore::RenderFrameResult::Failed,

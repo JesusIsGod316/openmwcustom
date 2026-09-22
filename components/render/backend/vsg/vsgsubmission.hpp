@@ -2,12 +2,14 @@
 #define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_VSGSUBMISSION_H
 
 #include "framecompletion.hpp"
+#include <components/debug/gameplaydiagnostics.hpp>
 
 #include <vsg/app/Presentation.h>
 #include <vsg/app/View.h>
 #include <vsg/app/Viewer.h>
 #include <vsg/core/ConstVisitor.h>
 #include <vsg/state/GraphicsPipeline.h>
+#include <vsg/state/ViewDependentState.h>
 #include <vsg/vk/Framebuffer.h>
 #include <vsg/vk/Context.h>
 #include <vsg/vk/Fence.h>
@@ -17,11 +19,13 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <deque>
 #include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -203,7 +207,10 @@ namespace RenderVsg
             }
             for (auto& commandGraph : task->commandGraphs)
                 commandGraph->reset();
-            result.submit = task->submit(vsg::ref_ptr<vsg::FrameStamp>(frameStamp));
+            {
+                Debug::GameplayDiagnostics::Stage stage("submit_task");
+                result.submit = task->submit(vsg::ref_ptr<vsg::FrameStamp>(frameStamp));
+            }
             if (result.submit != VK_SUCCESS)
                 return result;
         }
@@ -214,7 +221,10 @@ namespace RenderVsg
                 result.present = VK_ERROR_INITIALIZATION_FAILED;
                 return result;
             }
-            result.present = presentChecked(*presentation);
+            {
+                Debug::GameplayDiagnostics::Stage stage("submit_present_queue");
+                result.present = presentChecked(*presentation);
+            }
             if (result.present != VK_SUCCESS && result.present != VK_SUBOPTIMAL_KHR
                 && result.present != VK_ERROR_OUT_OF_DATE_KHR
                 && result.present != VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT)
@@ -380,15 +390,61 @@ namespace RenderVsg
         std::deque<Submission> mSubmissions;
     };
 
+    inline void updateViewerAfterCompile(vsg::Viewer& viewer, const vsg::CompileResult& result)
+    {
+        if (!result)
+            return;
+        if (result.requiresViewerUpdate(&viewer))
+            vsg::updateViewer(viewer, result);
+
+        // VSG 1.1.15 updateTasks grows only top-level CommandGraph::maxSlots.
+        // Shadow pre-render graphs keep the limits collected at startup. After
+        // a GUI-only startup (slots 0/1), later material set 1 lives in slot 2
+        // and is silently omitted from shadow draws unless this limit grows.
+        // The old water/sky PushConstants happened to occupy slot 2 and masked
+        // this defect. Uniform buffers correctly use slot 1 instead.
+        const char* control = std::getenv("OPENMW_V4_STALE_SHADOW_SLOTS");
+        if (control && std::string_view(control) == "1")
+            return; // Isolated regression control, never enabled by the launcher.
+        for (const auto& [view, details] : result.views)
+        {
+            if (view && view->viewDependentState && view->viewDependentState->preRenderCommandGraph)
+                view->viewDependentState->preRenderCommandGraph->maxSlots.update(result.maxSlots);
+        }
+    }
+
     // Compile first and publish the CompileResult to every affected VSG task.
     // The caller attaches the object to the live root only after this succeeds.
     [[nodiscard]] inline vsg::CompileResult compileForViewer(vsg::Viewer& viewer, vsg::ref_ptr<vsg::Object> object)
     {
         if (!viewer.compileManager || !object)
             return {};
-        vsg::CompileResult result = viewer.compileManager->compile(std::move(object));
-        if (result && result.requiresViewerUpdate(&viewer))
-            vsg::updateViewer(viewer, result);
+        // Context::viewDependentState is a raw pointer in VSG 1.1.15. Never
+        // dereference it after its owning View has gone away. Keep selected
+        // Views alive through compilation and reject stale registrations rather
+        // than silently publishing an incompletely prepared scene.
+        std::vector<vsg::ref_ptr<vsg::View>> liveViews;
+        bool invalidContext = false;
+        vsg::CompileResult result = viewer.compileManager->compile(std::move(object),
+            [&](vsg::Context& context) {
+                auto view = context.view.ref_ptr();
+                if (context.viewDependentState
+                    && (!view || context.viewDependentState != view->viewDependentState.get()))
+                {
+                    invalidContext = true;
+                    return false;
+                }
+                if (view)
+                    liveViews.push_back(std::move(view));
+                return true;
+            });
+        if (invalidContext)
+        {
+            result.result = VK_ERROR_INITIALIZATION_FAILED;
+            result.message = "Stale VSG view compilation context after view retirement";
+            return result;
+        }
+        updateViewerAfterCompile(viewer, result);
         return result;
     }
 
@@ -402,10 +458,22 @@ namespace RenderVsg
         if (!viewer.compileManager || !object)
             return {};
         const std::uint32_t viewId = view.viewID;
+        bool matchedContext = false;
         vsg::CompileResult result = viewer.compileManager->compile(std::move(object),
-            [viewId](vsg::Context& context) { return context.viewID == viewId; });
-        if (result && result.requiresViewerUpdate(&viewer))
-            vsg::updateViewer(viewer, result);
+            [&view, &matchedContext](vsg::Context& context) {
+                const bool matches = context.viewID == view.viewID && context.view.ref_ptr().get() == &view;
+                matchedContext = matchedContext || matches;
+                return matches;
+            });
+        // VSG 1.1.15 reports success even when a selector matches zero contexts.
+        // A no-op is not successful preparation of a renderable view.
+        if (!matchedContext)
+        {
+            result.result = VK_ERROR_INITIALIZATION_FAILED;
+            result.message = "No registered compile context for VSG view " + std::to_string(viewId);
+            return result;
+        }
+        updateViewerAfterCompile(viewer, result);
         return result;
     }
 

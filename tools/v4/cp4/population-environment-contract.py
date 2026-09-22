@@ -33,7 +33,8 @@ require(
 )
 require(
     "components/render/backend/vsg/vsgruntimehost.cpp",
-    "mStaticPopulationResidency.prepare(world, worldPlan)",
+    "mStaticPopulationResidency.prepare(world, worldPlan, coarsePopulationInvalidation)",
+    "OPENMW_V4_COARSE_POPULATION_REBUILD_CONTROL",
     "incremental VSG population model '",
     "compileFailureDiagnostic(subject, compileResult)",
     "mStaticPopulationResidency.markSubmitted(frame.frameId())",
@@ -49,7 +50,8 @@ require(
     "components/render/backend/vsg/skybackdrop.cpp",
     "vsg::DynamicState::create(VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR)",
     "mRoot->setAllChildren(environment.skyEnabled && !environment.interior && !environment.underwater)",
-    "vsg::PushConstants::create(VK_SHADER_STAGE_FRAGMENT_BIT, 0, result.mParameters.get())",
+    "layout(set = 0, binding = 0, std140) uniform SkyParameters",
+    "vsg::DescriptorBuffer::create(",
     "depth->depthWriteEnable = VK_FALSE",
 )
 require(
@@ -77,7 +79,7 @@ require(
 require(
     "apps/openmw/mwrender/v4enginerenderbridge.cpp",
     "groundcover->collectInstances(1.0f, center)",
-    "ensureModelPublished(*mSession, mVfs, modelPath)",
+    "ensureModelPublished(*mSession, mVfs, modelPath, &mTextureIdentities)",
     "mSession->populations().removeCell",
 )
 require(

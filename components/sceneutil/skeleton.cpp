@@ -1,4 +1,6 @@
 #include "skeleton.hpp"
+#include "updateonlyvisitor.hpp"
+#include <components/debug/gameplaydiagnostics.hpp>
 
 #include <osg/MatrixTransform>
 
@@ -133,9 +135,17 @@ namespace SceneUtil
         if (nv.getVisitorType() == osg::NodeVisitor::UPDATE_VISITOR)
         {
             if (mActive == Inactive && mLastFrameNumber != 0)
+            {
+                if (Debug::GameplayDiagnostics::sampling()) ++Debug::GameplayDiagnostics::context.skeletonSkippedInactive;
                 return;
-            if (mActive == SemiActive && mLastFrameNumber != 0 && mLastCullFrameNumber + 3 <= nv.getTraversalNumber())
+            }
+            if (mActive == SemiActive && mLastFrameNumber != 0 && mLastCullFrameNumber + 3 <= nv.getTraversalNumber()
+                && dynamic_cast<UpdateOnlyVisitor*>(&nv) == nullptr)
+            {
+                if (Debug::GameplayDiagnostics::sampling()) ++Debug::GameplayDiagnostics::context.skeletonSkippedCull;
                 return;
+            }
+            if (Debug::GameplayDiagnostics::sampling()) ++Debug::GameplayDiagnostics::context.skeletonUpdates;
         }
         else if (nv.getVisitorType() == osg::NodeVisitor::CULL_VISITOR)
             mLastCullFrameNumber = nv.getTraversalNumber();

@@ -203,6 +203,14 @@ namespace RenderCore
                     else
                         clipPlane = { glm::vec3(0.0f, 0.0f, -1.0f), input.environment.waterHeight };
 
+                    // Reflection retains the camera's side of the surface;
+                    // refraction retains the opposite side, also in wet caves.
+                    if (input.environment.underwater)
+                    {
+                        clipPlane.normal = -clipPlane.normal;
+                        clipPlane.distance = -clipPlane.distance;
+                    }
+
                     desc.renderTargets.push_back(RenderTargetDesc{
                         .identity = target,
                         .kind = RenderTargetKind::Offscreen,

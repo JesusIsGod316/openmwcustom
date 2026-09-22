@@ -44,6 +44,7 @@ namespace RenderVsg
         }
 
         RenderCore::RenderFrameResult renderFrame(const RenderCore::SingleViewFrameInput& input);
+        RenderCore::RenderFrameResult renderGuiFrame(const RenderCore::SingleViewFrameInput& input);
         [[nodiscard]] bool resetWorld();
         void waitIdle();
 
@@ -53,6 +54,7 @@ namespace RenderVsg
     private:
         VsgSemanticSession(StaticTextureResolver textureResolver, VsgRuntimeBootstrapOptions options);
         RenderCore::RenderFrameResult fail(std::string diagnostic);
+        RenderCore::RenderFrameResult renderFrameImpl(const RenderCore::SingleViewFrameInput& input, bool guiOnly);
 
         RenderCore::RenderWorld mWorld;
         RenderCore::RenderWorldPublisher mPublisher;

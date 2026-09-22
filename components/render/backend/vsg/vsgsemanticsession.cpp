@@ -39,10 +39,24 @@ namespace RenderVsg
 
     RenderCore::RenderFrameResult VsgSemanticSession::renderFrame(const RenderCore::SingleViewFrameInput& input)
     {
+        return renderFrameImpl(input, false);
+    }
+
+    RenderCore::RenderFrameResult VsgSemanticSession::renderGuiFrame(const RenderCore::SingleViewFrameInput& input)
+    {
+        return renderFrameImpl(input, true);
+    }
+
+    RenderCore::RenderFrameResult VsgSemanticSession::renderFrameImpl(
+        const RenderCore::SingleViewFrameInput& input, bool guiOnly)
+    {
         if (!mHealthy)
             return RenderCore::RenderFrameResult::Failed;
         mLastDiagnostic.clear();
-        const RenderCore::StaticPopulationPublishStatus populationStatus = mPopulations.flush();
+        // Progress refreshes occur inside cell insertion. Do not publish partial
+        // population batches or realize an incomplete world to draw the GUI.
+        const RenderCore::StaticPopulationPublishStatus populationStatus = guiOnly
+            ? RenderCore::StaticPopulationPublishStatus::AlreadyPresent : mPopulations.flush();
         if (populationStatus != RenderCore::StaticPopulationPublishStatus::Applied
             && populationStatus != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
             return fail("static population publication failed at the frame boundary");
@@ -53,7 +67,9 @@ namespace RenderVsg
         if (!frame)
             return fail("semantic frame producer rejected the engine frame input");
 
-        const RenderCore::RenderFrameResult result = mBootstrap->renderer().renderFrame(mWorld, *frame);
+        const RenderCore::RenderFrameResult result = guiOnly
+            ? mBootstrap->renderer().renderGuiFrame(mWorld, *frame)
+            : mBootstrap->renderer().renderFrame(mWorld, *frame);
         mLastDiagnostic = mBootstrap->renderer().lastDiagnostic();
         if (result == RenderCore::RenderFrameResult::Presented && !mFrames.commitPresented(*frame))
         {

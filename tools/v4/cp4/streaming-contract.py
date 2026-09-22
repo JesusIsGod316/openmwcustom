@@ -25,7 +25,7 @@ require(
     "maxChunks = 32",
     "maxPreparedBytes = 64u * 1024u * 1024u",
     "stale(work.generation)",
-    "terrainMeshPayloadBytes",
+    "terrainChunkPayloadBytes",
 )
 require(
     "components/rendercore/terrainchunkproducer.hpp",
@@ -33,6 +33,9 @@ require(
     "maxNewChunks",
     "targetCompleteAfterBatch",
     "retiredIdentities",
+    "TerrainLayerSource",
+    "CreateTexture{use.texture, texture.texture}",
+    "RetireTexture{handle}",
 )
 require(
     "apps/openmw/mwrender/v4enginerenderbridge.cpp",
@@ -45,6 +48,10 @@ require(
     "indexCache.getIndexBuffer",
     "request.stitchMask",
     "request.lodLevel",
+    "storage.getBlendmaps",
+    "mesh->texCoordSets.resize(2)",
+    "storage.resolveV4TextureIdentity",
+    "OPENMW_V4_GEOMETRY_ONLY_TERRAIN_CONTROL",
 )
 
 print("CP4B terrain streaming contract: PASS")

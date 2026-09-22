@@ -1,4 +1,5 @@
 #include "renderingmanager.hpp"
+#include <components/debug/gameplaydiagnostics.hpp>
 
 #include <algorithm>
 #include <cstdlib>
@@ -1462,7 +1463,19 @@ namespace MWRender
 
         mViewer->getCamera()->accept(*getIntersectionVisitor(intersector, ignorePlayer, ignoreActors, ignoreTerrain));
 
-        return getIntersectionResult(intersector, mIntersectionVisitor);
+        auto result = getIntersectionResult(intersector, mIntersectionVisitor);
+        if (Debug::GameplayDiagnostics::sampling())
+        {
+            const auto expected = mCamera->calculateViewMatrix();
+            const auto& picking = mViewer->getCamera()->getViewMatrix();
+            Debug::GameplayDiagnostics::emit("pick", {
+                {"view_delta", std::to_string(Debug::GameplayDiagnostics::matrixDifference(expected, picking))},
+                {"view_hash", std::to_string(Debug::GameplayDiagnostics::fingerprint(picking.ptr(), sizeof(double) * 16))},
+                {"expected_hash", std::to_string(Debug::GameplayDiagnostics::fingerprint(expected.ptr(), sizeof(float) * 16))},
+                {"x", std::to_string(nX)}, {"y", std::to_string(nY)}, {"hit", std::to_string(result.mHit)},
+                {"object", result.mHitObject.isEmpty() ? "" : result.mHitObject.getCellRef().getRefId().toString()}});
+        }
+        return result;
     }
 
     void RenderingManager::updatePtr(const MWWorld::Ptr& old, const MWWorld::Ptr& updated)

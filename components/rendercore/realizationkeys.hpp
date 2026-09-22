@@ -126,6 +126,7 @@ namespace RenderCore
     {
         bool depthTest = true;
         bool depthWrite = true;
+        bool equalDepth = false;
         bool stencilEnabled = false;
         CompareOp stencilCompare = CompareOp::Always;
         std::uint32_t stencilReference = 0u;
@@ -258,6 +259,7 @@ namespace RenderCore
 
         result.depthStencil.depthTest = material.depthTest;
         result.depthStencil.depthWrite = material.depthWrite;
+        result.depthStencil.equalDepth = material.terrainLayer && !material.terrainLayer->first;
         result.depthStencil.stencilEnabled = material.stencil.enabled;
         if (material.stencil.enabled)
         {
@@ -352,6 +354,7 @@ namespace RenderCore
             observeBool(hash, key.raster.decal);
             observeBool(hash, key.depthStencil.depthTest);
             observeBool(hash, key.depthStencil.depthWrite);
+            observeBool(hash, key.depthStencil.equalDepth);
             observeBool(hash, key.depthStencil.stencilEnabled);
             observeEnum(hash, key.depthStencil.stencilCompare);
             observeInteger(hash, key.depthStencil.stencilReference);

@@ -246,7 +246,10 @@ def command_for_asset(args: argparse.Namespace, asset: dict[str, Any], report_pa
     return command
 
 
-def tail(text: str, limit: int = 16384) -> str:
+def tail(text: str | bytes, limit: int = 16384) -> str:
+    # TimeoutExpired may carry bytes even when subprocess.run(text=True).
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="replace")
     return text if len(text) <= limit else text[-limit:]
 
 
@@ -256,6 +259,8 @@ def invoke_once(args: argparse.Namespace, asset: dict[str, Any], report_path: pa
         completed = subprocess.run(
             command,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=args.timeout,
@@ -269,6 +274,15 @@ def invoke_once(args: argparse.Namespace, asset: dict[str, Any], report_path: pa
             "stderrTail": tail(exc.stderr or ""),
             "toolReport": None,
             "invocationErrors": [f"tool timed out after {args.timeout} seconds"],
+        }
+    except OSError as exc:
+        return {
+            "returnCode": None,
+            "timedOut": False,
+            "stdoutTail": "",
+            "stderrTail": "",
+            "toolReport": None,
+            "invocationErrors": [f"unable to launch tool: {exc}"],
         }
 
     invocation_errors: list[str] = []
@@ -364,6 +378,22 @@ def aggregate_counts(assets: list[dict[str, Any]], section: str, fields: tuple[s
     return totals
 
 
+def write_report(path: pathlib.Path, report: dict[str, Any]) -> None:
+    """Replace the last checkpoint atomically; never truncate good evidence."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending: pathlib.Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n",
+                dir=path.parent, prefix=path.name + ".", suffix=".tmp", delete=False) as stream:
+            pending = pathlib.Path(stream.name)
+            json.dump(report, stream, indent=2, sort_keys=True, ensure_ascii=False)
+            stream.write("\n")
+        pending.replace(path)
+    finally:
+        if pending is not None:
+            pending.unlink(missing_ok=True)
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -380,11 +410,7 @@ def main() -> int:
         unknown_render_ids = set(args.render_id) - asset_ids
         require(not unknown_render_ids, f"--render-id not present in manifest: {sorted(unknown_render_ids)}")
 
-        with tempfile.TemporaryDirectory(prefix="openmw-cp3b4-") as temp_dir:
-            work_dir = pathlib.Path(temp_dir)
-            assets = [run_asset(args, asset, work_dir) for asset in manifest["assets"]]
-
-        passed = all(asset["passed"] for asset in assets)
+        assets: list[dict[str, Any]] = []
         covered_tags = sorted({tag for asset in manifest["assets"] for tag in asset.get("tags", [])})
         aggregate = {
             "schema": CORPUS_REPORT_SCHEMA,
@@ -398,21 +424,31 @@ def main() -> int:
             "renderFrames": args.render_frames if args.render_id else 0,
             "requiredTags": manifest.get("requiredTags", []),
             "coveredTags": covered_tags,
-            "passed": passed,
-            "summary": {
+            "assets": assets,
+        }
+
+        def checkpoint(complete: bool) -> None:
+            aggregate["complete"] = complete
+            aggregate["passed"] = complete and all(asset["passed"] for asset in assets)
+            aggregate["summary"] = {
                 "assets": len(assets),
+                "plannedAssets": len(manifest["assets"]),
+                "notTested": len(manifest["assets"]) - len(assets),
                 "passed": sum(1 for asset in assets if asset["passed"]),
                 "failed": sum(1 for asset in assets if not asset["passed"]),
                 "translationTotals": aggregate_counts(assets, "translation", TRANSLATION_FIELDS),
                 "realizationTotals": aggregate_counts(assets, "realization", REALIZATION_FIELDS),
                 "textureDecodeTotals": aggregate_counts(assets, "textureDecode", TEXTURE_DECODE_FIELDS),
-            },
-            "assets": assets,
-        }
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        with args.output.open("w", encoding="utf-8", newline="\n") as stream:
-            json.dump(aggregate, stream, indent=2, sort_keys=True, ensure_ascii=False)
-            stream.write("\n")
+            }
+            write_report(args.output, aggregate)
+
+        checkpoint(False)
+        with tempfile.TemporaryDirectory(prefix="openmw-cp3b4-") as temp_dir:
+            work_dir = pathlib.Path(temp_dir)
+            for asset in manifest["assets"]:
+                assets.append(run_asset(args, asset, work_dir))
+                checkpoint(False)
+        checkpoint(True)
 
         for asset in assets:
             state = "PASS" if asset["passed"] else "FAIL"
@@ -421,7 +457,10 @@ def main() -> int:
                 print(f"  - {error}")
         print(f"CP3B4 corpus: {aggregate['summary']['passed']}/{aggregate['summary']['assets']} assets passed")
         print(f"CP3B4 report: {args.output}")
-        return 0 if passed else 1
+        return 0 if aggregate["passed"] else 1
+    except KeyboardInterrupt:
+        print(f"CP3B4 interrupted; completed-case evidence remains at {args.output}", file=sys.stderr)
+        return 130
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"CP3B4 corpus configuration failure: {exc}", file=sys.stderr)
         return 2

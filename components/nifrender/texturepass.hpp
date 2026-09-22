@@ -3,6 +3,7 @@
 
 #include "materialsemantics.hpp"
 #include "textureidentity.hpp"
+#include "textureidentitycache.hpp"
 #include "translationbundle.hpp"
 
 #include <components/nif/property.hpp>
@@ -120,7 +121,7 @@ namespace NifRender
         }
 
         [[nodiscard]] inline std::optional<TextureIndex> stageSourceTexture(const Nif::NiSourceTexture& source,
-            const VFS::Manager* vfs, TranslationBundle& bundle)
+            const VFS::Manager* vfs, TranslationBundle& bundle, TextureIdentityCache* identities = nullptr)
         {
             const auto recordId = sourceRecordId(source);
             if (source.mExternal)
@@ -132,8 +133,9 @@ namespace NifRender
                     return std::nullopt;
                 }
 
-                const ResolvedVfsIdentity resolved
-                    = resolveTextureVfsIdentity(VFS::Path::toNormalized(source.mFile), *vfs);
+                const auto path = VFS::Path::toNormalized(source.mFile);
+                const ResolvedVfsIdentity resolved = identities ? identities->resolve(path)
+                    : resolveTextureVfsIdentity(path, *vfs);
                 if (resolved.valid())
                     return stageResolvedTexture(bundle, resolved, recordId);
 
@@ -167,7 +169,7 @@ namespace NifRender
     // material. Each property replaces all bindings inherited from an earlier
     // NiTexturingProperty, matching NifOsg::clearBoundTextures exactly.
     inline void applyLegacyTextureProperty(const Nif::NiTexturingProperty& source, const VFS::Manager* vfs,
-        TranslatedMaterial& material, TranslationBundle& bundle)
+        TranslatedMaterial& material, TranslationBundle& bundle, TextureIdentityCache* identities = nullptr)
     {
         material.textures.clear();
         material.state.textureApply = translateTextureApply(source.mApplyMode);
@@ -227,7 +229,7 @@ namespace NifRender
             }
 
             const std::optional<TextureIndex> staged = texture_pass_detail::stageSourceTexture(
-                *texture.mSourceTexture.getPtr(), vfs, bundle);
+                *texture.mSourceTexture.getPtr(), vfs, bundle, identities);
             if (!staged)
                 continue;
 

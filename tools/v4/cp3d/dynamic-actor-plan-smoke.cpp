@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <memory>
+#include <iostream>
 
 int main()
 {
@@ -98,6 +99,85 @@ int main()
     assert(plan->meshes.size() == 2u);
     assert(RenderVsg::dynamicActorPlanCurrent(world, *plan));
 
+    {
+        RenderWorld cachedWorld = world;
+        RenderVsg::DynamicActorPlanCache cache;
+        assert(cache.prepare(cachedWorld).valid() && cache.rebuilt == 1);
+        for (unsigned i = 0; i < 100; ++i)
+        {
+            const auto cached = cache.prepare(cachedWorld);
+            assert(cached.valid() && cache.rebuilt == 0 && cache.reused == 1);
+            assert(cached.actors.front().asset.draws.size() == plan->asset.draws.size());
+        }
+        assert(cache.prepare(cachedWorld, {}, true).valid() && cache.rebuilt == 1 && cache.reused == 0);
+        auto changed = *cachedWorld.get(*material);
+        changed.revision = ResourceRevision{changed.revision.value() + 1};
+        changed.alpha = 0.5f;
+        assert(cachedWorld.update(*material, changed));
+        assert(cache.prepare(cachedWorld).valid() && cache.rebuilt == 1);
+        auto moved = *cachedWorld.get(*instance);
+        moved.revision = ResourceRevision{moved.revision.value() + 1};
+        moved.transform.translation.x = 9.0;
+        assert(cachedWorld.update(*instance, moved));
+        auto movedPlan = cache.prepare(cachedWorld);
+        assert(movedPlan.valid() && cache.rebuilt == 1);
+        assert(movedPlan.actors.front().placement.translation.x == 9.0);
+        auto changedMesh = *cachedWorld.get(*mesh);
+        changedMesh.revision = ResourceRevision{changedMesh.revision.value() + 1};
+        assert(cachedWorld.update(*mesh, changedMesh));
+        assert(cache.prepare(cachedWorld).valid() && cache.rebuilt == 1);
+        auto changedSkeleton = *cachedWorld.get(*skeleton);
+        changedSkeleton.revision = ResourceRevision{changedSkeleton.revision.value() + 1};
+        assert(cachedWorld.update(*skeleton, changedSkeleton));
+        assert(cache.prepare(cachedWorld).valid() && cache.rebuilt == 1);
+        RenderVsg::StaticPlanOptions changedOptions;
+        changedOptions.showMarkers = true;
+        assert(cache.prepare(cachedWorld, changedOptions).valid() && cache.rebuilt == 1);
+        assert(cachedWorld.retire(*instance));
+        assert(cache.prepare(cachedWorld).valid() && cache.size() == 0);
+        assert(cachedWorld.reset());
+        assert(cache.prepare(cachedWorld).valid() && cache.size() == 0);
+        std::cout << "PASS actor plan cache: 100 stable frames, forced control, dependency/options/movement/removal/epoch\n";
+    }
+
+    {
+        RenderWorld cachedWorld = world;
+        const auto hiddenTexture = cachedWorld.reserveTexture();
+        TextureRecord textureRecord;
+        textureRecord.sourceIdentity = "actor:hidden-texture";
+        textureRecord.contentIdentity = "hidden-v1";
+        assert(hiddenTexture && cachedWorld.commit(*hiddenTexture, textureRecord));
+        const auto hiddenMaterial = cachedWorld.reserveMaterial();
+        MaterialRecord hiddenRecord;
+        hiddenRecord.sourceIdentity = "actor:hidden-material";
+        TextureBinding binding;
+        binding.texture = *hiddenTexture;
+        hiddenRecord.textures.push_back(binding);
+        assert(hiddenMaterial && cachedWorld.commit(*hiddenMaterial, hiddenRecord));
+        auto hiddenModel = *cachedWorld.get(*model);
+        auto hiddenPayload = std::make_shared<ModelPayload>(*hiddenModel.payload);
+        hiddenPayload->nodes[2].flags |= modelNodeFlag(ModelNodeFlag::Hidden);
+        hiddenPayload->nodes[2].materials = {*hiddenMaterial};
+        hiddenModel.payload = hiddenPayload;
+        hiddenModel.revision = ResourceRevision{hiddenModel.revision.value() + 1};
+        assert(cachedWorld.update(*model, hiddenModel));
+        RenderVsg::DynamicActorPlanCache cache;
+        assert(cache.prepare(cachedWorld).valid() && cache.rebuilt == 1);
+        textureRecord.revision = ResourceRevision{textureRecord.revision.value() + 1};
+        textureRecord.contentIdentity = "hidden-v2";
+        assert(cachedWorld.update(*hiddenTexture, textureRecord));
+        assert(cache.prepare(cachedWorld).valid() && cache.rebuilt == 1);
+        hiddenRecord.revision = ResourceRevision{hiddenRecord.revision.value() + 1};
+        assert(cachedWorld.update(*hiddenMaterial, hiddenRecord));
+        assert(cache.prepare(cachedWorld).valid() && cache.rebuilt == 1);
+        hiddenModel.revision = ResourceRevision{hiddenModel.revision.value() + 1};
+        hiddenModel.dynamicRequirements = modelDynamicRequirement(ModelDynamicRequirement::ParticleSystem);
+        assert(cachedWorld.update(*model, hiddenModel));
+        assert(!cache.prepare(cachedWorld).valid() && cache.size() == 0);
+        assert(!cache.prepare(cachedWorld).valid() && cache.reused == 0);
+        std::cout << "PASS actor plan cache: hidden material/texture invalidation, invalid models not reused\n";
+    }
+
     SingleViewFrameProducer producer;
     SingleViewFrameInput frameInput;
     frameInput.renderExtent = { 800u, 600u };
@@ -115,6 +195,48 @@ int main()
     assert(evaluated && evaluated->draws.size() == 2u);
     assert(evaluated->draws[0].worldTransform == glm::mat4(1.0f));
     assert(evaluated->draws[1].worldTransform[3][0] == 7.0f);
+
+    // A creature may animate rigid pieces only, with no skin or morph streams.
+    ModelRecord rigidModel = *world.get(*model);
+    rigidModel.revision = ResourceRevision{ rigidModel.revision.value() + 1u };
+    auto rigidPayload = std::make_shared<ModelPayload>(*rigidModel.payload);
+    rigidPayload->nodes[1].mesh = *rigidMesh;
+    rigidModel.payload = rigidPayload;
+    assert(world.update(*model, std::move(rigidModel)));
+    const auto rigidPlan = RenderVsg::buildDynamicActorPlan(world, *instance);
+    assert(rigidPlan && rigidPlan->asset.draws.size() == 2u);
+    const auto rigidFrame = producer.produce(world, frameInput);
+    assert(rigidFrame);
+    const auto rigidEvaluated = RenderVsg::evaluateDynamicActorAssetPlan(world, *rigidFrame, *rigidPlan);
+    assert(rigidEvaluated && rigidEvaluated->draws[0].worldTransform[3][0] == 5.0f);
+    assert(rigidEvaluated->draws[1].worldTransform[3][0] == 7.0f);
+
+    // Resident reuse must reject immutable material changes even when topology
+    // and array lengths have not changed.
+    MaterialRecord changedMaterial = *world.get(*material);
+    changedMaterial.revision = ResourceRevision{ changedMaterial.revision.value() + 1u };
+    changedMaterial.alpha = 0.5f;
+    assert(world.update(*material, std::move(changedMaterial)));
+    assert(!RenderVsg::dynamicActorPlanCurrent(world, *plan));
+    const auto materialRefresh = RenderVsg::buildDynamicActorPlan(world, *instance);
+    assert(materialRefresh && RenderVsg::dynamicActorPlanCurrent(world, *materialRefresh));
+
+    // Missing morph data on real geometry must remain an error. The translator
+    // normalizes only deliberately omitted geometry, not arbitrary bad models.
+    const ModelRecord validModel = *world.get(*model);
+    ModelRecord missingMorphModel = validModel;
+    missingMorphModel.revision = ResourceRevision{ missingMorphModel.revision.value() + 1u };
+    auto missingMorphPayload = std::make_shared<ModelPayload>(*missingMorphModel.payload);
+    missingMorphPayload->nodes[1].controllerFlags |= modelControllerFlag(ModelControllerFlag::Morph);
+    missingMorphPayload->nodes[1].flags |= modelNodeFlag(ModelNodeFlag::ControllerTarget);
+    missingMorphModel.payload = missingMorphPayload;
+    assert(world.update(*model, std::move(missingMorphModel)));
+    std::string missingMorphDiagnostic;
+    assert(!RenderVsg::buildDynamicActorPlan(world, *instance, {}, &missingMorphDiagnostic));
+    assert(missingMorphDiagnostic.find("actor:model") != std::string::npos);
+    ModelRecord restoredModel = validModel;
+    restoredModel.revision = ResourceRevision{ world.get(*model)->revision.value() + 1u };
+    assert(world.update(*model, std::move(restoredModel)));
 
     ModelRecord unsupportedModel = *world.get(*model);
     unsupportedModel.revision = ResourceRevision{ unsupportedModel.revision.value() + 1u };

@@ -2,6 +2,7 @@
 #define OPENMW_MWRENDER_V4ENGINERENDERBRIDGE_H
 
 #include "v4engineframesource.hpp"
+#include <components/nifrender/textureidentitycache.hpp>
 #include "v4renderroutestatus.hpp"
 
 #include "../mwworld/scenerenderlifecycle.hpp"
@@ -103,6 +104,7 @@ namespace MWRender
             std::string_view worldspaceIdentity, std::span<const RenderCore::TerrainResidencyCell> residency);
 
         const VFS::Manager& mVfs;
+        NifRender::TextureIdentityCache mTextureIdentities;
         std::shared_ptr<RenderVsg::VsgSemanticSession> mSession;
         std::shared_ptr<V4RenderRouteStatus> mRouteStatus;
         std::unique_ptr<RenderCore::TerrainChunkProducer> mTerrain;

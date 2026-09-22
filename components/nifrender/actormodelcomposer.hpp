@@ -21,6 +21,7 @@ namespace NifRender
         RenderCore::ModelHandle model;
         std::string attachmentBone;
         bool visible = true;
+        std::string sourceIdentity;
     };
 
     struct ForcedActorSkeleton
@@ -260,9 +261,17 @@ namespace NifRender
         {
             const ModelRecord* model = world.get(part.model);
             const std::optional<ModelNodeIndex> attachment = findBoneNode(part.attachmentBone);
-            if (!model || !model->payload || !attachment)
+            if (!model || !model->payload)
             {
-                result.diagnostic = "NPC part cannot resolve its published model or attachment bone";
+                result.diagnostic = "NPC part model '" + part.sourceIdentity + "' is missing or has no payload; attachment='"
+                    + part.attachmentBone + "'";
+                return result;
+            }
+            if (!attachment)
+            {
+                result.diagnostic = "NPC part '" + model->sourceIdentity + "' cannot resolve attachment bone '"
+                    + part.attachmentBone + "' in base '" + base->sourceIdentity
+                    + "' skeleton '" + skeleton->sourceIdentity + "'";
                 return result;
             }
 
@@ -389,11 +398,28 @@ namespace NifRender
                 continue;
             }
 
-            // Non-skeleton attachments keep the historical rigid path: clone the
-            // complete part model under the requested attachment bone. BoneOffset,
-            // left-side reflection and light attitude remain separate rigid-part
-            // compatibility facets and are intentionally not conflated with the
-            // skinned body-part repair above.
+            // SceneUtil::attach wraps rigid parts in a translation-only
+            // BoneOffset and an X reflection for a Left attachment. Neither is
+            // part of the skeleton pose, and neither applies to skinned parts.
+            ModelNodeIndex rigidParent = *attachment;
+            const bool left = payload->nodes[attachment->value()].name.find("Left") != std::string::npos;
+            const auto offset = std::find_if(model->payload->nodes.begin(), model->payload->nodes.end(),
+                [&](const ModelNodeRecord& node) { return equalFolded(node.name, "BoneOffset"); });
+            if (left || offset != model->payload->nodes.end())
+            {
+                ModelNodeRecord wrapper;
+                wrapper.name = "$rigid-attachment:" + std::to_string(payload->nodes.size());
+                wrapper.parent = *attachment;
+                if (offset != model->payload->nodes.end())
+                    wrapper.localTransform[3] = glm::vec4(glm::vec3(offset->localTransform[3]), 1.f);
+                if (left)
+                {
+                    wrapper.localTransform[0][0] = -1.f;
+                    wrapper.flags |= modelNodeFlag(ModelNodeFlag::ClockwiseFrontFace);
+                }
+                rigidParent = ModelNodeIndex{static_cast<std::uint32_t>(payload->nodes.size())};
+                payload->nodes.push_back(std::move(wrapper));
+            }
             for (const ModelNodeRecord& node : model->payload->nodes)
             {
                 const MeshRecord* mesh = node.mesh ? world.get(*node.mesh) : nullptr;
@@ -454,7 +480,7 @@ namespace NifRender
                         }
                     }
                 }
-                node.parent = source.parent.valid() ? remap[source.parent.value()] : *attachment;
+                node.parent = source.parent.valid() ? remap[source.parent.value()] : rigidParent;
                 if (!node.parent.valid())
                 {
                     result.diagnostic = "NPC part topology could not be rebound to the base skeleton";

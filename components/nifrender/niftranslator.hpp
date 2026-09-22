@@ -15,6 +15,7 @@ namespace VFS
 
 namespace NifRender
 {
+    class TextureIdentityCache;
     struct TranslatorOptions
     {
         // Matches normal game loading. Editor-only marker geometry remains
@@ -32,7 +33,8 @@ namespace NifRender
     // This prevents production callers from accidentally publishing geometry
     // while omitting VFS texture and BGSM/BGEM resolution.
     [[nodiscard]] TranslationBundle translateStaticNif(
-        Nif::FileView file, const VFS::Manager& vfs, TranslatorOptions options = {});
+        Nif::FileView file, const VFS::Manager& vfs, TranslatorOptions options = {},
+        TextureIdentityCache* textureIdentities = nullptr);
 }
 
 #endif

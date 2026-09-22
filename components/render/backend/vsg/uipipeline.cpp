@@ -1,12 +1,21 @@
 #include "uipipeline.hpp"
+#include "viewpipelinebinding.hpp"
 
 #include <cstring>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
 #include <components/debug/debuglog.hpp>
 namespace RenderVsg
 {
+    vsg::ref_ptr<vsg::Node> createUiOverlayLayer(vsg::ref_ptr<vsg::Node> overlay)
+    {
+        if (std::getenv("OPENMW_V4_EARLY_GUI_CONTROL"))
+            return overlay;
+        return vsg::Layer::create(UiOverlayBinNumber, 0.0, std::move(overlay));
+    }
+
     namespace
     {
         // MyGUI's vertices arrive in clip space already; just pass position through, flipping Y for Vulkan's
@@ -155,7 +164,7 @@ void main()
         result.descriptorSetLayout = descriptorSetLayout;
         result.sampler = sampler;
         result.whiteTexture = white;
-        result.bindPipeline = vsg::BindGraphicsPipeline::create(
+        result.bindPipeline = ViewPipelineBinding::create(
             vsg::GraphicsPipeline::create(pipelineLayout, vsg::ShaderStages{ vertexShader, fragmentShader }, states));
         if (result.bindPipeline && result.bindPipeline->pipeline)
             result.bindPipeline->pipeline->setValue("openmw.pipeline.family", "mygui-overlay");

@@ -2,11 +2,15 @@
 #define OPENMW_MWRENDER_V4EFFECTCAPTURE_H
 
 #include "animation.hpp"
+#include "vismask.hpp"
 
 #include <components/rendercore/effectframe.hpp>
-#include <components/nifrender/vfsidentity.hpp>
+#include <components/nifrender/textureidentitycache.hpp>
+#include <components/sceneutil/riggeometry.hpp>
+#include <components/sceneutil/morphgeometry.hpp>
 #include <components/sceneutil/material.hpp>
 #include <components/sceneutil/texturetype.hpp>
+#include <components/sceneutil/util.hpp>
 
 #include <osg/AlphaFunc>
 #include <osg/BlendEquation>
@@ -145,19 +149,20 @@ namespace MWRender
             }
         }
 
-        [[nodiscard]] inline RenderCore::TextureRole textureRole(std::string_view name) noexcept
+        [[nodiscard]] inline std::optional<RenderCore::TextureRole> textureRole(std::string_view name) noexcept
         {
             using RenderCore::TextureRole;
+            if (name == "diffuseMap") return TextureRole::Diffuse;
             if (name == "darkMap") return TextureRole::Dark;
             if (name == "detailMap") return TextureRole::Detail;
             if (name == "decalMap") return TextureRole::Decal;
             if (name == "emissiveMap") return TextureRole::Emissive;
-            if (name == "normalMap") return TextureRole::Normal;
+            if (name == "normalMap" || name == "normalHeightMap") return TextureRole::Normal;
             if (name == "envMap") return TextureRole::Environment;
             if (name == "specularMap") return TextureRole::Specular;
             if (name == "bumpMap") return TextureRole::Bump;
             if (name == "glossMap") return TextureRole::Gloss;
-            return TextureRole::Diffuse;
+            return std::nullopt;
         }
 
         [[nodiscard]] inline RenderCore::TextureWrap textureWrap(osg::Texture::WrapMode value) noexcept
@@ -289,7 +294,8 @@ namespace MWRender
         };
 
         [[nodiscard]] inline bool captureMaterial(const osg::NodePath& path, const osg::StateSet* drawableState,
-            const VFS::Manager& vfs, CapturedMaterial& out, std::string& diagnostic)
+            const VFS::Manager& vfs, CapturedMaterial& out, std::string& diagnostic,
+            NifRender::TextureIdentityCache* identityCache = nullptr)
         {
             using namespace RenderCore;
             const osg::ref_ptr<osg::StateSet> state = effectiveState(path, drawableState);
@@ -520,15 +526,25 @@ namespace MWRender
                     return false;
                 }
 
-                std::string typeName;
-                if (const auto* type = dynamic_cast<const SceneUtil::TextureType*>(
-                        state->getTextureAttribute(unit, SceneUtil::TextureType::AttributeType)))
-                    typeName = type->getName();
-                const TextureRole role = textureRole(typeName);
+                // Use the same type-attribute/name precedence as ShaderVisitor.
+                // Generated normal/specular textures can carry only a name;
+                // interpreting those as diffuse uploads data maps as sRGB color.
+                const std::string& typeName = SceneUtil::getTextureType(*state, *texture, unit);
+                std::optional<TextureRole> resolvedRole = textureRole(typeName);
+                if (!resolvedRole && unit == 0)
+                    resolvedRole = TextureRole::Diffuse;
+                if (!resolvedRole)
+                {
+                    diagnostic = "evaluated effect texture unit " + std::to_string(unit)
+                        + " has unsupported semantic '" + typeName + "' in " + image->getFileName();
+                    return false;
+                }
+                const TextureRole role = *resolvedRole;
 
                 const VFS::Path::Normalized texturePath(image->getFileName());
                 const NifRender::ResolvedVfsIdentity resolved
-                    = NifRender::resolveTextureVfsIdentity(texturePath, vfs);
+                    = identityCache ? identityCache->resolve(texturePath)
+                                    : NifRender::resolveTextureVfsIdentity(texturePath, vfs);
                 if (!resolved.valid())
                 {
                     diagnostic = "evaluated effect texture could not resolve its winning VFS content identity";
@@ -635,7 +651,7 @@ namespace MWRender
 
         [[nodiscard]] inline bool captureGeometry(const osg::Geometry& geometry, const osg::NodePath& path,
             const VFS::Manager& vfs, std::string identity, RenderCore::ImmediateEffectDraw& draw,
-            std::string& diagnostic)
+            std::string& diagnostic, NifRender::TextureIdentityCache* identityCache = nullptr)
         {
             const auto* positions = dynamic_cast<const osg::Vec3Array*>(geometry.getVertexArray());
             if (!positions || positions->empty())
@@ -687,21 +703,21 @@ namespace MWRender
                     return false;
                 }
             }
-            else if (const auto* colors = dynamic_cast<const osg::Vec4ubArray*>(geometry.getColorArray()))
+            else if (const auto* byteColors = dynamic_cast<const osg::Vec4ubArray*>(geometry.getColorArray()))
             {
                 const auto convert = [](const osg::Vec4ub& color) {
                     return glm::vec4(color.r() / 255.0f, color.g() / 255.0f,
                         color.b() / 255.0f, color.a() / 255.0f);
                 };
-                if (colors->size() == positions->size())
+                if (byteColors->size() == positions->size())
                 {
-                    draw.mesh.colors.reserve(colors->size());
-                    for (const osg::Vec4ub& color : *colors)
+                    draw.mesh.colors.reserve(byteColors->size());
+                    for (const osg::Vec4ub& color : *byteColors)
                         draw.mesh.colors.push_back(convert(color));
                 }
-                else if (colors->size() == 1u)
-                    draw.mesh.colors.assign(positions->size(), convert(colors->front()));
-                else if (!colors->empty())
+                else if (byteColors->size() == 1u)
+                    draw.mesh.colors.assign(positions->size(), convert(byteColors->front()));
+                else if (!byteColors->empty())
                 {
                     diagnostic = "evaluated effect geometry uses a non-vertex color binding";
                     return false;
@@ -709,7 +725,7 @@ namespace MWRender
             }
 
             CapturedMaterial captured;
-            if (!captureMaterial(path, geometry.getStateSet(), vfs, captured, diagnostic))
+            if (!captureMaterial(path, geometry.getStateSet(), vfs, captured, diagnostic, identityCache))
                 return false;
             draw.material = std::move(captured.material);
             draw.textures = std::move(captured.textures);
@@ -723,7 +739,8 @@ namespace MWRender
             const osg::ref_ptr<osg::StateSet> state = effectiveState(path, geometry.getStateSet());
             for (std::size_t set = 0; set < textureSets; ++set)
             {
-                const auto* coords = dynamic_cast<const osg::Vec2Array*>(geometry.getTexCoordArray(set));
+                const auto* coords = dynamic_cast<const osg::Vec2Array*>(
+                    geometry.getTexCoordArray(static_cast<unsigned int>(set)));
                 if (!coords || coords->size() != positions->size())
                 {
                     diagnostic = "evaluated effect textured geometry has no matching UV stream";
@@ -753,7 +770,8 @@ namespace MWRender
 
         [[nodiscard]] inline bool captureParticleSystem(const osgParticle::ParticleSystem& particles,
             const osg::NodePath& path, const VFS::Manager& vfs, std::string_view identityPrefix,
-            std::vector<RenderCore::ImmediateEffectDraw>& draws, std::string& diagnostic)
+            std::vector<RenderCore::ImmediateEffectDraw>& draws, std::string& diagnostic,
+            NifRender::TextureIdentityCache* identityCache = nullptr)
         {
             if (particles.getUseShaders())
             {
@@ -771,7 +789,7 @@ namespace MWRender
                 return false;
             }
             CapturedMaterial captured;
-            if (!captureMaterial(path, particles.getStateSet(), vfs, captured, diagnostic))
+            if (!captureMaterial(path, particles.getStateSet(), vfs, captured, diagnostic, identityCache))
                 return false;
             captured.material.vertexColorMode = RenderCore::VertexColorMode::AmbientDiffuse;
             if (particles.getSortMode() == osgParticle::ParticleSystem::NO_SORT)
@@ -888,20 +906,50 @@ namespace MWRender
             return false;
         }
 
+        // Ask the canonical drawable to evaluate; never impersonate a CullVisitor
+        // or capture its undeformed template. The returned arrays are copied by captureGeometry.
+        inline osg::Geometry* evaluatedGeometry(osg::Drawable& drawable, osg::NodeVisitor& visitor,
+            std::string& diagnostic)
+        {
+            try
+            {
+                osg::Geometry* geometry = nullptr;
+                if (auto* rig = dynamic_cast<SceneUtil::RigGeometry*>(&drawable))
+                    geometry = rig->evaluateGeometry(visitor.getTraversalNumber(), visitor.getNodePath());
+                else if (auto* morph = dynamic_cast<SceneUtil::MorphGeometry*>(&drawable))
+                    geometry = morph->evaluateGeometry(visitor.getTraversalNumber());
+                else
+                    return dynamic_cast<osg::Geometry*>(&drawable);
+                if (!geometry)
+                    diagnostic = "evaluated drawable has no source geometry or parent skeleton: " + drawable.getName();
+                return geometry;
+            }
+            catch (const std::exception& error)
+            {
+                diagnostic = "evaluated drawable " + drawable.getName() + ": " + error.what();
+                return nullptr;
+            }
+        }
+
         class CaptureVisitor final : public osg::NodeVisitor
         {
         public:
-            CaptureVisitor(std::string identityPrefix, bool wholeSubtree, const VFS::Manager& vfs)
-                : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN)
+            CaptureVisitor(std::string identityPrefix, bool wholeSubtree, const VFS::Manager& vfs,
+                NifRender::TextureIdentityCache* identityCache = nullptr, bool actorBody = false)
+                : osg::NodeVisitor(actorBody ? TRAVERSE_ACTIVE_CHILDREN : TRAVERSE_ALL_CHILDREN)
                 , mIdentityPrefix(std::move(identityPrefix))
                 , mWholeSubtree(wholeSubtree)
                 , mVfs(vfs)
+                , mIdentityCache(identityCache)
                 , mDepth(wholeSubtree ? 1u : 0u)
+                , mActorBody(actorBody)
             {
             }
 
             void apply(osg::Node& node) override
             {
+                if (excludedAttachment(node))
+                    return;
                 const bool entered = !mWholeSubtree && isEffectRoot(node);
                 if (entered)
                     ++mDepth;
@@ -910,7 +958,7 @@ namespace MWRender
                     if (const auto* particles = dynamic_cast<const osgParticle::ParticleSystem*>(&node))
                     {
                         if (!captureParticleSystem(*particles, getNodePath(), mVfs, nextIdentity("system"),
-                                mResult.draws, mResult.diagnostic))
+                                mResult.draws, mResult.diagnostic, mIdentityCache))
                             return;
                     }
                 }
@@ -922,6 +970,8 @@ namespace MWRender
 
             void apply(osg::Geode& geode) override
             {
+                if (excludedAttachment(geode))
+                    return;
                 const bool entered = !mWholeSubtree && isEffectRoot(geode);
                 if (entered)
                     ++mDepth;
@@ -933,22 +983,33 @@ namespace MWRender
 
             void apply(osg::Drawable& drawable) override
             {
+                if (excludedAttachment(drawable))
+                    return;
                 const bool entered = !mWholeSubtree && isEffectRoot(drawable);
                 if (entered)
                     ++mDepth;
                 if (mDepth != 0)
                 {
-                    if (auto* geometry = dynamic_cast<osg::Geometry*>(&drawable))
+                    if (auto* geometry = evaluatedGeometry(drawable, *this, mResult.diagnostic))
                     {
                         RenderCore::ImmediateEffectDraw draw;
                         if (captureGeometry(*geometry, getNodePath(), mVfs, nextIdentity("geometry"), draw,
-                                mResult.diagnostic))
+                                mResult.diagnostic, mIdentityCache))
+                        {
+                            // The body remains ordinary shadow-casting geometry;
+                            // built-in particles retain their effect semantics.
+                            if (mActorBody)
+                                draw.semanticFlags = RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::OrdinaryWorld)
+                                    | RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::ShadowCaster)
+                                    | RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::ReflectionEligible)
+                                    | RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::RefractionEligible);
                             mResult.draws.push_back(std::move(draw));
+                        }
                     }
                     else if (auto* particles = dynamic_cast<osgParticle::ParticleSystem*>(&drawable))
                     {
                         if (!captureParticleSystem(*particles, getNodePath(), mVfs, nextIdentity("system"),
-                                mResult.draws, mResult.diagnostic))
+                                mResult.draws, mResult.diagnostic, mIdentityCache))
                         {
                             if (entered)
                                 --mDepth;
@@ -965,6 +1026,12 @@ namespace MWRender
             [[nodiscard]] V4EffectCaptureResult take() { return std::move(mResult); }
 
         private:
+            [[nodiscard]] bool excludedAttachment(const osg::Node& node) const
+            {
+                // UpdateVfx attachments are captured separately, exactly once.
+                return mActorBody && getNodePath().size() > 1 && isEffectRoot(node);
+            }
+
             [[nodiscard]] std::string nextIdentity(std::string_view kind)
             {
                 return mIdentityPrefix + ":" + std::string(kind) + ":" + std::to_string(mOrdinal++);
@@ -973,24 +1040,43 @@ namespace MWRender
             std::string mIdentityPrefix;
             bool mWholeSubtree = false;
             const VFS::Manager& mVfs;
+            NifRender::TextureIdentityCache* mIdentityCache;
             std::size_t mDepth = 0;
             std::size_t mOrdinal = 0;
+            bool mActorBody = false;
             V4EffectCaptureResult mResult;
         };
     }
 
     [[nodiscard]] inline V4EffectCaptureResult captureV4AttachedEffects(
-        osg::Node& animationRoot, std::string identityPrefix, const VFS::Manager& vfs)
+        osg::Node& animationRoot, std::string identityPrefix, const VFS::Manager& vfs,
+        NifRender::TextureIdentityCache* identityCache = nullptr, unsigned int traversalNumber = 0)
     {
-        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), false, vfs);
+        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), false, vfs, identityCache);
+        visitor.setTraversalNumber(traversalNumber);
         animationRoot.accept(visitor);
         return visitor.take();
     }
 
     [[nodiscard]] inline V4EffectCaptureResult captureV4WholeEffectSubtree(
-        osg::Node& root, std::string identityPrefix, const VFS::Manager& vfs)
+        osg::Node& root, std::string identityPrefix, const VFS::Manager& vfs,
+        NifRender::TextureIdentityCache* identityCache = nullptr, unsigned int traversalNumber = 0)
     {
-        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), true, vfs);
+        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), true, vfs, identityCache);
+        visitor.setTraversalNumber(traversalNumber);
+        root.accept(visitor);
+        return visitor.take();
+    }
+
+    // Compatibility route for actors whose source contains built-in particles.
+    // The normal OpenMW update remains authoritative for animation and simulation.
+    [[nodiscard]] inline V4EffectCaptureResult captureV4ParticleActor(
+        osg::Node& root, std::string identityPrefix, const VFS::Manager& vfs,
+        NifRender::TextureIdentityCache* identityCache = nullptr, unsigned int traversalNumber = 0)
+    {
+        v4_effect_detail::CaptureVisitor visitor(std::move(identityPrefix), true, vfs, identityCache, true);
+        visitor.setTraversalMask(~Mask_UpdateVisitor);
+        visitor.setTraversalNumber(traversalNumber);
         root.accept(visitor);
         return visitor.take();
     }

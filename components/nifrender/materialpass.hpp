@@ -48,7 +48,8 @@ namespace NifRender
         }
 
         inline void applyInheritedNodeState(const std::vector<const Nif::NiProperty*>& properties,
-            const VFS::Manager* vfs, TranslatedMaterial& material, TranslationBundle& bundle)
+            const VFS::Manager* vfs, TranslatedMaterial& material, TranslationBundle& bundle,
+            TextureIdentityCache* identities = nullptr)
         {
             for (const Nif::NiProperty* property : properties)
             {
@@ -68,7 +69,7 @@ namespace NifRender
                         break;
                     case Nif::RC_NiTexturingProperty:
                         applyLegacyTextureProperty(
-                            *static_cast<const Nif::NiTexturingProperty*>(property), vfs, material, bundle);
+                            *static_cast<const Nif::NiTexturingProperty*>(property), vfs, material, bundle, identities);
                         break;
                     case Nif::RC_NiFogProperty:
                     {
@@ -127,10 +128,12 @@ namespace NifRender
         class MaterialPass final
         {
         public:
-            MaterialPass(Nif::FileView file, TranslationBundle& bundle, const VFS::Manager* vfs)
+            MaterialPass(Nif::FileView file, TranslationBundle& bundle, const VFS::Manager* vfs,
+                TextureIdentityCache* identities = nullptr)
                 : mFile(file)
                 , mBundle(bundle)
                 , mVfs(vfs)
+                , mTextureIdentities(identities)
             {
                 for (std::size_t i = 0; i < bundle.model.nodes.size(); ++i)
                 {
@@ -246,16 +249,16 @@ namespace NifRender
 
                 // Normal inherited node properties are realized before the
                 // geometry's dedicated BS shader property in V3.25.
-                applyInheritedNodeState(inheritedState, mVfs, translated.material, mBundle);
+                applyInheritedNodeState(inheritedState, mVfs, translated.material, mBundle, mTextureIdentities);
                 if (specialShader != nullptr)
                 {
                     if (externalMaterial)
                     {
                         applyExternalShaderMaterialNodeState(
-                            *externalMaterial, *specialShader, mVfs, translated.material, mBundle);
+                            *externalMaterial, *specialShader, mVfs, translated.material, mBundle, mTextureIdentities);
                     }
                     else
-                        applyInlineBsShaderNodeState(*specialShader, mVfs, translated.material, mBundle);
+                        applyInlineBsShaderNodeState(*specialShader, mVfs, translated.material, mBundle, mTextureIdentities);
                 }
 
                 normalizeTextureUvSets(node, targetNode, translated.material, mBundle);
@@ -280,6 +283,7 @@ namespace NifRender
             Nif::FileView mFile;
             TranslationBundle& mBundle;
             const VFS::Manager* mVfs = nullptr;
+            TextureIdentityCache* mTextureIdentities = nullptr;
             std::unordered_map<std::uint32_t, std::vector<TranslatedModelNode*>> mGeometryNodes;
             std::unordered_map<std::uint32_t, std::size_t> mNextGeometryNode;
         };
@@ -296,9 +300,10 @@ namespace NifRender
     // Production CP3B2 material path: consumes the already parsed FileView and
     // live VFS, preserving path correction, archive selection and content
     // identity without using OSG image/material caches as modern ownership.
-    inline void applyStaticMaterialPass(Nif::FileView file, const VFS::Manager& vfs, TranslationBundle& bundle)
+    inline void applyStaticMaterialPass(Nif::FileView file, const VFS::Manager& vfs, TranslationBundle& bundle,
+        TextureIdentityCache* identities = nullptr)
     {
-        material_pass_detail::MaterialPass(file, bundle, &vfs).run();
+        material_pass_detail::MaterialPass(file, bundle, &vfs, identities).run();
     }
 }
 

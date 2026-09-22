@@ -4,6 +4,7 @@
 #include <components/files/istreamptr.hpp>
 
 #include <filesystem>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -38,6 +39,10 @@ namespace VFS
 
         /// Build the file index. Should be called when all archives have been registered.
         void buildIndex();
+
+        /// Changes before reset/rebuild, including failed rebuilds. Like index
+        /// reads, this is safe only while no thread is rebuilding the index.
+        std::uint64_t getIndexGeneration() const noexcept { return mIndexGeneration; }
 
         /// Does a file with this name exist?
         /// @note May be called from any thread once the index has been built.
@@ -75,6 +80,7 @@ namespace VFS
         std::vector<std::unique_ptr<Archive>> mArchives;
 
         FileMap mIndex;
+        std::uint64_t mIndexGeneration = 0;
 
         inline Files::IStreamPtr findNormalized(std::string_view normalizedPath) const;
 

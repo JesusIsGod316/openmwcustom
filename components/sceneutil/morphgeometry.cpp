@@ -3,6 +3,7 @@
 #include <osgUtil/CullVisitor>
 
 #include <cassert>
+#include <stdexcept>
 #include <components/resource/scenemanager.hpp>
 
 namespace SceneUtil
@@ -31,6 +32,8 @@ namespace SceneUtil
             mGeometry[i] = nullptr;
 
         mSourceGeometry = sourceGeom;
+        mGeometryEvaluated = false;
+        mDirty = true;
 
         for (unsigned int i = 0; i < 2; ++i)
         {
@@ -172,22 +175,34 @@ namespace SceneUtil
 
     void MorphGeometry::cull(osg::NodeVisitor* nv)
     {
-        if (mLastFrameNumber == nv->getTraversalNumber() || !mDirty || mMorphTargets.size() == 0)
+        if (osg::Geometry* geom = evaluateGeometry(nv->getTraversalNumber()))
         {
-            osg::Geometry& geom = *getGeometry(mLastFrameNumber);
-            nv->pushOntoNodePath(&geom);
-            nv->apply(geom);
+            nv->pushOntoNodePath(geom);
+            nv->apply(*geom);
             nv->popFromNodePath();
-            return;
+        }
+    }
+
+    osg::Geometry* MorphGeometry::evaluateGeometry(unsigned int traversalNumber)
+    {
+        if (!mSourceGeometry)
+            return nullptr;
+        if ((mGeometryEvaluated && mLastFrameNumber == traversalNumber) || !mDirty || mMorphTargets.empty())
+            return getGeometry(mLastFrameNumber);
+
+        osg::Geometry& geom = *getGeometry(traversalNumber);
+        const osg::Vec3Array* positionSrc = mMorphTargets[0].getOffsets();
+        auto* positionDst = dynamic_cast<osg::Vec3Array*>(geom.getVertexArray());
+        if (!positionSrc || !positionDst || positionSrc->size() != positionDst->size())
+            throw std::runtime_error("MorphGeometry base target does not match source topology");
+        for (std::size_t i = 1; i < mMorphTargets.size(); ++i)
+        {
+            const auto& target = mMorphTargets[i];
+            if (target.getWeight() != 0.f
+                && (!target.getOffsets() || target.getOffsets()->size() != positionSrc->size()))
+                throw std::runtime_error("MorphGeometry active target does not match source topology");
         }
 
-        mDirty = false;
-        mLastFrameNumber = nv->getTraversalNumber();
-        osg::Geometry& geom = *getGeometry(mLastFrameNumber);
-
-        const osg::Vec3Array* positionSrc = mMorphTargets[0].getOffsets();
-        osg::Vec3Array* positionDst = static_cast<osg::Vec3Array*>(geom.getVertexArray());
-        assert(positionSrc->size() == positionDst->size());
         for (unsigned int vertex = 0; vertex < positionSrc->size(); ++vertex)
             (*positionDst)[vertex] = (*positionSrc)[vertex];
 
@@ -205,9 +220,10 @@ namespace SceneUtil
 
         geom.osg::Drawable::dirtyGLObjects();
 
-        nv->pushOntoNodePath(&geom);
-        nv->apply(geom);
-        nv->popFromNodePath();
+        mDirty = false;
+        mLastFrameNumber = traversalNumber;
+        mGeometryEvaluated = true;
+        return &geom;
     }
 
     osg::Geometry* MorphGeometry::getGeometry(unsigned int frame) const

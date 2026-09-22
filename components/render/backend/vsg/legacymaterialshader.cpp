@@ -16,6 +16,7 @@ namespace RenderVsg
     {
         constexpr std::string_view LegacyCompatibilityFragmentShader = R"glsl(#version 450
 #extension GL_ARB_separate_shader_objects : enable
+#pragma import_defines (OPENMW_TERRAIN_BLEND)
 #pragma import_defines (VSG_TEXTURECOORD_0, VSG_TEXTURECOORD_1, VSG_TEXTURECOORD_2, VSG_TEXTURECOORD_3, VSG_POINT_SPRITE, VSG_DIFFUSE_MAP, VSG_GREYSCALE_DIFFUSE_MAP, VSG_DARK_MAP, VSG_DETAIL_MAP, VSG_DECAL_MAP, VSG_EMISSIVE_MAP, VSG_GLOSS_MAP, VSG_LIGHTMAP_MAP, VSG_NORMAL_MAP, VSG_SPECULAR_MAP, SHADOWMAP_DEBUG)
 
 #if defined(VSG_SHADOWS_PCSS) || defined(VSG_SHADOWS_SOFT)
@@ -68,6 +69,9 @@ layout(set = MATERIAL_DESCRIPTOR_SET, binding = 12) uniform sampler2D openmwDeca
 #endif
 #ifdef VSG_GLOSS_MAP
 layout(set = MATERIAL_DESCRIPTOR_SET, binding = 13) uniform sampler2D openmwGlossMap;
+#endif
+#ifdef OPENMW_TERRAIN_BLEND
+layout(set = MATERIAL_DESCRIPTOR_SET, binding = 16) uniform sampler2D openmwTerrainBlendMap;
 #endif
 
 layout(set = MATERIAL_DESCRIPTOR_SET, binding = 10) uniform LegacyMaterialData
@@ -201,11 +205,14 @@ bool alphaComparisonPass(float value, float reference, int compareOp)
     return false;
 }
 
-vec3 getNormal()
+vec3 getNormal(vec2 sampleUv)
 {
     vec3 result;
 #ifdef VSG_NORMAL_MAP
-    vec3 tangentNormal = texture(normalMap, texCoord[texCoordIndices.normalMap]).xyz * 2.0 - 1.0;
+    vec3 tangentNormal = texture(normalMap, sampleUv).xyz * 2.0 - 1.0;
+    int terrainFlags = int(material.textureCoordSets.w + 0.5);
+    if ((terrainFlags & 8) != 0)
+        tangentNormal.z = sqrt(max(0.0, 1.0 - dot(tangentNormal.xy, tangentNormal.xy)));
     vec3 q1 = dFdx(eyePos);
     vec3 q2 = dFdy(eyePos);
     vec2 st1 = dFdx(texCoord[texCoordIndices.normalMap]);
@@ -213,6 +220,7 @@ vec3 getNormal()
     vec3 N = normalize(normalDir);
     vec3 T = normalize(q1 * st2.t - q2 * st1.t);
     vec3 B = -normalize(cross(N, T));
+    if ((terrainFlags & 1) != 0) B = -B;
     result = normalize(mat3(T, B, N) * tangentNormal);
 #else
     result = normalize(normalDir);
@@ -229,6 +237,7 @@ void main()
 {
     const int vertexColorMode = int(material.semantics.x + 0.5);
     const int textureApplyMode = int(material.fogColor.w + 0.5);
+    const int terrainFlags = int(material.textureCoordSets.w + 0.5);
     vec4 effectiveDiffuse = material.diffuseColor;
     vec4 effectiveAmbient = material.ambientColor;
     vec4 effectiveEmission = material.emissiveColor;
@@ -250,6 +259,25 @@ vec2 diffuseUv = vec2(0.0);
     diffuseUv = gl_PointCoord.xy;
 #elif defined(VSG_DIFFUSE_MAP)
     diffuseUv = texCoord[texCoordIndices.diffuseMap].st;
+#endif
+
+    vec2 normalUv = vec2(0.0);
+#ifdef VSG_NORMAL_MAP
+    normalUv = texCoord[texCoordIndices.normalMap].st;
+    // LAND height is normal alpha, unlike legacy object Hilight2 diffuse alpha.
+    // RG/BC5 normals reconstruct Z and have no height channel.
+    if ((terrainFlags & 4) != 0 && (terrainFlags & 8) == 0)
+    {
+        vec3 q1 = dFdx(eyePos), q2 = dFdy(eyePos);
+        vec2 st1 = dFdx(normalUv), st2 = dFdy(normalUv);
+        vec3 N = normalize(normalDir);
+        vec3 T = normalize(q1 * st2.t - q2 * st1.t);
+        vec3 B = normalize(cross(N, T));
+        vec3 tangentEye = transpose(mat3(T, B, N)) * normalize(-eyePos);
+        vec2 offset = tangentEye.xy * (texture(normalMap, normalUv).a * 0.04 - 0.02);
+        normalUv += offset;
+        diffuseUv += offset;
+    }
 #endif
 
 #ifdef VSG_DIFFUSE_MAP
@@ -288,6 +316,12 @@ vec2 diffuseUv = vec2(0.0);
         surfaceColor.a = 1.0;
 #endif
 
+    float terrainSpecular = surfaceColor.a;
+    if ((terrainFlags & 1) != 0) surfaceColor.a = 1.0;
+#ifdef OPENMW_TERRAIN_BLEND
+    surfaceColor.a *= texture(openmwTerrainBlendMap, texCoord[1].st).a;
+#endif
+
 #ifdef VSG_DARK_MAP
     // Canonical OpenMW's legacy object shader multiplies the complete sampled
     // RGBA after the diffuse sample and before material alpha/alpha testing.
@@ -317,6 +351,11 @@ vec2 diffuseUv = vec2(0.0);
     float shininess = max(material.parameters.x, 0.0);
     float specularStrength = material.parameters.z;
     float emissiveMultiplier = material.parameters.w;
+    if ((terrainFlags & 2) != 0)
+    {
+        specularColor = vec3(terrainSpecular);
+        shininess = 128.0;
+    }
 #ifdef VSG_SPECULAR_MAP
     // V3.25 specular maps replace material specular RGB and source shininess,
     // but the independent material specular-strength multiplier still applies.
@@ -330,7 +369,7 @@ vec2 diffuseUv = vec2(0.0);
     ambientOcclusion *= texture(aoMap, texCoord[texCoordIndices.aoMap].st).r;
 #endif
 
-    vec3 nd = getNormal();
+    vec3 nd = getNormal(normalUv);
     vec3 vd = normalize(viewDir);
     vec3 color = vec3(0.0);
     const float intensityMinimum = 0.001;
@@ -583,13 +622,16 @@ vec2 diffuseUv = vec2(0.0);
             source.cullMode == RenderCore::CullMode::None ? 1.0f : 0.0f);
         uniform.fogColor = toVsg(source.fog.color);
         uniform.fogColor.w = static_cast<float>(source.textureApply);
-        const bool additiveFog = source.alphaBlendEnabled
+        const bool additiveFog = !source.terrainLayer && source.alphaBlendEnabled
             && source.sourceBlend == RenderCore::BlendFactor::SourceAlpha
             && source.destinationBlend == RenderCore::BlendFactor::One;
         uniform.effects = vsg::vec4(static_cast<float>(source.fog.mode), source.fog.depth,
             additiveFog ? 1.0f : 0.0f, source.unlit ? 1.0f : 0.0f);
         uniform.ambientOverride = vsg::vec4(source.ambientLightOverride.r, source.ambientLightOverride.g,
             source.ambientLightOverride.b, source.ambientLightOverrideEnabled ? 1.0f : 0.0f);
+        if (source.terrainLayer)
+            uniform.textureCoordSets.w = float(1 + (source.terrainLayer->specular ? 2 : 0)
+                + (source.terrainLayer->parallax ? 4 : 0));
         for (const RenderCore::TextureBinding& binding : source.textures)
         {
             const float uv = static_cast<float>(binding.transform.uvSet);
@@ -674,6 +716,9 @@ vec2 diffuseUv = vec2(0.0);
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1u, VK_SHADER_STAGE_FRAGMENT_BIT, {},
             vsg::CoordinateSpace::sRGB);
         result->addDescriptorBinding("openmwGlossMap", "VSG_GLOSS_MAP", 1u, 13u,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1u, VK_SHADER_STAGE_FRAGMENT_BIT, {},
+            vsg::CoordinateSpace::LINEAR);
+        result->addDescriptorBinding("openmwTerrainBlendMap", "OPENMW_TERRAIN_BLEND", 1u, 16u,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1u, VK_SHADER_STAGE_FRAGMENT_BIT, {},
             vsg::CoordinateSpace::LINEAR);
 

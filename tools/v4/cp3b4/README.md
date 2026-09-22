@@ -65,6 +65,16 @@ of both the executable and exact manifest, archive encoding, covered/required
 tags, per-asset results, and corpus-wide translation/realization/texture-decode
 totals.
 
+The runner checkpoints the aggregate atomically before starting and after each
+completed asset. `complete=false` always implies `passed=false`; the summary
+includes `plannedAssets` and `notTested`, so an interrupted suite cannot look like
+a smaller passing suite. Launch errors, nonzero exits, and timeouts are per-asset
+failures; independent later assets still run. Keyboard interruption exits with
+130 and leaves completed-case evidence in `--output`. The currently interrupted
+asset remains uncompleted; this is not a resume mechanism or GPU-device recovery.
+Run `python tools/v4/cp3b4/test-corpus-recovery.py` for portable failure-isolation
+and evidence-checkpoint tests, including real subprocess failure/timeout cases.
+
 The schema version is intentionally explicit so CP3C/CP4 regression tooling can
 consume old reports without depending on unstable console wording.
 

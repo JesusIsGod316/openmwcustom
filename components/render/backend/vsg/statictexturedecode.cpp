@@ -1,6 +1,7 @@
 #include "statictexturedecode.hpp"
 
 #include "statictexturequirks.hpp"
+#include "livetexturecache.hpp"
 
 #include <vsg/core/Array2D.h>
 #include <vsg/io/Options.h>
@@ -13,6 +14,8 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <istream>
 #include <memory>
@@ -159,6 +162,22 @@ namespace RenderVsg
         if (!key.valid() || record.contentIdentity.empty() || record.revision != key.revision)
             return {};
 
+        if (record.pixels)
+        {
+            const auto& bytes = record.pixels->rgba8;
+            if (record.width == 0 || record.height == 0 || record.mipmapped
+                || bytes.size() % 4u != 0 || std::uint64_t(record.width) * record.height != bytes.size() / 4u)
+                return {};
+            vsg::Data::Properties properties;
+            properties.format = key.view.colorSpace == RenderCore::TextureColorSpace::Srgb
+                ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+            properties.origin = vsg::BOTTOM_LEFT;
+            properties.mipLevels = 1;
+            auto result = vsg::ubvec4Array2D::create(record.width, record.height, properties);
+            std::memcpy(result->dataPointer(), bytes.data(), bytes.size());
+            return result;
+        }
+
         if (warningTexture(record))
             return warningFallback(record, key, "neutral translation selected the canonical missing-image fallback");
 
@@ -222,7 +241,9 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::SharedObjects> sharedObjects, std::shared_ptr<StaticTextureDecodeReport> report)
     {
         auto decoder = std::make_shared<StaticTextureDecoder>(std::move(sharedObjects), std::move(report));
-        return [decoder = std::move(decoder), opener = std::move(opener)](const RenderCore::TextureRecord& record,
-                   const RenderCore::TextureRealizationKey& key) { return decoder->decode(record, key, opener); };
+        return cacheLiveTextures(
+            [decoder = std::move(decoder), opener = std::move(opener)](const RenderCore::TextureRecord& record,
+                const RenderCore::TextureRealizationKey& key) { return decoder->decode(record, key, opener); },
+            std::getenv("OPENMW_V4_UNCACHED_TEXTURE_DECODE") ? 0u : 4096u);
     }
 }

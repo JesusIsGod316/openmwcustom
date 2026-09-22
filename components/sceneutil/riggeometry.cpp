@@ -34,6 +34,7 @@ namespace SceneUtil
             mGeometry[i] = nullptr;
 
         mSourceGeometry = sourceGeometry;
+        mGeometryEvaluated = false;
 
         for (unsigned int i = 0; i < 2; ++i)
         {
@@ -97,9 +98,10 @@ namespace SceneUtil
         return mSourceGeometry;
     }
 
-    bool RigGeometry::initFromParentSkeleton(osg::NodeVisitor* nv)
+    bool RigGeometry::initFromParentSkeleton(const osg::NodePath& path)
     {
-        const osg::NodePath& path = nv->getNodePath();
+        if (path.size() < 2)
+            return false;
         for (osg::NodePath::const_reverse_iterator it = path.rbegin() + 1; it != path.rend(); ++it)
         {
             osg::Node* node = *it;
@@ -137,28 +139,26 @@ namespace SceneUtil
 
     void RigGeometry::cull(osg::NodeVisitor* nv)
     {
-        if (!mSkeleton)
+        if (osg::Geometry* geom = evaluateGeometry(nv->getTraversalNumber(), nv->getNodePath()))
         {
-            Log(Debug::Error)
-                << "Error: RigGeometry rendering with no skeleton, should have been initialized by UpdateVisitor";
-            // try to recover anyway, though rendering is likely to be incorrect.
-            if (!initFromParentSkeleton(nv))
-                return;
-        }
-
-        unsigned int traversalNumber = nv->getTraversalNumber();
-        if (mLastFrameNumber == traversalNumber || (mLastFrameNumber != 0 && !mSkeleton->getActive()))
-        {
-            osg::Geometry& geom = *getGeometry(mLastFrameNumber);
-            nv->pushOntoNodePath(&geom);
-            nv->apply(geom);
+            nv->pushOntoNodePath(geom);
+            nv->apply(*geom);
             nv->popFromNodePath();
-            return;
         }
+    }
+
+    osg::Geometry* RigGeometry::evaluateGeometry(unsigned int traversalNumber, const osg::NodePath& path)
+    {
+        if (!mSourceGeometry || !mData || path.size() < 2)
+            return nullptr;
+        if (!mSkeleton && !initFromParentSkeleton(path))
+            return nullptr;
+        if (mGeometryEvaluated && (mLastFrameNumber == traversalNumber || !mSkeleton->getActive()))
+            return getGeometry(mLastFrameNumber);
         mLastFrameNumber = traversalNumber;
         osg::Geometry& geom = *getGeometry(mLastFrameNumber);
-
         mSkeleton->updateBoneMatrices(traversalNumber);
+        updateSkinToSkelMatrix(path);
 
         // skinning
         const osg::Vec3Array* positionSrc = static_cast<osg::Vec3Array*>(mSourceGeometry->getVertexArray());
@@ -226,17 +226,15 @@ namespace SceneUtil
             tangentDst->dirty();
 
         geom.osg::Drawable::dirtyGLObjects();
-
-        nv->pushOntoNodePath(&geom);
-        nv->apply(geom);
-        nv->popFromNodePath();
+        mGeometryEvaluated = true;
+        return &geom;
     }
 
     void RigGeometry::updateBounds(osg::NodeVisitor* nv)
     {
         if (!mSkeleton)
         {
-            if (!initFromParentSkeleton(nv))
+            if (!initFromParentSkeleton(nv->getNodePath()))
                 return;
         }
 

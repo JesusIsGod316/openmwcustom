@@ -318,10 +318,19 @@ namespace RenderCore
 
         [[nodiscard]] bool valid() const noexcept
         {
+            return validPublication(true);
+        }
+
+        // commit/update validate each incoming record before mutation. A batch
+        // must still verify cross-record relationships, but unchanged immutable
+        // vertex/skin/morph arrays need not be rescanned after every publication.
+        // Full valid() remains the independent audit/control path.
+        [[nodiscard]] bool validPublication(bool validateImmutablePayloads = false) const noexcept
+        {
             bool result = true;
 
             mMeshes.forEachLive([&](MeshHandle, const MeshRecord& record) {
-                if (!validateMeshRecord(record))
+                if (validateImmutablePayloads && !validateMeshRecord(record))
                     result = false;
             });
             mModels.forEachLive([&](ModelHandle, const ModelRecord& record) {
@@ -337,7 +346,7 @@ namespace RenderCore
                     result = false;
             });
             mSkeletons.forEachLive([&](SkeletonHandle, const SkeletonRecord& record) {
-                if (!validateSkeletonRecord(record))
+                if (validateImmutablePayloads && !validateSkeletonRecord(record))
                     result = false;
             });
             mLights.forEachLive([&](LightHandle, const LightRecord& record) {
@@ -474,7 +483,10 @@ namespace RenderCore
             // Every published logical image must carry content identity. Source
             // path/provenance alone is not a safe residency or dedup key and must
             // never silently become one as CP4 paging and CP7 GPU residency grow.
-            return record.revision.valid() && !record.contentIdentity.empty();
+            return record.revision.valid() && !record.contentIdentity.empty()
+                && (!record.pixels || (record.width > 0 && record.height > 0
+                    && !record.mipmapped && std::uint64_t(record.width) * record.height
+                        == record.pixels->rgba8.size() / 4u && record.pixels->rgba8.size() % 4u == 0));
         }
 
         [[nodiscard]] static bool validateSkeletonRecord(const SkeletonRecord& record) noexcept

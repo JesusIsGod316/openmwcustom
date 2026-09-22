@@ -7,6 +7,10 @@
 
 namespace RenderVsg
 {
+    inline constexpr std::int32_t UiOverlayBinNumber = 11;
+    // Record after the world's traversal/sorted bins, preserving MyGUI order.
+    vsg::ref_ptr<vsg::Node> createUiOverlayLayer(vsg::ref_ptr<vsg::Node> overlay);
+
     // 2D screen-space overlay pipeline for the GUI — the rendering substrate for the MyGUI-on-Vulkan port
     // (MW8 P1). MyGUI emits triangles ALREADY in clip space, in a single interleaved vertex stream matching its
     // MyGUI::Vertex: position (3×float) @0, colour (RGBA8 UNORM, packed ColourABGR) @12, uv (2×float) @16 —

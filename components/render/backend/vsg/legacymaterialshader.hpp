@@ -47,7 +47,8 @@ namespace RenderVsg
         // w = override enabled. Local point-light ambient is intentionally separate.
         vsg::vec4 ambientOverride{ 1.0f, 1.0f, 1.0f, 0.0f };
         // x=DarkTexture UV set, y=DecalTexture UV set, z=GlossTexture UV set.
-        // Values are exact small integers encoded as floats. w is reserved.
+        // Values are exact small integers encoded as floats. w packs LAND flags:
+        // terrain=1, diffuse-alpha specular=2, normal-alpha height=4, RG normal=8.
         vsg::vec4 textureCoordSets{ 0.0f, 0.0f, 0.0f, 0.0f };
     };
 

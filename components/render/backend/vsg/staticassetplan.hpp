@@ -79,6 +79,7 @@ namespace RenderVsg
         {
             glm::mat4 world{ 1.0f };
             std::optional<RenderCore::ModelBillboardMode> billboard;
+            bool clockwiseFrontFace = false;
         };
 
         // NifOsg::LoaderImpl intentionally keeps these as loader-global state;
@@ -273,6 +274,8 @@ namespace RenderVsg
 
             static_plan_detail::TraversalState state = inherited;
             state.world = inherited.world * node.localTransform;
+            state.clockwiseFrontFace = inherited.clockwiseFrontFace
+                || static_plan_detail::hasFlag(node, ModelNodeFlag::ClockwiseFrontFace);
             if (node.billboard)
                 state.billboard = node.billboard;
 
@@ -334,6 +337,8 @@ namespace RenderVsg
                     draw.billboard = state.billboard;
                     draw.sortPolicy = materialSortPolicies[surface.materialSlot];
                     draw.pipeline = makeGraphicsPipelineKey(*mesh->payload, surface.topology, *material);
+                    if (state.clockwiseFrontFace)
+                        draw.pipeline.fixedFunction.raster.frontFace = FrontFaceWinding::Clockwise;
                     draw.materialRealization = makeMaterialRealizationKey(*material);
                     draw.textures.reserve(material->textures.size());
                     draw.samplers.reserve(material->textures.size());

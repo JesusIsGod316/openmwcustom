@@ -1,4 +1,6 @@
+#include "v4actorplacement.hpp"
 #include "v4semanticsource.hpp"
+#include <components/debug/gameplaydiagnostics.hpp>
 
 #include "camera.hpp"
 #include "celllighting.hpp"
@@ -199,6 +201,10 @@ namespace MWRender
         result.transform.rotation = { static_cast<float>(rotation.w()), static_cast<float>(rotation.x()),
             static_cast<float>(rotation.y()), static_cast<float>(rotation.z()) };
         result.transform.scale = { scale, scale, scale };
+        // Use the live rendering root after world/animation updates. Saved
+        // reference rotation and uniform scale are not the evaluated actor pose.
+        if (const auto* root = ptr.getRefData().getBaseNode())
+            result.transform = captureV4ActorPlacement(*root);
         result.localBounds = localBounds;
         return result;
     }
@@ -384,6 +390,10 @@ namespace MWRender
         // view from current gameplay-camera state instead of consuming the
         // matrix cache normally refreshed by the OSG camera callback.
         result.view = toGlmView(camera.calculateViewMatrix());
+        if (Debug::GameplayDiagnostics::sampling())
+            Debug::GameplayDiagnostics::emit("camera", {
+                {"cached_view_delta", std::to_string(Debug::GameplayDiagnostics::matrixDifference(
+                    camera.calculateViewMatrix(), camera.getViewMatrix()))}});
         const glm::mat4 cameraWorld = glm::inverse(result.view);
         result.worldPosition = glm::dvec3(cameraWorld[3]);
         result.worldOrientation = glm::normalize(glm::quat_cast(glm::mat3(cameraWorld)));
