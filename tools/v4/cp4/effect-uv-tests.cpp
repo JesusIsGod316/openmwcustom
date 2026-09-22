@@ -102,8 +102,9 @@ int main()
         auto input = geometry(); input->setTexCoordArray(0, uv());
         auto output = draw({0, 4}); std::string diagnostic;
         require(capture(*input, *state, output, diagnostic), diagnostic);
-        require(output.mesh.texCoordSets.size() == 2, "wrong compact stream count");
-        require(output.mesh.texCoordSets[0] == output.mesh.texCoordSets[1], "native array fallback lost");
+        require(output.mesh.texCoordSets.size() == 1, "one source array was duplicated for a second stage");
+        require(output.textures[0].binding.transform.uvSet == 0
+            && output.textures[1].binding.transform.uvSet == 0, "shared source bindings diverged");
         require(!input->getTexCoordArray(4), "capture mutated authoritative source geometry");
     });
     test("native fallback uses first non-null array when zero is absent", [&] {
@@ -129,6 +130,80 @@ int main()
         require(output.mesh.texCoordSets[0][0].x == 1.0f, "unit-zero matrix lost");
         require(output.mesh.texCoordSets[1][0].x == 4.0f, "fallback used source unit's matrix");
         require(output.textures[1].binding.transform.uvSet == 1, "secondary binding not remapped");
+    });
+    test("eight bound stages sharing one authored stream remain one stream", [&] {
+        auto input = geometry(); auto shared = uv(2.0f);
+        for (unsigned int unit = 0; unit < 8; ++unit) input->setTexCoordArray(unit, shared);
+        auto output = draw({0, 1, 2, 3, 4, 5, 6, 7}); std::string diagnostic;
+        require(capture(*input, *state, output, diagnostic), diagnostic);
+        require(output.mesh.texCoordSets.size() == 1, "aliased texture stages consumed extra vertex inputs");
+        require(output.textures.size() == 8, "a material texture stage was removed");
+        for (const auto& texture : output.textures)
+            require(texture.binding.transform.uvSet == 0, "shared stage was not remapped");
+    });
+    test("eight native fallback stages fit the four-stream shader contract", [&] {
+        auto input = geometry(); input->setTexCoordArray(0, uv());
+        auto output = draw({0, 1, 2, 3, 4, 5, 6, 7}); std::string diagnostic;
+        require(capture(*input, *state, output, diagnostic), diagnostic);
+        require(output.mesh.texCoordSets.size() == 1, "fallback duplicated coordinates past backend capacity");
+        require(output.textures.size() == 8, "textures were truncated to fit the shader");
+        require(!input->getTexCoordArray(7), "capture modified the source");
+    });
+    test("five stages using four source streams do not require a fifth vertex input", [&] {
+        auto input = geometry();
+        for (unsigned int unit = 0; unit < 4; ++unit) input->setTexCoordArray(unit, uv(float(unit)));
+        input->setTexCoordArray(4, input->getTexCoordArray(1));
+        auto output = draw({0, 1, 2, 3, 4}); std::string diagnostic;
+        require(capture(*input, *state, output, diagnostic), diagnostic);
+        require(output.mesh.texCoordSets.size() == 4, "stage count was confused with source-stream count");
+        require(output.textures[4].binding.transform.uvSet == 1, "aliased fifth stage lost its source");
+    });
+    test("equal TexMat values share a source despite distinct TexMat objects", [&] {
+        auto input = geometry(); input->setTexCoordArray(0, uv());
+        auto local = osg::ref_ptr<osg::StateSet>(new osg::StateSet);
+        local->setTextureAttribute(0, new osg::TexMat(osg::Matrix::translate(2.0, 0.0, 0.0)));
+        local->setTextureAttribute(5, new osg::TexMat(osg::Matrix::translate(2.0, 0.0, 0.0)));
+        auto output = draw({0, 5}); std::string diagnostic;
+        require(capture(*input, *local, output, diagnostic), diagnostic);
+        require(output.mesh.texCoordSets.size() == 1, "identical evaluated transforms were duplicated");
+        require(output.mesh.texCoordSets[0][0].x == 2.0f, "transform was lost");
+    });
+    test("missing TexMat and explicit identity share the same source", [&] {
+        auto input = geometry(); input->setTexCoordArray(0, uv());
+        auto local = osg::ref_ptr<osg::StateSet>(new osg::StateSet);
+        local->setTextureAttribute(4, new osg::TexMat(osg::Matrix::identity()));
+        auto output = draw({0, 4}); std::string diagnostic;
+        require(capture(*input, *local, output, diagnostic), diagnostic);
+        require(output.mesh.texCoordSets.size() == 1, "identity TexMat created a redundant stream");
+    });
+    test("independent authored arrays remain independent even when values coincide", [&] {
+        auto input = geometry(); input->setTexCoordArray(0, uv()); input->setTexCoordArray(1, uv());
+        auto output = draw({0, 1}); std::string diagnostic;
+        require(capture(*input, *state, output, diagnostic), diagnostic);
+        require(output.mesh.texCoordSets.size() == 2, "independently animated sources were conflated");
+    });
+    test("animated TexMat divergence separates formerly shared streams", [&] {
+        auto input = geometry(); input->setTexCoordArray(0, uv());
+        auto local = osg::ref_ptr<osg::StateSet>(new osg::StateSet);
+        auto matrix = osg::ref_ptr<osg::TexMat>(new osg::TexMat(osg::Matrix::identity()));
+        local->setTextureAttribute(4, matrix);
+        auto first = draw({0, 4}); std::string diagnostic;
+        require(capture(*input, *local, first, diagnostic), diagnostic);
+        require(first.mesh.texCoordSets.size() == 1, "identity stage did not share source");
+        matrix->setMatrix(osg::Matrix::translate(4.0, 0.0, 0.0));
+        auto second = draw({0, 4});
+        require(capture(*input, *local, second, diagnostic), diagnostic);
+        require(second.mesh.texCoordSets.size() == 2, "a stale alias hid the animated transform");
+        require(second.mesh.texCoordSets[1][0].x == 4.0f, "new transform was not evaluated");
+        require(first.mesh.texCoordSets[0][0].x == 0.0f, "previous immutable capture was modified");
+    });
+    test("five genuinely distinct sources are preserved, never silently truncated", [&] {
+        auto input = geometry();
+        for (unsigned int unit = 0; unit < 5; ++unit) input->setTexCoordArray(unit, uv(float(unit)));
+        auto output = draw({0, 1, 2, 3, 4}); std::string diagnostic;
+        require(capture(*input, *state, output, diagnostic), diagnostic);
+        require(output.mesh.texCoordSets.size() == 5, "distinct authored UVs were discarded");
+        require(output.textures[4].binding.transform.uvSet == 4, "unsupported distinct UVs were aliased");
     });
     test("missing all UV arrays remains a diagnostic failure", [&] {
         auto input = geometry(); auto output = draw({2}); std::string diagnostic;

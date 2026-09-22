@@ -520,8 +520,27 @@ namespace RenderVsg
             if (payload.texCoordSets.size() > 4u)
             {
                 result.root = {};
-                result.diagnostics.emplace_back(
-                    "VSG 1.1.15 standard compatibility vertex contract exposes four texture-coordinate sets");
+                std::string diagnostic
+                    = "VSG 1.1.15 standard compatibility vertex contract exposes four texture-coordinate sets"
+                    " [mesh='" + mesh->sourceIdentity + "', material='" + material->sourceIdentity
+                    + "', uv_streams=" + std::to_string(payload.texCoordSets.size())
+                    + ", texture_bindings=" + std::to_string(material->textures.size()) + "]";
+                // Failure provenance must not depend on the ordinary per-frame
+                // diagnostic example budget. Report bindings without dropping
+                // textures or aliasing genuinely distinct source coordinates.
+                const std::size_t limit = (std::min)(material->textures.size(), std::size_t{ 16 });
+                for (std::size_t index = 0; index < limit; ++index)
+                {
+                    const TextureBinding& binding = material->textures[index];
+                    const TextureRecord* texture = world.get(binding.texture);
+                    diagnostic += " [stage=" + std::to_string(index)
+                        + ", role=" + std::to_string(static_cast<unsigned int>(binding.role))
+                        + ", uv=" + std::to_string(binding.transform.uvSet)
+                        + ", texture='" + (texture ? texture->sourceIdentity : std::string("missing")) + "']";
+                }
+                if (material->textures.size() > limit)
+                    diagnostic += " [additional_bindings=" + std::to_string(material->textures.size() - limit) + "]";
+                result.diagnostics.push_back(std::move(diagnostic));
                 return result;
             }
 

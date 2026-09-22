@@ -4,9 +4,11 @@
 #include <components/rendercore/effectframe.hpp>
 
 #include <osg/Geometry>
+#include <osg/Matrix>
 #include <osg/StateSet>
 #include <osg/TexMat>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -18,7 +20,11 @@ namespace MWRender::v4_effect_detail
 {
     // A texture unit is an OSG state slot, not a dense mesh-UV index. Capture
     // only bound stages, retaining each stage's own TexMat even when several
-    // stages share the same source array. Missing explicit arrays follow native
+    // stages share the same source array. Reuse a captured stream only when the
+    // source array and the effective TexMat are identical. Texture count is not
+    // UV-stream count: the compatibility shader has four vertex UV inputs.
+    // These pointer keys are local to this capture, never published identities.
+    // Missing explicit arrays follow native
     // ShaderVisitor::adjustGeometry: unit zero, or the first non-null array when
     // zero is absent. Malformed arrays are never replaced by a different one.
     [[nodiscard]] inline bool captureEffectTextureCoordinates(const osg::Geometry& geometry,
@@ -36,7 +42,16 @@ namespace MWRender::v4_effect_detail
             return false;
         }
 
+        struct SourceStream
+        {
+            const osg::Vec2Array* coordinates;
+            osg::Matrix transform;
+        };
+        std::vector<SourceStream> sources;
+        std::vector<std::uint32_t> bindings;
         std::vector<std::vector<glm::vec2>> captured;
+        sources.reserve(draw.textures.size());
+        bindings.reserve(draw.textures.size());
         captured.reserve(draw.textures.size());
         for (const auto& texture : draw.textures)
         {
@@ -84,10 +99,21 @@ namespace MWRender::v4_effect_detail
             if (!coordinates || coordinates->size() != positions->size())
                 return fail("no valid explicit Vec2 stream after native array selection");
 
-            auto& destination = captured.emplace_back();
-            destination.reserve(coordinates->size());
             const auto* matrix = dynamic_cast<const osg::TexMat*>(
                 state.getTextureAttribute(unit, osg::StateAttribute::TEXMAT));
+            const osg::Matrix transform = matrix ? matrix->getMatrix() : osg::Matrix::identity();
+            const auto shared = std::find_if(sources.begin(), sources.end(), [&](const SourceStream& candidate) {
+                return candidate.coordinates == coordinates && candidate.transform == transform;
+            });
+            if (shared != sources.end())
+            {
+                bindings.push_back(static_cast<std::uint32_t>(shared - sources.begin()));
+                continue;
+            }
+            bindings.push_back(static_cast<std::uint32_t>(captured.size()));
+            sources.push_back({ coordinates, transform });
+            auto& destination = captured.emplace_back();
+            destination.reserve(coordinates->size());
             for (const osg::Vec2& uv : *coordinates)
             {
                 if (matrix)
@@ -104,7 +130,7 @@ namespace MWRender::v4_effect_detail
         // not leave earlier bindings remapped against an incomplete mesh.
         draw.mesh.texCoordSets = std::move(captured);
         for (std::size_t index = 0; index < draw.textures.size(); ++index)
-            draw.textures[index].binding.transform.uvSet = static_cast<std::uint32_t>(index);
+            draw.textures[index].binding.transform.uvSet = bindings[index];
         return true;
     }
 }
