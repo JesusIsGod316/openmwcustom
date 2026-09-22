@@ -1,0 +1,97 @@
+Log bytes: 3508689
+Head: b"\xef\xbb\xbf2026-09-22T21:17:39.4676710Z Current runner version: '2.337.0'\r\n2026-09-22T21:17:39.4698151Z ##[group]Runner Image Provisioner\r\n2026-09-22T21:17:39.4698764Z Hosted Compute Agent"
+2026-09-22T21:50:41.3445442Z   FrameworkDir: C:\Windows\Microsoft.NET\Framework64\
+2026-09-22T21:50:41.3445714Z   FrameworkDir64: C:\Windows\Microsoft.NET\Framework64\
+2026-09-22T21:50:41.3445945Z   FrameworkVersion: v4.0.30319
+2026-09-22T21:50:41.3446131Z   FrameworkVersion64: v4.0.30319
+2026-09-22T21:50:41.3446539Z   FSHARPINSTALLDIR: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\FSharp\Tools
+2026-09-22T21:50:41.3446994Z   HTMLHelpDir: C:\Program Files (x86)\HTML Help Workshop
+2026-09-22T21:50:41.3447358Z   IFCPATH: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\ifc\x64
+2026-09-22T21:50:41.3449088Z   INCLUDE: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\include;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\ATLMFC\include;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\VS\include;C:\Program Files (x86)\Windows Kits\10\include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\um;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\winrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\cppwinrt;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8\include\um
+2026-09-22T21:50:41.3450662Z   is_x64_arch: true
+2026-09-22T21:50:41.3451567Z   LIB: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\ATLMFC\lib\x64;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\lib\x64;C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8\lib\um\x64;C:\Program Files (x86)\Windows Kits\10\lib\10.0.26100.0\ucrt\x64;C:\Program Files (x86)\Windows Kits\10\\lib\10.0.26100.0\\um\x64
+2026-09-22T21:50:41.3454592Z   LIBPATH: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\ATLMFC\lib\x64;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\lib\x64;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\lib\x86\store\references;C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0;C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+2026-09-22T21:50:41.3455918Z   NETFXSDKDir: C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8\
+2026-09-22T21:50:41.3467259Z   Path: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\VC\VCPackages;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\TestWindow;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\TeamFoundation\Team Explorer;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\bin\Roslyn;C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8 Tools\x64\;C:\Program Files (x86)\HTML Help Workshop;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\FSharp\Tools;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Team Tools\DiagnosticsHub\Collector;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin;C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\\x64;C:\Program Files (x86)\Windows Kits\10\bin\\x64;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\\MSBuild\Current\Bin\amd64;C:\Windows\Microsoft.NET\Framework64\v4.0.30319;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\;C:\Program Files\MongoDB\Server\7.0\bin;C:\aliyun-cli;C:\vcpkg;C:\Program Files (x86)\NSIS\;C:\tools\zstd;C:\Program Files\Mercurial\;C:\hostedtoolcache\windows\stack\3.11.1\x64;C:\cabal\bin;C:\\ghcup\bin;C:\mingw64\bin;C:\Program Files\dotnet;C:\Program Files\MySQL\MySQL Server 8.0\bin;C:\Program Files\R\R-4.6.1\bin\x64;C:\SeleniumWebDrivers\GeckoDriver;C:\SeleniumWebDrivers\EdgeDriver\;C:\SeleniumWebDrivers\ChromeDriver;C:\Program Files (x86)\sbt\bin;C:\Program Files (x86)\GitHub CLI;C:\Program Files\Git\bin;C:\Program Files (x86)\pipx_bin;C:\npm\prefix;C:\hostedtoolcache\windows\go\1.24.13\x64\bin;C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts;C:\hostedtoolcache\windows\Python\3.12.10\x64;C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin;C:\Program Files\OpenSSL\bin;C:\tools\kotlinc\bin;C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\8.0.504-1\x64\bin;C:\Program Files\ImageMagick-7.1.2-Q16-HDRI;C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin;C:\ProgramData\kind;C:\ProgramData\Chocolatey\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\dotnet\;C:\Program Files\PowerShell\7\;C:\Program Files\Microsoft\Web Platform Installer\;C:\Program Files\TortoiseSVN\bin;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\150\Tools\Binn\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files\Microsoft SQL Server\130\DTS\Binn\;C:\Program Files\Microsoft SQL Server\140\DTS\Binn\;C:\Program Files\Microsoft SQL Server\150\DTS\Binn\;C:\Program Files\Microsoft SQL Server\160\DTS\Binn\;C:\Program Files\Microsoft SQL Server\170\DTS\Binn\;C:\Strawberry\c\bin;C:\Strawberry\perl\site\bin;C:\Strawberry\perl\bin;C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin;C:\Program Files\CMake\bin;C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin;C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code;C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\Git\mingw64\bin;C:\Program Files\Git\usr\bin;C:\Program Files\GitHub CLI\;c:\tools\php;C:\Program Files\Amazon\AWSCLIV2\;C:\Program Files\Amazon\SessionManagerPlugin\bin\;C:\Program Files\Amazon\AWSSAMCLI\bin\;C:\Program Files\Microsoft SQL Server\130\Tools\Binn\;C:\Program Files\mongosh\;C:\Program Files\LLVM\bin;C:\Program Files (x86)\LLVM\bin;C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\Installer;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\VC\Linux\bin\ConnectionManagerExe;C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\vcpkg
+2026-09-22T21:50:41.3478615Z   Platform: x64
+2026-09-22T21:50:41.3478769Z   UCRTVersion: 10.0.26100.0
+2026-09-22T21:50:41.3479001Z   UniversalCRTSdkDir: C:\Program Files (x86)\Windows Kits\10\
+2026-09-22T21:50:41.3479372Z   VCIDEInstallDir: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\VC\
+2026-09-22T21:50:41.3479779Z   VCINSTALLDIR: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\
+2026-09-22T21:50:41.3480200Z   VCPKG_ROOT: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\vcpkg
+2026-09-22T21:50:41.3480630Z   VCToolsInstallDir: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\
+2026-09-22T21:50:41.3481118Z   VCToolsRedistDir: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\14.44.35112\
+2026-09-22T21:50:41.3481456Z   VCToolsVersion: 14.44.35207
+2026-09-22T21:50:41.3481641Z   VisualStudioVersion: 17.0
+2026-09-22T21:50:41.3481926Z   VS170COMNTOOLS: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\
+2026-09-22T21:50:41.3482233Z   VSCMD_ARG_app_plat: Desktop
+2026-09-22T21:50:41.3482406Z   VSCMD_ARG_HOST_ARCH: x64
+2026-09-22T21:50:41.3482573Z   VSCMD_ARG_TGT_ARCH: x64
+2026-09-22T21:50:41.3482743Z   VSCMD_VER: 17.14.40
+2026-09-22T21:50:41.3482975Z   VSINSTALLDIR: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\
+2026-09-22T21:50:41.3483335Z   VSSDK150INSTALL: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VSSDK
+2026-09-22T21:50:41.3483709Z   VSSDKINSTALL: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VSSDK
+2026-09-22T21:50:41.3484222Z   WindowsLibPath: C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0
+2026-09-22T21:50:41.3484706Z   WindowsSdkBinPath: C:\Program Files (x86)\Windows Kits\10\bin\
+2026-09-22T21:50:41.3485003Z   WindowsSdkDir: C:\Program Files (x86)\Windows Kits\10\
+2026-09-22T21:50:41.3485236Z   WindowsSDKLibVersion: 10.0.26100.0\
+2026-09-22T21:50:41.3485517Z   WindowsSdkVerBinPath: C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\
+2026-09-22T21:50:41.3485804Z   WindowsSDKVersion: 10.0.26100.0\
+2026-09-22T21:50:41.3486150Z   WindowsSDK_ExecutablePath_x64: C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8 Tools\x64\
+2026-09-22T21:50:41.3486648Z   WindowsSDK_ExecutablePath_x86: C:\Program Files (x86)\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8 Tools\
+2026-09-22T21:50:41.3486985Z   __DOTNET_ADD_64BIT: 1
+2026-09-22T21:50:41.3487163Z   __DOTNET_PREFERRED_BITNESS: 64
+2026-09-22T21:50:41.3493937Z   __VSCMD_PREINIT_PATH: C:\Program Files\MongoDB\Server\7.0\bin;C:\aliyun-cli;C:\vcpkg;C:\Program Files (x86)\NSIS\;C:\tools\zstd;C:\Program Files\Mercurial\;C:\hostedtoolcache\windows\stack\3.11.1\x64;C:\cabal\bin;C:\\ghcup\bin;C:\mingw64\bin;C:\Program Files\dotnet;C:\Program Files\MySQL\MySQL Server 8.0\bin;C:\Program Files\R\R-4.6.1\bin\x64;C:\SeleniumWebDrivers\GeckoDriver;C:\SeleniumWebDrivers\EdgeDriver\;C:\SeleniumWebDrivers\ChromeDriver;C:\Program Files (x86)\sbt\bin;C:\Program Files (x86)\GitHub CLI;C:\Program Files\Git\bin;C:\Program Files (x86)\pipx_bin;C:\npm\prefix;C:\hostedtoolcache\windows\go\1.24.13\x64\bin;C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts;C:\hostedtoolcache\windows\Python\3.12.10\x64;C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin;C:\Program Files\OpenSSL\bin;C:\tools\kotlinc\bin;C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\8.0.504-1\x64\bin;C:\Program Files\ImageMagick-7.1.2-Q16-HDRI;C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin;C:\ProgramData\kind;C:\ProgramData\Chocolatey\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\dotnet\;C:\Program Files\PowerShell\7\;C:\Program Files\Microsoft\Web Platform Installer\;C:\Program Files\TortoiseSVN\bin;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\150\Tools\Binn\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files\Microsoft SQL Server\130\DTS\Binn\;C:\Program Files\Microsoft SQL Server\140\DTS\Binn\;C:\Program Files\Microsoft SQL Server\150\DTS\Binn\;C:\Program Files\Microsoft SQL Server\160\DTS\Binn\;C:\Program Files\Microsoft SQL Server\170\DTS\Binn\;C:\Strawberry\c\bin;C:\Strawberry\perl\site\bin;C:\Strawberry\perl\bin;C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin;C:\Program Files\CMake\bin;C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin;C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code;C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\Git\mingw64\bin;C:\Program Files\Git\usr\bin;C:\Program Files\GitHub CLI\;c:\tools\php;C:\Program Files (x86)\sbt\bin;C:\Program Files\Amazon\AWSCLIV2\;C:\Program Files\Amazon\SessionManagerPlugin\bin\;C:\Program Files\Amazon\AWSSAMCLI\bin\;C:\Program Files\Microsoft SQL Server\130\Tools\Binn\;C:\Program Files\mongosh\;C:\Program Files\LLVM\bin;C:\Program Files (x86)\LLVM\bin;C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\Installer
+2026-09-22T21:50:41.3501046Z   QT_VER: 6.6.3
+2026-09-22T21:50:41.3501197Z   VCPKG_TAG: 2026-02-24
+2026-09-22T21:50:41.3501361Z ##[endgroup]
+2026-09-22T21:50:41.4936751Z With the provided path, there will be 1 file uploaded
+2026-09-22T21:50:41.4940325Z Artifact name is valid!
+2026-09-22T21:50:41.4942156Z Root directory input is valid!
+2026-09-22T21:50:41.6887323Z Beginning upload of artifact content to blob storage
+2026-09-22T21:50:42.5588372Z Uploaded bytes 8388608
+2026-09-22T21:50:43.1976050Z Uploaded bytes 16777216
+2026-09-22T21:50:43.9298731Z Uploaded bytes 25165824
+2026-09-22T21:50:44.7471471Z Uploaded bytes 33554432
+2026-09-22T21:50:45.4092951Z Uploaded bytes 41943040
+2026-09-22T21:50:46.2026243Z Uploaded bytes 50331648
+2026-09-22T21:50:46.8892125Z Uploaded bytes 58720256
+2026-09-22T21:50:47.4718000Z Uploaded bytes 67108864
+2026-09-22T21:50:48.1177793Z Uploaded bytes 75497472
+2026-09-22T21:50:48.7514657Z Uploaded bytes 83886080
+2026-09-22T21:50:49.4580057Z Uploaded bytes 92274688
+2026-09-22T21:50:50.2538551Z Uploaded bytes 100663296
+2026-09-22T21:50:51.3660203Z Uploaded bytes 109051904
+2026-09-22T21:50:52.2658757Z Uploaded bytes 117440512
+2026-09-22T21:50:53.0943791Z Uploaded bytes 125829120
+2026-09-22T21:50:53.8321176Z Uploaded bytes 134217728
+2026-09-22T21:50:54.2355318Z Uploaded bytes 142606336
+2026-09-22T21:50:54.7297075Z Uploaded bytes 150994944
+2026-09-22T21:50:55.4783832Z Uploaded bytes 159383552
+2026-09-22T21:50:56.3636693Z Uploaded bytes 167772160
+2026-09-22T21:50:56.8808085Z Uploaded bytes 176160768
+2026-09-22T21:50:57.3806355Z Uploaded bytes 184549376
+2026-09-22T21:50:57.6694156Z Uploaded bytes 189600258
+2026-09-22T21:50:57.7191623Z Finished uploading artifact content to blob storage!
+2026-09-22T21:50:57.7194249Z SHA256 digest of uploaded artifact zip is 26e6e9cbb53624b2391b2a5855312b47452d8dc5d39bb8688c7a797b1b66d66e
+2026-09-22T21:50:57.7196254Z Finalizing artifact upload
+2026-09-22T21:50:57.9262508Z Artifact openmw-v4-cp4f-vulkan-symbols-570289804810174724e7e534600f0831d0e9ae67.zip successfully finalized. Artifact ID 10720848825
+2026-09-22T21:50:57.9263886Z Artifact openmw-v4-cp4f-vulkan-symbols-570289804810174724e7e534600f0831d0e9ae67 has been successfully uploaded! Final size is 189600258 bytes. Artifact ID is 10720848825
+2026-09-22T21:50:57.9273845Z Artifact download URL: https://github.com/JesusIsGod316/openmwcustom/actions/runs/35785669539/artifacts/10720848825
+2026-09-22T21:50:57.9526501Z ##[group]Run actions/upload-artifact@v6
+2026-09-22T21:50:57.9527189Z with:
+2026-09-22T21:50:57.9527523Z   name: openmw-v4-cp3b3-static-realization-logs-570289804810174724e7e534600f0831d0e9ae67
+2026-09-22T21:50:57.9530690Z   path: D:\a\openmwcustom\openmwcustom/build-diagnostic-headers-vulkan/CMakeCache.txt
+D:\a\openmwcustom\openmwcustom/build-diagnostic-headers-vulkan/Testing/Temporary/LastTest.log
+D:\a\openmwcustom\openmwcustom/build-diagnostic-headers-vulkan/baseline-*.log
+D:\a\openmwcustom\openmwcustom/build-v4-cp3b3/CMakeCache.txt
+D:\a\openmwcustom\openmwcustom/build-v4-cp3b3/.ninja_log
+D:\a\openmwcustom\openmwcustom/build-v4-cp3b3/Testing/Temporary/LastTest.log
+D:\a\openmwcustom\openmwcustom/build-v4-cp3b3-real-nif/CMakeCache.txt
+D:\a\openmwcustom\openmwcustom/build-v4-cp3b3-real-nif/.ninja_log
+D:\a\openmwcustom\openmwcustom/build-v4-cp3b3-real-nif/build-output.log
+D:\a\openmwcustom\openmwcustom/build-v4-cp3b3-real-nif/openmw-v4-link-output.log
+D:\a\openmwcustom\openmwcustom/build-v4-cp3b3-real-nif/effect-recovery-build.log
+D:\a\openmwcustom\openmwcustom/build-v4-cp3b3-real-nif/Testing/Temporary/LastTest.log
+D:\a\openmwcustom\openmwcustom/build-v4-cp3b3-real-nif/runtime-diagnostic-evidence/*.jsonl
+D:\a\_temp/cp4f-package-prepare/**/manifest.json
