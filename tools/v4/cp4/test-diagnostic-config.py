@@ -15,7 +15,10 @@ import diagnosticconfig as config
 class ConfigTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='cp4 config ')
-        self.root = Path(self.tmp.name)
+        # Windows TEMP may contain an 8.3 alias (RUNNER~1). The production
+        # preflight resolves directory identities; expectations must compare the
+        # same canonical paths rather than failing on two spellings of one dir.
+        self.root = Path(self.tmp.name).resolve()
         self.package = self.root / 'package'
         self.normal = self.root / 'normal'
         self.default = self.root / 'default'
@@ -32,6 +35,10 @@ class ConfigTests(unittest.TestCase):
         cmd = config.build_command(self.package / 'openmw.exe', self.normal, self.root / 'capture')
         self.assertIn('--replace=config', cmd)
         self.assertEqual(cmd.count(str(self.normal)), 1)
+    def test_explicit_directory_alias_is_canonicalized(self):
+        active, hashes = config.inspect_chain(self.package, self.normal / '..' / 'normal', self.default)
+        self.assertEqual(active, [self.package, self.normal])
+        self.assertIn(str(self.normal / 'openmw.cfg'), hashes)
     def test_empty_save_path_is_never_emitted(self):
         cmd = config.build_command(self.package / 'openmw.exe', self.normal, self.root / 'capture')
         self.assertNotIn('--load-savegame', cmd)

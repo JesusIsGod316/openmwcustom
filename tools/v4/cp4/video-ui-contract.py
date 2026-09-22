@@ -134,13 +134,17 @@ require(decoder, 'options->setValue("image_format", vsg::CoordinateSpace::sRGB)'
 require(decoder, "data->properties.origin = vsg::TOP_LEFT", "VSG MyGUI image orientation")
 
 # Menu buttons, text, loading wallpaper and video are composited through the same
-# Vulkan UI pipeline. The source minimum is straight-alpha blending, no culling,
-# and no depth test/write, with MyGUI's packed ABGR vertex colour interpreted as
-# RGBA8. This is the composition contract needed by button edges and font atlases.
+# Vulkan UI pipeline. Straight-alpha assets are converted to premultiplied
+# output in the shader, while explicitly marked preview images retain their
+# already-premultiplied colour. No culling/depth and packed RGBA8 stay required.
+# The rendered-pixel fixture checks equivalent ordinary button/font composition.
 require(ui, "VK_FORMAT_R8G8B8A8_UNORM, 12", "MyGUI vertex colour format")
 require(ui, "rasterization->cullMode = VK_CULL_MODE_NONE", "MyGUI two-sided composition")
 require(ui, "blendEnable = VK_TRUE", "MyGUI alpha blending")
-require(ui, "srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA", "MyGUI source alpha")
+require(ui, "srcColorBlendFactor = VK_BLEND_FACTOR_ONE", "MyGUI premultiplied source")
+require(ui, "sampling.flags.x > 0.5 ? 1.0 : sampled.a", "explicit texture coverage convention")
+require(ui, "sampled.rgb * coverage * modulation.rgb * modulation.a", "ordinary straight-alpha conversion")
+require(ui, "sampled.a * modulation.a", "widget alpha modulation")
 require(ui, "dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA", "MyGUI destination alpha")
 require(ui, "depth->depthTestEnable = VK_FALSE", "MyGUI depth-test disable")
 require(ui, "depth->depthWriteEnable = VK_FALSE", "MyGUI depth-write disable")

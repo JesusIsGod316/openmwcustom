@@ -53,6 +53,9 @@ namespace VsgMyGui
         vsg::ref_ptr<vsg::Data> data() const { return mData; }
         vsg::ref_ptr<vsg::ImageView> imageView() const { return mImageView; }
         bool externalImage() const noexcept { return static_cast<bool>(mImageView); }
+        bool premultipliedAlpha() const noexcept { return mPremultipliedAlpha; }
+        bool flipY() const noexcept { return mFlipY; }
+        void setSamplingConvention(bool premultipliedAlpha, bool flipY);
         std::uint64_t identity() const noexcept { return mIdentity; }
         std::uint64_t revision() const noexcept { return mRevision; }
 
@@ -73,6 +76,8 @@ namespace VsgMyGui
         MyGUI::TextureUsage mUsage = MyGUI::TextureUsage::Default;
         size_t mNumElemBytes = 0;
         bool mLocked = false;
+        bool mPremultipliedAlpha = false;
+        bool mFlipY = false;
         std::vector<uint8_t> mLockBuffer;
         vsg::ref_ptr<vsg::Data> mData;
         vsg::ref_ptr<vsg::ImageView> mImageView;

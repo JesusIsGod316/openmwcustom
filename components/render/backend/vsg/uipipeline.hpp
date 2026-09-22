@@ -15,9 +15,10 @@ namespace RenderVsg
     // (MW8 P1). MyGUI emits triangles ALREADY in clip space, in a single interleaved vertex stream matching its
     // MyGUI::Vertex: position (3×float) @0, colour (RGBA8 UNORM, packed ColourABGR) @12, uv (2×float) @16 —
     // stride 24. So one vertex binding, three attributes. The vertex shader passes position through with a
-    // Vulkan Y-flip (MyGUI targets a GL Y-up NDC); the fragment shader is texture × vertexColour. Alpha-blended,
+    // Vulkan Y-flip (MyGUI targets a GL Y-up NDC); the fragment shader emits linear premultiplied RGBA. Alpha-blended,
     // depth test/write OFF, cull NONE — the overlay draws over the 3D scene in submission (painter's) order,
-    // exactly MyGUI's layering model. Set 0 binding 0 = combined image sampler (the widget texture / font atlas).
+    // exactly MyGUI's layering model. Set 0 binding 0 = combined image sampler; binding 1 = sampling flags.
+    // Straight-alpha widgets and premultiplied RTTs remain distinct; vertex tint is decoded from sRGB.
     //
     // The layout also declares a 128-byte vertex push-constant range (projection@0 + modelView@64) that the
     // shader ignores: it exists only so the layout stays push-constant-compatible with the mesh pipeline when the
@@ -26,7 +27,7 @@ namespace RenderVsg
     {
         vsg::ref_ptr<vsg::BindGraphicsPipeline> bindPipeline;
         vsg::ref_ptr<vsg::PipelineLayout> pipelineLayout;
-        vsg::ref_ptr<vsg::DescriptorSetLayout> descriptorSetLayout; // set 0: binding 0 combined image sampler
+        vsg::ref_ptr<vsg::DescriptorSetLayout> descriptorSetLayout; // set 0: image sampler @0, sampling flags @1
         vsg::ref_ptr<vsg::Sampler> sampler; // linear, clamp-to-edge, no mips
         vsg::ref_ptr<vsg::Data> whiteTexture; // 1×1 white — solid quads show their vertex colour
 
@@ -43,6 +44,11 @@ namespace RenderVsg
     // compilation fails. VSG compiles the embedded GLSL stages with the same runtime path as the retained
     // compatibility shaders.
     UiPipeline createUiPipeline(uint32_t viewportWidth, uint32_t viewportHeight);
+    // The shader emits premultiplied output for both ordinary straight-alpha
+    // widgets and explicitly premultiplied RTTs, including additive alpha-zero
+    // contributions. A facade's legacy inverted UV is corrected per texture.
+    vsg::ref_ptr<vsg::BindDescriptorSet> createUiTextureBinding(const UiPipeline& pipeline,
+        vsg::ref_ptr<vsg::ImageInfo> image, bool premultipliedAlpha = false, bool flipY = false);
 
     // Verification node (MW8 P1.0): a few translucent, vertex-coloured quads laid out in clip space in MyGUI's
     // interleaved format, drawn through the UI pipeline as an overlay. Proves the pipeline (position/Y-orientation,

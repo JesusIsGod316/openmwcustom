@@ -73,6 +73,9 @@ namespace MWRender
 
         bool isEnabled() const;
 
+        // Main-thread read-only capture of already evaluated canonical sky layers.
+        osg::Group* nativeRenderRoot() const;
+
         bool hasRain() const;
 
         bool getRainRipplesEnabled() const;

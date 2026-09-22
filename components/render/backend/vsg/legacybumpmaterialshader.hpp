@@ -4,6 +4,8 @@
 #include "legacymaterialshader.hpp"
 
 #include <components/rendercore/records.hpp>
+#include <cstddef>
+#include <type_traits>
 
 #include <vsg/core/Value.h>
 #include <vsg/io/Options.h>
@@ -27,14 +29,19 @@ namespace RenderVsg
     // Exact backend representation of NiTexturingProperty's legacy bump facet.
     // matrix is the authored 2x2 value in NIF/OSG scalar order. lumaUv stores
     // x=luma scale, y=luma bias, z=texture-coordinate set, w=reserved.
-    struct alignas(16) LegacyBumpUniform
+    // std140 constrains byte offsets in the uploaded buffer, not host object alignment.
+    // Pinned VSG Object::operator new does not promise over-aligned allocations.
+    // Keep ordinary host alignment and prove every vec4 upload offset explicitly.
+    struct LegacyBumpUniform
     {
         vsg::vec4 matrix{ 1.0f, 0.0f, 0.0f, 1.0f };
         vsg::vec4 lumaUv{ 0.0f, 0.0f, 0.0f, 0.0f };
     };
 
     static_assert(sizeof(LegacyBumpUniform) == sizeof(vsg::vec4) * 2u);
-    static_assert(alignof(LegacyBumpUniform) >= 16u);
+    static_assert(std::is_standard_layout_v<LegacyBumpUniform>);
+    static_assert(offsetof(LegacyBumpUniform, matrix) == 0u * sizeof(vsg::vec4));
+    static_assert(offsetof(LegacyBumpUniform, lumaUv) == 1u * sizeof(vsg::vec4));
 
     using LegacyBumpUniformValue = vsg::Value<LegacyBumpUniform>;
 

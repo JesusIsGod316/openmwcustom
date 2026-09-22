@@ -6,6 +6,7 @@
 #include <bit>
 #include "runtimememorydiagnostics.hpp"
 #include "immediateeffectrealizer.hpp"
+#include "isolatedscene.hpp"
 #include "legacymaterialshader.hpp"
 #include "populationvisibility.hpp"
 #include "staticassetconformance.hpp"
@@ -201,6 +202,7 @@ namespace RenderVsg
         // VSG shadow traversals use ShadowTraversalMask and must never record
         // this color-only pipeline into a depth-only shadow render pass.
         mView->addChild(maskedNode(vsg::MASK_ALL & ~ShadowTraversalMask, mSkyBackdrop.node()));
+        mView->addChild(maskedNode(vsg::MASK_ALL & ~ShadowTraversalMask, mNativeSky.node()));
         mSceneRoot->addChild(mStaticRoot);
         mSceneRoot->addChild(mDynamicRoot);
         const VkExtent2D initialExtent = mWindow->extent2D();
@@ -215,7 +217,9 @@ namespace RenderVsg
             RenderCore::FrameView initial = initialView();
             initial.kind = kind;
             initial.extent = { options.water.targetSize, options.water.targetSize };
-            result.target = createOffscreenRenderTarget(mWindow->getOrCreateDevice(), initial.extent);
+            result.target = createOffscreenRenderTarget(mWindow->getOrCreateDevice(), initial.extent,
+                RenderCore::RenderTargetFormat::Rgba16Float, RenderCore::RenderTargetFormat::Depth32Float,
+                kind == RenderCore::ViewKind::Refraction);
             if (!result.target)
                 return std::nullopt;
             result.camera = FrameCameraObjects::create(initial);
@@ -229,6 +233,8 @@ namespace RenderVsg
             result.view->viewDependentState = result.state;
             result.view->addChild(mAmbientLight);
             result.view->addChild(mSunLight);
+            result.nativeSky = std::make_unique<NativeSky>();
+            result.view->addChild(result.nativeSky->node());
             result.view->addChild(mSceneRoot);
             result.view->bins = createStaticConformanceBins();
             result.target.renderGraph->addChild(result.view);
@@ -244,7 +250,8 @@ namespace RenderVsg
 
         if (options.water.enabled)
             mWaterSurface = WaterSurface::create(mReflectionView ? mReflectionView->target.color : nullptr,
-                mRefractionView ? mRefractionView->target.color : nullptr, options.water.normalMap);
+                mRefractionView ? mRefractionView->target.color : nullptr, options.water.normalMap,
+                mRefractionView ? mRefractionView->target.depth : nullptr);
         if (options.water.enabled && !mWaterSurface)
             throw std::runtime_error("VsgRuntimeHost could not create its CP4E water surface");
         if (mWaterSurface)
@@ -325,6 +332,12 @@ namespace RenderVsg
             mSceneRoot->children.clear();
         if (mMainOnlyRoot)
             mMainOnlyRoot->children.clear();
+        // Destroy view registrations while their compile manager is still alive.
+        if (mGuiLastUse)
+        {
+            (void)mAuxiliaryRetirements.collect(*mGuiLastUse);
+            (void)mIsolatedSceneRetirements.collect(*mGuiLastUse);
+        }
         mAuxiliaryViews.clear();
         mReflectionView.reset();
         mRefractionView.reset();
@@ -361,7 +374,12 @@ namespace RenderVsg
             return false;
         }
 
-        waitIdle();
+        // Isolated preview images/graphs are retained through the last GUI
+        // submission that could sample them. Closing a menu must not idle the GPU.
+        if (!found->isolated)
+            waitIdle();
+        if (found->isolated && mGuiLastUse)
+            mAuxiliaryRetirements.reserveAdditional(1);
         const auto graph = std::find(
             mCommandGraph->children.begin(), mCommandGraph->children.end(), found->commandVisibility);
         if (graph == mCommandGraph->children.end())
@@ -370,6 +388,11 @@ namespace RenderVsg
             return false;
         }
         mCommandGraph->children.erase(graph);
+        if (found->isolated && mGuiLastUse)
+        {
+            if (!mAuxiliaryRetirements.queue(*mGuiLastUse, std::move(*found)))
+                throw std::logic_error("invalid isolated preview retirement frame");
+        }
         mAuxiliaryViews.erase(found);
         return true;
     }
@@ -1204,8 +1227,10 @@ namespace RenderVsg
                     return false;
                 }
 
-                waitIdle();
+                if (!view.isolatedScene)
+                    waitIdle();
                 AuxiliaryViewRuntime created;
+                created.isolated = static_cast<bool>(view.isolatedScene);
                 created.identity = view.identity;
                 created.targetIdentity = view.outputTarget;
                 created.kind = view.kind;
@@ -1236,7 +1261,18 @@ namespace RenderVsg
                     return false;
                 }
                 created.view->viewDependentState = created.state;
-                if (view.kind == RenderCore::ViewKind::Map)
+                if (view.isolatedScene)
+                {
+                    created.ambientLight = vsg::AmbientLight::create();
+                    created.sunLight = vsg::DirectionalLight::create();
+                    created.isolatedHolder = vsg::Group::create();
+                    created.view->addChild(created.ambientLight);
+                    created.view->addChild(created.sunLight);
+                    created.view->addChild(created.isolatedHolder);
+                    // Never attach the gameplay scene, water, or its local lights
+                    // to the inventory/race camera.
+                }
+                else if (view.kind == RenderCore::ViewKind::Map)
                 {
                     // Match LocalMapRenderToTexture::setDefaults(): one fixed
                     // 0.3 ambient plus a fixed 0.7 directional light, no local
@@ -1326,7 +1362,8 @@ namespace RenderVsg
             }
             else if (runtime->targetIdentity != view.outputTarget || runtime->kind != view.kind
                 || runtime->target.extent != view.extent || runtime->colorFormat != target->colorFormat
-                || runtime->depthFormat != target->depthFormat)
+                || runtime->depthFormat != target->depthFormat
+                || runtime->isolated != static_cast<bool>(view.isolatedScene))
             {
                 mLastDiagnostic = "auxiliary view identity changed target shape; restart is required to preserve sampled-image lifetime";
                 return false;
@@ -1337,10 +1374,33 @@ namespace RenderVsg
                 mLastDiagnostic = "persistent auxiliary view lost its command visibility switch";
                 return false;
             }
+            if (view.isolatedScene && runtime->sceneRevision != view.isolatedScene->revision)
+            {
+                auto replacement = realizeIsolatedScene(*view.isolatedScene, mTextureResolver, mSharedObjects, mLastDiagnostic);
+                if (!replacement) return false;
+                const auto compiled = compileForViewerView(*mViewer, *runtime->view, replacement);
+                if (!compiled || !graphicsPipelinesRealizedForView(*replacement, *runtime->view))
+                {
+                    mLastDiagnostic = "isolated preview geometry failed its own framebuffer compile contract";
+                    return false;
+                }
+                if (runtime->isolatedPublished && mGuiLastUse)
+                {
+                    mIsolatedSceneRetirements.reserveAdditional(1);
+                    if (!mIsolatedSceneRetirements.queue(*mGuiLastUse, runtime->isolatedPublished))
+                        throw std::logic_error("invalid isolated preview generation retirement");
+                }
+                runtime->isolatedHolder->children = {replacement};
+                runtime->isolatedPublished = std::move(replacement);
+                runtime->sceneRevision = view.isolatedScene->revision;
+            }
             runtime->active = true;
             runtime->commandVisibility->setAllChildren(true);
             runtime->view->mask = vsg::MASK_ALL;
             runtime->camera.update(view);
+            if (view.isolatedScene)
+                runtime->camera.camera->viewportState->set(0, 0,
+                    view.isolatedScene->viewportExtent.width, view.isolatedScene->viewportExtent.height);
             runtime->view->LODScale = view.lodScale;
             if (strictQcEnabled())
             {
@@ -1385,13 +1445,33 @@ namespace RenderVsg
                 if (runtime->waterSurface)
                     runtime->waterSurface.update(auxiliaryEnvironment, view, frame.simulationTime());
             }
+            if (view.isolatedScene)
+            {
+                const auto& scene = *view.isolatedScene;
+                auxiliaryEnvironment = {};
+                auxiliaryEnvironment.ambient = scene.ambient;
+                auxiliaryEnvironment.sunDiffuse = scene.directionalDiffuse;
+                auxiliaryEnvironment.sunSpecular = scene.directionalDiffuse;
+                auxiliaryEnvironment.sunLightEnabled = true;
+                auxiliaryEnvironment.sunDirection = scene.directionalRay;
+                auxiliaryEnvironment.fogEnabled = false;
+                auxiliaryEnvironment.shadowsEnabled = false;
+                auxiliaryEnvironment.clusteredLocalLighting = false;
+                runtime->ambientLight->color.set(scene.ambient.r, scene.ambient.g, scene.ambient.b);
+                runtime->ambientLight->intensity = 1.0f;
+                runtime->sunLight->color.set(scene.directionalDiffuse.r, scene.directionalDiffuse.g,
+                    scene.directionalDiffuse.b);
+                runtime->sunLight->intensity = 1.0f;
+                runtime->sunLight->direction.set(scene.directionalRay.x, scene.directionalRay.y, scene.directionalRay.z);
+            }
             runtime->state->setRadiusFadeEnabled(auxiliaryEnvironment.localLightRadiusFade);
             runtime->state->setEnvironment(auxiliaryEnvironment, view.current.projection);
             runtime->state->setClipPlane(view.clipPlane, view.current);
-            const RenderCore::Color clear = view.kind == RenderCore::ViewKind::Map
+            const RenderCore::Color clear = view.isolatedScene ? RenderCore::Color{0, 0, 0, 0}
+                : view.kind == RenderCore::ViewKind::Map
                 ? RenderCore::Color{ 0.0f, 0.0f, 0.0f, 1.0f }
                 : (auxiliaryEnvironment.skyEnabled ? auxiliaryEnvironment.skyColor : auxiliaryEnvironment.fogColor);
-            runtime->target.renderGraph->setClearValues(
+            runtime->target.setClearValues(
                 { { clear.r, clear.g, clear.b, clear.a } }, { 0.0f, 0 });
         }
         return true;
@@ -1790,6 +1870,8 @@ namespace RenderVsg
                 mSharedObjects->prune();
             const auto releasedDynamic = mDynamicRetirements.collect(*completion.completedThrough).size();
             const auto releasedGui = mGuiRetirements.collect(*completion.completedThrough).size();
+            (void)mAuxiliaryRetirements.collect(*completion.completedThrough);
+            (void)mIsolatedSceneRetirements.collect(*completion.completedThrough);
             if (Debug::RuntimeDiagnostics::enabled())
             {
                 mDiagnosticReleasedDynamic += releasedDynamic;
@@ -1799,6 +1881,25 @@ namespace RenderVsg
         if (!mCompletion.canRegisterSubmission(frame.frameId()))
             return finish(RenderCore::RenderFrameResult::Failed, "semantic frame id is not submit-safe");
 
+        const auto prepareSky = [&](NativeSky& sky, vsg::View& targetView,
+                                    const RenderCore::FrameView& semantic, bool visible) {
+            return sky.prepare(frame.nativeSky().get(), frame.environment(), semantic, frame.frameId(),
+                mCompletedThrough, mTextureResolver, mSharedObjects,
+                [&](vsg::ref_ptr<vsg::Node> node) {
+                    const auto result = compileForViewerView(*mViewer, targetView, node);
+                    return result && graphicsPipelinesRealizedForView(*node, targetView);
+                }, mLastDiagnostic, visible);
+        };
+        if (!prepareSky(mNativeSky, *mView, *mainView, !guiOnly && frame.environment().skyEnabled))
+            return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
+        if (mReflectionView && !prepareSky(*mReflectionView->nativeSky, *mReflectionView->view,
+                reflectionView ? *reflectionView : *mainView,
+                !guiOnly && reflectionView && frame.environment().skyEnabled && !frame.environment().underwater))
+            return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
+        if (mRefractionView && !prepareSky(*mRefractionView->nativeSky, *mRefractionView->view,
+                refractionView ? *refractionView : *mainView,
+                !guiOnly && refractionView && !frame.environment().interior && frame.environment().underwater))
+            return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
         mCamera.update(*mainView);
         mView->LODScale = mainView->lodScale;
         const RenderCore::FrameEnvironmentState& environment = frame.environment();
@@ -1822,7 +1923,7 @@ namespace RenderVsg
             runtime->state->setClipPlane(view->clipPlane, view->current);
             const RenderCore::Color& auxiliaryClear
                 = environment.skyEnabled && !environment.underwater ? environment.skyColor : environment.fogColor;
-            runtime->target.renderGraph->setClearValues(
+            runtime->target.setClearValues(
                 { { auxiliaryClear.r, auxiliaryClear.g, auxiliaryClear.b, auxiliaryClear.a } }, { 0.0f, 0 });
         };
         updateWaterView(mReflectionView, reflectionView);
@@ -1832,7 +1933,9 @@ namespace RenderVsg
         mSunLight->color.set(environment.sunDiffuse.r, environment.sunDiffuse.g, environment.sunDiffuse.b);
         mSunLight->intensity = environment.sunLightEnabled ? 1.0f : 0.0f;
         mSunLight->direction.set(environment.sunDirection.x, environment.sunDirection.y, environment.sunDirection.z);
-        mSkyBackdrop.update(environment, *mainView);
+        auto backdropEnvironment = environment;
+        if (frame.nativeSky()) backdropEnvironment.skyEnabled = false;
+        mSkyBackdrop.update(backdropEnvironment, *mainView);
         mWaterSurface.update(environment, *mainView, frame.simulationTime());
         if (mOptions.shadows.enabled)
         {
@@ -1889,6 +1992,10 @@ namespace RenderVsg
         if (!guiOnly)
             mDynamicLastUse = frame.frameId();
         mGuiLastUse = frame.frameId();
+        if (!mNativeSky.markSubmitted(frame.frameId())
+            || (mReflectionView && !mReflectionView->nativeSky->markSubmitted(frame.frameId()))
+            || (mRefractionView && !mRefractionView->nativeSky->markSubmitted(frame.frameId())))
+            return finish(RenderCore::RenderFrameResult::Failed, "native sky resource timeline rejected submission");
         if (!submission.success())
             return finish(RenderCore::RenderFrameResult::Failed,
                 "Vulkan presentation failed with VkResult " + std::to_string(submission.present));
@@ -1918,6 +2025,7 @@ namespace RenderVsg
     std::size_t VsgRuntimeHost::pendingRetirementCount() const noexcept
     {
         return mStaticResidency.pendingRetirementCount() + mStaticPopulationResidency.pendingRetirementCount()
-            + mDynamicRetirements.size() + mGuiRetirements.size();
+            + mDynamicRetirements.size() + mGuiRetirements.size()
+            + mAuxiliaryRetirements.size() + mIsolatedSceneRetirements.size();
     }
 }

@@ -278,6 +278,12 @@ namespace MWRender
             return fail(mBridge.lastDiagnostic().empty()
                     ? "authoritative actor state could not produce a compatible V4 frame"
                     : mBridge.lastDiagnostic());
+        if (!mBridge.prepareNativeSkyFrame(rendering, *source))
+            return fail(mBridge.lastDiagnostic());
+        if (!mBridge.prepareNativePreviewFrame(*source))
+            return fail(mBridge.lastDiagnostic().empty()
+                    ? "native character-preview state could not be captured before Lua worker release"
+                    : mBridge.lastDiagnostic());
         if (!mBridge.prepareNativeLocalMapFrame())
             return fail(mBridge.lastDiagnostic().empty()
                     ? "mutable LocalMap state could not be captured before Lua worker release"

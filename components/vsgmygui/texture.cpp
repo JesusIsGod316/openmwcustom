@@ -51,6 +51,7 @@ namespace VsgMyGui
         mNumElemBytes = nb;
         mData = {};
         mImageView = {};
+        mPremultipliedAlpha = mFlipY = false;
         mLockBuffer.clear();
         mLocked = false;
         ++mRevision;
@@ -60,6 +61,7 @@ namespace VsgMyGui
     {
         mData = {};
         mImageView = {};
+        mPremultipliedAlpha = mFlipY = false;
         mLockBuffer.clear();
         mLocked = false;
         mFormat = MyGUI::PixelFormat::Unknow;
@@ -115,6 +117,7 @@ namespace VsgMyGui
         }
         mData = rgba;
         mImageView = {};
+        mPremultipliedAlpha = mFlipY = false;
         ++mRevision;
         mLockBuffer.clear();
         mLocked = false;
@@ -124,6 +127,7 @@ namespace VsgMyGui
     {
         mData = std::move(data);
         mImageView = {};
+        mPremultipliedAlpha = mFlipY = false;
         ++mRevision;
         mUsage = MyGUI::TextureUsage::Static;
         mFormat = MyGUI::PixelFormat::R8G8B8A8;
@@ -160,6 +164,7 @@ namespace VsgMyGui
         mFormat = MyGUI::PixelFormat::R8G8B8A8;
         mNumElemBytes = 4;
         mImageView = {};
+        mPremultipliedAlpha = mFlipY = false;
 
         vsg::ref_ptr<vsg::Data> decoded = mDecoder ? mDecoder(fname) : vsg::ref_ptr<vsg::Data>{};
         if (decoded)
@@ -190,4 +195,12 @@ namespace VsgMyGui
     {
         Log(Debug::Warning) << "VsgMyGui::Texture: setShader is not implemented";
     }
+    void Texture::setSamplingConvention(bool premultipliedAlpha, bool flipY)
+    {
+        if (mPremultipliedAlpha == premultipliedAlpha && mFlipY == flipY) return;
+        mPremultipliedAlpha = premultipliedAlpha;
+        mFlipY = flipY;
+        ++mRevision;
+    }
+
 }

@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 #include <components/debug/debuglog.hpp>
@@ -44,6 +45,7 @@ layout(location = 0) in vec4 fragColor;
 layout(location = 1) in vec2 fragUV;
 
 layout(set = 0, binding = 0) uniform sampler2D tex;
+layout(set = 0, binding = 1, std140) uniform SamplingConvention { vec4 flags; } sampling;
 
 layout(location = 0) out vec4 outColor;
 
@@ -62,7 +64,11 @@ void main()
     // before modulation; alpha remains linear coverage. This is the defined
     // sRGB transfer, not a visual gamma adjustment.
     vec4 modulation = vec4(srgbToLinear(fragColor.rgb), fragColor.a);
-    outColor = texture(tex, fragUV) * modulation;
+    vec2 uv = vec2(fragUV.x, sampling.flags.y > 0.5 ? 1.0 - fragUV.y : fragUV.y);
+    vec4 sampled = texture(tex, uv);
+    float coverage = sampling.flags.x > 0.5 ? 1.0 : sampled.a;
+    outColor = vec4(sampled.rgb * coverage * modulation.rgb * modulation.a,
+        sampled.a * modulation.a);
 }
 )";
 
@@ -97,6 +103,8 @@ void main()
         auto descriptorSetLayout = vsg::DescriptorSetLayout::create(vsg::DescriptorSetLayoutBindings{
             VkDescriptorSetLayoutBinding{
                 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+            VkDescriptorSetLayoutBinding{
+                1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
         });
 
         // The 128-byte vertex push range is unused by the shader (see the header) — it only keeps this layout
@@ -117,10 +125,12 @@ void main()
         auto rasterization = vsg::RasterizationState::create();
         rasterization->cullMode = VK_CULL_MODE_NONE;
 
-        // Straight-alpha over blend; premultiplied alpha for the alpha channel so nested render targets composite.
+        // The shader converts straight-alpha widgets to premultiplied output.
+        // Native preview RTTs are already premultiplied and must not be
+        // multiplied by their coverage again (dark fringes/additive loss).
         auto colorBlend = vsg::ColorBlendState::create();
         colorBlend->attachments[0].blendEnable = VK_TRUE;
-        colorBlend->attachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorBlend->attachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
         colorBlend->attachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         colorBlend->attachments[0].colorBlendOp = VK_BLEND_OP_ADD;
         colorBlend->attachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -171,6 +181,20 @@ void main()
         return result;
     }
 
+    vsg::ref_ptr<vsg::BindDescriptorSet> createUiTextureBinding(const UiPipeline& pipeline,
+        vsg::ref_ptr<vsg::ImageInfo> info, bool premultipliedAlpha, bool flipY)
+    {
+        if (!info || !info->imageView || (info->imageLayout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            && info->imageLayout != VK_IMAGE_LAYOUT_GENERAL))
+            throw std::invalid_argument("UI sampled image requires an explicit readable color layout");
+        auto image = vsg::DescriptorImage::create(info, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        auto convention = vsg::vec4Value::create(vsg::vec4(premultipliedAlpha ? 1.0f : 0.0f,
+            flipY ? 1.0f : 0.0f, 0.0f, 0.0f));
+        auto parameters = vsg::DescriptorBuffer::create(convention, 1, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+        auto descriptors = vsg::DescriptorSet::create(pipeline.descriptorSetLayout, vsg::Descriptors{image, parameters});
+        return vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout, 0, descriptors);
+    }
+
     vsg::ref_ptr<vsg::Node> buildUiTestOverlay(const UiPipeline& ui)
     {
         if (!ui)
@@ -196,10 +220,7 @@ void main()
         std::memcpy(bytes->dataPointer(), verts.data(), count * sizeof(GuiVertex));
 
         auto info = vsg::ImageInfo::create(ui.sampler, ui.whiteTexture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        auto image = vsg::DescriptorImage::create(info, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-        auto descriptorSet = vsg::DescriptorSet::create(ui.descriptorSetLayout, vsg::Descriptors{ image });
-        auto bindDescriptorSet
-            = vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, ui.pipelineLayout, 0, descriptorSet);
+        auto bindDescriptorSet = createUiTextureBinding(ui, info);
 
         auto stateGroup = vsg::StateGroup::create();
         stateGroup->add(ui.bindPipeline);

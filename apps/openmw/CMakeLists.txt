@@ -319,6 +319,7 @@ if (WIN32 AND BUILD_OPENMW)
         ../../tools/v4/cp4/run-runtime-qc.ps1
         ../../tools/v4/cp4/run-memory-qc.ps1
         ../../tools/v4/cp4/HOST-MEMORY-TERRAIN-REPAIR.md
+        ../../tools/v4/cp4/RENDERING-REPAIR.md
         ../../tools/v4/cp4/RUNTIME-DIAGNOSTICS.md
         DESTINATION ".")
 endif()
@@ -336,6 +337,16 @@ if (OPENMW_V4_BUILD_RECOVERY_TESTS)
     add_executable(openmw-v4-effect-uv-tests ../../tools/v4/cp4/effect-uv-tests.cpp)
     target_link_libraries(openmw-v4-effect-uv-tests PRIVATE openmw-lib)
     add_test(NAME openmw-v4-effect-uv-tests COMMAND openmw-v4-effect-uv-tests)
+    add_executable(openmw-v4-rendering-uniform-tests ../../tools/v4/cp4/rendering-uniform-tests.cpp)
+    target_link_libraries(openmw-v4-rendering-uniform-tests PRIVATE openmw-lib)
+    add_test(NAME openmw-v4-rendering-uniform-tests COMMAND openmw-v4-rendering-uniform-tests)
+    add_executable(openmw-v4-rendering-capture-tests ../../tools/v4/cp4/rendering-capture-tests.cpp)
+    target_link_libraries(openmw-v4-rendering-capture-tests PRIVATE openmw-lib)
+    add_test(NAME openmw-v4-rendering-capture-tests COMMAND openmw-v4-rendering-capture-tests)
+    # Headless Vulkan pixel suite: compile on Windows, execute only on an explicitly
+    # provisioned Vulkan host. It creates no gameplay window and reads no assets/saves.
+    add_executable(openmw-v4-rendering-pixel-tests ../../tools/v4/cp4/rendering-pixel-tests.cpp)
+    target_link_libraries(openmw-v4-rendering-pixel-tests PRIVATE openmw-lib)
     foreach(pressure_case host-memory cache-pressure)
         add_executable(openmw-v4-${pressure_case}-tests ../../tools/v4/cp4/${pressure_case}-tests.cpp)
         target_link_libraries(openmw-v4-${pressure_case}-tests PRIVATE openmw-lib)

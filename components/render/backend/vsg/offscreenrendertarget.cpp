@@ -4,6 +4,8 @@
 #include <vsg/state/Image.h>
 #include <vsg/state/ImageView.h>
 #include <vsg/vk/Framebuffer.h>
+#include <vsg/vk/Device.h>
+#include <vsg/vk/PhysicalDevice.h>
 #include <vsg/vk/RenderPass.h>
 
 namespace RenderVsg
@@ -39,18 +41,38 @@ namespace RenderVsg
         }
     }
 
+    void OffscreenRenderTarget::setClearValues(VkClearColorValue clearColor, VkClearDepthStencilValue clearDepth)
+    {
+        if (!renderGraph)
+            return;
+        renderGraph->clearValues.resize(depthFormat ? 2u : 1u);
+        renderGraph->clearValues[0].color = clearColor;
+        if (depthFormat)
+            renderGraph->clearValues[1].depthStencil = clearDepth;
+    }
+
     OffscreenRenderTarget createOffscreenRenderTarget(vsg::Device* device, RenderCore::Extent2D extent,
         RenderCore::RenderTargetFormat requestedColorFormat,
-        std::optional<RenderCore::RenderTargetFormat> requestedDepthFormat)
+        std::optional<RenderCore::RenderTargetFormat> requestedDepthFormat, bool sampleDepth)
     {
         OffscreenRenderTarget result;
-        if (!device || !extent.valid())
+        if (!device || !extent.valid() || (sampleDepth && !requestedDepthFormat))
             return result;
 
         const VkFormat colorVk = colorFormat(requestedColorFormat);
         if (colorVk == VK_FORMAT_UNDEFINED
             || (requestedDepthFormat && *requestedDepthFormat != RenderCore::RenderTargetFormat::Depth32Float))
             return result;
+
+        if (sampleDepth)
+        {
+            VkFormatProperties properties{};
+            vkGetPhysicalDeviceFormatProperties(device->getPhysicalDevice()->vk(), VK_FORMAT_D32_SFLOAT, &properties);
+            constexpr VkFormatFeatureFlags required
+                = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+            if ((properties.optimalTilingFeatures & required) != required)
+                return {};
+        }
 
         // Persistent auxiliary surfaces can be sampled by MyGUI and, for map
         // persistence, copied to a host-visible staging buffer after GPU
@@ -66,7 +88,8 @@ namespace RenderVsg
         if (requestedDepthFormat)
         {
             result.depth = createAttachment(
-                device, extent, depthVk, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+                device, extent, depthVk, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                    | (sampleDepth ? VK_IMAGE_USAGE_SAMPLED_BIT : VkImageUsageFlagBits{}), VK_IMAGE_ASPECT_DEPTH_BIT);
             if (!result.depth)
                 return {};
         }
@@ -85,21 +108,28 @@ namespace RenderVsg
         {
             vsg::AttachmentDescription depth = vsg::defaultDepthAttachment(depthVk);
             depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depth.storeOp = sampleDepth ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
             depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depth.finalLayout = sampleDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                           : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             attachments.push_back(depth);
             imageViews.push_back(result.depth);
             subpass.depthStencilAttachments
                 = { { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT } };
         }
 
+        // A sampled depth attachment has both early and late depth writes.
+        // Cover them before the water pass samples, and cover next-frame reuse.
+        const VkPipelineStageFlags writes = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+            | (sampleDepth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT : 0u);
+        const VkAccessFlags writeAccess = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+            | (sampleDepth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : VkAccessFlagBits{});
         vsg::RenderPass::Dependencies dependencies{
             { VK_SUBPASS_EXTERNAL, 0, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_SHADER_READ_BIT,
-                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_DEPENDENCY_BY_REGION_BIT },
-            { 0, VK_SUBPASS_EXTERNAL, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                writes, VK_ACCESS_SHADER_READ_BIT,
+                writeAccess, VK_DEPENDENCY_BY_REGION_BIT },
+            { 0, VK_SUBPASS_EXTERNAL, writes,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, writeAccess,
                 VK_ACCESS_SHADER_READ_BIT, VK_DEPENDENCY_BY_REGION_BIT },
         };
         auto renderPass = vsg::RenderPass::create(
@@ -111,10 +141,10 @@ namespace RenderVsg
         result.renderGraph = vsg::RenderGraph::create();
         result.renderGraph->framebuffer = std::move(framebuffer);
         result.renderGraph->renderArea = { { 0, 0 }, { extent.width, extent.height } };
-        result.renderGraph->setClearValues({ { 0.0f, 0.0f, 0.0f, 1.0f } }, { 0.0f, 0 });
         result.extent = extent;
         result.colorFormat = requestedColorFormat;
         result.depthFormat = requestedDepthFormat;
+        result.setClearValues({ { 0.0f, 0.0f, 0.0f, 1.0f } }, { 0.0f, 0 });
         return result;
     }
 }

@@ -4,6 +4,8 @@
 #include "legacymaterialshader.hpp"
 
 #include <components/rendercore/records.hpp>
+#include <cstddef>
+#include <type_traits>
 
 #include <vsg/core/Value.h>
 #include <vsg/io/Options.h>
@@ -24,7 +26,10 @@ namespace RenderVsg
     inline constexpr std::uint32_t EnchantedEnvironmentTextureBinding = 14u;
     inline constexpr std::uint32_t EnchantedEnvironmentUniformBinding = 15u;
 
-    struct alignas(16) EnchantedEnvironmentUniform
+    // std140 constrains byte offsets in the uploaded buffer, not host object alignment.
+    // Pinned VSG Object::operator new does not promise over-aligned allocations.
+    // Keep ordinary host alignment and prove every vec4 upload offset explicitly.
+    struct EnchantedEnvironmentUniform
     {
         // xyz is the realized legacy envMapColor multiplied by the neutral
         // environment-map strength. Alpha remains available for source parity
@@ -37,7 +42,9 @@ namespace RenderVsg
     };
 
     static_assert(sizeof(EnchantedEnvironmentUniform) == sizeof(vsg::vec4) * 2u);
-    static_assert(alignof(EnchantedEnvironmentUniform) >= 16u);
+    static_assert(std::is_standard_layout_v<EnchantedEnvironmentUniform>);
+    static_assert(offsetof(EnchantedEnvironmentUniform, colorStrength) == 0u * sizeof(vsg::vec4));
+    static_assert(offsetof(EnchantedEnvironmentUniform, effects) == 1u * sizeof(vsg::vec4));
 
     using EnchantedEnvironmentUniformValue = vsg::Value<EnchantedEnvironmentUniform>;
 

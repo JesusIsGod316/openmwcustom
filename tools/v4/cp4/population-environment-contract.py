@@ -43,7 +43,10 @@ require(
     "maskedNode(placementMask(castsShadow,",
     "populationWithinMaximumDistance(world, plan, mainView.current.worldPosition)",
     "environment.skyEnabled ? environment.skyColor : environment.fogColor",
-    "mSkyBackdrop.update(environment, *mainView)",
+    "if (frame.nativeSky()) backdropEnvironment.skyEnabled = false;",
+    "mSkyBackdrop.update(backdropEnvironment, *mainView)",
+    "prepareSky(mNativeSky, *mView, *mainView",
+    "maskedNode(vsg::MASK_ALL & ~ShadowTraversalMask, mNativeSky.node())",
     "maskedNode(vsg::MASK_ALL & ~ShadowTraversalMask, mSkyBackdrop.node())",
 )
 require(

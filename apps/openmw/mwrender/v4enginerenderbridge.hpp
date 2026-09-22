@@ -45,6 +45,7 @@ namespace MWWorld
 
 namespace MWRender
 {
+    class V4SkyCapture;
     class RenderingManager;
     // Build-gated application bridge for the distinct VSG route. It creates the
     // session directly from OpenMW's winning VFS, hands the world an observer
@@ -84,6 +85,9 @@ namespace MWRender
             const std::filesystem::path& logName = {});
         [[nodiscard]] bool captureDynamicFrameState(const RenderingManager& rendering, V4MainFrameSource& source);
         [[nodiscard]] bool prepareNativeLocalMapFrame();
+        bool prepareNativeSkyFrame(const RenderingManager& rendering, V4MainFrameSource& frame);
+        [[nodiscard]] bool prepareNativePreviewFrame(V4MainFrameSource& source);
+        void nativePreviewFramePresented(const V4MainFrameSource& source);
         [[nodiscard]] bool prepareGuiFrame();
         [[nodiscard]] bool synchronizeProjectiles(V4MainFrameSource& source);
         [[nodiscard]] bool synchronizeExteriorTerrain(const RenderingManager& rendering, const MWWorld::Cell& cell);
@@ -132,6 +136,16 @@ namespace MWRender
         RenderCore::WorldEpoch mProjectileEpoch;
         std::set<std::string, std::less<>> mGroundcoverCells;
         RenderCore::WorldEpoch mGroundcoverEpoch;
+
+        struct NativePreviewEntry
+        {
+            std::string textureName;
+            std::uint64_t renderedRevision = 0;
+            bool published = false;
+        };
+        std::map<std::uint32_t, NativePreviewEntry> mNativePreviewEntries;
+        std::shared_ptr<V4SkyCapture> mNativeSkyCapture;
+        bool mReportedSkyOcclusionDeferral = false;
 
         struct NativeMapUiEntry
         {

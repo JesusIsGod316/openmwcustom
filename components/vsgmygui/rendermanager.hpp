@@ -51,7 +51,8 @@ namespace VsgMyGui
         // Publish or replace a named, sampled VSG image as a native MyGUI texture. The render target stays owned by
         // the VSG runtime; collected GUI batches retain a strong ImageView reference instead of a raw Texture pointer.
         Texture* setExternalTexture(const std::string& name, vsg::ref_ptr<vsg::ImageView> imageView,
-            int width, int height, MyGUI::PixelFormat format = MyGUI::PixelFormat::R8G8B8A8);
+            int width, int height, MyGUI::PixelFormat format = MyGUI::PixelFormat::R8G8B8A8,
+            bool premultipliedAlpha = false, bool flipY = false);
 
         // Publish CPU-authored RGBA8 content without passing an OSG texture across
         // the VSG/MyGUI boundary. Used by persistent overlays such as local-map
@@ -78,6 +79,8 @@ namespace VsgMyGui
             vsg::ref_ptr<vsg::ImageView> imageView;
             std::uint64_t identity = 0;
             std::uint64_t revision = 0;
+            bool premultipliedAlpha = false;
+            bool flipY = false;
         };
 
         struct Batch
