@@ -23,7 +23,7 @@ jobs:
           git archive --format=tar HEAD | gzip -1 > "$RUNNER_TEMP/cp4f-uv-workspace/source.tar.gz"
           sudo apt-get update -qq
           cd "$RUNNER_TEMP/cp4f-uv-workspace/debs"
-          apt-get download libopenscenegraph-dev libopenscenegraph161 libopenthreads-dev libopenthreads21 libglm-dev libglu1-mesa
+          apt-get download libopenscenegraph-dev libopenscenegraph161 libopenthreads-dev libopenthreads21 libglm-dev libglu1-mesa libgl-dev libglx-dev libglvnd-core-dev
           cd ..
           sha256sum source.tar.gz debs/*.deb > SHA256SUMS
           printf '%s\n' 9a29f75410b341b786c052dc742e0fb7367fe008 > SOURCE_COMMIT
