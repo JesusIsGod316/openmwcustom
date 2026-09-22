@@ -1,0 +1,52 @@
+name: CP4F diagnostic dependency repair
+on:
+  push:
+    branches: [v4.0-cp4f-diagnostics-recovery-20260922]
+    paths: [.github/workflows/v4-cp4f-diagnostic-link-repair.yml]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Apply exact guarded dependency ownership change
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          def update(path, before, old, new, after):
+              p=Path(path); data=p.read_bytes()
+              def blob(b): return hashlib.sha1(b'blob '+str(len(b)).encode()+b'\0'+b).hexdigest()
+              assert blob(data)==before, (path, 'unexpected source')
+              text=data.decode(); assert text.count(old)==1
+              result=text.replace(old,new).encode()
+              assert blob(result)==after, (path, 'unexpected result')
+              p.write_bytes(result)
+          update('apps/openmw/CMakeLists.txt','88c5eb15ec908473b552a4b83c1bae50b260503c',
+              'if (WIN32)\n    target_link_libraries(openmw-lib PRIVATE psapi)\nendif()\n\n','',
+              'eef8f8ea27eda5dee8ad8eb6f2a002f49420378f')
+          update('components/CMakeLists.txt','4a378351f71ff8ebfb27a0eb343c4eaa374eb341',
+              'if (WIN32)\n    target_link_libraries(components shlwapi)\nendif()',
+              "if (WIN32)\n    # The shared diagnostic recorder is instantiated by components and tools,\n    # not just openmw-lib. Preserve this target's existing plain link signature.\n    target_link_libraries(components shlwapi psapi)\nendif()",
+              '6673febf242139ae28c5eea895b3ce0fc30a4131')
+          PY
+      - name: Reproduce old failure and validate both link contracts
+        run: python3 tools/v4/cp4/test-diagnostic-linkage.py
+      - name: Publish checked CMake files only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git add apps/openmw/CMakeLists.txt components/CMakeLists.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'CP4F: own Windows memory diagnostics linkage in shared components'
+          git push origin HEAD:v4.0-cp4f-diagnostics-recovery-20260922
+          git rev-parse HEAD
