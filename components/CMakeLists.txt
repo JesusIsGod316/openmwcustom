@@ -667,7 +667,9 @@ if (OSG_STATIC AND CMAKE_SYSTEM_NAME MATCHES "Linux")
 endif()
 
 if (WIN32)
-    target_link_libraries(components shlwapi)
+    # The shared diagnostic recorder is instantiated by components and tools,
+    # not just openmw-lib. Preserve this target's existing plain link signature.
+    target_link_libraries(components shlwapi psapi)
 endif()
 
 # Fix for not visible pthreads functions for linker with glibc 2.15
