@@ -46,6 +46,16 @@ jobs:
           subprocess.run(['git','apply',str(out/'rendering.patch')],check=True)
           print('Exact 53-file rendering patch verified and applied')
           PY
+      - name: Validate checksum syntax before dependency installation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib, re
+          text=pathlib.Path('.github/workflows/v4-cp4f-render-validation.yml').read_text()
+          hashes=re.findall(r'echo "([0-9a-f]+)  \$RUNNER_TEMP/',text)
+          assert hashes and all(len(value)==64 for value in hashes), 'Malformed pinned SHA256'
+          print('Pinned archive SHA256 syntax: PASS')
+          PY
       - name: Install native test dependencies and software Vulkan
         run: |
           sudo apt-get update -qq
@@ -57,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --location --retry 2 -H "Authorization: Bearer $GH_TOKEN" -o "$RUNNER_TEMP/render-sdk.zip" https://api.github.com/repos/JesusIsGod316/openmwcustom/actions/artifacts/10721042331/zip
-          echo "759107248040e002f5f4a7d2bed00082b6a7e9e3afc1ddb0076cf247204e0  $RUNNER_TEMP/render-sdk.zip" | sha256sum --check
+          echo "759107248040e002f5f4a7d2bed00082b6a7ea7e9e3afc1ddb0076cf247204e0  $RUNNER_TEMP/render-sdk.zip" | sha256sum --check
           mkdir -p "$RUNNER_TEMP/render-sdk"
           unzip -q "$RUNNER_TEMP/render-sdk.zip" -d "$RUNNER_TEMP/render-sdk"
           tar -xzf "$RUNNER_TEMP/render-sdk/cp4f-render-test-deps.tar.gz" -C "$RUNNER_TEMP/render-sdk"
