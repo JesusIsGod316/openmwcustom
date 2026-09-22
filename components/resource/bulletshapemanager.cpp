@@ -187,6 +187,12 @@ namespace Resource
         return osg::ref_ptr<BulletShapeInstance>();
     }
 
+    std::size_t BulletShapeManager::trimCache(std::size_t maximum)
+    {
+        const auto instances = mInstanceCache->trimUnused(maximum);
+        return instances + ResourceManager::trimCache(maximum);
+    }
+
     void BulletShapeManager::updateCache(double referenceTime)
     {
         ResourceManager::updateCache(referenceTime);

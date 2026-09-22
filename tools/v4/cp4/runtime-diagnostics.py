@@ -52,7 +52,7 @@ def analyze(path):
     ended = False
     schemas = ('os_memory', 'cache', 'cache_pool', 'prepared_cache', 'preload_cache',
                'neutral_memory', 'vulkan_heap', 'vsg_pool', 'resident_versions', 'retirement',
-               'effect_rebuild_count', 'probe_cost')
+               'effect_rebuild_count', 'probe_cost', 'host_memory_trim', 'cache_pressure')
     for row in bounded_rows(path, counts):
         counts['recognized_rows'] += 1
         kind = row['type']
@@ -66,6 +66,8 @@ def analyze(path):
                 coverage.add(f'{owner}: {identity}')
             else:
                 counts['summary_keys_limited'] += 1
+        if kind == 'host_memory_trim':
+            counts['cache_entries_trimmed'] += number(row, 'removed_entries') or 0
         if kind == 'configuration':
             if len(config) < 32:
                 config.append(row)
@@ -97,6 +99,11 @@ def analyze(path):
                                 'process_valid' if field in ('private_commit_bytes', 'working_set_bytes',
                                     'peak_working_set_bytes', 'page_fault_count') else None)
                     if required and row.get(required) != 1:
+                        continue
+                if kind == 'host_memory_trim':
+                    validity = {'physical_available_bytes': 'physical_valid', 'private_commit_bytes': 'process_valid',
+                                'commit_available_bytes': 'commit_valid'}.get(field)
+                    if validity and row.get(validity) != 1:
                         continue
                 if kind == 'vulkan_heap' and field in ('budget_bytes', 'usage_bytes') and row.get('budget_available') != 1:
                     continue
@@ -145,6 +152,9 @@ def analyze(path):
         findings.append('COVERAGE GAP: bounded analyzer identity/operation capacity was reached.')
     if not counts['os_memory']:
         findings.append('COVERAGE GAP: OS memory measurements unavailable.')
+    if counts['host_memory_trim']:
+        findings.append(f"HOST RETENTION: {counts['host_memory_trim']} pressure-trim sweeps removed "
+                        f"{counts['cache_entries_trimmed']} cache/pool entries. This is not a count of unique assets or bytes returned to the OS.")
     if counts['ui_missing_alias']:
         findings.append('OBSERVED: MyGUI attempted to render an unresolved native texture alias; inspect the recorded alias/preview path.')
     if operations:

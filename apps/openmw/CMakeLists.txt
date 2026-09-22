@@ -312,10 +312,13 @@ if (WIN32 AND BUILD_OPENMW)
     # They never run during install, never change cache policy, and never load a save.
     INSTALL(FILES
         ../../tools/v4/cp4/gameplay-diagnostics.py
+        ../../tools/v4/cp4/diagnosticconfig.py
+        ../../tools/v4/cp4/Start-CP4F-Test.cmd
         ../../tools/v4/cp4/runtime-diagnostics.py
         ../../tools/v4/cp4/shader_resources.py
         ../../tools/v4/cp4/run-runtime-qc.ps1
         ../../tools/v4/cp4/run-memory-qc.ps1
+        ../../tools/v4/cp4/HOST-MEMORY-TERRAIN-REPAIR.md
         ../../tools/v4/cp4/RUNTIME-DIAGNOSTICS.md
         DESTINATION ".")
 endif()
@@ -333,6 +336,11 @@ if (OPENMW_V4_BUILD_RECOVERY_TESTS)
     add_executable(openmw-v4-effect-uv-tests ../../tools/v4/cp4/effect-uv-tests.cpp)
     target_link_libraries(openmw-v4-effect-uv-tests PRIVATE openmw-lib)
     add_test(NAME openmw-v4-effect-uv-tests COMMAND openmw-v4-effect-uv-tests)
+    foreach(pressure_case host-memory cache-pressure)
+        add_executable(openmw-v4-${pressure_case}-tests ../../tools/v4/cp4/${pressure_case}-tests.cpp)
+        target_link_libraries(openmw-v4-${pressure_case}-tests PRIVATE openmw-lib)
+        add_test(NAME openmw-v4-${pressure_case}-tests COMMAND openmw-v4-${pressure_case}-tests)
+    endforeach()
     add_executable(openmw-v4-runtime-diagnostics-tests ../../tools/v4/cp4/runtime-diagnostics-tests.cpp)
     target_link_libraries(openmw-v4-runtime-diagnostics-tests PRIVATE openmw-lib)
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/runtime-diagnostic-evidence")

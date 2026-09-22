@@ -133,8 +133,11 @@ class ReportTests(unittest.TestCase):
                 'files': {'fixture.vert': diagnostics.sha256(shader_dir / 'fixture.vert')}}))
             user = base / 'normal config'
             user.mkdir()
-            for name in ('settings.cfg', 'openmw.cfg', 'openmw-crash.dmp'):
-                (user / name).write_bytes(b'original')
+            (base / 'openmw.cfg').write_text('config="?userconfig?"\n')
+            originals = {'settings.cfg': b'[Video]\nrenderer backend=opengl\n',
+                         'openmw.cfg': b'content=Morrowind.esm\n', 'openmw-crash.dmp': b'original'}
+            for name, content in originals.items():
+                (user / name).write_bytes(content)
             args = SimpleNamespace(executable=str(exe), user_config=str(user), evidence_root=str(base / 'evidence'),
                                    dll_directory=[], osg_library_path=None, source_head='fixture', source_diff_sha256='fixture')
             class Process:
@@ -145,27 +148,33 @@ class ReportTests(unittest.TestCase):
                 diagnostics.launch(args)
             command = start.call_args.args[0]
             self.assertEqual(command[0], str(exe))
-            self.assertEqual(len(command), 13)
-            self.assertEqual(command[1], '--config')
-            self.assertEqual(command[2], str(user))
-            self.assertEqual(command[3], '--config')
-            self.assertEqual(command[5], '--user-data')
-            self.assertEqual(command[6], str(Path(command[4]) / 'user-data'))
-            self.assertEqual(command[7:9], ['--load-savegame', ''])
-            self.assertEqual(command[9:], ['--skip-menu=false', '--new-game=false', '--script-run', ''])
+            self.assertEqual(len(command), 14)
+            self.assertEqual(command[1], '--replace=config')
+            self.assertEqual(command[2:5], ['--config', str(user), '--config'])
+            self.assertEqual(command.count(str(user)), 1)
+            self.assertEqual(command[6], '--user-data')
+            self.assertEqual(command[7], str(Path(command[5]) / 'user-data'))
+            self.assertEqual(command[8:10], ['--resources', str(base / 'resources')])
+            self.assertNotIn('--load-savegame', command)
+            self.assertEqual(command[10:], ['--skip-menu=false', '--new-game=false', '--script-run', ''])
             self.assertEqual(start.call_args.kwargs['env']['OPENMW_RUNTIME_DIAGNOSTICS'], 'standard')
-            self.assertTrue((Path(command[4]) / 'user-data').is_dir())
-            self.assertIn('user-data=', (Path(command[4]) / 'openmw.cfg').read_text())
-            self.assertTrue(Path(command[4]).with_suffix('.zip').is_file())
-            for name in ('settings.cfg', 'openmw.cfg', 'openmw-crash.dmp'):
-                self.assertEqual((user / name).read_bytes(), b'original')
-            manifest = json.loads((Path(command[4]) / 'manifest.json').read_text())
+            self.assertTrue((Path(command[5]) / 'user-data').is_dir())
+            self.assertIn('user-data=', (Path(command[5]) / 'openmw.cfg').read_text())
+            self.assertTrue(Path(command[5]).with_suffix('.zip').is_file())
+            for name, content in originals.items():
+                self.assertEqual((user / name).read_bytes(), content)
+            manifest = json.loads((Path(command[5]) / 'manifest.json').read_text())
             self.assertEqual(manifest['state'], 'exited')
             self.assertEqual(manifest['diagnostics'], 'standard')
             self.assertFalse(manifest['regular_saves_copied'])
             self.assertTrue(manifest['original_config_unchanged']['settings.cfg'])
+            self.assertTrue(all(manifest['original_chain_unchanged'].values()))
+            private_settings = (Path(command[5]) / 'settings.cfg').read_text()
+            self.assertIn('renderer backend = vulkan', private_settings)
+            self.assertNotIn('[V3]', private_settings)
+            self.assertFalse((Path(command[5]) / 'user-data/saves').exists())
             import zipfile
-            with zipfile.ZipFile(Path(command[4]).with_suffix('.zip')) as bundle:
+            with zipfile.ZipFile(Path(command[5]).with_suffix('.zip')) as bundle:
                 self.assertTrue(set(bundle.namelist()).issubset({
                     'manifest.json', 'console.log', 'openmw.log', 'gameplay.jsonl', 'runtime.jsonl',
                     'report.md', 'report.json', 'memory-report.md', 'memory-report.json'}))

@@ -47,7 +47,7 @@ namespace MWWorld
     {
     public:
         CellPreloader(Resource::ResourceSystem* resourceSystem, Resource::BulletShapeManager* bulletShapeManager,
-            Terrain::World* terrain, MWRender::LandManager* landManager);
+            Terrain::World* terrain, MWRender::LandManager* landManager, bool useLegacyTerrain = true);
         ~CellPreloader();
 
         /// Ask a background thread to preload rendering meshes and collision shapes for objects in this cell.
@@ -81,6 +81,7 @@ namespace MWWorld
 
         void setWorkQueue(osg::ref_ptr<SceneUtil::WorkQueue> workQueue);
 
+        bool usesLegacyTerrain() const noexcept { return mUseLegacyTerrain; }
         void setTerrainPreloadPositions(std::span<const PositionCellGrid> positions);
 
         void syncTerrainLoad(Loading::Listener& listener);
@@ -104,6 +105,7 @@ namespace MWWorld
         std::size_t mMinCacheSize = 0;
         std::size_t mMaxCacheSize = 0;
         bool mPreloadInstances;
+        const bool mUseLegacyTerrain;
 
         double mLastResourceCacheUpdate;
 
@@ -139,6 +141,7 @@ namespace MWWorld
         std::size_t mAdded = 0;
         std::size_t mExpired = 0;
         std::size_t mLoaded = 0;
+        std::size_t mPressureReleased = 0;
 
         std::size_t mV311TerrainTargetCompleted = 0;
         std::size_t mV311TerrainTargetReplaced = 0;

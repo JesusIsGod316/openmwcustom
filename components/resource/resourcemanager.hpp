@@ -1,6 +1,8 @@
 #ifndef OPENMW_COMPONENTS_RESOURCE_MANAGER_H
 #define OPENMW_COMPONENTS_RESOURCE_MANAGER_H
 
+#include <cstddef>
+
 #include <osg/ref_ptr>
 #include <typeinfo>
 
@@ -32,6 +34,8 @@ namespace Resource
         virtual void reportStats(unsigned int frameNumber, osg::Stats* stats) const = 0;
         virtual void releaseGLObjects(osg::State* state) = 0;
         virtual void reportRuntimeDiagnostics(double) const noexcept {}
+        // Count-limited optional retention trim; live references remain owners.
+        virtual std::size_t trimCache(std::size_t) { return 0; }
     };
 
     /// @brief Base class for managers that require a virtual file system and object cache.
@@ -63,6 +67,8 @@ namespace Resource
         {
             mCache->update(referenceTime, expiryDelay);
         }
+
+        std::size_t trimCache(std::size_t maximum) override { return mCache->trimUnused(maximum); }
 
         /// Clear all cache entries.
         void clearCache() override { mCache->clear(); }

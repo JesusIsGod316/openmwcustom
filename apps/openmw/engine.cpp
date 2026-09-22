@@ -1400,6 +1400,16 @@ void OMW::Engine::prepareEngine()
                      << static_cast<int>(Settings::cells().mV32GpuHardBudgetMb) << " MiB";
     mResourceSystem = std::make_unique<Resource::ResourceSystem>(mVFS.get(), effectiveResourceCacheExpiry,
         &mEncoder.get()->getStatelessEncoder(), Settings::RamCache::retainNifFiles());
+    // Retain the useful V3 policy with a pressure escape hatch on the Vulkan
+    // route. Same-executable control restores the pre-repair retention policy.
+    const bool hostMemoryBudget = mUseVulkanRenderer
+        && std::getenv("OPENMW_V4_LEGACY_HOST_RETENTION_CONTROL") == nullptr;
+    mResourceSystem->setHostMemoryBudgetEnabled(hostMemoryBudget);
+    Log(Debug::Info) << "V4 pressure-aware host retention: " << (hostMemoryBudget ? "on" : "legacy control");
+    if (Debug::RuntimeDiagnostics::enabled())
+        Debug::RuntimeDiagnostics::recordEvent("configuration", "host_memory_budget", {},
+            {{"enabled", hostMemoryBudget}, {"private_soft_percent", 75}, {"physical_reserve_denominator", 8},
+                {"recovery_ms", Resource::HostMemoryPolicy::RecoveryMilliseconds}});
     mResourceSystem->getSceneManager()->setPreparedInstanceCacheLimit(
         Settings::cells().mV3PreparedInstanceCache
             ? static_cast<std::size_t>(Settings::cells().mV3PreparedInstanceCacheMax)

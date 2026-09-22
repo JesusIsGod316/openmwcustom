@@ -1,31 +1,41 @@
 # CP4F runtime ownership diagnostics
 
-This is an optional, observational facility compiled into the optimized engine.
-It does not disable RAM overdrive, trim caches, change expiry, change renderer
-selection, force GPU completion, alter actor/effect reuse, or load a save.
-The existing actor-plan, effect-bounds, full-publication and water controls remain
-available. Keep this distinct from a future pressure-aware cache policy.
+The optional recorder remains observational: turning it off does not disable the
+new host-retention policy. The combined repair has independent same-executable
+controls for memory retention and legacy terrain preparation; see
+`HOST-MEMORY-TERRAIN-REPAIR.md`. No performance or gameplay acceptance is implied.
 
 ## Manual use (Windows)
 
-Use the helper beside the packaged `openmw.exe`:
+Double-click **Start-CP4F-Test.cmd** beside the packaged `openmw.exe`. This uses
+Python 3.11+, checks the current package identity, displays the private capture
+folder, and asks for confirmation before launching. It does not require a
+permanent PowerShell execution-policy change. An alternate configuration is:
 
 ```powershell
-.\run-memory-qc.ps1 -UserConfig 'C:\Users\LSCha\Documents\My Games\OpenMW'
+.\Start-CP4F-Test.cmd --user-config 'C:\Users\LSCha\Documents\My Games\OpenMW'
 ```
 
-`-Executable`, `-EvidenceRoot`, `-PythonExecutable`, `-SourceHead` can override
-locations/provenance. Python 3.11+ is required for reporting/packaging, not for the
-engine's recorder. The helper waits for natural exit and never kills the game.
-Normal content configuration is inherited, but writable config/logs **and
-user-data/saves/screenshots** are isolated. It never copies or loads regular saves.
-The command line explicitly disables inherited save autoload, skip-menu/new-game
-autostart and startup console scripts. Choose **New Game** manually. Keep the same content, settings, 1920x1080 windowed
-profile and New Game -> ship -> Seyda Neen -> Excise Office route for comparison.
-The helper does not silently change resolution, renderer or cache settings.
-Check the game's logged configuration paths and renderer before interpreting it.
+The packaged `run-memory-qc.ps1` also uses the corrected launch implementation.
+The `.cmd` default places captures under the build's `Test-Results`. Both helpers
+wait for natural exit and never kill the game. The command selects **Vulkan,
+1920x1080 windowed, Standard diagnostics**, with a private final configuration
+and private user-data/saves/screenshots. All other normal settings cascade from
+the selected configuration chain. No regular saves are read, copied or selected.
 
-Modes are `-Diagnostics standard` (default), `focused`, and `off`. These are
+Automatic package config expansion is explicitly replaced to avoid including the
+user configuration twice. There is **no `--load-savegame` argument**, including no
+empty path. Any inherited autoload entry is rejected before launch, rather than
+editing normal configuration. Skip-menu/new-game autostart and startup scripts
+are overridden; choose **New Game** manually. Unknown configuration tokens,
+repeated directory aliases and missing required config directories fail closed.
+`--prepare-only` checks and prepares without starting a process.
+
+Keep content and comparison controls fixed during a run. An OpenGL control is
+explicitly available with `--renderer opengl` in the `.cmd`/Python helper. Inspect
+the logged renderer and effective settings before interpreting any capture.
+
+Modes are `--diagnostics standard` (default), `focused`, and `off` for the `.cmd`/Python helper, or `-Diagnostics` for PowerShell. These are
 same-executable observation controls, **not cache-policy controls**. Off also
 disables this helper's gameplay recorder, but unrelated inherited profiler
 variables remain explicit in the manifest. Do not call an off run a clean
@@ -34,7 +44,7 @@ benchmark when another profiler or frame cap is active.
 Direct engine use sets `OPENMW_RUNTIME_DIAGNOSTICS=standard` or `focused` and
 `OPENMW_RUNTIME_DIAGNOSTICS_FILE=<writable path>/runtime.jsonl`. Set existing
 `OPENMW_GAMEPLAY_DIAGNOSTICS=1` and its FILE variable to retain stage records too.
-With no runtime diagnostic variable, normal gameplay is unchanged. Focused mode
+With no runtime diagnostic variable, this recorder stays off; the selected engine policy still applies. Focused mode
 adds existing actor/geometry fingerprints and full allocation graph inspection;
 standard omits those expensive checks. Focused is NOT GPU readback or a per-asset
 filter. Baseline old gameplay-only diagnostic behavior remains available.
@@ -61,7 +71,7 @@ python .\runtime-diagnostics.py '<evidence directory>'
   expiry, parsed-NIF retention, shape/prepared-instance limits. This shows profile
   overrides; it does not reconstruct per-setting file-origin history.
 - Existing resource-manager cache counters and bounded, borrowed payload census
-  during normal resource sweeps (not a newly forced sweep). Images are measured
+  during resource sweeps (the engine may independently increase maintenance cadence under pressure). Images are measured
   by their existing CPU mip payload. NIF capacity covers the file/record-pointer
   vectors and selected geometry/UV/triangle/strip arrays, NOT all records,
   strings, keyframes or allocator overhead. Other opaque caches are explicitly

@@ -31,6 +31,14 @@
 
 namespace MWRender
 {
+    bool V4SceneRenderLifecycle::usesLegacyTerrainPreload() const noexcept
+    {
+        // V4EngineRenderBridge owns the visible terrain and groundcover route.
+        // Retain both the old full-frontload control and a grid-only control.
+        return usesLegacyTerrainFrontload()
+            || std::getenv("OPENMW_V4_LEGACY_TERRAIN_PRELOAD_CONTROL") != nullptr;
+    }
+
     bool V4SceneRenderLifecycle::usesLegacyTerrainFrontload() const noexcept
     {
         // Independent same-executable control; never changes OpenGL behavior.

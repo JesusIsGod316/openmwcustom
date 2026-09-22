@@ -33,6 +33,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace osg
 {
@@ -49,6 +50,9 @@ namespace Resource
         osg::ref_ptr<osg::Object> mValue;
         double mLastUsage;
         std::uint64_t mDiagnosticHits = 0;
+        // Pressure trimming protects requests since the last bounded sweep.
+        // This never changes normal expiry behavior or depends on diagnostics.
+        bool mTrimRecentlyUsed = true;
     };
 
     template <typename KeyType>
@@ -101,6 +105,40 @@ namespace Resource
             }
             // remove expired items from cache
             objectsToRemove.clear();
+        }
+
+        // Release only cache-owned objects; never strip an active object's
+        // image/mesh storage. Work and removal counts are bounded, with a cursor
+        // so pinned early keys cannot starve later entries. Destruction is out
+        // of the lock and called on the existing resource-maintenance worker.
+        std::size_t trimUnused(std::size_t maxRemove, std::size_t maxScan = 4096)
+        {
+            if (maxRemove == 0 || maxScan == 0) return 0;
+            std::vector<osg::ref_ptr<osg::Object>> release;
+            release.reserve((std::min)(maxRemove, maxScan));
+            {
+                std::lock_guard lock(mMutex);
+                auto it = mTrimCursor ? mItems.upper_bound(*mTrimCursor) : mItems.begin();
+                std::size_t scanned = 0;
+                while (it != mItems.end() && scanned++ < maxScan && release.size() < maxRemove)
+                {
+                    mTrimCursor = it->first;
+                    Item& item = it->second;
+                    const bool recent = std::exchange(item.mTrimRecentlyUsed, false);
+                    if (!recent && item.mValue && item.mValue->referenceCount() == 1)
+                    {
+                        release.push_back(std::move(item.mValue));
+                        const bool neverHit = item.mDiagnosticHits == 0;
+                        it = mItems.erase(it);
+                        ++mPressureTrimmed;
+                        if (Debug::RuntimeDiagnostics::enabled() && neverHit)
+                            ++mDiagnosticPressureWithoutHit;
+                    }
+                    else ++it;
+                }
+                if (it == mItems.end()) mTrimCursor.reset();
+            }
+            return release.size();
         }
 
         /** Remove all objects in the cache regardless of having external references or expiry times.*/
@@ -224,7 +262,7 @@ namespace Resource
             {
                 CacheDiagnosticCensus census;
                 CacheStats stats;
-                std::uint64_t neverHit = 0;
+                std::uint64_t neverHit = 0, pressureTrimmed = 0, pressureWithoutHit = 0;
                 {
                     std::unique_lock lock(mMutex, std::try_to_lock);
                     if (!lock.owns_lock())
@@ -234,6 +272,8 @@ namespace Resource
                     }
                     stats = { mItems.size(), mGet, mHit, mExpired };
                     neverHit = mDiagnosticExpiredWithoutHit;
+                    pressureTrimmed = mPressureTrimmed;
+                    pressureWithoutHit = mDiagnosticPressureWithoutHit;
                     for (const auto& [key, item] : mItems)
                     {
                         if (census.entries >= CacheDiagnosticCensus::Limit) { census.limited = true; break; }
@@ -243,6 +283,9 @@ namespace Resource
                         census.add(name, item.mValue.get(), item.mLastUsage, referenceTime);
                     }
                 }
+                Debug::RuntimeDiagnostics::recordEvent("cache_pressure", owner, {}, {
+                    {"instance", reinterpret_cast<std::uintptr_t>(this)}, {"trimmed", pressureTrimmed},
+                    {"trimmed_without_hit", pressureWithoutHit}});
                 Debug::RuntimeDiagnostics::recordEvent("cache", owner, {}, {
                     {"instance", reinterpret_cast<std::uintptr_t>(this)}, {"entries", stats.mSize},
                     {"lookups", stats.mGet}, {"hits", stats.mHit}, {"expired", stats.mExpired},
@@ -268,9 +311,11 @@ namespace Resource
 
         std::map<KeyType, Item, std::less<>> mItems;
         mutable std::mutex mMutex;
+        std::optional<KeyType> mTrimCursor;
         std::size_t mGet = 0;
         std::size_t mHit = 0;
         std::size_t mExpired = 0;
+        std::uint64_t mPressureTrimmed = 0, mDiagnosticPressureWithoutHit = 0;
         std::uint64_t mDiagnosticExpiredWithoutHit = 0;
 
         Item* find(const auto& key)
@@ -280,6 +325,7 @@ namespace Resource
             if (it == mItems.end())
                 return nullptr;
             ++mHit;
+            it->second.mTrimRecentlyUsed = true;
             if (Debug::RuntimeDiagnostics::enabled()) ++it->second.mDiagnosticHits;
             return &it->second;
         }

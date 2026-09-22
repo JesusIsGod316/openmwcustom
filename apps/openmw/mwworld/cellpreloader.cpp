@@ -73,7 +73,8 @@ namespace MWWorld
         /// Constructor to be called from the main thread.
         explicit PreloadItem(MWWorld::CellStore* cell, Resource::SceneManager* sceneManager,
             Resource::BulletShapeManager* bulletShapeManager, Resource::KeyframeManager* keyframeManager,
-            Terrain::World* terrain, MWRender::LandManager* landManager, bool preloadInstances)
+            Terrain::World* terrain, MWRender::LandManager* landManager, bool preloadInstances,
+            Resource::ResourceSystem* resourceSystem, bool useLegacyTerrain)
             : mIsExterior(cell->getCell()->isExterior())
             , mCellLocation(cell->getCell()->getExteriorCellLocation())
             , mCellId(cell->getCell()->getId())
@@ -83,24 +84,31 @@ namespace MWWorld
             , mTerrain(terrain)
             , mLandManager(landManager)
             , mPreloadInstances(preloadInstances)
+            , mResourceSystem(resourceSystem)
+            , mUseLegacyTerrain(useLegacyTerrain)
             , mAbort(false)
         {
-            mTerrainView = mTerrain->createView();
+            if (mUseLegacyTerrain)
+                mTerrainView = mTerrain->createView();
 
             ListModelsVisitor visitor{ mMeshes };
             cell->forEachConst(visitor);
         }
 
         void abort() override { mAbort = true; }
+        bool fullyPrepared() const noexcept { return mFullyPrepared.load(std::memory_order_acquire); }
 
         /// Preload work to be called from the worker thread.
         void doWork() override
         {
+            if (mAbort || mResourceSystem->hostMemoryPressure() != Resource::HostMemoryPressure::Normal)
+                return;
             if (mIsExterior)
             {
                 try
                 {
-                    mTerrain->cacheCell(mTerrainView.get(), mCellLocation.mX, mCellLocation.mY);
+                    if (mUseLegacyTerrain)
+                        mTerrain->cacheCell(mTerrainView.get(), mCellLocation.mX, mCellLocation.mY);
                     mPreloadedObjects.insert(mLandManager->getLand(mCellLocation));
                 }
                 catch (const std::exception& e)
@@ -117,8 +125,10 @@ namespace MWWorld
                 = static_cast<bool>(Settings::cells().mV37CompanionKeyframePreload);
             for (VFS::Path::NormalizedView path : mMeshes)
             {
-                if (mAbort)
-                    break;
+                // These are speculative cache owners, not active gameplay.
+                // Stop between assets under pressure, even during loading waits.
+                if (mAbort || mResourceSystem->hostMemoryPressure() != Resource::HostMemoryPressure::Normal)
+                    return;
 
                 try
                 {
@@ -159,6 +169,7 @@ namespace MWWorld
                                         << e.what();
                 }
             }
+            mFullyPrepared.store(true, std::memory_order_release);
         }
 
     private:
@@ -172,8 +183,11 @@ namespace MWWorld
         Terrain::World* mTerrain;
         MWRender::LandManager* mLandManager;
         bool mPreloadInstances;
+        Resource::ResourceSystem* mResourceSystem;
+        bool mUseLegacyTerrain;
 
         std::atomic<bool> mAbort;
+        std::atomic<bool> mFullyPrepared{false};
 
         osg::ref_ptr<Terrain::View> mTerrainView;
 
@@ -248,10 +262,12 @@ namespace MWWorld
     class UpdateCacheItem : public SceneUtil::WorkItem
     {
     public:
-        UpdateCacheItem(Resource::ResourceSystem* resourceSystem, double referenceTime, bool idlePriority)
+        UpdateCacheItem(Resource::ResourceSystem* resourceSystem, double referenceTime, bool idlePriority,
+            std::vector<osg::ref_ptr<SceneUtil::WorkItem>> releasedPreloads = {})
             : mReferenceTime(referenceTime)
             , mResourceSystem(resourceSystem)
             , mIdlePriority(idlePriority)
+            , mReleasedPreloads(std::move(releasedPreloads))
         {
         }
 
@@ -259,6 +275,9 @@ namespace MWWorld
         {
             if (mIdlePriority)
                 Misc::setCurrentThreadIdlePriority();
+            // Release cell pinning references here, not on the main thread.
+            // Only completed work items are transferred; no new wait/barrier.
+            mReleasedPreloads.clear();
             mResourceSystem->updateCache(mReferenceTime);
         }
 
@@ -266,16 +285,19 @@ namespace MWWorld
         double mReferenceTime;
         Resource::ResourceSystem* mResourceSystem;
         bool mIdlePriority;
+        std::vector<osg::ref_ptr<SceneUtil::WorkItem>> mReleasedPreloads;
     };
 
     CellPreloader::CellPreloader(Resource::ResourceSystem* resourceSystem,
-        Resource::BulletShapeManager* bulletShapeManager, Terrain::World* terrain, MWRender::LandManager* landManager)
+        Resource::BulletShapeManager* bulletShapeManager, Terrain::World* terrain, MWRender::LandManager* landManager,
+        bool useLegacyTerrain)
         : mResourceSystem(resourceSystem)
         , mBulletShapeManager(bulletShapeManager)
         , mTerrain(terrain)
         , mLandManager(landManager)
         , mExpiryDelay(0.0)
         , mPreloadInstances(true)
+        , mUseLegacyTerrain(useLegacyTerrain)
         , mLastResourceCacheUpdate(0.0)
         , mLoadedTerrainTimestamp(0.0)
     {
@@ -290,6 +312,10 @@ namespace MWWorld
 
     void CellPreloader::preload(CellStore& cell, double timestamp)
     {
+        // Do not refill the optional preload owners while they are being
+        // reclaimed. Required Scene::loadCell and physics paths are untouched.
+        if (mResourceSystem->hostMemoryPressure() != Resource::HostMemoryPressure::Normal)
+            return;
         if (!mWorkQueue)
         {
             Log(Debug::Error) << "Error: can't preload, no work queue set";
@@ -335,7 +361,8 @@ namespace MWWorld
         }
 
         osg::ref_ptr<PreloadItem> item(new PreloadItem(&cell, mResourceSystem->getSceneManager(), mBulletShapeManager,
-            mResourceSystem->getKeyframeManager(), mTerrain, mLandManager, mPreloadInstances));
+            mResourceSystem->getKeyframeManager(), mTerrain, mLandManager, mPreloadInstances,
+            mResourceSystem, mUseLegacyTerrain));
         mWorkQueue->addWorkItem(item);
 
         mPreloadCells.emplace(&cell, PreloadEntry(timestamp, item));
@@ -374,6 +401,7 @@ namespace MWWorld
 
     void CellPreloader::updateCache(double timestamp)
     {
+        const auto hostPressure = mResourceSystem->hostMemoryPressure();
         if (mDiagnosticSampler.due())
         {
             std::uint64_t done = 0;
@@ -386,7 +414,9 @@ namespace MWWorld
                 {"expiry_seconds", static_cast<std::uint64_t>((std::max)(0.0, mExpiryDelay))},
                 {"terrain_views", mTerrainViews.size()}, {"terrain_targets", mTerrainPreloadPositions.size()},
                 {"terrain_job_pending", mTerrainPreloadItem && !mTerrainPreloadItem->isDone()},
-                {"resource_sweep_pending", mUpdateCacheItem && !mUpdateCacheItem->isDone()} });
+                {"resource_sweep_pending", mUpdateCacheItem && !mUpdateCacheItem->isDone()},
+                {"host_pressure", static_cast<std::uint64_t>(hostPressure)},
+                {"pressure_released", mPressureReleased}, {"legacy_terrain", mUseLegacyTerrain} });
         }
         for (PreloadMap::iterator it = mPreloadCells.begin(); it != mPreloadCells.end();)
         {
@@ -408,6 +438,7 @@ namespace MWWorld
             && Debug::V3GpuMemory::softPressure();
         const double v37ResourceSweepSeconds
             = static_cast<bool>(Settings::cells().mV37RelaxedResourceSweep) && !v37AdapterPressure
+                && hostPressure == Resource::HostMemoryPressure::Normal
             ? static_cast<double>(Settings::cells().mV37ResourceSweepSeconds)
             : 1.0;
         if (timestamp - mLastResourceCacheUpdate > v37ResourceSweepSeconds
@@ -418,7 +449,44 @@ namespace MWWorld
             // idle-priority and handles no paging-critical work.
             const bool v316IdleSweep = static_cast<bool>(Settings::cells().mV316IdleResourceSweep)
                 && mV316ResourceSweepQueue;
-            mUpdateCacheItem = new UpdateCacheItem(mResourceSystem, timestamp, v316IdleSweep);
+            std::vector<osg::ref_ptr<SceneUtil::WorkItem>> released;
+            // A pressure-aborted preload is not a complete warm cell. Discard
+            // it even if pressure has recovered, so a later request can retry.
+            // Completed ownership is transferred to the maintenance worker.
+            for (auto it = mPreloadCells.begin(); it != mPreloadCells.end() && released.size() < 16;)
+            {
+                const auto& item = it->second.mWorkItem;
+                if (item && item->isDone() && !static_cast<const PreloadItem&>(*item).fullyPrepared())
+                {
+                    released.push_back(std::move(it->second.mWorkItem));
+                    it = mPreloadCells.erase(it);
+                    ++mPressureReleased;
+                }
+                else ++it;
+            }
+            if (hostPressure != Resource::HostMemoryPressure::Normal)
+            {
+                // Oldest completed preloads first. In-progress jobs get an
+                // abort request only, and retain ownership until they finish.
+                const std::size_t limit = hostPressure == Resource::HostMemoryPressure::Critical ? 16 : 4;
+                released.reserve(limit);
+                for (auto& [cell, entry] : mPreloadCells)
+                    if (entry.mWorkItem && !entry.mWorkItem->isDone()) entry.mWorkItem->abort();
+                const auto releaseTarget = released.size() + limit;
+                while (released.size() < releaseTarget)
+                {
+                    auto oldest = mPreloadCells.end();
+                    for (auto it = mPreloadCells.begin(); it != mPreloadCells.end(); ++it)
+                        if (it->second.mWorkItem && it->second.mWorkItem->isDone()
+                            && (oldest == mPreloadCells.end()
+                                || it->second.mTimeStamp < oldest->second.mTimeStamp)) oldest = it;
+                    if (oldest == mPreloadCells.end()) break;
+                    released.push_back(std::move(oldest->second.mWorkItem));
+                    mPreloadCells.erase(oldest);
+                    ++mPressureReleased;
+                }
+            }
+            mUpdateCacheItem = new UpdateCacheItem(mResourceSystem, timestamp, v316IdleSweep, std::move(released));
             if (v316IdleSweep)
                 mV316ResourceSweepQueue->addWorkItem(mUpdateCacheItem);
             else
@@ -480,6 +548,7 @@ namespace MWWorld
 
     void CellPreloader::setTerrainPreloadPositions(std::span<const PositionCellGrid> positions)
     {
+        if (!mUseLegacyTerrain) return;
         const bool v311RollingExactActive
             = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode) > 0;
 

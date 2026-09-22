@@ -41,6 +41,7 @@ namespace MWRender
         void objectChanged(const MWWorld::Ptr& ptr) override;
         void objectRemoving(const MWWorld::Ptr& ptr) noexcept override;
         void worldResetting() noexcept override;
+        bool usesLegacyTerrainPreload() const noexcept override;
         bool usesLegacyTerrainFrontload() const noexcept override;
 
         [[nodiscard]] bool healthy() const noexcept { return mRouteStatus->healthy(); }
