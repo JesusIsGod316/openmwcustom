@@ -1,0 +1,59 @@
+name: CP4F interrupted diagnostics recovery
+on:
+  push:
+    branches: [v4.0-cp4f-diagnostics-recovery-20260922]
+    paths: [.github/workflows/v4-cp4f-diagnostic-recovery.yml]
+permissions:
+  contents: read
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c6b2ad8b87a989fb7630c69617673e179d81dbcb
+          persist-credentials: false
+      - name: Preserve exact baseline and available uploaded patch objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/recovery"
+          git archive --format=tar HEAD | gzip -1 > "$RUNNER_TEMP/recovery/source.tar.gz"
+          git ls-tree -r HEAD > "$RUNNER_TEMP/recovery/source-tree.txt"
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, urllib.request, urllib.error
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'recovery'
+          shas = ['7522d172f481fd53befcd295625bec9701cfd8d1', 'f5a3894fdaa63d5fdee5cf6dc14ad879059ce8d2', 'deb95c57cc752bf04f7c4145e2b0fb3ea21c6782', 'b8e3657efdca8eda08ddcd7a6b28e44a952293fb', '88cb257e3a87623248c6418c350ebe9397b2f509']
+          packed = bytearray()
+          found = []
+          for i, sha in enumerate(shas):
+              req = urllib.request.Request('https://api.github.com/repos/JesusIsGod316/openmwcustom/git/blobs/' + sha, headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'], 'Accept':'application/vnd.github+json'})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      obj = json.load(response)
+              except urllib.error.HTTPError as error:
+                  if error.code != 404: raise
+                  print('Missing uploaded chunk', i, sha)
+                  break
+              data = base64.b64decode(obj['content'])
+              actual = hashlib.sha1(('blob '+str(len(data))+'\0').encode()+data).hexdigest()
+              if actual != sha: raise SystemExit('Blob mismatch')
+              (out / ('chunk-'+str(i)+'.bin')).write_bytes(data)
+              packed.extend(data)
+              found.append(sha)
+          decoder = lzma.LZMADecompressor()
+          raw = decoder.decompress(packed)
+          (out/'recovered.patch.partial').write_bytes(raw)
+          report = {'chunks':found, 'bytes':len(raw), 'complete':decoder.eof, 'sha256':hashlib.sha256(raw).hexdigest(), 'expected_sha256':'79777f9188248ef68a436d27fa5a4d4b956d4a0c96b41d70f6bfda51c02832f8'}
+          (out/'recovery.json').write_text(json.dumps(report,indent=2))
+          print(json.dumps(report,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cp4f-interrupted-diagnostics-recovery
+          path: ${{ runner.temp }}/recovery/
+          retention-days: 7
+          if-no-files-found: error
