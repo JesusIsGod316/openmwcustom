@@ -11,6 +11,7 @@
 #include <components/vfs/pathutil.hpp>
 
 #include "cachestats.hpp"
+#include <components/debug/runtimediagnostics.hpp>
 
 namespace osg
 {
@@ -39,6 +40,7 @@ namespace Resource
         void releaseGLObjects(osg::State* state);
 
         CacheStats getStats() const;
+        void reportRuntimeDiagnostics(std::string_view owner, std::size_t limit) const noexcept;
 
     protected:
         typedef std::multimap<VFS::Path::Normalized, osg::ref_ptr<osg::Object>, std::less<>> ObjectCacheMap;

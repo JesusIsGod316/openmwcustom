@@ -8,6 +8,9 @@ param(
     [ValidateSet('Save', 'NewGame', 'Manual')]
     [string] $Mode = 'Save',
 
+    [ValidateSet('off', 'standard', 'focused')]
+    [string] $Diagnostics = 'standard',
+
     [string] $Save,
     [string] $Config,
     [string] $LogDirectory,
@@ -33,7 +36,7 @@ if ($Mode -eq 'Manual') {
     $manualArgs = @((Join-Path $PSScriptRoot 'gameplay-diagnostics.py'), 'launch',
         '--executable', $Executable, '--user-config', $UserData,
         '--evidence-root', $EvidenceRoot, '--source-head', $SourceHead,
-        '--source-diff-sha256', $SourceDiffSha256)
+        '--source-diff-sha256', $SourceDiffSha256, '--diagnostics', $Diagnostics)
     foreach ($directory in $DllDirectory) { $manualArgs += @('--dll-directory', $directory) }
     if ($OsgLibraryPath) { $manualArgs += @('--osg-library-path', $OsgLibraryPath) }
     & $PythonExecutable @manualArgs

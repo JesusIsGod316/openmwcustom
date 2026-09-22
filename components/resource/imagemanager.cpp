@@ -96,6 +96,7 @@ namespace Resource
             return osg::ref_ptr<osg::Image>(static_cast<osg::Image*>(obj.get()));
         else
         {
+            Debug::RuntimeDiagnostics::Operation diagnostic("image_cache_miss", path.value());
             Files::IStreamPtr stream;
             try
             {

@@ -1,3 +1,4 @@
+#include <components/debug/runtimediagnostics.hpp>
 #include "rendermanager.hpp"
 
 #include <algorithm>
@@ -147,6 +148,13 @@ namespace VsgMyGui
             created->second.setDecoder(mDecoder);
             it = created;
         }
+        if (Debug::RuntimeDiagnostics::enabled())
+        {
+            static Debug::RuntimeDiagnostics::Sampler sampler;
+            if (sampler.due()) Debug::RuntimeDiagnostics::emit("ui_external_texture", "mygui", name, {
+                {"width", static_cast<std::uint64_t>((std::max)(0, width))},
+                {"height", static_cast<std::uint64_t>((std::max)(0, height))}, {"image_present", static_cast<bool>(imageView)}});
+        }
         it->second.setImageView(std::move(imageView), width, height, format);
         return &it->second;
     }
@@ -222,6 +230,8 @@ namespace VsgMyGui
             }
             if (!nativeTexture)
             {
+                static Debug::RuntimeDiagnostics::Sampler sampler;
+                if (sampler.due()) Debug::RuntimeDiagnostics::emit("ui_missing_alias", "mygui", alias, {{"vertices", count}});
                 if (!mWarnedForeignTexture)
                 {
                     Log(Debug::Warning) << "VsgMyGui: skipping unresolved foreign render-target texture '"

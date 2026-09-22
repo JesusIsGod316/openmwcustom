@@ -1,6 +1,8 @@
 #ifndef OPENMW_DEBUG_GAMEPLAYDIAGNOSTICS_H
 #define OPENMW_DEBUG_GAMEPLAYDIAGNOSTICS_H
 
+#include "runtimediagnostics.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -52,6 +54,10 @@ namespace Debug::GameplayDiagnostics
     };
     inline thread_local Context context;
     inline bool sampling() { return context.sample; }
+    inline bool detailedSampling()
+    {
+        return sampling() && RuntimeDiagnostics::mode() != RuntimeDiagnostics::Mode::Standard;
+    }
 
     using Fields = std::initializer_list<std::pair<std::string_view, std::string>>;
     inline void emit(std::string_view type, Fields fields = {}, bool independent = false) noexcept
@@ -60,6 +66,11 @@ namespace Debug::GameplayDiagnostics
         const bool detail = type == "actor_pose" || type == "actor_geometry" || type == "pick" || type == "camera";
         if (detail && context.lines >= 128) { ++context.dropped; return; }
         ++context.lines; // preserve stage ends/frame summary even when detail is capped
+        if (RuntimeDiagnostics::enabled())
+        {
+            RuntimeDiagnostics::legacy(context.frame, type, fields);
+            return;
+        }
         try
         {
             struct Sink

@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_VSGRUNTIMEHOST_H
 
 #include "framecamera.hpp"
+#include <components/debug/runtimediagnostics.hpp>
 #include "dynamicactorplan.hpp"
 #include "framecompletion.hpp"
 #include "frameresourcepool.hpp"
@@ -24,6 +25,7 @@
 
 #include <vsg/core/ref_ptr.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -215,6 +217,11 @@ namespace RenderVsg
         RenderCore::RenderFrameResult finish(
             RenderCore::RenderFrameResult result, std::string diagnostic = {});
 
+        void reportRuntimeMemory(const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame) noexcept;
+        Debug::RuntimeDiagnostics::Sampler mRuntimeDiagnosticSampler;
+        std::array<std::uint64_t, static_cast<std::size_t>(ImmediateEffectMismatch::Count)> mEffectRebuildReasons{};
+        unsigned mEffectDiagnosticExamples = 8;
+        std::uint64_t mDiagnosticReleasedDynamic = 0, mDiagnosticReleasedGui = 0;
         VsgRuntimeHostOptions mOptions;
         std::size_t mLastCompiledDynamicRootCount = 0;
         StaticTextureResolver mTextureResolver;

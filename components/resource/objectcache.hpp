@@ -21,6 +21,7 @@
 #define OPENMW_COMPONENTS_RESOURCE_OBJECTCACHE
 
 #include "cachestats.hpp"
+#include "cachediagnostics.hpp"
 
 #include <osg/Node>
 #include <osg/Referenced>
@@ -47,6 +48,7 @@ namespace Resource
     {
         osg::ref_ptr<osg::Object> mValue;
         double mLastUsage;
+        std::uint64_t mDiagnosticHits = 0;
     };
 
     template <typename KeyType>
@@ -87,6 +89,8 @@ namespace Resource
                         return false;
 
                     ++mExpired;
+                    if (Debug::RuntimeDiagnostics::enabled() && item.mDiagnosticHits == 0)
+                        ++mDiagnosticExpiredWithoutHit;
 
                     // just mark for removal here so objects can be removed in bulk outside the lock
                     if (item.mValue != nullptr)
@@ -212,6 +216,53 @@ namespace Resource
             };
         }
 
+        void reportRuntimeDiagnostics(std::string_view owner, double referenceTime, double expiryDelay) const noexcept
+        {
+            if (!Debug::RuntimeDiagnostics::enabled()) return;
+            const auto start = Debug::RuntimeDiagnostics::nowUs();
+            try
+            {
+                CacheDiagnosticCensus census;
+                CacheStats stats;
+                std::uint64_t neverHit = 0;
+                {
+                    std::unique_lock lock(mMutex, std::try_to_lock);
+                    if (!lock.owns_lock())
+                    {
+                        Debug::RuntimeDiagnostics::emit("coverage", owner, "cache lock busy", {{"available", 0}});
+                        return;
+                    }
+                    stats = { mItems.size(), mGet, mHit, mExpired };
+                    neverHit = mDiagnosticExpiredWithoutHit;
+                    for (const auto& [key, item] : mItems)
+                    {
+                        if (census.entries >= CacheDiagnosticCensus::Limit) { census.limited = true; break; }
+                        std::string_view name;
+                        if constexpr (requires { std::string_view(key); }) name = std::string_view(key);
+                        else if constexpr (requires { std::string_view(key.value()); }) name = key.value();
+                        census.add(name, item.mValue.get(), item.mLastUsage, referenceTime);
+                    }
+                }
+                Debug::RuntimeDiagnostics::emit("cache", owner, {}, {
+                    {"instance", reinterpret_cast<std::uintptr_t>(this)}, {"entries", stats.mSize},
+                    {"lookups", stats.mGet}, {"hits", stats.mHit}, {"expired", stats.mExpired},
+                    {"expired_without_hit", neverHit}, {"sampled_entries", census.entries},
+                    {"external_refs", census.externallyReferenced}, {"cache_only_entries", census.cacheOnly},
+                    {"known_payload_bytes", census.knownPayloadBytes},
+                    {"cache_only_payload_bytes", census.cacheOnlyPayloadBytes},
+                    {"unmeasured_entries", census.unmeasuredEntries}, {"shared_payload_refs", census.sharedPayloadReferences},
+                    {"oldest_inactive_us", census.oldestInactiveUs}, {"limited", census.limited},
+                    {"expiry_us", expiryDelay > 0 ? static_cast<std::uint64_t>(expiryDelay * 1000000.0) : 0} });
+                if (Debug::RuntimeDiagnostics::mode() == Debug::RuntimeDiagnostics::Mode::Focused)
+                    for (const auto& top : census.top)
+                        if (top.bytes) Debug::RuntimeDiagnostics::emit("cache_asset", owner, top.name.data(),
+                            {{"known_payload_bytes", top.bytes}, {"external_ref_observed", top.external}});
+                Debug::RuntimeDiagnostics::emit("probe_cost", owner, "cache census", {
+                    {"elapsed_us", Debug::RuntimeDiagnostics::nowUs() - start}, {"source_elements", census.sourceElements}});
+            }
+            catch (...) { Debug::RuntimeDiagnostics::emit("coverage", owner, "cache census unavailable", {{"available", 0}}); }
+        }
+
     protected:
         using Item = GenericObjectCacheItem;
 
@@ -220,6 +271,7 @@ namespace Resource
         std::size_t mGet = 0;
         std::size_t mHit = 0;
         std::size_t mExpired = 0;
+        std::uint64_t mDiagnosticExpiredWithoutHit = 0;
 
         Item* find(const auto& key)
         {
@@ -228,6 +280,7 @@ namespace Resource
             if (it == mItems.end())
                 return nullptr;
             ++mHit;
+            if (Debug::RuntimeDiagnostics::enabled()) ++it->second.mDiagnosticHits;
             return &it->second;
         }
     };

@@ -42,6 +42,9 @@ function(openmw_cp3b3_define_real_nif_tool)
     target_link_libraries(
         openmw-v4-semantic-source-compile PRIVATE components SDL3::SDL3 glm::glm Vulkan::Vulkan vsg::vsg)
     target_compile_features(openmw-v4-semantic-source-compile PRIVATE cxx_std_20)
+    # These are Vulkan adapters; their guarded game-facing declarations must
+    # match the production runtime layout, even in this compile-only target.
+    target_compile_definitions(openmw-v4-semantic-source-compile PRIVATE OPENMW_ENABLE_V4_VULKAN_RUNTIME=1)
 
     add_executable(openmw-vulkan-nif-conformance
         "${CMAKE_SOURCE_DIR}/tools/v4/cp3b3/nif-conformance.cpp"

@@ -7,19 +7,46 @@
 #include <components/vfs/manager.hpp>
 
 #include "objectcache.hpp"
+#include <components/nif/data.hpp>
 
 namespace Resource
 {
 
-    class NifFileHolder : public osg::Object
+    class NifFileHolder : public osg::Object, public Debug::RuntimeDiagnostics::PayloadSource
     {
     public:
         NifFileHolder(const Nif::NIFFilePtr& file)
             : mNifFile(file)
         {
+            if (Debug::RuntimeDiagnostics::enabled())
+            {
+                using Debug::RuntimeDiagnostics::capacityBytes;
+                mDiagnosticBytes = sizeof(Nif::NIFFile) + capacityBytes(file->mRecords) + capacityBytes(file->mRoots);
+                for (const auto& record : file->mRecords)
+                {
+                    if (const auto* data = dynamic_cast<const Nif::NiGeometryData*>(record.get()))
+                    {
+                        mDiagnosticBytes += capacityBytes(data->mVertices) + capacityBytes(data->mNormals)
+                            + capacityBytes(data->mTangents) + capacityBytes(data->mBitangents)
+                            + capacityBytes(data->mColors) + capacityBytes(data->mUVList);
+                        for (const auto& uv : data->mUVList) mDiagnosticBytes += capacityBytes(uv);
+                    }
+                    if (const auto* triangles = dynamic_cast<const Nif::NiTriShapeData*>(record.get()))
+                    {
+                        mDiagnosticBytes += capacityBytes(triangles->mTriangles) + capacityBytes(triangles->mMatchGroups);
+                        for (const auto& group : triangles->mMatchGroups) mDiagnosticBytes += capacityBytes(group);
+                    }
+                    if (const auto* strips = dynamic_cast<const Nif::NiTriStripsData*>(record.get()))
+                    {
+                        mDiagnosticBytes += capacityBytes(strips->mStrips);
+                        for (const auto& strip : strips->mStrips) mDiagnosticBytes += capacityBytes(strip);
+                    }
+                }
+            }
         }
         NifFileHolder(const NifFileHolder& copy, const osg::CopyOp& copyop)
             : mNifFile(copy.mNifFile)
+            , mDiagnosticBytes(copy.mDiagnosticBytes)
         {
         }
 
@@ -27,7 +54,12 @@ namespace Resource
 
         META_Object(Resource, NifFileHolder)
 
+        Debug::RuntimeDiagnostics::PayloadInfo diagnosticPayload() const noexcept override
+        {
+            return { mNifFile.get(), mDiagnosticBytes, mNifFile ? mNifFile->mRecords.size() : 0, mNifFile.use_count() > 1 };
+        }
         Nif::NIFFilePtr mNifFile;
+        std::uint64_t mDiagnosticBytes = 0;
     };
 
     NifFileManager::NifFileManager(const VFS::Manager* vfs, const ToUTF8::StatelessUtf8Encoder* encoder)
@@ -46,6 +78,7 @@ namespace Resource
         if (obj != nullptr)
             return static_cast<NifFileHolder*>(obj.get())->mNifFile;
 
+        Debug::RuntimeDiagnostics::Operation diagnostic("nif_cache_miss", name.value());
         auto file = std::make_shared<Nif::NIFFile>(name);
         Nif::Reader reader(*file, mEncoder);
         reader.parse(mVFS->get(name));

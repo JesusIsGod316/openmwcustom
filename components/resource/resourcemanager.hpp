@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_RESOURCE_MANAGER_H
 
 #include <osg/ref_ptr>
+#include <typeinfo>
 
 #include <components/vfs/pathutil.hpp>
 
@@ -30,6 +31,7 @@ namespace Resource
         virtual void setExpiryDelay(double expiryDelay) = 0;
         virtual void reportStats(unsigned int frameNumber, osg::Stats* stats) const = 0;
         virtual void releaseGLObjects(osg::State* state) = 0;
+        virtual void reportRuntimeDiagnostics(double) const noexcept {}
     };
 
     /// @brief Base class for managers that require a virtual file system and object cache.
@@ -74,11 +76,17 @@ namespace Resource
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override {}
 
         void releaseGLObjects(osg::State* state) override { mCache->releaseGLObjects(state); }
+        void reportRuntimeDiagnostics(double referenceTime) const noexcept override
+        {
+            if (mDiagnosticSampler.due())
+                mCache->reportRuntimeDiagnostics(typeid(*this).name(), referenceTime, mExpiryDelay);
+        }
 
     protected:
         const VFS::Manager* mVFS;
         osg::ref_ptr<CacheType> mCache;
         double mExpiryDelay;
+        mutable Debug::RuntimeDiagnostics::Sampler mDiagnosticSampler;
     };
 
     class ResourceManager : public GenericResourceManager<std::string>
