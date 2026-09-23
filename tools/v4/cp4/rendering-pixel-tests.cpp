@@ -52,7 +52,8 @@ namespace
         vsg::ref_ptr<vsg::CommandGraph> commands;
         vsg::ref_ptr<vsg::SharedObjects> shared=vsg::SharedObjects::create();
         std::uint64_t tick=0;
-        explicit Fixture(vsg::ref_ptr<vsg::Device> input, vsg::ViewFeatures features = vsg::RECORD_ALL) : device(input)
+        explicit Fixture(vsg::ref_ptr<vsg::Device> input, vsg::ViewFeatures features = vsg::RECORD_ALL,
+            unsigned int shadowCascades = 0) : device(input)
         {
             frame.extent={128,128}; frame.current.projection.nearPlane=.1; frame.current.projection.farPlane=10000.;
             frame.current.projection.matrix=glm::perspectiveRH_ZO(glm::radians(60.f),1.f,10000.f,.1f);
@@ -72,7 +73,13 @@ namespace
             commands=vsg::CommandGraph::create(device,device->getPhysicalDevice()->getQueueFamily(VK_QUEUE_GRAPHICS_BIT));
             commands->addChild(target.renderGraph);
             viewer->assignRecordAndSubmitTaskAndPresentation({commands});
-            auto result=viewer->compile();
+            auto hints=vsg::ResourceHints::create();
+            if (shadowCascades)
+            {
+                hints->numShadowMapsRange={shadowCascades,shadowCascades};
+                hints->shadowMapSize={64,64};
+            }
+            auto result=viewer->compile(hints);
             require(bool(result),"initial target compilation "+result.message);
         }
         bool compile(vsg::ref_ptr<vsg::Node> node)
@@ -257,6 +264,58 @@ namespace
         close(pixel(f.render()).r,0,"removed lights remained in unshadowed buffer");
         std::cout<<"PASS unshadowed lighting pixels: ambient, directional, live colours, ray sign, removed lights, zero shadow maps\n";
     }
+    void checkShadowViewFeatures(vsg::ref_ptr<vsg::Device> device)
+    {
+        // Reproduce runtime feature combinations: a shadowed main world creates
+        // INHERIT_VIEWPOINT-only depth views, while a separate preview remains lit.
+        Fixture world(device, vsg::RECORD_ALL, 3);
+        auto ambient=vsg::AmbientLight::create();ambient->color={.4f,.4f,.4f};
+        auto sun=vsg::DirectionalLight::create();sun->direction={0,0,-1};sun->color={.1f,.1f,.1f};
+        sun->shadowSettings=vsg::HardShadows::create(3);
+        ImmediateEffectDraw draw;draw.identity="shadow-view-routing";draw.mesh=*quad();
+        draw.material.sourceIdentity="shadow-view-routing-material";draw.material.cullMode=CullMode::None;
+        draw.material.ambient={1,1,1,1};draw.material.diffuse={1,1,1,1};draw.material.specular={0,0,0,0};
+        draw.material.vertexColorMode=VertexColorMode::Ignore;
+        auto graph=RenderVsg::realizeImmediateEffectDraw(draw,resolver(),world.shared);
+        require(graph.valid(),graph.diagnostic);world.root->children={ambient,sun,graph.root};
+        // World drawables must be compiled for every live view, including
+        // generated depth passes; the ordinary Fixture::compile is UI/view-only.
+        const auto compiled=RenderVsg::compileForViewer(*world.viewer,world.root);
+        require(bool(compiled),"shadowed world compile: "+compiled.message);
+        require(RenderVsg::graphicsPipelinesRealizedForView(*graph.root,*world.view),
+            "world pipeline missing before recording");
+        for (const auto& shadow:world.state->shadowMaps)
+            require(RenderVsg::graphicsPipelinesRealizedForView(*graph.root,*shadow.view),
+                "shadow pipeline missing before recording");
+        require(world.state->shadowMaps.size()==3,"three actual VSG cascades were not compiled");
+        for (unsigned frame=0;frame<3;++frame)
+        {
+            const auto result=pixel(world.render());
+            require(result.r>100 && result.g>100 && result.b>100,"shadowed world lost ambient illumination");
+            require((*world.state->lightData)[0].x==1.f && (*world.state->lightData)[0].y==1.f,
+                "main shadowed view no longer packs ambient/sun data");
+            unsigned recorded=0;
+            for (std::size_t i=0;i<world.state->shadowMaps.size();++i)
+            {
+                const auto& shadow=world.state->shadowMaps[i];
+                require(shadow.view->features==vsg::INHERIT_VIEWPOINT,"generated shadow features changed");
+                const auto state=shadow.view->viewDependentState.cast<RenderVsg::OpenMwViewDependentState>();
+                require(state && state->lightData && state->lightData->size()==1,
+                    "depth-only shadow buffers were enlarged to hide the routing defect");
+                require((*state->lightData)[0]==vsg::vec4(0,0,0,0),"shadow camera received color-light counts");
+                if (world.state->preRenderSwitch->children[i].mask!=vsg::MASK_OFF)
+                {
+                    ++recorded;
+                    require(!state->ambientLights.empty() && !state->directionalLights.empty(),
+                        "shadow regression never encountered parent light nodes");
+                }
+            }
+            require(recorded>0,"shadow maps were silently disabled rather than repaired");
+        }
+        // The functional black-preview repair must survive the tighter feature gate.
+        checkUnshadowedLighting(device);
+        std::cout<<"PASS shadow view feature routing: three generated cascades, repeated frames, lit world and preview, unchanged depth buffer sizes\n";
+    }
     void checkSunSpecular(vsg::ref_ptr<vsg::Device> device)
     {
         Fixture f(device);
@@ -329,6 +388,7 @@ namespace
 
 int main(int argc,char** argv)
 {
+    std::cout << std::unitbuf;
     try
     {
         vsg::Names layers;
@@ -340,12 +400,13 @@ int main(int argc,char** argv)
         auto device=vsg::Device::create(selected,vsg::QueueSettings{{selected->getQueueFamily(VK_QUEUE_GRAPHICS_BIT),{1.f}}},vsg::Names{},extensions,features);
         std::cout<<"DEVICE "<<selected->getProperties().deviceName<<'\n';
         std::string mode=argc>1?argv[1]:"all";
-        require(mode=="all" || mode=="sky" || mode=="preview" || mode=="water" || mode=="normal" || mode=="baseline" || mode=="lighting" || mode=="specular", "unknown pixel test mode");
+        require(mode=="all" || mode=="sky" || mode=="preview" || mode=="water" || mode=="normal" || mode=="baseline" || mode=="lighting" || mode=="specular" || mode=="shadow-light-routing", "unknown pixel test mode");
         if(mode=="all"||mode=="baseline")checkWaterPixels(device);
         if(mode=="all"||mode=="sky")checkSky(device);
         if(mode=="all"||mode=="preview")checkPreview(device);
         if(mode=="all"||mode=="lighting")checkUnshadowedLighting(device);
         if(mode=="all"||mode=="specular")checkSunSpecular(device);
+        if(mode=="all"||mode=="shadow-light-routing")checkShadowViewFeatures(device);
         if(mode=="all"||mode=="water")checkWaterOptics(device);
         if(mode=="all"||mode=="normal")checkNormalMapping(device);
         return 0;

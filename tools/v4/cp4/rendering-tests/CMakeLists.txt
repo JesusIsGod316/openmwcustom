@@ -36,10 +36,12 @@ find_path(CP4F_GLM_INCLUDE_DIR glm/glm.hpp HINTS "${CP4F_RENDER_SDK}/sysroot/usr
 if(NOT EXISTS "${CP4F_MYGUI_INCLUDE_DIR}/MyGUI.h")
     message(FATAL_ERROR "Set CP4F_MYGUI_INCLUDE_DIR to the pinned MyGUIEngine/include directory")
 endif()
+set(CP4F_VIEW_STATE_SOURCE "${OPENMW_ROOT}/components/render/backend/vsg/openmwviewdependentstate.cpp"
+    CACHE FILEPATH "View state implementation; original source may be supplied for an expected-failure regression")
 add_library(rendering-source STATIC
     "${OPENMW_ROOT}/components/debug/debuglog.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/legacymaterialshader.cpp"
-    "${OPENMW_ROOT}/components/render/backend/vsg/openmwviewdependentstate.cpp"
+    "${CP4F_VIEW_STATE_SOURCE}"
     "${OPENMW_ROOT}/components/render/backend/vsg/offscreenrendertarget.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/staticassetconformance.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/staticassetrealizer.cpp"
@@ -48,7 +50,8 @@ add_library(rendering-source STATIC
     "${OPENMW_ROOT}/components/render/backend/vsg/watersurface.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/skybackdrop.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/nativesky.cpp")
-target_include_directories(rendering-source PUBLIC "${OPENMW_ROOT}" "${CP4F_GLM_INCLUDE_DIR}")
+target_include_directories(rendering-source PUBLIC "${OPENMW_ROOT}" "${CP4F_GLM_INCLUDE_DIR}"
+    PRIVATE "${OPENMW_ROOT}/components/render/backend/vsg")
 target_link_libraries(rendering-source PUBLIC rendering-deps Threads::Threads ${CMAKE_DL_LIBS})
 add_executable(rendering-pixels "${OPENMW_ROOT}/tools/v4/cp4/rendering-pixel-tests.cpp")
 target_link_libraries(rendering-pixels PRIVATE rendering-source)
@@ -85,7 +88,15 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_executable(rendering-uniforms "${OPENMW_ROOT}/tools/v4/cp4/rendering-uniform-tests.cpp")
 target_link_libraries(rendering-uniforms PRIVATE rendering-source)
+add_executable(rendering-view-features "${OPENMW_ROOT}/tools/v4/cp4/rendering-view-features-tests.cpp")
+target_link_libraries(rendering-view-features PRIVATE rendering-source)
+if(CP4F_CAPTURE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(rendering-source PRIVATE -O1 -g1 -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_compile_options(rendering-view-features PRIVATE -O1 -g1 -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rendering-source INTERFACE -fsanitize=address,undefined)
+endif()
 enable_testing()
+add_test(NAME rendering-view-features COMMAND rendering-view-features)
 add_test(NAME rendering-uniforms COMMAND rendering-uniforms)
 add_test(NAME rendering-capture COMMAND rendering-capture)
 # Pixel execution is explicit: missing Vulkan hardware is an error, never a PASS.

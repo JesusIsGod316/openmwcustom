@@ -230,7 +230,7 @@ jobs:
         shell: pwsh
         run: |
           $log = "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/effect-recovery-build.log"
-          cmake --build "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" --target openmw-v4-effect-uv-tests openmw-v4-effect-capture-tests openmw-v4-runtime-diagnostics-tests openmw-v4-host-memory-tests openmw-v4-cache-pressure-tests openmw-v4-rendering-uniform-tests openmw-v4-rendering-capture-tests openmw-v4-rendering-pixel-tests --verbose 2>&1 | Tee-Object -FilePath $log
+          cmake --build "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" --target openmw-v4-effect-uv-tests openmw-v4-effect-capture-tests openmw-v4-runtime-diagnostics-tests openmw-v4-host-memory-tests openmw-v4-cache-pressure-tests openmw-v4-rendering-uniform-tests openmw-v4-rendering-capture-tests openmw-v4-rendering-view-features-tests openmw-v4-rendering-pixel-tests --verbose 2>&1 | Tee-Object -FilePath $log
           $buildExit = $LASTEXITCODE
           if ($buildExit -ne 0) { exit $buildExit }
 
@@ -248,7 +248,7 @@ jobs:
           $env:PATH = $runtimePath
           & "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/openmw.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "build-tree Vulkan openmw.exe --version failed with $LASTEXITCODE" }
-          ctest --test-dir "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" -C RelWithDebInfo -R '^(openmw-v4-effect-(uv|capture)-tests|openmw-v4-(host-memory|cache-pressure)-tests|openmw-v4-rendering-(uniform|capture)-tests|openmw-v4-runtime-diagnostics-(off|standard|focused))$' --output-on-failure
+          ctest --test-dir "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" -C RelWithDebInfo -R '^(openmw-v4-effect-(uv|capture)-tests|openmw-v4-(host-memory|cache-pressure)-tests|openmw-v4-rendering-(uniform|capture|view-features)-tests|openmw-v4-runtime-diagnostics-(off|standard|focused))$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "rendering/effect/ownership recovery regressions failed with $LASTEXITCODE" }
           python tools/v4/cp4/test-runtime-diagnostics.py --capture-directory "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/runtime-diagnostic-evidence"
           if ($LASTEXITCODE -ne 0) { throw "native diagnostic output/report contract failed with $LASTEXITCODE" }

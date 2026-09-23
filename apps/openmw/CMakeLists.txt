@@ -343,6 +343,9 @@ if (OPENMW_V4_BUILD_RECOVERY_TESTS)
     add_executable(openmw-v4-rendering-capture-tests ../../tools/v4/cp4/rendering-capture-tests.cpp)
     target_link_libraries(openmw-v4-rendering-capture-tests PRIVATE openmw-lib)
     add_test(NAME openmw-v4-rendering-capture-tests COMMAND openmw-v4-rendering-capture-tests)
+    add_executable(openmw-v4-rendering-view-features-tests ../../tools/v4/cp4/rendering-view-features-tests.cpp)
+    target_link_libraries(openmw-v4-rendering-view-features-tests PRIVATE openmw-lib)
+    add_test(NAME openmw-v4-rendering-view-features-tests COMMAND openmw-v4-rendering-view-features-tests)
     # Headless Vulkan pixel suite: compile on Windows, execute only on an explicitly
     # provisioned Vulkan host. It creates no gameplay window and reads no assets/saves.
     add_executable(openmw-v4-rendering-pixel-tests ../../tools/v4/cp4/rendering-pixel-tests.cpp)

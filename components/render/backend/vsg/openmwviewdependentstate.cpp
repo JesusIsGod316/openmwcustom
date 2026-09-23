@@ -278,7 +278,13 @@ namespace RenderVsg
         const std::size_t required = 1u + ambientLights.size() + 3u * directionalLights.size()
             + 2u * pointLights.size() + 4u * spotLights.size();
         if (required > lightData->size())
-            throw std::runtime_error("unshadowed view light data exceeds its compiled buffer capacity");
+            throw std::runtime_error("unshadowed view light data exceeds its compiled buffer capacity"
+                " [view=" + std::to_string(view->viewID) + ", features="
+                + std::to_string(static_cast<unsigned int>(view->features)) + ", required_vec4="
+                + std::to_string(required) + ", capacity_vec4=" + std::to_string(lightData->size())
+                + ", ambient=" + std::to_string(ambientLights.size()) + ", directional="
+                + std::to_string(directionalLights.size()) + ", point=" + std::to_string(pointLights.size())
+                + ", spot=" + std::to_string(spotLights.size()) + "]");
         auto output = lightData->begin();
         bool changed = false;
         const auto write = [&](const vsg::vec4& value) {
@@ -324,7 +330,13 @@ namespace RenderVsg
 
     void OpenMwViewDependentState::traverse(vsg::RecordTraversal& traversal) const
     {
-        if (view && (view->features & vsg::RECORD_SHADOW_MAPS) == 0
+        // Absence of RECORD_SHADOW_MAPS does not imply a lit view. VSG's
+        // generated depth-only shadow cameras use INHERIT_VIEWPOINT, reserve
+        // only the light-count header, and can still collect parent Light nodes.
+        // Preserve their depth-only contract; only RECORD_LIGHTS views need our
+        // unshadowed lighting upload. Do not grow buffers or allocate shadow maps.
+        if (view && (view->features & vsg::RECORD_LIGHTS) != 0
+            && (view->features & vsg::RECORD_SHADOW_MAPS) == 0
             && std::getenv("OPENMW_V4_LEGACY_UNSHADOWED_LIGHTS_CONTROL") == nullptr)
             updateUnshadowedLightData();
         else
