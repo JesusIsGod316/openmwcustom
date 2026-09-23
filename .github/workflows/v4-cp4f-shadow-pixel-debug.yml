@@ -1,0 +1,76 @@
+name: CP4F shadow pixel fixture backtrace
+on:
+  push:
+    branches: [v4.0-cp4f-view-feature-routing-20260923]
+    paths: [.github/workflows/v4-cp4f-shadow-pixel-debug.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Recover exact reviewed source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/shadow-debug"
+          python3 - <<'PY'
+          import base64,hashlib,json,lzma,os,pathlib,subprocess,urllib.request
+          sha='a4bd978d0485080356161b3d6564e1a601306cd7'
+          request=urllib.request.Request('https://api.github.com/repos/JesusIsGod316/openmwcustom/git/blobs/'+sha,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN']})
+          with urllib.request.urlopen(request) as response: data=base64.b64decode(json.load(response)['content'])
+          assert hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()==sha
+          patch=lzma.decompress(data)
+          assert hashlib.sha256(patch).hexdigest()=='cbaf5b3af1fc8fda09e1e33691c84a64c445c04ead9ef299d1243081e6c74080'
+          path=pathlib.Path(os.environ['RUNNER_TEMP'])/'shadow-debug/repair.patch';path.write_bytes(patch)
+          subprocess.run(['git','apply',str(path)],check=True)
+          PY
+      - name: Install debugger and actual renderer dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y gdb ninja-build libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers libopenscenegraph-dev libglm-dev libbullet-dev libboost-all-dev libluajit-5.1-dev libpng-dev libsqlite3-dev libyaml-cpp-dev librecast-dev libopenal-dev libavcodec-dev libavformat-dev libswscale-dev libswresample-dev libfreetype-dev qt6-base-dev python3-yaml
+      - name: Retrieve exact verified SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 -H "Authorization: Bearer $GH_TOKEN" -o "$RUNNER_TEMP/render-sdk.zip" https://api.github.com/repos/JesusIsGod316/openmwcustom/actions/artifacts/10721042331/zip
+          echo "759107248040e002f5f4a7d2bed00082b6a7ea7e9e3afc1ddb0076cf247204e0  $RUNNER_TEMP/render-sdk.zip" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/render-sdk"
+          unzip -q "$RUNNER_TEMP/render-sdk.zip" -d "$RUNNER_TEMP/render-sdk"
+          tar -xzf "$RUNNER_TEMP/render-sdk/cp4f-render-test-deps.tar.gz" -C "$RUNNER_TEMP/render-sdk"
+          echo "CP4F_RENDER_SDK=$RUNNER_TEMP/render-sdk" >> "$GITHUB_ENV"
+          icd=$(find /usr/share/vulkan/icd.d -maxdepth 1 -name 'lvp_icd*.json' -print -quit)
+          test -n "$icd"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+      - name: Build exact failed pixel target
+        run: |
+          set -euo pipefail
+          cmake -S tools/v4/cp4/rendering-tests -B "$RUNNER_TEMP/shadow-debug/build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCP4F_RENDER_SDK="$CP4F_RENDER_SDK"
+          cmake --build "$RUNNER_TEMP/shadow-debug/build" --target rendering-pixels --parallel 3
+      - name: Collect first-failure stack without claiming a test pass
+        env:
+          OPENMW_V4_PIXEL_VALIDATION: '1'
+        run: |
+          set +e
+          out="$RUNNER_TEMP/shadow-debug"
+          stdbuf -oL -eL "$out/build/rendering-pixels" all > "$out/unbuffered-all.log" 2>&1
+          printf '%s\n' "$?" > "$out/exit-code.txt"
+          gdb --batch -ex 'set pagination off' -ex run -ex 'thread apply all bt 20' -ex 'frame 0' -ex 'info args' -ex 'info locals' --args "$out/build/rendering-pixels" shadow-light-routing > "$out/backtrace.log" 2>&1
+          cat "$out/unbuffered-all.log"
+          cat "$out/backtrace.log"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cp4f-shadow-pixel-backtrace-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/shadow-debug/*.log
+            ${{ runner.temp }}/shadow-debug/*.txt
+          retention-days: 14
+          if-no-files-found: error
