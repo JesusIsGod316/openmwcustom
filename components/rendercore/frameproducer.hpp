@@ -77,6 +77,7 @@ namespace RenderCore
             // requests are added or removed. Unspecified requests retain the
             // original positional behavior for one-shot preview/debug callers.
             std::optional<std::uint32_t> stableSlot;
+            std::shared_ptr<const IsolatedSceneSnapshot> isolatedScene;
         };
 
         CameraState camera;
@@ -92,6 +93,7 @@ namespace RenderCore
         std::vector<SkeletonPoseInput> skeletonPoses;
         std::vector<MorphWeightInput> morphWeights;
         std::vector<ImmediateEffectDraw> immediateEffectDraws;
+        std::shared_ptr<const NativeSkySnapshot> nativeSky;
         bool invalidateHistory = false;
         DerivedShadowViews shadowViews;
         WaterViews waterViews;
@@ -154,6 +156,7 @@ namespace RenderCore
             desc.historyValid = continuous;
             desc.environment = input.environment;
             desc.immediateEffectDraws = input.immediateEffectDraws;
+            desc.nativeSky = input.nativeSky;
             desc.renderTargets.push_back(RenderTargetDesc{
                 .identity = view.outputTarget,
                 .kind = RenderTargetKind::Swapchain,
@@ -305,6 +308,7 @@ namespace RenderCore
                     .historyEpoch = candidateHistoryEpoch,
                     .temporal = request.temporal,
                     .historyValid = false,
+                    .isolatedScene = request.isolatedScene,
                 });
                 desc.renderPasses.push_back(RenderPassDesc{
                     .identity = pass,

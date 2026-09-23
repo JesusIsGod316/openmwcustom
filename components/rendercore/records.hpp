@@ -545,6 +545,9 @@ namespace RenderCore
         BlendFactor sourceBlend = BlendFactor::SourceAlpha;
         BlendFactor destinationBlend = BlendFactor::OneMinusSourceAlpha;
         BlendEquation blendEquation = BlendEquation::Add;
+        bool separateAlphaBlend = false;
+        BlendFactor sourceAlphaBlend = BlendFactor::SourceAlpha;
+        BlendFactor destinationAlphaBlend = BlendFactor::OneMinusSourceAlpha;
         TextureApplyMode textureApply = TextureApplyMode::Modulate;
         CullMode cullMode = CullMode::Back;
         FrontFaceWinding frontFace = FrontFaceWinding::CounterClockwise;
@@ -552,6 +555,9 @@ namespace RenderCore
         VertexColorMode vertexColorMode = VertexColorMode::Ignore;
         bool wireframe = false;
         bool unlit = false;
+        // Authored FORCE_OPAQUE is applied after alpha comparison. This keeps
+        // opaque preview surfaces opaque without losing cutout coverage.
+        bool forceOpaqueAlpha = false;
         bool depthTest = true;
         bool depthWrite = true;
         std::optional<TerrainLayerSemantic> terrainLayer;

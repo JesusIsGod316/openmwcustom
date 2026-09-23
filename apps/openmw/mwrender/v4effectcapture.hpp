@@ -296,13 +296,15 @@ namespace MWRender
 
         [[nodiscard]] inline bool captureMaterial(const osg::NodePath& path, const osg::StateSet* drawableState,
             const VFS::Manager& vfs, CapturedMaterial& out, std::string& diagnostic,
-            NifRender::TextureIdentityCache* identityCache = nullptr)
+            NifRender::TextureIdentityCache* identityCache = nullptr, bool preview = false)
         {
             using namespace RenderCore;
             const osg::ref_ptr<osg::StateSet> state = effectiveState(path, drawableState);
             MaterialRecord material;
             material.textureApply = textureApplyMode(path);
             material.unlit = noLightingShader(path);
+            if (const auto* opaque = state->getDefinePair("FORCE_OPAQUE"))
+                material.forceOpaqueAlpha = (opaque->second & osg::StateAttribute::ON) && opaque->first == "1";
 
             // Vulkan's immediate-effect pass does not yet expose the opaque
             // scene depth as a sampled texture or the OSG distortion target.
@@ -390,6 +392,16 @@ namespace MWRender
                     }
                     material.sourceBlend = *source;
                     material.destinationBlend = *destination;
+                    const auto sourceAlpha = blendFactor(blend->getSourceAlpha());
+                    const auto destinationAlpha = blendFactor(blend->getDestinationAlpha());
+                    if (!sourceAlpha || !destinationAlpha)
+                    {
+                        diagnostic = "evaluated effect uses an unsupported separate alpha blend factor";
+                        return false;
+                    }
+                    material.separateAlphaBlend = *sourceAlpha != *source || *destinationAlpha != *destination;
+                    material.sourceAlphaBlend = *sourceAlpha;
+                    material.destinationAlphaBlend = *destinationAlpha;
                 }
                 if (const auto* equation = dynamic_cast<const osg::BlendEquation*>(
                         state->getAttribute(osg::StateAttribute::BLENDEQUATION)))
@@ -519,6 +531,14 @@ namespace MWRender
                 const auto* texture = dynamic_cast<const osg::Texture2D*>(
                     state->getTextureAttribute(unit, osg::StateAttribute::TEXTURE));
                 if (!texture)
+                    continue;
+                // The preview's named, engine-owned depth sentinel is a pass
+                // dependency, not an authored material image. It has no pixels.
+                // Never generalize this exception to user textures or world draws.
+                if (preview && texture->getName() == "openmw.character-preview.depth-sentinel"
+                    && !texture->getImage() && texture->getInternalFormat() == GL_DEPTH_COMPONENT
+                    && texture->getShadowComparison()
+                    && texture->getShadowCompareFunc() == osg::Texture::ALWAYS)
                     continue;
                 const osg::Image* image = texture->getImage();
                 if (!image || image->getFileName().empty() || image->s() <= 0 || image->t() <= 0)
@@ -652,7 +672,7 @@ namespace MWRender
 
         [[nodiscard]] inline bool captureGeometry(const osg::Geometry& geometry, const osg::NodePath& path,
             const VFS::Manager& vfs, std::string identity, RenderCore::ImmediateEffectDraw& draw,
-            std::string& diagnostic, NifRender::TextureIdentityCache* identityCache = nullptr)
+            std::string& diagnostic, NifRender::TextureIdentityCache* identityCache = nullptr, bool preview = false)
         {
             const auto* positions = dynamic_cast<const osg::Vec3Array*>(geometry.getVertexArray());
             if (!positions || positions->empty())
@@ -726,7 +746,7 @@ namespace MWRender
             }
 
             CapturedMaterial captured;
-            if (!captureMaterial(path, geometry.getStateSet(), vfs, captured, diagnostic, identityCache))
+            if (!captureMaterial(path, geometry.getStateSet(), vfs, captured, diagnostic, identityCache, preview))
                 return false;
             draw.material = std::move(captured.material);
             draw.textures = std::move(captured.textures);
@@ -923,7 +943,7 @@ namespace MWRender
         {
         public:
             CaptureVisitor(std::string identityPrefix, bool wholeSubtree, const VFS::Manager& vfs,
-                NifRender::TextureIdentityCache* identityCache = nullptr, bool actorBody = false)
+                NifRender::TextureIdentityCache* identityCache = nullptr, bool actorBody = false, bool preview = false)
                 : osg::NodeVisitor(actorBody ? TRAVERSE_ACTIVE_CHILDREN : TRAVERSE_ALL_CHILDREN)
                 , mIdentityPrefix(std::move(identityPrefix))
                 , mWholeSubtree(wholeSubtree)
@@ -931,6 +951,7 @@ namespace MWRender
                 , mIdentityCache(identityCache)
                 , mDepth(wholeSubtree ? 1u : 0u)
                 , mActorBody(actorBody)
+                , mPreview(preview)
             {
             }
 
@@ -982,7 +1003,7 @@ namespace MWRender
                     {
                         RenderCore::ImmediateEffectDraw draw;
                         if (captureGeometry(*geometry, getNodePath(), mVfs, nextIdentity("geometry"), draw,
-                                mResult.diagnostic, mIdentityCache))
+                                mResult.diagnostic, mIdentityCache, mPreview))
                         {
                             // The body remains ordinary shadow-casting geometry;
                             // built-in particles retain their effect semantics.
@@ -1032,6 +1053,7 @@ namespace MWRender
             std::size_t mDepth = 0;
             std::size_t mOrdinal = 0;
             bool mActorBody = false;
+            bool mPreview = false;
             V4EffectCaptureResult mResult;
         };
     }

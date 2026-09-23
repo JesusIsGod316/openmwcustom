@@ -60,6 +60,7 @@ layout(location = 0) out vec4 outColor;
 layout(set = 0, binding = 0) uniform sampler2D reflectionImage;
 layout(set = 0, binding = 1) uniform sampler2D refractionImage;
 layout(set = 0, binding = 3) uniform sampler2D normalMap;
+layout(set = 0, binding = 4) uniform sampler2D refractionDepth;
 
 layout(set = 0, binding = 2, std140) uniform WaterParameters
 {
@@ -73,10 +74,16 @@ layout(set = 0, binding = 2, std140) uniform WaterParameters
     vec4 camera;
     // x=water height, y=normal map enabled, z=rain intensity, w=unused.
     vec4 surface;
+    // xy=perspective near/far, z=depth optics enabled, w=native ambient magnitude.
+    vec4 optics;
+    vec4 sunDirection;
+    vec4 sunSpecular;
+    // xy=fog start/end, z=enabled, w=radial bit 1 / exponential bit 2.
+    vec4 fogRange;
 } water;
 
 // Wave scales/weights and dielectric response follow compatibility/water.frag
-// and lib/water/fresnel.glsl. Rain collision ripples/depth absorption are separate.
+// and lib/water/fresnel.glsl. Collision/rain ripple simulation remains separate.
 vec2 normalCoords(vec2 uv, float scale, float speed, float time, vec2 timer, vec3 previousNormal)
 {
     vec2 chop = abs(previousNormal.z) > 0.0001 ? previousNormal.xy / previousNormal.z : vec2(0.0);
@@ -92,6 +99,21 @@ float dielectric(vec3 incoming, vec3 normal, float eta)
     float A = (g - c) / (g + c);
     float B = (c * (g + c) - 1.0) / (c * (g - c) + 1.0);
     return clamp(0.5 * A * A * (1.0 + B * B), 0.0, 1.0);
+}
+
+// Reversed zero-to-one depth, without converting it to legacy GL depth.
+float linearDepth(float z)
+{
+    float n = water.optics.x, f = water.optics.y;
+    return n * f / max(n + z * (f - n), 0.000001);
+}
+
+float absorption(float depth)
+{
+    // Exact native water VISIBILITY=2500, DEPTH_FADE=.15 transfer curve.
+    float correction = sqrt(1.0 + 4.0 * 0.15 * 0.15);
+    return clamp(0.15 * 0.15 / (-0.5 * correction + 0.5 - max(depth,0.0) / 2500.0)
+        + 0.5 * correction + 0.5, 0.0, 1.0);
 }
 
 void main()
@@ -116,32 +138,65 @@ void main()
         waterNormal = normalize(vec3(-n.xy*bump,n.z));
         ripple = waterNormal.xy * 0.10;
     }
-    // Fragment coordinates remain valid when the large plane crosses the
-    // camera/near plane. Interpolating abs(clip.w)-divided corner UVs does not.
-    vec2 uv = clamp(gl_FragCoord.xy * water.target.xy + ripple, vec2(0.002), vec2(0.998));
-    // FrameProducer reflects forward/up then rebuilds a right-handed camera.
-    // Its right axis is reversed relative to the raw mirror transform. Undo
-    // that horizontal reversal when projecting its image onto the water.
+    // Fragment coordinates remain valid when the plane crosses the near plane.
+    vec2 screen = gl_FragCoord.xy * water.target.xy;
+    bool depthOptics = water.optics.z > 0.5;
+    float surfaceDepth = linearDepth(gl_FragCoord.z);
+    float realDepth = 0.0;
+    float distortedDepth = 0.0;
+    if (depthOptics)
+    {
+        realDepth = linearDepth(texture(refractionDepth,screen).r) - surfaceDepth;
+        distortedDepth = max(linearDepth(texture(refractionDepth,screen-ripple).r)-surfaceDepth,0.0);
+        ripple *= clamp(realDepth / 300.0,0.0,1.0);
+    }
+    vec2 uv = clamp(screen + ripple, vec2(0.002), vec2(0.998));
+    // The native reflected camera has a reversed right axis. Keep the tested
+    // horizontal correction, not the legacy composition control's unmirrored UV.
     vec2 reflectionUv = water.target.z > 0.5 ? uv : vec2(1.0 - uv.x, uv.y);
     vec3 reflection = texture(reflectionImage, reflectionUv).rgb;
+    if (water.state.z < 0.5) reflection = water.skyColor.rgb;
     vec2 refractionUv = water.surface.y > 0.5
-        ? clamp(gl_FragCoord.xy * water.target.xy - waterNormal.xy * 0.07, vec2(0.002),vec2(0.998)) : uv;
+        ? clamp(screen - waterNormal.xy * 0.07,vec2(0.002),vec2(0.998)) : uv;
+    if (depthOptics)
+    {
+        // Do not pull far underwater pixels over a shallow shore edge.
+        if (water.state.y < 0.5 && realDepth <= 3750.0 && distortedDepth > 3750.0) ripple=vec2(0.0);
+        refractionUv = clamp(screen-ripple,vec2(0.002),vec2(0.998));
+        distortedDepth = max(linearDepth(texture(refractionDepth,refractionUv).r)-surfaceDepth,0.0);
+        distortedDepth = mix(distortedDepth,realDepth,min(surfaceDepth/3000.0,1.0));
+    }
     vec3 refraction = texture(refractionImage, refractionUv).rgb;
-    if (water.state.z < 0.5)
-        reflection = water.skyColor.rgb;
-    if (water.state.w < 0.5)
-        refraction = water.fogColor.rgb * vec3(0.55, 0.72, 0.78);
-    float fresnel = clamp(0.32 + abs(ripple.x + ripple.y) * 12.0, 0.22, 0.68);
-    if (water.surface.y > 0.5)
-        fresnel = dielectric(normalize(vec3(worldXY,water.surface.x) - water.camera.xyz), waterNormal,
-            water.state.y > 0.5 ? 1.0 / 1.333 : 1.333);
-    vec3 color = mix(refraction, reflection, fresnel);
-    if (water.state.y > 0.5)
-        color = mix(color, water.fogColor.rgb, 0.46);
-    // The refraction target already contains the transmitted scene. Blending
-    // it again with the main scene counts that background twice.
-    float alpha = water.state.w > 0.5 && water.target.z < 0.5
-        ? 1.0 : (water.state.y > 0.5 ? 0.72 : 0.82);
+    if (water.state.w < 0.5) refraction=water.fogColor.rgb*vec3(0.55,0.72,0.78);
+    vec3 incoming = normalize(vec3(worldXY,water.surface.x)-water.camera.xyz);
+    float fresnel = clamp(0.32+abs(ripple.x+ripple.y)*12.0,0.22,0.68);
+    if (water.surface.y > 0.5 || depthOptics)
+        fresnel=dielectric(incoming,waterNormal,water.state.y>0.5?1.0/1.333:1.333);
+    if (depthOptics)
+    {
+        if (water.state.y > 0.5) refraction=clamp(refraction*1.5,0.0,1.0);
+        else refraction=mix(refraction,vec3(0.090195,0.115685,0.12745)*water.optics.w,absorption(distortedDepth));
+    }
+    vec3 color=mix(refraction,reflection,fresnel);
+    if (water.state.y > 0.5 && !depthOptics) color=mix(color,water.fogColor.rgb,0.46);
+    float alpha = water.state.w>0.5 && water.target.z<0.5 ? 1.0 : (water.state.y>0.5?0.72:0.82);
+    if (depthOptics)
+    {
+        vec3 specNormal=normalize(vec3(waterNormal.xy*5.0,waterNormal.z));
+        float phong=max(dot(reflect(incoming,specNormal),water.sunDirection.xyz),0.0);
+        float specular=clamp(pow(atan(phong*1.55),256.0)*1.5,0.0,1.0)
+            * clamp(water.sunSpecular.a/0.15,0.0,1.0);
+        color += specular*water.sunSpecular.rgb;
+        if (water.fogRange.z>0.5 && water.fogRange.y>water.fogRange.x)
+        {
+            int modes=int(water.fogRange.w);
+            float distanceToCamera=(modes&1)!=0 ? length(vec3(worldXY,water.surface.x)-water.camera.xyz) : surfaceDepth;
+            float factor=(modes&2)!=0
+                ? 1.0-exp(-2.0*max(0.0,distanceToCamera-water.fogRange.x*0.5)/(water.fogRange.y-water.fogRange.x*0.5))
+                : clamp((distanceToCamera-water.fogRange.x)/(water.fogRange.y-water.fogRange.x),0.0,1.0);
+            color=mix(color,water.fogColor.rgb,clamp(factor,0.0,1.0));
+        }
+    }
     outColor = vec4(color, alpha);
 }
 )";
@@ -159,13 +214,15 @@ void main()
 
     WaterSurface WaterSurface::create(
         vsg::ref_ptr<vsg::ImageView> reflection, vsg::ref_ptr<vsg::ImageView> refraction,
-        vsg::ref_ptr<vsg::Data> normalMap)
+        vsg::ref_ptr<vsg::Data> normalMap, vsg::ref_ptr<vsg::ImageView> refractionDepth)
     {
         WaterSurface result;
         result.mHasReflection = reflection.valid();
         result.mHasRefraction = refraction.valid();
         result.mLegacyComposition = std::getenv("OPENMW_V4_LEGACY_WATER_COMPOSITION_CONTROL") != nullptr;
         result.mHasNormalMap = normalMap.valid();
+        result.mDepthOptics = refraction.valid() && refractionDepth.valid()
+            && std::getenv("OPENMW_V4_LEGACY_WATER_OPTICS_CONTROL") == nullptr;
 
         auto vertexShader = vsg::ShaderStage::create(VK_SHADER_STAGE_VERTEX_BIT, "main", std::string(WaterVertexSource));
         auto fragmentShader
@@ -186,6 +243,7 @@ void main()
             { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
             { 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
             { 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+            { 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
         });
         auto pipelineLayout = vsg::PipelineLayout::create(vsg::DescriptorSetLayouts{ descriptorLayout },
             vsg::PushConstantRanges{ { VK_SHADER_STAGE_VERTEX_BIT, 0, 128 } });
@@ -221,7 +279,7 @@ void main()
         stateGroup->add(ViewPipelineBinding::create(std::move(pipeline)));
         // Keep effect parameters out of VSG's 128-byte matrix push constants.
         // Dynamic descriptors are uploaded by the viewer's transfer task.
-        result.mParameters = vsg::vec4Array::create(6);
+        result.mParameters = vsg::vec4Array::create(10);
         result.mParameters->properties.dataVariance = vsg::DYNAMIC_DATA;
         auto normalSampler = vsg::Sampler::create();
         normalSampler->addressModeU = normalSampler->addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
@@ -230,6 +288,17 @@ void main()
             auto flat = vsg::ubvec4Array2D::create(1,1, vsg::Data::Properties(VK_FORMAT_R8G8B8A8_UNORM));
             (*flat)(0,0) = vsg::ubvec4(128,128,255,255);
             normalMap = flat;
+        }
+        auto depthSampler = vsg::Sampler::create();
+        depthSampler->minFilter = depthSampler->magFilter = VK_FILTER_NEAREST;
+        depthSampler->addressModeU = depthSampler->addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        vsg::ref_ptr<vsg::ImageInfo> depthInfo;
+        if (refractionDepth)
+            depthInfo = vsg::ImageInfo::create(depthSampler, refractionDepth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        else
+        {
+            auto clearDepth = vsg::floatArray2D::create(1,1,0.0f,vsg::Data::Properties(VK_FORMAT_R32_SFLOAT));
+            depthInfo = vsg::ImageInfo::create(depthSampler, clearDepth);
         }
         auto descriptorSet = vsg::DescriptorSet::create(descriptorLayout,
             vsg::Descriptors{
@@ -240,6 +309,7 @@ void main()
                 vsg::DescriptorBuffer::create(result.mParameters, 2, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),
                 vsg::DescriptorImage::create(normalSampler, normalMap, 3, 0,
                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),
+                vsg::DescriptorImage::create(vsg::ImageInfoList{depthInfo}, 4, 0),
             });
         stateGroup->add(vsg::BindDescriptorSet::create(
             VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, descriptorSet));
@@ -277,7 +347,7 @@ void main()
         mPlacement->matrix = vsg::translate(mainView.current.worldPosition.x, mainView.current.worldPosition.y,
                                   environment.waterHeight)
             * vsg::scale(radius, radius, 1.0);
-        const vsg::vec4 values[6]{
+        const vsg::vec4 values[10]{
             { static_cast<float>(std::fmod(simulationTime, 4096.0)), environment.underwater ? 1.0f : 0.0f,
                 mHasReflection ? 1.0f : 0.0f, mHasRefraction ? 1.0f : 0.0f },
             { environment.fogColor.r, environment.fogColor.g, environment.fogColor.b, environment.fogColor.a },
@@ -288,9 +358,18 @@ void main()
                 static_cast<float>(mainView.current.worldPosition.z), static_cast<float>(radius)},
             {static_cast<float>(environment.waterHeight), mHasNormalMap ? 1.0f : 0.0f,
                 environment.precipitationIntensity, 0.0f},
+            {static_cast<float>(mainView.current.projection.nearPlane),static_cast<float>(mainView.current.projection.farPlane),
+                mDepthOptics ? 1.0f : 0.0f, std::sqrt(environment.ambient.r*environment.ambient.r
+                    + environment.ambient.g*environment.ambient.g + environment.ambient.b*environment.ambient.b)},
+            {-environment.sunDirection.x,-environment.sunDirection.y,-environment.sunDirection.z,0.0f},
+            {environment.sunSpecular.r,environment.sunSpecular.g,environment.sunSpecular.b,
+                environment.sunLightEnabled && !environment.interior ? environment.sunSpecular.a : 0.0f},
+            {environment.fogStart,environment.fogEnd,environment.fogEnabled ? 1.0f : 0.0f,
+                static_cast<float>((environment.fogDistanceMode==RenderCore::FogDistanceMode::Radial?1:0)
+                    | (environment.fogFalloffMode==RenderCore::FogFalloffMode::Exponential?2:0))},
         };
         bool changed = false;
-        for (std::size_t i = 0; i < 6; ++i)
+        for (std::size_t i = 0; i < 10; ++i)
         {
             changed = changed || (*mParameters)[i] != values[i];
             (*mParameters)[i] = values[i];

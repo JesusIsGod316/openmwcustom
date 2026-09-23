@@ -11,6 +11,7 @@
 #include "offscreenrendertarget.hpp"
 #include "sdlvulkanwindow.hpp"
 #include "skybackdrop.hpp"
+#include "nativesky.hpp"
 #include "staticassetrealizer.hpp"
 #include "staticpopulationresidency.hpp"
 #include "staticworldresidency.hpp"
@@ -157,6 +158,7 @@ namespace RenderVsg
         };
         struct WaterViewRuntime
         {
+            std::unique_ptr<NativeSky> nativeSky;
             OffscreenRenderTarget target;
             FrameCameraObjects camera;
             vsg::ref_ptr<vsg::View> view;
@@ -179,6 +181,10 @@ namespace RenderVsg
             WaterSurface waterSurface;
             std::unique_ptr<ViewCompileManager::Registration> compilation;
             bool active = false;
+            bool isolated = false;
+            std::uint64_t sceneRevision = 0;
+            vsg::ref_ptr<vsg::Group> isolatedHolder;
+            vsg::ref_ptr<vsg::Group> isolatedPublished;
         };
         struct DynamicActorResident
         {
@@ -252,6 +258,7 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::AmbientLight> mAmbientLight;
         vsg::ref_ptr<vsg::DirectionalLight> mSunLight;
         SkyBackdrop mSkyBackdrop;
+        NativeSky mNativeSky;
         WaterSurface mWaterSurface;
         FrameCameraObjects mCamera;
         StaticWorldResidency<StaticResident> mStaticResidency;
@@ -260,6 +267,8 @@ namespace RenderVsg
         StaticPopulationResidency<StaticPopulationResident> mStaticPopulationResidency;
         FrameRetirementQueue<vsg::ref_ptr<vsg::Group>> mDynamicRetirements;
         FrameRetirementQueue<vsg::ref_ptr<vsg::Group>> mGuiRetirements;
+        FrameRetirementQueue<vsg::ref_ptr<vsg::Group>> mIsolatedSceneRetirements;
+        FrameRetirementQueue<AuxiliaryViewRuntime> mAuxiliaryRetirements;
         std::optional<RenderCore::FrameId> mDynamicLastUse;
         std::optional<RenderCore::FrameId> mGuiLastUse;
         std::optional<RenderCore::FrameId> mCompletedThrough;

@@ -2,6 +2,9 @@
 #define MWRENDER_CHARACTERPREVIEW_H
 
 #include <memory>
+#include <cstdint>
+#include <vector>
+#include <osg/Matrixf>
 #include <osg/ref_ptr>
 
 #include <osg/PositionAttitudeTransform>
@@ -40,6 +43,25 @@ namespace MWRender
 
         void redraw();
 
+        struct NativeSnapshot
+        {
+            std::uint64_t identity = 0;
+            std::uint64_t revision = 0;
+            std::string textureName;
+            osg::ref_ptr<osg::Node> root;
+            osg::Matrixf view;
+            osg::Vec4f ambient;
+            osg::Vec4f diffuse;
+            osg::Vec3f directionalRay;
+            int width = 0, height = 0, viewportWidth = 0, viewportHeight = 0;
+            unsigned int traversalNumber = 0;
+            bool ready = false;
+        };
+        // Main-thread-only observation after the canonical update traversal.
+        // Returned OSG references are consumed immediately by the producer;
+        // only copied neutral geometry reaches the renderer/Lua-release boundary.
+        static std::vector<NativeSnapshot> nativeSnapshots();
+
         void rebuild();
 
         osg::ref_ptr<osg::Texture2D> getTexture();
@@ -72,6 +94,12 @@ namespace MWRender
 
         int mSizeX;
         int mSizeY;
+        std::uint64_t mNativeIdentity = 0;
+        std::uint64_t mNativeRevision = 1;
+        std::string mNativeTextureName;
+        osg::Vec4f mNativeAmbient;
+        osg::Vec4f mNativeDiffuse;
+        osg::Vec3f mNativeDirectionalRay;
     };
 
     class InventoryPreview : public CharacterPreview

@@ -265,8 +265,8 @@ namespace RenderVsg
                 attachment.srcColorBlendFactor = toVkBlendFactor(key.fixedFunction.blend.source);
                 attachment.dstColorBlendFactor = toVkBlendFactor(key.fixedFunction.blend.destination);
                 attachment.colorBlendOp = toVkBlendOp(key.fixedFunction.blend.equation);
-                attachment.srcAlphaBlendFactor = attachment.srcColorBlendFactor;
-                attachment.dstAlphaBlendFactor = attachment.dstColorBlendFactor;
+                attachment.srcAlphaBlendFactor = toVkBlendFactor(key.fixedFunction.blend.sourceAlpha);
+                attachment.dstAlphaBlendFactor = toVkBlendFactor(key.fixedFunction.blend.destinationAlpha);
                 attachment.alphaBlendOp = attachment.colorBlendOp;
                 attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
                     | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -863,7 +863,8 @@ namespace RenderVsg
                 vsg::ref_ptr<vsg::Sampler> sampler;
                 if (!realizeBinding(bindingIndex, data, sampler))
                     return result;
-                if (material->terrainLayer && binding.role == TextureRole::Normal
+                if (binding.role == TextureRole::Normal
+                    && (material->terrainLayer || !std::getenv("OPENMW_V4_LEGACY_NORMAL_MAPPING_CONTROL"))
                     && (data->properties.format == VK_FORMAT_BC5_UNORM_BLOCK
                         || data->properties.format == VK_FORMAT_R8G8_UNORM
                         || data->properties.format == VK_FORMAT_R16G16_UNORM))

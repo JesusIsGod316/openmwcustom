@@ -3,11 +3,13 @@
 
 #include "records.hpp"
 #include "effectframe.hpp"
+#include "skyframe.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <optional>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -135,6 +137,20 @@ namespace RenderCore
         double distance = 0.0;
     };
 
+    // An auxiliary scene is evaluated by the producer, independently of the
+    // gameplay world. The immutable payload owns no engine or backend objects.
+    // Revision identifies a redraw, not an animation time or a raw pointer.
+    struct IsolatedSceneSnapshot
+    {
+        std::uint64_t identity = 0;
+        std::uint64_t revision = 0;
+        Extent2D viewportExtent;
+        Color ambient{ 0.0f, 0.0f, 0.0f, 1.0f };
+        Color directionalDiffuse{ 1.0f, 1.0f, 1.0f, 1.0f };
+        glm::vec3 directionalRay{ 0.0f, 0.0f, -1.0f };
+        std::vector<ImmediateEffectDraw> draws;
+    };
+
     struct FrameView
     {
         ViewHandle identity;
@@ -151,6 +167,7 @@ namespace RenderCore
         HistoryEpoch historyEpoch = InitialHistoryEpoch;
         bool temporal = false;
         bool historyValid = false;
+        std::shared_ptr<const IsolatedSceneSnapshot> isolatedScene;
     };
 
     // Some auxiliary cameras and targets are derived by the backend from a
@@ -290,6 +307,7 @@ namespace RenderCore
         std::vector<MorphWeightState> morphWeights;
         std::vector<DynamicMaterialState> dynamicMaterials;
         std::vector<ImmediateEffectDraw> immediateEffectDraws;
+        std::shared_ptr<const NativeSkySnapshot> nativeSky;
     };
 
     // Immutable-by-interface snapshot. Producers assemble a FrameRenderStateDesc,
@@ -343,12 +361,15 @@ namespace RenderCore
             return mDesc.immediateEffectDraws;
         }
 
+        [[nodiscard]] const std::shared_ptr<const NativeSkySnapshot>& nativeSky() const noexcept { return mDesc.nativeSky; }
+
         [[nodiscard]] bool valid() const noexcept
         {
             if (!mDesc.frameId.valid() || !mDesc.worldEpoch.valid() || !mDesc.renderWorldRevision.valid()
                 || !mDesc.historyEpoch.valid() || !mDesc.renderExtent.valid() || !mDesc.outputExtent.valid()
                 || !finite(mDesc.simulationTime) || !finite(mDesc.frameDelta) || !finite(mDesc.jitter)
-                || !finite(mDesc.projectionOffset) || !finite(mDesc.environment))
+                || !finite(mDesc.projectionOffset) || !finite(mDesc.environment)
+                || (mDesc.nativeSky && !validNativeSky(*mDesc.nativeSky)))
                 return false;
 
             for (std::size_t i = 0; i < mDesc.renderTargets.size(); ++i)
@@ -374,6 +395,8 @@ namespace RenderCore
                 if (!view.identity.valid() || !view.outputTarget.valid() || !output
                     || !view.extent.valid() || !view.historyEpoch.valid() || !finite(view.lodScale)
                     || view.lodScale <= 0.0f || !finite(view.current) || !finite(view.previous)
+                    || (view.isolatedScene && (view.kind != ViewKind::Preview
+                        || !finite(*view.isolatedScene, view.extent)))
                     || (view.clipPlane && !finite(*view.clipPlane)))
                     return false;
                 for (std::size_t j = i + 1; j < mDesc.views.size(); ++j)
@@ -640,6 +663,22 @@ namespace RenderCore
                     || value.depthRange == ClipDepthRange::ZeroToOne)
                 && (value.depthDirection == DepthDirection::Forward || value.depthDirection == DepthDirection::Reversed)
                 && (value.yDirection == ClipYDirection::Up || value.yDirection == ClipYDirection::Down);
+        }
+
+        [[nodiscard]] static bool finite(const IsolatedSceneSnapshot& value, Extent2D target) noexcept
+        {
+            if (value.identity == 0 || value.revision == 0 || !value.viewportExtent.valid()
+                || value.viewportExtent.width > target.width || value.viewportExtent.height > target.height
+                || !finite(value.ambient) || !finite(value.directionalDiffuse) || !finite(value.directionalRay)
+                || glm::length(value.directionalRay) < 0.001f)
+                return false;
+            for (std::size_t i = 0; i < value.draws.size(); ++i)
+            {
+                if (!validImmediateEffectDraw(value.draws[i])) return false;
+                for (std::size_t j = 0; j < i; ++j)
+                    if (value.draws[i].identity == value.draws[j].identity) return false;
+            }
+            return true;
         }
 
         [[nodiscard]] static bool finite(const FrameEnvironmentState& value) noexcept

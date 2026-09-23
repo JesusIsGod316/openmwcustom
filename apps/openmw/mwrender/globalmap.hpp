@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <osg/ref_ptr>
+#include <osg/Image>
 
 namespace osg
 {

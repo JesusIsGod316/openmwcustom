@@ -2,6 +2,9 @@
 #include "characterpreview.hpp"
 
 #include <cmath>
+#include <algorithm>
+#include <limits>
+#include <stdexcept>
 
 #include <osg/BlendFunc>
 #include <osg/Camera>
@@ -38,6 +41,21 @@
 
 namespace MWRender
 {
+    namespace
+    {
+        std::vector<CharacterPreview*>& nativePreviews()
+        {
+            static std::vector<CharacterPreview*> previews;
+            return previews;
+        }
+        std::uint64_t nextNativePreviewIdentity()
+        {
+            static std::uint64_t next = 1;
+            if (next >= (std::uint64_t{1} << 30))
+                throw std::overflow_error("native character-preview identity exhausted");
+            return next++;
+        }
+    }
 
     class DrawOnceCallback : public SceneUtil::NodeCallback<DrawOnceCallback>
     {
@@ -80,6 +98,7 @@ namespace MWRender
         void redrawNextFrame() { mRendered = false; }
 
         unsigned int getLastRenderedFrame() const { return mLastRenderedFrame; }
+        bool ready() const { return mRendered; }
 
     private:
         bool mRendered;
@@ -258,6 +277,7 @@ namespace MWRender
         stateset->addUniform(new osg::Uniform("actorFade", 1.f));
 
         osg::ref_ptr<osg::Texture2D> dummyTexture = new osg::Texture2D();
+        dummyTexture->setName("openmw.character-preview.depth-sentinel");
         dummyTexture->setWrap(osg::Texture::WRAP_S, osg::Texture::CLAMP_TO_EDGE);
         dummyTexture->setWrap(osg::Texture::WRAP_T, osg::Texture::CLAMP_TO_EDGE);
         dummyTexture->setInternalFormat(GL_DEPTH_COMPONENT);
@@ -287,6 +307,9 @@ namespace MWRender
         light->setLinearAttenuation(0.f);
         light->setQuadraticAttenuation(0.f);
         lightManager->setSunlight(light);
+        mNativeAmbient = light->getAmbient();
+        mNativeDiffuse = light->getDiffuse();
+        mNativeDirectionalRay = osg::Vec3f(-positionX, -positionY, -positionZ);
 
         mRTTNode->addChild(lightManager);
 
@@ -299,10 +322,14 @@ namespace MWRender
         mParent->addChild(mRTTNode);
 
         mCharacter.mCell = nullptr;
+        mNativeIdentity = nextNativePreviewIdentity();
+        mNativeTextureName = "openmw.character-preview." + std::to_string(mNativeIdentity);
+        nativePreviews().push_back(this);
     }
 
     CharacterPreview::~CharacterPreview()
     {
+        std::erase(nativePreviews(), this);
         mParent->removeChild(mRTTNode);
     }
 
@@ -329,7 +356,11 @@ namespace MWRender
 
     osg::ref_ptr<osg::Texture2D> CharacterPreview::getTexture()
     {
-        return static_cast<osg::Texture2D*>(mRTTNode->getColorTexture(nullptr));
+        auto* texture = static_cast<osg::Texture2D*>(mRTTNode->getColorTexture(nullptr));
+        // MyGUI's OSG facade retains this name, allowing a native sampled image
+        // alias without replacing the widget or exposing backend objects to it.
+        texture->setName(mNativeTextureName);
+        return texture;
     }
 
     void CharacterPreview::rebuild()
@@ -344,8 +375,43 @@ namespace MWRender
         redraw();
     }
 
+    std::vector<CharacterPreview::NativeSnapshot> CharacterPreview::nativeSnapshots()
+    {
+        std::vector<NativeSnapshot> result;
+        result.reserve(nativePreviews().size());
+        for (const CharacterPreview* preview : nativePreviews())
+        {
+            NativeSnapshot snapshot;
+            snapshot.identity = preview->mNativeIdentity;
+            snapshot.revision = preview->mNativeRevision;
+            snapshot.textureName = preview->mNativeTextureName;
+            snapshot.root = preview->mRTTNode->mGroup;
+            snapshot.view = preview->mRTTNode->mViewMatrix;
+            snapshot.ambient = preview->mNativeAmbient;
+            snapshot.diffuse = preview->mNativeDiffuse;
+            snapshot.directionalRay = preview->mNativeDirectionalRay;
+            snapshot.width = snapshot.viewportWidth = preview->mSizeX;
+            snapshot.height = snapshot.viewportHeight = preview->mSizeY;
+            if (const osg::StateSet* state = preview->mRTTNode->mCameraStateset)
+            {
+                if (const auto* viewport = dynamic_cast<const osg::Viewport*>(state->getAttribute(osg::StateAttribute::VIEWPORT)))
+                {
+                    snapshot.viewportWidth = static_cast<int>(viewport->width());
+                    snapshot.viewportHeight = static_cast<int>(viewport->height());
+                }
+            }
+            snapshot.traversalNumber = preview->mDrawOnceCallback->getLastRenderedFrame();
+            snapshot.ready = preview->mAnimation && preview->mDrawOnceCallback->ready();
+            result.push_back(std::move(snapshot));
+        }
+        return result;
+    }
+
     void CharacterPreview::redraw()
     {
+        if (mNativeRevision == std::numeric_limits<std::uint64_t>::max())
+            throw std::overflow_error("native preview redraw revision exhausted");
+        ++mNativeRevision;
         static Debug::RuntimeDiagnostics::Sampler sampler;
         if (sampler.due())
             Debug::RuntimeDiagnostics::recordEvent("preview", "legacy_character_rtt", "redraw requested", {

@@ -7,6 +7,7 @@
 #include <vsg/utils/ShaderSet.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <string>
 #include <utility>
 
@@ -218,9 +219,36 @@ vec3 getNormal(vec2 sampleUv)
     vec2 st1 = dFdx(texCoord[texCoordIndices.normalMap]);
     vec2 st2 = dFdy(texCoord[texCoordIndices.normalMap]);
     vec3 N = normalize(normalDir);
-    vec3 T = normalize(q1 * st2.t - q2 * st1.t);
-    vec3 B = -normalize(cross(N, T));
-    if ((terrainFlags & 1) != 0) B = -B;
+    vec3 T;
+    vec3 B;
+    if ((terrainFlags & 16) != 0)
+    {
+        T = normalize(q1 * st2.t - q2 * st1.t);
+        B = -normalize(cross(N, T));
+        if ((terrainFlags & 1) != 0) B = -B;
+    }
+    else
+    {
+        // Recover the authored UV orientation, including mirrored UV charts.
+        // The old numerator-only tangent lost the Jacobian's sign when Vulkan
+        // inverted screen Y, then guessed the bitangent from the material kind.
+        float determinant = st1.s * st2.t - st1.t * st2.s;
+        vec3 tangentNumerator = q1 * st2.t - q2 * st1.t;
+        vec3 bitangentNumerator = q2 * st1.s - q1 * st2.s;
+        if (abs(determinant) < 1e-12 || dot(tangentNumerator,tangentNumerator) < 1e-20)
+        {
+            // A degenerate UV chart cannot define tangent space. Use its real
+            // surface normal instead of propagating NaNs into lighting.
+            return material.semantics.w > 0.5 && !gl_FrontFacing ? -N : N;
+        }
+        T = normalize(tangentNumerator / determinant);
+        T -= N * dot(N,T);
+        if (dot(T,T) < 1e-20)
+            return material.semantics.w > 0.5 && !gl_FrontFacing ? -N : N;
+        T = normalize(T);
+        B = normalize(cross(N,T));
+        if (dot(B,bitangentNumerator / determinant) < 0.0) B = -B;
+    }
     result = normalize(mat3(T, B, N) * tangentNormal);
 #else
     result = normalize(normalDir);
@@ -373,7 +401,8 @@ vec2 diffuseUv = vec2(0.0);
     vec3 vd = normalize(viewDir);
     vec3 color = vec3(0.0);
     const float intensityMinimum = 0.001;
-    const bool materialUnlit = material.effects.w > 0.5;
+    const int outputFlags = int(material.effects.w + 0.5);
+    const bool materialUnlit = (outputFlags & 1) != 0;
 
     vec4 lightNums = materialUnlit ? vec4(0.0) : lightData.values[0];
     int numAmbientLights = int(lightNums[0]);
@@ -591,7 +620,7 @@ vec2 diffuseUv = vec2(0.0);
         else
             outColor.rgb = mix(outColor.rgb, fogColor, fogValue);
     }
-    outColor.a = surfaceColor.a;
+    outColor.a = (outputFlags & 2) != 0 ? 1.0 : surfaceColor.a;
 }
 )glsl";
 
@@ -626,12 +655,14 @@ vec2 diffuseUv = vec2(0.0);
             && source.sourceBlend == RenderCore::BlendFactor::SourceAlpha
             && source.destinationBlend == RenderCore::BlendFactor::One;
         uniform.effects = vsg::vec4(static_cast<float>(source.fog.mode), source.fog.depth,
-            additiveFog ? 1.0f : 0.0f, source.unlit ? 1.0f : 0.0f);
+            additiveFog ? 1.0f : 0.0f, float((source.unlit ? 1 : 0) | (source.forceOpaqueAlpha ? 2 : 0)));
         uniform.ambientOverride = vsg::vec4(source.ambientLightOverride.r, source.ambientLightOverride.g,
             source.ambientLightOverride.b, source.ambientLightOverrideEnabled ? 1.0f : 0.0f);
         if (source.terrainLayer)
             uniform.textureCoordSets.w = float(1 + (source.terrainLayer->specular ? 2 : 0)
                 + (source.terrainLayer->parallax ? 4 : 0));
+        if (std::getenv("OPENMW_V4_LEGACY_NORMAL_MAPPING_CONTROL"))
+            uniform.textureCoordSets.w += 16.f;
         for (const RenderCore::TextureBinding& binding : source.textures)
         {
             const float uv = static_cast<float>(binding.transform.uvSet);

@@ -136,7 +136,7 @@ namespace VsgMyGui
     }
 
     Texture* RenderManager::setExternalTexture(const std::string& name, vsg::ref_ptr<vsg::ImageView> imageView,
-        int width, int height, MyGUI::PixelFormat format)
+        int width, int height, MyGUI::PixelFormat format, bool premultipliedAlpha, bool flipY)
     {
         if (name.empty())
             return nullptr;
@@ -156,6 +156,7 @@ namespace VsgMyGui
                 {"height", static_cast<std::uint64_t>((std::max)(0, height))}, {"image_present", static_cast<bool>(imageView)}});
         }
         it->second.setImageView(std::move(imageView), width, height, format);
+        it->second.setSamplingConvention(premultipliedAlpha, flipY);
         return &it->second;
     }
 
@@ -207,6 +208,8 @@ namespace VsgMyGui
         result.imageView = texture->imageView();
         result.identity = texture->identity();
         result.revision = texture->revision();
+        result.premultipliedAlpha = texture->premultipliedAlpha();
+        result.flipY = texture->flipY();
         return result;
     }
 
@@ -259,10 +262,8 @@ namespace VsgMyGui
         for (const Batch& batch : mBatches)
         {
             auto info = imageInfoFor(mPipeline, batch.texture.data, batch.texture.imageView);
-            auto image = vsg::DescriptorImage::create(info, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-            auto ds = vsg::DescriptorSet::create(mPipeline.descriptorSetLayout, vsg::Descriptors{ image });
-            auto bindDs
-                = vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, mPipeline.pipelineLayout, 0, ds);
+            auto bindDs = RenderVsg::createUiTextureBinding(mPipeline, info,
+                batch.texture.premultipliedAlpha, batch.texture.flipY);
             auto sg = vsg::StateGroup::create();
             sg->add(mPipeline.bindPipeline);
             sg->add(bindDs);
@@ -311,9 +312,7 @@ namespace VsgMyGui
         // Each rebuilt overlay owns the exact sampled backing it was collected with.
         // No mutable descriptor cache or raw MyGUI texture pointer crosses overlay lifetimes.
         auto info = imageInfoFor(mPipeline, texture.data, texture.imageView);
-        auto image = vsg::DescriptorImage::create(info, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-        auto ds = vsg::DescriptorSet::create(mPipeline.descriptorSetLayout, vsg::Descriptors{ image });
-        return vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, mPipeline.pipelineLayout, 0, ds);
+        return RenderVsg::createUiTextureBinding(mPipeline, info, texture.premultipliedAlpha, texture.flipY);
     }
 
     void RenderManager::updatePersistentOverlay()

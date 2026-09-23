@@ -51,7 +51,8 @@ inline void checkWaterPixels(vsg::Device* device)
     commandGraph->addChild(target.renderGraph);
     auto viewer = vsg::Viewer::create();
     viewer->assignRecordAndSubmitTaskAndPresentation({commandGraph});
-    require(static_cast<bool>(viewer->compile()), "water pixel compilation");
+    auto firstCompile = viewer->compile();
+    if (!firstCompile) throw std::runtime_error("water pixel compilation: " + firstCompile.message + " result=" + std::to_string(firstCompile.result));
 
     FrameEnvironmentState environment;
     environment.waterEnabled = true; environment.waterHeight = 0;
@@ -135,7 +136,7 @@ inline void checkWaterPixels(vsg::Device* device)
         "water height did not move the plane above the camera");
     environment.waterHeight = 0;
     // Reversed depth at its nearest value occludes the entire water plane.
-    target.renderGraph->setClearValues({{0,0,0,1}}, {1.0f,0});
+    target.setClearValues({{0,0,0,1}}, {1.0f,0});
     auto occluded = render(6);
     lower = pixel(occluded,64,112);
     require(lower.r < 4 && lower.g < 4 && lower.b < 4, "water ignored scene depth");
@@ -149,15 +150,15 @@ inline void checkWaterPixels(vsg::Device* device)
     water = RenderVsg::WaterSurface::create(horizontal, image({255,0,0,255}, {255,0,0,255}));
     root->children.clear(); root->addChild(sky.node()); root->addChild(water.node());
     require(static_cast<bool>(RenderVsg::compileForViewer(*viewer, root)), "asymmetric water compilation");
-    target.renderGraph->setClearValues({{0,0,0,1}}, {0.0f,0});
+    target.setClearValues({{0,0,0,1}}, {0.0f,0});
     auto asymmetric = render(0);
     const auto left = pixel(asymmetric,8,112), right = pixel(asymmetric,120,112);
     require(left.b > left.g + 60 && right.g > right.b + 60, "water reflection was not horizontally corrected");
-    target.renderGraph->setClearValues({{0,1,0,1}}, {0.0f,0});
+    target.setClearValues({{0,1,0,1}}, {0.0f,0});
     auto greenBackground = render(0);
     require(pixel(asymmetric,8,112) == pixel(greenBackground,8,112),
         "refraction composition counted main background twice");
-    target.renderGraph->setClearValues({{0,0,0,1}}, {0.0f,0});
+    target.setClearValues({{0,0,0,1}}, {0.0f,0});
     std::cout << "PASS water pixels: reflected left/right alignment, opaque refraction composition\n";
 
     // Exercise the normal-map descriptor and view-dependent Fresnel on the
@@ -229,6 +230,6 @@ inline void checkWaterPixels(vsg::Device* device)
     require(button.r > 200 && button.r > button.g + 50,
         "deferred world geometry painted over GUI");
     std::cout << "PASS GUI pixels: overlay recorded after deferred world bins\n";
-    target.renderGraph->setClearValues({{0,0,0,1}}, {0.0f,0});
+    target.setClearValues({{0,0,0,1}}, {0.0f,0});
     checkTerrainPixels(root, view, viewer, render, pixel);
 }

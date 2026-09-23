@@ -311,6 +311,8 @@ namespace MWRender
         input.skeletonPoses = source.skeletonPoses;
         input.morphWeights = source.morphWeights;
         input.immediateEffectDraws = source.immediateEffectDraws;
+        input.auxiliaryViews = source.previewViews;
+        input.nativeSky = source.nativeSky;
         input.invalidateHistory = source.invalidateHistory || mGuiOnlyFramePresented;
 
         std::vector<RenderCore::RenderTargetHandle> renderedMapTargets;
@@ -351,6 +353,7 @@ namespace MWRender
             return result;
 
         mGuiOnlyFramePresented = false;
+        nativePreviewFramePresented(source);
         std::optional<std::vector<RenderVsg::VsgRuntimeHost::AuxiliaryRgba8Readback>> mapReadbacks;
         if (!renderedMapTargets.empty())
         {

@@ -18,7 +18,7 @@ namespace RenderCore
     // Revision the stable fingerprints below whenever the key contract changes.
     // Equality still compares the complete key, so this is a persistent-cache
     // compatibility marker rather than a substitute for structural equality.
-    inline constexpr std::uint32_t RealizationKeySchemaRevision = 1u;
+    inline constexpr std::uint32_t RealizationKeySchemaRevision = 2u;
 
     struct TextureViewKey
     {
@@ -105,6 +105,8 @@ namespace RenderCore
         bool enabled = false;
         BlendFactor source = BlendFactor::One;
         BlendFactor destination = BlendFactor::Zero;
+        BlendFactor sourceAlpha = BlendFactor::One;
+        BlendFactor destinationAlpha = BlendFactor::Zero;
         BlendEquation equation = BlendEquation::Add;
 
         friend bool operator==(const BlendStateKey&, const BlendStateKey&) = default;
@@ -249,6 +251,9 @@ namespace RenderCore
         {
             result.blend.source = material.sourceBlend;
             result.blend.destination = material.destinationBlend;
+            result.blend.sourceAlpha = material.separateAlphaBlend ? material.sourceAlphaBlend : material.sourceBlend;
+            result.blend.destinationAlpha
+                = material.separateAlphaBlend ? material.destinationAlphaBlend : material.destinationBlend;
             result.blend.equation = material.blendEquation;
         }
 
@@ -347,6 +352,8 @@ namespace RenderCore
             observeBool(hash, key.blend.enabled);
             observeEnum(hash, key.blend.source);
             observeEnum(hash, key.blend.destination);
+            observeEnum(hash, key.blend.sourceAlpha);
+            observeEnum(hash, key.blend.destinationAlpha);
             observeEnum(hash, key.blend.equation);
             observeEnum(hash, key.raster.cullMode);
             observeEnum(hash, key.raster.frontFace);

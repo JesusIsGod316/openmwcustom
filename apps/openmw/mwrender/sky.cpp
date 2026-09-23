@@ -499,6 +499,11 @@ namespace MWRender
         return mSecunda->getPhaseInt();
     }
 
+    osg::Group* SkyManager::nativeRenderRoot() const
+    {
+        return mEnabled && mCreated ? mEarlyRenderBinRoot.get() : nullptr;
+    }
+
     bool SkyManager::isEnabled() const
     {
         return mEnabled;
