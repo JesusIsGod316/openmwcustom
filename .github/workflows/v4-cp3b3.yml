@@ -230,7 +230,7 @@ jobs:
         shell: pwsh
         run: |
           $log = "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/effect-recovery-build.log"
-          cmake --build "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" --target openmw-v4-effect-uv-tests openmw-v4-effect-capture-tests openmw-v4-runtime-diagnostics-tests openmw-v4-host-memory-tests openmw-v4-cache-pressure-tests --verbose 2>&1 | Tee-Object -FilePath $log
+          cmake --build "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" --target openmw-v4-effect-uv-tests openmw-v4-effect-capture-tests openmw-v4-runtime-diagnostics-tests openmw-v4-host-memory-tests openmw-v4-cache-pressure-tests openmw-v4-rendering-uniform-tests openmw-v4-rendering-capture-tests openmw-v4-rendering-pixel-tests --verbose 2>&1 | Tee-Object -FilePath $log
           $buildExit = $LASTEXITCODE
           if ($buildExit -ne 0) { exit $buildExit }
 
@@ -248,8 +248,8 @@ jobs:
           $env:PATH = $runtimePath
           & "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/openmw.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "build-tree Vulkan openmw.exe --version failed with $LASTEXITCODE" }
-          ctest --test-dir "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" -C RelWithDebInfo -R '^(openmw-v4-effect-(uv|capture)-tests|openmw-v4-(host-memory|cache-pressure)-tests|openmw-v4-runtime-diagnostics-(off|standard|focused))$' --output-on-failure
-          if ($LASTEXITCODE -ne 0) { throw "effect/ownership recovery regressions failed with $LASTEXITCODE" }
+          ctest --test-dir "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif" -C RelWithDebInfo -R '^(openmw-v4-effect-(uv|capture)-tests|openmw-v4-(host-memory|cache-pressure)-tests|openmw-v4-rendering-(uniform|capture)-tests|openmw-v4-runtime-diagnostics-(off|standard|focused))$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "rendering/effect/ownership recovery regressions failed with $LASTEXITCODE" }
           python tools/v4/cp4/test-runtime-diagnostics.py --capture-directory "$env:GITHUB_WORKSPACE/build-v4-cp3b3-real-nif/runtime-diagnostic-evidence"
           if ($LASTEXITCODE -ne 0) { throw "native diagnostic output/report contract failed with $LASTEXITCODE" }
 
@@ -293,7 +293,7 @@ jobs:
           $openmwExe = Get-ChildItem -LiteralPath $stage -Recurse -File -Filter openmw.exe | Select-Object -First 1
           if ($null -eq $openmwExe) { throw 'Installed Vulkan package is missing openmw.exe' }
           $runtime = $openmwExe.Directory.FullName
-          foreach ($helper in @('gameplay-diagnostics.py', 'diagnosticconfig.py', 'Start-CP4F-Test.cmd', 'runtime-diagnostics.py', 'shader_resources.py', 'run-runtime-qc.ps1', 'run-memory-qc.ps1', 'RUNTIME-DIAGNOSTICS.md', 'HOST-MEMORY-TERRAIN-REPAIR.md')) {
+          foreach ($helper in @('gameplay-diagnostics.py', 'diagnosticconfig.py', 'Start-CP4F-Test.cmd', 'runtime-diagnostics.py', 'shader_resources.py', 'run-runtime-qc.ps1', 'run-memory-qc.ps1', 'RUNTIME-DIAGNOSTICS.md', 'HOST-MEMORY-TERRAIN-REPAIR.md', 'RENDERING-REPAIR.md')) {
             if (-not (Test-Path -LiteralPath (Join-Path $runtime $helper) -PathType Leaf)) {
               throw "Installed runtime package is missing diagnostic helper: $helper"
             }
@@ -350,7 +350,7 @@ jobs:
             Copy-Item -LiteralPath $osgPlugins -Destination $runtime -Recurse -Force
           }
           @(
-            'OpenMW V4 CP4F combined memory and native-terrain repair checkpoint',
+            'OpenMW V4 CP4F combined rendering memory and terrain repair checkpoint',
             "commit=${{ github.sha }}",
             'renderer_selection=vulkan must be requested explicitly',
             'automatic_renderer=opengl until all compatibility facets qualify',
@@ -358,6 +358,8 @@ jobs:
             'diagnostics=optional off/standard/focused; policy independent of recording',
             'host_retention=pressure-aware optional ownership; legacy control available',
             'terrain=native Vulkan preparation; legacy preload control available',
+            'rendering=native preview and sky; depth-aware water; normal-map and host-alignment repair',
+            'rendering_controls=independent legacy preview/sky/water-optics/normal-mapping comparisons',
             'manual_test=isolated New Game only; no regular saves',
             ''
           ) | Set-Content -LiteralPath (Join-Path $runtime 'CP3E-TEST-IDENTITY.txt') -Encoding Ascii
