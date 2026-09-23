@@ -96,3 +96,10 @@ if(CP4F_UNIFORM_BASELINE_INCLUDE)
     target_include_directories(rendering-uniforms-baseline BEFORE PRIVATE "${CP4F_UNIFORM_BASELINE_INCLUDE}")
     target_link_libraries(rendering-uniforms-baseline PRIVATE rendering-source)
 endif()
+
+# Explicit old-capture control, not a different implementation hidden by include order.
+set(CP4F_CAPTURE_BASELINE_INCLUDE "" CACHE PATH "Original capture header tree for regression control")
+if(CP4F_CAPTURE_BASELINE_INCLUDE)
+    target_include_directories(rendering-capture BEFORE PRIVATE "${CP4F_CAPTURE_BASELINE_INCLUDE}")
+    target_include_directories(rendering-capture PRIVATE "${OPENMW_ROOT}/apps/openmw/mwrender")
+endif()

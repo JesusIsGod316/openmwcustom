@@ -52,7 +52,7 @@ namespace
         vsg::ref_ptr<vsg::CommandGraph> commands;
         vsg::ref_ptr<vsg::SharedObjects> shared=vsg::SharedObjects::create();
         std::uint64_t tick=0;
-        explicit Fixture(vsg::ref_ptr<vsg::Device> input) : device(input)
+        explicit Fixture(vsg::ref_ptr<vsg::Device> input, vsg::ViewFeatures features = vsg::RECORD_ALL) : device(input)
         {
             frame.extent={128,128}; frame.current.projection.nearPlane=.1; frame.current.projection.farPlane=10000.;
             frame.current.projection.matrix=glm::perspectiveRH_ZO(glm::radians(60.f),1.f,10000.f,.1f);
@@ -62,7 +62,7 @@ namespace
             require(bool(target),"headless target");
             require(target.renderGraph->clearValues.size()==2 && target.renderGraph->clearValues[1].depthStencil.depth==0.f,
                 "default reverse-depth clear missing or typed as colour");
-            view=vsg::View::create(camera.camera,root);
+            view=vsg::View::create(camera.camera,root,features);
             state=RenderVsg::OpenMwViewDependentState::create(view.get());
             state->shaderSet=RenderVsg::createLegacyCompatibilityShaderSet();
             view->viewDependentState=state;
@@ -231,6 +231,51 @@ namespace
         require(f.compile(f.root),"additive RTT compile");close(pixel(f.render()).r,encoded(.5f),"additive alpha-zero RTT discarded");
         std::cout<<"PASS preview pixels: isolated evaluated scene, transparent target, premultiplied sampling, widget alpha, Y convention, ordinary UI, additive alpha-zero\n";
     }
+    void checkUnshadowedLighting(vsg::ref_ptr<vsg::Device> device)
+    {
+        Fixture f(device,vsg::RECORD_LIGHTS);
+        auto ambient=vsg::AmbientLight::create();ambient->color={.1f,.2f,.3f};ambient->intensity=1.f;
+        auto sun=vsg::DirectionalLight::create();sun->color={.4f,.3f,.2f};sun->direction={0,0,-1};sun->intensity=1.f;
+        IsolatedSceneSnapshot scene;scene.identity=7;scene.revision=1;scene.viewportExtent={128,128};
+        ImmediateEffectDraw draw;draw.identity="lit-preview";draw.mesh=*quad();
+        draw.material.sourceIdentity="lit-preview-material";draw.material.cullMode=CullMode::None;
+        draw.material.ambient={1,1,1,1};draw.material.diffuse={1,1,1,1};draw.material.specular={0,0,0,0};
+        draw.material.vertexColorMode=VertexColorMode::Ignore;scene.draws={draw};
+        std::string diagnostic;auto graph=RenderVsg::realizeIsolatedScene(scene,resolver(),f.shared,diagnostic);
+        require(bool(graph),diagnostic);f.root->children={ambient,sun,graph};require(f.compile(f.root),"lit preview compile");
+        auto lit=pixel(f.render());
+        close(lit.r,encoded(.5f),"unshadowed preview ambient/directional R");
+        close(lit.g,encoded(.5f),"unshadowed preview ambient/directional G");
+        close(lit.b,encoded(.5f),"unshadowed preview ambient/directional B");
+        require(f.state->shadowMaps.empty(),"unshadowed repair allocated shadow maps");
+        sun->intensity=0.f;ambient->color={.3f,.1f,.2f};
+        auto updated=pixel(f.render());close(updated.r,encoded(.3f),"live ambient update R");
+        close(updated.g,encoded(.1f),"live ambient update G");close(updated.b,encoded(.2f),"live ambient update B");
+        sun->intensity=1.f;sun->direction={0,0,1};
+        close(pixel(f.render()).r,encoded(.3f),"directional eye-space/sign convention");
+        f.root->children={graph};require(f.compile(f.root),"light removal compile");
+        close(pixel(f.render()).r,0,"removed lights remained in unshadowed buffer");
+        std::cout<<"PASS unshadowed lighting pixels: ambient, directional, live colours, ray sign, removed lights, zero shadow maps\n";
+    }
+    void checkSunSpecular(vsg::ref_ptr<vsg::Device> device)
+    {
+        Fixture f(device);
+        auto sun=vsg::DirectionalLight::create();sun->direction={0,0,-1};sun->color={1,1,1};sun->intensity=1.f;
+        ImmediateEffectDraw draw;draw.identity="sun-specular";draw.mesh=*quad();
+        draw.material.sourceIdentity="sun-specular-material";draw.material.cullMode=CullMode::None;
+        draw.material.diffuse={0,0,0,1};draw.material.ambient={0,0,0,1};
+        draw.material.specular={1,1,1,1};draw.material.shininess=1.f;draw.material.vertexColorMode=VertexColorMode::Ignore;
+        auto realized=RenderVsg::realizeImmediateEffectDraw(draw,resolver(),f.shared);
+        require(realized.valid(),realized.diagnostic);f.root->children={sun,realized.root};require(f.compile(f.root),"sun-specular compile");
+        f.environment.sunSpecular={0,0,0,0};
+        auto disabled=pixel(f.render());close(disabled.r,0,"zero sun specular still produces a highlight");
+        close(disabled.g,0,"zero sun specular green");close(disabled.b,0,"zero sun specular blue");
+        f.environment.sunSpecular={.1f,.3f,.6f,1.f};auto coloured=pixel(f.render());
+        close(coloured.r,encoded(.1f),"independent sun specular red");
+        close(coloured.g,encoded(.3f),"independent sun specular green");
+        close(coloured.b,encoded(.6f),"independent sun specular blue");
+        std::cout<<"PASS sun-specular pixels: zero disables highlights, independent RGB updates without material recompilation\n";
+    }
     float reverseDepth(float distance,float near,float far) {return near*(far/distance-1)/(far-near);}
     void checkWaterOptics(vsg::ref_ptr<vsg::Device> device)
     {
@@ -295,10 +340,12 @@ int main(int argc,char** argv)
         auto device=vsg::Device::create(selected,vsg::QueueSettings{{selected->getQueueFamily(VK_QUEUE_GRAPHICS_BIT),{1.f}}},vsg::Names{},extensions,features);
         std::cout<<"DEVICE "<<selected->getProperties().deviceName<<'\n';
         std::string mode=argc>1?argv[1]:"all";
-        require(mode=="all" || mode=="sky" || mode=="preview" || mode=="water" || mode=="normal" || mode=="baseline", "unknown pixel test mode");
+        require(mode=="all" || mode=="sky" || mode=="preview" || mode=="water" || mode=="normal" || mode=="baseline" || mode=="lighting" || mode=="specular", "unknown pixel test mode");
         if(mode=="all"||mode=="baseline")checkWaterPixels(device);
         if(mode=="all"||mode=="sky")checkSky(device);
         if(mode=="all"||mode=="preview")checkPreview(device);
+        if(mode=="all"||mode=="lighting")checkUnshadowedLighting(device);
+        if(mode=="all"||mode=="specular")checkSunSpecular(device);
         if(mode=="all"||mode=="water")checkWaterOptics(device);
         if(mode=="all"||mode=="normal")checkNormalMapping(device);
         return 0;

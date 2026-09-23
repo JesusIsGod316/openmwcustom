@@ -133,6 +133,8 @@ layout(set = VIEW_DESCRIPTOR_SET, binding = 6) uniform OpenMwEnvironmentData
     vec4 weatherFlags;
     // Eye-space retained half-space; a zero normal disables clipping.
     vec4 clipPlane;
+    // x: enchanted frame index; yzw: the sun's independent specular RGB.
+    vec4 temporalEffects;
 } openmwEnvironment;
 
 layout(location = 0) in vec3 eyePos;
@@ -457,7 +459,8 @@ vec2 diffuseUv = vec2(0.0);
         if (shininess > 0.0 && diffuseFactor > 0.0)
         {
             vec3 halfDir = normalize(direction + vd);
-            color += specularColor * specularStrength * pow(max(dot(halfDir, nd), 0.0), shininess) * intensity;
+            color += specularColor * specularStrength * openmwEnvironment.temporalEffects.yzw
+                * pow(max(dot(halfDir, nd), 0.0), shininess) * intensity;
         }
     }
 

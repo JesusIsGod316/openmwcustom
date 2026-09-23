@@ -200,6 +200,64 @@ int main()
             && d.find("unknown-generated-texture")!=std::string::npos && d.find("preview-head-fixture")!=std::string::npos,
             "texture failure lacks actionable provenance");
     });
+    test("evaluated BumpTexture preserves authored matrix and luminance parameters",[]{
+        Scene s;auto g=geometry();auto* state=g->getStateSet();
+        state->setTextureAttribute(0,texture());state->setTextureAttribute(0,new SceneUtil::TextureType("bumpMap"));
+        state->addUniform(new osg::Uniform("bumpMapMatrix",osg::Matrix2(2.f,3.f,5.f,7.f)));
+        state->addUniform(new osg::Uniform("envMapLumaBias",osg::Vec2f(.4f,.6f)));
+        RenderCore::ImmediateEffectDraw draw;std::string d;
+        require(MWRender::v4_effect_detail::captureGeometry(*g,{},s.vfs,"bump",draw,d,&s.identities),d.c_str());
+        require(draw.material.bumpParametersEnabled,"captured BumpTexture lost its shader parameters");
+        require(draw.material.bumpMapMatrix==glm::vec4(2.f,3.f,5.f,7.f),"bump matrix transposed or changed");
+        require(draw.material.environmentMapLumaBias==glm::vec2(.4f,.6f),"bump luminance scale/bias lost");
+        require(draw.textures.size()==1 && draw.textures[0].binding.role==TextureRole::Bump
+            && draw.mesh.texCoordSets.size()==1,"authored bump stage/coordinates lost");
+        require(draw.textures[0].binding.colorSpace==TextureColorSpace::Data,"bump treated as colour data");
+    });
+    test("evaluated bump follows live controller uniforms and winning inherited state",[]{
+        Scene s;auto parent=osg::ref_ptr<osg::Group>(new osg::Group);auto* ps=parent->getOrCreateStateSet();
+        auto st=osg::ref_ptr<osg::StateSet>(new osg::StateSet);
+        st->setTextureAttribute(0,texture());st->setTextureAttribute(0,new SceneUtil::TextureType("bumpMap"));
+        ps->addUniform(new osg::Uniform("bumpMapMatrix",osg::Matrix2(2.f,3.f,5.f,7.f)),osg::StateAttribute::ON|osg::StateAttribute::OVERRIDE);
+        ps->addUniform(new osg::Uniform("envMapLumaBias",osg::Vec2f(.4f,.6f)));
+        st->addUniform(new osg::Uniform("bumpMapMatrix",osg::Matrix2(1.f,0.f,0.f,1.f)));
+        MWRender::v4_effect_detail::CapturedMaterial first,second;std::string d;
+        require(MWRender::v4_effect_detail::captureMaterial({parent.get()},st,s.vfs,first,d,&s.identities),d.c_str());
+        require(first.material.bumpMapMatrix==glm::vec4(2,3,5,7),"inherited override not respected");
+        ps->getUniform("bumpMapMatrix")->set(osg::Matrix2(11.f,13.f,17.f,19.f));
+        ps->getUniform("envMapLumaBias")->set(osg::Vec2f(.8f,.1f));
+        require(MWRender::v4_effect_detail::captureMaterial({parent.get()},st,s.vfs,second,d,&s.identities),d.c_str());
+        require(second.material.bumpMapMatrix==glm::vec4(11,13,17,19)
+            && second.material.environmentMapLumaBias==glm::vec2(.8f,.1f),"controller values frozen");
+        require(first.material.bumpMapMatrix!=second.material.bumpMapMatrix,"material reuse cannot see a bump change");
+    });
+    test("bump uniforms without a bump texture do not enable a phantom stage",[]{
+        Scene s;auto st=osg::ref_ptr<osg::StateSet>(new osg::StateSet);
+        st->addUniform(new osg::Uniform("bumpMapMatrix",osg::Matrix2(2.f,3.f,5.f,7.f)));
+        st->addUniform(new osg::Uniform("envMapLumaBias",osg::Vec2f(.4f,.6f)));
+        MWRender::v4_effect_detail::CapturedMaterial m;std::string d;
+        require(MWRender::v4_effect_detail::captureMaterial({},st,s.vfs,m,d,&s.identities),d.c_str());
+        require(!m.material.bumpParametersEnabled && m.textures.empty(),"orphan uniform creates a bump stage");
+    });
+    test("missing wrong-type nonfinite and multiple bump contracts fail explicitly",[]{
+        Scene s;
+        for(int change=0;change<5;++change){
+            auto st=osg::ref_ptr<osg::StateSet>(new osg::StateSet);
+            st->setTextureAttribute(0,texture());st->setTextureAttribute(0,new SceneUtil::TextureType("bumpMap"));
+            st->addUniform(new osg::Uniform("bumpMapMatrix",osg::Matrix2(2.f,3.f,5.f,7.f)));
+            st->addUniform(new osg::Uniform("envMapLumaBias",osg::Vec2f(.4f,.6f)));
+            switch(change){
+            case 0:st->removeUniform("bumpMapMatrix");break;
+            case 1:st->removeUniform("envMapLumaBias");st->addUniform(new osg::Uniform("envMapLumaBias",1.f));break;
+            case 2:st->getUniform("bumpMapMatrix")->set(osg::Matrix2(1.f,0.f,0.f,std::numeric_limits<float>::infinity()));break;
+            case 3:st->getUniform("envMapLumaBias")->set(osg::Vec2f(std::numeric_limits<float>::quiet_NaN(),0.f));break;
+            case 4:st->setTextureAttribute(1,texture());st->setTextureAttribute(1,new SceneUtil::TextureType("bumpMap"));break;
+            }
+            MWRender::v4_effect_detail::CapturedMaterial m;std::string d;
+            require(!MWRender::v4_effect_detail::captureMaterial({},st,s.vfs,m,d,&s.identities),"unsupported bump contract accepted");
+            require(d.find("BumpTexture")!=std::string::npos,"bump error is not actionable");
+        }
+    });
     test("normal and glow material roles remain distinct",[]{
         Scene s;auto st=osg::ref_ptr<osg::StateSet>(new osg::StateSet);st->setTextureAttribute(1,texture());st->setTextureAttribute(1,new SceneUtil::TextureType("normalMap"));
         st->setTextureAttribute(2,texture());st->setTextureAttribute(2,new SceneUtil::TextureType("emissiveMap"));

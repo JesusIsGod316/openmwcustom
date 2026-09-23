@@ -152,6 +152,7 @@ namespace RenderVsg
             result.diagnostic = realized.diagnostics.empty()
                 ? "evaluated effect requires an unsupported legacy realization semantic"
                 : realized.diagnostics.front();
+            result.diagnostic += " [evaluated-draw='" + draw.identity + "']";
             return result;
         }
         result.root = std::move(realized.root);

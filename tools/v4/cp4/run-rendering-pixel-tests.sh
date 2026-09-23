@@ -6,6 +6,7 @@ out=${2:?evidence directory required}
 mkdir -p "$out"
 export OPENMW_V4_PIXEL_VALIDATION=1
 unset OPENMW_V4_LEGACY_NORMAL_MAPPING_CONTROL OPENMW_V4_LEGACY_WATER_OPTICS_CONTROL
+unset OPENMW_V4_LEGACY_UNSHADOWED_LIGHTS_CONTROL OPENMW_V4_LEGACY_SUN_SPECULAR_CONTROL
 "$exe" all 2>&1 | tee "$out/pixels.log"
 if grep -E 'VUID-|Validation Error|runtime error:|ERROR: AddressSanitizer' "$out/pixels.log"; then
     echo 'The pixel fixture returned with validation errors' >&2; exit 1
@@ -15,11 +16,17 @@ OPENMW_V4_LEGACY_NORMAL_MAPPING_CONTROL=1 "$exe" normal > "$out/normal-control.l
 normal=$?
 OPENMW_V4_LEGACY_WATER_OPTICS_CONTROL=1 "$exe" water > "$out/water-control.log" 2>&1
 water=$?
+OPENMW_V4_LEGACY_UNSHADOWED_LIGHTS_CONTROL=1 "$exe" lighting > "$out/lighting-control.log" 2>&1
+lighting=$?
+OPENMW_V4_LEGACY_SUN_SPECULAR_CONTROL=1 "$exe" specular > "$out/specular-control.log" 2>&1
+specular=$?
 set -e
-test "$normal" = 1 && test "$water" = 1
+test "$normal" = 1 && test "$water" = 1 && test "$lighting" = 1 && test "$specular" = 1
 grep -F 'object RG normals did not reconstruct Z' "$out/normal-control.log"
 grep -F 'native depth absorption did not distinguish shore and deep water' "$out/water-control.log"
-if grep -E 'VUID-|Validation Error' "$out/normal-control.log" "$out/water-control.log"; then
+grep -F 'unshadowed preview ambient/directional R: actual=0 expected=188' "$out/lighting-control.log"
+grep -F 'zero sun specular still produces a highlight: actual=255 expected=0' "$out/specular-control.log"
+if grep -E 'VUID-|Validation Error' "$out/normal-control.log" "$out/water-control.log" "$out/lighting-control.log" "$out/specular-control.log"; then
     echo 'A comparison failed for a Vulkan API violation, not solely the expected pixel assertion' >&2; exit 1
 fi
-echo 'PASS repaired pixels; both old-path controls rejected by their target assertions'
+echo 'PASS repaired pixels; all four old-path controls rejected by their target assertions'
