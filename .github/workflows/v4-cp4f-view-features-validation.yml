@@ -1,0 +1,162 @@
+name: CP4F view feature routing validation
+on:
+  push:
+    branches: [v4.0-cp4f-view-feature-routing-20260923]
+    paths: [.github/workflows/v4-cp4f-view-features-validation.yml]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Recover exact reviewed six-file repair
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git merge-base 3b581b011e411b8633065b76ebd288fadc04cec7 HEAD)" = 3b581b011e411b8633065b76ebd288fadc04cec7
+          mkdir -p "$RUNNER_TEMP/view-features"
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'view-features'
+          sha='a4bd978d0485080356161b3d6564e1a601306cd7'
+          request=urllib.request.Request('https://api.github.com/repos/JesusIsGod316/openmwcustom/git/blobs/'+sha,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+          with urllib.request.urlopen(request,timeout=45) as response: data=base64.b64decode(json.load(response)['content'])
+          assert hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()==sha
+          patch=lzma.decompress(data)
+          assert len(patch)==28061 and hashlib.sha256(patch).hexdigest()=='cbaf5b3af1fc8fda09e1e33691c84a64c445c04ead9ef299d1243081e6c74080'
+          identities={
+              'apps/openmw/CMakeLists.txt':('ba6269f2c704f6c7dd142de246b6ab5dd37ebcf3','7918147cb077cfde9a2d50e3f930f6642858cfad'),
+              'components/render/backend/vsg/openmwviewdependentstate.cpp':('6986ef752ba577ac12d6a7907c3b36c108ee878d','569bc60c508b6ee5672c4637bf48dca7c7ea1253'),
+              'tools/v4/cp4/VIEW-FEATURE-LIGHT-REPAIR.md':(None,'3031a1612c3eba3b5f2dec0a50e4dfcf2999cd9b'),
+              'tools/v4/cp4/rendering-pixel-tests.cpp':('49442a4baad72710f18a8437293ac878440d145b','7cb8a65479620ded40242eef253aca3233e6ad9f'),
+              'tools/v4/cp4/rendering-tests/CMakeLists.txt':('afc3157b2ab1dd3f1c8669e301648174d7339cc7','fcf2acff6bf0fdc22d69f9fa2637a3bdcf0cf773'),
+              'tools/v4/cp4/rendering-view-features-tests.cpp':(None,'8c4b3739233d7e2b0159d58e2a07c310e8b7e95e')}
+          paths=[line.split(' b/',1)[1] for line in patch.decode().splitlines() if line.startswith('diff --git ')]
+          assert set(paths)==set(identities) and len(paths)==6
+          for path,(before,after) in identities.items():
+              if before: assert subprocess.check_output(['git','hash-object',path],text=True).strip()==before,path
+              else: assert not pathlib.Path(path).exists(),path
+          (out/'repair.patch').write_bytes(patch)
+          subprocess.run(['git','apply','--check',str(out/'repair.patch')],check=True)
+          subprocess.run(['git','apply',str(out/'repair.patch')],check=True)
+          for path,(_,after) in identities.items(): assert subprocess.check_output(['git','hash-object',path],text=True).strip()==after,path
+          (out/'paths.txt').write_text('\n'.join(paths)+'\n')
+          (out/'identities.json').write_text(json.dumps(identities,indent=2))
+          print('Exact six-file patch and all old/new identities verified')
+          PY
+      - name: Install actual renderer and capture dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y ninja-build libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers libopenscenegraph-dev libglm-dev libbullet-dev libboost-all-dev libluajit-5.1-dev libpng-dev libsqlite3-dev libyaml-cpp-dev librecast-dev libopenal-dev libavcodec-dev libavformat-dev libswscale-dev libswresample-dev libfreetype-dev qt6-base-dev python3-yaml
+      - name: Retrieve pinned verified renderer SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 -H "Authorization: Bearer $GH_TOKEN" -o "$RUNNER_TEMP/render-sdk.zip" https://api.github.com/repos/JesusIsGod316/openmwcustom/actions/artifacts/10721042331/zip
+          echo "759107248040e002f5f4a7d2bed00082b6a7ea7e9e3afc1ddb0076cf247204e0  $RUNNER_TEMP/render-sdk.zip" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/render-sdk"
+          unzip -q "$RUNNER_TEMP/render-sdk.zip" -d "$RUNNER_TEMP/render-sdk"
+          tar -xzf "$RUNNER_TEMP/render-sdk/cp4f-render-test-deps.tar.gz" -C "$RUNNER_TEMP/render-sdk"
+          echo "CP4F_RENDER_SDK=$RUNNER_TEMP/render-sdk" >> "$GITHUB_ENV"
+          icd=$(find /usr/share/vulkan/icd.d -maxdepth 1 -name 'lvp_icd*.json' -print -quit)
+          test -n "$icd"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+      - name: Actual renderer CPU regression and uniform capture tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/view-features"
+          cmake -S tools/v4/cp4/rendering-tests -B "$out/build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCP4F_RENDER_SDK="$CP4F_RENDER_SDK" 2>&1 | tee "$out/configure.log"
+          cmake --build "$out/build" --parallel 3 2>&1 | tee "$out/build.log"
+          ctest --test-dir "$out/build" --output-on-failure 2>&1 | tee "$out/cpu.log"
+          "$out/build/rendering-view-features" 2>&1 | tee "$out/view-features.log"
+      - name: Shadow-enabled production pixels and retained old-path controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/view-features"
+          bash tools/v4/cp4/run-rendering-pixel-tests.sh "$out/build/rendering-pixels" "$out/pixels" 2>&1 | tee "$out/pixel-summary.log"
+          grep -F 'PASS shadow view feature routing' "$out/pixels/pixels.log"
+      - name: Reproduce regression with exact original production source
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/view-features"
+          git show 3b581b011e411b8633065b76ebd288fadc04cec7:components/render/backend/vsg/openmwviewdependentstate.cpp > "$out/original.cpp"
+          test "$(git hash-object "$out/original.cpp")" = 6986ef752ba577ac12d6a7907c3b36c108ee878d
+          cmake -S tools/v4/cp4/rendering-tests -B "$out/old" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCP4F_RENDER_SDK="$CP4F_RENDER_SDK" -DCP4F_VIEW_STATE_SOURCE="$out/original.cpp" > "$out/old-configure.log"
+          cmake --build "$out/old" --target rendering-view-features rendering-pixels --parallel 3 > "$out/old-build.log" 2>&1
+          set +e
+          "$out/old/rendering-view-features" > "$out/old-cpu.log" 2>&1
+          cpu_result=$?
+          OPENMW_V4_PIXEL_VALIDATION=1 "$out/old/rendering-pixels" shadow-light-routing > "$out/old-pixel.log" 2>&1
+          pixel_result=$?
+          set -e
+          test "$cpu_result" = 1 && test "$pixel_result" = 1
+          grep -F '7/11 view-feature tests passed' "$out/old-cpu.log"
+          grep -F 'unshadowed view light data exceeds its compiled buffer capacity' "$out/old-pixel.log"
+          if grep -E 'VUID-|Validation Error' "$out/old-pixel.log"; then exit 1; fi
+      - name: Sanitize changed production view state and evaluated capture
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/view-features"
+          cmake -S tools/v4/cp4/rendering-tests -B "$out/sanitized" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCP4F_RENDER_SDK="$CP4F_RENDER_SDK" -DCP4F_CAPTURE_SANITIZERS=ON > "$out/sanitized-configure.log"
+          cmake --build "$out/sanitized" --target rendering-view-features rendering-capture --parallel 3 > "$out/sanitized-build.log" 2>&1
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 "$out/sanitized/rendering-view-features" 2>&1 | tee "$out/sanitized-view.log"
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 "$out/sanitized/rendering-capture" 2>&1 | tee "$out/sanitized-capture.log"
+      - name: Retain ownership UV recorder and launcher regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/view-features"
+          bash tools/v4/cp4/run-host-memory-tests.sh "$out/host" 2>&1 | tee "$out/host.log"
+          bash tools/v4/cp4/run-effect-uv-tests.sh "$out/uv" 2>&1 | tee "$out/uv.log"
+          bash tools/v4/cp4/run-runtime-diagnostics-tests.sh "$out/recorder" 2>&1 | tee "$out/recorder.log"
+          for p in test-gameplay-diagnostics.py test-diagnostic-config.py test-diagnostic-linkage.py test-diagnostic-header-boundary.py; do python3 "tools/v4/cp4/$p" 2>&1 | tee "$out/$p.log"; done
+      - name: Production translation units and preserved source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/view-features"
+          bash tools/v4/cp4/run-rendering-syntax.sh "$CP4F_RENDER_SDK" 2>&1 | tee "$out/syntax.log"
+          for p in tools/v4/cp3e/application-route-contract.py tools/v4/cp4/streaming-contract.py tools/v4/cp4/population-environment-contract.py tools/v4/cp4/water-environment-contract.py tools/v4/cp4/video-ui-contract.py tools/v4/cp4/animated-object-contract.py tools/v4/cp4/fullbody-first-person-contract.py tools/v4/cp4/runtime-blocker-contract.py tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py tools/v4/cp4/test-host-memory-integration.py tools/v4/cp4/rendering-contract.py; do python3 "$p"; done
+          git diff --exit-code 3b581b011e411b8633065b76ebd288fadc04cec7 -- apps/openmw/mwlua/worker.cpp apps/openmw/mwlua/worker.hpp components/misc/hostmemory.cpp components/misc/hostmemory.hpp components/settings/ramcache.hpp components/settings/v36profile.hpp apps/openmw/mwworld/cellpreloader.cpp apps/openmw/mwworld/scene.cpp apps/openmw/mwrender/v4effectcapture.hpp
+          git diff --check
+      - name: Publish independently validated paths on staging branch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/view-features"
+          while IFS= read -r path; do git add -- "$path"; done < "$out/paths.txt"
+          test "$(git diff --cached --name-only | wc -l)" = 6
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'CP4F: restrict unshadowed light packing to lighting-enabled views and exercise generated shadow cameras'
+          git push origin HEAD:v4.0-cp4f-view-feature-routing-20260923
+          git rev-parse HEAD > "$out/source-sha.txt"
+          git diff-tree --no-commit-id --raw -r HEAD > "$out/source-blobs.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cp4f-view-features-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/view-features/*.log
+            ${{ runner.temp }}/view-features/*.patch
+            ${{ runner.temp }}/view-features/*.txt
+            ${{ runner.temp }}/view-features/*.json
+            ${{ runner.temp }}/view-features/pixels/*.log
+            ${{ runner.temp }}/view-features/build/Testing/Temporary/LastTest.log
+          retention-days: 14
+          if-no-files-found: error
