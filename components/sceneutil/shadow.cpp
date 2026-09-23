@@ -1,4 +1,5 @@
 #include "shadow.hpp"
+#include "disabledshadowtexture.hpp"
 
 #include <osgShadow/ShadowSettings>
 #include <osgShadow/ShadowedScene>
@@ -108,14 +109,7 @@ namespace SceneUtil
         if (!mEnableShadows)
             return;
 
-        osg::ref_ptr<osg::Image> fakeShadowMapImage = new osg::Image();
-        fakeShadowMapImage->allocateImage(1, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT);
-        *(float*)fakeShadowMapImage->data() = std::numeric_limits<float>::infinity();
-        osg::ref_ptr<osg::Texture> fakeShadowMapTexture = new osg::Texture2D(fakeShadowMapImage);
-        fakeShadowMapTexture->setWrap(osg::Texture::WRAP_S, osg::Texture::CLAMP_TO_EDGE);
-        fakeShadowMapTexture->setWrap(osg::Texture::WRAP_T, osg::Texture::CLAMP_TO_EDGE);
-        fakeShadowMapTexture->setShadowComparison(true);
-        fakeShadowMapTexture->setShadowCompareFunc(osg::Texture::ShadowCompareFunc::ALWAYS);
+        const osg::ref_ptr<osg::Texture2D> fakeShadowMapTexture = makeDisabledShadowTexture();
         for (unsigned int i = mShadowSettings->getBaseShadowTextureUnit();
              i < mShadowSettings->getBaseShadowTextureUnit() + mShadowSettings->getNumShadowMapsPerLight(); ++i)
         {
