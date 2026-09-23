@@ -1,4 +1,4 @@
-name: V4.0 CP4F combined rendering memory and terrain repair QC
+name: V4.0 CP4F combined repair with preview startup fix QC
 
 on:
   workflow_dispatch:
@@ -25,12 +25,22 @@ jobs:
         run: |
           set -euo pipefail
           CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
-          CP4F_SOURCE=0d937755ae10ca4ef0e18a82c90e86c19edabf49
+          CP4F_SOURCE=811422eee7f85c05e21d6cca173887aeef6b1bf9
           git cat-file -e "${CP4E_BASE}^{commit}"
           git cat-file -e "${CP4F_SOURCE}^{commit}"
           test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
           test "$(git merge-base "${CP4F_SOURCE}" HEAD)" = "${CP4F_SOURCE}"
           test "$(git rev-parse HEAD^)" = "${CP4F_SOURCE}"
+
+      - name: Verify independently tested preview repair source identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:apps/openmw/mwrender/v4effectcapture.hpp)" = d77bd87402da33829e9d6e3c47bb4c968f484487
+          test "$(git rev-parse HEAD:components/sceneutil/disabledshadowtexture.hpp)" = 7d5422dd1febd128b9ab6fe984c9d9e20bb3c2c9
+          test "$(git rev-parse HEAD:components/sceneutil/shadow.cpp)" = 4c1270e607550f9108e10e38b131d92f7a289da8
+          test "$(git rev-parse HEAD:tools/v4/cp4/rendering-capture-tests.cpp)" = 11a1878b527d38e9d4a6913164c9b0829f064aba
+          echo 'Preview implementation and expanded tests match successful focused run 35805401119'
 
       - name: Run retained CP4 and new QC source contracts
         shell: bash
