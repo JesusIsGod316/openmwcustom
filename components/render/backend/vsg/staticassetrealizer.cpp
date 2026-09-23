@@ -560,7 +560,10 @@ namespace RenderVsg
             {
                 result.root = {};
                 result.diagnostics.emplace_back(
-                    "Legacy bump metadata does not match V3.25's single NiTexturingProperty BumpTexture contract");
+                    "Legacy bump metadata does not match V3.25's single NiTexturingProperty BumpTexture contract"
+                    " [mesh='" + mesh->sourceIdentity + "', material='" + material->sourceIdentity
+                    + "', bump_bindings=" + std::to_string(bumpBindingCount) + ", parameters_enabled="
+                    + std::to_string(material->bumpParametersEnabled) + "]");
                 return result;
             }
             const bool legacyBump = material->bumpParametersEnabled;

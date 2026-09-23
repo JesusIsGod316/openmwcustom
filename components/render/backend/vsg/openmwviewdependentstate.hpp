@@ -29,8 +29,8 @@ namespace RenderVsg
     inline constexpr std::size_t OpenMwLocalLightVec4Stride = 5;
     // The ninth vec4 is backend temporal compatibility state. Its x component
     // carries the exact legacy enchanted-caustic frame index for the current
-    // VSG FrameStamp; the existing environment values remain byte-for-byte in
-    // their original slots.
+    // VSG FrameStamp. Its formerly unused yzw carries independent sun-specular
+    // RGB. Existing environment fields and the 9-vec4 upload size are unchanged.
     inline constexpr std::size_t OpenMwEnvironmentVec4Count = 9;
 
     using OpenMwEnvironmentValues = std::array<vsg::vec4, OpenMwEnvironmentVec4Count>;
@@ -60,6 +60,8 @@ namespace RenderVsg
         [[nodiscard]] std::size_t localLightCount() const noexcept { return mPlan.lights.size(); }
 
     private:
+        void updateUnshadowedLightData() const;
+
         struct LocalLightTemporalState
         {
             RenderCore::LightModulation modulation = RenderCore::LightModulation::Constant;

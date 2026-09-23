@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <optional>
 #include <string>
@@ -297,10 +298,15 @@ namespace MWRender
 
         [[nodiscard]] inline bool captureMaterial(const osg::NodePath& path, const osg::StateSet* drawableState,
             const VFS::Manager& vfs, CapturedMaterial& out, std::string& diagnostic,
-            NifRender::TextureIdentityCache* identityCache = nullptr, bool preview = false)
+            NifRender::TextureIdentityCache* identityCache = nullptr, bool preview = false,
+            const osg::StateSet* preparedState = nullptr)
         {
             using namespace RenderCore;
-            const osg::ref_ptr<osg::StateSet> state = effectiveState(path, drawableState);
+            // The caller can share one immutable effective-state snapshot with
+            // UV capture. This avoids merging the same OSG inheritance chain
+            // twice per evaluated drawable, without retaining state across frames.
+            const osg::ref_ptr<const osg::StateSet> state
+                = preparedState ? preparedState : effectiveState(path, drawableState).get();
             MaterialRecord material;
             material.textureApply = textureApplyMode(path);
             material.unlit = noLightingShader(path);
@@ -606,6 +612,42 @@ namespace MWRender
                 out.textures.push_back(std::move(snapshot));
             }
 
+            // NiTexturingProperty's evaluated OSG state carries the bump
+            // matrix and luminance scale/bias as uniforms. Texture capture alone
+            // is insufficient: the VSG compatibility shader needs the same live
+            // values, including changes made by texture/controller updates.
+            const auto bumpCount = std::count_if(out.textures.begin(), out.textures.end(),
+                [](const EffectTextureSnapshot& texture) { return texture.binding.role == TextureRole::Bump; });
+            if (bumpCount > 1)
+            {
+                diagnostic = "evaluated material has more than one legacy BumpTexture stage";
+                return false;
+            }
+            if (bumpCount == 1)
+            {
+                const osg::Uniform* matrixUniform = state->getUniform("bumpMapMatrix");
+                const osg::Uniform* lumaUniform = state->getUniform("envMapLumaBias");
+                osg::Matrix2 matrix;
+                osg::Vec2f luma;
+                if (!matrixUniform || !lumaUniform || !matrixUniform->get(matrix) || !lumaUniform->get(luma))
+                {
+                    diagnostic = "evaluated legacy BumpTexture requires mat2 bumpMapMatrix and vec2 envMapLumaBias";
+                    return false;
+                }
+                // Keep the four authored scalars in NifLoader's exact order;
+                // do not transpose a non-symmetric bump matrix on capture.
+                const float* values = matrix.ptr();
+                if (!std::all_of(values, values + 4, [](float value) { return std::isfinite(value); })
+                    || !std::isfinite(luma.x()) || !std::isfinite(luma.y()))
+                {
+                    diagnostic = "evaluated legacy BumpTexture has nonfinite matrix or luminance parameters";
+                    return false;
+                }
+                material.bumpParametersEnabled = true;
+                material.bumpMapMatrix = { values[0], values[1], values[2], values[3] };
+                material.environmentMapLumaBias = { luma.x(), luma.y() };
+            }
+
             out.material = std::move(material);
             return true;
         }
@@ -760,8 +802,10 @@ namespace MWRender
                 }
             }
 
+            const osg::ref_ptr<osg::StateSet> state = effectiveState(path, geometry.getStateSet());
             CapturedMaterial captured;
-            if (!captureMaterial(path, geometry.getStateSet(), vfs, captured, diagnostic, identityCache, preview))
+            if (!captureMaterial(path, geometry.getStateSet(), vfs, captured, diagnostic, identityCache, preview,
+                    std::getenv("OPENMW_V4_REPEAT_CAPTURE_STATE_CONTROL") ? nullptr : state.get()))
             {
                 diagnostic += " [capture=" + draw.identity + ", source-drawable='" + geometry.getName()
                     + "', source-type=" + geometry.className() + "]";
@@ -770,7 +814,6 @@ namespace MWRender
             draw.material = std::move(captured.material);
             draw.textures = std::move(captured.textures);
 
-            const osg::ref_ptr<osg::StateSet> state = effectiveState(path, geometry.getStateSet());
             if (!captureEffectTextureCoordinates(geometry, *state, draw, diagnostic))
             {
                 diagnostic += " [capture=" + draw.identity + "]";
@@ -815,15 +858,16 @@ namespace MWRender
                 diagnostic = "particle visibility-distance culling requires an explicit V4 effect facet";
                 return false;
             }
+            const osg::ref_ptr<osg::StateSet> state = effectiveState(path, particles.getStateSet());
             CapturedMaterial captured;
-            if (!captureMaterial(path, particles.getStateSet(), vfs, captured, diagnostic, identityCache))
+            if (!captureMaterial(path, particles.getStateSet(), vfs, captured, diagnostic, identityCache, false,
+                    std::getenv("OPENMW_V4_REPEAT_CAPTURE_STATE_CONTROL") ? nullptr : state.get()))
                 return false;
             captured.material.vertexColorMode = RenderCore::VertexColorMode::AmbientDiffuse;
             if (particles.getSortMode() == osgParticle::ParticleSystem::NO_SORT)
                 captured.material.transparentSort = RenderCore::TransparentSortPolicy::Unsorted;
             else if (captured.material.alphaBlendEnabled)
                 captured.material.transparentSort = RenderCore::TransparentSortPolicy::Sorted;
-            const osg::ref_ptr<osg::StateSet> state = effectiveState(path, particles.getStateSet());
             const glm::mat4 systemWorld = toGlm(osg::computeLocalToWorld(path));
             if (!finite(systemWorld))
             {

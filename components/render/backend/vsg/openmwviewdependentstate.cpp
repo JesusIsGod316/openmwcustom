@@ -9,11 +9,17 @@
 #include <vsg/state/DescriptorSet.h>
 #include <vsg/state/DescriptorSetLayout.h>
 #include <vsg/ui/FrameStamp.h>
+#include <vsg/lighting/AmbientLight.h>
+#include <vsg/lighting/DirectionalLight.h>
+#include <vsg/lighting/PointLight.h>
+#include <vsg/lighting/SpotLight.h>
+#include <vsg/maths/transform.h>
 #include <vsg/vk/ResourceRequirements.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -73,7 +79,10 @@ namespace RenderVsg
             vsg::vec4(environment.precipitationEnabled ? 1.0f : 0.0f, environment.storm ? 1.0f : 0.0f,
                 environment.skyEnabled ? 1.0f : 0.0f, environment.shadowsEnabled ? 1.0f : 0.0f),
             vsg::vec4(eyeClipPlane.x, eyeClipPlane.y, eyeClipPlane.z, eyeClipPlane.w),
-            vsg::vec4(0.0f, 0.0f, 0.0f, 0.0f) };
+            std::getenv("OPENMW_V4_LEGACY_SUN_SPECULAR_CONTROL")
+                ? vsg::vec4(0.0f, 1.0f, 1.0f, 1.0f)
+                : vsg::vec4(0.0f, environment.sunSpecular.r, environment.sunSpecular.g,
+                    environment.sunSpecular.b) };
     }
 
     OpenMwViewDependentState::OpenMwViewDependentState(vsg::View* view)
@@ -258,9 +267,68 @@ namespace RenderVsg
         mEyeClipPlane = glm::transpose(glm::inverse(camera.view)) * worldPlane;
     }
 
+    void OpenMwViewDependentState::updateUnshadowedLightData() const
+    {
+        if (!lightData)
+            return;
+        // Pinned VSG 1.1.15 returns before packing even ambient/directional
+        // lights when RECORD_SHADOW_MAPS is absent. Previews, reflection and
+        // refraction intentionally omit that flag. Populate the same supported
+        // light-buffer layout here WITHOUT enabling or recording shadow maps.
+        const std::size_t required = 1u + ambientLights.size() + 3u * directionalLights.size()
+            + 2u * pointLights.size() + 4u * spotLights.size();
+        if (required > lightData->size())
+            throw std::runtime_error("unshadowed view light data exceeds its compiled buffer capacity");
+        auto output = lightData->begin();
+        bool changed = false;
+        const auto write = [&](const vsg::vec4& value) {
+            changed = changed || *output != value;
+            *output++ = value;
+        };
+        const auto color = [&](const auto& light) {
+            write({ light->color.r, light->color.g, light->color.b, light->intensity });
+        };
+        write({ static_cast<float>(ambientLights.size()), static_cast<float>(directionalLights.size()),
+            static_cast<float>(pointLights.size()), static_cast<float>(spotLights.size()) });
+        for (const auto& entry : ambientLights)
+            color(entry.second);
+        for (const auto& [matrix, light] : directionalLights)
+        {
+            const auto direction = vsg::normalize(light->direction * vsg::inverse_3x3(matrix));
+            color(light);
+            write({ static_cast<float>(direction.x), static_cast<float>(direction.y),
+                static_cast<float>(direction.z), 0.0f });
+            write({ 0.0f, 0.0f, 0.0f, 0.0f }); // No shadow descriptors/matrices follow this light.
+        }
+        for (const auto& [matrix, light] : pointLights)
+        {
+            const auto position = matrix * light->position;
+            color(light);
+            write({ static_cast<float>(position.x), static_cast<float>(position.y),
+                static_cast<float>(position.z), 0.0f });
+        }
+        for (const auto& [matrix, light] : spotLights)
+        {
+            const auto position = matrix * light->position;
+            const auto direction = vsg::normalize(light->direction * vsg::inverse_3x3(matrix));
+            color(light);
+            write({ static_cast<float>(position.x), static_cast<float>(position.y),
+                static_cast<float>(position.z), static_cast<float>(std::cos(light->innerAngle)) });
+            write({ static_cast<float>(direction.x), static_cast<float>(direction.y),
+                static_cast<float>(direction.z), static_cast<float>(std::cos(light->outerAngle)) });
+            write({ 0.0f, 0.0f, 0.0f, 0.0f });
+        }
+        if (changed)
+            lightData->dirty();
+    }
+
     void OpenMwViewDependentState::traverse(vsg::RecordTraversal& traversal) const
     {
-        vsg::ViewDependentState::traverse(traversal);
+        if (view && (view->features & vsg::RECORD_SHADOW_MAPS) == 0
+            && std::getenv("OPENMW_V4_LEGACY_UNSHADOWED_LIGHTS_CONTROL") == nullptr)
+            updateUnshadowedLightData();
+        else
+            vsg::ViewDependentState::traverse(traversal);
         const vsg::FrameStamp* const frameStamp = traversal.getFrameStamp();
         const double simulationTime = frameStamp ? frameStamp->simulationTime : 0.0;
         if (mOpenMwEnvironmentData)

@@ -1073,12 +1073,13 @@ namespace RenderVsg
 
     bool VsgRuntimeHost::synchronizeLocalLights(const RenderCore::RenderWorld& world)
     {
+        Debug::GameplayDiagnostics::Stage phase("local_light_sync");
         bool allCurrent = mOpenMwViewState->localLightsCurrent(world)
             && (!mReflectionView || mReflectionView->state->localLightsCurrent(world))
             && (!mRefractionView || mRefractionView->state->localLightsCurrent(world));
         for (const AuxiliaryViewRuntime& auxiliary : mAuxiliaryViews)
         {
-            if (auxiliary.active && auxiliary.kind != RenderCore::ViewKind::Map
+            if (auxiliary.active && !auxiliary.isolated && auxiliary.kind != RenderCore::ViewKind::Map
                 && !auxiliary.state->localLightsCurrent(world))
                 allCurrent = false;
         }
@@ -1118,7 +1119,7 @@ namespace RenderVsg
         }
         for (AuxiliaryViewRuntime& auxiliary : mAuxiliaryViews)
         {
-            if (auxiliary.active && auxiliary.kind != RenderCore::ViewKind::Map
+            if (auxiliary.active && !auxiliary.isolated && auxiliary.kind != RenderCore::ViewKind::Map
                 && !auxiliary.state->setLocalLights(plan))
             {
                 mLastDiagnostic = "auxiliary OpenMW view state rejected its prepared local light buffer";
@@ -1451,7 +1452,7 @@ namespace RenderVsg
                 auxiliaryEnvironment = {};
                 auxiliaryEnvironment.ambient = scene.ambient;
                 auxiliaryEnvironment.sunDiffuse = scene.directionalDiffuse;
-                auxiliaryEnvironment.sunSpecular = scene.directionalDiffuse;
+                auxiliaryEnvironment.sunSpecular = { 0.0f, 0.0f, 0.0f, 0.0f };
                 auxiliaryEnvironment.sunLightEnabled = true;
                 auxiliaryEnvironment.sunDirection = scene.directionalRay;
                 auxiliaryEnvironment.fogEnabled = false;
@@ -1832,7 +1833,11 @@ namespace RenderVsg
         if (!mWindow->visible())
             return finish(RenderCore::RenderFrameResult::Skipped, "SDL Vulkan window is hidden or minimized");
 
-        if (!synchronizeAuxiliaryViews(frame))
+        const auto auxiliaryReady = [&] {
+            Debug::GameplayDiagnostics::Stage phase("auxiliary_sync");
+            return synchronizeAuxiliaryViews(frame);
+        }();
+        if (!auxiliaryReady)
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
         const VkExtent2D desiredExtent{ frame.outputExtent().width, frame.outputExtent().height };
         const auto extentMatches = [&] {
@@ -1844,7 +1849,11 @@ namespace RenderVsg
         if (!extentMatches())
             return finish(
                 RenderCore::RenderFrameResult::Skipped, "SDL pixel extent is not ready for the requested output");
-        if (!mViewer->advanceToNextFrame(frame.simulationTime()))
+        const bool acquired = [&] {
+            Debug::GameplayDiagnostics::Stage phase("swapchain_acquire");
+            return mViewer->advanceToNextFrame(frame.simulationTime());
+        }();
+        if (!acquired)
             return finish(RenderCore::RenderFrameResult::Skipped, "VSG could not acquire the next swapchain frame");
         // advanceToNextFrame() polls SDL/VSG events before acquisition. A minimize
         // event can therefore make the window invisible after the pre-check and
@@ -1853,12 +1862,16 @@ namespace RenderVsg
         if (!mWindow->visible())
             return finish(RenderCore::RenderFrameResult::Skipped, "SDL Vulkan window became hidden or minimized");
 
-        const VsgCompletionPoll completion = mCompletion.pollBeforeRecordAndSubmit(*mViewer);
+        const VsgCompletionPoll completion = [&] {
+            Debug::GameplayDiagnostics::Stage phase("completion_poll");
+            return mCompletion.pollBeforeRecordAndSubmit(*mViewer);
+        }();
         if (completion.result != VK_SUCCESS)
             return finish(RenderCore::RenderFrameResult::Failed,
                 "Vulkan completion polling failed with VkResult " + std::to_string(completion.result));
         if (completion.completedThrough)
         {
+            Debug::GameplayDiagnostics::Stage phase("retirement_collect");
             mCompletedThrough = completion.completedThrough;
             bool releasedStatic = false;
             {
@@ -1883,6 +1896,7 @@ namespace RenderVsg
 
         const auto prepareSky = [&](NativeSky& sky, vsg::View& targetView,
                                     const RenderCore::FrameView& semantic, bool visible) {
+            Debug::GameplayDiagnostics::Stage phase("native_sky_prepare");
             return sky.prepare(frame.nativeSky().get(), frame.environment(), semantic, frame.frameId(),
                 mCompletedThrough, mTextureResolver, mSharedObjects,
                 [&](vsg::ref_ptr<vsg::Node> node) {
@@ -1964,7 +1978,10 @@ namespace RenderVsg
         }();
         if (!pipelinesReady)
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
-        mViewer->update();
+        {
+            Debug::GameplayDiagnostics::Stage phase("vsg_update_operations");
+            mViewer->update();
+        }
         const VsgSubmitPresentResult submission = [&] {
             Debug::GameplayDiagnostics::Stage submitDiagnostic("submit_present");
             return submitAndPresentChecked(*mViewer);

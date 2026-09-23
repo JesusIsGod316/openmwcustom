@@ -111,12 +111,9 @@ namespace RenderVsg
                     "} openmwEnvironmentEffect;\n"
                     "#endif\n"))
                 return false;
-            if (!insertAfterOnce(source, "    vec4 clipPlane;\n",
-                    "#ifdef OPENMW_ENCHANTED_ENVIRONMENT\n"
-                    "    // x is the exact legacy 16 Hz caustic frame index,\n"
-                    "    // computed from VSG's authoritative FrameStamp time.\n"
-                    "    vec4 temporalEffects;\n"
-                    "#endif\n"))
+            // The base environment block now declares the same ninth vec4 for
+            // both ordinary and enchanted materials. Never append a second slot.
+            if (source.find("    vec4 temporalEffects;\n") == std::string::npos)
                 return false;
             if (!insertAfterOnce(source, "layout(location = 4) in vec2 texCoord[VSG_TEXCOORD_COUNT];\n",
                     "#ifdef OPENMW_ENCHANTED_ENVIRONMENT\n"
