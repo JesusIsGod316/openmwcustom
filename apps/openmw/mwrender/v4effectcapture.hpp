@@ -11,6 +11,7 @@
 #include <components/sceneutil/morphgeometry.hpp>
 #include <components/sceneutil/material.hpp>
 #include <components/sceneutil/texturetype.hpp>
+#include <components/sceneutil/disabledshadowtexture.hpp>
 #include <components/sceneutil/util.hpp>
 
 #include <osg/AlphaFunc>
@@ -540,10 +541,24 @@ namespace MWRender
                     && texture->getShadowComparison()
                     && texture->getShadowCompareFunc() == osg::Texture::ALWAYS)
                     continue;
+                // ShadowManager binds a second, image-backed sentinel when
+                // shadows are enabled. It has no VFS filename by design and
+                // always compares lit. Exclude only its exact engine-owned
+                // signature in a preview, not arbitrary generated textures.
+                if (preview && SceneUtil::isDisabledShadowTexture(*texture))
+                    continue;
                 const osg::Image* image = texture->getImage();
                 if (!image || image->getFileName().empty() || image->s() <= 0 || image->t() <= 0)
                 {
-                    diagnostic = "evaluated effect texture has no recoverable winning-VFS image identity";
+                    diagnostic = "evaluated effect texture has no recoverable winning-VFS image identity"
+                        " [texture_unit=" + std::to_string(unit) + ", texture_name='" + texture->getName()
+                        + "', image_present=" + (image ? "1" : "0") + ", image_file='"
+                        + (image ? image->getFileName() : std::string()) + "', width="
+                        + std::to_string(image ? image->s() : 0) + ", height="
+                        + std::to_string(image ? image->t() : 0) + ", pixel_format="
+                        + std::to_string(image ? image->getPixelFormat() : 0) + ", shadow_compare="
+                        + std::to_string(texture->getShadowComparison()) + ", compare_func="
+                        + std::to_string(texture->getShadowCompareFunc()) + "]";
                     return false;
                 }
 
@@ -747,7 +762,11 @@ namespace MWRender
 
             CapturedMaterial captured;
             if (!captureMaterial(path, geometry.getStateSet(), vfs, captured, diagnostic, identityCache, preview))
+            {
+                diagnostic += " [capture=" + draw.identity + ", source-drawable='" + geometry.getName()
+                    + "', source-type=" + geometry.className() + "]";
                 return false;
+            }
             draw.material = std::move(captured.material);
             draw.textures = std::move(captured.textures);
 

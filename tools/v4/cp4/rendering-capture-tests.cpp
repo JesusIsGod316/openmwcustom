@@ -5,6 +5,8 @@
 #include <components/rendercore/realizationkeys.hpp>
 #include <components/vfs/archive.hpp>
 #include <components/vfs/file.hpp>
+#include <components/sceneutil/disabledshadowtexture.hpp>
+#include <cstring>
 #include <osg/Group>
 #include <osg/MatrixTransform>
 #include <osg/Switch>
@@ -133,6 +135,70 @@ int main()
         require(MWRender::v4_effect_detail::captureMaterial({},st,s.vfs,m,d,&s.identities,true)&&m.textures.empty(),"preview sentinel treated as authored image");
         require(!MWRender::v4_effect_detail::captureMaterial({},st,s.vfs,m,d,&s.identities,false),"world texture guard weakened");
         t->setName("mod texture");require(!MWRender::v4_effect_detail::captureMaterial({},st,s.vfs,m,d,&s.identities,true),"user image silently omitted");
+    });
+    test("disabled-shadow factory preserves legacy depth comparison without a VFS filename",[]{
+        const auto t=SceneUtil::makeDisabledShadowTexture();
+        require(SceneUtil::isDisabledShadowTexture(*t),"factory and capture contract disagree");
+        require(t->getWrap(osg::Texture::WRAP_S)==osg::Texture::CLAMP_TO_EDGE
+            && t->getWrap(osg::Texture::WRAP_T)==osg::Texture::CLAMP_TO_EDGE,"legacy shadow wraps changed");
+        require(t->getImage() && t->getImage()->getFileName().empty(),"generated image given a false VFS identity");
+    });
+    test("preview excludes image-backed disabled shadows but retains authored diffuse and UVs",[]{
+        Scene s;auto root=osg::ref_ptr<osg::Group>(new osg::Group);auto g=geometry();root->addChild(g);
+        auto* state=root->getOrCreateStateSet();const auto shadow=SceneUtil::makeDisabledShadowTexture();
+        for(unsigned unit: {5u,6u,8u}) {
+            state->setTextureAttribute(unit,shadow,osg::StateAttribute::ON|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
+            state->addUniform(new osg::Uniform(("shadowTexture"+std::to_string(unit)).c_str(),static_cast<int>(unit)));
+        }
+        g->getOrCreateStateSet()->setTextureAttribute(0,texture());
+        RenderCore::ImmediateEffectDraw draw;std::string d;
+        const bool ok=MWRender::v4_effect_detail::captureGeometry(*g,{root.get()},s.vfs,"shadow-preview",draw,d,&s.identities,true);
+        require(ok,d.c_str());require(draw.textures.size()==1 && draw.textures[0].texture.sourceIdentity=="textures/sky.dds",
+            "authored image removed or generated shadow uploaded as material");
+        require(draw.mesh.texCoordSets.size()==1 && draw.mesh.texCoordSets[0].size()==3,"shadow units consumed authored UVs");
+        require(state->getTextureAttribute(6,osg::StateAttribute::TEXTURE)==shadow.get(),"source state mutated during capture");
+    });
+    test("world capture still rejects the disabled-shadow image as an authored material",[]{
+        Scene s;auto st=osg::ref_ptr<osg::StateSet>(new osg::StateSet);
+        st->setTextureAttribute(6,SceneUtil::makeDisabledShadowTexture());
+        MWRender::v4_effect_detail::CapturedMaterial m;std::string d;
+        require(!MWRender::v4_effect_detail::captureMaterial({},st,s.vfs,m,d,&s.identities,false),"world image guard weakened");
+    });
+    test("preview rejects unnamed depth images and modified engine sentinels",[]{
+        Scene s;
+        for(int change=0;change<5;++change) {
+            auto t=SceneUtil::makeDisabledShadowTexture();
+            switch(change) {
+                case 0:t->setName("");break;
+                case 1:t->setShadowCompareFunc(osg::Texture::LESS);break;
+                case 2:t->setShadowComparison(false);break;
+                case 3:{const float depth=1;std::memcpy(t->getImage()->data(),&depth,sizeof(depth));break;}
+                case 4:t->getImage()->allocateImage(1,1,1,GL_RGBA,GL_UNSIGNED_BYTE);break;
+            }
+            require(!SceneUtil::isDisabledShadowTexture(*t),"modified or unmarked texture accepted as sentinel");
+            auto st=osg::ref_ptr<osg::StateSet>(new osg::StateSet);st->setTextureAttribute(6,t);
+            MWRender::v4_effect_detail::CapturedMaterial m;std::string d;
+            require(!MWRender::v4_effect_detail::captureMaterial({},st,s.vfs,m,d,&s.identities,true),"unknown generated image silently dropped");
+        }
+    });
+    test("marker name does not hide an authored texture",[]{
+        Scene s;auto t=texture();t->setName(SceneUtil::DisabledShadowTextureName);
+        auto st=osg::ref_ptr<osg::StateSet>(new osg::StateSet);st->setTextureAttribute(0,t);
+        MWRender::v4_effect_detail::CapturedMaterial m;std::string d;
+        require(!SceneUtil::isDisabledShadowTexture(*t),"authored file accepted as engine sentinel");
+        require(MWRender::v4_effect_detail::captureMaterial({},st,s.vfs,m,d,&s.identities,true),d.c_str());
+        require(m.textures.size()==1 && m.textures[0].texture.sourceIdentity=="textures/sky.dds","authored texture lost");
+    });
+    test("unknown preview texture errors identify unit image state and drawable",[]{
+        Scene s;auto g=geometry();g->setName("preview-head-fixture");
+        auto t=osg::ref_ptr<osg::Texture2D>(new osg::Texture2D);t->setName("unknown-generated-texture");
+        g->getStateSet()->setTextureAttribute(6,t);
+        RenderCore::ImmediateEffectDraw draw;std::string d;
+        require(!MWRender::v4_effect_detail::captureGeometry(*g,{},s.vfs,"preview-test",draw,d,&s.identities,true),
+            "unknown preview texture accepted");
+        require(d.find("texture_unit=6")!=std::string::npos && d.find("image_present=0")!=std::string::npos
+            && d.find("unknown-generated-texture")!=std::string::npos && d.find("preview-head-fixture")!=std::string::npos,
+            "texture failure lacks actionable provenance");
     });
     test("normal and glow material roles remain distinct",[]{
         Scene s;auto st=osg::ref_ptr<osg::StateSet>(new osg::StateSet);st->setTextureAttribute(1,texture());st->setTextureAttribute(1,new SceneUtil::TextureType("normalMap"));
