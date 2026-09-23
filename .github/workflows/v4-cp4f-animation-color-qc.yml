@@ -1,4 +1,4 @@
-name: V4.0 CP4F combined bump lighting and capture-state repair QC
+name: V4.0 CP4F combined repair with depth-view light routing QC
 
 on:
   workflow_dispatch:
@@ -25,14 +25,14 @@ jobs:
         run: |
           set -euo pipefail
           CP4E_BASE=161568af75c54fb0c445e258fa235c304b27fc8d
-          CP4F_SOURCE=28cacff32e0d4346d962d714185cd0aea22b703a
+          CP4F_SOURCE=712cb0f10ac6360b145e3cfebe4b753dbb4ac1e5
           git cat-file -e "${CP4E_BASE}^{commit}"
           git cat-file -e "${CP4F_SOURCE}^{commit}"
           test "$(git merge-base "${CP4E_BASE}" HEAD)" = "${CP4E_BASE}"
           test "$(git merge-base "${CP4F_SOURCE}" HEAD)" = "${CP4F_SOURCE}"
           test "$(git rev-parse HEAD^)" = "${CP4F_SOURCE}"
 
-      - name: Verify independently validated bump lighting and capture source identities
+      - name: Verify independently validated view feature repair and retained source identities
         shell: bash
         run: |
           set -euo pipefail
@@ -43,21 +43,25 @@ jobs:
               'components/render/backend/vsg/enchantedmaterialshader.hpp': '93b9f983af971826cb0a0f92fec90de6316ae505',
               'components/render/backend/vsg/immediateeffectrealizer.hpp': 'd65554c643a6e73cf35f3b8484a9857e27275a23',
               'components/render/backend/vsg/legacymaterialshader.cpp': '491a28349a724df1feadfa8c9d61cd34ca80ca6f',
-              'components/render/backend/vsg/openmwviewdependentstate.cpp': '6986ef752ba577ac12d6a7907c3b36c108ee878d',
+              'components/render/backend/vsg/openmwviewdependentstate.cpp': '569bc60c508b6ee5672c4637bf48dca7c7ea1253',
               'components/render/backend/vsg/openmwviewdependentstate.hpp': '64e827f9de741dfce5df5b668e0f1e669f9f85cd',
               'components/render/backend/vsg/staticassetrealizer.cpp': '9f05cdb70e8e07827924847f046691d18b25a9f4',
               'components/render/backend/vsg/vsgruntimehost.cpp': 'c4165e19e6ec0573c4263ff22faf41bbe1e7a727',
               'tools/v4/cp4/LIT-PREVIEW-BUMP-REPAIR.md': '7d166699552976535a88db315702b6d5cee509c3',
               'tools/v4/cp4/rendering-capture-tests.cpp': '08d9513c8c6c848fb9830f68f4c395fe67ddd9bf',
-              'tools/v4/cp4/rendering-pixel-tests.cpp': '49442a4baad72710f18a8437293ac878440d145b',
-              'tools/v4/cp4/rendering-tests/CMakeLists.txt': 'afc3157b2ab1dd3f1c8669e301648174d7339cc7',
+              'tools/v4/cp4/rendering-pixel-tests.cpp': 'fb6f66fc5b425cc6f4342437ead54e437149f760',
+              'tools/v4/cp4/rendering-tests/CMakeLists.txt': 'fcf2acff6bf0fdc22d69f9fa2637a3bdcf0cf773',
               'tools/v4/cp4/run-rendering-pixel-tests.sh': 'eb416569d5de6e89306164461ed2d13704db3bd7',
               'components/sceneutil/disabledshadowtexture.hpp': '7d5422dd1febd128b9ab6fe984c9d9e20bb3c2c9',
               'components/sceneutil/shadow.cpp': '4c1270e607550f9108e10e38b131d92f7a289da8',
+              'apps/openmw/CMakeLists.txt': '7918147cb077cfde9a2d50e3f930f6642858cfad',
+              'tools/v4/cp4/VIEW-FEATURE-LIGHT-REPAIR.md': 'cb7b338190c234907da7cb3d229e527b3a9a4092',
+              'tools/v4/cp4/rendering-view-features-tests.cpp': '8c4b3739233d7e2b0159d58e2a07c310e8b7e95e',
+              '.github/workflows/v4-cp3b3.yml': 'ad3c63286d994c3521d5ac861eaba7069b25d94f',
           }
           for path, sha in expected.items():
               assert subprocess.check_output(['git','rev-parse','HEAD:'+path],text=True).strip() == sha, path
-          print('13 source blobs match successful independent run 35836702603; prior shadow sentinel retained')
+          print('View feature repair matches passed functional checks in independent run 35846973079; prior combined fixes retained')
           PY
 
       - name: Run retained CP4 and new QC source contracts
