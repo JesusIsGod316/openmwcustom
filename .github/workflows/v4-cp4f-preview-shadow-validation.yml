@@ -1,0 +1,133 @@
+name: CP4F preview shadow sentinel focused validation
+on:
+  push:
+    branches: [v4.0-cp4f-preview-shadow-sentinel-20260922]
+    paths: [.github/workflows/v4-cp4f-preview-shadow-validation.yml]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Recover exact five-file candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git merge-base f29ef787cf07ae1e525f0967ff26947b1d50e048 HEAD)" = f29ef787cf07ae1e525f0967ff26947b1d50e048
+          mkdir -p "$RUNNER_TEMP/preview-validation"
+          python3 - <<'PY'
+          import base64,hashlib,json,lzma,os,pathlib,subprocess,urllib.request
+          sha='cb4ab3dc63849df5fe382f44fc9e7668c460892b'
+          req=urllib.request.Request('https://api.github.com/repos/JesusIsGod316/openmwcustom/git/blobs/'+sha,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+          with urllib.request.urlopen(req,timeout=30) as response: obj=json.load(response)
+          data=base64.b64decode(obj['content'])
+          assert hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()==sha
+          patch=lzma.decompress(data)
+          assert hashlib.sha256(patch).hexdigest()=='f520e3273c0d6812cc8460b00c8172199ef6b3a4ffbd28d2f5871f45b859312e'
+          paths=[l.split(' b/',1)[1] for l in patch.decode().splitlines() if l.startswith('diff --git ')]
+          expected=['apps/openmw/mwrender/v4effectcapture.hpp','components/sceneutil/disabledshadowtexture.hpp','components/sceneutil/shadow.cpp','tools/v4/cp4/PREVIEW-SHADOW-SENTINEL-REPAIR.md','tools/v4/cp4/rendering-capture-tests.cpp']
+          assert paths==expected
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'preview-validation'
+          (out/'candidate.patch').write_bytes(patch)
+          (out/'paths.txt').write_text('\n'.join(paths)+'\n')
+          subprocess.run(['git','apply','--check',str(out/'candidate.patch')],check=True)
+          subprocess.run(['git','apply',str(out/'candidate.patch')],check=True)
+          PY
+      - name: Install real test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y ninja-build libvulkan-dev libopenscenegraph-dev libglm-dev libboost-all-dev libbullet-dev libluajit-5.1-dev python3-yaml
+      - name: Retrieve verified pinned renderer headers and SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 -H "Authorization: Bearer $GH_TOKEN" -o "$RUNNER_TEMP/sdk.zip" https://api.github.com/repos/JesusIsGod316/openmwcustom/actions/artifacts/10721042331/zip
+          echo "759107248040e002f5f4a7d2bed00082b6a7ea7e9e3afc1ddb0076cf247204e0  $RUNNER_TEMP/sdk.zip" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/sdk"
+          unzip -q "$RUNNER_TEMP/sdk.zip" -d "$RUNNER_TEMP/sdk"
+          tar -xzf "$RUNNER_TEMP/sdk/cp4f-render-test-deps.tar.gz" -C "$RUNNER_TEMP/sdk"
+      - name: Run expanded capture tests and reproduce original failure
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/preview-validation"
+          cmake -S tools/v4/cp4/rendering-tests -B "$out/native" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCP4F_RENDER_SDK="$RUNNER_TEMP/sdk" > "$out/configure.log" 2>&1
+          cmake --build "$out/native" --target rendering-capture --parallel 3 > "$out/native-build.log" 2>&1
+          "$out/native/rendering-capture" 2>&1 | tee "$out/native.log"
+          header=apps/openmw/mwrender/v4effectcapture.hpp
+          cp "$header" "$out/repaired-header.hpp"
+          trap 'cp "$out/repaired-header.hpp" "$header"' EXIT
+          git show "f29ef787cf07ae1e525f0967ff26947b1d50e048:$header" > "$header"
+          cmake --build "$out/native" --target rendering-capture --parallel 3 > "$out/baseline-build.log" 2>&1
+          set +e
+          "$out/native/rendering-capture" > "$out/baseline.log" 2>&1
+          result=$?
+          set -e
+          test "$result" = 1
+          grep -F '18/20 rendering capture tests passed' "$out/baseline.log"
+          grep -F 'FAIL preview excludes image-backed disabled shadows but retains authored diffuse and UVs: evaluated effect texture has no recoverable winning-VFS image identity' "$out/baseline.log"
+          cp "$out/repaired-header.hpp" "$header"
+          trap - EXIT
+      - name: Sanitizers and retained UV and integration checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/preview-validation"
+          cmake -S tools/v4/cp4/rendering-tests -B "$out/sanitized" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCP4F_RENDER_SDK="$RUNNER_TEMP/sdk" -DCP4F_CAPTURE_SANITIZERS=ON > "$out/sanitized-configure.log" 2>&1
+          cmake --build "$out/sanitized" --target rendering-capture --parallel 3 > "$out/sanitized-build.log" 2>&1
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$out/sanitized/rendering-capture" 2>&1 | tee "$out/sanitized.log"
+          bash tools/v4/cp4/run-effect-uv-tests.sh "$out/uv" 2>&1 | tee "$out/uv.log"
+          for path in tools/v4/cp4/rendering-contract.py tools/v4/cp4/test-host-memory-integration.py tools/v4/cp4/video-ui-contract.py tools/v4/cp4/runtime-blocker-contract.py; do python3 "$path"; done | tee "$out/contracts.log"
+      - name: Actual modified production translation units
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$RUNNER_TEMP/sdk"
+          flags=(-std=c++20 -fsyntax-only -pthread -I. -Iextern/sol_config -Iextern/sol3 -Iextern/oics -isystem "$sdk/sysroot/usr/include" -isystem "$sdk/sysroot/usr/include/x86_64-linux-gnu" -isystem "$sdk/sysroot/usr/include/bullet" -isystem "$sdk/sysroot/usr/include/recastnavigation" -isystem "$sdk/sysroot/usr/include/luajit-2.1" -isystem "$sdk/mygui/MyGUIEngine/include" -isystem "$sdk/SDL3-3.4.10/include" -isystem "$sdk/prefix/include")
+          g++ "${flags[@]}" components/sceneutil/shadow.cpp > "$RUNNER_TEMP/preview-validation/syntax-shadow-opengl.log" 2>&1
+          g++ "${flags[@]}" -DOPENMW_ENABLE_V4_VULKAN_RUNTIME=1 components/sceneutil/shadow.cpp > "$RUNNER_TEMP/preview-validation/syntax-shadow-vulkan.log" 2>&1
+          g++ "${flags[@]}" -DOPENMW_ENABLE_V4_VULKAN_RUNTIME=1 apps/openmw/mwrender/v4previewbridge.cpp > "$RUNNER_TEMP/preview-validation/syntax-preview.log" 2>&1
+      - name: Preserve validated candidate on staging branch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/preview-validation"
+          git diff --check
+          while IFS= read -r path; do git add -- "$path"; done < "$out/paths.txt"
+          test "$(git diff --cached --name-only | wc -l)" = 5
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'CP4F: distinguish preview disabled-shadow dependencies from authored VFS textures'
+          git push origin HEAD:v4.0-cp4f-preview-shadow-sentinel-20260922
+          git rev-parse HEAD > "$out/source-sha.txt"
+          python3 - <<'PY'
+          import json,os,pathlib,subprocess
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'preview-validation'
+          entries=[]
+          for path in (out/'paths.txt').read_text().splitlines():
+              mode,kind,sha,_=subprocess.check_output(['git','ls-tree','HEAD','--',path],text=True).split(maxsplit=3)
+              entries.append(dict(path=path,mode=mode,type=kind,sha=sha))
+          (out/'source-blobs.json').write_text(json.dumps(entries,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cp4f-preview-shadow-candidate-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/preview-validation/*.log
+            ${{ runner.temp }}/preview-validation/*.patch
+            ${{ runner.temp }}/preview-validation/*.json
+            ${{ runner.temp }}/preview-validation/*.txt
+          retention-days: 14
+          if-no-files-found: error
