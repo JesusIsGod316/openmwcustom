@@ -1,0 +1,181 @@
+name: CP4F lit preview and evaluated bump validation
+on:
+  push:
+    branches: [v4.0-cp4f-lit-preview-bump-20260923]
+    paths: [.github/workflows/v4-cp4f-lit-preview-bump-validation.yml]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Recover reviewed source and verify every original and repaired blob
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git merge-base ddcb8cecfad3f8a9199bd3411033be676be6720f HEAD)" = ddcb8cecfad3f8a9199bd3411033be676be6720f
+          python3 - <<'PY'
+          import base64,hashlib,json,lzma,os,pathlib,subprocess,urllib.request
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'repair-validation'
+          out.mkdir()
+          sha='f26a62b4875941cf926046bcf9326df7a8f216a9'
+          request=urllib.request.Request('https://api.github.com/repos/JesusIsGod316/openmwcustom/git/blobs/'+sha,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+          with urllib.request.urlopen(request,timeout=45) as response: obj=json.load(response)
+          packed=base64.b64decode(obj['content'])
+          assert hashlib.sha1(b'blob '+str(len(packed)).encode()+b'\0'+packed).hexdigest()==sha
+          assert hashlib.sha256(packed).hexdigest()=='7457433b8b19b61ce741eb359bbf012030c4f76a1a41f3d501746d202290d04b'
+          bundle=json.loads(lzma.decompress(packed))
+          patch=bundle['patch'].encode()
+          assert len(patch)==45246
+          assert hashlib.sha256(patch).hexdigest()=='c21b5b31d70056c9233d244f5180c1b3f9ef321645218502e958cb36f1b59f10'
+          paths=[line.split(' b/',1)[1] for line in bundle['patch'].splitlines() if line.startswith('diff --git ')]
+          assert len(paths)==13 and len(set(paths))==13
+          assert set(paths)==set(bundle['original_blobs'])==set(bundle['new_blobs'])
+          assert all(p.startswith(('apps/openmw/mwrender/','components/render/backend/vsg/','tools/v4/cp4/')) and '..' not in p for p in paths)
+          for path,expected in bundle['original_blobs'].items():
+              if expected is None: assert not pathlib.Path(path).exists(),path
+              else: assert subprocess.check_output(['git','hash-object',path],text=True).strip()==expected,path
+          (out/'repair.patch').write_bytes(patch)
+          (out/'paths.txt').write_text('\n'.join(paths)+'\n')
+          (out/'expected-source.json').write_text(json.dumps(bundle['new_blobs'],indent=2))
+          subprocess.run(['git','apply','--check',str(out/'repair.patch')],check=True)
+          subprocess.run(['git','apply',str(out/'repair.patch')],check=True)
+          for path,expected in bundle['new_blobs'].items():
+              assert subprocess.check_output(['git','hash-object',path],text=True).strip()==expected,path
+          print('PASS all 13 original and repaired source identities')
+          PY
+      - name: Install real capture dependencies and software Vulkan validation
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y ninja-build libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers libopenscenegraph-dev libglm-dev libbullet-dev libboost-all-dev libluajit-5.1-dev libpng-dev libsqlite3-dev libyaml-cpp-dev librecast-dev libopenal-dev libavcodec-dev libavformat-dev libswscale-dev libswresample-dev libfreetype-dev qt6-base-dev python3-yaml
+      - name: Retrieve pinned renderer SDK with verified checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          hash=759107248040e002f5f4a7d2bed00082b6a7ea7e9e3afc1ddb0076cf247204e0
+          [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
+          curl --fail --location --retry 2 -H "Authorization: Bearer $GH_TOKEN" -o "$RUNNER_TEMP/render-sdk.zip" https://api.github.com/repos/JesusIsGod316/openmwcustom/actions/artifacts/10721042331/zip
+          echo "$hash  $RUNNER_TEMP/render-sdk.zip" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/render-sdk"
+          unzip -q "$RUNNER_TEMP/render-sdk.zip" -d "$RUNNER_TEMP/render-sdk"
+          tar -xzf "$RUNNER_TEMP/render-sdk/cp4f-render-test-deps.tar.gz" -C "$RUNNER_TEMP/render-sdk"
+          cat "$RUNNER_TEMP/render-sdk/identities.txt"
+          echo "CP4F_RENDER_SDK=$RUNNER_TEMP/render-sdk" >> "$GITHUB_ENV"
+          icd=$(find /usr/share/vulkan/icd.d -maxdepth 1 -name 'lvp_icd*.json' -print -quit)
+          test -n "$icd"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+      - name: Build actual renderer and run native capture and uniform tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/repair-validation"
+          cmake -S tools/v4/cp4/rendering-tests -B "$out/build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCP4F_RENDER_SDK="$CP4F_RENDER_SDK" 2>&1 | tee "$out/configure.log"
+          cmake --build "$out/build" --parallel 3 2>&1 | tee "$out/build.log"
+          ctest --test-dir "$out/build" --output-on-failure 2>&1 | tee "$out/cpu.log"
+          "$out/build/rendering-capture" 2>&1 | tee "$out/capture.log"
+          OPENMW_V4_REPEAT_CAPTURE_STATE_CONTROL=1 "$out/build/rendering-capture" 2>&1 | tee "$out/repeated-state-control.log"
+      - name: Reproduce missing evaluated bump parameters with exact original ddcb header
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/repair-validation"
+          path=apps/openmw/mwrender/v4effectcapture.hpp
+          mkdir -p "$out/original/$(dirname "$path")"
+          git show "ddcb8cecfad3f8a9199bd3411033be676be6720f:$path" > "$out/original/$path"
+          cmake -S tools/v4/cp4/rendering-tests -B "$out/control" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCP4F_RENDER_SDK="$CP4F_RENDER_SDK" -DCP4F_CAPTURE_BASELINE_INCLUDE="$out/original" > "$out/control-configure.log"
+          cmake --build "$out/control" --target rendering-capture --parallel 3 > "$out/control-build.log" 2>&1
+          set +e
+          "$out/control/rendering-capture" > "$out/control-capture.log" 2>&1
+          result=$?
+          set -e
+          test "$result" = 1
+          grep -F 'captured BumpTexture lost its shader parameters' "$out/control-capture.log"
+          grep -F '21/24 rendering capture tests passed' "$out/control-capture.log"
+      - name: Execute production pixels with validation and four old-path controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/repair-validation"
+          bash tools/v4/cp4/run-rendering-pixel-tests.sh "$out/build/rendering-pixels" "$out/pixels" 2>&1 | tee "$out/pixel-summary.log"
+      - name: Sanitize actual evaluated capture
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/repair-validation"
+          cmake -S tools/v4/cp4/rendering-tests -B "$out/sanitized" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCP4F_RENDER_SDK="$CP4F_RENDER_SDK" -DCP4F_CAPTURE_SANITIZERS=ON > "$out/sanitized-configure.log"
+          cmake --build "$out/sanitized" --target rendering-capture --parallel 3 > "$out/sanitized-build.log" 2>&1
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 "$out/sanitized/rendering-capture" 2>&1 | tee "$out/sanitized-capture.log"
+      - name: Retain memory ownership UV recorder and launcher regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/repair-validation"
+          bash tools/v4/cp4/run-host-memory-tests.sh "$out/host" 2>&1 | tee "$out/host.log"
+          bash tools/v4/cp4/run-effect-uv-tests.sh "$out/uv" 2>&1 | tee "$out/uv.log"
+          bash tools/v4/cp4/run-runtime-diagnostics-tests.sh "$out/recorder" 2>&1 | tee "$out/recorder.log"
+          python3 tools/v4/cp4/test-runtime-diagnostics.py 2>&1 | tee "$out/report.log"
+          python3 tools/v4/cp4/test-gameplay-diagnostics.py 2>&1 | tee "$out/gameplay.log"
+          python3 tools/v4/cp4/test-diagnostic-config.py 2>&1 | tee "$out/config.log"
+          python3 tools/v4/cp4/test-diagnostic-linkage.py
+          python3 tools/v4/cp4/test-diagnostic-header-boundary.py
+      - name: Compile actual production translation units and preserve source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/repair-validation"
+          bash tools/v4/cp4/run-rendering-syntax.sh "$CP4F_RENDER_SDK" 2>&1 | tee "$out/syntax.log"
+          for path in tools/v4/cp3e/application-route-contract.py tools/v4/cp4/streaming-contract.py tools/v4/cp4/population-environment-contract.py tools/v4/cp4/water-environment-contract.py tools/v4/cp4/video-ui-contract.py tools/v4/cp4/animated-object-contract.py tools/v4/cp4/fullbody-first-person-contract.py tools/v4/cp4/runtime-blocker-contract.py tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py tools/v4/cp4/test-host-memory-integration.py tools/v4/cp4/rendering-contract.py; do python3 "$path"; done
+          git diff --exit-code ddcb8cecfad3f8a9199bd3411033be676be6720f -- apps/openmw/mwlua/worker.cpp apps/openmw/mwlua/worker.hpp components/settings/ramcache.hpp components/settings/v36profile.hpp components/misc/hostmemory.cpp components/misc/hostmemory.hpp apps/openmw/mwworld/cellpreloader.cpp apps/openmw/mwworld/scene.cpp apps/openmw/mwrender/v4effectuv.hpp
+          python3 - <<'PY'
+          import pathlib,yaml
+          for path in pathlib.Path('.github/workflows').glob('*.yml'): yaml.safe_load(path.read_text())
+          print('Workflow YAML: PASS')
+          PY
+          git diff --check
+      - name: Publish only independently validated implementation paths on staging branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/repair-validation"
+          while IFS= read -r path; do git add -- "$path"; done < "$out/paths.txt"
+          test "$(git diff --cached --name-only | wc -l)" = 13
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'CP4F: preserve evaluated bump parameters and light isolated native views'
+          git push origin HEAD:v4.0-cp4f-lit-preview-bump-20260923
+          git rev-parse HEAD > "$out/source-sha.txt"
+          python3 - <<'PY'
+          import json,os,pathlib,subprocess
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'repair-validation'
+          entries=[]
+          expected=json.loads((out/'expected-source.json').read_text())
+          for path in (out/'paths.txt').read_text().splitlines():
+              mode,kind,sha,_=subprocess.check_output(['git','ls-tree','HEAD','--',path],text=True).split(maxsplit=3)
+              assert sha==expected[path],path
+              entries.append(dict(path=path,mode=mode,type=kind,sha=sha))
+          (out/'source-blobs.json').write_text(json.dumps(entries,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cp4f-lit-preview-bump-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/repair-validation/*.log
+            ${{ runner.temp }}/repair-validation/*.patch
+            ${{ runner.temp }}/repair-validation/*.json
+            ${{ runner.temp }}/repair-validation/*.txt
+            ${{ runner.temp }}/repair-validation/pixels/*.log
+            ${{ runner.temp }}/repair-validation/build/Testing/Temporary/LastTest.log
+          retention-days: 14
+          if-no-files-found: error
