@@ -12,6 +12,7 @@
 #include <components/misc/mathutil.hpp>
 #include <components/resource/resourcesystem.hpp>
 #include <components/sceneutil/material.hpp>
+#include <components/sceneutil/pagingwork.hpp>
 #include <components/sceneutil/positionattitudetransform.hpp>
 
 #include "chunkmanager.hpp"
@@ -565,6 +566,58 @@ namespace Terrain
             loadRenderingNode(entry, vd, cellWorldSize, grid, true);
             reporter.addProgress(1);
         }
+    }
+
+    std::size_t QuadTreeWorld::preloadStrongUpgrade(View* view, const osg::Vec3f& viewPoint,
+        const osg::Vec4i& grid, std::atomic<bool>& abort, Loading::Reporter& reporter)
+    {
+        // Required preload has already traversed this independent view and
+        // populated correct weak/render-ready chunks. Do not reset or retraverse
+        // it here: replaying preload() would hit ViewData's cached rendering
+        // nodes and silently skip ObjectPaging::getChunk().
+        ViewData* vd = static_cast<ViewData*>(view);
+        reporter.addTotal(vd->getNumEntries());
+
+        std::size_t requests = 0;
+        for (unsigned int i = 0, n = vd->getNumEntries(); i < n && !abort; ++i)
+        {
+            SceneUtil::PagingWorkScope::checkpoint();
+            ViewDataEntry& entry = vd->getEntry(i);
+            const osg::Vec2f& center = entry.mNode->getCenter();
+            const bool activeGrid = center.x() > grid.x() && center.y() > grid.y()
+                && center.x() < grid.z() && center.y() < grid.w();
+
+            bool upgradedEntry = false;
+            if (activeGrid)
+            {
+                for (ChunkManager* manager : mChunkManagers)
+                {
+                    if (!manager->supportsStrongPagingUpgrade())
+                        continue;
+
+                    osg::ref_ptr<osg::Node> node = manager->getChunk(entry.mNode->getSize(), center,
+                        static_cast<unsigned char>(DefaultLodCallback::getNativeLodLevel(entry.mNode, mMinSize)),
+                        entry.mLodFlags, true, viewPoint, true);
+                    if (node)
+                    {
+                        ++requests;
+                        upgradedEntry = true;
+                    }
+                    SceneUtil::PagingWorkScope::checkpoint();
+                }
+            }
+
+            if (upgradedEntry)
+            {
+                // The cache now owns the strong replacement. The private
+                // preload view must not pin its weak wrapper/chunk after
+                // publication; live terrain views will acquire the strong
+                // cache entry on demand.
+                entry.mRenderingNode = nullptr;
+            }
+            reporter.addProgress(1);
+        }
+        return requests;
     }
 
     void QuadTreeWorld::reportStats(unsigned int frameNumber, osg::Stats* stats)
