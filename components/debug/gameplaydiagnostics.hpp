@@ -52,6 +52,16 @@ namespace Debug::GameplayDiagnostics
         unsigned dropped = 0;
         unsigned skeletonUpdates = 0, skeletonSkippedCull = 0, skeletonSkippedInactive = 0;
         unsigned cameraCallbacks = 0;
+        unsigned materialProbes = 0;
+        unsigned captureActors = 0, captureObjects = 0, useAnimObjects = 0;
+        unsigned rigEvaluations = 0, morphEvaluations = 0, ordinaryGeometries = 0;
+        unsigned geometrySnapshotHits = 0, geometrySnapshotMisses = 0;
+        unsigned inheritedStateHits = 0, inheritedStateMisses = 0;
+        double actorCaptureMs = 0, objectCaptureMs = 0;
+        double geometryTransformMs = 0, inheritedStateMs = 0, materialCaptureMs = 0, geometryGuardMs = 0, geometryBuildMs = 0;
+        unsigned materialValueHits = 0, materialValueMisses = 0, objectPlanRebuilds = 0, objectPlanReuses = 0, objectPlanFallbacks = 0;
+        unsigned nativeObjectBuilds = 0, nativeObjectUpdates = 0, nativeObjectReuses = 0, nativeObjectFallbacks = 0;
+        double nativeBindingMs = 0, nativeIdentityMs = 0, nativeCopyMs = 0;
     };
     inline thread_local Context context;
     inline bool sampling() { return context.sample; }
@@ -60,11 +70,23 @@ namespace Debug::GameplayDiagnostics
         return sampling() && RuntimeDiagnostics::mode() != RuntimeDiagnostics::Mode::Standard;
     }
 
+    // Optional case-sensitive identity/path substring. This only selects
+    // diagnostic examples; it must never affect capture or material admission.
+    inline std::string_view materialProbeFilter()
+    {
+        static const std::string value = [] {
+            const char* filter = std::getenv("OPENMW_V4_MATERIAL_PROBE_FILTER");
+            return filter ? std::string(filter).substr(0, 256) : std::string();
+        }();
+        return value;
+    }
+
     using Fields = std::initializer_list<std::pair<std::string_view, std::string>>;
     inline void recordEvent(std::string_view type, Fields fields = {}, bool independent = false) noexcept
     {
         if (!sampling() && !(independent && enabled())) return;
-        const bool detail = type == "actor_pose" || type == "actor_geometry" || type == "pick" || type == "camera";
+        const bool detail = type == "actor_pose" || type == "actor_geometry" || type == "pick" || type == "camera"
+            || type == "material_probe" || type == "texture_probe" || type == "population_cause";
         if (detail && context.lines >= 128) { ++context.dropped; return; }
         ++context.lines; // preserve stage ends/frame summary even when detail is capped
         if (RuntimeDiagnostics::enabled())
@@ -104,6 +126,36 @@ namespace Debug::GameplayDiagnostics
     }
 
     using Clock = std::chrono::steady_clock;
+    struct CapturePhase
+    {
+        bool active = sampling();
+        double* value;
+        Clock::time_point start{};
+        explicit CapturePhase(double& output) : value(&output) { if (active) start = Clock::now(); }
+        void next(double& output)
+        {
+            if (active) { const auto now = Clock::now(); *value += std::chrono::duration<double,std::milli>(now-start).count(); start=now; }
+            value = &output;
+        }
+        ~CapturePhase() { if (active) *value += std::chrono::duration<double,std::milli>(Clock::now()-start).count(); }
+    };
+    // Aggregate sub-scopes, not thousands of per-object log lines. Includes
+    // early failures; all values are CPU envelopes nested in dynamic_capture.
+    struct CaptureWork
+    {
+        bool active = sampling(), actor;
+        Clock::time_point start{};
+        explicit CaptureWork(bool isActor) : actor(isActor)
+        {
+            if (active) { start=Clock::now(); actor ? ++context.captureActors : ++context.captureObjects; }
+        }
+        ~CaptureWork()
+        {
+            if (active)
+                (actor ? context.actorCaptureMs : context.objectCaptureMs)
+                    += std::chrono::duration<double,std::milli>(Clock::now()-start).count();
+        }
+    };
     // Main-thread loading operations are observed even outside sampled frames.
     // They do not enable expensive per-actor/frame sampling or mutate TLS frame
     // state. Unique IDs disambiguate nested operations with identical names.
@@ -187,6 +239,38 @@ namespace Debug::GameplayDiagnostics
         {
             if (active)
             {
+                if (context.captureActors || context.captureObjects)
+                {
+                    recordEvent("capture_work", {{"actors",std::to_string(context.captureActors)},
+                        {"objects",std::to_string(context.captureObjects)}, {"use_anim_objects",std::to_string(context.useAnimObjects)},
+                        {"actor_ms",std::to_string(context.actorCaptureMs)}, {"object_ms",std::to_string(context.objectCaptureMs)},
+                        {"rig_evaluations",std::to_string(context.rigEvaluations)},
+                        {"morph_evaluations",std::to_string(context.morphEvaluations)},
+                        {"ordinary_geometry_visits",std::to_string(context.ordinaryGeometries)},
+                        {"geometry_snapshot_hits",std::to_string(context.geometrySnapshotHits)},
+                        {"geometry_snapshot_misses",std::to_string(context.geometrySnapshotMisses)},
+                        {"inherited_state_hits",std::to_string(context.inheritedStateHits)},
+                        {"inherited_state_misses",std::to_string(context.inheritedStateMisses)}});
+                    recordEvent("capture_phases", {
+                        {"transform_ms",std::to_string(context.geometryTransformMs)},
+                        {"state_ms",std::to_string(context.inheritedStateMs)},
+                        {"material_ms",std::to_string(context.materialCaptureMs)},
+                        {"mesh_guard_ms",std::to_string(context.geometryGuardMs)},
+                        {"mesh_build_ms",std::to_string(context.geometryBuildMs)},
+                        {"material_value_hits",std::to_string(context.materialValueHits)},
+                        {"material_value_misses",std::to_string(context.materialValueMisses)},
+                        {"object_plan_rebuilds",std::to_string(context.objectPlanRebuilds)},
+                        {"object_plan_reuses",std::to_string(context.objectPlanReuses)},
+                        {"object_plan_fallbacks",std::to_string(context.objectPlanFallbacks)}});
+                    recordEvent("native_objects", {
+                        {"native_object_builds",std::to_string(context.nativeObjectBuilds)},
+                        {"native_object_updates",std::to_string(context.nativeObjectUpdates)},
+                        {"native_object_reuses",std::to_string(context.nativeObjectReuses)},
+                        {"native_object_fallbacks",std::to_string(context.nativeObjectFallbacks)},
+                        {"native_binding_ms",std::to_string(context.nativeBindingMs)},
+                        {"native_identity_ms",std::to_string(context.nativeIdentityMs)},
+                        {"native_copy_ms",std::to_string(context.nativeCopyMs)}});
+                }
                 recordEvent("frame_end", {{"completed", std::to_string(completed)},
                     {"ms", std::to_string(std::chrono::duration<double, std::milli>(Clock::now() - start).count())},
                     {"skeleton_updates", std::to_string(context.skeletonUpdates)},

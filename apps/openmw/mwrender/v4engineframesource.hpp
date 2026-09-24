@@ -21,6 +21,7 @@ namespace MWRender
         std::vector<RenderCore::SkeletonPoseInput> skeletonPoses;
         std::vector<RenderCore::MorphWeightInput> morphWeights;
         std::vector<RenderCore::ImmediateEffectDraw> immediateEffectDraws;
+        std::shared_ptr<const RenderCore::PersistentDrawFrame> persistentDraws;
         std::shared_ptr<const RenderCore::NativeSkySnapshot> nativeSky;
         bool invalidateHistory = false;
         std::vector<RenderCore::SingleViewFrameInput::AuxiliaryView> previewViews;

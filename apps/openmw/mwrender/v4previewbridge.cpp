@@ -5,6 +5,7 @@
 #include "renderingmanager.hpp"
 #include "sky.hpp"
 #include <components/debug/debuglog.hpp>
+#include <components/settings/values.hpp>
 
 #include <components/debug/runtimediagnostics.hpp>
 #include <components/vsgmygui/rendermanager.hpp>
@@ -93,6 +94,8 @@ namespace MWRender
             scene->directionalDiffuse = v4_effect_detail::toGlm(preview.diffuse);
             scene->directionalRay = v4_effect_detail::toGlm(preview.directionalRay);
             scene->draws = std::move(captured.draws);
+            for (auto& draw : scene->draws)
+                draw.material.environmentMapPreLight = Settings::shaders().mApplyLightingToEnvironmentMaps;
             RenderCore::SingleViewFrameInput::AuxiliaryView view;
             view.kind = RenderCore::ViewKind::Preview;
             view.stableSlot = slot;

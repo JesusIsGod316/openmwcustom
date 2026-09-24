@@ -89,7 +89,7 @@ namespace RenderVsg
         {
             result.depth = createAttachment(
                 device, extent, depthVk, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-                    | (sampleDepth ? VK_IMAGE_USAGE_SAMPLED_BIT : VkImageUsageFlagBits{}), VK_IMAGE_ASPECT_DEPTH_BIT);
+                    | (sampleDepth ? VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT : VkImageUsageFlagBits{}), VK_IMAGE_ASPECT_DEPTH_BIT);
             if (!result.depth)
                 return {};
         }

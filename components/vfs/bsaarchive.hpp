@@ -38,6 +38,9 @@ namespace VFS
             return std::filesystem::last_write_time(mFile->getFile()->getPath());
         }
 
+        std::optional<std::filesystem::path> getMetadataPath() const override
+        { return typeid(*this) == typeid(BsaArchiveFile) ? std::optional(mFile->getFile()->getPath()) : std::nullopt; }
+
         std::string getStem() const override
         {
             std::string_view name = mInfo->name();

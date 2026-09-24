@@ -1,5 +1,8 @@
 #include <apps/openmw/mwrender/v4updateonlyviewer.hpp>
 #include <components/sceneutil/skeleton.hpp>
+#include <components/sceneutil/riggeometry.hpp>
+#include <components/sceneutil/morphgeometry.hpp>
+#include <components/sceneutil/deformationintersectionvisitor.hpp>
 #include <osg/MatrixTransform>
 #include <osg/ShapeDrawable>
 #include <osgUtil/IntersectionVisitor>
@@ -62,9 +65,64 @@ int main()
 {
     int failures = 0;
     const auto test = [&](const char* name, auto run) {
+        std::cout << "RUN " << name << std::endl;
         try { run(); std::cout << "PASS " << name << '\n'; }
         catch (const std::exception& e) { ++failures; std::cerr << "FAIL " << name << ": " << e.what() << '\n'; }
     };
+    test("headless picking follows skinned and morphed triangles without cull", [] {
+        auto source = osg::ref_ptr<osg::Geometry>(new osg::Geometry);
+        auto vertices = osg::ref_ptr<osg::Vec3Array>(new osg::Vec3Array);
+        vertices->push_back({-1,-1,-5}); vertices->push_back({1,-1,-5}); vertices->push_back({0,1,-5});
+        source->setVertexArray(vertices);
+        source->addPrimitiveSet(new osg::DrawArrays(GL_TRIANGLES,0,3));
+        auto rig = osg::ref_ptr<SceneUtil::RigGeometry>(new SceneUtil::RigGeometry);
+        rig->setName("Geometry");
+        rig->setSourceGeometry(source);
+        rig->setBoneInfo({{"Bone", osg::BoundingSpheref(osg::Vec3f(0,0,-5),2.f), osg::Matrixf::identity()}});
+        rig->setInfluences({{{0,1.f}},{{0,1.f}},{{0,1.f}}});
+        rig->setTransform(osg::Matrixf::identity());
+        auto bone = osg::ref_ptr<osg::MatrixTransform>(new osg::MatrixTransform);
+        bone->setName("Bone");
+        auto skeleton = osg::ref_ptr<SceneUtil::Skeleton>(new SceneUtil::Skeleton);
+        skeleton->setName("Skeleton");
+        skeleton->addChild(bone); skeleton->addChild(rig);
+        auto morph = osg::ref_ptr<SceneUtil::MorphGeometry>(new SceneUtil::MorphGeometry);
+        morph->setSourceGeometry(source);
+        morph->addMorphTarget(vertices);
+        auto offsets = osg::ref_ptr<osg::Vec3Array>(new osg::Vec3Array(3));
+        for (auto& offset : *offsets) offset.set(6,0,0);
+        morph->addMorphTarget(offsets,0);
+        auto root = osg::ref_ptr<osg::Group>(new osg::Group);
+        root->addChild(skeleton); root->addChild(morph);
+        skeleton->setNodeMask(1); morph->setNodeMask(2);
+        auto stamp = osg::ref_ptr<osg::FrameStamp>(new osg::FrameStamp);
+        SceneUtil::UpdateOnlyVisitor update;
+        update.setFrameStamp(stamp);
+        const auto hit = [&](double x, unsigned frame, unsigned mask, bool refresh) {
+            auto ray = osg::ref_ptr<osgUtil::LineSegmentIntersector>(
+                new osgUtil::LineSegmentIntersector(osg::Vec3d(x,0,0),osg::Vec3d(x,0,-10)));
+            SceneUtil::DeformationIntersectionVisitor visitor;
+            visitor.setIntersector(ray); visitor.setTraversalNumber(frame);
+            visitor.setTraversalMask(mask); visitor.evaluateDeformation = refresh;
+            root->accept(visitor);
+            return ray->containsIntersections();
+        };
+        for (unsigned frame=1; frame<=6; ++frame)
+        {
+            const double x = frame % 2 ? 6 : 3;
+            bone->setMatrix(osg::Matrix::translate(x,0,0));
+            morph->getMorphTarget(1).setWeight(static_cast<float>(x/6)); morph->dirty();
+            stamp->setFrameNumber(frame); update.setTraversalNumber(frame); root->accept(update);
+            // Bounds advance during update; primitive intersection historically still reads the stale buffer.
+            require(!hit(x,frame,1,false), "rig control no longer reproduces stale picking");
+            require(!hit(x,frame,2,false), "morph control no longer reproduces stale picking");
+            require(hit(x,frame,1,true), "fresh skinned triangle is not pickable");
+            require(hit(x,frame,2,true), "fresh morphed triangle is not pickable");
+            require(!hit(x,frame,4,true), "picking bypassed traversal masks");
+            require(!hit(0,frame,3,true), "bind-pose triangle remains pickable");
+        }
+        require((*vertices)[0].x() == -1, "picking mutated shared source geometry");
+    });
     test("reproduce ordinary Viewer no-window shutdown", [] {
         osg::ref_ptr<osgViewer::Viewer> viewer = new osgViewer::Viewer;
         viewer->setSceneData(new osg::Group);

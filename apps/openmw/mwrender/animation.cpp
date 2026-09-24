@@ -1,4 +1,7 @@
 #include "animation.hpp"
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+#include "v4persistentobject.hpp"
+#endif
 
 #include <algorithm>
 #include <cstdlib>
@@ -115,6 +118,7 @@ namespace
     class DayNightCallback : public SceneUtil::NodeCallback<DayNightCallback, osg::Switch*>
     {
     public:
+        unsigned renderMutationMask() const noexcept override { return SceneUtil::RenderVisibility; }
         DayNightCallback()
             : mCurrentState(0)
         {
@@ -523,6 +527,7 @@ namespace MWRender
     class ResetAccumRootCallback : public SceneUtil::NodeCallback<ResetAccumRootCallback, osg::MatrixTransform*>
     {
     public:
+        unsigned renderMutationMask() const noexcept override { return SceneUtil::RenderTransform; }
         void operator()(osg::MatrixTransform* transform, osg::NodeVisitor* nv)
         {
             osg::Matrix mat = transform->getMatrix();
@@ -1761,6 +1766,9 @@ namespace MWRender
         mObjectRoot = nullptr;
         mSkeleton = nullptr;
         mV4SourceModel = VFS::Path::toNormalized(model);
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4PersistentObject.reset();
+#endif
 
         mNodeMap.clear();
         mNodeMapCreated = false;
@@ -2025,12 +2033,18 @@ namespace MWRender
 
         // Notify that this animation has attached magic effects
         mHasMagicEffects = true;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4PersistentObject.reset();
+#endif
 
         overrideFirstRootTexture(VFS::Path::toNormalized(texture), mResourceSystem, *node);
     }
 
     void Animation::removeEffect(std::string_view effectId)
     {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4PersistentObject.reset();
+#endif
         RemoveCallbackVisitor visitor(effectId);
         mInsert->accept(visitor);
         visitor.remove();
@@ -2347,7 +2361,22 @@ namespace MWRender
         {
             harvest(ptr);
         }
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        if (animated) prepareV4PersistentObject();
+#endif
     }
+
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+    V4PersistentObject* Animation::prepareV4PersistentObject()
+    {
+        // Custom OSG importers/callbacks keep their evaluated compatibility path.
+        // The NIF loader and engine controllers own the supported mutation contract.
+        if (Misc::environmentFlag<"OPENMW_V4_NATIVE_OBJECT_PRODUCERS">()
+            && mInsert && mV4SourceModel.value().ends_with(".nif") && !mV4PersistentObject)
+            mV4PersistentObject = std::make_unique<V4PersistentObject>(*mInsert);
+        return mV4PersistentObject.get();
+    }
+#endif
 
     void ObjectAnimation::harvest(const MWWorld::Ptr& ptr)
     {

@@ -4,6 +4,8 @@
 #include "localmap.hpp"
 
 #include <components/render/backend/vsg/vsgruntimehost.hpp>
+#include <components/debug/gameplaydiagnostics.hpp>
+#include <cstdlib>
 #include <components/vsgmygui/rendermanager.hpp>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -310,7 +312,7 @@ namespace MWRender
         input.dynamicTransforms = source.dynamicTransforms;
         input.skeletonPoses = source.skeletonPoses;
         input.morphWeights = source.morphWeights;
-        input.immediateEffectDraws = source.immediateEffectDraws;
+        publishImmediateEffects(input, source);
         input.auxiliaryViews = source.previewViews;
         input.nativeSky = source.nativeSky;
         input.invalidateHistory = source.invalidateHistory || mGuiOnlyFramePresented;

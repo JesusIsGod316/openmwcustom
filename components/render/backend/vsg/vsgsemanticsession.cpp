@@ -1,4 +1,5 @@
 #include "vsgsemanticsession.hpp"
+#include <components/debug/gameplaydiagnostics.hpp>
 
 #include <optional>
 #include <stdexcept>
@@ -60,10 +61,24 @@ namespace RenderVsg
         if (populationStatus != RenderCore::StaticPopulationPublishStatus::Applied
             && populationStatus != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
             return fail("static population publication failed at the frame boundary");
-        RenderCore::SingleViewFrameInput routedInput = input;
-        routedInput.shadowViews = mShadowViews;
-        routedInput.waterViews = mWaterViews;
-        std::optional<RenderCore::FrameRenderState> frame = mFrames.prepare(mWorld, routedInput);
+        std::optional<RenderCore::FrameRenderState> frame;
+        {
+            Debug::GameplayDiagnostics::Stage preparing("semantic_frame_prepare");
+            RenderCore::SingleViewFrameInput routedInput = input;
+            routedInput.shadowViews = mShadowViews;
+            routedInput.waterViews = mWaterViews;
+            frame = mFrames.prepare(mWorld, routedInput);
+            if (Debug::GameplayDiagnostics::sampling())
+                Debug::GameplayDiagnostics::recordEvent("effect_frame_handoff", {
+                    {"owned_snapshot", std::to_string(bool(input.ownedImmediateEffects))},
+                    {"publication_workers", std::to_string(input.ownedImmediateEffects
+                        ? input.ownedImmediateEffects->publicationWorkers() : 0)},
+                    {"draws", std::to_string(input.ownedImmediateEffects
+                        ? input.ownedImmediateEffects->draws().size() : input.immediateEffectDraws.size())},
+                    {"geometry_bytes", std::to_string(input.ownedImmediateEffects
+                        ? input.ownedImmediateEffects->payloadBytes() : 0)},
+                    {"valid", std::to_string(bool(frame))} });
+        }
         if (!frame)
             return fail("semantic frame producer rejected the engine frame input");
 
@@ -71,7 +86,11 @@ namespace RenderVsg
             ? mBootstrap->renderer().renderGuiFrame(mWorld, *frame)
             : mBootstrap->renderer().renderFrame(mWorld, *frame);
         mLastDiagnostic = mBootstrap->renderer().lastDiagnostic();
-        if (result == RenderCore::RenderFrameResult::Presented && !mFrames.commitPresented(*frame))
+        const bool historyCommitted = [&] {
+            Debug::GameplayDiagnostics::Stage history("frame_history_commit");
+            return result != RenderCore::RenderFrameResult::Presented || mFrames.commitPresented(*frame);
+        }();
+        if (!historyCommitted)
         {
             // Presentation already happened, so synchronize before poisoning
             // the route. This should be unreachable for a prepared frame, but

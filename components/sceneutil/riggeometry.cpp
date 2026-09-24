@@ -9,6 +9,7 @@
 #include <components/resource/scenemanager.hpp>
 
 #include "skeleton.hpp"
+#include "deformationintersectionvisitor.hpp"
 #include "util.hpp"
 
 namespace SceneUtil
@@ -380,7 +381,12 @@ namespace SceneUtil
         else if (nv.getVisitorType() == osg::NodeVisitor::UPDATE_VISITOR)
             updateBounds(&nv);
         else
+        {
+            if (auto* intersection = dynamic_cast<DeformationIntersectionVisitor*>(&nv);
+                intersection && intersection->evaluateDeformation)
+                evaluateGeometry(nv.getTraversalNumber(), nv.getNodePath());
             nv.apply(*this);
+        }
 
         nv.popFromNodePath();
     }

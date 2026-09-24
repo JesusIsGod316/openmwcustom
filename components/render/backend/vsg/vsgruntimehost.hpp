@@ -20,6 +20,12 @@
 #include "viewcompilemanager.hpp"
 #include "uipipeline.hpp"
 #include "watersurface.hpp"
+#include "waterinputprobe.hpp"
+#include "nativevisibility.hpp"
+#include "effectvisibility.hpp"
+#include "nativepostprocess.hpp"
+#include "persistentdrawscene.hpp"
+#include "retainedscenemembership.hpp"
 
 #include <components/rendercore/namedvisualsemantics.hpp>
 #include <components/rendercore/renderer.hpp>
@@ -155,6 +161,7 @@ namespace RenderVsg
         struct StaticPopulationResident
         {
             vsg::ref_ptr<vsg::Switch> visibility;
+            vsg::ref_ptr<vsg::Group> placementFreeAsset;
         };
         struct WaterViewRuntime
         {
@@ -201,6 +208,7 @@ namespace RenderVsg
             vsg::ref_ptr<vsg::MatrixTransform> placement;
             vsg::ref_ptr<vsg::Node> published;
             std::vector<StaticRealizationResult::MutableDrawStreams> mutableDraws;
+            vsg::ref_ptr<vsg::CullGroup> cull;
         };
 
         [[nodiscard]] bool synchronizeStaticWorld(const RenderCore::RenderWorld& world);
@@ -211,6 +219,7 @@ namespace RenderVsg
         [[nodiscard]] bool synchronizeLocalLights(const RenderCore::RenderWorld& world);
         [[nodiscard]] bool synchronizeAuxiliaryViews(const RenderCore::FrameRenderState& frame);
         [[nodiscard]] bool synchronizeGui();
+        [[nodiscard]] bool resizePostProcess(RenderCore::Extent2D extent);
         [[nodiscard]] bool ensureActiveGraphicsPipelinesRealized();
         void reportStrictFrameDiagnostics(
             const RenderCore::FrameRenderState& frame, const RenderCore::FrameView& mainView);
@@ -241,6 +250,8 @@ namespace RenderVsg
         // dynamic content. Replacement never mutates mSceneRoot child ordering and
         // the old generation stays strongly owned through frame-safe retirement.
         vsg::ref_ptr<vsg::Group> mDynamicRoot;
+        PersistentDrawScene mPersistentDrawScene;
+        RetainedSceneMembership mRetainedDynamicScene;
         vsg::ref_ptr<vsg::Group> mDynamicPublishedRoot;
         // Stable holder attached to the main view plus separately-owned published
         // content. Replacing GUI content never relies on child ordering in mMainOnlyRoot.
@@ -251,6 +262,10 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::View> mView;
         vsg::ref_ptr<OpenMwViewDependentState> mOpenMwViewState;
         vsg::ref_ptr<vsg::RenderGraph> mRenderGraph;
+        OffscreenRenderTarget mPostTarget;
+        vsg::ref_ptr<vsg::View> mOutputView;
+        vsg::ref_ptr<vsg::Group> mPostRoot;
+        NativePostProcessMode mPostMode = NativePostProcessMode::Copy;
         vsg::ref_ptr<vsg::CommandGraph> mCommandGraph;
         std::optional<WaterViewRuntime> mReflectionView;
         std::optional<WaterViewRuntime> mRefractionView;
@@ -260,10 +275,21 @@ namespace RenderVsg
         SkyBackdrop mSkyBackdrop;
         NativeSky mNativeSky;
         WaterSurface mWaterSurface;
+        vsg::ref_ptr<vsg::Group> mWaterProbeCommands;
+        std::vector<WaterInputProbe> mWaterProbes;
+        unsigned mWaterProbeSamples = 0;
+        std::chrono::steady_clock::time_point mNextWaterProbe{};
         FrameCameraObjects mCamera;
         StaticWorldResidency<StaticResident> mStaticResidency;
         StaticWorldSyncState mStaticSyncState;
+        NativeVisibility mNativeVisibility;
+        std::vector<vsg::ref_ptr<MainViewVisibility>> mVisibilityNodes;
+        bool mNativeFrustumEnabled = false;
+        bool mNativeOcclusionEnabled = false;
         DynamicActorPlanCache mActorPlanCache;
+        // Lazily created only for the opt-in path. Three workers plus the main
+        // thread leave room for required engine/driver work on a six-core CPU.
+        std::unique_ptr<RenderCore::BoundedParallelFor> mActorPreparationWorkers;
         StaticPopulationResidency<StaticPopulationResident> mStaticPopulationResidency;
         FrameRetirementQueue<vsg::ref_ptr<vsg::Group>> mDynamicRetirements;
         FrameRetirementQueue<vsg::ref_ptr<vsg::Group>> mGuiRetirements;

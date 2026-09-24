@@ -31,6 +31,8 @@ namespace RenderVsg
         std::vector<RenderCore::InstanceHandle> removals;
         std::uint32_t simpleMeshInstancesDeferred = 0;
         std::uint32_t dynamicInstancesDeferred = 0;
+        std::size_t reusedPlans = 0;
+        const RenderCore::RenderWorld* sourceWorld = nullptr;
         bool valid = false;
     };
 
@@ -52,6 +54,48 @@ namespace RenderVsg
         static_assert(std::is_copy_constructible_v<Object>);
         static_assert(std::is_nothrow_move_constructible_v<Object>);
 
+        // Reconcile individual residents (including LAND) before constructing
+        // asset plans. A moving population must not revalidate every unchanged
+        // terrain vertex/layer. Any asset publication conservatively rebuilds
+        // these plans, including dependencies in hidden/switch branches.
+        [[nodiscard]] StaticWorldMutation prepareIncremental(
+            const RenderCore::RenderWorld& world, StaticPlanOptions options = {})
+        {
+            StaticWorldMutation mutation;
+            mutation.serial = ++mLastPreparedSerial;
+            mutation.worldEpoch = world.epoch();
+            mutation.worldRevision = world.revision();
+            mutation.sourceWorld = &world;
+            mutation.valid = mutation.worldEpoch.valid() && mutation.worldRevision.valid();
+            std::unordered_set<std::uint64_t> planned;
+            const bool reusableAssets = mSourceWorld == &world && mWorldEpoch == world.epoch()
+                && mAssetRevision == world.assetRevision();
+            world.forEachInstance([&](auto handle, const RenderCore::InstanceRecord& instance) {
+                if (instance.mesh.valid() && !instance.model)
+                { ++mutation.simpleMeshInstancesDeferred; return; }
+                if (instance.skeleton || instance.attachment)
+                { ++mutation.dynamicInstancesDeferred; return; }
+                mutation.orderedInstances.push_back(handle);
+                planned.insert(staticInstanceKey(handle));
+                auto effective = options;
+                effective.includeDeformableMeshes = false;
+                effective.dayNightSwitchesEnabled = effective.dayNightSwitchesEnabled
+                    && (instance.semanticFlags & RenderCore::NightDaySwitchCapabilitySemanticFlag) != 0;
+                effective.herbalismHarvested = (instance.semanticFlags & RenderCore::HerbalismSwitchCapabilitySemanticFlag)
+                    && (instance.semanticFlags & RenderCore::HerbalismHarvestedSemanticFlag);
+                const auto* resident = reusableAssets ? find(handle) : nullptr;
+                if (resident && resident->plan.options == effective && staticInstancePlanCurrent(world, resident->plan))
+                { ++mutation.reusedPlans; return; }
+                auto plan = buildStaticInstancePlan(world, handle, options);
+                if (!plan) { mutation.valid = false; return; }
+                mutation.upserts.push_back(std::move(*plan));
+            });
+            for (const auto& resident : mResidents)
+                if (!planned.contains(staticInstanceKey(resident.plan.instance)))
+                    mutation.removals.push_back(resident.plan.instance);
+            return mutation;
+        }
+
         [[nodiscard]] StaticWorldMutation prepare(
             const RenderCore::RenderWorld& world, StaticPlanOptions options = {})
         {
@@ -65,6 +109,7 @@ namespace RenderVsg
             mutation.serial = ++mLastPreparedSerial;
             mutation.worldEpoch = plan.worldEpoch;
             mutation.worldRevision = plan.worldRevision;
+            mutation.sourceWorld = &world;
             mutation.simpleMeshInstancesDeferred = plan.simpleMeshInstancesDeferred;
             mutation.dynamicInstancesDeferred = plan.dynamicInstancesDeferred;
             mutation.valid = plan.valid();
@@ -80,7 +125,8 @@ namespace RenderVsg
                 mutation.orderedInstances.push_back(candidate.instance);
                 planned.insert(staticInstanceKey(candidate.instance));
                 const Resident* resident = find(candidate.instance);
-                if (!resident || resident->plan.instanceRevision != candidate.instanceRevision
+                if (mSourceWorld != &world || mWorldEpoch != world.epoch()
+                    || !resident || resident->plan.instanceRevision != candidate.instanceRevision
                     || resident->plan.options != candidate.options || !staticInstancePlanCurrent(world, resident->plan))
                     mutation.upserts.push_back(candidate);
             }
@@ -99,7 +145,7 @@ namespace RenderVsg
             const StaticWorldMutation& mutation, std::vector<Object> realizedUpserts)
         {
             StaticWorldCommitResult<Object> result;
-            if (!mutation.valid || mutation.serial == 0 || mutation.serial <= mLastCommittedSerial
+            if (!mutation.valid || mutation.sourceWorld != &world || mutation.serial == 0 || mutation.serial <= mLastCommittedSerial
                 || mutation.serial > mLastPreparedSerial || mutation.worldEpoch != world.epoch()
                 || mutation.worldRevision != world.revision() || realizedUpserts.size() != mutation.upserts.size())
                 return result;
@@ -201,6 +247,8 @@ namespace RenderVsg
             mResidentIndex.swap(nextIndex);
             mWorldEpoch = mutation.worldEpoch;
             mWorldRevision = mutation.worldRevision;
+            mSourceWorld = &world;
+            mAssetRevision = world.assetRevision();
             mLastCommittedSerial = mutation.serial;
             result.committed = true;
             return result;
@@ -272,6 +320,8 @@ namespace RenderVsg
         FrameRetirementQueue<Object> mRetirements;
         RenderCore::WorldEpoch mWorldEpoch;
         RenderCore::RenderWorldRevision mWorldRevision;
+        const RenderCore::RenderWorld* mSourceWorld = nullptr;
+        RenderCore::RenderWorldRevision mAssetRevision;
         std::optional<RenderCore::FrameId> mLastSubmittedFrame;
         std::uint64_t mLastPreparedSerial = 0;
         std::uint64_t mLastCommittedSerial = 0;

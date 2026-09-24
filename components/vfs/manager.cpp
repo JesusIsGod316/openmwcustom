@@ -96,6 +96,12 @@ namespace VFS
         return found->second->getLastModified();
     }
 
+    std::optional<std::filesystem::path> Manager::getMetadataPath(VFS::Path::NormalizedView name) const
+    {
+        const auto found = mIndex.find(name);
+        return found == mIndex.end() ? std::nullopt : found->second->getMetadataPath();
+    }
+
     std::string Manager::getStem(VFS::Path::NormalizedView name) const
     {
         const auto found = mIndex.find(name);

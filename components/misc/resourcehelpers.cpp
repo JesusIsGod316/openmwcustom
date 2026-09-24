@@ -250,11 +250,6 @@ VFS::Path::Normalized Misc::ResourceHelpers::correctSoundPath(
     return VFS::Path::Normalized(resPath);
 }
 
-bool Misc::ResourceHelpers::isHiddenMarker(const ESM::RefId& id)
-{
-    return id == "prisonmarker" || id == "divinemarker" || id == "templemarker" || id == "northmarker";
-}
-
 namespace
 {
     VFS::Path::Normalized getLODMeshNameImpl(VFS::Path::NormalizedView resPath, std::string_view pattern)

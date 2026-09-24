@@ -3,6 +3,8 @@
 #include "legacymaterialshader.hpp"
 #include "staticassetrealizer.hpp"
 #include "livetextureimages.hpp"
+#include "persistentpipelinecache.hpp"
+#include <components/debug/gameplaydiagnostics.hpp>
 
 #include <vsg/all.h>
 #include <vsg/utils/GraphicsPipelineConfigurator.h>
@@ -428,7 +430,15 @@ namespace RenderVsg
         std::unordered_map<TextureRealizationKey, TextureCacheEntry, TextureRealizationKeyHash> textureCache;
         std::unordered_map<SamplerRealizationKey, vsg::ref_ptr<vsg::Sampler>, SamplerRealizationKeyHash> samplerCache;
 
-        auto legacyShaderSet = createLegacyCompatibilityShaderSet();
+        // Runtime realization is owner-thread work. Keep compiled shader
+        // variants and immutable pipelines across per-frame sharing arenas.
+        // Thread-local ownership also isolates independent fixture/worker use.
+        static thread_local PersistentShaderFamilies persistentShaders;
+        static thread_local PersistentPipelineCache persistentPipelines;
+        const bool reuseShaders = std::getenv("OPENMW_V4_PERSISTENT_SHADERS") != nullptr;
+        const bool reusePipelines = std::getenv("OPENMW_V4_PERSISTENT_PIPELINES") != nullptr;
+        auto legacyShaderSet = reuseShaders ? persistentShaders.get(false, false, false)
+                                            : createLegacyCompatibilityShaderSet();
         if (!legacyShaderSet)
         {
             result.root = {};
@@ -438,6 +448,8 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::ShaderSet> legacyBumpShaderSet;
         vsg::ref_ptr<vsg::ShaderSet> enchantedShaderSet;
         vsg::ref_ptr<vsg::ShaderSet> enchantedBumpShaderSet;
+        vsg::ref_ptr<vsg::ShaderSet> sphereShaderSet;
+        vsg::ref_ptr<vsg::ShaderSet> sphereBumpShaderSet;
 
         vsg::ref_ptr<vsg::vec3Array> instanceTranslations;
         vsg::ref_ptr<vsg::vec4Array> instanceRotations;
@@ -517,6 +529,52 @@ namespace RenderVsg
             ++result.stats.legacyCompatibilityDraws;
 
             const MeshPayload& payload = *resolvedPayload;
+            // Include static assets as well as evaluated actors/objects. An
+            // explicit filter can observe realization during loading, outside
+            // sampled gameplay frames, without enabling per-draw logging.
+            if (Debug::GameplayDiagnostics::enabled()
+                && Debug::RuntimeDiagnostics::mode() == Debug::RuntimeDiagnostics::Mode::Focused
+                && Debug::GameplayDiagnostics::context.materialProbes < 8
+                && [&] {
+                    const auto filter = Debug::GameplayDiagnostics::materialProbeFilter();
+                    if (filter.empty()) return Debug::GameplayDiagnostics::sampling();
+                    if (mesh->sourceIdentity.find(filter) != std::string::npos
+                        || material->sourceIdentity.find(filter) != std::string::npos) return true;
+                    return std::any_of(material->textures.begin(), material->textures.end(), [&](const auto& binding) {
+                        const auto* texture = world.get(binding.texture);
+                        return texture && texture->sourceIdentity.find(filter) != std::string::npos;
+                    });
+                }())
+            {
+                ++Debug::GameplayDiagnostics::context.materialProbes;
+                const auto vectorText = [](const auto& value, unsigned size) {
+                    std::string out;
+                    for (unsigned i = 0; i < size; ++i) { if (i) out += ','; out += std::to_string(value[i]); }
+                    return out;
+                };
+                Debug::GameplayDiagnostics::recordEvent("material_probe", {
+                    {"phase", "realization"}, {"mesh", mesh->sourceIdentity}, {"draw", material->sourceIdentity},
+                    {"environment_mode", std::to_string(static_cast<unsigned>(material->environmentMapMode))},
+                    {"environment_color", vectorText(material->environmentMapColor, 4)},
+                    {"environment_pre_light", std::to_string(material->environmentMapPreLight)},
+                    {"specular", vectorText(material->specular, 4)}, {"shininess", std::to_string(material->shininess)},
+                    {"bump_matrix", vectorText(material->bumpMapMatrix, 4)},
+                    {"bump_luma", vectorText(material->environmentMapLumaBias, 2)}}, true);
+                for (std::size_t i = 0; i < std::min(material->textures.size(), std::size_t{8}); ++i)
+                {
+                    const auto& binding = material->textures[i];
+                    const auto* texture = world.get(binding.texture);
+                    if (!texture) continue;
+                    Debug::GameplayDiagnostics::recordEvent("texture_probe", {
+                        {"phase", "realization"}, {"draw", material->sourceIdentity}, {"source", texture->sourceIdentity},
+                        {"content", texture->contentIdentity}, {"role", std::to_string(static_cast<unsigned>(binding.role))},
+                        {"color_space", std::to_string(static_cast<unsigned>(binding.colorSpace))},
+                        {"uv_set", std::to_string(binding.transform.uvSet)},
+                        {"uv_scale", vectorText(binding.transform.scale, 2)},
+                        {"uv_offset", vectorText(binding.transform.offset, 2)},
+                        {"width", std::to_string(texture->width)}, {"height", std::to_string(texture->height)}}, true);
+                }
+            }
             if (payload.texCoordSets.size() > 4u)
             {
                 result.root = {};
@@ -584,19 +642,47 @@ namespace RenderVsg
                 material->textures.begin(), material->textures.end(),
                 [](const TextureBinding& binding) { return binding.role == TextureRole::Environment; }));
             const bool enchantedEnvironment
-                = environmentBindingCount == EnchantedEnvironmentFrameCount;
-            if (environmentBindingCount != 0u && !enchantedEnvironment)
+                = material->environmentMapMode == EnvironmentMapMode::EnchantedSequence
+                && environmentBindingCount == EnchantedEnvironmentFrameCount;
+            const bool sphereEnvironment = material->environmentMapMode == EnvironmentMapMode::SphereMap
+                && environmentBindingCount == 1u
+                && !std::getenv("OPENMW_V4_LEGACY_AUTHORED_ENVIRONMENT_CONTROL");
+            const bool environment = enchantedEnvironment || sphereEnvironment;
+            if (!environment && (environmentBindingCount != 0u
+                    || material->environmentMapMode != EnvironmentMapMode::None))
             {
+                result.root = {};
                 result.stats.unsupportedTextureBindings += static_cast<std::uint32_t>(environmentBindingCount);
                 result.diagnostics.emplace_back(
-                    "Legacy authored environment maps remain fail-closed; only the exact 32-frame enchanted caustic sequence is realized by CP4F");
+                    "Legacy environment metadata must describe one sphere map or the exact 32-frame enchanted sequence"
+                    " [material='" + material->sourceIdentity + "', mode="
+                    + std::to_string(static_cast<unsigned>(material->environmentMapMode))
+                    + ", bindings=" + std::to_string(environmentBindingCount) + "]");
+                return result;
             }
 
             vsg::ref_ptr<vsg::ShaderSet> shaderSet = legacyShaderSet;
-            if (enchantedEnvironment)
+            if (sphereEnvironment)
+            {
+                if (!sphereShaderSet)
+                    sphereShaderSet = reuseShaders ? persistentShaders.get(false, true, false)
+                                                   : createEnchantedLegacyCompatibilityShaderSet({}, true);
+                if (legacyBump && !sphereBumpShaderSet)
+                    sphereBumpShaderSet = reuseShaders ? persistentShaders.get(false, true, true)
+                                                       : createLegacyBumpCompatibilityShaderSet(sphereShaderSet);
+                shaderSet = legacyBump ? sphereBumpShaderSet : sphereShaderSet;
+                if (!shaderSet)
+                {
+                    result.root = {};
+                    result.diagnostics.emplace_back("Legacy sphere-map/bump ShaderSet construction failed");
+                    return result;
+                }
+            }
+            else if (enchantedEnvironment)
             {
                 if (!enchantedShaderSet)
-                    enchantedShaderSet = createEnchantedLegacyCompatibilityShaderSet();
+                    enchantedShaderSet = reuseShaders ? persistentShaders.get(true, false, false)
+                                                      : createEnchantedLegacyCompatibilityShaderSet();
                 if (!enchantedShaderSet)
                 {
                     result.root = {};
@@ -607,7 +693,8 @@ namespace RenderVsg
                 if (legacyBump)
                 {
                     if (!enchantedBumpShaderSet)
-                        enchantedBumpShaderSet = createLegacyBumpCompatibilityShaderSet(enchantedShaderSet);
+                        enchantedBumpShaderSet = reuseShaders ? persistentShaders.get(true, false, true)
+                            : createLegacyBumpCompatibilityShaderSet(enchantedShaderSet);
                     if (!enchantedBumpShaderSet)
                     {
                         result.root = {};
@@ -623,7 +710,8 @@ namespace RenderVsg
             else if (legacyBump)
             {
                 if (!legacyBumpShaderSet)
-                    legacyBumpShaderSet = createLegacyBumpCompatibilityShaderSet(legacyShaderSet);
+                    legacyBumpShaderSet = reuseShaders ? persistentShaders.get(false, false, true)
+                                                       : createLegacyBumpCompatibilityShaderSet(legacyShaderSet);
                 if (!legacyBumpShaderSet)
                 {
                     result.root = {};
@@ -805,7 +893,7 @@ namespace RenderVsg
                 return true;
             };
 
-            if (enchantedEnvironment)
+            if (environment)
             {
                 if (!config->assignDescriptor(
                         "openmwEnvironmentEffect", makeEnchantedEnvironmentMaterial(*material)))
@@ -817,7 +905,7 @@ namespace RenderVsg
                 }
 
                 vsg::ImageInfoList frames;
-                frames.reserve(EnchantedEnvironmentFrameCount);
+                frames.reserve(environmentBindingCount);
                 for (std::size_t bindingIndex = 0; bindingIndex < material->textures.size(); ++bindingIndex)
                 {
                     if (material->textures[bindingIndex].role != TextureRole::Environment)
@@ -828,12 +916,12 @@ namespace RenderVsg
                         return result;
                     frames.push_back(liveTextureImage(data, sampler));
                 }
-                if (frames.size() != EnchantedEnvironmentFrameCount
+                if (frames.size() != environmentBindingCount
                     || !config->assignTexture("openmwEnvironmentMaps", frames))
                 {
                     result.root = {};
                     result.diagnostics.emplace_back(
-                        "Enchanted compatibility shader rejected the exact 32-frame caustic descriptor array");
+                        "Legacy compatibility shader rejected its environment image descriptors");
                     return result;
                 }
             }
@@ -848,7 +936,7 @@ namespace RenderVsg
                     result.diagnostics.emplace_back("LAND blend binding requires a terrain layer and UV set 1");
                     return result;
                 }
-                if (enchantedEnvironment && binding.role == TextureRole::Environment)
+                if (environment && binding.role == TextureRole::Environment)
                     continue;
                 const auto descriptor = descriptorName(binding.role);
                 if (!descriptor)
@@ -905,7 +993,9 @@ namespace RenderVsg
                 // copyTo already interns the immutable pipeline independently
                 // of the per-draw arrays. Do not mutate an interned binding or
                 // its comparison keys after that sharing boundary.
-                auto viewBinding = ViewPipelineBinding::create(bindPipeline->pipeline);
+                auto pipeline = reusePipelines ? persistentPipelines.get(bindPipeline->pipeline)
+                                               : bindPipeline->pipeline;
+                auto viewBinding = ViewPipelineBinding::create(std::move(pipeline));
                 mSharedObjects->share(viewBinding);
                 stateCommand = viewBinding;
                 stateGroup->setValue("openmw.draw.source",

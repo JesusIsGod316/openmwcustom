@@ -23,6 +23,15 @@ class RuntimeReportTests(unittest.TestCase):
         self.assertEqual(result['counts']['cache_entries_trimmed'], 10)
         self.assertTrue(any('not a count of unique assets or bytes' in s for s in result['findings']))
 
+    def test_separate_preload_admission_counters_survive_reporting(self):
+        result = self.analyze([dict(type='preload_cache', owner='cell_preloader', entries=3),
+            dict(type='preload_admission', owner='cell_preloader', admission_pending=2,
+                reservation_estimate_bytes=4096, admission_accepted=8, admission_denied=4, admission_released=6)])
+        admission = next(e for e in result['series'] if e['type'] == 'preload_admission')
+        self.assertEqual(admission['last']['admission_denied'],4)
+        self.assertEqual(admission['last']['reservation_estimate_bytes'],4096)
+        self.assertEqual(result['counts'].get('truncated_rows',0),0)
+
     def test_pressure_probe_validity_remains_separate(self):
         result = self.analyze([dict(type='host_memory_trim', owner='owners', removed_entries=1,
             physical_valid=0, physical_available_bytes=0, process_valid=0, private_commit_bytes=0,

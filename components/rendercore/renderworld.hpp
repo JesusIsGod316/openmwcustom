@@ -30,6 +30,10 @@ namespace RenderCore
 
         [[nodiscard]] WorldEpoch epoch() const noexcept { return mEpoch; }
         [[nodiscard]] RenderWorldRevision revision() const noexcept { return mRevision; }
+        // Successful publications only. Actor/light motion must not force a
+        // walk over every static dependency; asset edits still invalidate it.
+        [[nodiscard]] RenderWorldRevision staticRevision() const noexcept { return mStaticRevision; }
+        [[nodiscard]] RenderWorldRevision assetRevision() const noexcept { return mAssetRevision; }
 
         [[nodiscard]] std::optional<MeshHandle> reserveMesh() { return mMeshes.reserve(); }
         [[nodiscard]] std::optional<ModelHandle> reserveModel() { return mModels.reserve(); }
@@ -79,6 +83,7 @@ namespace RenderCore
 
         bool commit(InstanceHandle handle, InstanceRecord record)
         {
+            const bool staticChange = touchesStatic(record);
             if (!mInstances.isReserved(handle) || !validateInstanceReferences(handle, record))
                 return false;
 
@@ -110,6 +115,7 @@ namespace RenderCore
             }
 
             mRevision = *nextRevision;
+            if (staticChange) mStaticRevision = mRevision;
             return true;
         }
 
@@ -195,6 +201,7 @@ namespace RenderCore
             instance->chunk = newChunk;
             instance->revision = *nextInstanceRevision;
             mRevision = *nextRevision;
+            if (touchesStatic(*instance)) mStaticRevision = mRevision;
             return true;
         }
 
@@ -237,6 +244,7 @@ namespace RenderCore
                 return false;
 
             const auto nextRevision = advanceMonotonic(mRevision);
+            const bool staticChange = touchesStatic(*instance);
             if (!nextRevision || !mInstances.retire(handle))
                 return false;
 
@@ -246,6 +254,7 @@ namespace RenderCore
                 chunk->members.erase(member);
             }
             mRevision = *nextRevision;
+            if (staticChange) mStaticRevision = mRevision;
             return true;
         }
 
@@ -405,10 +414,29 @@ namespace RenderCore
 
             mEpoch = *nextEpoch;
             mRevision = *nextRevision;
+            mStaticRevision = mAssetRevision = mRevision;
             return true;
         }
 
     private:
+        template <class Record>
+        static bool touchesStatic(const Record& record) noexcept
+        {
+            if constexpr (std::is_same_v<Record, InstanceRecord>)
+                return (record.mesh.valid() && !record.model) || (!record.skeleton && !record.attachment);
+            else
+                return !std::is_same_v<Record, SkeletonRecord> && !std::is_same_v<Record, LightRecord>;
+        }
+
+        template <class Record>
+        void published(bool staticChange) noexcept
+        {
+            if (staticChange) mStaticRevision = mRevision;
+            if constexpr (std::is_same_v<Record, MeshRecord> || std::is_same_v<Record, ModelRecord>
+                || std::is_same_v<Record, MaterialRecord> || std::is_same_v<Record, TextureRecord>)
+                mAssetRevision = mRevision;
+        }
+
         [[nodiscard]] bool validateMeshRecord(const MeshRecord& record) const noexcept
         {
             if (!record.revision.valid())
@@ -741,20 +769,25 @@ namespace RenderCore
         template <class Table, class Handle, class Record>
         bool commitRecord(Table& table, Handle handle, Record record)
         {
+            const bool staticChange = touchesStatic(record);
             const auto nextRevision = advanceMonotonic(mRevision);
             if (!nextRevision || !table.commit(handle, std::move(record)))
                 return false;
             mRevision = *nextRevision;
+            published<Record>(staticChange);
             return true;
         }
 
         template <class Table, class Handle, class Record>
         bool updateRecord(Table& table, Handle handle, Record record)
         {
+            const auto* prior = table.get(handle);
+            const bool staticChange = touchesStatic(record) || (prior && touchesStatic(*prior));
             const auto nextRevision = advanceMonotonic(mRevision);
             if (!nextRevision || !table.update(handle, std::move(record)))
                 return false;
             mRevision = *nextRevision;
+            published<Record>(staticChange);
             return true;
         }
 
@@ -770,15 +803,20 @@ namespace RenderCore
         template <class Table, class Handle>
         bool retireRecord(Table& table, Handle handle) noexcept
         {
+            const auto* prior = table.get(handle);
+            const bool staticChange = prior && touchesStatic(*prior);
             const auto nextRevision = advanceMonotonic(mRevision);
             if (!nextRevision || !table.retire(handle))
                 return false;
             mRevision = *nextRevision;
+            published<std::remove_cvref_t<decltype(*prior)>>(staticChange);
             return true;
         }
 
         WorldEpoch mEpoch = InitialWorldEpoch;
         RenderWorldRevision mRevision = InitialRenderWorldRevision;
+        RenderWorldRevision mStaticRevision = InitialRenderWorldRevision;
+        RenderWorldRevision mAssetRevision = InitialRenderWorldRevision;
         MeshTable mMeshes;
         ModelTable mModels;
         MaterialTable mMaterials;

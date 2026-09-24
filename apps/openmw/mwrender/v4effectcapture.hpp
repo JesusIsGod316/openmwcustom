@@ -3,7 +3,11 @@
 
 #include "animation.hpp"
 #include "v4effectuv.hpp"
+#include "v4geometrysnapshotcache.hpp"
+#include "v4effectstatecache.hpp"
+#include "v4materialvaluestamp.hpp"
 #include "vismask.hpp"
+#include <components/debug/gameplaydiagnostics.hpp>
 
 #include <components/rendercore/effectframe.hpp>
 #include <components/nifrender/textureidentitycache.hpp>
@@ -27,6 +31,7 @@
 #include <osg/PolygonMode>
 #include <osg/Stencil>
 #include <osg/StateSet>
+#include <osg/Switch>
 #include <osg/TexMat>
 #include <osg/Texture2D>
 #include <osg/Uniform>
@@ -224,6 +229,18 @@ namespace MWRender
         [[nodiscard]] inline osg::ref_ptr<osg::StateSet> effectiveState(
             const osg::NodePath& path, const osg::StateSet* drawable = nullptr)
         {
+            if (Misc::environmentFlag<"OPENMW_V4_INCREMENTAL_CAPTURE">())
+            {
+                static thread_local EffectStateCache cache;
+                const auto hits = cache.hits;
+                auto state = cache.get(path, drawable);
+                if (Debug::GameplayDiagnostics::sampling())
+                {
+                    if (cache.hits != hits) ++Debug::GameplayDiagnostics::context.inheritedStateHits;
+                    else ++Debug::GameplayDiagnostics::context.inheritedStateMisses;
+                }
+                return state;
+            }
             osg::ref_ptr<osg::StateSet> result = new osg::StateSet;
             for (const osg::Node* node : path)
             {
@@ -296,7 +313,7 @@ namespace MWRender
             std::vector<RenderCore::EffectTextureSnapshot> textures;
         };
 
-        [[nodiscard]] inline bool captureMaterial(const osg::NodePath& path, const osg::StateSet* drawableState,
+        [[nodiscard]] inline bool captureMaterialUncached(const osg::NodePath& path, const osg::StateSet* drawableState,
             const VFS::Manager& vfs, CapturedMaterial& out, std::string& diagnostic,
             NifRender::TextureIdentityCache* identityCache = nullptr, bool preview = false,
             const osg::StateSet* preparedState = nullptr)
@@ -612,6 +629,33 @@ namespace MWRender
                 out.textures.push_back(std::move(snapshot));
             }
 
+            const auto environmentCount = std::count_if(out.textures.begin(), out.textures.end(),
+                [](const EffectTextureSnapshot& texture) { return texture.binding.role == TextureRole::Environment; });
+            if (environmentCount > 1)
+            {
+                diagnostic = "evaluated material has more than one environment-map stage";
+                return false;
+            }
+            if (environmentCount == 1)
+            {
+                // Native envMap semantics generate sphere coordinates; a live
+                // GlowUpdater can also supply its currently evaluated image.
+                // Never infer a 32-frame sequence from an arbitrary image.
+                osg::Vec4f color;
+                const auto* uniform = state->getUniform("envMapColor");
+                if (!uniform || !uniform->get(color)
+                    || !std::all_of(color.ptr(), color.ptr() + 4, [](float v) { return std::isfinite(v); }))
+                {
+                    diagnostic = "evaluated sphere environment requires finite vec4 envMapColor";
+                    return false;
+                }
+                material.environmentMapMode = EnvironmentMapMode::SphereMap;
+                material.environmentMapColor = toGlm(color);
+                material.environmentMapStrength = 1.0f;
+                // Global preLightEnv is supplied by the engine publication
+                // boundary, not guessed from an OSG material or texture name.
+            }
+
             // NiTexturingProperty's evaluated OSG state carries the bump
             // matrix and luminance scale/bias as uniforms. Texture capture alone
             // is insufficient: the VSG compatibility shader needs the same live
@@ -649,6 +693,103 @@ namespace MWRender
             }
 
             out.material = std::move(material);
+            return true;
+        }
+
+        // Persistent neutral material records are keyed by the merged state,
+        // not drawable identity. Only changed values require translation. The
+        // owning capture thread validates controller outputs and VFS identities
+        // before reusing a record, including edits without dirty notifications.
+        class MaterialValueCache
+        {
+        public:
+            const CapturedMaterial* find(const osg::StateSet& state, RenderCore::TextureApplyMode apply,
+                bool unlit, NifRender::TextureIdentityCache& identities)
+            {
+                if (++mClock % 1024 == 0)
+                    std::erase_if(mEntries, [](const auto& value) { return !value.second.owner.valid(); });
+                const auto found = mEntries.find(&state);
+                if (found == mEntries.end()) return nullptr;
+                auto& entry = found->second;
+                if (!entry.owner.valid() || entry.apply != apply || entry.unlit != unlit
+                    || !entry.stamp.current(state)) return nullptr;
+                for (std::size_t i = 0; i < entry.authoredPaths.size(); ++i)
+                {
+                    const auto resolved = identities.resolve(entry.authoredPaths[i]);
+                    const auto& texture = entry.value.textures[i].texture;
+                    if (!resolved.valid() || resolved.canonicalPath.value() != texture.sourceIdentity
+                        || resolved.contentIdentity != texture.contentIdentity) return nullptr;
+                }
+                entry.used = mClock;
+                ++hits;
+                return &entry.value;
+            }
+            void remember(const osg::StateSet& state, const CapturedMaterial& value)
+            {
+                ++misses;
+                Entry entry;
+                entry.owner = &state;
+                entry.apply = value.material.textureApply;
+                entry.unlit = value.material.unlit;
+                if (!entry.stamp.capture(state)) { mEntries.erase(&state); return; }
+                for (unsigned unit = 0; unit < state.getTextureAttributeList().size(); ++unit)
+                    if (const auto* texture = dynamic_cast<const osg::Texture2D*>(
+                        state.getTextureAttribute(unit, osg::StateAttribute::TEXTURE)))
+                        entry.authoredPaths.emplace_back(texture->getImage()->getFileName());
+                if (entry.authoredPaths.size() != value.textures.size()) return;
+                entry.value = value;
+                entry.used = mClock;
+                mEntries.erase(&state);
+                if (mEntries.size() >= 2048)
+                {
+                    const auto oldest = std::min_element(mEntries.begin(), mEntries.end(),
+                        [](const auto& a, const auto& b) { return a.second.used < b.second.used; });
+                    mEntries.erase(oldest);
+                }
+                mEntries.emplace(&state, std::move(entry));
+            }
+            std::uint64_t hits = 0, misses = 0;
+        private:
+            struct Entry
+            {
+                osg::observer_ptr<const osg::StateSet> owner;
+                MaterialValueStamp stamp;
+                RenderCore::TextureApplyMode apply;
+                bool unlit = false;
+                std::uint64_t used = 0;
+                CapturedMaterial value;
+                std::vector<VFS::Path::Normalized> authoredPaths;
+            };
+            std::uint64_t mClock = 0;
+            std::unordered_map<const osg::StateSet*, Entry> mEntries;
+        };
+        inline MaterialValueCache& materialValueCache()
+        {
+            thread_local MaterialValueCache cache;
+            return cache;
+        }
+
+        [[nodiscard]] inline bool captureMaterial(const osg::NodePath& path, const osg::StateSet* drawableState,
+            const VFS::Manager& vfs, CapturedMaterial& out, std::string& diagnostic,
+            NifRender::TextureIdentityCache* identityCache = nullptr, bool preview = false,
+            const osg::StateSet* preparedState = nullptr)
+        {
+            if (!Misc::environmentFlag<"OPENMW_V4_MATERIAL_VALUE_CACHE">() || !identityCache || preview)
+                return captureMaterialUncached(path, drawableState, vfs, out, diagnostic,
+                    identityCache, preview, preparedState);
+            const osg::ref_ptr<const osg::StateSet> state
+                = preparedState ? preparedState : effectiveState(path, drawableState).get();
+            auto& cache = materialValueCache();
+            if (const auto* value = cache.find(*state, textureApplyMode(path), noLightingShader(path), *identityCache))
+            {
+                if (Debug::GameplayDiagnostics::sampling()) ++Debug::GameplayDiagnostics::context.materialValueHits;
+                out = *value;
+                return true;
+            }
+            if (Debug::GameplayDiagnostics::sampling()) ++Debug::GameplayDiagnostics::context.materialValueMisses;
+            if (!captureMaterialUncached(path, drawableState, vfs, out, diagnostic, identityCache, false, state))
+                return false;
+            cache.remember(*state, out);
             return true;
         }
 
@@ -729,21 +870,101 @@ namespace MWRender
 
         [[nodiscard]] inline bool captureGeometry(const osg::Geometry& geometry, const osg::NodePath& path,
             const VFS::Manager& vfs, std::string identity, RenderCore::ImmediateEffectDraw& draw,
-            std::string& diagnostic, NifRender::TextureIdentityCache* identityCache = nullptr, bool preview = false)
+            std::string& diagnostic, NifRender::TextureIdentityCache* identityCache = nullptr, bool preview = false,
+            const osg::Matrix* preparedTransform = nullptr)
         {
+            auto& counters = Debug::GameplayDiagnostics::context;
+            Debug::GameplayDiagnostics::CapturePhase phase(counters.geometryTransformMs);
             const auto* positions = dynamic_cast<const osg::Vec3Array*>(geometry.getVertexArray());
             if (!positions || positions->empty())
             {
                 diagnostic = "evaluated effect geometry has no supported position stream";
                 return false;
             }
+            draw.mesh = {};
+            draw.meshSnapshot.reset();
             draw.identity = std::move(identity);
-            draw.worldTransform = toGlm(osg::computeLocalToWorld(path));
+            draw.worldTransform = toGlm(preparedTransform ? *preparedTransform : osg::computeLocalToWorld(path));
             if (!finite(draw.worldTransform))
             {
                 diagnostic = "evaluated effect geometry has a non-finite world transform";
                 return false;
             }
+            phase.next(counters.inheritedStateMs);
+            const osg::ref_ptr<osg::StateSet> state = effectiveState(path, geometry.getStateSet());
+            phase.next(counters.materialCaptureMs);
+            CapturedMaterial captured;
+            if (!captureMaterial(path, geometry.getStateSet(), vfs, captured, diagnostic, identityCache, preview,
+                    Misc::environmentFlag<"OPENMW_V4_REPEAT_CAPTURE_STATE_CONTROL">() ? nullptr : state.get()))
+            {
+                diagnostic += " [capture=" + draw.identity + ", source-drawable='" + geometry.getName()
+                    + "', source-type=" + geometry.className() + "]";
+                return false;
+            }
+            draw.material = std::move(captured.material);
+            draw.material.sourceIdentity = draw.identity + ":" + geometry.getName();
+            draw.textures = std::move(captured.textures);
+
+            // Focused-only, at most eight materials per sampled frame. Read
+            // already evaluated state; no extra traversal, file decode or flush.
+            if (Debug::GameplayDiagnostics::detailedSampling()
+                && Debug::GameplayDiagnostics::context.materialProbes < 8 && !draw.textures.empty()
+                && [&] {
+                    const auto filter = Debug::GameplayDiagnostics::materialProbeFilter();
+                    return filter.empty() || draw.material.sourceIdentity.find(filter) != std::string::npos
+                        || std::any_of(path.begin(), path.end(), [&](const osg::Node* node) {
+                            return node && node->getName().find(filter) != std::string::npos;
+                        }) || std::any_of(draw.textures.begin(), draw.textures.end(), [&](const auto& texture) {
+                            return texture.texture.sourceIdentity.find(filter) != std::string::npos;
+                        });
+                }())
+            {
+                ++Debug::GameplayDiagnostics::context.materialProbes;
+                const auto vectorText = [](const auto& v, unsigned count) {
+                    std::string out;
+                    for (unsigned i=0;i<count;++i) { if (i) out += ','; out += std::to_string(v[i]); }
+                    return out;
+                };
+                Debug::GameplayDiagnostics::recordEvent("material_probe", {
+                    {"draw", draw.identity}, {"drawable", geometry.getName()},
+                    {"parent", path.empty() ? "" : path.back()->getName()},
+                    {"environment_mode", std::to_string(static_cast<unsigned>(draw.material.environmentMapMode))},
+                    {"environment_color", vectorText(draw.material.environmentMapColor,4)},
+                    {"specular", vectorText(draw.material.specular,4)},
+                    {"shininess", std::to_string(draw.material.shininess)},
+                    {"bump_matrix", vectorText(draw.material.bumpMapMatrix,4)},
+                    {"bump_luma", vectorText(draw.material.environmentMapLumaBias,2)} });
+                for (std::size_t i=0;i<std::min(draw.textures.size(),std::size_t{8});++i)
+                {
+                    const auto& t=draw.textures[i]; const auto unit=t.binding.transform.uvSet;
+                    const auto* tex=dynamic_cast<const osg::Texture2D*>(state->getTextureAttribute(unit,osg::StateAttribute::TEXTURE));
+                    const auto* image=tex ? tex->getImage() : nullptr;
+                    const auto* texmat=dynamic_cast<const osg::TexMat*>(state->getTextureAttribute(unit,osg::StateAttribute::TEXMAT));
+                    const auto* uv=geometry.getTexCoordArray(unit);
+                    Debug::GameplayDiagnostics::recordEvent("texture_probe", {
+                        {"draw",draw.identity}, {"source",t.texture.sourceIdentity},
+                        {"content",t.texture.contentIdentity}, {"unit",std::to_string(unit)},
+                        {"role",std::to_string(static_cast<unsigned>(t.binding.role))},
+                        {"color_space",std::to_string(static_cast<unsigned>(t.binding.colorSpace))},
+                        {"width",std::to_string(t.texture.width)}, {"height",std::to_string(t.texture.height)},
+                        {"source_pixel_format",std::to_string(image ? image->getPixelFormat() : 0)},
+                        {"source_internal_format",std::to_string(image ? image->getInternalTextureFormat() : 0)},
+                        {"source_uv_elements",std::to_string(uv ? uv->getNumElements() : 0)},
+                        {"nonidentity_texmat",std::to_string(texmat && texmat->getMatrix()!=osg::Matrix::identity())} });
+                }
+            }
+            phase.next(counters.geometryGuardMs);
+            static thread_local GeometrySnapshotCache geometryCache;
+            const bool cacheGeometry = Misc::environmentFlag<"OPENMW_V4_PERSISTENT_CAPTURE">();
+            if (cacheGeometry && geometryCache.find(geometry, *state, draw))
+            {
+                if (Debug::GameplayDiagnostics::sampling())
+                    ++Debug::GameplayDiagnostics::context.geometrySnapshotHits;
+                return RenderCore::validImmediateEffectDraw(draw);
+            }
+            phase.next(counters.geometryBuildMs);
+            if (cacheGeometry && Debug::GameplayDiagnostics::sampling())
+                ++Debug::GameplayDiagnostics::context.geometrySnapshotMisses;
             draw.mesh.positions.reserve(positions->size());
             for (const osg::Vec3f& position : *positions)
                 draw.mesh.positions.push_back(toGlm(position));
@@ -802,18 +1023,6 @@ namespace MWRender
                 }
             }
 
-            const osg::ref_ptr<osg::StateSet> state = effectiveState(path, geometry.getStateSet());
-            CapturedMaterial captured;
-            if (!captureMaterial(path, geometry.getStateSet(), vfs, captured, diagnostic, identityCache, preview,
-                    std::getenv("OPENMW_V4_REPEAT_CAPTURE_STATE_CONTROL") ? nullptr : state.get()))
-            {
-                diagnostic += " [capture=" + draw.identity + ", source-drawable='" + geometry.getName()
-                    + "', source-type=" + geometry.className() + "]";
-                return false;
-            }
-            draw.material = std::move(captured.material);
-            draw.textures = std::move(captured.textures);
-
             if (!captureEffectTextureCoordinates(geometry, *state, draw, diagnostic))
             {
                 diagnostic += " [capture=" + draw.identity + "]";
@@ -835,7 +1044,9 @@ namespace MWRender
                 return false;
             }
             draw.bounds = boundsFor(draw.mesh.positions);
-            return RenderCore::validImmediateEffectDraw(draw);
+            if (!RenderCore::validImmediateEffectDraw(draw)) return false;
+            if (cacheGeometry) geometryCache.insert(geometry, draw);
+            return true;
         }
 
         [[nodiscard]] inline bool captureParticleSystem(const osgParticle::ParticleSystem& particles,
@@ -861,7 +1072,7 @@ namespace MWRender
             const osg::ref_ptr<osg::StateSet> state = effectiveState(path, particles.getStateSet());
             CapturedMaterial captured;
             if (!captureMaterial(path, particles.getStateSet(), vfs, captured, diagnostic, identityCache, false,
-                    std::getenv("OPENMW_V4_REPEAT_CAPTURE_STATE_CONTROL") ? nullptr : state.get()))
+                    Misc::environmentFlag<"OPENMW_V4_REPEAT_CAPTURE_STATE_CONTROL">() ? nullptr : state.get()))
                 return false;
             captured.material.vertexColorMode = RenderCore::VertexColorMode::AmbientDiffuse;
             if (particles.getSortMode() == osgParticle::ParticleSystem::NO_SORT)
@@ -986,11 +1197,20 @@ namespace MWRender
             {
                 osg::Geometry* geometry = nullptr;
                 if (auto* rig = dynamic_cast<SceneUtil::RigGeometry*>(&drawable))
+                {
+                    if (Debug::GameplayDiagnostics::sampling()) ++Debug::GameplayDiagnostics::context.rigEvaluations;
                     geometry = rig->evaluateGeometry(visitor.getTraversalNumber(), visitor.getNodePath());
+                }
                 else if (auto* morph = dynamic_cast<SceneUtil::MorphGeometry*>(&drawable))
+                {
+                    if (Debug::GameplayDiagnostics::sampling()) ++Debug::GameplayDiagnostics::context.morphEvaluations;
                     geometry = morph->evaluateGeometry(visitor.getTraversalNumber());
+                }
                 else
+                {
+                    if (Debug::GameplayDiagnostics::sampling()) ++Debug::GameplayDiagnostics::context.ordinaryGeometries;
                     return dynamic_cast<osg::Geometry*>(&drawable);
+                }
                 if (!geometry)
                     diagnostic = "evaluated drawable has no source geometry or parent skeleton: " + drawable.getName();
                 return geometry;
@@ -1035,7 +1255,18 @@ namespace MWRender
                     }
                 }
                 if (mResult.valid())
-                    traverse(node);
+                {
+                    // Honor the already-evaluated Switch values without using
+                    // TRAVERSE_ACTIVE_CHILDREN globally: generic LOD selection
+                    // requires a view/eye and must not accidentally use zero.
+                    if (auto* selection = dynamic_cast<osg::Switch*>(&node);
+                        selection && Misc::environmentFlag<"OPENMW_V4_ACTIVE_SWITCH_CAPTURE">())
+                    {
+                        for (unsigned i = 0; i < selection->getNumChildren() && mResult.valid(); ++i)
+                            if (selection->getValue(i)) selection->getChild(i)->accept(*this);
+                    }
+                    else traverse(node);
+                }
                 if (entered)
                     --mDepth;
             }
@@ -1052,6 +1283,8 @@ namespace MWRender
                 if (entered)
                     --mDepth;
             }
+
+            void apply(osg::Switch& node) override { apply(static_cast<osg::Node&>(node)); }
 
             void apply(osg::Drawable& drawable) override
             {

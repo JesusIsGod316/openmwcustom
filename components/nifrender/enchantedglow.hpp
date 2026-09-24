@@ -243,6 +243,7 @@ namespace NifRender
             record.sourceIdentity += variantSuffix;
             record.environmentMapColor = color;
             record.environmentMapStrength = 1.0f;
+            record.environmentMapMode = RenderCore::EnvironmentMapMode::EnchantedSequence;
             record.environmentMapPreLight = applyLightingToEnvironmentMaps;
             record.textures.reserve(record.textures.size() + frames.size());
             for (const auto& frame : frames)

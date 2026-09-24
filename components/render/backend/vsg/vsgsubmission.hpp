@@ -2,11 +2,15 @@
 #define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_VSGSUBMISSION_H
 
 #include "framecompletion.hpp"
+#include "pipelineinventory.hpp"
+#include <components/misc/environmentflag.hpp>
 #include <components/debug/gameplaydiagnostics.hpp>
 
 #include <vsg/app/Presentation.h>
 #include <vsg/app/View.h>
 #include <vsg/app/Viewer.h>
+#include <vsg/app/RecordAndSubmitTask.h>
+#include <vsg/app/TransferTask.h>
 #include <vsg/core/ConstVisitor.h>
 #include <vsg/state/GraphicsPipeline.h>
 #include <vsg/state/ViewDependentState.h>
@@ -49,28 +53,47 @@ namespace RenderVsg
         explicit GraphicsPipelineViewValidator(std::uint32_t viewId)
             : mViewId(viewId)
         {
+            if (mFlatDeduplicate) mFlatVisited.resize(32768, nullptr);
         }
 
         using vsg::ConstVisitor::apply;
 
         void apply(const vsg::Object& object) override
         {
+            // The audit is view-ID specific, not transform specific. Shared
+            // DAG subgraphs need inspection once in this census, never once
+            // per placement. Do not retain this set across scene mutations.
+            if (alreadyVisited(object)) return;
+            if (mInventories)
+                if (const auto* resource = dynamic_cast<const PipelineInventoryNode*>(&object))
+                {
+                    for (const auto& pipeline : resource->pipelines()) check(pipeline);
+                    return;
+                }
             object.traverse(*this);
         }
 
         void apply(const vsg::BindGraphicsPipeline& bind) override
         {
+            if (alreadyVisited(bind)) return;
+            check(bind.pipeline);
+            bind.traverse(*this);
+        }
+
+        void check(const vsg::ref_ptr<vsg::GraphicsPipeline>& pipeline)
+        {
+            if (mInventories && !mCheckedPipelines.insert(pipeline.get()).second) return;
             ++mAudit.bindings;
-            const void* identity = bind.pipeline.get();
-            if ((!bind.pipeline || bind.pipeline->validated_vk(mViewId) == VK_NULL_HANDLE)
+            const void* identity = pipeline.get();
+            if ((!pipeline || pipeline->validated_vk(mViewId) == VK_NULL_HANDLE)
                 && mReported.insert(identity).second)
             {
                 std::string family = "unlabelled";
                 std::string source;
-                if (bind.pipeline)
+                if (pipeline)
                 {
-                    (void)bind.pipeline->getValue("openmw.pipeline.family", family);
-                    (void)bind.pipeline->getValue("openmw.pipeline.source", source);
+                    (void)pipeline->getValue("openmw.pipeline.family", family);
+                    (void)pipeline->getValue("openmw.pipeline.source", source);
                 }
                 std::ostringstream message;
                 message << family;
@@ -79,15 +102,39 @@ namespace RenderVsg
                 message << " pipeline=" << identity << " view=" << mViewId;
                 mAudit.unrealized.push_back(message.str());
             }
-            bind.traverse(*this);
         }
 
         [[nodiscard]] GraphicsPipelineAudit take() { return std::move(mAudit); }
 
     private:
+        bool alreadyVisited(const vsg::Object& object)
+        {
+            if (!mFlatDeduplicate)
+                return mDeduplicate && !mVisited.insert(&object).second;
+            // Bounded, allocation-free insertions instead of allocating a hash
+            // node for every mesh, descriptor, array and command on every view.
+            // Exhausted/colliding buckets fail OPEN (visit again), never omit a
+            // pipeline. No pointer or view result is retained between audits.
+            auto key = reinterpret_cast<std::uintptr_t>(&object) >> 4;
+            key ^= key >> 17;
+            key *= std::uintptr_t{0x9e3779b1};
+            for (std::size_t probe = 0; probe != 16; ++probe)
+            {
+                auto& slot = mFlatVisited[(key + probe) & (mFlatVisited.size() - 1)];
+                if (slot == &object) return true;
+                if (!slot) { slot = &object; return false; }
+            }
+            return false;
+        }
         std::uint32_t mViewId;
         GraphicsPipelineAudit mAudit;
         std::unordered_set<const void*> mReported;
+        bool mInventories = Misc::environmentFlag<"OPENMW_V4_PIPELINE_INVENTORIES">();
+        std::unordered_set<const void*> mCheckedPipelines;
+        bool mDeduplicate = std::getenv("OPENMW_V4_DEDUP_PIPELINE_AUDIT") != nullptr;
+        bool mFlatDeduplicate = std::getenv("OPENMW_V4_FLAT_PIPELINE_AUDIT") != nullptr;
+        std::vector<const vsg::Object*> mFlatVisited;
+        std::unordered_set<const vsg::Object*> mVisited;
     };
 
     [[nodiscard]] inline GraphicsPipelineAudit auditGraphicsPipelinesForView(
@@ -175,6 +222,46 @@ namespace RenderVsg
         return presentation.queue->present(info);
     }
 
+    // Use the pinned library's instrumentation hooks: RecordedCommandBuffers
+    // is not DLL-exported on Windows, so do not reconstruct submit() locally.
+    // Only the three task scopes are observed; no per-draw callbacks or GPU
+    // timestamps, and no instrumentation already installed by a profiler is replaced.
+    class SubmitTaskDiagnostics : public vsg::Inherit<vsg::Instrumentation, SubmitTaskDiagnostics>
+    {
+    public:
+        void enter(const vsg::SourceLocation* location, std::uint64_t&, const vsg::Object*) const override
+        {
+            if (!location || !location->name) return;
+            const std::string_view name(location->name);
+            if (name == "RecordAndSubmitTask start") { ++mObserved; mStart.emplace("submit_start_wait"); }
+            else if (name == "RecordAndSubmitTask record") { ++mObserved; mRecord.emplace("submit_record"); }
+            else if (name == "RecordAndSubmitTask finish") { ++mObserved; mFinish.emplace("submit_finish_transfer_queue"); }
+        }
+        void leave(const vsg::SourceLocation* location, std::uint64_t&, const vsg::Object*) const override
+        {
+            if (!location || !location->name) return;
+            const std::string_view name(location->name);
+            if (name == "RecordAndSubmitTask start") mStart.reset();
+            else if (name == "RecordAndSubmitTask record") mRecord.reset();
+            else if (name == "RecordAndSubmitTask finish") mFinish.reset();
+        }
+        [[nodiscard]] std::uint64_t observedScopes() const noexcept { return mObserved; }
+    private:
+        mutable std::uint64_t mObserved = 0;
+        mutable std::optional<Debug::GameplayDiagnostics::Stage> mStart, mRecord, mFinish;
+    };
+
+    // Shared by production submission and headless pixel tests. VSG retains
+    // complete ownership of the original transfers, fences and semaphores.
+    [[nodiscard]] inline VkResult submitTaskChecked(vsg::RecordAndSubmitTask& task,
+        vsg::ref_ptr<vsg::FrameStamp> frameStamp)
+    {
+        Debug::GameplayDiagnostics::Stage stage("submit_task");
+        if (std::getenv("OPENMW_V4_SUBMIT_BREAKDOWN") && !task.instrumentation)
+            task.instrumentation = SubmitTaskDiagnostics::create();
+        return task.submit(frameStamp);
+    }
+
     // Viewer::recordAndSubmit() and Viewer::present() intentionally discard the
     // VkResult returned by VSG 1.1.15 tasks. The production semantic backend
     // needs truthful failure propagation, so its single-threaded path uses this
@@ -207,10 +294,7 @@ namespace RenderVsg
             }
             for (auto& commandGraph : task->commandGraphs)
                 commandGraph->reset();
-            {
-                Debug::GameplayDiagnostics::Stage stage("submit_task");
-                result.submit = task->submit(vsg::ref_ptr<vsg::FrameStamp>(frameStamp));
-            }
+            result.submit = submitTaskChecked(*task, vsg::ref_ptr<vsg::FrameStamp>(frameStamp));
             if (result.submit != VK_SUCCESS)
                 return result;
         }

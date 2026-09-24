@@ -18,7 +18,7 @@ namespace RenderCore
     // Revision the stable fingerprints below whenever the key contract changes.
     // Equality still compares the complete key, so this is a persistent-cache
     // compatibility marker rather than a substitute for structural equality.
-    inline constexpr std::uint32_t RealizationKeySchemaRevision = 2u;
+    inline constexpr std::uint32_t RealizationKeySchemaRevision = 3u;
 
     struct TextureViewKey
     {
@@ -76,6 +76,7 @@ namespace RenderCore
         bool alphaTestEnabled = false;
         CompareOp alphaCompare = CompareOp::Always;
         bool bumpParametersEnabled = false;
+        EnvironmentMapMode environmentMapMode = EnvironmentMapMode::None;
         MaterialFogMode fogMode = MaterialFogMode::Inherit;
         bool treeAnimation = false;
         bool refraction = false;
@@ -228,6 +229,7 @@ namespace RenderCore
         result.alphaTestEnabled = material.alphaTestEnabled;
         result.alphaCompare = material.alphaTestEnabled ? material.alphaCompare : CompareOp::Always;
         result.bumpParametersEnabled = material.bumpParametersEnabled;
+        result.environmentMapMode = material.environmentMapMode;
         result.fogMode = material.fog.mode;
         result.treeAnimation = material.treeAnimation;
         result.refraction = material.refraction;
@@ -337,6 +339,7 @@ namespace RenderCore
             observeBool(hash, key.alphaTestEnabled);
             observeEnum(hash, key.alphaCompare);
             observeBool(hash, key.bumpParametersEnabled);
+            observeEnum(hash, key.environmentMapMode);
             observeEnum(hash, key.fogMode);
             observeBool(hash, key.treeAnimation);
             observeBool(hash, key.refraction);

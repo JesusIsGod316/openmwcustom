@@ -83,7 +83,9 @@ required = {
         all(name in scene for name in ('"cell_render_physics"', '"cell_navigation"',
             '"cell_insert_objects"', '"cell_render_add"', '"terrain_preload"')),
     'one bounded texture snapshot per dynamic capture':
-        'TextureIdentityCache::CaptureScope textureSnapshot(mTextureIdentities)' in bridge,
+        'auto textureSnapshot = [&]' in bridge
+        and bridge.count('return NifRender::TextureIdentityCache::CaptureScope(mTextureIdentities);') == 1
+        and 'Stage stage("texture_identity_prepare")' in bridge,
     'model translation reuses winning texture identity cache':
         'translateStaticNif(Nif::FileView(nifFile), vfs, {}, textureIdentities)' in bridge,
     'failed loading session blocks actor mutation and preserves first cause':
@@ -205,7 +207,9 @@ required = {
         and '*mDynamicLastUse <= *mCompletedThrough' in runtime_host,
     'evaluated effects update persistent dynamic buffers':
         'mImmediateEffectResidents.acquire(effect.identity)' in runtime_host
-        and 'updateImmediateEffectRealization(effect, resident.mutableDraws)' in runtime_host
+        and 'updateEffect(effect, resident.mutableDraws)' in runtime_host
+        and 'updateImmediateEffectRealization(effect, streams, bulkEffectStreams)' in runtime_host
+        and 'updateImmediateEffectRealization(*validatedEffects, effectIndex, streams, bulkEffectStreams)' in runtime_host
         and 'properties.dataVariance = vsg::DYNAMIC_DATA' in (
             root / 'components/render/backend/vsg/staticassetrealizer.cpp').read_text()
         and 'streams.positions->dirty();' in (

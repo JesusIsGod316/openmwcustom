@@ -244,6 +244,8 @@ namespace NifOsg
 
         META_Object(NifOsg, KeyframeController)
 
+        unsigned renderMutationMask() const noexcept override { return SceneUtil::RenderTransform; }
+
         osg::Vec3f getTranslation(float time) const override;
         osg::Callback* getAsCallback() override { return this; }
 
@@ -278,6 +280,8 @@ namespace NifOsg
 
         META_Object(NifOsg, UVController)
 
+        unsigned renderMutationMask() const noexcept override { return SceneUtil::RenderTexCoords; }
+
         void setDefaults(osg::StateSet* stateset) override;
         void apply(osg::StateSet* stateset, osg::NodeVisitor* nv) override;
 
@@ -305,6 +309,8 @@ namespace NifOsg
 
         META_Object(NifOsg, VisController)
 
+        unsigned renderMutationMask() const noexcept override { return SceneUtil::RenderVisibility; }
+
         void operator()(osg::Node* node, osg::NodeVisitor* nv);
     };
 
@@ -323,6 +329,8 @@ namespace NifOsg
         void operator()(osg::MatrixTransform* node, osg::NodeVisitor* nv);
 
         META_Object(NifOsg, RollController)
+
+        unsigned renderMutationMask() const noexcept override { return SceneUtil::RenderTransform; }
     };
 
     class AlphaController : public SceneUtil::StateSetUpdater, public SceneUtil::Controller
@@ -340,6 +348,8 @@ namespace NifOsg
         void apply(osg::StateSet* stateset, osg::NodeVisitor* nv) override;
 
         META_Object(NifOsg, AlphaController)
+
+        unsigned renderMutationMask() const noexcept override { return SceneUtil::RenderMaterial; }
     };
 
     class MaterialColorController : public SceneUtil::StateSetUpdater, public SceneUtil::Controller
@@ -350,6 +360,8 @@ namespace NifOsg
         MaterialColorController(const MaterialColorController& copy, const osg::CopyOp& copyop);
 
         META_Object(NifOsg, MaterialColorController)
+
+        unsigned renderMutationMask() const noexcept override { return SceneUtil::RenderMaterial; }
 
         void setDefaults(osg::StateSet* stateset) override;
 
@@ -378,6 +390,8 @@ namespace NifOsg
         FlipController(const FlipController& copy, const osg::CopyOp& copyop);
 
         META_Object(NifOsg, FlipController)
+
+        unsigned renderMutationMask() const noexcept override { return SceneUtil::RenderMaterial | SceneUtil::RenderTexCoords; }
 
         std::vector<osg::ref_ptr<osg::Texture2D>>& getTextures() { return mTextures; }
 
@@ -412,6 +426,8 @@ namespace NifOsg
 
         META_Object(NifOsg, PathController)
 
+        unsigned renderMutationMask() const noexcept override { return SceneUtil::RenderTransform; }
+
         void operator()(NifOsg::MatrixTransform*, osg::NodeVisitor*);
 
     private:
@@ -431,6 +447,8 @@ namespace NifOsg
         LookAtController(const LookAtController& copy, const osg::CopyOp& copyop);
 
         META_Object(NifOsg, LookAtController)
+
+        unsigned renderMutationMask() const noexcept override { return SceneUtil::RenderTransform; }
 
         void operator()(NifOsg::MatrixTransform*, osg::NodeVisitor*);
 

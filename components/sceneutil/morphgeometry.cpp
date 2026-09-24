@@ -1,4 +1,5 @@
 #include "morphgeometry.hpp"
+#include "deformationintersectionvisitor.hpp"
 
 #include <osgUtil/CullVisitor>
 
@@ -107,7 +108,12 @@ namespace SceneUtil
                 cv->popStateSet();
         }
         else
+        {
+            if (auto* intersection = dynamic_cast<DeformationIntersectionVisitor*>(&nv);
+                intersection && intersection->evaluateDeformation)
+                evaluateGeometry(nv.getTraversalNumber());
             nv.apply(*this);
+        }
 
         nv.popFromNodePath();
     }

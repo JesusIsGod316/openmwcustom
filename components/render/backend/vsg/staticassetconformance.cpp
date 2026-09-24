@@ -1,4 +1,6 @@
 #include "staticassetconformance.hpp"
+#include "pipelineinventory.hpp"
+#include <components/misc/environmentflag.hpp>
 
 #include <vsg/all.h>
 
@@ -398,6 +400,10 @@ namespace RenderVsg
         }
 
         result.root = routedRoot;
+        // Seal only AFTER billboard/sort conformance has completed topology
+        // rewriting. The raw realizer contract remains one child per draw.
+        if (Misc::environmentFlag<"OPENMW_V4_PIPELINE_INVENTORIES">())
+            result.root = sealPipelineInventory(result.root);
         return result;
     }
 }

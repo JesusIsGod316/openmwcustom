@@ -2,6 +2,8 @@
 #define OPENMW_COMPONENTS_SCENEUTIL_TEXTURETYPE_H
 
 #include <osg/StateAttribute>
+#include <osg/StateSet>
+#include <osg/Texture>
 
 namespace SceneUtil
 {
@@ -30,5 +32,16 @@ namespace SceneUtil
             return 0;
         }
     };
+
+    // Shared by native ShaderVisitor and neutral material capture. Keep this
+    // small semantic helper independent of scene loading and GlowUpdater.
+    inline const std::string& getTextureType(const osg::StateSet& stateset, const osg::Texture& texture,
+        unsigned int texUnit)
+    {
+        const osg::StateAttribute* type = stateset.getTextureAttribute(texUnit, TextureType::AttributeType);
+        if (type)
+            return static_cast<const TextureType*>(type)->getName();
+        return texture.getName();
+    }
 }
 #endif

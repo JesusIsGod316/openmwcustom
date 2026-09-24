@@ -3,6 +3,8 @@
 
 #include "v4runtimeoptions.hpp"
 #include "v4effectcapture.hpp"
+#include "v4objectcaptureplan.hpp"
+#include "v4persistentobject.hpp"
 #include "v4rigidactorpose.hpp"
 #include "v4scenerenderlifecycle.hpp"
 #include "v4semanticsource.hpp"
@@ -638,7 +640,10 @@ namespace MWRender
     bool V4EngineRenderBridge::captureDynamicFrameState(const RenderingManager& rendering, V4MainFrameSource& source)
     {
         Debug::GameplayDiagnostics::Stage diagnostic("dynamic_capture");
-        NifRender::TextureIdentityCache::CaptureScope textureSnapshot(mTextureIdentities);
+        auto textureSnapshot = [&] {
+            Debug::GameplayDiagnostics::Stage stage("texture_identity_prepare");
+            return NifRender::TextureIdentityCache::CaptureScope(mTextureIdentities);
+        }();
         mLastDiagnostic.clear();
         if (!mSession->healthy() || !mRouteStatus->healthy())
         {
@@ -649,8 +654,11 @@ namespace MWRender
             return false;
         }
         const RenderCore::WorldEpoch worldEpoch = mSession->world().epoch();
+        const bool persistentDraws = Misc::environmentFlag<"OPENMW_V4_PERSISTENT_DRAW_STREAM">();
+        if (persistentDraws) mPersistentDraws.begin(worldEpoch.value());
         if (mEvaluatedObjectPlaybackEpoch != worldEpoch)
         {
+            if (mObjectCapturePlans) mObjectCapturePlans->clear();
             mEvaluatedObjectPlayback.clear();
             mEvaluatedObjectPlaybackEpoch = worldEpoch;
         }
@@ -677,6 +685,7 @@ namespace MWRender
             if (ptr.isEmpty() || !ptr.getRefData().isEnabled())
                 return;
 
+            Debug::GameplayDiagnostics::CaptureWork captureWork(ptr.getClass().isActor());
             if (!ptr.getClass().isActor())
             {
                 const VFS::Path::Normalized modelPath = ptr.getClass().getCorrectedModel(ptr);
@@ -684,6 +693,8 @@ namespace MWRender
                     return;
 
                 bool needsEvaluatedCapture = ptr.getClass().useAnim();
+                if (Debug::GameplayDiagnostics::sampling() && needsEvaluatedCapture)
+                    ++Debug::GameplayDiagnostics::context.useAnimObjects;
                 if (!needsEvaluatedCapture)
                 {
                     const auto cached = mEvaluatedObjectPlayback.find(modelPath.value());
@@ -725,10 +736,44 @@ namespace MWRender
                     return;
                 }
 
-                AnimatedObjectCaptureVisitor objectVisitor("animated-object:" + *identity, mVfs, &mTextureIdentities);
-                objectVisitor.setTraversalNumber(mPoseTraversal);
-                evaluatedRoot->accept(objectVisitor);
-                V4EffectCaptureResult capturedObject = objectVisitor.take();
+                std::optional<V4EffectCaptureResult> planned;
+                if (Misc::environmentFlag<"OPENMW_V4_NATIVE_OBJECT_PRODUCERS">())
+                {
+                    if (auto* producer = animation.prepareV4PersistentObject())
+                    {
+                        const auto builds = producer->geometryBuilds;
+                        const auto updates = producer->materialUpdates;
+                        const auto reuses = producer->reusedDraws;
+                        planned = producer->publish("animated-object:" + *identity, mVfs, mTextureIdentities,
+                            persistentDraws ? &mPersistentDraws : nullptr,
+                            Settings::shaders().mApplyLightingToEnvironmentMaps);
+                        if (Debug::GameplayDiagnostics::sampling())
+                        {
+                            auto& c = Debug::GameplayDiagnostics::context;
+                            c.nativeObjectBuilds += static_cast<unsigned>(producer->geometryBuilds - builds);
+                            c.nativeObjectUpdates += static_cast<unsigned>(producer->materialUpdates - updates);
+                            c.nativeObjectReuses += static_cast<unsigned>(producer->reusedDraws - reuses);
+                            if (!planned && c.nativeObjectFallbacks++ < 4)
+                                Debug::GameplayDiagnostics::recordEvent("native_object_fallback", {
+                                    {"model", std::string(modelPath.value())}, {"reason", producer->fallbackReason()} });
+                        }
+                    }
+                }
+                if (!planned && Misc::environmentFlag<"OPENMW_V4_OBJECT_BINDING_PLANS">())
+                {
+                    if (!mObjectCapturePlans) mObjectCapturePlans = std::make_unique<V4ObjectCapturePlans>();
+                    planned = mObjectCapturePlans->capture(*evaluatedRoot, "animated-object:" + *identity,
+                        mVfs, mTextureIdentities);
+                }
+                V4EffectCaptureResult capturedObject;
+                if (planned) capturedObject = std::move(*planned);
+                else
+                {
+                    AnimatedObjectCaptureVisitor objectVisitor("animated-object:" + *identity, mVfs, &mTextureIdentities);
+                    objectVisitor.setTraversalNumber(mPoseTraversal);
+                    evaluatedRoot->accept(objectVisitor);
+                    capturedObject = objectVisitor.take();
+                }
                 if (!capturedObject.valid())
                 {
                     compatible = false;
@@ -738,7 +783,7 @@ namespace MWRender
                     mLastDiagnostic += " [model=" + std::string(modelPath.value()) + "]";
                     return;
                 }
-                if (capturedObject.draws.empty())
+                if (capturedObject.draws.empty() && !persistentDraws)
                 {
                     const char* strictQc = std::getenv("OPENMW_V4_STRICT_QC");
                     if (strictQc && strictQc[0] != '\0' && strictQc[0] != '0')
@@ -1489,6 +1534,7 @@ namespace MWRender
             source.morphWeights.clear();
             source.immediateEffectDraws.clear();
         }
+        if (compatible && persistentDraws) source.persistentDraws = mPersistentDraws.finish();
         return compatible;
     }
 
@@ -1507,6 +1553,27 @@ namespace MWRender
             ? "Vulkan MyGUI state could not be captured before Lua worker release"
             : host.lastDiagnostic();
         return false;
+    }
+
+    void V4EngineRenderBridge::publishImmediateEffects(
+        RenderCore::SingleViewFrameInput& input, const V4MainFrameSource& source)
+    {
+        Debug::GameplayDiagnostics::Stage handoff("effect_snapshot_publish");
+        input.persistentDraws = source.persistentDraws;
+        if (std::getenv("OPENMW_V4_LEGACY_FRAME_HANDOFF_CONTROL"))
+        {
+            input.immediateEffectDraws = source.immediateEffectDraws;
+            return;
+        }
+        const bool parallel = std::getenv("OPENMW_V4_PARALLEL_EFFECT_PUBLICATION") != nullptr;
+        if (parallel && !mEffectPublicationWorkers)
+        {
+            const auto hardware = std::thread::hardware_concurrency();
+            mEffectPublicationWorkers = std::make_unique<RenderCore::BoundedParallelFor>(
+                hardware > 1 ? std::min(hardware - 1, 3u) : 0u);
+        }
+        input.ownedImmediateEffects = std::make_shared<const RenderCore::OwnedImmediateEffects>(
+            source.immediateEffectDraws, parallel ? mEffectPublicationWorkers.get() : nullptr);
     }
 
     RenderCore::RenderFrameResult V4EngineRenderBridge::renderMainFrame(const V4MainFrameSource& source)
@@ -1542,7 +1609,7 @@ namespace MWRender
         input.dynamicTransforms = source.dynamicTransforms;
         input.skeletonPoses = source.skeletonPoses;
         input.morphWeights = source.morphWeights;
-        input.immediateEffectDraws = source.immediateEffectDraws;
+        publishImmediateEffects(input, source);
         input.invalidateHistory = source.invalidateHistory || mGuiOnlyFramePresented;
         const RenderCore::RenderFrameResult result = mSession->renderFrame(input);
         if (result == RenderCore::RenderFrameResult::Presented)

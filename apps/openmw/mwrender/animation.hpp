@@ -57,6 +57,9 @@ namespace MWRender
     class ResetAccumRootCallback;
     class RotateController;
     class TransparencyUpdater;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+    class V4PersistentObject;
+#endif
 
     using ActiveControllersVector = std::vector<std::pair<osg::ref_ptr<osg::Node>, osg::ref_ptr<osg::Callback>>>;
 
@@ -268,6 +271,9 @@ namespace MWRender
         bool mPlayScriptedOnly;
         bool mRequiresBoneMap;
         VFS::Path::Normalized mV4SourceModel;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        std::unique_ptr<V4PersistentObject> mV4PersistentObject;
+#endif
 
         const NodeMap& getNodeMap() const;
 
@@ -367,6 +373,9 @@ namespace MWRender
 
         osg::Group* getObjectRoot();
         osg::Group* getV4EffectRoot() const noexcept { return mInsert.get(); }
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        V4PersistentObject* prepareV4PersistentObject();
+#endif
 
         // Transitional V4 producer access. The evaluated OSG skeleton remains
         // source-side; callers must copy it into renderer-neutral pose records.

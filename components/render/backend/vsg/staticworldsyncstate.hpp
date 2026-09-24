@@ -4,6 +4,7 @@
 #include "staticworldplan.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <unordered_set>
 #include <vector>
 
@@ -18,6 +19,12 @@ namespace RenderVsg
     public:
         [[nodiscard]] bool unchanged(const RenderCore::RenderWorld& world, StaticPlanOptions options)
         {
+            mPendingRevision = world.staticRevision();
+            mPendingSource = &world;
+            mFastUnchanged = std::getenv("OPENMW_V4_STATIC_REVISION_GATE") && mSynchronized
+                && mSource == &world && mEpoch == world.epoch() && mOptions == options
+                && mRevision == mPendingRevision;
+            if (mFastUnchanged) return true;
             mPending.clear();
             mModels.clear();
             mPendingEpoch = world.epoch();
@@ -38,7 +45,13 @@ namespace RenderVsg
                 for (const auto& group : chunk.population->groups)
                     appendModel(world, group.model);
             });
-            return mSynchronized && mEpoch == mPendingEpoch && mOptions == mPendingOptions && mCurrent == mPending;
+            const bool same = mSynchronized && mEpoch == mPendingEpoch
+                && mOptions == mPendingOptions && mCurrent == mPending;
+            // An irrelevant asset publication may advance the conservative
+            // token without changing this scene. A complete comparison proves
+            // that token current without requiring a redundant realization.
+            if (same) { mRevision = mPendingRevision; mSource = &world; }
+            return same;
         }
 
         // Only acknowledge after both residency updates and scene publication
@@ -46,10 +59,13 @@ namespace RenderVsg
         // A failed realization must remain dirty on the next attempt.
         void synchronized() noexcept
         {
+            if (mFastUnchanged) return;
             mCurrent.swap(mPending);
             mEpoch = mPendingEpoch;
             mOptions = mPendingOptions;
             mSynchronized = true;
+            mRevision = mPendingRevision;
+            mSource = mPendingSource;
         }
 
     private:
@@ -106,6 +122,11 @@ namespace RenderVsg
         StaticPlanOptions mOptions;
         StaticPlanOptions mPendingOptions;
         bool mSynchronized = false;
+        bool mFastUnchanged = false;
+        RenderCore::RenderWorldRevision mRevision;
+        RenderCore::RenderWorldRevision mPendingRevision;
+        const RenderCore::RenderWorld* mSource = nullptr;
+        const RenderCore::RenderWorld* mPendingSource = nullptr;
     };
 }
 

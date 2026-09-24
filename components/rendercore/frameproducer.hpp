@@ -93,6 +93,8 @@ namespace RenderCore
         std::vector<SkeletonPoseInput> skeletonPoses;
         std::vector<MorphWeightInput> morphWeights;
         std::vector<ImmediateEffectDraw> immediateEffectDraws;
+        std::shared_ptr<const OwnedImmediateEffects> ownedImmediateEffects;
+        std::shared_ptr<const PersistentDrawFrame> persistentDraws;
         std::shared_ptr<const NativeSkySnapshot> nativeSky;
         bool invalidateHistory = false;
         DerivedShadowViews shadowViews;
@@ -156,6 +158,8 @@ namespace RenderCore
             desc.historyValid = continuous;
             desc.environment = input.environment;
             desc.immediateEffectDraws = input.immediateEffectDraws;
+            desc.ownedImmediateEffects = input.ownedImmediateEffects;
+            desc.persistentDraws = input.persistentDraws;
             desc.nativeSky = input.nativeSky;
             desc.renderTargets.push_back(RenderTargetDesc{
                 .identity = view.outputTarget,

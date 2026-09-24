@@ -3,6 +3,7 @@
 
 #include "records.hpp"
 #include "effectframe.hpp"
+#include "persistentdraw.hpp"
 #include "skyframe.hpp"
 
 #include <algorithm>
@@ -307,6 +308,8 @@ namespace RenderCore
         std::vector<MorphWeightState> morphWeights;
         std::vector<DynamicMaterialState> dynamicMaterials;
         std::vector<ImmediateEffectDraw> immediateEffectDraws;
+        std::shared_ptr<const OwnedImmediateEffects> ownedImmediateEffects;
+        std::shared_ptr<const PersistentDrawFrame> persistentDraws;
         std::shared_ptr<const NativeSkySnapshot> nativeSky;
     };
 
@@ -358,13 +361,24 @@ namespace RenderCore
         }
         [[nodiscard]] const std::vector<ImmediateEffectDraw>& immediateEffectDraws() const noexcept
         {
-            return mDesc.immediateEffectDraws;
+            return mDesc.ownedImmediateEffects ? mDesc.ownedImmediateEffects->draws() : mDesc.immediateEffectDraws;
+        }
+
+        [[nodiscard]] const std::shared_ptr<const PersistentDrawFrame>& persistentDraws() const noexcept
+        { return mDesc.persistentDraws; }
+
+        [[nodiscard]] const OwnedImmediateEffects* ownedImmediateEffects() const noexcept
+        {
+            return mDesc.ownedImmediateEffects.get();
         }
 
         [[nodiscard]] const std::shared_ptr<const NativeSkySnapshot>& nativeSky() const noexcept { return mDesc.nativeSky; }
 
         [[nodiscard]] bool valid() const noexcept
         {
+            if (mDesc.ownedImmediateEffects
+                && (!mDesc.immediateEffectDraws.empty() || !mDesc.ownedImmediateEffects->valid()))
+                return false;
             if (!mDesc.frameId.valid() || !mDesc.worldEpoch.valid() || !mDesc.renderWorldRevision.valid()
                 || !mDesc.historyEpoch.valid() || !mDesc.renderExtent.valid() || !mDesc.outputExtent.valid()
                 || !finite(mDesc.simulationTime) || !finite(mDesc.frameDelta) || !finite(mDesc.jitter)

@@ -53,6 +53,9 @@ namespace Resource
         // Configure once before workers start. Disabled preserves legacy policy.
         void setHostMemoryBudgetEnabled(bool enabled) { mHostMemoryBudget.setEnabled(enabled); }
         HostMemoryPressure hostMemoryPressure() { return mHostMemoryBudget.pressure(); }
+        std::optional<PreloadAdmission::Reservation> reserveOptionalPreload()
+        { return mHostMemoryBudget.reserveOptionalPreload(); }
+        PreloadAdmission::Stats preloadAdmissionStats() const { return mHostMemoryBudget.preloadAdmissionStats(); }
 
         /// Indicates to each resource manager to clear the cache, i.e. to drop cached objects that are no longer
         /// referenced.

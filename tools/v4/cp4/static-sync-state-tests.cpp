@@ -1,5 +1,6 @@
 #include <components/render/backend/vsg/staticworldsyncstate.hpp>
 #include <components/render/backend/vsg/staticpopulationresidency.hpp>
+#include <components/render/backend/vsg/staticworldresidency.hpp>
 #include <components/rendercore/staticpopulationproducer.hpp>
 
 #include <iostream>
@@ -70,7 +71,7 @@ namespace
         }
     };
 
-    void populationResidencyRegression()
+    void populationResidencyRegression(bool incremental)
     {
         Fixture f;
         RenderWorldPublisher publisher(f.world);
@@ -93,7 +94,10 @@ namespace
         }
         require(producer.flush() == StaticPopulationPublishStatus::Applied, "population flush");
         RenderVsg::StaticPopulationResidency<std::shared_ptr<int>> residency;
-        auto initial = residency.prepare(f.world);
+        auto prepare = [&](RenderVsg::StaticPlanOptions options = {}) {
+            return incremental ? residency.prepareIncremental(f.world, options) : residency.prepare(f.world, options);
+        };
+        auto initial = prepare();
         require(initial.valid && initial.upserts.size() == groupCount, "initial population groups");
         std::vector<std::shared_ptr<int>> objects(groupCount);
         for (auto& object : objects) object = std::make_shared<int>(1);
@@ -128,7 +132,7 @@ namespace
             require(producer.upsert(moving) == StaticPopulationPublishStatus::AlreadyPresent, "idempotent source update");
             require(producer.flush() == StaticPopulationPublishStatus::AlreadyPresent, "clean producer flush");
             f.revise(f.instance); // unrelated world revision, like a live actor
-            require(residency.prepare(f.world).upserts.empty(), "stable populations do not rebuild");
+            require(prepare().upserts.empty(), "stable populations do not rebuild");
         }
 
         // The moved placement also changes the cell bounds/packing origin.
@@ -137,7 +141,7 @@ namespace
         require(producer.upsert(moving) == StaticPopulationPublishStatus::Applied, "moving source update");
         require(producer.flush() == StaticPopulationPublishStatus::Applied, "moving source publication");
         const auto plan = RenderVsg::buildStaticWorldPlan(f.world);
-        auto repaired = residency.prepare(f.world, plan);
+        auto repaired = incremental ? residency.prepareIncremental(f.world) : residency.prepare(f.world, plan);
         const auto control = residency.prepare(f.world, plan, true);
         require(repaired.upserts.size() == 1 && control.upserts.size() == groupCount,
             "one changed group must not rebuild all 224 groups; coarse control reproduces fanout");
@@ -149,17 +153,17 @@ namespace
         require(residency.collect(FrameId{0}).empty(), "early retirement blocked");
         require(residency.collect(FrameId{1}).size() == 1, "changed group released after completion");
         for (int frame = 0; frame < 100; ++frame)
-            require(residency.prepare(f.world).upserts.empty(), "retained older stamps must not trigger subsequent rebuilds");
+            require(prepare().upserts.empty(), "retained older stamps must not trigger subsequent rebuilds");
 
         moving.lod.smallFeatureEligible = false;
         require(producer.upsert(moving) == StaticPopulationPublishStatus::Applied, "small-feature policy change preserved");
         require(producer.flush() == StaticPopulationPublishStatus::Applied, "small-feature policy published");
-        repaired = residency.prepare(f.world);
+        repaired = prepare();
         require(repaired.upserts.size() == 1, "small-feature change invalidates only its group");
         require(residency.commit(f.world, repaired, {std::make_shared<int>(3)}).committed, "policy update commit");
 
         auto checkDependencies = [&] {
-            auto mutation = residency.prepare(f.world);
+            auto mutation = prepare();
             require(mutation.upserts.size() == groupCount, "real shared-resource changes invalidate all dependent groups");
             std::vector<std::shared_ptr<int>> replacements(groupCount, std::make_shared<int>(4));
             require(residency.commit(f.world, mutation, std::move(replacements)).committed, "resource replacement commit");
@@ -168,11 +172,11 @@ namespace
         f.revise(f.material); checkDependencies();
         f.revise(f.mesh); checkDependencies();
         auto options = RenderVsg::StaticPlanOptions{.showMarkers = true};
-        require(residency.prepare(f.world, options).upserts.size() == groupCount, "options still invalidate populations");
+        require(prepare(options).upserts.size() == groupCount, "options still invalidate populations");
 
         require(producer.remove(moving.identity) == StaticPopulationPublishStatus::Applied, "remove one group");
         require(producer.flush() == StaticPopulationPublishStatus::Applied, "publish removal");
-        auto removal = residency.prepare(f.world);
+        auto removal = prepare();
         require(removal.removals.size() == 1 && removal.upserts.empty(), "removal retains unrelated groups despite bounds change");
         f.revise(f.texture);
         require(!residency.commit(f.world, removal, {}).committed, "intervening publication rejects stale mutation");
@@ -185,7 +189,48 @@ int main()
 {
     try
     {
-        populationResidencyRegression();
+        {
+            Fixture f;
+            RenderVsg::StaticWorldResidency<std::shared_ptr<int>> cache;
+            auto sync = [&] {
+                auto mutation = cache.prepareIncremental(f.world);
+                std::vector<std::shared_ptr<int>> objects(mutation.upserts.size(), std::make_shared<int>(1));
+                require(cache.commit(f.world, mutation, std::move(objects)).committed, "incremental instance commit");
+                return mutation;
+            };
+            require(sync().upserts.size() == 1, "initial instance build");
+            require(cache.markSubmitted(FrameId{1}), "instance submit");
+            const auto original = *cache.residentObject(f.instance);
+            const auto chunk = *f.world.reserveChunk();
+            require(f.world.commit(chunk, ChunkRecord{}), "unrelated chunk");
+            for (int i = 0; i < 100; ++i)
+            {
+                f.revise(chunk);
+                const auto stable = sync();
+                require(stable.upserts.empty() && stable.reusedPlans == 1, "population change replanned stable LAND/instance");
+            }
+            require(*cache.residentObject(f.instance) == original, "unchanged native graph replaced");
+            f.revise(f.hiddenMaterial);
+            require(sync().upserts.size() == 1, "hidden material invalidation");
+            f.revise(f.texture); require(sync().upserts.size() == 1, "texture invalidation");
+            f.revise(f.mesh); require(sync().upserts.size() == 1, "mesh invalidation");
+            f.revise(f.instance); require(sync().upserts.size() == 1, "placement invalidation");
+            require(cache.prepareIncremental(f.world, {.showMarkers = true}).upserts.size() == 1, "option invalidation");
+            auto stale = cache.prepareIncremental(f.world);
+            f.revise(f.instance);
+            require(!cache.commit(f.world, stale, {}).committed, "stale transaction accepted");
+            sync();
+            RenderWorld distinct = f.world;
+            require(cache.prepareIncremental(distinct).upserts.size() == 1, "different world reused aliases");
+            require(cache.collect(FrameId{0}).empty() && cache.collect(FrameId{1}).size() == 1, "instance fence retirement");
+            require(f.world.retire(f.instance), "instance removal");
+            require(sync().removals.size() == 1 && cache.residentCount() == 0, "retired instance retained");
+            require(f.world.reset(), "instance epoch reset");
+            require(sync().reusedPlans == 0, "epoch reused");
+            std::cout << "PASS incremental instances: stable LAND path, hidden/mesh/texture/placement/options, world identity, stale commit, fences, removal\n";
+        }
+        populationResidencyRegression(false);
+        populationResidencyRegression(true);
         Fixture f;
         RenderVsg::StaticWorldSyncState state;
         auto changed = [&] { return !state.unchanged(f.world, {}); };
@@ -196,6 +241,28 @@ int main()
         require(changed(), "first synchronization must run");
         require(changed(), "failed or unacknowledged synchronization must retry");
         acknowledge();
+        {
+            const auto staticStamp = f.world.staticRevision();
+            const auto assetStamp = f.world.assetRevision();
+            const auto reserved = *f.world.reserveInstance();
+            require(f.world.cancel(reserved), "reserved instance cancellation");
+            require(!f.world.update(f.mesh, *f.world.get(f.mesh)), "same asset revision must be rejected");
+            const auto light = *f.world.reserveLight();
+            require(f.world.commit(light, LightRecord{}), "light publication");
+            f.revise(light);
+            require(f.world.retire(light), "light retirement");
+            require(f.world.staticRevision() == staticStamp && f.world.assetRevision() == assetStamp,
+                "failed publications, reservations or lights dirtied static assets");
+            const auto chunk = *f.world.reserveChunk();
+            require(f.world.commit(chunk, ChunkRecord{}), "scene chunk publication");
+            require(f.world.reparentInstance(f.instance, chunk), "static reparent");
+            require(changed(), "reparent did not invalidate static scene"); acknowledge();
+            require(f.world.reparentInstance(f.instance, std::nullopt), "static unparent");
+            require(changed(), "unparent did not invalidate static scene"); acknowledge();
+            require(f.world.retire(chunk), "empty scene chunk retirement");
+            require(!changed(), "irrelevant empty chunk changed static dependency stamps");
+            require(f.world.assetRevision() == assetStamp, "placement bookkeeping dirtied assets");
+        }
         for (int frame = 0; frame < 100; ++frame)
             require(!changed(), "stable static scene must not replan every frame");
 
@@ -253,6 +320,18 @@ int main()
         chunkRecord.kind = ChunkRecord::Kind::StaticPopulation;
         chunkRecord.population = population;
         require(f.world.commit(chunk, chunkRecord), "population publication");
+        const auto originalPlan = RenderVsg::buildStaticPopulationPlan(f.world, chunk, population->groups.front(), {});
+        require(originalPlan.has_value(), "population asset fixture");
+        auto movedPlan = *originalPlan;
+        movedPlan.placements.front().transform.translation.x += 100;
+        movedPlan.coordinateOrigin.x += 200;
+        require(RenderVsg::reusablePopulationAsset(*originalPlan, movedPlan), "movement invalidated immutable asset");
+        movedPlan.materials.front().revision = *advanceMonotonic(movedPlan.materials.front().revision);
+        require(!RenderVsg::reusablePopulationAsset(*originalPlan, movedPlan), "material revision reused stale asset");
+        movedPlan = *originalPlan; movedPlan.options.showMarkers = !movedPlan.options.showMarkers;
+        require(!RenderVsg::reusablePopulationAsset(*originalPlan, movedPlan), "changed model selection reused asset");
+        movedPlan = *originalPlan; movedPlan.sourceEpoch = *advanceMonotonic(movedPlan.sourceEpoch);
+        require(!RenderVsg::reusablePopulationAsset(*originalPlan, movedPlan), "world reset reused prior resource");
         require(changed(), "new population"); acknowledge();
         f.revise(chunk); require(changed(), "population replacement"); acknowledge();
         require(f.world.retire(chunk), "population retirement");

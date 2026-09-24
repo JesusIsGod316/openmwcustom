@@ -50,7 +50,7 @@ def analyze(path):
     config = []
     latest_stats = {}
     ended = False
-    schemas = ('os_memory', 'cache', 'cache_pool', 'prepared_cache', 'preload_cache',
+    schemas = ('os_memory', 'cache', 'cache_pool', 'prepared_cache', 'preload_cache', 'preload_admission',
                'neutral_memory', 'vulkan_heap', 'vsg_pool', 'resident_versions', 'retirement',
                'effect_rebuild_count', 'probe_cost', 'host_memory_trim', 'cache_pressure')
     for row in bounded_rows(path, counts):
@@ -182,7 +182,8 @@ def analyze(path):
         'ACCOUNTING: payload capacities, Windows private commit/working set, Vulkan heap estimates, and pool reservations overlap or measure different layers. Do not add them.',
         'COVERAGE: object/allocator/driver internals, exact saved work per cache hit, complete allocation lifetime stacks, GPU timestamps, and pixel parity are not measured by this recorder.',
         'RETIREMENT: snapshots precede normal completion collection. Completed roots pending collection can be normal; retained writable pool slots are reusable, not automatically leaked.',
-        'CACHES: external-reference classification is a refcount observation (including other cache aliases), not proof of active gameplay use; NIF bytes cover selected geometry arrays only.'
+        'CACHES: external-reference classification is a refcount observation (including other cache aliases), not proof of active gameplay use; NIF bytes cover selected geometry arrays only.',
+        'PRELOAD ADMISSION: pending counts queued plus running optional jobs; reservation_estimate_bytes is conservative headroom, not allocated memory. Do not add it to payload or OS memory. Completed optional owners are reported separately.'
     ]
     return {'schema': 1, 'findings': findings, 'counts': dict(counts), 'configuration': config,
             'series': list(series.values()), 'work': work, 'longest_completed_work': longest,

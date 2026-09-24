@@ -7,6 +7,7 @@
 #include <osg/Matrix>
 #include <osg/StateSet>
 #include <osg/TexMat>
+#include <osg/TexGen>
 
 #include <algorithm>
 #include <cstddef>
@@ -73,6 +74,23 @@ namespace MWRender::v4_effect_detail
                     + ", texgen=" + (generated ? "enabled" : "disabled") + "]";
                 return false;
             };
+            if (texture.binding.role == RenderCore::TextureRole::Environment
+                && draw.material.environmentMapMode == RenderCore::EnvironmentMapMode::SphereMap)
+            {
+                const auto* generator = dynamic_cast<const osg::TexGen*>(
+                    state.getTextureAttribute(unit, osg::StateAttribute::TEXGEN));
+                const auto* matrix = dynamic_cast<const osg::TexMat*>(
+                    state.getTextureAttribute(unit, osg::StateAttribute::TEXMAT));
+                if ((generated && (!generator || generator->getMode() != osg::TexGen::SPHERE_MAP))
+                    || (matrix && matrix->getMatrix() != osg::Matrix::identity()))
+                    return fail("sphere environment has unsupported TexGen or nonidentity TexMat");
+                // No vertex UV is consumed by the sphere-map shader. This is
+                // not a fallback alias and must not spend one of four UV slots.
+                bindings.push_back(0u);
+                continue;
+            }
+            if (generated)
+                return fail("generated-coordinate stage requires semantic capture");
             if (!source)
             {
                 // Generated coordinates need a dedicated semantic, not borrowed

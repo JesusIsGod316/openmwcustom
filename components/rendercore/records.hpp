@@ -512,6 +512,13 @@ namespace RenderCore
         friend bool operator==(const TerrainLayerSemantic&, const TerrainLayerSemantic&) = default;
     };
 
+    enum class EnvironmentMapMode : std::uint8_t
+    {
+        None,
+        SphereMap, // one evaluated/authored image; coordinates generated from view-space reflection
+        EnchantedSequence, // exact 32-frame caustic sequence, advanced by simulation time
+    };
+
     struct MaterialRecord
     {
         ResourceRevision revision = InitialResourceRevision;
@@ -527,6 +534,7 @@ namespace RenderCore
         float emissiveMultiplier = 1.0f;
         float specularStrength = 1.0f;
         float environmentMapStrength = 0.0f;
+        EnvironmentMapMode environmentMapMode = EnvironmentMapMode::None;
         // OpenMW's compatibility shader can apply the same environment effect
         // either to the sampled surface before lighting or add it after lighting.
         // Preserve that ordering as neutral material state; it is observable

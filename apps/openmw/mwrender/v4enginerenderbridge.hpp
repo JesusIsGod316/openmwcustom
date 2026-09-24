@@ -46,6 +46,7 @@ namespace MWWorld
 namespace MWRender
 {
     class V4SkyCapture;
+    class V4ObjectCapturePlans;
     class RenderingManager;
     // Build-gated application bridge for the distinct VSG route. It creates the
     // session directly from OpenMW's winning VFS, hands the world an observer
@@ -104,6 +105,7 @@ namespace MWRender
 
     private:
         V4EngineRenderBridge(const VFS::Manager& vfs, std::shared_ptr<RenderVsg::VsgSemanticSession> session);
+        void publishImmediateEffects(RenderCore::SingleViewFrameInput& input, const V4MainFrameSource& source);
         [[nodiscard]] bool synchronizeGroundcover(const RenderingManager& rendering,
             std::string_view worldspaceIdentity, std::span<const RenderCore::TerrainResidencyCell> residency);
 
@@ -118,6 +120,9 @@ namespace MWRender
         std::string mLastDiagnostic;
         bool mLifecycleTaken = false;
         bool mGuiOnlyFramePresented = false;
+        std::unique_ptr<RenderCore::BoundedParallelFor> mEffectPublicationWorkers;
+        std::unique_ptr<V4ObjectCapturePlans> mObjectCapturePlans;
+        RenderCore::PersistentDrawWorld mPersistentDraws;
         unsigned int mPoseTraversal = 0;
         struct ComposedActorEntry
         {

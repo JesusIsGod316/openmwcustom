@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_RESOURCE_HOSTMEMORYBUDGET_H
 
 #include <components/misc/hostmemory.hpp>
+#include "preloadadmission.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -116,6 +117,16 @@ namespace Resource
             std::lock_guard lock(mMutex);
             return mLastMemory;
         }
+        std::optional<PreloadAdmission::Reservation> reserveOptionalPreload()
+        {
+            if (!enabled()) return PreloadAdmission::Reservation{};
+            const auto currentPressure = pressure();
+            const auto memory = snapshot();
+            const auto budget = HostMemoryPolicy::limits(memory.physicalTotal);
+            return mPreloads.reserve(memory, currentPressure != HostMemoryPressure::Normal,
+                budget.reserve, budget.privateSoft);
+        }
+        PreloadAdmission::Stats preloadAdmissionStats() const { return mPreloads.stats(); }
     private:
         Query mQuery;
         std::atomic<bool> mEnabled{false};
@@ -124,6 +135,7 @@ namespace Resource
         mutable std::mutex mMutex;
         HostMemoryPolicy mPolicy;
         Misc::HostMemoryStatus mLastMemory;
+        PreloadAdmission mPreloads;
     };
 }
 #endif

@@ -167,10 +167,11 @@ namespace RenderVsg
     }
 
     // Build a strict derivative of the already-validated OpenMW legacy shader.
-    // Only the enchanted 32-frame environment path is added; ordinary legacy
-    // draws continue using createLegacyCompatibilityShaderSet() unchanged.
+    // Both paths use the canonical sphere-reflection equation. A captured
+    // single image has a single descriptor, never a fabricated caustic array.
+    // Ordinary legacy draws continue using the base shader unchanged.
     [[nodiscard]] inline vsg::ref_ptr<vsg::ShaderSet> createEnchantedLegacyCompatibilityShaderSet(
-        vsg::ref_ptr<const vsg::Options> options = {})
+        vsg::ref_ptr<const vsg::Options> options = {}, bool singleSphereMap = false)
     {
         auto result = createLegacyCompatibilityShaderSet(std::move(options));
         if (!result)
@@ -209,6 +210,16 @@ namespace RenderVsg
                 continue;
             if (!patched)
                 return {};
+            if (singleSphereMap && stage->stage == VK_SHADER_STAGE_FRAGMENT_BIT)
+            {
+                if (!enchanted_material_shader_detail::replaceOnce(source,
+                        "uniform sampler2D openmwEnvironmentMaps[32];",
+                        "uniform sampler2D openmwEnvironmentMaps;")
+                    || !enchanted_material_shader_detail::replaceOnce(source,
+                        "texture(openmwEnvironmentMaps[openmwGlowFrame], openmwEnvUv)",
+                        "texture(openmwEnvironmentMaps, openmwEnvUv)"))
+                    return {};
+            }
 
             auto replacement = vsg::ShaderStage::create(*stage);
             replacement->module = vsg::ShaderModule::create(
@@ -220,7 +231,7 @@ namespace RenderVsg
 
         result->addDescriptorBinding("openmwEnvironmentMaps", "OPENMW_ENCHANTED_ENVIRONMENT", 1,
             EnchantedEnvironmentTextureBinding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            static_cast<std::uint32_t>(EnchantedEnvironmentFrameCount), VK_SHADER_STAGE_FRAGMENT_BIT, {},
+            singleSphereMap ? 1u : static_cast<std::uint32_t>(EnchantedEnvironmentFrameCount), VK_SHADER_STAGE_FRAGMENT_BIT, {},
             vsg::CoordinateSpace::sRGB);
         result->addDescriptorBinding("openmwEnvironmentEffect", "OPENMW_ENCHANTED_ENVIRONMENT", 1,
             EnchantedEnvironmentUniformBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,

@@ -293,6 +293,8 @@ namespace MWRender
                     ? "mutable MyGUI state could not be captured before Lua worker release"
                     : mBridge.lastDiagnostic());
 
+        for (auto& draw : source->immediateEffectDraws)
+            draw.material.environmentMapPreLight = Settings::shaders().mApplyLightingToEnvironmentMaps;
         mPreparedSource = std::move(*source);
         mLastDiagnostic.clear();
         return RenderCore::RenderFrameResult::Presented;

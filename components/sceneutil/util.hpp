@@ -9,6 +9,7 @@
 #include <components/resource/resourcesystem.hpp>
 
 #include "statesetupdater.hpp"
+#include "texturetype.hpp"
 
 namespace osgViewer
 {
@@ -126,7 +127,6 @@ namespace SceneUtil
 
     // Recover the presumed texture type for the given texture unit
     // It may be set as a state attribute or it may come from the used texture's name
-    const std::string& getTextureType(const osg::StateSet& stateset, const osg::Texture& texture, unsigned int texUnit);
 
     void disableFFPStateForRenderer(osgViewer::Renderer* renderer);
 }

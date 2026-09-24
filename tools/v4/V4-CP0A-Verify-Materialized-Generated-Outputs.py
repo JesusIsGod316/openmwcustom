@@ -39,11 +39,12 @@ EXPECTED_PACKAGING = {
 
 
 def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    # The frozen manifests describe Git's LF text blobs. Windows checkout
+    # conversion is not generator drift. Only normalize CRLF in this explicit
+    # allowlist of UTF-8 source/provenance files; preserve every other byte.
+    data = path.read_bytes()
+    data.decode("utf-8", errors="strict")
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
 
 
 def parse_manifest() -> dict[str, str]:
@@ -186,7 +187,7 @@ def main() -> int:
     print(
         "V4 CP0A generated-output materialization verification passed: "
         f"{len(expected)} audited omissions and {len(expected_packaging)} packaging/provenance outputs "
-        "are present, tracked, exact-hash, and V3 component includes resolve."
+        "are present, tracked, exact canonical-LF hash, and V3 component includes resolve."
     )
     return 0
 

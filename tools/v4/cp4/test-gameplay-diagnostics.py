@@ -12,6 +12,142 @@ spec.loader.exec_module(diagnostics)
 
 
 class ReportTests(unittest.TestCase):
+    def test_native_observations_are_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'gameplay.jsonl'
+            rows = [
+                dict(schema=1, frame=10, time_us=1, type='native_visibility',
+                     candidates='100', frustum_culled='30', occluded='12', main_view_only='1'),
+                dict(schema=1, frame=10, time_us=2, type='native_postprocess',
+                     mode='0', gui_after_effects='1', omwfx_chain_supported='0'),
+            ]
+            log.write_text('\n'.join(json.dumps(row) for row in rows), encoding='utf-8')
+            result = diagnostics.analyze(log)
+            self.assertEqual(result['repair_observations']['native_visibility'][0]['occluded'], '12')
+            self.assertEqual(result['repair_observations']['native_postprocess'][0]['omwfx_chain_supported'], '0')
+
+    def test_previous_persistent_control_disables_only_incremental_mechanisms(self):
+        env = {variable: '1' for variable in diagnostics.CPU_FASTPATHS.values()}
+        diagnostics.configure_cpu_fastpaths(env, 'vulkan', 'persistent')
+        for key, variable in diagnostics.CPU_FASTPATHS.items():
+            self.assertEqual(variable in env, key not in diagnostics.RETAINED_FASTPATHS
+                             and not key.startswith(('incremental-', 'exterior-', 'architecture-')))
+
+    def test_previous_incremental_control_disables_only_exterior_repairs(self):
+        env = {variable: '1' for variable in diagnostics.CPU_FASTPATHS.values()}
+        diagnostics.configure_cpu_fastpaths(env, 'vulkan', 'incremental')
+        for key, variable in diagnostics.CPU_FASTPATHS.items():
+            self.assertEqual(variable in env, key not in diagnostics.RETAINED_FASTPATHS
+                             and not key.startswith(('exterior-', 'architecture-')))
+
+    def test_previous_exterior_control_disables_only_integrated_architecture(self):
+        env = {variable: '1' for variable in diagnostics.CPU_FASTPATHS.values()}
+        diagnostics.configure_cpu_fastpaths(env, 'vulkan', 'exterior')
+        for key, variable in diagnostics.CPU_FASTPATHS.items():
+            self.assertEqual(variable in env, key not in diagnostics.RETAINED_FASTPATHS
+                             and not key.startswith('architecture-'))
+
+    def test_retained_profiles_match_measured_arms_without_metadata_experiment(self):
+        for selection in ('retained', 'previous-retained'):
+            env = {variable: '1' for variable in diagnostics.CPU_FASTPATHS.values()}
+            env['UNRELATED'] = 'preserved'
+            diagnostics.configure_cpu_fastpaths(env, 'vulkan', selection)
+            self.assertEqual(env['UNRELATED'], 'preserved')
+            for key, variable in diagnostics.CPU_FASTPATHS.items():
+                self.assertEqual(variable in env, key != 'architecture-metadata'
+                                 and (selection == 'retained' or key not in diagnostics.RETAINED_FASTPATHS))
+
+    def test_cpu_fastpaths_independent_and_control(self):
+        inherited = {'OPENMW_V4_LEGACY_FRAME_HANDOFF_CONTROL': '1', 'VK_OTHER': 'unchanged',
+                     **{variable: '1' for variable in diagnostics.CPU_FASTPATHS.values()}}
+        for selection in ('inherit', 'control', 'all', *diagnostics.CPU_FASTPATHS):
+            env = inherited.copy()
+            diagnostics.configure_cpu_fastpaths(env, 'vulkan', selection)
+            self.assertEqual(env['VK_OTHER'], 'unchanged')
+            self.assertEqual(env['OPENMW_V4_LEGACY_FRAME_HANDOFF_CONTROL'], '1')
+            for key, variable in diagnostics.CPU_FASTPATHS.items():
+                self.assertEqual(variable in env, selection in ('inherit', 'all', key))
+        with self.assertRaises(ValueError):
+            diagnostics.configure_cpu_fastpaths({}, 'opengl', 'all')
+        with self.assertRaises(ValueError):
+            diagnostics.configure_cpu_fastpaths({}, 'vulkan', 'typo')
+
+    def test_profiler_disabled_does_not_change_command(self):
+        command = ['game path/openmw.exe', '--script-run', '']
+        self.assertEqual(diagnostics.profiling_command(SimpleNamespace(), command, Path('.')), (command, None))
+        with self.assertRaisesRegex(ValueError, 'requires --nsight'):
+            diagnostics.profiling_command(SimpleNamespace(profile_cpu=True), command, Path('.'))
+
+    def test_profiler_bounds_privacy_and_target_lifetime(self):
+        with tempfile.TemporaryDirectory(prefix='profile test ') as directory:
+            root = Path(directory)
+            tool = root / 'nsys.exe'
+            tool.write_bytes(b'fixture')
+            command = [str(root / 'game path/openmw.exe'), '--script-run', str(root / 'no-op startup.txt')]
+            args = SimpleNamespace(nsight=str(tool), profile_seconds=20, renderer='vulkan')
+            with patch.object(diagnostics.subprocess, 'check_output', return_value='fixture version'), \
+                 patch.object(diagnostics.shutil, 'disk_usage', return_value=SimpleNamespace(free=9 * 1024**3)):
+                wrapped, metadata = diagnostics.profiling_command(args, command, root)
+            self.assertEqual(wrapped[-3:], command)
+            for flag in ('--kill=false', '--wait=all', '--duration=20', '--capture-range=hotkey',
+                         '--capture-range-end=stop', '--sample=none', '--cpuctxsw=none',
+                         '--discard-environment=true', '--force-overwrite=false', '--export=none'):
+                self.assertIn(flag, wrapped)
+            self.assertEqual(metadata['sha256'], diagnostics.sha256(tool))
+            self.assertFalse(metadata['cpu_sampling'])
+            self.assertFalse(metadata['raw_reports_in_zip'])
+            for seconds in (0, 4, 61):
+                args.profile_seconds = seconds
+                with self.assertRaisesRegex(ValueError, 'duration'):
+                    diagnostics.profiling_command(args, command, root)
+            args.profile_seconds = 20
+            with patch.object(diagnostics.shutil, 'disk_usage', return_value=SimpleNamespace(free=1024)):
+                with self.assertRaisesRegex(ValueError, 'less than 8 GiB'):
+                    diagnostics.profiling_command(args, command, root)
+
+    def test_profiler_refuses_empty_target_arguments_before_running_any_tool(self):
+        with patch.object(diagnostics.subprocess, 'check_output') as run:
+            with self.assertRaisesRegex(ValueError, 'must not be empty'):
+                diagnostics.profiling_command(SimpleNamespace(nsight='nsys.exe'),
+                                              ['openmw.exe', '--script-run', ''], Path('.'))
+            run.assert_not_called()
+
+    def test_profiler_report_does_not_conflate_wrapper_success_with_game_acceptance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'manifest.json').write_text(json.dumps(dict(state='exited', exit_code=0,
+                profiler={'tool': 'nsys.exe'})), encoding='utf-8')
+            findings = diagnostics.report(root)['findings']
+            self.assertTrue(any('profiler wrapper' in s for s in findings))
+            self.assertFalse(any(s.startswith('PASS') for s in findings))
+
+    def test_repair_probes_are_opt_in_and_preserve_recorded_controls(self):
+        env = {'OPENMW_V4_LEGACY_FRAME_HANDOFF_CONTROL': '1'}
+        diagnostics.configure_repair_probes(env, 'vulkan', 'standard')
+        self.assertEqual(env, {'OPENMW_V4_LEGACY_FRAME_HANDOFF_CONTROL': '1'})
+        diagnostics.configure_repair_probes(env, 'vulkan', 'focused', True, 'crate')
+        self.assertEqual(env['OPENMW_V4_WATER_INPUT_PROBE'], '1')
+        self.assertEqual(env['OPENMW_V4_MATERIAL_PROBE_FILTER'], 'crate')
+
+    def test_repair_probes_reject_unobservable_or_wrong_renderer_modes(self):
+        for backend, mode, water, material in [
+            ('opengl', 'focused', True, None), ('vulkan', 'off', True, None),
+            ('vulkan', 'standard', False, 'crate'), ('opengl', 'focused', False, 'crate'),
+            ('vulkan', 'focused', False, ''), ('vulkan', 'focused', False, 'a' * 257)]:
+            with self.assertRaises(ValueError):
+                diagnostics.configure_repair_probes({}, backend, mode, water, material)
+
+    def test_repair_observations_are_bounded_and_keep_provenance_without_verdict(self):
+        rows = [dict(type='texture_probe', draw='ref:1', source='textures/winning.dds', role='environment')]*80
+        rows += [dict(type='population_cause', field='texture_revision', source='texture:3', old_revision='2', new_revision='3'),
+                 dict(type='effect_frame_handoff', owned='1', draws='2005', geometry_bytes='1000'),
+                 dict(type='water_input_probe', target='refraction', samples='64', depth_nonclear='4')]
+        result = self.analyze(rows)
+        self.assertEqual(len(result['repair_observations']['texture_probe']), 64)
+        self.assertEqual(result['repair_observations']['texture_probe'][0]['source'], 'textures/winning.dds')
+        self.assertEqual(result['repair_observations']['population_cause'][0]['field'], 'texture_revision')
+        self.assertFalse(any('PASS' in s or 'RUNTIME FAILURE' in s for s in result['findings']))
+
     def test_allocation_and_terrain_observations_do_not_invent_performance_results(self):
         result = self.analyze([
             dict(type='dynamic_allocation', phase='before', summary='images=96 unique_image_payloads=1'),

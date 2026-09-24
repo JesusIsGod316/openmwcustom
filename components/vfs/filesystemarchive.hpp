@@ -18,6 +18,8 @@ namespace VFS
         Files::IStreamPtr open() override;
 
         std::filesystem::file_time_type getLastModified() const override;
+        std::optional<std::filesystem::path> getMetadataPath() const override
+        { return typeid(*this) == typeid(FileSystemArchiveFile) ? std::optional(mPath) : std::nullopt; }
 
         std::string getStem() const override;
 

@@ -2,13 +2,14 @@
 #define OPENMW_COMPONENTS_POSITIONATTITUDE_TRANSFORM_H
 
 #include <osg/Transform>
+#include "rendermutation.hpp"
 
 namespace SceneUtil
 {
 
     /// @brief A customized version of osg::PositionAttitudeTransform optimized for speed.
     /// Uses single precision values. Also removed _pivotPoint which we don't need.
-    class PositionAttitudeTransform : public osg::Transform
+    class PositionAttitudeTransform : public osg::Transform, public RenderMutationSource
     {
     public:
         PositionAttitudeTransform();
@@ -26,6 +27,7 @@ namespace SceneUtil
 
         inline void setPosition(const osg::Vec3f& pos)
         {
+            if (_position != pos) publishRenderMutation();
             _position = pos;
             dirtyBound();
         }
@@ -33,6 +35,7 @@ namespace SceneUtil
 
         inline void setAttitude(const osg::Quat& quat)
         {
+            if (_attitude != quat) publishRenderMutation();
             _attitude = quat;
             dirtyBound();
         }
@@ -40,10 +43,12 @@ namespace SceneUtil
 
         inline void setScale(const osg::Vec3f& scale)
         {
+            if (_scale != scale) publishRenderMutation();
             _scale = scale;
             dirtyBound();
         }
         inline const osg::Vec3f& getScale() const { return _scale; }
+        unsigned renderMutationMask() const noexcept override { return RenderTransform; }
 
         bool computeLocalToWorldMatrix(osg::Matrix& matrix, osg::NodeVisitor* nv) const override;
         bool computeWorldToLocalMatrix(osg::Matrix& matrix, osg::NodeVisitor* nv) const override;

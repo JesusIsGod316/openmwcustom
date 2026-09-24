@@ -23,8 +23,9 @@
 
 namespace RenderVsg
 {
-    inline constexpr std::uint32_t LegacyBumpTextureBinding = 12u;
-    inline constexpr std::uint32_t LegacyBumpUniformBinding = 13u;
+    // 12/13 belong to decal/gloss, 14/15 to environment, and 16 to LAND blend.
+    inline constexpr std::uint32_t LegacyBumpTextureBinding = 17u;
+    inline constexpr std::uint32_t LegacyBumpUniformBinding = 18u;
 
     // Exact backend representation of NiTexturingProperty's legacy bump facet.
     // matrix is the authored 2x2 value in NIF/OSG scalar order. lumaUv stores
@@ -92,8 +93,8 @@ namespace RenderVsg
                     "layout(set = MATERIAL_DESCRIPTOR_SET, binding = 5) uniform sampler2D specularMap;\n"
                     "#endif\n",
                     "#ifdef OPENMW_LEGACY_BUMP_MAP\n"
-                    "layout(set = MATERIAL_DESCRIPTOR_SET, binding = 12) uniform sampler2D openmwBumpMap;\n"
-                    "layout(set = MATERIAL_DESCRIPTOR_SET, binding = 13) uniform OpenMwLegacyBumpData\n"
+                    "layout(set = MATERIAL_DESCRIPTOR_SET, binding = 17) uniform sampler2D openmwBumpMap;\n"
+                    "layout(set = MATERIAL_DESCRIPTOR_SET, binding = 18) uniform OpenMwLegacyBumpData\n"
                     "{\n"
                     "    vec4 matrix;\n"
                     "    vec4 lumaUv;\n"
@@ -105,7 +106,7 @@ namespace RenderVsg
             // meaning in V3.25. It perturbs the legacy environment lookup only.
             // Therefore the base compatibility shader deliberately binds and
             // preserves it without sampling it. When an exact environment path
-            // is present (currently the 32-frame enchanted caustic path), apply
+            // is present (single sphere map or 32-frame enchanted path), apply
             // the same coordinate/luma equation as compatibility/objects.frag.
             if (source.find("OPENMW_ENCHANTED_ENVIRONMENT") == std::string::npos)
                 return true;

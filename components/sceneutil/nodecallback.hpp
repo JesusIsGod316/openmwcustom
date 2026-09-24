@@ -2,6 +2,7 @@
 #define SCENEUTIL_NODECALLBACK_H
 
 #include <osg/Callback>
+#include "rendermutation.hpp"
 
 namespace osg
 {
@@ -13,7 +14,7 @@ namespace SceneUtil
 {
 
     template <class Derived, typename NodeType = osg::Node*, typename VisitorType = osg::NodeVisitor*>
-    class NodeCallback : public osg::Callback
+    class NodeCallback : public osg::Callback, public RenderMutationSource
     {
     public:
         NodeCallback() {}
@@ -25,6 +26,7 @@ namespace SceneUtil
         bool run(osg::Object* object, osg::Object* data) override
         {
             static_cast<Derived*>(this)->operator()((NodeType)object, (VisitorType)data->asNodeVisitor());
+            publishRenderMutation();
             return true;
         }
 

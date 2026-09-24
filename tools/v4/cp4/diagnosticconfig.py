@@ -5,6 +5,7 @@ is never edited, saves are never copied, and ambiguous autoload fails closed.
 """
 from __future__ import annotations
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -146,17 +147,36 @@ def quoted(path: Path) -> str:
     return '"' + text.replace('&', '&&').replace('"', '&"') + '"'
 
 
-def build_command(exe: Path, normal: Path, evidence: Path) -> list[str]:
+def build_command(exe: Path, normal: Path, evidence: Path, *, startup_script: Path | None = None) -> list[str]:
     # Do NOT add --load-savegame, even with an empty value.
+    # Direct subprocess launches retain the original empty override. Profilers
+    # may drop empty argv entries; their caller supplies a private no-op file.
     return [str(exe), '--replace=config', '--config', str(normal), '--config', str(evidence),
             '--user-data', str(evidence / 'user-data'), '--resources', str(exe.parent / 'resources'),
-            '--skip-menu=false', '--new-game=false', '--script-run', '']
+            '--skip-menu=false', '--new-game=false', '--script-run',
+            str(startup_script) if startup_script is not None else '']
+
+
+def validated_build_manifest(executable: Path) -> dict | None:
+    path = executable.parent / 'persistent-build-manifest.json'
+    if not path.is_file():
+        return None
+    manifest = json.loads(path.read_text(encoding='utf-8-sig'))
+    if (manifest.get('schema') != 1 or not re.fullmatch(r'[0-9a-f]{40}', manifest.get('base_commit', ''))
+            or not isinstance(manifest.get('changed_source_files'), dict)):
+        raise ValueError('Candidate build identity is malformed. Nothing launched.')
+    if manifest.get('executable_sha256') != digest(executable):
+        raise ValueError('Executable differs from candidate build hash manifest. Nothing launched.')
+    return manifest
 
 
 def package_identity(executable: Path, requested: str) -> str:
     """Use the package's current identity; never pin the starter to an old EXE."""
     identity = executable.parent / 'CP3E-TEST-IDENTITY.txt'
-    actual = None
+    build = validated_build_manifest(executable)
+    actual = build['base_commit'] if build else None
+    if actual and requested != 'unrecorded' and requested != actual:
+        raise ValueError('Requested source identity differs from candidate. Nothing launched.')
     if identity.is_file():
         for line in identity.read_text(encoding='utf-8-sig').splitlines():
             if line.startswith('commit='):

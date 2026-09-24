@@ -39,6 +39,7 @@
 
 #include <components/occlusionculling/occlusionstorage.hpp>
 #include <components/sceneutil/cullsafeboundsvisitor.hpp>
+#include <components/sceneutil/deformationintersectionvisitor.hpp>
 #include <components/sceneutil/depth.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
@@ -48,6 +49,7 @@
 #include <components/sceneutil/shadow.hpp>
 #include <components/sceneutil/stateupdater.hpp>
 #include <components/sceneutil/texmat.hpp>
+#include <components/sceneutil/updateonlyvisitor.hpp>
 #include <components/sceneutil/visitor.hpp>
 #include <components/sceneutil/workqueue.hpp>
 #include <components/sceneutil/writescene.hpp>
@@ -1329,7 +1331,7 @@ namespace MWRender
         return result;
     }
 
-    class IntersectionVisitorWithIgnoreList : public osgUtil::IntersectionVisitor
+    class IntersectionVisitorWithIgnoreList : public SceneUtil::DeformationIntersectionVisitor
     {
     public:
         using osgUtil::IntersectionVisitor::apply;
@@ -1417,6 +1419,9 @@ namespace MWRender
         }
 
         mIntersectionVisitor->setTraversalNumber(mViewer->getFrameStamp()->getFrameNumber());
+        mIntersectionVisitor->evaluateDeformation
+            = dynamic_cast<SceneUtil::UpdateOnlyVisitor*>(mViewer->getUpdateVisitor()) != nullptr
+            && std::getenv("OPENMW_V4_LEGACY_PICK_DEFORMATION_CONTROL") == nullptr;
         mIntersectionVisitor->setFrameStamp(mViewer->getFrameStamp());
         mIntersectionVisitor->setIntersector(intersector);
 

@@ -9,6 +9,7 @@
 #include <MyGUI_VertexData.h>
 
 #include <components/debug/debuglog.hpp>
+#include <components/render/backend/vsg/livetextureimages.hpp>
 
 #include "texture.hpp"
 
@@ -42,6 +43,11 @@ namespace VsgMyGui
         {
             if (imageView)
                 return vsg::ImageInfo::create(pipeline.sampler, imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            // Texture::unlock/setData publish new Data owners. Only immutable
+            // sampled backing is shared; each overlay retains fresh draw and
+            // descriptor objects, and external render targets stay separate.
+            if (std::getenv("OPENMW_V4_PERSISTENT_UI_IMAGES"))
+                return RenderVsg::liveTextureImage(data ? data : pipeline.whiteTexture, pipeline.sampler);
             return vsg::ImageInfo::create(
                 pipeline.sampler, data ? data : pipeline.whiteTexture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }

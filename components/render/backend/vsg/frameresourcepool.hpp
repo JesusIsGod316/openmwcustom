@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace RenderVsg
@@ -65,6 +66,30 @@ namespace RenderVsg
             }
             available->selected = true;
             return available->object;
+        }
+
+        // Read sharing is safe even while an earlier submission uses this
+        // version. The predicate must prove that ALL GPU/record-visible values
+        // are unchanged. A const result deliberately prevents the caller from
+        // treating this as a writable acquisition; changed values still use
+        // acquire() and its fence-backed copy-on-write ring.
+        template <class Predicate>
+        const Object* selectUnchanged(const std::string& identity, Predicate&& unchanged)
+        {
+            if (!mPreparedFrame || identity.empty())
+                throw std::invalid_argument("immutable resource selection requires a frame and identity");
+            const auto found = mObjects.find(identity);
+            if (found == mObjects.end()) return nullptr;
+            auto& versions = found->second;
+            if (std::any_of(versions.begin(), versions.end(), [](const Version& v) { return v.selected; }))
+                throw std::invalid_argument("duplicate resource identity in a frame: " + identity);
+            for (auto& version : versions)
+                if (unchanged(std::as_const(version.object)))
+                {
+                    version.selected = true;
+                    return &version.object;
+                }
+            return nullptr;
         }
 
         // Remove disappeared identities only when their final use completed.

@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -73,6 +74,7 @@ namespace VFS
         RecursiveDirectoryRange getRecursiveDirectoryIterator() const;
 
         std::filesystem::file_time_type getLastModified(VFS::Path::NormalizedView name) const;
+        std::optional<std::filesystem::path> getMetadataPath(VFS::Path::NormalizedView name) const;
         // Equivalent to std::filesystem::path::stem. The result isn't normalized.
         std::string getStem(VFS::Path::NormalizedView name) const;
 

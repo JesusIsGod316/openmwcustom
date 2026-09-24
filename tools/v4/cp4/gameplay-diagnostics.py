@@ -43,6 +43,7 @@ def analyze(path):
     cell_insertions = []
     allocations = []
     terrain_work = []
+    repair_observations = defaultdict(lambda: deque(maxlen=64))
     actors = defaultdict(lambda: {'pose': set(), 'placement': set(), 'geometry': set()})
     stack = []
     operations = {}
@@ -84,6 +85,10 @@ def analyze(path):
                 elif kind == 'residency':
                     residency.append({key: int(row[key]) for key in (
                         'actors_reused', 'actors_rebuilt', 'effects_reused', 'effects_rebuilt')})
+                elif kind in ('effect_frame_handoff', 'population_cause', 'material_probe', 'texture_probe',
+                              'water_input_probe', 'water_probe_unavailable', 'population_plan', 'capture_work',
+                              'native_visibility', 'native_postprocess'):
+                    repair_observations[kind].append(row)
                 elif kind == 'stage_begin':
                     stack.append((frame, row['name']))
                 elif kind == 'stage_end':
@@ -149,6 +154,7 @@ def analyze(path):
             'findings': findings, 'inclusive_stage_timings': timings,
             'cell_insertions': cell_insertions, 'residency_samples': residency,
             'allocation_samples': allocations, 'terrain_preload_work': terrain_work,
+            'repair_observations': {key: list(values) for key, values in repair_observations.items()},
             'actor_variation': {key: {k: len(v) for k, v in values.items()} for key, values in actors.items()}}
 
 
@@ -181,6 +187,8 @@ def report(directory):
             status = json.loads(manifest.read_text(encoding='utf-8'))
             result['run_state'] = status.get('state', 'unknown')
             result['exit_code'] = status.get('exit_code')
+            if status.get('profiler'):
+                result['findings'].append('PROFILED RUN: profiler overhead is present; the recorded exit code belongs to the profiler wrapper, not independently to OpenMW. Raw profiler reports stay local and are excluded from the evidence ZIP.')
             if status.get('diagnostics') == 'standard':
                 result['findings'] = [f for f in result['findings'] if not f.startswith('COVERAGE GAP: no actor pose samples')]
                 result['findings'].append('STANDARD COVERAGE: detailed actor geometry/pose fingerprints are intentionally omitted; use focused mode for those checks.')
@@ -207,6 +215,12 @@ def report(directory):
     for sample in result.get('terrain_preload_work', []):
         text.append(f"- Terrain: queued {sample['queue_ms']:.3f} ms, worker {sample['work_ms']:.3f} ms, "
                     f"views {sample['views']}, aborted {sample['aborted']} (overlaps terrain wait).")
+    text += ['', '## Repair-path observations', '',
+             'Last 64 records per category; sparse samples, not acceptance. Material probes require focused mode.',
+             'Handoff bytes count geometry payload only. Population causes identify exact dependencies, not unique cells.',
+             'Water probes sample actual targets after a completed frame; clear-like samples alone do not prove a whole target is empty.', '']
+    for kind, samples in result.get('repair_observations', {}).items():
+        text += [f'### {kind}', '', '```json', json.dumps(samples[-8:], indent=2), '```', '']
     text += ['', '## Selected game log', '', '```text', *list(selected), '```', '',
              'Remaining coverage: full canonical-to-neutral skin-space equivalence, GPU-side buffer contents, pixels, texture semantics, map output, and long-duration memory budgets require separate checks.']
     (directory / 'report.md').write_text('\n'.join(text) + '\n', encoding='utf-8')
@@ -218,8 +232,128 @@ def report(directory):
     return result
 
 
+CPU_FASTPATHS = {
+    'architecture-producers': 'OPENMW_V4_NATIVE_OBJECT_PRODUCERS',
+    'architecture-texture-bindings': 'OPENMW_V4_LOAD_BOUND_TEXTURES',
+    'persistent-draws': 'OPENMW_V4_PERSISTENT_DRAW_STREAM',
+    'pipeline-inventories': 'OPENMW_V4_PIPELINE_INVENTORIES',
+    'persistent-membership': 'OPENMW_V4_PERSISTENT_DYNAMIC_MEMBERSHIP',
+    'persistent-populations': 'OPENMW_V4_PERSISTENT_POPULATION_ASSETS',
+    'parallel': 'OPENMW_V4_PARALLEL_EFFECT_PUBLICATION',
+    'validated': 'OPENMW_V4_VALIDATED_EFFECT_REUSE',
+    'bulk': 'OPENMW_V4_BULK_EFFECT_STREAMS',
+    'capture': 'OPENMW_V4_PERSISTENT_CAPTURE',
+    'shaders': 'OPENMW_V4_PERSISTENT_SHADERS',
+    'pipelines': 'OPENMW_V4_PERSISTENT_PIPELINES',
+    'ui-images': 'OPENMW_V4_PERSISTENT_UI_IMAGES',
+    'static-revisions': 'OPENMW_V4_STATIC_REVISION_GATE',
+    'incremental-capture': 'OPENMW_V4_INCREMENTAL_CAPTURE',
+    'incremental-populations': 'OPENMW_V4_INCREMENTAL_POPULATIONS',
+    'exterior-instances': 'OPENMW_V4_INCREMENTAL_INSTANCES',
+    'exterior-actors': 'OPENMW_V4_PARALLEL_ACTOR_PREPARATION',
+    'exterior-frustum': 'OPENMW_V4_EFFECT_FRUSTUM',
+    'exterior-audit': 'OPENMW_V4_DEDUP_PIPELINE_AUDIT',
+    'exterior-switches': 'OPENMW_V4_ACTIVE_SWITCH_CAPTURE',
+    'exterior-submit': 'OPENMW_V4_SUBMIT_BREAKDOWN',
+    'architecture-materials': 'OPENMW_V4_MATERIAL_VALUE_CACHE',
+    'architecture-bindings': 'OPENMW_V4_OBJECT_BINDING_PLANS',
+    'architecture-residents': 'OPENMW_V4_IMMUTABLE_RESIDENTS',
+    'architecture-audit': 'OPENMW_V4_FLAT_PIPELINE_AUDIT',
+    'architecture-record': 'OPENMW_V4_PARALLEL_VIEW_RECORD',
+    'architecture-frustum': 'OPENMW_V4_MULTIVIEW_FRUSTUM',
+    'architecture-flags': 'OPENMW_V4_STARTUP_FLAG_CACHE',
+    'architecture-metadata': 'OPENMW_V4_BATCH_TEXTURE_METADATA',
+}
+
+
+RETAINED_FASTPATHS = frozenset(('persistent-draws', 'pipeline-inventories',
+                              'persistent-membership', 'persistent-populations'))
+CPU_FASTPATH_PROFILES = ('inherit', 'control', 'persistent', 'incremental', 'exterior',
+                        'retained', 'previous-retained', 'all')
+
+
+def configure_cpu_fastpaths(env, renderer, selection):
+    if selection not in (*CPU_FASTPATH_PROFILES, *CPU_FASTPATHS):
+        raise ValueError('Invalid CPU fast-path selection')
+    if selection == 'inherit':
+        return
+    if renderer != 'vulkan' and selection != 'control':
+        raise ValueError('CPU fast paths require the Vulkan renderer')
+    for key, variable in CPU_FASTPATHS.items():
+        env.pop(variable, None)
+        if (selection in ('all', key)
+                or (selection == 'retained' and key != 'architecture-metadata')
+                or (selection == 'previous-retained' and key != 'architecture-metadata'
+                    and key not in RETAINED_FASTPATHS)
+                or (key not in RETAINED_FASTPATHS and (
+                    (selection == 'persistent' and not key.startswith(('incremental-', 'exterior-', 'architecture-')))
+                    or (selection == 'incremental' and not key.startswith(('exterior-', 'architecture-')))
+                    or (selection == 'exterior' and not key.startswith('architecture-'))))):
+            env[variable] = '1'
+
+
+def configure_repair_probes(env, renderer, selected_mode, water=False, material=None):
+    if water:
+        if renderer != 'vulkan' or selected_mode == 'off':
+            raise ValueError('Water probes require Vulkan and enabled diagnostics')
+        env['OPENMW_V4_WATER_INPUT_PROBE'] = '1'
+    if material is not None:
+        if renderer != 'vulkan' or selected_mode != 'focused' or not 1 <= len(material) <= 256:
+            raise ValueError('Material probes require Vulkan, focused diagnostics, and a 1-256 character path/identity substring')
+        env['OPENMW_V4_MATERIAL_PROBE_FILTER'] = material
+
+
+def profiling_command(args, command, evidence):
+    """Opt-in, hotkey-triggered short trace. Never terminate the target game."""
+    executable = getattr(args, 'nsight', None)
+    cpu = getattr(args, 'profile_cpu', False)
+    if not executable:
+        if cpu:
+            raise ValueError('--profile-cpu requires --nsight')
+        return command, None
+    if any(argument == '' for argument in command):
+        raise ValueError('Nsight target arguments must not be empty; use the private no-op startup script')
+    duration = getattr(args, 'profile_seconds', 20)
+    if not 5 <= duration <= 60:
+        raise ValueError('Profile duration must be between 5 and 60 seconds')
+    tool = Path(executable).resolve(strict=True)
+    if not tool.is_file() or tool.name.lower() != 'nsys.exe':
+        raise ValueError('--nsight must name the installed nsys.exe')
+    free = shutil.disk_usage(evidence).free
+    if free < 8 * 1024**3:
+        raise ValueError('Profiling refused: less than 8 GiB free on the capture volume')
+    if cpu and not getattr(args, 'prepare_only', False):
+        import ctypes
+        if os.name != 'nt' or not ctypes.windll.shell32.IsUserAnAdmin():
+            raise ValueError('CPU sampling requires a Windows terminal explicitly run as administrator; no elevation is attempted')
+    version = subprocess.check_output([str(tool), '--version'], text=True, timeout=15).strip()
+    renderer = getattr(args, 'renderer', 'vulkan')
+    trace = 'vulkan' if renderer == 'vulkan' else 'opengl'
+    wrapped = [str(tool), 'profile', '--trace=' + trace,
+               '--sample=' + ('process-tree' if cpu else 'none'),
+               '--cpuctxsw=' + ('process-tree' if cpu else 'none'),
+               '--capture-range=hotkey', '--hotkey-capture=F12',
+               '--capture-range-end=stop', '--duration=' + str(duration),
+               '--kill=false', '--wait=all', '--force-overwrite=false',
+               '--discard-environment=true', '--export=none',
+               '--output=' + str(evidence / 'nsight')]
+    if renderer == 'vulkan':
+        wrapped.append('--vulkan-gpu-workload=batch')
+    if cpu:
+        wrapped += ['--sampling-frequency=1000', '--resolve-symbols=true']
+    wrapped += command
+    return wrapped, {'tool': str(tool), 'version': version, 'sha256': sha256(tool),
+                     'cpu_sampling': cpu, 'seconds': duration, 'trigger': 'F12',
+                     'free_bytes_before': free, 'kills_game': False,
+                     'raw_reports_in_zip': False, 'command': wrapped}
+
+
 def launch(args):
     exe = Path(args.executable).resolve(strict=True)
+    if getattr(args, 'nsight', None) and not getattr(args, 'prepare_only', False) and os.name == 'nt':
+        import ctypes
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            raise ValueError('Launch the profiling starter from an administrator terminal: Nsight Vulkan layer registration and CPU sampling require it. No elevation is attempted.')
     spec = importlib.util.spec_from_file_location('shader_resources', Path(__file__).with_name('shader_resources.py'))
     shader_resources = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(shader_resources)
@@ -260,6 +394,10 @@ def launch(args):
     env['OPENMW_RUNTIME_DIAGNOSTICS_FILE'] = str(evidence / 'runtime.jsonl')
     env['OPENMW_GAMEPLAY_DIAGNOSTICS'] = '0' if selected_mode == 'off' else '1'
     env['OPENMW_GAMEPLAY_DIAGNOSTICS_FILE'] = str(evidence / 'gameplay.jsonl')
+    configure_repair_probes(env, renderer, selected_mode, getattr(args, 'water_probes', False),
+                           getattr(args, 'material_probe', None))
+    cpu_fastpaths = getattr(args, 'cpu_fastpaths', 'inherit')
+    configure_cpu_fastpaths(env, renderer, cpu_fastpaths)
     # Do not enable the older per-frame strict logger or GPU validation by
     # default: they have distinct overhead. Record any inherited controls.
     if args.dll_directory:
@@ -268,12 +406,25 @@ def launch(args):
         env['OSG_LIBRARY_PATH'] = args.osg_library_path
     # Override the default package config expansion, but preserve the selected
     # user's ordered content chain exactly once. No empty load-savegame path.
-    command = config.build_command(exe, user, evidence)
+    startup_script = None
+    if getattr(args, 'nsight', None):
+        # Nsight 2026.5.1 drops a standalone empty argv entry on Windows.
+        # Keep the CLI override of inherited script-run, but use a genuinely
+        # empty console file: Console::executeFile reads zero commands at EOF.
+        startup_script = evidence / 'no-op-startup.txt'
+        startup_script.touch(exist_ok=False)
+    command = config.build_command(exe, user, evidence, startup_script=startup_script)
+    launch_command, profiler = profiling_command(args, command, evidence)
     manifest = {'started_utc': datetime.now(timezone.utc).isoformat(), 'executable': str(exe),
                 'sha256': sha256(exe), 'shader_package': shader_package, 'command': command, 'cwd': str(exe.parent),
                 'source_head': source_head, 'source_diff_sha256': args.source_diff_sha256,
                 'original_config_hashes': fingerprints, 'original_chain_hashes': chain_hashes,
-                'launcher_revision': 'combined-repair-1', 'requested_renderer': renderer,
+                'launcher_revision': 'native-producers-11', 'requested_renderer': renderer,
+                'cpu_fastpaths_selection': cpu_fastpaths,
+                'launcher_file_hashes': {Path(p).name: sha256(p) for p in (__file__, config.__file__)},
+                'startup_override': ({'path': str(startup_script), 'sha256': sha256(startup_script),
+                                      'bytes': startup_script.stat().st_size} if startup_script else 'empty-cli'),
+                'profiler': profiler,
                 'controls': {k: v for k, v in env.items() if k.startswith(('OPENMW_', 'VK_')) or k == 'OSG_LIBRARY_PATH'},
                 'dll_directories': args.dll_directory, 'state': 'starting', 'evidence': str(evidence),
                 'diagnostics': selected_mode, 'isolated_user_data': str(private_data), 'regular_saves_copied': False}
@@ -287,12 +438,20 @@ def launch(args):
         manifest['source_file_hashes'] = {p: sha256(source_root / p) for p in paths if (source_root / p).is_file()}
     except (OSError, subprocess.SubprocessError):
         manifest['source_file_hashes'] = 'unavailable'
+    packaged_build = config.validated_build_manifest(exe)
+    if packaged_build is not None:
+        manifest['source_build_manifest'] = packaged_build
+        if source_root is None:
+            manifest['source_file_hashes'] = packaged_build['changed_source_files']
     manifest_path = evidence / 'manifest.json'
     def save_manifest():
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     save_manifest()
     print('Private capture:', evidence, flush=True)
     print(f'{renderer} / 1920x1080 / {selected_mode}. Choose NEW GAME only; no normal saves copied.', flush=True)
+    print(f'CPU fast paths: {cpu_fastpaths}; effective controls are recorded in manifest.json.', flush=True)
+    if profiler:
+        print(f"Nsight ready: press F12 once at the problem location to collect up to {profiler['seconds']} seconds, then quit the game normally. Do not use RenderDoc simultaneously.", flush=True)
     if getattr(args, 'prepare_only', False):
         manifest['state'] = 'prepared_only'
         save_manifest()
@@ -301,7 +460,7 @@ def launch(args):
         input('Close other OpenMW instances normally, then press Enter to launch this test: ')
     try:
         with (evidence / 'console.log').open('wb') as output:
-            process = subprocess.Popen(command, cwd=exe.parent, env=env, stdout=output, stderr=subprocess.STDOUT)
+            process = subprocess.Popen(launch_command, cwd=exe.parent, env=env, stdout=output, stderr=subprocess.STDOUT)
             manifest.update(pid=process.pid, state='running')
             save_manifest()
             manifest['exit_code'] = process.wait()  # no timeout, input injection or forced termination
@@ -312,6 +471,9 @@ def launch(args):
         raise
     finally:
         manifest['finished_utc'] = datetime.now(timezone.utc).isoformat()
+        if profiler:
+            profiler['outputs'] = {p.name: p.stat().st_size for p in evidence.glob('nsight*') if p.is_file()}
+            profiler['free_bytes_after'] = shutil.disk_usage(evidence).free
         manifest['original_config_unchanged'] = {
             name: (user / name).exists() and sha256(user / name) == digest for name, digest in fingerprints.items()}
         manifest['original_chain_unchanged'] = {
@@ -353,8 +515,15 @@ def main():
     run.add_argument('--dll-directory', action='append', default=[])
     run.add_argument('--osg-library-path')
     run.add_argument('--diagnostics', choices=('off', 'standard', 'focused'), default='standard')
+    run.add_argument('--cpu-fastpaths', choices=(*CPU_FASTPATH_PROFILES, *CPU_FASTPATHS), default='inherit',
+                     help='Same-executable controls: retained is the measured repair profile; previous-retained disables its four new mechanisms; older profiles exclude later repairs; control clears all listed fast paths')
+    run.add_argument('--water-probes', action='store_true', help='Opt-in bounded GPU water target samples; not a benchmark mode')
+    run.add_argument('--material-probe', help='Focused-only case-sensitive material/mesh/texture identity substring (max 256 characters)')
     run.add_argument('--source-head', default='unrecorded')
     run.add_argument('--source-diff-sha256', default='unrecorded')
+    run.add_argument('--nsight', help='Opt-in installed nsys.exe path; starts one short F12-triggered capture')
+    run.add_argument('--profile-seconds', type=int, default=20, help='Nsight collection duration, 5-60 seconds (default 20)')
+    run.add_argument('--profile-cpu', action='store_true', help='Include CPU stacks/scheduling; requires an explicitly elevated terminal')
     args = parser.parse_args()
     if args.mode == 'launch':
         launch(args)

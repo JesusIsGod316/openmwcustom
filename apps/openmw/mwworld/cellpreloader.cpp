@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <limits>
 #include <span>
 
@@ -74,7 +75,8 @@ namespace MWWorld
         explicit PreloadItem(MWWorld::CellStore* cell, Resource::SceneManager* sceneManager,
             Resource::BulletShapeManager* bulletShapeManager, Resource::KeyframeManager* keyframeManager,
             Terrain::World* terrain, MWRender::LandManager* landManager, bool preloadInstances,
-            Resource::ResourceSystem* resourceSystem, bool useLegacyTerrain)
+            Resource::ResourceSystem* resourceSystem, bool useLegacyTerrain,
+            Resource::PreloadAdmission::Reservation reservation)
             : mIsExterior(cell->getCell()->isExterior())
             , mCellLocation(cell->getCell()->getExteriorCellLocation())
             , mCellId(cell->getCell()->getId())
@@ -86,6 +88,7 @@ namespace MWWorld
             , mPreloadInstances(preloadInstances)
             , mResourceSystem(resourceSystem)
             , mUseLegacyTerrain(useLegacyTerrain)
+            , mReservation(std::move(reservation))
             , mAbort(false)
         {
             if (mUseLegacyTerrain)
@@ -101,6 +104,9 @@ namespace MWWorld
         /// Preload work to be called from the worker thread.
         void doWork() override
         {
+            // Release on every exit, including abort and exception. Until work
+            // starts the member also covers the queue and canceled-item lifetime.
+            const auto reservation = std::move(mReservation);
             if (mAbort || mResourceSystem->hostMemoryPressure() != Resource::HostMemoryPressure::Normal)
                 return;
             if (mIsExterior)
@@ -185,6 +191,7 @@ namespace MWWorld
         bool mPreloadInstances;
         Resource::ResourceSystem* mResourceSystem;
         bool mUseLegacyTerrain;
+        Resource::PreloadAdmission::Reservation mReservation;
 
         std::atomic<bool> mAbort;
         std::atomic<bool> mFullyPrepared{false};
@@ -335,6 +342,13 @@ namespace MWWorld
             return;
         }
 
+        static const bool legacyAdmission = std::getenv("OPENMW_V4_LEGACY_PRELOAD_ADMISSION_CONTROL") != nullptr;
+        auto reservation = legacyAdmission
+            ? std::optional<Resource::PreloadAdmission::Reservation>(std::in_place)
+            : mResourceSystem->reserveOptionalPreload();
+        if (!reservation)
+            return; // optional request can retry; never wait on the main thread
+
         while (mPreloadCells.size() >= mMaxCacheSize)
         {
             // throw out oldest cell to make room
@@ -362,7 +376,7 @@ namespace MWWorld
 
         osg::ref_ptr<PreloadItem> item(new PreloadItem(&cell, mResourceSystem->getSceneManager(), mBulletShapeManager,
             mResourceSystem->getKeyframeManager(), mTerrain, mLandManager, mPreloadInstances,
-            mResourceSystem, mUseLegacyTerrain));
+            mResourceSystem, mUseLegacyTerrain, std::move(*reservation)));
         mWorkQueue->addWorkItem(item);
 
         mPreloadCells.emplace(&cell, PreloadEntry(timestamp, item));
@@ -404,6 +418,7 @@ namespace MWWorld
         const auto hostPressure = mResourceSystem->hostMemoryPressure();
         if (mDiagnosticSampler.due())
         {
+            const auto admission = mResourceSystem->preloadAdmissionStats();
             std::uint64_t done = 0;
             for (const auto& [cell, entry] : mPreloadCells)
                 if (entry.mWorkItem && entry.mWorkItem->isDone()) ++done;
@@ -417,6 +432,12 @@ namespace MWWorld
                 {"resource_sweep_pending", mUpdateCacheItem && !mUpdateCacheItem->isDone()},
                 {"host_pressure", static_cast<std::uint64_t>(hostPressure)},
                 {"pressure_released", mPressureReleased}, {"legacy_terrain", mUseLegacyTerrain} });
+            // The bounded recorder has 16 fields. Keep admission accounting in
+            // its own event instead of silently truncating all five counters.
+            Debug::RuntimeDiagnostics::recordEvent("preload_admission", "cell_preloader", {}, {
+                {"admission_pending", admission.pending}, {"reservation_estimate_bytes", admission.reservedEstimate},
+                {"admission_accepted", admission.admitted}, {"admission_denied", admission.denied},
+                {"admission_released", admission.released} });
         }
         for (PreloadMap::iterator it = mPreloadCells.begin(); it != mPreloadCells.end();)
         {

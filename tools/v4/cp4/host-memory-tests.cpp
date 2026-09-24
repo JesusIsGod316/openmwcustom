@@ -116,6 +116,68 @@ int main()
         queries = 0; Resource::HostMemoryBudget monitor(&testQuery);
         for (unsigned i = 0; i < 1000; ++i) require(monitor.pressure() == Pressure::Normal, "disabled policy ran");
         require(queries == 0, "disabled query overhead");
+        for (unsigned i = 0; i < 10; ++i) require(monitor.reserveOptionalPreload().has_value(), "legacy preload denied");
+        require(queries == 0 && monitor.preloadAdmissionStats().admitted == 0, "control reserved memory");
+    });
+    test("optional reservations cover queue concurrency and release exactly once", [] {
+        Resource::PreloadAdmission admission; auto m = healthy(); auto limits = Policy::limits(m.physicalTotal);
+        std::vector<Resource::PreloadAdmission::Reservation> leases;
+        for (unsigned i = 0; i < 4; ++i)
+        {
+            auto lease = admission.reserve(m, false, limits.reserve, limits.privateSoft);
+            require(lease.has_value(), "healthy admission failed"); leases.push_back(std::move(*lease));
+        }
+        require(!admission.reserve(m, false, limits.reserve, limits.privateSoft), "unbounded optional queue");
+        require(admission.stats().reservedEstimate == GiB, "reservation estimate mismatch");
+        leases.erase(leases.begin()); // move assignment must release replaced owner
+        require(admission.stats().pending == 3 && admission.stats().released == 1, "moved lease lost or double refund");
+        require(admission.reserve(m, false, limits.reserve, limits.privateSoft).has_value(), "refunded slot not reusable");
+        leases.clear(); require(admission.stats().pending == 0 && admission.stats().reservedEstimate == 0, "reservation leaked");
+    });
+    test("pre-allocation headroom includes concurrent reservations", [] {
+        Resource::PreloadAdmission admission; auto m = healthy(); auto limits = Policy::limits(m.physicalTotal);
+        m.physicalAvailable = limits.reserve + Resource::PreloadAdmission::Allowance;
+        auto first = admission.reserve(m, false, limits.reserve, limits.privateSoft);
+        require(first.has_value(), "one allowance should fit");
+        require(!admission.reserve(m, false, limits.reserve, limits.privateSoft), "headroom double-admitted");
+        first.reset(); m = healthy(); m.privateCommit = limits.privateSoft;
+        require(!admission.reserve(m, false, limits.reserve, limits.privateSoft), "private budget ignored");
+        m = healthy(); m.commitAvailable = limits.reserve;
+        require(!admission.reserve(m, false, limits.reserve, limits.privateSoft), "commit budget ignored");
+        require(!admission.reserve(healthy(), true, limits.reserve, limits.privateSoft), "pressure hysteresis bypassed");
+        require(admission.reserve({}, false, 0, 0).has_value(), "unavailable sample invented shortage");
+    });
+    test("reservation destruction remains safe after admission owner destruction", [] {
+        std::optional<Resource::PreloadAdmission::Reservation> survivor;
+        { Resource::PreloadAdmission admission; survivor = admission.reserve({}, false, 0, 0); }
+        survivor.reset();
+    });
+    test("concurrent optional admission cannot overbook or lose cancellation refunds", [] {
+        Resource::PreloadAdmission admission;
+        std::atomic<unsigned> finished{0};
+        std::atomic<bool> release{false};
+        std::vector<std::thread> threads;
+        for (unsigned i = 0; i < 16; ++i)
+            threads.emplace_back([&] {
+                auto lease = admission.reserve(healthy(), false, 4 * GiB, 24 * GiB);
+                ++finished;
+                while (!release.load()) std::this_thread::yield();
+            });
+        while (finished.load() != 16) std::this_thread::yield();
+        const auto during = admission.stats();
+        release.store(true);
+        for (auto& thread : threads) thread.join();
+        require(during.pending == 4 && during.admitted == 4 && during.denied == 12,
+            "concurrent admission exceeded capacity");
+        require(admission.stats().pending == 0 && admission.stats().released == 4,
+            "cancelled concurrent owners did not refund exactly once");
+    });
+    test("independently valid commit counters still gate partial OS samples", [] {
+        Resource::PreloadAdmission admission; auto m = healthy();
+        m.physicalValid = false; m.commitAvailable = 0;
+        require(!admission.reserve(m, false, GiB, 24 * GiB), "valid exhausted commit was ignored");
+        m.commitValid = false; m.privateCommit = 24 * GiB;
+        require(!admission.reserve(m, false, GiB, 24 * GiB), "valid private limit was ignored");
     });
     test("concurrent monitor callers share one sample", [] {
         queries = 0; Resource::HostMemoryBudget monitor(&testQuery); monitor.setEnabled(true);

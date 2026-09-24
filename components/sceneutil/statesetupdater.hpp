@@ -84,6 +84,13 @@ namespace SceneUtil
 
         void addController(StateSetUpdater* ctrl);
 
+        unsigned renderMutationMask() const noexcept override
+        {
+            unsigned result = 0;
+            for (const auto& ctrl : mCtrls) result |= ctrl->renderMutationMask();
+            return result;
+        }
+
         void apply(osg::StateSet* stateset, osg::NodeVisitor* nv) override;
 
     protected:

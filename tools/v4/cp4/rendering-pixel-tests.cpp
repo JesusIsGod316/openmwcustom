@@ -1,6 +1,10 @@
 // Headless pixel tests of the production pipelines. No game window, save, mod
 // configuration or benchmark is involved. A Vulkan implementation is required.
 #include <components/render/backend/vsg/nativesky.hpp>
+#include <components/render/backend/vsg/nativepostprocess.hpp>
+#include <components/render/backend/vsg/nativevisibility.hpp>
+#include <components/render/backend/vsg/effectvisibility.hpp>
+#include <components/render/backend/vsg/persistentdrawscene.hpp>
 #include <components/render/backend/vsg/isolatedscene.hpp>
 #include <components/render/backend/vsg/offscreenrendertarget.hpp>
 #include <components/render/backend/vsg/openmwviewdependentstate.hpp>
@@ -8,7 +12,9 @@
 #include <components/render/backend/vsg/legacymaterialshader.hpp>
 #include <components/render/backend/vsg/uipipeline.hpp>
 #include <components/render/backend/vsg/vsgsubmission.hpp>
+#include <components/render/backend/vsg/parallelrecordtask.hpp>
 #include <components/render/backend/vsg/watersurface.hpp>
+#include <components/render/backend/vsg/waterinputprobe.hpp>
 #include <components/rendercore/frameproducer.hpp>
 #include <vsg/all.h>
 #include <glm/ext/matrix_clip_space.hpp>
@@ -18,6 +24,8 @@
 #include <functional>
 #include <iostream>
 #include <stdexcept>
+
+namespace RepairFixtures { RenderCore::ImmediateEffectDraw captureAuthoredMaterial(); }
 
 namespace
 {
@@ -50,16 +58,19 @@ namespace
         vsg::ref_ptr<RenderVsg::OpenMwViewDependentState> state;
         vsg::ref_ptr<vsg::Viewer> viewer=vsg::Viewer::create();
         vsg::ref_ptr<vsg::CommandGraph> commands;
+        std::vector<vsg::ref_ptr<vsg::View>> parallelViews;
         vsg::ref_ptr<vsg::SharedObjects> shared=vsg::SharedObjects::create();
         std::uint64_t tick=0;
         explicit Fixture(vsg::ref_ptr<vsg::Device> input, vsg::ViewFeatures features = vsg::RECORD_ALL,
-            unsigned int shadowCascades = 0) : device(input)
+            unsigned int shadowCascades = 0, RenderTargetFormat format = RenderTargetFormat::Rgba8Srgb,
+            bool independentRecording = false) : device(input)
         {
             frame.extent={128,128}; frame.current.projection.nearPlane=.1; frame.current.projection.farPlane=10000.;
             frame.current.projection.matrix=glm::perspectiveRH_ZO(glm::radians(60.f),1.f,10000.f,.1f);
             frame.current.projection.matrix[1][1]*=-1.f;
             camera=RenderVsg::FrameCameraObjects::create(frame);
-            target=RenderVsg::createOffscreenRenderTarget(device,{128,128},RenderTargetFormat::Rgba8Srgb,RenderTargetFormat::Depth32Float);
+            target=RenderVsg::createOffscreenRenderTarget(device,{128,128},format,RenderTargetFormat::Depth32Float,
+                format==RenderTargetFormat::Rgba16Float);
             require(bool(target),"headless target");
             require(target.renderGraph->clearValues.size()==2 && target.renderGraph->clearValues[1].depthStencil.depth==0.f,
                 "default reverse-depth clear missing or typed as colour");
@@ -73,6 +84,26 @@ namespace
             commands=vsg::CommandGraph::create(device,device->getPhysicalDevice()->getQueueFamily(VK_QUEUE_GRAPHICS_BIT));
             commands->addChild(target.renderGraph);
             viewer->assignRecordAndSubmitTaskAndPresentation({commands});
+            if (independentRecording && std::getenv("OPENMW_V4_PARALLEL_VIEW_RECORD"))
+            {
+                auto task = RenderVsg::ParallelRecordTask::create(*viewer->recordAndSubmitTasks.front());
+                for (int order : {-4, -3})
+                {
+                    auto extra = RenderVsg::createOffscreenRenderTarget(device,{128,128},format,RenderTargetFormat::Depth32Float);
+                    auto extraView = vsg::View::create(camera.camera, root, vsg::RECORD_LIGHTS);
+                    auto extraState = RenderVsg::OpenMwViewDependentState::create(extraView.get());
+                    extraState->shaderSet = RenderVsg::createLegacyCompatibilityShaderSet();
+                    extraView->viewDependentState = extraState;
+                    extraView->bins = RenderVsg::createStaticConformanceBins();
+                    extraView->bins.push_back(vsg::Bin::create(RenderVsg::UiOverlayBinNumber,vsg::Bin::NO_SORT));
+                    extra.renderGraph->addChild(extraView);
+                    auto graph = vsg::CommandGraph::create(device, commands->queueFamily);
+                    graph->submitOrder = order; graph->addChild(extra.renderGraph);
+                    task->commandGraphs.push_back(graph);
+                    parallelViews.push_back(extraView);
+                }
+                viewer->recordAndSubmitTasks.front() = task;
+            }
             auto hints=vsg::ResourceHints::create();
             if (shadowCascades)
             {
@@ -84,6 +115,8 @@ namespace
         }
         bool compile(vsg::ref_ptr<vsg::Node> node)
         {
+            for (const auto& extra : parallelViews)
+                if (!RenderVsg::compileForViewerView(*viewer,*extra,node)) return false;
             auto result=RenderVsg::compileForViewerView(*viewer,*view,node);
             if (!result) std::cerr<<"compile: "<<result.message<<" code="<<result.result<<'\n';
             return bool(result);
@@ -92,12 +125,21 @@ namespace
         {
             camera.update(frame);
             state->setEnvironment(environment,frame.current.projection);
+            for (const auto& extra : parallelViews)
+                static_cast<RenderVsg::OpenMwViewDependentState*>(extra->viewDependentState.get())
+                    ->setEnvironment(environment,frame.current.projection);
             require(viewer->advanceToNextFrame(double(++tick)),"advance frame");
             viewer->update();
             for (auto& task:viewer->recordAndSubmitTasks)
             {
                 for (auto& graph:task->commandGraphs) graph->reset();
-                require(task->submit(vsg::ref_ptr<vsg::FrameStamp>(viewer->getFrameStamp()))==VK_SUCCESS,"pixel submit");
+                require(RenderVsg::submitTaskChecked(*task,vsg::ref_ptr<vsg::FrameStamp>(viewer->getFrameStamp()))==VK_SUCCESS,"pixel submit");
+                if (std::getenv("OPENMW_V4_SUBMIT_BREAKDOWN"))
+                {
+                    auto* measured=dynamic_cast<RenderVsg::SubmitTaskDiagnostics*>(task->instrumentation.get());
+                    require(measured && measured->observedScopes()>=(parallelViews.empty()?3:2)*tick,
+                        "installed VSG did not provide submission scopes");
+                }
             }
             viewer->deviceWaitIdle(); // Test readback only, not production synchronization.
             auto buffer=vsg::createBufferAndMemory(device,128*128*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_SHARING_MODE_EXCLUSIVE,
@@ -165,6 +207,157 @@ namespace
         root->add(RenderVsg::createUiTextureBinding(ui,vsg::ImageInfo::create(ui.sampler,image,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),premultiplied,flip));
         root->addChild(vsg::BindVertexBuffers::create(0,vsg::DataList{values})); root->addChild(vsg::Draw::create(6,1,0,0));
         return root;
+    }
+    void checkPersistentDrawScene(vsg::ref_ptr<vsg::Device> device)
+    {
+        Fixture main(device), auxiliary(device);
+        PersistentDrawWorld world; PersistentDrawHandle handle;
+        RenderVsg::PersistentDrawScene scene;
+        main.root->addChild(scene.root()); auxiliary.root->addChild(scene.root());
+        ImmediateEffectDraw draw; draw.identity="persistent-pixel"; draw.mesh=*quad();
+        draw.material.sourceIdentity=draw.identity; draw.material.unlit=true;
+        draw.material.cullMode=CullMode::None; draw.material.diffuse={1,0,0,1};
+        draw.material.vertexColorMode=VertexColorMode::Ignore;
+        auto resolve=resolver(); std::string diagnostic; unsigned compilations=0;
+        const auto compile=[&](auto node) { ++compilations; return main.compile(node) && auxiliary.compile(node); };
+        const auto sync=[&](auto frame) {
+            require(scene.synchronize(frame,{},resolve,compile,diagnostic),diagnostic);
+            require(RenderVsg::graphicsPipelinesRealizedForView(*scene.root(),*main.view)
+                && RenderVsg::graphicsPipelinesRealizedForView(*scene.root(),*auxiliary.view),"persistent view audit");
+        };
+        world.begin(1); world.update(handle,draw,true); auto first=world.finish(); sync(first);
+        auto reference=main.render(); require(pixel(reference).r>240,"persistent initial pixels");
+        world.begin(1); draw.worldTransform[3].x=100; world.update(handle,draw,false); sync(world.finish());
+        require(pixel(main.render()).r<4,"persistent placement/frustum update");
+        auxiliary.frame.current.view=glm::translate(glm::mat4(1),glm::vec3(-100,0,0));
+        require(pixel(auxiliary.render()).r>240,"persistent auxiliary visibility used main result");
+        require(compilations==1,"placement recompiled asset");
+        world.begin(1); draw.worldTransform=glm::mat4(1); world.update(handle,draw,false); sync(world.finish());
+        require(main.render()==reference,"persistent movement changed pixels");
+        world.begin(1); world.hide(handle); sync(world.finish());
+        require(pixel(main.render()).r<4,"persistent hidden draw remained");
+        world.begin(1); draw.material.diffuse={0,1,0,1}; world.update(handle,draw,true); sync(world.finish());
+        require(pixel(main.render()).g>240 && compilations==2,"persistent material update/unhide");
+        world.begin(1); sync(world.finish()); require(pixel(main.render()).g<4,"persistent unload left ghost");
+        // A fresh backend/epoch can consume a complete retained snapshot.
+        sync(first); require(main.render()==reference,"persistent rewind/recovery pixels");
+        struct ReleaseMain : vsg::Visitor
+        {
+            unsigned viewId;
+            explicit ReleaseMain(unsigned id) : viewId(id) {}
+            void apply(vsg::Object& object) override { object.traverse(*this); }
+            void apply(vsg::BindGraphicsPipeline& bind) override { bind.pipeline->release(viewId); }
+        } releaseMain(main.view->viewID);
+        // render() has completed readback/fence waiting; release is safe here.
+        scene.root()->accept(releaseMain);
+        require(!RenderVsg::graphicsPipelinesRealizedForView(*scene.root(),*main.view)
+            && RenderVsg::graphicsPipelinesRealizedForView(*scene.root(),*auxiliary.view),
+            "persistent inventory cached a released view implementation");
+        require(main.compile(scene.root()) && main.render()==reference,"persistent pipeline recompile pixels");
+        std::cout<<"PASS persistent scene pixels: create, unchanged resource, movement, per-view cull, hide, rebind, unload, recovery\n";
+    }
+    void checkNativeVisibilityRouting(vsg::ref_ptr<vsg::Device> device)
+    {
+        Fixture f(device);
+        ImmediateEffectDraw draw;draw.identity="visibility-view-routing";draw.mesh=*quad();
+        draw.material.sourceIdentity="visibility-view-routing";draw.material.unlit=true;
+        draw.material.cullMode=CullMode::None;draw.material.diffuse={1,0,0,1};
+        draw.material.vertexColorMode=VertexColorMode::Ignore;
+        auto realized=RenderVsg::realizeImmediateEffectDraw(draw,resolver(),f.shared);
+        require(realized.valid(),"visibility routing geometry");
+        auto gate=RenderVsg::MainViewVisibility::create();
+        gate->mainViewId=f.view->viewID;gate->visible=false;gate->addChild(realized.root);
+        f.root->children={gate};require(f.compile(f.root),"invisible candidate must still compile");
+        require(pixel(f.render()).r<4,"main-view gate failed to reject draw");
+        gate->mainViewId=f.view->viewID+1;
+        require(pixel(f.render()).r>240,"other-view traversal inherited main-view rejection");
+        gate->mainViewId=f.view->viewID;gate->visible=true;
+        require(pixel(f.render()).r>240,"visible main-view candidate missing");
+        std::cout<<"PASS native visibility GPU routing: compile hidden, reject main, preserve other view, restore visible\n";
+    }
+    struct RecordCounter : vsg::Inherit<vsg::Group, RecordCounter>
+    {
+        mutable unsigned records = 0;
+        void accept(vsg::RecordTraversal& visitor) const override
+        { ++records; vsg::Group::accept(visitor); }
+    };
+    void checkEffectFrustum(vsg::ref_ptr<vsg::Device> device)
+    {
+        Fixture main(device), auxiliary(device);
+        ImmediateEffectDraw draw; draw.identity="effect-frustum"; draw.mesh=*quad();
+        draw.material.sourceIdentity=draw.identity; draw.material.unlit=true;
+        draw.material.cullMode=CullMode::None; draw.material.diffuse={1,0,0,1};
+        draw.material.vertexColorMode=VertexColorMode::Ignore;
+        auto realized=RenderVsg::realizeImmediateEffectDraw(draw,resolver(),main.shared);
+        require(realized.valid(),"frustum geometry");
+        auto counter=RecordCounter::create(); counter->addChild(realized.root);
+        auto bound=RenderVsg::effectCullBound(draw); require(bool(bound),"frustum bound");
+        auto cull=vsg::CullGroup::create(); cull->bound=*bound; cull->addChild(counter);
+        auto placed=vsg::MatrixTransform::create(); placed->addChild(cull);
+        main.root->children={placed}; auxiliary.root->children={placed};
+        require(main.compile(placed) && auxiliary.compile(placed),"both views compile shared graph");
+        auto reference=main.render(); require(pixel(reference).r>240 && counter->records>0,"visible effect missing");
+        placed->matrix=vsg::translate(100.0,0.0,0.0); counter->records=0;
+        require(pixel(main.render()).r<4 && counter->records==0,"offscreen effect reached record traversal");
+        auxiliary.frame.current.view=glm::translate(glm::mat4(1),glm::vec3(-100,0,0));
+        require(pixel(auxiliary.render()).r>240 && counter->records>0,"auxiliary view inherited main rejection");
+        placed->matrix=vsg::dmat4(); counter->records=0;
+        require(main.render()==reference && counter->records>0,"movement did not restore identical pixels");
+        placed->matrix=vsg::scale(-2.0,0.5,1.0);
+        require(pixel(main.render()).r>240,"nonuniform mirrored placement culled");
+        // A population gate owns world bounds OUTSIDE its placement. The same
+        // gate must reject an entire DAG in one view and retain it in another.
+        auto gate=RenderVsg::MainViewVisibility::create();
+        gate->perViewFrustum=true;gate->bounded=true;gate->mainViewId=main.view->viewID;
+        gate->minimum={99,-1,-.1};gate->maximum={101,1,.1};
+        placed->matrix=vsg::translate(100.,0.,0.);gate->addChild(placed);
+        main.root->children={gate};auxiliary.root->children={gate};
+        require(main.compile(gate)&&auxiliary.compile(gate),"population multi-view compilation");
+        counter->records=0;require(pixel(main.render()).r<4&&counter->records==0,"offscreen population traversed");
+        gate->visible=false;
+        require(pixel(auxiliary.render()).r>240&&counter->records>0,"population used another view's occlusion or frustum");
+        gate->visible=true;gate->minimum={-1,-1,-.1};gate->maximum={1,1,.1};placed->matrix=vsg::dmat4();
+        require(main.render()==reference,"population movement did not restore pixels");
+        std::cout<<"PASS evaluated-effect frustum: real record rejection, independent auxiliary view, movement, mirrored scale\n";
+    }
+    void checkNativePostProcess(vsg::ref_ptr<vsg::Device> device)
+    {
+        Fixture f(device);
+        auto scene=RenderVsg::createOffscreenRenderTarget(device,{128,128},
+            RenderTargetFormat::Rgba16Float,RenderTargetFormat::Depth32Float,true);
+        require(bool(scene),"native HDR + sampled depth target");
+        scene.setClearValues({{.125f,.25f,.5f,1.f}},{.25f,0});
+        f.commands->children.insert(f.commands->children.begin(),scene.renderGraph);
+        require(f.compile(scene.renderGraph),"postprocess scene clear compilation");
+        for(auto mode : {RenderVsg::NativePostProcessMode::Copy,RenderVsg::NativePostProcessMode::EdgeAA})
+        {
+            f.root->children={RenderVsg::createNativePostProcess(scene.color,scene.depth,mode)};
+            require(f.compile(f.root),"native postprocess compilation");
+            for(int i=0;i<5;++i)
+            {
+                auto c=pixel(f.render());
+                close(c.r,encoded(.125f),"native HDR R / flat edge AA");
+                close(c.g,encoded(.25f),"native HDR G / no double gamma");
+                close(c.b,encoded(.5f),"native HDR B");
+            }
+        }
+        f.root->children={RenderVsg::createNativePostProcess(scene.color,scene.depth,RenderVsg::NativePostProcessMode::Depth)};
+        require(f.compile(f.root),"native depth input compilation");
+        close(pixel(f.render()).r,encoded(.25f),"native sampled reversed depth");
+        // Crisp UI must be drawn after the effect, not filtered or depth-visualized.
+        auto ui=RenderVsg::createUiPipeline(128,128);
+        auto red=vsg::ubvec4Array2D::create(1,1,vsg::ubvec4(255,0,0,255),vsg::Data::Properties(VK_FORMAT_R8G8B8A8_UNORM));
+        f.root->addChild(RenderVsg::createUiOverlayLayer(uiQuad(ui,vsg::ImageView::create(vsg::Image::create(red)),false,false)));
+        require(f.compile(f.root),"postprocess GUI compilation");
+        auto overlay=pixel(f.render());require(overlay.r>250 && overlay.g<4,"GUI was processed or overdrawn");
+        // Explicit asymmetric source checks row orientation through the fullscreen pass.
+        auto rows=vsg::vec4Array2D::create(1,2,vsg::Data::Properties(VK_FORMAT_R32G32B32A32_SFLOAT));
+        (*rows)(0,0)=vsg::vec4(1,0,0,1);(*rows)(0,1)=vsg::vec4(0,0,1,1);
+        auto image=vsg::ImageView::create(vsg::Image::create(rows));
+        f.root->children={RenderVsg::createNativePostProcess(image,scene.depth,RenderVsg::NativePostProcessMode::Copy)};
+        require(f.compile(f.root),"postprocess orientation compilation");auto oriented=f.render();
+        require(pixel(oriented,64,4).r>240 && pixel(oriented,64,124).b>240,"native postprocess Y orientation");
+        std::cout<<"PASS native postprocess: linear HDR, sampled depth, flat AA, repeated reuse, UI ordering, orientation\n";
     }
     void checkSky(vsg::ref_ptr<vsg::Device> device)
     {
@@ -240,7 +433,7 @@ namespace
     }
     void checkUnshadowedLighting(vsg::ref_ptr<vsg::Device> device)
     {
-        Fixture f(device,vsg::RECORD_LIGHTS);
+        Fixture f(device,vsg::RECORD_LIGHTS,0,RenderTargetFormat::Rgba8Srgb,true);
         auto ambient=vsg::AmbientLight::create();ambient->color={.1f,.2f,.3f};ambient->intensity=1.f;
         auto sun=vsg::DirectionalLight::create();sun->color={.4f,.3f,.2f};sun->direction={0,0,-1};sun->intensity=1.f;
         IsolatedSceneSnapshot scene;scene.identity=7;scene.revision=1;scene.viewportExtent={128,128};
@@ -268,7 +461,7 @@ namespace
     {
         // Reproduce runtime feature combinations: a shadowed main world creates
         // INHERIT_VIEWPOINT-only depth views, while a separate preview remains lit.
-        Fixture world(device, vsg::RECORD_ALL, 3);
+        Fixture world(device, vsg::RECORD_ALL, 3,RenderTargetFormat::Rgba8Srgb,true);
         auto ambient=vsg::AmbientLight::create();ambient->color={.4f,.4f,.4f};
         auto sun=vsg::DirectionalLight::create();sun->direction={0,0,-1};sun->color={.1f,.1f,.1f};
         sun->shadowSettings=vsg::HardShadows::create(3);
@@ -335,6 +528,111 @@ namespace
         close(coloured.b,encoded(.6f),"independent sun specular blue");
         std::cout<<"PASS sun-specular pixels: zero disables highlights, independent RGB updates without material recompilation\n";
     }
+    void checkWaterProbe(vsg::ref_ptr<vsg::Device> device)
+    {
+        Fixture f(device,vsg::RECORD_ALL,0,RenderTargetFormat::Rgba16Float);
+        f.target.setClearValues({{.25f,.5f,.75f,1.f}},{0.f,0});
+        const auto sample = [&](std::uint64_t id) {
+            RenderVsg::WaterInputProbe probe(device,f.target,FrameId{id},"test-refraction",true);
+            require(!probe.read(FrameId{id-1}),"probe exposed staging before completion");
+            f.commands->children.resize(1); f.commands->addChild(probe.commands);
+            f.camera.update(f.frame); f.state->setEnvironment(f.environment,f.frame.current.projection);
+            require(f.viewer->advanceToNextFrame(double(id)),"probe advance"); f.viewer->update();
+            for(auto& task:f.viewer->recordAndSubmitTasks)
+            {
+                for(auto& graph:task->commandGraphs) graph->reset();
+                require(task->submit(vsg::ref_ptr<vsg::FrameStamp>(f.viewer->getFrameStamp()))==VK_SUCCESS,"probe submit");
+            }
+            // Fixture only: the game uses its normal completion tracker.
+            require(vkDeviceWaitIdle(device->vk())==VK_SUCCESS,"probe fixture completion");
+            auto result=probe.read(FrameId{id}); require(result.has_value(),"completed probe absent");
+            return *result;
+        };
+        auto clear=sample(2);
+        require(clear.colorNonclear==0 && clear.depthNonclear==0 && clear.nonfinite==0,"clear-only probe misclassified");
+        ImmediateEffectDraw d;d.identity="probe-geometry";d.mesh=*quad();d.material.diffuse={.8f,.1f,.2f,1};
+        d.material.unlit=true; d.material.cullMode=CullMode::None;
+        auto draw=RenderVsg::realizeImmediateEffectDraw(d,resolver(),f.shared);require(draw.valid(),draw.diagnostic);
+        f.root->addChild(draw.root);require(f.compile(f.root),"probe geometry compile");
+        auto scene=sample(3);
+        require(scene.colorNonclear>0 && scene.depthNonclear>0 && scene.nonfinite==0 && scene.checksum!=clear.checksum,
+            "probe failed to distinguish real geometry/depth from clear");
+        std::cout<<"PASS water input probe: RGBA16F+D32 production copies, clear vs geometry, fence gate, linear/depth decode\n";
+    }
+
+    void checkEnvironmentMaterial(vsg::ref_ptr<vsg::Device> device)
+    {
+        // Synthetic equivalent of the office bottle: base + authored sphere
+        // environment + legacy bump, then normal/gloss/specular concurrently.
+        // No mod files are bundled. Constant image colours make this an oracle,
+        // not a screenshot-looks-plausible check.
+        Fixture f(device); auto ambient=vsg::AmbientLight::create(); ambient->intensity=.25f;
+        ImmediateEffectDraw d; d.identity="synthetic-kurst"; d.mesh=*quad();
+        d.material.sourceIdentity="sphere-bump"; d.material.cullMode=CullMode::None;
+        d.material.diffuse={0,0,0,1}; d.material.ambient={0,0,0,1}; d.material.specular={0,0,0,1};
+        d.material.environmentMapMode=EnvironmentMapMode::SphereMap;
+        d.material.environmentMapStrength=.4f; d.material.environmentMapColor={1,.5f,.25f,1};
+        d.textures={texture("sphere-white",{255,255,255,255},TextureRole::Environment)};
+        auto render=[&] {
+            const auto r=RenderVsg::realizeImmediateEffectDraw(d,resolver(),f.shared);
+            require(r.valid(),r.diagnostic); f.root->children={ambient,r.root};
+            require(f.compile(f.root),"environment pipeline compile"); return pixel(f.render());
+        };
+        auto post=render(); close(post.r,encoded(.4f),"sphere post-light red");
+        close(post.g,encoded(.2f),"sphere post-light green");
+        d.material.environmentMapPreLight=true; auto pre=render();
+        require(pre.r+40<post.r,"pre-light environment ordering lost");
+        d.material.environmentMapPreLight=false;
+        d.material.bumpParametersEnabled=true;
+        d.material.bumpMapMatrix={.25f,.1f,-.2f,.5f}; d.material.environmentMapLumaBias={0.f,.25f};
+        auto bump=texture("bump-data",{32,64,255,255},TextureRole::Bump);
+        bump.binding.colorSpace=TextureColorSpace::Data; bump.binding.formatClass=TextureFormatClass::Height;
+        d.textures.push_back(bump);
+        auto bumped=render(); close(bumped.r,encoded(.1f),"authored bump luminance");
+        auto gloss=texture("gloss-data",{128,128,128,255},TextureRole::Gloss); gloss.binding.colorSpace=TextureColorSpace::Data;
+        d.textures.push_back(gloss);
+        d.textures.push_back(texture("normal-data",{128,128,255,255},TextureRole::Normal));
+        d.textures.push_back(texture("specular-black",{0,0,0,255},TextureRole::Specular));
+        auto combined=render(); close(combined.r,encoded(.1f*128.f/255.f),"sphere+bump+gloss+normal+specular");
+        // Use the actual evaluated OSG capture, neutral owned publication and
+        // production shader together, not just hand-built neutral records.
+        auto captured = RepairFixtures::captureAuthoredMaterial();
+        // Persistent capture intentionally moves mesh data into an immutable
+        // owner. Inspect the semantic accessor in both modes, not its scratch buffer.
+        require(captured.textures.size()==6 && captured.meshData().texCoordSets.size()==1,
+            "combined captured material lost stages or did not preserve aliased UVs");
+        require(!std::getenv("OPENMW_V4_PERSISTENT_CAPTURE") || bool(captured.meshSnapshot),
+            "combined material did not exercise persistent mesh ownership");
+        for (auto& stage : captured.textures)
+        {
+            // Deterministic decoded image fixture; all roles, bindings and VFS
+            // identities above come from the real capture function unchanged.
+            vsg::ubvec4 rgba{255,255,255,255};
+            if (stage.binding.role==TextureRole::Normal) rgba=vsg::ubvec4{128,128,255,255};
+            if (stage.binding.role==TextureRole::Gloss) rgba=vsg::ubvec4{128,128,128,255};
+            if (stage.binding.role==TextureRole::Specular) rgba=vsg::ubvec4{0,0,0,255};
+            auto data=std::make_shared<TexturePixels>(); data->rgba8={rgba.r,rgba.g,rgba.b,rgba.a};
+            stage.texture.pixels=data;
+        }
+        RenderWorld captureWorld; SingleViewFrameProducer captureProducer; SingleViewFrameInput captureInput;
+        const std::array captureDraws{captured};
+        captureInput.ownedImmediateEffects=std::make_shared<const OwnedImmediateEffects>(captureDraws);
+        captureInput.renderExtent=captureInput.outputExtent={128,128};
+        const auto published=captureProducer.prepare(captureWorld,captureInput);
+        require(published && published->valid(),"captured authored material failed neutral publication");
+        const auto capturedGraph=RenderVsg::realizeImmediateEffectDraw(published->immediateEffectDraws().front(),resolver(),f.shared);
+        require(capturedGraph.valid(),capturedGraph.diagnostic); f.root->children={ambient,capturedGraph.root};
+        require(f.compile(f.root),"captured authored material production shader compile");
+        close(pixel(f.render()).r,combined.r,"capture to owned frame to authored material pixels");
+        // The descriptor array remains exclusive to the exact enchanted mode.
+        d.material.environmentMapMode=EnvironmentMapMode::EnchantedSequence;
+        for(unsigned i=1;i<32;++i)
+            d.textures.push_back(texture("caustic-"+std::to_string(i),{255,255,255,255},TextureRole::Environment));
+        close(render().r,combined.r,"enchanted bump path changed");
+        d.textures.pop_back();
+        require(!RenderVsg::realizeImmediateEffectDraw(d,resolver(),f.shared).valid(),"31-frame malformed sequence accepted");
+        std::cout<<"PASS material sphere/bump pixels: post/pre-light ordering, combined normal/specular/gloss, exact caustic array and malformed rejection\n";
+    }
     float reverseDepth(float distance,float near,float far) {return near*(far/distance-1)/(far-near);}
     void checkWaterOptics(vsg::ref_ptr<vsg::Device> device)
     {
@@ -400,7 +698,10 @@ int main(int argc,char** argv)
         auto device=vsg::Device::create(selected,vsg::QueueSettings{{selected->getQueueFamily(VK_QUEUE_GRAPHICS_BIT),{1.f}}},vsg::Names{},extensions,features);
         std::cout<<"DEVICE "<<selected->getProperties().deviceName<<'\n';
         std::string mode=argc>1?argv[1]:"all";
-        require(mode=="all" || mode=="sky" || mode=="preview" || mode=="water" || mode=="normal" || mode=="baseline" || mode=="lighting" || mode=="specular" || mode=="shadow-light-routing", "unknown pixel test mode");
+        require(mode=="all" || mode=="sky" || mode=="preview" || mode=="water" || mode=="normal" || mode=="baseline" || mode=="lighting" || mode=="specular" || mode=="shadow-light-routing" || mode=="environment" || mode=="water-probe", "unknown pixel test mode");
+        if(mode=="all") {checkPersistentDrawScene(device);checkNativeVisibilityRouting(device);checkEffectFrustum(device);checkNativePostProcess(device);}
+        if(mode=="all"||mode=="water-probe")checkWaterProbe(device);
+        if(mode=="all"||mode=="environment")checkEnvironmentMaterial(device);
         if(mode=="all"||mode=="baseline")checkWaterPixels(device);
         if(mode=="all"||mode=="sky")checkSky(device);
         if(mode=="all"||mode=="preview")checkPreview(device);

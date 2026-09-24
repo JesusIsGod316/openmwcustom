@@ -1,7 +1,9 @@
 #ifndef OPENMW_RENDER_VSG_IMMEDIATEEFFECTCONTRACT_H
 #define OPENMW_RENDER_VSG_IMMEDIATEEFFECTCONTRACT_H
 #include <components/rendercore/effectframe.hpp>
+#include <components/misc/environmentflag.hpp>
 #include <cstddef>
+#include <cstdlib>
 #include <iterator>
 namespace RenderVsg
 {
@@ -31,24 +33,34 @@ namespace RenderVsg
             || resident.bounds.maximum != current.bounds.maximum)) return Reason::BoundsControl;
         if (resident.material != current.material) return Reason::Material;
         if (resident.semanticFlags != current.semanticFlags) return Reason::Semantics;
-        if (resident.mesh.indices != current.mesh.indices) return Reason::Indices;
-        if (resident.mesh.tangents != current.mesh.tangents || resident.mesh.bitangents != current.mesh.bitangents)
-            return Reason::TangentBasis;
-        if (resident.mesh.positions.size() != current.mesh.positions.size()
-            || resident.mesh.normals.size() != current.mesh.normals.size()
-            || resident.mesh.colors.size() != current.mesh.colors.size()) return Reason::VertexLayout;
-        if (resident.mesh.texCoordSets.size() != current.mesh.texCoordSets.size()) return Reason::UvLayout;
-        if (resident.mesh.surfaces.size() != current.mesh.surfaces.size()) return Reason::Surfaces;
-        if (resident.textures.size() != current.textures.size()) return Reason::TextureCount;
-        for (std::size_t i = 0; i < resident.mesh.texCoordSets.size(); ++i)
-            if (resident.mesh.texCoordSets[i].size() != current.mesh.texCoordSets[i].size()) return Reason::UvLayout;
-        for (std::size_t i = 0; i < resident.mesh.surfaces.size(); ++i)
+        // FrozenEffectMesh owns a private immutable copy, so owner identity
+        // proves all topology/layout/tangent predicates. Material and texture
+        // values remain independently checked on every reuse.
+        const bool sameMesh = Misc::environmentFlag<"OPENMW_V4_INCREMENTAL_CAPTURE">() && resident.meshSnapshot
+            && resident.meshSnapshot == current.meshSnapshot;
+        if (!sameMesh)
         {
-            const auto& left = resident.mesh.surfaces[i];
-            const auto& right = current.mesh.surfaces[i];
-            if (left.topology != right.topology || left.firstIndex != right.firstIndex
-                || left.indexCount != right.indexCount || left.materialSlot != right.materialSlot) return Reason::Surfaces;
+            if (resident.meshData().indices != current.meshData().indices) return Reason::Indices;
+            if (resident.meshData().tangents != current.meshData().tangents
+                || resident.meshData().bitangents != current.meshData().bitangents) return Reason::TangentBasis;
+            if (resident.meshData().positions.size() != current.meshData().positions.size()
+                || resident.meshData().normals.size() != current.meshData().normals.size()
+                || resident.meshData().colors.size() != current.meshData().colors.size()) return Reason::VertexLayout;
+            if (resident.meshData().texCoordSets.size() != current.meshData().texCoordSets.size()) return Reason::UvLayout;
+            if (resident.meshData().surfaces.size() != current.meshData().surfaces.size()) return Reason::Surfaces;
+            for (std::size_t i = 0; i < resident.meshData().texCoordSets.size(); ++i)
+                if (resident.meshData().texCoordSets[i].size() != current.meshData().texCoordSets[i].size())
+                    return Reason::UvLayout;
+            for (std::size_t i = 0; i < resident.meshData().surfaces.size(); ++i)
+            {
+                const auto& left = resident.meshData().surfaces[i];
+                const auto& right = current.meshData().surfaces[i];
+                if (left.topology != right.topology || left.firstIndex != right.firstIndex
+                    || left.indexCount != right.indexCount || left.materialSlot != right.materialSlot)
+                    return Reason::Surfaces;
+            }
         }
+        if (resident.textures.size() != current.textures.size()) return Reason::TextureCount;
         for (std::size_t i = 0; i < resident.textures.size(); ++i)
         {
             if (resident.textures[i].texture != current.textures[i].texture) return Reason::TextureIdentity;
