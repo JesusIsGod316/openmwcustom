@@ -87,7 +87,8 @@ namespace MWRender
         std::shared_ptr<HybridTorsoPose> torsoPose, int torsoBone)
     {
         mPrimary = std::move(primary);
-        if (visual)
+        const bool hasVisual = static_cast<bool>(visual);
+        if (hasVisual)
         {
             if (mVisualTime != visualTime)
             {
@@ -97,10 +98,10 @@ namespace MWRender
             }
             mVisual = std::move(visual);
             mVisualTime = visualTime;
+            mTorsoPose = std::move(torsoPose);
+            mTorsoBone = torsoBone;
         }
-        mTorsoPose = std::move(torsoPose);
-        mTorsoBone = torsoBone;
-        mTargetWeight = mVisual && visualWeight > 0.f ? std::clamp(visualWeight, 0.f, 1.f) : 0.f;
+        mTargetWeight = hasVisual && visualWeight > 0.f ? std::clamp(visualWeight, 0.f, 1.f) : 0.f;
     }
 
     void HybridNifAnimController::operator()(NifOsg::MatrixTransform* node, osg::NodeVisitor* nv)
