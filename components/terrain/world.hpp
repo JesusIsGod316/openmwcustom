@@ -5,6 +5,8 @@
 #include <osg/Vec3f>
 #include <osg/ref_ptr>
 
+#include <atomic>
+#include <cstddef>
 #include <memory>
 #include <set>
 
@@ -94,6 +96,14 @@ namespace Terrain
         virtual void preload(View* view, const osg::Vec3f& viewPoint, const osg::Vec4i& cellgrid,
             std::atomic<bool>& abort, Loading::Reporter& reporter)
         {
+        }
+
+        // Optional post-readiness preparation. Implementations must not make
+        // already-published terrain correctness depend on this work.
+        virtual std::size_t preloadStrongUpgrade(View* view, const osg::Vec3f& viewPoint,
+            const osg::Vec4i& cellgrid, std::atomic<bool>& abort, Loading::Reporter& reporter)
+        {
+            return 0;
         }
 
         virtual void rebuildViews() {}
