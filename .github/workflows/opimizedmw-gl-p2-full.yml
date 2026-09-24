@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Require committed native-tested P2 integration
         run: |
-          python tools/opimizedmw/gl-p2/prepare-source.py --verify-only
+          python tools/opimizedmw/gl-p2/readiness-contract.py
           python tools/opimizedmw/gl-p1b/check-integration.py
           python tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
   Windows:
