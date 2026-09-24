@@ -177,50 +177,114 @@ namespace Resource
 
     inline SpeculativeBudget::SpeculativeBudget(Config config) : mState(std::make_shared<State>(config)) {}
     inline const std::atomic<std::uint64_t>* SpeculativeBudget::watermark() const noexcept { return &mState->growth; }
-    inline bool SpeculativeBudget::usable(const OpenGlPressureSample& s) noexcept
+    inline bool SpeculativeBudget::usable(
+        const OpenGlPressureSample& s, SpeculativePriority priority) noexcept
     {
-        return s.generation && s.decision.state == OpenGlPressure::Normal
-            && s.decision.admissionsPerSample && s.memory.physicalValid && s.memory.physicalTotal
+        const bool valid = s.generation && s.memory.physicalValid && s.memory.physicalTotal
             && s.memory.physicalAvailable <= s.memory.physicalTotal
             && (s.memory.commitValid || s.memory.systemCommitValid)
             && !(s.memory.lowMemoryValid && s.memory.lowMemory);
+        if (!valid)
+            return false;
+        if (priority == SpeculativePriority::Background)
+            return s.decision.state == OpenGlPressure::Normal && s.decision.admissionsPerSample;
+        return s.decision.state == OpenGlPressure::Normal
+            || s.decision.state == OpenGlPressure::Caution
+            || s.decision.state == OpenGlPressure::Recovering;
     }
-    inline SpeculativeBudget::Job SpeculativeBudget::tryJob(const OpenGlPressureSample& sample)
+
+    inline SpeculativeBudget::Job SpeculativeBudget::tryJob(
+        const OpenGlPressureSample& sample, SpeculativePriority priority)
     {
         std::lock_guard lock(mState->mutex);
+        const bool nearFuture = priority == SpeculativePriority::NearFuture;
         if (sample.generation > mState->generation)
-        { mState->generation = sample.generation; mState->generationJobs = 0; }
-        // Normal steady admission is concurrency/bytes limited, not four jobs
-        // per second. Retain the one-per-sample recovery ramp from P1A.
-        if (!usable(sample) || sample.generation != mState->generation || mState->saturated
-            || mState->stats.jobs >= mState->config.maximumJobs
-            || (sample.decision.admissionsPerSample == 1 && mState->generationJobs >= 1))
-        { ++mState->stats.denied; return {}; }
-        ++mState->generationJobs; ++mState->stats.jobs; ++mState->stats.admitted;
-        return Job(mState);
+        {
+            mState->generation = sample.generation;
+            mState->generationJobs = 0;
+            mState->generationNearFutureJobs = 0;
+        }
+
+        const unsigned reserved = (std::min)(
+            mState->config.reservedNearFutureJobs, mState->config.maximumJobs);
+        const unsigned backgroundJobs = static_cast<unsigned>(
+            mState->stats.jobs >= mState->stats.priorityJobs
+                ? mState->stats.jobs - mState->stats.priorityJobs : 0);
+        const unsigned backgroundLimit = mState->config.maximumJobs - reserved;
+        const bool prioritySampleLimited = sample.decision.state != OpenGlPressure::Normal
+            || sample.decision.admissionsPerSample == 1;
+
+        const bool deny = !usable(sample, priority) || sample.generation != mState->generation
+            || mState->saturated || mState->stats.jobs >= mState->config.maximumJobs
+            || (nearFuture && reserved && mState->stats.priorityJobs >= reserved)
+            || (!nearFuture && reserved && backgroundJobs >= backgroundLimit)
+            || (nearFuture && prioritySampleLimited && mState->generationNearFutureJobs >= 1)
+            || (!nearFuture && sample.decision.admissionsPerSample == 1 && mState->generationJobs >= 1);
+        if (deny)
+        {
+            ++mState->stats.denied;
+            if (nearFuture)
+                ++mState->stats.nearFutureDenied;
+            return {};
+        }
+
+        ++mState->generationJobs;
+        if (nearFuture)
+            ++mState->generationNearFutureJobs;
+        ++mState->stats.jobs;
+        if (nearFuture)
+            ++mState->stats.priorityJobs;
+        ++mState->stats.admitted;
+        if (nearFuture)
+            ++mState->stats.nearFutureAdmitted;
+        return Job(mState, nearFuture);
     }
+
     inline void SpeculativeBudget::Job::finish()
     {
-        if (!mState) return;
+        if (!mState)
+            return;
         auto state = std::move(mState);
         std::lock_guard lock(state->mutex);
         --state->stats.jobs;
+        if (mNearFuture)
+            --state->stats.priorityJobs;
+        mNearFuture = false;
     }
-    inline SpeculativeBudget::Stage SpeculativeBudget::reserve(const OpenGlPressureSample& sample, std::uint64_t bytes)
+
+    inline SpeculativeBudget::Stage SpeculativeBudget::reserve(
+        const OpenGlPressureSample& sample, std::uint64_t bytes, SpeculativePriority priority)
     {
         std::lock_guard lock(mState->mutex);
+        const bool nearFuture = priority == SpeculativePriority::NearFuture;
         const auto growth = mState->growth.load(std::memory_order_relaxed);
         const auto future = add(mState->stats.futureBytes, bytes);
-        const auto extra = add(future, growth >= sample.accountedGrowth ? growth - sample.accountedGrowth : UINT64_MAX);
+        const auto extra = add(
+            future, growth >= sample.accountedGrowth ? growth - sample.accountedGrowth : UINT64_MAX);
         const auto fits = [extra](std::uint64_t available, std::uint64_t floor) {
             return available >= floor && extra <= available - floor;
         };
-        if (!usable(sample) || !sample.growthWatermarkValid || mState->saturated
+
+        auto physicalFloor = sample.decision.limits.physicalReserve;
+        auto commitFloor = sample.decision.limits.commitReserve;
+        if (nearFuture && sample.decision.state == OpenGlPressure::Caution)
+        {
+            physicalFloor = sample.decision.limits.physicalCritical;
+            commitFloor = sample.decision.limits.commitCritical;
+        }
+
+        if (!usable(sample, priority) || !sample.growthWatermarkValid || mState->saturated
             || bytes == UINT64_MAX || future > mState->config.transientLimit
-            || !fits(sample.memory.physicalAvailable, sample.decision.limits.physicalReserve)
-            || (sample.memory.commitValid && !fits(sample.memory.commitAvailable, sample.decision.limits.commitReserve))
-            || (sample.memory.systemCommitValid && !fits(sample.memory.systemCommitAvailable, sample.decision.limits.commitReserve)))
-        { ++mState->stats.denied; throw SpeculativeDeferred{}; }
+            || !fits(sample.memory.physicalAvailable, physicalFloor)
+            || (sample.memory.commitValid && !fits(sample.memory.commitAvailable, commitFloor))
+            || (sample.memory.systemCommitValid
+                && !fits(sample.memory.systemCommitAvailable, commitFloor)))
+        {
+            ++mState->stats.denied;
+            if (nearFuture)
+                ++mState->stats.nearFutureDenied;
+            throw SpeculativeDeferred{};
+        }
         mState->stats.futureBytes = future;
         return Stage(mState, bytes);
     }
