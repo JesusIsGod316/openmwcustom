@@ -325,23 +325,15 @@ namespace MWWorld
                 {
                     Loading::Reporter optimizationReporter;
                     const auto optionalStart = Debug::GameplayDiagnostics::Clock::now();
-                    Resource::SpeculativeBudget::Job priorityJob;
                     Resource::SpeculativeBudget* budget = mResourceSystem->speculativeBudget();
                     bool admitted = true;
 
-                    // P2's strong replacement is near-future work: P1 may stop
-                    // ordinary speculation under caution, but reserves one
-                    // bounded lane for this active-grid upgrade. Critical or
-                    // unknown/degraded pressure still keeps the correct weak
-                    // chunk and skips optional growth.
-                    if (budget)
-                    {
-                        priorityJob = budget->tryJob(
-                            Resource::ResourceSystem::speculativeSample(mResourceSystem),
-                            Resource::SpeculativePriority::NearFuture);
-                        admitted = static_cast<bool>(priorityJob);
-                    }
-                    else if (mResourceSystem->openGlHostMemoryBudgetEnabled())
+                    // P2's optional tail is already serialized by the single
+                    // TerrainPreloadItem owner, so it does not consume P1B's
+                    // reserved near-future JOB slot. It still uses the
+                    // NearFuture byte/headroom reservation below. The reserved
+                    // job slot remains available to the closest exterior cell.
+                    if (!budget && mResourceSystem->openGlHostMemoryBudgetEnabled())
                     {
                         const auto sample = Resource::ResourceSystem::speculativeSample(mResourceSystem);
                         admitted = sample.generation
@@ -353,7 +345,7 @@ namespace MWWorld
 
                     if (admitted)
                     {
-                        Resource::SpeculativeScope speculativeScope(priorityJob ? budget : nullptr,
+                        Resource::SpeculativeScope speculativeScope(budget,
                             &Resource::ResourceSystem::speculativeSample, mResourceSystem,
                             Resource::SpeculativePriority::NearFuture);
                         try
