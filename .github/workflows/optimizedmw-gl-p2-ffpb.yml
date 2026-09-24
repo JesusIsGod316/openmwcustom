@@ -1,0 +1,28 @@
+name: OptimizedMW GL-P2 + full-body first-person checkpoint
+on:
+  push:
+    branches: [optimizedmw/gl-p2-ffpb]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  Source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify combined OptimizedMW source
+        run: |
+          python tools/optimizedmw/verify-gl-p2-ffpb.py
+          python tools/opimizedmw/gl-p2/readiness-contract.py
+          python tools/opimizedmw/gl-p1b/check-integration.py
+          python tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+  Windows:
+    needs: Source
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
