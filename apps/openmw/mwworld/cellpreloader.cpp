@@ -248,14 +248,17 @@ namespace MWWorld
     {
     public:
         explicit TerrainPreloadItem(const std::vector<osg::ref_ptr<Terrain::View>>& views, Terrain::World* world,
-            std::span<const PositionCellGrid> preloadPositions, bool cancellableOptimization = false)
+            std::span<const PositionCellGrid> preloadPositions, bool cancellableOptimization = false,
+            bool readinessSplit = false)
             : mAbort(false)
             , mCancellableOptimization(cancellableOptimization)
+            , mReadinessSplit(cancellableOptimization && readinessSplit)
             , mTerrainViews(views)
             , mWorld(world)
             , mPreloadPositions(preloadPositions.begin(), preloadPositions.end())
         {
-            if (Debug::GameplayDiagnostics::enabled() || Debug::RuntimeDiagnostics::enabled()) mQueued = Debug::GameplayDiagnostics::Clock::now();
+            if (Debug::GameplayDiagnostics::enabled() || Debug::RuntimeDiagnostics::enabled())
+                mQueued = Debug::GameplayDiagnostics::Clock::now();
         }
 
         void doWork() override
@@ -264,21 +267,77 @@ namespace MWWorld
             const auto start = measure ? Debug::GameplayDiagnostics::Clock::now()
                                        : Debug::GameplayDiagnostics::Clock::time_point{};
             if (measure) mQueueMs = std::chrono::duration<double, std::milli>(start - mQueued).count();
-            const auto prepare = [&] {
+
+            const auto prepare = [&](Loading::Reporter& reporter) {
                 for (unsigned int i = 0; i < mTerrainViews.size() && i < mPreloadPositions.size() && !mAbort; ++i)
                 {
                     SceneUtil::PagingWorkScope::checkpoint();
                     mTerrainViews[i]->reset();
                     mWorld->preload(mTerrainViews[i], mPreloadPositions[i].mPosition, mPreloadPositions[i].mCellBounds,
-                        mAbort, mLoadingReporter);
+                        mAbort, reporter);
                 }
             };
-            if (mCancellableOptimization)
+
+            if (mCancellableOptimization && mReadinessSplit)
+            {
+                const auto readyStart = Debug::GameplayDiagnostics::Clock::now();
+                try
+                {
+                    SceneUtil::PagingWorkScope scope(
+                        &mAbort, SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
+                    prepare(mRequiredReporter);
+                    mSucceeded.store(!mAbort.load(), std::memory_order_release);
+                }
+                catch (const SceneUtil::PagingWorkCancelled&)
+                {
+                    // Required private views were cancelled before publication.
+                }
+                catch (...)
+                {
+                    mRequiredFailure = std::current_exception();
+                }
+                if (measure)
+                    mReadinessMs = std::chrono::duration<double, std::milli>(
+                        Debug::GameplayDiagnostics::Clock::now() - readyStart).count();
+
+                // Publish only the required phase to syncTerrainLoad. The work
+                // item deliberately remains alive while the stronger V3.13
+                // cache upgrade continues on the worker.
+                mRequiredReporter.complete();
+
+                if (mSucceeded.load(std::memory_order_acquire) && !mAbort.load(std::memory_order_relaxed))
+                {
+                    Loading::Reporter optimizationReporter;
+                    try
+                    {
+                        SceneUtil::PagingWorkScope scope(
+                            &mAbort, SceneUtil::PagingWorkScope::Phase::OptionalOptimization);
+                        prepare(optimizationReporter);
+                    }
+                    catch (const SceneUtil::PagingWorkCancelled&)
+                    {
+                        // Correct readiness was already published. Obsolete
+                        // stronger preparation can disappear without a wait.
+                    }
+                    catch (const std::exception& e)
+                    {
+                        Log(Debug::Warning)
+                            << "Optional paging optimization failed after required terrain readiness: " << e.what();
+                    }
+                    catch (...)
+                    {
+                        Log(Debug::Warning)
+                            << "Optional paging optimization failed after required terrain readiness";
+                    }
+                    optimizationReporter.complete();
+                }
+            }
+            else if (mCancellableOptimization)
             {
                 SceneUtil::PagingWorkScope scope(&mAbort);
                 try
                 {
-                    prepare();
+                    prepare(mLoadingReporter);
                     mSucceeded.store(!mAbort.load(), std::memory_order_release);
                 }
                 catch (const SceneUtil::PagingWorkCancelled&)
@@ -288,63 +347,96 @@ namespace MWWorld
                 catch (...)
                 {
                     // WorkQueue does not catch exceptions. Preserve failure for
-                    // the waiting main thread instead of terminating a worker or
-                    // leaving the loading reporter waiting forever.
-                    mFailure = std::current_exception();
+                    // the waiting main thread instead of terminating a worker.
+                    mRequiredFailure = std::current_exception();
                 }
+                mLoadingReporter.complete();
             }
             else
-                prepare();
-            if (measure) mWorkMs = std::chrono::duration<double, std::milli>(
-                Debug::GameplayDiagnostics::Clock::now() - start).count();
+            {
+                prepare(mLoadingReporter);
+                mLoadingReporter.complete();
+            }
+
+            if (measure)
+                mWorkMs = std::chrono::duration<double, std::milli>(
+                    Debug::GameplayDiagnostics::Clock::now() - start).count();
             if (Debug::RuntimeDiagnostics::enabled())
                 Debug::RuntimeDiagnostics::recordEvent("terrain_job", "legacy_terrain_preload", {}, {
                     {"job", reinterpret_cast<std::uintptr_t>(this)},
                     {"queue_us", static_cast<std::uint64_t>((std::max)(0.0, mQueueMs.load()) * 1000)},
                     {"work_us", static_cast<std::uint64_t>((std::max)(0.0, mWorkMs.load()) * 1000)},
-                    {"views", mPreloadPositions.size()}, {"aborted", mAbort.load()} });
-            mLoadingReporter.complete();
+                    {"readiness_us", static_cast<std::uint64_t>((std::max)(0.0, mReadinessMs.load()) * 1000)},
+                    {"views", mPreloadPositions.size()}, {"aborted", mAbort.load()},
+                    {"readiness_split", mReadinessSplit} });
         }
 
         void abort() override { mAbort = true; }
         bool succeeded() const noexcept
         { return !mCancellableOptimization || mSucceeded.load(std::memory_order_acquire); }
+        bool readinessSplit() const noexcept { return mReadinessSplit; }
+        bool readinessComplete() const noexcept
+        { return mReadinessSplit && mSucceeded.load(std::memory_order_acquire); }
+        bool takeReadinessPublication() noexcept
+        {
+            return readinessComplete() && !mReadinessPublished.exchange(true, std::memory_order_acq_rel);
+        }
 
         void wait(Loading::Listener& listener)
         {
             Debug::RuntimeDiagnostics::Operation runtimeOperation("required_terrain_wait");
             if (Debug::RuntimeDiagnostics::enabled())
                 Debug::RuntimeDiagnostics::recordEvent("wait_dependency", "required_terrain_wait", {},
-                    {{"job", reinterpret_cast<std::uintptr_t>(this)}, {"views", mPreloadPositions.size()}});
+                    {{"job", reinterpret_cast<std::uintptr_t>(this)}, {"views", mPreloadPositions.size()},
+                     {"readiness_split", mReadinessSplit}});
             Debug::GameplayDiagnostics::Operation operation("terrain_wait");
-            mLoadingReporter.wait(listener);
-            if (mCancellableOptimization)
+
+            if (mReadinessSplit)
             {
-                // Reporter completion precedes WorkQueue::signalDone. Join that
-                // publication before reading the worker-owned exception_ptr.
-                waitTillDone();
-                if (mFailure) std::rethrow_exception(mFailure);
+                mRequiredReporter.wait(listener);
+                // Required-phase state is immutable after reporter completion.
+                // Do not join the optional strong-upgrade tail.
+                if (mRequiredFailure) std::rethrow_exception(mRequiredFailure);
                 if (!succeeded())
                     throw std::runtime_error("Required terrain preparation was cancelled; no partial view published");
             }
+            else
+            {
+                mLoadingReporter.wait(listener);
+                if (mCancellableOptimization)
+                {
+                    // Reporter completion precedes WorkQueue::signalDone.
+                    waitTillDone();
+                    if (mRequiredFailure) std::rethrow_exception(mRequiredFailure);
+                    if (!succeeded())
+                        throw std::runtime_error("Required terrain preparation was cancelled; no partial view published");
+                }
+            }
+
             if (Debug::GameplayDiagnostics::enabled())
                 Debug::GameplayDiagnostics::recordEvent("terrain_preload_work", {
-                    {"queue_ms", std::to_string(mQueueMs.load())}, {"work_ms", std::to_string(mWorkMs.load())},
+                    {"queue_ms", std::to_string(mQueueMs.load())},
+                    {"work_ms", std::to_string(mWorkMs.load())},
+                    {"readiness_ms", std::to_string(mReadinessMs.load())},
                     {"views", std::to_string(mPreloadPositions.size())},
-                    {"aborted", std::to_string(mAbort.load())}}, true);
+                    {"aborted", std::to_string(mAbort.load())},
+                    {"readiness_split", std::to_string(mReadinessSplit)}}, true);
         }
 
     private:
         std::atomic<bool> mAbort;
         const bool mCancellableOptimization;
+        const bool mReadinessSplit;
         std::atomic<bool> mSucceeded{false};
-        std::exception_ptr mFailure;
+        std::atomic<bool> mReadinessPublished{false};
+        std::exception_ptr mRequiredFailure;
         std::vector<osg::ref_ptr<Terrain::View>> mTerrainViews;
         Terrain::World* mWorld;
         std::vector<PositionCellGrid> mPreloadPositions;
         Loading::Reporter mLoadingReporter;
+        Loading::Reporter mRequiredReporter;
         Debug::GameplayDiagnostics::Clock::time_point mQueued{};
-        std::atomic<double> mQueueMs{0}, mWorkMs{0};
+        std::atomic<double> mQueueMs{0}, mWorkMs{0}, mReadinessMs{0};
     };
 
     /// Worker thread item: update the resource system's cache, effectively deleting unused entries.
@@ -388,6 +480,10 @@ namespace MWWorld
         , mPreloadInstances(true)
         , mUseLegacyTerrain(useLegacyTerrain)
         , mCancellablePagingOptimization(useLegacyTerrain && Settings::cells().mOpimizedMWPagingOptimizer)
+        , mPagingReadinessSplit(mCancellablePagingOptimization
+            && static_cast<bool>(Settings::cells().mOpimizedMWPagingReadinessSplit)
+            && static_cast<int>(Settings::cells().mV313ChunkQualityMode) > 0
+            && static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode) > 0)
         , mLastResourceCacheUpdate(0.0)
         , mLoadedTerrainTimestamp(0.0)
     {
@@ -656,10 +752,19 @@ namespace MWWorld
             mLastResourceCacheUpdate = timestamp;
         }
 
-        if (mTerrainPreloadItem && mTerrainPreloadItem->isDone() && mTerrainPreloadItem->succeeded())
+        if (mTerrainPreloadItem && mTerrainPreloadItem->takeReadinessPublication())
         {
             mLoadedTerrainPositions = mTerrainPreloadPositions;
             mLoadedTerrainTimestamp = timestamp;
+        }
+
+        if (mTerrainPreloadItem && mTerrainPreloadItem->isDone() && mTerrainPreloadItem->succeeded())
+        {
+            if (!mTerrainPreloadItem->readinessSplit())
+            {
+                mLoadedTerrainPositions = mTerrainPreloadPositions;
+                mLoadedTerrainTimestamp = timestamp;
+            }
 
             if (static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode) > 0)
             {
@@ -711,7 +816,8 @@ namespace MWWorld
 
     void CellPreloader::syncTerrainLoad(Loading::Listener& listener)
     {
-        if (mTerrainPreloadItem != nullptr && (mCancellablePagingOptimization || !mTerrainPreloadItem->isDone()))
+        if (mTerrainPreloadItem != nullptr
+            && (mPagingReadinessSplit || mCancellablePagingOptimization || !mTerrainPreloadItem->isDone()))
             mTerrainPreloadItem->wait(listener);
     }
 
@@ -766,6 +872,8 @@ namespace MWWorld
                 ++mV311TerrainTargetReplaced;
 
             mV311PendingTerrainPreloadPositions.assign(positions.begin(), positions.end());
+            if (mPagingReadinessSplit && mTerrainPreloadItem->readinessComplete())
+                mTerrainPreloadItem->abort();
             return;
         }
         else
@@ -781,7 +889,8 @@ namespace MWWorld
             mTerrainPreloadPositions.assign(positions.begin(), positions.end());
             if (!positions.empty())
             {
-                mTerrainPreloadItem = new TerrainPreloadItem(mTerrainViews, mTerrain, positions, mCancellablePagingOptimization);
+                mTerrainPreloadItem = new TerrainPreloadItem(
+                    mTerrainViews, mTerrain, positions, mCancellablePagingOptimization, mPagingReadinessSplit);
                 mWorkQueue->addWorkItem(mTerrainPreloadItem);
             }
         }
