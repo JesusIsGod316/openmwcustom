@@ -1,0 +1,106 @@
+name: OpimizedMW GL-P1B native memory and cache QC
+on:
+  push:
+    branches: [opimizedmw/gl-p1b-qc]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  Native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            lane: gcc
+            cxx: g++
+            sanitizer: 'OFF'
+            osg: 'ON'
+          - os: ubuntu-24.04
+            lane: clang-sanitized
+            cxx: clang++
+            sanitizer: 'ON'
+            osg: 'ON'
+          - os: windows-2022
+            lane: msvc
+            cxx: cl
+            sanitizer: 'OFF'
+            osg: 'OFF'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Materialize exact source in disposable CI worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config core.autocrlf false
+          git reset --hard HEAD
+          python tools/opimizedmw/gl-p1b/prepare-source.py
+          python tools/opimizedmw/gl-p1b/check-integration.py
+          python tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+      - name: Install native OSG dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y libopenscenegraph-dev
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Configure actual production-code tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S tools/opimizedmw/gl-p1b -B p1b-native-build -G Ninja \
+            -D CMAKE_CXX_COMPILER=${{ matrix.cxx }} -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D OPIMIZEDMW_P1B_SANITIZERS=${{ matrix.sanitizer }} \
+            -D OPIMIZEDMW_P1B_OSG_TESTS=${{ matrix.osg }} 2>&1 | tee p1b-evidence/configure.log
+      - name: Compile and execute native ledger, policy and cache tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build p1b-native-build --parallel 2 --verbose 2>&1 | tee p1b-evidence/build.log
+          ctest --test-dir p1b-native-build -C RelWithDebInfo -V --output-on-failure 2>&1 | tee p1b-evidence/tests.log
+          git diff --cached --stat > p1b-evidence/source-stat.txt
+          git diff --cached --check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: OpimizedMW-GL-P1B-${{ matrix.lane }}-${{ github.run_id }}
+          path: p1b-evidence/
+          if-no-files-found: error
+  Publish:
+    needs: Native
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: OpimizedMW-GL-P1B-*
+          path: native-evidence
+      - name: Publish exact three-lane native-tested production source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/opimizedmw/gl-p1b/prepare-source.py
+          python tools/opimizedmw/gl-p1b/check-integration.py
+          expected="$(cat p1b-evidence/tested-tree.txt)"
+          count=0
+          for f in native-evidence/*/tested-tree.txt; do
+            test "$(cat "$f")" = "$expected"
+            count=$((count+1))
+          done
+          test "$count" -eq 3
+          git config user.name 'OpimizedMW maintenance'
+          git config user.email 'opimizedmw@users.noreply.github.com'
+          git commit -m 'OpimizedMW GL-P1B: materialize native-tested speculative memory and reclamation' \
+            -m "Tested tree: $expected. GCC, sanitized Clang and MSVC native gates passed. Full OpenGL engine and gameplay acceptance remain separate."
+          git push origin HEAD:refs/heads/opimizedmw/gl-p1b
+          test "$(git ls-remote origin refs/heads/opimizedmw/gl-p1b | cut -f1)" = "$(git rev-parse HEAD)"
+          git rev-parse HEAD > p1b-evidence/published-commit.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpimizedMW-GL-P1B-published-${{ github.run_id }}
+          path: p1b-evidence/

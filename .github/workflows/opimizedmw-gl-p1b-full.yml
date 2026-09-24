@@ -1,0 +1,32 @@
+name: OpimizedMW GL-P1 combined OpenGL Windows gate
+on:
+  push:
+    branches: [opimizedmw/gl-p1b-build]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  Source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require committed production source, not staging patch output
+        run: |
+          python tools/opimizedmw/gl-p1b/check-integration.py
+          python - <<'PY'
+          from pathlib import Path
+          import json, subprocess
+          m=json.loads(Path('tools/opimizedmw/gl-p1b/source-manifest.json').read_text())
+          for p,v in m['files'].items():
+              actual=subprocess.check_output(['git','rev-parse','HEAD:'+p],text=True).strip()
+              assert actual==v['after'],p
+          print('All P1B production and test sources committed at this exact build SHA.')
+          PY
+          python tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+  Windows:
+    needs: Source
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
