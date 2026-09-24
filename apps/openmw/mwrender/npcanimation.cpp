@@ -831,7 +831,23 @@ namespace MWRender
             mFirstPersonNeckController->setOffset(mFirstPersonOffset);
         }
 
-        WeaponAnimation::configureControllers(mPtr.getRefData().getPosition().rot[0] + getBodyPitchRadians());
+        int activeWeaponType = ESM::Weapon::None;
+        if (mHybridVisualEnabled && mHybridMeleeVisualActive)
+            MWMechanics::getActiveWeapon(mPtr, &activeWeaponType);
+        const bool hybridMelee = mHybridVisualEnabled && mHybridMeleeVisualActive
+            && activeWeaponType != ESM::Weapon::None && activeWeaponType != ESM::Weapon::Spell
+            && activeWeaponType != ESM::Weapon::PickProbe
+            && MWMechanics::getWeaponType(activeWeaponType)->mWeaponClass == ESM::WeaponType::Melee;
+        if (hybridMelee)
+        {
+            // The authored first-person melee clip owns the upper body. Do not
+            // leave a fading procedural pitch on the same spine joints after
+            // switching into that clip.
+            mAdditionalPitchBlend = 0.f;
+            setControllerEnabled(false);
+        }
+        else
+            WeaponAnimation::configureControllers(mPtr.getRefData().getPosition().rot[0] + getBodyPitchRadians());
 
         return ret;
     }

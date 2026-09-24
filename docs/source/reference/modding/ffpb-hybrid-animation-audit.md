@@ -131,6 +131,20 @@ head and fingers remain on the full-body track. Visual transitions
 and interruptions are weight-blended. Unsupported/missing NIF tracks fall
 back per bone. The new setting defaults off.
 
+User runtime screenshots from `cd380cea8e` still show an oversized torso
+when looking down, arms outside the view when looking up, and unarmed arms
+that do not swing during movement. The runtime log confirms that ReAnimation
+v3 visual groups are selected, including `_xReanimationv1.kf` for unarmed
+walk/run and `x2cmovement.kf` for two-handed movement. Inspection of the
+actual `_xReanimationv1.kf` walk/run intervals found no arm rotation across
+the clips: selecting them cannot produce an arm swing. The next checkpoint
+samples arm motion per visual track for unarmed locomotion and retains the
+full-body moving track where the FP track is static. Authored moving FP arm
+tracks from regular or modded clips still take visual ownership. It also
+disables the additional procedural melee spine pitch while an authored FP
+melee visual is active, avoiding simultaneous spine pitch layers. This is
+source-level mitigation only; torso and camera framing remain unvalidated.
+
 This slice does not retarget different rest poses or finger rigs. The
 15-degree lean is a reference-derived test value, not a promoted clipping
 solution. OSG animation controllers remain on the normal source. Runtime
