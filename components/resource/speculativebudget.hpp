@@ -88,16 +88,27 @@ namespace Resource
             Job() = default;
             Job(const Job&) = delete;
             Job& operator=(const Job&) = delete;
-            Job(Job&& other) noexcept : mState(std::move(other.mState)) {}
+            Job(Job&& other) noexcept
+                : mState(std::move(other.mState)), mNearFuture(std::exchange(other.mNearFuture, false)) {}
             Job& operator=(Job&& other) noexcept
-            { if (this != &other) { finish(); mState = std::move(other.mState); } return *this; }
+            {
+                if (this != &other)
+                {
+                    finish();
+                    mState = std::move(other.mState);
+                    mNearFuture = std::exchange(other.mNearFuture, false);
+                }
+                return *this;
+            }
             ~Job() { finish(); }
             explicit operator bool() const noexcept { return mState != nullptr; }
             void finish();
         private:
             friend class SpeculativeBudget;
-            explicit Job(std::shared_ptr<State> state) : mState(std::move(state)) {}
+            Job(std::shared_ptr<State> state, bool nearFuture)
+                : mState(std::move(state)), mNearFuture(nearFuture) {}
             std::shared_ptr<State> mState;
+            bool mNearFuture = false;
         };
         class Stage
         {
@@ -137,8 +148,10 @@ namespace Resource
         // Sample watermark is read BEFORE the OS query starts. Growth after
         // that watermark remains charged even if its owners have been released.
         const std::atomic<std::uint64_t>* watermark() const noexcept;
-        Job tryJob(const OpenGlPressureSample& sample);
-        Stage reserve(const OpenGlPressureSample& sample, std::uint64_t bytes);
+        Job tryJob(const OpenGlPressureSample& sample,
+            SpeculativePriority priority = SpeculativePriority::Background);
+        Stage reserve(const OpenGlPressureSample& sample, std::uint64_t bytes,
+            SpeculativePriority priority = SpeculativePriority::Background);
         Claim claim(std::string key);
         ChargePtr track(Key key, std::uint64_t bytes, bool known, Stage* stage = nullptr);
         void hit(bool speculative);
@@ -154,9 +167,9 @@ namespace Resource
             std::set<std::string> requests;
             std::atomic<std::uint64_t> growth{0}, demandHits{0}, prefetchHits{0};
             bool saturated = false;
-            std::uint64_t generation = 0, generationJobs = 0;
+            std::uint64_t generation = 0, generationJobs = 0, generationNearFutureJobs = 0;
         };
-        static bool usable(const OpenGlPressureSample& s) noexcept;
+        static bool usable(const OpenGlPressureSample& s, SpeculativePriority priority) noexcept;
         static std::uint64_t add(std::uint64_t a, std::uint64_t b) noexcept
         { return b > UINT64_MAX - a ? UINT64_MAX : a + b; }
         std::shared_ptr<State> mState;
