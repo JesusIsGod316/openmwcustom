@@ -30,6 +30,22 @@ def main():
     if not all(actual[p] == paths[p]['after'] for p in paths):
         if not all(actual[p] == paths[p]['before'] for p in paths):
             raise RuntimeError('source does not match the exact P1A before-blobs')
+        # Windows checkout conversion is not a source change. Check every
+        # allowlisted input before canonicalizing only its line endings. A
+        # reset after changing autocrlf does not necessarily rewrite files.
+        originals = {}
+        for rel, entry in paths.items():
+            path = ROOT/rel
+            if entry['before'] is None:
+                if path.exists():
+                    raise RuntimeError('refusing to overwrite untracked source: '+rel)
+                continue
+            original = git('cat-file', 'blob', entry['before'])
+            if path.read_bytes().replace(b'\r\n', b'\n') != original.replace(b'\r\n', b'\n'):
+                raise RuntimeError('refusing to overwrite modified source: '+rel)
+            originals[path] = original
+        for path, original in originals.items():
+            path.write_bytes(original)
         patch = gzip.decompress(data)
         target = HERE/'transport.tmp.patch'
         target.write_bytes(patch)
