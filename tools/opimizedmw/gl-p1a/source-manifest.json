@@ -1,0 +1,18 @@
+{
+  "base": "4286850552993b15594b8cd36942965eb4854f7e",
+  "patch_sha256": "ca4be9523f01d4829be37e81ba981c272e85e598b94d440e772058d8e1fe6792",
+  "paths": {
+    "apps/openmw/engine.cpp": {"before": "5df3483d7beb65803dcb781907ee8af473ae4032", "after": "ffbdcb130a0e3435f36bb55d6d476ca9ebdeec71"},
+    "apps/openmw/mwworld/cellpreloader.cpp": {"before": "b72b56252e71e09f59948736938f330199b2e872", "after": "dd54b10bd447f935099ce679ffefef5bbb722be8"},
+    "components/misc/hostmemory.cpp": {"before": "10f358ca14d6d4925259b20f476ec283df310548", "after": "89ad7cd1778ddc491ca80612c4404857847b7f86"},
+    "components/misc/hostmemory.hpp": {"before": "cec83a36fb3ad44e07f47ff24287f7f16fa33256", "after": "b3865cbf49c3decb61f160425872ffad5f8a2bb1"},
+    "components/resource/hostmemorybudget.hpp": {"before": "796ea50442aaab977b203a23ce88b6d3d05b9f01", "after": "cf96eac18ce17b6e3e95a263bd918ad338f1bfea"},
+    "components/resource/preloadadmission.hpp": {"before": "16795c0385659221a800f69bc93b7b3c362ce2c0", "after": "d351ffe42a953cd0127c91f1321fb76a3765644a"},
+    "components/resource/resourcesystem.cpp": {"before": "ec80dea7ccff4def3ad762aa8892d43541274ea3", "after": "0c25d5080783596adc76e2d424c3cb0409f9beca"},
+    "components/resource/resourcesystem.hpp": {"before": "18c08e77d44dcf80de86bebbb82a4da4a0141f5e", "after": "be6330dba7e6d3c169715f56a097df80cf78c6b6"},
+    "components/settings/categories/cells.hpp": {"before": "4c966fd5b81dcdf624710faaeaa198c3f7f88af7", "after": "2b269b94d5463c71e5620ade74943e94f8196f2a"},
+    "files/settings-default.cfg": {"before": "ebdbc162afcc37f2b88a5320c7510727192897f4", "after": "ab9b4c891dddc1a8795e7eda0ad2c30b684a8cb5"}
+  },
+  "archive": "opimizedmw-gl-p0-precleanup-20260924",
+  "scope": "GL-P1A only; ten existing files, new standalone policy/monitor header; no P1B/P2 changes"
+}

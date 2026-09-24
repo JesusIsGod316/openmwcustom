@@ -1,0 +1,312 @@
+diff --git a/apps/openmw/engine.cpp b/apps/openmw/engine.cpp
+index 5df3483d7beb65803dcb781907ee8af473ae4032..ffbdcb130a0e3435f36bb55d6d476ca9ebdeec71 100644
+--- a/apps/openmw/engine.cpp
++++ b/apps/openmw/engine.cpp
+@@ -1410,6 +1410,19 @@ void OMW::Engine::prepareEngine()
+         Debug::RuntimeDiagnostics::recordEvent("configuration", "host_memory_budget", {},
+             {{"enabled", hostMemoryBudget}, {"private_soft_percent", 75}, {"physical_reserve_denominator", 8},
+                 {"recovery_ms", Resource::HostMemoryPolicy::RecoveryMilliseconds}});
++    if (!mUseVulkanRenderer && static_cast<bool>(Settings::cells().mOpimizedMWHostPressure))
++    {
++        Resource::OpenGlPressureConfig pressureConfig;
++        pressureConfig.physicalReserve = static_cast<std::uint64_t>(
++            static_cast<int>(Settings::cells().mOpimizedMWHostReserveMb)) * Resource::OpenGlPressureConfig::MiB;
++        pressureConfig.commitReserve = static_cast<std::uint64_t>(
++            static_cast<int>(Settings::cells().mOpimizedMWCommitReserveMb)) * Resource::OpenGlPressureConfig::MiB;
++        mResourceSystem->enableOpenGlHostMemoryBudget(pressureConfig);
++        Log(Debug::Info) << "OpimizedMW GL-P1A pressure protection: on; healthy retention unchanged; "
++                        << "private commit is diagnostic only; startup-only settings";
++    }
++    else
++        Log(Debug::Info) << "OpimizedMW GL-P1A pressure protection: off (P0/Vulkan control)";
+     mResourceSystem->getSceneManager()->setPreparedInstanceCacheLimit(
+         Settings::cells().mV3PreparedInstanceCache
+             ? static_cast<std::size_t>(Settings::cells().mV3PreparedInstanceCacheMax)
+diff --git a/apps/openmw/mwworld/cellpreloader.cpp b/apps/openmw/mwworld/cellpreloader.cpp
+index b72b56252e71e09f59948736938f330199b2e872..dd54b10bd447f935099ce679ffefef5bbb722be8 100644
+--- a/apps/openmw/mwworld/cellpreloader.cpp
++++ b/apps/openmw/mwworld/cellpreloader.cpp
+@@ -343,7 +343,7 @@ namespace MWWorld
+         }
+ 
+         static const bool legacyAdmission = std::getenv("OPENMW_V4_LEGACY_PRELOAD_ADMISSION_CONTROL") != nullptr;
+-        auto reservation = legacyAdmission
++        auto reservation = (legacyAdmission && !mResourceSystem->openGlHostMemoryBudgetEnabled())
+             ? std::optional<Resource::PreloadAdmission::Reservation>(std::in_place)
+             : mResourceSystem->reserveOptionalPreload();
+         if (!reservation)
+diff --git a/components/misc/hostmemory.cpp b/components/misc/hostmemory.cpp
+index 10f358ca14d6d4925259b20f476ec283df310548..89ad7cd1778ddc491ca80612c4404857847b7f86 100644
+--- a/components/misc/hostmemory.cpp
++++ b/components/misc/hostmemory.cpp
+@@ -41,4 +41,37 @@ namespace Misc
+         // Unavailable counters do not mean zero available bytes or an OOM.
+         return result;
+     }
++    HostMemoryStatus queryOpenGlHostMemoryStatus() noexcept
++    {
++        auto result = queryHostMemoryStatus();
++#ifdef _WIN32
++        PERFORMANCE_INFORMATION performance{};
++        performance.cb = sizeof(performance);
++        if (GetPerformanceInfo(&performance, sizeof(performance)) && performance.PageSize != 0
++            && performance.CommitLimit >= performance.CommitTotal)
++        {
++            const auto pages = performance.CommitLimit - performance.CommitTotal;
++            if (pages <= UINT64_MAX / performance.PageSize)
++            {
++                result.systemCommitAvailable = static_cast<std::uint64_t>(pages) * performance.PageSize;
++                result.systemCommitValid = true;
++            }
++        }
++        struct Notification
++        {
++            HANDLE handle = CreateMemoryResourceNotification(LowMemoryResourceNotification);
++            ~Notification() { if (handle) CloseHandle(handle); }
++        };
++        // Constructed once by the startup/sampler owner, never by a frame read.
++        static const Notification notification;
++        BOOL low = FALSE;
++        if (notification.handle && QueryMemoryResourceNotification(notification.handle, &low))
++        {
++            result.lowMemory = low != FALSE;
++            result.lowMemoryValid = true;
++        }
++#endif
++        return result;
++    }
++
+ }
+diff --git a/components/misc/hostmemory.hpp b/components/misc/hostmemory.hpp
+index cec83a36fb3ad44e07f47ff24287f7f16fa33256..b3865cbf49c3decb61f160425872ffad5f8a2bb1 100644
+--- a/components/misc/hostmemory.hpp
++++ b/components/misc/hostmemory.hpp
+@@ -15,9 +15,16 @@ namespace Misc
+         bool physicalValid = false;
+         bool processValid = false;
+         bool commitValid = false;
++        // Optional independent signals; appended to retain old aggregate layout.
++        std::uint64_t systemCommitAvailable = 0;
++        bool systemCommitValid = false;
++        bool lowMemory = false;
++        bool lowMemoryValid = false;
+     };
+ 
+     // No platform headers or diagnostic recorder dependency at this boundary.
+     HostMemoryStatus queryHostMemoryStatus() noexcept;
++    // GL-P1A sampler only. Legacy callers retain their existing query behavior.
++    HostMemoryStatus queryOpenGlHostMemoryStatus() noexcept;
+ }
+ #endif
+diff --git a/components/resource/hostmemorybudget.hpp b/components/resource/hostmemorybudget.hpp
+index 796ea50442aaab977b203a23ce88b6d3d05b9f01..cf96eac18ce17b6e3e95a263bd918ad338f1bfea 100644
+--- a/components/resource/hostmemorybudget.hpp
++++ b/components/resource/hostmemorybudget.hpp
+@@ -3,6 +3,7 @@
+ 
+ #include <components/misc/hostmemory.hpp>
+ #include "preloadadmission.hpp"
++#include "openglpressure.hpp"
+ 
+ #include <algorithm>
+ #include <atomic>
+@@ -95,9 +96,28 @@ namespace Resource
+         explicit HostMemoryBudget(Query query = &Misc::queryHostMemoryStatus) : mQuery(query) {}
+         void setEnabled(bool enabled) noexcept { mEnabled.store(enabled, std::memory_order_release); }
+         bool enabled() const noexcept { return mEnabled.load(std::memory_order_acquire); }
++        // Startup-only; off/Vulkan keep the original coordinator and policy.
++        void enableOpenGl(OpenGlPressureConfig config = {})
++        {
++            mOpenGl = std::make_unique<OpenGlPressureMonitor>(config);
++            mEnabled.store(true, std::memory_order_release);
++        }
++        bool openGlEnabled() const noexcept { return enabled() && mOpenGl != nullptr; }
++        OpenGlPressureSample openGlSample() const { return mOpenGl ? mOpenGl->read() : OpenGlPressureSample{}; }
+         HostMemoryPressure pressure()
+         {
+             if (!enabled()) return HostMemoryPressure::Normal;
++            if (mOpenGl)
++            {
++                switch (mOpenGl->read().decision.state)
++                {
++                    case OpenGlPressure::Critical: return HostMemoryPressure::Critical;
++                    case OpenGlPressure::Caution: return HostMemoryPressure::Trim;
++                    // Missing data or recovery suppresses admission, not hot
++                    // cache ownership. Never invent pressure from failed probes.
++                    default: return HostMemoryPressure::Normal;
++                }
++            }
+             const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::steady_clock::now().time_since_epoch()).count());
+             if (now >= mNextSample.load(std::memory_order_relaxed))
+@@ -114,12 +134,20 @@ namespace Resource
+         }
+         Misc::HostMemoryStatus snapshot() const
+         {
++            if (mOpenGl) return mOpenGl->read().memory;
+             std::lock_guard lock(mMutex);
+             return mLastMemory;
+         }
+         std::optional<PreloadAdmission::Reservation> reserveOptionalPreload()
+         {
+             if (!enabled()) return PreloadAdmission::Reservation{};
++            if (mOpenGl)
++            {
++                const auto sample = mOpenGl->read();
++                return mPreloads.reserveOpenGl(sample.memory, sample.generation,
++                    sample.decision.admissionsPerSample, sample.decision.limits.physicalReserve,
++                    sample.decision.limits.commitReserve);
++            }
+             const auto currentPressure = pressure();
+             const auto memory = snapshot();
+             const auto budget = HostMemoryPolicy::limits(memory.physicalTotal);
+@@ -136,6 +164,8 @@ namespace Resource
+         HostMemoryPolicy mPolicy;
+         Misc::HostMemoryStatus mLastMemory;
+         PreloadAdmission mPreloads;
++        // Only allocated/started when the explicit OpenGL switch is enabled.
++        std::unique_ptr<OpenGlPressureMonitor> mOpenGl;
+     };
+ }
+ #endif
+diff --git a/components/resource/preloadadmission.hpp b/components/resource/preloadadmission.hpp
+index 16795c0385659221a800f69bc93b7b3c362ce2c0..d351ffe42a953cd0127c91f1321fb76a3765644a 100644
+--- a/components/resource/preloadadmission.hpp
++++ b/components/resource/preloadadmission.hpp
+@@ -26,7 +26,12 @@ namespace Resource
+             std::uint64_t pending = 0, reservedEstimate = 0, admitted = 0, denied = 0, released = 0;
+         };
+     private:
+-        struct State { std::mutex mutex; Stats stats; };
++        struct State
++        {
++            std::mutex mutex;
++            Stats stats;
++            std::uint64_t sampleGeneration = 0, sampleAdmissions = 0, sampleOpeningReservations = 0;
++        };
+     public:
+         class Reservation
+         {
+@@ -79,6 +84,50 @@ namespace Resource
+             ++stats.pending; ++stats.admitted; stats.reservedEstimate = projected;
+             return Reservation(mState);
+         }
++        // GL-P1A's conservative interim guard. Credits are NOT refunded within
++        // an OS sample when a fast job finishes but keeps its cached output.
++        // Existing running reservations may already be in the OS counters: we
++        // deliberately overestimate here. Precise stage/retained-byte transfer
++        // remains GL-P1B; these allowances are not actual allocation accounting.
++        std::optional<Reservation> reserveOpenGl(const Misc::HostMemoryStatus& memory,
++            std::uint64_t generation, unsigned sampleLimit,
++            std::uint64_t physicalReserve, std::uint64_t commitReserve)
++        {
++            std::lock_guard lock(mState->mutex);
++            auto& stats = mState->stats;
++            if (generation > mState->sampleGeneration)
++            {
++                mState->sampleGeneration = generation;
++                mState->sampleAdmissions = 0;
++                mState->sampleOpeningReservations = stats.reservedEstimate;
++            }
++            const auto fits = [](std::uint64_t available, std::uint64_t floor, std::uint64_t extra) {
++                return available >= floor && extra <= available - floor;
++            };
++            const auto projected = mState->sampleOpeningReservations
++                + (mState->sampleAdmissions + 1) * Allowance;
++            const bool healthy = generation != 0 && generation == mState->sampleGeneration
++                && sampleLimit != 0 && mState->sampleAdmissions < (std::min)(MaximumJobs,
++                    static_cast<std::uint64_t>(sampleLimit))
++                && memory.physicalValid && memory.physicalTotal != 0
++                && memory.physicalAvailable <= memory.physicalTotal
++                && (memory.commitValid || memory.systemCommitValid)
++                && !(memory.lowMemoryValid && memory.lowMemory)
++                && fits(memory.physicalAvailable, physicalReserve, projected)
++                && (!memory.commitValid || fits(memory.commitAvailable, commitReserve, projected))
++                && (!memory.systemCommitValid || fits(memory.systemCommitAvailable, commitReserve, projected));
++            if (!healthy || stats.pending >= MaximumJobs)
++            {
++                ++stats.denied;
++                return std::nullopt;
++            }
++            ++mState->sampleAdmissions;
++            ++stats.pending;
++            ++stats.admitted;
++            stats.reservedEstimate += Allowance;
++            return Reservation(mState);
++        }
++
+         Stats stats() const
+         {
+             std::lock_guard lock(mState->mutex);
+diff --git a/components/resource/resourcesystem.cpp b/components/resource/resourcesystem.cpp
+index ec80dea7ccff4def3ad762aa8892d43541274ea3..0c25d5080783596adc76e2d424c3cb0409f9beca 100644
+--- a/components/resource/resourcesystem.cpp
++++ b/components/resource/resourcesystem.cpp
+@@ -113,7 +113,13 @@ namespace Resource
+             if (Debug::RuntimeDiagnostics::enabled())
+             {
+                 const auto memory = mHostMemoryBudget.snapshot();
+-                const auto limits = HostMemoryPolicy::limits(memory.physicalTotal);
++                auto limits = HostMemoryPolicy::limits(memory.physicalTotal);
++                if (mHostMemoryBudget.openGlEnabled())
++                {
++                    const auto gl = mHostMemoryBudget.openGlSample();
++                    limits.reserve = gl.decision.limits.physicalReserve;
++                    limits.privateSoft = 0; // no automatic private/RAM cap in GL-P1A
++                }
+                 Debug::RuntimeDiagnostics::recordEvent("host_memory_trim", "optional_resource_owners", {}, {
+                     {"pressure", static_cast<std::uint64_t>(pressure)}, {"removed_entries", removed},
+                     {"per_owner_limit", maximum}, {"physical_valid", memory.physicalValid},
+diff --git a/components/resource/resourcesystem.hpp b/components/resource/resourcesystem.hpp
+index 18c08e77d44dcf80de86bebbb82a4da4a0141f5e..be6330dba7e6d3c169715f56a097df80cf78c6b6 100644
+--- a/components/resource/resourcesystem.hpp
++++ b/components/resource/resourcesystem.hpp
+@@ -52,6 +52,8 @@ namespace Resource
+ 
+         // Configure once before workers start. Disabled preserves legacy policy.
+         void setHostMemoryBudgetEnabled(bool enabled) { mHostMemoryBudget.setEnabled(enabled); }
++        void enableOpenGlHostMemoryBudget(OpenGlPressureConfig config) { mHostMemoryBudget.enableOpenGl(config); }
++        bool openGlHostMemoryBudgetEnabled() const { return mHostMemoryBudget.openGlEnabled(); }
+         HostMemoryPressure hostMemoryPressure() { return mHostMemoryBudget.pressure(); }
+         std::optional<PreloadAdmission::Reservation> reserveOptionalPreload()
+         { return mHostMemoryBudget.reserveOptionalPreload(); }
+diff --git a/components/settings/categories/cells.hpp b/components/settings/categories/cells.hpp
+index 4c966fd5b81dcdf624710faaeaa198c3f7f88af7..2b269b94d5463c71e5620ade74943e94f8196f2a 100644
+--- a/components/settings/categories/cells.hpp
++++ b/components/settings/categories/cells.hpp
+@@ -18,6 +18,13 @@ namespace Settings
+     {
+         using WithIndex::WithIndex;
+ 
++        // OpimizedMW GL-P1A is an independent opt-in, not part of the V3 preset.
++        SettingValue<bool> mOpimizedMWHostPressure{ mIndex, "Cells", "opimizedmw host pressure" };
++        SettingValue<int> mOpimizedMWHostReserveMb{ mIndex, "Cells", "opimizedmw host reserve mb",
++            makeClampSanitizerInt(0, 65536) };
++        SettingValue<int> mOpimizedMWCommitReserveMb{ mIndex, "Cells", "opimizedmw commit reserve mb",
++            makeClampSanitizerInt(256, 65536) };
++
+         // V3.6 keeps profile controls in one category object while preserving the user-facing [V3] section.
+         SettingValue<bool> mV36PerformanceProfile{ mIndex, "V3", "v3.6 performance profile" };
+         SettingValue<bool> mV36DisableRamOverdrive{ mIndex, "V3", "v3.6 disable ram overdrive" };
+diff --git a/files/settings-default.cfg b/files/settings-default.cfg
+index ebdbc162afcc37f2b88a5320c7510727192897f4..ab9b4c891dddc1a8795e7eda0ad2c30b684a8cb5 100644
+--- a/files/settings-default.cfg
++++ b/files/settings-default.cfg
+@@ -295,6 +295,17 @@ v3.16 idle resource sweep = false
+ 
+ [Cells]
+ 
++# OpimizedMW GL-P1A: optional ownership pressure protection (OpenGL only).
++# Off is the existing P0 control. Does not change healthy cache TTL/counts.
++# Startup-only: changes take effect on the next launch; no live policy mutation.
++opimizedmw host pressure = false
++# MiB. 0 scales caution reserve to usable RAM / 8 (minimum 512 MiB).
++# Critical = half this reserve; recovery = 1.25 times reserve for five seconds.
++opimizedmw host reserve mb = 0
++# Independent process/system commit reserve, not a private-RAM usage cap.
++# Critical = 0.25 times this reserve; recovery = 1.5 times reserve.
++opimizedmw commit reserve mb = 1024
++
+ # V3 RAM/cache policy preset.
+ # normal = upstream OpenMW cache behavior.
+ # aggressive = longer-lived caches for systems with spare RAM.

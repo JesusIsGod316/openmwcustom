@@ -1,0 +1,102 @@
+name: OpimizedMW GL-P1A native pressure protection QC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [opimizedmw/gl-p1a-qc]
+
+permissions:
+  contents: read
+
+jobs:
+  Native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            compiler: gcc
+          - os: ubuntu-24.04
+            compiler: clang-sanitized
+          - os: windows-2022
+            compiler: msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Materialize exact allowlisted source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config core.autocrlf false
+          git checkout-index -af
+          python tools/opimizedmw/gl-p1a/prepare-source.py --apply
+          python tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+          python tools/v4/cp4/test-host-memory-integration.py
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Configure native tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ '${{ matrix.compiler }}' == clang-sanitized ]]; then
+            cmake -S tools/opimizedmw/gl-p1a -B build-p1a -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ -DOPIMIZEDMW_P1A_SANITIZERS=ON
+          elif [[ '${{ matrix.compiler }}' == msvc ]]; then
+            cmake -S tools/opimizedmw/gl-p1a -B build-p1a -G Ninja -DCMAKE_BUILD_TYPE=Release
+          else
+            cmake -S tools/opimizedmw/gl-p1a -B build-p1a -DCMAKE_BUILD_TYPE=Release
+          fi
+      - name: Compile and execute actual production policy and OS probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-p1a --config Release --parallel 2
+          ctest --test-dir build-p1a -C Release --output-on-failure --verbose
+          git add $(python -c "import json; print(' '.join(json.load(open('tools/opimizedmw/gl-p1a/source-manifest.json'))['paths']))")
+          git write-tree > build-p1a/tested-tree.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: OpimizedMW-GL-P1A-${{ matrix.compiler }}-${{ github.run_id }}
+          path: |
+            build-p1a/Testing/Temporary/LastTest.log
+            build-p1a/CMakeCache.txt
+            build-p1a/tested-tree.txt
+          if-no-files-found: warn
+
+  Publish:
+    needs: Native
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: OpimizedMW-GL-P1A-*-${{ github.run_id }}
+          path: evidence
+      - name: Publish only the exact native-tested source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/opimizedmw/gl-p1a/prepare-source.py --apply
+          git add $(python -c "import json; print(' '.join(json.load(open('tools/opimizedmw/gl-p1a/source-manifest.json'))['paths']))")
+          tree=$(git write-tree)
+          count=0
+          while IFS= read -r file; do
+            test "$(tr -d '\r\n' < "$file")" = "$tree"
+            count=$((count + 1))
+          done < <(find evidence -name tested-tree.txt -type f)
+          test "$count" = 3
+          git config user.name 'OpimizedMW maintenance'
+          git config user.email 'opimizedmw@users.noreply.github.com'
+          git commit -m 'OpimizedMW GL-P1A: materialize native-tested OpenGL pressure protection' -m "Native GCC, Clang sanitizers and Windows MSVC policy/OS-probe tests passed. Tested tree: $tree. Full game build and runtime acceptance remain pending."
+          git push origin HEAD:refs/heads/opimizedmw/gl-p1a
+          git rev-parse HEAD > published-source.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpimizedMW-GL-P1A-published-${{ github.run_id }}
+          path: published-source.txt
