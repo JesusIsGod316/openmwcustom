@@ -5,6 +5,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <exception>
 #include <limits>
@@ -480,6 +481,7 @@ namespace MWRender
     struct Animation::AnimSource
     {
         osg::ref_ptr<const SceneUtil::KeyframeHolder> mKeyframes;
+        std::string mPath;
 
         typedef std::map<std::string, osg::ref_ptr<SceneUtil::KeyframeController>> ControllerMap;
 
@@ -802,6 +804,7 @@ namespace MWRender
         std::shared_ptr<AnimSource> animsrc = std::make_shared<AnimSource>();
 
         animsrc->mKeyframes = std::move(keyframes);
+        animsrc->mPath = std::string(kfname.value());
 
         const NodeMap* nodeMapPtr = nullptr;
         {
@@ -838,8 +841,9 @@ namespace MWRender
                     osg::Node* node = found->second;
                     const size_t blendMask = detectBlendMask(node, it->second->getName());
                     if (hybridVisual
-                        && (blendMask == BoneGroup_LowerBody || bonename.find("finger") != std::string::npos
-                            || bonename == "bip01 neck" || bonename == "bip01 head"))
+                        && ((blendMask == BoneGroup_LowerBody && bonename != "bip01"
+                                && bonename != "bip01 pelvis" && bonename != "bip01 spine")
+                            || bonename.find("finger") != std::string::npos || bonename == "bip01 head"))
                         continue;
 
                     osg::ref_ptr<SceneUtil::KeyframeController> cloned
@@ -878,8 +882,9 @@ namespace MWRender
                     osg::Node* node = found->second;
                     const size_t blendMask = detectBlendMask(node, it->second->getName());
                     if (hybridVisual
-                        && (blendMask == BoneGroup_LowerBody || bonename.find("finger") != std::string::npos
-                            || bonename == "bip01 neck" || bonename == "bip01 head"))
+                        && ((blendMask == BoneGroup_LowerBody && bonename != "bip01"
+                                && bonename != "bip01 pelvis" && bonename != "bip01 spine")
+                            || bonename.find("finger") != std::string::npos || bonename == "bip01 head"))
                         continue;
                     const SceneUtil::KeyframeController* controller = it->second.get();
                     if (dynamic_cast<const NifOsg::KeyframeController*>(controller) == nullptr)
@@ -1223,7 +1228,11 @@ namespace MWRender
                         }
                         if (appendHybridTimeAnchor(
                                 state.mHybridTimeAnchors, state.mStopTime, visualState.mStopTime))
+                        {
                             syncHybridVisualTime(state);
+                            Log(Debug::Info) << "Hybrid FP visual group '" << groupname << "' from "
+                                             << (*visualIt)->mPath;
+                        }
                         else
                         {
                             state.mHybridVisualSource.reset();
@@ -1430,6 +1439,8 @@ namespace MWRender
 
         mAccumCtrl = nullptr;
         mHybridMeleeVisualActive = false;
+        std::shared_ptr<AnimSource> lowerSource;
+        bool torsoVisualReady = false;
 
         for (size_t blendMask = 0; blendMask < sNumBlendMasks; blendMask++)
         {
@@ -1453,8 +1464,91 @@ namespace MWRender
             if (active != mStates.end())
             {
                 std::shared_ptr<AnimSource> animsrc = active->second.mSource;
+                if (blendMask == BoneGroup_LowerBody)
+                    lowerSource = animsrc;
                 const AnimBlendStateData stateData
                     = { .mGroupname = active->second.mGroupname, .mStartKey = active->second.mStartKey };
+
+                std::shared_ptr<HybridTorsoPose> torsoPose;
+                if (mHybridVisualEnabled && blendMask == BoneGroup_Torso && lowerSource
+                    && active->second.mHybridVisualSource)
+                {
+                    static constexpr std::array<std::string_view, 3> lowerNames
+                        = { "bip01", "bip01 pelvis", "bip01 spine" };
+                    static constexpr std::array<std::string_view, 3> chestNames
+                        = { "bip01 spine1", "bip01 spine2", "bip01 neck" };
+                    HybridTorsoPose::Tracks primaryLower;
+                    HybridTorsoPose::Tracks visualLower;
+                    HybridTorsoPose::Tracks visualChest;
+                    bool complete = true;
+                    for (size_t i = 0; i < lowerNames.size(); ++i)
+                    {
+                        const std::string lowerName(lowerNames[i]);
+                        const std::string chestName(chestNames[i]);
+                        const auto& primaryMap = lowerSource->mControllerMap[BoneGroup_LowerBody];
+                        const auto& visualLowerMap
+                            = active->second.mHybridVisualSource->mControllerMap[BoneGroup_LowerBody];
+                        const auto& visualChestMap
+                            = active->second.mHybridVisualSource->mControllerMap[BoneGroup_Torso];
+                        const auto primaryIt = primaryMap.find(lowerName);
+                        const auto visualLowerIt = visualLowerMap.find(lowerName);
+                        const auto visualChestIt = visualChestMap.find(chestName);
+                        if (primaryIt == primaryMap.end() || visualChestIt == visualChestMap.end())
+                        {
+                            complete = false;
+                            break;
+                        }
+                        primaryLower[i] = primaryIt->second;
+                        osg::ref_ptr<SceneUtil::KeyframeController> visualLowerTrack;
+                        bool fixedLowerTrack = visualLowerIt == visualLowerMap.end();
+                        if (!fixedLowerTrack)
+                            visualLowerTrack = visualLowerIt->second;
+                        else
+                        {
+                            // Some authored FP clips (notably ReAnimation bow
+                            // groups) omit the root. Use the FP base pose for
+                            // that missing parent, not a different clip's time.
+                            for (const auto& source : mHybridVisualSources)
+                            {
+                                const auto& baseMap = source->mControllerMap[BoneGroup_LowerBody];
+                                const auto found = baseMap.find(lowerName);
+                                if (found != baseMap.end())
+                                {
+                                    visualLowerTrack = found->second;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!visualLowerTrack)
+                        {
+                            complete = false;
+                            break;
+                        }
+                        auto& boundLower = active->second.mHybridBoundControllers[BoneGroup_LowerBody];
+                        auto& boundChest = active->second.mHybridBoundControllers[BoneGroup_Torso];
+                        const auto bindVisual = [&](auto& bound, const std::string& name,
+                                                    const osg::ref_ptr<SceneUtil::KeyframeController>& source,
+                                                    bool fixed) {
+                            const auto found = bound.find(name);
+                            if (found != bound.end())
+                                return found->second;
+                            osg::ref_ptr<SceneUtil::KeyframeController> clone
+                                = osg::clone(source.get(), osg::CopyOp::SHALLOW_COPY);
+                            if (fixed)
+                                clone->setSource(std::make_shared<NullAnimationTime>());
+                            else
+                                clone->setSource(active->second.mHybridTimeSource);
+                            bound.emplace(name, clone);
+                            return clone;
+                        };
+                        visualLower[i] = bindVisual(boundLower, lowerName, visualLowerTrack, fixedLowerTrack);
+                        visualChest[i] = bindVisual(boundChest, chestName, visualChestIt->second, false);
+                    }
+                    if (complete)
+                        torsoPose = std::make_shared<HybridTorsoPose>(
+                            std::move(primaryLower), std::move(visualLower), std::move(visualChest));
+                    torsoVisualReady = static_cast<bool>(torsoPose);
+                }
 
                 for (AnimSource::ControllerMap::iterator it = animsrc->mControllerMap[blendMask].begin();
                      it != animsrc->mControllerMap[blendMask].end(); ++it)
@@ -1473,9 +1567,9 @@ namespace MWRender
                         // First-person finger tracks can share third-person
                         // names while assuming a different rest rig.
                         const bool protectedBone = it->first.find("finger") != std::string::npos
-                            || it->first == "bip01 neck" || it->first == "bip01 head";
+                            || it->first == "bip01 head";
                         osg::ref_ptr<SceneUtil::KeyframeController> visual;
-                        if (!protectedBone && active->second.mHybridVisualSource)
+                        if (!protectedBone && active->second.mHybridVisualSource && torsoVisualReady)
                         {
                             const auto& visualMap
                                 = active->second.mHybridVisualSource->mControllerMap[blendMask];
@@ -1506,9 +1600,18 @@ namespace MWRender
                                 hybridController = new HybridNifAnimController;
                                 mHybridNifControllers.emplace(node, hybridController);
                             }
-                            const float weight = blendMask == BoneGroup_Torso ? 0.45f : 1.f;
-                            hybridController->setTracks(
-                                it->second, visual, active->second.mHybridVisualTime, weight);
+                            int torsoBone = -1;
+                            if (blendMask == BoneGroup_Torso)
+                            {
+                                if (it->first == "bip01 spine1")
+                                    torsoBone = 0;
+                                else if (it->first == "bip01 spine2")
+                                    torsoBone = 1;
+                                else if (it->first == "bip01 neck")
+                                    torsoBone = 2;
+                            }
+                            hybridController->setTracks(it->second, visual,
+                                active->second.mHybridVisualTime, 1.f, torsoPose, torsoBone);
                             callback = hybridController;
                             hybridBound = true;
                             if (visual && blendMask == BoneGroup_RightArm
