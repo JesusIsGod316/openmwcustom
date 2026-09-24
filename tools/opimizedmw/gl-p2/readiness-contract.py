@@ -30,8 +30,11 @@ checks = {
     "weak private wrapper released": "entry.mRenderingNode = nullptr" in terrain,
     "P1 near-future priority exists": "SpeculativePriority::NearFuture" in cell
         and "reservedNearFutureJobs" in budget,
-    "P1 reserves upgrade slot only with readiness split": "mOpimizedMWPagingReadinessSplit" in engine
-        and "reservedNearFutureJobs" in engine,
+    "P1 reserves one imminent-cell job slot": "reservedNearFutureJobs = 1" in engine,
+    "P2 optional tail uses priority byte policy without job competition":
+        "SpeculativeScope speculativeScope(budget" in cell
+        and "SpeculativePriority::NearFuture" in cell
+        and "priorityJob" not in cell,
 }
 failed=[name for name, ok in checks.items() if not ok]
 if failed:
