@@ -42,6 +42,7 @@ for line in (
 
 budget = (ROOT / "components/resource/speculativebudget.hpp").read_text(encoding="utf-8")
 cell = (ROOT / "apps/openmw/mwworld/cellpreloader.cpp").read_text(encoding="utf-8")
+scene = (ROOT / "apps/openmw/mwworld/scene.cpp").read_text(encoding="utf-8")
 terrain = (ROOT / "components/terrain/quadtreeworld.cpp").read_text(encoding="utf-8")
 engine = (ROOT / "apps/openmw/engine.cpp").read_text(encoding="utf-8")
 
@@ -53,6 +54,9 @@ checks = {
     "direct strong upgrade": "preloadStrongUpgrade" in cell and "preloadStrongUpgrade" in terrain,
     "weak private owner release": "entry.mRenderingNode = nullptr" in terrain,
     "required wait does not join optional tail": "Do not join the optional strong-upgrade tail" in cell,
+    "closest exterior preload gets near-future lane": "const bool nearFuture = attemptedNew == 0" in scene
+        and "tryJob(" in cell and "priority)" in cell,
+    "wider speculation stays background": "Wider grid/door/fast-travel speculation" in scene,
 }
 failed = [name for name, ok in checks.items() if not ok]
 if failed:
