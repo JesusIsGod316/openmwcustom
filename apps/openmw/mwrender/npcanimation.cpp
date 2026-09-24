@@ -534,6 +534,8 @@ namespace MWRender
                 mHeadModel = std::move(vampireHead);
 
         bool is1stPerson = mViewMode == VM_FirstPerson;
+        mHybridVisualEnabled = mViewMode == VM_FirstPersonFullBody && !isWerewolf
+            && mPtr == MWMechanics::getPlayer() && Settings::camera().mFullBodyFirstPersonHybridAnimations;
         bool isBeast = (race->mData.mFlags & ESM::Race::Beast) != 0;
 
         std::string_view base;
@@ -591,6 +593,20 @@ namespace MWRender
 
         if (v325BatchSources)
             endAnimSourceBatch();
+
+        if (mHybridVisualEnabled)
+        {
+            // Use the same VFS paths and additional-source order as native first
+            // person. Winning regular or modded KF files are visual companions,
+            // while the normal sources above keep events and root movement.
+            const std::string firstPersonBase(Settings::models().mXbaseanim1st.get().value());
+            addHybridVisualSource(firstPersonBase, smodel);
+            const std::string firstPersonSkeleton = Misc::ResourceHelpers::correctActorModelPath(
+                VFS::Path::toNormalized(getActorSkeleton(true, isFemale, isBeast, false)),
+                mResourceSystem->getVFS());
+            if (firstPersonSkeleton != firstPersonBase)
+                addHybridVisualSource(firstPersonSkeleton, smodel);
+        }
 
         if (is1stPerson)
         {

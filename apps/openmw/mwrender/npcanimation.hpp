@@ -145,7 +145,8 @@ namespace MWRender
             // full-body first-person view and the ordinary third-person actor
             // skeleton. This deliberately covers NPCs as well as the player;
             // combat hit/contact direction remains owned by mechanics.
-            if ((mViewMode != VM_Normal && mViewMode != VM_FirstPersonFullBody) || !mAccurateAiming)
+            if ((mViewMode != VM_Normal && mViewMode != VM_FirstPersonFullBody) || !mAccurateAiming
+                || mHybridMeleeVisualActive)
                 return 0.f;
 
             int weaponType = ESM::Weapon::None;

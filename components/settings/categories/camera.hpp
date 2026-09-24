@@ -27,6 +27,8 @@ namespace Settings
         SettingValue<float> mFirstPersonFieldOfView{ mIndex, "Camera", "first person field of view",
             makeClampSanitizerFloat(1, 179) };
         SettingValue<bool> mV321FullBodyFirstPerson{ mIndex, "Camera", "v3.21 full body first person" };
+        SettingValue<bool> mFullBodyFirstPersonHybridAnimations{
+            mIndex, "Camera", "full body first person hybrid animations" };
         SettingValue<bool> mV321FullBodyFirstPersonShadowCompat{ mIndex, "Camera",
             "v3.21 full body first person shadow compatibility" };
         SettingValue<float> mV321FullBodyFirstPersonForwardOffset{ mIndex, "Camera",

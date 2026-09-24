@@ -5,12 +5,97 @@
 
 #include <osgAnimation/Bone>
 
+#include <algorithm>
 #include <cassert>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace MWRender
 {
+    void HybridNifAnimController::setTracks(osg::ref_ptr<SceneUtil::KeyframeController> primary,
+        osg::ref_ptr<SceneUtil::KeyframeController> visual,
+        const std::shared_ptr<float>& visualTime, float visualWeight)
+    {
+        mPrimary = std::move(primary);
+        if (visual)
+        {
+            if (mVisualTime != visualTime)
+            {
+                mPreviousVisual = mVisual;
+                mVisualMix = mPreviousVisual && mWeight > 0.f ? 0.f : 1.f;
+            }
+            mVisual = std::move(visual);
+            mVisualTime = visualTime;
+        }
+        mTargetWeight = mVisual && visualWeight > 0.f ? std::clamp(visualWeight, 0.f, 1.f) : 0.f;
+    }
+
+    void HybridNifAnimController::operator()(NifOsg::MatrixTransform* node, osg::NodeVisitor* nv)
+    {
+        const float now = static_cast<float>(nv->getFrameStamp()->getSimulationTime());
+        const float dt = mLastTime < 0.f ? 0.f : std::clamp(now - mLastTime, 0.f, 0.05f);
+        mLastTime = now;
+        const float step = dt * (mTargetWeight > mWeight ? 8.f : 5.f);
+        if (mTargetWeight > mWeight)
+            mWeight = std::min(mTargetWeight, mWeight + step);
+        else
+            mWeight = std::max(mTargetWeight, mWeight - step);
+
+        if (!mPrimary)
+        {
+            traverse(node, nv);
+            return;
+        }
+
+        auto primary = mPrimary->getCurrentTransformation(nv);
+        if (mWeight > 0.f && mVisual)
+        {
+            auto visual = mVisual->getCurrentTransformation(nv);
+            if (mPreviousVisual && mVisualMix < 1.f)
+            {
+                mVisualMix = std::min(1.f, mVisualMix + dt * 8.f);
+                const auto previous = mPreviousVisual->getCurrentTransformation(nv);
+                if (previous.mRotation && visual.mRotation)
+                {
+                    osg::Quat rotation;
+                    rotation.slerp(mVisualMix, *previous.mRotation, *visual.mRotation);
+                    visual.mRotation = rotation;
+                }
+                if (previous.mTranslation && visual.mTranslation)
+                    visual.mTranslation = *previous.mTranslation * (1.f - mVisualMix)
+                        + *visual.mTranslation * mVisualMix;
+            }
+            if (mVisualMix >= 1.f)
+                mPreviousVisual = nullptr;
+            if (primary.mRotation && visual.mRotation)
+            {
+                osg::Quat rotation;
+                rotation.slerp(mWeight, *primary.mRotation, *visual.mRotation);
+                primary.mRotation = rotation;
+            }
+            if (primary.mTranslation && visual.mTranslation)
+                primary.mTranslation = *primary.mTranslation * (1.f - mWeight) + *visual.mTranslation * mWeight;
+            // Keep the full-body scale, including any modded visibility keys.
+        }
+        else if (mTargetWeight == 0.f)
+        {
+            mVisual = nullptr;
+            mPreviousVisual = nullptr;
+            mVisualTime.reset();
+        }
+
+        if (primary.mRotation)
+            node->setRotation(*primary.mRotation);
+        else
+            node->setRotation(node->mRotationScale);
+        if (primary.mTranslation)
+            node->setTranslation(*primary.mTranslation);
+        if (primary.mScale)
+            node->setScale(*primary.mScale);
+        traverse(node, nv);
+    }
+
     namespace
     {
         // Animation Easing/Blending functions

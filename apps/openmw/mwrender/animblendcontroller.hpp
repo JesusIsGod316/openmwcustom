@@ -2,6 +2,7 @@
 #define OPENMW_MWRENDER_ANIMBLENDCONTROLLER_H
 
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -80,6 +81,40 @@ namespace MWRender
         osg::Quat mBlendStartRot;
         osg::Vec3f mBlendStartTrans;
         float mBlendStartScale = 0.0f;
+    };
+
+    // Samples two tracks on one NIF bone. The primary track remains the
+    // gameplay/full-body animation; the visual track never owns text keys or
+    // root accumulation. Instances survive controller rebuilds so the visual
+    // weight can decay when a group is interrupted.
+    class HybridNifAnimController
+        : public SceneUtil::NodeCallback<HybridNifAnimController, NifOsg::MatrixTransform*>
+    {
+    public:
+        HybridNifAnimController() = default;
+
+        HybridNifAnimController(const HybridNifAnimController& other, const osg::CopyOp&)
+            : HybridNifAnimController()
+        {
+        }
+
+        META_Object(MWRender, HybridNifAnimController)
+
+        void setTracks(osg::ref_ptr<SceneUtil::KeyframeController> primary,
+            osg::ref_ptr<SceneUtil::KeyframeController> visual,
+            const std::shared_ptr<float>& visualTime, float visualWeight);
+        bool hasActiveBlend() const { return mWeight > 0.f; }
+        void operator()(NifOsg::MatrixTransform* node, osg::NodeVisitor* nv);
+
+    private:
+        osg::ref_ptr<SceneUtil::KeyframeController> mPrimary;
+        osg::ref_ptr<SceneUtil::KeyframeController> mVisual;
+        osg::ref_ptr<SceneUtil::KeyframeController> mPreviousVisual;
+        std::shared_ptr<float> mVisualTime;
+        float mWeight = 0.f;
+        float mTargetWeight = 0.f;
+        float mVisualMix = 1.f;
+        float mLastTime = -1.f;
     };
 
     class BoneAnimBlendController : public SceneUtil::NodeCallback<BoneAnimBlendController, osgAnimation::Bone*>,

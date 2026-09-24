@@ -158,6 +158,11 @@ namespace MWRender
         struct AnimState
         {
             std::shared_ptr<AnimSource> mSource;
+            std::shared_ptr<AnimSource> mHybridVisualSource;
+            std::shared_ptr<float> mHybridVisualTime;
+            std::shared_ptr<AnimationTime> mHybridTimeSource;
+            std::vector<std::pair<float, float>> mHybridTimeAnchors;
+            std::map<std::string, osg::ref_ptr<SceneUtil::KeyframeController>> mHybridBoundControllers[sNumBlendMasks];
             float mStartTime = 0;
             float mLoopStartTime = 0;
             float mLoopStopTime = 0;
@@ -190,6 +195,9 @@ namespace MWRender
 
         typedef std::vector<std::shared_ptr<AnimSource>> AnimSourceList;
         AnimSourceList mAnimSources;
+        AnimSourceList mHybridVisualSources;
+        bool mHybridVisualEnabled = false;
+        bool mHybridMeleeVisualActive = false;
 
         std::unordered_set<std::string_view> mSupportedAnimations;
         mutable std::vector<std::pair<std::string, MWWorld::MovementDirectionFlags>> mSupportedDirections;
@@ -216,6 +224,7 @@ namespace MWRender
         // Keep track of the animation controllers for easy access
         std::map<osg::ref_ptr<osg::Node>, osg::ref_ptr<NifAnimBlendController>> mAnimBlendControllers;
         std::map<osg::ref_ptr<osg::Node>, osg::ref_ptr<BoneAnimBlendController>> mBoneAnimBlendControllers;
+        std::map<osg::ref_ptr<osg::Node>, osg::ref_ptr<HybridNifAnimController>> mHybridNifControllers;
 
         std::shared_ptr<AnimationTime> mAnimationTimePtr[sNumBlendMasks];
 
@@ -282,6 +291,7 @@ namespace MWRender
          * in the AnimationState to the corresponding nodes.
          */
         void resetActiveGroups();
+        void syncHybridVisualTime(AnimState& state);
 
         size_t detectBlendMask(const osg::Node* node, const std::string& controllerName) const;
 
@@ -312,7 +322,9 @@ namespace MWRender
          */
         void setObjectRoot(const std::string& model, bool forceskeleton, bool baseonly, bool isCreature);
 
-        void loadAdditionalAnimations(VFS::Path::NormalizedView model, const std::string& baseModel);
+        void loadAdditionalAnimations(
+            VFS::Path::NormalizedView model, const std::string& baseModel, bool hybridVisual = false);
+        void addHybridVisualSource(std::string_view model, const std::string& baseModel);
 
         /** Adds the keyframe controllers in the specified model as a new animation source.
          * @note Later added animation sources have the highest priority when it comes to finding a particular
@@ -321,7 +333,8 @@ namespace MWRender
          * @param baseModel The filename of the mObjectRoot, only used for error messages.
          */
         void addAnimSource(std::string_view model, const std::string& baseModel);
-        std::shared_ptr<AnimSource> addSingleAnimSource(VFS::Path::NormalizedView kfname, const std::string& baseModel);
+        std::shared_ptr<AnimSource> addSingleAnimSource(
+            VFS::Path::NormalizedView kfname, const std::string& baseModel, bool hybridVisual = false);
 
         // V3.25 bridge primitive: defer actor-global source finalization across a
         // known-safe group of ordered animation-source additions. Generic callers

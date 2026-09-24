@@ -1,7 +1,8 @@
 # Full-body first-person hybrid animation: source audit and composition contract
 
-Status: source and reference audit, 2026-09-24. No hybrid runtime path is enabled
-or claimed playable at this checkpoint. Feature branch
+Status: source and reference audit, 2026-09-24. A default-off engine prototype
+is being implemented on the feature branch. It is not runtime validated.
+Feature branch
 `codex/ffpb-hybrid-animation` starts at `opimizedmw/gl-p2` commit
 `17e6e5e6bb1f5ca297236f75507e515375007199`.
 
@@ -112,23 +113,39 @@ missing anchors to the control path. Only the visual companion reads this
 mapped time. Smooth weight transitions must cover draw, attack, recovery,
 interruptions and FP/TP switches, including actor rebuild after load.
 
-## Required implementation gates before the first Windows build
+## Prototype implementation and validation gates
 
-1. Add an opt-in setting whose disabled path leaves native FP, existing FFPB,
-   ordinary TP and NPC source binding exactly as before.
-2. Add a visual-only companion source with cached compatible node bindings,
-   a separately mapped time, and no text-key dispatch or root accumulation.
-   Pair it with the authoritative normal `AnimState`, never a second actor.
-3. Add weighted per-bone composition and transition lifetime rules. Existing
-   `AnimBlendController` track switching alone cannot meet this contract.
-4. Disable only the extra FFPB melee pitch when authored FP melee has actually
-   taken over. Keep ranged pitch and all third-person/NPC correction.
-5. Test disabled-path parity, source selection, missing-bone fallback,
+The prototype loads the winning native first-person base KF and additional
+first-person animation directory sources through OpenMW's VFS. It pairs a
+matching visual group with the normal full-body state. The normal source
+remains the only source of text keys and root motion. Matching animation
+phase keys produce a monotone visual time map, and a callback samples both
+NIF tracks on the same actor bone. Upper arm/weapon tracks can receive the
+authored FP pose; torso is initially weighted to 0.45, while root, pelvis,
+legs, neck, head and fingers remain on the full-body track. Visual transitions
+and interruptions are weight-blended. Unsupported/missing NIF tracks fall
+back per bone. The new setting defaults off.
+
+This first slice does not retarget different rest poses or finger rigs, and
+its torso weight is a test setting rather than a promoted camera-clipping
+solution. OSG animation controllers remain on the normal source. Runtime
+testing must check regular first-person assets and a representative modded
+stack, especially hand/weapon framing, chest clipping, draw/sheath, and
+attack follow-through. The same binary with the setting off is the control.
+
+1. Verify disabled-path parity for native FP, existing FFPB, ordinary TP and
+   NPCs in a compiled build.
+2. Verify one actor/skeleton, cached compatible visual bindings, mapped time,
+   and no additional text-key dispatch or root accumulation.
+3. Test authored upper-body/weapon motion and smooth attack, draw and recovery
+   transitions with regular and modded first-person animations.
+4. Verify extra FFPB melee pitch is excluded only while authored FP melee is
+   active. Keep ranged pitch and third-person/NPC correction.
+5. Test missing-bone/source fallback,
    root/pelvis single ownership, attack-event single dispatch, FP/TP/load
    rebuild, equipment and complete shadow geometry. Add test vectors for
    mismatched ReAnimation attack timelines and finger rig differences.
 
-No Windows build is warranted for this audit checkpoint. It changes no engine
-source or runtime behavior. The first build should follow a coherent playable
-prototype satisfying gates 1-4, then user runtime validation determines
-whether its presentation or performance can be promoted.
+The first Windows build should follow cheap source checks. Its result is a
+compile gate only; user runtime validation determines whether the visual
+presentation or performance can be promoted.

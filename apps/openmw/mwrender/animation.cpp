@@ -1,10 +1,12 @@
 #include "animation.hpp"
+#include "hybridanimationtimemap.hpp"
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
 #include "v4persistentobject.hpp"
 #endif
 
 #include <algorithm>
 #include <cstdlib>
+#include <exception>
 #include <limits>
 #include <vector>
 
@@ -633,7 +635,8 @@ namespace MWRender
         return mKeyframes->mTextKeys;
     }
 
-    void Animation::loadAdditionalAnimations(VFS::Path::NormalizedView model, const std::string& baseModel)
+    void Animation::loadAdditionalAnimations(
+        VFS::Path::NormalizedView model, const std::string& baseModel, bool hybridVisual)
     {
         constexpr VFS::Path::NormalizedView meshes("meshes/");
         if (!model.value().starts_with(meshes.value()))
@@ -653,7 +656,7 @@ namespace MWRender
         constexpr VFS::Path::ExtensionView kf("kf");
         for (const VFS::Path::Normalized& name : mResourceSystem->getVFS()->getRecursiveDirectoryIterator(path))
             if (name.extension() == kf)
-                addSingleAnimSource(name, baseModel);
+                addSingleAnimSource(name, baseModel, hybridVisual);
     }
 
     void Animation::flushV325PendingControllerClones()
@@ -759,8 +762,26 @@ namespace MWRender
             loadAdditionalAnimations(kfname, baseModel);
     }
 
+    void Animation::addHybridVisualSource(std::string_view model, const std::string& baseModel)
+    {
+        VFS::Path::Normalized kfname(model);
+        if (kfname.extension() == VFS::Path::ExtensionView("nif"))
+            kfname.changeExtension(VFS::Path::ExtensionView("kf"));
+        try
+        {
+            addSingleAnimSource(kfname, baseModel, true);
+            if (Settings::game().mUseAdditionalAnimSources)
+                loadAdditionalAnimations(kfname, baseModel, true);
+        }
+        catch (const std::exception& e)
+        {
+            Log(Debug::Warning) << "Hybrid first-person animation source '" << kfname
+                                << "' could not be bound: " << e.what();
+        }
+    }
+
     std::shared_ptr<Animation::AnimSource> Animation::addSingleAnimSource(
-        VFS::Path::NormalizedView kfname, const std::string& baseModel)
+        VFS::Path::NormalizedView kfname, const std::string& baseModel, bool hybridVisual)
     {
         Debug::V324DeepTelemetry::Scope v324DeepScope("animation", "add_single_anim_source");
 
@@ -808,13 +829,18 @@ namespace MWRender
                     NodeMap::const_iterator found = nodeMap.find(bonename);
                     if (found == nodeMap.end())
                     {
-                        Log(Debug::Warning) << "Warning: addAnimSource: can't find bone '" + bonename << "' in " << baseModel
-                                            << " (referenced by " << kfname << ")";
+                        if (!hybridVisual)
+                            Log(Debug::Warning) << "Warning: addAnimSource: can't find bone '" + bonename << "' in "
+                                                << baseModel << " (referenced by " << kfname << ")";
                         continue;
                     }
 
                     osg::Node* node = found->second;
                     const size_t blendMask = detectBlendMask(node, it->second->getName());
+                    if (hybridVisual
+                        && (blendMask == BoneGroup_LowerBody || bonename.find("finger") != std::string::npos
+                            || bonename == "bip01 neck" || bonename == "bip01 head"))
+                        continue;
 
                     osg::ref_ptr<SceneUtil::KeyframeController> cloned
                         = osg::clone(it->second.get(), osg::CopyOp::SHALLOW_COPY);
@@ -843,13 +869,18 @@ namespace MWRender
                     NodeMap::const_iterator found = nodeMap.find(bonename);
                     if (found == nodeMap.end())
                     {
-                        Log(Debug::Warning) << "Warning: addAnimSource: can't find bone '" + bonename << "' in " << baseModel
-                                            << " (referenced by " << kfname << ")";
+                        if (!hybridVisual)
+                            Log(Debug::Warning) << "Warning: addAnimSource: can't find bone '" + bonename << "' in "
+                                                << baseModel << " (referenced by " << kfname << ")";
                         continue;
                     }
 
                     osg::Node* node = found->second;
                     const size_t blendMask = detectBlendMask(node, it->second->getName());
+                    if (hybridVisual
+                        && (blendMask == BoneGroup_LowerBody || bonename.find("finger") != std::string::npos
+                            || bonename == "bip01 neck" || bonename == "bip01 head"))
+                        continue;
                     const SceneUtil::KeyframeController* controller = it->second.get();
                     if (dynamic_cast<const NifOsg::KeyframeController*>(controller) == nullptr)
                         workerCloneSafe = false;
@@ -890,12 +921,17 @@ namespace MWRender
             }
         }
 
-        mAnimSources.push_back(animsrc);
+        if (hybridVisual)
+            mHybridVisualSources.push_back(animsrc);
+        else
+        {
+            mAnimSources.push_back(animsrc);
+            mSupportedDirections.clear();
+            for (const std::string& group : animsrc->getTextKeys().getGroups())
+                mSupportedAnimations.insert(group);
+        }
 
-        mSupportedDirections.clear();
-        for (const std::string& group : mAnimSources.back()->getTextKeys().getGroups())
-            mSupportedAnimations.insert(group);
-
+        if (!hybridVisual)
         {
             Debug::V36ControllerTrace::PhaseScope v36SourceAssign(
                 v36ControllerTrace, Debug::V36ControllerTrace::Phase::SourceAssign);
@@ -909,7 +945,7 @@ namespace MWRender
         }
 
         // Determine the movement accumulation bone if necessary
-        if (!mAccumRoot)
+        if (!hybridVisual && !mAccumRoot)
         {
             // Priority matters! bip01 is preferred.
             static const std::initializer_list<std::string_view> accumRootNames = { "bip01", "root bone" };
@@ -934,7 +970,7 @@ namespace MWRender
         }
 
         // Get the blending rules
-        if (Settings::game().mSmoothAnimTransitions)
+        if (!hybridVisual && Settings::game().mSmoothAnimTransitions)
         {
             constexpr VFS::Path::ExtensionView yaml("yaml");
 
@@ -973,6 +1009,7 @@ namespace MWRender
         mAnimSourceBatchDepth = 0;
         mAnimSourceBatchNeedsControllerAssignment = false;
         mStates.clear();
+        mHybridMeleeVisualActive = false;
 
         for (size_t i = 0; i < sNumBlendMasks; i++)
             mAnimationTimePtr[i]->setTimePtr(std::shared_ptr<float>());
@@ -982,6 +1019,8 @@ namespace MWRender
         mSupportedAnimations.clear();
         mSupportedDirections.clear();
         mAnimSources.clear();
+        mHybridVisualSources.clear();
+        mHybridNifControllers.clear();
 
         mAnimVelocities.clear();
     }
@@ -1135,6 +1174,65 @@ namespace MWRender
                 state.mGroupname = groupname;
                 state.mStartKey = start;
                 state.mStopKey = stop;
+
+                if (mHybridVisualEnabled)
+                {
+                    // Keep the normal state authoritative. The companion has
+                    // its own time and never enters mStates or dispatches keys.
+                    for (auto visualIt = mHybridVisualSources.rbegin();
+                         visualIt != mHybridVisualSources.rend(); ++visualIt)
+                    {
+                        AnimState visualState;
+                        const SceneUtil::TextKeyMap& visualKeys = (*visualIt)->getTextKeys();
+                        if (!reset(visualState, visualKeys, groupname, start, stop, startpoint, loopfallback))
+                            continue;
+
+                        state.mHybridVisualSource = *visualIt;
+                        state.mHybridVisualTime = visualState.mTime;
+                        state.mHybridTimeSource = std::make_shared<AnimationTime>();
+                        state.mHybridTimeSource->setTimePtr(state.mHybridVisualTime);
+                        if (!appendHybridTimeAnchor(
+                                state.mHybridTimeAnchors, state.mStartTime, visualState.mStartTime))
+                        {
+                            state.mHybridVisualSource.reset();
+                            state.mHybridVisualTime.reset();
+                            break;
+                        }
+
+                        // Matching phase keys keep authored attack windup and
+                        // hit poses aligned even when the two clips use very
+                        // different absolute timelines. Malformed/nonmonotone
+                        // pairs are ignored; endpoints still give a fallback.
+                        float lastVisual = visualState.mStartTime;
+                        for (auto key = textkeys.lowerBound(state.mStartTime); key != textkeys.end()
+                             && key->first < state.mStopTime; ++key)
+                        {
+                            if (key->first <= state.mStartTime)
+                                continue;
+                            for (auto visualKey = visualKeys.lowerBound(lastVisual); visualKey != visualKeys.end()
+                                 && visualKey->first < visualState.mStopTime; ++visualKey)
+                            {
+                                if (visualKey->first <= lastVisual
+                                    || !Misc::StringUtils::ciEqual(key->second, visualKey->second))
+                                    continue;
+                                if (appendHybridTimeAnchor(
+                                        state.mHybridTimeAnchors, key->first, visualKey->first))
+                                    lastVisual = visualKey->first;
+                                break;
+                            }
+                        }
+                        if (appendHybridTimeAnchor(
+                                state.mHybridTimeAnchors, state.mStopTime, visualState.mStopTime))
+                            syncHybridVisualTime(state);
+                        else
+                        {
+                            state.mHybridVisualSource.reset();
+                            state.mHybridVisualTime.reset();
+                            state.mHybridTimeAnchors.clear();
+                        }
+                        break;
+                    }
+                }
                 mStates[std::string{ groupname }] = state;
 
                 if (state.mPlaying)
@@ -1168,6 +1266,13 @@ namespace MWRender
         }
 
         resetActiveGroups();
+    }
+
+    void Animation::syncHybridVisualTime(AnimState& state)
+    {
+        if (!state.mHybridVisualTime || state.mHybridTimeAnchors.size() < 2)
+            return;
+        *state.mHybridVisualTime = mapHybridAnimationTime(state.mHybridTimeAnchors, state.getTime());
     }
 
     bool Animation::reset(AnimState& state, const SceneUtil::TextKeyMap& keys, std::string_view groupname,
@@ -1324,12 +1429,13 @@ namespace MWRender
         mActiveControllers.clear();
 
         mAccumCtrl = nullptr;
+        mHybridMeleeVisualActive = false;
 
         for (size_t blendMask = 0; blendMask < sNumBlendMasks; blendMask++)
         {
-            AnimStateMap::const_iterator active = mStates.end();
+            AnimStateMap::iterator active = mStates.end();
 
-            AnimStateMap::const_iterator state = mStates.begin();
+            AnimStateMap::iterator state = mStates.begin();
             for (; state != mStates.end(); ++state)
             {
                 if (!state->second.blendMaskContains(blendMask))
@@ -1359,7 +1465,59 @@ namespace MWRender
                     const bool useSmoothAnims = Settings::game().mSmoothAnimTransitions;
 
                     osg::Callback* callback = it->second->getAsCallback();
-                    if (useSmoothAnims)
+                    bool hybridBound = false;
+                    if (mHybridVisualEnabled && blendMask != BoneGroup_LowerBody
+                        && dynamic_cast<NifOsg::MatrixTransform*>(node.get())
+                        && dynamic_cast<NifOsg::KeyframeController*>(it->second.get()))
+                    {
+                        // First-person finger tracks can share third-person
+                        // names while assuming a different rest rig.
+                        const bool protectedBone = it->first.find("finger") != std::string::npos
+                            || it->first == "bip01 neck" || it->first == "bip01 head";
+                        osg::ref_ptr<SceneUtil::KeyframeController> visual;
+                        if (!protectedBone && active->second.mHybridVisualSource)
+                        {
+                            const auto& visualMap
+                                = active->second.mHybridVisualSource->mControllerMap[blendMask];
+                            const auto visualIt = visualMap.find(it->first);
+                            if (visualIt != visualMap.end()
+                                && dynamic_cast<NifOsg::KeyframeController*>(visualIt->second.get()))
+                            {
+                                auto& bound = active->second.mHybridBoundControllers[blendMask];
+                                const auto boundIt = bound.find(it->first);
+                                if (boundIt != bound.end())
+                                    visual = boundIt->second;
+                                else
+                                {
+                                    visual = osg::clone(visualIt->second.get(), osg::CopyOp::SHALLOW_COPY);
+                                    visual->setSource(active->second.mHybridTimeSource);
+                                    bound.emplace(it->first, visual);
+                                }
+                            }
+                        }
+                        const auto existing = mHybridNifControllers.find(node);
+                        if (visual || (existing != mHybridNifControllers.end() && existing->second->hasActiveBlend()))
+                        {
+                            osg::ref_ptr<HybridNifAnimController> hybridController;
+                            if (existing != mHybridNifControllers.end())
+                                hybridController = existing->second;
+                            else
+                            {
+                                hybridController = new HybridNifAnimController;
+                                mHybridNifControllers.emplace(node, hybridController);
+                            }
+                            const float weight = blendMask == BoneGroup_Torso ? 0.45f : 1.f;
+                            hybridController->setTracks(
+                                it->second, visual, active->second.mHybridVisualTime, weight);
+                            callback = hybridController;
+                            hybridBound = true;
+                            if (visual && blendMask == BoneGroup_RightArm
+                                && (active->first.starts_with("weapon")
+                                    || active->first.starts_with("handtohand")))
+                                mHybridMeleeVisualActive = true;
+                        }
+                    }
+                    if (useSmoothAnims && !hybridBound)
                     {
                         if (dynamic_cast<NifOsg::MatrixTransform*>(node.get()))
                         {
@@ -1600,6 +1758,8 @@ namespace MWRender
                 if (timepassed <= 0.0f)
                     break;
             }
+
+            syncHybridVisualTime(state);
 
             if (!state.mPlaying && state.mAutoDisable)
             {
