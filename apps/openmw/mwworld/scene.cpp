@@ -1764,7 +1764,11 @@ namespace MWWorld
             }
             else if (!blockNewPreloads && (effectiveBudget == 0 || attemptedNew < effectiveBudget))
             {
-                preloadCell(*candidate.mCell);
+                // Only the closest new candidate receives P1's reserved
+                // near-future lane. Wider grid/door/fast-travel speculation
+                // remains ordinary background work.
+                const bool nearFuture = attemptedNew == 0;
+                mPreloader->preload(*candidate.mCell, mRendering.getReferenceTime(), nearFuture);
                 ++attemptedNew;
             }
             else
