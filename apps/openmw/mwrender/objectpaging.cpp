@@ -133,6 +133,7 @@ namespace MWRender
             return nullptr;
 
         const ChunkId id = std::make_tuple(center, size, activeGrid);
+        const bool p2RequiredReadiness = SceneUtil::PagingWorkScope::requiredReadiness();
         const int v311PrepareMode = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode);
         const int v313QualityMode = static_cast<int>(Settings::cells().mV313ChunkQualityMode);
 
@@ -164,7 +165,7 @@ namespace MWRender
             osg::ref_ptr<osg::Node> node = createChunk(size, center, activeGrid, viewPoint, compile, lod);
             mCache->addEntryToObjectCache(id, node.get());
 
-            if (v311PrepareMode > 0 && activeGrid && compile)
+            if (v311PrepareMode > 0 && activeGrid && compile && !p2RequiredReadiness)
             {
                 std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
                 mV311PreparedActiveChunks.insert(id);
@@ -174,9 +175,11 @@ namespace MWRender
         }
 
         const unsigned char v313RequestedPrepareMode
-            = activeGrid && compile && v311PrepareMode > 0 ? static_cast<unsigned char>(v311PrepareMode) : 0;
+            = activeGrid && compile && !p2RequiredReadiness && v311PrepareMode > 0
+            ? static_cast<unsigned char>(v311PrepareMode) : 0;
         const unsigned char v313RequestedSpatialMode
-            = activeGrid && compile && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0 ? 1 : 0;
+            = activeGrid && compile && !p2RequiredReadiness
+                && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0 ? 1 : 0;
         const V313ChunkQuality v313RequestedQuality{ v313RequestedPrepareMode, v313RequestedSpatialMode };
 
         const auto v313QualitySatisfies = [&](const V313ChunkQuality& have, const V313ChunkQuality& need) {
@@ -258,8 +261,10 @@ namespace MWRender
         }
 
         const V313ChunkQuality v313BuiltQuality{
-            activeGrid && compile && v311PrepareMode > 0 ? static_cast<unsigned char>(v311PrepareMode) : 0,
-            activeGrid && compile && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0 ? 1 : 0 };
+            activeGrid && compile && !p2RequiredReadiness && v311PrepareMode > 0
+                ? static_cast<unsigned char>(v311PrepareMode) : 0,
+            activeGrid && compile && !p2RequiredReadiness
+                && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0 ? 1 : 0 };
         if (v313RepairBuild)
             mV313UpgradeBuilt.fetch_add(1, std::memory_order_relaxed);
 
@@ -1358,6 +1363,7 @@ namespace MWRender
             const int v311PrepareMode = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode);
             const bool v311PreparedActive = v311PrepareMode > 0 && compile && activeGrid && v38BatchingMode >= 2;
             const bool v311PreparedPostTransform = v311PrepareMode >= 2 && v311PreparedActive;
+            const bool p2RequiredReadiness = SceneUtil::PagingWorkScope::requiredReadiness();
 
             if (v39BatchOptimizerMode == 0 && !v310PreloadPostTransform && !v311PreparedActive)
             {
@@ -1375,6 +1381,12 @@ namespace MWRender
                 // VERTEX_PRETRANSFORM.
                 options |= SceneUtil::Optimizer::VERTEX_POSTTRANSFORM;
             }
+
+            // Required terrain readiness must still flatten/merge and queue GL
+            // compilation, but must not depend on expensive vertex reordering.
+            // The optional second pass requests the normal strong quality.
+            if (p2RequiredReadiness)
+                options &= ~(SceneUtil::Optimizer::VERTEX_POSTTRANSFORM | SceneUtil::Optimizer::VERTEX_PRETRANSFORM);
 
             const bool v315CanonicalizeBeforeMerge
                 = static_cast<bool>(Settings::cells().mV315PremergeStateCanonicalization)
