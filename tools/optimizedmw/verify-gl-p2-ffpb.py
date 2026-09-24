@@ -15,10 +15,10 @@ P2 = {
     "tools/opimizedmw/gl-p2/vertex-tests.cpp": "557200c2d2519e1376696afcf4a8f4bb11b85821",
 }
 FFPB = {
-    "apps/openmw/mwrender/animation.cpp": "01b96822af1bc8e20ca31fc864ba2518b949ef2b",
+    "apps/openmw/mwrender/animation.cpp": "133217c8d9beb17c79d0607f1e154564998b1921",
     "apps/openmw/mwrender/animation.hpp": "33b37566cdfe1597979b047ea27588d31b7a4212",
-    "apps/openmw/mwrender/animblendcontroller.cpp": "2b50b9f280f1ead7d5b62df236e962340a54a208",
-    "apps/openmw/mwrender/animblendcontroller.hpp": "6e8a57a8f6a46d24cb412708a7ab1fec2b1b2a2d",
+    "apps/openmw/mwrender/animblendcontroller.cpp": "1e0b68d6de7225528cb4bc68c5f73adede871461",
+    "apps/openmw/mwrender/animblendcontroller.hpp": "3a105b1c3651dc366fed34be4ae27daba7a9175d",
     "apps/openmw/mwrender/hybridanimationtimemap.hpp": "0f3329f091d179f414aa9818495f6d80c8a62223",
     "apps/openmw/mwrender/npcanimation.cpp": "7a2d5b6607b74d02fb33c0bdc8370e9e80e4e77d",
     "apps/openmw/mwrender/npcanimation.hpp": "5db90a29e14e493b07932aa6cb53f6cdedf94b64",
