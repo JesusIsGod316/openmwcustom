@@ -4,6 +4,7 @@
 #include <components/debug/debuglog.hpp>
 
 #include <osgAnimation/Bone>
+#include <osg/Math>
 
 #include <algorithm>
 #include <cassert>
@@ -13,22 +14,94 @@
 
 namespace MWRender
 {
+    namespace
+    {
+        // OSG's Quat operator* stores the right operand on the left of the
+        // Hamilton product. Write composition in parent-then-local order.
+        osg::Quat composeHybridRotation(const osg::Quat& parent, const osg::Quat& local)
+        {
+            return local * parent;
+        }
+    }
+
+    HybridTorsoPose::HybridTorsoPose(Tracks primaryLower, Tracks visualLower, Tracks visualChest)
+        : mPrimaryLower(std::move(primaryLower))
+        , mVisualLower(std::move(visualLower))
+        , mVisualChest(std::move(visualChest))
+    {
+    }
+
+    std::optional<osg::Quat> HybridTorsoPose::rotation(unsigned bone, osg::NodeVisitor* nv) const
+    {
+        if (bone >= mVisualChest.size())
+            return std::nullopt;
+        const auto sampleChain = [nv](const Tracks& tracks) -> std::optional<osg::Quat> {
+            osg::Quat result(0.f, 0.f, 0.f, 1.f);
+            for (const auto& track : tracks)
+            {
+                if (!track)
+                    return std::nullopt;
+                const auto sampled = track->getCurrentTransformation(nv).mRotation;
+                if (!sampled)
+                    return std::nullopt;
+                result = composeHybridRotation(result, *sampled);
+            }
+            return result;
+        };
+        const auto primaryBase = sampleChain(mPrimaryLower);
+        const auto visualBase = sampleChain(mVisualLower);
+        if (!primaryBase || !visualBase)
+            return std::nullopt;
+        std::array<osg::Quat, 3> local;
+        for (unsigned i = 0; i < local.size(); ++i)
+        {
+            if (!mVisualChest[i])
+                return std::nullopt;
+            const auto sampled = mVisualChest[i]->getCurrentTransformation(nv).mRotation;
+            if (!sampled)
+                return std::nullopt;
+            local[i] = *sampled;
+        }
+
+        // ReAnimation's first-person chest leans back into a visible full-body
+        // camera. Lean the chest 15 degrees forward, split across both spine
+        // joints, then solve the neck back to the authored world orientation.
+        // The lower body still owns movement and every gameplay text key.
+        const osg::Quat lean(osg::DegreesToRadians(7.5f), osg::Vec3f(-1.f, 0.f, 0.f));
+        const osg::Quat oldSpine1 = composeHybridRotation(*visualBase, local[0]);
+        const osg::Quat oldSpine2 = composeHybridRotation(oldSpine1, local[1]);
+        const osg::Quat oldNeck = composeHybridRotation(oldSpine2, local[2]);
+        const osg::Quat newSpine1 = composeHybridRotation(lean, oldSpine1);
+        const osg::Quat newSpine2 = composeHybridRotation(
+            composeHybridRotation(lean, lean), oldSpine2);
+        if (bone == 0)
+            return composeHybridRotation(primaryBase->inverse(), newSpine1);
+        if (bone == 1)
+            return composeHybridRotation(newSpine1.inverse(), newSpine2);
+        return composeHybridRotation(newSpine2.inverse(), oldNeck);
+    }
+
     void HybridNifAnimController::setTracks(osg::ref_ptr<SceneUtil::KeyframeController> primary,
         osg::ref_ptr<SceneUtil::KeyframeController> visual,
-        const std::shared_ptr<float>& visualTime, float visualWeight)
+        const std::shared_ptr<float>& visualTime, float visualWeight,
+        std::shared_ptr<HybridTorsoPose> torsoPose, int torsoBone)
     {
         mPrimary = std::move(primary);
-        if (visual)
+        const bool hasVisual = static_cast<bool>(visual);
+        if (hasVisual)
         {
             if (mVisualTime != visualTime)
             {
                 mPreviousVisual = mVisual;
+                mPreviousTorsoPose = mTorsoPose;
                 mVisualMix = mPreviousVisual && mWeight > 0.f ? 0.f : 1.f;
             }
             mVisual = std::move(visual);
             mVisualTime = visualTime;
+            mTorsoPose = std::move(torsoPose);
+            mTorsoBone = torsoBone;
         }
-        mTargetWeight = mVisual && visualWeight > 0.f ? std::clamp(visualWeight, 0.f, 1.f) : 0.f;
+        mTargetWeight = hasVisual && visualWeight > 0.f ? std::clamp(visualWeight, 0.f, 1.f) : 0.f;
     }
 
     void HybridNifAnimController::operator()(NifOsg::MatrixTransform* node, osg::NodeVisitor* nv)
@@ -52,10 +125,17 @@ namespace MWRender
         if (mWeight > 0.f && mVisual)
         {
             auto visual = mVisual->getCurrentTransformation(nv);
+            if (mTorsoPose && mTorsoBone >= 0)
+                if (const auto corrected = mTorsoPose->rotation(static_cast<unsigned>(mTorsoBone), nv))
+                    visual.mRotation = *corrected;
             if (mPreviousVisual && mVisualMix < 1.f)
             {
                 mVisualMix = std::min(1.f, mVisualMix + dt * 8.f);
-                const auto previous = mPreviousVisual->getCurrentTransformation(nv);
+                auto previous = mPreviousVisual->getCurrentTransformation(nv);
+                if (mPreviousTorsoPose && mTorsoBone >= 0)
+                    if (const auto corrected
+                        = mPreviousTorsoPose->rotation(static_cast<unsigned>(mTorsoBone), nv))
+                        previous.mRotation = *corrected;
                 if (previous.mRotation && visual.mRotation)
                 {
                     osg::Quat rotation;
@@ -67,7 +147,10 @@ namespace MWRender
                         + *visual.mTranslation * mVisualMix;
             }
             if (mVisualMix >= 1.f)
+            {
                 mPreviousVisual = nullptr;
+                mPreviousTorsoPose.reset();
+            }
             if (primary.mRotation && visual.mRotation)
             {
                 osg::Quat rotation;
@@ -82,6 +165,8 @@ namespace MWRender
         {
             mVisual = nullptr;
             mPreviousVisual = nullptr;
+            mTorsoPose.reset();
+            mPreviousTorsoPose.reset();
             mVisualTime.reset();
         }
 
