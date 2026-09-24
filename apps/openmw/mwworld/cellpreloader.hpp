@@ -107,6 +107,7 @@ namespace MWWorld
         std::size_t mMaxCacheSize = 0;
         bool mPreloadInstances;
         const bool mUseLegacyTerrain;
+        const bool mCancellablePagingOptimization;
 
         double mLastResourceCacheUpdate;
 

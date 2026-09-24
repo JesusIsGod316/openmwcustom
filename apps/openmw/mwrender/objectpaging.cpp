@@ -43,6 +43,7 @@
 #include <components/sceneutil/material.hpp>
 #include <components/sceneutil/morphgeometry.hpp>
 #include <components/sceneutil/optimizer.hpp>
+#include <components/sceneutil/pagingwork.hpp>
 #include <components/sceneutil/positionattitudetransform.hpp>
 #include <components/sceneutil/riggeometry.hpp>
 #include <components/sceneutil/riggeometryosgaextension.hpp>
@@ -240,7 +241,21 @@ namespace MWRender
         Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::pagingWriter(),
             v313RepairBuild ? "object_chunk_quality_upgrade" : "object_chunk_create",
             activeGrid ? "active_grid" : "distant", 0.25);
-        osg::ref_ptr<osg::Node> node = createChunk(size, center, activeGrid, viewPoint, compile, lod);
+        osg::ref_ptr<osg::Node> node;
+        try
+        {
+            node = createChunk(size, center, activeGrid, viewPoint, compile, lod);
+            SceneUtil::PagingWorkScope::checkpoint();
+        }
+        catch (...)
+        {
+            if (v313RepairBuild)
+            {
+                std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
+                mV313StrongUpgradeInFlight.erase(id);
+            }
+            throw;
+        }
 
         const V313ChunkQuality v313BuiltQuality{
             activeGrid && compile && v311PrepareMode > 0 ? static_cast<unsigned char>(v311PrepareMode) : 0,
@@ -864,6 +879,7 @@ namespace MWRender
                 "object_chunk_template_analysis", activeGrid ? "active_grid" : "distant", 0.1);
             for (const auto& [refNum, ref] : refs)
             {
+            SceneUtil::PagingWorkScope::checkpoint();
             if (size < 1.f)
             {
                 const osg::Vec3f cellPos = ref.mPosition / static_cast<float>(cellSize);
@@ -1015,6 +1031,7 @@ namespace MWRender
                 "object_chunk_build_instances", activeGrid ? "active_grid" : "distant", 0.1);
             for (const auto& pair : nodes)
             {
+                SceneUtil::PagingWorkScope::checkpoint();
                 const osg::Node* cnode = pair.first;
 
             const AnalyzeVisitor::Result& analyzeResult = pair.second.mAnalyzeResult;
@@ -1365,7 +1382,9 @@ namespace MWRender
             if (v315CanonicalizeBeforeMerge)
                 mSceneManager->shareState(mergeGroup);
 
+            SceneUtil::PagingWorkScope::checkpoint();
             optimizer.optimize(mergeGroup, options);
+            SceneUtil::PagingWorkScope::checkpoint();
 
             const bool v39ShareState
                 = v39BatchOptimizerMode >= 2 || v310PreloadPostTransform || v311PreparedActive;
@@ -1387,6 +1406,7 @@ namespace MWRender
         }
         }
 
+        SceneUtil::PagingWorkScope::checkpoint();
         osgUtil::IncrementalCompileOperation* const ico = mSceneManager->getIncrementalCompileOperation();
         if (!stateToCompile.empty() && ico)
         {

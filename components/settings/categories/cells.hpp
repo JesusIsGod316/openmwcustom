@@ -18,6 +18,9 @@ namespace Settings
     {
         using WithIndex::WithIndex;
 
+        // P2 first slice: cancellable, restart-indexed paging optimization.
+        SettingValue<bool> mOpimizedMWPagingOptimizer{ mIndex, "Cells", "opimizedmw paging optimizer" };
+
         SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
         SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
             makeClampSanitizerInt(64, 16384) };

@@ -15,6 +15,7 @@
 /* Modified for OpenMW */
 
 #include "optimizer.hpp"
+#include "pagingwork.hpp"
 
 #include <osg/Transform>
 #include <osg/MatrixTransform>
@@ -129,9 +130,14 @@ void Optimizer::optimize(osg::Node* node, unsigned int options)
     if (options & VERTEX_POSTTRANSFORM)
     {
         OSG_INFO<<"Optimizer::optimize() doing VERTEX_POSTTRANSFORM"<<std::endl;
-        VertexCacheVisitor vcv;
-        node->accept(vcv);
-        vcv.optimizeVertices();
+        if (PagingWorkScope::active())
+            optimizePagingVertices(*node);
+        else
+        {
+            VertexCacheVisitor vcv;
+            node->accept(vcv);
+            vcv.optimizeVertices();
+        }
     }
 
     if (options & VERTEX_PRETRANSFORM)

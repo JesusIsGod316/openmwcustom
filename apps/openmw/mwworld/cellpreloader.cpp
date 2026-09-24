@@ -5,6 +5,10 @@
 #include <cstdlib>
 #include <limits>
 #include <span>
+#include <exception>
+#include <stdexcept>
+
+#include <components/sceneutil/pagingwork.hpp>
 
 #include <osg/Stats>
 
@@ -244,8 +248,9 @@ namespace MWWorld
     {
     public:
         explicit TerrainPreloadItem(const std::vector<osg::ref_ptr<Terrain::View>>& views, Terrain::World* world,
-            std::span<const PositionCellGrid> preloadPositions)
+            std::span<const PositionCellGrid> preloadPositions, bool cancellableOptimization = false)
             : mAbort(false)
+            , mCancellableOptimization(cancellableOptimization)
             , mTerrainViews(views)
             , mWorld(world)
             , mPreloadPositions(preloadPositions.begin(), preloadPositions.end())
@@ -259,12 +264,37 @@ namespace MWWorld
             const auto start = measure ? Debug::GameplayDiagnostics::Clock::now()
                                        : Debug::GameplayDiagnostics::Clock::time_point{};
             if (measure) mQueueMs = std::chrono::duration<double, std::milli>(start - mQueued).count();
-            for (unsigned int i = 0; i < mTerrainViews.size() && i < mPreloadPositions.size() && !mAbort; ++i)
+            const auto prepare = [&] {
+                for (unsigned int i = 0; i < mTerrainViews.size() && i < mPreloadPositions.size() && !mAbort; ++i)
+                {
+                    SceneUtil::PagingWorkScope::checkpoint();
+                    mTerrainViews[i]->reset();
+                    mWorld->preload(mTerrainViews[i], mPreloadPositions[i].mPosition, mPreloadPositions[i].mCellBounds,
+                        mAbort, mLoadingReporter);
+                }
+            };
+            if (mCancellableOptimization)
             {
-                mTerrainViews[i]->reset();
-                mWorld->preload(mTerrainViews[i], mPreloadPositions[i].mPosition, mPreloadPositions[i].mCellBounds,
-                    mAbort, mLoadingReporter);
+                SceneUtil::PagingWorkScope scope(&mAbort);
+                try
+                {
+                    prepare();
+                    mSucceeded.store(!mAbort.load(), std::memory_order_release);
+                }
+                catch (const SceneUtil::PagingWorkCancelled&)
+                {
+                    // A cancelled private view is never advertised as ready.
+                }
+                catch (...)
+                {
+                    // WorkQueue does not catch exceptions. Preserve failure for
+                    // the waiting main thread instead of terminating a worker or
+                    // leaving the loading reporter waiting forever.
+                    mFailure = std::current_exception();
+                }
             }
+            else
+                prepare();
             if (measure) mWorkMs = std::chrono::duration<double, std::milli>(
                 Debug::GameplayDiagnostics::Clock::now() - start).count();
             if (Debug::RuntimeDiagnostics::enabled())
@@ -277,8 +307,10 @@ namespace MWWorld
         }
 
         void abort() override { mAbort = true; }
+        bool succeeded() const noexcept
+        { return !mCancellableOptimization || mSucceeded.load(std::memory_order_acquire); }
 
-        void wait(Loading::Listener& listener) const
+        void wait(Loading::Listener& listener)
         {
             Debug::RuntimeDiagnostics::Operation runtimeOperation("required_terrain_wait");
             if (Debug::RuntimeDiagnostics::enabled())
@@ -286,6 +318,15 @@ namespace MWWorld
                     {{"job", reinterpret_cast<std::uintptr_t>(this)}, {"views", mPreloadPositions.size()}});
             Debug::GameplayDiagnostics::Operation operation("terrain_wait");
             mLoadingReporter.wait(listener);
+            if (mCancellableOptimization)
+            {
+                // Reporter completion precedes WorkQueue::signalDone. Join that
+                // publication before reading the worker-owned exception_ptr.
+                waitTillDone();
+                if (mFailure) std::rethrow_exception(mFailure);
+                if (!succeeded())
+                    throw std::runtime_error("Required terrain preparation was cancelled; no partial view published");
+            }
             if (Debug::GameplayDiagnostics::enabled())
                 Debug::GameplayDiagnostics::recordEvent("terrain_preload_work", {
                     {"queue_ms", std::to_string(mQueueMs.load())}, {"work_ms", std::to_string(mWorkMs.load())},
@@ -295,6 +336,9 @@ namespace MWWorld
 
     private:
         std::atomic<bool> mAbort;
+        const bool mCancellableOptimization;
+        std::atomic<bool> mSucceeded{false};
+        std::exception_ptr mFailure;
         std::vector<osg::ref_ptr<Terrain::View>> mTerrainViews;
         Terrain::World* mWorld;
         std::vector<PositionCellGrid> mPreloadPositions;
@@ -343,6 +387,7 @@ namespace MWWorld
         , mExpiryDelay(0.0)
         , mPreloadInstances(true)
         , mUseLegacyTerrain(useLegacyTerrain)
+        , mCancellablePagingOptimization(useLegacyTerrain && Settings::cells().mOpimizedMWPagingOptimizer)
         , mLastResourceCacheUpdate(0.0)
         , mLoadedTerrainTimestamp(0.0)
     {
@@ -611,7 +656,7 @@ namespace MWWorld
             mLastResourceCacheUpdate = timestamp;
         }
 
-        if (mTerrainPreloadItem && mTerrainPreloadItem->isDone())
+        if (mTerrainPreloadItem && mTerrainPreloadItem->isDone() && mTerrainPreloadItem->succeeded())
         {
             mLoadedTerrainPositions = mTerrainPreloadPositions;
             mLoadedTerrainTimestamp = timestamp;
@@ -666,7 +711,7 @@ namespace MWWorld
 
     void CellPreloader::syncTerrainLoad(Loading::Listener& listener)
     {
-        if (mTerrainPreloadItem != nullptr && !mTerrainPreloadItem->isDone())
+        if (mTerrainPreloadItem != nullptr && (mCancellablePagingOptimization || !mTerrainPreloadItem->isDone()))
             mTerrainPreloadItem->wait(listener);
     }
 
@@ -694,7 +739,9 @@ namespace MWWorld
             mLoadedTerrainPositions.clear();
             mV311PendingTerrainPreloadPositions.clear();
         }
-        else if (contains(mTerrainPreloadPositions, positions, 128.f))
+        else if (contains(mTerrainPreloadPositions, positions, 128.f)
+            && (!mCancellablePagingOptimization || !mTerrainPreloadItem || !mTerrainPreloadItem->isDone()
+                || mTerrainPreloadItem->succeeded()))
             return;
 
         if (mTerrainPreloadItem && !mTerrainPreloadItem->isDone())
@@ -734,7 +781,7 @@ namespace MWWorld
             mTerrainPreloadPositions.assign(positions.begin(), positions.end());
             if (!positions.empty())
             {
-                mTerrainPreloadItem = new TerrainPreloadItem(mTerrainViews, mTerrain, positions);
+                mTerrainPreloadItem = new TerrainPreloadItem(mTerrainViews, mTerrain, positions, mCancellablePagingOptimization);
                 mWorkQueue->addWorkItem(mTerrainPreloadItem);
             }
         }
