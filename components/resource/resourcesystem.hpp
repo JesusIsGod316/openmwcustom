@@ -52,6 +52,8 @@ namespace Resource
 
         // Configure once before workers start. Disabled preserves legacy policy.
         void setHostMemoryBudgetEnabled(bool enabled) { mHostMemoryBudget.setEnabled(enabled); }
+        void enableOpenGlHostMemoryBudget(OpenGlPressureConfig config) { mHostMemoryBudget.enableOpenGl(config); }
+        bool openGlHostMemoryBudgetEnabled() const { return mHostMemoryBudget.openGlEnabled(); }
         HostMemoryPressure hostMemoryPressure() { return mHostMemoryBudget.pressure(); }
         std::optional<PreloadAdmission::Reservation> reserveOptionalPreload()
         { return mHostMemoryBudget.reserveOptionalPreload(); }

@@ -3,6 +3,7 @@
 
 #include <components/misc/hostmemory.hpp>
 #include "preloadadmission.hpp"
+#include "openglpressure.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -95,9 +96,28 @@ namespace Resource
         explicit HostMemoryBudget(Query query = &Misc::queryHostMemoryStatus) : mQuery(query) {}
         void setEnabled(bool enabled) noexcept { mEnabled.store(enabled, std::memory_order_release); }
         bool enabled() const noexcept { return mEnabled.load(std::memory_order_acquire); }
+        // Startup-only; off/Vulkan keep the original coordinator and policy.
+        void enableOpenGl(OpenGlPressureConfig config = {})
+        {
+            mOpenGl = std::make_unique<OpenGlPressureMonitor>(config);
+            mEnabled.store(true, std::memory_order_release);
+        }
+        bool openGlEnabled() const noexcept { return enabled() && mOpenGl != nullptr; }
+        OpenGlPressureSample openGlSample() const { return mOpenGl ? mOpenGl->read() : OpenGlPressureSample{}; }
         HostMemoryPressure pressure()
         {
             if (!enabled()) return HostMemoryPressure::Normal;
+            if (mOpenGl)
+            {
+                switch (mOpenGl->read().decision.state)
+                {
+                    case OpenGlPressure::Critical: return HostMemoryPressure::Critical;
+                    case OpenGlPressure::Caution: return HostMemoryPressure::Trim;
+                    // Missing data or recovery suppresses admission, not hot
+                    // cache ownership. Never invent pressure from failed probes.
+                    default: return HostMemoryPressure::Normal;
+                }
+            }
             const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count());
             if (now >= mNextSample.load(std::memory_order_relaxed))
@@ -114,12 +134,20 @@ namespace Resource
         }
         Misc::HostMemoryStatus snapshot() const
         {
+            if (mOpenGl) return mOpenGl->read().memory;
             std::lock_guard lock(mMutex);
             return mLastMemory;
         }
         std::optional<PreloadAdmission::Reservation> reserveOptionalPreload()
         {
             if (!enabled()) return PreloadAdmission::Reservation{};
+            if (mOpenGl)
+            {
+                const auto sample = mOpenGl->read();
+                return mPreloads.reserveOpenGl(sample.memory, sample.generation,
+                    sample.decision.admissionsPerSample, sample.decision.limits.physicalReserve,
+                    sample.decision.limits.commitReserve);
+            }
             const auto currentPressure = pressure();
             const auto memory = snapshot();
             const auto budget = HostMemoryPolicy::limits(memory.physicalTotal);
@@ -136,6 +164,8 @@ namespace Resource
         HostMemoryPolicy mPolicy;
         Misc::HostMemoryStatus mLastMemory;
         PreloadAdmission mPreloads;
+        // Only allocated/started when the explicit OpenGL switch is enabled.
+        std::unique_ptr<OpenGlPressureMonitor> mOpenGl;
     };
 }
 #endif

@@ -113,7 +113,13 @@ namespace Resource
             if (Debug::RuntimeDiagnostics::enabled())
             {
                 const auto memory = mHostMemoryBudget.snapshot();
-                const auto limits = HostMemoryPolicy::limits(memory.physicalTotal);
+                auto limits = HostMemoryPolicy::limits(memory.physicalTotal);
+                if (mHostMemoryBudget.openGlEnabled())
+                {
+                    const auto gl = mHostMemoryBudget.openGlSample();
+                    limits.reserve = gl.decision.limits.physicalReserve;
+                    limits.privateSoft = 0; // no automatic private/RAM cap in GL-P1A
+                }
                 Debug::RuntimeDiagnostics::recordEvent("host_memory_trim", "optional_resource_owners", {}, {
                     {"pressure", static_cast<std::uint64_t>(pressure)}, {"removed_entries", removed},
                     {"per_owner_limit", maximum}, {"physical_valid", memory.physicalValid},

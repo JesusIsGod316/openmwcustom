@@ -15,9 +15,16 @@ namespace Misc
         bool physicalValid = false;
         bool processValid = false;
         bool commitValid = false;
+        // Optional independent signals; appended to retain old aggregate layout.
+        std::uint64_t systemCommitAvailable = 0;
+        bool systemCommitValid = false;
+        bool lowMemory = false;
+        bool lowMemoryValid = false;
     };
 
     // No platform headers or diagnostic recorder dependency at this boundary.
     HostMemoryStatus queryHostMemoryStatus() noexcept;
+    // GL-P1A sampler only. Legacy callers retain their existing query behavior.
+    HostMemoryStatus queryOpenGlHostMemoryStatus() noexcept;
 }
 #endif

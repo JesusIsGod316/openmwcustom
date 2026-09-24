@@ -41,4 +41,37 @@ namespace Misc
         // Unavailable counters do not mean zero available bytes or an OOM.
         return result;
     }
+    HostMemoryStatus queryOpenGlHostMemoryStatus() noexcept
+    {
+        auto result = queryHostMemoryStatus();
+#ifdef _WIN32
+        PERFORMANCE_INFORMATION performance{};
+        performance.cb = sizeof(performance);
+        if (GetPerformanceInfo(&performance, sizeof(performance)) && performance.PageSize != 0
+            && performance.CommitLimit >= performance.CommitTotal)
+        {
+            const auto pages = performance.CommitLimit - performance.CommitTotal;
+            if (pages <= UINT64_MAX / performance.PageSize)
+            {
+                result.systemCommitAvailable = static_cast<std::uint64_t>(pages) * performance.PageSize;
+                result.systemCommitValid = true;
+            }
+        }
+        struct Notification
+        {
+            HANDLE handle = CreateMemoryResourceNotification(LowMemoryResourceNotification);
+            ~Notification() { if (handle) CloseHandle(handle); }
+        };
+        // Constructed once by the startup/sampler owner, never by a frame read.
+        static const Notification notification;
+        BOOL low = FALSE;
+        if (notification.handle && QueryMemoryResourceNotification(notification.handle, &low))
+        {
+            result.lowMemory = low != FALSE;
+            result.lowMemoryValid = true;
+        }
+#endif
+        return result;
+    }
+
 }

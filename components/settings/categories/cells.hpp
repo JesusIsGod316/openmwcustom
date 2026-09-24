@@ -18,6 +18,13 @@ namespace Settings
     {
         using WithIndex::WithIndex;
 
+        // OpimizedMW GL-P1A is an independent opt-in, not part of the V3 preset.
+        SettingValue<bool> mOpimizedMWHostPressure{ mIndex, "Cells", "opimizedmw host pressure" };
+        SettingValue<int> mOpimizedMWHostReserveMb{ mIndex, "Cells", "opimizedmw host reserve mb",
+            makeClampSanitizerInt(0, 65536) };
+        SettingValue<int> mOpimizedMWCommitReserveMb{ mIndex, "Cells", "opimizedmw commit reserve mb",
+            makeClampSanitizerInt(256, 65536) };
+
         // V3.6 keeps profile controls in one category object while preserving the user-facing [V3] section.
         SettingValue<bool> mV36PerformanceProfile{ mIndex, "V3", "v3.6 performance profile" };
         SettingValue<bool> mV36DisableRamOverdrive{ mIndex, "V3", "v3.6 disable ram overdrive" };

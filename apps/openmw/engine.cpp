@@ -1410,6 +1410,19 @@ void OMW::Engine::prepareEngine()
         Debug::RuntimeDiagnostics::recordEvent("configuration", "host_memory_budget", {},
             {{"enabled", hostMemoryBudget}, {"private_soft_percent", 75}, {"physical_reserve_denominator", 8},
                 {"recovery_ms", Resource::HostMemoryPolicy::RecoveryMilliseconds}});
+    if (!mUseVulkanRenderer && static_cast<bool>(Settings::cells().mOpimizedMWHostPressure))
+    {
+        Resource::OpenGlPressureConfig pressureConfig;
+        pressureConfig.physicalReserve = static_cast<std::uint64_t>(
+            static_cast<int>(Settings::cells().mOpimizedMWHostReserveMb)) * Resource::OpenGlPressureConfig::MiB;
+        pressureConfig.commitReserve = static_cast<std::uint64_t>(
+            static_cast<int>(Settings::cells().mOpimizedMWCommitReserveMb)) * Resource::OpenGlPressureConfig::MiB;
+        mResourceSystem->enableOpenGlHostMemoryBudget(pressureConfig);
+        Log(Debug::Info) << "OpimizedMW GL-P1A pressure protection: on; healthy retention unchanged; "
+                        << "private commit is diagnostic only; startup-only settings";
+    }
+    else
+        Log(Debug::Info) << "OpimizedMW GL-P1A pressure protection: off (P0/Vulkan control)";
     mResourceSystem->getSceneManager()->setPreparedInstanceCacheLimit(
         Settings::cells().mV3PreparedInstanceCache
             ? static_cast<std::size_t>(Settings::cells().mV3PreparedInstanceCacheMax)

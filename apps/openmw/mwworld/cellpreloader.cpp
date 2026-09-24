@@ -343,7 +343,7 @@ namespace MWWorld
         }
 
         static const bool legacyAdmission = std::getenv("OPENMW_V4_LEGACY_PRELOAD_ADMISSION_CONTROL") != nullptr;
-        auto reservation = legacyAdmission
+        auto reservation = (legacyAdmission && !mResourceSystem->openGlHostMemoryBudgetEnabled())
             ? std::optional<Resource::PreloadAdmission::Reservation>(std::in_place)
             : mResourceSystem->reserveOptionalPreload();
         if (!reservation)

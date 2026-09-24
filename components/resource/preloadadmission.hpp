@@ -26,7 +26,12 @@ namespace Resource
             std::uint64_t pending = 0, reservedEstimate = 0, admitted = 0, denied = 0, released = 0;
         };
     private:
-        struct State { std::mutex mutex; Stats stats; };
+        struct State
+        {
+            std::mutex mutex;
+            Stats stats;
+            std::uint64_t sampleGeneration = 0, sampleAdmissions = 0, sampleOpeningReservations = 0;
+        };
     public:
         class Reservation
         {
@@ -79,6 +84,50 @@ namespace Resource
             ++stats.pending; ++stats.admitted; stats.reservedEstimate = projected;
             return Reservation(mState);
         }
+        // GL-P1A's conservative interim guard. Credits are NOT refunded within
+        // an OS sample when a fast job finishes but keeps its cached output.
+        // Existing running reservations may already be in the OS counters: we
+        // deliberately overestimate here. Precise stage/retained-byte transfer
+        // remains GL-P1B; these allowances are not actual allocation accounting.
+        std::optional<Reservation> reserveOpenGl(const Misc::HostMemoryStatus& memory,
+            std::uint64_t generation, unsigned sampleLimit,
+            std::uint64_t physicalReserve, std::uint64_t commitReserve)
+        {
+            std::lock_guard lock(mState->mutex);
+            auto& stats = mState->stats;
+            if (generation > mState->sampleGeneration)
+            {
+                mState->sampleGeneration = generation;
+                mState->sampleAdmissions = 0;
+                mState->sampleOpeningReservations = stats.reservedEstimate;
+            }
+            const auto fits = [](std::uint64_t available, std::uint64_t floor, std::uint64_t extra) {
+                return available >= floor && extra <= available - floor;
+            };
+            const auto projected = mState->sampleOpeningReservations
+                + (mState->sampleAdmissions + 1) * Allowance;
+            const bool healthy = generation != 0 && generation == mState->sampleGeneration
+                && sampleLimit != 0 && mState->sampleAdmissions < (std::min)(MaximumJobs,
+                    static_cast<std::uint64_t>(sampleLimit))
+                && memory.physicalValid && memory.physicalTotal != 0
+                && memory.physicalAvailable <= memory.physicalTotal
+                && (memory.commitValid || memory.systemCommitValid)
+                && !(memory.lowMemoryValid && memory.lowMemory)
+                && fits(memory.physicalAvailable, physicalReserve, projected)
+                && (!memory.commitValid || fits(memory.commitAvailable, commitReserve, projected))
+                && (!memory.systemCommitValid || fits(memory.systemCommitAvailable, commitReserve, projected));
+            if (!healthy || stats.pending >= MaximumJobs)
+            {
+                ++stats.denied;
+                return std::nullopt;
+            }
+            ++mState->sampleAdmissions;
+            ++stats.pending;
+            ++stats.admitted;
+            stats.reservedEstimate += Allowance;
+            return Reservation(mState);
+        }
+
         Stats stats() const
         {
             std::lock_guard lock(mState->mutex);
