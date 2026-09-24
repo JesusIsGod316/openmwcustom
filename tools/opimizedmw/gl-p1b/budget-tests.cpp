@@ -26,7 +26,11 @@ namespace
         s.decision.state = Resource::OpenGlPressure::Normal;
         s.decision.admissionsPerSample = 4;
         s.decision.limits.physicalReserve = 4 * 1024 * M;
+        s.decision.limits.physicalCritical = 2 * 1024 * M;
+        s.decision.limits.physicalRecovery = 5 * 1024 * M;
         s.decision.limits.commitReserve = 1024 * M;
+        s.decision.limits.commitCritical = 256 * M;
+        s.decision.limits.commitRecovery = 1536 * M;
         return s;
     }
     Resource::OpenGlPressureSample sampleFn(void* p) { return *static_cast<Resource::OpenGlPressureSample*>(p); }
@@ -103,6 +107,59 @@ int main()
             { auto j = ledger.tryJob(ramp); check(bool(j), "ramp first"); }
             check(!ledger.tryJob(ramp), "ramp rate guard");
             ramp.generation = 3; {auto j = ledger.tryJob(ramp); check(bool(j), "ramp next sample");}
+        }
+        {
+            SpeculativeBudget prioritized({1024 * M, 4, 1});
+            std::vector<SpeculativeBudget::Job> background;
+            for (int i = 0; i < 3; ++i)
+                background.push_back(prioritized.tryJob(s));
+            check(background[0] && background[1] && background[2], "priority lane keeps three background jobs");
+            check(!prioritized.tryJob(s), "priority lane reserves fourth slot");
+            auto near = prioritized.tryJob(s, SpeculativePriority::NearFuture);
+            check(bool(near) && prioritized.stats().priorityJobs == 1, "near-future job uses reserved slot");
+            check(!prioritized.tryJob(s, SpeculativePriority::NearFuture), "one reserved near-future slot");
+        }
+        {
+            SpeculativeBudget prioritized({1024 * M, 4, 1});
+            auto caution = healthy();
+            caution.decision.state = OpenGlPressure::Caution;
+            caution.decision.admissionsPerSample = 0;
+            caution.memory.physicalAvailable = 3 * 1024 * M;
+            caution.memory.commitAvailable = 2 * 1024 * M;
+            check(!prioritized.tryJob(caution), "background denied during caution");
+            auto near = prioritized.tryJob(caution, SpeculativePriority::NearFuture);
+            check(bool(near), "near-future admitted during caution");
+            auto lease = prioritized.reserve(caution, 128 * M, SpeculativePriority::NearFuture);
+            check(lease.future() == 128 * M, "near-future uses critical-floor headroom");
+            check(deferred([&] {
+                auto tooTight = caution;
+                tooTight.generation = 2;
+                tooTight.memory.physicalAvailable = tooTight.decision.limits.physicalCritical + 64 * M;
+                auto rejected = prioritized.reserve(tooTight, 128 * M, SpeculativePriority::NearFuture);
+            }), "near-future denied before critical floor");
+        }
+        {
+            SpeculativeBudget prioritized({1024 * M, 4, 1});
+            auto recovering = healthy();
+            recovering.decision.state = OpenGlPressure::Recovering;
+            recovering.decision.admissionsPerSample = 0;
+            { auto near = prioritized.tryJob(recovering, SpeculativePriority::NearFuture);
+              check(bool(near), "near-future admitted during recovery"); }
+            check(!prioritized.tryJob(recovering, SpeculativePriority::NearFuture),
+                "near-future recovery ramp one per sample");
+            recovering.generation = 2;
+            { auto near = prioritized.tryJob(recovering, SpeculativePriority::NearFuture);
+              check(bool(near), "near-future recovery next sample"); }
+            auto critical = recovering;
+            critical.generation = 3;
+            critical.decision.state = OpenGlPressure::Critical;
+            check(!prioritized.tryJob(critical, SpeculativePriority::NearFuture),
+                "near-future denied under critical pressure");
+            auto degraded = recovering;
+            degraded.generation = 4;
+            degraded.decision.state = OpenGlPressure::Degraded;
+            check(!prioritized.tryJob(degraded, SpeculativePriority::NearFuture),
+                "near-future denied under degraded pressure");
         }
         {
             auto claim = ledger.claim("17|nif|mesh");
