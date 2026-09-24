@@ -1,0 +1,57 @@
+name: OpimizedMW GL-P2 required-readiness QC
+on:
+  push:
+    branches: ['opimizedmw/gl-p2-readiness-qc']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  Native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            lane: gcc
+            compiler: g++
+            osg: 'ON'
+            sanitize: 'OFF'
+          - os: ubuntu-24.04
+            lane: clang-sanitized
+            compiler: clang++
+            osg: 'ON'
+            sanitize: 'ON'
+          - os: windows-2022
+            lane: msvc
+            compiler: cl
+            osg: 'OFF'
+            sanitize: 'OFF'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify materialized P1/P2 source and readiness contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/opimizedmw/gl-p1b/check-integration.py
+          python tools/opimizedmw/gl-p2/readiness-contract.py
+          python tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+      - name: Install native OSG
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y libopenscenegraph-dev
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Configure P2 and retained P1 tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S tools/opimizedmw/gl-p2 -B build-p2 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} -DOPIMIZEDMW_P2_OSG_TESTS=${{ matrix.osg }} -DOPIMIZEDMW_P2_SANITIZERS=${{ matrix.sanitize }}
+          cmake -S tools/opimizedmw/gl-p1b -B build-p1 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} -DOPIMIZEDMW_P1B_OSG_TESTS=${{ matrix.osg }} -DOPIMIZEDMW_P1B_SANITIZERS=${{ matrix.sanitize }}
+      - name: Compile and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-p2 --config Release --parallel 2
+          ctest --test-dir build-p2 -C Release -V --output-on-failure
+          cmake --build build-p1 --config Release --parallel 2
+          ctest --test-dir build-p1 -C Release -V --output-on-failure
