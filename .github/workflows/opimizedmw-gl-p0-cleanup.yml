@@ -1,0 +1,116 @@
+name: OpimizedMW GL-P0 disabled-source cleanup QC
+
+on:
+  push:
+    branches: ['opimizedmw/gl-p0-cleanup-qc']
+    paths:
+      - '.github/workflows/opimizedmw-gl-p0-cleanup.yml'
+      - 'tools/opimizedmw/gl-p0/prepare_cleanup.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: opimizedmw-gl-p0-cleanup
+  cancel-in-progress: false
+
+jobs:
+  Cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify previously published recovery archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git cat-file -t opimizedmw-gl-p0-precleanup-20260924)" = tag
+          test "$(git rev-parse opimizedmw-gl-p0-precleanup-20260924^{})" = be2869dd00a49774ff2642ec238d98f1456b2b8a
+          mkdir "$RUNNER_TEMP/archive-proof"
+          gh release download opimizedmw-gl-p0-precleanup-20260924 --repo "$GITHUB_REPOSITORY" --pattern archive-manifest.json --dir "$RUNNER_TEMP/archive-proof"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          m=json.loads((Path(os.environ['RUNNER_TEMP'])/'archive-proof/archive-manifest.json').read_text())
+          assert m['bundle_sha256']=='26b829e48bb70957cfb0889c5c77d30e54e3712535a8473320f83396abad2762'
+          assert m['empty_repository_restore']=='PASS' and m['git_fsck']=='PASS'
+          assert m['source']=='be2869dd00a49774ff2642ec238d98f1456b2b8a'
+          PY
+          git diff --exit-code be2869dd00a49774ff2642ec238d98f1456b2b8a -- components apps files
+      - name: Install dependencies for the real OpenGL shadow translation unit
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libopenscenegraph-dev libboost-dev libgl-dev clang
+      - name: Compile preserved source before any removal
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/cleanup-evidence"
+          for compiler in g++ clang++; do
+            "$compiler" --version > "$RUNNER_TEMP/cleanup-evidence/$compiler-version.txt"
+            "$compiler" -std=c++20 -O2 -g0 -DNDEBUG -pthread -I. -c components/sceneutil/mwshadowtechnique.cpp -o "$RUNNER_TEMP/cleanup-evidence/$compiler-before.o" 2>&1 | tee "$RUNNER_TEMP/cleanup-evidence/$compiler-before.log"
+          done
+      - name: Prepare exact candidate, compile it, and require identical objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B tools/opimizedmw/gl-p0/prepare_cleanup.py --source-root . --candidate "$RUNNER_TEMP/candidate-shadow.cpp" --manifest "$RUNNER_TEMP/cleanup-evidence/removals.json"
+          test "$(git hash-object "$RUNNER_TEMP/candidate-shadow.cpp")" = 32b6200968e621ab4a88fc93d105daf3b9214f62
+          cp "$RUNNER_TEMP/candidate-shadow.cpp" components/sceneutil/mwshadowtechnique.cpp
+          for compiler in g++ clang++; do
+            "$compiler" -std=c++20 -O2 -g0 -DNDEBUG -pthread -I. -c components/sceneutil/mwshadowtechnique.cpp -o "$RUNNER_TEMP/cleanup-evidence/$compiler-after.o" 2>&1 | tee "$RUNNER_TEMP/cleanup-evidence/$compiler-after.log"
+            cmp "$RUNNER_TEMP/cleanup-evidence/$compiler-before.o" "$RUNNER_TEMP/cleanup-evidence/$compiler-after.o"
+          done
+          python3 tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+          git diff --check
+          git diff --stat | tee "$RUNNER_TEMP/cleanup-evidence/diff-stat.txt"
+      - name: Commit source removal separately and index its recovery evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'OpimizedMW maintenance'
+          git config user.email 'opimizedmw@users.noreply.github.com'
+          git add components/sceneutil/mwshadowtechnique.cpp
+          git commit -m 'OpimizedMW GL-P0: retire 16 archived disabled shadow blocks' -m 'Remove only literal #if 0 regions with no outer alternative. Original source is restore-tested under opimizedmw-gl-p0-precleanup-20260924. GCC and Clang optimized OpenGL translation-unit objects are byte-identical before and after. No performance claim.'
+          export REMOVAL_COMMIT=$(git rev-parse HEAD)
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          evidence=Path(os.environ['RUNNER_TEMP'])/'cleanup-evidence'
+          m=json.loads((evidence/'removals.json').read_text())
+          m['removal_commit']=os.environ['REMOVAL_COMMIT']
+          m['validation']={}
+          for compiler in ('g++','clang++'):
+              before=(evidence/(compiler+'-before.o')).read_bytes()
+              after=(evidence/(compiler+'-after.o')).read_bytes()
+              assert before==after
+              m['validation'][compiler]={'object_bytes_identical':True,'object_sha256':hashlib.sha256(after).hexdigest(),'compiler':(evidence/(compiler+'-version.txt')).read_text().splitlines()[0]}
+          m['build_flags']=['-std=c++20','-O2','-g0','-DNDEBUG','-pthread','-I.']
+          m['validation_scope']='Actual OpenGL shadow translation unit, not full Windows or gameplay acceptance'
+          target=Path('tools/opimizedmw/gl-p0/removals.json')
+          target.write_text(json.dumps(m,indent=2)+'\n')
+          (evidence/'removals.json').write_text(target.read_text())
+          PY
+          git add tools/opimizedmw/gl-p0/removals.json
+          git commit -m 'OpimizedMW GL-P0: index exact cleanup commit and restore evidence'
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          g=lambda *args: subprocess.check_output(['git',*args],text=True).strip()
+          m={'branch':'opimizedmw/gl-p0-cleanup-qc','head':g('rev-parse','HEAD'),'tree':g('rev-parse','HEAD^{tree}'),'removal_commit':os.environ['REMOVAL_COMMIT'],'production_runtime_acceptance':False}
+          (Path(os.environ['RUNNER_TEMP'])/'cleanup-evidence/publication.json').write_text(json.dumps(m,indent=2)+'\n')
+          PY
+          git push origin HEAD:refs/heads/opimizedmw/gl-p0-cleanup-qc
+      - name: Preserve exact compilation and publication evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpimizedMW-GL-P0-cleanup-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/cleanup-evidence/*
+          if-no-files-found: warn
+          retention-days: 90
