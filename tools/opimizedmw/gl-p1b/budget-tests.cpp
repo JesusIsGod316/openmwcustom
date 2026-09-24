@@ -136,6 +136,7 @@ int main()
                 tooTight.generation = 2;
                 tooTight.memory.physicalAvailable = tooTight.decision.limits.physicalCritical + 64 * M;
                 auto rejected = prioritized.reserve(tooTight, 128 * M, SpeculativePriority::NearFuture);
+                (void)rejected;
             }), "near-future denied before critical floor");
         }
         {
