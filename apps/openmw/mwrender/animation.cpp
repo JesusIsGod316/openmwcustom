@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <cmath>
 #include <exception>
 #include <limits>
 #include <vector>
@@ -80,6 +81,56 @@
 
 namespace
 {
+    bool isUnarmedLocomotion(std::string_view group)
+    {
+        static constexpr std::array<std::string_view, 24> groups = {
+            "walkforward", "walkback", "walkleft", "walkright",
+            "runforward", "runback", "runleft", "runright",
+            "sneakforward", "sneakback", "sneakleft", "sneakright",
+            "swimwalkforward", "swimwalkback", "swimwalkleft", "swimwalkright",
+            "swimrunforward", "swimrunback", "swimrunleft", "swimrunright",
+            "turnleft", "turnright", "jump", "jumpforward",
+        };
+        return std::find(groups.begin(), groups.end(), group) != groups.end();
+    }
+
+    class HybridProbeTime final : public SceneUtil::ControllerSource
+    {
+    public:
+        float mTime = 0.f;
+        float getValue(osg::NodeVisitor*) override { return mTime; }
+    };
+
+    bool hasHybridArmMotion(SceneUtil::KeyframeController& controller, float start, float stop)
+    {
+        if (stop <= start)
+            return false;
+        const auto originalSource = controller.getSource();
+        const auto probe = std::make_shared<HybridProbeTime>();
+        controller.setSource(probe);
+        osg::NodeVisitor visitor;
+        probe->mTime = start;
+        const auto first = controller.getCurrentTransformation(&visitor);
+        bool moving = false;
+        for (int sample = 1; sample <= 8 && !moving; ++sample)
+        {
+            probe->mTime = start + (stop - start) * (static_cast<float>(sample) / 8.f);
+            const auto next = controller.getCurrentTransformation(&visitor);
+            if (first.mRotation && next.mRotation)
+            {
+                const osg::Quat& a = *first.mRotation;
+                const osg::Quat& b = *next.mRotation;
+                const float dot = std::abs(a.x() * b.x() + a.y() * b.y()
+                    + a.z() * b.z() + a.w() * b.w());
+                moving = dot < 0.9998f;
+            }
+            if (first.mTranslation && next.mTranslation)
+                moving = moving || (*first.mTranslation - *next.mTranslation).length2() > 0.25f;
+        }
+        controller.setSource(originalSource);
+        return moving;
+    }
+
     /// Removes all particle systems and related nodes in a subgraph.
     class RemoveParticlesVisitor : public osg::NodeVisitor
     {
@@ -1577,15 +1628,32 @@ namespace MWRender
                             if (visualIt != visualMap.end()
                                 && dynamic_cast<NifOsg::KeyframeController*>(visualIt->second.get()))
                             {
-                                auto& bound = active->second.mHybridBoundControllers[blendMask];
-                                const auto boundIt = bound.find(it->first);
-                                if (boundIt != bound.end())
-                                    visual = boundIt->second;
-                                else
+                                osg::ref_ptr<SceneUtil::KeyframeController> candidate
+                                    = osg::clone(visualIt->second.get(), osg::CopyOp::SHALLOW_COPY);
+                                candidate->setSource(active->second.mHybridTimeSource);
+                                // Many native first-person unarmed walk/run clips
+                                // contain static arm tracks because the arms are
+                                // hidden in that view. Preserve the moving body
+                                // track only when this particular visual track
+                                // has no authored motion. Modded moving tracks
+                                // still take precedence.
+                                const bool staticUnarmedArm
+                                    = (blendMask == BoneGroup_LeftArm || blendMask == BoneGroup_RightArm)
+                                    && isUnarmedLocomotion(active->second.mGroupname)
+                                    && !hasHybridArmMotion(*candidate,
+                                        active->second.mHybridTimeAnchors.front().second,
+                                        active->second.mHybridTimeAnchors.back().second);
+                                if (!staticUnarmedArm)
                                 {
-                                    visual = osg::clone(visualIt->second.get(), osg::CopyOp::SHALLOW_COPY);
-                                    visual->setSource(active->second.mHybridTimeSource);
-                                    bound.emplace(it->first, visual);
+                                    auto& bound = active->second.mHybridBoundControllers[blendMask];
+                                    const auto boundIt = bound.find(it->first);
+                                    if (boundIt != bound.end())
+                                        visual = boundIt->second;
+                                    else
+                                    {
+                                        visual = std::move(candidate);
+                                        bound.emplace(it->first, visual);
+                                    }
                                 }
                             }
                         }
