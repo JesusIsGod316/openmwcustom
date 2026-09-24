@@ -1,7 +1,7 @@
 name: OpimizedMW GL-P1B native memory and cache QC
 on:
   push:
-    branches: [opimizedmw/gl-p1b-qc]
+    branches: ['opimizedmw/gl-p1b-qc*']
   workflow_dispatch:
 permissions:
   contents: read
@@ -49,8 +49,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The pre-existing recorder intentionally uses non-short-circuit bool
+          # OR to copy all three fields. Do not change its semantics for this QC.
           cmake -S tools/opimizedmw/gl-p1b -B p1b-native-build -G Ninja \
             -D CMAKE_CXX_COMPILER=${{ matrix.cxx }} -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D "CMAKE_CXX_FLAGS=${{ matrix.lane == 'clang-sanitized' && '-Wno-bitwise-instead-of-logical' || '' }}" \
             -D OPIMIZEDMW_P1B_SANITIZERS=${{ matrix.sanitizer }} \
             -D OPIMIZEDMW_P1B_OSG_TESTS=${{ matrix.osg }} 2>&1 | tee p1b-evidence/configure.log
       - name: Compile and execute native ledger, policy and cache tests
