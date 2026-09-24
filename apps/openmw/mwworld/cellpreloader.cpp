@@ -80,7 +80,8 @@ namespace MWWorld
             Resource::BulletShapeManager* bulletShapeManager, Resource::KeyframeManager* keyframeManager,
             Terrain::World* terrain, MWRender::LandManager* landManager, bool preloadInstances,
             Resource::ResourceSystem* resourceSystem, bool useLegacyTerrain,
-            Resource::PreloadAdmission::Reservation reservation, Resource::SpeculativeBudget::Job byteJob = {})
+            Resource::PreloadAdmission::Reservation reservation, Resource::SpeculativeBudget::Job byteJob = {},
+            Resource::SpeculativePriority priority = Resource::SpeculativePriority::Background)
             : mIsExterior(cell->getCell()->isExterior())
             , mCellLocation(cell->getCell()->getExteriorCellLocation())
             , mCellId(cell->getCell()->getId())
@@ -94,6 +95,7 @@ namespace MWWorld
             , mUseLegacyTerrain(useLegacyTerrain)
             , mReservation(std::move(reservation))
             , mByteJob(std::move(byteJob))
+            , mPriority(priority)
             , mAbort(false)
         {
             if (mUseLegacyTerrain)
@@ -104,7 +106,7 @@ namespace MWWorld
             if (mByteJob)
             {
                 Resource::SpeculativeScope scope(mResourceSystem->speculativeBudget(),
-                    &Resource::ResourceSystem::speculativeSample, mResourceSystem);
+                    &Resource::ResourceSystem::speculativeSample, mResourceSystem, mPriority);
                 const auto shell = std::uint64_t(mMeshes.capacity()) * sizeof(mMeshes.front()) + sizeof(*this);
                 Resource::SpeculativeScope::Stage stage(shell, shell);
                 mOwnerCharge = Resource::SpeculativeScope::track(mResourceSystem->speculativeBudget(), {this, 3}, shell, true);
@@ -124,7 +126,7 @@ namespace MWWorld
             const auto reservation = std::move(mReservation);
             auto byteJob = std::move(mByteJob);
             Resource::SpeculativeScope scope(byteJob ? mResourceSystem->speculativeBudget() : nullptr,
-                &Resource::ResourceSystem::speculativeSample, mResourceSystem);
+                &Resource::ResourceSystem::speculativeSample, mResourceSystem, mPriority);
             struct Receipt
             {
                 Resource::SpeculativeScope& scope;
@@ -132,7 +134,13 @@ namespace MWWorld
                 ~Receipt() { estimate.store((std::max)(64 * Resource::SpeculativeBudget::MiB,
                     scope.retainedEstimate()), std::memory_order_release); }
             } receipt{scope, mRetainedEstimate};
-            if (mAbort || mResourceSystem->hostMemoryPressure() != Resource::HostMemoryPressure::Normal)
+            if (mAbort)
+                return;
+            if (mPriority == Resource::SpeculativePriority::Background
+                && mResourceSystem->hostMemoryPressure() != Resource::HostMemoryPressure::Normal)
+                return;
+            if (mPriority == Resource::SpeculativePriority::NearFuture
+                && mResourceSystem->hostMemoryPressure() == Resource::HostMemoryPressure::Critical)
                 return;
             if (mIsExterior)
             {
@@ -162,7 +170,13 @@ namespace MWWorld
             {
                 // These are speculative cache owners, not active gameplay.
                 // Stop between assets under pressure, even during loading waits.
-                if (mAbort || mResourceSystem->hostMemoryPressure() != Resource::HostMemoryPressure::Normal)
+                if (mAbort)
+                    return;
+                const auto currentPressure = mResourceSystem->hostMemoryPressure();
+                if ((mPriority == Resource::SpeculativePriority::Background
+                        && currentPressure != Resource::HostMemoryPressure::Normal)
+                    || (mPriority == Resource::SpeculativePriority::NearFuture
+                        && currentPressure == Resource::HostMemoryPressure::Critical))
                     return;
 
                 try
@@ -232,6 +246,7 @@ namespace MWWorld
         bool mUseLegacyTerrain;
         Resource::PreloadAdmission::Reservation mReservation;
         Resource::SpeculativeBudget::Job mByteJob;
+        Resource::SpeculativePriority mPriority = Resource::SpeculativePriority::Background;
         Resource::SpeculativeBudget::ChargePtr mOwnerCharge;
         std::atomic<std::uint64_t> mRetainedEstimate{64 * Resource::SpeculativeBudget::MiB};
 
@@ -568,13 +583,18 @@ namespace MWWorld
         clearAllTasks();
     }
 
-    void CellPreloader::preload(CellStore& cell, double timestamp)
+    void CellPreloader::preload(CellStore& cell, double timestamp, bool nearFuture)
     {
         const bool p1b = mResourceSystem->speculativeBudget() != nullptr;
-        if (p1b && mResourceSystem->pendingReleases()) return;
-        // Do not refill the optional preload owners while they are being
-        // reclaimed. Required Scene::loadCell and physics paths are untouched.
-        if (mResourceSystem->hostMemoryPressure() != Resource::HostMemoryPressure::Normal)
+        const auto priority = nearFuture
+            ? Resource::SpeculativePriority::NearFuture : Resource::SpeculativePriority::Background;
+        if (p1b && mResourceSystem->pendingReleases() && !nearFuture)
+            return;
+        // Ordinary speculation yields immediately under host pressure. The
+        // single closest not-yet-preloaded exterior cell may continue through
+        // P1B's bounded NearFuture lane; its own sample/byte checks still deny
+        // critical, degraded or insufficient-headroom work.
+        if (!nearFuture && mResourceSystem->hostMemoryPressure() != Resource::HostMemoryPressure::Normal)
             return;
         if (!mWorkQueue)
         {
@@ -607,7 +627,8 @@ namespace MWWorld
         Resource::SpeculativeBudget::Job byteJob;
         if (p1b)
         {
-            byteJob = mResourceSystem->speculativeBudget()->tryJob(Resource::ResourceSystem::speculativeSample(mResourceSystem));
+            byteJob = mResourceSystem->speculativeBudget()->tryJob(
+                Resource::ResourceSystem::speculativeSample(mResourceSystem), priority);
             if (!byteJob) return;
         }
         while (mPreloadCells.size() >= mMaxCacheSize)
@@ -642,7 +663,7 @@ namespace MWWorld
         {
             item = new PreloadItem(&cell, mResourceSystem->getSceneManager(), mBulletShapeManager,
                 mResourceSystem->getKeyframeManager(), mTerrain, mLandManager, mPreloadInstances,
-                mResourceSystem, mUseLegacyTerrain, std::move(*reservation), std::move(byteJob));
+                mResourceSystem, mUseLegacyTerrain, std::move(*reservation), std::move(byteJob), priority);
         }
         catch (const Resource::SpeculativeDeferred&) { return; }
         mWorkQueue->addWorkItem(item);
