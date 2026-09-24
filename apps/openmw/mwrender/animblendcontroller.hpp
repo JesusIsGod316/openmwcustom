@@ -1,6 +1,7 @@
 #ifndef OPENMW_MWRENDER_ANIMBLENDCONTROLLER_H
 #define OPENMW_MWRENDER_ANIMBLENDCONTROLLER_H
 
+#include <array>
 #include <map>
 #include <memory>
 #include <optional>
@@ -83,6 +84,22 @@ namespace MWRender
         float mBlendStartScale = 0.0f;
     };
 
+    // Rebuilds the first-person chest in the full-body lower-body frame.
+    // The neck counter-rotation preserves authored arm and camera framing.
+    class HybridTorsoPose
+    {
+    public:
+        using Tracks = std::array<osg::ref_ptr<SceneUtil::KeyframeController>, 3>;
+
+        HybridTorsoPose(Tracks primaryLower, Tracks visualLower, Tracks visualChest);
+        std::optional<osg::Quat> rotation(unsigned bone, osg::NodeVisitor* nv) const;
+
+    private:
+        Tracks mPrimaryLower;
+        Tracks mVisualLower;
+        Tracks mVisualChest;
+    };
+
     // Samples two tracks on one NIF bone. The primary track remains the
     // gameplay/full-body animation; the visual track never owns text keys or
     // root accumulation. Instances survive controller rebuilds so the visual
@@ -102,7 +119,8 @@ namespace MWRender
 
         void setTracks(osg::ref_ptr<SceneUtil::KeyframeController> primary,
             osg::ref_ptr<SceneUtil::KeyframeController> visual,
-            const std::shared_ptr<float>& visualTime, float visualWeight);
+            const std::shared_ptr<float>& visualTime, float visualWeight,
+            std::shared_ptr<HybridTorsoPose> torsoPose = {}, int torsoBone = -1);
         bool hasActiveBlend() const { return mWeight > 0.f; }
         void operator()(NifOsg::MatrixTransform* node, osg::NodeVisitor* nv);
 
@@ -110,6 +128,9 @@ namespace MWRender
         osg::ref_ptr<SceneUtil::KeyframeController> mPrimary;
         osg::ref_ptr<SceneUtil::KeyframeController> mVisual;
         osg::ref_ptr<SceneUtil::KeyframeController> mPreviousVisual;
+        std::shared_ptr<HybridTorsoPose> mTorsoPose;
+        std::shared_ptr<HybridTorsoPose> mPreviousTorsoPose;
+        int mTorsoBone = -1;
         std::shared_ptr<float> mVisualTime;
         float mWeight = 0.f;
         float mTargetWeight = 0.f;

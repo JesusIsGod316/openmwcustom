@@ -120,14 +120,19 @@ first-person animation directory sources through OpenMW's VFS. It pairs a
 matching visual group with the normal full-body state. The normal source
 remains the only source of text keys and root motion. Matching animation
 phase keys produce a monotone visual time map, and a callback samples both
-NIF tracks on the same actor bone. Upper arm/weapon tracks can receive the
-authored FP pose; torso is initially weighted to 0.45, while root, pelvis,
-legs, neck, head and fingers remain on the full-body track. Visual transitions
+NIF tracks on the same actor bone. The first checkpoint weighted the torso
+to 0.45 and left the neck on the full-body track. Runtime screenshots from
+`171ba4b1c6` showed chest clipping and arms folding into the body.
+The revised prototype samples the authored FP root/pelvis/spine and chest
+chain without attaching a second gameplay controller. It solves the FP chest
+against the full-body lower frame, leans the visible chest forward 15 degrees,
+and counter-rotates the neck to preserve authored hand framing. Lower body,
+head and fingers remain on the full-body track. Visual transitions
 and interruptions are weight-blended. Unsupported/missing NIF tracks fall
 back per bone. The new setting defaults off.
 
-This first slice does not retarget different rest poses or finger rigs, and
-its torso weight is a test setting rather than a promoted camera-clipping
+This slice does not retarget different rest poses or finger rigs. The
+15-degree lean is a reference-derived test value, not a promoted clipping
 solution. OSG animation controllers remain on the normal source. Runtime
 testing must check regular first-person assets and a representative modded
 stack, especially hand/weapon framing, chest clipping, draw/sheath, and
