@@ -108,6 +108,7 @@ namespace MWWorld
         bool mPreloadInstances;
         const bool mUseLegacyTerrain;
         const bool mCancellablePagingOptimization;
+        const bool mPagingReadinessSplit;
 
         double mLastResourceCacheUpdate;
 
