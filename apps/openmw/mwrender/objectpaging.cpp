@@ -303,7 +303,7 @@ namespace MWRender
         else
             mCache->addEntryToObjectCache(id, node.get());
 
-        if (v311PrepareMode > 0 && activeGrid && compile)
+        if (v311PrepareMode > 0 && activeGrid && compile && !p2RequiredReadiness)
         {
             std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
             mV311PreparedActiveChunks.insert(id);
@@ -1356,14 +1356,15 @@ namespace MWRender
                 = (static_cast<int>(Settings::cells().mV39FrontloadMode) > 0 && !compile)
                 ? 1
                 : v39ConfiguredBatchOptimizerMode;
+            const bool p2RequiredReadiness = SceneUtil::PagingWorkScope::requiredReadiness();
             const bool v310PreloadPostTransform
                 = static_cast<bool>(Settings::cells().mV310PreloadPostTransform)
-                && compile && mV310InitialFrontloadActive.load(std::memory_order_acquire)
+                && compile && !p2RequiredReadiness && mV310InitialFrontloadActive.load(std::memory_order_acquire)
                 && v38BatchingMode >= 2;
             const int v311PrepareMode = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode);
-            const bool v311PreparedActive = v311PrepareMode > 0 && compile && activeGrid && v38BatchingMode >= 2;
+            const bool v311PreparedActive
+                = v311PrepareMode > 0 && compile && !p2RequiredReadiness && activeGrid && v38BatchingMode >= 2;
             const bool v311PreparedPostTransform = v311PrepareMode >= 2 && v311PreparedActive;
-            const bool p2RequiredReadiness = SceneUtil::PagingWorkScope::requiredReadiness();
 
             if (v39BatchOptimizerMode == 0 && !v310PreloadPostTransform && !v311PreparedActive)
             {
