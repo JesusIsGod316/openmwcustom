@@ -46,6 +46,7 @@ namespace MWRender
             const osg::Vec3f& viewPoint, bool compile, unsigned char lod);
 
         unsigned int getNodeMask() override;
+        bool supportsStrongPagingUpgrade() const override { return true; }
 
         /// @return true if view needs rebuild
         bool enableObject(int type, ESM::RefNum refnum, const osg::Vec3f& pos, const osg::Vec2i& cell, bool enabled);
