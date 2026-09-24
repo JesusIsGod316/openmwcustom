@@ -1,0 +1,26 @@
+{
+  "base_commit": "2d493b6e78a25e395895daad0298c85a947d28dd",
+  "patch_sha256": "b1e7f0669bc9e95f78c1bc2ddaf7128e34b8016415b4d09d2890fbf08640dbbc",
+  "files": {
+    "apps/openmw/mwrender/objectpaging.cpp": {"before":"842fe9510e62d0b65e2f4ced4ae0dbb37dc371a2","after":"90eab31af38b652422e052f6d0e28a8732a112e8"},
+    "apps/openmw/mwworld/cellpreloader.cpp": {"before":"23df66911f5a4f5593051cebcdadb427ce0f3365","after":"9aac3dad4b0ecbf9d6914fc55f2f675e6184d6da"},
+    "apps/openmw/mwworld/cellpreloader.hpp": {"before":"03e2adc16a1ac9216f49b00f839e4a63f42e5795","after":"2c911d342485cf80e2def33d93b9df9cdf97bb9f"},
+    "components/CMakeLists.txt": {"before":"43028c6d80d8978bd9d0f8463cb55daf394e12ca","after":"c65c2ae83a6d23ddf0625411438a6cb25026dcbd"},
+    "components/sceneutil/optimizer.cpp": {"before":"606288af5423f7fda2805b5c918ae0dbca573a14","after":"b1b4e5fabaaf1333baa416f23b771cd334090f98"},
+    "components/settings/categories/cells.hpp": {"before":"a601ae1bb8e7359851645c5104942dcef950336c","after":"e3b6466d6211c2e7d09dec5169a42ee4d8b2e03a"},
+    "files/settings-default.cfg": {"before":"ed8e73e6a5ccc0a901d62e935e06823f39f9f8e6","after":"fba754863bd21de018556941c2f1ea3a6500e2e4"},
+    "components/sceneutil/pagingvertexcache.hpp": {"before":null,"after":"2f2bad4f9f4c75deb751b89bb937bc37a6946005"},
+    "components/sceneutil/pagingwork.cpp": {"before":null,"after":"23455c9fc783e934af0846525862c4374ae3bba5"},
+    "components/sceneutil/pagingwork.hpp": {"before":null,"after":"cc97b110a07ef3a88e2a746753f44e5939ac7928"},
+    "tools/opimizedmw/gl-p2/CMakeLists.txt": {"before":null,"after":"fb1603e7206c657c06ae91f448fc36a20565a071"},
+    "tools/opimizedmw/gl-p2/README.md": {"before":null,"after":"e56405d2b979caa35924e48b36ae456883110847"},
+    "tools/opimizedmw/gl-p2/osg-tests.cpp": {"before":null,"after":"a89039cdb4b5e1c0ca1899a1d0c634bda91e9238"},
+    "tools/opimizedmw/gl-p2/vertex-tests.cpp": {"before":null,"after":"a30c5446f863a94ba8f9427534317dfdb872a93d"},
+    "tools/opimizedmw/gl-p2/OSGPL-LICENSE.txt": {"before":null,"after":"793879943406cd853fa9c48397746af8c3f525ac"}
+  },
+  "upstream_license": {
+    "path":"tools/opimizedmw/gl-p2/OSGPL-LICENSE.txt",
+    "url":"https://raw.githubusercontent.com/openscenegraph/OpenSceneGraph/OpenSceneGraph-3.6.5/LICENSE.txt",
+    "git_blob":"793879943406cd853fa9c48397746af8c3f525ac"
+  }
+}

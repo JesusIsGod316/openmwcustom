@@ -1,0 +1,305 @@
+diff --git a/apps/openmw/mwrender/objectpaging.cpp b/apps/openmw/mwrender/objectpaging.cpp
+index 842fe9510e..90eab31af3 100644
+--- a/apps/openmw/mwrender/objectpaging.cpp
++++ b/apps/openmw/mwrender/objectpaging.cpp
+@@ -43,6 +43,7 @@
+ #include <components/sceneutil/material.hpp>
+ #include <components/sceneutil/morphgeometry.hpp>
+ #include <components/sceneutil/optimizer.hpp>
++#include <components/sceneutil/pagingwork.hpp>
+ #include <components/sceneutil/positionattitudetransform.hpp>
+ #include <components/sceneutil/riggeometry.hpp>
+ #include <components/sceneutil/riggeometryosgaextension.hpp>
+@@ -240,7 +241,21 @@ namespace MWRender
+         Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::pagingWriter(),
+             v313RepairBuild ? "object_chunk_quality_upgrade" : "object_chunk_create",
+             activeGrid ? "active_grid" : "distant", 0.25);
+-        osg::ref_ptr<osg::Node> node = createChunk(size, center, activeGrid, viewPoint, compile, lod);
++        osg::ref_ptr<osg::Node> node;
++        try
++        {
++            node = createChunk(size, center, activeGrid, viewPoint, compile, lod);
++            SceneUtil::PagingWorkScope::checkpoint();
++        }
++        catch (...)
++        {
++            if (v313RepairBuild)
++            {
++                std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
++                mV313StrongUpgradeInFlight.erase(id);
++            }
++            throw;
++        }
+ 
+         const V313ChunkQuality v313BuiltQuality{
+             activeGrid && compile && v311PrepareMode > 0 ? static_cast<unsigned char>(v311PrepareMode) : 0,
+@@ -864,6 +879,7 @@ namespace MWRender
+                 "object_chunk_template_analysis", activeGrid ? "active_grid" : "distant", 0.1);
+             for (const auto& [refNum, ref] : refs)
+             {
++            SceneUtil::PagingWorkScope::checkpoint();
+             if (size < 1.f)
+             {
+                 const osg::Vec3f cellPos = ref.mPosition / static_cast<float>(cellSize);
+@@ -1015,6 +1031,7 @@ namespace MWRender
+                 "object_chunk_build_instances", activeGrid ? "active_grid" : "distant", 0.1);
+             for (const auto& pair : nodes)
+             {
++                SceneUtil::PagingWorkScope::checkpoint();
+                 const osg::Node* cnode = pair.first;
+ 
+             const AnalyzeVisitor::Result& analyzeResult = pair.second.mAnalyzeResult;
+@@ -1365,7 +1382,9 @@ namespace MWRender
+             if (v315CanonicalizeBeforeMerge)
+                 mSceneManager->shareState(mergeGroup);
+ 
++            SceneUtil::PagingWorkScope::checkpoint();
+             optimizer.optimize(mergeGroup, options);
++            SceneUtil::PagingWorkScope::checkpoint();
+ 
+             const bool v39ShareState
+                 = v39BatchOptimizerMode >= 2 || v310PreloadPostTransform || v311PreparedActive;
+@@ -1387,6 +1406,7 @@ namespace MWRender
+         }
+         }
+ 
++        SceneUtil::PagingWorkScope::checkpoint();
+         osgUtil::IncrementalCompileOperation* const ico = mSceneManager->getIncrementalCompileOperation();
+         if (!stateToCompile.empty() && ico)
+         {
+diff --git a/apps/openmw/mwworld/cellpreloader.cpp b/apps/openmw/mwworld/cellpreloader.cpp
+index 23df66911f..9aac3dad4b 100644
+--- a/apps/openmw/mwworld/cellpreloader.cpp
++++ b/apps/openmw/mwworld/cellpreloader.cpp
+@@ -5,6 +5,10 @@
+ #include <cstdlib>
+ #include <limits>
+ #include <span>
++#include <exception>
++#include <stdexcept>
++
++#include <components/sceneutil/pagingwork.hpp>
+ 
+ #include <osg/Stats>
+ 
+@@ -244,8 +248,9 @@ namespace MWWorld
+     {
+     public:
+         explicit TerrainPreloadItem(const std::vector<osg::ref_ptr<Terrain::View>>& views, Terrain::World* world,
+-            std::span<const PositionCellGrid> preloadPositions)
++            std::span<const PositionCellGrid> preloadPositions, bool cancellableOptimization = false)
+             : mAbort(false)
++            , mCancellableOptimization(cancellableOptimization)
+             , mTerrainViews(views)
+             , mWorld(world)
+             , mPreloadPositions(preloadPositions.begin(), preloadPositions.end())
+@@ -259,12 +264,37 @@ namespace MWWorld
+             const auto start = measure ? Debug::GameplayDiagnostics::Clock::now()
+                                        : Debug::GameplayDiagnostics::Clock::time_point{};
+             if (measure) mQueueMs = std::chrono::duration<double, std::milli>(start - mQueued).count();
+-            for (unsigned int i = 0; i < mTerrainViews.size() && i < mPreloadPositions.size() && !mAbort; ++i)
++            const auto prepare = [&] {
++                for (unsigned int i = 0; i < mTerrainViews.size() && i < mPreloadPositions.size() && !mAbort; ++i)
++                {
++                    SceneUtil::PagingWorkScope::checkpoint();
++                    mTerrainViews[i]->reset();
++                    mWorld->preload(mTerrainViews[i], mPreloadPositions[i].mPosition, mPreloadPositions[i].mCellBounds,
++                        mAbort, mLoadingReporter);
++                }
++            };
++            if (mCancellableOptimization)
+             {
+-                mTerrainViews[i]->reset();
+-                mWorld->preload(mTerrainViews[i], mPreloadPositions[i].mPosition, mPreloadPositions[i].mCellBounds,
+-                    mAbort, mLoadingReporter);
++                SceneUtil::PagingWorkScope scope(&mAbort);
++                try
++                {
++                    prepare();
++                    mSucceeded.store(!mAbort.load(), std::memory_order_release);
++                }
++                catch (const SceneUtil::PagingWorkCancelled&)
++                {
++                    // A cancelled private view is never advertised as ready.
++                }
++                catch (...)
++                {
++                    // WorkQueue does not catch exceptions. Preserve failure for
++                    // the waiting main thread instead of terminating a worker or
++                    // leaving the loading reporter waiting forever.
++                    mFailure = std::current_exception();
++                }
+             }
++            else
++                prepare();
+             if (measure) mWorkMs = std::chrono::duration<double, std::milli>(
+                 Debug::GameplayDiagnostics::Clock::now() - start).count();
+             if (Debug::RuntimeDiagnostics::enabled())
+@@ -277,8 +307,10 @@ namespace MWWorld
+         }
+ 
+         void abort() override { mAbort = true; }
++        bool succeeded() const noexcept
++        { return !mCancellableOptimization || mSucceeded.load(std::memory_order_acquire); }
+ 
+-        void wait(Loading::Listener& listener) const
++        void wait(Loading::Listener& listener)
+         {
+             Debug::RuntimeDiagnostics::Operation runtimeOperation("required_terrain_wait");
+             if (Debug::RuntimeDiagnostics::enabled())
+@@ -286,6 +318,15 @@ namespace MWWorld
+                     {{"job", reinterpret_cast<std::uintptr_t>(this)}, {"views", mPreloadPositions.size()}});
+             Debug::GameplayDiagnostics::Operation operation("terrain_wait");
+             mLoadingReporter.wait(listener);
++            if (mCancellableOptimization)
++            {
++                // Reporter completion precedes WorkQueue::signalDone. Join that
++                // publication before reading the worker-owned exception_ptr.
++                waitTillDone();
++                if (mFailure) std::rethrow_exception(mFailure);
++                if (!succeeded())
++                    throw std::runtime_error("Required terrain preparation was cancelled; no partial view published");
++            }
+             if (Debug::GameplayDiagnostics::enabled())
+                 Debug::GameplayDiagnostics::recordEvent("terrain_preload_work", {
+                     {"queue_ms", std::to_string(mQueueMs.load())}, {"work_ms", std::to_string(mWorkMs.load())},
+@@ -295,6 +336,9 @@ namespace MWWorld
+ 
+     private:
+         std::atomic<bool> mAbort;
++        const bool mCancellableOptimization;
++        std::atomic<bool> mSucceeded{false};
++        std::exception_ptr mFailure;
+         std::vector<osg::ref_ptr<Terrain::View>> mTerrainViews;
+         Terrain::World* mWorld;
+         std::vector<PositionCellGrid> mPreloadPositions;
+@@ -343,6 +387,7 @@ namespace MWWorld
+         , mExpiryDelay(0.0)
+         , mPreloadInstances(true)
+         , mUseLegacyTerrain(useLegacyTerrain)
++        , mCancellablePagingOptimization(useLegacyTerrain && Settings::cells().mOpimizedMWPagingOptimizer)
+         , mLastResourceCacheUpdate(0.0)
+         , mLoadedTerrainTimestamp(0.0)
+     {
+@@ -611,7 +656,7 @@ namespace MWWorld
+             mLastResourceCacheUpdate = timestamp;
+         }
+ 
+-        if (mTerrainPreloadItem && mTerrainPreloadItem->isDone())
++        if (mTerrainPreloadItem && mTerrainPreloadItem->isDone() && mTerrainPreloadItem->succeeded())
+         {
+             mLoadedTerrainPositions = mTerrainPreloadPositions;
+             mLoadedTerrainTimestamp = timestamp;
+@@ -666,7 +711,7 @@ namespace MWWorld
+ 
+     void CellPreloader::syncTerrainLoad(Loading::Listener& listener)
+     {
+-        if (mTerrainPreloadItem != nullptr && !mTerrainPreloadItem->isDone())
++        if (mTerrainPreloadItem != nullptr && (mCancellablePagingOptimization || !mTerrainPreloadItem->isDone()))
+             mTerrainPreloadItem->wait(listener);
+     }
+ 
+@@ -694,7 +739,9 @@ namespace MWWorld
+             mLoadedTerrainPositions.clear();
+             mV311PendingTerrainPreloadPositions.clear();
+         }
+-        else if (contains(mTerrainPreloadPositions, positions, 128.f))
++        else if (contains(mTerrainPreloadPositions, positions, 128.f)
++            && (!mCancellablePagingOptimization || !mTerrainPreloadItem || !mTerrainPreloadItem->isDone()
++                || mTerrainPreloadItem->succeeded()))
+             return;
+ 
+         if (mTerrainPreloadItem && !mTerrainPreloadItem->isDone())
+@@ -734,7 +781,7 @@ namespace MWWorld
+             mTerrainPreloadPositions.assign(positions.begin(), positions.end());
+             if (!positions.empty())
+             {
+-                mTerrainPreloadItem = new TerrainPreloadItem(mTerrainViews, mTerrain, positions);
++                mTerrainPreloadItem = new TerrainPreloadItem(mTerrainViews, mTerrain, positions, mCancellablePagingOptimization);
+                 mWorkQueue->addWorkItem(mTerrainPreloadItem);
+             }
+         }
+diff --git a/apps/openmw/mwworld/cellpreloader.hpp b/apps/openmw/mwworld/cellpreloader.hpp
+index 03e2adc16a..2c911d3424 100644
+--- a/apps/openmw/mwworld/cellpreloader.hpp
++++ b/apps/openmw/mwworld/cellpreloader.hpp
+@@ -107,6 +107,7 @@ namespace MWWorld
+         std::size_t mMaxCacheSize = 0;
+         bool mPreloadInstances;
+         const bool mUseLegacyTerrain;
++        const bool mCancellablePagingOptimization;
+ 
+         double mLastResourceCacheUpdate;
+ 
+diff --git a/components/CMakeLists.txt b/components/CMakeLists.txt
+index 43028c6d80..c65c2ae83a 100644
+--- a/components/CMakeLists.txt
++++ b/components/CMakeLists.txt
+@@ -138,7 +138,7 @@ add_component_dir (shader
+ 
+ add_component_dir (sceneutil
+     clone attach visitor util statesetupdater stateupdater controller skeleton riggeometry morphgeometry lightcontroller
+-    lightmanager lightutil positionattitudetransform workqueue pathgridutil waterutil writescene serialize optimizer
++    lightmanager lightutil positionattitudetransform workqueue pathgridutil waterutil writescene serialize optimizer pagingwork
+     detourdebugdraw navmesh agentpath animblendrules shadow mwshadowtechnique recastmesh shadowsbin osgacontroller rtt
+     screencapture depth color riggeometryosgaextension extradata unrefqueue lightcommon clearcolor
+     cullsafeboundsvisitor keyframe nodecallback textkeymap glextensions fog texmat material occlusionculling
+diff --git a/components/sceneutil/optimizer.cpp b/components/sceneutil/optimizer.cpp
+index 606288af54..b1b4e5faba 100644
+--- a/components/sceneutil/optimizer.cpp
++++ b/components/sceneutil/optimizer.cpp
+@@ -15,6 +15,7 @@
+ /* Modified for OpenMW */
+ 
+ #include "optimizer.hpp"
++#include "pagingwork.hpp"
+ 
+ #include <osg/Transform>
+ #include <osg/MatrixTransform>
+@@ -129,9 +130,14 @@ void Optimizer::optimize(osg::Node* node, unsigned int options)
+     if (options & VERTEX_POSTTRANSFORM)
+     {
+         OSG_INFO<<"Optimizer::optimize() doing VERTEX_POSTTRANSFORM"<<std::endl;
+-        VertexCacheVisitor vcv;
+-        node->accept(vcv);
+-        vcv.optimizeVertices();
++        if (PagingWorkScope::active())
++            optimizePagingVertices(*node);
++        else
++        {
++            VertexCacheVisitor vcv;
++            node->accept(vcv);
++            vcv.optimizeVertices();
++        }
+     }
+ 
+     if (options & VERTEX_PRETRANSFORM)
+diff --git a/components/settings/categories/cells.hpp b/components/settings/categories/cells.hpp
+index a601ae1bb8..e3b6466d62 100644
+--- a/components/settings/categories/cells.hpp
++++ b/components/settings/categories/cells.hpp
+@@ -18,6 +18,9 @@ namespace Settings
+     {
+         using WithIndex::WithIndex;
+ 
++        // P2 first slice: cancellable, restart-indexed paging optimization.
++        SettingValue<bool> mOpimizedMWPagingOptimizer{ mIndex, "Cells", "opimizedmw paging optimizer" };
++
+         SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
+         SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
+             makeClampSanitizerInt(64, 16384) };
+diff --git a/files/settings-default.cfg b/files/settings-default.cfg
+index ed8e73e6a5..fba754863b 100644
+--- a/files/settings-default.cfg
++++ b/files/settings-default.cfg
+@@ -295,6 +295,10 @@ v3.16 idle resource sweep = false
+ 
+ [Cells]
+ 
++# P2 first slice. Startup-only; preserves P1 controls and required loading waits.
++# Uses cancellable vertex optimization inside legacy terrain preparation only.
++opimizedmw paging optimizer = false
++
+ # OpimizedMW GL-P1A: optional ownership pressure protection (OpenGL only).
+ # Off is the existing P0 control. Does not change healthy cache TTL/counts.
+ # Startup-only: changes take effect on the next launch; no live policy mutation.

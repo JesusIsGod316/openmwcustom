@@ -1,0 +1,25 @@
+name: OpimizedMW GL-P2 initial OpenGL Windows gate
+on:
+  push:
+    branches: [opimizedmw/gl-p2-build]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  Source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require committed native-tested P2 integration
+        run: |
+          python tools/opimizedmw/gl-p2/prepare-source.py --verify-only
+          python tools/opimizedmw/gl-p1b/check-integration.py
+          python tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+  Windows:
+    needs: Source
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false

@@ -1,0 +1,100 @@
+name: OpimizedMW GL-P2 optimizer and cancellation QC
+on:
+  push:
+    branches: ['opimizedmw/gl-p2-optimizer-qc*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  Native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            lane: gcc
+            compiler: g++
+            osg: 'ON'
+            sanitize: 'OFF'
+          - os: ubuntu-24.04
+            lane: clang-sanitized
+            compiler: clang++
+            osg: 'ON'
+            sanitize: 'ON'
+          - os: windows-2022
+            lane: msvc
+            compiler: cl
+            osg: 'OFF'
+            sanitize: 'OFF'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Materialize exact integration in disposable worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/opimizedmw/gl-p2/prepare-source.py
+          python tools/opimizedmw/gl-p1b/check-integration.py
+          python tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+      - name: Install native OSG
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y libopenscenegraph-dev
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Configure optimizer and retained P1 regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S tools/opimizedmw/gl-p2 -B build-p2 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} -DOPIMIZEDMW_P2_OSG_TESTS=${{ matrix.osg }} -DOPIMIZEDMW_P2_SANITIZERS=${{ matrix.sanitize }} 2>&1 | tee p2-evidence/configure-p2.txt
+          cmake -S tools/opimizedmw/gl-p1b -B build-p1 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} -DOPIMIZEDMW_P1B_OSG_TESTS=${{ matrix.osg }} -DOPIMIZEDMW_P1B_SANITIZERS=${{ matrix.sanitize }} 2>&1 | tee p2-evidence/configure-p1.txt
+      - name: Compile and test production optimizer and OSG equivalence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-p2 --config Release --parallel 2 2>&1 | tee p2-evidence/build-p2.txt
+          ctest --test-dir build-p2 -C Release -V --output-on-failure 2>&1 | tee p2-evidence/tests-p2.txt
+          cmake --build build-p1 --config Release --parallel 2 2>&1 | tee p2-evidence/build-p1.txt
+          ctest --test-dir build-p1 -C Release -V --output-on-failure 2>&1 | tee p2-evidence/tests-p1.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: OpimizedMW-GL-P2-${{ matrix.lane }}-${{ github.run_id }}
+          path: p2-evidence/
+          if-no-files-found: error
+  Publish:
+    needs: Native
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: native-evidence
+      - name: Commit and publish only the identical native-tested tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/opimizedmw/gl-p2/prepare-source.py
+          python - <<'PY'
+          from pathlib import Path
+          expected=Path('p2-evidence/tested-tree.txt').read_text().strip()
+          actual=list(Path('native-evidence').glob('*/tested-tree.txt'))
+          assert len(actual)==3, actual
+          assert all(p.read_text().strip()==expected for p in actual)
+          print('All three native lanes tested the same final source tree:',expected)
+          PY
+          test -z "$(git ls-remote --heads origin refs/heads/opimizedmw/gl-p2)"
+          git config user.name 'OpimizedMW maintenance'
+          git config user.email 'opimizedmw@users.noreply.github.com'
+          git commit -m 'OpimizedMW GL-P2: materialize native-tested optimizer and cancellation slice' -m "Tested tree: $(cat p2-evidence/tested-tree.txt). First P2 slice only: required-readiness separation and gameplay acceptance remain pending."
+          git push origin HEAD:refs/heads/opimizedmw/gl-p2
+          git rev-parse HEAD > p2-evidence/published-commit.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpimizedMW-GL-P2-published-${{ github.run_id }}
+          path: p2-evidence/
