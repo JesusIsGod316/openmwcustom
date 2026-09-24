@@ -1,4 +1,5 @@
 #include "scenemanager.hpp"
+#include "sharedstatecache.hpp"
 #include "hostmemorybudget.hpp"
 
 #include <cstdlib>
@@ -192,20 +193,6 @@ namespace Resource
         mObjects.emplace_back(node);
     }
 
-    class SharedStateManager : public osgDB::SharedStateManager
-    {
-    public:
-        size_t getNumSharedTextures() const { return _sharedTextureList.size(); }
-
-        size_t getNumSharedStateSets() const { return _sharedStateSetList.size(); }
-
-        void clearCache()
-        {
-            std::lock_guard<OpenThreads::Mutex> lock(_listMutex);
-            _sharedTextureList.clear();
-            _sharedStateSetList.clear();
-        }
-    };
 
     /// Set texture filtering settings on textures contained in a FlipController.
     class SetFilterSettingsControllerVisitor : public SceneUtil::ControllerVisitor
@@ -632,6 +619,7 @@ namespace Resource
                     mImageManager->getImage(VFS::Path::toNormalized(Files::pathToUnicodeString(filePath))),
                     osgDB::ReaderWriter::ReadResult::FILE_LOADED);
             }
+            catch (const SpeculativeDeferred&) { throw; }
             catch (std::exception& e)
             {
                 return osgDB::ReaderWriter::ReadResult(e.what());
@@ -969,6 +957,7 @@ namespace Resource
                     return load(path, mVFS, mImageManager, mNifFileManager, mBgsmFileManager);
             }
         }
+        catch (const SpeculativeDeferred&) { throw; }
         catch (const std::exception& e)
         {
             Log(Debug::Warning) << "Failed to load error marker:" << e.what()
@@ -1005,11 +994,17 @@ namespace Resource
             Debug::V3Diagnostics::TraceScope trace("render", "scene_template_miss", path.value(), 0.1);
             Debug::V3Diagnostics::ScopedCsvTimer timer(
                 Debug::V3Diagnostics::renderWriter(), "scene_template_miss", path.value(), 0.25);
+            auto claim = SpeculativeScope::claim(SpeculativeScope::active()
+                ? std::to_string(mVFS->getIndexGeneration()) + "|template|" + std::string(path.value()) : std::string{});
+            // Geometry/conversion estimate excludes separately charged image
+            // decoding. P1B keeps unknown plugin/allocator overhead explicit.
+            SpeculativeScope::Stage memoryStage(64 * SpeculativeBudget::MiB, 16 * SpeculativeBudget::MiB);
             osg::ref_ptr<osg::Node> loaded;
             try
             {
                 loaded = load(path, mVFS, mImageManager, mNifFileManager, mBgsmFileManager);
             }
+            catch (const SpeculativeDeferred&) { throw; }
             catch (const std::exception& e)
             {
                 Log(Debug::Error) << "Failed to load '" << path << "': " << e.what() << ", using marker_error instead";
@@ -1087,6 +1082,7 @@ namespace Resource
 
     void SceneManager::setPreparedInstanceCacheLimit(std::size_t limit)
     {
+        std::vector<osg::ref_ptr<osg::Node>> released;
         std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);
         if (mPreparedInstanceLimit != limit)
             ++mPreparedInstanceGeneration;
@@ -1099,6 +1095,7 @@ namespace Resource
             {
                 while (!it->second.empty() && mPreparedInstanceCount > mPreparedInstanceLimit)
                 {
+                    released.push_back(std::move(it->second.front()));
                     it->second.pop_front();
                     --mPreparedInstanceCount;
                 }
@@ -1299,23 +1296,30 @@ namespace Resource
     {
         ResourceManager::updateCache(referenceTime);
 
-        mSharedStateMutex.lock();
-        mSharedStateManager->prune();
-        mSharedStateMutex.unlock();
+        std::vector<osg::ref_ptr<osg::Object>> releasedState;
+        {
+            std::lock_guard lock(mSharedStateMutex);
+            if (auto* budget = CacheMaintenanceScope::current()) mSharedStateManager->pruneBudgeted(releasedState, *budget);
+            else mSharedStateManager->prune();
+        }
+        releasedState.clear();
 
         if (mIncrementalCompileOperation)
         {
+            osgUtil::IncrementalCompileOperation::CompileSets releasedCompiles;
             std::lock_guard<OpenThreads::Mutex> lock(*mIncrementalCompileOperation->getToCompiledMutex());
             osgUtil::IncrementalCompileOperation::CompileSets& sets = mIncrementalCompileOperation->getToCompile();
             for (osgUtil::IncrementalCompileOperation::CompileSets::iterator it = sets.begin(); it != sets.end();)
             {
+                if (auto* budget = CacheMaintenanceScope::current(); budget && !budget->scan()) break;
                 int refcount = (*it)->_subgraphToCompile->referenceCount();
                 if ((*it)->_subgraphToCompile->asDrawable())
                     refcount -= 1; // ref by CompileList.
-                if (refcount <= 2) // ref by ObjectCache + ref by _subgraphToCompile.
+                if (refcount <= 2 && (!CacheMaintenanceScope::current() || CacheMaintenanceScope::current()->release())) // cache + compile
                 {
                     // no other ref = not needed anymore.
-                    it = sets.erase(it);
+                    auto released = it++;
+                    releasedCompiles.splice(releasedCompiles.end(), sets, released);
                 }
                 else
                     ++it;
@@ -1333,8 +1337,10 @@ namespace Resource
             auto it = mPreparedInstances.begin();
             while (it != mPreparedInstances.end() && release.size() < maximum)
             {
+                if (auto* budget = CacheMaintenanceScope::current(); budget && !budget->scan()) break;
                 while (!it->second.empty() && release.size() < maximum)
                 {
+                    if (auto* budget = CacheMaintenanceScope::current(); budget && !budget->release()) break;
                     release.push_back(std::move(it->second.front()));
                     it->second.pop_front();
                     --mPreparedInstanceCount;
@@ -1346,25 +1352,31 @@ namespace Resource
         const auto prepared = release.size();
         release.clear(); // outside the pool lock; drops TemplateRef owners first
         const auto templates = ResourceManager::trimCache(maximum);
+        std::vector<osg::ref_ptr<osg::Object>> releasedState;
         {
             std::lock_guard lock(mSharedStateMutex);
-            mSharedStateManager->prune();
+            if (auto* budget = CacheMaintenanceScope::current()) mSharedStateManager->pruneBudgeted(releasedState, *budget);
+            else mSharedStateManager->prune();
         }
         return prepared + templates;
     }
 
     void SceneManager::clearCache()
     {
+        decltype(mPreparedInstances) released;
         {
             std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);
             ++mPreparedInstanceGeneration;
-            mPreparedInstances.clear();
+            released.swap(mPreparedInstances);
             mPreparedInstanceCount = 0;
         }
+        released.clear();
         ResourceManager::clearCache();
 
-        std::lock_guard<std::mutex> lock(mSharedStateMutex);
-        mSharedStateManager->clearCache();
+        auto releasedShared = [&] {
+            std::lock_guard<std::mutex> lock(mSharedStateMutex);
+            return mSharedStateManager->detachAll();
+        }();
     }
 
     void SceneManager::reportRuntimeDiagnostics(double referenceTime) const noexcept

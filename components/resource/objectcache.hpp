@@ -22,6 +22,8 @@
 
 #include "cachestats.hpp"
 #include "cachediagnostics.hpp"
+#include "speculativebudget.hpp"
+#include "cachemaintenance.hpp"
 
 #include <osg/Node>
 #include <osg/Referenced>
@@ -47,8 +49,12 @@ namespace Resource
 {
     struct GenericObjectCacheItem
     {
+        GenericObjectCacheItem() = default;
+        GenericObjectCacheItem(osg::Object* value, double time) : mValue(value), mLastUsage(time) {}
+        // Released after mValue: logical ownership is not freed before payload.
+        SpeculativeBudget::ChargePtr mCharge;
         osg::ref_ptr<osg::Object> mValue;
-        double mLastUsage;
+        double mLastUsage = 0;
         std::uint64_t mDiagnosticHits = 0;
         // Pressure trimming protects requests since the last bounded sweep.
         // This never changes normal expiry behavior or depends on diagnostics.
@@ -73,9 +79,14 @@ namespace Resource
          * @param referenceTime the timestamp indicating when the item was most recently used
          * @param expiryDelay the delay after which the cache entry for an item expires
          */
+        void setSpeculativeBudget(SpeculativeBudget* budget) { mBudget = budget; } // startup only
+        bool memoryAccountingEnabled() const noexcept { return mBudget != nullptr; }
+
         void update(double referenceTime, double expiryDelay)
         {
-            std::vector<osg::ref_ptr<osg::Object>> objectsToRemove;
+            if (auto* budget = CacheMaintenanceScope::current())
+            { maintain(referenceTime, expiryDelay, false, *budget); return; }
+            std::vector<Item> objectsToRemove;
             {
                 const double expiryTime = referenceTime - expiryDelay;
                 std::lock_guard<std::mutex> lock(mMutex);
@@ -98,7 +109,7 @@ namespace Resource
 
                     // just mark for removal here so objects can be removed in bulk outside the lock
                     if (item.mValue != nullptr)
-                        objectsToRemove.push_back(std::move(item.mValue));
+                        objectsToRemove.push_back(std::move(item));
 
                     return true;
                 });
@@ -114,7 +125,9 @@ namespace Resource
         std::size_t trimUnused(std::size_t maxRemove, std::size_t maxScan = 4096)
         {
             if (maxRemove == 0 || maxScan == 0) return 0;
-            std::vector<osg::ref_ptr<osg::Object>> release;
+            if (auto* budget = CacheMaintenanceScope::current())
+                return maintain(0, 0, true, *budget, maxScan, maxRemove);
+            std::vector<Item> release;
             release.reserve((std::min)(maxRemove, maxScan));
             {
                 std::lock_guard lock(mMutex);
@@ -127,8 +140,8 @@ namespace Resource
                     const bool recent = std::exchange(item.mTrimRecentlyUsed, false);
                     if (!recent && item.mValue && item.mValue->referenceCount() == 1)
                     {
-                        release.push_back(std::move(item.mValue));
                         const bool neverHit = item.mDiagnosticHits == 0;
+                        release.push_back(std::move(item));
                         it = mItems.erase(it);
                         ++mPressureTrimmed;
                         if (Debug::RuntimeDiagnostics::enabled() && neverHit)
@@ -144,29 +157,51 @@ namespace Resource
         /** Remove all objects in the cache regardless of having external references or expiry times.*/
         void clear()
         {
-            std::lock_guard<std::mutex> lock(mMutex);
-            mItems.clear();
+            decltype(mItems) release;
+            {
+                std::lock_guard<std::mutex> lock(mMutex);
+                release.swap(mItems);
+                mTrimCursor.reset(); mExpiryCursor.reset();
+            } // final releases happen outside the cache mutex
         }
 
         /** Add a key,object,timestamp triple to the Registry::ObjectCache.*/
         template <class K>
         void addEntryToObjectCache(K&& key, osg::Object* object, double timestamp = 0.0)
         {
-            std::lock_guard<std::mutex> lock(mMutex);
-            const auto it = mItems.find(key);
-            if (it == mItems.end())
-                mItems.emplace_hint(it, std::forward<K>(key), Item{ object, timestamp });
-            else
-                it->second = Item{ object, timestamp };
+            Item incoming(object, timestamp);
+            if (mBudget && object)
+            {
+                const auto* image = dynamic_cast<const osg::Image*>(object);
+                const auto* identity = image && image->data() ? static_cast<const void*>(image->data()) : object;
+                incoming.mCharge = SpeculativeScope::track(mBudget, {identity, image ? 1u : 2u},
+                    image ? image->getTotalSizeInBytesIncludingMipmaps() : 0, image != nullptr);
+            }
+            // Incoming and displaced values outlive the lock, including when
+            // insertion throws. Never invoke a reentrant destructor under it.
+            Item displaced;
+            {
+                std::lock_guard<std::mutex> lock(mMutex);
+                const auto it = mItems.find(key);
+                if (it == mItems.end())
+                    mItems.emplace_hint(it, std::forward<K>(key), std::move(incoming));
+                else
+                {
+                    displaced = std::move(it->second);
+                    it->second = std::move(incoming);
+                }
+            }
         }
 
         /** Remove Object from cache.*/
         void removeFromObjectCache(const auto& key)
         {
-            std::lock_guard<std::mutex> lock(mMutex);
-            const auto itr = mItems.find(key);
-            if (itr != mItems.end())
-                mItems.erase(itr);
+            typename decltype(mItems)::node_type release;
+            {
+                std::lock_guard<std::mutex> lock(mMutex);
+                const auto it = mItems.find(key);
+                if (it != mItems.end()) release = mItems.extract(it);
+            }
         }
 
         /** Get an ref_ptr<Object> from the object cache*/
@@ -306,12 +341,61 @@ namespace Resource
             catch (...) { Debug::RuntimeDiagnostics::recordEvent("coverage", owner, "cache census unavailable", {{"available", 0}}); }
         }
 
+    private:
+        std::size_t maintain(double referenceTime, double expiryDelay, bool pressure,
+            CacheMaintenanceBudget& budget, std::size_t scanLimit = 128, std::size_t removeLimit = 8)
+        {
+            scanLimit = (std::min)(scanLimit, std::size_t(128));
+            removeLimit = (std::min)(removeLimit, std::size_t(8));
+            std::size_t scanned = 0, removed = 0;
+            auto& cursor = pressure ? mTrimCursor : mExpiryCursor;
+            while (scanned < scanLimit && removed < removeLimit && budget.available())
+            {
+                // One final release between time checks. The map node, value
+                // and charge are destroyed outside its mutex.
+                typename decltype(mItems)::node_type release;
+                bool reachedEnd = false;
+                {
+                    std::lock_guard lock(mMutex);
+                    auto it = cursor ? mItems.upper_bound(*cursor) : mItems.begin();
+                    if (it == mItems.end()) { cursor.reset(); break; }
+                    if (!budget.scan()) break;
+                    ++scanned; cursor = it->first;
+                    auto& item = it->second;
+                    bool eligible = false;
+                    if (pressure)
+                    {
+                        const bool recent = std::exchange(item.mTrimRecentlyUsed, false);
+                        eligible = !recent && item.mValue && item.mValue->referenceCount() == 1;
+                    }
+                    else
+                    {
+                        if ((item.mValue && item.mValue->referenceCount() > 1) || item.mLastUsage == 0)
+                            item.mLastUsage = referenceTime;
+                        eligible = item.mLastUsage <= referenceTime - expiryDelay;
+                    }
+                    reachedEnd = std::next(it) == mItems.end();
+                    if (eligible && budget.release(item.mCharge ? item.mCharge->bytes() : 0))
+                    {
+                        if (pressure) ++mPressureTrimmed; else ++mExpired;
+                        release = mItems.extract(it); ++removed;
+                    }
+                    if (reachedEnd) cursor.reset();
+                }
+                if (release && release.mapped().mCharge && release.mapped().mCharge.use_count() == 1)
+                    release.mapped().mCharge->pending();
+                if (reachedEnd) break;
+            }
+            return removed;
+        }
+
     protected:
         using Item = GenericObjectCacheItem;
 
         std::map<KeyType, Item, std::less<>> mItems;
         mutable std::mutex mMutex;
-        std::optional<KeyType> mTrimCursor;
+        std::optional<KeyType> mTrimCursor, mExpiryCursor;
+        SpeculativeBudget* mBudget = nullptr; // ResourceSystem outlives this cache
         std::size_t mGet = 0;
         std::size_t mHit = 0;
         std::size_t mExpired = 0;
@@ -325,6 +409,7 @@ namespace Resource
             if (it == mItems.end())
                 return nullptr;
             ++mHit;
+            if (mBudget) mBudget->hit(SpeculativeScope::active());
             it->second.mTrimRecentlyUsed = true;
             if (Debug::RuntimeDiagnostics::enabled()) ++it->second.mDiagnosticHits;
             return &it->second;

@@ -28,6 +28,7 @@ namespace Resource
     {
     public:
         virtual ~BaseResourceManager() = default;
+        virtual void setSpeculativeBudget(SpeculativeBudget*) {}
         virtual void updateCache(double referenceTime) = 0;
         virtual void clearCache() = 0;
         virtual void setExpiryDelay(double expiryDelay) = 0;
@@ -55,6 +56,7 @@ namespace Resource
         }
 
         virtual ~GenericResourceManager() = default;
+        void setSpeculativeBudget(SpeculativeBudget* budget) override { mCache->setSpeculativeBudget(budget); }
 
         /// Clear cache entries that have not been referenced for longer than expiryDelay.
         void updateCache(double referenceTime) override { mCache->update(referenceTime, mExpiryDelay); }

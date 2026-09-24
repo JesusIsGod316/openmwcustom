@@ -17,6 +17,7 @@
 #include <components/vfs/pathutil.hpp>
 
 #include "objectcache.hpp"
+#include "preloadestimate.hpp"
 
 #ifdef OSG_LIBRARY_STATIC
 // This list of plugins should match with the list in the top-level CMakelists.txt.
@@ -96,6 +97,9 @@ namespace Resource
             return osg::ref_ptr<osg::Image>(static_cast<osg::Image*>(obj.get()));
         else
         {
+            auto claim = SpeculativeScope::claim(SpeculativeScope::active()
+                ? std::to_string(mVFS->getIndexGeneration()) + "|image|" + std::string(path.value())
+                    + (disableFlip ? "|no-flip" : "|flip") : std::string{});
             Debug::RuntimeDiagnostics::Operation diagnostic("image_cache_miss", path.value());
             Files::IStreamPtr stream;
             try
@@ -123,6 +127,8 @@ namespace Resource
                 return mWarningImage;
             }
 
+            const auto estimate = SpeculativeScope::active() ? estimateStream(*stream, true) : PreloadEstimate{};
+            SpeculativeScope::Stage memoryStage(estimate.peak, estimate.retained);
             bool killAlpha = false;
             if (reader->supportedExtensions().count("tga"))
             {

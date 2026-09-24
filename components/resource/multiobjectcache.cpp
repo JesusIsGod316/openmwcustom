@@ -1,4 +1,5 @@
 #include "multiobjectcache.hpp"
+#include "cachemaintenance.hpp"
 
 #include <algorithm>
 #include <utility>
@@ -10,6 +11,32 @@ namespace Resource
 {
     void MultiObjectCache::removeUnreferencedObjectsInCache(std::size_t keepUnreferenced)
     {
+        if (auto* budget = CacheMaintenanceScope::current())
+        {
+            for (unsigned scanned = 0; scanned < 128 && budget->available(); ++scanned)
+            {
+                osg::ref_ptr<osg::Object> released;
+                bool end = false;
+                {
+                    std::lock_guard lock(mObjectCacheMutex);
+                    if (mExpiryNext == mObjectCache.end()) { mExpiryNext = mObjectCache.begin(); mExpiryKept = 0; }
+                    if (mExpiryNext == mObjectCache.end() || !budget->scan()) break;
+                    auto it = mExpiryNext++;
+                    if (it->second->referenceCount() <= 1)
+                    {
+                        if (mExpiryKept < keepUnreferenced) ++mExpiryKept;
+                        else if (budget->release())
+                        {
+                            if (mTrimNext == it) ++mTrimNext;
+                            released = std::move(it->second); mObjectCache.erase(it); ++mExpired;
+                        }
+                    }
+                    end = mExpiryNext == mObjectCache.end();
+                }
+                if (end) break;
+            }
+            return;
+        }
         std::vector<osg::ref_ptr<osg::Object>> objectsToRemove;
         {
             std::lock_guard<std::mutex> lock(mObjectCacheMutex);
@@ -30,6 +57,7 @@ namespace Resource
                     }
                     objectsToRemove.push_back(oitr->second);
                     if (mTrimNext == oitr) ++mTrimNext;
+                    if (mExpiryNext == oitr) ++mExpiryNext;
                     mObjectCache.erase(oitr++);
                     ++mExpired;
                 }
@@ -47,6 +75,30 @@ namespace Resource
     std::size_t MultiObjectCache::trimUnused(std::size_t maximum, std::size_t maxScan)
     {
         if (maximum == 0 || maxScan == 0) return 0;
+        if (auto* budget = CacheMaintenanceScope::current())
+        {
+            std::size_t removed = 0;
+            for (std::size_t scanned = 0; scanned < (std::min)(maxScan, std::size_t(128))
+                && removed < maximum && budget->available(); ++scanned)
+            {
+                osg::ref_ptr<osg::Object> released;
+                bool end = false;
+                {
+                    std::lock_guard lock(mObjectCacheMutex);
+                    if (mTrimNext == mObjectCache.end()) mTrimNext = mObjectCache.begin();
+                    if (mTrimNext == mObjectCache.end() || !budget->scan()) break;
+                    auto it = mTrimNext++;
+                    if (it->second && it->second->referenceCount() == 1 && budget->release())
+                    {
+                        if (mExpiryNext == it) ++mExpiryNext;
+                        released = std::move(it->second); mObjectCache.erase(it); ++removed; ++mPressureTrimmed;
+                    }
+                    end = mTrimNext == mObjectCache.end();
+                }
+                if (end) break;
+            }
+            return removed;
+        }
         std::vector<osg::ref_ptr<osg::Object>> release;
         release.reserve((std::min)(maximum, maxScan));
         {
@@ -59,6 +111,7 @@ namespace Resource
                 if (it->second && it->second->referenceCount() == 1)
                 {
                     release.push_back(std::move(it->second));
+                    if (mExpiryNext == it) ++mExpiryNext;
                     mObjectCache.erase(it);
                     ++mPressureTrimmed;
                 }
@@ -69,9 +122,12 @@ namespace Resource
 
     void MultiObjectCache::clear()
     {
-        std::lock_guard<std::mutex> lock(mObjectCacheMutex);
-        mObjectCache.clear();
-        mTrimNext = mObjectCache.end();
+        ObjectCacheMap released;
+        {
+            std::lock_guard<std::mutex> lock(mObjectCacheMutex);
+            released.swap(mObjectCache);
+            mTrimNext = mObjectCache.end(); mExpiryNext = mObjectCache.end(); mExpiryKept = 0;
+        }
     }
 
     void MultiObjectCache::addEntryToObjectCache(VFS::Path::NormalizedView filename, osg::Object* object)
@@ -94,6 +150,7 @@ namespace Resource
         {
             osg::ref_ptr<osg::Object> object = std::move(it->second);
             if (mTrimNext == it) ++mTrimNext;
+            if (mExpiryNext == it) ++mExpiryNext;
             mObjectCache.erase(it);
             ++mHit;
             return object;

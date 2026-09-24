@@ -97,9 +97,10 @@ namespace Resource
         void setEnabled(bool enabled) noexcept { mEnabled.store(enabled, std::memory_order_release); }
         bool enabled() const noexcept { return mEnabled.load(std::memory_order_acquire); }
         // Startup-only; off/Vulkan keep the original coordinator and policy.
-        void enableOpenGl(OpenGlPressureConfig config = {})
+        void enableOpenGl(OpenGlPressureConfig config = {}, const std::atomic<std::uint64_t>* watermark = nullptr)
         {
-            mOpenGl = std::make_unique<OpenGlPressureMonitor>(config);
+            mOpenGl = std::make_unique<OpenGlPressureMonitor>(config, &Misc::queryOpenGlHostMemoryStatus,
+                &OpenGlPressureMonitor::milliseconds, true, watermark);
             mEnabled.store(true, std::memory_order_release);
         }
         bool openGlEnabled() const noexcept { return enabled() && mOpenGl != nullptr; }

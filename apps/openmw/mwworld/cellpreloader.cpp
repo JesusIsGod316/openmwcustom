@@ -76,7 +76,7 @@ namespace MWWorld
             Resource::BulletShapeManager* bulletShapeManager, Resource::KeyframeManager* keyframeManager,
             Terrain::World* terrain, MWRender::LandManager* landManager, bool preloadInstances,
             Resource::ResourceSystem* resourceSystem, bool useLegacyTerrain,
-            Resource::PreloadAdmission::Reservation reservation)
+            Resource::PreloadAdmission::Reservation reservation, Resource::SpeculativeBudget::Job byteJob = {})
             : mIsExterior(cell->getCell()->isExterior())
             , mCellLocation(cell->getCell()->getExteriorCellLocation())
             , mCellId(cell->getCell()->getId())
@@ -89,6 +89,7 @@ namespace MWWorld
             , mResourceSystem(resourceSystem)
             , mUseLegacyTerrain(useLegacyTerrain)
             , mReservation(std::move(reservation))
+            , mByteJob(std::move(byteJob))
             , mAbort(false)
         {
             if (mUseLegacyTerrain)
@@ -96,8 +97,18 @@ namespace MWWorld
 
             ListModelsVisitor visitor{ mMeshes };
             cell->forEachConst(visitor);
+            if (mByteJob)
+            {
+                Resource::SpeculativeScope scope(mResourceSystem->speculativeBudget(),
+                    &Resource::ResourceSystem::speculativeSample, mResourceSystem);
+                const auto shell = std::uint64_t(mMeshes.capacity()) * sizeof(mMeshes.front()) + sizeof(*this);
+                Resource::SpeculativeScope::Stage stage(shell, shell);
+                mOwnerCharge = Resource::SpeculativeScope::track(mResourceSystem->speculativeBudget(), {this, 3}, shell, true);
+            }
         }
 
+        std::uint64_t retainedEstimate() const noexcept { return mRetainedEstimate.load(std::memory_order_acquire); }
+        void pendingRelease() { if (mOwnerCharge) mOwnerCharge->pending(); }
         void abort() override { mAbort = true; }
         bool fullyPrepared() const noexcept { return mFullyPrepared.load(std::memory_order_acquire); }
 
@@ -107,16 +118,29 @@ namespace MWWorld
             // Release on every exit, including abort and exception. Until work
             // starts the member also covers the queue and canceled-item lifetime.
             const auto reservation = std::move(mReservation);
+            auto byteJob = std::move(mByteJob);
+            Resource::SpeculativeScope scope(byteJob ? mResourceSystem->speculativeBudget() : nullptr,
+                &Resource::ResourceSystem::speculativeSample, mResourceSystem);
+            struct Receipt
+            {
+                Resource::SpeculativeScope& scope;
+                std::atomic<std::uint64_t>& estimate;
+                ~Receipt() { estimate.store((std::max)(64 * Resource::SpeculativeBudget::MiB,
+                    scope.retainedEstimate()), std::memory_order_release); }
+            } receipt{scope, mRetainedEstimate};
             if (mAbort || mResourceSystem->hostMemoryPressure() != Resource::HostMemoryPressure::Normal)
                 return;
             if (mIsExterior)
             {
                 try
                 {
+                    Resource::SpeculativeScope::Stage terrainStage(128 * Resource::SpeculativeBudget::MiB,
+                        32 * Resource::SpeculativeBudget::MiB);
                     if (mUseLegacyTerrain)
                         mTerrain->cacheCell(mTerrainView.get(), mCellLocation.mX, mCellLocation.mY);
                     mPreloadedObjects.insert(mLandManager->getLand(mCellLocation));
                 }
+                catch (const Resource::SpeculativeDeferred&) { return; }
                 catch (const std::exception& e)
                 {
                     Log(Debug::Warning) << "Failed to cache terrain for exterior cell " << mCellLocation << ": "
@@ -129,6 +153,7 @@ namespace MWWorld
             std::set<VFS::Path::Normalized> v37PreloadedKeyframes;
             const bool v37CompanionKeyframePreload
                 = static_cast<bool>(Settings::cells().mV37CompanionKeyframePreload);
+            std::set<VFS::Path::Normalized> p1bMeshes;
             for (VFS::Path::NormalizedView path : mMeshes)
             {
                 // These are speculative cache owners, not active gameplay.
@@ -144,6 +169,11 @@ namespace MWWorld
 
                     if (!vfs.exists(mesh))
                         continue;
+                    if (byteJob && !p1bMeshes.insert(mesh).second) continue;
+                    // Non-NIF plugin readers can swallow nested decode errors.
+                    // Do not budget-abort through unknown plugins; let demand
+                    // load them on the unchanged required path instead.
+                    if (byteJob && mesh.extension() != VFS::Path::ExtensionView("nif")) continue;
 
                     constexpr VFS::Path::ExtensionView nif("nif");
                     const bool v37CheckKeyframe = mesh.extension() == nif
@@ -157,6 +187,10 @@ namespace MWWorld
                             mPreloadedObjects.insert(mKeyframeManager->get(kfname));
                     }
 
+                    // Outer shell/instance preparation estimate; nested image,
+                    // NIF and template stages have their own reservations.
+                    Resource::SpeculativeScope::Stage assetStage(32 * Resource::SpeculativeBudget::MiB,
+                        8 * Resource::SpeculativeBudget::MiB);
                     if (Resource::v321CP2FairnessEnabled())
                         mPreloadedObjects.insert(mSceneManager->getTemplate(
                             mesh, true, Resource::V321CompileClass::GenericModel));
@@ -169,6 +203,7 @@ namespace MWWorld
                     if (!mAbort)
                         mSceneManager->prepareInstance(mesh);
                 }
+                catch (const Resource::SpeculativeDeferred&) { return; }
                 catch (const std::exception& e)
                 {
                     Log(Debug::Warning) << "Failed to preload mesh \"" << path << "\" from cell " << mCellId << ": "
@@ -192,6 +227,9 @@ namespace MWWorld
         Resource::ResourceSystem* mResourceSystem;
         bool mUseLegacyTerrain;
         Resource::PreloadAdmission::Reservation mReservation;
+        Resource::SpeculativeBudget::Job mByteJob;
+        Resource::SpeculativeBudget::ChargePtr mOwnerCharge;
+        std::atomic<std::uint64_t> mRetainedEstimate{64 * Resource::SpeculativeBudget::MiB};
 
         std::atomic<bool> mAbort;
         std::atomic<bool> mFullyPrepared{false};
@@ -308,7 +346,7 @@ namespace MWWorld
         , mLastResourceCacheUpdate(0.0)
         , mLoadedTerrainTimestamp(0.0)
     {
-        if (static_cast<bool>(Settings::cells().mV316IdleResourceSweep))
+        if (static_cast<bool>(Settings::cells().mV316IdleResourceSweep) || mResourceSystem->speculativeBudget())
             mV316ResourceSweepQueue = new SceneUtil::WorkQueue(1);
     }
 
@@ -319,6 +357,8 @@ namespace MWWorld
 
     void CellPreloader::preload(CellStore& cell, double timestamp)
     {
+        const bool p1b = mResourceSystem->speculativeBudget() != nullptr;
+        if (p1b && mResourceSystem->pendingReleases()) return;
         // Do not refill the optional preload owners while they are being
         // reclaimed. Required Scene::loadCell and physics paths are untouched.
         if (mResourceSystem->hostMemoryPressure() != Resource::HostMemoryPressure::Normal)
@@ -337,18 +377,26 @@ namespace MWWorld
         PreloadMap::iterator found = mPreloadCells.find(&cell);
         if (found != mPreloadCells.end())
         {
+            // A retired or incomplete owner is not a warm ready cell.
+            if (found->second.mRetired) return;
             // already preloaded, nothing to do other than updating the timestamp
             found->second.mTimeStamp = timestamp;
             return;
         }
 
         static const bool legacyAdmission = std::getenv("OPENMW_V4_LEGACY_PRELOAD_ADMISSION_CONTROL") != nullptr;
-        auto reservation = (legacyAdmission && !mResourceSystem->openGlHostMemoryBudgetEnabled())
+        auto reservation = (p1b || (legacyAdmission && !mResourceSystem->openGlHostMemoryBudgetEnabled()))
             ? std::optional<Resource::PreloadAdmission::Reservation>(std::in_place)
             : mResourceSystem->reserveOptionalPreload();
         if (!reservation)
             return; // optional request can retry; never wait on the main thread
 
+        Resource::SpeculativeBudget::Job byteJob;
+        if (p1b)
+        {
+            byteJob = mResourceSystem->speculativeBudget()->tryJob(Resource::ResourceSystem::speculativeSample(mResourceSystem));
+            if (!byteJob) return;
+        }
         while (mPreloadCells.size() >= mMaxCacheSize)
         {
             // throw out oldest cell to make room
@@ -367,6 +415,8 @@ namespace MWWorld
             if (oldestTimestamp + threshold < timestamp)
             {
                 oldestCell->second.mWorkItem->abort();
+                if (p1b)
+                { oldestCell->second.mRetired = true; retireCompletedPreloads(); return; }
                 mPreloadCells.erase(oldestCell);
                 ++mEvicted;
             }
@@ -374,9 +424,14 @@ namespace MWWorld
                 return;
         }
 
-        osg::ref_ptr<PreloadItem> item(new PreloadItem(&cell, mResourceSystem->getSceneManager(), mBulletShapeManager,
-            mResourceSystem->getKeyframeManager(), mTerrain, mLandManager, mPreloadInstances,
-            mResourceSystem, mUseLegacyTerrain, std::move(*reservation)));
+        osg::ref_ptr<PreloadItem> item;
+        try
+        {
+            item = new PreloadItem(&cell, mResourceSystem->getSceneManager(), mBulletShapeManager,
+                mResourceSystem->getKeyframeManager(), mTerrain, mLandManager, mPreloadInstances,
+                mResourceSystem, mUseLegacyTerrain, std::move(*reservation), std::move(byteJob));
+        }
+        catch (const Resource::SpeculativeDeferred&) { return; }
         mWorkQueue->addWorkItem(item);
 
         mPreloadCells.emplace(&cell, PreloadEntry(timestamp, item));
@@ -388,6 +443,14 @@ namespace MWWorld
         PreloadMap::iterator found = mPreloadCells.find(cell);
         if (found != mPreloadCells.end())
         {
+            if (mResourceSystem->speculativeBudget())
+            {
+                if (!found->second.mDemandUsed) { ++mLoaded; found->second.mDemandUsed = true; }
+                found->second.mRetired = true;
+                if (found->second.mWorkItem) found->second.mWorkItem->abort();
+                retireCompletedPreloads();
+                return;
+            }
             if (found->second.mWorkItem)
             {
                 found->second.mWorkItem->abort();
@@ -401,6 +464,13 @@ namespace MWWorld
 
     void CellPreloader::clear()
     {
+        if (mResourceSystem->speculativeBudget())
+        {
+            for (auto& [cell, entry] : mPreloadCells)
+            { entry.mRetired = true; if (entry.mWorkItem) entry.mWorkItem->abort(); }
+            retireCompletedPreloads();
+            return;
+        }
         for (PreloadMap::iterator it = mPreloadCells.begin(); it != mPreloadCells.end();)
         {
             if (it->second.mWorkItem)
@@ -439,26 +509,51 @@ namespace MWWorld
                 {"admission_accepted", admission.admitted}, {"admission_denied", admission.denied},
                 {"admission_released", admission.released} });
         }
+        // Count live owners rather than map slots: P1B detaches asynchronously,
+        // so marking entries must consume the same retention floor as erasing.
+        std::size_t retainedCells = mPreloadCells.size();
+        if (mResourceSystem->speculativeBudget())
+            retainedCells = static_cast<std::size_t>(std::count_if(mPreloadCells.begin(), mPreloadCells.end(),
+                [](const auto& pair) { return !pair.second.mRetired; }));
         for (PreloadMap::iterator it = mPreloadCells.begin(); it != mPreloadCells.end();)
         {
-            if (mPreloadCells.size() >= mMinCacheSize && it->second.mTimeStamp < timestamp - mExpiryDelay)
+            if ((mResourceSystem->speculativeBudget() ? retainedCells : mPreloadCells.size()) >= mMinCacheSize
+                && it->second.mTimeStamp < timestamp - mExpiryDelay)
             {
-                if (it->second.mWorkItem)
+                if (mResourceSystem->speculativeBudget())
                 {
-                    it->second.mWorkItem->abort();
-                    it->second.mWorkItem = nullptr;
+                    if (!it->second.mRetired) { ++mExpired; --retainedCells; }
+                    it->second.mRetired = true;
+                    if (it->second.mWorkItem) it->second.mWorkItem->abort();
+                    ++it;
                 }
-                mPreloadCells.erase(it++);
-                ++mExpired;
+                else
+                {
+                    if (it->second.mWorkItem)
+                    { it->second.mWorkItem->abort(); it->second.mWorkItem = nullptr; }
+                    mPreloadCells.erase(it++); ++mExpired;
+                }
             }
             else
                 ++it;
         }
 
+        if (mResourceSystem->speculativeBudget())
+        {
+            for (auto& [cell, entry] : mPreloadCells)
+            {
+                if (hostPressure != Resource::HostMemoryPressure::Normal)
+                { entry.mRetired = true; if (entry.mWorkItem) entry.mWorkItem->abort(); }
+                if (entry.mWorkItem && entry.mWorkItem->isDone()
+                    && !static_cast<const PreloadItem&>(*entry.mWorkItem).fullyPrepared()) entry.mRetired = true;
+            }
+            retireCompletedPreloads();
+        }
         const bool v37AdapterPressure = static_cast<bool>(Settings::cells().mV32GpuMemoryManagement)
             && Debug::V3GpuMemory::softPressure();
-        const double v37ResourceSweepSeconds
-            = static_cast<bool>(Settings::cells().mV37RelaxedResourceSweep) && !v37AdapterPressure
+        const double v37ResourceSweepSeconds = mResourceSystem->speculativeBudget()
+            ? ((hostPressure != Resource::HostMemoryPressure::Normal || mResourceSystem->pendingReleases()) ? 0.1 : 1.0)
+            : static_cast<bool>(Settings::cells().mV37RelaxedResourceSweep) && !v37AdapterPressure
                 && hostPressure == Resource::HostMemoryPressure::Normal
             ? static_cast<double>(Settings::cells().mV37ResourceSweepSeconds)
             : 1.0;
@@ -468,13 +563,14 @@ namespace MWWorld
             // V3.16 balanced/aggressive modes isolate periodic cache maintenance
             // from the shared preload queue. The dedicated thread is permanently
             // idle-priority and handles no paging-critical work.
-            const bool v316IdleSweep = static_cast<bool>(Settings::cells().mV316IdleResourceSweep)
-                && mV316ResourceSweepQueue;
+            const bool v316IdleSweep = mV316ResourceSweepQueue
+                && (static_cast<bool>(Settings::cells().mV316IdleResourceSweep) || mResourceSystem->speculativeBudget());
             std::vector<osg::ref_ptr<SceneUtil::WorkItem>> released;
             // A pressure-aborted preload is not a complete warm cell. Discard
             // it even if pressure has recovered, so a later request can retry.
             // Completed ownership is transferred to the maintenance worker.
-            for (auto it = mPreloadCells.begin(); it != mPreloadCells.end() && released.size() < 16;)
+            for (auto it = mPreloadCells.begin(); !mResourceSystem->speculativeBudget()
+                && it != mPreloadCells.end() && released.size() < 16;)
             {
                 const auto& item = it->second.mWorkItem;
                 if (item && item->isDone() && !static_cast<const PreloadItem&>(*item).fullyPrepared())
@@ -485,7 +581,7 @@ namespace MWWorld
                 }
                 else ++it;
             }
-            if (hostPressure != Resource::HostMemoryPressure::Normal)
+            if (!mResourceSystem->speculativeBudget() && hostPressure != Resource::HostMemoryPressure::Normal)
             {
                 // Oldest completed preloads first. In-progress jobs get an
                 // abort request only, and retain ownership until they finish.
@@ -531,6 +627,25 @@ namespace MWWorld
                     setTerrainPreloadPositions(pending);
                 }
             }
+        }
+    }
+
+    void CellPreloader::retireCompletedPreloads()
+    {
+        // Bounded by the configured cell-owner population; a full retirement
+        // queue leaves ownership here and blocks new speculation. Never wait.
+        std::size_t moved = 0;
+        for (auto it = mPreloadCells.begin(); it != mPreloadCells.end() && moved < 4;)
+        {
+            auto& entry = it->second;
+            if (entry.mRetired && entry.mWorkItem && entry.mWorkItem->isDone())
+            {
+                auto& item = static_cast<PreloadItem&>(*entry.mWorkItem);
+                item.pendingRelease();
+                if (!mResourceSystem->deferRelease(entry.mWorkItem, item.retainedEstimate())) break;
+                it = mPreloadCells.erase(it); ++moved; ++mPressureReleased;
+            }
+            else ++it;
         }
     }
 

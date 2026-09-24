@@ -77,7 +77,7 @@ namespace MWWorld
 
         std::size_t getCacheSize() const { return mPreloadCells.size(); }
 
-        bool isPreloaded(const CellStore& cell) const { return mPreloadCells.find(&cell) != mPreloadCells.end(); }
+        bool isPreloaded(const CellStore& cell) const { const auto it = mPreloadCells.find(&cell); return it != mPreloadCells.end() && !it->second.mRetired; }
 
         void setWorkQueue(osg::ref_ptr<SceneUtil::WorkQueue> workQueue);
 
@@ -93,6 +93,7 @@ namespace MWWorld
 
     private:
         void clearAllTasks();
+        void retireCompletedPreloads();
         Debug::RuntimeDiagnostics::Sampler mDiagnosticSampler;
 
         Resource::ResourceSystem* mResourceSystem;
@@ -123,6 +124,8 @@ namespace MWWorld
 
             double mTimeStamp;
             osg::ref_ptr<SceneUtil::WorkItem> mWorkItem;
+            bool mRetired = false;
+            bool mDemandUsed = false;
         };
         typedef std::map<const MWWorld::CellStore*, PreloadEntry> PreloadMap;
 

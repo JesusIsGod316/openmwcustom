@@ -1,6 +1,7 @@
 #include "resourcesystem.hpp"
 
 #include <algorithm>
+#include "cachemaintenance.hpp"
 
 #include <components/debug/v3diagnostics.hpp>
 
@@ -43,6 +44,8 @@ namespace Resource
     {
         // this has to be defined in the .cpp file as we can't delete incomplete types
 
+        // Engine teardown has already joined preload/maintenance workers.
+        mDeferredRelease.clear();
         mResourceManagers.clear();
     }
 
@@ -89,6 +92,7 @@ namespace Resource
 
     void ResourceSystem::updateCache(double referenceTime)
     {
+        if (mSpeculativeBudget) { updateBudgetedCache(referenceTime); return; }
         Debug::V3Diagnostics::TraceScope trace("resource", "resource_cache_update", "all_managers", 0.5);
         Debug::V3Diagnostics::ScopedCsvTimer timer(
             Debug::V3Diagnostics::resourceWriter(), "resource_cache_update", "all_managers", 0.5);
@@ -141,6 +145,8 @@ namespace Resource
     void ResourceSystem::addResourceManager(BaseResourceManager* resourceMgr)
     {
         mResourceManagers.push_back(resourceMgr);
+        if (mSpeculativeBudget)
+        { resourceMgr->setSpeculativeBudget(mSpeculativeBudget.get()); rebuildMaintenanceOrder(); }
     }
 
     void ResourceSystem::removeResourceManager(BaseResourceManager* resourceMgr)
@@ -148,7 +154,59 @@ namespace Resource
         std::vector<BaseResourceManager*>::iterator found
             = std::find(mResourceManagers.begin(), mResourceManagers.end(), resourceMgr);
         if (found != mResourceManagers.end())
-            mResourceManagers.erase(found);
+        { mResourceManagers.erase(found); if (mSpeculativeBudget) rebuildMaintenanceOrder(); }
+    }
+
+
+    void ResourceSystem::enableOpenGlSpeculativeBudget(OpenGlPressureConfig pressure, SpeculativeBudget::Config config)
+    {
+        mSpeculativeBudget = std::make_unique<SpeculativeBudget>(config);
+        mHostMemoryBudget.enableOpenGl(pressure, mSpeculativeBudget->watermark());
+        for (auto* manager : mResourceManagers) manager->setSpeculativeBudget(mSpeculativeBudget.get());
+        rebuildMaintenanceOrder();
+    }
+
+    void ResourceSystem::rebuildMaintenanceOrder()
+    {
+        mMaintenanceOrder.clear();
+        for (auto* manager : mResourceManagers)
+            if (manager != mSceneManager.get() && manager != mImageManager.get()) mMaintenanceOrder.push_back(manager);
+        mMaintenanceOrder.push_back(mSceneManager.get());
+        mMaintenanceOrder.push_back(mImageManager.get());
+        mMaintenanceCursor = 0;
+    }
+
+    std::size_t ResourceSystem::pendingReleases() const
+    { return mDeferredRelease.stats().owners; }
+
+    void ResourceSystem::updateBudgetedCache(double referenceTime)
+    {
+        CacheMaintenanceBudget budget;
+        CacheMaintenanceScope scope(budget);
+        // This executes on the existing dedicated resource worker. Never wait
+        // for a running preload and never perform GL finish/wait here.
+        mDeferredRelease.drain(budget);
+        const auto pressure = mHostMemoryBudget.pressure();
+        // Rotating start avoids starvation when a manager or a destructor uses
+        // the remaining time. Within a cycle owners precede templates/images.
+        for (std::size_t visited = 0; visited < mMaintenanceOrder.size() && budget.available(); ++visited)
+        {
+            auto* manager = mMaintenanceOrder[mMaintenanceCursor];
+            mMaintenanceCursor = (mMaintenanceCursor + 1) % mMaintenanceOrder.size();
+            manager->updateCache(referenceTime);
+            if (pressure != HostMemoryPressure::Normal && budget.available()) manager->trimCache(8);
+        }
+        if (Debug::RuntimeDiagnostics::enabled())
+        {
+            const auto stats = mSpeculativeBudget->stats();
+            Debug::RuntimeDiagnostics::recordEvent("opimizedmw_memory", "p1b", "Owner charges; not total process/VRAM bytes", {
+                {"future_bytes", stats.futureBytes}, {"known_owner_bytes", stats.knownOwnerBytes},
+                {"estimated_owner_bytes", stats.estimatedOwnerBytes}, {"unknown_owners", stats.unknownOwners},
+                {"pending_owner_bytes", stats.pendingOwnerBytes}, {"jobs", stats.jobs}, {"denied", stats.denied},
+                {"duplicate_defers", stats.duplicateRequests}, {"shared_claims", stats.sharedClaims},
+                {"demand_hits", stats.demandHits}, {"prefetch_hits", stats.prefetchHits},
+                {"scanned", budget.scanned}, {"released", budget.released}, {"pending_owners", pendingReleases()} });
+        }
     }
 
     const VFS::Manager* ResourceSystem::getVFS() const

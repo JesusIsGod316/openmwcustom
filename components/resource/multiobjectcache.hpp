@@ -50,6 +50,8 @@ namespace Resource
         // All erasing operations repair this iterator while holding the mutex.
         ObjectCacheMap::iterator mTrimNext = mObjectCache.end();
         mutable std::mutex mObjectCacheMutex;
+        ObjectCacheMap::iterator mExpiryNext = mObjectCache.end();
+        std::size_t mExpiryKept = 0;
         std::size_t mGet = 0;
         std::size_t mHit = 0;
         std::size_t mExpired = 0;

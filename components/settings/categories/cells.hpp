@@ -18,6 +18,10 @@ namespace Settings
     {
         using WithIndex::WithIndex;
 
+        SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
+        SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
+            makeClampSanitizerInt(64, 16384) };
+
         // OpimizedMW GL-P1A is an independent opt-in, not part of the V3 preset.
         SettingValue<bool> mOpimizedMWHostPressure{ mIndex, "Cells", "opimizedmw host pressure" };
         SettingValue<int> mOpimizedMWHostReserveMb{ mIndex, "Cells", "opimizedmw host reserve mb",

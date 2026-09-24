@@ -7,6 +7,7 @@
 #include <components/vfs/manager.hpp>
 
 #include "objectcache.hpp"
+#include "preloadestimate.hpp"
 #include <components/nif/data.hpp>
 
 namespace Resource
@@ -79,9 +80,14 @@ namespace Resource
             return static_cast<NifFileHolder*>(obj.get())->mNifFile;
 
         Debug::RuntimeDiagnostics::Operation diagnostic("nif_cache_miss", name.value());
+        auto claim = SpeculativeScope::claim(SpeculativeScope::active()
+            ? std::to_string(mVFS->getIndexGeneration()) + "|nif|" + std::string(name.value()) : std::string{});
+        auto stream = mVFS->get(name);
+        const auto estimate = SpeculativeScope::active() ? estimateStream(*stream, false) : PreloadEstimate{};
+        SpeculativeScope::Stage memoryStage(estimate.peak, estimate.retained);
         auto file = std::make_shared<Nif::NIFFile>(name);
         Nif::Reader reader(*file, mEncoder);
-        reader.parse(mVFS->get(name));
+        reader.parse(std::move(stream));
         obj = new NifFileHolder(file);
         mCache->addEntryToObjectCache(name.value(), obj);
         return file;

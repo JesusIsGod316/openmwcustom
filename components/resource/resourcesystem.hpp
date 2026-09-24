@@ -2,6 +2,10 @@
 #define OPENMW_COMPONENTS_RESOURCE_RESOURCESYSTEM_H
 
 #include "hostmemorybudget.hpp"
+#include "speculativebudget.hpp"
+#include <osg/ref_ptr>
+#include <osg/Referenced>
+#include "deferredrelease.hpp"
 
 #include <memory>
 #include <vector>
@@ -53,6 +57,14 @@ namespace Resource
         // Configure once before workers start. Disabled preserves legacy policy.
         void setHostMemoryBudgetEnabled(bool enabled) { mHostMemoryBudget.setEnabled(enabled); }
         void enableOpenGlHostMemoryBudget(OpenGlPressureConfig config) { mHostMemoryBudget.enableOpenGl(config); }
+        void enableOpenGlSpeculativeBudget(OpenGlPressureConfig pressure, SpeculativeBudget::Config config);
+        SpeculativeBudget* speculativeBudget() const noexcept { return mSpeculativeBudget.get(); }
+        static OpenGlPressureSample speculativeSample(void* self)
+        { return static_cast<ResourceSystem*>(self)->mHostMemoryBudget.openGlSample(); }
+        template<class T>
+        bool deferRelease(osg::ref_ptr<T>& object, std::uint64_t estimate)
+        { return mSpeculativeBudget && mDeferredRelease.push(object, estimate); }
+        std::size_t pendingReleases() const;
         bool openGlHostMemoryBudgetEnabled() const { return mHostMemoryBudget.openGlEnabled(); }
         HostMemoryPressure hostMemoryPressure() { return mHostMemoryBudget.pressure(); }
         std::optional<PreloadAdmission::Reservation> reserveOptionalPreload()
@@ -88,7 +100,14 @@ namespace Resource
 
     private:
         // Outlives all managers that borrow it.
+        // Monitor must stop before its growth watermark/ledger is destroyed.
+        std::unique_ptr<SpeculativeBudget> mSpeculativeBudget;
         HostMemoryBudget mHostMemoryBudget;
+        DeferredReleaseQueue mDeferredRelease;
+        std::size_t mMaintenanceCursor = 0;
+        std::vector<BaseResourceManager*> mMaintenanceOrder;
+        void rebuildMaintenanceOrder();
+        void updateBudgetedCache(double referenceTime);
         std::unique_ptr<SceneManager> mSceneManager;
         std::unique_ptr<ImageManager> mImageManager;
         std::unique_ptr<BgsmFileManager> mBgsmFileManager;

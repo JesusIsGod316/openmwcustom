@@ -1410,6 +1410,9 @@ void OMW::Engine::prepareEngine()
         Debug::RuntimeDiagnostics::recordEvent("configuration", "host_memory_budget", {},
             {{"enabled", hostMemoryBudget}, {"private_soft_percent", 75}, {"physical_reserve_denominator", 8},
                 {"recovery_ms", Resource::HostMemoryPolicy::RecoveryMilliseconds}});
+    if (!mUseVulkanRenderer && static_cast<bool>(Settings::cells().mOpimizedMWSpeculativeBudget)
+        && !static_cast<bool>(Settings::cells().mOpimizedMWHostPressure))
+        throw std::runtime_error("OpimizedMW speculative budget requires opimizedmw host pressure=true");
     if (!mUseVulkanRenderer && static_cast<bool>(Settings::cells().mOpimizedMWHostPressure))
     {
         Resource::OpenGlPressureConfig pressureConfig;
@@ -1417,7 +1420,15 @@ void OMW::Engine::prepareEngine()
             static_cast<int>(Settings::cells().mOpimizedMWHostReserveMb)) * Resource::OpenGlPressureConfig::MiB;
         pressureConfig.commitReserve = static_cast<std::uint64_t>(
             static_cast<int>(Settings::cells().mOpimizedMWCommitReserveMb)) * Resource::OpenGlPressureConfig::MiB;
-        mResourceSystem->enableOpenGlHostMemoryBudget(pressureConfig);
+        if (static_cast<bool>(Settings::cells().mOpimizedMWSpeculativeBudget))
+        {
+            Resource::SpeculativeBudget::Config config;
+            config.transientLimit = static_cast<std::uint64_t>(
+                static_cast<int>(Settings::cells().mOpimizedMWTransientBudgetMb)) * Resource::SpeculativeBudget::MiB;
+            mResourceSystem->enableOpenGlSpeculativeBudget(pressureConfig, config);
+            Log(Debug::Info) << "OpimizedMW GL-P1B byte admission and bounded maintenance: on";
+        }
+        else mResourceSystem->enableOpenGlHostMemoryBudget(pressureConfig);
         Log(Debug::Info) << "OpimizedMW GL-P1A pressure protection: on; healthy retention unchanged; "
                         << "private commit is diagnostic only; startup-only settings";
     }

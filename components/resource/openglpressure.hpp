@@ -4,6 +4,7 @@
 #include <components/misc/hostmemory.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -124,6 +125,8 @@ namespace Resource
         Misc::HostMemoryStatus memory;
         OpenGlPressureDecision decision;
         std::uint64_t generation = 0, sampledAtMs = 0;
+        std::uint64_t accountedGrowth = 0;
+        bool growthWatermarkValid = false;
     };
 
     // One sampler per enabled ResourceSystem, NOT one worker per cache/job.
@@ -142,8 +145,9 @@ namespace Resource
         }
 
         explicit OpenGlPressureMonitor(OpenGlPressureConfig config = {},
-            Query query = &Misc::queryOpenGlHostMemoryStatus, Clock clock = &milliseconds, bool background = true)
-            : mPolicy(config), mQuery(query), mClock(clock)
+            Query query = &Misc::queryOpenGlHostMemoryStatus, Clock clock = &milliseconds, bool background = true,
+            const std::atomic<std::uint64_t>* growthWatermark = nullptr)
+            : mPolicy(config), mQuery(query), mClock(clock), mGrowthWatermark(growthWatermark)
         {
             // Seed at engine initialization, before gameplay/preload workers.
             // No consumer ever queries the OS. Manual mode supports native tests.
@@ -185,6 +189,11 @@ namespace Resource
             std::lock_guard sampling(mSamplingMutex);
             OpenGlPressureSample next;
             next.sampledAtMs = mClock(); // do not label a slow query freshly sampled
+            if (mGrowthWatermark)
+            {
+                next.accountedGrowth = mGrowthWatermark->load(std::memory_order_acquire);
+                next.growthWatermarkValid = true;
+            }
             next.memory = mQuery();
             next.decision = mPolicy.update(next.memory, next.sampledAtMs);
             std::lock_guard publication(mPublicationMutex);
@@ -207,6 +216,7 @@ namespace Resource
         OpenGlPressurePolicy mPolicy;
         Query mQuery;
         Clock mClock;
+        const std::atomic<std::uint64_t>* mGrowthWatermark;
         std::mutex mSamplingMutex;
         mutable std::mutex mPublicationMutex;
         OpenGlPressureSample mPublished;
