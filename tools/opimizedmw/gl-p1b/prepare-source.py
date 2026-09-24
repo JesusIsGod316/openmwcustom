@@ -12,12 +12,24 @@ HERE = Path(__file__).resolve().parent
 def git(*args):
     return subprocess.check_output(['git', *args], cwd=ROOT)
 
+def apply_checked(data):
+    target = HERE/'transport.tmp.patch'
+    target.write_bytes(data)
+    try:
+        subprocess.run(['git', 'apply', '--check', str(target)], cwd=ROOT, check=True)
+        subprocess.run(['git', 'apply', str(target)], cwd=ROOT, check=True)
+    finally:
+        target.unlink(missing_ok=True)
+
 def main():
     manifest = json.loads((HERE/'source-manifest.json').read_text())
     parts = ('0', '1', '2', '30', '31', '32', '33', '4')
     data = b''.join((HERE/f'implementation.patch.gz.part{i}').read_bytes() for i in parts)
     if hashlib.sha256(data).hexdigest() != manifest['patch_sha256']:
         raise RuntimeError('source transport checksum mismatch')
+    correction = (HERE/'source-fixes.patch').read_bytes().replace(b'\r\n',b'\n')
+    if hashlib.sha256(correction).hexdigest() != manifest['correction_sha256']:
+        raise RuntimeError('source correction checksum mismatch')
     paths = manifest['files']
     for rel in paths:
         path = PurePosixPath(rel)
@@ -30,9 +42,6 @@ def main():
     if not all(actual[p] == paths[p]['after'] for p in paths):
         if not all(actual[p] == paths[p]['before'] for p in paths):
             raise RuntimeError('source does not match the exact P1A before-blobs')
-        # Windows checkout conversion is not a source change. Check every
-        # allowlisted input before canonicalizing only its line endings. A
-        # reset after changing autocrlf does not necessarily rewrite files.
         originals = {}
         for rel, entry in paths.items():
             path = ROOT/rel
@@ -46,14 +55,12 @@ def main():
             originals[path] = original
         for path, original in originals.items():
             path.write_bytes(original)
-        patch = gzip.decompress(data)
-        target = HERE/'transport.tmp.patch'
-        target.write_bytes(patch)
-        try:
-            subprocess.run(['git', 'apply', '--check', str(target)], cwd=ROOT, check=True)
-            subprocess.run(['git', 'apply', str(target)], cwd=ROOT, check=True)
-        finally:
-            target.unlink(missing_ok=True)
+        apply_checked(gzip.decompress(data))
+        for rel, entry in paths.items():
+            expected = entry.get('transport_after',entry['after'])
+            if git('hash-object',rel).decode().strip() != expected:
+                raise RuntimeError('original transport source hash mismatch: '+rel)
+        apply_checked(correction)
     for rel in paths:
         if git('hash-object', rel).decode().strip() != paths[rel]['after']:
             raise RuntimeError('materialized source hash mismatch: '+rel)

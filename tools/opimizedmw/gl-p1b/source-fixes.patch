@@ -1,0 +1,35 @@
+diff --git a/components/resource/deferredrelease.hpp b/components/resource/deferredrelease.hpp
+index 59398e2de6..c944c5012d 100644
+--- a/components/resource/deferredrelease.hpp
++++ b/components/resource/deferredrelease.hpp
+@@ -26,6 +26,10 @@ namespace Resource
+             if (mOwners.size() + mReleasing >= mMaximumOwners || estimate > UINT64_MAX - mBytes
+                 || (mBytes && (mBytes >= mMaximumBytes || estimate > mMaximumBytes - mBytes))) return false;
+             mOwners.push_back(std::move(incoming)); mBytes += estimate;
++            // OSG 3.6 ref_ptr may copy even from an rvalue. Clear the
++            // temporary while the queue is still protected, so a fast
++            // consumer cannot leave it as the final submitting-thread owner.
++            incoming.object = nullptr;
+             // Publish only after removing the caller's retaining reference.
+             // Otherwise a consumer could release first, leaving the caller to
+             // run the last destructor on the main thread after this returns.
+diff --git a/tools/opimizedmw/gl-p1b/CMakeLists.txt b/tools/opimizedmw/gl-p1b/CMakeLists.txt
+index b02b9d35e7..631c320257 100644
+--- a/tools/opimizedmw/gl-p1b/CMakeLists.txt
++++ b/tools/opimizedmw/gl-p1b/CMakeLists.txt
+@@ -26,10 +26,14 @@ foreach(t IN LISTS targets)
+     target_include_directories(${t} PRIVATE "${ROOT}")
+     target_link_libraries(${t} PRIVATE Threads::Threads)
+     if(MSVC)
+-        target_compile_options(${t} PRIVATE /W4 /WX /permissive-)
++        target_compile_options(${t} PRIVATE /W4 /WX /permissive- /EHsc)
+         target_link_libraries(${t} PRIVATE psapi)
+     else()
+         target_compile_options(${t} PRIVATE -Wall -Wextra -Wpedantic -Werror)
++        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
++            # Existing diagnostics intentionally evaluates every copy call.
++            target_compile_options(${t} PRIVATE -Wno-bitwise-instead-of-logical)
++        endif()
+         if(OPIMIZEDMW_P1B_SANITIZERS)
+             target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+             target_link_options(${t} PRIVATE -fsanitize=address,undefined)
