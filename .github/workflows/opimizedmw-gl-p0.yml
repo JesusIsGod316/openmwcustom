@@ -1,0 +1,70 @@
+name: OpimizedMW GL-P0 archive and OpenGL baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['opimizedmw/gl-p0']
+    paths:
+      - '.github/workflows/opimizedmw-gl-p0.yml'
+      - 'tools/opimizedmw/gl-p0/archive_source.py'
+      - 'tools/opimizedmw/gl-p0/test_archive_source.py'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: opimizedmw-gl-p0-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  Archive:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Test archive safety and empty-repository recovery
+        run: python3 -B tools/opimizedmw/gl-p0/test_archive_source.py
+      - name: Create and restore committed-source archive before cleanup
+        run: python3 -B tools/opimizedmw/gl-p0/archive_source.py --output "$RUNNER_TEMP/OpimizedMW-P0-archive"
+      - name: Publish immutable annotated tags and verify their remote targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tag in opimizedmw-gl-p0-precleanup-20260924 archive/vulkan-retained-20260924-be2869 archive/opimizedmw-opengl-reference-20260924; do
+            git push origin "refs/tags/$tag:refs/tags/$tag"
+            expected=$(git rev-parse "$tag^{}")
+            actual=$(git ls-remote origin "refs/tags/$tag^{}" | cut -f1)
+            test "$actual" = "$expected"
+          done
+      - name: Publish durable source-only backup release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/OpimizedMW-P0-archive"
+          sha256sum --check SHA256SUMS
+          gh release create opimizedmw-gl-p0-precleanup-20260924 ./* --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false --title 'OpimizedMW GL-P0 - pre-cleanup source archive' --notes 'Source recovery archive, NOT a playable build. Includes the committed OpenGL starting source, parked Vulkan checkpoint, accepted SDL3/OpenGL reference and their ancestors. Empty-repository recovery, Git integrity and materialized-source verification passed before publication. Local Windows uncommitted/untracked worktrees and downloaded dependency binaries are not included. See RESTORE.md and archive-manifest.json. No performance or runtime-acceptance claim.'
+      - name: Preserve independent artifact copy and manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpimizedMW-GL-P0-source-backup-${{ github.run_id }}
+          path: ${{ runner.temp }}/OpimizedMW-P0-archive/*
+          compression-level: 0
+          retention-days: 90
+          if-no-files-found: error
+
+  OpenGLBaselineWindows:
+    needs: Archive
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      build-type: RelWithDebInfo
+      tests: true
+      package: false
+      release: false
