@@ -206,6 +206,11 @@ namespace Resource
                 {"duplicate_defers", stats.duplicateRequests}, {"shared_claims", stats.sharedClaims},
                 {"demand_hits", stats.demandHits}, {"prefetch_hits", stats.prefetchHits},
                 {"scanned", budget.scanned}, {"released", budget.released}, {"pending_owners", pendingReleases()} });
+            Debug::RuntimeDiagnostics::recordEvent("opimizedmw_priority", "p1b",
+                "Near-future lane is reserved for active-grid strong upgrades", {
+                    {"priority_jobs", stats.priorityJobs},
+                    {"near_future_admitted", stats.nearFutureAdmitted},
+                    {"near_future_denied", stats.nearFutureDenied} });
         }
     }
 
