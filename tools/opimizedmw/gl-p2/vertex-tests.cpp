@@ -62,11 +62,16 @@ int main()
         }
         std::atomic<bool> cancelled{true}, healthy{false};
         check(!PagingWorkScope::active(),"no ambient scope");
+        check(PagingWorkScope::phase()==PagingWorkScope::Phase::Full,"ambient phase full");
         {
-            PagingWorkScope outer(&cancelled);
+            PagingWorkScope outer(&cancelled, PagingWorkScope::Phase::RequiredReadiness);
             check(PagingWorkScope::cancelled(),"outer cancelled");
-            { PagingWorkScope inner(&healthy); check(!PagingWorkScope::cancelled(),"nested isolation"); }
+            check(PagingWorkScope::requiredReadiness(),"required readiness phase");
+            { PagingWorkScope inner(&healthy, PagingWorkScope::Phase::OptionalOptimization);
+              check(!PagingWorkScope::cancelled(),"nested isolation");
+              check(PagingWorkScope::optionalOptimization(),"optional optimization phase"); }
             check(PagingWorkScope::cancelled(),"nested restore");
+            check(PagingWorkScope::requiredReadiness(),"nested phase restore");
             bool threadIsolated=false;
             std::thread worker([&]{threadIsolated=!PagingWorkScope::active();});worker.join();
             check(threadIsolated,"worker-local token");
@@ -74,6 +79,7 @@ int main()
             check(threw,"cooperative exception");
         }
         check(!PagingWorkScope::active(),"scope unwound");
+        check(PagingWorkScope::phase()==PagingWorkScope::Phase::Full,"phase unwound");
         std::cout<<checks<<" P2 vertex/cancellation checks passed\n";
     }
     catch (const std::exception& e) {std::cerr<<e.what()<<'\n';return EXIT_FAILURE;}
