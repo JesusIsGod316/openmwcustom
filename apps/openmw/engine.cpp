@@ -1429,7 +1429,8 @@ void OMW::Engine::prepareEngine()
             // splitting is active reserve one slot for near-future strong
             // upgrades so low-value speculation cannot starve cache repair.
             config.reservedNearFutureJobs
-                = static_cast<bool>(Settings::cells().mOpimizedMWPagingReadinessSplit) ? 1u : 0u;
+                = static_cast<bool>(Settings::cells().mOpimizedMWPagingOptimizer)
+                    && static_cast<bool>(Settings::cells().mOpimizedMWPagingReadinessSplit) ? 1u : 0u;
             mResourceSystem->enableOpenGlSpeculativeBudget(pressureConfig, config);
             Log(Debug::Info) << "OpimizedMW GL-P1B byte admission and bounded maintenance: on";
         }
