@@ -376,8 +376,9 @@ namespace Resource
     {
     public:
         using Sample = OpenGlPressureSample (*)(void*);
-        SpeculativeScope(SpeculativeBudget* budget, Sample sample, void* owner)
-            : mPrevious(sCurrent), mBudget(budget), mSample(sample), mOwner(owner)
+        SpeculativeScope(SpeculativeBudget* budget, Sample sample, void* owner,
+            SpeculativePriority priority = SpeculativePriority::Background)
+            : mPrevious(sCurrent), mBudget(budget), mSample(sample), mOwner(owner), mPriority(priority)
         { if (budget) sCurrent = this; }
         ~SpeculativeScope() { if (mBudget) sCurrent = mPrevious; }
         SpeculativeScope(const SpeculativeScope&) = delete;
@@ -389,7 +390,8 @@ namespace Resource
         public:
             Stage(std::uint64_t peak, std::uint64_t outputEstimate)
                 : mScope(sCurrent), mPrevious(mScope ? mScope->mStage : nullptr), mEstimate(outputEstimate)
-                , mLease(mScope ? mScope->mBudget->reserve(mScope->mSample(mScope->mOwner), peak) : SpeculativeBudget::Stage{})
+                , mLease(mScope ? mScope->mBudget->reserve(
+                    mScope->mSample(mScope->mOwner), peak, mScope->mPriority) : SpeculativeBudget::Stage{})
             { if (mScope) mScope->mStage = this; }
             ~Stage() { if (mScope) mScope->mStage = mPrevious; }
             Stage(const Stage&) = delete;
@@ -421,6 +423,7 @@ namespace Resource
         SpeculativeBudget* mBudget;
         Sample mSample;
         void* mOwner;
+        SpeculativePriority mPriority = SpeculativePriority::Background;
         Stage* mStage = nullptr;
         std::uint64_t mRetainedEstimate = 0;
     };
