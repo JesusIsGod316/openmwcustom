@@ -1425,12 +1425,11 @@ void OMW::Engine::prepareEngine()
             Resource::SpeculativeBudget::Config config;
             config.transientLimit = static_cast<std::uint64_t>(
                 static_cast<int>(Settings::cells().mOpimizedMWTransientBudgetMb)) * Resource::SpeculativeBudget::MiB;
-            // Preserve the original four-job ceiling, but when P2 readiness
-            // splitting is active reserve one slot for near-future strong
-            // upgrades so low-value speculation cannot starve cache repair.
-            config.reservedNearFutureJobs
-                = static_cast<bool>(Settings::cells().mOpimizedMWPagingOptimizer)
-                    && static_cast<bool>(Settings::cells().mOpimizedMWPagingReadinessSplit) ? 1u : 0u;
+            // Preserve the original four-job ceiling while reserving one
+            // slot for the closest exterior preload. P2's optional strong
+            // upgrade is intrinsically single-instance and uses the same
+            // NearFuture byte/headroom policy without consuming this job slot.
+            config.reservedNearFutureJobs = 1;
             mResourceSystem->enableOpenGlSpeculativeBudget(pressureConfig, config);
             Log(Debug::Info) << "OpimizedMW GL-P1B byte admission and bounded maintenance: on";
         }
