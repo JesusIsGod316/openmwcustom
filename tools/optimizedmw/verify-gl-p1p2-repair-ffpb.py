@@ -48,10 +48,13 @@ engine = (ROOT / "apps/openmw/engine.cpp").read_text(encoding="utf-8")
 
 checks = {
     "near-future priority type": "SpeculativePriority : unsigned char" in budget,
-    "reserved near-future capacity": "reservedNearFutureJobs" in budget and "reservedNearFutureJobs" in engine,
+    "reserved near-future capacity": "reservedNearFutureJobs" in budget
+        and "reservedNearFutureJobs = 1" in engine,
     "caution admits near-future": "OpenGlPressure::Caution" in budget and "NearFuture" in budget,
     "critical weak fallback": "HostMemoryPressure::Critical" in cell,
     "direct strong upgrade": "preloadStrongUpgrade" in cell and "preloadStrongUpgrade" in terrain,
+    "P2 byte reservation does not consume priority job": "SpeculativeScope speculativeScope(budget" in cell
+        and "priorityJob" not in cell,
     "weak private owner release": "entry.mRenderingNode = nullptr" in terrain,
     "required wait does not join optional tail": "Do not join the optional strong-upgrade tail" in cell,
     "closest exterior preload gets near-future lane": "const bool nearFuture = attemptedNew == 0" in scene
