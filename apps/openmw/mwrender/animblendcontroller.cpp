@@ -14,6 +14,16 @@
 
 namespace MWRender
 {
+    namespace
+    {
+        // OSG's Quat operator* stores the right operand on the left of the
+        // Hamilton product. Write composition in parent-then-local order.
+        osg::Quat composeHybridRotation(const osg::Quat& parent, const osg::Quat& local)
+        {
+            return local * parent;
+        }
+    }
+
     HybridTorsoPose::HybridTorsoPose(Tracks primaryLower, Tracks visualLower, Tracks visualChest)
         : mPrimaryLower(std::move(primaryLower))
         , mVisualLower(std::move(visualLower))
@@ -34,7 +44,7 @@ namespace MWRender
                 const auto sampled = track->getCurrentTransformation(nv).mRotation;
                 if (!sampled)
                     return std::nullopt;
-                result = result * *sampled;
+                result = composeHybridRotation(result, *sampled);
             }
             return result;
         };
@@ -58,16 +68,17 @@ namespace MWRender
         // joints, then solve the neck back to the authored world orientation.
         // The lower body still owns movement and every gameplay text key.
         const osg::Quat lean(osg::DegreesToRadians(7.5f), osg::Vec3f(-1.f, 0.f, 0.f));
-        const osg::Quat oldSpine1 = *visualBase * local[0];
-        const osg::Quat oldSpine2 = oldSpine1 * local[1];
-        const osg::Quat oldNeck = oldSpine2 * local[2];
-        const osg::Quat newSpine1 = lean * oldSpine1;
-        const osg::Quat newSpine2 = lean * lean * oldSpine2;
+        const osg::Quat oldSpine1 = composeHybridRotation(*visualBase, local[0]);
+        const osg::Quat oldSpine2 = composeHybridRotation(oldSpine1, local[1]);
+        const osg::Quat oldNeck = composeHybridRotation(oldSpine2, local[2]);
+        const osg::Quat newSpine1 = composeHybridRotation(lean, oldSpine1);
+        const osg::Quat newSpine2 = composeHybridRotation(
+            composeHybridRotation(lean, lean), oldSpine2);
         if (bone == 0)
-            return primaryBase->inverse() * newSpine1;
+            return composeHybridRotation(primaryBase->inverse(), newSpine1);
         if (bone == 1)
-            return newSpine1.inverse() * newSpine2;
-        return newSpine2.inverse() * oldNeck;
+            return composeHybridRotation(newSpine1.inverse(), newSpine2);
+        return composeHybridRotation(newSpine2.inverse(), oldNeck);
     }
 
     void HybridNifAnimController::setTracks(osg::ref_ptr<SceneUtil::KeyframeController> primary,
