@@ -52,6 +52,8 @@ namespace Terrain
         View* createView() override;
         void preload(View* view, const osg::Vec3f& eyePoint, const osg::Vec4i& cellgrid, std::atomic<bool>& abort,
             Loading::Reporter& reporter) override;
+        std::size_t preloadStrongUpgrade(View* view, const osg::Vec3f& eyePoint, const osg::Vec4i& cellgrid,
+            std::atomic<bool>& abort, Loading::Reporter& reporter) override;
         void rebuildViews() override;
 
         void reportStats(unsigned int frameNumber, osg::Stats* stats) override;
@@ -70,6 +72,7 @@ namespace Terrain
                 unsigned int lodFlags, bool activeGrid, const osg::Vec3f& viewPoint, bool compile)
                 = 0;
             virtual unsigned int getNodeMask() { return 0; }
+            virtual bool supportsStrongPagingUpgrade() const { return false; }
 
             void setViewDistance(float viewDistance) { mViewDistance = viewDistance; }
             float getViewDistance() const { return mViewDistance; }
