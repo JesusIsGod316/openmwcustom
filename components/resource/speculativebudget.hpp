@@ -18,6 +18,12 @@
 
 namespace Resource
 {
+    // P2 strong active-grid upgrades are optional for correctness but more
+    // valuable than ordinary distant/background speculation. P1 reserves a
+    // bounded lane for them and may admit them during caution/recovery while
+    // still denying them under critical or unknown pressure.
+    enum class SpeculativePriority : unsigned char { Background, NearFuture };
+
     // Optional preparation may be deferred, but MUST NOT be turned into a
     // missing-resource/error-marker cache entry by a loader's ordinary catch.
     struct SpeculativeDeferred : std::exception
@@ -33,12 +39,14 @@ namespace Resource
         {
             std::uint64_t transientLimit = 1024 * MiB;
             unsigned maximumJobs = 4;
+            unsigned reservedNearFutureJobs = 0;
         };
         struct Stats
         {
             std::uint64_t futureBytes = 0, knownOwnerBytes = 0, estimatedOwnerBytes = 0;
-            std::uint64_t pendingOwnerBytes = 0, unknownOwners = 0, jobs = 0;
-            std::uint64_t admitted = 0, denied = 0, duplicateRequests = 0, sharedClaims = 0;
+            std::uint64_t pendingOwnerBytes = 0, unknownOwners = 0, jobs = 0, priorityJobs = 0;
+            std::uint64_t admitted = 0, denied = 0, nearFutureAdmitted = 0, nearFutureDenied = 0;
+            std::uint64_t duplicateRequests = 0, sharedClaims = 0;
             std::uint64_t demandHits = 0, prefetchHits = 0, observedGrowth = 0;
         };
         struct Key
