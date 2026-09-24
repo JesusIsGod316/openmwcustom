@@ -326,6 +326,13 @@ namespace MWWorld
                             Resource::SpeculativePriority::NearFuture);
                         admitted = static_cast<bool>(priorityJob);
                     }
+                    else if (mResourceSystem->openGlHostMemoryBudgetEnabled())
+                    {
+                        const auto sample = Resource::ResourceSystem::speculativeSample(mResourceSystem);
+                        admitted = sample.generation
+                            && sample.decision.state != Resource::OpenGlPressure::Critical
+                            && sample.decision.state != Resource::OpenGlPressure::Degraded;
+                    }
                     else if (mResourceSystem->hostMemoryPressure() == Resource::HostMemoryPressure::Critical)
                         admitted = false;
 
