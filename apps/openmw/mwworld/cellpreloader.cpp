@@ -248,13 +248,14 @@ namespace MWWorld
     {
     public:
         explicit TerrainPreloadItem(const std::vector<osg::ref_ptr<Terrain::View>>& views, Terrain::World* world,
-            std::span<const PositionCellGrid> preloadPositions, bool cancellableOptimization = false,
-            bool readinessSplit = false)
+            Resource::ResourceSystem* resourceSystem, std::span<const PositionCellGrid> preloadPositions,
+            bool cancellableOptimization = false, bool readinessSplit = false)
             : mAbort(false)
             , mCancellableOptimization(cancellableOptimization)
             , mReadinessSplit(cancellableOptimization && readinessSplit)
             , mTerrainViews(views)
             , mWorld(world)
+            , mResourceSystem(resourceSystem)
             , mPreloadPositions(preloadPositions.begin(), preloadPositions.end())
         {
             if (Debug::GameplayDiagnostics::enabled() || Debug::RuntimeDiagnostics::enabled())
@@ -308,28 +309,83 @@ namespace MWWorld
                 if (mSucceeded.load(std::memory_order_acquire) && !mAbort.load(std::memory_order_relaxed))
                 {
                     Loading::Reporter optimizationReporter;
-                    try
+                    const auto optionalStart = Debug::GameplayDiagnostics::Clock::now();
+                    Resource::SpeculativeBudget::Job priorityJob;
+                    Resource::SpeculativeBudget* budget = mResourceSystem->speculativeBudget();
+                    bool admitted = true;
+
+                    // P2's strong replacement is near-future work: P1 may stop
+                    // ordinary speculation under caution, but reserves one
+                    // bounded lane for this active-grid upgrade. Critical or
+                    // unknown/degraded pressure still keeps the correct weak
+                    // chunk and skips optional growth.
+                    if (budget)
                     {
-                        SceneUtil::PagingWorkScope scope(
-                            &mAbort, SceneUtil::PagingWorkScope::Phase::OptionalOptimization);
-                        prepare(optimizationReporter);
+                        priorityJob = budget->tryJob(
+                            Resource::ResourceSystem::speculativeSample(mResourceSystem),
+                            Resource::SpeculativePriority::NearFuture);
+                        admitted = static_cast<bool>(priorityJob);
                     }
-                    catch (const SceneUtil::PagingWorkCancelled&)
+                    else if (mResourceSystem->hostMemoryPressure() == Resource::HostMemoryPressure::Critical)
+                        admitted = false;
+
+                    if (admitted)
                     {
-                        // Correct readiness was already published. Obsolete
-                        // stronger preparation can disappear without a wait.
+                        Resource::SpeculativeScope speculativeScope(priorityJob ? budget : nullptr,
+                            &Resource::ResourceSystem::speculativeSample, mResourceSystem,
+                            Resource::SpeculativePriority::NearFuture);
+                        try
+                        {
+                            // Bound the weak->strong overlap. Nested resource
+                            // stages inherit NearFuture priority; the private
+                            // weak view is released after cache replacement.
+                            Resource::SpeculativeScope::Stage upgradeStage(
+                                128 * Resource::SpeculativeBudget::MiB, 0);
+                            SceneUtil::PagingWorkScope scope(
+                                &mAbort, SceneUtil::PagingWorkScope::Phase::OptionalOptimization);
+                            mOptionalUpgradeRequests.store(mWorld->preloadStrongUpgrade(mTerrainViews.front().get(),
+                                mPreloadPositions.front().mPosition, mPreloadPositions.front().mCellBounds,
+                                mAbort, optimizationReporter), std::memory_order_release);
+
+                            // Additional target views are independent future
+                            // grids; upgrade each without replaying preload().
+                            for (std::size_t i = 1; i < mTerrainViews.size()
+                                && i < mPreloadPositions.size() && !mAbort; ++i)
+                            {
+                                mOptionalUpgradeRequests.fetch_add(mWorld->preloadStrongUpgrade(
+                                    mTerrainViews[i].get(), mPreloadPositions[i].mPosition,
+                                    mPreloadPositions[i].mCellBounds, mAbort, optimizationReporter),
+                                    std::memory_order_relaxed);
+                            }
+                            mOptionalCompleted.store(!mAbort.load(), std::memory_order_release);
+                        }
+                        catch (const Resource::SpeculativeDeferred&)
+                        {
+                            mOptionalDeferred.store(true, std::memory_order_release);
+                        }
+                        catch (const SceneUtil::PagingWorkCancelled&)
+                        {
+                            // Correct readiness was already published. Obsolete
+                            // stronger preparation can disappear without a wait.
+                        }
+                        catch (const std::exception& e)
+                        {
+                            Log(Debug::Warning)
+                                << "Optional paging optimization failed after required terrain readiness: " << e.what();
+                        }
+                        catch (...)
+                        {
+                            Log(Debug::Warning)
+                                << "Optional paging optimization failed after required terrain readiness";
+                        }
                     }
-                    catch (const std::exception& e)
-                    {
-                        Log(Debug::Warning)
-                            << "Optional paging optimization failed after required terrain readiness: " << e.what();
-                    }
-                    catch (...)
-                    {
-                        Log(Debug::Warning)
-                            << "Optional paging optimization failed after required terrain readiness";
-                    }
+                    else
+                        mOptionalDeferred.store(true, std::memory_order_release);
+
                     optimizationReporter.complete();
+                    if (measure)
+                        mOptionalMs = std::chrono::duration<double, std::milli>(
+                            Debug::GameplayDiagnostics::Clock::now() - optionalStart).count();
                 }
             }
             else if (mCancellableOptimization)
@@ -367,6 +423,9 @@ namespace MWWorld
                     {"queue_us", static_cast<std::uint64_t>((std::max)(0.0, mQueueMs.load()) * 1000)},
                     {"work_us", static_cast<std::uint64_t>((std::max)(0.0, mWorkMs.load()) * 1000)},
                     {"readiness_us", static_cast<std::uint64_t>((std::max)(0.0, mReadinessMs.load()) * 1000)},
+                    {"optional_us", static_cast<std::uint64_t>((std::max)(0.0, mOptionalMs.load()) * 1000)},
+                    {"optional_requests", mOptionalUpgradeRequests.load(std::memory_order_relaxed)},
+                    {"optional_deferred", mOptionalDeferred.load(std::memory_order_relaxed)},
                     {"views", mPreloadPositions.size()}, {"aborted", mAbort.load()},
                     {"readiness_split", mReadinessSplit} });
         }
@@ -418,6 +477,9 @@ namespace MWWorld
                     {"queue_ms", std::to_string(mQueueMs.load())},
                     {"work_ms", std::to_string(mWorkMs.load())},
                     {"readiness_ms", std::to_string(mReadinessMs.load())},
+                    {"optional_ms", std::to_string(mOptionalMs.load())},
+                    {"optional_requests", std::to_string(mOptionalUpgradeRequests.load())},
+                    {"optional_deferred", std::to_string(mOptionalDeferred.load())},
                     {"views", std::to_string(mPreloadPositions.size())},
                     {"aborted", std::to_string(mAbort.load())},
                     {"readiness_split", std::to_string(mReadinessSplit)}}, true);
@@ -432,11 +494,14 @@ namespace MWWorld
         std::exception_ptr mRequiredFailure;
         std::vector<osg::ref_ptr<Terrain::View>> mTerrainViews;
         Terrain::World* mWorld;
+        Resource::ResourceSystem* mResourceSystem;
         std::vector<PositionCellGrid> mPreloadPositions;
         Loading::Reporter mLoadingReporter;
         Loading::Reporter mRequiredReporter;
         Debug::GameplayDiagnostics::Clock::time_point mQueued{};
-        std::atomic<double> mQueueMs{0}, mWorkMs{0}, mReadinessMs{0};
+        std::atomic<double> mQueueMs{0}, mWorkMs{0}, mReadinessMs{0}, mOptionalMs{0};
+        std::atomic<std::uint64_t> mOptionalUpgradeRequests{0};
+        std::atomic<bool> mOptionalDeferred{false}, mOptionalCompleted{false};
     };
 
     /// Worker thread item: update the resource system's cache, effectively deleting unused entries.
@@ -889,8 +954,8 @@ namespace MWWorld
             mTerrainPreloadPositions.assign(positions.begin(), positions.end());
             if (!positions.empty())
             {
-                mTerrainPreloadItem = new TerrainPreloadItem(
-                    mTerrainViews, mTerrain, positions, mCancellablePagingOptimization, mPagingReadinessSplit);
+                mTerrainPreloadItem = new TerrainPreloadItem(mTerrainViews, mTerrain, mResourceSystem,
+                    positions, mCancellablePagingOptimization, mPagingReadinessSplit);
                 mWorkQueue->addWorkItem(mTerrainPreloadItem);
             }
         }
