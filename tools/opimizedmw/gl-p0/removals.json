@@ -1,0 +1,186 @@
+{
+  "project": "OpimizedMW",
+  "stage": "GL-P0",
+  "source_commit": "be2869dd00a49774ff2642ec238d98f1456b2b8a",
+  "archive_tag": "opimizedmw-gl-p0-precleanup-20260924",
+  "archive_bundle_sha256": "26b829e48bb70957cfb0889c5c77d30e54e3712535a8473320f83396abad2762",
+  "path": "components/sceneutil/mwshadowtechnique.cpp",
+  "old_blob": "381fdbea063b8620fe324bf7650d3c307b10542d",
+  "new_blob": "32b6200968e621ab4a88fc93d105daf3b9214f62",
+  "ranges": [
+    {
+      "original_lines": [
+        517,
+        535
+      ],
+      "lines_removed": 19,
+      "removed_text_sha256": "4a2e22f60c131f262c82571b074cdc86dbeef9ca609c34a3cd8a740216876fd2",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        1375,
+        1410
+      ],
+      "lines_removed": 36,
+      "removed_text_sha256": "87df8e47e86a4d2f9927bbcadae9387b6d9bf57da21131d5d4cbb13fbb6028eb",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        2070,
+        2074
+      ],
+      "lines_removed": 5,
+      "removed_text_sha256": "a59b56b8e56eaf36257b94b7e5ce111e97b7c8878559587c889e1e2e0f02a8fa",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        2910,
+        2916
+      ],
+      "lines_removed": 7,
+      "removed_text_sha256": "f5c9ae61c7ec89b59b90a11c8bec87a85ed839f6fbafa6c0ed7d31c09b90202e",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        2936,
+        2942
+      ],
+      "lines_removed": 7,
+      "removed_text_sha256": "9703872fc8bfff3505703c4eb16c12529aa93e51ed089e01fe0717912d3b1351",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        2944,
+        2950
+      ],
+      "lines_removed": 7,
+      "removed_text_sha256": "a926d809ea60363387443a6766cb5828194513976171c4c8b355b514ff9ddb22",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        2952,
+        3017
+      ],
+      "lines_removed": 66,
+      "removed_text_sha256": "0072df8272c52f668da846cb146edc60eaf84d4c87da4e00402210b5b4ef702a",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        3019,
+        3025
+      ],
+      "lines_removed": 7,
+      "removed_text_sha256": "a66372ddc9d6b1e243bf0dcc411dcfba6f4590bb3e70a11b8a83016e7843a5eb",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        3046,
+        3050
+      ],
+      "lines_removed": 5,
+      "removed_text_sha256": "aff492c14a1615d0b3b612809079d6302d74f3e77ecdcf6861cbf280ceaa95fd",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        3072,
+        3075
+      ],
+      "lines_removed": 4,
+      "removed_text_sha256": "1c6d7b051058f50ed2c5cf9e7ebc31a0ea69d9b31b24dad2deb7cbae4357cd5c",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        3099,
+        3105
+      ],
+      "lines_removed": 7,
+      "removed_text_sha256": "11dc72de7ad2929e45b06ca3e8c3c31d62fbff3cb97e4f33085a8a1084d7c57d",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        3145,
+        3149
+      ],
+      "lines_removed": 5,
+      "removed_text_sha256": "8a67d272e428030ee682942db9625c13a0f30a5d3836d25c6a2d3a0c75879bf2",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        3167,
+        3172
+      ],
+      "lines_removed": 6,
+      "removed_text_sha256": "3e973595abe7435e9bb54152196ab78434635e1726f71e1e42873a7f36de533c",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        3174,
+        3206
+      ],
+      "lines_removed": 33,
+      "removed_text_sha256": "dc994fde419b321547a639aeb2ff4651165886ed77a5d1984b2f50db1919348c",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        3211,
+        3218
+      ],
+      "lines_removed": 8,
+      "removed_text_sha256": "f0ec87b2a3905523c81fab3057061061ff082f95a1f2c35580da379beb464316",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    },
+    {
+      "original_lines": [
+        3253,
+        3258
+      ],
+      "lines_removed": 6,
+      "removed_text_sha256": "51994fda5765f9832b6418c78548217f1aff1d8fa1db048dc86575039fed13dc",
+      "reason": "Literal #if 0, no outer elif/else; obsolete shadow diagnostic/experimental code"
+    }
+  ],
+  "total_lines_removed": 228,
+  "public_api_settings_shaders": "UNCHANGED",
+  "performance_claim": "NONE",
+  "restoration": "git restore --source=opimizedmw-gl-p0-precleanup-20260924 -- components/sceneutil/mwshadowtechnique.cpp",
+  "related_archive_events": [
+    "evt.project.opengl_performance_ram_cleanup_plan.126"
+  ],
+  "preserved_live_helper": "ObjectPaging::DebugVisitor is used by mDebugBatches and is not removed",
+  "removal_commit": "034ff271127753467455275174986585a8160b88",
+  "validation": {
+    "g++": {
+      "object_bytes_identical": true,
+      "object_sha256": "54a17b44996cadc767aa4454db5ab5fd698c425830de3614134ac1706fde6c76",
+      "compiler": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0"
+    },
+    "clang++": {
+      "object_bytes_identical": true,
+      "object_sha256": "7a2e29fcf67e8f8f98250586dcf6b659deb37e8edb7437e80dcfe4412610d1fb",
+      "compiler": "Ubuntu clang version 18.1.3 (1ubuntu1)"
+    }
+  },
+  "build_flags": [
+    "-std=c++20",
+    "-O2",
+    "-g0",
+    "-DNDEBUG",
+    "-pthread",
+    "-I."
+  ],
+  "validation_scope": "Actual OpenGL shadow translation unit, not full Windows or gameplay acceptance"
+}
