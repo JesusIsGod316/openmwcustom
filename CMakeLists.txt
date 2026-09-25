@@ -1278,7 +1278,6 @@ if(WIN32)
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p3/OptimizedMW_GL-P3_Test.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p4/START-OptimizedMW-GL-P4-Test.bat"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p4/OptimizedMW_GL-P4_Test.ps1"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p4/README.md"
         "${CMAKE_SOURCE_DIR}/tools/v3/v3_trace_to_chrome.py"
         "${CMAKE_SOURCE_DIR}/V3-applied-source.patch"
         "${CMAKE_SOURCE_DIR}/V3-applied-source-stat.txt"
