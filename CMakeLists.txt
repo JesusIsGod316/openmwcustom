@@ -1274,6 +1274,8 @@ if(WIN32)
         "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Transition_Deep.bat"
         "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Render_Deep.bat"
         "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Lab.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p3/START-OptimizedMW-GL-P3-Test.bat"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p3/OptimizedMW_GL-P3_Test.ps1"
         "${CMAKE_SOURCE_DIR}/tools/v3/v3_trace_to_chrome.py"
         "${CMAKE_SOURCE_DIR}/V3-applied-source.patch"
         "${CMAKE_SOURCE_DIR}/V3-applied-source-stat.txt"
