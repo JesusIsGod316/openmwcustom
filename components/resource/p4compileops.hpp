@@ -24,6 +24,16 @@ namespace Resource
             return 0.0;
         }
 
+        std::size_t byteSize() const
+        {
+            return mBuffer ? static_cast<std::size_t>(mBuffer->computeRequiredBufferSize()) : 0;
+        }
+
+        GLenum target() const
+        {
+            return mBuffer ? mBuffer->getTarget() : 0;
+        }
+
         bool compile(osgUtil::IncrementalCompileOperation::CompileInfo& info) override
         {
             if (!mBuffer || !info.getState())
