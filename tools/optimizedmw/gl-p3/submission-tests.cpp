@@ -8,6 +8,7 @@
 #include <osgDB/SharedStateManager>
 
 #include <components/sceneutil/optimizer.hpp>
+#include <components/sceneutil/material.hpp>
 
 namespace
 {
@@ -104,6 +105,43 @@ namespace
         return geometry;
     }
 
+    osg::ref_ptr<osg::Group> makeIgnoredColorMismatchPair()
+    {
+        osg::ref_ptr<osg::Group> root = new osg::Group;
+        osg::ref_ptr<osg::StateSet> state = new osg::StateSet;
+        osg::ref_ptr<SceneUtil::Material> material = new SceneUtil::Material;
+        material->setVertexColorMode(SceneUtil::VertexColorModes::None);
+        state->setAttribute(material);
+
+        osg::ref_ptr<osg::Geometry> colored = makeTriangle(0.f);
+        osg::ref_ptr<osg::Geometry> plain = makeTriangle(2.f);
+        colored->setStateSet(state);
+        plain->setStateSet(state);
+
+        osg::ref_ptr<osg::Vec4Array> colors = new osg::Vec4Array;
+        colors->assign(3, osg::Vec4f(0.25f, 0.5f, 0.75f, 1.f));
+        colored->setColorArray(colors, osg::Array::BIND_PER_VERTEX);
+        plain->setColorArray(nullptr);
+
+        root->addChild(colored);
+        root->addChild(plain);
+        return root;
+    }
+
+    osg::ref_ptr<osg::Group> makeUsedColorMismatchPair()
+    {
+        osg::ref_ptr<osg::Group> root = makeIgnoredColorMismatchPair();
+        osg::Geometry* first = root->getChild(0)->asGeometry();
+        osg::Geometry* second = root->getChild(1)->asGeometry();
+        osg::ref_ptr<osg::StateSet> state = first->getStateSet();
+        auto* material = dynamic_cast<SceneUtil::Material*>(
+            state->getAttribute(osg::StateAttribute::MATERIAL));
+        require(material != nullptr, "test material missing");
+        material->setVertexColorMode(SceneUtil::VertexColorModes::AmbientAndDiffuse);
+        second->setStateSet(state);
+        return root;
+    }
+
     osg::ref_ptr<osg::Group> makeEquivalentStatePair()
     {
         osg::ref_ptr<osg::Group> root = new osg::Group;
@@ -165,6 +203,30 @@ int main()
         "transparent primitive ordering was compacted across a barrier");
     require(transparentOptimizer.getCompatibleIndexMergeCount() == 0,
         "transparent non-adjacent path reported a P3A merge");
+
+    osg::ref_ptr<osg::Group> ignoredControl = makeIgnoredColorMismatchPair();
+    SceneUtil::Optimizer ignoredControlOptimizer;
+    ignoredControlOptimizer.optimize(ignoredControl, SceneUtil::Optimizer::MERGE_GEOMETRY);
+    require(ignoredControl->getNumChildren() == 2,
+        "ignored-color mismatch unexpectedly merged without packet normalization");
+
+    osg::ref_ptr<osg::Group> ignoredCandidate = makeIgnoredColorMismatchPair();
+    SceneUtil::Optimizer ignoredCandidateOptimizer;
+    ignoredCandidateOptimizer.setNormalizeIgnoredVertexColors(true);
+    ignoredCandidateOptimizer.optimize(ignoredCandidate, SceneUtil::Optimizer::MERGE_GEOMETRY);
+    require(ignoredCandidate->getNumChildren() == 1,
+        "normalized ignored-color stream did not unlock physical geometry merge");
+    require(ignoredCandidateOptimizer.getNormalizedColorStreamCount() == 1,
+        "normalized ignored-color stream count mismatch");
+
+    osg::ref_ptr<osg::Group> usedColorCandidate = makeUsedColorMismatchPair();
+    SceneUtil::Optimizer usedColorOptimizer;
+    usedColorOptimizer.setNormalizeIgnoredVertexColors(true);
+    usedColorOptimizer.optimize(usedColorCandidate, SceneUtil::Optimizer::MERGE_GEOMETRY);
+    require(usedColorCandidate->getNumChildren() == 2,
+        "vertex-color-dependent geometry was incorrectly normalized");
+    require(usedColorOptimizer.getNormalizedColorStreamCount() == 0,
+        "vertex-color-dependent geometry reported normalization");
 
     osg::ref_ptr<osg::Group> separate = makeEquivalentStatePair();
     SceneUtil::Optimizer separateOptimizer;
