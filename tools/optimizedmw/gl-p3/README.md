@@ -20,10 +20,15 @@ Threading remains in scope. Prior threading rejections are not permanent bans; t
 
 Fresh accepted P1/P2 capture analysis found that the largest sampled distant `object_chunk_template_analysis` event was dominated by serial `scene_template_miss` work: roughly 1.864 seconds of a 2.103 second sampled chunk, across 361 unique template misses. The `AnalyzeVisitor` itself is therefore not the primary target.
 
-P3B adds a separate opt-in `[Cells] optimizedmw parallel template prefetch` path (default false, minimum-template threshold 16). It applies only to strong compile-time distant chunks, never active-grid demand and never the P2 required-readiness weak pass. A cheap deterministic prepass collects unique model paths; one bounded helper and the existing paging worker warm the already thread-safe SceneManager template cache, then the original authoritative ObjectPaging loop performs grouping, radius decisions, analysis, merge and publication unchanged.
+P3B adds a separate opt-in `[Cells] optimizedmw parallel template prefetch` path (default false, minimum-template threshold 16). It applies to compile-time distant chunks, including P2 required-readiness work, but never active-grid demand. A cheap deterministic prepass collects unique model paths; one persistent bounded helper and the existing paging worker warm the already thread-safe SceneManager template cache, then the original authoritative ObjectPaging loop performs grouping, radius decisions, analysis, merge and publication unchanged.
 
-The helper is deliberately not a global OSG threading-mode change and does not mutate the live scene graph. Only one P3 two-way helper operation can exist engine-wide at a time; contention or thread-creation failure falls back to the original serial path rather than queueing.
+The helper is deliberately not a global OSG threading-mode change and does not mutate the live scene graph. Only one P3 two-way helper operation can exist engine-wide at a time; contention or worker-creation failure falls back to the original serial path rather than queueing. The helper thread is persistent after first use so large distant loads do not pay a fresh OS thread launch on every chunk.
 
 P1/P2 ownership is preserved explicitly. `SpeculativeScope` and `PagingWorkScope` are thread-local, so P3B captures their contexts, installs child scopes on the helper, propagates cancellation/phase, and credits helper retained-byte estimates back to the parent speculative job after join. Targeted tests cover these contracts.
 
 Promotion still requires runtime evidence: useful reduction in distant paging/template-load tails without steady-frame, memory, compatibility or accepted-P1/P2 regressions. Worker count stays at one helper until evidence justifies more.
+
+
+## P3C+ open lanes
+
+P3 is not limited to prior V3 mechanisms. High-value follow-ups include: cached immutable per-template analysis, parallel worker-local merge planning with deterministic publish, and capability-gated OpenGL multi-draw/indirect packet submission that preserves the current material/shadow contract. Prior rejected instancing, spatial batching, or OSG threading experiments may be revisited only through materially different implementations informed by their failure evidence.
