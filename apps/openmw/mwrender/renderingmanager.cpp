@@ -27,6 +27,7 @@
 
 #include <components/resource/imagemanager.hpp>
 #include <components/resource/keyframemanager.hpp>
+#include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/v321classifiedcompileset.hpp>
 
@@ -310,7 +311,11 @@ namespace MWRender
 
         if (getenv("OPENMW_DONT_PRECOMPILE") == nullptr)
         {
-            osg::ref_ptr<osgUtil::IncrementalCompileOperation> ico = new osgUtil::IncrementalCompileOperation;
+            osg::ref_ptr<osgUtil::IncrementalCompileOperation> ico;
+            if (static_cast<int>(Settings::cells().mOptimizedMWCompileSchedulerMode) > 0)
+                ico = new Resource::OpenMWIncrementalCompileOperation;
+            else
+                ico = new osgUtil::IncrementalCompileOperation;
 
             const double configuredTarget = static_cast<double>(Settings::cells().mTargetFramerate);
             double compileTarget = configuredTarget;
