@@ -6,6 +6,7 @@
 
 #include <components/esm/util.hpp>
 #include <components/resource/objectcache.hpp>
+#include <components/resource/openmwcompileoperation.hpp>
 #include <components/debug/v3diagnostics.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/v321classifiedcompileset.hpp>
@@ -49,7 +50,7 @@ namespace Terrain
             osg::ref_ptr<osg::StateAttribute> mAttribute;
         };
 
-        class TerrainGeometryCompileOp final : public osgUtil::IncrementalCompileOperation::CompileOp
+        class TerrainGeometryCompileOp final : public Resource::OpenMWDrawableCompileOp
         {
         public:
             explicit TerrainGeometryCompileOp(TerrainDrawable* drawable)
