@@ -97,6 +97,36 @@ int main()
     Resource::SpeculativeScope::creditRetainedEstimate(helperRetained);
     require(parent.retainedEstimate() == 4096, "helper retained bytes were not credited to parent");
 
+    std::thread::id helperId1;
+    std::thread::id helperId2;
+    require(SceneUtil::BoundedTwoWayWork::run(32, 16,
+        [&](std::size_t, std::size_t, bool helper) {
+            if (helper) helperId1 = std::this_thread::get_id();
+        }), "persistent helper first reuse probe failed");
+    require(SceneUtil::BoundedTwoWayWork::run(32, 16,
+        [&](std::size_t, std::size_t, bool helper) {
+            if (helper) helperId2 = std::this_thread::get_id();
+        }), "persistent helper second reuse probe failed");
+    require(helperId1 != std::thread::id{} && helperId1 == helperId2,
+        "coarse helper thread was recreated between runs");
+
+    {
+        std::atomic<bool> requiredCancel{ false };
+        SceneUtil::PagingWorkScope required(
+            &requiredCancel, SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
+        const auto requiredContext = SceneUtil::PagingWorkScope::capture();
+        std::atomic<bool> helperSawRequired{ false };
+        require(SceneUtil::BoundedTwoWayWork::run(32, 16,
+            [&](std::size_t, std::size_t, bool helper) {
+                if (!helper) return;
+                SceneUtil::PagingWorkScope inherited(requiredContext);
+                helperSawRequired.store(SceneUtil::PagingWorkScope::requiredReadiness(),
+                    std::memory_order_release);
+            }), "required-readiness helper probe failed");
+        require(helperSawRequired.load(std::memory_order_acquire),
+            "helper did not inherit required-readiness phase");
+    }
+
     cancel.store(true, std::memory_order_release);
     std::atomic<bool> cancelled{ false };
     std::thread cancellationThread([&] {
