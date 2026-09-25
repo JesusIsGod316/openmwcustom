@@ -1,5 +1,6 @@
 #include "terraincompile.hpp"
 
+#include "compositemaprenderer.hpp"
 #include "terraindrawable.hpp"
 
 #include <components/resource/p4compileops.hpp>
