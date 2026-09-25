@@ -38,6 +38,9 @@ namespace Settings
             mIndex, "Cells", "optimizedmw render handoff attribution" };
         SettingValue<bool> mOptimizedMWParallelTemplatePrefetch{
             mIndex, "Cells", "optimizedmw parallel template prefetch" };
+        SettingValue<int> mOptimizedMWParallelTemplatePrefetchWorkers{
+            mIndex, "Cells", "optimizedmw parallel template prefetch workers",
+            makeClampSanitizerInt(1, 2) };
         SettingValue<int> mOptimizedMWParallelTemplatePrefetchMinTemplates{
             mIndex, "Cells", "optimizedmw parallel template prefetch min templates",
             makeClampSanitizerInt(4, 512) };
