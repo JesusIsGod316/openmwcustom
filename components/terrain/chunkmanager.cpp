@@ -11,6 +11,7 @@
 #include <components/resource/v321classifiedcompileset.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
+#include <components/settings/values.hpp>
 
 #include "compositemaprenderer.hpp"
 #include "material.hpp"
@@ -20,6 +21,108 @@
 
 namespace Terrain
 {
+    namespace
+    {
+        class TerrainStateAttributeCompileOp final : public osgUtil::IncrementalCompileOperation::CompileOp
+        {
+        public:
+            explicit TerrainStateAttributeCompileOp(osg::StateAttribute* attribute)
+                : mAttribute(attribute)
+            {
+            }
+
+            double estimatedTimeForCompile(osgUtil::IncrementalCompileOperation::CompileInfo&) const override
+            {
+                return 0.0;
+            }
+
+            bool compile(osgUtil::IncrementalCompileOperation::CompileInfo& info) override
+            {
+                if (mAttribute)
+                    mAttribute->compileGLObjects(*info.getState());
+                return true;
+            }
+
+        private:
+            osg::ref_ptr<osg::StateAttribute> mAttribute;
+        };
+
+        class TerrainGeometryCompileOp final : public osgUtil::IncrementalCompileOperation::CompileOp
+        {
+        public:
+            explicit TerrainGeometryCompileOp(TerrainDrawable* drawable)
+                : mDrawable(drawable)
+            {
+            }
+
+            double estimatedTimeForCompile(osgUtil::IncrementalCompileOperation::CompileInfo& info) const override
+            {
+                osg::GraphicsCostEstimator* estimator = info.getState()->getGraphicsCostEstimator();
+                return estimator && mDrawable ? estimator->estimateCompileCost(mDrawable.get()).first : 0.0;
+            }
+
+            bool compile(osgUtil::IncrementalCompileOperation::CompileInfo& info) override
+            {
+                if (mDrawable)
+                    mDrawable->compileGeometryGLObjects(info);
+                return true;
+            }
+
+        private:
+            osg::ref_ptr<TerrainDrawable> mDrawable;
+        };
+
+        void appendTerrainStateSetCompileOps(
+            osgUtil::IncrementalCompileOperation::CompileList& list, osg::StateSet* stateSet)
+        {
+            if (!stateSet)
+                return;
+
+            for (const auto& [key, value] : stateSet->getAttributeList())
+            {
+                (void)key;
+                if (value.first)
+                    list.add(new TerrainStateAttributeCompileOp(value.first.get()));
+            }
+
+            for (const osg::StateSet::AttributeList& attributes : stateSet->getTextureAttributeList())
+            {
+                for (const auto& [key, value] : attributes)
+                {
+                    (void)key;
+                    if (value.first)
+                        list.add(new TerrainStateAttributeCompileOp(value.first.get()));
+                }
+            }
+        }
+
+        void phaseTerrainCompileSet(Resource::V321ClassifiedCompileSet& compileSet, TerrainDrawable& geometry)
+        {
+            for (auto& [context, compileList] : compileSet._compileMap)
+            {
+                (void)context;
+                osgUtil::IncrementalCompileOperation::CompileList rebuilt;
+                for (const osg::ref_ptr<osgUtil::IncrementalCompileOperation::CompileOp>& op : compileList._compileOps)
+                {
+                    const auto* drawableOp
+                        = dynamic_cast<const osgUtil::IncrementalCompileOperation::CompileDrawableOp*>(op.get());
+                    if (!drawableOp || drawableOp->_drawable.get() != &geometry)
+                    {
+                        rebuilt.add(op.get());
+                        continue;
+                    }
+
+                    // Preserve TerrainDrawable::compileGLObjects ordering, but
+                    // expose interruption points between pass attributes and the
+                    // final geometry/VBO upload.
+                    for (const osg::ref_ptr<osg::StateSet>& pass : geometry.getPasses())
+                        appendTerrainStateSetCompileOps(rebuilt, pass.get());
+                    rebuilt.add(new TerrainGeometryCompileOp(&geometry));
+                }
+                compileList._compileOps.swap(rebuilt._compileOps);
+            }
+        }
+    }
 
     struct UpdateTextureFilteringFunctor
     {
@@ -309,9 +412,18 @@ namespace Terrain
 
         if (!templateGeometry && compile && mSceneManager->getIncrementalCompileOperation())
         {
+            osgUtil::IncrementalCompileOperation* const ico = mSceneManager->getIncrementalCompileOperation();
             auto compileSet = new Resource::V321ClassifiedCompileSet(
                 geometry, Resource::V321CompileClass::Terrain);
-            mSceneManager->getIncrementalCompileOperation()->add(compileSet);
+
+            if (Settings::cells().mOptimizedMWTerrainPhasedCompile)
+            {
+                compileSet->buildCompileMap(ico->getContextSet());
+                phaseTerrainCompileSet(*compileSet, *geometry);
+                ico->add(compileSet, false);
+            }
+            else
+                ico->add(compileSet);
         }
         geometry->setNodeMask(mNodeMask);
 
