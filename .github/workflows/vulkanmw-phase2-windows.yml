@@ -9,6 +9,7 @@ on:
       - 'components/rendercore/**'
       - 'components/nifrender/**'
       - 'components/render/backend/vsg/**'
+      - 'apps/openmw/CMakeLists.txt'
       - 'apps/openmw/mwrender/vulkanmw/**'
       - 'apps/openmw/mwrender/groundcover*'
       - 'apps/openmw/mwrender/renderingmanager.*'
