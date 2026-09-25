@@ -93,6 +93,8 @@ namespace Settings
         SettingValue<float> mOptimizedMWTerrainDrawablePriorMs{
             mIndex, "Cells", "optimizedmw terrain drawable prior ms",
             makeClampSanitizerFloat(0.0, 50.0) };
+        SettingValue<bool> mOptimizedMWTerrainPhasedCompile{
+            mIndex, "Cells", "optimizedmw terrain phased compile" };
 
         SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
         SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
