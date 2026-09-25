@@ -885,12 +885,13 @@ namespace MWRender
 
         std::size_t p3TemplatePrefetchModels = 0;
         bool p3TemplatePrefetchParallel = false;
+        const bool p3TemplatePrefetchRequired = SceneUtil::PagingWorkScope::requiredReadiness();
         const bool p3TemplatePrefetch = static_cast<bool>(Settings::cells().mOptimizedMWParallelTemplatePrefetch)
-            && !activeGrid && compile && !SceneUtil::PagingWorkScope::requiredReadiness();
+            && !activeGrid && compile;
         if (p3TemplatePrefetch)
         {
-            Debug::V3Diagnostics::ScopedCsvTimer timer(
-                Debug::V3Diagnostics::renderWriter(), "p3_template_prefetch", "distant", 0.1);
+            Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
+                "p3_template_prefetch", p3TemplatePrefetchRequired ? "required_distant" : "distant", 0.1);
             std::set<VFS::Path::Normalized> seenModels;
             std::vector<VFS::Path::Normalized> models;
             models.reserve(refs.size());
@@ -1580,7 +1581,8 @@ namespace MWRender
                     + " templates=" + std::to_string(nodes.size())
                     + " p3_index_merges=" + std::to_string(p3CompatibleIndexMerges)
                     + " p3_prefetch_models=" + std::to_string(p3TemplatePrefetchModels)
-                    + " p3_prefetch_parallel=" + std::to_string(p3TemplatePrefetchParallel ? 1 : 0))
+                    + " p3_prefetch_parallel=" + std::to_string(p3TemplatePrefetchParallel ? 1 : 0)
+                    + " p3_prefetch_required=" + std::to_string(p3TemplatePrefetchRequired ? 1 : 0))
                 << ",0";
             Debug::V3Diagnostics::renderWriter().writeLine(row.str());
         }
