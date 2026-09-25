@@ -1,6 +1,10 @@
 #include "nifsemanticcompiler.hpp"
 
+#include <components/misc/constants.hpp>
+#include <components/nif/extra.hpp>
 #include <components/nif/niffile.hpp>
+#include <components/nif/node.hpp>
+#include <components/rendercore/namedvisualsemantics.hpp>
 #include <components/vfs/manager.hpp>
 
 #include <exception>
@@ -8,12 +12,39 @@
 
 namespace RenderNative
 {
+    namespace
+    {
+        [[nodiscard]] std::uint64_t inspectNamedVisualCapabilities(Nif::FileView file) noexcept
+        {
+            std::uint64_t result = 0;
+            for (std::size_t rootIndex = 0; rootIndex < file.numRoots(); ++rootIndex)
+            {
+                const Nif::Record* record = file.getRoot(rootIndex);
+                const auto* root = dynamic_cast<const Nif::NiAVObject*>(record);
+                if (!root)
+                    continue;
+                for (const Nif::ExtraPtr& extra : root->getExtraList())
+                {
+                    if (extra.empty() || extra->mRecordType != Nif::RC_NiStringExtraData)
+                        continue;
+                    const auto* value = static_cast<const Nif::NiStringExtraData*>(extra.getPtr());
+                    if (value->mData == Constants::NightDayLabel)
+                        result |= RenderCore::NightDaySwitchCapabilitySemanticFlag;
+                    else if (value->mData == Constants::HerbalismLabel)
+                        result |= RenderCore::HerbalismSwitchCapabilitySemanticFlag;
+                }
+            }
+            return result;
+        }
+    }
+
     NifSemanticCompileResult NifSemanticCompiler::compile(
         Nif::FileView file, NifRender::TranslatorOptions options) const
     {
         NifSemanticCompileResult result;
         try
         {
+            result.namedVisualCapabilities = inspectNamedVisualCapabilities(file);
             result.bundle = NifRender::translateStaticNif(file, mVfs, options, mTextureIdentities);
             result.status = NifSemanticCompileStatus::Compiled;
             if (!result.bundle.valid())
