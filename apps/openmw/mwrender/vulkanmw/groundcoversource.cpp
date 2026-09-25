@@ -11,9 +11,9 @@
 
 namespace MWRender::VulkanMW
 {
-    GroundcoverPopulationSource makeGroundcoverPopulationSource(const Groundcover& groundcover,
-        RenderNative::NifAssetService& assets, const RenderCore::RenderWorld& world, std::string_view worldspaceIdentity,
-        std::int32_t gridX, std::int32_t gridY, float renderingDistance)
+    GroundcoverPopulationSource makeGroundcoverPopulationSource(const MWWorld::GroundcoverStore& store,
+        float density, RenderNative::NifAssetService& assets, const RenderCore::RenderWorld& world,
+        std::string_view worldspaceIdentity, std::int32_t gridX, std::int32_t gridY, float renderingDistance)
     {
         GroundcoverPopulationSource result;
         if (worldspaceIdentity.empty())
@@ -30,7 +30,7 @@ namespace MWRender::VulkanMW
         result.cell.groundcover = true;
 
         const GroundcoverInstanceMap instances = collectGroundcoverInstances(
-            groundcover, 1.0f, static_cast<float>(gridX) + 0.5f, static_cast<float>(gridY) + 0.5f);
+            store, density, 1.0f, static_cast<float>(gridX) + 0.5f, static_cast<float>(gridY) + 0.5f);
         for (const auto& [modelPath, entries] : instances)
         {
             const RenderNative::NifAssetResolveResult resolved = assets.resolve(modelPath);
