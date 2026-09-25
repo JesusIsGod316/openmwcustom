@@ -1,29 +1,32 @@
-# OptimizedMW GL-P4 compile scheduler
+# OptimizedMW GL-P4R / P5 compile pipeline
 
-Parent: repaired GL-P3 integration build e62a7bd38c76cbb3d9bc226424134d146f816bcd.
+Parent: GL-P4 compile-scheduler build 1487a9ab6081f82424cbe7b96103542c66c85ea3.
 
-This build targets the recurring IncrementalCompileOperation / renderingTraversals handoff hitch path.
+This branch repairs the P4 starvation/cheap-drain defect and adds two independent mechanisms for the next remaining GL hitch class.
 
-Modes:
-1. CONTROL-B1 — original OSG ICO, validated P3B one-helper.
-2. CONTROL-B1-C — original ICO with B1+C.
-3. CONTROL-B1-C-D — original ICO with B1+C+D, for same-binary D comparison.
-4. P4A-B1 — cost-aware per-operation compile admission.
-5. P4B-B1 — cost-aware admission plus rendering-handoff feedback and compile credit.
-6. P4B-B1-C — primary stacking test.
-7. P4B-B1-C-D — tests whether D can stack once GL realization is smoothed.
-8. P4B-B1-C-COMPLETION — adds the existing V3.21 completed-set admission governor.
-9. P4A-B1-C — separates cost-aware scheduling from handoff feedback.
+## P4R scheduler repair
+- Cheap operations continue draining inside the per-frame time budget even when they are old.
+- Only a genuinely over-budget operation may use the one-per-frame starvation escape hatch.
+- Maximum ordinary operations per frame is raised to 12 while the total time budget remains bounded.
+- Cost history is tracked per producer class + GL operation type rather than globally by type.
+- A decaying risk estimate catches repeated under-predicted operations without permanently quarantining cheap work.
+- Queue-age default is 120 frames instead of 12.
 
-P4 modes are startup settings. Mode 0 constructs the original OSG IncrementalCompileOperation.
+## P5 heavy GL lane
+Optional. Known/predicted heavy operations are admitted only after sustained smooth headroom. It does not preempt a driver call; it controls when the call begins. The cold terrain prior retires after four observations.
 
-The scheduler does not preempt OpenGL calls. Instead it measures drawable/texture/program costs, predicts the next operation cost, avoids launching operations that do not fit the current budget, class-prioritizes ObjectPaging/Terrain work, forces aged work to avoid indefinite starvation, and gives GL deletion its own small budget.
+## P5 phased terrain compile
+Optional. TerrainDrawable's compile work is split into individual pass StateAttribute operations plus a geometry/VBO operation. This preserves the original pass-before-geometry order but gives the scheduler interruption points between work units. Diagnostics tag:
+- p5_terrain_pass_attribute
+- p5_terrain_geometry_vbo
 
-Diagnostics:
-- p4-compile.csv: per-operation and per-frame scheduler evidence
-- v3-render.csv: render-handoff events
-- v3-osg-stats.log: frame/cull/draw/GPU/resource/Compiling statistics
-- paging/resource/streaming/batching/shadow/GPU-memory logs
-- process-memory.csv
+## Launcher modes
+1. CONTROL-B1
+2. CONTROL-B1-C
+3. P4R-B1
+4. P4R-B1-C
+5. P4R-B1-C-HEAVY
+6. P4R-B1-C-TERRAIN
+7. P4R-B1-C-HEAVY-TERRAIN
 
-Deep trace/profilers remain off because they would contaminate performance comparisons.
+The focused diagnostics remain nonblocking. p4-compile.csv records queue depth/age, budget, credit, prediction, actual cost, headroom, producer class, and admission reason.
