@@ -83,6 +83,10 @@ namespace Resource
             return CompileKind::Program;
         if (dynamic_cast<const P4CompileBufferOp*>(op))
             return CompileKind::Buffer;
+        if (dynamic_cast<const P4CompileStateSetOp*>(op))
+            return CompileKind::StateSet;
+        if (dynamic_cast<const P4CompileGeometryFinalizeOp*>(op))
+            return CompileKind::GeometryFinalize;
         return CompileKind::Other;
     }
 
@@ -94,6 +98,8 @@ namespace Resource
             case CompileKind::Texture: return "texture";
             case CompileKind::Program: return "program";
             case CompileKind::Buffer: return "buffer";
+            case CompileKind::StateSet: return "stateset";
+            case CompileKind::GeometryFinalize: return "geometry_finalize";
             case CompileKind::Other: return "other";
             case CompileKind::Count: break;
         }
@@ -397,6 +403,14 @@ namespace Resource
                     detail = "budgeted_aged_cheap";
                 else
                     detail = "budgeted";
+
+                if (const auto* bufferOp = dynamic_cast<const P4CompileBufferOp*>(selected.mOp))
+                {
+                    std::ostringstream extra;
+                    extra << detail << " buffer_bytes=" << bufferOp->byteSize()
+                          << " buffer_target=" << bufferOp->target();
+                    detail = extra.str();
+                }
 
                 writeP4CompileRow(frame, "op", compileKindName(selected.mKind),
                     compileClassName(selected.mSet), queued.size(), oldestAge,
