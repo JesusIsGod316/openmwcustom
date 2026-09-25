@@ -45,6 +45,37 @@ namespace Settings
             mIndex, "Cells", "optimizedmw parallel template prefetch min templates",
             makeClampSanitizerInt(4, 512) };
 
+        // OptimizedMW GL-P4: startup-selected replacement for OSG ICO scheduling.
+        // Mode 0 preserves stock/current ICO behavior, 1 adds cost-aware admission,
+        // and 2 adds rendering-handoff feedback plus bounded compile credit.
+        SettingValue<int> mOptimizedMWCompileSchedulerMode{
+            mIndex, "Cells", "optimizedmw compile scheduler mode",
+            makeClampSanitizerInt(0, 2) };
+        SettingValue<float> mOptimizedMWCompileSchedulerMaxBudgetMs{
+            mIndex, "Cells", "optimizedmw compile scheduler max budget ms",
+            makeClampSanitizerFloat(0.1, 8.0) };
+        SettingValue<float> mOptimizedMWCompileSchedulerCreditCapMs{
+            mIndex, "Cells", "optimizedmw compile scheduler credit cap ms",
+            makeClampSanitizerFloat(0.1, 16.0) };
+        SettingValue<float> mOptimizedMWCompileSchedulerHeadroomRatio{
+            mIndex, "Cells", "optimizedmw compile scheduler headroom ratio",
+            makeClampSanitizerFloat(0.05, 1.0) };
+        SettingValue<float> mOptimizedMWCompileSchedulerHandoffThresholdMs{
+            mIndex, "Cells", "optimizedmw compile scheduler handoff threshold ms",
+            makeClampSanitizerFloat(5.0, 100.0) };
+        SettingValue<int> mOptimizedMWCompileSchedulerMaxQueueAgeFrames{
+            mIndex, "Cells", "optimizedmw compile scheduler max queue age frames",
+            makeClampSanitizerInt(1, 240) };
+        SettingValue<float> mOptimizedMWCompileSchedulerDeleteBudgetMs{
+            mIndex, "Cells", "optimizedmw compile scheduler delete budget ms",
+            makeClampSanitizerFloat(0.0, 4.0) };
+        SettingValue<int> mOptimizedMWCompileSchedulerMaxObjectsPerFrame{
+            mIndex, "Cells", "optimizedmw compile scheduler max objects per frame",
+            makeClampSanitizerInt(1, 32) };
+        SettingValue<float> mOptimizedMWCompileSchedulerDiagnosticThresholdMs{
+            mIndex, "Cells", "optimizedmw compile scheduler diagnostic threshold ms",
+            makeClampSanitizerFloat(0.0, 20.0) };
+
         SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
         SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
             makeClampSanitizerInt(64, 16384) };
