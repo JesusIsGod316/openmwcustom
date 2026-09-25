@@ -1171,6 +1171,7 @@ namespace MWRender
         std::size_t v36MergeCandidateGroups = 0;
         std::size_t p3CompatibleIndexMerges = 0;
         std::size_t p3DisplayListPromotions = 0;
+        std::size_t p3NormalizedColorStreams = 0;
         bool p3SemanticPremergeUsed = false;
         {
             Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
@@ -1497,8 +1498,12 @@ namespace MWRender
                 = static_cast<bool>(Settings::cells().mOptimizedMWDistantDisplayLists)
                 && !activeGrid && compile && !p2RequiredReadiness
                 && !static_cast<bool>(Settings::stereo().mMultiview);
+            const bool p3NormalizedStaticPackets
+                = static_cast<bool>(Settings::cells().mOptimizedMWNormalizedStaticPackets)
+                && compile && !p2RequiredReadiness && v38BatchingMode >= 2;
             optimizer.setMergeCompatibleIndexTypes(p3SubmissionCompaction);
             optimizer.setPreferDisplayListsForMergedGeometry(p3DistantDisplayLists);
+            optimizer.setNormalizeIgnoredVertexColors(p3NormalizedStaticPackets);
             unsigned int options = SceneUtil::Optimizer::FLATTEN_STATIC_TRANSFORMS
                 | SceneUtil::Optimizer::REMOVE_REDUNDANT_NODES | SceneUtil::Optimizer::MERGE_GEOMETRY;
 
@@ -1556,6 +1561,7 @@ namespace MWRender
             optimizer.optimize(mergeGroup, options);
             p3CompatibleIndexMerges += optimizer.getCompatibleIndexMergeCount();
             p3DisplayListPromotions += optimizer.getDisplayListPromotionCount();
+            p3NormalizedColorStreams += optimizer.getNormalizedColorStreamCount();
             SceneUtil::PagingWorkScope::checkpoint();
 
             const bool v39ShareState
@@ -1609,6 +1615,7 @@ namespace MWRender
                     + " p3_index_merges=" + std::to_string(p3CompatibleIndexMerges)
                     + " p3_semantic_premerge=" + std::to_string(p3SemanticPremergeUsed ? 1 : 0)
                     + " p3_display_lists=" + std::to_string(p3DisplayListPromotions)
+                    + " p3_normalized_colors=" + std::to_string(p3NormalizedColorStreams)
                     + " p3_prefetch_models=" + std::to_string(p3TemplatePrefetchModels)
                     + " p3_prefetch_reuse_hits=" + std::to_string(p3TemplateReuseHits)
                     + " p3_prefetch_parallel=" + std::to_string(p3TemplatePrefetchParallel ? 1 : 0)
