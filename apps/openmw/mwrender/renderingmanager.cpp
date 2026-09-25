@@ -335,6 +335,10 @@ namespace MWRender
                     Settings::cells().mOptimizedMWCompileSchedulerMaxObjectsPerFrame);
                 config.mDiagnosticThresholdMs = static_cast<double>(
                     Settings::cells().mOptimizedMWCompileSchedulerDiagnosticThresholdMs);
+                config.mMinimumDrainBudgetMs = static_cast<double>(
+                    Settings::cells().mOptimizedMWCompileSchedulerMinimumDrainBudgetMs);
+                config.mHeavyOpThresholdMs = static_cast<double>(
+                    Settings::cells().mOptimizedMWCompileSchedulerHeavyOpThresholdMs);
                 ico = new Resource::OpenMWIncrementalCompileOperation(config);
             }
             else
