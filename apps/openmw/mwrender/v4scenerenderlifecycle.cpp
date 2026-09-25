@@ -18,7 +18,7 @@
 #include <components/nifrender/niftranslator.hpp>
 #include <components/render/backend/vsg/vsgsemanticsession.hpp>
 #include <components/rendercore/namedvisualsemantics.hpp>
-#include <components/render/native/nifsemanticcompiler.hpp>
+#include <components/render/native/nifassetservice.hpp>
 #include <components/settings/values.hpp>
 #include <components/vfs/manager.hpp>
 
@@ -134,6 +134,8 @@ namespace MWRender
     {
         if (!mSession || !mRouteStatus)
             throw std::invalid_argument("V4 scene lifecycle requires a semantic session and route status");
+        mNativeAssets = std::make_unique<RenderNative::NifAssetService>(
+            mVfs, &mTextureIdentities, mSession->models());
     }
 
     void V4SceneRenderLifecycle::cellActivated(const MWWorld::CellStore& cell)
@@ -339,43 +341,12 @@ namespace MWRender
         }
 
         const std::string modelIdentity = modelPath.value();
-        std::uint64_t visualCapabilities = 0;
-        auto capability = mModelVisualCapabilities.find(modelIdentity);
-        std::optional<RenderCore::ModelHandle> model = mSession->models().find(modelIdentity);
-        if (!model)
-        {
-            Debug::GameplayDiagnostics::Operation modelDiagnostic("v4_model_load", modelIdentity);
-            if (!mVfs.exists(modelPath))
-                throw std::runtime_error("V4 static model is missing from the winning VFS: " + modelIdentity);
-
-            const RenderNative::NifSemanticCompiler compiler(mVfs, &mTextureIdentities);
-            const RenderNative::NifSemanticCompileResult compiled = compiler.compile(modelPath);
-            if (!compiled.compiled())
-                throw std::runtime_error("VulkanMW native NIF compile failed for " + modelIdentity + ": "
-                    + compiled.diagnostic);
-            visualCapabilities = compiled.namedVisualCapabilities;
-            mModelVisualCapabilities.insert_or_assign(modelIdentity, visualCapabilities);
-            const NifRender::StaticModelCacheResult published = mSession->models().publish(compiled.bundle);
-            if (!published.available())
-                throw publicationError("static model publication", static_cast<unsigned int>(published.status));
-            model = published.model;
-        }
-        else if (capability != mModelVisualCapabilities.end())
-            visualCapabilities = capability->second;
-        else
-        {
-            // Another source path (notably actor model composition) can populate
-            // the shared model cache before this lifecycle sees a world object.
-            // Recover the root descriptions once, then retain them for live
-            // objectChanged updates such as door rotation and harvesting.
-            const RenderNative::NifSemanticCompiler compiler(mVfs, &mTextureIdentities);
-            const RenderNative::NifSemanticCompileResult compiled = compiler.compile(modelPath);
-            if (!compiled.compiled())
-                throw std::runtime_error("VulkanMW cached native NIF metadata compile failed for " + modelIdentity
-                    + ": " + compiled.diagnostic);
-            visualCapabilities = compiled.namedVisualCapabilities;
-            mModelVisualCapabilities.emplace(modelIdentity, visualCapabilities);
-        }
+        const RenderNative::NifAssetResolveResult resolved = mNativeAssets->resolve(modelPath);
+        if (!resolved.available())
+            throw std::runtime_error("VulkanMW native NIF asset resolution failed for " + modelIdentity + ": "
+                + resolved.diagnostic);
+        std::uint64_t visualCapabilities = resolved.namedVisualCapabilities;
+        std::optional<RenderCore::ModelHandle> model = resolved.model;
 
         const RenderCore::ModelRecord* modelRecord = mSession->world().get(*model);
         if (!modelRecord)
