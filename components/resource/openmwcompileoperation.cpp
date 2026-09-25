@@ -406,12 +406,12 @@ namespace Resource
             consumeP4CompileCredit(mPolicyState, mode, actualMs);
             compileActualMs += actualMs;
             ++compiledObjects;
-            if (forced)
+            if (heavyPrewarm)
+                ++heavyObjects;
+            else if (forced)
                 ++ageForcedObjects;
             else
                 ++budgetedObjects;
-            if (heavyPrewarm)
-                ++heavyObjects;
             if (actualMs > std::max(selected.mPredictionMs * 4.0, mConfig.mHeavyThresholdMs))
                 ++predictionMisses;
 
