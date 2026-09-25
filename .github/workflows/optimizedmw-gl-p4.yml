@@ -1,8 +1,8 @@
-name: OptimizedMW GL-P4 compile scheduler gate
+name: OptimizedMW GL-P4R scheduler and terrain gate
 
 on:
   push:
-    branches: [optimizedmw/gl-p4-compile-scheduler]
+    branches: [optimizedmw/gl-p4-repair-worker]
   workflow_dispatch:
 
 permissions:
