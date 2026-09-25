@@ -172,6 +172,23 @@ int main()
     require(commandCached->getUseDisplayList(), "distant command-cache experiment did not enable display list");
     require(!commandCached->getUseVertexBufferObjects(), "display-list experiment must not retain VBO submission");
 
+    osg::ref_ptr<osg::Group> displayRoot = new osg::Group;
+    displayRoot->addChild(makeTriangle(0.f));
+    displayRoot->addChild(makeTriangle(2.f));
+    osg::ref_ptr<osg::StateSet> displayState = new osg::StateSet;
+    displayRoot->getChild(0)->setStateSet(displayState);
+    displayRoot->getChild(1)->setStateSet(displayState);
+    SceneUtil::Optimizer displayOptimizer;
+    displayOptimizer.setPreferDisplayListsForMergedGeometry(true);
+    displayOptimizer.optimize(displayRoot, SceneUtil::Optimizer::MERGE_GEOMETRY);
+    require(displayRoot->getNumChildren() == 1,
+        "same-state geometry did not merge for independent display-list test");
+    osg::Geometry* independentDisplay = displayRoot->getChild(0)->asGeometry();
+    require(independentDisplay != nullptr && independentDisplay->getUseDisplayList(),
+        "display-list promotion incorrectly depended on P3A mixed-index compaction");
+    require(displayOptimizer.getDisplayListPromotionCount() == 1,
+        "independent display-list promotion count mismatch");
+
     osg::ref_ptr<osg::Group> opaqueRoot = new osg::Group;
     osg::ref_ptr<osg::Geometry> opaqueInterleaved = makeInterleavedTriangles(false);
     opaqueRoot->addChild(opaqueInterleaved);
@@ -218,6 +235,9 @@ int main()
         "normalized ignored-color stream did not unlock physical geometry merge");
     require(ignoredCandidateOptimizer.getNormalizedColorStreamCount() == 1,
         "normalized ignored-color stream count mismatch");
+    osg::Geometry* normalizedMerged = ignoredCandidate->getChild(0)->asGeometry();
+    require(normalizedMerged != nullptr && normalizedMerged->getColorArray() == nullptr,
+        "material-ignored color stream was not stripped from merged geometry");
 
     osg::ref_ptr<osg::Group> usedColorCandidate = makeUsedColorMismatchPair();
     SceneUtil::Optimizer usedColorOptimizer;
