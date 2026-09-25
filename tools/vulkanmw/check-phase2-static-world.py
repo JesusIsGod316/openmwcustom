@@ -17,6 +17,8 @@ NATIVE_STATIC = [
     ROOT / "apps/openmw/mwrender/vulkanmw/referenceplacement.hpp",
     ROOT / "apps/openmw/mwrender/vulkanmw/groundcoversource.hpp",
     ROOT / "apps/openmw/mwrender/vulkanmw/groundcoversource.cpp",
+    ROOT / "apps/openmw/mwrender/groundcoverdata.hpp",
+    ROOT / "apps/openmw/mwrender/groundcoverquery.hpp",
 ]
 
 FORBIDDEN = [
@@ -86,8 +88,10 @@ def main() -> int:
     groundcover = code_only(
         (ROOT / "apps/openmw/mwrender/vulkanmw/groundcoversource.cpp").read_text(encoding="utf-8")
     )
+    if "../groundcover.hpp" in groundcover:
+        fail("native groundcover source includes the OSG renderer header directly")
     for needle in (
-        "groundcover.collectInstances(1.0f",
+        "collectGroundcoverInstances(",
         "assets.resolve(modelPath)",
         "makeReferenceRotation(entry.mPos)",
         "StaticPopulationInstanceSource",
