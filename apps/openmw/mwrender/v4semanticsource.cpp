@@ -152,32 +152,6 @@ namespace MWRender
         return result;
     }
 
-    std::optional<RenderCore::StaticInstanceSource> makeV4StaticInstanceSource(
-        const MWWorld::Ptr& ptr, RenderCore::ModelHandle model, RenderCore::AxisAlignedBounds localBounds)
-    {
-        if (ptr.isEmpty() || !ptr.getCell() || !model.valid() || !ptr.getRefData().isEnabled()
-            || ptr.getClass().isActor() || ptr.getClass().useAnim())
-            return std::nullopt;
-        const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
-        const std::optional<RenderCore::ActiveCellSource> cell = makeV4ActiveCellSource(*ptr.getCell());
-        if (!identity || !cell)
-            return std::nullopt;
-
-        const ESM::Position& position = ptr.getRefData().getPosition();
-        const osg::Quat rotation = Misc::Convert::makeOsgQuat(position);
-        const float scale = ptr.getCellRef().getScale();
-        RenderCore::StaticInstanceSource result;
-        result.identity = *identity;
-        result.cellIdentity = cell->identity;
-        result.model = model;
-        result.transform.translation = { position.pos[0], position.pos[1], position.pos[2] };
-        result.transform.rotation = { static_cast<float>(rotation.w()), static_cast<float>(rotation.x()),
-            static_cast<float>(rotation.y()), static_cast<float>(rotation.z()) };
-        result.transform.scale = { scale, scale, scale };
-        result.localBounds = localBounds;
-        return result;
-    }
-
     std::optional<RenderCore::DynamicInstanceSource> makeV4DynamicInstanceSource(const MWWorld::Ptr& ptr,
         RenderCore::ModelHandle model, RenderCore::SkeletonHandle skeleton, RenderCore::AxisAlignedBounds localBounds)
     {
