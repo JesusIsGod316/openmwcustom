@@ -7,12 +7,13 @@ This build targets the recurring IncrementalCompileOperation / renderingTraversa
 Modes:
 1. CONTROL-B1 — original OSG ICO, validated P3B one-helper.
 2. CONTROL-B1-C — original ICO with B1+C.
-3. P4A-B1 — cost-aware per-operation compile admission.
-4. P4B-B1 — cost-aware admission plus rendering-handoff feedback and compile credit.
-5. P4B-B1-C — primary stacking test.
-6. P4B-B1-C-D — tests whether D can stack once GL realization is smoothed.
-7. P4B-B1-C-COMPLETION — adds the existing V3.21 completed-set admission governor.
-8. P4A-B1-C — separates cost-aware scheduling from handoff feedback.
+3. CONTROL-B1-C-D — original ICO with B1+C+D, for same-binary D comparison.
+4. P4A-B1 — cost-aware per-operation compile admission.
+5. P4B-B1 — cost-aware admission plus rendering-handoff feedback and compile credit.
+6. P4B-B1-C — primary stacking test.
+7. P4B-B1-C-D — tests whether D can stack once GL realization is smoothed.
+8. P4B-B1-C-COMPLETION — adds the existing V3.21 completed-set admission governor.
+9. P4A-B1-C — separates cost-aware scheduling from handoff feedback.
 
 P4 modes are startup settings. Mode 0 constructs the original OSG IncrementalCompileOperation.
 
