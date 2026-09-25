@@ -1,0 +1,191 @@
+name: VulkanMW Phase 1 Windows closeout
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [vulkanmw/phase1-nif-semantic-compiler]
+    paths:
+      - 'components/render/native/**'
+      - 'components/nifrender/**'
+      - 'components/render/backend/vsg/**'
+      - 'apps/openmw/mwrender/v4scenerenderlifecycle.*'
+      - 'tools/vulkanmw/**'
+      - '.github/workflows/vulkanmw-phase1-windows.yml'
+
+concurrency:
+  group: vulkanmw-phase1-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Phase 0 ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          PHASE0=086732cf494c31d4b823bc774e2929a6a75d4d67
+          git cat-file -e "${PHASE0}^{commit}"
+          test "$(git merge-base "${PHASE0}" HEAD)" = "${PHASE0}"
+
+      - name: Enforce VulkanMW architecture contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/vulkanmw/check-architecture-boundaries.py
+          python3 tools/vulkanmw/check-phase1-nif-compiler.py
+          git diff --check 086732cf494c31d4b823bc774e2929a6a75d4d67 HEAD --             components/render/native             components/nifrender             components/render/backend/vsg/staticnifconformance.cpp             components/render/backend/vsg/runtime-sources.cmake             apps/openmw/mwrender/v4scenerenderlifecycle.cpp             apps/openmw/mwrender/v4scenerenderlifecycle.hpp             tools/vulkanmw
+
+  Windows:
+    needs: Preflight
+    runs-on: windows-2022
+    env:
+      VCPKG_FEATURE_FLAGS: manifests,versions
+      archive: FAILEDTODOWNLOAD
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Ensure pinned VSG vcpkg baseline
+        shell: pwsh
+        run: |
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --no-tags --depth=1 origin 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+
+      - name: Configure static VSG conformance support
+        shell: pwsh
+        run: |
+          cmake `
+            -S "$env:GITHUB_WORKSPACE/tools/v4/cp3b3" `
+            -B "$env:GITHUB_WORKSPACE/build-vulkanmw-static" `
+            -G Ninja `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D CMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -D VCPKG_MANIFEST_DIR="$env:GITHUB_WORKSPACE/tools/v4/cp3b3" `
+            -D VCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE/vulkanmw-vcpkg" `
+            -D VCPKG_TARGET_TRIPLET=x64-windows
+          if ($LASTEXITCODE -ne 0) { throw "Static VSG configure failed" }
+
+      - name: Build and test static VSG conformance support
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-static" --verbose
+          if ($LASTEXITCODE -ne 0) { throw "Static VSG build failed" }
+          ctest --test-dir "$env:GITHUB_WORKSPACE/build-vulkanmw-static" -C RelWithDebInfo --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Static VSG tests failed" }
+
+      - name: Load OpenMW dependency identity
+        shell: bash
+        run: |
+          sed '/^\s*#/d; /^\s*$/d' "${{ github.workspace }}/CI/deps_versions.msvc.sh" >> $GITHUB_ENV
+
+      - name: Download OpenMW Windows dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE/deps" | Out-Null
+          Set-Location "$env:GITHUB_WORKSPACE/deps"
+          $MANIFEST = "vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}-manifest.txt"
+          curl.exe --fail --retry 3 -L -o "$MANIFEST" "https://gitlab.com/OpenMW/openmw-deps/-/raw/main/windows/$MANIFEST"
+          if ($LASTEXITCODE -ne 0) { throw "Dependency manifest download failed" }
+          $lines = Get-Content "$MANIFEST"
+          $URL = $lines[0]
+          $split = -split $lines[1]
+          $HASH = $split[0]
+          $FILE = $split[1]
+          curl.exe --fail --retry 3 -L -o "$FILE" "$URL"
+          if ($LASTEXITCODE -ne 0) { throw "Dependency archive download failed" }
+          $filehash = Get-FileHash "$FILE" -Algorithm SHA512
+          if ($filehash.hash -ne $HASH) { throw "OpenMW dependency archive hash mismatch" }
+          "archive=$FILE" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Extract OpenMW Windows dependencies
+        shell: pwsh
+        working-directory: ${{ github.workspace }}/deps
+        run: |
+          7z x -y -ovcpkg-x64-windows-2022-${{ env.VCPKG_TAG }} $env:archive
+          if ($LASTEXITCODE -ne 0) { throw "Dependency extraction failed" }
+
+      - name: Configure production VulkanMW/OpenMW tree
+        shell: pwsh
+        run: |
+          $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
+          $vsgPrefix = "$env:GITHUB_WORKSPACE/vulkanmw-vcpkg/x64-windows"
+          cmake `
+            -S "$env:GITHUB_WORKSPACE" `
+            -B "$env:GITHUB_WORKSPACE/build-vulkanmw-phase1" `
+            -G Ninja `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D CMAKE_TOOLCHAIN_FILE="$openmwDeps/scripts/buildsystems/vcpkg.cmake" `
+            -D CMAKE_PREFIX_PATH="$vsgPrefix" `
+            -D CMAKE_PROJECT_INCLUDE="$env:GITHUB_WORKSPACE/tools/v4/cp3b3/OpenMWRealNifTool.cmake" `
+            -D LuaJit_INCLUDE_DIR="$openmwDeps/installed/x64-windows/include/luajit" `
+            -D LuaJit_LIBRARY="$openmwDeps/installed/x64-windows/lib/lua51.lib" `
+            -D BUILD_OPENMW=ON `
+            -D OPENMW_ENABLE_V4_VULKAN_RUNTIME=ON `
+            -D OPENMW_V4_BUILD_RECOVERY_TESTS=ON `
+            -D BUILD_LAUNCHER=OFF `
+            -D BUILD_WIZARD=OFF `
+            -D BUILD_MWINIIMPORTER=OFF `
+            -D BUILD_OPENCS=OFF `
+            -D BUILD_ESSIMPORTER=OFF `
+            -D BUILD_BSATOOL=OFF `
+            -D BUILD_ESMTOOL=OFF `
+            -D BUILD_NIFTEST=OFF `
+            -D BUILD_DOCS=OFF `
+            -D BUILD_COMPONENTS_TESTS=OFF `
+            -D BUILD_BENCHMARKS=OFF `
+            -D BUILD_NAVMESHTOOL=OFF `
+            -D BUILD_BULLETOBJECTTOOL=OFF `
+            -D BUILD_OPENCS_TESTS=OFF `
+            -D BUILD_OPENMW_TESTS=OFF `
+            -D OPENMW_USE_SYSTEM_SQLITE3=OFF `
+            -D OPENMW_USE_SYSTEM_YAML_CPP=OFF `
+            -D OPENMW_LTO_BUILD=OFF
+          if ($LASTEXITCODE -ne 0) { throw "Production configure failed" }
+
+      - name: Build real-NIF VulkanMW conformance executable
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-phase1" --target openmw-vulkan-nif-conformance --verbose
+          if ($LASTEXITCODE -ne 0) { throw "VulkanMW real-NIF conformance build failed" }
+
+      - name: Build production OpenMW with VulkanMW native asset path
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-phase1" --target openmw --verbose
+          if ($LASTEXITCODE -ne 0) { throw "Production OpenMW VulkanMW link failed" }
+
+      - name: Validate executable command surfaces
+        shell: pwsh
+        run: |
+          $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
+          $roots = @(
+            "$openmwDeps/installed/x64-windows/bin",
+            "$env:GITHUB_WORKSPACE/vulkanmw-vcpkg/x64-windows/bin",
+            "$env:GITHUB_WORKSPACE/build-vulkanmw-phase1/_deps/SDL3-3.4.10/lib/x64"
+          )
+          $env:PATH = (($roots | Where-Object { Test-Path $_ }) -join ';') + ';' + $env:PATH
+          & "$env:GITHUB_WORKSPACE/build-vulkanmw-phase1/openmw.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "openmw.exe --version failed" }
+          & "$env:GITHUB_WORKSPACE/build-vulkanmw-phase1/openmw-vulkan-nif-conformance.exe" --help
+          if ($LASTEXITCODE -ne 0) { throw "real-NIF conformance --help failed" }
+
+      - name: Upload Phase 1 build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulkanmw-phase1-windows-${{ github.sha }}
+          if-no-files-found: ignore
+          path: |
+            build-vulkanmw-static/CMakeCache.txt
+            build-vulkanmw-static/Testing/Temporary/LastTest.log
+            build-vulkanmw-phase1/CMakeCache.txt
+            build-vulkanmw-phase1/.ninja_log
