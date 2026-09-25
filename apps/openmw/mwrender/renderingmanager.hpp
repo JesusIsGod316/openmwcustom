@@ -219,6 +219,7 @@ namespace MWRender
         SkyManager* getSkyManager();
         const SkyManager* getSkyManager() const;
         [[nodiscard]] const Groundcover* getGroundcover() const noexcept { return mGroundcover; }
+        [[nodiscard]] const MWWorld::GroundcoverStore& getGroundcoverStore() const noexcept { return mGroundCoverStore; }
 
         void spawnEffect(VFS::Path::NormalizedView model, std::string_view texture, const osg::Vec3f& worldPosition,
             float scale = 1.f, bool isMagicVFX = true, bool useAmbientLight = true, std::string_view effectId = {},
