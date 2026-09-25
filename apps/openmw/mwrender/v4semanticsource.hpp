@@ -33,9 +33,6 @@ namespace MWRender
     [[nodiscard]] std::optional<RenderCore::ActiveCellSource> makeV4ActiveCellSource(
         const MWWorld::CellStore& cell);
 
-    [[nodiscard]] std::optional<RenderCore::StaticInstanceSource> makeV4StaticInstanceSource(
-        const MWWorld::Ptr& ptr, RenderCore::ModelHandle model, RenderCore::AxisAlignedBounds localBounds);
-
     [[nodiscard]] std::optional<RenderCore::DynamicInstanceSource> makeV4DynamicInstanceSource(
         const MWWorld::Ptr& ptr, RenderCore::ModelHandle model, RenderCore::SkeletonHandle skeleton,
         RenderCore::AxisAlignedBounds localBounds);
