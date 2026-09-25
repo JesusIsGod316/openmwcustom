@@ -25,6 +25,7 @@
 #include <SDL3/SDL_main.h>
 #include <components/debug/debuglog.hpp>
 #include <components/debug/gldebug.hpp>
+#include <components/debug/v3diagnostics.hpp>
 
 #include <components/misc/rng.hpp>
 #include <components/misc/strings/format.hpp>
@@ -924,7 +925,28 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 #endif
         }
         else
+        {
+            const bool p3HandoffAttribution
+                = static_cast<bool>(Settings::cells().mOptimizedMWRenderHandoffAttribution)
+                && Debug::V3Diagnostics::renderWriter().enabled();
+            const auto p3RenderStart = p3HandoffAttribution ? Debug::V3Diagnostics::Clock::now()
+                                                           : Debug::V3Diagnostics::Clock::time_point{};
             mViewer->renderingTraversals();
+
+            if (p3HandoffAttribution)
+            {
+                const double renderMs = Debug::V3Diagnostics::elapsedMs(p3RenderStart);
+                if (renderMs >= 20.0)
+                {
+                    std::ostringstream row;
+                    row << frameNumber << ',' << Debug::V3Diagnostics::epochMs() << ','
+                        << Debug::V3Diagnostics::csvQuote("p3_render_handoff") << ','
+                        << Debug::V3Diagnostics::csvQuote("rendering_traversals_gt20ms") << ','
+                        << std::fixed << std::setprecision(3) << renderMs;
+                    Debug::V3Diagnostics::renderWriter().writeLine(row.str());
+                }
+            }
+        }
     }
 
     {
