@@ -11,6 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 NATIVE_STATIC = [
     ROOT / "components/render/native/staticworldservice.hpp",
+    ROOT / "components/render/native/terrainworldservice.hpp",
     ROOT / "apps/openmw/mwrender/vulkanmw/staticworldsource.hpp",
     ROOT / "apps/openmw/mwrender/vulkanmw/staticworldsource.cpp",
     ROOT / "apps/openmw/mwrender/vulkanmw/referenceplacement.hpp",
@@ -117,6 +118,34 @@ def main() -> int:
     if "makeV4StaticInstanceSource" in legacy_header or "makeV4StaticInstanceSource" in legacy_cpp:
         fail("legacy OSG static placement adapter still exists")
 
+    terrain_service = (ROOT / "components/render/native/terrainworldservice.hpp").read_text(encoding="utf-8")
+    for needle in (
+        "class TerrainWorldService",
+        "TerrainPreparationService",
+        "TerrainResidencyPlanner",
+        "mTerrain.synchronize",
+        "updateResidency",
+        "stopBackgroundPreparation",
+    ):
+        if needle not in terrain_service:
+            fail(f"native terrain service lost required ownership step: {needle}")
+
+    terrain_adapter = code_only(
+        (ROOT / "apps/openmw/mwrender/v4terrainsource.cpp").read_text(encoding="utf-8")
+    )
+    for forbidden in (
+        "osg::Node",
+        "osg::Group",
+        "osg::Geode",
+        "osg::Geometry",
+        "osg::StateSet",
+        "osg::NodeVisitor",
+        "SceneUtil::",
+        "NifOsg::",
+    ):
+        if forbidden in terrain_adapter:
+            fail(f"LAND extractor regressed into OSG scene ownership: {forbidden}")
+
     bridge = code_only(
         (ROOT / "apps/openmw/mwrender/v4enginerenderbridge.cpp").read_text(encoding="utf-8")
     )
@@ -133,9 +162,22 @@ def main() -> int:
         "mSession->populations().addCell",
         "mSession->populations().upsert",
         "mSession->populations().removeCell",
+        "mTerrainPreparation",
+        "mTerrainResidencyPlanner",
+        "mPendingTerrainPublication",
+        "mTerrain->synchronize",
     ):
         if forbidden in bridge:
-            fail(f"production groundcover route still owns legacy/direct mutation: {forbidden}")
+            fail(f"production terrain/groundcover bridge still owns legacy/direct mutation: {forbidden}")
+
+    for needle in (
+        "mNativeTerrain->updateResidency",
+        "mNativeTerrain->synchronize",
+        "mNativeTerrain->clear",
+        "mNativeTerrain->stopBackgroundPreparation",
+    ):
+        if needle not in bridge:
+            fail(f"production terrain route bypasses native terrain service: {needle}")
 
     cmake = (ROOT / "apps/openmw/mwrender/v4engine-sources.cmake").read_text(encoding="utf-8")
     for source_file in (
