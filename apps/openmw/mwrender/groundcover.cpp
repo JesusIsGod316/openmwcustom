@@ -1,4 +1,5 @@
 #include "groundcover.hpp"
+#include "groundcoverquery.hpp"
 
 #include "occlusionculling.hpp"
 
@@ -424,6 +425,12 @@ namespace MWRender
     Groundcover::InstanceMap Groundcover::collectInstances(float size, float centerX, float centerY) const
     {
         return collectInstances(size, osg::Vec2f(centerX, centerY));
+    }
+
+    GroundcoverInstanceMap collectGroundcoverInstances(
+        const Groundcover& groundcover, float size, float centerX, float centerY)
+    {
+        return groundcover.collectInstances(size, centerX, centerY);
     }
 
     void Groundcover::collectInstances(InstanceMap& instances, float size, const osg::Vec2f& center) const
