@@ -60,6 +60,13 @@ namespace Terrain
                 list.add(texture);
             for (osg::Program* program : stateToCompile._programs)
                 list.add(program);
+
+            if (geometry.getStateSet())
+                list.add(new Resource::P4CompileStateSetOp(geometry.getStateSet()));
+            for (const osg::ref_ptr<osg::StateSet>& pass : geometry.getPasses())
+                if (pass)
+                    list.add(new Resource::P4CompileStateSetOp(pass));
+
             for (osg::BufferObject* buffer : buffers)
                 list.add(new Resource::P4CompileBufferOp(buffer));
 
