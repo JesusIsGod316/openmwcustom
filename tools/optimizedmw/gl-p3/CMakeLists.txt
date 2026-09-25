@@ -6,6 +6,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 get_filename_component(ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
 option(OPTIMIZEDMW_P3_SANITIZERS "Address and undefined-behavior sanitizers" OFF)
 find_package(OpenSceneGraph 3.6 REQUIRED COMPONENTS osg osgDB osgUtil)
+find_package(OpenGL REQUIRED)
 enable_testing()
 add_executable(optimizedmw-p3-submission-tests
     submission-tests.cpp
@@ -13,7 +14,7 @@ add_executable(optimizedmw-p3-submission-tests
     "${ROOT}/components/sceneutil/pagingwork.cpp")
 target_include_directories(optimizedmw-p3-submission-tests PRIVATE "${ROOT}")
 target_include_directories(optimizedmw-p3-submission-tests SYSTEM PRIVATE ${OPENSCENEGRAPH_INCLUDE_DIRS})
-target_link_libraries(optimizedmw-p3-submission-tests PRIVATE ${OPENSCENEGRAPH_LIBRARIES})
+target_link_libraries(optimizedmw-p3-submission-tests PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
 if(MSVC)
     target_compile_options(optimizedmw-p3-submission-tests PRIVATE /W4 /WX /permissive- /EHsc)
 else()
