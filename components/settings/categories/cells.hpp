@@ -22,6 +22,11 @@ namespace Settings
         SettingValue<bool> mOpimizedMWPagingOptimizer{ mIndex, "Cells", "opimizedmw paging optimizer" };
         SettingValue<bool> mOpimizedMWPagingReadinessSplit{ mIndex, "Cells", "opimizedmw paging readiness split" };
 
+        // OptimizedMW GL-P3: preserve primitive order/material semantics while compacting
+        // adjacent indexed draws that differ only in index storage width.
+        SettingValue<bool> mOptimizedMWSubmissionCompaction{
+            mIndex, "Cells", "optimizedmw submission compaction" };
+
         SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
         SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
             makeClampSanitizerInt(64, 16384) };

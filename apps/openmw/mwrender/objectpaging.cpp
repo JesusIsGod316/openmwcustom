@@ -1031,6 +1031,7 @@ namespace MWRender
         std::size_t v36RepeatedInstances = 0;
         std::size_t v36TotalInstances = 0;
         std::size_t v36MergeCandidateGroups = 0;
+        std::size_t p3CompatibleIndexMerges = 0;
         {
             Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
                 "object_chunk_build_instances", activeGrid ? "active_grid" : "distant", 0.1);
@@ -1346,6 +1347,10 @@ namespace MWRender
                 optimizer.setMergeAlphaBlending(true);
             }
             optimizer.setIsOperationPermissibleForObjectCallback(new CanOptimizeCallback);
+            const bool p3SubmissionCompaction
+                = static_cast<bool>(Settings::cells().mOptimizedMWSubmissionCompaction)
+                && compile && !p2RequiredReadiness && v38BatchingMode >= 2;
+            optimizer.setMergeCompatibleIndexTypes(p3SubmissionCompaction);
             unsigned int options = SceneUtil::Optimizer::FLATTEN_STATIC_TRANSFORMS
                 | SceneUtil::Optimizer::REMOVE_REDUNDANT_NODES | SceneUtil::Optimizer::MERGE_GEOMETRY;
 
@@ -1397,6 +1402,7 @@ namespace MWRender
 
             SceneUtil::PagingWorkScope::checkpoint();
             optimizer.optimize(mergeGroup, options);
+            p3CompatibleIndexMerges += optimizer.getCompatibleIndexMergeCount();
             SceneUtil::PagingWorkScope::checkpoint();
 
             const bool v39ShareState
@@ -1446,7 +1452,8 @@ namespace MWRender
             row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs()
                 << ',' << Debug::V3Diagnostics::csvQuote("object_chunk_summary") << ',' << Debug::V3Diagnostics::csvQuote(
                     std::string(activeGrid ? "active" : "distant") + " refs=" + std::to_string(refs.size())
-                    + " templates=" + std::to_string(nodes.size()))
+                    + " templates=" + std::to_string(nodes.size())
+                    + " p3_index_merges=" + std::to_string(p3CompatibleIndexMerges))
                 << ",0";
             Debug::V3Diagnostics::renderWriter().writeLine(row.str());
         }

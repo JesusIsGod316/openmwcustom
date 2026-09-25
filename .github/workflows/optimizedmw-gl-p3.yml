@@ -1,0 +1,22 @@
+name: OptimizedMW GL-P3 targeted QC
+on:
+  push:
+    branches: [optimizedmw/gl-p3-render-threading]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  Linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OSG
+        run: sudo apt-get update -qq && sudo apt-get install -y libopenscenegraph-dev
+      - name: Verify source contract
+        run: python tools/optimizedmw/gl-p3/source-contract.py
+      - name: Configure
+        run: cmake -S tools/optimizedmw/gl-p3 -B build-gl-p3 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOPTIMIZEDMW_P3_SANITIZERS=ON
+      - name: Build
+        run: cmake --build build-gl-p3 --parallel 2
+      - name: Test
+        run: ctest --test-dir build-gl-p3 -V --output-on-failure

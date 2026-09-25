@@ -56,6 +56,7 @@ void Optimizer::reset()
 
 void Optimizer::optimize(osg::Node* node, unsigned int options)
 {
+    _compatibleIndexMergeCount = 0;
     StatsVisitor stats;
 
     if (osg::getNotifyLevel()>=osg::INFO)
@@ -119,8 +120,10 @@ void Optimizer::optimize(osg::Node* node, unsigned int options)
         MergeGeometryVisitor mgv(this);
         mgv.setTargetMaximumNumberOfVertices(1000000);
         mgv.setMergeAlphaBlending(_mergeAlphaBlending);
+        mgv.setMergeCompatibleIndexTypes(_mergeCompatibleIndexTypes);
         mgv.setViewPoint(_viewPoint);
         node->accept(mgv);
+        _compatibleIndexMergeCount = mgv.getCompatibleIndexMergeCount();
 
         osg::Timer_t endTick = osg::Timer::instance()->tick();
 
@@ -1206,6 +1209,64 @@ bool containsSharedPrimitives(const osg::Geometry* geom)
     return false;
 }
 
+namespace
+{
+    bool isDrawElementsPrimitiveType(unsigned int type)
+    {
+        return type == osg::PrimitiveSet::DrawElementsUBytePrimitiveType
+            || type == osg::PrimitiveSet::DrawElementsUShortPrimitiveType
+            || type == osg::PrimitiveSet::DrawElementsUIntPrimitiveType;
+    }
+
+    int drawElementsRank(unsigned int type)
+    {
+        switch (type)
+        {
+            case osg::PrimitiveSet::DrawElementsUBytePrimitiveType:
+                return 1;
+            case osg::PrimitiveSet::DrawElementsUShortPrimitiveType:
+                return 2;
+            case osg::PrimitiveSet::DrawElementsUIntPrimitiveType:
+                return 3;
+            default:
+                return 0;
+        }
+    }
+
+    osg::ref_ptr<osg::PrimitiveSet> mergePromotedDrawElements(
+        const osg::PrimitiveSet& lhs, const osg::PrimitiveSet& rhs, osg::ElementBufferObject*& ebo)
+    {
+        const int targetRank = std::max(drawElementsRank(lhs.getType()), drawElementsRank(rhs.getType()));
+        if (targetRank == 0 || lhs.getMode() != rhs.getMode())
+            return nullptr;
+
+        if (!ebo)
+            ebo = new osg::ElementBufferObject;
+
+        const unsigned int total = lhs.getNumIndices() + rhs.getNumIndices();
+        if (targetRank == 2)
+        {
+            osg::ref_ptr<osg::DrawElementsUShort> merged = new osg::DrawElementsUShort(lhs.getMode());
+            merged->setElementBufferObject(ebo);
+            merged->reserve(total);
+            for (unsigned int i = 0; i < lhs.getNumIndices(); ++i)
+                merged->push_back(static_cast<unsigned short>(lhs.index(i)));
+            for (unsigned int i = 0; i < rhs.getNumIndices(); ++i)
+                merged->push_back(static_cast<unsigned short>(rhs.index(i)));
+            return merged;
+        }
+
+        osg::ref_ptr<osg::DrawElementsUInt> merged = new osg::DrawElementsUInt(lhs.getMode());
+        merged->setElementBufferObject(ebo);
+        merged->reserve(total);
+        for (unsigned int i = 0; i < lhs.getNumIndices(); ++i)
+            merged->push_back(lhs.index(i));
+        for (unsigned int i = 0; i < rhs.getNumIndices(); ++i)
+            merged->push_back(rhs.index(i));
+        return merged;
+    }
+}
+
     // clang-format on
 
     namespace
@@ -1521,10 +1582,13 @@ bool Optimizer::MergeGeometryVisitor::mergeGroup(osg::Group& group)
 
                     bool combine = false;
 
-                    if (lhs->getType()==rhs->getType() &&
-                        lhs->getMode()==rhs->getMode())
-                    {
+                    const bool sameType = lhs->getType() == rhs->getType();
+                    const bool compatibleIndexTypes = _mergeCompatibleIndexTypes && !sameType
+                        && isDrawElementsPrimitiveType(lhs->getType())
+                        && isDrawElementsPrimitiveType(rhs->getType());
 
+                    if ((sameType || compatibleIndexTypes) && lhs->getMode() == rhs->getMode())
+                    {
                         switch(lhs->getMode())
                         {
                         case(osg::PrimitiveSet::POINTS):
@@ -1534,10 +1598,20 @@ bool Optimizer::MergeGeometryVisitor::mergeGroup(osg::Group& group)
                             combine = true;
                             break;
                         }
-
                     }
 
-                    if (combine)
+                    if (combine && compatibleIndexTypes)
+                    {
+                        osg::ref_ptr<osg::PrimitiveSet> promoted = mergePromotedDrawElements(*lhs, *rhs, ebo);
+                        combine = promoted.valid();
+                        if (combine)
+                        {
+                            primitives[lhsNo] = promoted;
+                            lhs = promoted.get();
+                            ++_compatibleIndexMergeCount;
+                        }
+                    }
+                    else if (combine)
                     {
                         lhs = clonePrimitive(lhs, ebo, geom);
                         primitives[lhsNo] = lhs;

@@ -74,7 +74,14 @@ class Optimizer
 
     public:
 
-        Optimizer() : _mergeAlphaBlending(false), _sharedStateManager(nullptr), _sharedStateMutex(nullptr) {}
+        Optimizer()
+            : _mergeAlphaBlending(false)
+            , _mergeCompatibleIndexTypes(false)
+            , _compatibleIndexMergeCount(0)
+            , _sharedStateManager(nullptr)
+            , _sharedStateMutex(nullptr)
+        {
+        }
         virtual ~Optimizer() {}
 
         enum OptimizationOptions
@@ -128,6 +135,8 @@ class Optimizer
         };
 
         void setMergeAlphaBlending(bool merge) { _mergeAlphaBlending = merge; }
+        void setMergeCompatibleIndexTypes(bool merge) { _mergeCompatibleIndexTypes = merge; }
+        std::size_t getCompatibleIndexMergeCount() const { return _compatibleIndexMergeCount; }
         void setViewPoint(const osg::Vec3f& viewPoint) { _viewPoint = viewPoint; }
 
         void setSharedStateManager(osgDB::SharedStateManager* sharedStateManager, std::mutex* sharedStateMutex) { _sharedStateMutex = sharedStateMutex; _sharedStateManager = sharedStateManager; }
@@ -268,6 +277,8 @@ class Optimizer
 
         osg::Vec3f _viewPoint;
         bool _mergeAlphaBlending;
+        bool _mergeCompatibleIndexTypes;
+        std::size_t _compatibleIndexMergeCount;
 
         osgDB::SharedStateManager* _sharedStateManager;
         mutable std::mutex* _sharedStateMutex;
@@ -410,11 +421,20 @@ class Optimizer
                 /// default to traversing all children.
                 MergeGeometryVisitor(Optimizer* optimizer=0) :
                     BaseOptimizerVisitor(optimizer, MERGE_GEOMETRY),
-                    _targetMaximumNumberOfVertices(10000), _alphaBlendingActive(false), _mergeAlphaBlending(false) {}
+                    _targetMaximumNumberOfVertices(10000), _alphaBlendingActive(false), _mergeAlphaBlending(false),
+                    _mergeCompatibleIndexTypes(false), _compatibleIndexMergeCount(0) {}
 
                 void setMergeAlphaBlending(bool merge)
                 {
                     _mergeAlphaBlending = merge;
+                }
+                void setMergeCompatibleIndexTypes(bool merge)
+                {
+                    _mergeCompatibleIndexTypes = merge;
+                }
+                std::size_t getCompatibleIndexMergeCount() const
+                {
+                    return _compatibleIndexMergeCount;
                 }
                 void setViewPoint(const osg::Vec3f& viewPoint)
                 {
@@ -454,6 +474,8 @@ class Optimizer
                 std::vector<osg::StateSet*> _stateSetStack;
                 bool _alphaBlendingActive;
                 bool _mergeAlphaBlending;
+                bool _mergeCompatibleIndexTypes;
+                std::size_t _compatibleIndexMergeCount;
                 osg::Vec3f _viewPoint;
         };
 
