@@ -2,6 +2,7 @@
 #include <components/debug/gameplaydiagnostics.hpp>
 
 #include "v4semanticsource.hpp"
+#include "vulkanmw/staticworldsource.hpp"
 
 #include "../mwworld/cellstore.hpp"
 #include "../mwworld/class.hpp"
@@ -51,16 +52,19 @@ namespace MWRender
                 || status == RenderCore::ActiveCellPublishStatus::AlreadyPresent;
         }
 
-        [[nodiscard]] bool accepted(RenderCore::StaticPopulationPublishStatus status) noexcept
-        {
-            return status == RenderCore::StaticPopulationPublishStatus::Applied
-                || status == RenderCore::StaticPopulationPublishStatus::AlreadyPresent;
-        }
-
         [[nodiscard]] std::runtime_error publicationError(const char* operation, unsigned int status)
         {
             return std::runtime_error(
                 std::string("V4 scene lifecycle ") + operation + " failed with status " + std::to_string(status));
+        }
+
+        [[nodiscard]] std::runtime_error staticWorldError(
+            const char* operation, const RenderNative::StaticWorldMutationResult& result)
+        {
+            return std::runtime_error(std::string("VulkanMW static world ") + operation
+                + " failed with status " + std::to_string(static_cast<unsigned int>(result.status))
+                + ", cell status " + std::to_string(static_cast<unsigned int>(result.cellStatus))
+                + ", population status " + std::to_string(static_cast<unsigned int>(result.populationStatus)));
         }
 
         [[nodiscard]] std::runtime_error enchantedGlowError(NifRender::EnchantedGlowPublishStatus status)
@@ -136,6 +140,8 @@ namespace MWRender
             throw std::invalid_argument("V4 scene lifecycle requires a semantic session and route status");
         mNativeAssets = std::make_unique<RenderNative::NifAssetService>(
             mVfs, &mTextureIdentities, mSession->models());
+        mNativeStaticWorld = std::make_unique<RenderNative::StaticWorldService>(
+            mSession->cells(), mSession->populations());
     }
 
     void V4SceneRenderLifecycle::cellActivated(const MWWorld::CellStore& cell)
@@ -143,24 +149,13 @@ namespace MWRender
         try
         {
             requireHealthy();
-            const std::optional<RenderCore::ActiveCellSource> source = makeV4ActiveCellSource(cell);
+            const std::optional<RenderNative::StaticWorldCellSource> source
+                = VulkanMW::makeStaticWorldCellSource(cell);
             if (!source)
-                throw std::runtime_error("V4 scene lifecycle rejected an invalid active cell");
-            const RenderCore::ActiveCellPublishResult result = mSession->cells().addCell(*source);
-            if (!accepted(result.status))
-                throw publicationError("cell activation", static_cast<unsigned int>(result.status));
-            if (cell.getCell()->isExterior())
-            {
-                RenderCore::StaticPopulationCellSource population;
-                population.identity = source->identity;
-                population.worldspaceIdentity = source->worldspaceIdentity;
-                population.gridX = cell.getCell()->getGridX();
-                population.gridY = cell.getCell()->getGridY();
-                const RenderCore::StaticPopulationPublishStatus populationResult
-                    = mSession->populations().addCell(std::move(population));
-                if (!accepted(populationResult))
-                    throw publicationError("exterior population activation", static_cast<unsigned int>(populationResult));
-            }
+                throw std::runtime_error("VulkanMW static world rejected an invalid active cell");
+            const RenderNative::StaticWorldMutationResult result = mNativeStaticWorld->activateCell(*source);
+            if (!result.accepted())
+                throw staticWorldError("cell activation", result);
         }
         catch (const std::exception& error)
         {
@@ -178,20 +173,15 @@ namespace MWRender
     {
         try
         {
-            const std::optional<std::string> identity = makeV4CellIdentity(cell);
+            const std::optional<std::string> identity = VulkanMW::makeCellIdentity(cell);
             if (!identity)
             {
-                recordFailure("V4 scene lifecycle could not identify a deactivating cell");
+                recordFailure("VulkanMW static world could not identify a deactivating cell");
                 return;
             }
-            const RenderCore::ActiveCellPublishResult result = mSession->cells().removeCell(*identity);
-            if (result.status != RenderCore::ActiveCellPublishStatus::Applied
-                && result.status != RenderCore::ActiveCellPublishStatus::NotFound)
-                recordFailure("V4 scene lifecycle failed to retire a cell");
-            const RenderCore::StaticPopulationPublishStatus population = mSession->populations().removeCell(*identity);
-            if (population != RenderCore::StaticPopulationPublishStatus::Applied
-                && population != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
-                recordFailure("V4 scene lifecycle failed to retire an exterior population");
+            const RenderNative::StaticWorldMutationResult result = mNativeStaticWorld->deactivateCell(*identity);
+            if (!result.accepted())
+                recordFailure(staticWorldError("cell retirement", result).what());
         }
         catch (...)
         {
@@ -239,17 +229,22 @@ namespace MWRender
     {
         try
         {
-            const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
+            const std::optional<std::string> identity = VulkanMW::makeReferenceIdentity(ptr);
             if (!identity)
                 return;
-            const RenderCore::ActiveCellPublishResult instance = mSession->cells().removeInstance(*identity);
-            if (instance.status != RenderCore::ActiveCellPublishStatus::Applied
-                && instance.status != RenderCore::ActiveCellPublishStatus::NotFound)
-                recordFailure("V4 scene lifecycle failed to retire an object instance");
-            const RenderCore::StaticPopulationPublishStatus population = mSession->populations().remove(*identity);
-            if (population != RenderCore::StaticPopulationPublishStatus::Applied
-                && population != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
-                recordFailure("V4 scene lifecycle failed to retire an exterior population placement");
+            if (ptr.getClass().isActor())
+            {
+                const RenderCore::ActiveCellPublishResult instance = mSession->cells().removeInstance(*identity);
+                if (instance.status != RenderCore::ActiveCellPublishStatus::Applied
+                    && instance.status != RenderCore::ActiveCellPublishStatus::NotFound)
+                    recordFailure("V4 scene lifecycle failed to retire an actor instance");
+            }
+            else
+            {
+                const RenderNative::StaticWorldMutationResult staticResult = mNativeStaticWorld->removeStatic(*identity);
+                if (!staticResult.accepted())
+                    recordFailure(staticWorldError("object retirement", staticResult).what());
+            }
             const RenderCore::ActiveCellPublishResult light = mSession->cells().removeLight(*identity);
             if (light.status != RenderCore::ActiveCellPublishStatus::Applied
                 && light.status != RenderCore::ActiveCellPublishStatus::NotFound)
@@ -282,7 +277,7 @@ namespace MWRender
         if (ptr.isEmpty() || !ptr.getCell())
             return;
 
-        const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
+        const std::optional<std::string> identity = VulkanMW::makeReferenceIdentity(ptr);
         if (!ptr.getRefData().isEnabled())
         {
             if (identity)
@@ -318,14 +313,9 @@ namespace MWRender
         const auto retirePersistentObject = [&]() {
             if (!identity)
                 throw std::runtime_error("V4 evaluated non-actor object has no stable content identity");
-            const RenderCore::ActiveCellPublishResult instance = mSession->cells().removeInstance(*identity);
-            if (instance.status != RenderCore::ActiveCellPublishStatus::Applied
-                && instance.status != RenderCore::ActiveCellPublishStatus::NotFound)
-                throw publicationError("evaluated object static retirement", static_cast<unsigned int>(instance.status));
-            const RenderCore::StaticPopulationPublishStatus population = mSession->populations().remove(*identity);
-            if (!accepted(population))
-                throw publicationError(
-                    "evaluated object population retirement", static_cast<unsigned int>(population));
+            const RenderNative::StaticWorldMutationResult retired = mNativeStaticWorld->removeStatic(*identity);
+            if (!retired.accepted())
+                throw staticWorldError("evaluated object retirement", retired);
         };
 
         // OpenMW's existing Animation/ObjectAnimation graph remains the
@@ -381,43 +371,19 @@ namespace MWRender
         }
 
         std::optional<RenderCore::StaticInstanceSource> source
-            = makeV4StaticInstanceSource(ptr, *model, modelRecord->bounds);
+            = VulkanMW::makeStaticInstanceSource(ptr, *model, modelRecord->bounds);
         if (!source)
             throw std::runtime_error("V4 scene lifecycle rejected an eligible static object");
         applyReferenceVisualSemantics(ptr, visualCapabilities, *source);
 
-        // Dense immutable exterior statics keep the data-oriented population
-        // path. Evaluated animated references never reach this branch: they stay
-        // individually authoritative on the OpenMW animation side and are copied
-        // into neutral frame state by V4EngineRenderBridge.
-        if (ptr.getCell()->getCell()->isExterior())
-        {
-            const RenderCore::ActiveCellPublishResult removed = mSession->cells().removeInstance(source->identity);
-            if (removed.status != RenderCore::ActiveCellPublishStatus::Applied
-                && removed.status != RenderCore::ActiveCellPublishStatus::NotFound)
-                throw publicationError("interior static retirement", static_cast<unsigned int>(removed.status));
-            RenderCore::StaticPopulationInstanceSource population;
-            population.identity = source->identity;
-            population.cellIdentity = source->cellIdentity;
-            population.model = source->model;
-            population.transform = source->transform;
-            population.localBounds = source->localBounds;
-            population.lod = source->lod;
-            population.semanticFlags = source->semanticFlags;
-            population.lightingEnabled = source->lightingEnabled;
-            const RenderCore::StaticPopulationPublishStatus result
-                = mSession->populations().upsert(std::move(population));
-            if (!accepted(result))
-                throw publicationError("exterior static population", static_cast<unsigned int>(result));
-            return;
-        }
-
-        const RenderCore::StaticPopulationPublishStatus removed = mSession->populations().remove(source->identity);
-        if (!accepted(removed))
-            throw publicationError("exterior static retirement", static_cast<unsigned int>(removed));
-        const RenderCore::ActiveCellPublishResult result = mSession->cells().upsertStaticInstance(*source);
-        if (!accepted(result.status))
-            throw publicationError("static object publication", static_cast<unsigned int>(result.status));
+        // Dense immutable exterior statics use data-oriented population chunks;
+        // interiors stay individually addressable. The native service owns the
+        // transition between those representations so the app adapter does not
+        // duplicate RenderWorld mutation policy.
+        const RenderNative::StaticWorldMutationResult staticResult
+            = mNativeStaticWorld->upsertStatic(*source, ptr.getCell()->getCell()->isExterior());
+        if (!staticResult.accepted())
+            throw staticWorldError("static object publication", staticResult);
     }
 
     void V4SceneRenderLifecycle::requireHealthy() const
