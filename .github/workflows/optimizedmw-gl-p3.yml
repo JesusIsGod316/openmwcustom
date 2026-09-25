@@ -1,7 +1,7 @@
 name: OptimizedMW GL-P3 targeted QC
 on:
   push:
-    branches: [optimizedmw/gl-p3-render-threading, optimizedmw/gl-p3-experimental-pack, optimizedmw/gl-p3-integration-repair]
+    branches: [optimizedmw/gl-p3-render-threading, optimizedmw/gl-p3-experimental-pack]
   workflow_dispatch:
 permissions:
   contents: read
