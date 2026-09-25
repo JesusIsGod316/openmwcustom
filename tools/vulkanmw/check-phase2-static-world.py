@@ -69,14 +69,19 @@ def main() -> int:
     source = code_only(
         (ROOT / "apps/openmw/mwrender/vulkanmw/staticworldsource.cpp").read_text(encoding="utf-8")
     )
+    if "RenderCore::StaticInstanceSource" not in source or "makeReferenceRotation(position)" not in source:
+        fail("OSG-free static placement source lost native placement publication")
+
+    placement = code_only(
+        (ROOT / "apps/openmw/mwrender/vulkanmw/referenceplacement.hpp").read_text(encoding="utf-8")
+    )
     for needle in (
         "glm::angleAxis(position.rot[2], glm::vec3(0.f, 0.f, -1.f))",
         "glm::angleAxis(position.rot[1], glm::vec3(0.f, -1.f, 0.f))",
         "glm::angleAxis(position.rot[0], glm::vec3(-1.f, 0.f, 0.f))",
-        "RenderCore::StaticInstanceSource",
     ):
-        if needle not in source:
-            fail(f"OSG-free static placement source lost required semantic: {needle}")
+        if needle not in placement:
+            fail(f"OSG-free reference placement lost required rotation semantic: {needle}")
 
     groundcover = code_only(
         (ROOT / "apps/openmw/mwrender/vulkanmw/groundcoversource.cpp").read_text(encoding="utf-8")
