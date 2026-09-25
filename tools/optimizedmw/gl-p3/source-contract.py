@@ -74,7 +74,7 @@ checks = {
     "speculative_context": "static Context capture()" in speculative
         and "creditRetainedEstimate" in speculative,
     "paging_context": "static Context capture()" in paging,
-    "p3b_distant_only": "&& !activeGrid && compile;" in objectpaging
+    "p3b_distant_only": "&& !activeGrid && compile && !SceneUtil::PagingWorkScope::optionalOptimization();" in objectpaging
         and "p3TemplatePrefetchRequired" in objectpaging,
     "p3b_dynamic_balance": "nextModel.fetch_add" in objectpaging
         and "BoundedTwoWayWork::runWorkers" in objectpaging
