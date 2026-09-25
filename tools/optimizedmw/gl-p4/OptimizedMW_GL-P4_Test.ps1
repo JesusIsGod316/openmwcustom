@@ -36,14 +36,15 @@ Write-Host ''
 Write-Host 'OptimizedMW GL-P4 compile scheduler benchmark launcher' -ForegroundColor Cyan
 Write-Host '  1 = CONTROL-B1              - current ICO + validated P3B one-helper'
 Write-Host '  2 = CONTROL-B1-C            - current ICO + P3B one-helper + P3C'
-Write-Host '  3 = P4A-B1                  - cost-aware compile scheduler + B1'
-Write-Host '  4 = P4B-B1                  - handoff/credit-aware scheduler + B1'
-Write-Host '  5 = P4B-B1-C                - handoff scheduler + B1 + C'
-Write-Host '  6 = P4B-B1-C-D              - handoff scheduler + B1 + C + D'
-Write-Host '  7 = P4B-B1-C-COMPLETION     - mode 5 + V3.21 completed-set governor'
-Write-Host '  8 = P4A-B1-C                - cost-aware scheduler + B1 + C'
+Write-Host '  3 = CONTROL-B1-C-D          - current ICO + P3B one-helper + P3C + P3D'
+Write-Host '  4 = P4A-B1                  - cost-aware compile scheduler + B1'
+Write-Host '  5 = P4B-B1                  - handoff/credit-aware scheduler + B1'
+Write-Host '  6 = P4B-B1-C                - handoff scheduler + B1 + C'
+Write-Host '  7 = P4B-B1-C-D              - handoff scheduler + B1 + C + D'
+Write-Host '  8 = P4B-B1-C-COMPLETION     - mode 6 + V3.21 completed-set governor'
+Write-Host '  9 = P4A-B1-C                - cost-aware scheduler + B1 + C'
 Write-Host ''
-do{$choice=Read-Host 'Choose test mode (1-8)'}until($choice -in @('1','2','3','4','5','6','7','8'))
+do{$choice=Read-Host 'Choose test mode (1-9)'}until($choice -in @('1','2','3','4','5','6','7','8','9'))
 
 $SchedulerMode='0'
 $P3C='false'
@@ -53,12 +54,13 @@ $Experiment='CONTROL-B1'
 
 switch($choice){
     '2'{$Experiment='CONTROL-B1-C';$P3C='true'}
-    '3'{$Experiment='P4A-B1';$SchedulerMode='1'}
-    '4'{$Experiment='P4B-B1';$SchedulerMode='2'}
-    '5'{$Experiment='P4B-B1-C';$SchedulerMode='2';$P3C='true'}
-    '6'{$Experiment='P4B-B1-C-D';$SchedulerMode='2';$P3C='true';$P3D='true'}
-    '7'{$Experiment='P4B-B1-C-COMPLETION';$SchedulerMode='2';$P3C='true';$Completion='1'}
-    '8'{$Experiment='P4A-B1-C';$SchedulerMode='1';$P3C='true'}
+    '3'{$Experiment='CONTROL-B1-C-D';$P3C='true';$P3D='true'}
+    '4'{$Experiment='P4A-B1';$SchedulerMode='1'}
+    '5'{$Experiment='P4B-B1';$SchedulerMode='2'}
+    '6'{$Experiment='P4B-B1-C';$SchedulerMode='2';$P3C='true'}
+    '7'{$Experiment='P4B-B1-C-D';$SchedulerMode='2';$P3C='true';$P3D='true'}
+    '8'{$Experiment='P4B-B1-C-COMPLETION';$SchedulerMode='2';$P3C='true';$Completion='1'}
+    '9'{$Experiment='P4A-B1-C';$SchedulerMode='1';$P3C='true'}
 }
 
 New-Item -ItemType Directory -Path $ProfilesRoot -Force | Out-Null
