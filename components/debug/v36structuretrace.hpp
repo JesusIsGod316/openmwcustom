@@ -19,11 +19,15 @@ namespace Debug::V36StructureTrace
     {
         std::uint64_t mDrawables = 0;
         std::uint64_t mVertices = 0;
+        std::uint64_t mPrimitiveSets = 0;
+        std::uint64_t mMultiPrimitiveGeometries = 0;
 
         StructureStats& operator+=(const StructureStats& other)
         {
             mDrawables += other.mDrawables;
             mVertices += other.mVertices;
+            mPrimitiveSets += other.mPrimitiveSets;
+            mMultiPrimitiveGeometries += other.mMultiPrimitiveGeometries;
             return *this;
         }
     };
@@ -40,8 +44,14 @@ namespace Debug::V36StructureTrace
         {
             ++mStats.mDrawables;
             if (const osg::Geometry* geometry = drawable.asGeometry())
+            {
                 if (const osg::Array* vertices = geometry->getVertexArray())
                     mStats.mVertices += vertices->getNumElements();
+                const auto primitiveSets = geometry->getNumPrimitiveSets();
+                mStats.mPrimitiveSets += primitiveSets;
+                if (primitiveSets > 1)
+                    ++mStats.mMultiPrimitiveGeometries;
+            }
         }
 
         StructureStats mStats;
@@ -52,7 +62,8 @@ namespace Debug::V36StructureTrace
         static V3Diagnostics::CsvWriter writer("OPENMW_V36_BATCHING_FILE",
             "frame,epoch_ms,active_grid,chunk_size,lod,source_refs,template_groups,repeated_template_groups,"
             "repeated_instances,total_instances,merge_candidate_groups,drawables_before,drawables_after,"
-            "vertices_before,vertices_after,chunk_build_ms");
+            "vertices_before,vertices_after,primitive_sets_before,primitive_sets_after,"
+            "multi_primitive_geometries_before,multi_primitive_geometries_after,chunk_build_ms");
         return writer;
     }
 
@@ -73,7 +84,8 @@ namespace Debug::V36StructureTrace
             << ',' << std::fixed << std::setprecision(3) << size << ',' << lod << ',' << sourceRefs << ','
             << templateGroups << ',' << repeatedGroups << ',' << repeatedInstances << ',' << totalInstances << ','
             << mergeCandidateGroups << ',' << before.mDrawables << ',' << after.mDrawables << ',' << before.mVertices
-            << ',' << after.mVertices << ',' << buildMs;
+            << ',' << after.mVertices << ',' << before.mPrimitiveSets << ',' << after.mPrimitiveSets << ','
+            << before.mMultiPrimitiveGeometries << ',' << after.mMultiPrimitiveGeometries << ',' << buildMs;
         writer().writeLine(row.str());
     }
 }
