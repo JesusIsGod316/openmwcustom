@@ -78,8 +78,10 @@ class Optimizer
             : _mergeAlphaBlending(false)
             , _mergeCompatibleIndexTypes(false)
             , _preferDisplayListsForMergedGeometry(false)
+            , _normalizeIgnoredVertexColors(false)
             , _compatibleIndexMergeCount(0)
             , _displayListPromotionCount(0)
+            , _normalizedColorStreamCount(0)
             , _sharedStateManager(nullptr)
             , _sharedStateMutex(nullptr)
         {
@@ -139,8 +141,10 @@ class Optimizer
         void setMergeAlphaBlending(bool merge) { _mergeAlphaBlending = merge; }
         void setMergeCompatibleIndexTypes(bool merge) { _mergeCompatibleIndexTypes = merge; }
         void setPreferDisplayListsForMergedGeometry(bool prefer) { _preferDisplayListsForMergedGeometry = prefer; }
+        void setNormalizeIgnoredVertexColors(bool normalize) { _normalizeIgnoredVertexColors = normalize; }
         std::size_t getCompatibleIndexMergeCount() const { return _compatibleIndexMergeCount; }
         std::size_t getDisplayListPromotionCount() const { return _displayListPromotionCount; }
+        std::size_t getNormalizedColorStreamCount() const { return _normalizedColorStreamCount; }
         void setViewPoint(const osg::Vec3f& viewPoint) { _viewPoint = viewPoint; }
 
         void setSharedStateManager(osgDB::SharedStateManager* sharedStateManager, std::mutex* sharedStateMutex) { _sharedStateMutex = sharedStateMutex; _sharedStateManager = sharedStateManager; }
@@ -283,8 +287,10 @@ class Optimizer
         bool _mergeAlphaBlending;
         bool _mergeCompatibleIndexTypes;
         bool _preferDisplayListsForMergedGeometry;
+        bool _normalizeIgnoredVertexColors;
         std::size_t _compatibleIndexMergeCount;
         std::size_t _displayListPromotionCount;
+        std::size_t _normalizedColorStreamCount;
 
         osgDB::SharedStateManager* _sharedStateManager;
         mutable std::mutex* _sharedStateMutex;
@@ -429,7 +435,8 @@ class Optimizer
                     BaseOptimizerVisitor(optimizer, MERGE_GEOMETRY),
                     _targetMaximumNumberOfVertices(10000), _alphaBlendingActive(false), _mergeAlphaBlending(false),
                     _mergeCompatibleIndexTypes(false), _preferDisplayListsForMergedGeometry(false),
-                    _compatibleIndexMergeCount(0), _displayListPromotionCount(0) {}
+                    _normalizeIgnoredVertexColors(false), _compatibleIndexMergeCount(0),
+                    _displayListPromotionCount(0), _normalizedColorStreamCount(0) {}
 
                 void setMergeAlphaBlending(bool merge)
                 {
@@ -443,6 +450,10 @@ class Optimizer
                 {
                     _preferDisplayListsForMergedGeometry = prefer;
                 }
+                void setNormalizeIgnoredVertexColors(bool normalize)
+                {
+                    _normalizeIgnoredVertexColors = normalize;
+                }
                 std::size_t getCompatibleIndexMergeCount() const
                 {
                     return _compatibleIndexMergeCount;
@@ -450,6 +461,10 @@ class Optimizer
                 std::size_t getDisplayListPromotionCount() const
                 {
                     return _displayListPromotionCount;
+                }
+                std::size_t getNormalizedColorStreamCount() const
+                {
+                    return _normalizedColorStreamCount;
                 }
                 void setViewPoint(const osg::Vec3f& viewPoint)
                 {
@@ -491,8 +506,10 @@ class Optimizer
                 bool _mergeAlphaBlending;
                 bool _mergeCompatibleIndexTypes;
                 bool _preferDisplayListsForMergedGeometry;
+                bool _normalizeIgnoredVertexColors;
                 std::size_t _compatibleIndexMergeCount;
                 std::size_t _displayListPromotionCount;
+                std::size_t _normalizedColorStreamCount;
                 osg::Vec3f _viewPoint;
         };
 
