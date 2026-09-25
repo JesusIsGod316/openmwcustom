@@ -884,7 +884,9 @@ namespace MWRender
         const float minSize = mMinSizeMergeFactor ? mMinSize * mMinSizeMergeFactor : mMinSize;
 
         std::size_t p3TemplatePrefetchModels = 0;
+        std::size_t p3TemplateReuseHits = 0;
         bool p3TemplatePrefetchParallel = false;
+        std::map<VFS::Path::Normalized, osg::ref_ptr<const osg::Node>> p3PrefetchedTemplates;
         const bool p3TemplatePrefetchRequired = SceneUtil::PagingWorkScope::requiredReadiness();
         const bool p3TemplatePrefetch = static_cast<bool>(Settings::cells().mOptimizedMWParallelTemplatePrefetch)
             && !activeGrid && compile;
@@ -952,6 +954,7 @@ namespace MWRender
             p3TemplatePrefetchModels = models.size();
             const std::size_t minimumTemplates = static_cast<std::size_t>(
                 Settings::cells().mOptimizedMWParallelTemplatePrefetchMinTemplates);
+            std::vector<osg::ref_ptr<const osg::Node>> prefetchedNodes(models.size());
             const auto speculativeContext = Resource::SpeculativeScope::capture();
             const auto pagingContext = SceneUtil::PagingWorkScope::capture();
             std::uint64_t helperRetainedEstimate = 0;
@@ -962,7 +965,7 @@ namespace MWRender
                     for (std::size_t i = begin; i < end; ++i)
                     {
                         SceneUtil::PagingWorkScope::checkpoint();
-                        mSceneManager->getTemplate(models[i], false);
+                        prefetchedNodes[i] = mSceneManager->getTemplate(models[i], false);
                     }
                     return;
                 }
@@ -979,7 +982,7 @@ namespace MWRender
                 for (std::size_t i = begin; i < end; ++i)
                 {
                     SceneUtil::PagingWorkScope::checkpoint();
-                    mSceneManager->getTemplate(models[i], false);
+                    prefetchedNodes[i] = mSceneManager->getTemplate(models[i], false);
                 }
             };
 
@@ -996,13 +999,11 @@ namespace MWRender
             Resource::SpeculativeScope::creditRetainedEstimate(helperRetainedEstimate);
 
             if (!p3TemplatePrefetchParallel)
-            {
-                for (const auto& model : models)
-                {
-                    SceneUtil::PagingWorkScope::checkpoint();
-                    mSceneManager->getTemplate(model, false);
-                }
-            }
+                loadRange(0, models.size(), false);
+
+            for (std::size_t i = 0; i < models.size(); ++i)
+                if (prefetchedNodes[i])
+                    p3PrefetchedTemplates.emplace(models[i], prefetchedNodes[i]);
         }
 
         {
@@ -1068,7 +1069,18 @@ namespace MWRender
                                 ->second;
             }
 
-            osg::ref_ptr<const osg::Node> cnode = mSceneManager->getTemplate(model, false);
+            osg::ref_ptr<const osg::Node> cnode;
+            if (p3TemplatePrefetch)
+            {
+                const auto prefetched = p3PrefetchedTemplates.find(model);
+                if (prefetched != p3PrefetchedTemplates.end())
+                {
+                    cnode = prefetched->second;
+                    ++p3TemplateReuseHits;
+                }
+            }
+            if (!cnode)
+                cnode = mSceneManager->getTemplate(model, false);
 
             if (activeGrid)
             {
@@ -1598,6 +1610,7 @@ namespace MWRender
                     + " p3_semantic_premerge=" + std::to_string(p3SemanticPremergeUsed ? 1 : 0)
                     + " p3_display_lists=" + std::to_string(p3DisplayListPromotions)
                     + " p3_prefetch_models=" + std::to_string(p3TemplatePrefetchModels)
+                    + " p3_prefetch_reuse_hits=" + std::to_string(p3TemplateReuseHits)
                     + " p3_prefetch_parallel=" + std::to_string(p3TemplatePrefetchParallel ? 1 : 0)
                     + " p3_prefetch_required=" + std::to_string(p3TemplatePrefetchRequired ? 1 : 0))
                 << ",0";
