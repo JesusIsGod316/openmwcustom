@@ -20,7 +20,7 @@
 #include <components/nifrender/enchantedglow.hpp>
 #include <components/nifrender/niftranslator.hpp>
 #include <components/render/backend/vsg/vsgsemanticsession.hpp>
-#include <components/rendercore/namedvisualsemantics.hpp>
+#include <components/rendercore/namedvisualsemantics.hpp>\n#include <components/render/native/nifsemanticcompiler.hpp>
 #include <components/settings/values.hpp>
 #include <components/vfs/manager.hpp>
 
@@ -382,8 +382,12 @@ namespace MWRender
             const Nif::FileView file(nifFile);
             visualCapabilities = inspectNamedVisualCapabilities(file);
             mModelVisualCapabilities.insert_or_assign(modelIdentity, visualCapabilities);
-            const NifRender::TranslationBundle bundle = NifRender::translateStaticNif(file, mVfs, {}, &mTextureIdentities);
-            const NifRender::StaticModelCacheResult published = mSession->models().publish(bundle);
+            const RenderNative::NifSemanticCompiler compiler(mVfs, &mTextureIdentities);
+            const RenderNative::NifSemanticCompileResult compiled = compiler.compile(file);
+            if (!compiled.compiled())
+                throw std::runtime_error("VulkanMW native NIF compile failed for " + modelIdentity + ": "
+                    + compiled.diagnostic);
+            const NifRender::StaticModelCacheResult published = mSession->models().publish(compiled.bundle);
             if (!published.available())
                 throw publicationError("static model publication", static_cast<unsigned int>(published.status));
             model = published.model;
