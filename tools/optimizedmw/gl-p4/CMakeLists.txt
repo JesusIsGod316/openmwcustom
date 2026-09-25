@@ -26,7 +26,11 @@ if(MSVC)
     target_compile_options(optimizedmw-p4-compile-object PRIVATE /W4 /WX /permissive- /EHsc)
 else()
     target_compile_options(optimizedmw-p4-policy-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-    target_compile_options(optimizedmw-p4-compile-object PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    # Existing V3 diagnostic headers still use std::filesystem::u8path. The
+    # standalone P4 object probe includes them transitively; do not let that
+    # unrelated upstream deprecation hide warnings in the new scheduler itself.
+    target_compile_options(optimizedmw-p4-compile-object PRIVATE
+        -Wall -Wextra -Wpedantic -Werror -Wno-deprecated-declarations)
 endif()
 
 add_test(NAME optimizedmw-p4-policy-tests COMMAND optimizedmw-p4-policy-tests)
