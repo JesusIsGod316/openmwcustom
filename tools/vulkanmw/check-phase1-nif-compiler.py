@@ -12,6 +12,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 NATIVE = [
     ROOT / "components/render/native/nifsemanticcompiler.hpp",
     ROOT / "components/render/native/nifsemanticcompiler.cpp",
+    ROOT / "components/render/native/nifassetservice.hpp",
+    ROOT / "components/render/native/nifassetservice.cpp",
 ]
 TRANSLATOR = [
     ROOT / "components/nifrender/niftranslator.hpp",
@@ -56,10 +58,12 @@ def main() -> int:
             fail(f"native compiler no longer contains required direct-NIF step: {needle}")
 
     lifecycle = (ROOT / "apps/openmw/mwrender/v4scenerenderlifecycle.cpp").read_text(encoding="utf-8")
-    if "RenderNative::NifSemanticCompiler" not in lifecycle:
-        fail("production static lifecycle is not routed through NifSemanticCompiler")
-    if "NifRender::translateStaticNif(" in code_only(lifecycle):
-        fail("production static lifecycle bypasses NifSemanticCompiler")
+    lifecycle_code = code_only(lifecycle)
+    if "mNativeAssets->resolve(modelPath)" not in lifecycle_code:
+        fail("production static lifecycle is not routed through NifAssetService")
+    for forbidden in ("NifRender::translateStaticNif(", "Nif::Reader", "Nif::NIFFile"):
+        if forbidden in lifecycle_code:
+            fail(f"production static lifecycle still owns direct NIF translation/parsing: {forbidden}")
 
     translator = (ROOT / "components/nifrender/niftranslator.cpp").read_text(encoding="utf-8")
     for needle in (
