@@ -12,6 +12,7 @@ enable_testing()
 add_executable(optimizedmw-p3-submission-tests
     submission-tests.cpp
     "${ROOT}/components/sceneutil/optimizer.cpp"
+    "${ROOT}/components/sceneutil/material.cpp"
     "${ROOT}/components/sceneutil/pagingwork.cpp")
 target_include_directories(optimizedmw-p3-submission-tests PRIVATE "${ROOT}")
 target_include_directories(optimizedmw-p3-submission-tests SYSTEM PRIVATE ${OPENSCENEGRAPH_INCLUDE_DIRS})
