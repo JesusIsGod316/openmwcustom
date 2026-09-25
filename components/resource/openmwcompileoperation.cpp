@@ -70,7 +70,8 @@ namespace Resource
 
     OpenMWIncrementalCompileOperation::CompileKind OpenMWIncrementalCompileOperation::classify(const CompileOp* op) const
     {
-        if (dynamic_cast<const CompileDrawableOp*>(op))
+        if (dynamic_cast<const CompileDrawableOp*>(op)
+            || dynamic_cast<const OpenMWDrawableCompileOp*>(op))
             return CompileKind::Drawable;
         if (dynamic_cast<const CompileTextureOp*>(op))
             return CompileKind::Texture;
