@@ -53,6 +53,7 @@ jobs:
           g++ ${CXXFLAGS} -c components/nifrender/niftranslator.cpp -o /tmp/vulkanmw-niftranslator.o
           g++ ${CXXFLAGS} -c components/nifrender/staticniftranslator.cpp -o /tmp/vulkanmw-staticniftranslator.o
           g++ ${CXXFLAGS} -c components/render/native/nifsemanticcompiler.cpp -o /tmp/vulkanmw-nifsemanticcompiler.o
+          g++ ${CXXFLAGS} -c components/render/native/nifassetservice.cpp -o /tmp/vulkanmw-nifassetservice.o
 
       - name: Check Phase 1 whitespace
         shell: bash
