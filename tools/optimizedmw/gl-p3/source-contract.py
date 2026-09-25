@@ -15,11 +15,17 @@ p3_submission = objectpaging.index("const bool p3SubmissionCompaction")
 v38_before_p3 = objectpaging.rfind("const int v38BatchingMode", 0, p3_submission)
 p2_before_p3 = objectpaging.rfind("const bool p2RequiredReadiness", 0, p3_submission)
 
+p3_compaction_index = objectpaging.index("const bool p3SubmissionCompaction")
+p2_readiness_index = objectpaging.rfind("const bool p2RequiredReadiness", 0, p3_compaction_index)
+v38_batching_index = objectpaging.rfind("const int v38BatchingMode", 0, p3_compaction_index)
+
 checks = {
     "setting": "optimizedmw submission compaction" in cells and "optimizedmw submission compaction = false" in defaults,
     "switchable_optimizer": "setMergeCompatibleIndexTypes" in optimizer_h,
     "mixed_width_merge": "mergePromotedDrawElements" in optimizer_cpp,
     "strong_only_gate": "&& compile && !p2RequiredReadiness && v38BatchingMode >= 2" in objectpaging,
+    "objectpaging_integration_order": p2_readiness_index >= 0 and v38_batching_index >= 0
+        and p2_readiness_index < p3_compaction_index and v38_batching_index < p3_compaction_index,
     "mechanical_counter": "p3_index_merges=" in objectpaging,
     "production_declaration_order": v38_before_p3 >= 0 and p2_before_p3 >= 0,
     "semantic_premerge_switch": "optimizedmw semantic premerge" in cells
