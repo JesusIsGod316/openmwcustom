@@ -6,11 +6,11 @@
 #include "../mwworld/scenerenderlifecycle.hpp"
 
 #include <cstdint>
-#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <components/nifrender/textureidentitycache.hpp>
+#include <components/render/native/nifassetservice.hpp>
 
 namespace RenderVsg
 {
@@ -59,11 +59,7 @@ namespace MWRender
         std::shared_ptr<V4RenderRouteStatus> mRouteStatus;
         const VFS::Manager& mVfs;
         NifRender::TextureIdentityCache mTextureIdentities;
-        // Source capability metadata is model-global but deliberately remains
-        // outside backend ownership. Cache it by normalized winning VFS path so
-        // live door/reference updates never reparse the NIF merely to recover
-        // NightDaySwitch/HerbalismSwitch root user descriptions.
-        std::map<std::string, std::uint64_t, std::less<>> mModelVisualCapabilities;
+        std::unique_ptr<RenderNative::NifAssetService> mNativeAssets;
     };
 }
 
