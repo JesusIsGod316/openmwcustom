@@ -289,7 +289,8 @@ namespace Resource
                 break;
 
             const bool agedOut = selectedAge >= maxQueueAge;
-            if (agedOut && policy.mSuppressedByHandoff
+            const bool hardAgedOut = selectedAge >= maxQueueAge * 2u;
+            if (agedOut && !hardAgedOut && policy.mSuppressedByHandoff
                 && lastHandoffMs >= policyConfig.mHandoffThresholdMs * 1.5)
                 break;
 
@@ -317,7 +318,8 @@ namespace Resource
                     compileClassName(selected), queued.size(), oldestAge,
                     policy.mBudgetMs, mPolicyState.mCreditMs, selectedPrediction, actualMs,
                     policy.mHeadroomMs, lastHandoffMs, 1,
-                    agedOut ? "forced_by_queue_age" : "budgeted");
+                    hardAgedOut ? "forced_by_hard_queue_age"
+                                : (agedOut ? "forced_by_queue_age" : "budgeted"));
             }
 
             if (completedSet)
