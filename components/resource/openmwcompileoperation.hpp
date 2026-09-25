@@ -12,10 +12,24 @@
 
 namespace Resource
 {
+    struct OpenMWCompileSchedulerConfig
+    {
+        int mMode = 0;
+        double mTargetFrameRate = 60.0;
+        double mMaxBudgetMs = 2.0;
+        double mCreditCapMs = 2.5;
+        double mHeadroomRatio = 0.25;
+        double mHandoffThresholdMs = 20.0;
+        unsigned int mMaxQueueAgeFrames = 12;
+        double mDeleteBudgetMs = 0.15;
+        unsigned int mMaxObjectsPerFrame = 4;
+        double mDiagnosticThresholdMs = 0.20;
+    };
+
     class OpenMWIncrementalCompileOperation final : public osgUtil::IncrementalCompileOperation
     {
     public:
-        OpenMWIncrementalCompileOperation();
+        explicit OpenMWIncrementalCompileOperation(OpenMWCompileSchedulerConfig config);
 
         void operator()(osg::GraphicsContext* context) override;
 
@@ -56,6 +70,7 @@ namespace Resource
         static const char* compileClassName(const CompileSet* set);
         static const char* compileKindName(CompileKind kind);
 
+        OpenMWCompileSchedulerConfig mConfig;
         P4CompilePolicyState mPolicyState;
         std::array<CostState, static_cast<std::size_t>(CompileKind::Count)> mCosts{};
         std::unordered_map<const CompileSet*, SeenState> mSeen;
