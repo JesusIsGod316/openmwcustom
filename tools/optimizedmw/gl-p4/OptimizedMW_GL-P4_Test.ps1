@@ -33,21 +33,23 @@ function Set-IniValue {
 }
 
 Write-Host ''
-Write-Host 'OptimizedMW GL-P4R + heavy-GL benchmark launcher' -ForegroundColor Cyan
-Write-Host '  1 = CONTROL-B1              - stock OSG ICO + B1'
-Write-Host '  2 = CONTROL-B1-C            - stock OSG ICO + B1 + C'
-Write-Host '  3 = P4R-B1                  - repaired cheap-drain scheduler + B1'
-Write-Host '  4 = P4R-B1-C                - repaired scheduler + B1 + C'
-Write-Host '  5 = P4R-B1-C-HEAVY          - mode 4 + heavy-GL smooth-headroom lane'
-Write-Host '  6 = P4R-B1-HEAVY            - repaired scheduler + B1 + heavy lane'
+Write-Host 'OptimizedMW GL-P4R / P5 terrain compile benchmark launcher' -ForegroundColor Cyan
+Write-Host '  1 = CONTROL-B1                    - stock OSG ICO + B1'
+Write-Host '  2 = CONTROL-B1-C                  - stock OSG ICO + B1 + C'
+Write-Host '  3 = P4R-B1                        - repaired cheap-drain scheduler + B1'
+Write-Host '  4 = P4R-B1-C                      - repaired scheduler + B1 + C'
+Write-Host '  5 = P4R-B1-C-HEAVY                - mode 4 + heavy-GL smooth-headroom lane'
+Write-Host '  6 = P4R-B1-C-TERRAIN              - mode 4 + phased terrain GL compilation'
+Write-Host '  7 = P4R-B1-C-HEAVY-TERRAIN        - repaired scheduler + both P5 mechanisms'
 Write-Host ''
-do{$choice=Read-Host 'Choose test mode (1-6)'}until($choice -in @('1','2','3','4','5','6'))
+do{$choice=Read-Host 'Choose test mode (1-7)'}until($choice -in @('1','2','3','4','5','6','7'))
 
 $SchedulerMode='0'
 $P3C='false'
 $P3D='false'
 $Completion='0'
 $HeavyMode='0'
+$TerrainPhased='false'
 $Experiment='CONTROL-B1'
 
 switch($choice){
@@ -55,7 +57,8 @@ switch($choice){
     '3'{$Experiment='P4R-B1';$SchedulerMode='2'}
     '4'{$Experiment='P4R-B1-C';$SchedulerMode='2';$P3C='true'}
     '5'{$Experiment='P4R-B1-C-HEAVY';$SchedulerMode='2';$P3C='true';$HeavyMode='1'}
-    '6'{$Experiment='P4R-B1-HEAVY';$SchedulerMode='2';$HeavyMode='1'}
+    '6'{$Experiment='P4R-B1-C-TERRAIN';$SchedulerMode='2';$P3C='true';$TerrainPhased='true'}
+    '7'{$Experiment='P4R-B1-C-HEAVY-TERRAIN';$SchedulerMode='2';$P3C='true';$HeavyMode='1';$TerrainPhased='true'}
 }
 
 New-Item -ItemType Directory -Path $ProfilesRoot -Force | Out-Null
@@ -107,6 +110,7 @@ try{
     Set-IniValue $SettingsPath 'Cells' 'optimizedmw heavy compile min smooth frames' '30'
     Set-IniValue $SettingsPath 'Cells' 'optimizedmw heavy compile min headroom ms' '5.0'
     Set-IniValue $SettingsPath 'Cells' 'optimizedmw terrain drawable prior ms' '8.0'
+    Set-IniValue $SettingsPath 'Cells' 'optimizedmw terrain phased compile' $TerrainPhased
 
     # Freeze the pre-existing compile policy so control and candidate differ only by P4.
     Set-IniValue $SettingsPath 'Cells' 'target framerate' '60'
@@ -161,6 +165,7 @@ try{
         "p5_heavy_min_smooth_frames=30",
         "p5_heavy_min_headroom_ms=5.0",
         "p5_terrain_drawable_prior_ms=8.0",
+        "p5_terrain_phased_compile=$TerrainPhased",
         "completion_governor=$Completion",
         "v38_compile_pacing_mode=3",
         "v315_adaptive_compile_governor=1",
