@@ -1672,6 +1672,51 @@ bool Optimizer::MergeGeometryVisitor::mergeGroup(osg::Group& group)
                         if (!toremove.count(*pitr)) primitives.push_back(*pitr);
                     }
                 }
+
+                // P3A: opaque merged geometry can still retain multiple triangle
+                // submissions when an unrelated primitive sits between them.
+                // Inside one Geometry the StateSet is already shared, so fold
+                // non-adjacent indexed TRIANGLES while preserving the first
+                // occurrence position. Transparent geometry is deliberately
+                // excluded because primitive order can be visually significant.
+                if (_mergeCompatibleIndexTypes && !_alphaBlendingActive && primitives.size() > 2)
+                {
+                    unsigned int firstTriangle = static_cast<unsigned int>(primitives.size());
+                    std::set<osg::PrimitiveSet*> nonAdjacentRemove;
+                    for (unsigned int primitiveIndex = 0; primitiveIndex < primitives.size(); ++primitiveIndex)
+                    {
+                        osg::PrimitiveSet* primitive = primitives[primitiveIndex].get();
+                        if (!isDrawElementsPrimitiveType(primitive->getType())
+                            || primitive->getMode() != osg::PrimitiveSet::TRIANGLES)
+                            continue;
+
+                        if (firstTriangle == primitives.size())
+                        {
+                            firstTriangle = primitiveIndex;
+                            continue;
+                        }
+
+                        osg::PrimitiveSet* target = primitives[firstTriangle].get();
+                        osg::ref_ptr<osg::PrimitiveSet> promoted
+                            = mergePromotedDrawElements(*target, *primitive, ebo);
+                        if (!promoted)
+                            continue;
+
+                        primitives[firstTriangle] = promoted;
+                        nonAdjacentRemove.insert(primitive);
+                        ++_compatibleIndexMergeCount;
+                    }
+
+                    if (!nonAdjacentRemove.empty())
+                    {
+                        osg::Geometry::PrimitiveSetList oldPrimitives;
+                        primitives.swap(oldPrimitives);
+                        for (const auto& primitive : oldPrimitives)
+                            if (!nonAdjacentRemove.count(primitive.get()))
+                                primitives.push_back(primitive);
+                        doneCombine = true;
+                    }
+                }
     #endif
 
 #else
