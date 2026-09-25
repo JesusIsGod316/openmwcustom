@@ -170,7 +170,7 @@ int main()
                 Resource::SpeculativeScope::Stage stage(
                     1 * Resource::SpeculativeBudget::MiB, 4096);
                 auto charge = Resource::SpeculativeScope::track(
-                    &budget, { &identity, 100 + workerIndex }, 4096, true);
+                    &budget, { &identity, static_cast<unsigned int>(100 + workerIndex) }, 4096, true);
                 require(static_cast<bool>(charge), "dynamic helper charge missing");
                 consume();
                 retained.at(workerIndex - 1) = child.retainedEstimate();
