@@ -37,6 +37,9 @@ namespace RenderNative
     {
         NifSemanticCompileStatus status = NifSemanticCompileStatus::InvalidSource;
         NifRender::TranslationBundle bundle;
+        // Source-authored named visual capabilities are extracted from the same
+        // parsed NIF so callers do not need a second parse or an OSG node tree.
+        std::uint64_t namedVisualCapabilities = 0;
         std::string diagnostic;
 
         [[nodiscard]] bool compiled() const noexcept
