@@ -9,9 +9,9 @@
 #include <string_view>
 #include <vector>
 
-namespace MWRender
+namespace MWWorld
 {
-    class Groundcover;
+    class GroundcoverStore;
 }
 
 namespace RenderCore
@@ -30,9 +30,9 @@ namespace MWRender::VulkanMW
         [[nodiscard]] bool valid() const noexcept { return diagnostic.empty(); }
     };
 
-    [[nodiscard]] GroundcoverPopulationSource makeGroundcoverPopulationSource(const Groundcover& groundcover,
-        RenderNative::NifAssetService& assets, const RenderCore::RenderWorld& world, std::string_view worldspaceIdentity,
-        std::int32_t gridX, std::int32_t gridY, float renderingDistance);
+    [[nodiscard]] GroundcoverPopulationSource makeGroundcoverPopulationSource(const MWWorld::GroundcoverStore& store,
+        float density, RenderNative::NifAssetService& assets, const RenderCore::RenderWorld& world,
+        std::string_view worldspaceIdentity, std::int32_t gridX, std::int32_t gridY, float renderingDistance);
 }
 
 #endif
