@@ -1277,6 +1277,9 @@ namespace MWRender
         std::size_t p3CompatibleIndexMerges = 0;
         std::size_t p3DisplayListPromotions = 0;
         std::size_t p3NormalizedColorStreams = 0;
+        std::size_t p3ShadowEligibleDrawables = 0;
+        std::size_t p3ShadowProxyBatches = 0;
+        std::size_t p3ShadowSourceIndices = 0;
         bool p3SemanticPremergeUsed = false;
         {
             Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
@@ -1674,7 +1677,25 @@ namespace MWRender
             if ((v39BatchOptimizerMode == 0 && v38BatchingMode >= 2) || v39ShareState)
                 mSceneManager->shareState(mergeGroup);
 
-            group->addChild(mergeGroup);
+            osg::ref_ptr<osg::Node> publishedMergeNode = mergeGroup;
+            osg::ref_ptr<osg::Group> p3ShadowRoot;
+            const bool p3ShadowStaticBatching
+                = static_cast<bool>(Settings::cells().mOptimizedMWShadowStaticBatching)
+                && !activeGrid && compile && !p2RequiredReadiness;
+            if (p3ShadowStaticBatching)
+            {
+                P3ShadowBatchResult shadowBatch = p3BuildShadowBatch(*mergeGroup);
+                if (shadowBatch.mShadowRoot)
+                {
+                    p3ShadowEligibleDrawables += shadowBatch.mEligibleDrawables;
+                    ++p3ShadowProxyBatches;
+                    p3ShadowSourceIndices += shadowBatch.mSourceIndices;
+                    p3ShadowRoot = shadowBatch.mShadowRoot;
+                    publishedMergeNode = new SceneUtil::ShadowProxyGroup(mergeGroup, p3ShadowRoot);
+                }
+            }
+
+            group->addChild(publishedMergeNode);
 
             if (mDebugBatches)
             {
@@ -1685,6 +1706,8 @@ namespace MWRender
             {
                 stateToCompile._mode = osgUtil::GLObjectsVisitor::COMPILE_DISPLAY_LISTS;
                 mergeGroup->accept(stateToCompile);
+                if (p3ShadowRoot)
+                    p3ShadowRoot->accept(stateToCompile);
             }
         }
         }
@@ -1721,6 +1744,9 @@ namespace MWRender
                     + " p3_semantic_premerge=" + std::to_string(p3SemanticPremergeUsed ? 1 : 0)
                     + " p3_display_lists=" + std::to_string(p3DisplayListPromotions)
                     + " p3_normalized_colors=" + std::to_string(p3NormalizedColorStreams)
+                    + " p3_shadow_eligible=" + std::to_string(p3ShadowEligibleDrawables)
+                    + " p3_shadow_batches=" + std::to_string(p3ShadowProxyBatches)
+                    + " p3_shadow_indices=" + std::to_string(p3ShadowSourceIndices)
                     + " p3_prefetch_models=" + std::to_string(p3TemplatePrefetchModels)
                     + " p3_prefetch_reuse_hits=" + std::to_string(p3TemplateReuseHits)
                     + " p3_prefetch_parallel=" + std::to_string(p3TemplatePrefetchParallel ? 1 : 0)
