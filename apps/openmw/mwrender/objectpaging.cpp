@@ -297,7 +297,7 @@ namespace MWRender
                 = (currentQuality.mP3OptionalMask & v313BuiltQuality.mP3OptionalMask)
                 == v313BuiltQuality.mP3OptionalMask;
             if (current && v313QualitySatisfies(currentQuality, v313BuiltQuality)
-                && (v313BuiltQuality.mP3OptionalMask != 0 && currentCoversP3
+                && ((v313BuiltQuality.mP3OptionalMask != 0 && currentCoversP3)
                     || currentQuality.mPrepareMode > v313BuiltQuality.mPrepareMode
                     || (currentQuality.mPrepareMode == v313BuiltQuality.mPrepareMode
                         && (v313QualityMode < 2 || currentQuality.mSpatialMode == v313BuiltQuality.mSpatialMode))))
@@ -1644,16 +1644,17 @@ namespace MWRender
 
             const int v38BatchingMode = static_cast<int>(Settings::cells().mV38WorldBatchingMode);
             const bool p2RequiredReadiness = SceneUtil::PagingWorkScope::requiredReadiness();
+            const bool p3OptionalDistant
+                = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization();
             const bool p3SubmissionCompaction
                 = static_cast<bool>(Settings::cells().mOptimizedMWSubmissionCompaction)
                 && compile && !p2RequiredReadiness && v38BatchingMode >= 2;
             const bool p3DistantDisplayLists
                 = static_cast<bool>(Settings::cells().mOptimizedMWDistantDisplayLists)
-                && !activeGrid && compile && !p2RequiredReadiness
-                && !static_cast<bool>(Settings::stereo().mMultiview);
+                && p3OptionalDistant && !static_cast<bool>(Settings::stereo().mMultiview);
             const bool p3NormalizedStaticPackets
                 = static_cast<bool>(Settings::cells().mOptimizedMWNormalizedStaticPackets)
-                && compile && !p2RequiredReadiness && v38BatchingMode >= 2;
+                && p3OptionalDistant && v38BatchingMode >= 2;
             optimizer.setMergeCompatibleIndexTypes(p3SubmissionCompaction);
             optimizer.setPreferDisplayListsForMergedGeometry(p3DistantDisplayLists);
             optimizer.setNormalizeIgnoredVertexColors(p3NormalizedStaticPackets);
@@ -1703,7 +1704,7 @@ namespace MWRender
                 && compile && v38BatchingMode >= 2;
             const bool p3SemanticPremerge
                 = static_cast<bool>(Settings::cells().mOptimizedMWSemanticPremerge)
-                && compile && !p2RequiredReadiness && v38BatchingMode >= 2;
+                && p3OptionalDistant && v38BatchingMode >= 2;
             if (v315CanonicalizeBeforeMerge || p3SemanticPremerge)
             {
                 mSceneManager->shareState(mergeGroup);
@@ -1726,7 +1727,7 @@ namespace MWRender
             osg::ref_ptr<osg::Group> p3ShadowRoot;
             const bool p3ShadowStaticBatching
                 = static_cast<bool>(Settings::cells().mOptimizedMWShadowStaticBatching)
-                && !activeGrid && compile && !p2RequiredReadiness;
+                && p3OptionalDistant;
             if (p3ShadowStaticBatching)
             {
                 P3ShadowBatchResult shadowBatch = p3BuildShadowBatch(*mergeGroup);
