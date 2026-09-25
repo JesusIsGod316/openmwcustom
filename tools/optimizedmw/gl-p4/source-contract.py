@@ -51,7 +51,7 @@ checks = {
     "policy_handoff_suppression": "mSuppressedByHandoff" in policy
         and "state.mCreditMs *= 0.25" in policy,
     "launcher_matrix": all(token in launcher for token in (
-        "CONTROL-B1", "CONTROL-B1-C", "P4A-B1", "P4B-B1",
+        "CONTROL-B1", "CONTROL-B1-C", "CONTROL-B1-C-D", "P4A-B1", "P4B-B1",
         "P4B-B1-C", "P4B-B1-C-D", "P4B-B1-C-COMPLETION",
         "OPENMW_P4_COMPILE_FILE", "optimizedmw compile scheduler mode")),
     "launcher_packaged": "START-OptimizedMW-GL-P4-Test.bat" in root_cmake
