@@ -27,7 +27,12 @@ checks = {
         "mOptimizedMWCompileSchedulerHandoffThresholdMs",
         "mOptimizedMWCompileSchedulerMaxQueueAgeFrames",
         "mOptimizedMWCompileSchedulerDeleteBudgetMs",
-        "mOptimizedMWCompileSchedulerMaxObjectsPerFrame")),
+        "mOptimizedMWCompileSchedulerMaxObjectsPerFrame",
+        "mOptimizedMWHeavyCompileLaneMode",
+        "mOptimizedMWHeavyCompileThresholdMs",
+        "mOptimizedMWHeavyCompileMinSmoothFrames",
+        "mOptimizedMWHeavyCompileMinHeadroomMs",
+        "mOptimizedMWTerrainDrawablePriorMs")),
     "production_build": "openmwcompileoperation" in cmake,
     "control_exact_path": "new osgUtil::IncrementalCompileOperation" in rendering
         and "new Resource::OpenMWIncrementalCompileOperation" in rendering,
@@ -35,7 +40,17 @@ checks = {
         and "mOptimizedMWCompileSchedulerMode) >= 2" in engine,
     "cost_aware": "predictedMs" in compile_cpp
         and "estimatedTimeForCompile" in compile_cpp
-        and "observe(selectedKind, actualMs)" in compile_cpp,
+        and "observe(selected.mSet, selected.mKind, actualMs)" in compile_cpp
+        and "mRiskMs" in compile_h
+        and "costIndex" in compile_cpp,
+    "cheap_drain_repair": "age never converts a cheap fitting operation" in compile_cpp
+        and "if (fits)" in compile_cpp
+        and "if (forced || remainingBudgetMs <= 0.0)" in compile_cpp
+        and "mMaxObjectsPerFrame = 12" in compile_h,
+    "heavy_lane": "heavy_smooth_headroom" in compile_cpp
+        and "mHeavyMinSmoothFrames" in compile_h
+        and "mTerrainDrawablePriorMs" in compile_h
+        and "mSmoothFrames = 0" in compile_cpp,
     "queue_age_guard": "forced_by_queue_age" in compile_cpp
         and "mConfig.mMaxQueueAgeFrames" in compile_cpp,
     "class_priority": "V321CompileClass::ObjectPaging" in compile_cpp
@@ -51,8 +66,8 @@ checks = {
     "policy_handoff_suppression": "mSuppressedByHandoff" in policy
         and "state.mCreditMs *= 0.25" in policy,
     "launcher_matrix": all(token in launcher for token in (
-        "CONTROL-B1", "CONTROL-B1-C", "CONTROL-B1-C-D", "P4A-B1", "P4B-B1",
-        "P4B-B1-C", "P4B-B1-C-D", "P4B-B1-C-COMPLETION",
+        "CONTROL-B1", "CONTROL-B1-C", "P4R-B1", "P4R-B1-C",
+        "P4R-B1-C-HEAVY", "P4R-B1-HEAVY",
         "OPENMW_P4_COMPILE_FILE", "optimizedmw compile scheduler mode")),
     "launcher_packaged": "START-OptimizedMW-GL-P4-Test.bat" in root_cmake
         and "OptimizedMW_GL-P4_Test.ps1" in root_cmake,
