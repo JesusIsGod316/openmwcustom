@@ -147,7 +147,17 @@ int main()
         fail();
     if (!staticWorld.deactivatePopulationCell(groundCell.identity).accepted())
         fail();
-    if (populations.flush() != RenderCore::StaticPopulationPublishStatus::Applied)
+    const RenderCore::StaticPopulationPublishStatus postGroundcoverFlush = populations.flush();
+    if (postGroundcoverFlush != RenderCore::StaticPopulationPublishStatus::Applied
+        && postGroundcoverFlush != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
+        fail();
+
+    groundcoverPlacements = 0;
+    world.forEachChunk([&](auto, const RenderCore::ChunkRecord& chunk) {
+        if (chunk.kind == RenderCore::ChunkRecord::Kind::Groundcover)
+            ++groundcoverPlacements;
+    });
+    if (groundcoverPlacements != 0)
         fail();
 
     if (!staticWorld.deactivateCell(interior.cell.identity).accepted()
