@@ -418,6 +418,14 @@ namespace Debug::V3Diagnostics
         return writer;
     }
 
+    inline CsvWriter& compileWriter()
+    {
+        static CsvWriter writer("OPENMW_P4_COMPILE_FILE",
+            "frame,epoch_ms,event,kind,compile_class,queue_depth,oldest_age_frames,budget_ms,credit_ms,"
+            "predicted_ms,actual_ms,headroom_ms,last_handoff_ms,objects,detail");
+        return writer;
+    }
+
     inline CsvWriter& postFxWriter()
     {
         static CsvWriter writer("OPENMW_V3_POSTFX_FILE",
