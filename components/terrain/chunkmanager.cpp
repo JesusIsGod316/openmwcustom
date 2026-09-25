@@ -9,6 +9,7 @@
 #include <components/debug/v3diagnostics.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/v321classifiedcompileset.hpp>
+#include <components/settings/values.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
 
@@ -16,6 +17,7 @@
 #include "material.hpp"
 #include "storage.hpp"
 #include "terraindrawable.hpp"
+#include "terraincompile.hpp"
 #include "texturemanager.hpp"
 
 namespace Terrain
@@ -220,10 +222,19 @@ namespace Terrain
 
             mStorage->fillVertexBuffers(lod, chunkSize, chunkCenter, mWorldspace, *positions, *normals, *colors);
 
-            osg::ref_ptr<osg::VertexBufferObject> vbo(new osg::VertexBufferObject);
-            positions->setVertexBufferObject(vbo);
-            normals->setVertexBufferObject(vbo);
-            colors->setVertexBufferObject(vbo);
+            if (Settings::cells().mOptimizedMWSplitTerrainAttributeVbos)
+            {
+                positions->setVertexBufferObject(new osg::VertexBufferObject);
+                normals->setVertexBufferObject(new osg::VertexBufferObject);
+                colors->setVertexBufferObject(new osg::VertexBufferObject);
+            }
+            else
+            {
+                osg::ref_ptr<osg::VertexBufferObject> vbo(new osg::VertexBufferObject);
+                positions->setVertexBufferObject(vbo);
+                normals->setVertexBufferObject(vbo);
+                colors->setVertexBufferObject(vbo);
+            }
 
             geometry->setVertexArray(positions);
             geometry->setNormalArray(normals, osg::Array::BIND_PER_VERTEX);
@@ -239,10 +250,19 @@ namespace Terrain
             osg::ref_ptr<osg::Array> colors
                 = static_cast<osg::Array*>(templateGeometry->getColorArray()->clone(osg::CopyOp::DEEP_COPY_ALL));
 
-            osg::ref_ptr<osg::VertexBufferObject> vbo(new osg::VertexBufferObject);
-            positions->setVertexBufferObject(vbo);
-            normals->setVertexBufferObject(vbo);
-            colors->setVertexBufferObject(vbo);
+            if (Settings::cells().mOptimizedMWSplitTerrainAttributeVbos)
+            {
+                positions->setVertexBufferObject(new osg::VertexBufferObject);
+                normals->setVertexBufferObject(new osg::VertexBufferObject);
+                colors->setVertexBufferObject(new osg::VertexBufferObject);
+            }
+            else
+            {
+                osg::ref_ptr<osg::VertexBufferObject> vbo(new osg::VertexBufferObject);
+                positions->setVertexBufferObject(vbo);
+                normals->setVertexBufferObject(vbo);
+                colors->setVertexBufferObject(vbo);
+            }
 
             geometry->setVertexArray(positions);
             geometry->setNormalArray(normals, osg::Array::BIND_PER_VERTEX);
@@ -309,9 +329,18 @@ namespace Terrain
 
         if (!templateGeometry && compile && mSceneManager->getIncrementalCompileOperation())
         {
+            osgUtil::IncrementalCompileOperation* const ico = mSceneManager->getIncrementalCompileOperation();
             auto compileSet = new Resource::V321ClassifiedCompileSet(
                 geometry, Resource::V321CompileClass::Terrain);
-            mSceneManager->getIncrementalCompileOperation()->add(compileSet);
+
+            if (Settings::cells().mOptimizedMWStagedTerrainCompile)
+            {
+                buildStagedTerrainCompileMap(
+                    *geometry, *compileSet, ico->getContextSet(), ico->getMarkerObject());
+                ico->add(compileSet, false);
+            }
+            else
+                ico->add(compileSet);
         }
         geometry->setNodeMask(mNodeMask);
 
