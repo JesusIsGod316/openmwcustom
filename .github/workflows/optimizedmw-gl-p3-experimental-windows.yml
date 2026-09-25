@@ -1,7 +1,7 @@
 name: OptimizedMW GL-P3 experimental Windows gate
 on:
   push:
-    branches: [optimizedmw/gl-p3-experimental-windows, optimizedmw/gl-p3-integration-repair]
+    branches: [optimizedmw/gl-p3-experimental-windows]
   workflow_dispatch:
 permissions:
   contents: read
