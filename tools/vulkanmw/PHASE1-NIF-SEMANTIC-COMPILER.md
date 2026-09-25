@@ -1,6 +1,6 @@
 # VulkanMW Phase 1 — Native NIF Semantic Compiler
 
-Status: implementation started
+Status: P1A implemented; native asset-service integration implemented; focused CI pending
 Branch: vulkanmw/phase1-nif-semantic-compiler
 Parent: vulkanmw/phase0-foundation@086732cf494c31d4b823bc774e2929a6a75d4d67
 
@@ -58,3 +58,15 @@ Phase 1 is not complete until:
 - normal Phase 1 static compilation constructs no OSG rendering nodes
 - OpenGL/NifOsg remains unchanged as control/reference
 - no Vulkan runtime performance claim is made before later parity gates
+
+## Current source checkpoint
+
+Implemented on this branch:
+- `RenderNative::NifSemanticCompiler` owns winning-VFS parse plus direct neutral translation.
+- named NightDaySwitch/Herbalism source capabilities are extracted during the same parse.
+- `RenderNative::NifAssetService` owns canonical source resolve, model-cache reuse, direct compile, and stable RenderWorld publication.
+- production static world lifecycle now consumes `NifAssetService`; it no longer directly owns `Nif::Reader`, `Nif::NIFFile`, or `translateStaticNif`.
+- the old NifOsg/OpenGL loader is untouched and remains the compatibility/reference backend.
+- Phase 0 architecture guard and Phase 1 direct-NIF contract are both wired into focused CI.
+
+No runtime or performance acceptance is implied by this checkpoint.
