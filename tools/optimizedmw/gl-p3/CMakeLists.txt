@@ -17,7 +17,7 @@ target_link_libraries(optimizedmw-p3-submission-tests PRIVATE ${OPENSCENEGRAPH_L
 if(MSVC)
     target_compile_options(optimizedmw-p3-submission-tests PRIVATE /W4 /WX /permissive- /EHsc)
 else()
-    target_compile_options(optimizedmw-p3-submission-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(optimizedmw-p3-submission-tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter)
     if(OPTIMIZEDMW_P3_SANITIZERS)
         target_compile_options(optimizedmw-p3-submission-tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(optimizedmw-p3-submission-tests PRIVATE -fsanitize=address,undefined)
