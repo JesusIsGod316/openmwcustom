@@ -3,6 +3,7 @@
 # target from compiling successfully while omitting a required implementation
 # object from the other.
 set(OPENMW_V4_VSG_RUNTIME_SOURCES
+    "${CMAKE_SOURCE_DIR}/components/render/native/nifsemanticcompiler.cpp"
     "${CMAKE_SOURCE_DIR}/components/nifrender/niftranslator.cpp"
     "${CMAKE_SOURCE_DIR}/components/nifrender/staticniftranslator.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/auxiliaryreadback.cpp"
