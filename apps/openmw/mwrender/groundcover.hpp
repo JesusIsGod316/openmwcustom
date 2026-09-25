@@ -1,6 +1,8 @@
 #ifndef OPENMW_MWRENDER_GROUNDCOVER_H
 #define OPENMW_MWRENDER_GROUNDCOVER_H
 
+#include "groundcoverdata.hpp"
+
 #include <atomic>
 
 #include <components/esm3/loadcell.hpp>
@@ -43,21 +45,8 @@ namespace MWRender
 
         void setOcclusionCuller(SceneUtil::OcclusionCuller* culler, bool coarseChunkOcclusion);
 
-        struct GroundcoverEntry
-        {
-            ESM::RefNum mRefNum;
-            ESM::Position mPos;
-            float mScale;
-
-            GroundcoverEntry(const ESM::CellRef& ref)
-                : mRefNum(ref.mRefNum)
-                , mPos(ref.mPos)
-                , mScale(ref.mScale)
-            {
-            }
-        };
-
-        using InstanceMap = std::map<VFS::Path::Normalized, std::vector<GroundcoverEntry>, std::less<>>;
+        using GroundcoverEntry = MWRender::GroundcoverEntry;
+        using InstanceMap = GroundcoverInstanceMap;
 
         // Backend-neutral callers reuse the exact winning-file merge, density,
         // and border selection used by the established OpenGL renderer.
