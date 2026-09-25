@@ -41,7 +41,9 @@ checks = {
     "paging_context": "static Context capture()" in paging,
     "distant_only_threading": "&& !activeGrid && compile;" in objectpaging
         and "p3TemplatePrefetchRequired" in objectpaging,
-    "thread_mechanical_counter": "p3_prefetch_parallel=" in objectpaging,
+    "thread_mechanical_counter": "p3_prefetch_parallel=" in objectpaging
+        and "p3_prefetch_reuse_hits=" in objectpaging
+        and "p3PrefetchedTemplates.find(model)" in objectpaging,
 }
 failed = [name for name, ok in checks.items() if not ok]
 if failed:
