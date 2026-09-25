@@ -76,6 +76,24 @@ namespace Settings
             mIndex, "Cells", "optimizedmw compile scheduler diagnostic threshold ms",
             makeClampSanitizerFloat(0.0, 20.0) };
 
+        // P4R/P5: optional lane for individual GL calls whose observed/predicted
+        // duration is too large for the ordinary frame budget.
+        SettingValue<int> mOptimizedMWHeavyCompileLaneMode{
+            mIndex, "Cells", "optimizedmw heavy compile lane mode",
+            makeClampSanitizerInt(0, 1) };
+        SettingValue<float> mOptimizedMWHeavyCompileThresholdMs{
+            mIndex, "Cells", "optimizedmw heavy compile threshold ms",
+            makeClampSanitizerFloat(1.0, 50.0) };
+        SettingValue<int> mOptimizedMWHeavyCompileMinSmoothFrames{
+            mIndex, "Cells", "optimizedmw heavy compile min smooth frames",
+            makeClampSanitizerInt(1, 600) };
+        SettingValue<float> mOptimizedMWHeavyCompileMinHeadroomMs{
+            mIndex, "Cells", "optimizedmw heavy compile min headroom ms",
+            makeClampSanitizerFloat(0.5, 16.0) };
+        SettingValue<float> mOptimizedMWTerrainDrawablePriorMs{
+            mIndex, "Cells", "optimizedmw terrain drawable prior ms",
+            makeClampSanitizerFloat(0.0, 50.0) };
+
         SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
         SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
             makeClampSanitizerInt(64, 16384) };
