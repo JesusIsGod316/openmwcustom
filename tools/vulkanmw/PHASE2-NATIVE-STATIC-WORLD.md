@@ -1,6 +1,6 @@
 # VulkanMW Phase 2 — Native Static World, Terrain and Groundcover
 
-Status: P2A native static-world lifecycle implemented; focused QC pending
+Status: P2A static world green; native groundcover and terrain ownership implemented; focused QC pending
 Branch: vulkanmw/phase2-native-static-world
 Accepted parent: vulkanmw/phase1-nif-semantic-compiler@5b2a2128ccc37da84a16112be1965b8931352346
 
@@ -96,3 +96,31 @@ Representative interior/exterior routes after warmup:
 - cell/static add/move/remove semantics remain stable
 - OpenGL control remains unchanged
 - no performance promotion until matched runtime evidence exists
+
+## P2B/P2C implementation checkpoint
+
+### Groundcover
+
+The VulkanMW bridge no longer:
+- constructs groundcover `osg::Quat` placement,
+- parses groundcover models directly,
+- or mutates `StaticPopulationProducer` directly.
+
+Groundcover now uses:
+`Groundcover authoritative store -> VulkanMW groundcover semantic source -> NifAssetService -> StaticWorldService -> RenderWorld population chunks`.
+
+The existing OpenGL groundcover renderer remains unchanged. A scalar collection overload is the only new seam added to the shared Groundcover class.
+
+### Terrain
+
+`RenderNative::TerrainWorldService` now owns:
+- terrain residency planning,
+- background preparation,
+- required-current-chunk admission,
+- bounded multi-chunk publication,
+- world-epoch reset,
+- and background preparation teardown.
+
+`V4EngineRenderBridge` supplies only the authoritative LAND builder and desired resident requests.
+
+The current LAND extractor still uses OSG arrays/images/matrix objects as temporary data containers because the existing ESMTerrain storage API exposes those types. It does not create or traverse OSG scene nodes. Phase 2 treats this as an explicit temporary source-data seam, not render ownership.
