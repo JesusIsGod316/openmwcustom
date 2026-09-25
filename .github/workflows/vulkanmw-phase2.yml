@@ -1,0 +1,53 @@
+name: VulkanMW Phase 2 native static world
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [vulkanmw/phase2-native-static-world]
+
+concurrency:
+  group: vulkanmw-phase2-static-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  NativeStaticWorld:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify accepted Phase 1 ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          PHASE1=5b2a2128ccc37da84a16112be1965b8931352346
+          git cat-file -e "${PHASE1}^{commit}"
+          test "$(git merge-base "${PHASE1}" HEAD)" = "${PHASE1}"
+
+      - name: Enforce VulkanMW architecture contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/vulkanmw/check-architecture-boundaries.py
+          python3 tools/vulkanmw/check-phase1-nif-compiler.py
+          python3 tools/vulkanmw/check-phase2-static-world.py
+
+      - name: Install lightweight compile dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libglm-dev
+
+      - name: Compile and run native static-world smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I.             tools/vulkanmw/phase2-static-world-smoke.cpp             -o /tmp/vulkanmw-phase2-static-world-smoke
+          /tmp/vulkanmw-phase2-static-world-smoke
+
+      - name: Check Phase 2 whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check 5b2a2128ccc37da84a16112be1965b8931352346 HEAD --             components/render/native             apps/openmw/mwrender/vulkanmw             apps/openmw/mwrender/v4scenerenderlifecycle.cpp             apps/openmw/mwrender/v4scenerenderlifecycle.hpp             apps/openmw/mwrender/v4semanticsource.cpp             apps/openmw/mwrender/v4semanticsource.hpp             apps/openmw/mwrender/v4engine-sources.cmake             tools/vulkanmw
