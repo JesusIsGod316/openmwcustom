@@ -172,6 +172,49 @@ namespace RenderNative
                 published.status, retired };
         }
 
+        [[nodiscard]] StaticWorldMutationResult activatePopulationCell(
+            RenderCore::StaticPopulationCellSource source)
+        {
+            if (source.identity.empty() || source.worldspaceIdentity.empty())
+                return { StaticWorldMutationStatus::InvalidSource };
+            const RenderCore::StaticPopulationPublishStatus population = mPopulations.addCell(std::move(source));
+            if (!acceptedStaticPopulationStatus(population))
+                return { StaticWorldMutationStatus::PublishFailed,
+                    RenderCore::ActiveCellPublishStatus::AlreadyPresent, population };
+            return { population == RenderCore::StaticPopulationPublishStatus::Applied
+                    ? StaticWorldMutationStatus::Applied
+                    : StaticWorldMutationStatus::AlreadyCurrent,
+                RenderCore::ActiveCellPublishStatus::AlreadyPresent, population };
+        }
+
+        [[nodiscard]] StaticWorldMutationResult deactivatePopulationCell(std::string_view identity)
+        {
+            if (identity.empty())
+                return { StaticWorldMutationStatus::InvalidSource };
+            const RenderCore::StaticPopulationPublishStatus population = mPopulations.removeCell(identity);
+            if (!acceptedStaticPopulationStatus(population))
+                return { StaticWorldMutationStatus::PublishFailed,
+                    RenderCore::ActiveCellPublishStatus::AlreadyPresent, population };
+            return { population == RenderCore::StaticPopulationPublishStatus::Applied
+                    ? StaticWorldMutationStatus::Applied
+                    : StaticWorldMutationStatus::NotFound,
+                RenderCore::ActiveCellPublishStatus::AlreadyPresent, population };
+        }
+
+        [[nodiscard]] StaticWorldMutationResult upsertPopulation(RenderCore::StaticPopulationInstanceSource source)
+        {
+            if (source.identity.empty() || source.cellIdentity.empty() || !source.model.valid())
+                return { StaticWorldMutationStatus::InvalidSource };
+            const RenderCore::StaticPopulationPublishStatus population = mPopulations.upsert(std::move(source));
+            if (!acceptedStaticPopulationStatus(population))
+                return { StaticWorldMutationStatus::PublishFailed,
+                    RenderCore::ActiveCellPublishStatus::AlreadyPresent, population };
+            return { population == RenderCore::StaticPopulationPublishStatus::Applied
+                    ? StaticWorldMutationStatus::Applied
+                    : StaticWorldMutationStatus::AlreadyCurrent,
+                RenderCore::ActiveCellPublishStatus::AlreadyPresent, population };
+        }
+
         [[nodiscard]] StaticWorldMutationResult removeStatic(std::string_view identity)
         {
             if (identity.empty())
