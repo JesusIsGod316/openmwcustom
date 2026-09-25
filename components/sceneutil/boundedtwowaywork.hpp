@@ -10,42 +10,21 @@
 #include <mutex>
 #include <system_error>
 #include <thread>
-#include <utility>
-#include <vector>
 
 namespace SceneUtil
 {
-    // Persistent bounded helper pool for coarse thread-safe work.
-    // - caller always owns partition 0
-    // - up to three persistent helper threads own partitions 1..N
-    // - one operation engine-wide at a time; contention fails open to serial
-    // - no FIFO/background queue and no borrowed task survives run()
+    // One persistent helper for coarse thread-safe work. There is no FIFO:
+    // concurrent users fail open to their serial path. The caller owns half
+    // of the range while the helper owns the other half. Publication remains
+    // the caller's responsibility after run() returns.
     class BoundedTwoWayWork final
     {
     public:
         using RangeTask = std::function<void(std::size_t begin, std::size_t end, bool helper)>;
-        using IndexedRangeTask
-            = std::function<void(std::size_t begin, std::size_t end, std::size_t workerIndex)>;
 
-        // Backward-compatible proven P3B one-helper API.
         static bool run(std::size_t count, std::size_t minimumCount, RangeTask task)
         {
-            if (!task)
-                return false;
-            const std::size_t helpers = runIndexed(count, minimumCount, 1,
-                [task = std::move(task)](std::size_t begin, std::size_t end, std::size_t workerIndex) {
-                    task(begin, end, workerIndex != 0);
-                });
-            return helpers != 0;
-        }
-
-        // Returns the number of helper threads actually used. Zero means the
-        // caller must execute the serial fallback.
-        static std::size_t runIndexed(
-            std::size_t count, std::size_t minimumCount, std::size_t requestedHelpers, IndexedRangeTask task)
-        {
-            return instance().runImpl(
-                count, minimumCount, std::clamp(requestedHelpers, std::size_t{ 1 }, std::size_t{ 3 }), std::move(task));
+            return instance().runImpl(count, minimumCount, std::move(task));
         }
 
     private:
@@ -56,7 +35,6 @@ namespace SceneUtil
         }
 
         BoundedTwoWayWork() = default;
-
         ~BoundedTwoWayWork()
         {
             {
@@ -65,62 +43,50 @@ namespace SceneUtil
             }
             mWork.notify_all();
             mDone.notify_all();
-            for (std::thread& worker : mWorkers)
-                if (worker.joinable())
-                    worker.join();
+            if (mWorker.joinable())
+                mWorker.join();
         }
 
-        std::size_t ensureWorkers(std::size_t requested)
+        bool ensureWorker()
         {
-            while (mWorkers.size() < requested)
+            if (mWorker.joinable())
+                return true;
+            try
             {
-                const std::size_t workerIndex = mWorkers.size() + 1;
-                try
-                {
-                    mWorkers.emplace_back([this, workerIndex] { workerLoop(workerIndex); });
-                }
-                catch (const std::system_error&)
-                {
-                    break;
-                }
+                mWorker = std::thread([this] { workerLoop(); });
+                return true;
             }
-            return std::min(requested, mWorkers.size());
+            catch (const std::system_error&)
+            {
+                return false;
+            }
         }
 
-        std::size_t runImpl(
-            std::size_t count, std::size_t minimumCount, std::size_t requestedHelpers, IndexedRangeTask task)
+        bool runImpl(std::size_t count, std::size_t minimumCount, RangeTask task)
         {
             if (!task || count < (std::max)(std::size_t{ 2 }, minimumCount))
-                return 0;
+                return false;
 
             std::unique_lock gate(mGateMutex, std::try_to_lock);
-            if (!gate.owns_lock())
-                return 0;
+            if (!gate.owns_lock() || !ensureWorker())
+                return false;
 
-            const std::size_t helpers = ensureWorkers(requestedHelpers);
-            if (helpers == 0)
-                return 0;
-
-            const std::size_t partitions = helpers + 1;
+            const std::size_t middle = count / 2;
             std::uint64_t generation = 0;
-            IndexedRangeTask callerTask;
             {
                 std::lock_guard lock(mStateMutex);
-                mTask = std::move(task);
-                callerTask = mTask;
-                mCount = count;
-                mActiveHelpers = helpers;
-                mPending = helpers;
+                mTask = task;
+                mBegin = middle;
+                mEnd = count;
                 mHelperError = nullptr;
                 generation = ++mGeneration;
             }
-            mWork.notify_all();
+            mWork.notify_one();
 
             std::exception_ptr callerError;
             try
             {
-                const std::size_t end = count / partitions;
-                callerTask(0, end, 0);
+                task(0, middle, false);
             }
             catch (...)
             {
@@ -131,29 +97,27 @@ namespace SceneUtil
             {
                 std::unique_lock lock(mStateMutex);
                 mDone.wait(lock, [this, generation] {
-                    return mStop || (mCompletedGeneration >= generation && mPending == 0);
+                    return mStop || mCompletedGeneration >= generation;
                 });
                 helperError = mHelperError;
-                mTask = {};
             }
 
             if (callerError)
                 std::rethrow_exception(callerError);
             if (helperError)
                 std::rethrow_exception(helperError);
-            return mStop ? 0 : helpers;
+            return !mStop;
         }
 
-        void workerLoop(std::size_t workerIndex)
+        void workerLoop()
         {
             std::uint64_t seenGeneration = 0;
             for (;;)
             {
-                IndexedRangeTask task;
+                RangeTask task;
                 std::size_t begin = 0;
                 std::size_t end = 0;
                 std::uint64_t generation = 0;
-                bool active = false;
                 {
                     std::unique_lock lock(mStateMutex);
                     mWork.wait(lock, [this, seenGeneration] {
@@ -164,23 +128,15 @@ namespace SceneUtil
 
                     generation = mGeneration;
                     seenGeneration = generation;
-                    active = workerIndex <= mActiveHelpers;
-                    if (active)
-                    {
-                        task = mTask;
-                        const std::size_t partitions = mActiveHelpers + 1;
-                        begin = mCount * workerIndex / partitions;
-                        end = mCount * (workerIndex + 1) / partitions;
-                    }
+                    task = mTask;
+                    begin = mBegin;
+                    end = mEnd;
                 }
-
-                if (!active)
-                    continue;
 
                 std::exception_ptr error;
                 try
                 {
-                    task(begin, end, workerIndex);
+                    task(begin, end, true);
                 }
                 catch (...)
                 {
@@ -191,12 +147,9 @@ namespace SceneUtil
                     std::lock_guard lock(mStateMutex);
                     if (generation == mGeneration)
                     {
-                        if (error && !mHelperError)
-                            mHelperError = error;
-                        if (mPending > 0)
-                            --mPending;
-                        if (mPending == 0)
-                            mCompletedGeneration = generation;
+                        mHelperError = error;
+                        mCompletedGeneration = generation;
+                        mTask = {};
                     }
                 }
                 mDone.notify_one();
@@ -207,11 +160,10 @@ namespace SceneUtil
         std::mutex mStateMutex;
         std::condition_variable mWork;
         std::condition_variable mDone;
-        std::vector<std::thread> mWorkers;
-        IndexedRangeTask mTask;
-        std::size_t mCount = 0;
-        std::size_t mActiveHelpers = 0;
-        std::size_t mPending = 0;
+        std::thread mWorker;
+        RangeTask mTask;
+        std::size_t mBegin = 0;
+        std::size_t mEnd = 0;
         std::uint64_t mGeneration = 0;
         std::uint64_t mCompletedGeneration = 0;
         std::exception_ptr mHelperError;
