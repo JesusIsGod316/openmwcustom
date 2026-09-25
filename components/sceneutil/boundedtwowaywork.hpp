@@ -103,9 +103,11 @@ namespace SceneUtil
 
             const std::size_t partitions = helpers + 1;
             std::uint64_t generation = 0;
+            IndexedRangeTask callerTask;
             {
                 std::lock_guard lock(mStateMutex);
                 mTask = std::move(task);
+                callerTask = mTask;
                 mCount = count;
                 mActiveHelpers = helpers;
                 mPending = helpers;
@@ -118,7 +120,7 @@ namespace SceneUtil
             try
             {
                 const std::size_t end = count / partitions;
-                mTask(0, end, 0);
+                callerTask(0, end, 0);
             }
             catch (...)
             {
