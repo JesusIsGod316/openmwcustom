@@ -38,6 +38,8 @@ namespace Terrain
 
             bool compile(osgUtil::IncrementalCompileOperation::CompileInfo& info) override
             {
+                Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
+                    "p5_terrain_pass_attribute", mAttribute ? mAttribute->className() : "null", 0.15);
                 if (mAttribute)
                     mAttribute->compileGLObjects(*info.getState());
                 return true;
@@ -63,6 +65,8 @@ namespace Terrain
 
             bool compile(osgUtil::IncrementalCompileOperation::CompileInfo& info) override
             {
+                Debug::V3Diagnostics::ScopedCsvTimer timer(
+                    Debug::V3Diagnostics::renderWriter(), "p5_terrain_geometry_vbo", "geometry", 0.15);
                 if (mDrawable)
                     mDrawable->compileGeometryGLObjects(info);
                 return true;
