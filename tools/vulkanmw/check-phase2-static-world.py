@@ -13,6 +13,9 @@ NATIVE_STATIC = [
     ROOT / "components/render/native/staticworldservice.hpp",
     ROOT / "apps/openmw/mwrender/vulkanmw/staticworldsource.hpp",
     ROOT / "apps/openmw/mwrender/vulkanmw/staticworldsource.cpp",
+    ROOT / "apps/openmw/mwrender/vulkanmw/referenceplacement.hpp",
+    ROOT / "apps/openmw/mwrender/vulkanmw/groundcoversource.hpp",
+    ROOT / "apps/openmw/mwrender/vulkanmw/groundcoversource.cpp",
 ]
 
 FORBIDDEN = [
@@ -55,6 +58,9 @@ def main() -> int:
         "mPopulations.upsert",
         "mCells.removeInstance",
         "mPopulations.remove",
+        "activatePopulationCell",
+        "deactivatePopulationCell",
+        "upsertPopulation",
     ):
         if needle not in service:
             fail(f"native static-world service lost required ownership step: {needle}")
@@ -70,6 +76,18 @@ def main() -> int:
     ):
         if needle not in source:
             fail(f"OSG-free static placement source lost required semantic: {needle}")
+
+    groundcover = code_only(
+        (ROOT / "apps/openmw/mwrender/vulkanmw/groundcoversource.cpp").read_text(encoding="utf-8")
+    )
+    for needle in (
+        "groundcover.collectInstances(1.0f",
+        "assets.resolve(modelPath)",
+        "makeReferenceRotation(entry.mPos)",
+        "StaticPopulationInstanceSource",
+    ):
+        if needle not in groundcover:
+            fail(f"native groundcover source lost required semantic: {needle}")
 
     lifecycle = code_only(
         (ROOT / "apps/openmw/mwrender/v4scenerenderlifecycle.cpp").read_text(encoding="utf-8")
@@ -99,11 +117,35 @@ def main() -> int:
     if "makeV4StaticInstanceSource" in legacy_header or "makeV4StaticInstanceSource" in legacy_cpp:
         fail("legacy OSG static placement adapter still exists")
 
-    cmake = (ROOT / "apps/openmw/mwrender/v4engine-sources.cmake").read_text(encoding="utf-8")
-    if "apps/openmw/mwrender/vulkanmw/staticworldsource.cpp" not in cmake:
-        fail("production OpenMW target does not compile VulkanMW staticworldsource.cpp")
+    bridge = code_only(
+        (ROOT / "apps/openmw/mwrender/v4enginerenderbridge.cpp").read_text(encoding="utf-8")
+    )
+    for needle in (
+        "VulkanMW::makeGroundcoverPopulationSource",
+        "mNativeStaticWorld->activatePopulationCell",
+        "mNativeStaticWorld->upsertPopulation",
+        "mNativeStaticWorld->deactivatePopulationCell",
+    ):
+        if needle not in bridge:
+            fail(f"production groundcover route bypasses native semantic service: {needle}")
+    for forbidden in (
+        "makeOsgQuat(entry.mPos)",
+        "mSession->populations().addCell",
+        "mSession->populations().upsert",
+        "mSession->populations().removeCell",
+    ):
+        if forbidden in bridge:
+            fail(f"production groundcover route still owns legacy/direct mutation: {forbidden}")
 
-    print("VulkanMW Phase 2 native static-world contract PASS")
+    cmake = (ROOT / "apps/openmw/mwrender/v4engine-sources.cmake").read_text(encoding="utf-8")
+    for source_file in (
+        "apps/openmw/mwrender/vulkanmw/staticworldsource.cpp",
+        "apps/openmw/mwrender/vulkanmw/groundcoversource.cpp",
+    ):
+        if source_file not in cmake:
+            fail(f"production OpenMW target does not compile {source_file}")
+
+    print("VulkanMW Phase 2 native static-world/groundcover contract PASS")
     return 0
 
 
