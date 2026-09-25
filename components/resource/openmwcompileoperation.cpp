@@ -30,8 +30,10 @@ namespace
 
     void writeP4CompileRow(unsigned int frame, std::string_view event, std::string_view kind,
         std::string_view compileClass, std::size_t queueDepth, unsigned int oldestAgeFrames,
-        double budgetMs, double creditMs, double predictedMs, double actualMs,
-        double headroomMs, double lastHandoffMs, unsigned int objects, std::string_view detail)
+        double budgetMs, double creditMs, double predictedMs, double osgEstimateMs,
+        double costEmaMs, double estimateScale, double actualMs,
+        double headroomMs, double lastHandoffMs, unsigned int objects,
+        bool fitsBudget, bool forced, std::string_view detail)
     {
         auto& writer = Debug::V3Diagnostics::compileWriter();
         if (!writer.enabled())
@@ -44,8 +46,10 @@ namespace
             << Debug::V3Diagnostics::csvQuote(compileClass) << ','
             << queueDepth << ',' << oldestAgeFrames << ','
             << std::fixed << std::setprecision(3)
-            << budgetMs << ',' << creditMs << ',' << predictedMs << ',' << actualMs << ','
+            << budgetMs << ',' << creditMs << ',' << predictedMs << ',' << osgEstimateMs << ','
+            << costEmaMs << ',' << estimateScale << ',' << actualMs << ','
             << headroomMs << ',' << lastHandoffMs << ',' << objects << ','
+            << (fitsBudget ? 1 : 0) << ',' << (forced ? 1 : 0) << ','
             << Debug::V3Diagnostics::csvQuote(detail);
         writer.writeLine(row.str());
     }
@@ -92,6 +96,18 @@ namespace Resource
         return "unknown";
     }
 
+    std::size_t OpenMWIncrementalCompileOperation::compileClassIndex(const CompileSet* set)
+    {
+        switch (getV321CompileClass(set))
+        {
+            case V321CompileClass::ObjectPaging: return 1;
+            case V321CompileClass::Terrain: return 2;
+            case V321CompileClass::GenericModel: return 3;
+            case V321CompileClass::Unknown:
+            default: return 0;
+        }
+    }
+
     int OpenMWIncrementalCompileOperation::compileClassRank(const CompileSet* set)
     {
         switch (getV321CompileClass(set))
@@ -116,32 +132,53 @@ namespace Resource
         }
     }
 
-    double OpenMWIncrementalCompileOperation::predictedMs(
-        CompileOp* op, CompileInfo& info, CompileKind kind) const
+    OpenMWIncrementalCompileOperation::Prediction OpenMWIncrementalCompileOperation::predictedCost(
+        CompileOp* op, CompileInfo& info, CompileKind kind, const CompileSet* set) const
     {
-        double osgEstimateMs = 0.0;
+        Prediction result;
         if (op)
         {
             const double seconds = op->estimatedTimeForCompile(info);
             if (std::isfinite(seconds) && seconds > 0.0)
-                osgEstimateMs = seconds * 1000.0;
+                result.mOsgEstimateMs = seconds * 1000.0;
         }
 
-        const CostState& cost = mCosts.at(static_cast<std::size_t>(kind));
-        const double measured = cost.mSamples > 0 ? cost.mEmaMs : 0.0;
-        const double floor = cost.mSamples > 0 ? std::min(cost.mMaxMs, measured * 2.0) : 0.10;
-        return std::max({ 0.10, osgEstimateMs, measured, floor });
+        const CostState& cost
+            = mCosts.at(compileClassIndex(set)).at(static_cast<std::size_t>(kind));
+        result.mEmaMs = cost.mSamples > 0 ? cost.mEmaMs : 0.0;
+        result.mEstimateScale = cost.mSamples > 0 ? std::clamp(cost.mEstimateScale, 1.0, 256.0) : 1.0;
+
+        const double scaledEstimate = result.mOsgEstimateMs * result.mEstimateScale;
+        const double learnedFloor = cost.mSamples > 0 ? result.mEmaMs * 0.65 : 0.10;
+        const double highWaterGuard = cost.mSamples > 1
+            ? std::min(cost.mHighWaterMs * 0.75, std::max(learnedFloor * 2.0, scaledEstimate * 1.5))
+            : 0.0;
+
+        result.mPredictedMs = std::max({ 0.10, scaledEstimate, learnedFloor, highWaterGuard });
+        return result;
     }
 
-    void OpenMWIncrementalCompileOperation::observe(CompileKind kind, double actualMs)
+    void OpenMWIncrementalCompileOperation::observe(
+        CompileKind kind, const CompileSet* set, double osgEstimateMs, double actualMs)
     {
-        CostState& cost = mCosts.at(static_cast<std::size_t>(kind));
+        CostState& cost
+            = mCosts.at(compileClassIndex(set)).at(static_cast<std::size_t>(kind));
         ++cost.mSamples;
         if (cost.mSamples == 1)
             cost.mEmaMs = actualMs;
         else
-            cost.mEmaMs = cost.mEmaMs * 0.85 + actualMs * 0.15;
-        cost.mMaxMs = std::max(actualMs, cost.mMaxMs * 0.985);
+            cost.mEmaMs = cost.mEmaMs * 0.82 + actualMs * 0.18;
+
+        cost.mHighWaterMs = std::max(actualMs, cost.mHighWaterMs * 0.985);
+
+        if (osgEstimateMs > 0.01)
+        {
+            const double ratio = std::clamp(actualMs / osgEstimateMs, 1.0, 256.0);
+            if (cost.mSamples == 1)
+                cost.mEstimateScale = ratio;
+            else
+                cost.mEstimateScale = cost.mEstimateScale * 0.85 + ratio * 0.15;
+        }
     }
 
     void OpenMWIncrementalCompileOperation::finishCompileSet(CompileSet* set)
@@ -234,18 +271,37 @@ namespace Resource
         const double diagnosticThresholdMs = mConfig.mDiagnosticThresholdMs;
 
         double remainingBudgetMs = policy.mBudgetMs;
+        if (!policy.mSuppressedByHandoff)
+        {
+            // The first P4 build starved the queue because the render thread
+            // frequently reached ICO with near-zero nominal headroom. Permit a
+            // very small cheap-work floor, while keeping expensive work gated.
+            double minimumDrain = mConfig.mMinimumDrainBudgetMs;
+            if (queued.size() >= 1024)
+                minimumDrain = std::max(minimumDrain, 0.75);
+            else if (queued.size() >= 256)
+                minimumDrain = std::max(minimumDrain, 0.50);
+            remainingBudgetMs = std::max(remainingBudgetMs, minimumDrain);
+        }
+
         double compileActualMs = 0.0;
         unsigned int compiledObjects = 0;
         bool forcedOldest = false;
 
         while (compiledObjects < maxObjects && !queued.empty())
         {
-            CompileSet* selected = nullptr;
-            CompileOp* selectedOp = nullptr;
-            CompileKind selectedKind = CompileKind::Other;
-            double selectedPrediction = std::numeric_limits<double>::max();
-            unsigned int selectedAge = 0;
-            int selectedRank = std::numeric_limits<int>::max();
+            struct Candidate
+            {
+                CompileSet* mSet = nullptr;
+                CompileOp* mOp = nullptr;
+                CompileKind mKind = CompileKind::Other;
+                Prediction mPrediction;
+                unsigned int mAge = 0;
+                int mRank = std::numeric_limits<int>::max();
+            };
+
+            Candidate bestFit;
+            Candidate bestForced;
 
             for (const osg::ref_ptr<CompileSet>& setRef : queued)
             {
@@ -260,84 +316,105 @@ namespace Resource
                 CompileOp* op = mapIt->second._compileOps.front().get();
                 CompileInfo estimateInfo(context, this);
                 const CompileKind kind = classify(op);
-                const double prediction = predictedMs(op, estimateInfo, kind);
+                const Prediction prediction = predictedCost(op, estimateInfo, kind, set);
                 const auto seenIt = mSeen.find(set);
                 const unsigned int age = seenIt != mSeen.end() && frame >= seenIt->second.mFirstFrame
                     ? frame - seenIt->second.mFirstFrame : 0;
                 const int rank = compileClassRank(set);
+                const bool fits = prediction.mPredictedMs <= std::max(0.10, remainingBudgetMs);
                 const bool agedOut = age >= maxQueueAge;
 
-                const bool fits = prediction <= std::max(0.10, remainingBudgetMs);
-                if (!fits && !agedOut)
-                    continue;
+                auto betterFit = [&](const Candidate& current) {
+                    if (!current.mSet)
+                        return true;
+                    if (rank != current.mRank)
+                        return rank < current.mRank;
+                    if (age != current.mAge)
+                        return age > current.mAge;
+                    return prediction.mPredictedMs < current.mPrediction.mPredictedMs;
+                };
 
-                const bool selectedAgedOut = selected && selectedAge >= maxQueueAge;
-                bool better = !selected;
-                if (!better && agedOut != selectedAgedOut)
-                    better = agedOut;
-                else if (!better && agedOut == selectedAgedOut)
-                    better = rank < selectedRank || (rank == selectedRank && age > selectedAge);
+                auto betterForced = [&](const Candidate& current) {
+                    if (!current.mSet)
+                        return true;
+                    if (age != current.mAge)
+                        return age > current.mAge;
+                    if (rank != current.mRank)
+                        return rank < current.mRank;
+                    return prediction.mPredictedMs < current.mPrediction.mPredictedMs;
+                };
 
-                if (better)
-                {
-                    selected = set;
-                    selectedOp = op;
-                    selectedKind = kind;
-                    selectedPrediction = prediction;
-                    selectedAge = age;
-                    selectedRank = rank;
-                }
+                if (fits && betterFit(bestFit))
+                    bestFit = Candidate{ set, op, kind, prediction, age, rank };
+                else if (!fits && agedOut && betterForced(bestForced))
+                    bestForced = Candidate{ set, op, kind, prediction, age, rank };
             }
 
-            if (!selected || !selectedOp)
+            Candidate selected = bestFit.mSet ? bestFit : bestForced;
+            if (!selected.mSet || !selected.mOp)
                 break;
 
-            const bool agedOut = selectedAge >= maxQueueAge;
-            const bool hardAgedOut = selectedAge >= maxQueueAge * 2u;
-            if (agedOut && !hardAgedOut && policy.mSuppressedByHandoff
+            const bool fitsBudget = bestFit.mSet != nullptr;
+            const bool forced = !fitsBudget;
+            const bool agedOut = selected.mAge >= maxQueueAge;
+            const bool hardAgedOut = selected.mAge >= maxQueueAge * 2u;
+
+            if (forced && !hardAgedOut && policy.mSuppressedByHandoff
                 && lastHandoffMs >= policyConfig.mHandoffThresholdMs * 1.5)
                 break;
 
-            forcedOldest = forcedOldest || agedOut;
+            forcedOldest = forcedOldest || forced;
 
             CompileInfo compileInfo(context, this);
             compileInfo.maxNumObjectsToCompile = 1;
-            // We gate each operation ourselves because the stock ICO time check
-            // cannot preempt a GL call once it starts.
+            // We gate each operation ourselves because a GL call cannot be
+            // preempted after entry.
             compileInfo.allocatedTime = 3600.0;
             compileInfo.compileAll = false;
 
             const auto start = Debug::V3Diagnostics::Clock::now();
-            const bool completedSet = selected->compile(compileInfo);
+            const bool completedSet = selected.mSet->compile(compileInfo);
             const double actualMs = Debug::V3Diagnostics::elapsedMs(start);
-            observe(selectedKind, actualMs);
+            observe(selected.mKind, selected.mSet, selected.mPrediction.mOsgEstimateMs, actualMs);
             consumeP4CompileCredit(mPolicyState, mode, actualMs);
             compileActualMs += actualMs;
             ++compiledObjects;
             remainingBudgetMs = std::max(0.0, remainingBudgetMs - actualMs);
 
-            if (actualMs >= diagnosticThresholdMs || agedOut)
+            if (actualMs >= diagnosticThresholdMs || agedOut || forced)
             {
-                writeP4CompileRow(frame, "op", compileKindName(selectedKind),
-                    compileClassName(selected), queued.size(), oldestAge,
-                    policy.mBudgetMs, mPolicyState.mCreditMs, selectedPrediction, actualMs,
-                    policy.mHeadroomMs, lastHandoffMs, 1,
-                    hardAgedOut ? "forced_by_hard_queue_age"
-                                : (agedOut ? "forced_by_queue_age" : "budgeted"));
+                std::string detail;
+                if (forced)
+                    detail = hardAgedOut ? "forced_by_hard_queue_age_over_budget"
+                                       : "forced_by_queue_age_over_budget";
+                else if (selected.mPrediction.mPredictedMs >= mConfig.mHeavyOpThresholdMs)
+                    detail = "budgeted_heavy";
+                else if (agedOut)
+                    detail = "budgeted_aged_cheap";
+                else
+                    detail = "budgeted";
+
+                writeP4CompileRow(frame, "op", compileKindName(selected.mKind),
+                    compileClassName(selected.mSet), queued.size(), oldestAge,
+                    policy.mBudgetMs, mPolicyState.mCreditMs,
+                    selected.mPrediction.mPredictedMs, selected.mPrediction.mOsgEstimateMs,
+                    selected.mPrediction.mEmaMs, selected.mPrediction.mEstimateScale, actualMs,
+                    policy.mHeadroomMs, lastHandoffMs, 1, fitsBudget, forced, detail);
             }
 
             if (completedSet)
             {
-                finishCompileSet(selected);
-                mSeen.erase(selected);
+                finishCompileSet(selected.mSet);
+                mSeen.erase(selected.mSet);
                 queued.remove_if([&](const osg::ref_ptr<CompileSet>& value) {
-                    return value.get() == selected;
+                    return value.get() == selected.mSet;
                 });
             }
 
-            // An age override exists only to guarantee eventual progress. Never
-            // let several oversized/starved GL calls collapse into one frame.
-            if (agedOut || remainingBudgetMs <= 0.0)
+            // Only an actually over-budget age override is limited to one per
+            // frame. Aged work that fits is ordinary cheap work and may keep
+            // draining until the time/object budget is exhausted.
+            if (forced || remainingBudgetMs <= 0.0)
                 break;
         }
 
@@ -358,8 +435,8 @@ namespace Resource
             if (deleteActualMs >= diagnosticThresholdMs)
             {
                 writeP4CompileRow(frame, "delete_flush", "delete", "n/a", queued.size(), oldestAge,
-                    deleteBudgetMs, mPolicyState.mCreditMs, 0.0, deleteActualMs,
-                    policy.mHeadroomMs, lastHandoffMs, 0, "separate_delete_budget");
+                    deleteBudgetMs, mPolicyState.mCreditMs, 0.0, 0.0, 0.0, 1.0, deleteActualMs,
+                    policy.mHeadroomMs, lastHandoffMs, 0, true, false, "separate_delete_budget");
             }
         }
 
@@ -377,8 +454,9 @@ namespace Resource
                    << " forced_oldest=" << (forcedOldest ? 1 : 0)
                    << " elapsed_before_ms=" << std::fixed << std::setprecision(3) << currentElapsedMs;
             writeP4CompileRow(frame, "summary", "", "", queueDepthAfter, oldestAge,
-                policy.mBudgetMs, mPolicyState.mCreditMs, 0.0, compileActualMs + deleteActualMs,
-                policy.mHeadroomMs, lastHandoffMs, compiledObjects, detail.str());
+                policy.mBudgetMs, mPolicyState.mCreditMs, 0.0, 0.0, 0.0, 1.0,
+                compileActualMs + deleteActualMs, policy.mHeadroomMs, lastHandoffMs,
+                compiledObjects, true, false, detail.str());
         }
 
         mLastQueueDepth = queueDepthAfter;
