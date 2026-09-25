@@ -34,11 +34,11 @@ checks = {
         and "estimatedTimeForCompile" in compile_cpp
         and "observe(selectedKind, actualMs)" in compile_cpp,
     "queue_age_guard": "forced_by_queue_age" in compile_cpp
-        and "mOptimizedMWCompileSchedulerMaxQueueAgeFrames" in compile_cpp,
+        and "mConfig.mMaxQueueAgeFrames" in compile_cpp,
     "class_priority": "V321CompileClass::ObjectPaging" in compile_cpp
         and "V321CompileClass::Terrain" in compile_cpp,
     "separate_delete_budget": "separate_delete_budget" in compile_cpp
-        and "mOptimizedMWCompileSchedulerDeleteBudgetMs" in compile_cpp,
+        and "mConfig.mDeleteBudgetMs" in compile_cpp,
     "nonblocking_diagnostics": "OPENMW_P4_COMPILE_FILE" in diagnostics
         and "DiagnosticWriterHub" in diagnostics,
     "policy_handoff_suppression": "mSuppressedByHandoff" in policy
