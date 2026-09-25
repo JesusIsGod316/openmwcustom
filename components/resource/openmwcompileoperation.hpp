@@ -48,6 +48,8 @@ namespace Resource
             Texture,
             Program,
             Buffer,
+            StateSet,
+            GeometryFinalize,
             Other,
             Count,
         };
