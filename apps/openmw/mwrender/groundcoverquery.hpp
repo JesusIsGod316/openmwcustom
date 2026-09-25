@@ -3,15 +3,18 @@
 
 #include "groundcoverdata.hpp"
 
+namespace MWWorld
+{
+    class GroundcoverStore;
+}
+
 namespace MWRender
 {
-    class Groundcover;
-
-    // Neutral query seam used by non-OSG render backends. The implementation
-    // delegates to the established winning-file merge/density/border selection
-    // inside Groundcover without exposing OSG vectors or scene objects.
-    [[nodiscard]] GroundcoverInstanceMap collectGroundcoverInstances(
-        const Groundcover& groundcover, float size, float centerX, float centerY);
+    // Renderer-neutral selection of winning groundcover references. This owns
+    // file merge, deletion override, density thinning and chunk-border filtering
+    // without constructing an OpenGL/OSG Groundcover renderer object.
+    [[nodiscard]] GroundcoverInstanceMap collectGroundcoverInstances(const MWWorld::GroundcoverStore& store,
+        float density, float size, float centerX, float centerY);
 }
 
 #endif
