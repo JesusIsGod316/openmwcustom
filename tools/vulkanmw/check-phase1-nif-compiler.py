@@ -30,11 +30,15 @@ def fail(message: str) -> None:
     print(f"VulkanMW Phase 1 contract FAILED: {message}", file=sys.stderr)
     raise SystemExit(1)
 
+def code_only(text: str) -> str:
+    text = re.sub(r"/\\*.*?\\*/", "", text, flags=re.S)
+    return "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+
 def main() -> int:
     for path in NATIVE + TRANSLATOR:
         if not path.is_file():
             fail(f"missing required source: {path.relative_to(ROOT)}")
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = code_only(path.read_text(encoding="utf-8", errors="replace"))
         for pattern in SCENE_TOKENS:
             match = pattern.search(text)
             if match:
