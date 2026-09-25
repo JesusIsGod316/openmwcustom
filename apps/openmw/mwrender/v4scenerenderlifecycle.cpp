@@ -14,13 +14,11 @@
 #include <components/misc/constants.hpp>
 #include <components/misc/convert.hpp>
 #include <components/misc/resourcehelpers.hpp>
-#include <components/nif/extra.hpp>
-#include <components/nif/niffile.hpp>
-#include <components/nif/node.hpp>
 #include <components/nifrender/enchantedglow.hpp>
 #include <components/nifrender/niftranslator.hpp>
 #include <components/render/backend/vsg/vsgsemanticsession.hpp>
-#include <components/rendercore/namedvisualsemantics.hpp>\n#include <components/render/native/nifsemanticcompiler.hpp>
+#include <components/rendercore/namedvisualsemantics.hpp>
+#include <components/render/native/nifsemanticcompiler.hpp>
 #include <components/settings/values.hpp>
 #include <components/vfs/manager.hpp>
 
@@ -96,32 +94,6 @@ namespace MWRender
         {
             return !ptr.isEmpty()
                 && (ptr.getType() == ESM::Light::sRecordId || ptr.getType() == ESM4::Light::sRecordId);
-        }
-
-        // SceneUtil::hasUserDescription() performs exact description equality.
-        // Recover the same capability information from the winning source NIF
-        // before OSG exists, then publish only neutral semantic bits downstream.
-        [[nodiscard]] std::uint64_t inspectNamedVisualCapabilities(Nif::FileView file) noexcept
-        {
-            std::uint64_t result = 0;
-            for (std::size_t rootIndex = 0; rootIndex < file.numRoots(); ++rootIndex)
-            {
-                const Nif::Record* record = file.getRoot(rootIndex);
-                const auto* root = dynamic_cast<const Nif::NiAVObject*>(record);
-                if (!root)
-                    continue;
-                for (const Nif::ExtraPtr& extra : root->getExtraList())
-                {
-                    if (extra.empty() || extra->mRecordType != Nif::RC_NiStringExtraData)
-                        continue;
-                    const auto* value = static_cast<const Nif::NiStringExtraData*>(extra.getPtr());
-                    if (value->mData == Constants::NightDayLabel)
-                        result |= RenderCore::NightDaySwitchCapabilitySemanticFlag;
-                    else if (value->mData == Constants::HerbalismLabel)
-                        result |= RenderCore::HerbalismSwitchCapabilitySemanticFlag;
-                }
-            }
-            return result;
         }
 
         [[nodiscard]] bool requiresModelPlayback(const RenderCore::ModelRecord& model) noexcept
@@ -376,17 +348,13 @@ namespace MWRender
             if (!mVfs.exists(modelPath))
                 throw std::runtime_error("V4 static model is missing from the winning VFS: " + modelIdentity);
 
-            Nif::NIFFile nifFile(modelPath);
-            Nif::Reader reader(nifFile, nullptr);
-            reader.parse(mVfs.get(modelPath));
-            const Nif::FileView file(nifFile);
-            visualCapabilities = inspectNamedVisualCapabilities(file);
-            mModelVisualCapabilities.insert_or_assign(modelIdentity, visualCapabilities);
             const RenderNative::NifSemanticCompiler compiler(mVfs, &mTextureIdentities);
-            const RenderNative::NifSemanticCompileResult compiled = compiler.compile(file);
+            const RenderNative::NifSemanticCompileResult compiled = compiler.compile(modelPath);
             if (!compiled.compiled())
                 throw std::runtime_error("VulkanMW native NIF compile failed for " + modelIdentity + ": "
                     + compiled.diagnostic);
+            visualCapabilities = compiled.namedVisualCapabilities;
+            mModelVisualCapabilities.insert_or_assign(modelIdentity, visualCapabilities);
             const NifRender::StaticModelCacheResult published = mSession->models().publish(compiled.bundle);
             if (!published.available())
                 throw publicationError("static model publication", static_cast<unsigned int>(published.status));
@@ -400,12 +368,12 @@ namespace MWRender
             // the shared model cache before this lifecycle sees a world object.
             // Recover the root descriptions once, then retain them for live
             // objectChanged updates such as door rotation and harvesting.
-            if (!mVfs.exists(modelPath))
-                throw std::runtime_error("V4 cached static model is missing from the winning VFS: " + modelIdentity);
-            Nif::NIFFile nifFile(modelPath);
-            Nif::Reader reader(nifFile, nullptr);
-            reader.parse(mVfs.get(modelPath));
-            visualCapabilities = inspectNamedVisualCapabilities(Nif::FileView(nifFile));
+            const RenderNative::NifSemanticCompiler compiler(mVfs, &mTextureIdentities);
+            const RenderNative::NifSemanticCompileResult compiled = compiler.compile(modelPath);
+            if (!compiled.compiled())
+                throw std::runtime_error("VulkanMW cached native NIF metadata compile failed for " + modelIdentity
+                    + ": " + compiled.diagnostic);
+            visualCapabilities = compiled.namedVisualCapabilities;
             mModelVisualCapabilities.emplace(modelIdentity, visualCapabilities);
         }
 
