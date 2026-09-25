@@ -8,6 +8,8 @@
 #include "../mwworld/scenerenderlifecycle.hpp"
 
 #include <components/render/backend/vsg/vsgruntimebootstrap.hpp>
+#include <components/render/native/nifassetservice.hpp>
+#include <components/render/native/staticworldservice.hpp>
 #include <components/render/backend/vsg/vsgsemanticsession.hpp>
 #include <components/rendercore/frameproducer.hpp>
 #include <components/rendercore/renderer.hpp>
@@ -112,6 +114,8 @@ namespace MWRender
         const VFS::Manager& mVfs;
         NifRender::TextureIdentityCache mTextureIdentities;
         std::shared_ptr<RenderVsg::VsgSemanticSession> mSession;
+        std::unique_ptr<RenderNative::NifAssetService> mNativeAssets;
+        std::unique_ptr<RenderNative::StaticWorldService> mNativeStaticWorld;
         std::shared_ptr<V4RenderRouteStatus> mRouteStatus;
         std::unique_ptr<RenderCore::TerrainChunkProducer> mTerrain;
         std::unique_ptr<RenderCore::TerrainPreparationService> mTerrainPreparation;
