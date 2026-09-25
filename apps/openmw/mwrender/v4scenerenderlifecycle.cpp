@@ -265,7 +265,7 @@ namespace MWRender
     {
         try
         {
-            mModelVisualCapabilities.clear();
+            mNativeAssets->clearSourceMetadata();
             mTextureIdentities.clear();
             if (!mSession->resetWorld())
                 recordFailure("V4 scene lifecycle failed to reset the semantic world");
