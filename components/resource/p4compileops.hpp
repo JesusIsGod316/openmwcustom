@@ -3,6 +3,7 @@
 
 #include <osg/BufferObject>
 #include <osg/Geometry>
+#include <osg/StateSet>
 #include <osg/ref_ptr>
 
 #include <osgUtil/IncrementalCompileOperation>
@@ -36,6 +37,31 @@ namespace Resource
 
     private:
         osg::ref_ptr<osg::BufferObject> mBuffer;
+    };
+
+    class P4CompileStateSetOp final : public osgUtil::IncrementalCompileOperation::CompileOp
+    {
+    public:
+        explicit P4CompileStateSetOp(osg::StateSet* stateSet)
+            : mStateSet(stateSet)
+        {
+        }
+
+        double estimatedTimeForCompile(
+            osgUtil::IncrementalCompileOperation::CompileInfo&) const override
+        {
+            return 0.00005;
+        }
+
+        bool compile(osgUtil::IncrementalCompileOperation::CompileInfo& info) override
+        {
+            if (mStateSet && info.getState())
+                mStateSet->compileGLObjects(*info.getState());
+            return true;
+        }
+
+    private:
+        osg::ref_ptr<osg::StateSet> mStateSet;
     };
 
     class P4CompileGeometryFinalizeOp final : public osgUtil::IncrementalCompileOperation::CompileOp
