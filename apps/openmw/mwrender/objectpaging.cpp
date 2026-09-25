@@ -1035,7 +1035,7 @@ namespace MWRender
         std::map<VFS::Path::Normalized, osg::ref_ptr<const osg::Node>> p3PrefetchedTemplates;
         const bool p3TemplatePrefetchRequired = SceneUtil::PagingWorkScope::requiredReadiness();
         const bool p3TemplatePrefetch = static_cast<bool>(Settings::cells().mOptimizedMWParallelTemplatePrefetch)
-            && !activeGrid && compile;
+            && !activeGrid && compile && !SceneUtil::PagingWorkScope::optionalOptimization();
         if (p3TemplatePrefetch)
         {
             Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
