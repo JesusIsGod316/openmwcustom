@@ -335,6 +335,16 @@ namespace MWRender
                     Settings::cells().mOptimizedMWCompileSchedulerMaxObjectsPerFrame);
                 config.mDiagnosticThresholdMs = static_cast<double>(
                     Settings::cells().mOptimizedMWCompileSchedulerDiagnosticThresholdMs);
+                config.mHeavyLaneMode
+                    = static_cast<int>(Settings::cells().mOptimizedMWHeavyCompileLaneMode);
+                config.mHeavyThresholdMs
+                    = static_cast<double>(Settings::cells().mOptimizedMWHeavyCompileThresholdMs);
+                config.mHeavyMinSmoothFrames = static_cast<unsigned int>(
+                    Settings::cells().mOptimizedMWHeavyCompileMinSmoothFrames);
+                config.mHeavyMinHeadroomMs
+                    = static_cast<double>(Settings::cells().mOptimizedMWHeavyCompileMinHeadroomMs);
+                config.mTerrainDrawablePriorMs
+                    = static_cast<double>(Settings::cells().mOptimizedMWTerrainDrawablePriorMs);
                 ico = new Resource::OpenMWIncrementalCompileOperation(config);
             }
             else
