@@ -37,6 +37,7 @@
 
 #include "glextensions.hpp"
 #include "shadowsbin.hpp"
+#include "shadowproxygroup.hpp"
 #include "lightmanager.hpp"
 
 // NOLINTBEGIN(readability-identifier-naming)
@@ -3113,7 +3114,11 @@ void MWShadowTechnique::cullShadowCastingScene(osgUtil::CullVisitor* cv, osg::Ca
 
     cv->setTraversalMask( traversalMask & _shadowedScene->getShadowSettings()->getCastsShadowTraversalMask() );
 
-        if (camera) camera->accept(*cv);
+    {
+        ShadowTraversalScope shadowTraversal;
+        if (camera)
+            camera->accept(*cv);
+    }
 
     cv->setTraversalMask( traversalMask );
 
