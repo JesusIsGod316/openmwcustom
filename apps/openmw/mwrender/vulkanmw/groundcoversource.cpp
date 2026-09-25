@@ -2,7 +2,7 @@
 
 #include "referenceplacement.hpp"
 
-#include "../groundcover.hpp"
+#include "../groundcoverquery.hpp"
 
 #include <components/rendercore/renderworld.hpp>
 
@@ -29,8 +29,8 @@ namespace MWRender::VulkanMW
         result.cell.gridY = gridY;
         result.cell.groundcover = true;
 
-        const Groundcover::InstanceMap instances
-            = groundcover.collectInstances(1.0f, static_cast<float>(gridX) + 0.5f, static_cast<float>(gridY) + 0.5f);
+        const GroundcoverInstanceMap instances = collectGroundcoverInstances(
+            groundcover, 1.0f, static_cast<float>(gridX) + 0.5f, static_cast<float>(gridY) + 0.5f);
         for (const auto& [modelPath, entries] : instances)
         {
             const RenderNative::NifAssetResolveResult resolved = assets.resolve(modelPath);
@@ -48,7 +48,7 @@ namespace MWRender::VulkanMW
                 return result;
             }
 
-            for (const Groundcover::GroundcoverEntry& entry : entries)
+            for (const GroundcoverEntry& entry : entries)
             {
                 RenderCore::StaticPopulationInstanceSource source;
                 source.identity = "groundcover:" + entry.mRefNum.toString();
