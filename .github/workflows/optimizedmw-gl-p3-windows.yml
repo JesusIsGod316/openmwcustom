@@ -1,0 +1,70 @@
+name: OptimizedMW GL-P3 consolidated Windows gate
+on:
+  push:
+    branches: [optimizedmw/gl-p3-windows]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  Source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install native OSG
+        run: sudo apt-get update -qq && sudo apt-get install -y libopenscenegraph-dev
+
+      - name: Verify accepted P1-P2 and P3 source contracts
+        run: |
+          set -euo pipefail
+          python tools/optimizedmw/verify-gl-p1p2-repair-ffpb.py
+          python tools/opimizedmw/gl-p2/readiness-contract.py
+          python tools/optimizedmw/gl-p3/source-contract.py
+          python tools/v4/V4-CP0A-Verify-Materialized-Generated-Outputs.py
+
+      - name: Configure accepted P1 tests
+        run: >
+          cmake -S tools/opimizedmw/gl-p1b -B build-p1
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DOPIMIZEDMW_P1B_OSG_TESTS=ON
+          -DOPIMIZEDMW_P1B_SANITIZERS=ON
+
+      - name: Build and run accepted P1 tests
+        run: |
+          cmake --build build-p1 --parallel 2
+          ctest --test-dir build-p1 -V --output-on-failure
+
+      - name: Configure accepted P2 tests
+        run: >
+          cmake -S tools/opimizedmw/gl-p2 -B build-p2
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DOPIMIZEDMW_P2_OSG_TESTS=ON
+          -DOPIMIZEDMW_P2_SANITIZERS=ON
+
+      - name: Build and run accepted P2 tests
+        run: |
+          cmake --build build-p2 --parallel 2
+          ctest --test-dir build-p2 -V --output-on-failure
+
+      - name: Configure P3 tests
+        run: >
+          cmake -S tools/optimizedmw/gl-p3 -B build-p3
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DOPTIMIZEDMW_P3_SANITIZERS=ON
+
+      - name: Build and run P3 tests
+        run: |
+          cmake --build build-p3 --parallel 2
+          ctest --test-dir build-p3 -V --output-on-failure
+
+  Windows:
+    needs: Source
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
