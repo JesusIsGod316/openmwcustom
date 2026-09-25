@@ -75,6 +75,12 @@ namespace Settings
         SettingValue<float> mOptimizedMWCompileSchedulerDiagnosticThresholdMs{
             mIndex, "Cells", "optimizedmw compile scheduler diagnostic threshold ms",
             makeClampSanitizerFloat(0.0, 20.0) };
+        SettingValue<float> mOptimizedMWCompileSchedulerMinimumDrainBudgetMs{
+            mIndex, "Cells", "optimizedmw compile scheduler minimum drain budget ms",
+            makeClampSanitizerFloat(0.0, 4.0) };
+        SettingValue<float> mOptimizedMWCompileSchedulerHeavyOpThresholdMs{
+            mIndex, "Cells", "optimizedmw compile scheduler heavy op threshold ms",
+            makeClampSanitizerFloat(0.5, 100.0) };
 
         SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
         SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
