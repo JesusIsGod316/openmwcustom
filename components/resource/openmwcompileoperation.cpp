@@ -180,7 +180,11 @@ namespace Resource
     void OpenMWIncrementalCompileOperation::operator()(osg::GraphicsContext* context)
     {
         const int mode = mConfig.mMode;
-        if (mode <= 0 || !context || !context->getState())
+        // P4 owns one mutable cost/credit history. OpenMW's normal Windows
+        // renderer has one graphics context; fail open to stock ICO for
+        // multi-context/stereo configurations rather than sharing that state
+        // across concurrent graphics threads.
+        if (mode <= 0 || !context || !context->getState() || _contexts.size() != 1)
         {
             osgUtil::IncrementalCompileOperation::operator()(context);
             return;
