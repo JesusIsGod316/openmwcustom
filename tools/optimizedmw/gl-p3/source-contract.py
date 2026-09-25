@@ -19,11 +19,13 @@ checks = {
     "mechanical_counter": "p3_index_merges=" in objectpaging,
     "thread_switch": "optimizedmw parallel template prefetch" in cells
         and "optimizedmw parallel template prefetch = false" in defaults,
-    "bounded_helper": "class BoundedTwoWayWork" in two_way and "std::try_to_lock" in two_way,
+    "bounded_helper": "class BoundedTwoWayWork" in two_way and "std::try_to_lock" in two_way
+        and "workerLoop" in two_way and "mWorker.joinable()" in two_way,
     "speculative_context": "static Context capture()" in speculative
         and "creditRetainedEstimate" in speculative,
     "paging_context": "static Context capture()" in paging,
-    "distant_only_threading": "!activeGrid && compile && !SceneUtil::PagingWorkScope::requiredReadiness()" in objectpaging,
+    "distant_only_threading": "&& !activeGrid && compile;" in objectpaging
+        and "p3TemplatePrefetchRequired" in objectpaging,
     "thread_mechanical_counter": "p3_prefetch_parallel=" in objectpaging,
 }
 failed = [name for name, ok in checks.items() if not ok]
