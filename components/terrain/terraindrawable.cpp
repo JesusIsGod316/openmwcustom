@@ -149,6 +149,11 @@ namespace Terrain
         }
     }
 
+    void TerrainDrawable::compileGeometryGLObjects(osg::RenderInfo& renderInfo) const
+    {
+        osg::Geometry::compileGLObjects(renderInfo);
+    }
+
     void TerrainDrawable::compileGLObjects(osg::RenderInfo& renderInfo) const
     {
         for (PassVector::const_iterator it = mPasses.begin(); it != mPasses.end(); ++it)
@@ -157,7 +162,7 @@ namespace Terrain
             stateset->compileGLObjects(*renderInfo.getState());
         }
 
-        osg::Geometry::compileGLObjects(renderInfo);
+        compileGeometryGLObjects(renderInfo);
     }
 
 }
