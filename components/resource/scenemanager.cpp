@@ -1037,7 +1037,7 @@ namespace Resource
 
             if (compile && mIncrementalCompileOperation)
             {
-                if (v321CP2FairnessEnabled() && compileClass != V321CompileClass::Unknown)
+                if (compileClass != V321CompileClass::Unknown)
                 {
                     auto compileSet = new V321ClassifiedCompileSet(loaded, compileClass);
                     mIncrementalCompileOperation->add(compileSet);
