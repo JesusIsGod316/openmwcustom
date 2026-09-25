@@ -422,7 +422,8 @@ namespace Debug::V3Diagnostics
     {
         static CsvWriter writer("OPENMW_P4_COMPILE_FILE",
             "frame,epoch_ms,event,kind,compile_class,queue_depth,oldest_age_frames,budget_ms,credit_ms,"
-            "predicted_ms,actual_ms,headroom_ms,last_handoff_ms,objects,detail");
+            "predicted_ms,osg_estimate_ms,cost_ema_ms,estimate_scale,actual_ms,headroom_ms,last_handoff_ms,"
+            "objects,fits_budget,forced,detail");
         return writer;
     }
 
