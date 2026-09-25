@@ -1779,19 +1779,13 @@ namespace MWRender
         {
             Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
                 "object_chunk_compile_map", activeGrid ? "active_grid" : "distant", 0.1);
-            if (Resource::v321CP2FairnessEnabled())
-            {
-                auto compileSet = new Resource::V321ClassifiedCompileSet(
-                    group, Resource::V321CompileClass::ObjectPaging);
-                compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
-                ico->add(compileSet, false);
-            }
-            else
-            {
-                auto compileSet = new osgUtil::IncrementalCompileOperation::CompileSet(group);
-                compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
-                ico->add(compileSet, false);
-            }
+            // Classification is metadata only unless a scheduler/fairness policy
+            // consumes it. Always retain the producer identity so GL-P4 can
+            // prioritize without enabling the older CP2 completion policy.
+            auto compileSet = new Resource::V321ClassifiedCompileSet(
+                group, Resource::V321CompileClass::ObjectPaging);
+            compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
+            ico->add(compileSet, false);
         }
 
         if (Debug::V3Diagnostics::renderWriter().enabled())
