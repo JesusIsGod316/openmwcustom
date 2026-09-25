@@ -17,9 +17,7 @@
 #include <osgUtil/GLObjectsVisitor>
 #include <osgUtil/IncrementalCompileOperation>
 
-#include <components/esm3/esmreader.hpp>
 #include <components/esm3/loadland.hpp>
-#include <components/esm3/readerscache.hpp>
 #include <components/misc/convert.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/nodecallback.hpp>
@@ -28,8 +26,6 @@
 #include <components/settings/values.hpp>
 #include <components/shader/shadermanager.hpp>
 #include <components/terrain/quadtreenode.hpp>
-
-#include "../mwworld/groundcoverstore.hpp"
 
 #include "vismask.hpp"
 
@@ -268,34 +264,6 @@ namespace MWRender
             osg::Vec3f mChunkPosition;
         };
 
-        class DensityCalculator
-        {
-        public:
-            DensityCalculator(float density)
-                : mDensity(density)
-            {
-            }
-
-            bool isInstanceEnabled()
-            {
-                if (mDensity >= 1.f)
-                    return true;
-
-                mCurrentGroundcover += mDensity;
-                if (mCurrentGroundcover < 1.f)
-                    return false;
-
-                mCurrentGroundcover -= 1.f;
-
-                return true;
-            }
-            void reset() { mCurrentGroundcover = 0.f; }
-
-        private:
-            float mCurrentGroundcover = 0.f;
-            float mDensity = 0.f;
-        };
-
         class ViewDistanceCallback : public SceneUtil::NodeCallback<ViewDistanceCallback>
         {
         public:
@@ -315,22 +283,6 @@ namespace MWRender
             osg::BoundingBox mBox;
         };
 
-        inline bool isInChunkBorders(ESM::CellRef& ref, osg::Vec2f& minBound, osg::Vec2f& maxBound)
-        {
-            osg::Vec2f size = maxBound - minBound;
-            if (size.x() >= 1 && size.y() >= 1)
-                return true;
-
-            osg::Vec3f pos = ref.mPos.asVec3();
-            osg::Vec3f cellPos = pos / ESM::Land::REAL_SIZE;
-            if ((minBound.x() > std::floor(minBound.x()) && cellPos.x() < minBound.x())
-                || (minBound.y() > std::floor(minBound.y()) && cellPos.y() < minBound.y())
-                || (maxBound.x() < std::ceil(maxBound.x()) && cellPos.x() >= maxBound.x())
-                || (maxBound.y() < std::ceil(maxBound.y()) && cellPos.y() >= maxBound.y()))
-                return false;
-
-            return true;
-        }
     }
 
     osg::ref_ptr<osg::Node> Groundcover::getChunk(float size, const osg::Vec2f& center, unsigned char lod,
@@ -346,8 +298,7 @@ namespace MWRender
         {
             Debug::V3Diagnostics::ScopedCsvTimer timer(
                 Debug::V3Diagnostics::pagingWriter(), "groundcover_chunk_create", "", 0.25);
-            InstanceMap instances;
-            collectInstances(instances, size, center);
+            InstanceMap instances = collectInstances(size, center);
             if (Debug::V3Diagnostics::renderWriter().enabled())
             {
                 std::size_t instanceCount = 0;
@@ -417,79 +368,12 @@ namespace MWRender
 
     Groundcover::InstanceMap Groundcover::collectInstances(float size, const osg::Vec2f& center) const
     {
-        InstanceMap result;
-        collectInstances(result, size, center);
-        return result;
+        return collectGroundcoverInstances(mGroundcoverStore, mDensity, size, center.x(), center.y());
     }
 
     Groundcover::InstanceMap Groundcover::collectInstances(float size, float centerX, float centerY) const
     {
-        return collectInstances(size, osg::Vec2f(centerX, centerY));
-    }
-
-    GroundcoverInstanceMap collectGroundcoverInstances(
-        const Groundcover& groundcover, float size, float centerX, float centerY)
-    {
-        return groundcover.collectInstances(size, centerX, centerY);
-    }
-
-    void Groundcover::collectInstances(InstanceMap& instances, float size, const osg::Vec2f& center) const
-    {
-        if (mDensity <= 0.f)
-            return;
-
-        osg::Vec2f minBound = (center - osg::Vec2f(size / 2.f, size / 2.f));
-        osg::Vec2f maxBound = (center + osg::Vec2f(size / 2.f, size / 2.f));
-        DensityCalculator calculator(mDensity);
-        ESM::ReadersCache readers;
-        osg::Vec2i startCell = osg::Vec2i(static_cast<int>(std::floor(center.x() - size / 2.f)),
-            static_cast<int>(std::floor(center.y() - size / 2.f)));
-        for (int cellX = startCell.x(); cellX < startCell.x() + size; ++cellX)
-        {
-            for (int cellY = startCell.y(); cellY < startCell.y() + size; ++cellY)
-            {
-                ESM::Cell cell;
-                mGroundcoverStore.initCell(cell, cellX, cellY);
-                if (cell.mContextList.empty())
-                    continue;
-
-                calculator.reset();
-                std::map<ESM::RefNum, ESM::CellRef> refs;
-                for (size_t i = 0; i < cell.mContextList.size(); ++i)
-                {
-                    const std::size_t index = static_cast<std::size_t>(cell.mContextList[i].index);
-                    const ESM::ReadersCache::BusyItem reader = readers.get(index);
-                    cell.restore(*reader, i);
-                    ESM::CellRef ref;
-                    bool deleted = false;
-                    while (cell.getNextRef(*reader, ref, deleted))
-                    {
-                        if (!deleted && refs.find(ref.mRefNum) == refs.end() && !calculator.isInstanceEnabled())
-                            deleted = true;
-                        if (!deleted && !isInChunkBorders(ref, minBound, maxBound))
-                            deleted = true;
-
-                        if (deleted)
-                        {
-                            refs.erase(ref.mRefNum);
-                            continue;
-                        }
-                        refs[ref.mRefNum] = std::move(ref);
-                    }
-                }
-
-                for (auto& [refNum, cellRef] : refs)
-                {
-                    const VFS::Path::NormalizedView model = mGroundcoverStore.getGroundcoverModel(cellRef.mRefID);
-                    if (model.empty())
-                        continue;
-                    auto it = instances.find(model);
-                    if (it == instances.end())
-                        it = instances.emplace_hint(it, VFS::Path::Normalized(model), std::vector<GroundcoverEntry>());
-                    it->second.emplace_back(std::move(cellRef));
-                }
-            }
-        }
+        return collectGroundcoverInstances(mGroundcoverStore, mDensity, size, centerX, centerY);
     }
 
     osg::ref_ptr<osg::Node> Groundcover::createChunk(InstanceMap& instances, const osg::Vec2f& center)
