@@ -8,7 +8,6 @@
 #include <osg/ref_ptr>
 
 #include <atomic>
-#include <atomic>
 #include <map>
 #include <mutex>
 #include <set>
@@ -47,6 +46,7 @@ namespace MWRender
 
         unsigned int getNodeMask() override;
         bool supportsStrongPagingUpgrade() const override { return true; }
+        bool supportsDistantStrongPagingUpgrade() const override;
 
         /// @return true if view needs rebuild
         bool enableObject(int type, ESM::RefNum refnum, const osg::Vec3f& pos, const osg::Vec2i& cell, bool enabled);
@@ -102,6 +102,7 @@ namespace MWRender
         {
             unsigned char mPrepareMode = 0;
             unsigned char mSpatialMode = 0;
+            unsigned char mP3OptionalMask = 0;
         };
         mutable std::mutex mV313ChunkQualityMutex;
         std::map<ChunkId, V313ChunkQuality> mV313ChunkQualities;
@@ -110,6 +111,8 @@ namespace MWRender
         std::atomic_uint64_t mV313UpgradeBuilt{ 0 };
         std::atomic_uint64_t mV313UpgradeInstalled{ 0 };
         std::atomic_uint64_t mV313UpgradeCoalesced{ 0 };
+
+        unsigned char p3OptionalDistantMask() const;
 
         std::mutex mRefTrackerMutex;
         struct RefTracker
