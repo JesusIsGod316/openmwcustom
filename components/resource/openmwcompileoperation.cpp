@@ -11,8 +11,10 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <sstream>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -327,7 +329,9 @@ namespace Resource
                 });
             }
 
-            if (remainingBudgetMs <= 0.0 && !agedOut)
+            // An age override exists only to guarantee eventual progress. Never
+            // let several oversized/starved GL calls collapse into one frame.
+            if (agedOut || remainingBudgetMs <= 0.0)
                 break;
         }
 
