@@ -1,6 +1,7 @@
 #include "openmwcompileoperation.hpp"
 
 #include "v321classifiedcompileset.hpp"
+#include "p4compileops.hpp"
 
 #include <components/debug/v3diagnostics.hpp>
 #include <osg/GraphicsContext>
@@ -80,6 +81,8 @@ namespace Resource
             return CompileKind::Texture;
         if (dynamic_cast<const CompileProgramOp*>(op))
             return CompileKind::Program;
+        if (dynamic_cast<const P4CompileBufferOp*>(op))
+            return CompileKind::Buffer;
         return CompileKind::Other;
     }
 
@@ -90,6 +93,7 @@ namespace Resource
             case CompileKind::Drawable: return "drawable";
             case CompileKind::Texture: return "texture";
             case CompileKind::Program: return "program";
+            case CompileKind::Buffer: return "buffer";
             case CompileKind::Other: return "other";
             case CompileKind::Count: break;
         }
