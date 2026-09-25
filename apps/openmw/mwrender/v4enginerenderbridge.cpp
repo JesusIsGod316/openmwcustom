@@ -9,6 +9,7 @@
 #include "v4scenerenderlifecycle.hpp"
 #include "v4semanticsource.hpp"
 #include "v4terrainsource.hpp"
+#include "vulkanmw/groundcoversource.hpp"
 
 #include "animation.hpp"
 #include "groundcover.hpp"
@@ -347,6 +348,10 @@ namespace MWRender
         : mVfs(vfs)
         , mTextureIdentities(vfs, std::getenv("OPENMW_V4_UNCACHED_TEXTURE_IDENTITIES") ? 0u : 4096u)
         , mSession(std::move(session))
+        , mNativeAssets(std::make_unique<RenderNative::NifAssetService>(
+              mVfs, &mTextureIdentities, mSession->models()))
+        , mNativeStaticWorld(std::make_unique<RenderNative::StaticWorldService>(
+              mSession->cells(), mSession->populations()))
         , mRouteStatus(std::make_shared<V4RenderRouteStatus>())
         , mTerrain(std::make_unique<RenderCore::TerrainChunkProducer>(mSession->world(), mSession->publisher()))
     {
@@ -488,69 +493,40 @@ namespace MWRender
                     continue;
                 const std::string cellIdentity = "groundcover:" + std::string(worldspaceIdentity) + ":"
                     + std::to_string(resident.gridX) + "," + std::to_string(resident.gridY);
-                if (mGroundcoverCells.contains(cellIdentity))
-                    continue;
-                if (newCells >= maxNewCellsPerFrame)
+                if (mGroundcoverCells.contains(cellIdentity) || newCells >= maxNewCellsPerFrame)
                     continue;
 
-                RenderCore::StaticPopulationCellSource cellSource;
-                cellSource.identity = cellIdentity;
-                cellSource.worldspaceIdentity = worldspaceIdentity;
-                cellSource.gridX = resident.gridX;
-                cellSource.gridY = resident.gridY;
-                cellSource.groundcover = true;
-                const RenderCore::StaticPopulationPublishStatus added
-                    = mSession->populations().addCell(std::move(cellSource));
-                if (added != RenderCore::StaticPopulationPublishStatus::Applied
-                    && added != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
+                VulkanMW::GroundcoverPopulationSource source = VulkanMW::makeGroundcoverPopulationSource(
+                    *groundcover, *mNativeAssets, mSession->world(), worldspaceIdentity, resident.gridX, resident.gridY,
+                    Settings::groundcover().mRenderingDistance.get());
+                if (!source.valid())
                 {
-                    mLastDiagnostic = "groundcover population cell staging failed";
+                    mLastDiagnostic = source.diagnostic.empty()
+                        ? "native groundcover source rejected the resident cell"
+                        : source.diagnostic;
                     return false;
                 }
 
-                const osg::Vec2f center(
-                    static_cast<float>(resident.gridX) + 0.5f, static_cast<float>(resident.gridY) + 0.5f);
-                Groundcover::InstanceMap instances = groundcover->collectInstances(1.0f, center);
-                for (const auto& [modelPath, entries] : instances)
+                const RenderNative::StaticWorldMutationResult activated
+                    = mNativeStaticWorld->activatePopulationCell(std::move(source.cell));
+                if (!activated.accepted())
                 {
-                    const std::optional<NifRender::StaticModelCacheResult> published
-                        = ensureModelPublished(*mSession, mVfs, modelPath, &mTextureIdentities);
-                    if (!published)
+                    mLastDiagnostic = "native groundcover population cell publication failed";
+                    return false;
+                }
+
+                for (RenderCore::StaticPopulationInstanceSource& placement : source.instances)
+                {
+                    const RenderNative::StaticWorldMutationResult published
+                        = mNativeStaticWorld->upsertPopulation(std::move(placement));
+                    if (!published.accepted())
                     {
-                        mLastDiagnostic = "groundcover model publication failed for " + modelPath.value();
+                        static_cast<void>(mNativeStaticWorld->deactivatePopulationCell(cellIdentity));
+                        mLastDiagnostic = "native groundcover placement publication failed";
                         return false;
-                    }
-                    const RenderCore::ModelRecord* model = mSession->world().get(published->model);
-                    if (!model)
-                    {
-                        mLastDiagnostic = "groundcover model cache returned a stale handle";
-                        return false;
-                    }
-                    for (const Groundcover::GroundcoverEntry& entry : entries)
-                    {
-                        RenderCore::StaticPopulationInstanceSource source;
-                        source.identity = "groundcover:" + entry.mRefNum.toString();
-                        source.cellIdentity = cellIdentity;
-                        source.model = published->model;
-                        source.transform.translation
-                            = { entry.mPos.pos[0], entry.mPos.pos[1], entry.mPos.pos[2] };
-                        const osg::Quat rotation = Misc::Convert::makeOsgQuat(entry.mPos);
-                        source.transform.rotation = { static_cast<float>(rotation.w()), static_cast<float>(rotation.x()),
-                            static_cast<float>(rotation.y()), static_cast<float>(rotation.z()) };
-                        source.transform.scale = { entry.mScale, entry.mScale, entry.mScale };
-                        source.localBounds = model->bounds;
-                        source.lod.maximumDistance = std::max(0.0f, Settings::groundcover().mRenderingDistance.get());
-                        source.semanticFlags &= ~RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::ShadowCaster);
-                        const RenderCore::StaticPopulationPublishStatus status
-                            = mSession->populations().upsert(std::move(source));
-                        if (status != RenderCore::StaticPopulationPublishStatus::Applied
-                            && status != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
-                        {
-                            mLastDiagnostic = "groundcover placement staging failed";
-                            return false;
-                        }
                     }
                 }
+
                 mGroundcoverCells.insert(cellIdentity);
                 ++newCells;
             }
@@ -563,11 +539,11 @@ namespace MWRender
                 ++current;
                 continue;
             }
-            const RenderCore::StaticPopulationPublishStatus status = mSession->populations().removeCell(*current);
-            if (status != RenderCore::StaticPopulationPublishStatus::Applied
-                && status != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
+            const RenderNative::StaticWorldMutationResult retired
+                = mNativeStaticWorld->deactivatePopulationCell(*current);
+            if (!retired.accepted())
             {
-                mLastDiagnostic = "groundcover population retirement failed";
+                mLastDiagnostic = "native groundcover population retirement failed";
                 return false;
             }
             current = mGroundcoverCells.erase(current);
