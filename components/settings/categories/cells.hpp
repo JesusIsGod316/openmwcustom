@@ -36,9 +36,6 @@ namespace Settings
             mIndex, "Cells", "optimizedmw shadow static batching" };
         SettingValue<bool> mOptimizedMWRenderHandoffAttribution{
             mIndex, "Cells", "optimizedmw render handoff attribution" };
-        SettingValue<int> mOptimizedMWParallelTemplatePrefetchWorkers{
-            mIndex, "Cells", "optimizedmw parallel template prefetch workers",
-            makeClampSanitizerInt(1, 3) };
         SettingValue<bool> mOptimizedMWParallelTemplatePrefetch{
             mIndex, "Cells", "optimizedmw parallel template prefetch" };
         SettingValue<int> mOptimizedMWParallelTemplatePrefetchMinTemplates{
