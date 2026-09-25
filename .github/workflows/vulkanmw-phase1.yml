@@ -1,0 +1,61 @@
+name: VulkanMW Phase 1 native NIF compiler
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [vulkanmw/phase1-nif-semantic-compiler]
+
+concurrency:
+  group: vulkanmw-phase1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  NativeNifSemanticCompiler:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout VulkanMW Phase 1
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Phase 0 ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          PHASE0=086732cf494c31d4b823bc774e2929a6a75d4d67
+          git cat-file -e "${PHASE0}^{commit}"
+          test "$(git merge-base "${PHASE0}" HEAD)" = "${PHASE0}"
+
+      - name: Enforce VulkanMW architecture boundaries
+        run: python3 tools/vulkanmw/check-architecture-boundaries.py
+
+      - name: Enforce Phase 1 direct NIF compiler contract
+        run: python3 tools/vulkanmw/check-phase1-nif-compiler.py
+
+      - name: Install lightweight compile dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libglm-dev libopenscenegraph-dev
+
+      - name: Compile native compiler API smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I.             tools/vulkanmw/phase1-api-smoke.cpp             -o /tmp/vulkanmw-phase1-api-smoke
+          /tmp/vulkanmw-phase1-api-smoke
+
+      - name: Compile direct NIF semantic source closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          CXXFLAGS="-std=c++20 -O1 -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter -I."
+          g++ ${CXXFLAGS} -c components/nifrender/niftranslator.cpp -o /tmp/vulkanmw-niftranslator.o
+          g++ ${CXXFLAGS} -c components/nifrender/staticniftranslator.cpp -o /tmp/vulkanmw-staticniftranslator.o
+          g++ ${CXXFLAGS} -c components/render/native/nifsemanticcompiler.cpp -o /tmp/vulkanmw-nifsemanticcompiler.o
+
+      - name: Check Phase 1 whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check 086732cf494c31d4b823bc774e2929a6a75d4d67 HEAD --             components/render/native             components/render/backend/vsg/runtime-sources.cmake             apps/openmw/mwrender/v4scenerenderlifecycle.cpp             tools/vulkanmw
