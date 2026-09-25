@@ -168,13 +168,14 @@ jobs:
         run: |
           $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
           $roots = @(
-            "$openmwDeps/installed/x64-windows/bin",
             "$env:GITHUB_WORKSPACE/vulkanmw-vcpkg/x64-windows/bin",
+            "$openmwDeps/installed/x64-windows/bin/Release",
+            "$openmwDeps/installed/x64-windows/bin",
             "$env:GITHUB_WORKSPACE/build-vulkanmw-phase1/_deps/SDL3-3.4.10/lib/x64"
           )
           $env:PATH = (($roots | Where-Object { Test-Path $_ }) -join ';') + ';' + $env:PATH
           & "$env:GITHUB_WORKSPACE/build-vulkanmw-phase1/openmw.exe" --version
-          if ($LASTEXITCODE -ne 0) { throw "openmw.exe --version failed" }
+          if ($LASTEXITCODE -ne 0) { throw "openmw.exe --version failed with $LASTEXITCODE" }
           & "$env:GITHUB_WORKSPACE/build-vulkanmw-phase1/openmw-vulkan-nif-conformance.exe" --help
           if ($LASTEXITCODE -ne 0) { throw "real-NIF conformance --help failed" }
 
