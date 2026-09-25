@@ -33,39 +33,34 @@ function Set-IniValue {
 }
 
 Write-Host ''
-Write-Host 'OptimizedMW GL-P4 compile scheduler benchmark launcher' -ForegroundColor Cyan
-Write-Host '  1 = CONTROL-B1              - current ICO + validated P3B one-helper'
-Write-Host '  2 = CONTROL-B1-C            - current ICO + P3B one-helper + P3C'
-Write-Host '  3 = CONTROL-B1-C-D          - current ICO + P3B one-helper + P3C + P3D'
-Write-Host '  4 = P4A-B1                  - cost-aware compile scheduler + B1'
-Write-Host '  5 = P4B-B1                  - handoff/credit-aware scheduler + B1'
-Write-Host '  6 = P4B-B1-C                - handoff scheduler + B1 + C'
-Write-Host '  7 = P4B-B1-C-D              - handoff scheduler + B1 + C + D'
-Write-Host '  8 = P4B-B1-C-COMPLETION     - mode 6 + V3.21 completed-set governor'
-Write-Host '  9 = P4A-B1-C                - cost-aware scheduler + B1 + C'
+Write-Host 'OptimizedMW GL-P4R + heavy-GL benchmark launcher' -ForegroundColor Cyan
+Write-Host '  1 = CONTROL-B1              - stock OSG ICO + B1'
+Write-Host '  2 = CONTROL-B1-C            - stock OSG ICO + B1 + C'
+Write-Host '  3 = P4R-B1                  - repaired cheap-drain scheduler + B1'
+Write-Host '  4 = P4R-B1-C                - repaired scheduler + B1 + C'
+Write-Host '  5 = P4R-B1-C-HEAVY          - mode 4 + heavy-GL smooth-headroom lane'
+Write-Host '  6 = P4R-B1-HEAVY            - repaired scheduler + B1 + heavy lane'
 Write-Host ''
-do{$choice=Read-Host 'Choose test mode (1-9)'}until($choice -in @('1','2','3','4','5','6','7','8','9'))
+do{$choice=Read-Host 'Choose test mode (1-6)'}until($choice -in @('1','2','3','4','5','6'))
 
 $SchedulerMode='0'
 $P3C='false'
 $P3D='false'
 $Completion='0'
+$HeavyMode='0'
 $Experiment='CONTROL-B1'
 
 switch($choice){
     '2'{$Experiment='CONTROL-B1-C';$P3C='true'}
-    '3'{$Experiment='CONTROL-B1-C-D';$P3C='true';$P3D='true'}
-    '4'{$Experiment='P4A-B1';$SchedulerMode='1'}
-    '5'{$Experiment='P4B-B1';$SchedulerMode='2'}
-    '6'{$Experiment='P4B-B1-C';$SchedulerMode='2';$P3C='true'}
-    '7'{$Experiment='P4B-B1-C-D';$SchedulerMode='2';$P3C='true';$P3D='true'}
-    '8'{$Experiment='P4B-B1-C-COMPLETION';$SchedulerMode='2';$P3C='true';$Completion='1'}
-    '9'{$Experiment='P4A-B1-C';$SchedulerMode='1';$P3C='true'}
+    '3'{$Experiment='P4R-B1';$SchedulerMode='2'}
+    '4'{$Experiment='P4R-B1-C';$SchedulerMode='2';$P3C='true'}
+    '5'{$Experiment='P4R-B1-C-HEAVY';$SchedulerMode='2';$P3C='true';$HeavyMode='1'}
+    '6'{$Experiment='P4R-B1-HEAVY';$SchedulerMode='2';$HeavyMode='1'}
 }
 
 New-Item -ItemType Directory -Path $ProfilesRoot -Force | Out-Null
 $stamp=Get-Date -Format 'yyyyMMdd_HHmmss'
-$ProfileDir=Join-Path $ProfilesRoot ("OptimizedMW_GL-P4_{0}_{1}" -f $Experiment,$stamp)
+$ProfileDir=Join-Path $ProfilesRoot ("OptimizedMW_GL-P4R_{0}_{1}" -f $Experiment,$stamp)
 New-Item -ItemType Directory -Path $ProfileDir -Force | Out-Null
 $BackupSettings=Join-Path $ProfileDir 'settings-before.cfg'
 Copy-Item -LiteralPath $SettingsPath -Destination $BackupSettings -Force
@@ -103,10 +98,15 @@ try{
     Set-IniValue $SettingsPath 'Cells' 'optimizedmw compile scheduler credit cap ms' '2.5'
     Set-IniValue $SettingsPath 'Cells' 'optimizedmw compile scheduler headroom ratio' '0.25'
     Set-IniValue $SettingsPath 'Cells' 'optimizedmw compile scheduler handoff threshold ms' '20.0'
-    Set-IniValue $SettingsPath 'Cells' 'optimizedmw compile scheduler max queue age frames' '12'
+    Set-IniValue $SettingsPath 'Cells' 'optimizedmw compile scheduler max queue age frames' '120'
     Set-IniValue $SettingsPath 'Cells' 'optimizedmw compile scheduler delete budget ms' '0.15'
-    Set-IniValue $SettingsPath 'Cells' 'optimizedmw compile scheduler max objects per frame' '4'
+    Set-IniValue $SettingsPath 'Cells' 'optimizedmw compile scheduler max objects per frame' '12'
     Set-IniValue $SettingsPath 'Cells' 'optimizedmw compile scheduler diagnostic threshold ms' '0.15'
+    Set-IniValue $SettingsPath 'Cells' 'optimizedmw heavy compile lane mode' $HeavyMode
+    Set-IniValue $SettingsPath 'Cells' 'optimizedmw heavy compile threshold ms' '6.0'
+    Set-IniValue $SettingsPath 'Cells' 'optimizedmw heavy compile min smooth frames' '30'
+    Set-IniValue $SettingsPath 'Cells' 'optimizedmw heavy compile min headroom ms' '5.0'
+    Set-IniValue $SettingsPath 'Cells' 'optimizedmw terrain drawable prior ms' '8.0'
 
     # Freeze the pre-existing compile policy so control and candidate differ only by P4.
     Set-IniValue $SettingsPath 'Cells' 'target framerate' '60'
@@ -143,7 +143,7 @@ try{
 
     @(
         "experiment=$Experiment",
-        "expected_lineage=optimizedmw/gl-p4-compile-scheduler",
+        "expected_lineage=optimizedmw/gl-p4r-heavy-gl",
         "p3b_parallel_template_prefetch=true",
         "p3b_workers=1",
         "p3c_semantic_premerge=$P3C",
@@ -153,9 +153,14 @@ try{
         "p4_credit_cap_ms=2.5",
         "p4_headroom_ratio=0.25",
         "p4_handoff_threshold_ms=20.0",
-        "p4_max_queue_age_frames=12",
+        "p4_max_queue_age_frames=120",
         "p4_delete_budget_ms=0.15",
-        "p4_max_objects_per_frame=4",
+        "p4_max_objects_per_frame=12",
+        "p5_heavy_lane_mode=$HeavyMode",
+        "p5_heavy_threshold_ms=6.0",
+        "p5_heavy_min_smooth_frames=30",
+        "p5_heavy_min_headroom_ms=5.0",
+        "p5_terrain_drawable_prior_ms=8.0",
         "completion_governor=$Completion",
         "v38_compile_pacing_mode=3",
         "v315_adaptive_compile_governor=1",
@@ -181,7 +186,7 @@ try{
     $env:OPENMW_OSG_STATS_LIST='times;resource'
 
     Write-Host ''
-    Write-Host "Starting OptimizedMW GL-P4 test: $Experiment" -ForegroundColor Green
+    Write-Host "Starting OptimizedMW GL-P4R test: $Experiment" -ForegroundColor Green
     Write-Host 'Use the SAME outdoor save, fixed heavy view, walking route, and frame-cap state.' -ForegroundColor Yellow
     Write-Host 'Hold the fixed view ~45 sec, then walk the same 2-3 minute route across the same cell boundaries. Quit normally.'
     Write-Host ''
@@ -217,7 +222,7 @@ $zipPath="$ProfileDir.zip"
 if(Test-Path -LiteralPath $zipPath){Remove-Item -LiteralPath $zipPath -Force}
 Compress-Archive -Path (Join-Path $ProfileDir '*') -DestinationPath $zipPath -CompressionLevel Optimal
 Write-Host ''
-Write-Host 'GL-P4 profile complete. Your normal settings have been restored.' -ForegroundColor Green
+Write-Host 'GL-P4R profile complete. Your normal settings have been restored.' -ForegroundColor Green
 Write-Host "Upload this ZIP to ChatGPT: $zipPath" -ForegroundColor Cyan
 try{Start-Process explorer.exe -ArgumentList "/select,`"$zipPath`""}catch{}
 Read-Host 'Press Enter to close'
