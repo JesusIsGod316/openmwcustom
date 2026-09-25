@@ -14,6 +14,7 @@
 #include <limits>
 #include <sstream>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace
@@ -145,7 +146,8 @@ namespace Resource
     {
         {
             OpenThreads::ScopedLock<OpenThreads::Mutex> lock(_toCompileMutex);
-            auto it = std::find(_toCompile.begin(), _toCompile.end(), set);
+            auto it = std::find_if(_toCompile.begin(), _toCompile.end(),
+                [set](const osg::ref_ptr<CompileSet>& value) { return value.get() == set; });
             if (it != _toCompile.end())
                 _toCompile.erase(it);
         }
@@ -230,11 +232,6 @@ namespace Resource
         unsigned int compiledObjects = 0;
         bool forcedOldest = false;
 
-        auto stillQueued = [&](CompileSet* set) {
-            OpenThreads::ScopedLock<OpenThreads::Mutex> lock(_toCompileMutex);
-            return std::find(_toCompile.begin(), _toCompile.end(), set) != _toCompile.end();
-        };
-
         while (compiledObjects < maxObjects && !queued.empty())
         {
             CompileSet* selected = nullptr;
@@ -247,7 +244,7 @@ namespace Resource
             for (const osg::ref_ptr<CompileSet>& setRef : queued)
             {
                 CompileSet* set = setRef.get();
-                if (!set || !stillQueued(set))
+                if (!set)
                     continue;
 
                 auto mapIt = set->_compileMap.find(context);
