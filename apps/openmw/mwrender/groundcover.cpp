@@ -421,6 +421,11 @@ namespace MWRender
         return result;
     }
 
+    Groundcover::InstanceMap Groundcover::collectInstances(float size, float centerX, float centerY) const
+    {
+        return collectInstances(size, osg::Vec2f(centerX, centerY));
+    }
+
     void Groundcover::collectInstances(InstanceMap& instances, float size, const osg::Vec2f& center) const
     {
         if (mDensity <= 0.f)
