@@ -29,6 +29,7 @@
 #include <components/sceneutil/skeleton.hpp>
 
 #include <components/debug/debuglog.hpp>
+#include <components/esm3/loadcell.hpp>
 
 #include <components/misc/strings/lower.hpp>
 #include <components/misc/convert.hpp>
@@ -424,8 +425,9 @@ namespace MWRender
         }
 
         std::set<std::string, std::less<>> desired;
-        const Groundcover* groundcover = rendering.getGroundcover();
-        if (groundcover && !worldspaceIdentity.empty())
+        const bool groundcoverEnabled = Settings::groundcover().mEnabled && !worldspaceIdentity.empty()
+            && ESM::RefId::deserializeText(worldspaceIdentity) == ESM::Cell::sDefaultWorldspaceId;
+        if (groundcoverEnabled)
         {
             for (const RenderCore::TerrainResidencyCell& resident : residency)
             {
@@ -446,7 +448,8 @@ namespace MWRender
                     continue;
 
                 VulkanMW::GroundcoverPopulationSource source = VulkanMW::makeGroundcoverPopulationSource(
-                    *groundcover, *mNativeAssets, mSession->world(), worldspaceIdentity, resident.gridX, resident.gridY,
+                    rendering.getGroundcoverStore(), Settings::groundcover().mDensity.get(), *mNativeAssets,
+                    mSession->world(), worldspaceIdentity, resident.gridX, resident.gridY,
                     Settings::groundcover().mRenderingDistance.get());
                 if (!source.valid())
                 {
