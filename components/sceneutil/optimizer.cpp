@@ -1679,7 +1679,10 @@ bool Optimizer::MergeGeometryVisitor::mergeGroup(osg::Group& group)
                 // non-adjacent indexed TRIANGLES while preserving the first
                 // occurrence position. Transparent geometry is deliberately
                 // excluded because primitive order can be visually significant.
-                if (_mergeCompatibleIndexTypes && !_alphaBlendingActive && primitives.size() > 2)
+                const bool p3LocalTransparent = geom->getStateSet()
+                    && geom->getStateSet()->getRenderingHint() == osg::StateSet::TRANSPARENT_BIN;
+                if (_mergeCompatibleIndexTypes && !_alphaBlendingActive && !p3LocalTransparent
+                    && primitives.size() > 2)
                 {
                     unsigned int firstTriangle = static_cast<unsigned int>(primitives.size());
                     std::set<osg::PrimitiveSet*> nonAdjacentRemove;
