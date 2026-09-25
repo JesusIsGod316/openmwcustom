@@ -61,7 +61,7 @@ namespace RenderNative
             std::string_view worldspaceIdentity, std::int32_t gridX, std::int32_t gridY)
         {
             synchronizeEpoch();
-            return mResidency.update(worldspaceIdentity, gridX, gridY);
+            return mResidency.update(std::string(worldspaceIdentity), gridX, gridY);
         }
 
         [[nodiscard]] TerrainWorldSyncResult clear()
@@ -77,9 +77,11 @@ namespace RenderNative
             }
             const RenderCore::TerrainChunkPublishStatus published = mTerrain.synchronize(std::nullopt);
             if (published == RenderCore::TerrainChunkPublishStatus::Applied)
-                return { TerrainWorldSyncStatus::Applied, published };
+                return { TerrainWorldSyncStatus::Applied, published,
+                    RenderCore::TerrainPreparationRequestStatus::Unchanged, {} };
             if (published == RenderCore::TerrainChunkPublishStatus::AlreadyPresent)
-                return { TerrainWorldSyncStatus::AlreadyCurrent, published };
+                return { TerrainWorldSyncStatus::AlreadyCurrent, published,
+                    RenderCore::TerrainPreparationRequestStatus::Unchanged, {} };
             return { TerrainWorldSyncStatus::PublishFailed, published,
                 RenderCore::TerrainPreparationRequestStatus::Unchanged,
                 "native terrain clear failed with publish status "
@@ -91,7 +93,9 @@ namespace RenderNative
         {
             synchronizeEpoch();
             if (desired.empty() || !builder)
-                return { TerrainWorldSyncStatus::InvalidSource };
+                return { TerrainWorldSyncStatus::InvalidSource,
+                    RenderCore::TerrainChunkPublishStatus::AlreadyPresent,
+                    RenderCore::TerrainPreparationRequestStatus::Invalid, {} };
 
             const auto required = std::ranges::find_if(desired, &RenderCore::TerrainPreparationRequest::required);
             if (required == desired.end())
@@ -162,13 +166,13 @@ namespace RenderNative
                     mPendingPublication.clear();
 
                 if (publishStatus == RenderCore::TerrainChunkPublishStatus::PartiallyApplied)
-                    return { TerrainWorldSyncStatus::PartiallyApplied, publishStatus, requested };
+                    return { TerrainWorldSyncStatus::PartiallyApplied, publishStatus, requested, {} };
                 if (publishStatus == RenderCore::TerrainChunkPublishStatus::Applied)
                     changed = true;
             }
 
             return { changed ? TerrainWorldSyncStatus::Applied : TerrainWorldSyncStatus::AlreadyCurrent,
-                publishStatus, requested };
+                publishStatus, requested, {} };
         }
 
         void stopBackgroundPreparation() { mPreparation.reset(); }
