@@ -1351,32 +1351,21 @@ bool Optimizer::MergeGeometryVisitor::mergeGroup(osg::Group& group)
         GeometryDuplicateMap geometryDuplicateMap;
         Nodes standardChildren;
 
-        // OptimizedMW P3: some immutable static geometries carry a vertex-color
-        // stream even when their material explicitly ignores vertex color, while
-        // otherwise equivalent geometry omits it. OSG refuses to merge those
-        // layouts. For private, unpublished opaque paging geometry only, normalize
-        // the omitted stream to GL's white default so the existing physical merge
-        // can remove a real drawable boundary without changing material semantics.
+        // OptimizedMW P3E: private static paging geometry can retain vertex-color
+        // arrays even when its material explicitly ignores vertex color. Removing
+        // that semantically dead stream before grouping both reduces copied vertex
+        // payload and eliminates a real merge-layout mismatch without inventing
+        // replacement data. Vertex-color-dependent materials remain untouched.
         if (_normalizeIgnoredVertexColors && !_alphaBlendingActive)
         {
-            struct ColorPrototype
-            {
-                const osg::Array* mArray = nullptr;
-                bool mConflict = false;
-            };
-            std::map<osg::StateSet*, ColorPrototype> colorPrototypes;
-
-            auto supportedColor = [](const osg::Array* array) {
-                return dynamic_cast<const osg::Vec4Array*>(array) != nullptr
-                    || dynamic_cast<const osg::Vec4ubArray*>(array) != nullptr;
-            };
-
             for (unsigned int childIndex = 0; childIndex < group.getNumChildren(); ++childIndex)
             {
                 osg::Geometry* geometry = group.getChild(childIndex)->asGeometry();
-                if (!geometry || geometry->getDataVariance() == osg::Object::DYNAMIC
+                if (!geometry || !geometry->getColorArray()
+                    || geometry->getDataVariance() == osg::Object::DYNAMIC
                     || !isOperationPermissibleForObject(geometry))
                     continue;
+
                 osg::StateSet* state = geometry->getStateSet();
                 if (!state)
                     continue;
@@ -1384,52 +1373,8 @@ bool Optimizer::MergeGeometryVisitor::mergeGroup(osg::Group& group)
                     state->getAttribute(osg::StateAttribute::MATERIAL));
                 if (!material || material->getVertexColorMode() != SceneUtil::VertexColorModes::None)
                     continue;
-                const osg::Array* color = geometry->getColorArray();
-                if (!color)
-                    continue;
-                if (osg::getBinding(color) != osg::Array::BIND_PER_VERTEX
-                    || !geometry->getVertexArray()
-                    || color->getNumElements() != geometry->getVertexArray()->getNumElements()
-                    || !supportedColor(color))
-                    continue;
 
-                ColorPrototype& prototype = colorPrototypes[state];
-                if (!prototype.mArray)
-                    prototype.mArray = color;
-                else if (prototype.mArray->getType() != color->getType())
-                    prototype.mConflict = true;
-            }
-
-            for (unsigned int childIndex = 0; childIndex < group.getNumChildren(); ++childIndex)
-            {
-                osg::Geometry* geometry = group.getChild(childIndex)->asGeometry();
-                if (!geometry || geometry->getColorArray() || !geometry->getVertexArray()
-                    || geometry->getDataVariance() == osg::Object::DYNAMIC
-                    || !isOperationPermissibleForObject(geometry))
-                    continue;
-                osg::StateSet* state = geometry->getStateSet();
-                const auto found = colorPrototypes.find(state);
-                if (found == colorPrototypes.end() || found->second.mConflict || !found->second.mArray)
-                    continue;
-
-                const unsigned count = geometry->getVertexArray()->getNumElements();
-                osg::ref_ptr<osg::Array> normalized;
-                if (dynamic_cast<const osg::Vec4Array*>(found->second.mArray))
-                {
-                    osg::ref_ptr<osg::Vec4Array> values = new osg::Vec4Array;
-                    values->assign(count, osg::Vec4f(1.f, 1.f, 1.f, 1.f));
-                    normalized = values;
-                }
-                else if (dynamic_cast<const osg::Vec4ubArray*>(found->second.mArray))
-                {
-                    osg::ref_ptr<osg::Vec4ubArray> values = new osg::Vec4ubArray;
-                    values->assign(count, osg::Vec4ub(255, 255, 255, 255));
-                    normalized = values;
-                }
-                if (!normalized)
-                    continue;
-
-                geometry->setColorArray(normalized, osg::Array::BIND_PER_VERTEX);
+                geometry->setColorArray(nullptr);
                 ++_normalizedColorStreamCount;
             }
         }
