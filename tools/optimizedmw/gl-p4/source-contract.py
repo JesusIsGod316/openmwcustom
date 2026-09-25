@@ -10,6 +10,8 @@ policy = (root / "components/resource/p4compilepolicy.hpp").read_text()
 rendering = (root / "apps/openmw/mwrender/renderingmanager.cpp").read_text()
 objectpaging = (root / "apps/openmw/mwrender/objectpaging.cpp").read_text()
 terrain_chunk = (root / "components/terrain/chunkmanager.cpp").read_text()
+terrain_drawable_h = (root / "components/terrain/terraindrawable.hpp").read_text()
+terrain_drawable_cpp = (root / "components/terrain/terraindrawable.cpp").read_text()
 scene_manager = (root / "components/resource/scenemanager.cpp").read_text()
 engine = (root / "apps/openmw/engine.cpp").read_text()
 diagnostics = (root / "components/debug/v3diagnostics.hpp").read_text()
@@ -32,7 +34,8 @@ checks = {
         "mOptimizedMWHeavyCompileThresholdMs",
         "mOptimizedMWHeavyCompileMinSmoothFrames",
         "mOptimizedMWHeavyCompileMinHeadroomMs",
-        "mOptimizedMWTerrainDrawablePriorMs")),
+        "mOptimizedMWTerrainDrawablePriorMs",
+        "mOptimizedMWTerrainPhasedCompile")),
     "production_build": "openmwcompileoperation" in cmake,
     "control_exact_path": "new osgUtil::IncrementalCompileOperation" in rendering
         and "new Resource::OpenMWIncrementalCompileOperation" in rendering,
@@ -51,6 +54,14 @@ checks = {
         and "mHeavyMinSmoothFrames" in compile_h
         and "mTerrainDrawablePriorMs" in compile_h
         and "mSmoothFrames = 0" in compile_cpp,
+    "terrain_phased_compile": "mOptimizedMWTerrainPhasedCompile" in cells
+        and "phaseTerrainCompileSet" in terrain_chunk
+        and "TerrainStateAttributeCompileOp" in terrain_chunk
+        and "TerrainGeometryCompileOp" in terrain_chunk
+        and "p5_terrain_pass_attribute" in terrain_chunk
+        and "p5_terrain_geometry_vbo" in terrain_chunk
+        and "compileGeometryGLObjects" in terrain_drawable_h
+        and "osg::Geometry::compileGLObjects(renderInfo)" in terrain_drawable_cpp,
     "queue_age_guard": "forced_by_queue_age" in compile_cpp
         and "mConfig.mMaxQueueAgeFrames" in compile_cpp,
     "class_priority": "V321CompileClass::ObjectPaging" in compile_cpp
@@ -67,7 +78,7 @@ checks = {
         and "state.mCreditMs *= 0.25" in policy,
     "launcher_matrix": all(token in launcher for token in (
         "CONTROL-B1", "CONTROL-B1-C", "P4R-B1", "P4R-B1-C",
-        "P4R-B1-C-HEAVY", "P4R-B1-HEAVY",
+        "P4R-B1-C-HEAVY", "P4R-B1-C-TERRAIN", "P4R-B1-C-HEAVY-TERRAIN",
         "OPENMW_P4_COMPILE_FILE", "optimizedmw compile scheduler mode")),
     "launcher_packaged": "START-OptimizedMW-GL-P4-Test.bat" in root_cmake
         and "OptimizedMW_GL-P4_Test.ps1" in root_cmake,
