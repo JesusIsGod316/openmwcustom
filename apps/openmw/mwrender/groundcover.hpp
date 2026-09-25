@@ -64,7 +64,6 @@ namespace MWRender
         std::atomic_uint64_t mV314CompileQueued{ 0 };
 
         osg::ref_ptr<osg::Node> createChunk(InstanceMap& instances, const osg::Vec2f& center);
-        void collectInstances(InstanceMap& instances, float size, const osg::Vec2f& center) const;
     };
 }
 
