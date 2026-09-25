@@ -62,6 +62,7 @@ namespace MWRender
         // Backend-neutral callers reuse the exact winning-file merge, density,
         // and border selection used by the established OpenGL renderer.
         [[nodiscard]] InstanceMap collectInstances(float size, const osg::Vec2f& center) const;
+        [[nodiscard]] InstanceMap collectInstances(float size, float centerX, float centerY) const;
 
     private:
         Resource::SceneManager* mSceneManager;
