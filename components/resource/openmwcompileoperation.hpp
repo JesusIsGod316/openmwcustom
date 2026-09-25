@@ -47,6 +47,7 @@ namespace Resource
             Drawable = 0,
             Texture,
             Program,
+            Buffer,
             Other,
             Count,
         };
