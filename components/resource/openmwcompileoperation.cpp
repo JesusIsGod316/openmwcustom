@@ -160,7 +160,11 @@ namespace Resource
         const double risk = cost.mSamples > 0
             ? std::min(cost.mRiskMs, std::max(cost.mEmaMs * 4.0, 0.25))
             : 0.0;
-        return std::max({ 0.05, osgEstimateMs, measured, risk, staticPriorMs(set, kind) });
+        // Empirical terrain prior protects only the cold-start samples. Once the
+        // class/type bucket has four observations, measured history owns the risk
+        // estimate so ordinary cheap terrain cannot be quarantined forever.
+        const double prior = cost.mSamples < 4 ? staticPriorMs(set, kind) : 0.0;
+        return std::max({ 0.05, osgEstimateMs, measured, risk, prior });
     }
 
     void OpenMWIncrementalCompileOperation::observe(const CompileSet* set, CompileKind kind, double actualMs)
