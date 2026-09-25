@@ -1,7 +1,7 @@
 #include "staticnifconformance.hpp"
 
 #include <components/nif/niffile.hpp>
-#include <components/nifrender/niftranslator.hpp>
+#include <components/render/native/nifsemanticcompiler.hpp>
 #include <components/vfs/manager.hpp>
 #include <components/vfs/pathutil.hpp>
 
@@ -20,14 +20,18 @@ namespace RenderVsg
     {
         StaticNifConformanceResult result;
 
-        NifRender::TranslationBundle bundle = NifRender::translateStaticNif(file, vfs);
-        result.translationSummary = bundle.summary();
-        result.translationDiagnostics = bundle.diagnostics;
-        if (!bundle.valid() || bundle.hasErrors())
+        RenderNative::NifSemanticCompiler compiler(vfs);
+        RenderNative::NifSemanticCompileResult compiled = compiler.compile(file);
+        if (!compiled.compiled())
+            return result;
+        result.translationSummary = compiled.bundle.summary();
+        result.translationDiagnostics = compiled.bundle.diagnostics;
+        if (!compiled.semanticReady())
             return result;
 
         result.stage = StaticNifConformanceStage::Publish;
-        NifRender::TranslationPublishResult published = NifRender::publishTranslation(world, publisher, bundle);
+        NifRender::TranslationPublishResult published
+            = NifRender::publishTranslation(world, publisher, compiled.bundle);
         result.publishStatus = published.status;
         if (!published.applied())
             return result;
