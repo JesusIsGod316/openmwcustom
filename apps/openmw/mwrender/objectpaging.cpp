@@ -336,7 +336,10 @@ namespace MWRender
         struct P3ShadowBatchResult
         {
             osg::ref_ptr<osg::Group> mShadowRoot;
+            std::size_t mCandidateDrawables = 0;
             std::size_t mEligibleDrawables = 0;
+            std::size_t mRejectedState = 0;
+            std::size_t mRejectedGeometry = 0;
             std::size_t mSourceIndices = 0;
         };
 
@@ -405,13 +408,19 @@ namespace MWRender
                 const std::size_t oldVertexCount = proxyVertices->size();
                 const std::size_t oldIndexCount = proxyIndices->size();
 
-                if (geometry && geometry->getDataVariance() != osg::Object::DYNAMIC
-                    && p3ShadowStateOpaque(*geometry)
-                    && p3AppendShadowGeometry(*geometry, *proxyVertices, *proxyIndices))
+                if (geometry && geometry->getDataVariance() != osg::Object::DYNAMIC)
                 {
-                    ++result.mEligibleDrawables;
-                    result.mSourceIndices += proxyIndices->size() - oldIndexCount;
-                    continue;
+                    ++result.mCandidateDrawables;
+                    if (!p3ShadowStateOpaque(*geometry))
+                        ++result.mRejectedState;
+                    else if (p3AppendShadowGeometry(*geometry, *proxyVertices, *proxyIndices))
+                    {
+                        ++result.mEligibleDrawables;
+                        result.mSourceIndices += proxyIndices->size() - oldIndexCount;
+                        continue;
+                    }
+                    else
+                        ++result.mRejectedGeometry;
                 }
 
                 proxyVertices->resize(oldVertexCount);
@@ -421,7 +430,7 @@ namespace MWRender
             }
 
             if (result.mEligibleDrawables < 2 || proxyIndices->empty())
-                return {};
+                return result;
 
             osg::ref_ptr<osg::Geometry> proxy = new osg::Geometry;
             proxy->setDataVariance(osg::Object::STATIC);
@@ -1322,7 +1331,10 @@ namespace MWRender
         std::size_t p3CompatibleIndexMerges = 0;
         std::size_t p3DisplayListPromotions = 0;
         std::size_t p3NormalizedColorStreams = 0;
+        std::size_t p3ShadowCandidateDrawables = 0;
         std::size_t p3ShadowEligibleDrawables = 0;
+        std::size_t p3ShadowRejectedState = 0;
+        std::size_t p3ShadowRejectedGeometry = 0;
         std::size_t p3ShadowProxyBatches = 0;
         std::size_t p3ShadowSourceIndices = 0;
         bool p3SemanticPremergeUsed = false;
@@ -1731,11 +1743,14 @@ namespace MWRender
             if (p3ShadowStaticBatching)
             {
                 P3ShadowBatchResult shadowBatch = p3BuildShadowBatch(*mergeGroup);
+                p3ShadowCandidateDrawables += shadowBatch.mCandidateDrawables;
+                p3ShadowEligibleDrawables += shadowBatch.mEligibleDrawables;
+                p3ShadowRejectedState += shadowBatch.mRejectedState;
+                p3ShadowRejectedGeometry += shadowBatch.mRejectedGeometry;
+                p3ShadowSourceIndices += shadowBatch.mSourceIndices;
                 if (shadowBatch.mShadowRoot)
                 {
-                    p3ShadowEligibleDrawables += shadowBatch.mEligibleDrawables;
                     ++p3ShadowProxyBatches;
-                    p3ShadowSourceIndices += shadowBatch.mSourceIndices;
                     p3ShadowRoot = shadowBatch.mShadowRoot;
                     publishedMergeNode = new SceneUtil::ShadowProxyGroup(mergeGroup, p3ShadowRoot);
                 }
@@ -1790,7 +1805,10 @@ namespace MWRender
                     + " p3_semantic_premerge=" + std::to_string(p3SemanticPremergeUsed ? 1 : 0)
                     + " p3_display_lists=" + std::to_string(p3DisplayListPromotions)
                     + " p3_normalized_colors=" + std::to_string(p3NormalizedColorStreams)
+                    + " p3_shadow_candidates=" + std::to_string(p3ShadowCandidateDrawables)
                     + " p3_shadow_eligible=" + std::to_string(p3ShadowEligibleDrawables)
+                    + " p3_shadow_rejected_state=" + std::to_string(p3ShadowRejectedState)
+                    + " p3_shadow_rejected_geometry=" + std::to_string(p3ShadowRejectedGeometry)
                     + " p3_shadow_batches=" + std::to_string(p3ShadowProxyBatches)
                     + " p3_shadow_indices=" + std::to_string(p3ShadowSourceIndices)
                     + " p3_prefetch_models=" + std::to_string(p3TemplatePrefetchModels)
