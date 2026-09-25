@@ -3,8 +3,6 @@
 #include "v321classifiedcompileset.hpp"
 
 #include <components/debug/v3diagnostics.hpp>
-#include <components/settings/values.hpp>
-
 #include <osg/GraphicsContext>
 #include <osg/Timer>
 
@@ -52,7 +50,10 @@ namespace
 
 namespace Resource
 {
-    OpenMWIncrementalCompileOperation::OpenMWIncrementalCompileOperation() = default;
+    OpenMWIncrementalCompileOperation::OpenMWIncrementalCompileOperation(OpenMWCompileSchedulerConfig config)
+        : mConfig(std::move(config))
+    {
+    }
 
     void OpenMWIncrementalCompileOperation::publishRenderingTraversalMs(double value) noexcept
     {
@@ -174,7 +175,7 @@ namespace Resource
 
     void OpenMWIncrementalCompileOperation::operator()(osg::GraphicsContext* context)
     {
-        const int mode = static_cast<int>(Settings::cells().mOptimizedMWCompileSchedulerMode);
+        const int mode = mConfig.mMode;
         if (mode <= 0 || !context || !context->getState())
         {
             osgUtil::IncrementalCompileOperation::operator()(context);
@@ -189,22 +190,17 @@ namespace Resource
         }
 
         const unsigned int frame = frameNumberFor(context);
-        const double targetFrameRate = std::max(1.0,
-            static_cast<double>(Settings::cells().mTargetFramerate));
+        const double targetFrameRate = std::max(1.0, mConfig.mTargetFrameRate);
         const double targetFrameMs = 1000.0 / targetFrameRate;
         const double currentElapsedMs = std::max(0.0, context->getTimeSinceLastClear() * 1000.0);
         const double lastHandoffMs = lastRenderingTraversalMs();
 
         P4CompilePolicyConfig policyConfig;
         policyConfig.mTargetFrameMs = targetFrameMs;
-        policyConfig.mMaxBudgetMs
-            = static_cast<double>(Settings::cells().mOptimizedMWCompileSchedulerMaxBudgetMs);
-        policyConfig.mCreditCapMs
-            = static_cast<double>(Settings::cells().mOptimizedMWCompileSchedulerCreditCapMs);
-        policyConfig.mHeadroomRatio
-            = static_cast<double>(Settings::cells().mOptimizedMWCompileSchedulerHeadroomRatio);
-        policyConfig.mHandoffThresholdMs
-            = static_cast<double>(Settings::cells().mOptimizedMWCompileSchedulerHandoffThresholdMs);
+        policyConfig.mMaxBudgetMs = mConfig.mMaxBudgetMs;
+        policyConfig.mCreditCapMs = mConfig.mCreditCapMs;
+        policyConfig.mHeadroomRatio = mConfig.mHeadroomRatio;
+        policyConfig.mHandoffThresholdMs = mConfig.mHandoffThresholdMs;
 
         const P4CompilePolicyOutput policy = updateP4CompilePolicy(
             mPolicyState, policyConfig, { mode, currentElapsedMs, lastHandoffMs });
@@ -225,12 +221,9 @@ namespace Resource
                 oldestAge = std::max(oldestAge, frame - it->second.mFirstFrame);
         }
 
-        const unsigned int maxQueueAge
-            = static_cast<unsigned int>(Settings::cells().mOptimizedMWCompileSchedulerMaxQueueAgeFrames);
-        const unsigned int maxObjects
-            = static_cast<unsigned int>(Settings::cells().mOptimizedMWCompileSchedulerMaxObjectsPerFrame);
-        const double diagnosticThresholdMs
-            = static_cast<double>(Settings::cells().mOptimizedMWCompileSchedulerDiagnosticThresholdMs);
+        const unsigned int maxQueueAge = mConfig.mMaxQueueAgeFrames;
+        const unsigned int maxObjects = mConfig.mMaxObjectsPerFrame;
+        const double diagnosticThresholdMs = mConfig.mDiagnosticThresholdMs;
 
         double remainingBudgetMs = policy.mBudgetMs;
         double compileActualMs = 0.0;
@@ -341,8 +334,7 @@ namespace Resource
                 break;
         }
 
-        const double configuredDeleteBudgetMs
-            = static_cast<double>(Settings::cells().mOptimizedMWCompileSchedulerDeleteBudgetMs);
+        const double configuredDeleteBudgetMs = mConfig.mDeleteBudgetMs;
         double deleteBudgetMs = configuredDeleteBudgetMs;
         if (mode >= 2 && policy.mSuppressedByHandoff)
             deleteBudgetMs *= 0.25;
