@@ -22,7 +22,13 @@ add_executable(optimizedmw-p3-threading-tests threading-tests.cpp)
 target_include_directories(optimizedmw-p3-threading-tests PRIVATE "${ROOT}")
 target_link_libraries(optimizedmw-p3-threading-tests PRIVATE Threads::Threads)
 
-set(p3_targets optimizedmw-p3-submission-tests optimizedmw-p3-threading-tests)
+add_executable(optimizedmw-p3-shadow-proxy-tests
+    shadow-proxy-tests.cpp
+    "${ROOT}/components/sceneutil/shadowproxygroup.cpp")
+target_include_directories(optimizedmw-p3-shadow-proxy-tests PRIVATE "${ROOT}")
+target_link_libraries(optimizedmw-p3-shadow-proxy-tests PRIVATE ${OPENSCENEGRAPH_LIBRARIES})
+
+set(p3_targets optimizedmw-p3-submission-tests optimizedmw-p3-threading-tests optimizedmw-p3-shadow-proxy-tests)
 if(MSVC)
     foreach(t IN LISTS p3_targets)
         target_compile_options(${t} PRIVATE /W4 /WX /permissive- /EHsc)
