@@ -62,6 +62,11 @@ def source_files(directory: pathlib.Path):
             yield path
 
 
+def code_only(text: str) -> str:
+    text = re.sub(r"/\\*.*?\\*/", "", text, flags=re.S)
+    return "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+
+
 def main() -> int:
     failures: list[str] = []
     checked = 0
@@ -69,7 +74,7 @@ def main() -> int:
     for directory, patterns in RULES:
         for path in source_files(directory) or ():
             checked += 1
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = code_only(path.read_text(encoding="utf-8", errors="replace"))
             for pattern, message in patterns:
                 for match in pattern.finditer(text):
                     line = text.count("\n", 0, match.start()) + 1
