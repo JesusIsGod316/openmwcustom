@@ -10,6 +10,9 @@
 #include <set>
 #include <vector>
 
+#include <osg/AlphaFunc>
+#include <osg/CullFace>
+#include <osg/FrontFace>
 #include <osg/ComputeBoundsVisitor>
 #include <osg/LOD>
 #include <osg/MatrixTransform>
@@ -48,6 +51,7 @@
 #include <components/sceneutil/optimizer.hpp>
 #include <components/sceneutil/pagingwork.hpp>
 #include <components/sceneutil/positionattitudetransform.hpp>
+#include <components/sceneutil/shadowproxygroup.hpp>
 #include <components/sceneutil/riggeometry.hpp>
 #include <components/sceneutil/riggeometryosgaextension.hpp>
 #include <components/sceneutil/util.hpp>
@@ -317,6 +321,107 @@ namespace MWRender
 
     namespace
     {
+        struct P3ShadowBatchResult
+        {
+            osg::ref_ptr<osg::Group> mShadowRoot;
+            std::size_t mEligibleDrawables = 0;
+            std::size_t mSourceIndices = 0;
+        };
+
+        bool p3ShadowStateOpaque(const osg::Geometry& geometry)
+        {
+            const osg::StateSet* state = geometry.getStateSet();
+            if (!state)
+                return true;
+            if (state->getRenderingHint() == osg::StateSet::TRANSPARENT_BIN)
+                return false;
+            if ((state->getMode(GL_BLEND) & osg::StateAttribute::ON) != 0)
+                return false;
+            if (const auto* alpha = dynamic_cast<const osg::AlphaFunc*>(
+                    state->getAttribute(osg::StateAttribute::ALPHAFUNC)))
+            {
+                if (alpha->getFunction() != GL_ALWAYS)
+                    return false;
+            }
+            if (state->getAttribute(osg::StateAttribute::FRONTFACE)
+                || state->getAttribute(osg::StateAttribute::CULLFACE))
+                return false;
+            return true;
+        }
+
+        bool p3AppendShadowGeometry(const osg::Geometry& geometry, osg::Vec3Array& vertices,
+            osg::DrawElementsUInt& indices)
+        {
+            const auto* sourceVertices = dynamic_cast<const osg::Vec3Array*>(geometry.getVertexArray());
+            if (!sourceVertices || sourceVertices->empty() || geometry.getNumPrimitiveSets() == 0)
+                return false;
+
+            for (unsigned int i = 0; i < geometry.getNumPrimitiveSets(); ++i)
+            {
+                const osg::PrimitiveSet* primitive = geometry.getPrimitiveSet(i);
+                if (!primitive || primitive->getMode() != osg::PrimitiveSet::TRIANGLES
+                    || primitive->getNumInstances() != 0)
+                    return false;
+                for (unsigned int index = 0; index < primitive->getNumIndices(); ++index)
+                    if (primitive->index(index) >= sourceVertices->size())
+                        return false;
+            }
+
+            const unsigned base = static_cast<unsigned>(vertices.size());
+            vertices.insert(vertices.end(), sourceVertices->begin(), sourceVertices->end());
+            for (unsigned int i = 0; i < geometry.getNumPrimitiveSets(); ++i)
+            {
+                const osg::PrimitiveSet* primitive = geometry.getPrimitiveSet(i);
+                for (unsigned int index = 0; index < primitive->getNumIndices(); ++index)
+                    indices.push_back(base + primitive->index(index));
+            }
+            return true;
+        }
+
+        P3ShadowBatchResult p3BuildShadowBatch(osg::Group& normal)
+        {
+            P3ShadowBatchResult result;
+            osg::ref_ptr<osg::Group> shadowRoot = new osg::Group;
+            osg::ref_ptr<osg::Vec3Array> proxyVertices = new osg::Vec3Array;
+            osg::ref_ptr<osg::DrawElementsUInt> proxyIndices
+                = new osg::DrawElementsUInt(osg::PrimitiveSet::TRIANGLES);
+
+            for (unsigned int childIndex = 0; childIndex < normal.getNumChildren(); ++childIndex)
+            {
+                osg::Node* child = normal.getChild(childIndex);
+                osg::Geometry* geometry = child ? child->asGeometry() : nullptr;
+                const std::size_t oldVertexCount = proxyVertices->size();
+                const std::size_t oldIndexCount = proxyIndices->size();
+
+                if (geometry && geometry->getDataVariance() != osg::Object::DYNAMIC
+                    && p3ShadowStateOpaque(*geometry)
+                    && p3AppendShadowGeometry(*geometry, *proxyVertices, *proxyIndices))
+                {
+                    ++result.mEligibleDrawables;
+                    result.mSourceIndices += proxyIndices->size() - oldIndexCount;
+                    continue;
+                }
+
+                proxyVertices->resize(oldVertexCount);
+                proxyIndices->resize(oldIndexCount);
+                if (child)
+                    shadowRoot->addChild(child);
+            }
+
+            if (result.mEligibleDrawables < 2 || proxyIndices->empty())
+                return {};
+
+            osg::ref_ptr<osg::Geometry> proxy = new osg::Geometry;
+            proxy->setDataVariance(osg::Object::STATIC);
+            proxy->setVertexArray(proxyVertices);
+            proxy->addPrimitiveSet(proxyIndices);
+            proxy->setUseVertexBufferObjects(true);
+            proxy->setUseDisplayList(false);
+            shadowRoot->addChild(proxy);
+            result.mShadowRoot = shadowRoot;
+            return result;
+        }
+
         class CanOptimizeCallback : public SceneUtil::Optimizer::IsOperationPermissibleForObjectCallback
         {
         public:
