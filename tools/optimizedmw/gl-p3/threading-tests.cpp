@@ -1,4 +1,7 @@
 #include <atomic>
+#include <array>
+#include <mutex>
+#include <set>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -125,6 +128,57 @@ int main()
             }), "required-readiness helper probe failed");
         require(helperSawRequired.load(std::memory_order_acquire),
             "helper did not inherit required-readiness phase");
+    }
+
+    {
+        std::array<std::atomic<bool>, 3> sawOptional{};
+        std::array<std::uint64_t, 3> retained{};
+        std::mutex idsMutex;
+        std::set<std::thread::id> helperIds;
+        const auto indexedSpeculative = Resource::SpeculativeScope::capture();
+        const auto indexedPaging = SceneUtil::PagingWorkScope::capture();
+
+        const std::size_t helpers = SceneUtil::BoundedTwoWayWork::runIndexed(
+            96, 16, 3, [&](std::size_t begin, std::size_t end, std::size_t workerIndex) {
+                if (workerIndex == 0)
+                {
+                    for (std::size_t i = begin; i < end; ++i)
+                        SceneUtil::PagingWorkScope::checkpoint();
+                    return;
+                }
+
+                Resource::SpeculativeScope child(indexedSpeculative);
+                SceneUtil::PagingWorkScope childPaging(indexedPaging);
+                sawOptional.at(workerIndex - 1).store(
+                    SceneUtil::PagingWorkScope::optionalOptimization(), std::memory_order_release);
+                {
+                    std::lock_guard lock(idsMutex);
+                    helperIds.insert(std::this_thread::get_id());
+                }
+
+                int identity = static_cast<int>(workerIndex);
+                Resource::SpeculativeScope::Stage stage(
+                    1 * Resource::SpeculativeBudget::MiB, 4096);
+                auto charge = Resource::SpeculativeScope::track(
+                    &budget, { &identity, 100 + workerIndex }, 4096, true);
+                require(static_cast<bool>(charge), "indexed helper charge missing");
+
+                for (std::size_t i = begin; i < end; ++i)
+                    SceneUtil::PagingWorkScope::checkpoint();
+                retained.at(workerIndex - 1) = child.retainedEstimate();
+            });
+
+        require(helpers == 3, "three-helper bounded execution did not activate");
+        require(helperIds.size() == 3, "three-helper execution did not use three persistent helper threads");
+        for (std::size_t i = 0; i < 3; ++i)
+        {
+            require(sawOptional[i].load(std::memory_order_acquire),
+                "indexed helper did not inherit optional paging phase");
+            require(retained[i] == 4096, "indexed helper retained estimate mismatch");
+            Resource::SpeculativeScope::creditRetainedEstimate(retained[i]);
+        }
+        require(parent.retainedEstimate() == 4096 * 4,
+            "indexed helper retained bytes were not credited to parent");
     }
 
     cancel.store(true, std::memory_order_release);
