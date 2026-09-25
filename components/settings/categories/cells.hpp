@@ -81,6 +81,10 @@ namespace Settings
         SettingValue<float> mOptimizedMWCompileSchedulerHeavyOpThresholdMs{
             mIndex, "Cells", "optimizedmw compile scheduler heavy op threshold ms",
             makeClampSanitizerFloat(0.5, 100.0) };
+        SettingValue<bool> mOptimizedMWStagedTerrainCompile{
+            mIndex, "Cells", "optimizedmw staged terrain compile" };
+        SettingValue<bool> mOptimizedMWSplitTerrainAttributeVbos{
+            mIndex, "Cells", "optimizedmw split terrain attribute vbos" };
 
         SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
         SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
