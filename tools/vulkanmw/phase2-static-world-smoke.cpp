@@ -107,6 +107,49 @@ int main()
     if (populationPlacements != 0)
         fail();
 
+    RenderCore::StaticPopulationCellSource groundCell;
+    groundCell.identity = "groundcover:test:1,1";
+    groundCell.worldspaceIdentity = "test";
+    groundCell.gridX = 1;
+    groundCell.gridY = 1;
+    groundCell.groundcover = true;
+    if (!staticWorld.activatePopulationCell(groundCell).accepted())
+        fail();
+
+    RenderCore::StaticPopulationInstanceSource ground;
+    ground.identity = "groundcover:ref:2";
+    ground.cellIdentity = groundCell.identity;
+    ground.model = model;
+    ground.localBounds.minimum = {-1.f, -1.f, -1.f};
+    ground.localBounds.maximum = {1.f, 1.f, 1.f};
+    ground.semanticFlags &= ~RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::ShadowCaster);
+    if (!staticWorld.upsertPopulation(ground).accepted())
+        fail();
+    if (populations.flush() != RenderCore::StaticPopulationPublishStatus::Applied)
+        fail();
+
+    std::size_t groundcoverPlacements = 0;
+    world.forEachChunk([&](auto, const RenderCore::ChunkRecord& chunk) {
+        if (chunk.kind != RenderCore::ChunkRecord::Kind::Groundcover || !chunk.population)
+            return;
+        for (const auto& group : chunk.population->groups)
+        {
+            for (const auto& placement : group.instances)
+            {
+                if ((placement.semanticFlags & RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::Groundcover))
+                    == 0)
+                    fail();
+                ++groundcoverPlacements;
+            }
+        }
+    });
+    if (groundcoverPlacements != 1)
+        fail();
+    if (!staticWorld.deactivatePopulationCell(groundCell.identity).accepted())
+        fail();
+    if (populations.flush() != RenderCore::StaticPopulationPublishStatus::Applied)
+        fail();
+
     if (!staticWorld.deactivateCell(interior.cell.identity).accepted()
         || !staticWorld.deactivateCell(exterior.cell.identity).accepted())
         fail();
