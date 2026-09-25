@@ -1158,6 +1158,8 @@ namespace MWRender
         std::size_t v36TotalInstances = 0;
         std::size_t v36MergeCandidateGroups = 0;
         std::size_t p3CompatibleIndexMerges = 0;
+        std::size_t p3DisplayListPromotions = 0;
+        bool p3SemanticPremergeUsed = false;
         {
             Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
                 "object_chunk_build_instances", activeGrid ? "active_grid" : "distant", 0.1);
@@ -1473,21 +1475,27 @@ namespace MWRender
                 optimizer.setMergeAlphaBlending(true);
             }
             optimizer.setIsOperationPermissibleForObjectCallback(new CanOptimizeCallback);
+
+            const int v38BatchingMode = static_cast<int>(Settings::cells().mV38WorldBatchingMode);
+            const bool p2RequiredReadiness = SceneUtil::PagingWorkScope::requiredReadiness();
             const bool p3SubmissionCompaction
                 = static_cast<bool>(Settings::cells().mOptimizedMWSubmissionCompaction)
                 && compile && !p2RequiredReadiness && v38BatchingMode >= 2;
+            const bool p3DistantDisplayLists
+                = static_cast<bool>(Settings::cells().mOptimizedMWDistantDisplayLists)
+                && !activeGrid && compile && !p2RequiredReadiness
+                && !static_cast<bool>(Settings::stereo().mMultiview);
             optimizer.setMergeCompatibleIndexTypes(p3SubmissionCompaction);
+            optimizer.setPreferDisplayListsForMergedGeometry(p3DistantDisplayLists);
             unsigned int options = SceneUtil::Optimizer::FLATTEN_STATIC_TRANSFORMS
                 | SceneUtil::Optimizer::REMOVE_REDUNDANT_NODES | SceneUtil::Optimizer::MERGE_GEOMETRY;
 
-            const int v38BatchingMode = static_cast<int>(Settings::cells().mV38WorldBatchingMode);
             const int v39ConfiguredBatchOptimizerMode
                 = static_cast<int>(Settings::cells().mV39BatchOptimizerMode);
             const int v39BatchOptimizerMode
                 = (static_cast<int>(Settings::cells().mV39FrontloadMode) > 0 && !compile)
                 ? 1
                 : v39ConfiguredBatchOptimizerMode;
-            const bool p2RequiredReadiness = SceneUtil::PagingWorkScope::requiredReadiness();
             const bool v310PreloadPostTransform
                 = static_cast<bool>(Settings::cells().mV310PreloadPostTransform)
                 && compile && !p2RequiredReadiness && mV310InitialFrontloadActive.load(std::memory_order_acquire)
@@ -1523,12 +1531,19 @@ namespace MWRender
             const bool v315CanonicalizeBeforeMerge
                 = static_cast<bool>(Settings::cells().mV315PremergeStateCanonicalization)
                 && compile && v38BatchingMode >= 2;
-            if (v315CanonicalizeBeforeMerge)
+            const bool p3SemanticPremerge
+                = static_cast<bool>(Settings::cells().mOptimizedMWSemanticPremerge)
+                && compile && !p2RequiredReadiness && v38BatchingMode >= 2;
+            if (v315CanonicalizeBeforeMerge || p3SemanticPremerge)
+            {
                 mSceneManager->shareState(mergeGroup);
+                p3SemanticPremergeUsed = p3SemanticPremerge;
+            }
 
             SceneUtil::PagingWorkScope::checkpoint();
             optimizer.optimize(mergeGroup, options);
             p3CompatibleIndexMerges += optimizer.getCompatibleIndexMergeCount();
+            p3DisplayListPromotions += optimizer.getDisplayListPromotionCount();
             SceneUtil::PagingWorkScope::checkpoint();
 
             const bool v39ShareState
@@ -1580,6 +1595,8 @@ namespace MWRender
                     std::string(activeGrid ? "active" : "distant") + " refs=" + std::to_string(refs.size())
                     + " templates=" + std::to_string(nodes.size())
                     + " p3_index_merges=" + std::to_string(p3CompatibleIndexMerges)
+                    + " p3_semantic_premerge=" + std::to_string(p3SemanticPremergeUsed ? 1 : 0)
+                    + " p3_display_lists=" + std::to_string(p3DisplayListPromotions)
                     + " p3_prefetch_models=" + std::to_string(p3TemplatePrefetchModels)
                     + " p3_prefetch_parallel=" + std::to_string(p3TemplatePrefetchParallel ? 1 : 0)
                     + " p3_prefetch_required=" + std::to_string(p3TemplatePrefetchRequired ? 1 : 0))

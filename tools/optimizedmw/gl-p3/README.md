@@ -29,6 +29,18 @@ P1/P2 ownership is preserved explicitly. `SpeculativeScope` and `PagingWorkScope
 Promotion still requires runtime evidence: useful reduction in distant paging/template-load tails without steady-frame, memory, compatibility or accepted-P1/P2 regressions. Worker count stays at one helper until evidence justifies more.
 
 
-## P3C+ open lanes
+## P3C — semantic premerge
 
-P3 is not limited to prior V3 mechanisms. High-value follow-ups include: cached immutable per-template analysis, parallel worker-local merge planning with deterministic publish, and capability-gated OpenGL multi-draw/indirect packet submission that preserves the current material/shadow contract. Prior rejected instancing, spatial batching, or OSG threading experiments may be revisited only through materially different implementations informed by their failure evidence.
+This revisits the visually-safe V3.15 state canonicalization idea through a different combined mechanism. The current final ObjectPaging optimizer groups geometry by StateSet identity. Equivalent states that become shared only after the optimizer are already too late to unlock a merge. P3C optionally canonicalizes state immediately before the final strong-quality merge, where P3A can then also collapse mixed-width index submissions inside the newly larger geometry.
+
+Setting: `[Cells] optimizedmw semantic premerge` (default false). The P3 path excludes P2 required-readiness work. Existing V3.15 behavior remains independent and unchanged.
+
+## P3D — immutable distant command cache
+
+The modified OSG optimizer historically switches successfully merged geometry to VBOs and explicitly disables display lists because VBOs consume less driver memory. That was a reasonable memory-first choice, but current accepted captures are draw-side CPU limited enough to justify retesting the opposite trade for immutable distant world geometry.
+
+Setting: `[Cells] optimizedmw distant display lists` (default false). The experiment is limited to compile-time strong-quality distant chunks, excludes active-grid and P2 required-readiness paths, and is disabled for multiview. It changes only the submission storage/cache strategy after a successful merge; geometry, indices, state, shaders, shadows and render order are unchanged. Promotion requires a CPU-draw win large enough to justify any measured VRAM increase.
+
+## P3E+ open lanes
+
+P3 is not limited to prior V3 mechanisms. Higher-risk/high-upside follow-ups under active audit include: shared-context background OpenGL compile/upload, cached immutable per-template analysis, worker-local ObjectPaging construction/merge planning with deterministic publish, and capability-gated persistent multi-draw/indirect static submission. The SDL/OSG window path already understands shared OSG context IDs, but actual SDL GL object sharing must be made explicit before a background compile context can be trusted. Prior rejected instancing, spatial batching, or OSG threading experiments may be revisited through materially different implementations informed by their failure evidence.

@@ -57,6 +57,7 @@ void Optimizer::reset()
 void Optimizer::optimize(osg::Node* node, unsigned int options)
 {
     _compatibleIndexMergeCount = 0;
+    _displayListPromotionCount = 0;
     StatsVisitor stats;
 
     if (osg::getNotifyLevel()>=osg::INFO)
@@ -121,9 +122,11 @@ void Optimizer::optimize(osg::Node* node, unsigned int options)
         mgv.setTargetMaximumNumberOfVertices(1000000);
         mgv.setMergeAlphaBlending(_mergeAlphaBlending);
         mgv.setMergeCompatibleIndexTypes(_mergeCompatibleIndexTypes);
+        mgv.setPreferDisplayListsForMergedGeometry(_preferDisplayListsForMergedGeometry);
         mgv.setViewPoint(_viewPoint);
         node->accept(mgv);
         _compatibleIndexMergeCount = mgv.getCompatibleIndexMergeCount();
+        _displayListPromotionCount = mgv.getDisplayListPromotionCount();
 
         osg::Timer_t endTick = osg::Timer::instance()->tick();
 
@@ -1735,9 +1738,22 @@ bool Optimizer::MergeGeometryVisitor::mergeGroup(osg::Group& group)
 #endif
                 if (doneCombine && !geom->containsSharedArrays() && !containsSharedPrimitives(geom))
                 {
-                    // prefer to use vbo for merged geometries as vbo uses less memory than display lists.
-                    geom->setUseVertexBufferObjects(true);
-                    geom->setUseDisplayList(false);
+                    if (_preferDisplayListsForMergedGeometry)
+                    {
+                        // P3 command-cache experiment: immutable distant merged
+                        // geometry can trade driver memory for lower repeated
+                        // CPU submission cost. Never enabled by default.
+                        geom->setUseVertexBufferObjects(false);
+                        geom->setUseDisplayList(true);
+                        ++_displayListPromotionCount;
+                    }
+                    else
+                    {
+                        // Historical OpenMW choice: VBOs use less driver memory
+                        // than compatibility-profile display lists.
+                        geom->setUseVertexBufferObjects(true);
+                        geom->setUseDisplayList(false);
+                    }
                 }
                 if (_alphaBlendingActive && _mergeAlphaBlending && !geom->getStateSet())
                 {

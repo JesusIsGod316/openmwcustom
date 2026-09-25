@@ -11,12 +11,27 @@ speculative = (root / "components/resource/speculativebudget.hpp").read_text()
 paging = (root / "components/sceneutil/pagingwork.hpp").read_text()
 two_way = (root / "components/sceneutil/boundedtwowaywork.hpp").read_text()
 
+p3_submission = objectpaging.index("const bool p3SubmissionCompaction")
+v38_before_p3 = objectpaging.rfind("const int v38BatchingMode", 0, p3_submission)
+p2_before_p3 = objectpaging.rfind("const bool p2RequiredReadiness", 0, p3_submission)
+
 checks = {
     "setting": "optimizedmw submission compaction" in cells and "optimizedmw submission compaction = false" in defaults,
     "switchable_optimizer": "setMergeCompatibleIndexTypes" in optimizer_h,
     "mixed_width_merge": "mergePromotedDrawElements" in optimizer_cpp,
     "strong_only_gate": "&& compile && !p2RequiredReadiness && v38BatchingMode >= 2" in objectpaging,
     "mechanical_counter": "p3_index_merges=" in objectpaging,
+    "production_declaration_order": v38_before_p3 >= 0 and p2_before_p3 >= 0,
+    "semantic_premerge_switch": "optimizedmw semantic premerge" in cells
+        and "optimizedmw semantic premerge = false" in defaults
+        and "mOptimizedMWSemanticPremerge" in objectpaging
+        and "&& compile && !p2RequiredReadiness && v38BatchingMode >= 2" in objectpaging,
+    "display_list_switch": "optimizedmw distant display lists" in cells
+        and "optimizedmw distant display lists = false" in defaults
+        and "setPreferDisplayListsForMergedGeometry" in optimizer_h
+        and "_preferDisplayListsForMergedGeometry" in optimizer_cpp,
+    "new_mechanical_counters": "p3_semantic_premerge=" in objectpaging
+        and "p3_display_lists=" in objectpaging,
     "thread_switch": "optimizedmw parallel template prefetch" in cells
         and "optimizedmw parallel template prefetch = false" in defaults,
     "bounded_helper": "class BoundedTwoWayWork" in two_way and "std::try_to_lock" in two_way

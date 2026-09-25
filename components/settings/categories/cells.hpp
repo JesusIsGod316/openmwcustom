@@ -26,6 +26,10 @@ namespace Settings
         // adjacent indexed draws that differ only in index storage width.
         SettingValue<bool> mOptimizedMWSubmissionCompaction{
             mIndex, "Cells", "optimizedmw submission compaction" };
+        SettingValue<bool> mOptimizedMWSemanticPremerge{
+            mIndex, "Cells", "optimizedmw semantic premerge" };
+        SettingValue<bool> mOptimizedMWDistantDisplayLists{
+            mIndex, "Cells", "optimizedmw distant display lists" };
         SettingValue<bool> mOptimizedMWParallelTemplatePrefetch{
             mIndex, "Cells", "optimizedmw parallel template prefetch" };
         SettingValue<int> mOptimizedMWParallelTemplatePrefetchMinTemplates{
