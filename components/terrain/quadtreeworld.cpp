@@ -588,23 +588,22 @@ namespace Terrain
                 && center.x() < grid.z() && center.y() < grid.w();
 
             bool upgradedEntry = false;
-            if (activeGrid)
+            for (ChunkManager* manager : mChunkManagers)
             {
-                for (ChunkManager* manager : mChunkManagers)
-                {
-                    if (!manager->supportsStrongPagingUpgrade())
-                        continue;
+                const bool supported = activeGrid ? manager->supportsStrongPagingUpgrade()
+                                                  : manager->supportsDistantStrongPagingUpgrade();
+                if (!supported)
+                    continue;
 
-                    osg::ref_ptr<osg::Node> node = manager->getChunk(entry.mNode->getSize(), center,
-                        static_cast<unsigned char>(DefaultLodCallback::getNativeLodLevel(entry.mNode, mMinSize)),
-                        entry.mLodFlags, true, viewPoint, true);
-                    if (node)
-                    {
-                        ++requests;
-                        upgradedEntry = true;
-                    }
-                    SceneUtil::PagingWorkScope::checkpoint();
+                osg::ref_ptr<osg::Node> node = manager->getChunk(entry.mNode->getSize(), center,
+                    static_cast<unsigned char>(DefaultLodCallback::getNativeLodLevel(entry.mNode, mMinSize)),
+                    entry.mLodFlags, activeGrid, viewPoint, true);
+                if (node)
+                {
+                    ++requests;
+                    upgradedEntry = true;
                 }
+                SceneUtil::PagingWorkScope::checkpoint();
             }
 
             if (upgradedEntry)
