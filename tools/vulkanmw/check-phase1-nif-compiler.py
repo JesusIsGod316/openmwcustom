@@ -17,6 +17,7 @@ TRANSLATOR = [
     ROOT / "components/nifrender/niftranslator.hpp",
     ROOT / "components/nifrender/niftranslator.cpp",
     ROOT / "components/nifrender/staticniftranslator.cpp",
+    ROOT / "components/nifrender/translationpublish.hpp",
 ]
 
 SCENE_TOKENS = [
@@ -62,13 +63,22 @@ def main() -> int:
 
     translator = (ROOT / "components/nifrender/niftranslator.cpp").read_text(encoding="utf-8")
     for needle in (
-        "RenderCore::ModelNodeRecord",
+        "NifRender::TranslatedModelNode",
         "RenderCore::MeshRecord",
         "RenderCore::SkinPayload",
         "RenderCore::MorphPayload",
     ):
         if needle not in translator:
-            fail(f"neutral translator lost required semantic output: {needle}")
+            fail(f"neutral translator lost required staged semantic output: {needle}")
+
+    publisher = (ROOT / "components/nifrender/translationpublish.hpp").read_text(encoding="utf-8")
+    for needle in (
+        "RenderCore::ModelNodeRecord",
+        "RenderCore::ModelRecord",
+        "RenderCore::CreateModel",
+    ):
+        if needle not in publisher:
+            fail(f"neutral publisher lost required stable RenderCore mapping: {needle}")
 
     print("VulkanMW Phase 1 direct-NIF semantic compiler contract PASS")
     return 0
