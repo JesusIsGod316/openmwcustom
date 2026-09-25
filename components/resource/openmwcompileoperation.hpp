@@ -13,6 +13,14 @@
 
 namespace Resource
 {
+    // Marker base for custom ICO operations that retain Drawable/VBO cost
+    // characteristics after a producer has split a monolithic drawable compile.
+    class OpenMWDrawableCompileOp : public osgUtil::IncrementalCompileOperation::CompileOp
+    {
+    protected:
+        ~OpenMWDrawableCompileOp() override = default;
+    };
+
     struct OpenMWCompileSchedulerConfig
     {
         int mMode = 0;
