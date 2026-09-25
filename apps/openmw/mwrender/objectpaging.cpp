@@ -1,6 +1,7 @@
 #include "objectpaging.hpp"
 
 #include <limits>
+#include <array>
 
 #include "occlusionculling.hpp"
 
@@ -990,6 +991,7 @@ namespace MWRender
 
         std::size_t p3TemplatePrefetchModels = 0;
         std::size_t p3TemplateReuseHits = 0;
+        std::size_t p3TemplatePrefetchHelpers = 0;
         bool p3TemplatePrefetchParallel = false;
         std::map<VFS::Path::Normalized, osg::ref_ptr<const osg::Node>> p3PrefetchedTemplates;
         const bool p3TemplatePrefetchRequired = SceneUtil::PagingWorkScope::requiredReadiness();
@@ -1062,10 +1064,12 @@ namespace MWRender
             std::vector<osg::ref_ptr<const osg::Node>> prefetchedNodes(models.size());
             const auto speculativeContext = Resource::SpeculativeScope::capture();
             const auto pagingContext = SceneUtil::PagingWorkScope::capture();
-            std::uint64_t helperRetainedEstimate = 0;
+            std::array<std::uint64_t, 3> helperRetainedEstimates{};
+            const std::size_t requestedHelpers = static_cast<std::size_t>(
+                Settings::cells().mOptimizedMWParallelTemplatePrefetchWorkers);
 
-            auto loadRange = [&](std::size_t begin, std::size_t end, bool helper) {
-                if (!helper)
+            auto loadRange = [&](std::size_t begin, std::size_t end, std::size_t workerIndex) {
+                if (workerIndex == 0)
                 {
                     for (std::size_t i = begin; i < end; ++i)
                     {
@@ -1082,7 +1086,7 @@ namespace MWRender
                     Resource::SpeculativeScope& scope;
                     std::uint64_t& estimate;
                     ~Receipt() { estimate = scope.retainedEstimate(); }
-                } receipt{ helperSpeculation, helperRetainedEstimate };
+                } receipt{ helperSpeculation, helperRetainedEstimates.at(workerIndex - 1) };
 
                 for (std::size_t i = begin; i < end; ++i)
                 {
@@ -1091,20 +1095,26 @@ namespace MWRender
                 }
             };
 
+            auto creditHelperRetained = [&] {
+                for (const std::uint64_t bytes : helperRetainedEstimates)
+                    Resource::SpeculativeScope::creditRetainedEstimate(bytes);
+            };
+
             try
             {
-                p3TemplatePrefetchParallel
-                    = SceneUtil::BoundedTwoWayWork::run(models.size(), minimumTemplates, loadRange);
+                p3TemplatePrefetchHelpers = SceneUtil::BoundedTwoWayWork::runIndexed(
+                    models.size(), minimumTemplates, requestedHelpers, loadRange);
+                p3TemplatePrefetchParallel = p3TemplatePrefetchHelpers != 0;
             }
             catch (...)
             {
-                Resource::SpeculativeScope::creditRetainedEstimate(helperRetainedEstimate);
+                creditHelperRetained();
                 throw;
             }
-            Resource::SpeculativeScope::creditRetainedEstimate(helperRetainedEstimate);
+            creditHelperRetained();
 
             if (!p3TemplatePrefetchParallel)
-                loadRange(0, models.size(), false);
+                loadRange(0, models.size(), 0);
 
             for (std::size_t i = 0; i < models.size(); ++i)
                 if (prefetchedNodes[i])
@@ -1750,6 +1760,7 @@ namespace MWRender
                     + " p3_prefetch_models=" + std::to_string(p3TemplatePrefetchModels)
                     + " p3_prefetch_reuse_hits=" + std::to_string(p3TemplateReuseHits)
                     + " p3_prefetch_parallel=" + std::to_string(p3TemplatePrefetchParallel ? 1 : 0)
+                    + " p3_prefetch_helpers=" + std::to_string(p3TemplatePrefetchHelpers)
                     + " p3_prefetch_required=" + std::to_string(p3TemplatePrefetchRequired ? 1 : 0))
                 << ",0";
             Debug::V3Diagnostics::renderWriter().writeLine(row.str());
