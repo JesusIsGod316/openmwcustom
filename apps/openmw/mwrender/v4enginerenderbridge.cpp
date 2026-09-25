@@ -353,7 +353,8 @@ namespace MWRender
         , mNativeStaticWorld(std::make_unique<RenderNative::StaticWorldService>(
               mSession->cells(), mSession->populations()))
         , mRouteStatus(std::make_shared<V4RenderRouteStatus>())
-        , mTerrain(std::make_unique<RenderCore::TerrainChunkProducer>(mSession->world(), mSession->publisher()))
+        , mNativeTerrain(std::make_unique<RenderNative::TerrainWorldService>(
+              mSession->world(), mSession->publisher()))
     {
     }
 
@@ -364,17 +365,15 @@ namespace MWRender
         {
             if (!synchronizeGroundcover(rendering, {}, {}))
                 return false;
-            mTerrainResidencyPlanner.reset();
-            mPendingTerrainPublication.clear();
-            if (mTerrainPreparation)
+            const RenderNative::TerrainWorldSyncResult cleared = mNativeTerrain->clear();
+            if (!cleared.accepted())
             {
-                static_cast<void>(
-                    mTerrainPreparation->request(std::span<const RenderCore::TerrainPreparationRequest>{}));
-                static_cast<void>(mTerrainPreparation->takeReady());
+                mLastDiagnostic = cleared.diagnostic.empty()
+                    ? "native terrain clear failed"
+                    : cleared.diagnostic;
+                return false;
             }
-            const RenderCore::TerrainChunkPublishStatus status = mTerrain->synchronize(std::nullopt);
-            return status == RenderCore::TerrainChunkPublishStatus::Applied
-                || status == RenderCore::TerrainChunkPublishStatus::AlreadyPresent;
+            return true;
         }
 
         TerrainStorage* const storage = rendering.getTerrainStorage();
@@ -386,82 +385,32 @@ namespace MWRender
 
         const RenderCore::TerrainPreparationRequest current
             = makeV4TerrainChunkRequest(cell, cell.getGridX(), cell.getGridY(), true);
-        if (!mTerrain->contains(current.identity))
-        {
-            const std::optional<RenderCore::TerrainChunkSource> source = makeV4TerrainChunkSource(*storage, current);
-            if (!source)
-            {
-                mLastDiagnostic = "authoritative exterior LAND data could not produce the required terrain chunk";
-                return false;
-            }
-            const RenderCore::TerrainChunkPublishStatus status = mTerrain->synchronize(source);
-            if (status != RenderCore::TerrainChunkPublishStatus::Applied
-                && status != RenderCore::TerrainChunkPublishStatus::AlreadyPresent)
-            {
-                mLastDiagnostic = "required terrain chunk publication failed with status "
-                    + std::to_string(static_cast<unsigned int>(status));
-                return false;
-            }
-        }
-
-        if (!mTerrainPreparation)
-        {
-            mTerrainPreparation = std::make_unique<RenderCore::TerrainPreparationService>(
-                [storage](const RenderCore::TerrainPreparationRequest& request, std::stop_token stop) {
-                    if (stop.stop_requested())
-                        return std::optional<RenderCore::TerrainChunkSource>{};
-                    return makeV4TerrainChunkSource(*storage, request);
-                });
-        }
-
         const std::vector<RenderCore::TerrainResidencyCell> residency
-            = mTerrainResidencyPlanner.update(current.worldspaceIdentity, current.gridX, current.gridY);
-        if (!synchronizeGroundcover(rendering, current.worldspaceIdentity, residency))
-            return false;
+            = mNativeTerrain->updateResidency(current.worldspaceIdentity, current.gridX, current.gridY);
+
         std::vector<RenderCore::TerrainPreparationRequest> desired;
         desired.reserve(residency.size());
         for (const RenderCore::TerrainResidencyCell& resident : residency)
             desired.push_back(makeV4TerrainChunkRequest(
                 cell, resident.gridX, resident.gridY, resident.required, resident.lodLevel, resident.stitchMask));
-        const RenderCore::TerrainPreparationRequestStatus requested
-            = mTerrainPreparation->request(std::span<const RenderCore::TerrainPreparationRequest>(desired));
-        if (requested == RenderCore::TerrainPreparationRequestStatus::Invalid
-            || requested == RenderCore::TerrainPreparationRequestStatus::GenerationExhausted)
+
+        const RenderNative::TerrainWorldSyncResult terrain = mNativeTerrain->synchronize(
+            std::span<const RenderCore::TerrainPreparationRequest>(desired),
+            [storage](const RenderCore::TerrainPreparationRequest& request, std::stop_token stop) {
+                if (stop.stop_requested())
+                    return std::optional<RenderCore::TerrainChunkSource>{};
+                return makeV4TerrainChunkSource(*storage, request);
+            });
+        if (!terrain.accepted())
         {
-            mLastDiagnostic = "terrain preparation rejected the desired resident cell set";
+            mLastDiagnostic = terrain.diagnostic.empty()
+                ? "native terrain synchronization failed"
+                : terrain.diagnostic;
             return false;
         }
-        if (requested == RenderCore::TerrainPreparationRequestStatus::Accepted)
-            mPendingTerrainPublication.clear();
 
-        if (std::optional<RenderCore::PreparedTerrainSet> ready = mTerrainPreparation->takeReady())
-        {
-            if (!ready->requiredChunksReady)
-            {
-                mLastDiagnostic = "background terrain preparation failed for the required current cell";
-                return false;
-            }
-            mPendingTerrainPublication = std::move(ready->chunks);
-        }
-        if (!mPendingTerrainPublication.empty())
-        {
-            constexpr RenderCore::TerrainPublicationLimits limits{
-                .maxNewChunks = 4,
-                .maxNewMeshBytes = 8u * 1024u * 1024u,
-            };
-            const RenderCore::TerrainChunkPublishStatus status = mTerrain->synchronize(
-                std::span<const RenderCore::TerrainChunkSource>(mPendingTerrainPublication), limits);
-            if (status != RenderCore::TerrainChunkPublishStatus::Applied
-                && status != RenderCore::TerrainChunkPublishStatus::PartiallyApplied
-                && status != RenderCore::TerrainChunkPublishStatus::AlreadyPresent)
-            {
-                mLastDiagnostic = "prepared terrain set publication failed with status "
-                    + std::to_string(static_cast<unsigned int>(status));
-                return false;
-            }
-            if (status != RenderCore::TerrainChunkPublishStatus::PartiallyApplied)
-                mPendingTerrainPublication.clear();
-        }
+        if (!synchronizeGroundcover(rendering, current.worldspaceIdentity, residency))
+            return false;
         return true;
     }
 
@@ -559,7 +508,8 @@ namespace MWRender
 
     void V4EngineRenderBridge::stopBackgroundPreparation()
     {
-        mTerrainPreparation.reset();
+        if (mNativeTerrain)
+            mNativeTerrain->stopBackgroundPreparation();
     }
 
     std::unique_ptr<MWWorld::SceneRenderLifecycle> V4EngineRenderBridge::takeSceneRenderLifecycle()
