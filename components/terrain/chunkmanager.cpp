@@ -309,14 +309,9 @@ namespace Terrain
 
         if (!templateGeometry && compile && mSceneManager->getIncrementalCompileOperation())
         {
-            if (Resource::v321CP2FairnessEnabled())
-            {
-                auto compileSet = new Resource::V321ClassifiedCompileSet(
-                    geometry, Resource::V321CompileClass::Terrain);
-                mSceneManager->getIncrementalCompileOperation()->add(compileSet);
-            }
-            else
-                mSceneManager->getIncrementalCompileOperation()->add(geometry);
+            auto compileSet = new Resource::V321ClassifiedCompileSet(
+                geometry, Resource::V321CompileClass::Terrain);
+            mSceneManager->getIncrementalCompileOperation()->add(compileSet);
         }
         geometry->setNodeMask(mNodeMask);
 
