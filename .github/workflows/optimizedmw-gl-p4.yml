@@ -1,8 +1,8 @@
-name: OptimizedMW GL-P4 compile scheduler gate
+name: OptimizedMW GL-P4R heavy GL gate
 
 on:
   push:
-    branches: [optimizedmw/gl-p4-compile-scheduler]
+    branches: [optimizedmw/gl-p4r-heavy-gl]
   workflow_dispatch:
 
 permissions:
