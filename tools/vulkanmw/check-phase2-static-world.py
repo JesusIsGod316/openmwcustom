@@ -19,6 +19,7 @@ NATIVE_STATIC = [
     ROOT / "apps/openmw/mwrender/vulkanmw/groundcoversource.cpp",
     ROOT / "apps/openmw/mwrender/groundcoverdata.hpp",
     ROOT / "apps/openmw/mwrender/groundcoverquery.hpp",
+    ROOT / "apps/openmw/mwrender/groundcoverquery.cpp",
 ]
 
 FORBIDDEN = [
@@ -90,8 +91,11 @@ def main() -> int:
     )
     if "../groundcover.hpp" in groundcover:
         fail("native groundcover source includes the OSG renderer header directly")
+    if "Groundcover&" in groundcover:
+        fail("native groundcover source still depends on the OpenGL Groundcover renderer object")
     for needle in (
         "collectGroundcoverInstances(",
+        "MWWorld::GroundcoverStore",
         "assets.resolve(modelPath)",
         "makeReferenceRotation(entry.mPos)",
         "StaticPopulationInstanceSource",
@@ -160,6 +164,8 @@ def main() -> int:
     )
     for needle in (
         "VulkanMW::makeGroundcoverPopulationSource",
+        "rendering.getGroundcoverStore()",
+        "Settings::groundcover().mDensity",
         "mNativeStaticWorld->activatePopulationCell",
         "mNativeStaticWorld->upsertPopulation",
         "mNativeStaticWorld->deactivatePopulationCell",
@@ -175,6 +181,7 @@ def main() -> int:
         "mTerrainResidencyPlanner",
         "mPendingTerrainPublication",
         "mTerrain->synchronize",
+        "rendering.getGroundcover()",
     ):
         if forbidden in bridge:
             fail(f"production terrain/groundcover bridge still owns legacy/direct mutation: {forbidden}")
