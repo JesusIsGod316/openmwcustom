@@ -117,10 +117,7 @@ namespace MWRender
         std::unique_ptr<RenderNative::NifAssetService> mNativeAssets;
         std::unique_ptr<RenderNative::StaticWorldService> mNativeStaticWorld;
         std::shared_ptr<V4RenderRouteStatus> mRouteStatus;
-        std::unique_ptr<RenderCore::TerrainChunkProducer> mTerrain;
-        std::unique_ptr<RenderCore::TerrainPreparationService> mTerrainPreparation;
-        RenderCore::TerrainResidencyPlanner mTerrainResidencyPlanner;
-        std::vector<RenderCore::TerrainChunkSource> mPendingTerrainPublication;
+        std::unique_ptr<RenderNative::TerrainWorldService> mNativeTerrain;
         std::string mLastDiagnostic;
         bool mLifecycleTaken = false;
         bool mGuiOnlyFramePresented = false;
