@@ -36,7 +36,11 @@ checks = {
     "queue_age_guard": "forced_by_queue_age" in compile_cpp
         and "mConfig.mMaxQueueAgeFrames" in compile_cpp,
     "class_priority": "V321CompileClass::ObjectPaging" in compile_cpp
-        and "V321CompileClass::Terrain" in compile_cpp,
+        and "V321CompileClass::Terrain" in compile_cpp
+        and "new Resource::V321ClassifiedCompileSet" in objectpaging
+        and "Resource::V321CompileClass::ObjectPaging" in objectpaging
+        and "Resource::V321CompileClass::Terrain" in terrain_chunk
+        and "compileClass != V321CompileClass::Unknown" in scene_manager,
     "separate_delete_budget": "separate_delete_budget" in compile_cpp
         and "mConfig.mDeleteBudgetMs" in compile_cpp,
     "nonblocking_diagnostics": "OPENMW_P4_COMPILE_FILE" in diagnostics
