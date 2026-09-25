@@ -37,14 +37,29 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libglm-dev
+          sudo apt-get install -y --no-install-recommends libglm-dev libopenscenegraph-dev
 
-      - name: Compile and run native static-world smoke
+      - name: Compile and run native Phase 2 smokes
         shell: bash
         run: |
           set -euo pipefail
-          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I.             tools/vulkanmw/phase2-static-world-smoke.cpp             -o /tmp/vulkanmw-phase2-static-world-smoke
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+            tools/vulkanmw/phase2-static-world-smoke.cpp \
+            -o /tmp/vulkanmw-phase2-static-world-smoke
           /tmp/vulkanmw-phase2-static-world-smoke
+
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -pthread -I. \
+            tools/vulkanmw/phase2-terrain-world-smoke.cpp \
+            -o /tmp/vulkanmw-phase2-terrain-world-smoke
+          /tmp/vulkanmw-phase2-terrain-world-smoke
+
+      - name: Compile neutral groundcover source closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          CXXFLAGS="-std=c++20 -O1 -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter -I."
+          g++ ${CXXFLAGS} -c apps/openmw/mwrender/groundcoverquery.cpp -o /tmp/vulkanmw-groundcoverquery.o
+          g++ ${CXXFLAGS} -c apps/openmw/mwrender/vulkanmw/groundcoversource.cpp -o /tmp/vulkanmw-groundcoversource.o
 
       - name: Check Phase 2 whitespace
         shell: bash
