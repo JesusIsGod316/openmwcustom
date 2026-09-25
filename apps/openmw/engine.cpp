@@ -37,6 +37,7 @@
 #include <components/sdlutil/sdlgraphicswindow.hpp>
 
 #include <components/resource/resourcesystem.hpp>
+#include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/stats.hpp>
 
@@ -929,14 +930,20 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
             const bool p3HandoffAttribution
                 = static_cast<bool>(Settings::cells().mOptimizedMWRenderHandoffAttribution)
                 && Debug::V3Diagnostics::renderWriter().enabled();
-            const auto p3RenderStart = p3HandoffAttribution ? Debug::V3Diagnostics::Clock::now()
+            const bool p4HandoffFeedback
+                = static_cast<int>(Settings::cells().mOptimizedMWCompileSchedulerMode) >= 2;
+            const bool measureRenderHandoff = p3HandoffAttribution || p4HandoffFeedback;
+            const auto p3RenderStart = measureRenderHandoff ? Debug::V3Diagnostics::Clock::now()
                                                            : Debug::V3Diagnostics::Clock::time_point{};
             mViewer->renderingTraversals();
 
-            if (p3HandoffAttribution)
+            if (measureRenderHandoff)
             {
                 const double renderMs = Debug::V3Diagnostics::elapsedMs(p3RenderStart);
-                if (renderMs >= 20.0)
+                if (p4HandoffFeedback)
+                    Resource::OpenMWIncrementalCompileOperation::publishRenderingTraversalMs(renderMs);
+
+                if (p3HandoffAttribution && renderMs >= 20.0)
                 {
                     std::ostringstream row;
                     row << frameNumber << ',' << Debug::V3Diagnostics::epochMs() << ','
