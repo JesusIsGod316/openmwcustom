@@ -11,6 +11,7 @@
 #include <string_view>
 #include <components/nifrender/textureidentitycache.hpp>
 #include <components/render/native/nifassetservice.hpp>
+#include <components/render/native/staticworldservice.hpp>
 
 namespace RenderVsg
 {
@@ -60,6 +61,7 @@ namespace MWRender
         const VFS::Manager& mVfs;
         NifRender::TextureIdentityCache mTextureIdentities;
         std::unique_ptr<RenderNative::NifAssetService> mNativeAssets;
+        std::unique_ptr<RenderNative::StaticWorldService> mNativeStaticWorld;
     };
 }
 
