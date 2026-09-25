@@ -141,12 +141,15 @@ namespace MWRender
 
         const ChunkId id = std::make_tuple(center, size, activeGrid);
         const bool p2RequiredReadiness = SceneUtil::PagingWorkScope::requiredReadiness();
+        const unsigned char p3OptionalMask
+            = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
+            ? p3OptionalDistantMask() : 0;
         const int v311PrepareMode = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode);
         const int v313QualityMode = static_cast<int>(Settings::cells().mV313ChunkQualityMode);
 
-        // Mode0 is the inherited V3.12/V3.11 first-writer path. Keep it isolated
-        // so all historical modes remain a valid behavioral/performance control.
-        if (v313QualityMode == 0)
+        // Mode0 remains the inherited V3.12/V3.11 first-writer path unless a
+        // P3 optional distant upgrade explicitly needs a stronger cached variant.
+        if (v313QualityMode == 0 && p3OptionalMask == 0)
         {
             if (const osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(id))
             {
@@ -187,12 +190,15 @@ namespace MWRender
         const unsigned char v313RequestedSpatialMode
             = activeGrid && compile && !p2RequiredReadiness
                 && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0 ? 1 : 0;
-        const V313ChunkQuality v313RequestedQuality{ v313RequestedPrepareMode, v313RequestedSpatialMode };
+        const V313ChunkQuality v313RequestedQuality{
+            v313RequestedPrepareMode, v313RequestedSpatialMode, p3OptionalMask };
 
         const auto v313QualitySatisfies = [&](const V313ChunkQuality& have, const V313ChunkQuality& need) {
             if (have.mPrepareMode < need.mPrepareMode)
                 return false;
             if (v313QualityMode >= 2 && need.mPrepareMode > 0 && have.mSpatialMode != need.mSpatialMode)
+                return false;
+            if ((have.mP3OptionalMask & need.mP3OptionalMask) != need.mP3OptionalMask)
                 return false;
             return true;
         };
@@ -202,7 +208,7 @@ namespace MWRender
         if (cached)
         {
             bool v313CachedSatisfies = true;
-            if (v313QualityMode > 0 && v313RequestedPrepareMode > 0)
+            if ((v313QualityMode > 0 && v313RequestedPrepareMode > 0) || p3OptionalMask != 0)
             {
                 std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
                 const auto it = mV313ChunkQualities.find(id);
@@ -231,7 +237,7 @@ namespace MWRender
                 return static_cast<osg::Node*>(cached.get());
             }
         }
-        else if (v313QualityMode > 0)
+        else if (v313QualityMode > 0 || p3OptionalMask != 0)
         {
             // Generic cache expiry/removal does not know about V3.13's side table.
             // A real cache miss is authoritative and makes any old quality record stale.
@@ -271,11 +277,12 @@ namespace MWRender
             activeGrid && compile && !p2RequiredReadiness && v311PrepareMode > 0
                 ? static_cast<unsigned char>(v311PrepareMode) : 0,
             activeGrid && compile && !p2RequiredReadiness
-                && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0 ? 1 : 0 };
+                && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0 ? 1 : 0,
+            p3OptionalMask };
         if (v313RepairBuild)
             mV313UpgradeBuilt.fetch_add(1, std::memory_order_relaxed);
 
-        if (v313QualityMode > 0)
+        if (v313QualityMode > 0 || p3OptionalMask != 0)
         {
             // Strong-wins installation. A cheap demand miss may have started before a
             // strong worker finished; it must never overwrite the stronger live node.
@@ -285,8 +292,12 @@ namespace MWRender
             const V313ChunkQuality currentQuality
                 = current && currentIt != mV313ChunkQualities.end() ? currentIt->second : V313ChunkQuality{};
 
+            const bool currentCoversP3
+                = (currentQuality.mP3OptionalMask & v313BuiltQuality.mP3OptionalMask)
+                == v313BuiltQuality.mP3OptionalMask;
             if (current && v313QualitySatisfies(currentQuality, v313BuiltQuality)
-                && (currentQuality.mPrepareMode > v313BuiltQuality.mPrepareMode
+                && (v313BuiltQuality.mP3OptionalMask != 0 && currentCoversP3
+                    || currentQuality.mPrepareMode > v313BuiltQuality.mPrepareMode
                     || (currentQuality.mPrepareMode == v313BuiltQuality.mPrepareMode
                         && (v313QualityMode < 2 || currentQuality.mSpatialMode == v313BuiltQuality.mSpatialMode))))
             {
@@ -760,6 +771,25 @@ namespace MWRender
         , mMinSizeCostMultiplier(Settings::terrain().mObjectPagingMinSizeCostMultiplier)
         , mRefTrackerLocked(false)
     {
+    }
+
+    unsigned char ObjectPaging::p3OptionalDistantMask() const
+    {
+        unsigned char mask = 0;
+        if (static_cast<bool>(Settings::cells().mOptimizedMWSemanticPremerge))
+            mask |= 1u << 0u;
+        if (static_cast<bool>(Settings::cells().mOptimizedMWDistantDisplayLists))
+            mask |= 1u << 1u;
+        if (static_cast<bool>(Settings::cells().mOptimizedMWNormalizedStaticPackets))
+            mask |= 1u << 2u;
+        if (static_cast<bool>(Settings::cells().mOptimizedMWShadowStaticBatching))
+            mask |= 1u << 3u;
+        return mask;
+    }
+
+    bool ObjectPaging::supportsDistantStrongPagingUpgrade() const
+    {
+        return p3OptionalDistantMask() != 0;
     }
 
     void ObjectPaging::setOcclusionCuller(SceneUtil::OcclusionCuller* culler, unsigned int maxTriangles,
