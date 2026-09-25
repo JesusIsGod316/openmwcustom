@@ -10,12 +10,10 @@
 #include <components/render/backend/vsg/vsgruntimebootstrap.hpp>
 #include <components/render/native/nifassetservice.hpp>
 #include <components/render/native/staticworldservice.hpp>
+#include <components/render/native/terrainworldservice.hpp>
 #include <components/render/backend/vsg/vsgsemanticsession.hpp>
 #include <components/rendercore/frameproducer.hpp>
 #include <components/rendercore/renderer.hpp>
-#include <components/rendercore/terrainchunkproducer.hpp>
-#include <components/rendercore/terrainpreparationservice.hpp>
-#include <components/rendercore/terrainresidencyplanner.hpp>
 
 #include <cstdint>
 #include <filesystem>
