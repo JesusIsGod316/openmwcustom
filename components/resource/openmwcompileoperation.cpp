@@ -275,9 +275,14 @@ namespace Resource
                 if (!fits && !agedOut)
                     continue;
 
-                if (!selected || agedOut != (selectedAge >= maxQueueAge)
-                    ? agedOut
-                    : (rank < selectedRank || (rank == selectedRank && age > selectedAge)))
+                const bool selectedAgedOut = selected && selectedAge >= maxQueueAge;
+                bool better = !selected;
+                if (!better && agedOut != selectedAgedOut)
+                    better = agedOut;
+                else if (!better && agedOut == selectedAgedOut)
+                    better = rank < selectedRank || (rank == selectedRank && age > selectedAge);
+
+                if (better)
                 {
                     selected = set;
                     selectedOp = op;
