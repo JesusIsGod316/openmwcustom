@@ -59,6 +59,12 @@ checks = {
     "thread_mechanical_counter": "p3_prefetch_parallel=" in objectpaging
         and "p3_prefetch_reuse_hits=" in objectpaging
         and "p3PrefetchedTemplates.find(model)" in objectpaging,
+    "experimental_pack_switches": "optimizedmw normalized static packets" in cells
+        and "optimizedmw shadow static batching" in cells
+        and "optimizedmw render handoff attribution" in cells,
+    "normalized_packet_semantics": "setNormalizeIgnoredVertexColors" in optimizer_h
+        and "VertexColorModes::None" in optimizer_cpp
+        and "p3_normalized_colors=" in objectpaging,
 }
 failed = [name for name, ok in checks.items() if not ok]
 if failed:
