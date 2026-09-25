@@ -54,6 +54,12 @@ def main() -> int:
         if needle not in cpp:
             fail(f"native compiler no longer contains required direct-NIF step: {needle}")
 
+    lifecycle = (ROOT / "apps/openmw/mwrender/v4scenerenderlifecycle.cpp").read_text(encoding="utf-8")
+    if "RenderNative::NifSemanticCompiler" not in lifecycle:
+        fail("production static lifecycle is not routed through NifSemanticCompiler")
+    if "NifRender::translateStaticNif(" in code_only(lifecycle):
+        fail("production static lifecycle bypasses NifSemanticCompiler")
+
     translator = (ROOT / "components/nifrender/niftranslator.cpp").read_text(encoding="utf-8")
     for needle in (
         "RenderCore::ModelNodeRecord",
