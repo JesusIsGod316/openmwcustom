@@ -73,6 +73,7 @@ namespace Terrain
                 = 0;
             virtual unsigned int getNodeMask() { return 0; }
             virtual bool supportsStrongPagingUpgrade() const { return false; }
+            virtual bool supportsDistantStrongPagingUpgrade() const { return false; }
 
             void setViewDistance(float viewDistance) { mViewDistance = viewDistance; }
             float getViewDistance() const { return mViewDistance; }
