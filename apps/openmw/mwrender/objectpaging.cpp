@@ -1933,6 +1933,19 @@ namespace MWRender
             return false;
         for (const ChunkId& chunk : ccf.getCollected())
             mCache->removeFromObjectCache(chunk);
+        {
+            std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
+            for (const ChunkId& chunk : ccf.getCollected())
+            {
+                mV313ChunkQualities.erase(chunk);
+                mV313StrongUpgradeInFlight.erase(chunk);
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
+            for (const ChunkId& chunk : ccf.getCollected())
+                mV311PreparedActiveChunks.erase(chunk);
+        }
         return true;
     }
 
@@ -1955,6 +1968,19 @@ namespace MWRender
             return false;
         for (const ChunkId& chunk : ccf.getCollected())
             mCache->removeFromObjectCache(chunk);
+        {
+            std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
+            for (const ChunkId& chunk : ccf.getCollected())
+            {
+                mV313ChunkQualities.erase(chunk);
+                mV313StrongUpgradeInFlight.erase(chunk);
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
+            for (const ChunkId& chunk : ccf.getCollected())
+                mV311PreparedActiveChunks.erase(chunk);
+        }
         return true;
     }
 
@@ -1969,17 +1995,14 @@ namespace MWRender
     void ObjectPaging::clearCache()
     {
         mCache->clear();
-        if (static_cast<int>(Settings::cells().mV313ChunkQualityMode) > 0)
         {
-            {
-                std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
-                mV313ChunkQualities.clear();
-                mV313StrongUpgradeInFlight.clear();
-            }
-            {
-                std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
-                mV311PreparedActiveChunks.clear();
-            }
+            std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
+            mV313ChunkQualities.clear();
+            mV313StrongUpgradeInFlight.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
+            mV311PreparedActiveChunks.clear();
         }
     }
 
