@@ -1,5 +1,7 @@
 #include "staticworldsource.hpp"
 
+#include "referenceplacement.hpp"
+
 #include "../../mwworld/cell.hpp"
 #include "../../mwworld/cellstore.hpp"
 #include "../../mwworld/class.hpp"
@@ -7,7 +9,6 @@
 
 #include <components/esm/position.hpp>
 
-#include <glm/gtc/quaternion.hpp>
 
 #include <string>
 
@@ -26,15 +27,6 @@ namespace MWRender::VulkanMW
             return result + "/interior:" + cell.getId().serializeText();
         }
 
-        [[nodiscard]] RenderCore::Rotation referenceRotation(const ESM::Position& position) noexcept
-        {
-            // Exact equivalent of the established OpenMW reference rotation
-            // composition, expressed directly with GLM rather than osg::Quat.
-            return glm::normalize(
-                glm::angleAxis(position.rot[2], glm::vec3(0.f, 0.f, -1.f))
-                * glm::angleAxis(position.rot[1], glm::vec3(0.f, -1.f, 0.f))
-                * glm::angleAxis(position.rot[0], glm::vec3(-1.f, 0.f, 0.f)));
-        }
     }
 
     std::optional<std::string> makeCellIdentity(const MWWorld::CellStore& cell)
@@ -93,7 +85,7 @@ namespace MWRender::VulkanMW
         result.cellIdentity = cell->cell.identity;
         result.model = model;
         result.transform.translation = { position.pos[0], position.pos[1], position.pos[2] };
-        result.transform.rotation = referenceRotation(position);
+        result.transform.rotation = makeReferenceRotation(position);
         result.transform.scale = { scale, scale, scale };
         result.localBounds = localBounds;
         return result;
