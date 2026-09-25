@@ -376,14 +376,46 @@ namespace Resource
     {
     public:
         using Sample = OpenGlPressureSample (*)(void*);
+        struct Context
+        {
+            SpeculativeBudget* budget = nullptr;
+            Sample sample = nullptr;
+            void* owner = nullptr;
+            SpeculativePriority priority = SpeculativePriority::Background;
+        };
+
         SpeculativeScope(SpeculativeBudget* budget, Sample sample, void* owner,
             SpeculativePriority priority = SpeculativePriority::Background)
-            : mPrevious(sCurrent), mBudget(budget), mSample(sample), mOwner(owner), mPriority(priority)
-        { if (budget) sCurrent = this; }
+            : SpeculativeScope(Context{ budget, sample, owner, priority })
+        {
+        }
+        explicit SpeculativeScope(Context context)
+            : mPrevious(sCurrent)
+            , mBudget(context.budget)
+            , mSample(context.sample)
+            , mOwner(context.owner)
+            , mPriority(context.priority)
+        {
+            if (mBudget)
+                sCurrent = this;
+        }
         ~SpeculativeScope() { if (mBudget) sCurrent = mPrevious; }
         SpeculativeScope(const SpeculativeScope&) = delete;
         SpeculativeScope& operator=(const SpeculativeScope&) = delete;
         static bool active() noexcept { return sCurrent != nullptr; }
+        static Context capture() noexcept
+        {
+            return sCurrent
+                ? Context{ sCurrent->mBudget, sCurrent->mSample, sCurrent->mOwner, sCurrent->mPriority }
+                : Context{};
+        }
+        static void creditRetainedEstimate(std::uint64_t bytes) noexcept
+        {
+            if (!sCurrent || !bytes)
+                return;
+            sCurrent->mRetainedEstimate = bytes > UINT64_MAX - sCurrent->mRetainedEstimate
+                ? UINT64_MAX : sCurrent->mRetainedEstimate + bytes;
+        }
         std::uint64_t retainedEstimate() const noexcept { return mRetainedEstimate; }
         class Stage
         {

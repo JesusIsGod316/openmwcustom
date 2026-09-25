@@ -26,6 +26,11 @@ namespace Settings
         // adjacent indexed draws that differ only in index storage width.
         SettingValue<bool> mOptimizedMWSubmissionCompaction{
             mIndex, "Cells", "optimizedmw submission compaction" };
+        SettingValue<bool> mOptimizedMWParallelTemplatePrefetch{
+            mIndex, "Cells", "optimizedmw parallel template prefetch" };
+        SettingValue<int> mOptimizedMWParallelTemplatePrefetchMinTemplates{
+            mIndex, "Cells", "optimizedmw parallel template prefetch min templates",
+            makeClampSanitizerInt(4, 512) };
 
         SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
         SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",

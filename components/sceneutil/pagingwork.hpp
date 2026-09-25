@@ -24,12 +24,22 @@ namespace SceneUtil
             OptionalOptimization
         };
 
+        struct Context
+        {
+            const std::atomic<bool>* cancel = nullptr;
+            Phase phase = Phase::Full;
+        };
+
         explicit PagingWorkScope(const std::atomic<bool>* cancel, Phase phase = Phase::Full) noexcept
+            : PagingWorkScope(Context{ cancel, phase })
+        {
+        }
+        explicit PagingWorkScope(Context context) noexcept
             : mPrevious(sCancel)
             , mPreviousPhase(sPhase)
         {
-            sCancel = cancel;
-            sPhase = phase;
+            sCancel = context.cancel;
+            sPhase = context.phase;
         }
         ~PagingWorkScope()
         {
@@ -39,6 +49,7 @@ namespace SceneUtil
         PagingWorkScope(const PagingWorkScope&) = delete;
         PagingWorkScope& operator=(const PagingWorkScope&) = delete;
         static bool active() noexcept { return sCancel != nullptr; }
+        static Context capture() noexcept { return Context{ sCancel, sPhase }; }
         static bool cancelled() noexcept { return sCancel && sCancel->load(std::memory_order_relaxed); }
         static Phase phase() noexcept { return sPhase; }
         static bool requiredReadiness() noexcept { return active() && sPhase == Phase::RequiredReadiness; }

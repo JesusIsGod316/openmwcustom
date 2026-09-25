@@ -7,6 +7,7 @@
 #include <components/sceneutil/occlusionculling.hpp>
 
 #include <unordered_map>
+#include <set>
 #include <vector>
 
 #include <osg/ComputeBoundsVisitor>
@@ -38,7 +39,9 @@
 #include <components/misc/rng.hpp>
 #include <components/nifosg/autotransform.hpp>
 #include <components/resource/scenemanager.hpp>
+#include <components/resource/speculativebudget.hpp>
 #include <components/resource/v321classifiedcompileset.hpp>
+#include <components/sceneutil/boundedtwowaywork.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
 #include <components/sceneutil/morphgeometry.hpp>
@@ -879,6 +882,128 @@ namespace MWRender
 
         AnalyzeVisitor analyzeVisitor(copyMask);
         const float minSize = mMinSizeMergeFactor ? mMinSize * mMinSizeMergeFactor : mMinSize;
+
+        std::size_t p3TemplatePrefetchModels = 0;
+        bool p3TemplatePrefetchParallel = false;
+        const bool p3TemplatePrefetch = static_cast<bool>(Settings::cells().mOptimizedMWParallelTemplatePrefetch)
+            && !activeGrid && compile && !SceneUtil::PagingWorkScope::requiredReadiness();
+        if (p3TemplatePrefetch)
+        {
+            Debug::V3Diagnostics::ScopedCsvTimer timer(
+                Debug::V3Diagnostics::renderWriter(), "p3_template_prefetch", "distant", 0.1);
+            std::set<VFS::Path::Normalized> seenModels;
+            std::vector<VFS::Path::Normalized> models;
+            models.reserve(refs.size());
+
+            // Reproduce only checks that occur before the authoritative
+            // getTemplate() call below. The original loop still owns grouping,
+            // radius decisions, analysis, merge and publication.
+            for (const auto& [refNum, ref] : refs)
+            {
+                SceneUtil::PagingWorkScope::checkpoint();
+                if (size < 1.f)
+                {
+                    const osg::Vec3f cellPos = ref.mPosition / static_cast<float>(cellSize);
+                    if ((minBound.x() > floorMinBound.x() && cellPos.x() < minBound.x())
+                        || (minBound.y() > floorMinBound.y() && cellPos.y() < minBound.y())
+                        || (maxBound.x() < ceilMaxBound.x() && cellPos.x() >= maxBound.x())
+                        || (maxBound.y() < ceilMaxBound.y() && cellPos.y() >= maxBound.y()))
+                        continue;
+                }
+
+                const float dSqr = (viewPoint - ref.mPosition).length2();
+                {
+                    std::lock_guard<std::mutex> lock(mSizeCacheMutex);
+                    const SizeCache::iterator found = mSizeCache.find(refNum);
+                    if (found != mSizeCache.end() && found->second < dSqr * minSize * minSize)
+                        continue;
+                }
+                if (Misc::ResourceHelpers::isHiddenMarker(ref.mRefId))
+                    continue;
+
+                const int type = store.findStatic(ref.mRefId);
+                VFS::Path::Normalized model = getModel(type, ref.mRefId, store);
+                if (model.empty())
+                    continue;
+                model = Misc::ResourceHelpers::correctMeshPath(model);
+                {
+                    std::lock_guard<std::mutex> lock(mLODNameCacheMutex);
+                    LODNameCacheKey key{ model, lod };
+                    LODNameCache::const_iterator found = mLODNameCache.lower_bound(key);
+                    if (found != mLODNameCache.end() && found->first == key)
+                        model = found->second;
+                    else
+                        model = mLODNameCache
+                                    .emplace_hint(found, std::move(key),
+                                        Misc::ResourceHelpers::getLODMeshName(world.getESMVersions()[refNum.mContentFile],
+                                            model, *mSceneManager->getVFS(), lod))
+                                    ->second;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(mRefTrackerMutex);
+                    if (getRefTracker().mDisabled.count(refNum))
+                        continue;
+                }
+                if (seenModels.insert(model).second)
+                    models.push_back(std::move(model));
+            }
+
+            p3TemplatePrefetchModels = models.size();
+            const std::size_t minimumTemplates = static_cast<std::size_t>(
+                Settings::cells().mOptimizedMWParallelTemplatePrefetchMinTemplates);
+            const auto speculativeContext = Resource::SpeculativeScope::capture();
+            const auto pagingContext = SceneUtil::PagingWorkScope::capture();
+            std::uint64_t helperRetainedEstimate = 0;
+
+            auto loadRange = [&](std::size_t begin, std::size_t end, bool helper) {
+                if (!helper)
+                {
+                    for (std::size_t i = begin; i < end; ++i)
+                    {
+                        SceneUtil::PagingWorkScope::checkpoint();
+                        mSceneManager->getTemplate(models[i], false);
+                    }
+                    return;
+                }
+
+                Resource::SpeculativeScope helperSpeculation(speculativeContext);
+                SceneUtil::PagingWorkScope helperPaging(pagingContext);
+                struct Receipt
+                {
+                    Resource::SpeculativeScope& scope;
+                    std::uint64_t& estimate;
+                    ~Receipt() { estimate = scope.retainedEstimate(); }
+                } receipt{ helperSpeculation, helperRetainedEstimate };
+
+                for (std::size_t i = begin; i < end; ++i)
+                {
+                    SceneUtil::PagingWorkScope::checkpoint();
+                    mSceneManager->getTemplate(models[i], false);
+                }
+            };
+
+            try
+            {
+                p3TemplatePrefetchParallel
+                    = SceneUtil::BoundedTwoWayWork::run(models.size(), minimumTemplates, loadRange);
+            }
+            catch (...)
+            {
+                Resource::SpeculativeScope::creditRetainedEstimate(helperRetainedEstimate);
+                throw;
+            }
+            Resource::SpeculativeScope::creditRetainedEstimate(helperRetainedEstimate);
+
+            if (!p3TemplatePrefetchParallel)
+            {
+                for (const auto& model : models)
+                {
+                    SceneUtil::PagingWorkScope::checkpoint();
+                    mSceneManager->getTemplate(model, false);
+                }
+            }
+        }
+
         {
             Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
                 "object_chunk_template_analysis", activeGrid ? "active_grid" : "distant", 0.1);
@@ -1453,7 +1578,9 @@ namespace MWRender
                 << ',' << Debug::V3Diagnostics::csvQuote("object_chunk_summary") << ',' << Debug::V3Diagnostics::csvQuote(
                     std::string(activeGrid ? "active" : "distant") + " refs=" + std::to_string(refs.size())
                     + " templates=" + std::to_string(nodes.size())
-                    + " p3_index_merges=" + std::to_string(p3CompatibleIndexMerges))
+                    + " p3_index_merges=" + std::to_string(p3CompatibleIndexMerges)
+                    + " p3_prefetch_models=" + std::to_string(p3TemplatePrefetchModels)
+                    + " p3_prefetch_parallel=" + std::to_string(p3TemplatePrefetchParallel ? 1 : 0))
                 << ",0";
             Debug::V3Diagnostics::renderWriter().writeLine(row.str());
         }
