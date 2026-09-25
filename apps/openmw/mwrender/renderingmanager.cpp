@@ -312,8 +312,31 @@ namespace MWRender
         if (getenv("OPENMW_DONT_PRECOMPILE") == nullptr)
         {
             osg::ref_ptr<osgUtil::IncrementalCompileOperation> ico;
-            if (static_cast<int>(Settings::cells().mOptimizedMWCompileSchedulerMode) > 0)
-                ico = new Resource::OpenMWIncrementalCompileOperation;
+            const int p4CompileSchedulerMode
+                = static_cast<int>(Settings::cells().mOptimizedMWCompileSchedulerMode);
+            if (p4CompileSchedulerMode > 0)
+            {
+                Resource::OpenMWCompileSchedulerConfig config;
+                config.mMode = p4CompileSchedulerMode;
+                config.mTargetFrameRate = static_cast<double>(Settings::cells().mTargetFramerate);
+                config.mMaxBudgetMs
+                    = static_cast<double>(Settings::cells().mOptimizedMWCompileSchedulerMaxBudgetMs);
+                config.mCreditCapMs
+                    = static_cast<double>(Settings::cells().mOptimizedMWCompileSchedulerCreditCapMs);
+                config.mHeadroomRatio
+                    = static_cast<double>(Settings::cells().mOptimizedMWCompileSchedulerHeadroomRatio);
+                config.mHandoffThresholdMs
+                    = static_cast<double>(Settings::cells().mOptimizedMWCompileSchedulerHandoffThresholdMs);
+                config.mMaxQueueAgeFrames = static_cast<unsigned int>(
+                    Settings::cells().mOptimizedMWCompileSchedulerMaxQueueAgeFrames);
+                config.mDeleteBudgetMs
+                    = static_cast<double>(Settings::cells().mOptimizedMWCompileSchedulerDeleteBudgetMs);
+                config.mMaxObjectsPerFrame = static_cast<unsigned int>(
+                    Settings::cells().mOptimizedMWCompileSchedulerMaxObjectsPerFrame);
+                config.mDiagnosticThresholdMs = static_cast<double>(
+                    Settings::cells().mOptimizedMWCompileSchedulerDiagnosticThresholdMs);
+                ico = new Resource::OpenMWIncrementalCompileOperation(config);
+            }
             else
                 ico = new osgUtil::IncrementalCompileOperation;
 
