@@ -17,7 +17,8 @@ target_include_directories(optimizedmw-p4-policy-tests PRIVATE "${ROOT}")
 target_link_libraries(optimizedmw-p4-policy-tests PRIVATE Threads::Threads)
 
 add_library(optimizedmw-p4-compile-object OBJECT
-    "${ROOT}/components/resource/openmwcompileoperation.cpp")
+    "${ROOT}/components/resource/openmwcompileoperation.cpp"
+    "${ROOT}/components/terrain/terraincompile.cpp")
 target_include_directories(optimizedmw-p4-compile-object PRIVATE "${ROOT}")
 target_include_directories(optimizedmw-p4-compile-object SYSTEM PRIVATE ${OPENSCENEGRAPH_INCLUDE_DIRS})
 
