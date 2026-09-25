@@ -62,6 +62,32 @@ namespace
         return geometry;
     }
 
+    osg::ref_ptr<osg::Geometry> makeInterleavedTriangles(bool transparent)
+    {
+        osg::ref_ptr<osg::Geometry> geometry = new osg::Geometry;
+        osg::ref_ptr<osg::Vec3Array> vertices = new osg::Vec3Array;
+        for (int i = 0; i < 8; ++i)
+            vertices->push_back(osg::Vec3f(static_cast<float>(i), 0.f, 0.f));
+        geometry->setVertexArray(vertices);
+
+        osg::ref_ptr<osg::DrawElementsUByte> first
+            = new osg::DrawElementsUByte(osg::PrimitiveSet::TRIANGLES);
+        first->push_back(0); first->push_back(1); first->push_back(2);
+        osg::ref_ptr<osg::DrawElementsUShort> barrier
+            = new osg::DrawElementsUShort(osg::PrimitiveSet::LINES);
+        barrier->push_back(3); barrier->push_back(4);
+        osg::ref_ptr<osg::DrawElementsUInt> second
+            = new osg::DrawElementsUInt(osg::PrimitiveSet::TRIANGLES);
+        second->push_back(5); second->push_back(6); second->push_back(7);
+
+        geometry->addPrimitiveSet(first);
+        geometry->addPrimitiveSet(barrier);
+        geometry->addPrimitiveSet(second);
+        if (transparent)
+            geometry->getOrCreateStateSet()->setRenderingHint(osg::StateSet::TRANSPARENT_BIN);
+        return geometry;
+    }
+
     osg::ref_ptr<osg::Geometry> makeTriangle(float offset)
     {
         osg::ref_ptr<osg::Geometry> geometry = new osg::Geometry;
@@ -107,6 +133,38 @@ int main()
     osg::ref_ptr<osg::Geometry> commandCached = optimize(true, true);
     require(commandCached->getUseDisplayList(), "distant command-cache experiment did not enable display list");
     require(!commandCached->getUseVertexBufferObjects(), "display-list experiment must not retain VBO submission");
+
+    osg::ref_ptr<osg::Group> opaqueRoot = new osg::Group;
+    osg::ref_ptr<osg::Geometry> opaqueInterleaved = makeInterleavedTriangles(false);
+    opaqueRoot->addChild(opaqueInterleaved);
+    SceneUtil::Optimizer opaqueOptimizer;
+    opaqueOptimizer.setMergeCompatibleIndexTypes(true);
+    opaqueOptimizer.optimize(opaqueRoot, SceneUtil::Optimizer::MERGE_GEOMETRY);
+    require(opaqueInterleaved->getNumPrimitiveSets() == 2,
+        "opaque non-adjacent triangle submissions were not compacted");
+    require(opaqueOptimizer.getCompatibleIndexMergeCount() == 1,
+        "opaque non-adjacent compaction count mismatch");
+    osg::PrimitiveSet* opaqueTriangles = opaqueInterleaved->getPrimitiveSet(0);
+    require(opaqueTriangles->getType() == osg::PrimitiveSet::DrawElementsUIntPrimitiveType,
+        "opaque non-adjacent merge did not retain widest index type");
+    require(opaqueTriangles->getNumIndices() == 6,
+        "opaque non-adjacent merge changed triangle index count");
+    const unsigned expectedOpaque[] = {0, 1, 2, 5, 6, 7};
+    for (unsigned int i = 0; i < 6; ++i)
+        require(opaqueTriangles->index(i) == expectedOpaque[i],
+            "opaque non-adjacent merge changed triangle order");
+
+    osg::ref_ptr<osg::Group> transparentRoot = new osg::Group;
+    osg::ref_ptr<osg::Geometry> transparentInterleaved = makeInterleavedTriangles(true);
+    transparentRoot->addChild(transparentInterleaved);
+    SceneUtil::Optimizer transparentOptimizer;
+    transparentOptimizer.setMergeCompatibleIndexTypes(true);
+    transparentOptimizer.setMergeAlphaBlending(true);
+    transparentOptimizer.optimize(transparentRoot, SceneUtil::Optimizer::MERGE_GEOMETRY);
+    require(transparentInterleaved->getNumPrimitiveSets() == 3,
+        "transparent primitive ordering was compacted across a barrier");
+    require(transparentOptimizer.getCompatibleIndexMergeCount() == 0,
+        "transparent non-adjacent path reported a P3A merge");
 
     osg::ref_ptr<osg::Group> separate = makeEquivalentStatePair();
     SceneUtil::Optimizer separateOptimizer;
