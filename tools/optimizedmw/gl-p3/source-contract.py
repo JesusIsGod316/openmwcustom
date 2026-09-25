@@ -19,8 +19,17 @@ p3_compaction_index = objectpaging.index("const bool p3SubmissionCompaction")
 p2_readiness_index = objectpaging.rfind("const bool p2RequiredReadiness", 0, p3_compaction_index)
 v38_batching_index = objectpaging.rfind("const int v38BatchingMode", 0, p3_compaction_index)
 
+launcher = (root / "tools/optimizedmw/gl-p3/OptimizedMW_GL-P3_Test.ps1").read_text()
+cmake_root = (root / "CMakeLists.txt").read_text()
+
 checks = {
     "setting": "optimizedmw submission compaction" in cells and "optimizedmw submission compaction = false" in defaults,
+    "focused_launcher": all(token in launcher for token in (
+        "CONTROL", "P3A", "P3B", "optimizedmw submission compaction",
+        "optimizedmw parallel template prefetch", "settings-effective-test.cfg",
+        "OPENMW_V36_BATCHING_FILE"))
+        and "START-OptimizedMW-GL-P3-Test.bat" in cmake_root
+        and "OptimizedMW_GL-P3_Test.ps1" in cmake_root,
     "switchable_optimizer": "setMergeCompatibleIndexTypes" in optimizer_h,
     "mixed_width_merge": "mergePromotedDrawElements" in optimizer_cpp,
     "strong_only_gate": "&& compile && !p2RequiredReadiness && v38BatchingMode >= 2" in objectpaging,
