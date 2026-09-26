@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import pathlib
-import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -39,28 +38,50 @@ def require(path: pathlib.Path, needles: tuple[str, ...]) -> str:
     return text
 
 
+def forbid(path: pathlib.Path, needles: tuple[str, ...]) -> None:
+    text = require(path, ())
+    for needle in needles:
+        if needle in text:
+            fail(f"{path.relative_to(ROOT)} regained forbidden Phase 3C behavior: {needle}")
+
+
 def main() -> int:
-    require(PROGRAM_HPP, (
-        "defaultTranslation",
-        "defaultRotation",
-        "defaultScale",
+    program_hpp = require(PROGRAM_HPP, (
+        "struct TransformTrackSample",
         "TransformTrackSample sample(float time) const noexcept",
+        "result.translation = translations.sample(time);",
+        "result.scale = scales.sample(time);",
     ))
-    require(PROGRAM_CPP, (
-        "interpolator->mDefaultValue",
+    # Missing KF channels have compatibility-specific behavior. Do not silently
+    # synthesize NiTransformInterpolator defaults into the per-frame sample.
+    for removed in ("defaultTranslation", "defaultRotation", "defaultScale"):
+        if removed in program_hpp:
+            fail(f"native transform track incorrectly synthesizes removed default channel: {removed}")
+
+    forbid(PROGRAM_CPP, (
         "target.defaultTranslation",
         "target.defaultRotation",
         "target.defaultScale",
     ))
+
     require(RECORDS, (
         "glm::mat4 sourceParentPath",
         "glm::mat4 sourceLocal",
+        "bool sourceAnimationBoundary",
+        "std::uint32_t sourceControllerFlags",
+        "std::uint32_t sourceParentControllerFlags",
+        "std::vector<std::string> sourceParentPathNodes",
     ))
     require(TRANSLATOR, (
         "const glm::mat4 sourceLocal = mResult.model.nodes[modelNode].localTransform;",
         "bone.sourceParentPath = sourceParentPath;",
         "bone.sourceLocal = sourceLocal;",
+        "bone.sourceAnimationBoundary = true;",
+        "bone.sourceControllerFlags = mResult.model.nodes[modelNode].controllerFlags;",
+        "bone.sourceParentControllerFlags = sourceParentControllerFlags;",
+        "bone.sourceParentPathNodes = std::move(sourceParentPathNodes);",
     ))
+
     require(BLEND_HPP, ("bool isInterpolating() const noexcept",))
     require(ROTATE_HPP, ("bool isEnabled() const noexcept",))
     require(ANIMATION_HPP, (
@@ -68,40 +89,72 @@ def main() -> int:
         "struct V4NativeAnimationState",
         "captureV4NativeAnimationState",
     ))
+
     state_source = require(ANIMATION_CPP, (
         "mV4NativeBoneNames",
         "mV4NativeKf",
         "OPENMW_V4_LEGACY_ANIMATION_CAPTURE_CONTROL",
-        "controller->isInterpolating()",
+        "dynamic_cast<const NifAnimBlendController*>(callback.get())",
+        "dynamic_cast<const BoneAnimBlendController*>(callback.get())",
+        "dynamic_cast<const HybridNifAnimController*>(callback.get())",
         "rotate->isEnabled()",
         "state.layers[blendMask]",
+        "mAccumRoot && mAccumCtrl",
     ))
-    if "mMatrixInSkeletonSpace" in state_source[state_source.find("captureV4NativeAnimationState"):
-                                                state_source.find("prepareV4PersistentObject")]:
-        fail("Animation state snapshot must not copy evaluated skeleton matrices")
+    state_begin = state_source.find("bool Animation::captureV4NativeAnimationState")
+    state_end = state_source.find("V4PersistentObject* Animation::prepareV4PersistentObject", state_begin)
+    if state_begin < 0 or state_end < 0:
+        fail("could not isolate Animation native-state snapshot implementation")
+    state_body = state_source[state_begin:state_end]
+    for forbidden in ("mMatrixInSkeletonSpace", "updateBoneMatrices"):
+        if forbidden in state_body:
+            fail(f"Animation native-state snapshot reads evaluated scenegraph pose: {forbidden}")
 
+    require(RUNTIME_HPP, (
+        "void beginFrame();",
+        "captureSkeletonPose(",
+        "std::string_view actorIdentity",
+        "seedSkeletonPose(",
+        "void endFrame();",
+        "void clear();",
+    ))
     runtime = require(RUNTIME_CPP, (
         "NifKeyframeClipCompiler",
+        "native animation pose requires one compatibility seed frame",
         "controller.timing.map(layer.time)",
         "controller.track.sample(keyTime)",
-        "bone.sourceParentPath * animatedSourceLocal",
-        "result.sampledTracks == 0",
+        "seedSkeletonPose",
+        "bone.sourceParentPath * composeNifLocal(actorPose.sourceLocal[i])",
+        "binding.collapsedParentNodes",
+        "sourceControllerFlags",
+        "sourceParentControllerFlags",
+        "mSeenActors",
     ))
     for forbidden in ("updateBoneMatrices", "mMatrixInSkeletonSpace", "SceneUtil::Bone"):
         if forbidden in runtime:
             fail(f"native animation runtime regained evaluated OSG pose dependency: {forbidden}")
 
     bridge = require(BRIDGE_CPP, (
-        "mNativeAnimation->captureSkeletonPose",
+        "mNativeAnimation->beginFrame()",
+        "mNativeAnimation->captureSkeletonPose(",
+        "mNativeAnimation->seedSkeletonPose(",
+        "mNativeAnimation->endFrame()",
         "nativePose.applied()",
         "native_animation_fallback",
+        "native_animation_seed_fallback",
         "native_animation_runtime",
+        "native_actor_poses",
         "legacy_actor_poses",
+        "sampled_tracks",
     ))
     native_call = bridge.find("mNativeAnimation->captureSkeletonPose")
     legacy_update = bridge.find("evaluated->updateBoneMatrices", native_call)
     if native_call < 0 or legacy_update < 0 or native_call > legacy_update:
-        fail("native pose substitution must precede the compatibility skeleton traversal")
+        fail("native pose substitution must precede compatibility skeleton traversal")
+
+    seed_call = bridge.find("mNativeAnimation->seedSkeletonPose", native_call)
+    if seed_call < legacy_update:
+        fail("compatibility seed must be captured after the exact legacy pose has been reconstructed")
 
     require(BRIDGE_HPP, ("std::unique_ptr<V4NativeAnimationRuntime> mNativeAnimation;",))
     require(ENGINE_SOURCES, ("apps/openmw/mwrender/vulkanmw/nativeanimationruntime.cpp",))
