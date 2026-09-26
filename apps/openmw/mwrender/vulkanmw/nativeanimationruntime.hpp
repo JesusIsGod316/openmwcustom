@@ -5,6 +5,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -57,10 +59,20 @@ namespace MWRender
         V4NativeAnimationRuntime(const V4NativeAnimationRuntime&) = delete;
         V4NativeAnimationRuntime& operator=(const V4NativeAnimationRuntime&) = delete;
 
-        [[nodiscard]] V4NativeAnimationPoseResult captureSkeletonPose(
-            const Animation& animation, const RenderCore::SkeletonRecord& skeleton,
-            std::vector<glm::mat4>& localTransforms);
+        void beginFrame();
 
+        [[nodiscard]] V4NativeAnimationPoseResult captureSkeletonPose(
+            std::string_view actorIdentity, const Animation& animation,
+            const RenderCore::SkeletonRecord& skeleton, std::vector<glm::mat4>& localTransforms);
+
+        // Compatibility fallback seeds the exact current local pose once. Later
+        // native frames then preserve the legacy controller's missing-channel
+        // behavior without reading OSG bones again.
+        [[nodiscard]] bool seedSkeletonPose(std::string_view actorIdentity,
+            const RenderCore::SkeletonRecord& skeleton, std::span<const glm::mat4> localTransforms,
+            std::string& diagnostic);
+
+        void endFrame();
         void clear();
 
     private:
