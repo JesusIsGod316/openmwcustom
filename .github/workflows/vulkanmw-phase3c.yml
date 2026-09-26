@@ -1,0 +1,66 @@
+name: VulkanMW Phase 3C native runtime substitution
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [vulkanmw/phase3c-native-runtime-substitution]
+    paths:
+      - 'components/render/native/**'
+      - 'components/rendercore/**'
+      - 'components/nifrender/**'
+      - 'apps/openmw/mwrender/animation.*'
+      - 'apps/openmw/mwrender/animblendcontroller.*'
+      - 'apps/openmw/mwrender/rotatecontroller.*'
+      - 'apps/openmw/mwrender/v4engine*'
+      - 'apps/openmw/mwrender/vulkanmw/**'
+      - 'tools/vulkanmw/**'
+      - '.github/workflows/vulkanmw-phase3c.yml'
+
+concurrency:
+  group: vulkanmw-phase3c-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  SourceContracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Phase 3 parent ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          P3=87962b7d1fda6ca1d5333ee005530ce1ed2731c9
+          git cat-file -e "${P3}^{commit}"
+          test "$(git merge-base "${P3}" HEAD)" = "${P3}"
+
+      - name: Enforce VulkanMW Phase 0 through Phase 3C contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/vulkanmw/check-architecture-boundaries.py
+          python3 tools/vulkanmw/check-phase1-nif-compiler.py
+          python3 tools/vulkanmw/check-phase2-static-world.py
+          python3 tools/vulkanmw/check-phase3-controller-animation.py
+          python3 tools/vulkanmw/check-phase3-kf-compiler.py
+          python3 tools/vulkanmw/check-phase3c-native-runtime.py
+
+      - name: Check Phase 3C whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check 87962b7d1fda6ca1d5333ee005530ce1ed2731c9 HEAD -- \
+            components/render/native \
+            components/rendercore \
+            components/nifrender \
+            apps/openmw/mwrender/animation.cpp \
+            apps/openmw/mwrender/animation.hpp \
+            apps/openmw/mwrender/animblendcontroller.hpp \
+            apps/openmw/mwrender/rotatecontroller.hpp \
+            apps/openmw/mwrender/v4enginerenderbridge.cpp \
+            apps/openmw/mwrender/v4enginerenderbridge.hpp \
+            apps/openmw/mwrender/v4engine-sources.cmake \
+            apps/openmw/mwrender/vulkanmw \
+            tools/vulkanmw
