@@ -8,6 +8,7 @@ on:
       - 'components/render/native/**'
       - 'components/rendercore/**'
       - 'components/nifrender/**'
+      - 'components/resource/keyframemanager.*'
       - 'components/render/backend/vsg/**'
       - 'apps/openmw/CMakeLists.txt'
       - 'apps/openmw/mwrender/vulkanmw/**'
@@ -40,7 +41,7 @@ jobs:
           git cat-file -e "${PHASE2}^{commit}"
           test "$(git merge-base "${PHASE2}" HEAD)" = "${PHASE2}"
 
-      - name: Enforce VulkanMW Phase 0 through Phase 3A contracts
+      - name: Enforce VulkanMW Phase 0 through Phase 3 contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -48,7 +49,8 @@ jobs:
           python3 tools/vulkanmw/check-phase1-nif-compiler.py
           python3 tools/vulkanmw/check-phase2-static-world.py
           python3 tools/vulkanmw/check-phase3-controller-animation.py
-          git diff --check 93e94bc6b9bc778e65c8969cea5a27363dcd17b6 HEAD --             components/render/native             apps/openmw/mwrender/vulkanmw             apps/openmw/mwrender/groundcover.cpp             apps/openmw/mwrender/groundcover.hpp             apps/openmw/mwrender/groundcoverdata.hpp             apps/openmw/mwrender/groundcoverquery.cpp             apps/openmw/mwrender/groundcoverquery.hpp             apps/openmw/mwrender/renderingmanager.hpp             apps/openmw/mwrender/v4engine-sources.cmake             apps/openmw/mwrender/v4enginerenderbridge.cpp             apps/openmw/mwrender/v4enginerenderbridge.hpp             apps/openmw/mwrender/v4scenerenderlifecycle.cpp             apps/openmw/mwrender/v4scenerenderlifecycle.hpp             apps/openmw/mwrender/v4semanticsource.cpp             apps/openmw/mwrender/v4semanticsource.hpp             apps/openmw/mwrender/v4terrainsource.cpp             apps/openmw/mwrender/v4terrainsource.hpp             tools/vulkanmw
+          python3 tools/vulkanmw/check-phase3-kf-compiler.py
+          git diff --check 93e94bc6b9bc778e65c8969cea5a27363dcd17b6 HEAD --             components/render/native             apps/openmw/mwrender/vulkanmw             apps/openmw/mwrender/groundcover.cpp             apps/openmw/mwrender/groundcover.hpp             apps/openmw/mwrender/groundcoverdata.hpp             apps/openmw/mwrender/groundcoverquery.cpp             apps/openmw/mwrender/groundcoverquery.hpp             apps/openmw/mwrender/renderingmanager.hpp             apps/openmw/mwrender/v4engine-sources.cmake             apps/openmw/mwrender/v4enginerenderbridge.cpp             apps/openmw/mwrender/v4enginerenderbridge.hpp             apps/openmw/mwrender/v4scenerenderlifecycle.cpp             apps/openmw/mwrender/v4scenerenderlifecycle.hpp             apps/openmw/mwrender/v4semanticsource.cpp             apps/openmw/mwrender/v4semanticsource.hpp             apps/openmw/mwrender/v4terrainsource.cpp             apps/openmw/mwrender/v4terrainsource.hpp             components/resource/keyframemanager.hpp             tools/vulkanmw
 
   Windows:
     needs: Preflight
@@ -123,7 +125,7 @@ jobs:
           7z x -y -ovcpkg-x64-windows-2022-${{ env.VCPKG_TAG }} $env:archive
           if ($LASTEXITCODE -ne 0) { throw "Dependency extraction failed" }
 
-      - name: Configure production VulkanMW Phase 3A tree
+      - name: Configure production VulkanMW Phase 3 tree
         shell: pwsh
         run: |
           $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
@@ -159,7 +161,7 @@ jobs:
             -D OPENMW_USE_SYSTEM_SQLITE3=OFF `
             -D OPENMW_USE_SYSTEM_YAML_CPP=OFF `
             -D OPENMW_LTO_BUILD=OFF
-          if ($LASTEXITCODE -ne 0) { throw "Production Phase 3A configure failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Production Phase 3 configure failed" }
 
       - name: Build real-NIF VulkanMW conformance executable
         shell: pwsh
@@ -167,11 +169,11 @@ jobs:
           cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3" --target openmw-vulkan-nif-conformance --verbose
           if ($LASTEXITCODE -ne 0) { throw "VulkanMW real-NIF conformance build failed" }
 
-      - name: Build production OpenMW with Phase 3A native world path
+      - name: Build production OpenMW with Phase 3 native controller and KF path
         shell: pwsh
         run: |
           cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3" --target openmw --verbose
-          if ($LASTEXITCODE -ne 0) { throw "Production OpenMW Phase 3A link failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Production OpenMW Phase 3 link failed" }
 
       - name: Validate executable command surfaces
         shell: pwsh
@@ -189,7 +191,7 @@ jobs:
           & "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3/openmw-vulkan-nif-conformance.exe" --help
           if ($LASTEXITCODE -ne 0) { throw "real-NIF conformance --help failed with $LASTEXITCODE" }
 
-      - name: Upload Phase 3A build evidence
+      - name: Upload Phase 3 build evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
