@@ -4,7 +4,12 @@
 
 #include <components/debug/v3diagnostics.hpp>
 
+#include <osg/Array>
+#include <osg/Geometry>
 #include <osg/GraphicsContext>
+#include <osg/Image>
+#include <osg/PrimitiveSet>
+#include <osg/Texture>
 #include <osg/Timer>
 
 #include <OpenThreads/ScopedLock>
@@ -130,17 +135,108 @@ namespace Resource
         }
     }
 
-    std::size_t OpenMWIncrementalCompileOperation::costIndex(const CompileSet* set, CompileKind kind) const
+    std::size_t OpenMWIncrementalCompileOperation::costIndex(
+        const CompileSet* set, CompileKind kind, std::size_t sizeTier) const
     {
-        return compileClassIndex(set) * sCompileKindCount + static_cast<std::size_t>(kind);
+        return (compileClassIndex(set) * sCompileKindCount + static_cast<std::size_t>(kind))
+            * sCompileSizeTierCount + std::min(sizeTier, sCompileSizeTierCount - 1);
     }
 
-    double OpenMWIncrementalCompileOperation::staticPriorMs(const CompileSet* set, CompileKind kind) const
+    std::size_t OpenMWIncrementalCompileOperation::resourceSizeBytes(const CompileOp* op)
     {
-        if (mConfig.mHeavyLaneMode > 0 && kind == CompileKind::Drawable
-            && getV321CompileClass(set) == V321CompileClass::Terrain)
-            return mConfig.mTerrainDrawablePriorMs;
-        return 0.0;
+        if (const auto* textureOp = dynamic_cast<const CompileTextureOp*>(op))
+        {
+            std::size_t bytes = 0;
+            if (textureOp->_texture)
+            {
+                for (unsigned int i = 0; i < textureOp->_texture->getNumImages(); ++i)
+                {
+                    if (const osg::Image* image = textureOp->_texture->getImage(i))
+                        bytes += image->getTotalDataSize();
+                }
+            }
+            return bytes;
+        }
+
+        const osg::Drawable* drawable = nullptr;
+        if (const auto* drawableOp = dynamic_cast<const CompileDrawableOp*>(op))
+            drawable = drawableOp->_drawable.get();
+        if (const osg::Geometry* geometry = drawable ? drawable->asGeometry() : nullptr)
+        {
+            std::size_t bytes = 0;
+            auto addArray = [&bytes](const osg::Array* array) {
+                if (array)
+                    bytes += array->getTotalDataSize();
+            };
+            addArray(geometry->getVertexArray());
+            addArray(geometry->getNormalArray());
+            addArray(geometry->getColorArray());
+            addArray(geometry->getSecondaryColorArray());
+            addArray(geometry->getFogCoordArray());
+            for (const osg::ref_ptr<osg::Array>& array : geometry->getTexCoordArrayList())
+                addArray(array.get());
+            for (unsigned int i = 0; i < geometry->getNumPrimitiveSets(); ++i)
+            {
+                if (const osg::PrimitiveSet* primitive = geometry->getPrimitiveSet(i))
+                    bytes += primitive->getTotalDataSize();
+            }
+            return bytes;
+        }
+        return 0;
+    }
+
+    std::size_t OpenMWIncrementalCompileOperation::resourceSizeTier(std::size_t bytes)
+    {
+        if (bytes >= 8u * 1024u * 1024u)
+            return 3;
+        if (bytes >= 2u * 1024u * 1024u)
+            return 2;
+        if (bytes >= 512u * 1024u)
+            return 1;
+        return 0;
+    }
+
+    int OpenMWIncrementalCompileOperation::urgencyRank(const CompileSet* set)
+    {
+        switch (getV321CompileUrgency(set))
+        {
+            case V321CompileUrgency::Required: return 0;
+            case V321CompileUrgency::NearFuture: return 1;
+            case V321CompileUrgency::Background: return 2;
+        }
+        return 1;
+    }
+
+    const char* OpenMWIncrementalCompileOperation::urgencyName(const CompileSet* set)
+    {
+        switch (getV321CompileUrgency(set))
+        {
+            case V321CompileUrgency::Required: return "required";
+            case V321CompileUrgency::NearFuture: return "near_future";
+            case V321CompileUrgency::Background: return "background";
+        }
+        return "near_future";
+    }
+
+    double OpenMWIncrementalCompileOperation::staticPriorMs(
+        const CompileSet* set, CompileKind kind, std::size_t sizeTier) const
+    {
+        double prior = 0.0;
+
+        if ((mConfig.mHeavyLaneMode > 0 || mConfig.mResidencySchedulerMode > 0)
+            && kind == CompileKind::Drawable && getV321CompileClass(set) == V321CompileClass::Terrain)
+            prior = std::max(prior, mConfig.mTerrainDrawablePriorMs);
+
+        if (kind == CompileKind::Texture)
+        {
+            if (sizeTier >= 3)
+                prior = std::max(prior, 12.0);
+            else if (sizeTier == 2)
+                prior = std::max(prior, 6.0);
+            else if (sizeTier == 1)
+                prior = std::max(prior, 2.0);
+        }
+        return prior;
     }
 
     double OpenMWIncrementalCompileOperation::cachedOsgEstimateMs(CompileOp* op, CompileInfo& info,
@@ -188,9 +284,9 @@ namespace Resource
         return std::max({ 0.05, osgEstimateMs, measured, risk, prior });
     }
 
-    void OpenMWIncrementalCompileOperation::observe(const CompileSet* set, CompileKind kind, double actualMs)
+    void OpenMWIncrementalCompileOperation::observe(std::size_t costBucket, double actualMs)
     {
-        CostState& cost = mCosts.at(costIndex(set, kind));
+        CostState& cost = mCosts.at(costBucket);
         ++cost.mSamples;
         if (cost.mSamples == 1)
             cost.mEmaMs = actualMs;
@@ -313,6 +409,7 @@ namespace Resource
         unsigned int budgetedObjects = 0;
         unsigned int ageForcedObjects = 0;
         unsigned int heavyObjects = 0;
+        unsigned int quarantinedCandidates = 0;
         unsigned int predictionMisses = 0;
         std::uint64_t candidateScans = 0;
         std::uint64_t candidateBuilds = 0;
@@ -332,7 +429,10 @@ namespace Resource
             double mStaticPriorMs = 0.0;
             double mPredictionMs = 0.0;
             std::size_t mCostBucket = 0;
+            std::size_t mResourceBytes = 0;
+            std::size_t mSizeTier = 0;
             unsigned int mAge = 0;
+            int mUrgencyRank = 1;
             int mRank = std::numeric_limits<int>::max();
 
             explicit operator bool() const { return mSet != nullptr && mOp != nullptr; }
@@ -347,6 +447,8 @@ namespace Resource
                 return candidateUrgent;
             if (candidateUrgent && candidate.mAge != current.mAge)
                 return candidate.mAge > current.mAge;
+            if (candidate.mUrgencyRank != current.mUrgencyRank)
+                return candidate.mUrgencyRank < current.mUrgencyRank;
             if (candidate.mRank != current.mRank)
                 return candidate.mRank < current.mRank;
             return candidate.mAge > current.mAge;
@@ -355,6 +457,8 @@ namespace Resource
         auto betterOverflow = [](const Candidate& candidate, const Candidate& current) {
             if (!current)
                 return true;
+            if (candidate.mUrgencyRank != current.mUrgencyRank)
+                return candidate.mUrgencyRank < current.mUrgencyRank;
             if (candidate.mAge != current.mAge)
                 return candidate.mAge > current.mAge;
             return candidate.mRank < current.mRank;
@@ -383,8 +487,11 @@ namespace Resource
             const CompileKind kind = classify(op);
             candidate.mOp = op;
             candidate.mKind = kind;
-            candidate.mCostBucket = costIndex(candidate.mSet, kind);
-            candidate.mStaticPriorMs = staticPriorMs(candidate.mSet, kind);
+            candidate.mResourceBytes = resourceSizeBytes(op);
+            candidate.mSizeTier = resourceSizeTier(candidate.mResourceBytes);
+            candidate.mCostBucket = costIndex(candidate.mSet, kind, candidate.mSizeTier);
+            candidate.mStaticPriorMs = staticPriorMs(candidate.mSet, kind, candidate.mSizeTier);
+            candidate.mUrgencyRank = urgencyRank(candidate.mSet);
             candidate.mOsgEstimateMs
                 = cachedOsgEstimateMs(op, estimateInfo, candidate.mSet, estimateCalls, estimateCacheHits);
             candidate.mPredictionMs
@@ -439,6 +546,17 @@ namespace Resource
                     = predictedMs(candidate.mOsgEstimateMs, candidate.mCostBucket, candidate.mStaticPriorMs);
                 const bool fits = candidate.mPredictionMs <= std::max(0.05, remainingBudgetMs);
                 const bool heavy = candidate.mPredictionMs >= mConfig.mHeavyThresholdMs;
+                const V321CompileUrgency urgency = getV321CompileUrgency(candidate.mSet);
+                const bool quarantineHeavy = mConfig.mResidencySchedulerMode > 0 && heavy
+                    && (urgency == V321CompileUrgency::Background
+                        || (mConfig.mResidencySchedulerMode >= 2
+                            && urgency == V321CompileUrgency::NearFuture));
+
+                if (quarantineHeavy)
+                {
+                    ++quarantinedCandidates;
+                    continue;
+                }
 
                 // P4R repair: age never converts a cheap fitting operation into a
                 // forced one. Cheap work keeps draining until budget/object cap.
@@ -510,7 +628,7 @@ namespace Resource
             const auto start = Debug::V3Diagnostics::Clock::now();
             const bool completedSet = selected.mSet->compile(compileInfo);
             const double actualMs = Debug::V3Diagnostics::elapsedMs(start);
-            observe(selected.mSet, selected.mKind, actualMs);
+            observe(selected.mCostBucket, actualMs);
             consumeP4CompileCredit(mPolicyState, mode, actualMs);
             compileActualMs += actualMs;
             ++compiledObjects;
@@ -530,7 +648,10 @@ namespace Resource
                 writeP4CompileRow(frame, "op", compileKindName(selected.mKind),
                     compileClassName(selected.mSet), localQueueDepth, oldestAge,
                     policy.mBudgetMs, mPolicyState.mCreditMs, selected.mPredictionMs, actualMs,
-                    policy.mHeadroomMs, lastHandoffMs, 1, reason);
+                    policy.mHeadroomMs, lastHandoffMs, 1,
+                    std::string(reason) + " urgency=" + urgencyName(selected.mSet)
+                        + " bytes=" + std::to_string(selected.mResourceBytes)
+                        + " tier=" + std::to_string(selected.mSizeTier));
             }
 
             if (completedSet)
@@ -603,11 +724,13 @@ namespace Resource
             std::ostringstream detail;
             detail << "mode=" << mode
                    << " heavy_mode=" << mConfig.mHeavyLaneMode
+                   << " residency_mode=" << mConfig.mResidencySchedulerMode
                    << " suppressed=" << (policy.mSuppressedByHandoff ? 1 : 0)
                    << " smooth_frames=" << mSmoothFrames
                    << " budgeted=" << budgetedObjects
                    << " forced=" << ageForcedObjects
                    << " heavy=" << heavyObjects
+                   << " quarantined_candidates=" << quarantinedCandidates
                    << " prediction_miss=" << predictionMisses
                    << " candidate_build_ms=" << std::fixed << std::setprecision(3) << candidateBuildActualMs
                    << " selection_ms=" << selectionActualMs
