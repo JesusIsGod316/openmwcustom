@@ -989,7 +989,8 @@ namespace MWRender
         // the exact folded bone-group membership from the same node map and
         // blend-mask rules used by the compatibility controller binding above.
         // This is load-time metadata only; no evaluated transform is copied.
-        if (kfname.extension() == kf)
+        constexpr VFS::Path::ExtensionView kfExtension("kf");
+        if (kfname.extension() == kfExtension)
         {
             animsrc->mV4NativeKf = true;
             for (const auto& [sourceName, controller] : controllerMap)
