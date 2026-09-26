@@ -46,6 +46,13 @@ checks = {
         and "observe(selected.mSet, selected.mKind, actualMs)" in compile_cpp
         and "mRiskMs" in compile_h
         and "costIndex" in compile_cpp,
+    "estimator_cache_repair": "PredictionCacheEntry" in compile_h
+        and "mPredictionCache" in compile_h
+        and "cacheIt->second.mOp != op" in compile_cpp
+        and "estimate_cache_hits=" in compile_cpp
+        and "selection_ms=" in compile_cpp
+        and "scheduler_total_ms=" in compile_cpp
+        and "candidates_scanned=" in compile_cpp,
     "cheap_drain_repair": "age never converts a cheap fitting operation" in compile_cpp
         and "if (fits)" in compile_cpp
         and "if (forced || remainingBudgetMs <= 0.0)" in compile_cpp

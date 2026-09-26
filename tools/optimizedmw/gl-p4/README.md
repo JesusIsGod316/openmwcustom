@@ -2,7 +2,9 @@
 
 Parent: GL-P4 compile-scheduler build 1487a9ab6081f82424cbe7b96103542c66c85ea3.
 
-This branch repairs the P4 starvation/cheap-drain defect and adds two independent mechanisms for the next remaining GL hitch class.
+The original P4R runtime at af120839420f20423a1f376c5785de4155a2ace3 was rejected after hardware testing exposed a scheduler hot-loop: full-queue rescans repeatedly re-ran OSG cost estimators on queues approaching 3,000 compile sets. This repair keeps the cheap-drain policy but caches the static OSG estimate for each compile set's current front operation and instruments selector overhead directly.
+
+The P5 heavy/terrain mechanisms remain experimental and are not eligible for promotion until the common P4R scheduler path is clean.
 
 ## P4R scheduler repair
 - Cheap operations continue draining inside the per-frame time budget even when they are old.
@@ -11,6 +13,8 @@ This branch repairs the P4 starvation/cheap-drain defect and adds two independen
 - Cost history is tracked per producer class + GL operation type rather than globally by type.
 - A decaying risk estimate catches repeated under-predicted operations without permanently quarantining cheap work.
 - Queue-age default is 120 frames instead of 12.
+- The OSG estimate for an unchanged front compile operation is reused across queue rescans and frames; EMA/risk remains live and uncached.
+- p4-compile summary rows now report selection_ms, scheduler_total_ms, selection_passes, candidates_scanned, estimate_calls, and estimate_cache_hits so selector overhead cannot hide behind GL-call timing.
 
 ## P5 heavy GL lane
 Optional. Known/predicted heavy operations are admitted only after sustained smooth headroom. It does not preempt a driver call; it controls when the call begins. The cold terrain prior retires after four observations.

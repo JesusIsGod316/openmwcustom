@@ -1,8 +1,8 @@
-name: OptimizedMW GL-P4R heavy GL gate
+name: OptimizedMW GL-P4R scheduler repair gate
 
 on:
   push:
-    branches: [optimizedmw/gl-p4r-heavy-gl]
+    branches: [optimizedmw/gl-p4r-heavy-gl, optimizedmw/gl-p4r-scheduler-repair]
   workflow_dispatch:
 
 permissions:

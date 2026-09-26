@@ -142,15 +142,31 @@ namespace Resource
         return 0.0;
     }
 
-    double OpenMWIncrementalCompileOperation::predictedMs(
-        CompileOp* op, CompileInfo& info, const CompileSet* set, CompileKind kind) const
+    double OpenMWIncrementalCompileOperation::predictedMs(CompileOp* op, CompileInfo& info,
+        const CompileSet* set, CompileKind kind, std::uint64_t& estimateCalls, std::uint64_t& estimateCacheHits)
     {
+        // The OSG estimators are not free: texture estimation emits OSG_NOTICE,
+        // and the old P4R selector called them again for every full-queue rescan.
+        // Cache only the static OSG component for the current front operation.
+        // Dynamic EMA/risk history below is still recomputed on every selection
+        // pass, so recent measured cost immediately affects admission.
         double osgEstimateMs = 0.0;
-        if (op)
+        auto [cacheIt, inserted] = mPredictionCache.try_emplace(set);
+        if (inserted || cacheIt->second.mOp != op)
         {
-            const double seconds = op->estimatedTimeForCompile(info);
-            if (std::isfinite(seconds) && seconds > 0.0)
-                osgEstimateMs = seconds * 1000.0;
+            if (op)
+            {
+                const double seconds = op->estimatedTimeForCompile(info);
+                if (std::isfinite(seconds) && seconds > 0.0)
+                    osgEstimateMs = seconds * 1000.0;
+            }
+            cacheIt->second = PredictionCacheEntry{ op, osgEstimateMs };
+            ++estimateCalls;
+        }
+        else
+        {
+            osgEstimateMs = cacheIt->second.mOsgEstimateMs;
+            ++estimateCacheHits;
         }
 
         const CostState& cost = mCosts.at(costIndex(set, kind));
@@ -210,6 +226,14 @@ namespace Resource
             else
                 ++it;
         }
+
+        for (auto it = mPredictionCache.begin(); it != mPredictionCache.end();)
+        {
+            if (!live.contains(it->first))
+                it = mPredictionCache.erase(it);
+            else
+                ++it;
+        }
     }
 
     void OpenMWIncrementalCompileOperation::operator()(osg::GraphicsContext* context)
@@ -252,6 +276,8 @@ namespace Resource
         else
             mSmoothFrames = 0;
 
+        const auto schedulerStart = Debug::V3Diagnostics::Clock::now();
+
         CompileSets queued;
         {
             OpenThreads::ScopedLock<OpenThreads::Mutex> lock(_toCompileMutex);
@@ -284,6 +310,11 @@ namespace Resource
         unsigned int ageForcedObjects = 0;
         unsigned int heavyObjects = 0;
         unsigned int predictionMisses = 0;
+        std::uint64_t candidateScans = 0;
+        std::uint64_t estimateCalls = 0;
+        std::uint64_t estimateCacheHits = 0;
+        unsigned int selectionPasses = 0;
+        double selectionActualMs = 0.0;
         bool stopAfterThisOperation = false;
 
         struct Candidate
@@ -326,8 +357,11 @@ namespace Resource
             Candidate agedOverflow;
             Candidate heavyReady;
 
+            const auto selectionStart = Debug::V3Diagnostics::Clock::now();
+            ++selectionPasses;
             for (const osg::ref_ptr<CompileSet>& setRef : queued)
             {
+                ++candidateScans;
                 CompileSet* set = setRef.get();
                 if (!set)
                     continue;
@@ -339,7 +373,8 @@ namespace Resource
                 CompileOp* op = mapIt->second._compileOps.front().get();
                 CompileInfo estimateInfo(context, this);
                 const CompileKind kind = classify(op);
-                const double prediction = predictedMs(op, estimateInfo, set, kind);
+                const double prediction
+                    = predictedMs(op, estimateInfo, set, kind, estimateCalls, estimateCacheHits);
                 const auto seenIt = mSeen.find(set);
                 const unsigned int age = seenIt != mSeen.end() && frame >= seenIt->second.mFirstFrame
                     ? frame - seenIt->second.mFirstFrame : 0;
@@ -368,6 +403,7 @@ namespace Resource
                 if (heavyLaneReady && betterOverflow(candidate, heavyReady))
                     heavyReady = candidate;
             }
+            selectionActualMs += Debug::V3Diagnostics::elapsedMs(selectionStart);
 
             Candidate selected;
             std::string_view reason = "budgeted";
@@ -473,6 +509,8 @@ namespace Resource
             queueDepthAfter = _toCompile.size();
         }
 
+        const double schedulerTotalMs = Debug::V3Diagnostics::elapsedMs(schedulerStart);
+
         if (queueDepthAfter > 0 || mLastQueueDepth > 0 || compiledObjects > 0 || deleteActualMs >= diagnosticThresholdMs)
         {
             std::ostringstream detail;
@@ -484,6 +522,12 @@ namespace Resource
                    << " forced=" << ageForcedObjects
                    << " heavy=" << heavyObjects
                    << " prediction_miss=" << predictionMisses
+                   << " selection_ms=" << std::fixed << std::setprecision(3) << selectionActualMs
+                   << " scheduler_total_ms=" << schedulerTotalMs
+                   << " selection_passes=" << selectionPasses
+                   << " candidates_scanned=" << candidateScans
+                   << " estimate_calls=" << estimateCalls
+                   << " estimate_cache_hits=" << estimateCacheHits
                    << " q_unknown=" << queueByClass[0]
                    << " q_object=" << queueByClass[1]
                    << " q_terrain=" << queueByClass[2]

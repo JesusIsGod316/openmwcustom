@@ -82,8 +82,15 @@ namespace Resource
             unsigned int mFirstFrame = 0;
         };
 
+        struct PredictionCacheEntry
+        {
+            const CompileOp* mOp = nullptr;
+            double mOsgEstimateMs = 0.0;
+        };
+
         CompileKind classify(const CompileOp* op) const;
-        double predictedMs(CompileOp* op, CompileInfo& info, const CompileSet* set, CompileKind kind) const;
+        double predictedMs(CompileOp* op, CompileInfo& info, const CompileSet* set, CompileKind kind,
+            std::uint64_t& estimateCalls, std::uint64_t& estimateCacheHits);
         void observe(const CompileSet* set, CompileKind kind, double actualMs);
         std::size_t costIndex(const CompileSet* set, CompileKind kind) const;
         double staticPriorMs(const CompileSet* set, CompileKind kind) const;
@@ -99,6 +106,7 @@ namespace Resource
         P4CompilePolicyState mPolicyState;
         std::array<CostState, sCompileClassCount * sCompileKindCount> mCosts{};
         std::unordered_map<const CompileSet*, SeenState> mSeen;
+        std::unordered_map<const CompileSet*, PredictionCacheEntry> mPredictionCache;
         std::size_t mLastQueueDepth = 0;
         unsigned int mSmoothFrames = 0;
 
