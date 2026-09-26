@@ -908,6 +908,7 @@ namespace RenderCore
         bool sourceAnimationBoundary = false;
         std::uint32_t sourceControllerFlags = 0;
         std::uint32_t sourceParentControllerFlags = 0;
+        std::vector<std::string> sourceParentPathNodes;
     };
 
     struct SkeletonPayload
