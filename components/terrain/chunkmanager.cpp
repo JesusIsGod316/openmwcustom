@@ -9,6 +9,7 @@
 
 #include <string>
 #include <unordered_set>
+#include <utility>
 
 #include <components/esm/util.hpp>
 #include <components/resource/objectcache.hpp>
