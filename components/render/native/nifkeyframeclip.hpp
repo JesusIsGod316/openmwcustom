@@ -5,6 +5,7 @@
 
 #include <components/vfs/pathutil.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <set>
