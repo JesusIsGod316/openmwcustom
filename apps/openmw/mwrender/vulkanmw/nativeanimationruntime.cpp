@@ -157,8 +157,9 @@ namespace MWRender
             cached = {};
             cached.encoder = encoder;
             RenderNative::NifKeyframeClipCompiler compiler(mVfs, encoder);
+            const VFS::Path::Normalized normalized(sourcePath);
             RenderNative::NifKeyframeCompileResult compiled
-                = compiler.compile(VFS::Path::NormalizedView(sourcePath));
+                = compiler.compile(VFS::Path::NormalizedView(normalized));
             if (!compiled.usable())
             {
                 cached.diagnostic = compiled.diagnostic.empty()
