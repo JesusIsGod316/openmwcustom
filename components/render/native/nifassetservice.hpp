@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -37,6 +38,7 @@ namespace RenderNative
         RenderCore::ModelHandle model;
         std::optional<RenderCore::SkeletonHandle> skeleton;
         std::uint64_t namedVisualCapabilities = 0;
+        std::shared_ptr<const NifControllerProgram> controllers;
         std::string diagnostic;
 
         [[nodiscard]] bool available() const noexcept
@@ -47,10 +49,9 @@ namespace RenderNative
 
     // Session-side canonical native model service.
     //
-    // This is the Phase 1 boundary Phase 2 should consume: normalized winning
-    // VFS identity -> direct semantic compile -> stable RenderWorld publication.
-    // Repeated world references reuse the same published model handle and source
-    // metadata; no OSG rendering node is created or inspected.
+    // Winning VFS identity -> direct semantic/controller compile -> stable
+    // RenderWorld publication. Repeated references reuse both model handles and
+    // immutable native controller programs.
     class NifAssetService final
     {
     public:
@@ -67,6 +68,12 @@ namespace RenderNative
         void clearSourceMetadata() { mMetadata.clear(); }
 
     private:
+        struct SourceMetadata
+        {
+            std::uint64_t namedVisualCapabilities = 0;
+            std::shared_ptr<const NifControllerProgram> controllers;
+        };
+
         NifSemanticCompiler mCompiler;
         NifRender::StaticModelCache& mModels;
         std::map<std::string, SourceMetadata, std::less<>> mMetadata;
