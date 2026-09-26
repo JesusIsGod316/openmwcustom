@@ -1,0 +1,203 @@
+name: VulkanMW Phase 2 test package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [vulkanmw/phase2-test-package]
+    paths:
+      - '.github/workflows/vulkanmw-phase2-package.yml'
+
+concurrency:
+  group: vulkanmw-phase2-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  Package:
+    runs-on: windows-2022
+    env:
+      VCPKG_FEATURE_FLAGS: manifests,versions
+      archive: FAILEDTODOWNLOAD
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Verify exact Phase 2 source parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          PHASE2=93e94bc6b9bc778e65c8969cea5a27363dcd17b6
+          git cat-file -e "${PHASE2}^{commit}"
+          test "$(git merge-base "${PHASE2}" HEAD)" = "${PHASE2}"
+          python3 tools/vulkanmw/check-architecture-boundaries.py
+          python3 tools/vulkanmw/check-phase1-nif-compiler.py
+          python3 tools/vulkanmw/check-phase2-static-world.py
+
+      - name: Ensure pinned VSG vcpkg baseline
+        shell: pwsh
+        run: |
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --no-tags --depth=1 origin 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+
+      - name: Install Vulkan/VSG package dependencies
+        shell: pwsh
+        run: |
+          cmake `
+            -S "$env:GITHUB_WORKSPACE/tools/v4/cp3b3" `
+            -B "$env:GITHUB_WORKSPACE/build-vulkanmw-deps" `
+            -G Ninja `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D CMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -D VCPKG_MANIFEST_DIR="$env:GITHUB_WORKSPACE/tools/v4/cp3b3" `
+            -D VCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE/vulkanmw-vcpkg" `
+            -D VCPKG_TARGET_TRIPLET=x64-windows
+          if ($LASTEXITCODE -ne 0) { throw "VulkanMW dependency configure failed" }
+
+      - name: Load OpenMW dependency identity
+        shell: bash
+        run: |
+          sed '/^\s*#/d; /^\s*$/d' "${{ github.workspace }}/CI/deps_versions.msvc.sh" >> $GITHUB_ENV
+
+      - name: Download OpenMW Windows dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE/deps" | Out-Null
+          Set-Location "$env:GITHUB_WORKSPACE/deps"
+          $MANIFEST = "vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}-manifest.txt"
+          curl.exe --fail --retry 3 -L -o "$MANIFEST" "https://gitlab.com/OpenMW/openmw-deps/-/raw/main/windows/$MANIFEST"
+          if ($LASTEXITCODE -ne 0) { throw "Dependency manifest download failed" }
+          $lines = Get-Content "$MANIFEST"
+          $URL = $lines[0]
+          $split = -split $lines[1]
+          $HASH = $split[0]
+          $FILE = $split[1]
+          curl.exe --fail --retry 3 -L -o "$FILE" "$URL"
+          if ($LASTEXITCODE -ne 0) { throw "Dependency archive download failed" }
+          $filehash = Get-FileHash "$FILE" -Algorithm SHA512
+          if ($filehash.hash -ne $HASH) { throw "OpenMW dependency archive hash mismatch" }
+          "archive=$FILE" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Extract OpenMW Windows dependencies
+        shell: pwsh
+        working-directory: ${{ github.workspace }}/deps
+        run: |
+          7z x -y -ovcpkg-x64-windows-2022-${{ env.VCPKG_TAG }} $env:archive
+          if ($LASTEXITCODE -ne 0) { throw "Dependency extraction failed" }
+
+      - name: Configure production VulkanMW Phase 2
+        shell: pwsh
+        run: |
+          $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
+          $vsgPrefix = "$env:GITHUB_WORKSPACE/vulkanmw-vcpkg/x64-windows"
+          cmake `
+            -S "$env:GITHUB_WORKSPACE" `
+            -B "$env:GITHUB_WORKSPACE/build-vulkanmw-package" `
+            -G Ninja `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D CMAKE_TOOLCHAIN_FILE="$openmwDeps/scripts/buildsystems/vcpkg.cmake" `
+            -D CMAKE_PREFIX_PATH="$vsgPrefix" `
+            -D LuaJit_INCLUDE_DIR="$openmwDeps/installed/x64-windows/include/luajit" `
+            -D LuaJit_LIBRARY="$openmwDeps/installed/x64-windows/lib/lua51.lib" `
+            -D BUILD_OPENMW=ON `
+            -D OPENMW_ENABLE_V4_VULKAN_RUNTIME=ON `
+            -D BUILD_LAUNCHER=OFF `
+            -D BUILD_WIZARD=OFF `
+            -D BUILD_MWINIIMPORTER=OFF `
+            -D BUILD_OPENCS=OFF `
+            -D BUILD_ESSIMPORTER=OFF `
+            -D BUILD_BSATOOL=OFF `
+            -D BUILD_ESMTOOL=OFF `
+            -D BUILD_NIFTEST=OFF `
+            -D BUILD_DOCS=OFF `
+            -D BUILD_COMPONENTS_TESTS=OFF `
+            -D BUILD_BENCHMARKS=OFF `
+            -D BUILD_NAVMESHTOOL=OFF `
+            -D BUILD_BULLETOBJECTTOOL=OFF `
+            -D BUILD_OPENCS_TESTS=OFF `
+            -D BUILD_OPENMW_TESTS=OFF `
+            -D OPENMW_USE_SYSTEM_SQLITE3=OFF `
+            -D OPENMW_USE_SYSTEM_YAML_CPP=OFF `
+            -D OPENMW_LTO_BUILD=OFF
+          if ($LASTEXITCODE -ne 0) { throw "VulkanMW package configure failed" }
+
+      - name: Build production OpenMW
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-package" --target openmw --verbose
+          if ($LASTEXITCODE -ne 0) { throw "VulkanMW production build failed" }
+
+      - name: Stage runnable test package
+        shell: pwsh
+        run: |
+          $build = "$env:GITHUB_WORKSPACE/build-vulkanmw-package"
+          $stage = "$env:GITHUB_WORKSPACE/VulkanMW-PHASE2-TEST"
+          $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
+          $vsg = "$env:GITHUB_WORKSPACE/vulkanmw-vcpkg/x64-windows"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+
+          cmake --install $build --prefix $stage
+          if ($LASTEXITCODE -ne 0) { throw "VulkanMW install staging failed" }
+
+          if (-not (Test-Path "$stage/openmw.exe")) {
+            Copy-Item "$build/openmw.exe" "$stage/openmw.exe" -Force
+          }
+
+          Get-ChildItem "$openmwDeps/installed/x64-windows/bin" -Filter *.dll -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage -Force
+          Get-ChildItem "$openmwDeps/installed/x64-windows/bin/Release" -Filter *.dll -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage -Force
+          Get-ChildItem "$vsg/bin" -Filter *.dll -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage -Force
+
+          $sdlRoots = @(
+            "$build/_deps/SDL3-3.4.10/lib/x64",
+            "$build/_deps/SDL3-build",
+            "$build/_deps/SDL3-build/Release"
+          )
+          foreach ($root in $sdlRoots) {
+            if (Test-Path $root) {
+              Get-ChildItem $root -Filter *.dll -File -Recurse -ErrorAction SilentlyContinue |
+                Copy-Item -Destination $stage -Force
+            }
+          }
+
+          $osgPluginSrc = "$openmwDeps/installed/x64-windows/bin/osgPlugins-3.6.5"
+          if (Test-Path $osgPluginSrc) {
+            New-Item -ItemType Directory -Force "$stage/osgPlugins-3.6.5" | Out-Null
+            Get-ChildItem $osgPluginSrc -Filter *.dll -File |
+              Copy-Item -Destination "$stage/osgPlugins-3.6.5" -Force
+          }
+
+          @(
+            "VulkanMW PHASE 2 TEST PACKAGE",
+            "source_phase2=93e94bc6b9bc778e65c8969cea5a27363dcd17b6",
+            "package_commit=${{ github.sha }}",
+            "renderer_test=Vulkan/VSG",
+            "status=Phase 2 source/build green; hardware runtime acceptance pending",
+            "",
+            "Unzip this folder. Use your normal OpenMW configuration/content setup.",
+            "Test static world objects, exterior terrain, groundcover, and interior/exterior transitions.",
+            "Keep your existing OpenMW install as a control/backup."
+          ) | Set-Content -LiteralPath "$stage/VULKANMW-PHASE2-TEST.txt" -Encoding Ascii
+
+          if (-not (Test-Path "$stage/openmw.exe")) { throw "Package is missing openmw.exe" }
+          Get-ChildItem $stage | Select-Object Name,Length | Format-Table -AutoSize
+
+      - name: Smoke package executable
+        shell: pwsh
+        run: |
+          $stage = "$env:GITHUB_WORKSPACE/VulkanMW-PHASE2-TEST"
+          $env:PATH = "$stage;$stage/osgPlugins-3.6.5;" + $env:PATH
+          & "$stage/openmw.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "Packaged openmw.exe --version failed with $LASTEXITCODE" }
+
+      - name: Upload runnable VulkanMW Phase 2 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: VulkanMW-PHASE2-TEST-${{ github.sha }}
+          if-no-files-found: error
+          compression-level: 6
+          path: VulkanMW-PHASE2-TEST/**
