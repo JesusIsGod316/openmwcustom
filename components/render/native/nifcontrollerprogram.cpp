@@ -179,15 +179,18 @@ namespace
                 = static_cast<const Nif::NiTransformInterpolator*>(source.mInterpolator.getPtr());
             if (!interpolator->mData.empty())
                 data = interpolator->mData.getPtr();
+            else
+                return RenderNative::TransformTrackCompileStatus::Empty;
         }
         else if (!source.mData.empty())
             data = source.mData.getPtr();
+        else
+            return RenderNative::TransformTrackCompileStatus::MissingSourceData;
 
-        // A supported controller with no key data is a valid no-op. The OpenGL
-        // KF loader still binds it, so preserve that distinction from an
-        // unsupported interpolator type.
+        // A supported controller whose present data contains no populated key
+        // tracks is a valid no-op. The compatibility KF loader still binds it.
         if (!data)
-            return RenderNative::TransformTrackCompileStatus::Empty;
+            return RenderNative::TransformTrackCompileStatus::MissingSourceData;
 
         copyQuaternionTrack(data->mRotations, target.rotations);
         copyFloatTrack(data->mXRotations, target.xRotations);
@@ -362,9 +365,10 @@ namespace
                         program.autoPlay = autoPlay;
                         const RenderNative::TransformTrackCompileStatus transformStatus
                             = compileTransform(static_cast<const Nif::NiKeyframeController&>(controller), program.track);
-                        if (transformStatus != RenderNative::TransformTrackCompileStatus::UnsupportedInterpolator)
+                        if (transformStatus == RenderNative::TransformTrackCompileStatus::Compiled
+                            || transformStatus == RenderNative::TransformTrackCompileStatus::Empty)
                             mResult.transforms.push_back(std::move(program));
-                        else
+                        else if (transformStatus == RenderNative::TransformTrackCompileStatus::UnsupportedInterpolator)
                             diagnostic(controller, "transform controller uses an unsupported interpolator");
                         break;
                     }
