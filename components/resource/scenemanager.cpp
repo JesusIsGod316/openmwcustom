@@ -28,6 +28,7 @@
 #include <osgDB/SharedStateManager>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/p8dynamicdrawtelemetry.hpp>
 #include <components/debug/v3diagnostics.hpp>
 
 #include <components/nifosg/controller.hpp>
@@ -1188,6 +1189,14 @@ namespace Resource
         if (cloned->getNumChildrenRequiringUpdateTraversal() > 0)
         {
             InitParticlesVisitor visitor(mParticleSystemMask);
+            cloned->accept(visitor);
+        }
+
+        // Benchmark-only P8 attribution. Ordinary gameplay never enables the
+        // P8 channels, so no draw callbacks are installed on normal launches.
+        if (Debug::P8DynamicDrawTelemetry::enabled())
+        {
+            Debug::P8DynamicDrawTelemetry::InstallVisitor visitor;
             cloned->accept(visitor);
         }
 
