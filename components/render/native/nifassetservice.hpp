@@ -69,7 +69,7 @@ namespace RenderNative
     private:
         NifSemanticCompiler mCompiler;
         NifRender::StaticModelCache& mModels;
-        std::map<std::string, std::uint64_t, std::less<>> mMetadata;
+        std::map<std::string, SourceMetadata, std::less<>> mMetadata;
     };
 }
 
