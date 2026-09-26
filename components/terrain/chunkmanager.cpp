@@ -1,8 +1,14 @@
 #include "chunkmanager.hpp"
 
+#include <osg/BufferObject>
+#include <osg/Program>
+#include <osg/Texture>
 #include <osg/Texture2D>
 
 #include <osgUtil/IncrementalCompileOperation>
+
+#include <string>
+#include <unordered_set>
 
 #include <components/esm/util.hpp>
 #include <components/resource/objectcache.hpp>
@@ -67,7 +73,7 @@ namespace Terrain
             bool compile(osgUtil::IncrementalCompileOperation::CompileInfo& info) override
             {
                 Debug::V3Diagnostics::ScopedCsvTimer timer(
-                    Debug::V3Diagnostics::renderWriter(), "p5_terrain_geometry_vbo", "geometry", 0.15);
+                    Debug::V3Diagnostics::renderWriter(), "p6_terrain_geometry_finalize", "geometry", 0.15);
                 if (mDrawable)
                     mDrawable->compileGeometryGLObjects(info);
                 return true;
@@ -75,6 +81,43 @@ namespace Terrain
 
         private:
             osg::ref_ptr<TerrainDrawable> mDrawable;
+        };
+
+        class TerrainBufferCompileOp final : public Resource::OpenMWDrawableCompileOp
+        {
+        public:
+            TerrainBufferCompileOp(osg::BufferObject* buffer, std::string label)
+                : mBuffer(buffer)
+                , mLabel(std::move(label))
+                , mBytes(buffer ? buffer->computeRequiredBufferSize() : 0)
+            {
+            }
+
+            double estimatedTimeForCompile(osgUtil::IncrementalCompileOperation::CompileInfo&) const override
+            {
+                return 0.0;
+            }
+
+            std::size_t resourceBytes() const noexcept override { return mBytes; }
+
+            bool compile(osgUtil::IncrementalCompileOperation::CompileInfo& info) override
+            {
+                Debug::V3Diagnostics::ScopedCsvTimer timer(
+                    Debug::V3Diagnostics::renderWriter(), "p6_terrain_buffer_upload", mLabel, 0.15);
+                if (!mBuffer || !info.getState())
+                    return true;
+
+                osg::GLBufferObject* glBuffer
+                    = mBuffer->getOrCreateGLBufferObject(info.getState()->getContextID());
+                if (glBuffer && glBuffer->isDirty())
+                    glBuffer->compileBuffer();
+                return true;
+            }
+
+        private:
+            osg::ref_ptr<osg::BufferObject> mBuffer;
+            std::string mLabel;
+            std::size_t mBytes = 0;
         };
 
         void appendTerrainStateSetCompileOps(
@@ -122,6 +165,91 @@ namespace Terrain
                     // final geometry/VBO upload.
                     for (const osg::ref_ptr<osg::StateSet>& pass : geometry.getPasses())
                         appendTerrainStateSetCompileOps(rebuilt, pass.get());
+                    rebuilt.add(new TerrainGeometryCompileOp(&geometry));
+                }
+                compileList._compileOps.swap(rebuilt._compileOps);
+            }
+        }
+
+        void appendTerrainPassResourceOps(
+            osgUtil::IncrementalCompileOperation::CompileList& list, TerrainDrawable& geometry)
+        {
+            std::unordered_set<const osg::StateAttribute*> seen;
+
+            for (const osg::ref_ptr<osg::StateSet>& pass : geometry.getPasses())
+            {
+                if (!pass)
+                    continue;
+
+                for (const auto& [key, value] : pass->getAttributeList())
+                {
+                    (void)key;
+                    osg::StateAttribute* attribute = value.first.get();
+                    if (!attribute || !seen.insert(attribute).second)
+                        continue;
+
+                    if (auto* program = dynamic_cast<osg::Program*>(attribute))
+                        list.add(new osgUtil::IncrementalCompileOperation::CompileProgramOp(program));
+                    else
+                        list.add(new TerrainStateAttributeCompileOp(attribute));
+                }
+
+                for (const osg::StateSet::AttributeList& attributes : pass->getTextureAttributeList())
+                {
+                    for (const auto& [key, value] : attributes)
+                    {
+                        (void)key;
+                        osg::StateAttribute* attribute = value.first.get();
+                        if (!attribute || !seen.insert(attribute).second)
+                            continue;
+
+                        if (auto* texture = dynamic_cast<osg::Texture*>(attribute))
+                            list.add(new osgUtil::IncrementalCompileOperation::CompileTextureOp(texture));
+                        else
+                            list.add(new TerrainStateAttributeCompileOp(attribute));
+                    }
+                }
+            }
+        }
+
+        void appendTerrainBufferOps(
+            osgUtil::IncrementalCompileOperation::CompileList& list, TerrainDrawable& geometry)
+        {
+            std::unordered_set<const osg::BufferObject*> seen;
+            auto append = [&](const osg::Array* array, const char* label) {
+                if (!array)
+                    return;
+                const osg::BufferObject* buffer = array->getBufferObject();
+                if (!buffer || !seen.insert(buffer).second)
+                    return;
+                list.add(new TerrainBufferCompileOp(const_cast<osg::BufferObject*>(buffer), label));
+            };
+
+            append(geometry.getVertexArray(), "positions");
+            append(geometry.getNormalArray(), "normals");
+            append(geometry.getColorArray(), "colors");
+        }
+
+        void phaseTerrainCompileSetV2(Resource::V321ClassifiedCompileSet& compileSet,
+            TerrainDrawable& geometry, bool splitVertexBuffers)
+        {
+            for (auto& [context, compileList] : compileSet._compileMap)
+            {
+                (void)context;
+                osgUtil::IncrementalCompileOperation::CompileList rebuilt;
+                for (const osg::ref_ptr<osgUtil::IncrementalCompileOperation::CompileOp>& op : compileList._compileOps)
+                {
+                    const auto* drawableOp
+                        = dynamic_cast<const osgUtil::IncrementalCompileOperation::CompileDrawableOp*>(op.get());
+                    if (!drawableOp || drawableOp->_drawable.get() != &geometry)
+                    {
+                        rebuilt.add(op.get());
+                        continue;
+                    }
+
+                    appendTerrainPassResourceOps(rebuilt, geometry);
+                    if (splitVertexBuffers)
+                        appendTerrainBufferOps(rebuilt, geometry);
                     rebuilt.add(new TerrainGeometryCompileOp(&geometry));
                 }
                 compileList._compileOps.swap(rebuilt._compileOps);
@@ -329,10 +457,19 @@ namespace Terrain
 
             mStorage->fillVertexBuffers(lod, chunkSize, chunkCenter, mWorldspace, *positions, *normals, *colors);
 
-            osg::ref_ptr<osg::VertexBufferObject> vbo(new osg::VertexBufferObject);
-            positions->setVertexBufferObject(vbo);
-            normals->setVertexBufferObject(vbo);
-            colors->setVertexBufferObject(vbo);
+            if (Settings::cells().mOptimizedMWTerrainSplitVertexBuffers)
+            {
+                positions->setVertexBufferObject(new osg::VertexBufferObject);
+                normals->setVertexBufferObject(new osg::VertexBufferObject);
+                colors->setVertexBufferObject(new osg::VertexBufferObject);
+            }
+            else
+            {
+                osg::ref_ptr<osg::VertexBufferObject> vbo(new osg::VertexBufferObject);
+                positions->setVertexBufferObject(vbo);
+                normals->setVertexBufferObject(vbo);
+                colors->setVertexBufferObject(vbo);
+            }
 
             geometry->setVertexArray(positions);
             geometry->setNormalArray(normals, osg::Array::BIND_PER_VERTEX);
@@ -359,10 +496,19 @@ namespace Terrain
             osg::ref_ptr<osg::Array> colors
                 = static_cast<osg::Array*>(templateGeometry->getColorArray()->clone(osg::CopyOp::DEEP_COPY_ALL));
 
-            osg::ref_ptr<osg::VertexBufferObject> vbo(new osg::VertexBufferObject);
-            positions->setVertexBufferObject(vbo);
-            normals->setVertexBufferObject(vbo);
-            colors->setVertexBufferObject(vbo);
+            if (Settings::cells().mOptimizedMWTerrainSplitVertexBuffers)
+            {
+                positions->setVertexBufferObject(new osg::VertexBufferObject);
+                normals->setVertexBufferObject(new osg::VertexBufferObject);
+                colors->setVertexBufferObject(new osg::VertexBufferObject);
+            }
+            else
+            {
+                osg::ref_ptr<osg::VertexBufferObject> vbo(new osg::VertexBufferObject);
+                positions->setVertexBufferObject(vbo);
+                normals->setVertexBufferObject(vbo);
+                colors->setVertexBufferObject(vbo);
+            }
 
             geometry->setVertexArray(positions);
             geometry->setNormalArray(normals, osg::Array::BIND_PER_VERTEX);
@@ -435,17 +581,11 @@ namespace Terrain
                 activeGrid ? Resource::V321CompileUrgency::NearFuture
                            : Resource::V321CompileUrgency::Background);
 
-            if (Settings::cells().mOptimizedMWTexturePboStaging)
+            if (Settings::cells().mOptimizedMWTerrainResourcePhases)
             {
-                osgUtil::StateToCompile stateToCompile(
-                    osgUtil::GLObjectsVisitor::COMPILE_DISPLAY_LISTS
-                        | osgUtil::GLObjectsVisitor::COMPILE_STATE_ATTRIBUTES,
-                    nullptr);
-                stateToCompile._assignPBOToImages = true;
-                geometry->accept(stateToCompile);
-                compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
-                if (Settings::cells().mOptimizedMWTerrainPhasedCompile)
-                    phaseTerrainCompileSet(*compileSet, *geometry);
+                compileSet->buildCompileMap(ico->getContextSet());
+                phaseTerrainCompileSetV2(*compileSet, *geometry,
+                    static_cast<bool>(Settings::cells().mOptimizedMWTerrainSplitVertexBuffers));
                 ico->add(compileSet, false);
             }
             else if (Settings::cells().mOptimizedMWTerrainPhasedCompile)
