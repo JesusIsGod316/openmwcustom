@@ -70,7 +70,8 @@ def main() -> int:
         "RC_NiKeyframeController",
         "NifControllerCompiler::compileTransformTrack",
         "NifControllerCompiler::compileTiming",
-        "track.supported()",
+        "track.unsupported()",
+        "track.bindable()",
         "track.hasKeys()",
         "++result.clip.emptyControllers",
         "Nif::Reader reader(file, mEncoder);",
@@ -83,12 +84,14 @@ def main() -> int:
     require(CONTROLLER_HEADER, (
         "enum class TransformTrackCompileStatus",
         "struct TransformTrackCompileResult",
+        "MissingSourceData",
         "UnsupportedInterpolator",
         "compileTiming(const Nif::NiTimeController& source)",
         "TransformTrackCompileResult compileTransformTrack(",
     ))
     require(CONTROLLER_SOURCE, (
         "TransformTrackCompileStatus::Empty",
+        "TransformTrackCompileStatus::MissingSourceData",
         "TransformTrackCompileStatus::UnsupportedInterpolator",
         "NifControllerCompiler::compileTiming",
         "NifControllerCompiler::compileTransformTrack",
