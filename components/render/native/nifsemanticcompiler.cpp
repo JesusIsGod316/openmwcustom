@@ -46,11 +46,14 @@ namespace RenderNative
         {
             result.namedVisualCapabilities = inspectNamedVisualCapabilities(file);
             result.bundle = NifRender::translateStaticNif(file, mVfs, options, mTextureIdentities);
+            result.controllers = NifControllerCompiler::compile(file, result.bundle);
             result.status = NifSemanticCompileStatus::Compiled;
             if (!result.bundle.valid())
                 result.diagnostic = "native NIF semantic compiler produced an invalid neutral bundle";
             else if (result.bundle.hasErrors())
                 result.diagnostic = "native NIF semantic compiler produced fail-closed translation diagnostics";
+            else if (!result.controllers.valid())
+                result.diagnostic = "native NIF semantic compiler produced an invalid controller program";
             return result;
         }
         catch (const std::exception& error)
