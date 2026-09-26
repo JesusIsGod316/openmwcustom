@@ -16,6 +16,8 @@
 namespace Nif
 {
     class FileView;
+    struct NiKeyframeController;
+    struct NiTimeController;
 }
 
 namespace NifRender
@@ -383,6 +385,13 @@ namespace RenderNative
         // using TranslationBundle sourceRecordId values as stable model-node keys.
         [[nodiscard]] static NifControllerProgram compile(
             Nif::FileView file, const NifRender::TranslationBundle& bundle);
+
+        // Shared Phase 3 source-compatibility primitives used by both embedded
+        // model controllers and external .kf clips. Keeping these conversions in
+        // one implementation prevents the native paths from drifting apart.
+        [[nodiscard]] static ControllerTiming compileTiming(const Nif::NiTimeController& source) noexcept;
+        [[nodiscard]] static std::optional<TransformControllerTrack> compileTransformTrack(
+            const Nif::NiKeyframeController& source);
     };
 }
 
