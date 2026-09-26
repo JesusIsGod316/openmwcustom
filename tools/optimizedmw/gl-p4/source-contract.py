@@ -74,7 +74,8 @@ checks = {
         and "dynamic_cast<const OpenMWDrawableCompileOp*>" in compile_cpp
         and "Resource::OpenMWDrawableCompileOp" in terrain_chunk
         and "p5_terrain_pass_attribute" in terrain_chunk
-        and "p5_terrain_geometry_vbo" in terrain_chunk
+        and ("p5_terrain_geometry_vbo" in terrain_chunk
+             or "p6_terrain_geometry_finalize" in terrain_chunk)
         and "compileGeometryGLObjects" in terrain_drawable_h
         and "osg::Geometry::compileGLObjects(renderInfo)" in terrain_drawable_cpp,
     "queue_age_guard": "forced_by_queue_age" in compile_cpp
