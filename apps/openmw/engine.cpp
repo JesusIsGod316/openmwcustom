@@ -13,11 +13,15 @@
 #include <future>
 #include <system_error>
 
+#include <osgDB/DatabasePager>
+#include <osgDB/ImagePager>
 #include <osgDB/ReaderWriter>
 #include <osgDB/Registry>
 #include <osgUtil/IncrementalCompileOperation>
+#include <osgUtil/StatsVisitor>
 
 #include <osgViewer/Renderer>
+#include <osgViewer/Scene>
 #include <osgViewer/ViewerEventHandlers>
 
 #include <SDL3/SDL.h>
@@ -230,6 +234,290 @@ namespace
     struct IgnoreString
     {
         void operator()(std::string) const {}
+    };
+
+    class P6InstrumentedViewer final : public osgViewer::Viewer
+    {
+    public:
+        void renderingTraversals() override
+        {
+            using Clock = Debug::V3Diagnostics::Clock;
+
+            struct Breakdown
+            {
+                double contextQuery = 0.0;
+                double windowStatus = 0.0;
+                double sceneStats = 0.0;
+                double pagerBegin = 0.0;
+                double sceneBound = 0.0;
+                double cameraQuery = 0.0;
+                double startBarrier = 0.0;
+                double cull = 0.0;
+                double contextOps = 0.0;
+                double dispatchWait = 0.0;
+                double mainSwap = 0.0;
+                double pagerEnd = 0.0;
+                double dynamicDrawWait = 0.0;
+                double releaseContext = 0.0;
+            } breakdown;
+
+            const auto totalStart = Clock::now();
+
+            Contexts contexts;
+            {
+                const auto start = Clock::now();
+                getContexts(contexts);
+                breakdown.contextQuery = Debug::V3Diagnostics::elapsedMs(start);
+            }
+
+            {
+                const auto start = Clock::now();
+                checkWindowStatus(contexts);
+                breakdown.windowStatus = Debug::V3Diagnostics::elapsedMs(start);
+            }
+            if (_done)
+                return;
+
+            const double beginRenderingTraversals = elapsedTime();
+            osg::FrameStamp* frameStamp = getViewerFrameStamp();
+            const unsigned int frameNumber = frameStamp ? frameStamp->getFrameNumber() : 0;
+
+            {
+                const auto start = Clock::now();
+                if (getViewerStats() && getViewerStats()->collectStats("scene"))
+                {
+                    Views views;
+                    getViews(views);
+                    for (Views::iterator vitr = views.begin(); vitr != views.end(); ++vitr)
+                    {
+                        View* view = *vitr;
+                        osg::Stats* stats = view->getStats();
+                        osg::Node* sceneRoot = view->getSceneData();
+                        if (sceneRoot && stats)
+                        {
+                            osgUtil::StatsVisitor statsVisitor;
+                            sceneRoot->accept(statsVisitor);
+                            statsVisitor.totalUpStats();
+
+                            unsigned int uniquePrimitives = 0;
+                            for (osgUtil::Statistics::PrimitiveCountMap::iterator pcmitr
+                                    = statsVisitor._uniqueStats.GetPrimitivesBegin();
+                                 pcmitr != statsVisitor._uniqueStats.GetPrimitivesEnd(); ++pcmitr)
+                                uniquePrimitives += pcmitr->second;
+
+                            stats->setAttribute(frameNumber, "Number of unique StateSet",
+                                static_cast<double>(statsVisitor._statesetSet.size()));
+                            stats->setAttribute(frameNumber, "Number of unique Group",
+                                static_cast<double>(statsVisitor._groupSet.size()));
+                            stats->setAttribute(frameNumber, "Number of unique Transform",
+                                static_cast<double>(statsVisitor._transformSet.size()));
+                            stats->setAttribute(frameNumber, "Number of unique LOD",
+                                static_cast<double>(statsVisitor._lodSet.size()));
+                            stats->setAttribute(frameNumber, "Number of unique Switch",
+                                static_cast<double>(statsVisitor._switchSet.size()));
+                            stats->setAttribute(frameNumber, "Number of unique Geode",
+                                static_cast<double>(statsVisitor._geodeSet.size()));
+                            stats->setAttribute(frameNumber, "Number of unique Drawable",
+                                static_cast<double>(statsVisitor._drawableSet.size()));
+                            stats->setAttribute(frameNumber, "Number of unique Geometry",
+                                static_cast<double>(statsVisitor._geometrySet.size()));
+                            stats->setAttribute(frameNumber, "Number of unique Vertices",
+                                static_cast<double>(statsVisitor._uniqueStats._vertexCount));
+                            stats->setAttribute(frameNumber, "Number of unique Primitives",
+                                static_cast<double>(uniquePrimitives));
+
+                            unsigned int instancedPrimitives = 0;
+                            for (osgUtil::Statistics::PrimitiveCountMap::iterator pcmitr
+                                    = statsVisitor._instancedStats.GetPrimitivesBegin();
+                                 pcmitr != statsVisitor._instancedStats.GetPrimitivesEnd(); ++pcmitr)
+                                instancedPrimitives += pcmitr->second;
+
+                            stats->setAttribute(frameNumber, "Number of instanced Stateset",
+                                static_cast<double>(statsVisitor._numInstancedStateSet));
+                            stats->setAttribute(frameNumber, "Number of instanced Group",
+                                static_cast<double>(statsVisitor._numInstancedGroup));
+                            stats->setAttribute(frameNumber, "Number of instanced Transform",
+                                static_cast<double>(statsVisitor._numInstancedTransform));
+                            stats->setAttribute(frameNumber, "Number of instanced LOD",
+                                static_cast<double>(statsVisitor._numInstancedLOD));
+                            stats->setAttribute(frameNumber, "Number of instanced Switch",
+                                static_cast<double>(statsVisitor._numInstancedSwitch));
+                            stats->setAttribute(frameNumber, "Number of instanced Geode",
+                                static_cast<double>(statsVisitor._numInstancedGeode));
+                            stats->setAttribute(frameNumber, "Number of instanced Drawable",
+                                static_cast<double>(statsVisitor._numInstancedDrawable));
+                            stats->setAttribute(frameNumber, "Number of instanced Geometry",
+                                static_cast<double>(statsVisitor._numInstancedGeometry));
+                            stats->setAttribute(frameNumber, "Number of instanced Vertices",
+                                static_cast<double>(statsVisitor._instancedStats._vertexCount));
+                            stats->setAttribute(frameNumber, "Number of instanced Primitives",
+                                static_cast<double>(instancedPrimitives));
+                        }
+                    }
+                }
+                breakdown.sceneStats = Debug::V3Diagnostics::elapsedMs(start);
+            }
+
+            Scenes scenes;
+            getScenes(scenes);
+
+            for (Scenes::iterator sitr = scenes.begin(); sitr != scenes.end(); ++sitr)
+            {
+                Scene* scene = *sitr;
+                if (!scene)
+                    continue;
+
+                {
+                    const auto start = Clock::now();
+                    osgDB::DatabasePager* dp = scene->getDatabasePager();
+                    if (dp)
+                        dp->signalBeginFrame(frameStamp);
+                    osgDB::ImagePager* ip = scene->getImagePager();
+                    if (ip)
+                        ip->signalBeginFrame(frameStamp);
+                    breakdown.pagerBegin += Debug::V3Diagnostics::elapsedMs(start);
+                }
+
+                if (scene->getSceneData())
+                {
+                    const auto start = Clock::now();
+                    scene->getSceneData()->getBound();
+                    breakdown.sceneBound += Debug::V3Diagnostics::elapsedMs(start);
+                }
+            }
+
+            Cameras cameras;
+            {
+                const auto start = Clock::now();
+                getCameras(cameras);
+                breakdown.cameraQuery = Debug::V3Diagnostics::elapsedMs(start);
+            }
+
+            Contexts::iterator itr;
+            bool doneMakeCurrentInThisThread = false;
+
+            if (_endDynamicDrawBlock.valid())
+                _endDynamicDrawBlock->reset();
+
+            {
+                const auto start = Clock::now();
+                if (_startRenderingBarrier.valid())
+                    _startRenderingBarrier->block();
+                breakdown.startBarrier = Debug::V3Diagnostics::elapsedMs(start);
+            }
+
+            {
+                const auto start = Clock::now();
+                for (Cameras::iterator camItr = cameras.begin(); camItr != cameras.end(); ++camItr)
+                {
+                    osg::Camera* camera = *camItr;
+                    Renderer* renderer = dynamic_cast<Renderer*>(camera->getRenderer());
+                    if (renderer && !renderer->getGraphicsThreadDoesCull() && !(camera->getCameraThread()))
+                        renderer->cull();
+                }
+                breakdown.cull = Debug::V3Diagnostics::elapsedMs(start);
+            }
+
+            {
+                const auto start = Clock::now();
+                for (itr = contexts.begin(); itr != contexts.end() && !_done; ++itr)
+                {
+                    if (!((*itr)->getGraphicsThread()) && (*itr)->valid())
+                    {
+                        doneMakeCurrentInThisThread = true;
+                        makeCurrent(*itr);
+                        (*itr)->runOperations();
+                    }
+                }
+                breakdown.contextOps = Debug::V3Diagnostics::elapsedMs(start);
+            }
+
+            {
+                const auto start = Clock::now();
+                if (_endRenderingDispatchBarrier.valid())
+                    _endRenderingDispatchBarrier->block();
+                breakdown.dispatchWait = Debug::V3Diagnostics::elapsedMs(start);
+            }
+
+            {
+                const auto start = Clock::now();
+                for (itr = contexts.begin(); itr != contexts.end() && !_done; ++itr)
+                {
+                    if (!((*itr)->getGraphicsThread()) && (*itr)->valid())
+                    {
+                        doneMakeCurrentInThisThread = true;
+                        makeCurrent(*itr);
+                        (*itr)->swapBuffers();
+                    }
+                }
+                breakdown.mainSwap = Debug::V3Diagnostics::elapsedMs(start);
+            }
+
+            {
+                const auto start = Clock::now();
+                for (Scenes::iterator sitr = scenes.begin(); sitr != scenes.end(); ++sitr)
+                {
+                    Scene* scene = *sitr;
+                    if (!scene)
+                        continue;
+                    osgDB::DatabasePager* dp = scene->getDatabasePager();
+                    if (dp)
+                        dp->signalEndFrame();
+                    osgDB::ImagePager* ip = scene->getImagePager();
+                    if (ip)
+                        ip->signalEndFrame();
+                }
+                breakdown.pagerEnd = Debug::V3Diagnostics::elapsedMs(start);
+            }
+
+            {
+                const auto start = Clock::now();
+                if (_endDynamicDrawBlock.valid())
+                    _endDynamicDrawBlock->block();
+                breakdown.dynamicDrawWait = Debug::V3Diagnostics::elapsedMs(start);
+            }
+
+            {
+                const auto start = Clock::now();
+                if (_releaseContextAtEndOfFrameHint && doneMakeCurrentInThisThread)
+                    releaseContext();
+                breakdown.releaseContext = Debug::V3Diagnostics::elapsedMs(start);
+            }
+
+            if (getViewerStats() && getViewerStats()->collectStats("update"))
+            {
+                const double endRenderingTraversals = elapsedTime();
+                getViewerStats()->setAttribute(frameNumber, "Rendering traversals begin time ", beginRenderingTraversals);
+                getViewerStats()->setAttribute(frameNumber, "Rendering traversals end time ", endRenderingTraversals);
+                getViewerStats()->setAttribute(
+                    frameNumber, "Rendering traversals time taken", endRenderingTraversals - beginRenderingTraversals);
+            }
+
+            _requestRedraw = false;
+
+            const double totalMs = Debug::V3Diagnostics::elapsedMs(totalStart);
+            const double measuredMs = breakdown.contextQuery + breakdown.windowStatus + breakdown.sceneStats
+                + breakdown.pagerBegin + breakdown.sceneBound + breakdown.cameraQuery + breakdown.startBarrier
+                + breakdown.cull + breakdown.contextOps + breakdown.dispatchWait + breakdown.mainSwap
+                + breakdown.pagerEnd + breakdown.dynamicDrawWait + breakdown.releaseContext;
+            const double otherMs = std::max(0.0, totalMs - measuredMs);
+
+            auto& writer = Debug::V3Diagnostics::p6TraversalBreakdownWriter();
+            if (writer.enabled())
+            {
+                std::ostringstream row;
+                row << frameNumber << ',' << Debug::V3Diagnostics::epochMs() << ','
+                    << std::fixed << std::setprecision(3)
+                    << totalMs << ',' << breakdown.contextQuery << ',' << breakdown.windowStatus << ','
+                    << breakdown.sceneStats << ',' << breakdown.pagerBegin << ',' << breakdown.sceneBound << ','
+                    << breakdown.cameraQuery << ',' << breakdown.startBarrier << ',' << breakdown.cull << ','
+                    << breakdown.contextOps << ',' << breakdown.dispatchWait << ',' << breakdown.mainSwap << ','
+                    << breakdown.pagerEnd << ',' << breakdown.dynamicDrawWait << ',' << breakdown.releaseContext << ','
+                    << otherMs << ',' << contexts.size() << ',' << cameras.size() << ','
+                    << static_cast<int>(getThreadingModel());
+                writer.writeLine(row.str());
+            }
+        }
     };
 
     class P6SwapTimingCallback final : public osg::GraphicsContext::SwapCallback
@@ -1868,7 +2156,15 @@ void OMW::Engine::go()
         mViewer = new MWRender::V4UpdateOnlyViewer;
     else
 #endif
-        mViewer = new osgViewer::Viewer;
+    {
+        // Preserve the stock OSG viewer in normal gameplay. The instrumented
+        // viewer is selected only when the benchmark launcher provides a
+        // traversal output path.
+        if (Debug::V3Diagnostics::p6TraversalBreakdownWriter().enabled())
+            mViewer = new P6InstrumentedViewer;
+        else
+            mViewer = new osgViewer::Viewer;
+    }
     if (!mUseVulkanRenderer)
     {
         mViewer->getCamera()->getOrCreateStateSet()->removeAttribute(osg::StateAttribute::MATERIAL);
