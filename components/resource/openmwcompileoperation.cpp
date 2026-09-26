@@ -144,6 +144,13 @@ namespace Resource
 
     std::size_t OpenMWIncrementalCompileOperation::resourceSizeBytes(const CompileOp* op)
     {
+        if (const auto* customDrawable = dynamic_cast<const OpenMWDrawableCompileOp*>(op))
+        {
+            const std::size_t bytes = customDrawable->resourceBytes();
+            if (bytes > 0)
+                return bytes;
+        }
+
         if (const auto* textureOp = dynamic_cast<const CompileTextureOp*>(op))
         {
             std::size_t bytes = 0;
