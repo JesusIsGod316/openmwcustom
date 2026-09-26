@@ -283,6 +283,13 @@ namespace RenderNative
         }
     };
 
+    struct TransformTrackSample
+    {
+        std::optional<glm::vec3> translation;
+        std::optional<glm::quat> rotation;
+        std::optional<float> scale;
+    };
+
     struct TransformControllerTrack
     {
         QuaternionControllerTrack rotations;
@@ -292,6 +299,52 @@ namespace RenderNative
         Vec3ControllerTrack translations;
         FloatControllerTrack scales;
         ControllerAxisOrder axisOrder = ControllerAxisOrder::XYZ;
+
+        // NiTransformInterpolator supplies authored defaults for channels which
+        // have no key data. The legacy NifOsg controller consumes these defaults,
+        // so the native runtime must retain them before it can replace evaluated
+        // scenegraph capture.
+        std::optional<glm::vec3> defaultTranslation;
+        std::optional<glm::quat> defaultRotation;
+        std::optional<float> defaultScale;
+
+        [[nodiscard]] TransformTrackSample sample(float time) const noexcept
+        {
+            TransformTrackSample result;
+            result.translation = translations.sample(time);
+            if (!result.translation)
+                result.translation = defaultTranslation;
+
+            result.rotation = rotations.sample(time);
+            if (!result.rotation && (!xRotations.empty() || !yRotations.empty() || !zRotations.empty()))
+            {
+                const float x = xRotations.sample(time).value_or(0.0f);
+                const float y = yRotations.sample(time).value_or(0.0f);
+                const float z = zRotations.sample(time).value_or(0.0f);
+                const glm::quat xr = glm::angleAxis(x, glm::vec3(1.0f, 0.0f, 0.0f));
+                const glm::quat yr = glm::angleAxis(y, glm::vec3(0.0f, 1.0f, 0.0f));
+                const glm::quat zr = glm::angleAxis(z, glm::vec3(0.0f, 0.0f, 1.0f));
+                switch (axisOrder)
+                {
+                    case ControllerAxisOrder::XYZ: result.rotation = xr * yr * zr; break;
+                    case ControllerAxisOrder::XZY: result.rotation = xr * zr * yr; break;
+                    case ControllerAxisOrder::YZX: result.rotation = yr * zr * xr; break;
+                    case ControllerAxisOrder::YXZ: result.rotation = yr * xr * zr; break;
+                    case ControllerAxisOrder::ZXY: result.rotation = zr * xr * yr; break;
+                    case ControllerAxisOrder::ZYX: result.rotation = zr * yr * xr; break;
+                    case ControllerAxisOrder::XYX: result.rotation = xr * yr * xr; break;
+                    case ControllerAxisOrder::YZY: result.rotation = yr * zr * yr; break;
+                    case ControllerAxisOrder::ZXZ: result.rotation = zr * xr * zr; break;
+                }
+            }
+            if (!result.rotation)
+                result.rotation = defaultRotation;
+
+            result.scale = scales.sample(time);
+            if (!result.scale)
+                result.scale = defaultScale;
+            return result;
+        }
     };
 
     enum class TransformTrackCompileStatus : std::uint8_t
