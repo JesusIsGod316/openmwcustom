@@ -187,7 +187,8 @@ namespace Terrain
 
         Debug::V3Diagnostics::ScopedCsvTimer timer(
             Debug::V3Diagnostics::pagingWriter(), "terrain_chunk_create", templateGeometry ? "template_reuse" : "new", 0.25);
-        osg::ref_ptr<osg::Node> node = createChunk(size, center, lod, lodFlags, compile, templateGeometry);
+        osg::ref_ptr<osg::Node> node
+            = createChunk(size, center, lod, lodFlags, activeGrid, compile, templateGeometry);
         mCache->addEntryToObjectCache(key, node.get());
         return node;
     }
@@ -315,7 +316,7 @@ namespace Terrain
     }
 
     osg::ref_ptr<osg::Node> ChunkManager::createChunk(float chunkSize, const osg::Vec2f& chunkCenter, unsigned char lod,
-        unsigned int lodFlags, bool compile, const TerrainDrawable* templateGeometry)
+        unsigned int lodFlags, bool activeGrid, bool compile, const TerrainDrawable* templateGeometry)
     {
         osg::ref_ptr<TerrainDrawable> geometry(new TerrainDrawable);
 
