@@ -32,7 +32,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify accepted Phase 3A ancestry
+      - name: Verify accepted Phase 2 ancestry
         shell: bash
         run: |
           set -euo pipefail
@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           python3 tools/vulkanmw/check-architecture-boundaries.py
           python3 tools/vulkanmw/check-phase1-nif-compiler.py
-          python3 tools/vulkanmw/check-phase3-static-world.py
+          python3 tools/vulkanmw/check-phase2-static-world.py
           python3 tools/vulkanmw/check-phase3-controller-animation.py
           git diff --check 93e94bc6b9bc778e65c8969cea5a27363dcd17b6 HEAD --             components/render/native             apps/openmw/mwrender/vulkanmw             apps/openmw/mwrender/groundcover.cpp             apps/openmw/mwrender/groundcover.hpp             apps/openmw/mwrender/groundcoverdata.hpp             apps/openmw/mwrender/groundcoverquery.cpp             apps/openmw/mwrender/groundcoverquery.hpp             apps/openmw/mwrender/renderingmanager.hpp             apps/openmw/mwrender/v4engine-sources.cmake             apps/openmw/mwrender/v4enginerenderbridge.cpp             apps/openmw/mwrender/v4enginerenderbridge.hpp             apps/openmw/mwrender/v4scenerenderlifecycle.cpp             apps/openmw/mwrender/v4scenerenderlifecycle.hpp             apps/openmw/mwrender/v4semanticsource.cpp             apps/openmw/mwrender/v4semanticsource.hpp             apps/openmw/mwrender/v4terrainsource.cpp             apps/openmw/mwrender/v4terrainsource.hpp             tools/vulkanmw
 
