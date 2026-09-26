@@ -177,10 +177,6 @@ namespace
                 return RenderNative::TransformTrackCompileStatus::UnsupportedInterpolator;
             const auto* interpolator
                 = static_cast<const Nif::NiTransformInterpolator*>(source.mInterpolator.getPtr());
-            const Nif::NiQuatTransform& defaults = interpolator->mDefaultValue;
-            target.defaultTranslation = vec3(defaults.mTranslation);
-            target.defaultRotation = quat(defaults.mRotation);
-            target.defaultScale = defaults.mScale;
             if (!interpolator->mData.empty())
                 data = interpolator->mData.getPtr();
             else
