@@ -433,6 +433,19 @@ namespace Debug::V3Diagnostics
         return writer;
     }
 
+    inline CsvWriter& p6TraversalBreakdownWriter()
+    {
+        // One compact row per benchmark frame. This is intentionally separate
+        // from the event-style render writer so subphase attribution does not
+        // require high-volume deep tracing.
+        static CsvWriter writer("OPENMW_P6_TRAVERSAL_FILE",
+            "frame,epoch_ms,total_ms,scene_stats_ms,pager_begin_ms,scene_bound_ms,"
+            "start_barrier_ms,cull_ms,context_ops_ms,dispatch_wait_ms,main_swap_ms,"
+            "pager_end_ms,dynamic_draw_wait_ms,release_context_ms,other_ms,"
+            "contexts,cameras,threading_model");
+        return writer;
+    }
+
     inline CsvWriter& postFxWriter()
     {
         static CsvWriter writer("OPENMW_V3_POSTFX_FILE",
