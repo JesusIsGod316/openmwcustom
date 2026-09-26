@@ -21,11 +21,13 @@ checks = {
     "default_off": all(token in defaults for token in (
         "optimizedmw residency scheduler mode = 0",
         "optimizedmw terrain immutable vertex reuse = false",
-        "optimizedmw texture pbo staging = false")),
+        "optimizedmw terrain resource phases = false",
+        "optimizedmw terrain split vertex buffers = false")),
     "settings_declared": all(token in cells for token in (
         "mOptimizedMWResidencySchedulerMode",
         "mOptimizedMWTerrainImmutableVertexReuse",
-        "mOptimizedMWTexturePboStaging")),
+        "mOptimizedMWTerrainResourcePhases",
+        "mOptimizedMWTerrainSplitVertexBuffers")),
     "deadline_metadata": "V321CompileUrgency" in classified
         and "getV321CompileUrgency" in classified
         and "activeGrid ? Resource::V321CompileUrgency::NearFuture" in terrain
@@ -42,9 +44,19 @@ checks = {
         and "sCompileSizeTierCount = 4" in compile_h,
     "terrain_vertex_reuse": "mOptimizedMWTerrainImmutableVertexReuse" in terrain
         and "arrays and their VBO" in terrain,
-    "texture_pbo": "_assignPBOToImages" in terrain
-        and "mOptimizedMWTexturePboStaging" in terrain
-        and "mOptimizedMWTexturePboStaging" in objectpaging,
+    "pbo_rejected": "mOptimizedMWTexturePboStaging" not in cells
+        and "_assignPBOToImages = true" not in terrain
+        and "mOptimizedMWTexturePboStaging" not in objectpaging
+        and "P6-QUARANTINE-PBO" not in launcher,
+    "terrain_resource_phases": "phaseTerrainCompileSetV2" in terrain
+        and "CompileTextureOp(texture)" in terrain
+        and "CompileProgramOp(program)" in terrain
+        and "mOptimizedMWTerrainResourcePhases" in terrain,
+    "terrain_vbo_slicing": "TerrainBufferCompileOp" in terrain
+        and "p6_terrain_buffer_upload" in terrain
+        and "mOptimizedMWTerrainSplitVertexBuffers" in terrain
+        and "resourceBytes() const noexcept override" in terrain
+        and "customDrawable->resourceBytes()" in compile_cpp,
     "benchmark_only_hitch": "Normal gameplay must never start" in hitch
         and "OPENMW_V3_HITCH_FILE" in launcher
         and "OPENMW_V3_FRAME_FILE" in launcher,
@@ -54,7 +66,9 @@ checks = {
         and "OPENMW_P6_RENDER_PHASE_FILE" in launcher,
     "launcher_matrix": all(token in launcher for token in (
         "P4R-STAGE2", "P6-QUARANTINE", "P6-STRICT-QUARANTINE",
-        "P6-QUARANTINE-VERTEX-REUSE", "P6-QUARANTINE-PBO", "P6-FULL")),
+        "P6-QUARANTINE-VERTEX-REUSE", "P6-TERRAIN-RESOURCE-PHASES", "P6-TERRAIN-VBO-SPLIT")),
+    "crash_capture": "openmw-crash*.dmp" in launcher
+        and "exitCode -ne 0" in launcher,
     "launcher_packaged": "START-OptimizedMW-GL-P6-Test.bat" in cmake
         and "OptimizedMW_GL-P6_Test.ps1" in cmake,
 }
