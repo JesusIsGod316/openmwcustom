@@ -313,6 +313,13 @@ namespace MWRender
             }
         }
 
+        if (result.sampledTracks == 0)
+        {
+            localTransforms.clear();
+            result.diagnostic = "active actor has no native KF skeleton tracks to substitute";
+            return result;
+        }
+
         result.status = V4NativeAnimationPoseStatus::Applied;
         return result;
     }
