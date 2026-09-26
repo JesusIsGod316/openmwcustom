@@ -442,7 +442,31 @@ namespace Debug::V3Diagnostics
             "frame,epoch_ms,total_ms,context_query_ms,window_status_ms,scene_stats_ms,"
             "pager_begin_ms,scene_bound_ms,camera_query_ms,start_barrier_ms,cull_ms,"
             "context_ops_ms,dispatch_wait_ms,main_swap_ms,pager_end_ms,"
-            "dynamic_draw_wait_ms,release_context_ms,other_ms,contexts,cameras,threading_model");
+            "dynamic_draw_wait_ms,release_context_ms,other_ms,contexts,cameras,threading_model,"
+            "sceneview0_dynamic,sceneview1_dynamic,dynamic_max");
+        return writer;
+    }
+
+    inline CsvWriter& p8DynamicDrawWriter()
+    {
+        static CsvWriter writer("OPENMW_P8_DYNAMIC_DRAW_FILE",
+            "frame,epoch_ms,thread,kind,class,name,duration_ms,data_variance,vertices,primitive_sets,"
+            "buffer_objects,buffer_bytes,dynamic_buffer_bytes,max_modified_count");
+        return writer;
+    }
+
+    inline CsvWriter& p8DynamicFrameWriter()
+    {
+        static CsvWriter writer("OPENMW_P8_DYNAMIC_FRAME_FILE",
+            "frame,epoch_ms,thread,instrumented_draws,total_draw_ms,max_draw_ms,slow_draws,"
+            "buffer_bytes,dynamic_buffer_bytes");
+        return writer;
+    }
+
+    inline CsvWriter& p8DeformWriter()
+    {
+        static CsvWriter writer("OPENMW_P8_DEFORM_FILE",
+            "frame,epoch_ms,thread,kind,name,duration_ms,vertices,units,buffer_bytes");
         return writer;
     }
 
