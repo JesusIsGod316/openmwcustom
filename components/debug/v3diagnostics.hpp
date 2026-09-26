@@ -426,6 +426,13 @@ namespace Debug::V3Diagnostics
         return writer;
     }
 
+    inline CsvWriter& p6RenderPhaseWriter()
+    {
+        static CsvWriter writer("OPENMW_P6_RENDER_PHASE_FILE",
+            "frame,epoch_ms,thread,phase,duration_ms,detail");
+        return writer;
+    }
+
     inline CsvWriter& postFxWriter()
     {
         static CsvWriter writer("OPENMW_V3_POSTFX_FILE",
