@@ -9,6 +9,7 @@ compile_h = (root / "components/resource/openmwcompileoperation.hpp").read_text(
 compile_cpp = (root / "components/resource/openmwcompileoperation.cpp").read_text()
 rendering = (root / "apps/openmw/mwrender/renderingmanager.cpp").read_text()
 terrain = (root / "components/terrain/chunkmanager.cpp").read_text()
+terrain_h = (root / "components/terrain/chunkmanager.hpp").read_text()
 objectpaging = (root / "apps/openmw/mwrender/objectpaging.cpp").read_text()
 engine = (root / "apps/openmw/engine.cpp").read_text()
 hitch = (root / "components/debug/v3hitchtelemetry.hpp").read_text()
@@ -29,6 +30,9 @@ checks = {
         and "getV321CompileUrgency" in classified
         and "activeGrid ? Resource::V321CompileUrgency::NearFuture" in terrain
         and "activeGrid ? Resource::V321CompileUrgency::NearFuture" in objectpaging,
+    "terrain_deadline_wiring": "unsigned int lodFlags, bool activeGrid, bool compile" in terrain_h
+        and "unsigned int lodFlags, bool activeGrid, bool compile" in terrain
+        and "lodFlags, activeGrid, compile, templateGeometry" in terrain,
     "scheduler_quarantine": "quarantineHeavy" in compile_cpp
         and "quarantined_candidates=" in compile_cpp
         and "mResidencySchedulerMode" in compile_h
