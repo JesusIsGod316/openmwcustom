@@ -111,22 +111,24 @@ namespace RenderNative
             // vanilla and OpenMW's compatibility loader both bind these tracks.
             const auto* name = static_cast<const Nif::NiStringExtraData*>(extra.getPtr());
             const auto* keyframe = static_cast<const Nif::NiKeyframeController*>(controller.getPtr());
-            std::optional<TransformControllerTrack> track = NifControllerCompiler::compileTransformTrack(*keyframe);
-            if (!track)
+            TransformTrackCompileResult track = NifControllerCompiler::compileTransformTrack(*keyframe);
+            if (!track.supported())
             {
                 ++result.clip.unsupportedControllers;
                 if (result.diagnostic.empty())
                 {
-                    result.diagnostic = "KF transform controller has empty data or unsupported interpolator: "
+                    result.diagnostic = "KF transform controller uses an unsupported interpolator: "
                         + std::to_string(keyframe->mRecordIndex);
                 }
                 continue;
             }
+            if (!track.hasKeys())
+                ++result.clip.emptyControllers;
 
             NamedTransformTrack compiled;
             compiled.name = name->mData;
             compiled.timing = NifControllerCompiler::compileTiming(*keyframe);
-            compiled.track = std::move(*track);
+            compiled.track = std::move(track.track);
 
             // std::map::emplace intentionally preserves the first duplicate,
             // matching SceneUtil::KeyframeHolder.
@@ -156,7 +158,7 @@ namespace RenderNative
         try
         {
             Nif::NIFFile file(path);
-            Nif::Reader reader(file, nullptr);
+            Nif::Reader reader(file, mEncoder);
             reader.parse(mVfs.get(path));
             return compile(Nif::FileView(file));
         }
