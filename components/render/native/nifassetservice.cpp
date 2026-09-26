@@ -48,7 +48,8 @@ namespace RenderNative
             return result;
         }
 
-        mMetadata.insert_or_assign(identity, compiled.namedVisualCapabilities);
+        auto controllers = std::make_shared<const NifControllerProgram>(std::move(compiled.controllers));
+        mMetadata.insert_or_assign(identity, SourceMetadata{ compiled.namedVisualCapabilities, controllers });
         result.status = published.status == NifRender::StaticModelCacheStatus::Published
             ? NifAssetResolveStatus::Published
             : NifAssetResolveStatus::Reused;
