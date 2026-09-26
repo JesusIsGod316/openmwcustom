@@ -7,8 +7,6 @@
 #include <components/nif/nifkey.hpp>
 #include <components/nifrender/translationbundle.hpp>
 
-#include <glm/gtx/quaternion.hpp>
-
 #include <cstddef>
 #include <sstream>
 #include <string_view>
