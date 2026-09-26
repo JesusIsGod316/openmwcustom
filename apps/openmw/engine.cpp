@@ -18,7 +18,7 @@
 #include <osgDB/ReaderWriter>
 #include <osgDB/Registry>
 #include <osgUtil/IncrementalCompileOperation>
-#include <osgUtil/StatsVisitor>
+#include <osgUtil/Statistics>
 
 #include <osgViewer/Renderer>
 #include <osgViewer/Scene>
