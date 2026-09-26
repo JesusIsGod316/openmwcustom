@@ -42,6 +42,7 @@ namespace Resource
         unsigned int mHeavyMinSmoothFrames = 30;
         double mHeavyMinHeadroomMs = 5.0;
         double mTerrainDrawablePriorMs = 8.0;
+        int mResidencySchedulerMode = 0;
     };
 
     class OpenMWIncrementalCompileOperation final : public osgUtil::IncrementalCompileOperation
@@ -69,6 +70,7 @@ namespace Resource
 
         static constexpr std::size_t sCompileClassCount = 4;
         static constexpr std::size_t sCompileKindCount = static_cast<std::size_t>(CompileKind::Count);
+        static constexpr std::size_t sCompileSizeTierCount = 4;
 
         struct CostState
         {
@@ -92,9 +94,13 @@ namespace Resource
         double cachedOsgEstimateMs(CompileOp* op, CompileInfo& info, const CompileSet* set,
             std::uint64_t& estimateCalls, std::uint64_t& estimateCacheHits);
         double predictedMs(double osgEstimateMs, std::size_t costBucket, double staticPriorMs) const;
-        void observe(const CompileSet* set, CompileKind kind, double actualMs);
-        std::size_t costIndex(const CompileSet* set, CompileKind kind) const;
-        double staticPriorMs(const CompileSet* set, CompileKind kind) const;
+        void observe(std::size_t costBucket, double actualMs);
+        std::size_t costIndex(const CompileSet* set, CompileKind kind, std::size_t sizeTier) const;
+        double staticPriorMs(const CompileSet* set, CompileKind kind, std::size_t sizeTier) const;
+        static std::size_t resourceSizeBytes(const CompileOp* op);
+        static std::size_t resourceSizeTier(std::size_t bytes);
+        static int urgencyRank(const CompileSet* set);
+        static const char* urgencyName(const CompileSet* set);
 
         void finishCompileSet(CompileSet* set);
         void pruneSeen(const CompileSets& queued);
@@ -105,7 +111,7 @@ namespace Resource
 
         OpenMWCompileSchedulerConfig mConfig;
         P4CompilePolicyState mPolicyState;
-        std::array<CostState, sCompileClassCount * sCompileKindCount> mCosts{};
+        std::array<CostState, sCompileClassCount * sCompileKindCount * sCompileSizeTierCount> mCosts{};
         std::unordered_map<const CompileSet*, SeenState> mSeen;
         std::unordered_map<const CompileSet*, PredictionCacheEntry> mPredictionCache;
         std::size_t mLastQueueDepth = 0;
