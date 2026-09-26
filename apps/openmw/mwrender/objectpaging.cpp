@@ -1306,6 +1306,8 @@ namespace MWRender
         osg::Group* mergeGroup = v312MergeGroups.front().get();
         osg::ref_ptr<Resource::TemplateMultiRef> templateRefs = new Resource::TemplateMultiRef;
         osgUtil::StateToCompile stateToCompile(0, nullptr);
+        stateToCompile._assignPBOToImages
+            = static_cast<bool>(Settings::cells().mOptimizedMWTexturePboStaging);
         CopyOp copyop(activeGrid, copyMask);
 
         const bool buildOccluders = Settings::camera().mOcclusionCulling && Settings::camera().mOcclusionCullingStatics;
@@ -1783,7 +1785,9 @@ namespace MWRender
             // consumes it. Always retain the producer identity so GL-P4 can
             // prioritize without enabling the older CP2 completion policy.
             auto compileSet = new Resource::V321ClassifiedCompileSet(
-                group, Resource::V321CompileClass::ObjectPaging);
+                group, Resource::V321CompileClass::ObjectPaging,
+                activeGrid ? Resource::V321CompileUrgency::NearFuture
+                           : Resource::V321CompileUrgency::Background);
             compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
             ico->add(compileSet, false);
         }
