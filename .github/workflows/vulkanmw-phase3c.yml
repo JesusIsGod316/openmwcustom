@@ -47,6 +47,16 @@ jobs:
           python3 tools/vulkanmw/check-phase3-kf-compiler.py
           python3 tools/vulkanmw/check-phase3c-native-runtime.py
 
+      - name: Test forced skeleton metadata and actor composition
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libglm-dev
+          cmake -S tools/vulkanmw/tests -B build-phase3c-metadata -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-phase3c-metadata --parallel 2
+          ctest --test-dir build-phase3c-metadata --output-on-failure
+
       - name: Check Phase 3C whitespace
         shell: bash
         run: |

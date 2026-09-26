@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -19,6 +20,7 @@ BRIDGE_CPP = ROOT / "apps/openmw/mwrender/v4enginerenderbridge.cpp"
 ENGINE_SOURCES = ROOT / "apps/openmw/mwrender/v4engine-sources.cmake"
 RECORDS = ROOT / "components/rendercore/records.hpp"
 TRANSLATOR = ROOT / "components/nifrender/niftranslator.cpp"
+COMPOSER = ROOT / "components/nifrender/actormodelcomposer.hpp"
 PROGRAM_HPP = ROOT / "components/render/native/nifcontrollerprogram.hpp"
 PROGRAM_CPP = ROOT / "components/render/native/nifcontrollerprogram.cpp"
 
@@ -78,6 +80,20 @@ def main() -> int:
         "bone.sourceLocal = sourceLocal;",
         "bone.sourceAnimationBoundary = true;",
         "bone.sourceControllerFlags = mResult.model.nodes[modelNode].controllerFlags;",
+        "bone.sourceParentControllerFlags = sourceParentControllerFlags;",
+        "bone.sourceParentPathNodes = std::move(sourceParentPathNodes);",
+    ))
+
+    require(COMPOSER, (
+        "const ModelNodeRecord& ancestor = base.payload->nodes[*it];",
+        "sourceParentPath *= ancestor.localTransform;",
+        "sourceParentControllerFlags |= ancestor.controllerFlags;",
+        "sourceParentPathNodes.push_back(foldName(ancestor.name));",
+        "const glm::mat4 bindLocal = sourceParentPath * source.localTransform;",
+        "bone.sourceParentPath = sourceParentPath;",
+        "bone.sourceLocal = source.localTransform;",
+        "bone.sourceAnimationBoundary = true;",
+        "bone.sourceControllerFlags = source.controllerFlags;",
         "bone.sourceParentControllerFlags = sourceParentControllerFlags;",
         "bone.sourceParentPathNodes = std::move(sourceParentPathNodes);",
     ))
@@ -146,11 +162,30 @@ def main() -> int:
         "native_actor_poses",
         "legacy_actor_poses",
         "sampled_tracks",
+        "seed_failures",
     ))
     native_call = bridge.find("mNativeAnimation->captureSkeletonPose")
     legacy_update = bridge.find("evaluated->updateBoneMatrices", native_call)
     if native_call < 0 or legacy_update < 0 or native_call > legacy_update:
         fail("native pose substitution must precede compatibility skeleton traversal")
+
+    # Ordering alone does not prove substitution: all evaluated work must stay
+    # exclusively inside the unsuccessful-native branch, not run beside it.
+    branches = re.search(
+        r"if \(nativePose\.applied\(\)\)\s*\{(?P<native>.*?)\n\s*\}\s*else\s*"
+        r"\{(?P<legacy>.*?)\n\s*\}\s*if \(pose\.localTransforms\.size\(\)",
+        bridge[native_call:], re.DOTALL,
+    )
+    if not branches:
+        fail("could not isolate native-success versus evaluated-fallback branches")
+    for operation in (
+        "evaluated->getBone(bone.name)",
+        "evaluated->updateBoneMatrices",
+        "bone->mMatrixInSkeletonSpace",
+        "glm::inverse(global[",
+    ):
+        if operation in branches["native"] or operation not in branches["legacy"]:
+            fail(f"evaluated pose work is not exclusive to fallback: {operation}")
 
     seed_call = bridge.find("mNativeAnimation->seedSkeletonPose", native_call)
     if seed_call < legacy_update:

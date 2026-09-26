@@ -54,6 +54,16 @@ jobs:
           python3 tools/vulkanmw/check-phase3c-native-runtime.py
           git diff --check 87962b7d1fda6ca1d5333ee005530ce1ed2731c9 HEAD
 
+      - name: Gate full build on skeleton metadata regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libglm-dev
+          cmake -S tools/vulkanmw/tests -B build-phase3c-metadata -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-phase3c-metadata --parallel 2
+          ctest --test-dir build-phase3c-metadata --output-on-failure
+
   Windows:
     needs: Preflight
     runs-on: windows-2022
@@ -95,6 +105,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Static VSG build failed" }
           ctest --test-dir "$env:GITHUB_WORKSPACE/build-vulkanmw-static" -C RelWithDebInfo --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "Static VSG tests failed" }
+
+      - name: Test skeleton metadata with MSVC
+        shell: pwsh
+        run: |
+          cmake -S tools/vulkanmw/tests -B build-phase3c-metadata -G Ninja `
+            -D CMAKE_BUILD_TYPE=Release `
+            -D CMAKE_PREFIX_PATH="$env:GITHUB_WORKSPACE/vulkanmw-vcpkg/x64-windows"
+          if ($LASTEXITCODE -ne 0) { throw "Phase 3C metadata configure failed" }
+          cmake --build build-phase3c-metadata
+          if ($LASTEXITCODE -ne 0) { throw "Phase 3C metadata build failed" }
+          ctest --test-dir build-phase3c-metadata --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Phase 3C metadata tests failed" }
 
       - name: Load OpenMW dependency identity
         shell: bash
@@ -263,6 +285,7 @@ jobs:
           path: |
             build-vulkanmw-static/CMakeCache.txt
             build-vulkanmw-static/Testing/Temporary/LastTest.log
+            build-phase3c-metadata/Testing/Temporary/LastTest.log
             build-vulkanmw-phase3c/CMakeCache.txt
             build-vulkanmw-phase3c/.ninja_log
 

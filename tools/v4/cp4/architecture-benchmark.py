@@ -16,7 +16,16 @@ from collections import defaultdict
 from types import SimpleNamespace
 
 
+def animation_controls(renderer, legacy_capture):
+    if legacy_capture and renderer != 'vulkan':
+        raise ValueError('--legacy-animation-capture is only meaningful for Vulkan')
+    return {'OPENMW_V4_LEGACY_ANIMATION_CAPTURE_CONTROL': '1'} if legacy_capture else {}
+
+
 def run(args):
+    # Validate before creating a profile. Inherited OPENMW_ variables are scrubbed
+    # below, so the same-executable animation control needs an explicit CLI arm.
+    animation = animation_controls(args.renderer, args.legacy_animation_capture)
     here = Path(__file__).resolve().parent
     spec = importlib.util.spec_from_file_location('capture', here / 'gameplay-diagnostics.py')
     capture = importlib.util.module_from_spec(spec)
@@ -50,6 +59,7 @@ def run(args):
         if key.startswith(('OPENMW_', 'VK_')):
             env.pop(key)
     env.update(manifest['controls'])
+    env.update(animation)
     if args.renderer == 'vulkan':
         env['OPENMW_V4_STATIC_FRUSTUM'] = '1'
         env['OPENMW_V4_TERRAIN_OCCLUSION'] = '1'
@@ -85,7 +95,7 @@ def run(args):
         for row in rows:
             if row.get('frame') not in steady: continue
             if row['type'] == 'stage_end': stages[row['name']].append(float(row['ms']))
-            if row['type'] in ('capture_work','capture_phases','native_objects','residency','native_visibility','persistent_draws'):
+            if row['type'] in ('capture_work','capture_phases','native_objects','residency','native_visibility','persistent_draws','native_animation_runtime'):
                 for key,value in row.items():
                     if key in ('schema','frame','time_us','type','truncated'): continue
                     try: work[key].append(float(value))
@@ -110,4 +120,6 @@ if __name__ == '__main__':
     parser.add_argument('--renderer', choices=('vulkan', 'opengl'), default='vulkan')
     parser.add_argument('--fastpaths', choices=('control', 'exterior', 'retained', 'previous-retained', 'all'), required=True)
     parser.add_argument('--disable-fastpath', action='append', default=[])
+    parser.add_argument('--legacy-animation-capture', action='store_true',
+        help='Vulkan same-executable control: force evaluated actor pose capture')
     run(parser.parse_args())

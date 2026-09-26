@@ -57,9 +57,17 @@ RenderCore::BoneRecord now retains:
 
 - sourceParentPath — the exact static transform chain between skeleton bones;
 - sourceLocal — the exact authored local transform of the controlled bone node.
+- sourceAnimationBoundary — whether the authored replacement boundary is known;
+- sourceControllerFlags — controllers attached to that exact source node;
+- sourceParentControllerFlags — controllers anywhere in the collapsed ancestor path;
+- sourceParentPathNodes — ordered, normalized source names along that ancestor path.
 
 This allows native animation to replace only the authored bone transform while preserving static
 non-bone ancestors. bindLocal and inverseBind remain authoritative existing skeleton fields.
+
+The forced actor skeleton builder must retain the same metadata as the direct NIF translator.
+See [runtime skeleton provenance audit](PHASE3C-SKELETON-PROVENANCE.md) for the NPC/composition
+publication defect, its repair, and the scoped compatibility boundaries.
 
 ## Phase 3C first-slice boundary
 
@@ -78,7 +86,14 @@ The gameplay diagnostics expose:
 - native_animation_runtime.native_actor_poses
 - native_animation_runtime.legacy_actor_poses
 - native_animation_runtime.sampled_tracks
+- native_animation_runtime.seed_failures
 - bounded native_animation_fallback reasons
 
 A useful 3C runtime test must show non-zero native actor pose substitution on the real workload.
 No performance claim is made from source/build success alone.
+
+The permanent test launcher accepts `--legacy-animation-capture` for the matched evaluated-pose
+control. The benchmark deliberately clears inherited `OPENMW_` settings; merely setting the
+environment variable outside this launcher is insufficient. The explicit switch is applied after
+that cleanup and recorded in the run manifest. Omit it for native substitution. Both arms use the
+same executable, mods, private profile, seed, warmup, and measured interval.

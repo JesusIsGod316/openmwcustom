@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.20)
+project(VulkanMWPhase3CMetadataTests LANGUAGES CXX)
+
+find_package(glm CONFIG REQUIRED)
+enable_testing()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME vulkanmw-phase3c-benchmark-control
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-benchmark-control.py)
+add_executable(vulkanmw-phase3c-metadata-tests phase3c-metadata-tests.cpp)
+target_compile_features(vulkanmw-phase3c-metadata-tests PRIVATE cxx_std_20)
+target_include_directories(vulkanmw-phase3c-metadata-tests PRIVATE ../../..)
+target_link_libraries(vulkanmw-phase3c-metadata-tests PRIVATE glm::glm)
+if(MSVC)
+    target_compile_options(vulkanmw-phase3c-metadata-tests PRIVATE /W4 /WX /permissive-)
+else()
+    target_compile_options(vulkanmw-phase3c-metadata-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+add_test(NAME vulkanmw-phase3c-metadata COMMAND vulkanmw-phase3c-metadata-tests)
