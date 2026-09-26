@@ -43,7 +43,8 @@ checks = {
         and "mOptimizedMWCompileSchedulerMode) >= 2" in engine,
     "cost_aware": "predictedMs" in compile_cpp
         and "estimatedTimeForCompile" in compile_cpp
-        and "observe(selected.mSet, selected.mKind, actualMs)" in compile_cpp
+        and ("observe(selected.mSet, selected.mKind, actualMs)" in compile_cpp
+             or "observe(selected.mCostBucket, actualMs)" in compile_cpp)
         and "mRiskMs" in compile_h
         and "costIndex" in compile_cpp,
     "estimator_cache_repair": "PredictionCacheEntry" in compile_h
