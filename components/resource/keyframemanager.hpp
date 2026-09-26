@@ -58,6 +58,8 @@ namespace Resource
         /// @note Throws an exception if the resource is not found.
         osg::ref_ptr<const SceneUtil::KeyframeHolder> get(VFS::Path::NormalizedView name);
 
+        [[nodiscard]] const ToUTF8::StatelessUtf8Encoder* getEncoder() const noexcept { return mEncoder; }
+
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
 
     private:
