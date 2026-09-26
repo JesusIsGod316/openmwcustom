@@ -609,9 +609,12 @@ namespace MWRender
         std::uint32_t legacyActorPoses = 0;
         std::uint32_t nativeSampledTracks = 0;
         std::uint32_t nativeFallbackEvents = 0;
+        std::uint32_t nativeSeedFailures = 0;
         bool compatible = true;
         if (++mPoseTraversal == 0u)
             ++mPoseTraversal;
+        if (mNativeAnimation)
+            mNativeAnimation->beginFrame();
 
         rendering.forEachAnimation([&](Animation& animation) {
             if (!compatible)
@@ -1231,7 +1234,8 @@ namespace MWRender
 
                 V4NativeAnimationPoseResult nativePose;
                 if (evaluated && mNativeAnimation)
-                    nativePose = mNativeAnimation->captureSkeletonPose(animation, *skeleton, pose.localTransforms);
+                    nativePose = mNativeAnimation->captureSkeletonPose(
+                        *identity, animation, *skeleton, pose.localTransforms);
 
                 std::vector<glm::mat4> global;
                 if (nativePose.applied())
@@ -1317,6 +1321,20 @@ namespace MWRender
                         compatible = false;
                         mLastDiagnostic = "actor pose contains a non-finite local transform";
                         return;
+                    }
+                }
+
+                if (!nativePose.applied() && mNativeAnimation)
+                {
+                    std::string seedDiagnostic;
+                    if (!mNativeAnimation->seedSkeletonPose(
+                            *identity, *skeleton, pose.localTransforms, seedDiagnostic))
+                    {
+                        ++nativeSeedFailures;
+                        if (Debug::GameplayDiagnostics::sampling() && nativeFallbackEvents++ < 4
+                            && !seedDiagnostic.empty())
+                            Debug::GameplayDiagnostics::recordEvent("native_animation_seed_fallback",
+                                { { "identity", *identity }, { "reason", seedDiagnostic } });
                     }
                 }
 
@@ -1482,11 +1500,14 @@ namespace MWRender
                 currentActorLights.insert(light.identity);
             }
         });
+        if (mNativeAnimation)
+            mNativeAnimation->endFrame();
         if (Debug::GameplayDiagnostics::sampling())
             Debug::GameplayDiagnostics::recordEvent("native_animation_runtime",
                 { { "native_actor_poses", std::to_string(nativeActorPoses) },
                     { "legacy_actor_poses", std::to_string(legacyActorPoses) },
                     { "sampled_tracks", std::to_string(nativeSampledTracks) },
+                    { "seed_failures", std::to_string(nativeSeedFailures) },
                     { "legacy_control",
                         std::getenv("OPENMW_V4_LEGACY_ANIMATION_CAPTURE_CONTROL") ? "1" : "0" } });
         if (compatible)
