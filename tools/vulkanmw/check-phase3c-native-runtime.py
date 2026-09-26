@@ -190,6 +190,14 @@ def main() -> int:
     seed_call = bridge.find("mNativeAnimation->seedSkeletonPose", native_call)
     if seed_call < legacy_update:
         fail("compatibility seed must be captured after the exact legacy pose has been reconstructed")
+    seed_guard = re.search(
+        r'if \(!nativePose\.applied\(\) && mNativeAnimation\s*'
+        r'&& !std::getenv\("OPENMW_V4_LEGACY_ANIMATION_CAPTURE_CONTROL"\)\)\s*'
+        r'\{\s*std::string seedDiagnostic;\s*if \(!mNativeAnimation->seedSkeletonPose',
+        bridge,
+    )
+    if not seed_guard:
+        fail("forced legacy control must not pay for unused native pose seeds")
 
     require(BRIDGE_HPP, ("std::unique_ptr<V4NativeAnimationRuntime> mNativeAnimation;",))
     require(ENGINE_SOURCES, ("apps/openmw/mwrender/vulkanmw/nativeanimationruntime.cpp",))

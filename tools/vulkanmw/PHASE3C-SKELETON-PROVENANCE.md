@@ -72,6 +72,12 @@ argument: inherited engine environment variables are intentionally scrubbed.
 The effective flag is recorded in the manifest. The summary now also records
 sampled native/legacy pose, track and seed-failure counters.
 
+Control follow-up: the forced-legacy arm does not seed native pose history,
+because it never resumes native posing. Previously it still decomposed every
+legacy pose for the unused native cache; repairing metadata would make that
+unnecessary work succeed for many more actors and bias the comparison. Ordinary
+blend/procedural/unsupported fallback continues seeding exactly as before.
+
 ## Validation at source checkpoint
 
 - New CPU regression reproduced the original defect before the repair:

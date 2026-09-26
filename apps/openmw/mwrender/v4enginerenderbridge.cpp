@@ -1324,7 +1324,11 @@ namespace MWRender
                     }
                 }
 
-                if (!nativePose.applied() && mNativeAnimation)
+                // The forced legacy benchmark arm never resumes native posing.
+                // Do not charge it for native history decomposition/maintenance.
+                // Ordinary compatibility fallback still refreshes the exact seed.
+                if (!nativePose.applied() && mNativeAnimation
+                    && !std::getenv("OPENMW_V4_LEGACY_ANIMATION_CAPTURE_CONTROL"))
                 {
                     std::string seedDiagnostic;
                     if (!mNativeAnimation->seedSkeletonPose(
