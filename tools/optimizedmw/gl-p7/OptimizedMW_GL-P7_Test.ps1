@@ -189,6 +189,8 @@ try{
         "v315_adaptive_compile_governor=1",
         "diagnostic_render_handoff=true",
         "diagnostic_render_traversal_breakdown=true",
+        "diagnostic_dynamic_draw=true",
+        "diagnostic_dynamic_deformation=true",
         "diagnostic_compile_ops=true",
         "openmw_exe_sha256=$exeHash",
         "settings_effective_sha256=$settingsHash",
@@ -215,6 +217,9 @@ try{
     $env:OPENMW_P6_TRAVERSAL_FILE=Join-Path $ProfileDir 'p6-render-traversal.csv'
     $env:OPENMW_V325_JOBGROUP_STATS_FILE=Join-Path $ProfileDir 'p7-actor-jobgroup.csv'
     $env:OPENMW_P7_PREP_STATS_FILE=Join-Path $ProfileDir 'p7-cpu-prep.csv'
+    $env:OPENMW_P8_DYNAMIC_DRAW_FILE=Join-Path $ProfileDir 'p8-dynamic-draw.csv'
+    $env:OPENMW_P8_DYNAMIC_FRAME_FILE=Join-Path $ProfileDir 'p8-dynamic-frame.csv'
+    $env:OPENMW_P8_DEFORM_FILE=Join-Path $ProfileDir 'p8-deform.csv'
     $env:OPENMW_OSG_STATS_FILE=Join-Path $ProfileDir 'v3-osg-stats.log'
     $env:OPENMW_OSG_STATS_LIST='times;resource'
 
@@ -255,7 +260,8 @@ finally{
         'OPENMW_V3_RESOURCE_FILE','OPENMW_V3_STREAMING_FILE','OPENMW_V3_SHADOW_FILE','OPENMW_V36_BATCHING_FILE',
         'OPENMW_V32_GPU_MEMORY_FILE','OPENMW_P4_COMPILE_FILE','OPENMW_V3_FRAME_FILE','OPENMW_V3_HITCH_FILE',
         'OPENMW_P6_RENDER_PHASE_FILE','OPENMW_P6_TRAVERSAL_FILE','OPENMW_V325_JOBGROUP_STATS_FILE',
-        'OPENMW_P7_PREP_STATS_FILE','OPENMW_OSG_STATS_FILE','OPENMW_OSG_STATS_LIST'
+        'OPENMW_P7_PREP_STATS_FILE','OPENMW_P8_DYNAMIC_DRAW_FILE','OPENMW_P8_DYNAMIC_FRAME_FILE',
+        'OPENMW_P8_DEFORM_FILE','OPENMW_OSG_STATS_FILE','OPENMW_OSG_STATS_LIST'
     )){Remove-Item ("Env:"+$name) -ErrorAction SilentlyContinue}
 
     if(Test-Path -LiteralPath (Join-Path $UserOpenMW 'openmw.log')){Copy-Item -LiteralPath (Join-Path $UserOpenMW 'openmw.log') -Destination (Join-Path $ProfileDir 'openmw.log') -Force -ErrorAction SilentlyContinue}
