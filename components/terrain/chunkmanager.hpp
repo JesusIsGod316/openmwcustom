@@ -98,7 +98,7 @@ namespace Terrain
 
     private:
         osg::ref_ptr<osg::Node> createChunk(float size, const osg::Vec2f& center, unsigned char lod,
-            unsigned int lodFlags, bool compile, const TerrainDrawable* templateGeometry);
+            unsigned int lodFlags, bool activeGrid, bool compile, const TerrainDrawable* templateGeometry);
 
         osg::ref_ptr<osg::Texture2D> createCompositeMapRTT();
 
