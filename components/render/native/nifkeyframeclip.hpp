@@ -17,6 +17,11 @@ namespace Nif
     class FileView;
 }
 
+namespace ToUTF8
+{
+    class StatelessUtf8Encoder;
+}
+
 namespace VFS
 {
     class Manager;
@@ -81,6 +86,7 @@ namespace RenderNative
         // are unique and the first authored duplicate wins.
         std::map<std::string, NamedTransformTrack, std::less<>> controllers;
         std::uint32_t ignoredPairs = 0;
+        std::uint32_t emptyControllers = 0;
         std::uint32_t unsupportedControllers = 0;
 
         [[nodiscard]] bool usable() const noexcept
@@ -117,8 +123,10 @@ namespace RenderNative
     class NifKeyframeClipCompiler final
     {
     public:
-        explicit NifKeyframeClipCompiler(const VFS::Manager& vfs) noexcept
+        NifKeyframeClipCompiler(
+            const VFS::Manager& vfs, const ToUTF8::StatelessUtf8Encoder* encoder) noexcept
             : mVfs(vfs)
+            , mEncoder(encoder)
         {
         }
 
@@ -127,6 +135,7 @@ namespace RenderNative
 
     private:
         const VFS::Manager& mVfs;
+        const ToUTF8::StatelessUtf8Encoder* mEncoder = nullptr;
     };
 }
 
