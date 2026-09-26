@@ -395,6 +395,7 @@ namespace
 
             Contexts::iterator itr;
             bool doneMakeCurrentInThisThread = false;
+            std::array<unsigned int, 2> sceneViewDynamic{ 0, 0 };
 
             if (_endDynamicDrawBlock.valid())
                 _endDynamicDrawBlock->reset();
@@ -413,7 +414,21 @@ namespace
                     osg::Camera* camera = *camItr;
                     osgViewer::Renderer* renderer = dynamic_cast<osgViewer::Renderer*>(camera->getRenderer());
                     if (renderer && !renderer->getGraphicsThreadDoesCull() && !(camera->getCameraThread()))
+                    {
                         renderer->cull();
+
+                        // P8 benchmark attribution: after main-thread cull, one of
+                        // the double-buffered SceneViews contains this frame's
+                        // dynamic-leaf count. Sum by slot across cameras.
+                        for (unsigned int sceneViewIndex = 0; sceneViewIndex < 2; ++sceneViewIndex)
+                        {
+                            osgUtil::SceneView* sceneView = renderer->getSceneView(sceneViewIndex);
+                            if (!sceneView || !sceneView->getFrameStamp()
+                                || sceneView->getFrameStamp()->getFrameNumber() != frameNumber)
+                                continue;
+                            sceneViewDynamic[sceneViewIndex] += sceneView->getDynamicObjectCount();
+                        }
+                    }
                 }
                 breakdown.cull = Debug::V3Diagnostics::elapsedMs(start);
             }
@@ -514,7 +529,9 @@ namespace
                     << breakdown.contextOps << ',' << breakdown.dispatchWait << ',' << breakdown.mainSwap << ','
                     << breakdown.pagerEnd << ',' << breakdown.dynamicDrawWait << ',' << breakdown.releaseContext << ','
                     << otherMs << ',' << contexts.size() << ',' << cameras.size() << ','
-                    << static_cast<int>(getThreadingModel());
+                    << static_cast<int>(getThreadingModel()) << ','
+                    << sceneViewDynamic[0] << ',' << sceneViewDynamic[1] << ','
+                    << (std::max)(sceneViewDynamic[0], sceneViewDynamic[1]);
                 writer.writeLine(row.str());
             }
         }
