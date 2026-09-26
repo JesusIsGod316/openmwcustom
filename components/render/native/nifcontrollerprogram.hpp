@@ -300,20 +300,10 @@ namespace RenderNative
         FloatControllerTrack scales;
         ControllerAxisOrder axisOrder = ControllerAxisOrder::XYZ;
 
-        // NiTransformInterpolator supplies authored defaults for channels which
-        // have no key data. The legacy NifOsg controller consumes these defaults,
-        // so the native runtime must retain them before it can replace evaluated
-        // scenegraph capture.
-        std::optional<glm::vec3> defaultTranslation;
-        std::optional<glm::quat> defaultRotation;
-        std::optional<float> defaultScale;
-
         [[nodiscard]] TransformTrackSample sample(float time) const noexcept
         {
             TransformTrackSample result;
             result.translation = translations.sample(time);
-            if (!result.translation)
-                result.translation = defaultTranslation;
 
             result.rotation = rotations.sample(time);
             if (!result.rotation && (!xRotations.empty() || !yRotations.empty() || !zRotations.empty()))
@@ -337,12 +327,7 @@ namespace RenderNative
                     case ControllerAxisOrder::ZXZ: result.rotation = zr * xr * zr; break;
                 }
             }
-            if (!result.rotation)
-                result.rotation = defaultRotation;
-
             result.scale = scales.sample(time);
-            if (!result.scale)
-                result.scale = defaultScale;
             return result;
         }
     };
