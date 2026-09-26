@@ -541,6 +541,13 @@ namespace MWRender
         const SceneUtil::TextKeyMap& getTextKeys() const;
 
         osg::ref_ptr<const SceneUtil::AnimBlendRules> mAnimBlendRules;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        // Stable source-to-bone binding metadata derived once from the exact
+        // compatibility binding pass. Per-frame native capture reuses these
+        // names instead of walking the OSG node hierarchy again.
+        std::array<std::vector<std::string>, sNumBlendMasks> mV4NativeBoneNames;
+        bool mV4NativeKf = false;
+#endif
     };
 
     void UpdateVfxCallback::operator()(osg::Node* node, osg::NodeVisitor* nv)
@@ -976,6 +983,31 @@ namespace MWRender
                 }
             }
         }
+
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        // External NIF keyframes are the Phase 3C direct-runtime subset. Build
+        // the exact folded bone-group membership from the same node map and
+        // blend-mask rules used by the compatibility controller binding above.
+        // This is load-time metadata only; no evaluated transform is copied.
+        if (kfname.extension() == kf)
+        {
+            animsrc->mV4NativeKf = true;
+            for (const auto& [sourceName, controller] : controllerMap)
+            {
+                std::string boneName = Misc::StringUtils::lowerCase(sourceName);
+                const NodeMap::const_iterator found = nodeMap.find(boneName);
+                if (found == nodeMap.end())
+                    continue;
+                const size_t blendMask = detectBlendMask(found->second, controller->getName());
+                if (hybridVisual
+                    && ((blendMask == BoneGroup_LowerBody && boneName != "bip01"
+                            && boneName != "bip01 pelvis" && boneName != "bip01 spine")
+                        || boneName.find("finger") != std::string::npos || boneName == "bip01 head"))
+                    continue;
+                animsrc->mV4NativeBoneNames[blendMask].push_back(std::move(boneName));
+            }
+        }
+#endif
 
         if (hybridVisual)
             mHybridVisualSources.push_back(animsrc);
@@ -2698,6 +2730,103 @@ namespace MWRender
     }
 
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+    bool Animation::captureV4NativeAnimationState(
+        V4NativeAnimationState& state, std::string& diagnostic) const
+    {
+        state = {};
+        diagnostic.clear();
+
+        if (std::getenv("OPENMW_V4_LEGACY_ANIMATION_CAPTURE_CONTROL"))
+        {
+            diagnostic = "legacy animation capture control requested";
+            return false;
+        }
+        if (!mResourceSystem || !mResourceSystem->getKeyframeManager())
+        {
+            diagnostic = "animation has no keyframe resource manager";
+            return false;
+        }
+
+        // Smooth-transition callbacks intentionally retain the exact evaluated
+        // compatibility path until their interpolation is complete. Native
+        // substitution resumes automatically on steady frames.
+        for (const auto& [node, controller] : mAnimBlendControllers)
+        {
+            if (controller && controller->isInterpolating())
+            {
+                diagnostic = "NIF animation blend interpolation is active";
+                return false;
+            }
+        }
+        for (const auto& [node, controller] : mBoneAnimBlendControllers)
+        {
+            if (controller && controller->isInterpolating())
+            {
+                diagnostic = "OSG bone animation blend interpolation is active";
+                return false;
+            }
+        }
+        for (const auto& [node, controller] : mHybridNifControllers)
+        {
+            if (controller && controller->hasActiveBlend())
+            {
+                diagnostic = "hybrid first-person visual animation blend is active";
+                return false;
+            }
+        }
+
+        // Head/body/weapon pitch controllers are gameplay/view-driven
+        // post-transforms. Until their neutral equivalent is published, any
+        // enabled instance forces exact compatibility capture for this actor.
+        for (const auto& [node, callback] : mActiveControllers)
+        {
+            const auto* rotate = dynamic_cast<const RotateController*>(callback.get());
+            if (rotate && rotate->isEnabled())
+            {
+                diagnostic = "procedural actor rotation is active";
+                return false;
+            }
+        }
+
+        for (std::size_t blendMask = 0; blendMask < sNumBlendMasks; ++blendMask)
+        {
+            AnimStateMap::const_iterator active = mStates.end();
+            for (auto it = mStates.begin(); it != mStates.end(); ++it)
+            {
+                if (!it->second.blendMaskContains(blendMask))
+                    continue;
+                if (active == mStates.end()
+                    || active->second.mPriority[static_cast<BoneGroup>(blendMask)]
+                        < it->second.mPriority[static_cast<BoneGroup>(blendMask)])
+                    active = it;
+            }
+            if (active == mStates.end())
+                continue;
+
+            const std::shared_ptr<AnimSource>& source = active->second.mSource;
+            if (!source || !source->mV4NativeKf)
+            {
+                diagnostic = "active animation source is not a native NIF keyframe clip";
+                return false;
+            }
+
+            state.layers[blendMask] = V4NativeAnimationLayer{
+                source->mPath,
+                active->second.getTime(),
+                std::span<const std::string>(source->mV4NativeBoneNames[blendMask]),
+            };
+        }
+
+        if (mAccumRoot)
+        {
+            state.accumulationBone = mAccumRoot->getName();
+            state.accumulationAxes
+                = { mAccumulate.x(), mAccumulate.y(), mAccumulate.z() };
+        }
+        state.encoder = mResourceSystem->getKeyframeManager()->getEncoder();
+        return true;
+    }
+
     V4PersistentObject* Animation::prepareV4PersistentObject()
     {
         // Custom OSG importers/callbacks keep their evaluated compatibility path.
