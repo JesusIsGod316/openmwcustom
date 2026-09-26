@@ -17,6 +17,7 @@
 #include <components/sceneutil/util.hpp>
 #include <components/vfs/pathutil.hpp>
 
+#include <array>
 #include <map>
 #include <optional>
 #include <span>
@@ -34,6 +35,11 @@ namespace ESM
 namespace Resource
 {
     class ResourceSystem;
+}
+
+namespace ToUTF8
+{
+    class StatelessUtf8Encoder;
 }
 
 namespace NifOsg
@@ -387,6 +393,26 @@ namespace MWRender
         osg::Group* getObjectRoot();
         osg::Group* getV4EffectRoot() const noexcept { return mInsert.get(); }
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        struct V4NativeAnimationLayer
+        {
+            std::string_view sourcePath;
+            float time = 0.0f;
+            std::span<const std::string> boneNames;
+        };
+
+        struct V4NativeAnimationState
+        {
+            std::array<std::optional<V4NativeAnimationLayer>, sNumBlendMasks> layers;
+            std::string_view accumulationBone;
+            std::array<float, 3> accumulationAxes{ 0.0f, 0.0f, 0.0f };
+            const ToUTF8::StatelessUtf8Encoder* encoder = nullptr;
+        };
+
+        // Snapshot only gameplay-owned animation selection/time state. No bone
+        // matrices or evaluated scenegraph state cross this boundary. The
+        // Vulkan adapter may evaluate the selected authored KF tracks directly.
+        [[nodiscard]] bool captureV4NativeAnimationState(
+            V4NativeAnimationState& state, std::string& diagnostic) const;
         V4PersistentObject* prepareV4PersistentObject();
 #endif
 
