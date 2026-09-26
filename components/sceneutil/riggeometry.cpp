@@ -5,6 +5,7 @@
 #include <osgUtil/CullVisitor>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/p8dynamicdrawtelemetry.hpp>
 #include <components/misc/strings/algorithm.hpp>
 #include <components/resource/scenemanager.hpp>
 
@@ -91,6 +92,8 @@ namespace SceneUtil
             }
             else
                 mSourceTangents = nullptr;
+
+            Debug::P8DynamicDrawTelemetry::install(to, "rig_geometry");
         }
     }
 
@@ -158,6 +161,9 @@ namespace SceneUtil
             return getGeometry(mLastFrameNumber);
         mLastFrameNumber = traversalNumber;
         osg::Geometry& geom = *getGeometry(mLastFrameNumber);
+        const bool p8Measure = Debug::V3Diagnostics::p8DeformWriter().enabled();
+        const auto p8Start
+            = p8Measure ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         mSkeleton->updateBoneMatrices(traversalNumber);
         updateSkinToSkelMatrix(path);
 
@@ -228,6 +234,13 @@ namespace SceneUtil
 
         geom.osg::Drawable::dirtyGLObjects();
         mGeometryEvaluated = true;
+        if (p8Measure)
+        {
+            const auto stats = Debug::P8DynamicDrawTelemetry::inspect(&geom);
+            Debug::P8DynamicDrawTelemetry::recordDeformation("rig", getName(),
+                Debug::V3Diagnostics::elapsedMs(p8Start),
+                positionDst ? positionDst->size() : 0, mNodes.size(), stats.bufferBytes);
+        }
         return &geom;
     }
 
