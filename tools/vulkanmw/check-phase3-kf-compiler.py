@@ -13,6 +13,7 @@ SOURCE = ROOT / "components/render/native/nifkeyframeclip.cpp"
 CONTROLLER_HEADER = ROOT / "components/render/native/nifcontrollerprogram.hpp"
 CONTROLLER_SOURCE = ROOT / "components/render/native/nifcontrollerprogram.cpp"
 RUNTIME = ROOT / "components/render/backend/vsg/runtime-sources.cmake"
+KEYFRAME_MANAGER = ROOT / "components/resource/keyframemanager.hpp"
 
 FORBIDDEN = (
     re.compile(r"#\s*include\s*[<\"](?:osg|osgAnimation|osgParticle|osgUtil|osgViewer)/"),
@@ -54,6 +55,8 @@ def main() -> int:
         "struct NifKeyframeClip",
         "std::map<std::string, NamedTransformTrack",
         "class NifKeyframeClipCompiler",
+        "const ToUTF8::StatelessUtf8Encoder* encoder",
+        "const ToUTF8::StatelessUtf8Encoder* mEncoder",
         "NifKeyframeCompileResult compile(VFS::Path::NormalizedView path) const;",
     ))
 
@@ -67,6 +70,10 @@ def main() -> int:
         "RC_NiKeyframeController",
         "NifControllerCompiler::compileTransformTrack",
         "NifControllerCompiler::compileTiming",
+        "track.supported()",
+        "track.hasKeys()",
+        "++result.clip.emptyControllers",
+        "Nif::Reader reader(file, mEncoder);",
         "result.clip.controllers.emplace",
     ))
 
@@ -74,12 +81,20 @@ def main() -> int:
         fail("external KF compiler must preserve vanilla/OpenMW behavior that ignores controller active flags")
 
     require(CONTROLLER_HEADER, (
+        "enum class TransformTrackCompileStatus",
+        "struct TransformTrackCompileResult",
+        "UnsupportedInterpolator",
         "compileTiming(const Nif::NiTimeController& source)",
-        "compileTransformTrack(",
+        "TransformTrackCompileResult compileTransformTrack(",
     ))
     require(CONTROLLER_SOURCE, (
+        "TransformTrackCompileStatus::Empty",
+        "TransformTrackCompileStatus::UnsupportedInterpolator",
         "NifControllerCompiler::compileTiming",
         "NifControllerCompiler::compileTransformTrack",
+    ))
+    require(KEYFRAME_MANAGER, (
+        "const ToUTF8::StatelessUtf8Encoder* getEncoder() const noexcept",
     ))
     require(RUNTIME, ("components/render/native/nifkeyframeclip.cpp",))
 
