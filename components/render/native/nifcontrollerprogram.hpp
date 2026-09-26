@@ -294,6 +294,29 @@ namespace RenderNative
         ControllerAxisOrder axisOrder = ControllerAxisOrder::XYZ;
     };
 
+    enum class TransformTrackCompileStatus : std::uint8_t
+    {
+        Compiled,
+        Empty,
+        UnsupportedInterpolator,
+    };
+
+    struct TransformTrackCompileResult
+    {
+        TransformTrackCompileStatus status = TransformTrackCompileStatus::Empty;
+        TransformControllerTrack track;
+
+        [[nodiscard]] bool supported() const noexcept
+        {
+            return status != TransformTrackCompileStatus::UnsupportedInterpolator;
+        }
+
+        [[nodiscard]] bool hasKeys() const noexcept
+        {
+            return status == TransformTrackCompileStatus::Compiled;
+        }
+    };
+
     struct TransformControllerProgram
     {
         RenderCore::ModelNodeIndex node;
@@ -390,7 +413,7 @@ namespace RenderNative
         // model controllers and external .kf clips. Keeping these conversions in
         // one implementation prevents the native paths from drifting apart.
         [[nodiscard]] static ControllerTiming compileTiming(const Nif::NiTimeController& source) noexcept;
-        [[nodiscard]] static std::optional<TransformControllerTrack> compileTransformTrack(
+        [[nodiscard]] static TransformTrackCompileResult compileTransformTrack(
             const Nif::NiKeyframeController& source);
     };
 }
