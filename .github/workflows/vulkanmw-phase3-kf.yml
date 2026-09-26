@@ -1,0 +1,66 @@
+name: VulkanMW Phase 3B native KF compiler
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [vulkanmw/phase3b-native-kf-staging]
+    paths:
+      - 'components/render/native/**'
+      - 'components/render/backend/vsg/runtime-sources.cmake'
+      - 'tools/vulkanmw/**'
+      - '.github/workflows/vulkanmw-phase3-kf.yml'
+
+concurrency:
+  group: vulkanmw-phase3-kf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  NativeKFCompiler:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Phase 3A ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          P3A=3605865864d611375e2f6d5e874a7a7079b6b991
+          git cat-file -e "${P3A}^{commit}"
+          test "$(git merge-base "${P3A}" HEAD)" = "${P3A}"
+
+      - name: Enforce VulkanMW Phase 0 through Phase 3B contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/vulkanmw/check-architecture-boundaries.py
+          python3 tools/vulkanmw/check-phase1-nif-compiler.py
+          python3 tools/vulkanmw/check-phase2-static-world.py
+          python3 tools/vulkanmw/check-phase3-controller-animation.py
+          python3 tools/vulkanmw/check-phase3-kf-compiler.py
+
+      - name: Install lightweight compile dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libglm-dev libopenscenegraph-dev
+
+      - name: Compile native controller and KF source closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          CXXFLAGS="-std=c++20 -O1 -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter -I."
+          g++ ${CXXFLAGS} -c components/render/native/nifcontrollerprogram.cpp -o /tmp/nifcontrollerprogram.o
+          g++ ${CXXFLAGS} -c components/render/native/nifkeyframeclip.cpp -o /tmp/nifkeyframeclip.o
+          g++ ${CXXFLAGS} -c components/render/native/nifsemanticcompiler.cpp -o /tmp/nifsemanticcompiler.o
+          g++ ${CXXFLAGS} -c components/render/native/nifassetservice.cpp -o /tmp/nifassetservice.o
+
+      - name: Check Phase 3B whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check 3605865864d611375e2f6d5e874a7a7079b6b991 HEAD -- \
+            components/render/native \
+            components/render/backend/vsg/runtime-sources.cmake \
+            tools/vulkanmw
