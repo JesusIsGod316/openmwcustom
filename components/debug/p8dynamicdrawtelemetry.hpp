@@ -133,6 +133,8 @@ namespace Debug::P8DynamicDrawTelemetry
     class TimedDrawCallback final : public osg::Drawable::DrawCallback
     {
     public:
+        TimedDrawCallback() = default;
+
         TimedDrawCallback(std::string kind, const osg::Drawable* drawable, osg::Drawable::DrawCallback* inner)
             : mKind(std::move(kind))
             , mInner(inner)
