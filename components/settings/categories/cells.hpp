@@ -102,8 +102,14 @@ namespace Settings
             makeClampSanitizerInt(0, 2) };
         SettingValue<bool> mOptimizedMWTerrainImmutableVertexReuse{
             mIndex, "Cells", "optimizedmw terrain immutable vertex reuse" };
-        SettingValue<bool> mOptimizedMWTexturePboStaging{
-            mIndex, "Cells", "optimizedmw texture pbo staging" };
+        // P6R: expose TerrainDrawable pass resources as native texture/program
+        // compile operations instead of generic StateAttribute calls.
+        SettingValue<bool> mOptimizedMWTerrainResourcePhases{
+            mIndex, "Cells", "optimizedmw terrain resource phases" };
+        // P6R: split the mutable terrain position/normal/color streams across
+        // independent VBOs so GL upload work has scheduler interruption points.
+        SettingValue<bool> mOptimizedMWTerrainSplitVertexBuffers{
+            mIndex, "Cells", "optimizedmw terrain split vertex buffers" };
 
         SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
         SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
