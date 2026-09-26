@@ -290,7 +290,7 @@ namespace
                     getViews(views);
                     for (Views::iterator vitr = views.begin(); vitr != views.end(); ++vitr)
                     {
-                        View* view = *vitr;
+                        osgViewer::View* view = *vitr;
                         osg::Stats* stats = view->getStats();
                         osg::Node* sceneRoot = view->getSceneData();
                         if (sceneRoot && stats)
@@ -363,7 +363,7 @@ namespace
 
             for (Scenes::iterator sitr = scenes.begin(); sitr != scenes.end(); ++sitr)
             {
-                Scene* scene = *sitr;
+                osgViewer::Scene* scene = *sitr;
                 if (!scene)
                     continue;
 
@@ -411,7 +411,7 @@ namespace
                 for (Cameras::iterator camItr = cameras.begin(); camItr != cameras.end(); ++camItr)
                 {
                     osg::Camera* camera = *camItr;
-                    Renderer* renderer = dynamic_cast<Renderer*>(camera->getRenderer());
+                    osgViewer::Renderer* renderer = dynamic_cast<osgViewer::Renderer*>(camera->getRenderer());
                     if (renderer && !renderer->getGraphicsThreadDoesCull() && !(camera->getCameraThread()))
                         renderer->cull();
                 }
@@ -457,7 +457,7 @@ namespace
                 const auto start = Clock::now();
                 for (Scenes::iterator sitr = scenes.begin(); sitr != scenes.end(); ++sitr)
                 {
-                    Scene* scene = *sitr;
+                    osgViewer::Scene* scene = *sitr;
                     if (!scene)
                         continue;
                     osgDB::DatabasePager* dp = scene->getDatabasePager();
