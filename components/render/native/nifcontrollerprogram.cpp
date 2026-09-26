@@ -177,6 +177,10 @@ namespace
                 return RenderNative::TransformTrackCompileStatus::UnsupportedInterpolator;
             const auto* interpolator
                 = static_cast<const Nif::NiTransformInterpolator*>(source.mInterpolator.getPtr());
+            const Nif::NiQuatTransform& defaults = interpolator->mDefaultValue;
+            target.defaultTranslation = vec3(defaults.mTranslation);
+            target.defaultRotation = quat(defaults.mRotation);
+            target.defaultScale = defaults.mScale;
             if (!interpolator->mData.empty())
                 data = interpolator->mData.getPtr();
             else
@@ -268,30 +272,6 @@ namespace
         return !target.empty();
     }
 
-    [[nodiscard]] glm::quat xyzRotation(
-        const RenderNative::TransformControllerTrack& track, float time) noexcept
-    {
-        const float x = track.xRotations.sample(time).value_or(0.0f);
-        const float y = track.yRotations.sample(time).value_or(0.0f);
-        const float z = track.zRotations.sample(time).value_or(0.0f);
-        const glm::quat xr = glm::angleAxis(x, glm::vec3(1.0f, 0.0f, 0.0f));
-        const glm::quat yr = glm::angleAxis(y, glm::vec3(0.0f, 1.0f, 0.0f));
-        const glm::quat zr = glm::angleAxis(z, glm::vec3(0.0f, 0.0f, 1.0f));
-        using Order = RenderNative::ControllerAxisOrder;
-        switch (track.axisOrder)
-        {
-            case Order::XYZ: return xr * yr * zr;
-            case Order::XZY: return xr * zr * yr;
-            case Order::YZX: return yr * zr * xr;
-            case Order::YXZ: return yr * xr * zr;
-            case Order::ZXY: return zr * xr * yr;
-            case Order::ZYX: return zr * yr * xr;
-            case Order::XYX: return xr * yr * xr;
-            case Order::YZY: return yr * zr * yr;
-            case Order::ZXZ: return zr * xr * zr;
-        }
-        return xr * yr * zr;
-    }
 
     class Compiler
     {
@@ -421,15 +401,12 @@ namespace RenderNative
             if (!controller.autoPlay)
                 continue;
             const float time = controller.timing.map(sourceTime);
+            const TransformTrackSample sampled = controller.track.sample(time);
             ControllerTransformSample sample;
             sample.node = controller.node;
-            sample.translation = controller.track.translations.sample(time);
-            sample.scale = controller.track.scales.sample(time);
-            sample.rotation = controller.track.rotations.sample(time);
-            if (!sample.rotation
-                && (!controller.track.xRotations.empty() || !controller.track.yRotations.empty()
-                    || !controller.track.zRotations.empty()))
-                sample.rotation = xyzRotation(controller.track, time);
+            sample.translation = sampled.translation;
+            sample.rotation = sampled.rotation;
+            sample.scale = sampled.scale;
             if (sample.translation || sample.rotation || sample.scale)
                 frame.transforms.push_back(std::move(sample));
         }
