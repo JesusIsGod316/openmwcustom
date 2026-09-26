@@ -906,6 +906,8 @@ namespace RenderCore
         glm::mat4 sourceParentPath{ 1.0f };
         glm::mat4 sourceLocal{ 1.0f };
         bool sourceAnimationBoundary = false;
+        std::uint32_t sourceControllerFlags = 0;
+        std::uint32_t sourceParentControllerFlags = 0;
     };
 
     struct SkeletonPayload
