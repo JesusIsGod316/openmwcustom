@@ -149,7 +149,7 @@ namespace Debug::P8DynamicDrawTelemetry
         {
         }
 
-        META_Object(Debug, P8TimedDrawCallback);
+        META_Object(Debug, TimedDrawCallback);
 
         void drawImplementation(osg::RenderInfo& renderInfo, const osg::Drawable* drawable) const override
         {
