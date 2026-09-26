@@ -345,6 +345,8 @@ namespace MWRender
                     = static_cast<double>(Settings::cells().mOptimizedMWHeavyCompileMinHeadroomMs);
                 config.mTerrainDrawablePriorMs
                     = static_cast<double>(Settings::cells().mOptimizedMWTerrainDrawablePriorMs);
+                config.mResidencySchedulerMode
+                    = static_cast<int>(Settings::cells().mOptimizedMWResidencySchedulerMode);
                 ico = new Resource::OpenMWIncrementalCompileOperation(config);
             }
             else
