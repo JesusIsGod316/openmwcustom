@@ -67,6 +67,40 @@ def code_only(text: str) -> str:
     return "\n".join(line.split("//", 1)[0] for line in text.splitlines())
 
 
+def check_vulkanmw_launcher_contract(failures: list[str]) -> None:
+    launcher = ROOT / "tools" / "vulkanmw" / "START-VulkanMW-Test.bat"
+    cmake = ROOT / "apps" / "openmw" / "CMakeLists.txt"
+    if not launcher.is_file():
+        failures.append("VulkanMW benchmark launcher is missing")
+        return
+
+    launcher_text = launcher.read_text(encoding="utf-8", errors="replace")
+    for required in (
+        "architecture-benchmark.py",
+        "--renderer vulkan",
+        "--fastpaths retained",
+        "VulkanMW-Benchmark-",
+    ):
+        if required not in launcher_text:
+            failures.append(f"VulkanMW benchmark launcher lost required contract: {required}")
+
+    cmake_text = cmake.read_text(encoding="utf-8", errors="replace")
+    contract_marker = "# VulkanMW packaging contract: every installed Windows Vulkan build carries"
+    if contract_marker not in cmake_text:
+        failures.append("VulkanMW CMake install contract marker is missing")
+        return
+    contract = cmake_text.split(contract_marker, 1)[1]
+    contract = contract.split("endif()", 1)[0]
+    for required in (
+        "if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)",
+        "../../tools/vulkanmw/START-VulkanMW-Test.bat",
+        "../../tools/v4/cp4/architecture-benchmark.py",
+        "../../tools/v4/cp4/architecture-benchmark.lua",
+    ):
+        if required not in contract:
+            failures.append(f"VulkanMW install contract lost required entry: {required}")
+
+
 def main() -> int:
     failures: list[str] = []
     checked = 0
@@ -79,6 +113,8 @@ def main() -> int:
                 for match in pattern.finditer(text):
                     line = text.count("\n", 0, match.start()) + 1
                     failures.append(f"{path.relative_to(ROOT)}:{line}: {message}")
+
+    check_vulkanmw_launcher_contract(failures)
 
     if failures:
         print("VulkanMW architecture boundary check FAILED", file=sys.stderr)

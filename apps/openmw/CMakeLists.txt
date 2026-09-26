@@ -322,6 +322,17 @@ if (WIN32 AND BUILD_OPENMW)
         ../../tools/v4/cp4/RENDERING-REPAIR.md
         ../../tools/v4/cp4/RUNTIME-DIAGNOSTICS.md
         DESTINATION ".")
+
+    # VulkanMW packaging contract: every installed Windows Vulkan build carries
+    # the same automated benchmark launcher and driver used for matched hardware
+    # comparisons. OpenGL-only builds do not install these VulkanMW entrypoints.
+    if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        INSTALL(FILES
+            ../../tools/vulkanmw/START-VulkanMW-Test.bat
+            ../../tools/v4/cp4/architecture-benchmark.py
+            ../../tools/v4/cp4/architecture-benchmark.lua
+            DESTINATION ".")
+    endif()
 endif()
 
 if (OPENMW_V4_BUILD_RECOVERY_TESTS)
