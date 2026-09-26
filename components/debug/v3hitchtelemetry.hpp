@@ -53,7 +53,9 @@ namespace Debug::V3HitchTelemetry
                 return {};
             return std::string(setting);
         }
-        return "v3-hitch-telemetry.csv";
+        // Benchmark telemetry is opt-in. Normal gameplay must never start
+        // writing hitch traces merely because a hitch occurred.
+        return {};
     }
 
     class State
