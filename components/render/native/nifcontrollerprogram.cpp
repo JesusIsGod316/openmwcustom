@@ -167,14 +167,14 @@ namespace
         return Target::XYZ;
     }
 
-    [[nodiscard]] bool compileTransform(
+    [[nodiscard]] RenderNative::TransformTrackCompileStatus compileTransform(
         const Nif::NiKeyframeController& source, RenderNative::TransformControllerTrack& target)
     {
         const Nif::NiKeyframeData* data = nullptr;
         if (!source.mInterpolator.empty())
         {
             if (source.mInterpolator->mRecordType != Nif::RC_NiTransformInterpolator)
-                return false;
+                return RenderNative::TransformTrackCompileStatus::UnsupportedInterpolator;
             const auto* interpolator
                 = static_cast<const Nif::NiTransformInterpolator*>(source.mInterpolator.getPtr());
             if (!interpolator->mData.empty())
@@ -183,8 +183,11 @@ namespace
         else if (!source.mData.empty())
             data = source.mData.getPtr();
 
+        // A supported controller with no key data is a valid no-op. The OpenGL
+        // KF loader still binds it, so preserve that distinction from an
+        // unsupported interpolator type.
         if (!data)
-            return false;
+            return RenderNative::TransformTrackCompileStatus::Empty;
 
         copyQuaternionTrack(data->mRotations, target.rotations);
         copyFloatTrack(data->mXRotations, target.xRotations);
@@ -194,8 +197,10 @@ namespace
         copyFloatTrack(data->mScales, target.scales);
         target.axisOrder = axisOrder(data->mAxisOrder);
 
-        return !target.rotations.empty() || !target.xRotations.empty() || !target.yRotations.empty()
+        const bool populated = !target.rotations.empty() || !target.xRotations.empty() || !target.yRotations.empty()
             || !target.zRotations.empty() || !target.translations.empty() || !target.scales.empty();
+        return populated ? RenderNative::TransformTrackCompileStatus::Compiled
+                         : RenderNative::TransformTrackCompileStatus::Empty;
     }
 
     [[nodiscard]] bool compileVisibility(
@@ -355,10 +360,12 @@ namespace
                         program.node = target;
                         program.timing = timing(controller);
                         program.autoPlay = autoPlay;
-                        if (compileTransform(static_cast<const Nif::NiKeyframeController&>(controller), program.track))
+                        const RenderNative::TransformTrackCompileStatus transformStatus
+                            = compileTransform(static_cast<const Nif::NiKeyframeController&>(controller), program.track);
+                        if (transformStatus != RenderNative::TransformTrackCompileStatus::UnsupportedInterpolator)
                             mResult.transforms.push_back(std::move(program));
                         else
-                            diagnostic(controller, "transform track is empty or uses an unsupported interpolator");
+                            diagnostic(controller, "transform controller uses an unsupported interpolator");
                         break;
                     }
                     case Nif::RC_NiVisController:
@@ -463,12 +470,11 @@ namespace RenderNative
         return timing(source);
     }
 
-    std::optional<TransformControllerTrack> NifControllerCompiler::compileTransformTrack(
+    TransformTrackCompileResult NifControllerCompiler::compileTransformTrack(
         const Nif::NiKeyframeController& source)
     {
-        TransformControllerTrack track;
-        if (!compileTransform(source, track))
-            return std::nullopt;
-        return track;
+        TransformTrackCompileResult result;
+        result.status = compileTransform(source, result.track);
+        return result;
     }
 }
