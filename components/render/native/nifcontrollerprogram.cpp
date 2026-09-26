@@ -36,13 +36,13 @@ namespace
     template <class Value>
     [[nodiscard]] glm::vec3 vec3(const Value& value) noexcept
     {
-        return { value.x(), value.y(), value.z() };
+        return { static_cast<float>(value.x()), static_cast<float>(value.y()), static_cast<float>(value.z()) };
     }
 
     template <class Value>
     [[nodiscard]] glm::quat quat(const Value& value) noexcept
     {
-        return { value.w(), value.x(), value.y(), value.z() };
+        return { static_cast<float>(value.w()), static_cast<float>(value.x()), static_cast<float>(value.y()), static_cast<float>(value.z()) };
     }
 
     template <class MapPtr>
