@@ -439,10 +439,10 @@ namespace Debug::V3Diagnostics
         // from the event-style render writer so subphase attribution does not
         // require high-volume deep tracing.
         static CsvWriter writer("OPENMW_P6_TRAVERSAL_FILE",
-            "frame,epoch_ms,total_ms,scene_stats_ms,pager_begin_ms,scene_bound_ms,"
-            "start_barrier_ms,cull_ms,context_ops_ms,dispatch_wait_ms,main_swap_ms,"
-            "pager_end_ms,dynamic_draw_wait_ms,release_context_ms,other_ms,"
-            "contexts,cameras,threading_model");
+            "frame,epoch_ms,total_ms,context_query_ms,window_status_ms,scene_stats_ms,"
+            "pager_begin_ms,scene_bound_ms,camera_query_ms,start_barrier_ms,cull_ms,"
+            "context_ops_ms,dispatch_wait_ms,main_swap_ms,pager_end_ms,"
+            "dynamic_draw_wait_ms,release_context_ms,other_ms,contexts,cameras,threading_model");
         return writer;
     }
 
