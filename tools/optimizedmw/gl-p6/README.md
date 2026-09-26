@@ -16,3 +16,7 @@ This first switchable pack establishes safe prerequisites before any shared-cont
 Normal gameplay telemetry is off. The P6 launcher explicitly enables benchmark telemetry, while a normal openmw.exe launch sets none of those environment variables.
 
 The shared-context worker remains a follow-up after this matrix tells us which quarantined calls are genuinely required before visibility. It will require explicit publication/fence ownership so background GL work cannot race a live drawable.
+
+## First Windows gate repair
+
+Run 36252863827 failed at components/terrain/chunkmanager.cpp because P6 urgency selection referenced activeGrid inside createChunk without carrying that value through the private createChunk boundary. The repair passes activeGrid from getChunk into createChunk and the P6 source contract now asserts declaration, definition, and call-site wiring.
