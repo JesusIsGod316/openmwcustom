@@ -919,6 +919,7 @@ namespace
                 bone.bindLocal = bindLocal;
                 bone.sourceParentPath = sourceParentPath;
                 bone.sourceLocal = sourceLocal;
+                bone.sourceAnimationBoundary = true;
                 bone.inverseBind = glm::inverse(global);
                 modelToBone[modelNode] = payload->bones.size();
                 payload->bones.push_back(std::move(bone));
