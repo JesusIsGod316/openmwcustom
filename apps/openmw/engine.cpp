@@ -232,6 +232,35 @@ namespace
         void operator()(std::string) const {}
     };
 
+    class P6SwapTimingCallback final : public osg::GraphicsContext::SwapCallback
+    {
+    public:
+        void swapBuffersImplementation(osg::GraphicsContext* gc) override
+        {
+            const auto start = Debug::V3Diagnostics::Clock::now();
+            gc->swapBuffersImplementation();
+            const double durationMs = Debug::V3Diagnostics::elapsedMs(start);
+            if (durationMs < 0.25)
+                return;
+
+            auto& writer = Debug::V3Diagnostics::p6RenderPhaseWriter();
+            if (!writer.enabled())
+                return;
+
+            unsigned int frame = Debug::V3HitchTelemetry::currentFrame();
+            if (gc && gc->getState() && gc->getState()->getFrameStamp())
+                frame = gc->getState()->getFrameStamp()->getFrameNumber();
+
+            std::ostringstream row;
+            row << frame << ',' << Debug::V3Diagnostics::epochMs() << ','
+                << Debug::V3Diagnostics::threadId() << ','
+                << Debug::V3Diagnostics::csvQuote("swap_buffers") << ','
+                << std::fixed << std::setprecision(3) << durationMs << ','
+                << Debug::V3Diagnostics::csvQuote("graphics_context_swap");
+            writer.writeLine(row.str());
+        }
+    };
+
     class IdentifyOpenGLOperation : public osg::GraphicsOperation
     {
     public:
@@ -1257,6 +1286,11 @@ void OMW::Engine::createWindow()
 
         traits->alpha = 0; // set to 0 to stop ScreenCaptureHandler reading the alpha channel
     }
+
+    // Benchmark-only: ordinary openmw.exe launches leave this writer disabled
+    // and install no swap callback.
+    if (Debug::V3Diagnostics::p6RenderPhaseWriter().enabled())
+        graphicsWindow->setSwapCallback(new P6SwapTimingCallback);
 
     osg::ref_ptr<osg::Camera> camera = mViewer->getCamera();
     camera->setGraphicsContext(graphicsWindow);
