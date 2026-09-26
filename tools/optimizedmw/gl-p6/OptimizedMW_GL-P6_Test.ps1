@@ -38,8 +38,8 @@ Write-Host '  1 = P4R-STAGE2                  - current Stage-2 control'
 Write-Host '  2 = P6-QUARANTINE                 - deadline metadata + heavy background quarantine'
 Write-Host '  3 = P6-STRICT-QUARANTINE          - also quarantine near-future heavy work'
 Write-Host '  4 = P6-QUARANTINE-VERTEX-REUSE    - mode 2 + immutable terrain VBO reuse'
-Write-Host '  5 = P6-QUARANTINE-PBO             - mode 2 + texture PBO staging'
-Write-Host '  6 = P6-FULL                       - quarantine + terrain VBO reuse + PBO staging'
+Write-Host '  5 = P6-TERRAIN-RESOURCE-PHASES    - quarantine + native pass texture/program phases'
+Write-Host '  6 = P6-TERRAIN-VBO-SPLIT          - mode 5 + independent position/normal/color VBO uploads'
 Write-Host ''
 do{$choice=Read-Host 'Choose test mode (1-6)'}until($choice -in @('1','2','3','4','5','6'))
 
@@ -51,15 +51,16 @@ $HeavyMode='0'
 $TerrainPhased='false'
 $ResidencyMode='0'
 $TerrainVertexReuse='false'
-$TexturePbo='false'
+$TerrainResourcePhases='false'
+$TerrainSplitVbo='false'
 $Experiment='P4R-STAGE2'
 
 switch($choice){
     '2'{$Experiment='P6-QUARANTINE';$ResidencyMode='1'}
     '3'{$Experiment='P6-STRICT-QUARANTINE';$ResidencyMode='2'}
     '4'{$Experiment='P6-QUARANTINE-VERTEX-REUSE';$ResidencyMode='1';$TerrainVertexReuse='true'}
-    '5'{$Experiment='P6-QUARANTINE-PBO';$ResidencyMode='1';$TexturePbo='true'}
-    '6'{$Experiment='P6-FULL';$ResidencyMode='1';$TerrainVertexReuse='true';$TexturePbo='true'}
+    '5'{$Experiment='P6-TERRAIN-RESOURCE-PHASES';$ResidencyMode='1';$TerrainResourcePhases='true'}
+    '6'{$Experiment='P6-TERRAIN-VBO-SPLIT';$ResidencyMode='1';$TerrainResourcePhases='true';$TerrainSplitVbo='true'}
 }
 
 New-Item -ItemType Directory -Path $ProfilesRoot -Force | Out-Null
@@ -114,7 +115,8 @@ try{
     Set-IniValue $SettingsPath 'Cells' 'optimizedmw terrain phased compile' $TerrainPhased
     Set-IniValue $SettingsPath 'Cells' 'optimizedmw residency scheduler mode' $ResidencyMode
     Set-IniValue $SettingsPath 'Cells' 'optimizedmw terrain immutable vertex reuse' $TerrainVertexReuse
-    Set-IniValue $SettingsPath 'Cells' 'optimizedmw texture pbo staging' $TexturePbo
+    Set-IniValue $SettingsPath 'Cells' 'optimizedmw terrain resource phases' $TerrainResourcePhases
+    Set-IniValue $SettingsPath 'Cells' 'optimizedmw terrain split vertex buffers' $TerrainSplitVbo
 
     # Freeze the pre-existing compile policy so control and candidate differ only by P4.
     Set-IniValue $SettingsPath 'Cells' 'target framerate' '60'
@@ -172,7 +174,8 @@ try{
         "p5_terrain_phased_compile=$TerrainPhased",
         "p6_residency_scheduler_mode=$ResidencyMode",
         "p6_terrain_immutable_vertex_reuse=$TerrainVertexReuse",
-        "p6_texture_pbo_staging=$TexturePbo",
+        "p6_terrain_resource_phases=$TerrainResourcePhases",
+        "p6_terrain_split_vertex_buffers=$TerrainSplitVbo",
         "completion_governor=$Completion",
         "v38_compile_pacing_mode=3",
         "v315_adaptive_compile_governor=1",
@@ -220,7 +223,16 @@ try{
         Start-Sleep -Milliseconds 1000
     }
     $process.WaitForExit()
-    "exit_code=$($process.ExitCode)" | Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
+    $exitCode=$process.ExitCode
+    "exit_code=$exitCode" | Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
+
+    if($exitCode -ne 0){
+        Get-ChildItem -LiteralPath $UserOpenMW -Filter 'openmw-crash*.dmp' -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTimeUtc -ge $start.UtcDateTime.AddSeconds(-5) } |
+            ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $ProfileDir $_.Name) -Force -ErrorAction SilentlyContinue
+            }
+    }
 }
 finally{
     foreach($name in @(
