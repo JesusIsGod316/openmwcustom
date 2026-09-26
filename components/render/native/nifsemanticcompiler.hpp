@@ -1,7 +1,7 @@
 #ifndef OPENMW_COMPONENTS_RENDER_NATIVE_NIFSEMANTICCOMPILER_H
 #define OPENMW_COMPONENTS_RENDER_NATIVE_NIFSEMANTICCOMPILER_H
 
-#include <components/nifrender/niftranslator.hpp>
+#include "nifcontrollerprogram.hpp"\n\n#include <components/nifrender/niftranslator.hpp>
 #include <components/vfs/pathutil.hpp>
 
 #include <cstdint>
@@ -52,7 +52,7 @@ namespace RenderNative
         // it contains unsupported semantics.
         [[nodiscard]] bool semanticReady() const noexcept
         {
-            return compiled() && bundle.valid() && !bundle.hasErrors();
+            return compiled() && bundle.valid() && !bundle.hasErrors() && controllers.valid();
         }
     };
 
