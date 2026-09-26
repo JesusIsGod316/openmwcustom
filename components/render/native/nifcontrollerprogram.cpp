@@ -457,4 +457,18 @@ namespace RenderNative
     {
         return Compiler(file, bundle).run();
     }
+
+    ControllerTiming NifControllerCompiler::compileTiming(const Nif::NiTimeController& source) noexcept
+    {
+        return timing(source);
+    }
+
+    std::optional<TransformControllerTrack> NifControllerCompiler::compileTransformTrack(
+        const Nif::NiKeyframeController& source)
+    {
+        TransformControllerTrack track;
+        if (!compileTransform(source, track))
+            return std::nullopt;
+        return track;
+    }
 }

@@ -5,6 +5,7 @@
 set(OPENMW_V4_VSG_RUNTIME_SOURCES
     "${CMAKE_SOURCE_DIR}/components/render/native/nifassetservice.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/native/nifcontrollerprogram.cpp"
+    "${CMAKE_SOURCE_DIR}/components/render/native/nifkeyframeclip.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/native/nifsemanticcompiler.cpp"
     "${CMAKE_SOURCE_DIR}/components/nifrender/niftranslator.cpp"
     "${CMAKE_SOURCE_DIR}/components/nifrender/staticniftranslator.cpp"
