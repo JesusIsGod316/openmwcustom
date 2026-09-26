@@ -337,9 +337,20 @@ namespace Terrain
             geometry->setNormalArray(normals, osg::Array::BIND_PER_VERTEX);
             geometry->setColorArray(colors, osg::Array::BIND_PER_VERTEX);
         }
+        else if (Settings::cells().mOptimizedMWTerrainImmutableVertexReuse)
+        {
+            // P6: stitching variants with the same center + vertex LOD have
+            // identical immutable position/normal/color streams. Reuse the
+            // arrays and their VBO; the index buffer remains variant-specific.
+            geometry->setVertexArray(const_cast<osg::Array*>(templateGeometry->getVertexArray()));
+            geometry->setNormalArray(
+                const_cast<osg::Array*>(templateGeometry->getNormalArray()), osg::Array::BIND_PER_VERTEX);
+            geometry->setColorArray(
+                const_cast<osg::Array*>(templateGeometry->getColorArray()), osg::Array::BIND_PER_VERTEX);
+        }
         else
         {
-            // Unfortunately we need to copy vertex data because of poor coupling with VertexBufferObject.
+            // Legacy behavior: private arrays/VBO for every stitching variant.
             osg::ref_ptr<osg::Array> positions
                 = static_cast<osg::Array*>(templateGeometry->getVertexArray()->clone(osg::CopyOp::DEEP_COPY_ALL));
             osg::ref_ptr<osg::Array> normals
@@ -419,9 +430,24 @@ namespace Terrain
         {
             osgUtil::IncrementalCompileOperation* const ico = mSceneManager->getIncrementalCompileOperation();
             auto compileSet = new Resource::V321ClassifiedCompileSet(
-                geometry, Resource::V321CompileClass::Terrain);
+                geometry, Resource::V321CompileClass::Terrain,
+                activeGrid ? Resource::V321CompileUrgency::NearFuture
+                           : Resource::V321CompileUrgency::Background);
 
-            if (Settings::cells().mOptimizedMWTerrainPhasedCompile)
+            if (Settings::cells().mOptimizedMWTexturePboStaging)
+            {
+                osgUtil::StateToCompile stateToCompile(
+                    osgUtil::GLObjectsVisitor::COMPILE_DISPLAY_LISTS
+                        | osgUtil::GLObjectsVisitor::COMPILE_STATE_ATTRIBUTES,
+                    nullptr);
+                stateToCompile._assignPBOToImages = true;
+                geometry->accept(stateToCompile);
+                compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
+                if (Settings::cells().mOptimizedMWTerrainPhasedCompile)
+                    phaseTerrainCompileSet(*compileSet, *geometry);
+                ico->add(compileSet, false);
+            }
+            else if (Settings::cells().mOptimizedMWTerrainPhasedCompile)
             {
                 compileSet->buildCompileMap(ico->getContextSet());
                 phaseTerrainCompileSet(*compileSet, *geometry);
