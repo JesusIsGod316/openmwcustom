@@ -17,6 +17,11 @@ namespace Resource
     // characteristics after a producer has split a monolithic drawable compile.
     class OpenMWDrawableCompileOp : public osgUtil::IncrementalCompileOperation::CompileOp
     {
+    public:
+        // Custom drawable/buffer operations can expose their real byte footprint
+        // to the P6 size-tier model without pretending to be an OSG drawable op.
+        virtual std::size_t resourceBytes() const noexcept { return 0; }
+
     protected:
         ~OpenMWDrawableCompileOp() override = default;
     };
