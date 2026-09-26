@@ -64,6 +64,19 @@ checks = {
         and "p6RenderPhaseWriter().enabled()" in engine
         and "OPENMW_P6_RENDER_PHASE_FILE" in diag
         and "OPENMW_P6_RENDER_PHASE_FILE" in launcher,
+    "rendering_traversal_breakdown": "P6InstrumentedViewer" in engine
+        and "void renderingTraversals() override" in engine
+        and "_startRenderingBarrier->block()" in engine
+        and "_endRenderingDispatchBarrier->block()" in engine
+        and "_endDynamicDrawBlock->block()" in engine
+        and "breakdown.dispatchWait" in engine
+        and "breakdown.dynamicDrawWait" in engine
+        and "breakdown.sceneBound" in engine
+        and "p6TraversalBreakdownWriter().enabled()" in engine
+        and "new P6InstrumentedViewer" in engine
+        and "new osgViewer::Viewer" in engine
+        and "OPENMW_P6_TRAVERSAL_FILE" in diag
+        and "OPENMW_P6_TRAVERSAL_FILE" in launcher,
     "launcher_matrix": all(token in launcher for token in (
         "P4R-STAGE2", "P6-QUARANTINE", "P6-STRICT-QUARANTINE",
         "P6-QUARANTINE-VERTEX-REUSE", "P6-TERRAIN-RESOURCE-PHASES", "P6-TERRAIN-VBO-SPLIT")),
