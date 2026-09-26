@@ -42,3 +42,25 @@ P6R replaces the two PBO launcher modes with:
 - P6-TERRAIN-VBO-SPLIT: additionally gives position, normal, and color streams independent VBOs and explicit buffer compile operations before final geometry realization.
 
 The benchmark launcher now copies any fresh openmw-crash*.dmp into the profile ZIP when OpenMW exits non-zero.
+
+
+## Direct renderingTraversals attribution
+
+P6R benchmarks now instantiate a benchmark-only P6InstrumentedViewer when OPENMW_P6_TRAVERSAL_FILE is present. Normal gameplay still constructs the stock osgViewer::Viewer.
+
+The instrumented viewer preserves the OpenSceneGraph 3.6.5 renderingTraversals control flow and records one compact row per benchmark frame with:
+- context query and window status;
+- optional scene-stat traversal;
+- pager begin/end signaling;
+- scene bound recomputation;
+- camera query;
+- start-render barrier;
+- main-thread cull;
+- no-graphics-thread context operations;
+- end-render-dispatch barrier wait;
+- main-thread swap path;
+- dynamic-draw completion wait;
+- context release;
+- residual/other time, context/camera counts, and active OSG threading model.
+
+This is attribution, not a threading-model experiment. No OSG threading mode, barrier policy, or runtime synchronization semantics are intentionally changed. The existing graphics-context swap callback remains a separate event stream.
