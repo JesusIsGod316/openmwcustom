@@ -28,6 +28,8 @@ namespace MWRender
 
         const osg::Quat& getRotate() const { return mRotate; }
 
+        [[nodiscard]] bool isEnabled() const noexcept { return mEnabled; }
+
         osg::Node* getRelativeTo() const { return mRelativeTo; }
 
         void operator()(osg::MatrixTransform* node, osg::NodeVisitor* nv);
