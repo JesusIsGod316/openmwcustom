@@ -1,0 +1,77 @@
+name: VulkanMW Phase 3 native controller animation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [vulkanmw/phase3-native-controller-animation]
+    paths:
+      - 'components/render/native/**'
+      - 'components/render/backend/vsg/runtime-sources.cmake'
+      - 'components/nifrender/**'
+      - 'apps/openmw/mwrender/vulkanmw/**'
+      - 'apps/openmw/mwrender/v4engine*'
+      - 'apps/openmw/mwrender/v4scene*'
+      - 'tools/vulkanmw/**'
+      - '.github/workflows/vulkanmw-phase3.yml'
+
+concurrency:
+  group: vulkanmw-phase3-controller-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  NativeControllerAnimation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify accepted Phase 2 ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          PHASE2=93e94bc6b9bc778e65c8969cea5a27363dcd17b6
+          git cat-file -e "${PHASE2}^{commit}"
+          test "$(git merge-base "${PHASE2}" HEAD)" = "${PHASE2}"
+
+      - name: Enforce VulkanMW architecture contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/vulkanmw/check-architecture-boundaries.py
+          python3 tools/vulkanmw/check-phase1-nif-compiler.py
+          python3 tools/vulkanmw/check-phase2-static-world.py
+          python3 tools/vulkanmw/check-phase3-controller-animation.py
+
+      - name: Install lightweight compile dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libglm-dev libopenscenegraph-dev
+
+      - name: Compile and run controller math smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+            tools/vulkanmw/phase3-controller-smoke.cpp \
+            -o /tmp/vulkanmw-phase3-controller-smoke
+          /tmp/vulkanmw-phase3-controller-smoke
+
+      - name: Compile native Phase 3 source closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          CXXFLAGS="-std=c++20 -O1 -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter -I."
+          g++ ${CXXFLAGS} -c components/render/native/nifcontrollerprogram.cpp -o /tmp/nifcontrollerprogram.o
+          g++ ${CXXFLAGS} -c components/render/native/nifsemanticcompiler.cpp -o /tmp/nifsemanticcompiler.o
+          g++ ${CXXFLAGS} -c components/render/native/nifassetservice.cpp -o /tmp/nifassetservice.o
+
+      - name: Check Phase 3 whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check 93e94bc6b9bc778e65c8969cea5a27363dcd17b6 HEAD -- \
+            components/render/native \
+            components/render/backend/vsg/runtime-sources.cmake \
+            tools/vulkanmw
