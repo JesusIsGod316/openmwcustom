@@ -111,6 +111,12 @@ namespace Settings
         SettingValue<bool> mOptimizedMWTerrainSplitVertexBuffers{
             mIndex, "Cells", "optimizedmw terrain split vertex buffers" };
 
+        // P7 CPU preparation. These remain backend-neutral and default-off.
+        SettingValue<bool> mOptimizedMWParallelActorBinding{
+            mIndex, "Cells", "optimizedmw parallel actor binding" };
+        SettingValue<bool> mOptimizedMWParallelTerrainCpuPrep{
+            mIndex, "Cells", "optimizedmw parallel terrain cpu prep" };
+
         SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
         SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
             makeClampSanitizerInt(64, 16384) };

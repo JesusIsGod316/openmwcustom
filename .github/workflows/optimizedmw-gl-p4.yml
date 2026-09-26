@@ -1,8 +1,8 @@
-name: OptimizedMW GL-P6 stutter residency gate
+name: OptimizedMW GL-P7 CPU preparation gate
 
 on:
   push:
-    branches: [optimizedmw/gl-p4r-heavy-gl, optimizedmw/gl-p4r-scheduler-repair, optimizedmw/gl-p6-stutter-residency]
+    branches: [optimizedmw/gl-p4r-heavy-gl, optimizedmw/gl-p4r-scheduler-repair, optimizedmw/gl-p6-stutter-residency, optimizedmw/gl-p7-cpu-prep]
   workflow_dispatch:
 
 permissions:
@@ -24,6 +24,7 @@ jobs:
           python tools/optimizedmw/gl-p3/source-contract.py
           python tools/optimizedmw/gl-p4/source-contract.py
           python tools/optimizedmw/gl-p6/source-contract.py
+          if [ -f tools/optimizedmw/gl-p7/source-contract.py ]; then python tools/optimizedmw/gl-p7/source-contract.py; fi
       - name: Configure P3
         run: cmake -S tools/optimizedmw/gl-p3 -B build-p3 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOPTIMIZEDMW_P3_SANITIZERS=ON
       - name: Test retained P3

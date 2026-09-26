@@ -870,6 +870,8 @@ namespace MWRender
                 v36ControllerTrace, Debug::V36ControllerTrace::Phase::ControllerClone);
 
             static const bool v325ParallelActorBinding = [] {
+                if (static_cast<bool>(Settings::cells().mOptimizedMWParallelActorBinding))
+                    return true;
                 const char* value = std::getenv("OPENMW_V325_PARALLEL_ACTOR_BINDING");
                 return value && value[0] == '1' && value[1] == '\0';
             }();

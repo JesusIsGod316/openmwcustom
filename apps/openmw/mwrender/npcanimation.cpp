@@ -55,6 +55,8 @@ namespace
     bool v325ActorSourceBatchEnabled()
     {
         static const bool enabled = [] {
+            if (static_cast<bool>(Settings::cells().mOptimizedMWParallelActorBinding))
+                return true;
             const char* value = std::getenv("OPENMW_V325_ACTOR_SOURCE_BATCH");
             return value && value[0] == '1' && value[1] == '\0';
         }();

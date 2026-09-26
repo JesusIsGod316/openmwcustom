@@ -19,6 +19,7 @@
 #include <components/resource/v321classifiedcompileset.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
+#include <components/sceneutil/prepjobservice.hpp>
 #include <components/settings/values.hpp>
 
 #include "compositemaprenderer.hpp"
@@ -258,6 +259,13 @@ namespace Terrain
         }
     }
 
+    struct ChunkManager::PreparedPassData
+    {
+        std::vector<LayerInfo> mLayers;
+        std::vector<osg::ref_ptr<osg::Image>> mBlendmaps;
+        int mTileCount = 0;
+    };
+
     struct UpdateTextureFilteringFunctor
     {
         UpdateTextureFilteringFunctor(Resource::SceneManager* sceneMgr)
@@ -403,51 +411,60 @@ namespace Terrain
         }
     }
 
-    std::vector<osg::ref_ptr<osg::StateSet>> ChunkManager::createPasses(
-        float chunkSize, const osg::Vec2f& chunkCenter, bool forCompositeMap)
+    ChunkManager::PreparedPassData ChunkManager::preparePassData(
+        float chunkSize, const osg::Vec2f& chunkCenter)
     {
-        std::vector<LayerInfo> layerList;
-        std::vector<osg::ref_ptr<osg::Image>> blendmaps;
-        mStorage->getBlendmaps(chunkSize, chunkCenter, blendmaps, layerList, mWorldspace);
+        PreparedPassData result;
+        mStorage->getBlendmaps(chunkSize, chunkCenter, result.mBlendmaps, result.mLayers, mWorldspace);
+        result.mTileCount = mStorage->getTextureTileCount(chunkSize, mWorldspace);
+        return result;
+    }
 
+    std::vector<osg::ref_ptr<osg::StateSet>> ChunkManager::realizePasses(
+        PreparedPassData&& prepared, bool forCompositeMap)
+    {
         std::vector<TextureLayer> layers;
+        layers.reserve(prepared.mLayers.size());
+        for (const LayerInfo& info : prepared.mLayers)
         {
-            for (std::vector<LayerInfo>::const_iterator it = layerList.begin(); it != layerList.end(); ++it)
-            {
-                TextureLayer textureLayer;
-                textureLayer.mParallax = it->mParallax;
-                textureLayer.mSpecular = it->mSpecular;
-
-                textureLayer.mDiffuseMap = mTextureManager->getTexture(it->mDiffuseMap);
-
-                if (!forCompositeMap && !it->mNormalMap.empty())
-                    textureLayer.mNormalMap = mTextureManager->getTexture(it->mNormalMap);
-
-                layers.push_back(textureLayer);
-            }
+            TextureLayer textureLayer;
+            textureLayer.mParallax = info.mParallax;
+            textureLayer.mSpecular = info.mSpecular;
+            textureLayer.mDiffuseMap = mTextureManager->getTexture(info.mDiffuseMap);
+            if (!forCompositeMap && !info.mNormalMap.empty())
+                textureLayer.mNormalMap = mTextureManager->getTexture(info.mNormalMap);
+            layers.push_back(std::move(textureLayer));
         }
 
         std::vector<osg::ref_ptr<osg::Texture2D>> blendmapTextures;
-        for (std::vector<osg::ref_ptr<osg::Image>>::const_iterator it = blendmaps.begin(); it != blendmaps.end(); ++it)
+        blendmapTextures.reserve(prepared.mBlendmaps.size());
+        for (osg::ref_ptr<osg::Image>& image : prepared.mBlendmaps)
         {
             osg::ref_ptr<osg::Texture2D> texture(new osg::Texture2D);
-            texture->setImage(*it);
+            texture->setImage(image);
             texture->setWrap(osg::Texture::WRAP_S, osg::Texture::CLAMP_TO_EDGE);
             texture->setWrap(osg::Texture::WRAP_T, osg::Texture::CLAMP_TO_EDGE);
             texture->setResizeNonPowerOfTwoHint(false);
-            blendmapTextures.push_back(texture);
+            blendmapTextures.push_back(std::move(texture));
         }
 
-        int tileCount = mStorage->getTextureTileCount(chunkSize, mWorldspace);
+        return ::Terrain::createPasses(mSceneManager, layers, blendmapTextures, prepared.mTileCount,
+            static_cast<float>(prepared.mTileCount), forCompositeMap, ESM::isEsm4Ext(mWorldspace));
+    }
 
-        return ::Terrain::createPasses(mSceneManager, layers, blendmapTextures, tileCount,
-            static_cast<float>(tileCount), forCompositeMap, ESM::isEsm4Ext(mWorldspace));
+    std::vector<osg::ref_ptr<osg::StateSet>> ChunkManager::createPasses(
+        float chunkSize, const osg::Vec2f& chunkCenter, bool forCompositeMap)
+    {
+        return realizePasses(preparePassData(chunkSize, chunkCenter), forCompositeMap);
     }
 
     osg::ref_ptr<osg::Node> ChunkManager::createChunk(float chunkSize, const osg::Vec2f& chunkCenter, unsigned char lod,
         unsigned int lodFlags, bool activeGrid, bool compile, const TerrainDrawable* templateGeometry)
     {
         osg::ref_ptr<TerrainDrawable> geometry(new TerrainDrawable);
+        const bool useCompositeMap = chunkSize >= mCompositeMapLevel;
+        PreparedPassData preparedPasses;
+        bool hasPreparedPasses = false;
 
         if (!templateGeometry)
         {
@@ -456,7 +473,27 @@ namespace Terrain
             osg::ref_ptr<osg::Vec4ubArray> colors(new osg::Vec4ubArray);
             colors->setNormalize(true);
 
-            mStorage->fillVertexBuffers(lod, chunkSize, chunkCenter, mWorldspace, *positions, *normals, *colors);
+            const auto fillVertices = [&] {
+                mStorage->fillVertexBuffers(lod, chunkSize, chunkCenter, mWorldspace, *positions, *normals, *colors);
+            };
+
+            const bool p7ParallelTerrain
+                = static_cast<bool>(Settings::cells().mOptimizedMWParallelTerrainCpuPrep) && !useCompositeMap;
+            if (p7ParallelTerrain)
+            {
+                const auto lane = compile ? SceneUtil::PrepJobService::Lane::Background
+                                          : SceneUtil::PrepJobService::Lane::Critical;
+                const bool paired = SceneUtil::PrepJobService::instance().runPair(
+                    lane, [&] { preparedPasses = preparePassData(chunkSize, chunkCenter); }, fillVertices);
+                if (!paired)
+                {
+                    fillVertices();
+                    preparedPasses = preparePassData(chunkSize, chunkCenter);
+                }
+                hasPreparedPasses = true;
+            }
+            else
+                fillVertices();
 
             if (Settings::cells().mOptimizedMWTerrainSplitVertexBuffers)
             {
@@ -527,7 +564,6 @@ namespace Terrain
 
         geometry->addPrimitiveSet(mBufferCache.getIndexBuffer(numVerts, lodFlags));
 
-        bool useCompositeMap = chunkSize >= mCompositeMapLevel;
         unsigned int numUvSets = useCompositeMap ? 1 : 2;
 
         geometry->setTexCoordArrayList(osg::Geometry::ArrayList(numUvSets, mBufferCache.getUVBuffer(numVerts)));
@@ -568,7 +604,10 @@ namespace Terrain
             }
             else
             {
-                geometry->setPasses(createPasses(chunkSize, chunkCenter, false));
+                if (hasPreparedPasses)
+                    geometry->setPasses(realizePasses(std::move(preparedPasses), false));
+                else
+                    geometry->setPasses(createPasses(chunkSize, chunkCenter, false));
             }
         }
 

@@ -97,6 +97,8 @@ namespace Terrain
         void releaseGLObjects(osg::State* state) override;
 
     private:
+        struct PreparedPassData;
+
         osg::ref_ptr<osg::Node> createChunk(float size, const osg::Vec2f& center, unsigned char lod,
             unsigned int lodFlags, bool activeGrid, bool compile, const TerrainDrawable* templateGeometry);
 
@@ -105,6 +107,9 @@ namespace Terrain
         void createCompositeMapGeometry(
             float chunkSize, const osg::Vec2f& chunkCenter, const osg::Vec4f& texCoords, CompositeMap& map);
 
+        PreparedPassData preparePassData(float chunkSize, const osg::Vec2f& chunkCenter);
+        std::vector<osg::ref_ptr<osg::StateSet>> realizePasses(
+            PreparedPassData&& prepared, bool forCompositeMap);
         std::vector<osg::ref_ptr<osg::StateSet>> createPasses(
             float chunkSize, const osg::Vec2f& chunkCenter, bool forCompositeMap);
 
