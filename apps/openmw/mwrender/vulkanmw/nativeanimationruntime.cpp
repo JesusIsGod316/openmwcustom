@@ -8,7 +8,7 @@
 #include <components/vfs/manager.hpp>
 #include <components/vfs/pathutil.hpp>
 
-#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
@@ -16,9 +16,12 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -53,13 +56,14 @@ namespace
         float scale = 1.0f;
     };
 
-    // Bone sourceLocal is emitted from one authored NiTransform. Refuse the
-    // uncommon reflected/non-uniform matrix forms which cannot be represented
-    // by the KF controller's translation/quaternion/uniform-scale contract.
+    // sourceLocal is emitted from one authored NiTransform. Refuse uncommon
+    // reflected/non-uniform forms which cannot be represented by the external
+    // KF translation/quaternion/uniform-scale controller contract.
     [[nodiscard]] std::optional<NifLocalTransform> decomposeNifLocal(const glm::mat4& value) noexcept
     {
         if (!finite(value))
             return std::nullopt;
+
         constexpr float affineTolerance = 1e-4f;
         if (std::abs(value[0][3]) > affineTolerance || std::abs(value[1][3]) > affineTolerance
             || std::abs(value[2][3]) > affineTolerance || std::abs(value[3][3] - 1.0f) > affineTolerance)
@@ -137,7 +141,17 @@ namespace MWRender
         {
             const RenderCore::SkeletonPayload* payload = nullptr;
             std::map<std::string, std::size_t, std::less<>> indices;
-            std::vector<std::optional<NifLocalTransform>> sourceLocal;
+            std::vector<std::optional<NifLocalTransform>> sourceBase;
+            std::set<std::string, std::less<>> collapsedParentNodes;
+            std::string diagnostic;
+        };
+
+        struct ActorPose
+        {
+            const RenderCore::SkeletonPayload* payload = nullptr;
+            std::string skeletonIdentity;
+            std::vector<NifLocalTransform> sourceLocal;
+            bool collapsedParentAnimation = false;
         };
 
         explicit Impl(const VFS::Manager& vfs)
@@ -170,9 +184,7 @@ namespace MWRender
 
             cached.clip = std::make_shared<const RenderNative::NifKeyframeClip>(std::move(compiled.clip));
             for (const auto& [name, track] : cached.clip->controllers)
-            {
                 cached.foldedControllers.emplace(Misc::StringUtils::lowerCase(name), &track);
-            }
             return cached;
         }
 
@@ -187,14 +199,41 @@ namespace MWRender
             binding = {};
             binding.payload = payload;
             if (!payload)
+            {
+                binding.diagnostic = "native animation received no skeleton payload";
                 return binding;
-            binding.sourceLocal.reserve(payload->bones.size());
+            }
+
+            binding.sourceBase.reserve(payload->bones.size());
             for (std::size_t i = 0; i < payload->bones.size(); ++i)
             {
                 const RenderCore::BoneRecord& bone = payload->bones[i];
-                binding.indices.emplace(Misc::StringUtils::lowerCase(bone.name), i);
-                binding.sourceLocal.push_back(
-                    bone.sourceAnimationBoundary ? decomposeNifLocal(bone.sourceLocal) : std::nullopt);
+                const std::string folded = Misc::StringUtils::lowerCase(bone.name);
+                if (!binding.indices.emplace(folded, i).second)
+                {
+                    binding.diagnostic = "native animation skeleton contains duplicate bone name: " + folded;
+                    return binding;
+                }
+                if (!bone.sourceAnimationBoundary)
+                {
+                    binding.diagnostic = "skeleton lacks authored source-animation boundary metadata";
+                    return binding;
+                }
+                if (bone.sourceControllerFlags != 0 || bone.sourceParentControllerFlags != 0)
+                {
+                    binding.diagnostic = "skeleton source path contains embedded controller semantics";
+                    return binding;
+                }
+
+                std::optional<NifLocalTransform> base = decomposeNifLocal(bone.sourceLocal);
+                if (!base)
+                {
+                    binding.diagnostic = "authored bone local transform is not safely decomposable: " + folded;
+                    return binding;
+                }
+                binding.sourceBase.push_back(std::move(base));
+                for (const std::string& parent : bone.sourceParentPathNodes)
+                    binding.collapsedParentNodes.insert(Misc::StringUtils::lowerCase(parent));
             }
             return binding;
         }
@@ -202,6 +241,8 @@ namespace MWRender
         const VFS::Manager& mVfs;
         std::map<std::string, CachedClip, std::less<>> mClips;
         std::map<std::string, BoneBinding, std::less<>> mSkeletons;
+        std::map<std::string, ActorPose, std::less<>> mActors;
+        std::set<std::string, std::less<>> mSeenActors;
     };
 
     V4NativeAnimationRuntime::V4NativeAnimationRuntime(const VFS::Manager& vfs)
@@ -211,33 +252,54 @@ namespace MWRender
 
     V4NativeAnimationRuntime::~V4NativeAnimationRuntime() = default;
 
+    void V4NativeAnimationRuntime::beginFrame()
+    {
+        mImpl->mSeenActors.clear();
+    }
+
     V4NativeAnimationPoseResult V4NativeAnimationRuntime::captureSkeletonPose(
-        const Animation& animation, const RenderCore::SkeletonRecord& skeleton,
+        std::string_view actorIdentity, const Animation& animation, const RenderCore::SkeletonRecord& skeleton,
         std::vector<glm::mat4>& localTransforms)
     {
         V4NativeAnimationPoseResult result;
-        if (!skeleton.payload)
-        {
-            result.diagnostic = "native animation received no skeleton payload";
-            return result;
-        }
+        const std::string actorKey(actorIdentity);
+        mImpl->mSeenActors.insert(actorKey);
 
         Animation::V4NativeAnimationState state;
         if (!animation.captureV4NativeAnimationState(state, result.diagnostic))
             return result;
 
         Impl::BoneBinding& binding = mImpl->bones(skeleton);
+        if (!binding.diagnostic.empty())
+        {
+            result.diagnostic = binding.diagnostic;
+            return result;
+        }
         if (binding.payload != skeleton.payload.get()
-            || binding.sourceLocal.size() != skeleton.payload->bones.size())
+            || binding.sourceBase.size() != skeleton.payload->bones.size())
         {
             result.diagnostic = "native animation skeleton binding cache is incoherent";
             return result;
         }
 
-        localTransforms.clear();
-        localTransforms.reserve(skeleton.payload->bones.size());
-        for (const RenderCore::BoneRecord& bone : skeleton.payload->bones)
-            localTransforms.push_back(bone.bindLocal);
+        auto actorIt = mImpl->mActors.find(actorKey);
+        if (actorIt == mImpl->mActors.end() || actorIt->second.payload != skeleton.payload.get()
+            || actorIt->second.skeletonIdentity != skeleton.sourceIdentity)
+        {
+            result.diagnostic = "native animation pose requires one compatibility seed frame";
+            return result;
+        }
+        Impl::ActorPose& actorPose = actorIt->second;
+        if (actorPose.collapsedParentAnimation)
+        {
+            result.diagnostic = "actor previously animated a collapsed skeleton parent node";
+            return result;
+        }
+        if (actorPose.sourceLocal.size() != skeleton.payload->bones.size())
+        {
+            result.diagnostic = "native actor pose history has the wrong bone count";
+            return result;
+        }
 
         const std::string accumulationBone
             = state.accumulationBone.empty() ? std::string() : Misc::StringUtils::lowerCase(state.accumulationBone);
@@ -260,7 +322,15 @@ namespace MWRender
                 const std::string folded = Misc::StringUtils::lowerCase(boundName);
                 const auto boneIt = binding.indices.find(folded);
                 if (boneIt == binding.indices.end())
-                    continue; // The active KF may control non-skin transform nodes.
+                {
+                    if (binding.collapsedParentNodes.contains(folded))
+                    {
+                        actorPose.collapsedParentAnimation = true;
+                        result.diagnostic = "active KF animates collapsed skeleton parent node: " + folded;
+                        return result;
+                    }
+                    continue; // Active KF may control an attachment/non-skin node.
+                }
 
                 const auto trackIt = cached.foldedControllers.find(folded);
                 if (trackIt == cached.foldedControllers.end() || !trackIt->second)
@@ -270,20 +340,28 @@ namespace MWRender
                 }
 
                 const std::size_t boneIndex = boneIt->second;
-                if (boneIndex >= binding.sourceLocal.size() || !binding.sourceLocal[boneIndex])
+                if (boneIndex >= actorPose.sourceLocal.size() || boneIndex >= binding.sourceBase.size()
+                    || !binding.sourceBase[boneIndex])
                 {
-                    result.diagnostic = "authored bone local transform is not safely decomposable: " + folded;
+                    result.diagnostic = "native animation bone history is unavailable: " + folded;
                     return result;
                 }
 
-                NifLocalTransform local = *binding.sourceLocal[boneIndex];
+                NifLocalTransform local = actorPose.sourceLocal[boneIndex];
+                const NifLocalTransform& base = *binding.sourceBase[boneIndex];
                 const RenderNative::NamedTransformTrack& controller = *trackIt->second;
                 const float keyTime = controller.timing.map(layer.time);
                 const RenderNative::TransformTrackSample sampled = controller.track.sample(keyTime);
+
+                // Match NifOsg::KeyframeController exactly: translation/scale
+                // without keys retain the previous value, while absent rotation
+                // is explicitly reset to the authored MatrixTransform rotation.
                 if (sampled.translation)
                     local.translation = *sampled.translation;
                 if (sampled.rotation)
                     local.rotation = glm::normalize(*sampled.rotation);
+                else
+                    local.rotation = base.rotation;
                 if (sampled.scale)
                     local.scale = *sampled.scale;
 
@@ -302,33 +380,98 @@ namespace MWRender
                     }
                 }
 
-                const glm::mat4 animatedSourceLocal = composeNifLocal(local);
-                const RenderCore::BoneRecord& bone = skeleton.payload->bones[boneIndex];
-                const glm::mat4 evaluated = bone.sourceParentPath * animatedSourceLocal;
-                if (!finite(evaluated))
-                {
-                    result.diagnostic = "native KF produced a non-finite skeleton-local matrix: " + folded;
-                    return result;
-                }
-                localTransforms[boneIndex] = evaluated;
+                actorPose.sourceLocal[boneIndex] = local;
                 ++result.sampledTracks;
             }
         }
 
-        if (result.sampledTracks == 0)
+        localTransforms.clear();
+        localTransforms.reserve(skeleton.payload->bones.size());
+        for (std::size_t i = 0; i < skeleton.payload->bones.size(); ++i)
         {
-            localTransforms.clear();
-            result.diagnostic = "active actor has no native KF skeleton tracks to substitute";
-            return result;
+            const RenderCore::BoneRecord& bone = skeleton.payload->bones[i];
+            const glm::mat4 evaluated = bone.sourceParentPath * composeNifLocal(actorPose.sourceLocal[i]);
+            if (!finite(evaluated))
+            {
+                localTransforms.clear();
+                result.diagnostic = "native KF produced a non-finite skeleton-local matrix: " + bone.name;
+                return result;
+            }
+            localTransforms.push_back(evaluated);
         }
 
         result.status = V4NativeAnimationPoseStatus::Applied;
         return result;
     }
 
+    bool V4NativeAnimationRuntime::seedSkeletonPose(std::string_view actorIdentity,
+        const RenderCore::SkeletonRecord& skeleton, std::span<const glm::mat4> localTransforms,
+        std::string& diagnostic)
+    {
+        diagnostic.clear();
+        const std::string actorKey(actorIdentity);
+        mImpl->mSeenActors.insert(actorKey);
+
+        Impl::BoneBinding& binding = mImpl->bones(skeleton);
+        if (!binding.diagnostic.empty())
+        {
+            diagnostic = binding.diagnostic;
+            return false;
+        }
+        if (!skeleton.payload || localTransforms.size() != skeleton.payload->bones.size())
+        {
+            diagnostic = "compatibility seed pose does not match skeleton bone count";
+            return false;
+        }
+
+        Impl::ActorPose seeded;
+        seeded.payload = skeleton.payload.get();
+        seeded.skeletonIdentity = skeleton.sourceIdentity;
+        seeded.sourceLocal.reserve(localTransforms.size());
+
+        const auto previous = mImpl->mActors.find(actorKey);
+        if (previous != mImpl->mActors.end())
+            seeded.collapsedParentAnimation = previous->second.collapsedParentAnimation;
+
+        for (std::size_t i = 0; i < localTransforms.size(); ++i)
+        {
+            const RenderCore::BoneRecord& bone = skeleton.payload->bones[i];
+            const float determinant = glm::determinant(bone.sourceParentPath);
+            if (!finite(determinant) || std::abs(determinant) <= 1e-8f)
+            {
+                diagnostic = "skeleton source-parent path is non-invertible: " + bone.name;
+                return false;
+            }
+            const glm::mat4 sourceLocal = glm::inverse(bone.sourceParentPath) * localTransforms[i];
+            std::optional<NifLocalTransform> decomposed = decomposeNifLocal(sourceLocal);
+            if (!decomposed)
+            {
+                diagnostic = "compatibility seed cannot be represented as NIF local transform: " + bone.name;
+                return false;
+            }
+            seeded.sourceLocal.push_back(std::move(*decomposed));
+        }
+
+        mImpl->mActors.insert_or_assign(actorKey, std::move(seeded));
+        return true;
+    }
+
+    void V4NativeAnimationRuntime::endFrame()
+    {
+        for (auto it = mImpl->mActors.begin(); it != mImpl->mActors.end();)
+        {
+            if (!mImpl->mSeenActors.contains(it->first))
+                it = mImpl->mActors.erase(it);
+            else
+                ++it;
+        }
+    }
+
     void V4NativeAnimationRuntime::clear()
     {
         mImpl->mClips.clear();
         mImpl->mSkeletons.clear();
+        mImpl->mActors.clear();
+        mImpl->mSeenActors.clear();
     }
 }
