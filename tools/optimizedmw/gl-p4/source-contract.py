@@ -50,9 +50,13 @@ checks = {
         and "mPredictionCache" in compile_h
         and "cacheIt->second.mOp != op" in compile_cpp
         and "estimate_cache_hits=" in compile_cpp
+        and "candidate_build_ms=" in compile_cpp
         and "selection_ms=" in compile_cpp
         and "scheduler_total_ms=" in compile_cpp
-        and "candidates_scanned=" in compile_cpp,
+        and "candidate_builds=" in compile_cpp
+        and "candidates_scanned=" in compile_cpp
+        and "std::vector<Candidate> candidates" in compile_cpp
+        and "refresh only the selected set" in compile_cpp,
     "cheap_drain_repair": "age never converts a cheap fitting operation" in compile_cpp
         and "if (fits)" in compile_cpp
         and "if (forced || remainingBudgetMs <= 0.0)" in compile_cpp

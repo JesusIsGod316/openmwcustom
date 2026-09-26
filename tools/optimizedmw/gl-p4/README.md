@@ -14,7 +14,8 @@ The P5 heavy/terrain mechanisms remain experimental and are not eligible for pro
 - A decaying risk estimate catches repeated under-predicted operations without permanently quarantining cheap work.
 - Queue-age default is 120 frames instead of 12.
 - The OSG estimate for an unchanged front compile operation is reused across queue rescans and frames; EMA/risk remains live and uncached.
-- p4-compile summary rows now report selection_ms, scheduler_total_ms, selection_passes, candidates_scanned, estimate_calls, and estimate_cache_hits so selector overhead cannot hide behind GL-call timing.
+- p4-compile summary rows report candidate_build_ms, selection_ms, scheduler_total_ms, selection_passes, candidate_builds, candidates_scanned, estimate_calls, and estimate_cache_hits so selector overhead cannot hide behind GL-call timing.
+- Scheduler repair stage 2 builds map/RTTI/OSG-estimator candidate descriptors once per frame, reuses the flat descriptors across cheap-drain passes, and refreshes only a selected CompileSet whose front operation advances. This preserves dynamic EMA/risk admission while removing repeated candidate reconstruction from the O(kN) drain loop.
 
 ## P5 heavy GL lane
 Optional. Known/predicted heavy operations are admitted only after sustained smooth headroom. It does not preempt a driver call; it controls when the call begins. The cold terrain prior retires after four observations.

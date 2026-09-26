@@ -89,8 +89,9 @@ namespace Resource
         };
 
         CompileKind classify(const CompileOp* op) const;
-        double predictedMs(CompileOp* op, CompileInfo& info, const CompileSet* set, CompileKind kind,
+        double cachedOsgEstimateMs(CompileOp* op, CompileInfo& info, const CompileSet* set,
             std::uint64_t& estimateCalls, std::uint64_t& estimateCacheHits);
+        double predictedMs(double osgEstimateMs, std::size_t costBucket, double staticPriorMs) const;
         void observe(const CompileSet* set, CompileKind kind, double actualMs);
         std::size_t costIndex(const CompileSet* set, CompileKind kind) const;
         double staticPriorMs(const CompileSet* set, CompileKind kind) const;

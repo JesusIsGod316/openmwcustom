@@ -18,6 +18,7 @@
 #include <string_view>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -142,14 +143,12 @@ namespace Resource
         return 0.0;
     }
 
-    double OpenMWIncrementalCompileOperation::predictedMs(CompileOp* op, CompileInfo& info,
-        const CompileSet* set, CompileKind kind, std::uint64_t& estimateCalls, std::uint64_t& estimateCacheHits)
+    double OpenMWIncrementalCompileOperation::cachedOsgEstimateMs(CompileOp* op, CompileInfo& info,
+        const CompileSet* set, std::uint64_t& estimateCalls, std::uint64_t& estimateCacheHits)
     {
-        // The OSG estimators are not free: texture estimation emits OSG_NOTICE,
-        // and the old P4R selector called them again for every full-queue rescan.
-        // Cache only the static OSG component for the current front operation.
-        // Dynamic EMA/risk history below is still recomputed on every selection
-        // pass, so recent measured cost immediately affects admission.
+        // OSG's static estimators can be surprisingly expensive (and the texture
+        // estimator emits OSG_NOTICE). Cache this component by the current front
+        // operation. Per-bucket measured history remains dynamic below.
         double osgEstimateMs = 0.0;
         auto [cacheIt, inserted] = mPredictionCache.try_emplace(set);
         if (inserted || cacheIt->second.mOp != op)
@@ -168,8 +167,13 @@ namespace Resource
             osgEstimateMs = cacheIt->second.mOsgEstimateMs;
             ++estimateCacheHits;
         }
+        return osgEstimateMs;
+    }
 
-        const CostState& cost = mCosts.at(costIndex(set, kind));
+    double OpenMWIncrementalCompileOperation::predictedMs(
+        double osgEstimateMs, std::size_t costBucket, double staticPrior) const
+    {
+        const CostState& cost = mCosts.at(costBucket);
         const double measured = cost.mSamples > 0 ? cost.mEmaMs * 1.25 : 0.0;
         // Risk decays on every successful operation in the same producer/type
         // bucket. Cap it relative to the EMA so one pathological call does not
@@ -180,7 +184,7 @@ namespace Resource
         // Empirical terrain prior protects only the cold-start samples. Once the
         // class/type bucket has four observations, measured history owns the risk
         // estimate so ordinary cheap terrain cannot be quarantined forever.
-        const double prior = cost.mSamples < 4 ? staticPriorMs(set, kind) : 0.0;
+        const double prior = cost.mSamples < 4 ? staticPrior : 0.0;
         return std::max({ 0.05, osgEstimateMs, measured, risk, prior });
     }
 
@@ -311,9 +315,11 @@ namespace Resource
         unsigned int heavyObjects = 0;
         unsigned int predictionMisses = 0;
         std::uint64_t candidateScans = 0;
+        std::uint64_t candidateBuilds = 0;
         std::uint64_t estimateCalls = 0;
         std::uint64_t estimateCacheHits = 0;
         unsigned int selectionPasses = 0;
+        double candidateBuildActualMs = 0.0;
         double selectionActualMs = 0.0;
         bool stopAfterThisOperation = false;
 
@@ -322,7 +328,10 @@ namespace Resource
             CompileSet* mSet = nullptr;
             CompileOp* mOp = nullptr;
             CompileKind mKind = CompileKind::Other;
+            double mOsgEstimateMs = 0.0;
+            double mStaticPriorMs = 0.0;
             double mPredictionMs = 0.0;
+            std::size_t mCostBucket = 0;
             unsigned int mAge = 0;
             int mRank = std::numeric_limits<int>::max();
 
@@ -351,70 +360,131 @@ namespace Resource
             return candidate.mRank < current.mRank;
         };
 
-        while (compiledObjects < maxObjects && !queued.empty() && !stopAfterThisOperation)
+        // Build the expensive descriptor for each queued CompileSet once per
+        // frame. Subsequent admission passes operate on this flat vector and
+        // refresh only the selected set if its front operation advances.
+        std::vector<Candidate> candidates;
+        candidates.reserve(queued.size());
+        std::size_t activeCandidates = 0;
+        std::size_t localQueueDepth = queued.size();
+
+        auto refreshCandidate = [&](Candidate& candidate) {
+            if (!candidate.mSet)
+                return false;
+            auto mapIt = candidate.mSet->_compileMap.find(context);
+            if (mapIt == candidate.mSet->_compileMap.end() || mapIt->second._compileOps.empty())
+            {
+                candidate.mOp = nullptr;
+                return false;
+            }
+
+            CompileOp* op = mapIt->second._compileOps.front().get();
+            CompileInfo estimateInfo(context, this);
+            const CompileKind kind = classify(op);
+            candidate.mOp = op;
+            candidate.mKind = kind;
+            candidate.mCostBucket = costIndex(candidate.mSet, kind);
+            candidate.mStaticPriorMs = staticPriorMs(candidate.mSet, kind);
+            candidate.mOsgEstimateMs
+                = cachedOsgEstimateMs(op, estimateInfo, candidate.mSet, estimateCalls, estimateCacheHits);
+            candidate.mPredictionMs
+                = predictedMs(candidate.mOsgEstimateMs, candidate.mCostBucket, candidate.mStaticPriorMs);
+            candidate.mRank = compileClassRank(candidate.mSet);
+            ++candidateBuilds;
+            return true;
+        };
+
+        const auto candidateBuildStart = Debug::V3Diagnostics::Clock::now();
+        for (const osg::ref_ptr<CompileSet>& setRef : queued)
+        {
+            CompileSet* set = setRef.get();
+            if (!set)
+                continue;
+            const auto seenIt = mSeen.find(set);
+            const unsigned int age = seenIt != mSeen.end() && frame >= seenIt->second.mFirstFrame
+                ? frame - seenIt->second.mFirstFrame : 0;
+            Candidate candidate;
+            candidate.mSet = set;
+            candidate.mAge = age;
+            if (refreshCandidate(candidate))
+            {
+                candidates.push_back(candidate);
+                ++activeCandidates;
+            }
+        }
+        candidateBuildActualMs = Debug::V3Diagnostics::elapsedMs(candidateBuildStart);
+
+        while (compiledObjects < maxObjects && activeCandidates > 0 && !stopAfterThisOperation)
         {
             Candidate fitting;
             Candidate agedOverflow;
             Candidate heavyReady;
+            std::size_t fittingIndex = std::numeric_limits<std::size_t>::max();
+            std::size_t agedOverflowIndex = std::numeric_limits<std::size_t>::max();
+            std::size_t heavyReadyIndex = std::numeric_limits<std::size_t>::max();
 
             const auto selectionStart = Debug::V3Diagnostics::Clock::now();
             ++selectionPasses;
-            for (const osg::ref_ptr<CompileSet>& setRef : queued)
+            for (std::size_t i = 0; i < candidates.size(); ++i)
             {
+                Candidate& candidate = candidates[i];
+                if (!candidate)
+                    continue;
                 ++candidateScans;
-                CompileSet* set = setRef.get();
-                if (!set)
-                    continue;
 
-                auto mapIt = set->_compileMap.find(context);
-                if (mapIt == set->_compileMap.end() || mapIt->second._compileOps.empty())
-                    continue;
-
-                CompileOp* op = mapIt->second._compileOps.front().get();
-                CompileInfo estimateInfo(context, this);
-                const CompileKind kind = classify(op);
-                const double prediction
-                    = predictedMs(op, estimateInfo, set, kind, estimateCalls, estimateCacheHits);
-                const auto seenIt = mSeen.find(set);
-                const unsigned int age = seenIt != mSeen.end() && frame >= seenIt->second.mFirstFrame
-                    ? frame - seenIt->second.mFirstFrame : 0;
-                const int rank = compileClassRank(set);
-                const bool fits = prediction <= std::max(0.05, remainingBudgetMs);
-                const bool heavy = prediction >= mConfig.mHeavyThresholdMs;
-
-                Candidate candidate{ set, op, kind, prediction, age, rank };
+                // Dynamic measured risk is intentionally refreshed every pass,
+                // but the OSG estimator, map lookup, RTTI classification and age
+                // lookup are not repeated for every candidate.
+                candidate.mPredictionMs
+                    = predictedMs(candidate.mOsgEstimateMs, candidate.mCostBucket, candidate.mStaticPriorMs);
+                const bool fits = candidate.mPredictionMs <= std::max(0.05, remainingBudgetMs);
+                const bool heavy = candidate.mPredictionMs >= mConfig.mHeavyThresholdMs;
 
                 // P4R repair: age never converts a cheap fitting operation into a
                 // forced one. Cheap work keeps draining until budget/object cap.
                 if (fits)
                 {
                     if (betterFitting(candidate, fitting))
+                    {
                         fitting = candidate;
+                        fittingIndex = i;
+                    }
                     continue;
                 }
 
-                if (age >= maxQueueAge && betterOverflow(candidate, agedOverflow))
+                if (candidate.mAge >= maxQueueAge && betterOverflow(candidate, agedOverflow))
+                {
                     agedOverflow = candidate;
+                    agedOverflowIndex = i;
+                }
 
                 const bool heavyLaneReady = mConfig.mHeavyLaneMode > 0 && heavy
                     && mSmoothFrames >= mConfig.mHeavyMinSmoothFrames
                     && policy.mHeadroomMs >= mConfig.mHeavyMinHeadroomMs
                     && !policy.mSuppressedByHandoff;
                 if (heavyLaneReady && betterOverflow(candidate, heavyReady))
+                {
                     heavyReady = candidate;
+                    heavyReadyIndex = i;
+                }
             }
             selectionActualMs += Debug::V3Diagnostics::elapsedMs(selectionStart);
 
             Candidate selected;
+            std::size_t selectedIndex = std::numeric_limits<std::size_t>::max();
             std::string_view reason = "budgeted";
             bool forced = false;
             bool heavyPrewarm = false;
 
             if (fitting)
+            {
                 selected = fitting;
+                selectedIndex = fittingIndex;
+            }
             else if (heavyReady)
             {
                 selected = heavyReady;
+                selectedIndex = heavyReadyIndex;
                 reason = "heavy_smooth_headroom";
                 forced = true;
                 heavyPrewarm = true;
@@ -425,6 +495,7 @@ namespace Resource
                 if (policy.mSuppressedByHandoff && !hardAgedOut)
                     break;
                 selected = agedOverflow;
+                selectedIndex = agedOverflowIndex;
                 reason = hardAgedOut ? "forced_by_hard_queue_age" : "forced_by_queue_age";
                 forced = true;
             }
@@ -457,7 +528,7 @@ namespace Resource
             if (actualMs >= diagnosticThresholdMs || forced)
             {
                 writeP4CompileRow(frame, "op", compileKindName(selected.mKind),
-                    compileClassName(selected.mSet), queued.size(), oldestAge,
+                    compileClassName(selected.mSet), localQueueDepth, oldestAge,
                     policy.mBudgetMs, mPolicyState.mCreditMs, selected.mPredictionMs, actualMs,
                     policy.mHeadroomMs, lastHandoffMs, 1, reason);
             }
@@ -468,9 +539,24 @@ namespace Resource
                 finishCompileSet(completed);
                 mSeen.erase(completed);
                 mPredictionCache.erase(completed);
-                queued.remove_if([completed](const osg::ref_ptr<CompileSet>& value) {
-                    return value.get() == completed;
-                });
+                if (selectedIndex < candidates.size() && candidates[selectedIndex])
+                {
+                    candidates[selectedIndex] = Candidate{};
+                    --activeCandidates;
+                    if (localQueueDepth > 0)
+                        --localQueueDepth;
+                }
+            }
+            else if (selectedIndex < candidates.size())
+            {
+                // Only the selected CompileSet can advance its front operation.
+                // Refresh that one descriptor instead of rebuilding the entire
+                // queue before the next cheap-drain admission pass.
+                if (!refreshCandidate(candidates[selectedIndex]))
+                {
+                    candidates[selectedIndex] = Candidate{};
+                    --activeCandidates;
+                }
             }
 
             if (heavyPrewarm)
@@ -498,7 +584,7 @@ namespace Resource
             deleteActualMs = Debug::V3Diagnostics::elapsedMs(start);
             if (deleteActualMs >= diagnosticThresholdMs)
             {
-                writeP4CompileRow(frame, "delete_flush", "delete", "n/a", queued.size(), oldestAge,
+                writeP4CompileRow(frame, "delete_flush", "delete", "n/a", localQueueDepth, oldestAge,
                     deleteBudgetMs, mPolicyState.mCreditMs, 0.0, deleteActualMs,
                     policy.mHeadroomMs, lastHandoffMs, 0, "separate_delete_budget");
             }
@@ -523,9 +609,11 @@ namespace Resource
                    << " forced=" << ageForcedObjects
                    << " heavy=" << heavyObjects
                    << " prediction_miss=" << predictionMisses
-                   << " selection_ms=" << std::fixed << std::setprecision(3) << selectionActualMs
+                   << " candidate_build_ms=" << std::fixed << std::setprecision(3) << candidateBuildActualMs
+                   << " selection_ms=" << selectionActualMs
                    << " scheduler_total_ms=" << schedulerTotalMs
                    << " selection_passes=" << selectionPasses
+                   << " candidate_builds=" << candidateBuilds
                    << " candidates_scanned=" << candidateScans
                    << " estimate_calls=" << estimateCalls
                    << " estimate_cache_hits=" << estimateCacheHits
