@@ -20,3 +20,25 @@ The shared-context worker remains a follow-up after this matrix tells us which q
 ## First Windows gate repair
 
 Run 36252863827 failed at components/terrain/chunkmanager.cpp because P6 urgency selection referenced activeGrid inside createChunk without carrying that value through the private createChunk boundary. The repair passes activeGrid from getChunk into createChunk and the P6 source contract now asserts declaration, definition, and call-site wiring.
+
+
+## P6 hardware matrix and PBO rejection
+
+Hardware test of 4a53dcfda5fd0515317f0cb37d8a3c8b90d2163e isolated a runtime crash to the PBO experiment:
+- modes 1-4 exited 0;
+- P6-QUARANTINE-PBO and P6-FULL both exited 1;
+- PBO staging was the only experimental switch common to both crashes and absent from the four clean runs.
+
+The PBO path is rejected. It mutated shared osg::Image BufferObject ownership during paging through StateToCompile::_assignPBOToImages, which is not an acceptable ownership model for OpenMW's shared image/cache workload. P6R removes that path rather than hiding it behind a default-off switch.
+
+Clean-route evidence also showed:
+- Stage-2: p95 23.62 ms, >33.3 ms 1.89%, >50 ms 0.53%, queue end 4;
+- P6 quarantine: p95 19.42 ms, >33.3 ms 1.54%, >50 ms 0.79%, queue end 4;
+- strict quarantine: p95 19.79 ms but queue end 122, proving postponement alone is not a residency solution;
+- terrain vertex reuse did not improve the extreme tail enough to promote.
+
+P6R replaces the two PBO launcher modes with:
+- P6-TERRAIN-RESOURCE-PHASES: TerrainDrawable pass textures/programs become native CompileTextureOp/CompileProgramOp entries so the size-tier model can see them instead of hiding them in generic StateAttribute work.
+- P6-TERRAIN-VBO-SPLIT: additionally gives position, normal, and color streams independent VBOs and explicit buffer compile operations before final geometry realization.
+
+The benchmark launcher now copies any fresh openmw-crash*.dmp into the profile ZIP when OpenMW exits non-zero.
