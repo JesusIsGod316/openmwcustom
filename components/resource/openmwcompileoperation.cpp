@@ -467,6 +467,7 @@ namespace Resource
                 CompileSet* completed = selected.mSet;
                 finishCompileSet(completed);
                 mSeen.erase(completed);
+                mPredictionCache.erase(completed);
                 queued.remove_if([completed](const osg::ref_ptr<CompileSet>& value) {
                     return value.get() == completed;
                 });
