@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <sstream>
+#include <string_view>
 #include <unordered_map>
 
 namespace
@@ -207,7 +208,7 @@ namespace
             if (source.mInterpolator->mRecordType != Nif::RC_NiBoolInterpolator)
                 return false;
             const auto* interpolator = static_cast<const Nif::NiBoolInterpolator*>(source.mInterpolator.getPtr());
-            if (!interpolator->mData)
+            if (interpolator->mData.empty())
                 return false;
             copyBoolTrack(interpolator->mData->mKeyList, target);
             return !target.empty();
@@ -253,7 +254,7 @@ namespace
             if (!interpolator.empty() && interpolator->mRecordType == Nif::RC_NiFloatInterpolator)
             {
                 const auto* value = static_cast<const Nif::NiFloatInterpolator*>(interpolator.getPtr());
-                if (value->mData)
+                if (!value->mData.empty())
                     copyFloatTrack(value->mData->mKeyList, channel.track);
             }
             target.push_back(std::move(channel));
