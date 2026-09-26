@@ -10,6 +10,7 @@
 #include "v4semanticsource.hpp"
 #include "v4terrainsource.hpp"
 #include "vulkanmw/groundcoversource.hpp"
+#include "vulkanmw/nativeanimationruntime.hpp"
 
 #include "animation.hpp"
 #include "groundcover.hpp"
@@ -356,6 +357,7 @@ namespace MWRender
         , mRouteStatus(std::make_shared<V4RenderRouteStatus>())
         , mNativeTerrain(std::make_unique<RenderNative::TerrainWorldService>(
               mSession->world(), mSession->publisher()))
+        , mNativeAnimation(std::make_unique<V4NativeAnimationRuntime>(mVfs))
     {
     }
 
@@ -603,6 +605,10 @@ namespace MWRender
             mActorLightEpoch = worldEpoch;
         }
         std::set<std::string, std::less<>> currentActorLights;
+        std::uint32_t nativeActorPoses = 0;
+        std::uint32_t legacyActorPoses = 0;
+        std::uint32_t nativeSampledTracks = 0;
+        std::uint32_t nativeFallbackEvents = 0;
         bool compatible = true;
         if (++mPoseTraversal == 0u)
             ++mPoseTraversal;
@@ -1219,73 +1225,111 @@ namespace MWRender
                 }
 
                 SceneUtil::Skeleton* evaluated = animation.getSkeleton();
-                std::vector<glm::mat4> global;
-                if (!evaluated)
-                {
-                    const bool skinned = std::any_of(model->payload->nodes.begin(), model->payload->nodes.end(),
-                        [&](const RenderCore::ModelNodeRecord& node) {
-                            const auto* mesh = node.mesh ? mSession->world().get(*node.mesh) : nullptr;
-                            return mesh && mesh->skinned;
-                        });
-                    if (skinned || !animation.getObjectRoot()
-                        || !captureV4RigidActorPose(
-                            *animation.getObjectRoot(), *skeleton->payload, global, mLastDiagnostic))
-                    {
-                        compatible = false;
-                        if (mLastDiagnostic.empty())
-                            mLastDiagnostic = "actor cannot supply its evaluated pose";
-                        mLastDiagnostic
-                            += " actor=" + *identity + " model=" + std::string(animation.getV4SourceModel().value());
-                        return;
-                    }
-                }
-                else
-                {
-                    std::vector<SceneUtil::Bone*> evaluatedBones;
-                    evaluatedBones.reserve(skeleton->payload->bones.size());
-                    for (const RenderCore::BoneRecord& bone : skeleton->payload->bones)
-                    {
-                        SceneUtil::Bone* sourceBone = evaluated->getBone(bone.name);
-                        if (!sourceBone)
-                        {
-                            compatible = false;
-                            mLastDiagnostic = "evaluated actor skeleton is missing required bone " + bone.name
-                                + " from " + skeleton->sourceIdentity;
-                            return;
-                        }
-                        evaluatedBones.push_back(sourceBone);
-                    }
-                    evaluated->updateBoneMatrices(mPoseTraversal);
-                    global.reserve(evaluatedBones.size());
-                    for (const SceneUtil::Bone* bone : evaluatedBones)
-                        global.push_back(toGlm(bone->mMatrixInSkeletonSpace));
-                }
-
                 RenderCore::SkeletonPoseInput pose;
                 pose.instance = *handle;
                 pose.skeleton = *instance->skeleton;
-                pose.localTransforms.resize(global.size());
-                for (std::size_t i = 0; i < global.size(); ++i)
+
+                V4NativeAnimationPoseResult nativePose;
+                if (evaluated && mNativeAnimation)
+                    nativePose = mNativeAnimation->captureSkeletonPose(animation, *skeleton, pose.localTransforms);
+
+                std::vector<glm::mat4> global;
+                if (nativePose.applied())
                 {
-                    const std::int32_t parent = skeleton->payload->bones[i].parent;
-                    pose.localTransforms[i]
-                        = parent < 0 ? global[i] : glm::inverse(global[static_cast<std::size_t>(parent)]) * global[i];
-                    if (!finite(pose.localTransforms[i]))
+                    ++nativeActorPoses;
+                    nativeSampledTracks += nativePose.sampledTracks;
+                }
+                else
+                {
+                    ++legacyActorPoses;
+                    if (Debug::GameplayDiagnostics::sampling() && evaluated
+                        && nativeFallbackEvents++ < 4 && !nativePose.diagnostic.empty())
+                        Debug::GameplayDiagnostics::recordEvent("native_animation_fallback",
+                            { { "identity", *identity }, { "reason", nativePose.diagnostic } });
+
+                    if (!evaluated)
+                    {
+                        const bool skinned = std::any_of(model->payload->nodes.begin(), model->payload->nodes.end(),
+                            [&](const RenderCore::ModelNodeRecord& node) {
+                                const auto* mesh = node.mesh ? mSession->world().get(*node.mesh) : nullptr;
+                                return mesh && mesh->skinned;
+                            });
+                        if (skinned || !animation.getObjectRoot()
+                            || !captureV4RigidActorPose(
+                                *animation.getObjectRoot(), *skeleton->payload, global, mLastDiagnostic))
+                        {
+                            compatible = false;
+                            if (mLastDiagnostic.empty())
+                                mLastDiagnostic = "actor cannot supply its evaluated pose";
+                            mLastDiagnostic
+                                += " actor=" + *identity + " model=" + std::string(animation.getV4SourceModel().value());
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        std::vector<SceneUtil::Bone*> evaluatedBones;
+                        evaluatedBones.reserve(skeleton->payload->bones.size());
+                        for (const RenderCore::BoneRecord& bone : skeleton->payload->bones)
+                        {
+                            SceneUtil::Bone* sourceBone = evaluated->getBone(bone.name);
+                            if (!sourceBone)
+                            {
+                                compatible = false;
+                                mLastDiagnostic = "evaluated actor skeleton is missing required bone " + bone.name
+                                    + " from " + skeleton->sourceIdentity;
+                                return;
+                            }
+                            evaluatedBones.push_back(sourceBone);
+                        }
+                        evaluated->updateBoneMatrices(mPoseTraversal);
+                        global.reserve(evaluatedBones.size());
+                        for (const SceneUtil::Bone* bone : evaluatedBones)
+                            global.push_back(toGlm(bone->mMatrixInSkeletonSpace));
+                    }
+
+                    pose.localTransforms.resize(global.size());
+                    for (std::size_t i = 0; i < global.size(); ++i)
+                    {
+                        const std::int32_t parent = skeleton->payload->bones[i].parent;
+                        pose.localTransforms[i]
+                            = parent < 0 ? global[i]
+                                       : glm::inverse(global[static_cast<std::size_t>(parent)]) * global[i];
+                        if (!finite(pose.localTransforms[i]))
+                        {
+                            compatible = false;
+                            mLastDiagnostic = "evaluated actor pose contains a non-finite local transform";
+                            return;
+                        }
+                    }
+                }
+
+                if (pose.localTransforms.size() != skeleton->payload->bones.size())
+                {
+                    compatible = false;
+                    mLastDiagnostic = "actor pose does not match the published skeleton bone count";
+                    return;
+                }
+                for (const glm::mat4& local : pose.localTransforms)
+                {
+                    if (!finite(local))
                     {
                         compatible = false;
-                        mLastDiagnostic = "evaluated actor pose contains a non-finite local transform";
+                        mLastDiagnostic = "actor pose contains a non-finite local transform";
                         return;
                     }
                 }
+
                 if (Debug::GameplayDiagnostics::detailedSampling() && source.skeletonPoses.size() < 16)
                     Debug::GameplayDiagnostics::recordEvent("actor_pose",
                         { { "actor",
                               std::to_string(mSession->world().epoch().value()) + ":" + std::to_string(handle->slot())
                                   + ":" + std::to_string(handle->generation()) },
                             { "identity", *identity }, { "skeleton", skeleton->sourceIdentity },
-                            { "bones", std::to_string(global.size()) },
-                            { "global_hash",
-                                std::to_string(Debug::GameplayDiagnostics::fingerprint(
+                            { "bones", std::to_string(pose.localTransforms.size()) },
+                            { "source", nativePose.applied() ? "native_kf" : "legacy_osg" },
+                            { "global_hash", nativePose.applied() ? "not_captured"
+                                : std::to_string(Debug::GameplayDiagnostics::fingerprint(
                                     global.data(), global.size() * sizeof(glm::mat4))) },
                             { "local_hash",
                                 std::to_string(Debug::GameplayDiagnostics::fingerprint(
@@ -1438,6 +1482,13 @@ namespace MWRender
                 currentActorLights.insert(light.identity);
             }
         });
+        if (Debug::GameplayDiagnostics::sampling())
+            Debug::GameplayDiagnostics::recordEvent("native_animation_runtime",
+                { { "native_actor_poses", std::to_string(nativeActorPoses) },
+                    { "legacy_actor_poses", std::to_string(legacyActorPoses) },
+                    { "sampled_tracks", std::to_string(nativeSampledTracks) },
+                    { "legacy_control",
+                        std::getenv("OPENMW_V4_LEGACY_ANIMATION_CAPTURE_CONTROL") ? "1" : "0" } });
         if (compatible)
         {
             for (const std::string& identity : mActorLights)
