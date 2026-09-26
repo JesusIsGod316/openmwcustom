@@ -112,7 +112,7 @@ namespace RenderNative
             const auto* name = static_cast<const Nif::NiStringExtraData*>(extra.getPtr());
             const auto* keyframe = static_cast<const Nif::NiKeyframeController*>(controller.getPtr());
             TransformTrackCompileResult track = NifControllerCompiler::compileTransformTrack(*keyframe);
-            if (!track.supported())
+            if (track.unsupported())
             {
                 ++result.clip.unsupportedControllers;
                 if (result.diagnostic.empty())
@@ -122,6 +122,8 @@ namespace RenderNative
                 }
                 continue;
             }
+            if (!track.bindable())
+                continue;
             if (!track.hasKeys())
                 ++result.clip.emptyControllers;
 
