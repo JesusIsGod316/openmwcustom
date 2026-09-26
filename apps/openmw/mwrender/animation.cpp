@@ -2812,7 +2812,7 @@ namespace MWRender
             };
         }
 
-        if (mAccumRoot)
+        if (mAccumRoot && mAccumCtrl)
         {
             state.accumulationBone = mAccumRoot->getName();
             state.accumulationAxes
