@@ -1,6 +1,8 @@
 #include "nifassetservice.hpp"
 
+#include <memory>
 #include <string>
+#include <utility>
 
 namespace RenderNative
 {
@@ -23,7 +25,8 @@ namespace RenderNative
             result.status = NifAssetResolveStatus::Reused;
             result.model = *existing;
             result.skeleton = mModels.findSkeleton(identity);
-            result.namedVisualCapabilities = metadata->second;
+            result.namedVisualCapabilities = metadata->second.namedVisualCapabilities;
+            result.controllers = metadata->second.controllers;
             return result;
         }
 
@@ -56,6 +59,7 @@ namespace RenderNative
         result.model = published.model;
         result.skeleton = published.skeleton;
         result.namedVisualCapabilities = compiled.namedVisualCapabilities;
+        result.controllers = std::move(controllers);
         result.diagnostic = std::move(compiled.diagnostic);
         return result;
     }
