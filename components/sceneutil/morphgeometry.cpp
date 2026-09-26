@@ -6,6 +6,7 @@
 #include <cassert>
 #include <stdexcept>
 #include <components/resource/scenemanager.hpp>
+#include <components/debug/p8dynamicdrawtelemetry.hpp>
 
 namespace SceneUtil
 {
@@ -65,6 +66,8 @@ namespace SceneUtil
                 vertexArray->setVertexBufferObject(vbo);
                 to.setVertexArray(vertexArray);
             }
+
+            Debug::P8DynamicDrawTelemetry::install(to, "morph_geometry");
         }
     }
 
@@ -197,6 +200,9 @@ namespace SceneUtil
             return getGeometry(mLastFrameNumber);
 
         osg::Geometry& geom = *getGeometry(traversalNumber);
+        const bool p8Measure = Debug::V3Diagnostics::p8DeformWriter().enabled();
+        const auto p8Start
+            = p8Measure ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         const osg::Vec3Array* positionSrc = mMorphTargets[0].getOffsets();
         auto* positionDst = dynamic_cast<osg::Vec3Array*>(geom.getVertexArray());
         if (!positionSrc || !positionDst || positionSrc->size() != positionDst->size())
@@ -229,6 +235,13 @@ namespace SceneUtil
         mDirty = false;
         mLastFrameNumber = traversalNumber;
         mGeometryEvaluated = true;
+        if (p8Measure)
+        {
+            const auto stats = Debug::P8DynamicDrawTelemetry::inspect(&geom);
+            Debug::P8DynamicDrawTelemetry::recordDeformation("morph", getName(),
+                Debug::V3Diagnostics::elapsedMs(p8Start),
+                positionDst ? positionDst->size() : 0, mMorphTargets.size(), stats.bufferBytes);
+        }
         return &geom;
     }
 
