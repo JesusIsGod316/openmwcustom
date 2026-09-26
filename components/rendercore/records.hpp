@@ -898,13 +898,13 @@ namespace RenderCore
         // or non-uniform transforms that are not losslessly representable as a
         // translation/quaternion/uniform-scale tuple.
         glm::mat4 bindLocal{ 1.0f };
+        glm::mat4 inverseBind{ 1.0f };
         // Phase 3 native animation needs to replace only the authored bone
         // node transform while retaining any static non-bone ancestors between
-        // skeleton bones. Their product is sourceParentPath; sourceLocal is the
-        // exact parsed local transform of the authored bone node itself.
+        // skeleton bones. Keep these fields after the historical record members
+        // so older aggregate initializers retain their positional meaning.
         glm::mat4 sourceParentPath{ 1.0f };
         glm::mat4 sourceLocal{ 1.0f };
-        glm::mat4 inverseBind{ 1.0f };
     };
 
     struct SkeletonPayload
