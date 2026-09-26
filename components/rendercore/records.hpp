@@ -905,6 +905,7 @@ namespace RenderCore
         // so older aggregate initializers retain their positional meaning.
         glm::mat4 sourceParentPath{ 1.0f };
         glm::mat4 sourceLocal{ 1.0f };
+        bool sourceAnimationBoundary = false;
     };
 
     struct SkeletonPayload
