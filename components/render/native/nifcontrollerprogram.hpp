@@ -298,6 +298,7 @@ namespace RenderNative
     {
         Compiled,
         Empty,
+        MissingSourceData,
         UnsupportedInterpolator,
     };
 
@@ -306,9 +307,15 @@ namespace RenderNative
         TransformTrackCompileStatus status = TransformTrackCompileStatus::Empty;
         TransformControllerTrack track;
 
-        [[nodiscard]] bool supported() const noexcept
+        [[nodiscard]] bool bindable() const noexcept
         {
-            return status != TransformTrackCompileStatus::UnsupportedInterpolator;
+            return status == TransformTrackCompileStatus::Compiled
+                || status == TransformTrackCompileStatus::Empty;
+        }
+
+        [[nodiscard]] bool unsupported() const noexcept
+        {
+            return status == TransformTrackCompileStatus::UnsupportedInterpolator;
         }
 
         [[nodiscard]] bool hasKeys() const noexcept
