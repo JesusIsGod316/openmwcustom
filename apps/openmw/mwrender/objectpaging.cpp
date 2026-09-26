@@ -1306,8 +1306,6 @@ namespace MWRender
         osg::Group* mergeGroup = v312MergeGroups.front().get();
         osg::ref_ptr<Resource::TemplateMultiRef> templateRefs = new Resource::TemplateMultiRef;
         osgUtil::StateToCompile stateToCompile(0, nullptr);
-        stateToCompile._assignPBOToImages
-            = static_cast<bool>(Settings::cells().mOptimizedMWTexturePboStaging);
         CopyOp copyop(activeGrid, copyMask);
 
         const bool buildOccluders = Settings::camera().mOcclusionCulling && Settings::camera().mOcclusionCullingStatics;
