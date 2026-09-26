@@ -60,6 +60,7 @@ def main() -> int:
         "struct MorphControllerProgram",
         "ControllerTiming",
         "evaluateAutoplay",
+        "glm::slerp",
         "class NifControllerCompiler",
     ))
     required(PROGRAM_CPP, (
@@ -70,7 +71,6 @@ def main() -> int:
         "RC_NiGeomMorpherController",
         "ControllerExtrapolation::Cycle",
         "ControllerExtrapolation::Reverse",
-        "glm::slerp",
     ))
     required(SEMANTIC_HPP, (
         "NifControllerProgram controllers;",
