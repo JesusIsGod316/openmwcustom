@@ -898,12 +898,15 @@ namespace
 
                 glm::mat4 sourceParentPath(1.0f);
                 std::uint32_t sourceParentControllerFlags = 0;
+                std::vector<std::string> sourceParentPathNodes;
                 for (auto it = path.rbegin(); it != path.rend(); ++it)
                 {
                     if (*it != modelNode)
                     {
                         sourceParentPath *= mResult.model.nodes[*it].localTransform;
                         sourceParentControllerFlags |= mResult.model.nodes[*it].controllerFlags;
+                        sourceParentPathNodes.push_back(
+                            Misc::StringUtils::lowerCase(mSourceNodes[*it]->mName));
                     }
                 }
                 const glm::mat4 sourceLocal = mResult.model.nodes[modelNode].localTransform;
@@ -926,6 +929,7 @@ namespace
                 bone.sourceAnimationBoundary = true;
                 bone.sourceControllerFlags = mResult.model.nodes[modelNode].controllerFlags;
                 bone.sourceParentControllerFlags = sourceParentControllerFlags;
+                bone.sourceParentPathNodes = std::move(sourceParentPathNodes);
                 bone.inverseBind = glm::inverse(global);
                 modelToBone[modelNode] = payload->bones.size();
                 payload->bones.push_back(std::move(bone));
