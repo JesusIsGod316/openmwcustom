@@ -96,6 +96,15 @@ namespace Settings
         SettingValue<bool> mOptimizedMWTerrainPhasedCompile{
             mIndex, "Cells", "optimizedmw terrain phased compile" };
 
+        // P6 stutter-first residency experiments. All remain default-off.
+        SettingValue<int> mOptimizedMWResidencySchedulerMode{
+            mIndex, "Cells", "optimizedmw residency scheduler mode",
+            makeClampSanitizerInt(0, 2) };
+        SettingValue<bool> mOptimizedMWTerrainImmutableVertexReuse{
+            mIndex, "Cells", "optimizedmw terrain immutable vertex reuse" };
+        SettingValue<bool> mOptimizedMWTexturePboStaging{
+            mIndex, "Cells", "optimizedmw texture pbo staging" };
+
         SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
         SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
             makeClampSanitizerInt(64, 16384) };
