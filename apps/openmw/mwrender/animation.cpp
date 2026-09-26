@@ -2747,39 +2747,34 @@ namespace MWRender
             return false;
         }
 
-        // Smooth-transition callbacks intentionally retain the exact evaluated
-        // compatibility path until their interpolation is complete. Native
-        // substitution resumes automatically on steady frames.
-        for (const auto& [node, controller] : mAnimBlendControllers)
+        // Only callbacks attached to the current animation selection matter.
+        // The blend-controller caches intentionally outlive a group switch, so
+        // inspecting the cache maps would let a detached, unfinished controller
+        // force compatibility fallback forever.
+        for (const auto& [node, callback] : mActiveControllers)
         {
-            if (controller && controller->isInterpolating())
+            if (const auto* controller = dynamic_cast<const NifAnimBlendController*>(callback.get());
+                controller && controller->isInterpolating())
             {
                 diagnostic = "NIF animation blend interpolation is active";
                 return false;
             }
-        }
-        for (const auto& [node, controller] : mBoneAnimBlendControllers)
-        {
-            if (controller && controller->isInterpolating())
+            if (const auto* controller = dynamic_cast<const BoneAnimBlendController*>(callback.get());
+                controller && controller->isInterpolating())
             {
                 diagnostic = "OSG bone animation blend interpolation is active";
                 return false;
             }
-        }
-        for (const auto& [node, controller] : mHybridNifControllers)
-        {
-            if (controller && controller->hasActiveBlend())
+            if (const auto* controller = dynamic_cast<const HybridNifAnimController*>(callback.get());
+                controller && controller->hasActiveBlend())
             {
                 diagnostic = "hybrid first-person visual animation blend is active";
                 return false;
             }
-        }
 
-        // Head/body/weapon pitch controllers are gameplay/view-driven
-        // post-transforms. Until their neutral equivalent is published, any
-        // enabled instance forces exact compatibility capture for this actor.
-        for (const auto& [node, callback] : mActiveControllers)
-        {
+            // Head/body/weapon pitch controllers are gameplay/view-driven
+            // post-transforms. Until their neutral equivalent is published, any
+            // enabled instance forces exact compatibility capture for this actor.
             const auto* rotate = dynamic_cast<const RotateController*>(callback.get());
             if (rotate && rotate->isEnabled())
             {
