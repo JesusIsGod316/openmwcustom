@@ -1,7 +1,9 @@
 #ifndef OPENMW_COMPONENTS_RENDER_NATIVE_NIFSEMANTICCOMPILER_H
 #define OPENMW_COMPONENTS_RENDER_NATIVE_NIFSEMANTICCOMPILER_H
 
-#include "nifcontrollerprogram.hpp"\n\n#include <components/nifrender/niftranslator.hpp>
+#include "nifcontrollerprogram.hpp"
+
+#include <components/nifrender/niftranslator.hpp>
 #include <components/vfs/pathutil.hpp>
 
 #include <cstdint>
@@ -37,8 +39,9 @@ namespace RenderNative
     {
         NifSemanticCompileStatus status = NifSemanticCompileStatus::InvalidSource;
         NifRender::TranslationBundle bundle;
+        NifControllerProgram controllers;
         // Source-authored named visual capabilities are extracted from the same
-        // parsed NIF so callers do not need a second parse or an OSG node tree.
+        // parsed NIF so callers do not need a second parse or a legacy scene tree.
         std::uint64_t namedVisualCapabilities = 0;
         std::string diagnostic;
 
@@ -56,16 +59,12 @@ namespace RenderNative
         }
     };
 
-    // VulkanMW Phase 1 source-side compiler.
+    // VulkanMW native source-side compiler.
     //
     // Authored NIF data is parsed from the winning OpenMW VFS entry and compiled
-    // directly into the existing backend-neutral NifRender/RenderCore semantic
-    // bundle. No osg::Node, StateSet, Drawable, Geometry, NodeVisitor, SceneUtil
-    // object, VSG object, or Vulkan object participates in this boundary.
-    //
-    // The parsed-file overload exists so callers that also need source metadata
-    // can parse exactly once and share the same FileView without constructing an
-    // OSG scene. The path overload is the normal one-shot native asset entry.
+    // directly into backend-neutral NifRender/RenderCore semantic payloads plus
+    // the Phase 3 controller program. The parsed-file overload lets both products
+    // share one FileView and one winning VFS parse.
     class NifSemanticCompiler final
     {
     public:
