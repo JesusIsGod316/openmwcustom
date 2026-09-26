@@ -193,7 +193,8 @@ namespace MWRender
             {
                 const RenderCore::BoneRecord& bone = payload->bones[i];
                 binding.indices.emplace(Misc::StringUtils::lowerCase(bone.name), i);
-                binding.sourceLocal.push_back(decomposeNifLocal(bone.sourceLocal));
+                binding.sourceLocal.push_back(
+                    bone.sourceAnimationBoundary ? decomposeNifLocal(bone.sourceLocal) : std::nullopt);
             }
             return binding;
         }
