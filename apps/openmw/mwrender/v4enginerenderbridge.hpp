@@ -47,6 +47,7 @@ namespace MWRender
 {
     class V4SkyCapture;
     class V4ObjectCapturePlans;
+    class V4NativeAnimationRuntime;
     class RenderingManager;
     // Build-gated application bridge for the distinct VSG route. It creates the
     // session directly from OpenMW's winning VFS, hands the world an observer
@@ -121,6 +122,7 @@ namespace MWRender
         bool mGuiOnlyFramePresented = false;
         std::unique_ptr<RenderCore::BoundedParallelFor> mEffectPublicationWorkers;
         std::unique_ptr<V4ObjectCapturePlans> mObjectCapturePlans;
+        std::unique_ptr<V4NativeAnimationRuntime> mNativeAnimation;
         RenderCore::PersistentDrawWorld mPersistentDraws;
         unsigned int mPoseTraversal = 0;
         struct ComposedActorEntry
