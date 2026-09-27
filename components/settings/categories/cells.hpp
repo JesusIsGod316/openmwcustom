@@ -117,6 +117,13 @@ namespace Settings
         SettingValue<bool> mOptimizedMWParallelTerrainCpuPrep{
             mIndex, "Cells", "optimizedmw parallel terrain cpu prep" };
 
+        // P8-HL1 ceiling probe. Startup-only OpenGL threading selection:
+        // 0=OSG automatic/current behavior, 1=DrawThreadPerContext,
+        // 2=CullDrawThreadPerContext, 3=SingleThreaded.
+        SettingValue<int> mOptimizedMWOsgThreadingMode{
+            mIndex, "Cells", "optimizedmw osg threading mode",
+            makeClampSanitizerInt(0, 3) };
+
         SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
         SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
             makeClampSanitizerInt(64, 16384) };
