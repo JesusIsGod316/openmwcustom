@@ -2192,6 +2192,32 @@ void OMW::Engine::go()
     // Do not try to outsmart the OS thread scheduler (see bug #4785).
     mViewer->setUseConfigureAffinity(false);
 
+    // OptimizedMW P8-HL1: startup-only OpenGL ceiling probe. Mode 0 deliberately
+    // leaves OSG AutomaticSelection untouched so the current P7/P8 control path
+    // remains exact. Vulkan has its own frame coordinator and ignores this probe.
+    if (!mUseVulkanRenderer)
+    {
+        const int optimizedThreadingMode = static_cast<int>(Settings::cells().mOptimizedMWOsgThreadingMode);
+        switch (optimizedThreadingMode)
+        {
+            case 1:
+                mViewer->setThreadingModel(osgViewer::ViewerBase::DrawThreadPerContext);
+                Log(Debug::Info) << "OptimizedMW P8-HL1 OSG threading probe: DrawThreadPerContext";
+                break;
+            case 2:
+                mViewer->setThreadingModel(osgViewer::ViewerBase::CullDrawThreadPerContext);
+                Log(Debug::Info) << "OptimizedMW P8-HL1 OSG threading probe: CullDrawThreadPerContext";
+                break;
+            case 3:
+                mViewer->setThreadingModel(osgViewer::ViewerBase::SingleThreaded);
+                Log(Debug::Info) << "OptimizedMW P8-HL1 OSG threading probe: SingleThreaded";
+                break;
+            default:
+                Log(Debug::Info) << "OptimizedMW P8-HL1 OSG threading probe: AutomaticSelection control";
+                break;
+        }
+    }
+
     mEnvironment.setFrameRateLimit(Settings::video().mFramerateLimit);
 
     prepareEngine();
