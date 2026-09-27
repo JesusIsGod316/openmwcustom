@@ -25,6 +25,16 @@ namespace Settings
         SettingValue<int> mStompIntensity{ mIndex, "Groundcover", "stomp intensity",
             makeEnumSanitizerInt({ 0, 1, 2 }) };
         SettingValue<bool> mPointLighting{ mIndex, "Groundcover", "point lighting" };
+
+        // OptimizedMW P8G2 shader-only groundcover experiments.
+        // 0 = exact stock shader path, 1 = same-quality arithmetic/branch fast path,
+        // 2 = mode 1 + reduced-harmonic wind ceiling probe.
+        SettingValue<int> mOptimizedMWGpuPath{
+            mIndex, "Groundcover", "optimizedmw gpu path",
+            makeClampSanitizerInt(0, 2) };
+        // Quality-risk ceiling probe. True preserves current shadow receiving.
+        SettingValue<bool> mOptimizedMWShadowReceive{
+            mIndex, "Groundcover", "optimizedmw shadow receive" };
     };
 }
 
