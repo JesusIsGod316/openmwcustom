@@ -5,6 +5,10 @@ find_package(glm CONFIG REQUIRED)
 enable_testing()
 find_package(Threads REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+# Run the shader/source contract before the expensive Windows dependency build.
+# The real VSG smoke still compiles GLSL and validates descriptors/realization.
+add_test(NAME vulkanmw-legacy-material-source-contract
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-legacy-material-source-contract.py)
 add_test(NAME vulkanmw-isolated-profile
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-vulkan-profile.py)
 add_test(NAME vulkanmw-frame-profile-report
