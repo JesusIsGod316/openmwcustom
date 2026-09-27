@@ -46,6 +46,7 @@ uniform float osg_SimulationTime;
 uniform mat4 osg_ViewMatrixInverse;
 uniform mat4 osg_ViewMatrix;
 uniform float windSpeed;
+uniform vec4 groundcoverWindCoefficients;
 uniform vec3 playerPos;
 
 centroid varying vec4 passColor;
@@ -61,22 +62,43 @@ centroid varying vec4 passColor;
 
 vec2 groundcoverDisplacement(in vec3 worldpos, float h)
 {
-    vec2 windDirection = vec2(1.0);
     vec3 footPos = playerPos;
-    vec3 windVec = vec3(windSpeed * windDirection, 1.0);
+    vec2 harmonics = vec2(0.0);
 
+#if @optimizedmwGroundcoverGpuPath >= 1
+#if @optimizedmwGroundcoverGpuPath >= 2
+    // Deliberately visual-risk ceiling probe: keep the largest and finest wind terms.
+    harmonics += vec2(groundcoverWindCoefficients.x
+        * sin(1.0*osg_SimulationTime + worldpos.xy / 1100.0));
+    harmonics += vec2(groundcoverWindCoefficients.w
+        * sin(5.0*osg_SimulationTime + worldpos.xy / 200.0));
+#else
+    // Same algebra as the established path, with uniform wind-only terms
+    // precomputed once per frame instead of once per vertex.
+    harmonics += vec2(groundcoverWindCoefficients.x
+        * sin(1.0*osg_SimulationTime + worldpos.xy / 1100.0));
+    harmonics += vec2(groundcoverWindCoefficients.y
+        * cos(2.0*osg_SimulationTime + worldpos.xy / 750.0));
+    harmonics += vec2(groundcoverWindCoefficients.z
+        * sin(3.0*osg_SimulationTime + worldpos.xy / 500.0));
+    harmonics += vec2(groundcoverWindCoefficients.w
+        * sin(5.0*osg_SimulationTime + worldpos.xy / 200.0));
+#endif
+#else
+    vec2 windDirection = vec2(1.0);
+    vec3 windVec = vec3(windSpeed * windDirection, 1.0);
     float v = length(windVec);
     vec2 displace = vec2(2.0 * windVec + 0.1);
-    vec2 harmonics = vec2(0.0);
 
     harmonics += vec2((1.0 - 0.10*v) * sin(1.0*osg_SimulationTime + worldpos.xy / 1100.0));
     harmonics += vec2((1.0 - 0.04*v) * cos(2.0*osg_SimulationTime + worldpos.xy / 750.0));
     harmonics += vec2((1.0 + 0.14*v) * sin(3.0*osg_SimulationTime + worldpos.xy / 500.0));
     harmonics += vec2((1.0 + 0.28*v) * sin(5.0*osg_SimulationTime + worldpos.xy / 200.0));
+    harmonics *= displace;
+#endif
 
     vec2 stomp = vec2(0.0);
 #if STOMP
-    float d = length(worldpos.xy - footPos.xy);
 #if STOMP_INTENSITY_LEVEL == 0
     // Gentle intensity
     const float STOMP_RANGE = 50.0; // maximum distance from player that grass is affected by stomping
@@ -90,15 +112,27 @@ vec2 groundcoverDisplacement(in vec3 worldpos, float h)
     const float STOMP_RANGE = 150.0;
     const float STOMP_DISTANCE = 60.0;
 #endif
+
+#if @optimizedmwGroundcoverGpuPath >= 1
+    vec2 stompDelta = worldpos.xy - footPos.xy;
+    float stompDistanceSquared = dot(stompDelta, stompDelta);
+    if (stompDistanceSquared < STOMP_RANGE * STOMP_RANGE && stompDistanceSquared > 0.0)
+    {
+        float d = sqrt(stompDistanceSquared);
+        stomp = (STOMP_DISTANCE / d - STOMP_DISTANCE / STOMP_RANGE) * stompDelta;
+    }
+#else
+    float d = length(worldpos.xy - footPos.xy);
     if (d < STOMP_RANGE && d > 0.0)
         stomp = (STOMP_DISTANCE / d - STOMP_DISTANCE / STOMP_RANGE) * (worldpos.xy - footPos.xy);
+#endif
 
 #ifdef STOMP_HEIGHT_SENSITIVE
     stomp *= clamp((worldpos.z - footPos.z) / h, 0.0, 1.0);
 #endif
 #endif
 
-    return clamp(0.02 * h, 0.0, 1.0) * (harmonics * displace + stomp);
+    return clamp(0.02 * h, 0.0, 1.0) * (harmonics + stomp);
 }
 
 mat4 rotation(in vec3 angle)
@@ -127,12 +161,42 @@ mat3 rotation3(in mat4 rot4)
 
 void main(void)
 {
-    Material material = getMaterial();
-
     vec3 position = aOffset.xyz;
     float scale = aOffset.w;
 
+#if @optimizedmwGroundcoverGpuPath >= 1
+    vec4 instanceBaseViewPos = gl_ModelViewMatrix * vec4(position, 1.0);
+    if (dot(instanceBaseViewPos.xyz, instanceBaseViewPos.xyz)
+        > @groundcoverFadeEnd * @groundcoverFadeEnd)
+    {
+        // Same degenerate output used by the established path, but before
+        // rotation, wind and lighting work for the rejected instance.
+        gl_ClipVertex = instanceBaseViewPos;
+        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+#endif
+
+    Material material = getMaterial();
+
+#if @optimizedmwGroundcoverGpuPath >= 1
+    mat4 instanceRotation;
+    if (aRotation.x == 0.0 && aRotation.y == 0.0)
+    {
+        float sin_z = sin(aRotation.z);
+        float cos_z = cos(aRotation.z);
+        instanceRotation = mat4(
+            cos_z, -sin_z, 0.0, 0.0,
+            sin_z,  cos_z, 0.0, 0.0,
+            0.0,    0.0,   1.0, 0.0,
+            0.0,    0.0,   0.0, 1.0);
+    }
+    else
+        instanceRotation = rotation(aRotation);
+    mat4 rotation = instanceRotation;
+#else
     mat4 rotation = rotation(aRotation);
+#endif
     vec4 displacedVertex = rotation * scale * gl_Vertex;
 
     displacedVertex = vec4(displacedVertex.xyz + position, 1.0);
@@ -144,10 +208,14 @@ void main(void)
     gl_ClipVertex = viewPos;
     euclideanDepth = length(viewPos.xyz);
 
+#if @optimizedmwGroundcoverGpuPath >= 1
+    gl_Position = viewToClip(viewPos);
+#else
     if (length(gl_ModelViewMatrix * vec4(position, 1.0)) > @groundcoverFadeEnd)
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
     else
         gl_Position = viewToClip(viewPos);
+#endif
 
     linearDepth = getLinearDepth(gl_Position.z, viewPos.z);
 
@@ -157,7 +225,7 @@ void main(void)
     normalToViewMatrix *= generateTangentSpace(gl_MultiTexCoord7.xyzw * rotation, passNormal);
 #endif
 
-#if (!PER_PIXEL_LIGHTING || @shadows_enabled)
+#if (!PER_PIXEL_LIGHTING || (@shadows_enabled && @optimizedmwGroundcoverShadowReceive))
     vec3 viewNormal = normalize(gl_NormalMatrix * passNormal);
 #endif
 
@@ -184,7 +252,7 @@ void main(void)
     clampLighting(passLighting);
 #endif
 
-#if (@shadows_enabled)
+#if (@shadows_enabled && @optimizedmwGroundcoverShadowReceive)
     setupShadowCoords(viewPos, viewNormal);
 #endif
 }
