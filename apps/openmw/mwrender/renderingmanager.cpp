@@ -282,6 +282,10 @@ namespace MWRender
         globalDefines["groundcoverFadeEnd"] = std::to_string(groundcoverDistance);
         globalDefines["groundcoverStompMode"] = std::to_string(Settings::groundcover().mStompMode);
         globalDefines["groundcoverStompIntensity"] = std::to_string(Settings::groundcover().mStompIntensity);
+        globalDefines["optimizedmwGroundcoverGpuPath"]
+            = std::to_string(static_cast<int>(Settings::groundcover().mOptimizedMWGpuPath));
+        globalDefines["optimizedmwGroundcoverShadowReceive"]
+            = Settings::groundcover().mOptimizedMWShadowReceive ? "1" : "0";
 
         globalDefines["reverseZ"] = reverseZ ? "1" : "0";
 
