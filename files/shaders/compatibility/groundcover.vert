@@ -9,7 +9,11 @@
 #define GROUNDCOVER
 
 attribute vec4 aOffset;
+#if @optimizedmwGroundcoverGpuPath >= 1
+attribute vec4 aRotation;
+#else
 attribute vec3 aRotation;
+#endif
 
 #if @diffuseMap
 varying vec2 diffuseMapUV;
@@ -69,10 +73,17 @@ vec2 groundcoverDisplacement(in vec3 worldpos, float h)
     vec2 displace = vec2(2.0 * windVec + 0.1);
     vec2 harmonics = vec2(0.0);
 
+#if @optimizedmwGroundcoverGpuPath >= 2
+    // P8G quality-risk ceiling probe: preserve large- and small-scale motion
+    // while dropping the two middle harmonics.
+    harmonics += vec2((1.0 - 0.10*v) * sin(1.0*osg_SimulationTime + worldpos.xy / 1100.0));
+    harmonics += vec2((1.0 + 0.28*v) * sin(5.0*osg_SimulationTime + worldpos.xy / 200.0));
+#else
     harmonics += vec2((1.0 - 0.10*v) * sin(1.0*osg_SimulationTime + worldpos.xy / 1100.0));
     harmonics += vec2((1.0 - 0.04*v) * cos(2.0*osg_SimulationTime + worldpos.xy / 750.0));
     harmonics += vec2((1.0 + 0.14*v) * sin(3.0*osg_SimulationTime + worldpos.xy / 500.0));
     harmonics += vec2((1.0 + 0.28*v) * sin(5.0*osg_SimulationTime + worldpos.xy / 200.0));
+#endif
 
     vec2 stomp = vec2(0.0);
 #if STOMP
@@ -101,6 +112,12 @@ vec2 groundcoverDisplacement(in vec3 worldpos, float h)
     return clamp(0.02 * h, 0.0, 1.0) * (harmonics * displace + stomp);
 }
 
+#if @optimizedmwGroundcoverGpuPath >= 1
+vec3 rotateByQuaternion(in vec4 q, in vec3 v)
+{
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+#else
 mat4 rotation(in vec3 angle)
 {
     float sin_x = sin(angle.x);
@@ -124,18 +141,35 @@ mat3 rotation3(in mat4 rot4)
         rot4[1].xyz,
         rot4[2].xyz);
 }
+#endif
 
 void main(void)
 {
-    Material material = getMaterial();
-
     vec3 position = aOffset.xyz;
     float scale = aOffset.w;
 
+#if @optimizedmwGroundcoverGpuPath >= 1
+    // The stock path performs all Euler trigonometry, wind work and lighting
+    // before this exact instance-base distance test. Rejecting here preserves
+    // the same fade boundary while avoiding expensive work for whole instances
+    // that collapse to the stock degenerate clip-space point.
+    vec4 instanceBaseViewPos = gl_ModelViewMatrix * vec4(position, 1.0);
+    if (length(instanceBaseViewPos.xyz) > @groundcoverFadeEnd)
+    {
+        gl_ClipVertex = instanceBaseViewPos;
+        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
+    Material material = getMaterial();
+    vec3 rotatedVertex = rotateByQuaternion(aRotation, gl_Vertex.xyz) * scale;
+    vec4 displacedVertex = vec4(rotatedVertex + position, 1.0);
+#else
+    Material material = getMaterial();
     mat4 rotation = rotation(aRotation);
     vec4 displacedVertex = rotation * scale * gl_Vertex;
-
     displacedVertex = vec4(displacedVertex.xyz + position, 1.0);
+#endif
 
     vec4 worldPos = osg_ViewMatrixInverse * gl_ModelViewMatrix * displacedVertex;
     worldPos.xy += groundcoverDisplacement(worldPos.xyz, gl_Vertex.z);
@@ -144,20 +178,34 @@ void main(void)
     gl_ClipVertex = viewPos;
     euclideanDepth = length(viewPos.xyz);
 
+#if @optimizedmwGroundcoverGpuPath >= 1
+    gl_Position = viewToClip(viewPos);
+#else
     if (length(gl_ModelViewMatrix * vec4(position, 1.0)) > @groundcoverFadeEnd)
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
     else
         gl_Position = viewToClip(viewPos);
+#endif
 
     linearDepth = getLinearDepth(gl_Position.z, viewPos.z);
 
+#if @optimizedmwGroundcoverGpuPath >= 1
+    passNormal = rotateByQuaternion(aRotation, gl_Normal.xyz);
+#else
     passNormal = rotation3(rotation) * gl_Normal.xyz;
+#endif
     normalToViewMatrix = gl_NormalMatrix;
 #if @normalMap
+#if @optimizedmwGroundcoverGpuPath >= 1
+    vec4 rotatedTangent = vec4(
+        rotateByQuaternion(aRotation, gl_MultiTexCoord7.xyz), gl_MultiTexCoord7.w);
+    normalToViewMatrix *= generateTangentSpace(rotatedTangent, passNormal);
+#else
     normalToViewMatrix *= generateTangentSpace(gl_MultiTexCoord7.xyzw * rotation, passNormal);
 #endif
+#endif
 
-#if (!PER_PIXEL_LIGHTING || @shadows_enabled)
+#if (!PER_PIXEL_LIGHTING || (@shadows_enabled && @optimizedmwGroundcoverShadowReceive))
     vec3 viewNormal = normalize(gl_NormalMatrix * passNormal);
 #endif
 
@@ -184,7 +232,7 @@ void main(void)
     clampLighting(passLighting);
 #endif
 
-#if (@shadows_enabled)
+#if (@shadows_enabled && @optimizedmwGroundcoverShadowReceive)
     setupShadowCoords(viewPos, viewNormal);
 #endif
 }
