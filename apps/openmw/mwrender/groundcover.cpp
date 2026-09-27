@@ -201,11 +201,12 @@ namespace MWRender
         class InstancingVisitor : public osg::NodeVisitor
         {
         public:
-            explicit InstancingVisitor(
-                std::span<const Groundcover::GroundcoverEntry> instances, osg::Vec3f& chunkPosition)
+            explicit InstancingVisitor(std::span<const Groundcover::GroundcoverEntry> instances,
+                osg::Vec3f& chunkPosition, int optimizedGpuPath)
                 : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN)
                 , mInstances(instances)
                 , mChunkPosition(chunkPosition)
+                , mOptimizedGpuPath(optimizedGpuPath)
             {
             }
 
@@ -246,10 +247,26 @@ namespace MWRender
 
                 geom.setInitialBound(box);
 
-                osg::ref_ptr<osg::Vec3Array> rotations = new osg::Vec3Array(static_cast<unsigned>(mInstances.size()));
-                for (unsigned int i = 0; i < rotations->getNumElements(); i++)
+                osg::ref_ptr<osg::Array> rotations;
+                if (mOptimizedGpuPath >= 1)
                 {
-                    (*rotations)[i] = mInstances[i].mPos.asRotationVec3();
+                    osg::ref_ptr<osg::Vec4Array> quaternionRotations
+                        = new osg::Vec4Array(static_cast<unsigned>(mInstances.size()));
+                    for (unsigned int i = 0; i < quaternionRotations->getNumElements(); ++i)
+                    {
+                        const osg::Quat rotation = Misc::Convert::makeOsgQuat(mInstances[i].mPos);
+                        (*quaternionRotations)[i]
+                            = osg::Vec4f(rotation.x(), rotation.y(), rotation.z(), rotation.w());
+                    }
+                    rotations = quaternionRotations;
+                }
+                else
+                {
+                    osg::ref_ptr<osg::Vec3Array> eulerRotations
+                        = new osg::Vec3Array(static_cast<unsigned>(mInstances.size()));
+                    for (unsigned int i = 0; i < eulerRotations->getNumElements(); ++i)
+                        (*eulerRotations)[i] = mInstances[i].mPos.asRotationVec3();
+                    rotations = eulerRotations;
                 }
 
                 // Display lists do not support instancing in OSG 3.4
@@ -265,6 +282,7 @@ namespace MWRender
         private:
             std::span<const Groundcover::GroundcoverEntry> mInstances;
             osg::Vec3f mChunkPosition;
+            int mOptimizedGpuPath = 0;
         };
 
         class DensityCalculator
@@ -494,7 +512,8 @@ namespace MWRender
             // Keep link to original mesh to keep it in cache
             group->getOrCreateUserDataContainer()->addUserObject(new Resource::TemplateRef(temp));
 
-            InstancingVisitor visitor(entries, worldCenter);
+            InstancingVisitor visitor(
+                entries, worldCenter, static_cast<int>(Settings::groundcover().mOptimizedMWGpuPath));
             node->accept(visitor);
             group->addChild(node);
         }
