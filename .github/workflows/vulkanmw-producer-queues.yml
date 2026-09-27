@@ -1,0 +1,25 @@
+name: VulkanMW producer dirty queues
+on:
+  workflow_dispatch:
+  push:
+    branches: [vulkanmw/phase3c-producer-dirty-queues]
+    paths: ['.github/workflows/vulkanmw-producer-queues.yml']
+permissions:
+  contents: read
+jobs:
+  SourceWorkspace:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Export exact source for offline implementation and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format=tar 348bfe6b087b7c8b83738e12a11a7e10f9e592ef | gzip > "$RUNNER_TEMP/vulkanmw-348bfe6-source.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vulkanmw-producer-source-348bfe6
+          path: ${{ runner.temp }}/vulkanmw-348bfe6-source.tar.gz
+          retention-days: 7
