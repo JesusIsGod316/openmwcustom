@@ -10,7 +10,9 @@
 
 attribute vec4 aOffset;
 #if @optimizedmwGroundcoverGpuPath >= 1
-attribute vec4 aRotation;
+attribute vec3 aRotation0;
+attribute vec3 aRotation1;
+attribute vec3 aRotation2;
 #else
 attribute vec3 aRotation;
 #endif
@@ -113,9 +115,9 @@ vec2 groundcoverDisplacement(in vec3 worldpos, float h)
 }
 
 #if @optimizedmwGroundcoverGpuPath >= 1
-vec3 rotateByQuaternion(in vec4 q, in vec3 v)
+mat3 optimizedmwInstanceRotation()
 {
-    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+    return mat3(aRotation0, aRotation1, aRotation2);
 }
 #else
 mat4 rotation(in vec3 angle)
@@ -162,7 +164,8 @@ void main(void)
     }
 
     Material material = getMaterial();
-    vec3 rotatedVertex = rotateByQuaternion(aRotation, gl_Vertex.xyz) * scale;
+    mat3 instanceRotation = optimizedmwInstanceRotation();
+    vec3 rotatedVertex = instanceRotation * gl_Vertex.xyz * scale;
     vec4 displacedVertex = vec4(rotatedVertex + position, 1.0);
 #else
     Material material = getMaterial();
@@ -190,15 +193,14 @@ void main(void)
     linearDepth = getLinearDepth(gl_Position.z, viewPos.z);
 
 #if @optimizedmwGroundcoverGpuPath >= 1
-    passNormal = rotateByQuaternion(aRotation, gl_Normal.xyz);
+    passNormal = instanceRotation * gl_Normal.xyz;
 #else
     passNormal = rotation3(rotation) * gl_Normal.xyz;
 #endif
     normalToViewMatrix = gl_NormalMatrix;
 #if @normalMap
 #if @optimizedmwGroundcoverGpuPath >= 1
-    vec4 rotatedTangent = vec4(
-        rotateByQuaternion(aRotation, gl_MultiTexCoord7.xyz), gl_MultiTexCoord7.w);
+    vec4 rotatedTangent = vec4(instanceRotation * gl_MultiTexCoord7.xyz, gl_MultiTexCoord7.w);
     normalToViewMatrix *= generateTangentSpace(rotatedTangent, passNormal);
 #else
     normalToViewMatrix *= generateTangentSpace(gl_MultiTexCoord7.xyzw * rotation, passNormal);
