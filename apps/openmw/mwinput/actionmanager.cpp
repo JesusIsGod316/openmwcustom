@@ -23,6 +23,8 @@
 #include "../mwmechanics/actorutil.hpp"
 #include "../mwmechanics/npcstats.hpp"
 
+#include "../mwrender/postprocessor.hpp"
+
 #include "actions.hpp"
 #include "bindingsmanager.hpp"
 
@@ -124,11 +126,13 @@ namespace MWInput
                 windowManager->toggleDebugWindow();
                 break;
             case A_TogglePostProcessorHUD:
-                if (mViewer && mViewer->getCamera() && mViewer->getCamera()->getGraphicsContext())
+                if ((mViewer && mViewer->getCamera() && mViewer->getCamera()->getGraphicsContext())
+                    || (MWBase::Environment::get().getWorld()->getPostProcessor()
+                        && MWBase::Environment::get().getWorld()->getPostProcessor()->hasNativeFrontend()))
                     windowManager->togglePostProcessorHud();
                 else
                     windowManager->messageBox(
-                        "The legacy OpenGL post-processing debug HUD is unavailable on the V4 Vulkan renderer.");
+                        "Post-processing controls are unavailable without the native Vulkan OMWFX frontend.");
                 break;
             case A_QuickSave:
                 quickSave();

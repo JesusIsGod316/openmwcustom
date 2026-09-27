@@ -1,0 +1,298 @@
+name: VulkanMW Phase 3C Windows build and package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [vulkanmw/phase3c-native-runtime-substitution]
+    paths:
+      - 'components/render/native/**'
+      - 'components/rendercore/**'
+      - 'components/nifrender/**'
+      - 'components/resource/keyframemanager.*'
+      - 'components/render/backend/vsg/**'
+      - 'apps/openmw/CMakeLists.txt'
+      - 'apps/openmw/mwrender/animation.*'
+      - 'apps/openmw/mwrender/animblendcontroller.*'
+      - 'apps/openmw/mwrender/rotatecontroller.*'
+      - 'apps/openmw/mwrender/vulkanmw/**'
+      - 'apps/openmw/mwrender/v4engine*'
+      - 'apps/openmw/mwrender/v4scene*'
+      - 'apps/openmw/mwrender/v4semantic*'
+      - 'apps/openmw/mwrender/v4terrain*'
+      - 'tools/vulkanmw/**'
+      - '.github/workflows/vulkanmw-phase3c-windows.yml'
+
+concurrency:
+  group: vulkanmw-phase3c-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  Preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact Phase 3 parent ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          P3=87962b7d1fda6ca1d5333ee005530ce1ed2731c9
+          git cat-file -e "${P3}^{commit}"
+          test "$(git merge-base "${P3}" HEAD)" = "${P3}"
+
+      - name: Enforce VulkanMW Phase 0 through Phase 3C contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/vulkanmw/check-architecture-boundaries.py
+          python3 tools/vulkanmw/check-phase1-nif-compiler.py
+          python3 tools/vulkanmw/check-phase2-static-world.py
+          python3 tools/vulkanmw/check-phase3-controller-animation.py
+          python3 tools/vulkanmw/check-phase3-kf-compiler.py
+          python3 tools/vulkanmw/check-phase3c-native-runtime.py
+          git diff --check 87962b7d1fda6ca1d5333ee005530ce1ed2731c9 HEAD
+
+      - name: Gate full build on skeleton metadata regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libglm-dev
+          cmake -S tools/vulkanmw/tests -B build-phase3c-metadata -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-phase3c-metadata --parallel 2
+          ctest --test-dir build-phase3c-metadata --output-on-failure
+
+  Windows:
+    needs: Preflight
+    runs-on: windows-2022
+    env:
+      VCPKG_FEATURE_FLAGS: manifests,versions
+      archive: FAILEDTODOWNLOAD
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Ensure pinned VSG vcpkg baseline
+        shell: pwsh
+        run: |
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --no-tags --depth=1 origin 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+
+      - name: Configure static VSG conformance support
+        shell: pwsh
+        run: |
+          cmake `
+            -S "$env:GITHUB_WORKSPACE/tools/v4/cp3b3" `
+            -B "$env:GITHUB_WORKSPACE/build-vulkanmw-static" `
+            -G Ninja `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D CMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -D VCPKG_MANIFEST_DIR="$env:GITHUB_WORKSPACE/tools/v4/cp3b3" `
+            -D VCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE/vulkanmw-vcpkg" `
+            -D VCPKG_TARGET_TRIPLET=x64-windows
+          if ($LASTEXITCODE -ne 0) { throw "Static VSG configure failed" }
+
+      - name: Build and test static VSG conformance support
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-static" --verbose
+          if ($LASTEXITCODE -ne 0) { throw "Static VSG build failed" }
+          ctest --test-dir "$env:GITHUB_WORKSPACE/build-vulkanmw-static" -C RelWithDebInfo --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Static VSG tests failed" }
+
+      - name: Test skeleton metadata with MSVC
+        shell: pwsh
+        run: |
+          cmake -S tools/vulkanmw/tests -B build-phase3c-metadata -G Ninja `
+            -D CMAKE_BUILD_TYPE=Release `
+            -D CMAKE_PREFIX_PATH="$env:GITHUB_WORKSPACE/vulkanmw-vcpkg/x64-windows"
+          if ($LASTEXITCODE -ne 0) { throw "Phase 3C metadata configure failed" }
+          cmake --build build-phase3c-metadata
+          if ($LASTEXITCODE -ne 0) { throw "Phase 3C metadata build failed" }
+          ctest --test-dir build-phase3c-metadata --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Phase 3C metadata tests failed" }
+
+      - name: Load OpenMW dependency identity
+        shell: bash
+        run: |
+          sed '/^\s*#/d; /^\s*$/d' "${{ github.workspace }}/CI/deps_versions.msvc.sh" >> $GITHUB_ENV
+
+      - name: Download OpenMW Windows dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE/deps" | Out-Null
+          Set-Location "$env:GITHUB_WORKSPACE/deps"
+          $MANIFEST = "vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}-manifest.txt"
+          curl.exe --fail --retry 3 -L -o "$MANIFEST" "https://gitlab.com/OpenMW/openmw-deps/-/raw/main/windows/$MANIFEST"
+          if ($LASTEXITCODE -ne 0) { throw "Dependency manifest download failed" }
+          $lines = Get-Content "$MANIFEST"
+          $URL = $lines[0]
+          $split = -split $lines[1]
+          $HASH = $split[0]
+          $FILE = $split[1]
+          curl.exe --fail --retry 3 -L -o "$FILE" "$URL"
+          if ($LASTEXITCODE -ne 0) { throw "OpenMW dependency archive download failed" }
+          $filehash = Get-FileHash "$FILE" -Algorithm SHA512
+          if ($filehash.hash -ne $HASH) { throw "OpenMW dependency archive hash mismatch" }
+          "archive=$FILE" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Extract OpenMW Windows dependencies
+        shell: pwsh
+        working-directory: ${{ github.workspace }}/deps
+        run: |
+          7z x -y -ovcpkg-x64-windows-2022-${{ env.VCPKG_TAG }} $env:archive
+          if ($LASTEXITCODE -ne 0) { throw "Dependency extraction failed" }
+
+      - name: Configure production VulkanMW Phase 3C tree
+        shell: pwsh
+        run: |
+          $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
+          $vsgPrefix = "$env:GITHUB_WORKSPACE/vulkanmw-vcpkg/x64-windows"
+          cmake `
+            -S "$env:GITHUB_WORKSPACE" `
+            -B "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c" `
+            -G Ninja `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D CMAKE_TOOLCHAIN_FILE="$openmwDeps/scripts/buildsystems/vcpkg.cmake" `
+            -D CMAKE_PREFIX_PATH="$vsgPrefix" `
+            -D CMAKE_PROJECT_INCLUDE="$env:GITHUB_WORKSPACE/tools/v4/cp3b3/OpenMWRealNifTool.cmake" `
+            -D LuaJit_INCLUDE_DIR="$openmwDeps/installed/x64-windows/include/luajit" `
+            -D LuaJit_LIBRARY="$openmwDeps/installed/x64-windows/lib/lua51.lib" `
+            -D BUILD_OPENMW=ON `
+            -D OPENMW_ENABLE_V4_VULKAN_RUNTIME=ON `
+            -D OPENMW_V4_BUILD_RECOVERY_TESTS=ON `
+            -D BUILD_LAUNCHER=OFF `
+            -D BUILD_WIZARD=OFF `
+            -D BUILD_MWINIIMPORTER=OFF `
+            -D BUILD_OPENCS=OFF `
+            -D BUILD_ESSIMPORTER=OFF `
+            -D BUILD_BSATOOL=OFF `
+            -D BUILD_ESMTOOL=OFF `
+            -D BUILD_NIFTEST=OFF `
+            -D BUILD_DOCS=OFF `
+            -D BUILD_COMPONENTS_TESTS=OFF `
+            -D BUILD_BENCHMARKS=OFF `
+            -D BUILD_NAVMESHTOOL=OFF `
+            -D BUILD_BULLETOBJECTTOOL=OFF `
+            -D BUILD_OPENCS_TESTS=OFF `
+            -D BUILD_OPENMW_TESTS=OFF `
+            -D OPENMW_USE_SYSTEM_SQLITE3=OFF `
+            -D OPENMW_USE_SYSTEM_YAML_CPP=OFF `
+            -D OPENMW_LTO_BUILD=OFF
+          if ($LASTEXITCODE -ne 0) { throw "Production Phase 3C configure failed" }
+
+      - name: Build real-NIF VulkanMW conformance executable
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c" --target openmw-vulkan-nif-conformance --verbose
+          if ($LASTEXITCODE -ne 0) { throw "VulkanMW real-NIF conformance build failed" }
+
+      - name: Build production OpenMW Phase 3C
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c" --target openmw --verbose
+          if ($LASTEXITCODE -ne 0) { throw "Production OpenMW Phase 3C link failed" }
+
+      - name: Stage runnable Phase 3C package
+        shell: pwsh
+        run: |
+          $build = "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c"
+          $stage = "$env:GITHUB_WORKSPACE/VulkanMW-PHASE3C-TEST"
+          $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
+          $vsg = "$env:GITHUB_WORKSPACE/vulkanmw-vcpkg/x64-windows"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+
+          cmake --install $build --prefix $stage
+          if ($LASTEXITCODE -ne 0) { throw "VulkanMW Phase 3C install staging failed" }
+          if (-not (Test-Path "$stage/openmw.exe")) {
+            Copy-Item "$build/openmw.exe" "$stage/openmw.exe" -Force
+          }
+
+          Get-ChildItem "$openmwDeps/installed/x64-windows/bin" -Filter *.dll -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage -Force
+          Get-ChildItem "$openmwDeps/installed/x64-windows/bin/Release" -Filter *.dll -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage -Force
+          Get-ChildItem "$vsg/bin" -Filter *.dll -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage -Force
+
+          $sdlRoots = @(
+            "$build/_deps/SDL3-3.4.10/lib/x64",
+            "$build/_deps/SDL3-build",
+            "$build/_deps/SDL3-build/Release"
+          )
+          foreach ($root in $sdlRoots) {
+            if (Test-Path $root) {
+              Get-ChildItem $root -Filter *.dll -File -Recurse -ErrorAction SilentlyContinue |
+                Copy-Item -Destination $stage -Force
+            }
+          }
+
+          $osgPluginSrc = "$openmwDeps/installed/x64-windows/bin/osgPlugins-3.6.5"
+          if (Test-Path $osgPluginSrc) {
+            New-Item -ItemType Directory -Force "$stage/osgPlugins-3.6.5" | Out-Null
+            Get-ChildItem $osgPluginSrc -Filter *.dll -File |
+              Copy-Item -Destination "$stage/osgPlugins-3.6.5" -Force
+          }
+
+          @(
+            "VulkanMW PHASE 3C TEST PACKAGE",
+            "source_phase3c=${{ github.sha }}",
+            "parent_phase3=87962b7d1fda6ca1d5333ee005530ce1ed2731c9",
+            "renderer_test=Vulkan/VSG",
+            "runtime_substitution=native KF skeleton pose with fail-closed OSG fallback",
+            "legacy_control=OPENMW_V4_LEGACY_ANIMATION_CAPTURE_CONTROL",
+            "launcher=START-VulkanMW-Test.bat",
+            "status=build green only; hardware runtime acceptance pending"
+          ) | Set-Content -LiteralPath "$stage/VULKANMW-PHASE3C-TEST.txt" -Encoding Ascii
+
+          foreach ($required in @(
+            "openmw.exe",
+            "START-VulkanMW-Test.bat",
+            "architecture-benchmark.py",
+            "architecture-benchmark.lua",
+            "gameplay-diagnostics.py",
+            "diagnosticconfig.py"
+          )) {
+            if (-not (Test-Path "$stage/$required")) { throw "Package is missing $required" }
+          }
+
+      - name: Validate packaged executable and launcher
+        shell: pwsh
+        run: |
+          $stage = "$env:GITHUB_WORKSPACE/VulkanMW-PHASE3C-TEST"
+          $env:PATH = "$stage;$stage/osgPlugins-3.6.5;" + $env:PATH
+          & "$stage/openmw.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "openmw.exe --version failed with $LASTEXITCODE" }
+          & "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c/openmw-vulkan-nif-conformance.exe" --help
+          if ($LASTEXITCODE -ne 0) { throw "real-NIF conformance --help failed with $LASTEXITCODE" }
+          $launcher = Get-Content "$stage/START-VulkanMW-Test.bat" -Raw
+          if ($launcher -notmatch "--renderer vulkan" -or $launcher -notmatch "--fastpaths retained") {
+            throw "Packaged VulkanMW benchmark launcher contract failed"
+          }
+
+      - name: Upload Phase 3C build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulkanmw-phase3c-build-evidence-${{ github.sha }}
+          if-no-files-found: ignore
+          path: |
+            build-vulkanmw-static/CMakeCache.txt
+            build-vulkanmw-static/Testing/Temporary/LastTest.log
+            build-phase3c-metadata/Testing/Temporary/LastTest.log
+            build-vulkanmw-phase3c/CMakeCache.txt
+            build-vulkanmw-phase3c/.ninja_log
+
+      - name: Upload runnable VulkanMW Phase 3C package
+        uses: actions/upload-artifact@v4
+        with:
+          name: VulkanMW-PHASE3C-TEST-${{ github.sha }}
+          if-no-files-found: error
+          compression-level: 6
+          path: VulkanMW-PHASE3C-TEST/**

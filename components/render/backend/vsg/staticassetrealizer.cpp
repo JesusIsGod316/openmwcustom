@@ -5,6 +5,7 @@
 #include "livetextureimages.hpp"
 #include "persistentpipelinecache.hpp"
 #include <components/debug/gameplaydiagnostics.hpp>
+#include <components/misc/environmentflag.hpp>
 
 #include <vsg/all.h>
 #include <vsg/utils/GraphicsPipelineConfigurator.h>
@@ -343,9 +344,10 @@ namespace RenderVsg
 
     bool updateDeformedAssetRealization(const RenderCore::RenderWorld& world,
         const StaticAssetPlan& plan, const MeshPayloadResolver& resolve,
-        std::vector<StaticRealizationResult::MutableDrawStreams>& streams)
+        std::vector<StaticRealizationResult::MutableDrawStreams>& streams,
+        std::span<const glm::mat4> placements, bool persistentStreams)
     {
-        if (streams.size() != plan.draws.size())
+        if (streams.size() != plan.draws.size() || (!placements.empty() && placements.size() != streams.size()))
             return false;
         std::vector<const RenderCore::MeshPayload*> payloads;
         payloads.reserve(plan.draws.size());
@@ -362,15 +364,20 @@ namespace RenderVsg
                 || target.normals->size() != payload->positions.size()
                 || (!payload->normals.empty() && payload->normals.size() != payload->positions.size()))
                 return false;
-            for (const auto& p : payload->positions)
-                if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
-                    return false;
-            for (const auto& n : payload->normals)
-                if (!std::isfinite(n.x) || !std::isfinite(n.y) || !std::isfinite(n.z))
-                    return false;
+            // Authored rigid streams were validated when this resident was
+            // built. Its immutable dependency contract is checked by the host.
+            // Only current deformed streams need vertex-level validation.
+            if (!persistentStreams || (mesh && (mesh->skinned || mesh->morphed)))
+            {
+                for (const auto& p : payload->positions)
+                    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) return false;
+                for (const auto& n : payload->normals)
+                    if (!std::isfinite(n.x) || !std::isfinite(n.y) || !std::isfinite(n.z)) return false;
+            }
+            const auto& placement = placements.empty() ? draw.worldTransform : placements[i];
             for (int col = 0; col < 4; ++col)
                 for (int row = 0; row < 4; ++row)
-                    if (!std::isfinite(draw.worldTransform[col][row]))
+                    if (!std::isfinite(placement[col][row]))
                         return false;
             payloads.push_back(payload);
         }
@@ -378,8 +385,10 @@ namespace RenderVsg
         {
             auto& target = streams[i];
             const auto& payload = *payloads[i];
+            const auto* mesh = world.get(plan.draws[i].mesh);
+            const bool updateStreams = !persistentStreams || (mesh && (mesh->skinned || mesh->morphed));
             bool positionsChanged = false, normalsChanged = false;
-            for (std::size_t vertex = 0; vertex < payload.positions.size(); ++vertex)
+            for (std::size_t vertex = 0; updateStreams && vertex < payload.positions.size(); ++vertex)
             {
                 const auto& p = payload.positions[vertex];
                 const vsg::vec3 position(p.x, p.y, p.z);
@@ -400,9 +409,11 @@ namespace RenderVsg
                 target.positions->dirty();
             if (normalsChanged)
                 target.normals->dirty();
-            target.transform->matrix = toVsg(plan.draws[i].worldTransform);
-            if (target.sorted)
-                target.sorted->bound = drawBound(payload, plan.draws[i].worldTransform);
+            const auto& placement = placements.empty() ? plan.draws[i].worldTransform : placements[i];
+            const auto matrix = toVsg(placement);
+            if (target.sorted && (updateStreams || target.transform->matrix != matrix))
+                target.sorted->bound = drawBound(payload, placement);
+            target.transform->matrix = matrix;
         }
         return true;
     }
@@ -422,6 +433,7 @@ namespace RenderVsg
 
         StaticRealizationResult result;
         result.root = vsg::Group::create();
+        const bool persistentStreams = dynamicData && Misc::environmentFlag<"OPENMW_VK_PERSISTENT_ACTORS">();
 
         std::unordered_set<GraphicsPipelineKey, GraphicsPipelineKeyHash> pipelineKeys;
         std::unordered_set<MaterialRealizationKey, MaterialRealizationKeyHash> materialKeys;
@@ -732,7 +744,7 @@ namespace RenderVsg
 
             vsg::DataList arrays;
             auto positions = vsg::vec3Array::create(payload.positions.size());
-            if (dynamicData)
+            if (dynamicData && (!persistentStreams || mesh->skinned || mesh->morphed))
                 positions->properties.dataVariance = vsg::DYNAMIC_DATA;
             for (std::size_t i = 0; i < payload.positions.size(); ++i)
                 positions->set(i, vsg::vec3(payload.positions[i].x, payload.positions[i].y, payload.positions[i].z));
@@ -754,7 +766,7 @@ namespace RenderVsg
             }
 
             auto normals = vsg::vec3Array::create(payload.positions.size());
-            if (dynamicData)
+            if (dynamicData && (!persistentStreams || mesh->skinned || mesh->morphed))
                 normals->properties.dataVariance = vsg::DYNAMIC_DATA;
             for (std::size_t i = 0; i < payload.positions.size(); ++i)
             {
@@ -768,7 +780,7 @@ namespace RenderVsg
             for (std::size_t set = 0; set < payload.texCoordSets.size(); ++set)
             {
                 auto texCoords = vsg::vec2Array::create(payload.texCoordSets[set].size());
-                if (dynamicData)
+                if (dynamicData && !persistentStreams)
                     texCoords->properties.dataVariance = vsg::DYNAMIC_DATA;
                 for (std::size_t i = 0; i < payload.texCoordSets[set].size(); ++i)
                     texCoords->set(i, vsg::vec2(payload.texCoordSets[set][i].x, payload.texCoordSets[set][i].y));
@@ -777,7 +789,7 @@ namespace RenderVsg
             }
 
             auto colors = vsg::vec4Array::create(payload.positions.size());
-            if (dynamicData)
+            if (dynamicData && !persistentStreams)
                 colors->properties.dataVariance = vsg::DYNAMIC_DATA;
             for (std::size_t i = 0; i < payload.positions.size(); ++i)
             {

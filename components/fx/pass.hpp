@@ -13,6 +13,8 @@
 #include <osg/Vec4f>
 #include <osg/ref_ptr>
 
+#include "vulkanshader.hpp"
+
 namespace osg
 {
     class StateSet;
@@ -44,6 +46,13 @@ namespace Fx
 
         void compile(Technique& technique, std::string_view preamble);
 
+        // Reuse the parsed effect, but not its OpenGL program or state set.
+        VulkanShaderSources getVulkanSources(Technique& technique);
+        Type getType() const { return mType; }
+        auto getBlendSource() const { return mBlendSource; }
+        auto getBlendDest() const { return mBlendDest; }
+        auto getBlendEquation() const { return mBlendEq; }
+
         std::string getTarget() const { return mTarget; }
 
         const std::array<std::string, 3>& getRenderTargets() const { return mRenderTargets; }
@@ -55,7 +64,12 @@ namespace Fx
         void dirty();
 
     private:
-        std::string getPassHeader(Technique& technique, std::string_view preamble, bool fragOut = false);
+        std::string getPassHeader(Technique& technique, std::string_view preamble, bool fragOut = false,
+            VulkanShaderSources* vulkan = nullptr);
+
+        std::string mVertexBody;
+        std::string mFragmentBody;
+        std::string mSharedBody;
 
         bool mCompiled;
 

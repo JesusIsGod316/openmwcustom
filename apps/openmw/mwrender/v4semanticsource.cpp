@@ -153,10 +153,11 @@ namespace MWRender
     }
 
     std::optional<RenderCore::DynamicInstanceSource> makeV4DynamicInstanceSource(const MWWorld::Ptr& ptr,
-        RenderCore::ModelHandle model, RenderCore::SkeletonHandle skeleton, RenderCore::AxisAlignedBounds localBounds)
+        RenderCore::ModelHandle model, RenderCore::SkeletonHandle skeleton, RenderCore::AxisAlignedBounds localBounds,
+        bool skeletalObject)
     {
         if (ptr.isEmpty() || !ptr.getCell() || !model.valid() || !skeleton.valid() || !ptr.getRefData().isEnabled()
-            || !ptr.getClass().isActor())
+            || (!ptr.getClass().isActor() && !skeletalObject))
             return std::nullopt;
         const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
         const std::optional<RenderCore::ActiveCellSource> cell = makeV4ActiveCellSource(*ptr.getCell());

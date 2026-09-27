@@ -1,0 +1,19 @@
+fragment probe
+{
+    omw_In vec2 omw_TexCoord;
+    void main()
+    {
+        vec3 world = omw_GetWorldPosFromUV(omw_TexCoord);
+        float linearDepth = omw_GetLinearDepth(omw_TexCoord);
+        float axialDistance = dot(world - omw.eyePos.xyz, omw.eyeVec.xyz);
+        bool positionOk = length(omw.eyePos.xyz - omw.invViewMatrix[3].xyz) < 0.01;
+        bool directionOk = length(omw.eyeVec.xyz + omw.invViewMatrix[2].xyz) < 0.001;
+        bool depthOk = abs(axialDistance - linearDepth) < 0.01;
+        omw_FragColor = vec4(positionOk ? 0.25 : 0.0, directionOk ? 0.5 : 0.0,
+            depthOk ? 0.75 : 0.0, 1.0);
+    }
+}
+technique
+{
+    passes = probe;
+}

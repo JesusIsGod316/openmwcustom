@@ -2,6 +2,7 @@
 #define OPENMW_DEBUG_GAMEPLAYDIAGNOSTICS_H
 
 #include "runtimediagnostics.hpp"
+#include "frameprofile.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -126,6 +127,36 @@ namespace Debug::GameplayDiagnostics
     }
 
     using Clock = std::chrono::steady_clock;
+    inline bool frameProfileEnabled()
+    {
+        static const bool value = [] {
+            const char* flag = std::getenv("OPENMW_VK_FRAME_PROFILE");
+            return flag && std::string_view(flag) == "1";
+        }();
+        return value;
+    }
+    inline std::uint64_t profileTime(Clock::time_point time)
+    {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count();
+    }
+    // Static labels only. Aggregate repeated calls without per-call logging or
+    // allocation. Exclusive times subtract nested scopes on this thread only.
+    struct ProfileScope
+    {
+        unsigned token = FrameProfile::Accumulator::Invalid;
+        explicit ProfileScope(std::string_view name)
+        {
+            if (FrameProfile::accumulator.active)
+                token = FrameProfile::accumulator.enter(name, profileTime(Clock::now()));
+        }
+        ProfileScope(const ProfileScope&) = delete;
+        ProfileScope& operator=(const ProfileScope&) = delete;
+        ~ProfileScope()
+        {
+            if (token != FrameProfile::Accumulator::Invalid)
+                FrameProfile::accumulator.leave(token, profileTime(Clock::now()));
+        }
+    };
     struct CapturePhase
     {
         bool active = sampling();
@@ -143,9 +174,10 @@ namespace Debug::GameplayDiagnostics
     // early failures; all values are CPU envelopes nested in dynamic_capture.
     struct CaptureWork
     {
+        ProfileScope profile;
         bool active = sampling(), actor;
         Clock::time_point start{};
-        explicit CaptureWork(bool isActor) : actor(isActor)
+        explicit CaptureWork(bool isActor) : profile(isActor ? "capture_actor" : "capture_object"), actor(isActor)
         {
             if (active) { start=Clock::now(); actor ? ++context.captureActors : ++context.captureObjects; }
         }
@@ -193,15 +225,26 @@ namespace Debug::GameplayDiagnostics
         Clock::time_point start{};
         bool active;
         int exceptions;
+        unsigned profileToken = FrameProfile::Accumulator::Invalid;
         explicit Stage(std::string_view value) : name(value), active(sampling()), exceptions(std::uncaught_exceptions())
         {
-            if (active) { start = Clock::now(); recordEvent("stage_begin", {{"name", std::string(name)}}); }
+            if (active)
+            {
+                start = Clock::now();
+                profileToken = FrameProfile::accumulator.enter(name, profileTime(start));
+                recordEvent("stage_begin", {{"name", std::string(name)}});
+            }
         }
         ~Stage()
         {
-            if (active) recordEvent("stage_end", {{"name", std::string(name)},
-                {"ms", std::to_string(std::chrono::duration<double, std::milli>(Clock::now() - start).count())},
-                {"unwinding", std::to_string(std::uncaught_exceptions() > exceptions)}});
+            if (active)
+            {
+                const auto end = Clock::now();
+                FrameProfile::accumulator.leave(profileToken, profileTime(end));
+                recordEvent("stage_end", {{"name", std::string(name)},
+                    {"ms", std::to_string(std::chrono::duration<double, std::milli>(end - start).count())},
+                    {"unwinding", std::to_string(std::uncaught_exceptions() > exceptions)}});
+            }
         }
     };
 
@@ -229,9 +272,15 @@ namespace Debug::GameplayDiagnostics
             context = {};
             context.sample = active;
             context.frame = frame;
+            if (frameProfileEnabled())
+            {
+                FrameProfile::accumulator = {};
+                FrameProfile::accumulator.active = active;
+            }
             if (active)
             {
                 start = Clock::now();
+                FrameProfile::accumulator.enter("frame", profileTime(start));
                 recordEvent("frame_begin", {{"vulkan", std::to_string(vulkan)}, {"viewer_done", std::to_string(viewerDone)}});
             }
         }
@@ -239,6 +288,25 @@ namespace Debug::GameplayDiagnostics
         {
             if (active)
             {
+                const auto frameEnd = Clock::now();
+                auto& profile = FrameProfile::accumulator;
+                if (profile.active)
+                {
+                    profile.leave(0, profileTime(frameEnd));
+                    profile.active = false;
+                    RuntimeDiagnostics::ScopedLegacyBatch batch;
+                    for (unsigned i = 0; i < profile.size; ++i)
+                    {
+                        const auto& total = profile.totals[i];
+                        recordEvent("profile_total", {{"name", std::string(total.name)},
+                            {"inclusive_ms", std::to_string(double(total.inclusive) / 1e6)},
+                            {"exclusive_ms", std::to_string(double(total.exclusive) / 1e6)},
+                            {"max_ms", std::to_string(double(total.maximum) / 1e6)},
+                            {"calls", std::to_string(total.calls)}});
+                    }
+                    recordEvent("profile_health", {{"dropped", std::to_string(profile.dropped)},
+                        {"unclosed", std::to_string(profile.depth)}});
+                }
                 if (context.captureActors || context.captureObjects)
                 {
                     recordEvent("capture_work", {{"actors",std::to_string(context.captureActors)},
@@ -272,7 +340,7 @@ namespace Debug::GameplayDiagnostics
                         {"native_copy_ms",std::to_string(context.nativeCopyMs)}});
                 }
                 recordEvent("frame_end", {{"completed", std::to_string(completed)},
-                    {"ms", std::to_string(std::chrono::duration<double, std::milli>(Clock::now() - start).count())},
+                    {"ms", std::to_string(std::chrono::duration<double, std::milli>(frameEnd - start).count())},
                     {"skeleton_updates", std::to_string(context.skeletonUpdates)},
                     {"skeleton_skipped_cull", std::to_string(context.skeletonSkippedCull)},
                     {"skeleton_skipped_inactive", std::to_string(context.skeletonSkippedInactive)},

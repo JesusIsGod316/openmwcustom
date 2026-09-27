@@ -241,6 +241,7 @@ namespace MWRender
         void forEachAnimation(const std::function<void(Animation&)>& visitor) const;
 
         PostProcessor* getPostProcessor();
+        PostProcessor* getPostProcessor() const { return mPostProcessor.get(); }
 
         void addWaterRippleEmitter(const MWWorld::Ptr& ptr);
         void removeWaterRippleEmitter(const MWWorld::Ptr& ptr);

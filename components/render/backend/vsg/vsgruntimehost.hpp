@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_VSGRUNTIMEHOST_H
 
 #include "framecamera.hpp"
+#include "framegpuprofile.hpp"
 #include <components/debug/runtimediagnostics.hpp>
 #include "dynamicactorplan.hpp"
 #include "framecompletion.hpp"
@@ -26,6 +27,7 @@
 #include "nativepostprocess.hpp"
 #include "persistentdrawscene.hpp"
 #include "retainedscenemembership.hpp"
+#include "pipelineinventory.hpp"
 
 #include <components/rendercore/namedvisualsemantics.hpp>
 #include <components/rendercore/renderer.hpp>
@@ -62,8 +64,11 @@ namespace VsgMyGui
     class RenderManager;
 }
 
+namespace Fx { struct NativeFrame; }
+
 namespace RenderVsg
 {
+    class OmwFxRuntime;
     struct VsgShadowOptions
     {
         bool enabled = false;
@@ -143,6 +148,7 @@ namespace RenderVsg
         // Snapshot and compile mutable MyGUI state before the application releases
         // its Lua worker. renderFrame() only publishes this immutable generation.
         [[nodiscard]] bool prepareGui();
+        void setPostProcessingFrame(std::shared_ptr<const Fx::NativeFrame> frame) { mOmwfxFrame = std::move(frame); }
         [[nodiscard]] vsg::ref_ptr<vsg::ImageView> auxiliaryColorImage(
             RenderCore::RenderTargetHandle target) const noexcept;
         [[nodiscard]] std::optional<std::vector<AuxiliaryRgba8Readback>> readbackAuxiliaryRgba8(
@@ -158,10 +164,18 @@ namespace RenderVsg
         RenderCore::RenderFrameResult renderFrameImpl(
             const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame, bool guiOnly);
         using StaticResident = vsg::ref_ptr<vsg::Node>;
+        RetainedPipelineInventory mStaticPipelineInventory;
         struct StaticPopulationResident
         {
+            struct Placement
+            {
+                vsg::ref_ptr<vsg::Node> node;
+                // Private immutable bounds snapshot, not a live visibility gate.
+                vsg::ref_ptr<MainViewVisibility> bounds;
+            };
             vsg::ref_ptr<vsg::Switch> visibility;
             vsg::ref_ptr<vsg::Group> placementFreeAsset;
+            std::vector<Placement> placements;
         };
         struct WaterViewRuntime
         {
@@ -220,6 +234,8 @@ namespace RenderVsg
         [[nodiscard]] bool synchronizeAuxiliaryViews(const RenderCore::FrameRenderState& frame);
         [[nodiscard]] bool synchronizeGui();
         [[nodiscard]] bool resizePostProcess(RenderCore::Extent2D extent);
+        [[nodiscard]] bool synchronizePostProcessing(const RenderCore::FrameRenderState& frame,
+            const RenderCore::FrameView& view);
         [[nodiscard]] bool ensureActiveGraphicsPipelinesRealized();
         void reportStrictFrameDiagnostics(
             const RenderCore::FrameRenderState& frame, const RenderCore::FrameView& mainView);
@@ -266,7 +282,14 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::View> mOutputView;
         vsg::ref_ptr<vsg::Group> mPostRoot;
         NativePostProcessMode mPostMode = NativePostProcessMode::Copy;
+        std::unique_ptr<OmwFxRuntime> mOmwfx;
+        std::shared_ptr<const Fx::NativeFrame> mOmwfxFrame;
+        std::shared_ptr<const Fx::NativeFrame> mOmwfxRejectedFrame;
+        unsigned mOmwfxCaptureFrames = 0;
+        vsg::ref_ptr<vsg::Group> mOmwfxCommands;
+        vsg::ref_ptr<vsg::ubyteArray> mOmwfxLights;
         vsg::ref_ptr<vsg::CommandGraph> mCommandGraph;
+        std::vector<std::shared_ptr<FrameGpuProfile>> mFrameGpuProfiles;
         std::optional<WaterViewRuntime> mReflectionView;
         std::optional<WaterViewRuntime> mRefractionView;
         std::vector<AuxiliaryViewRuntime> mAuxiliaryViews;
@@ -287,6 +310,7 @@ namespace RenderVsg
         bool mNativeFrustumEnabled = false;
         bool mNativeOcclusionEnabled = false;
         DynamicActorPlanCache mActorPlanCache;
+        PersistentActorPlanCache mPersistentActorPlans;
         // Lazily created only for the opt-in path. Three workers plus the main
         // thread leave room for required engine/driver work on a six-core CPU.
         std::unique_ptr<RenderCore::BoundedParallelFor> mActorPreparationWorkers;

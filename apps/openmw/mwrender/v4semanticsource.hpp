@@ -35,7 +35,7 @@ namespace MWRender
 
     [[nodiscard]] std::optional<RenderCore::DynamicInstanceSource> makeV4DynamicInstanceSource(
         const MWWorld::Ptr& ptr, RenderCore::ModelHandle model, RenderCore::SkeletonHandle skeleton,
-        RenderCore::AxisAlignedBounds localBounds);
+        RenderCore::AxisAlignedBounds localBounds, bool skeletalObject = false);
 
     // Preserves authored ESM3/ESM4 light behaviour at the backend-neutral
     // boundary, including negative colors, fallback attenuation, off-default

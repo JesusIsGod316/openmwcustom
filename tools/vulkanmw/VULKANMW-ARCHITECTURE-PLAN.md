@@ -1,6 +1,6 @@
 # VulkanMW Native Renderer Architecture Plan
 
-Status: Phase 0 foundation
+Status: Phase 3C in progress; work/plan audit and execution gates updated 2026-09-27
 Project: VulkanMW
 Repository: JesusIsGod316/openmwcustom
 Foundation branch: vulkanmw/phase0-foundation
@@ -8,6 +8,64 @@ Accepted OpenGL base: optimizedmw/gl-p1p2-repair-ffpb@41ff409f8ba8fce55f57eecb8e
 Parked Vulkan reference: codex/cp4f-material-frame-repair@be2869dd00a49774ff2642ec238d98f1456b2b8a
 Donor/reference: vsgopenmw-dev/vsgopenmw
 Date: 2026-09-25
+
+## Current sequencing decision — 2026-09-26
+
+### Audit correction — 2026-09-27
+
+The focused work/source/evidence audit is in
+`tools/vulkanmw/WORK-AND-PLAN-AUDIT-20260927.md`. Its execution gates take
+precedence over feature-completion sequencing below. No new runtime acceptance
+is granted by this documentation update.
+
+- Maintain one settings-isolated, cumulative candidate. Later admission and
+  specular cohorts omitted the measured publication trio; they establish local
+  comparisons, not an integrated progression or additive gains.
+- Prioritize removal of recurring producer inspection, CPU actor deformation/
+  stream updates, and dominant-graph recording cost. Existing independent-view
+  recording is not parallel recording within the main graph. Use a bounded
+  CPU/driver attribution step before choosing its replacement.
+- Place per-view eligibility before expensive render preparation where bounds
+  permit; preserve gameplay, other views and conservative fallbacks.
+- Treat postfx normal/distortion placeholders, blending rejection, convention
+  gaps and chain bypass as incomplete compatibility. Tests of shader execution
+  are not complete F2/Rafael or scene-equivalence validation.
+- Gate the next broad user-facing repair on a combined, repeated whole-frame
+  improvement and representative visuals/interaction/streaming/private-save
+  checks. Stop using a phase number, OSG coverage count or isolated GPU saving
+  as the success metric. Preserve controls and failed-experiment evidence.
+
+### Retained sequencing principles
+
+The user has clarified that phases are dependency/coverage milestones, not a
+mandatory serial schedule. The outcome is correct, mod/save-compatible Vulkan
+rendering with competitive frame time and frame pacing. Architecture coverage
+alone is not evidence that this outcome has been achieved.
+
+- Continue replacing live OSG rendering/update/capture with native semantic
+  producers. Prefer removing whole duplicate workloads to optimizing their
+  inspection indefinitely. Retain useful importers/utilities and narrowly scoped
+  correctness fallbacks until replacements are proven.
+- Bring Vulkan-specific batching, resource reuse, visibility, recording,
+  threading, and synchronization work forward when measurements justify it.
+  These mechanisms need not be shared with or change OpenGL.
+- GPU deformation, effects migration, and secondary-view work may overlap when
+  their input/lifetime contracts are ready; completing every animation fallback
+  is not an automatic prerequisite for all other work.
+- Post-processing/F2 compatibility and rendering repairs may proceed alongside
+  performance work. Track their correctness and cost separately; do not enable
+  expensive new effects in a performance comparison or silently drop effects
+  to improve a result.
+- Preserve gameplay, animation events, VFS/mod semantics, saves, and the OpenGL
+  control. Workers consume stable owned data, never an unsynchronized live scene.
+- Use incremental local builds, focused tests, and matched hardware experiments
+  before pushing coherent checkpoints. CI verifies those checkpoints; it is not
+  required for every edit. Never benchmark while a local build is competing for
+  the CPU or attach an old timing result to a newly rebuilt executable.
+
+This update supersedes the strict sequencing language below, not the architectural
+boundaries or compatibility/promotion requirements. The historical starting base
+and Phase 0 section remain as provenance, not a description of today's HEAD.
 
 ## 1. Executive decision
 
@@ -23,7 +81,15 @@ OpenMW game/mod semantics
 -> direct VSG/Vulkan realization and delta updates
 -> Vulkan
 
-The RenderWorld/FrameRenderState layer is retained. It is not the source of the observed fourfold frame-cost gap. The expensive debt is primarily the producer side: deriving renderer semantics from an already-evaluated OSG scene, repeatedly capturing dynamic geometry/material state, CPU-deforming actors, and continuing an OSG update-only scene while VSG owns presentation.
+The RenderWorld/FrameRenderState contracts are retained, but their implementations
+are subject to the same performance scrutiny as producers and the backend. The
+publication repair measured substantial cost in neutral-world publication and
+consumer inventory maintenance. General transactions still copy the world.
+Producer capture, CPU actor deformation, OSG updates, command recording and GPU
+passes all contribute; no single layer has been exonerated or proven to explain
+the entire gap. Historical cross-backend ratios also require effective-quality
+qualification. Preserve semantic separation while removing repeated inspection,
+copying, duplication and synchronization wherever current evidence locates it.
 
 Core rule:
 
@@ -509,7 +575,9 @@ with zero live-game OSG scene traversal and zero normal OSG capture fallback.
 
 ## 13. Phase 8 — Vulkan-specific performance optimization
 
-Do this only after the clean architecture is functional.
+This is an ongoing workstream, not work deferred until every migration phase is
+complete. Optimize measured native-renderer costs while removing duplicate OSG
+producers. Do not expand the old capture architecture as the permanent solution.
 
 Targets may include, when profiling proves headroom:
 - parallel command recording
@@ -568,7 +636,7 @@ Architectural contracts should enforce:
 
 Architecture acceptance is not final renderer promotion.
 
-Before advanced Vulkan tuning, require:
+For final native architecture acceptance, require:
 - OSG update = 0 in native Vulkan gameplay
 - OSG capture = 0 in native validation route
 - steady static realization = 0 after warmup
@@ -595,7 +663,10 @@ Require:
 - representative mod/save compatibility
 - no normal OSG fallback dependence
 
-## 17. Ordered implementation sequence
+## 17. Architectural milestones (not a mandatory serial schedule)
+
+Dependencies still matter, but the 2026-09-26 sequencing decision permits
+overlapping migration, rendering fixes, and measured Vulkan optimization.
 
 1. Phase 0 branch/foundation/guardrails.
 2. Direct NIF -> RenderCore compiler.

@@ -60,8 +60,10 @@ namespace Fx
     {
     }
 
-    std::string Pass::getPassHeader(Technique& technique, std::string_view preamble, bool fragOut)
+    std::string Pass::getPassHeader(Technique& technique, std::string_view preamble, bool fragOut,
+        VulkanShaderSources* vulkan)
     {
+        const bool legacy = !vulkan && mLegacyGLSL;
         std::string header = R"GLSL(
 #version @version @profile
 @extensions
@@ -273,42 +275,104 @@ float omw_EstimateFogCoverageFromUV(vec2 uv)
         const std::vector<std::pair<std::string, std::string>> defines
             = { { "@pointLightCount", std::to_string(SceneUtil::PPLightBuffer::sMaxPPLightsArraySize) },
                   { "@apiVersion", std::to_string(Version::getPostprocessingApiRevision()) },
-                  { "@version", std::to_string(technique.getGLSLVersion()) },
-                  { "@multiview", Stereo::getMultiview() ? "1" : "0" },
-                  { "@builtinSampler", Stereo::getMultiview() ? "sampler2DArray" : "sampler2D" },
-                  { "@profile", technique.getGLSLProfile() }, { "@extensions", extBlock.str() },
+                  { "@version", vulkan ? "450" : std::to_string(technique.getGLSLVersion()) },
+                  { "@multiview", !vulkan && Stereo::getMultiview() ? "1" : "0" },
+                  { "@builtinSampler", !vulkan && Stereo::getMultiview() ? "sampler2DArray" : "sampler2D" },
+                  { "@profile", vulkan ? "core" : technique.getGLSLProfile() }, { "@extensions", extBlock.str() },
                   { "@uboStruct", StateUpdater::getStructDefinition() }, { "@ubo", mUBO ? "1" : "0" },
                   { "@normals", technique.getNormals() ? "1" : "0" },
-                  { "@reverseZ", SceneUtil::AutoDepth::isReversed() ? "1" : "0" },
+                  { "@reverseZ", vulkan || SceneUtil::AutoDepth::isReversed() ? "1" : "0" },
                   { "@radialFog", Settings::fog().mRadialFog ? "1" : "0" },
                   { "@exponentialFog", Settings::fog().mExponentialFog ? "1" : "0" },
-                  { "@hdr", technique.getHDR() ? "1" : "0" }, { "@in", mLegacyGLSL ? "varying" : "in" },
-                  { "@out", mLegacyGLSL ? "varying" : "out" }, { "@position", "gl_Position" },
-                  { "@texture1D", mLegacyGLSL ? "texture1D" : "texture" },
+                  { "@hdr", technique.getHDR() ? "1" : "0" }, { "@in", legacy ? "varying" : "in" },
+                  { "@out", legacy ? "varying" : "out" }, { "@position", "gl_Position" },
+                  { "@texture1D", legacy ? "texture1D" : "texture" },
                   // Note, @texture2DArray must be defined before @texture2D since @texture2D is a perfect prefix of
                   // texture2DArray
-                  { "@texture2DArray", mLegacyGLSL ? "texture2DArray" : "texture" },
-                  { "@texture2D", mLegacyGLSL ? "texture2D" : "texture" },
-                  { "@texture3D", mLegacyGLSL ? "texture3D" : "texture" },
-                  { "@vertex", mLegacyGLSL ? "gl_Vertex" : "_omw_Vertex" },
-                  { "@fragColor", mLegacyGLSL ? "gl_FragColor" : "_omw_FragColor" },
-                  { "@useBindings", mLegacyGLSL ? "0" : "1" },
-                  { "@fragBinding", mLegacyGLSL ? "" : "out vec4 omw_FragColor;" } };
+                  { "@texture2DArray", legacy ? "texture2DArray" : "texture" },
+                  { "@texture2D", legacy ? "texture2D" : "texture" },
+                  { "@texture3D", legacy ? "texture3D" : "texture" },
+                  { "@vertex", vulkan ? "(vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2) * 2.0 - 1.0)"
+                                      : legacy ? "gl_Vertex" : "_omw_Vertex" },
+                  { "@fragColor", legacy ? "gl_FragColor" : "_omw_FragColor" },
+                  { "@useBindings", legacy ? "0" : "1" },
+                  { "@fragBinding", vulkan ? (fragOut ? "layout(location=0) out vec4 omw_FragColor;" : "")
+                                            : legacy ? "" : "out vec4 omw_FragColor;" } };
 
         for (const auto& [define, value] : defines)
             for (size_t pos = header.find(define); pos != std::string::npos; pos = header.find(define))
                 header.replace(pos, define.size(), value);
 
-        for (const auto& target : mRenderTargets)
-            header.append("uniform sampler2D " + target + ";");
+        if (vulkan)
+        {
+            const auto replace = [&](std::string_view before, const std::string& after)
+            {
+                const auto pos = header.find(before);
+                if (pos == std::string::npos) throw std::logic_error("OMWFX Vulkan header contract changed");
+                header.replace(pos, before.size(), after);
+            };
+            replace("layout(std140) uniform _data { _omw_data omw; };",
+                "layout(std140,set=0,binding=0) uniform _data { _omw_data omw; };");
+            replace("uniform _omw_data omw;",
+                "layout(std140,set=0,binding=0) uniform _data { _omw_data omw; };");
+            replace("uniform vec4 omw_PointLights[", "layout(std140,set=0,binding=1) uniform _lights { vec4 omw_PointLights[");
+            replace("uniform int omw_PointLightsCount;", "int omw_PointLightsCount; };");
+            const std::array<std::string, 6> builtins = {"omw_SamplerLastShader", "omw_SamplerLastPass",
+                "omw_SamplerDepth", "omw_SamplerNormals", "omw_SamplerDistortion", "omw_EyeAdaptation"};
+            for (const auto& name : builtins)
+            {
+                const auto binding = vulkan->samplers.size() + 3;
+                vulkan->samplers.push_back(name);
+                const std::string declaration = "uniform sampler2D " + name + ";";
+                replace(declaration, "layout(set=0,binding=" + std::to_string(binding) + ") " + declaration);
+            }
+        }
 
+        const auto sampler = [&](const std::string& declaration, const std::string& name)
+        {
+            if (vulkan)
+            {
+                const auto binding = vulkan->samplers.size() + 3;
+                vulkan->samplers.push_back(name);
+                header.append("layout(set=0,binding=" + std::to_string(binding) + ") ");
+            }
+            header.append(declaration);
+        };
+        std::unordered_set<std::string> targets;
+        for (const auto& target : mRenderTargets)
+            if (!vulkan || (!target.empty() && targets.insert(target).second))
+                sampler("uniform sampler2D " + target + ";", target);
+
+        std::string parameters;
         for (auto& uniform : technique.getUniformMap())
             if (auto glsl = uniform->getGLSL())
-                header.append(glsl.value());
+            {
+                if (uniform->mSamplerType) sampler(*glsl, uniform->mName);
+                else if (vulkan && glsl->starts_with("uniform ")) parameters.append(glsl->substr(8));
+                else header.append(*glsl);
+            }
+        if (!parameters.empty())
+            header.append("layout(std140,set=0,binding=2) uniform _parameters { " + parameters + " };\n");
 
         header.append(preamble);
 
         return header;
+    }
+
+    VulkanShaderSources Pass::getVulkanSources(Technique& technique)
+    {
+        if (!mCompiled || mType != Type::Pixel)
+            throw std::runtime_error("Vulkan post-processing requires a compiled pixel pass: " + mName);
+        VulkanShaderSources result;
+        auto vertex = mSharedBody + mVertexBody;
+        auto fragment = mSharedBody + mFragmentBody;
+        qualifyVulkanInterfaces(vertex, fragment);
+        VulkanShaderSources fragmentBindings;
+        result.vertex = getPassHeader(technique, {}, false, &result) + vertex;
+        result.fragment = getPassHeader(technique, {}, true, &fragmentBindings) + fragment;
+        if (result.samplers != fragmentBindings.samplers)
+            throw std::logic_error("OMWFX stage descriptor bindings differ");
+        return result;
     }
 
     void Pass::prepareStateSet(osg::StateSet* stateSet, const std::string& name) const
@@ -349,6 +413,9 @@ float omw_EstimateFogCoverageFromUV(vec2 uv)
         mVertex = nullptr;
         mFragment = nullptr;
         mCompute = nullptr;
+        mVertexBody.clear();
+        mFragmentBody.clear();
+        mSharedBody.clear();
         mCompiled = false;
     }
 
@@ -365,6 +432,9 @@ float omw_EstimateFogCoverageFromUV(vec2 uv)
                 mVertex = new osg::Shader(
                     osg::Shader::VERTEX, Stereo::getMultiview() ? s_DefaultVertexMultiview : s_DefaultVertex);
 
+            mVertexBody = mVertex->getShaderSource();
+            mFragmentBody = mFragment->getShaderSource();
+            mSharedBody = preamble;
             mVertex->setShaderSource(getPassHeader(technique, preamble).append(mVertex->getShaderSource()));
             mFragment->setShaderSource(getPassHeader(technique, preamble, true).append(mFragment->getShaderSource()));
 

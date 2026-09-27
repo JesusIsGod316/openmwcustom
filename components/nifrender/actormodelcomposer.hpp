@@ -125,9 +125,25 @@ namespace NifRender
                 cursor = base.payload->nodes[index].parent;
             }
 
-            glm::mat4 bindLocal(1.0f);
+            // Retain the same authored boundary as the direct NIF translator.
+            // KF evaluation replaces only this node's local transform; skipped
+            // structural/duplicate/filter nodes remain in the parent path. This
+            // comes from the winning base model, never an equipment donor or
+            // the evaluated OSG skeleton. Keep controller/name provenance so
+            // native animation can still reject animated collapsed ancestors.
+            glm::mat4 sourceParentPath(1.0f);
+            std::uint32_t sourceParentControllerFlags = 0;
+            std::vector<std::string> sourceParentPathNodes;
             for (auto it = path.rbegin(); it != path.rend(); ++it)
-                bindLocal *= base.payload->nodes[*it].localTransform;
+            {
+                if (*it == modelNode)
+                    continue;
+                const ModelNodeRecord& ancestor = base.payload->nodes[*it];
+                sourceParentPath *= ancestor.localTransform;
+                sourceParentControllerFlags |= ancestor.controllerFlags;
+                sourceParentPathNodes.push_back(foldName(ancestor.name));
+            }
+            const glm::mat4 bindLocal = sourceParentPath * source.localTransform;
             const glm::mat4 global = parentBone ? globalBind[*parentBone] * bindLocal : bindLocal;
             const float determinant = glm::determinant(global);
             if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-8f)
@@ -142,6 +158,12 @@ namespace NifRender
             bone.parent = parentBone ? static_cast<std::int32_t>(*parentBone) : -1;
             bone.bindLocal = bindLocal;
             bone.inverseBind = glm::inverse(global);
+            bone.sourceParentPath = sourceParentPath;
+            bone.sourceLocal = source.localTransform;
+            bone.sourceAnimationBoundary = true;
+            bone.sourceControllerFlags = source.controllerFlags;
+            bone.sourceParentControllerFlags = sourceParentControllerFlags;
+            bone.sourceParentPathNodes = std::move(sourceParentPathNodes);
             modelToBone[modelNode] = payload->bones.size();
             payload->bones.push_back(std::move(bone));
             globalBind.push_back(global);

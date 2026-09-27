@@ -13,6 +13,7 @@
 #include <components/render/backend/vsg/uipipeline.hpp>
 #include <components/render/backend/vsg/vsgsubmission.hpp>
 #include <components/render/backend/vsg/parallelrecordtask.hpp>
+#include <components/render/backend/vsg/parallelshadowrecord.hpp>
 #include <components/render/backend/vsg/watersurface.hpp>
 #include <components/render/backend/vsg/waterinputprobe.hpp>
 #include <components/rendercore/frameproducer.hpp>
@@ -63,7 +64,7 @@ namespace
         std::uint64_t tick=0;
         explicit Fixture(vsg::ref_ptr<vsg::Device> input, vsg::ViewFeatures features = vsg::RECORD_ALL,
             unsigned int shadowCascades = 0, RenderTargetFormat format = RenderTargetFormat::Rgba8Srgb,
-            bool independentRecording = false) : device(input)
+            bool independentRecording = false, unsigned shadowMapSize = 64) : device(input)
         {
             frame.extent={128,128}; frame.current.projection.nearPlane=.1; frame.current.projection.farPlane=10000.;
             frame.current.projection.matrix=glm::perspectiveRH_ZO(glm::radians(60.f),1.f,10000.f,.1f);
@@ -98,7 +99,8 @@ namespace
                     extraView->bins.push_back(vsg::Bin::create(RenderVsg::UiOverlayBinNumber,vsg::Bin::NO_SORT));
                     extra.renderGraph->addChild(extraView);
                     auto graph = vsg::CommandGraph::create(device, commands->queueFamily);
-                    graph->submitOrder = order; graph->addChild(extra.renderGraph);
+                    graph->submitOrder = std::getenv("OPENMW_VK_PARALLEL_SHADOW_RECORD") ? order * 100 : order;
+                    graph->addChild(extra.renderGraph);
                     task->commandGraphs.push_back(graph);
                     parallelViews.push_back(extraView);
                 }
@@ -108,7 +110,7 @@ namespace
             if (shadowCascades)
             {
                 hints->numShadowMapsRange={shadowCascades,shadowCascades};
-                hints->shadowMapSize={64,64};
+                hints->shadowMapSize={shadowMapSize,shadowMapSize};
             }
             auto result=viewer->compile(hints);
             require(bool(result),"initial target compilation "+result.message);
@@ -509,6 +511,84 @@ namespace
         checkUnshadowedLighting(device);
         std::cout<<"PASS shadow view feature routing: three generated cascades, repeated frames, lit world and preview, unchanged depth buffer sizes\n";
     }
+    void checkShadowWorldAnchor(vsg::ref_ptr<vsg::Device> device)
+    {
+        for (const auto origin : {glm::vec3(0), glm::vec3(30000,-60000,500)})
+        {
+        const bool parallelShadows=std::getenv("OPENMW_VK_PARALLEL_SHADOW_RECORD")!=nullptr;
+        Fixture world(device,vsg::RECORD_ALL,3,RenderTargetFormat::Rgba8Srgb,parallelShadows,1024);
+        world.state->maxShadowDistance=20;
+        auto ambient=vsg::AmbientLight::create();ambient->color={.1f,.1f,.1f};
+        auto sun=vsg::DirectionalLight::create();sun->direction=vsg::normalize(vsg::dvec3(1,0,-1));
+        sun->color={.7f,.7f,.7f};sun->shadowSettings=vsg::HardShadows::create(3);
+        ImmediateEffectDraw receiver;receiver.identity="shadow-world-receiver";receiver.mesh=*quad(-5);
+        receiver.worldTransform=glm::translate(glm::mat4(1),origin);
+        receiver.bounds.minimum={-4,-4,-5};receiver.bounds.maximum={4,4,-5};
+        receiver.material.sourceIdentity="shadow-world-material";receiver.material.cullMode=CullMode::None;
+        receiver.material.ambient={1,1,1,1};receiver.material.diffuse={1,1,1,1};
+        receiver.material.specular={0,0,0,0};receiver.material.vertexColorMode=VertexColorMode::Ignore;
+        auto blocker=receiver;blocker.identity="shadow-world-blocker";blocker.mesh=*quad(-3);
+        for(auto& point:blocker.mesh.positions){point.x=point.x*.2f-1.f;point.y*=.2f;}
+        blocker.bounds.minimum={-1.8f,-.8f,-3};blocker.bounds.maximum={-.2f,.8f,-3};
+        auto r=RenderVsg::realizeImmediateEffectDraw(receiver,resolver(),world.shared);
+        auto b=RenderVsg::realizeImmediateEffectDraw(blocker,resolver(),world.shared);
+        require(r.valid()&&b.valid(),"shadow anchor geometry");
+        // The runtime owns instance placement, outside the shared asset realizer.
+        auto placed=vsg::MatrixTransform::create(RenderVsg::toVsgMatrix(receiver.worldTransform));
+        placed->addChild(r.root);placed->addChild(b.root);
+        world.root->children={ambient,sun,placed};
+        require(bool(RenderVsg::compileForViewer(*world.viewer,world.root)),"shadow anchor compile");
+        const auto serialGraph=world.state->preRenderCommandGraph;
+        const auto parallelGraph=parallelShadows ? RenderVsg::ParallelShadowRecordGraph::create(
+            *serialGraph,world.state->preRenderSwitch) : vsg::ref_ptr<RenderVsg::ParallelShadowRecordGraph>{};
+        for(const auto offset:{glm::vec3(0),glm::vec3(.2f,.1f,.3f)})
+        for(float angle:{0.f,.28f,-.28f,0.f})
+        {
+            const auto eye=origin+offset;
+            world.frame.current.view=glm::lookAtRH(eye,eye+glm::vec3(std::sin(angle),0,-std::cos(angle)),glm::vec3(0,1,0));
+            auto pixels=world.render();
+            if(parallelGraph)
+            {
+                world.state->preRenderCommandGraph=serialGraph;
+                world.render(); pixels=world.render();
+                world.state->preRenderCommandGraph=parallelGraph;
+                world.render(); const auto parallelPixels=world.render();
+                require(parallelPixels==pixels,"parallel shadow recording changed rendered pixels");
+            }
+            require((*world.state->lightData)[4].x==3,"anchor test did not render all cascades");
+            for(unsigned cascade=0;cascade<3;++cascade)
+            {
+                const auto base=5+cascade*8;
+                const auto& data=*world.state->lightData;
+                const vsg::mat4 matrix(data[base],data[base+1],data[base+2],data[base+3]);
+                for(unsigned column=0;column<4;++column)
+                    for(unsigned row=0;row<4;++row)
+                        require(std::isfinite(matrix[column][row]),"non-finite shadow projection");
+                const auto transform=[&](glm::vec3 local) {
+                    const auto eyePoint=world.frame.current.view*glm::vec4(origin+local,1);
+                    return matrix*vsg::vec4(eyePoint.x,eyePoint.y,eyePoint.z,eyePoint.w);
+                };
+                const auto receiverTc=transform({1,0,-5});
+                const auto casterTc=transform({-1,0,-3});
+                require(std::abs(receiverTc.x-casterTc.x)<.002f && std::abs(receiverTc.y-casterTc.y)<.002f,
+                    "light ray moved off its world-space caster");
+                require(casterTc.z>receiverTc.z,"shadow reverse-depth ordering changed");
+            }
+            const auto sample=[&](glm::vec3 position)
+            {
+                auto clip=world.frame.current.projection.matrix*world.frame.current.view*glm::vec4(origin+position,1);
+                auto uv=glm::vec2(clip)/clip.w*.5f+.5f;
+                require(uv.x>0&&uv.x<1&&uv.y>0&&uv.y<1,"shadow probe offscreen");
+                return pixel(pixels,static_cast<unsigned>(uv.x*128),static_cast<unsigned>(uv.y*128));
+            };
+            auto shadow=sample({1,0,-5});auto lit=sample({-.8f,-1.5f,-5});
+            std::cout<<"SHADOW anchor angle="<<angle<<" shadow="<<unsigned(shadow.r)<<" lit="<<unsigned(lit.r)<<'\n';
+            close(shadow.r,encoded(.1f),"camera rotation moved anchored shadow",12);
+            require(lit.r>shadow.r+70,"camera rotation shadowed the lit probe");
+        }
+        }
+        std::cout<<"PASS shadow world anchor: 16 frames, camera rotations/translations, large world coordinates, finite matrices\n";
+    }
     void checkSunSpecular(vsg::ref_ptr<vsg::Device> device)
     {
         Fixture f(device);
@@ -698,7 +778,7 @@ int main(int argc,char** argv)
         auto device=vsg::Device::create(selected,vsg::QueueSettings{{selected->getQueueFamily(VK_QUEUE_GRAPHICS_BIT),{1.f}}},vsg::Names{},extensions,features);
         std::cout<<"DEVICE "<<selected->getProperties().deviceName<<'\n';
         std::string mode=argc>1?argv[1]:"all";
-        require(mode=="all" || mode=="sky" || mode=="preview" || mode=="water" || mode=="normal" || mode=="baseline" || mode=="lighting" || mode=="specular" || mode=="shadow-light-routing" || mode=="environment" || mode=="water-probe", "unknown pixel test mode");
+        require(mode=="all" || mode=="sky" || mode=="preview" || mode=="water" || mode=="normal" || mode=="baseline" || mode=="lighting" || mode=="specular" || mode=="shadow-light-routing" || mode=="shadow-anchor" || mode=="environment" || mode=="water-probe", "unknown pixel test mode");
         if(mode=="all") {checkPersistentDrawScene(device);checkNativeVisibilityRouting(device);checkEffectFrustum(device);checkNativePostProcess(device);}
         if(mode=="all"||mode=="water-probe")checkWaterProbe(device);
         if(mode=="all"||mode=="environment")checkEnvironmentMaterial(device);
@@ -708,6 +788,7 @@ int main(int argc,char** argv)
         if(mode=="all"||mode=="lighting")checkUnshadowedLighting(device);
         if(mode=="all"||mode=="specular")checkSunSpecular(device);
         if(mode=="all"||mode=="shadow-light-routing")checkShadowViewFeatures(device);
+        if(mode=="all"||mode=="shadow-anchor")checkShadowWorldAnchor(device);
         if(mode=="all"||mode=="water")checkWaterOptics(device);
         if(mode=="all"||mode=="normal")checkNormalMapping(device);
         return 0;

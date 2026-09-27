@@ -899,6 +899,16 @@ namespace RenderCore
         // translation/quaternion/uniform-scale tuple.
         glm::mat4 bindLocal{ 1.0f };
         glm::mat4 inverseBind{ 1.0f };
+        // Phase 3 native animation needs to replace only the authored bone
+        // node transform while retaining any static non-bone ancestors between
+        // skeleton bones. Keep these fields after the historical record members
+        // so older aggregate initializers retain their positional meaning.
+        glm::mat4 sourceParentPath{ 1.0f };
+        glm::mat4 sourceLocal{ 1.0f };
+        bool sourceAnimationBoundary = false;
+        std::uint32_t sourceControllerFlags = 0;
+        std::uint32_t sourceParentControllerFlags = 0;
+        std::vector<std::string> sourceParentPathNodes;
     };
 
     struct SkeletonPayload
@@ -916,7 +926,8 @@ namespace RenderCore
             const std::int32_t parent = bone.parent;
             if (bone.name.empty() || parent < -1 || (parent >= 0 && static_cast<std::size_t>(parent) >= i))
                 return false;
-            if (!semantic_detail::finite(bone.bindLocal) || !semantic_detail::finite(bone.inverseBind))
+            if (!semantic_detail::finite(bone.bindLocal) || !semantic_detail::finite(bone.sourceParentPath)
+                || !semantic_detail::finite(bone.sourceLocal) || !semantic_detail::finite(bone.inverseBind))
                 return false;
             for (std::size_t other = i + 1; other < payload.bones.size(); ++other)
             {

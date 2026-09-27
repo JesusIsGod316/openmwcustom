@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_FX_STATEUPDATER_H
 
 #include <osg/BufferTemplate>
+#include <vector>
 
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/statesetupdater.hpp>
@@ -110,6 +111,37 @@ namespace Fx
         }
 
         static const std::string& getStructDefinition() { return sDefinition; }
+
+        // CPU-only snapshot for native backends; never binds an OpenGL buffer.
+        std::vector<char> snapshot() const
+        {
+            UniformData::BufferType bytes{};
+            mData.copyTo(bytes);
+            return {bytes.begin(), bytes.end()};
+        }
+
+        static void updateNativeCameraSnapshot(std::vector<char>& bytes, const osg::Matrixf& projection,
+            const osg::Matrixf& view, const osg::Matrixf& previousView, float nearPlane, float farPlane,
+            const osg::Vec2f& resolution)
+        {
+            const auto inverseView = osg::Matrixf::inverse(view);
+            const osg::Vec4f eye(inverseView.getTrans(), 0.f);
+            osg::Vec3f direction = osg::Matrixf::transform3x3(osg::Vec3f(0,0,-1), inverseView);
+            direction.normalize();
+            const auto write = [&](auto field, const auto& value)
+            { UniformData::writeField<decltype(field)>(bytes.data(), bytes.size(), value); };
+            write(ProjectionMatrix{}, projection);
+            write(InvProjectionMatrix{}, osg::Matrixf::inverse(projection));
+            write(ViewMatrix{}, view);
+            write(PrevViewMatrix{}, previousView);
+            write(InvViewMatrix{}, inverseView);
+            write(EyePos{}, eye);
+            write(EyeVec{}, osg::Vec4f(direction, 0.f));
+            write(Near{}, nearPlane);
+            write(Far{}, farPlane);
+            write(Resolution{}, resolution);
+            write(RcpResolution{}, osg::Vec2f(1.f / resolution.x(), 1.f / resolution.y()));
+        }
 
         void setDefaults(osg::StateSet* stateset) override;
 

@@ -38,6 +38,7 @@ namespace MWRender
             const AnimBlendStateData& animState, const osg::ref_ptr<const SceneUtil::AnimBlendRules>& blendRules);
 
         bool getBlendTrigger() const { return mBlendTrigger; }
+        [[nodiscard]] bool isInterpolating() const noexcept { return mBlendTrigger || mInterpActive; }
 
     protected:
         EasingFn mEasingFn;

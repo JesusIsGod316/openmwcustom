@@ -896,9 +896,21 @@ namespace
                     cursor = mResult.model.nodes[index].parent;
                 }
 
-                glm::mat4 bindLocal(1.0f);
+                glm::mat4 sourceParentPath(1.0f);
+                std::uint32_t sourceParentControllerFlags = 0;
+                std::vector<std::string> sourceParentPathNodes;
                 for (auto it = path.rbegin(); it != path.rend(); ++it)
-                    bindLocal *= mResult.model.nodes[*it].localTransform;
+                {
+                    if (*it != modelNode)
+                    {
+                        sourceParentPath *= mResult.model.nodes[*it].localTransform;
+                        sourceParentControllerFlags |= mResult.model.nodes[*it].controllerFlags;
+                        sourceParentPathNodes.push_back(
+                            Misc::StringUtils::lowerCase(mSourceNodes[*it]->mName));
+                    }
+                }
+                const glm::mat4 sourceLocal = mResult.model.nodes[modelNode].localTransform;
+                const glm::mat4 bindLocal = sourceParentPath * sourceLocal;
                 const glm::mat4 global = parentBone ? globalBind[*parentBone] * bindLocal : bindLocal;
                 const float determinant = glm::determinant(global);
                 if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-8f)
@@ -912,6 +924,12 @@ namespace
                 bone.name = Misc::StringUtils::lowerCase(mSourceNodes[modelNode]->mName);
                 bone.parent = parentBone ? static_cast<std::int32_t>(*parentBone) : -1;
                 bone.bindLocal = bindLocal;
+                bone.sourceParentPath = sourceParentPath;
+                bone.sourceLocal = sourceLocal;
+                bone.sourceAnimationBoundary = true;
+                bone.sourceControllerFlags = mResult.model.nodes[modelNode].controllerFlags;
+                bone.sourceParentControllerFlags = sourceParentControllerFlags;
+                bone.sourceParentPathNodes = std::move(sourceParentPathNodes);
                 bone.inverseBind = glm::inverse(global);
                 modelToBone[modelNode] = payload->bones.size();
                 payload->bones.push_back(std::move(bone));

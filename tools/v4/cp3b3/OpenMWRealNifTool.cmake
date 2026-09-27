@@ -51,6 +51,19 @@ function(openmw_cp3b3_define_real_nif_tool)
         "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/staticnifconformance.cpp"
         ${OPENMW_V4_VSG_RUNTIME_SOURCES})
 
+    # This deferred target is created after OpenMW sets VS macro-based output
+    # directories. CMake treats those macros as a relative path and prefixes
+    # the binary directory; SolutionDir then expands to a second absolute path.
+    # Use concrete per-configuration paths for this tool without changing the
+    # production targets or single-configuration Ninja build layout.
+    if(CMAKE_GENERATOR MATCHES "Visual Studio")
+        foreach(_config IN LISTS CMAKE_CONFIGURATION_TYPES)
+            string(TOUPPER "${_config}" _upper_config)
+            set_target_properties(openmw-vulkan-nif-conformance PROPERTIES
+                "RUNTIME_OUTPUT_DIRECTORY_${_upper_config}" "${CMAKE_BINARY_DIR}/${_config}")
+        endforeach()
+    endif()
+
     target_include_directories(openmw-vulkan-nif-conformance PRIVATE "${CMAKE_SOURCE_DIR}")
     target_link_libraries(openmw-vulkan-nif-conformance PRIVATE
         components

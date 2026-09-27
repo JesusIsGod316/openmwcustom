@@ -110,12 +110,56 @@ layout(set = VIEW_DESCRIPTOR_SET, binding = 4) uniform sampler shadowMapShadowSa
 
 layout(std430, set = VIEW_DESCRIPTOR_SET, binding = 5) readonly buffer OpenMwLocalLightData
 {
-    // header: x=count, y=radius-fade enabled, z=vec4 stride.
+    // header: x=count, y=radius-fade enabled, z=vec4 stride,
+    // w=screen-tile columns (zero selects the unfiltered compatibility loop).
     vec4 header;
     // Per light: position/radius, diffuse, specular, ambient,
     // constant/linear/quadratic attenuation plus enabled actor fade.
     vec4 values[];
 } openmwLocalLights;
+
+void addOpenMwPointLight(int i, vec3 eyePosition, vec3 normal, vec3 viewDirection,
+    vec3 surfaceDiffuse, vec3 surfaceAmbient, vec3 materialSpecular, float shininess, inout vec3 color)
+{
+    int base = i * 5;
+    vec4 positionRadius = openmwLocalLights.values[base];
+    vec4 diffuse = openmwLocalLights.values[base + 1];
+    vec4 specular = openmwLocalLights.values[base + 2];
+    vec4 ambient = openmwLocalLights.values[base + 3];
+    vec4 attenuationFade = openmwLocalLights.values[base + 4];
+    if (attenuationFade.w < 0.001)
+        return;
+
+    vec3 delta = positionRadius.xyz - eyePosition;
+    float lightDistance = length(delta);
+    if (openmwLocalLights.header.y > 0.5)
+    {
+        if (positionRadius.w <= 0.0 || lightDistance > positionRadius.w)
+            return;
+    }
+    vec3 direction = lightDistance > 0.0 ? delta / lightDistance : normal;
+    float denominator = attenuationFade.x + attenuationFade.y * lightDistance
+        + attenuationFade.z * lightDistance * lightDistance;
+    if (denominator <= 0.0)
+        return;
+    float scale = attenuationFade.w / denominator;
+    if (openmwLocalLights.header.y > 0.5)
+    {
+        float radiusFade = clamp((lightDistance / positionRadius.w - 0.75) / 0.25, 0.0, 1.0);
+        radiusFade = 1.0 - radiusFade * radiusFade;
+        radiusFade = 1.0 - radiusFade * radiusFade;
+        scale *= 1.0 - radiusFade;
+    }
+    float diffuseFactor = scale * max(dot(direction, normal), 0.0);
+    color += surfaceDiffuse * diffuse.rgb * diffuseFactor;
+    color += surfaceAmbient * ambient.rgb * scale;
+    if (shininess > 0.0 && diffuseFactor > 0.0)
+    {
+        vec3 halfDir = normalize(direction + viewDirection);
+        color += materialSpecular * specular.rgb
+            * pow(max(dot(halfDir, normal), 0.0), shininess) * scale;
+    }
+}
 
 layout(set = VIEW_DESCRIPTOR_SET, binding = 6) uniform OpenMwEnvironmentData
 {
@@ -487,46 +531,36 @@ vec2 diffuseUv = vec2(0.0);
     int openmwPointLightCount = materialUnlit
         ? 0
         : min(int(openmwLocalLights.header.x), openmwLocalLights.values.length() / 5);
-    for (int i = 0; i < openmwPointLightCount; ++i)
+    vec3 localSurfaceDiffuse = surfaceColor.rgb * effectiveDiffuse.rgb;
+    vec3 localSurfaceAmbient = surfaceColor.rgb * effectiveAmbient.rgb;
+    vec3 localMaterialSpecular = specularColor * specularStrength;
+    int tileColumns = int(openmwLocalLights.header.w);
+    int maskWords = (openmwPointLightCount + 31) / 32;
+    int maskVec4s = (maskWords + 3) / 4;
+    int tileId = (int(gl_FragCoord.y) / 32) * tileColumns + int(gl_FragCoord.x) / 32;
+    int maskBase = openmwPointLightCount * 5 + tileId * maskVec4s;
+    bool useTiles = tileColumns > 0 && maskWords > 0 && tileId >= 0 && maskBase >= 0
+        && maskBase + maskVec4s <= openmwLocalLights.values.length();
+    if (useTiles)
     {
-        int base = i * 5;
-        vec4 positionRadius = openmwLocalLights.values[base];
-        vec4 diffuse = openmwLocalLights.values[base + 1];
-        vec4 specular = openmwLocalLights.values[base + 2];
-        vec4 ambient = openmwLocalLights.values[base + 3];
-        vec4 attenuationFade = openmwLocalLights.values[base + 4];
-        if (attenuationFade.w < intensityMinimum)
-            continue;
-
-        vec3 delta = positionRadius.xyz - eyePos;
-        float lightDistance = length(delta);
-        if (openmwLocalLights.header.y > 0.5)
+        for (int word = 0; word < maskWords; ++word)
         {
-            if (positionRadius.w <= 0.0 || lightDistance > positionRadius.w)
-                continue;
+            uint bits = floatBitsToUint(openmwLocalLights.values[maskBase + word / 4][word % 4]);
+            while (bits != 0u)
+            {
+                int i = word * 32 + findLSB(bits);
+                bits &= bits - 1u;
+                if (i < openmwPointLightCount)
+                    addOpenMwPointLight(i, eyePos, nd, vd,
+                        localSurfaceDiffuse, localSurfaceAmbient, localMaterialSpecular, shininess, color);
+            }
         }
-        vec3 direction = lightDistance > 0.0 ? delta / lightDistance : nd;
-        float denominator = attenuationFade.x + attenuationFade.y * lightDistance
-            + attenuationFade.z * lightDistance * lightDistance;
-        if (denominator <= 0.0)
-            continue;
-        float scale = attenuationFade.w / denominator;
-        if (openmwLocalLights.header.y > 0.5)
-        {
-            float radiusFade = clamp((lightDistance / positionRadius.w - 0.75) / 0.25, 0.0, 1.0);
-            radiusFade = 1.0 - radiusFade * radiusFade;
-            radiusFade = 1.0 - radiusFade * radiusFade;
-            scale *= 1.0 - radiusFade;
-        }
-        float diffuseFactor = scale * max(dot(direction, nd), 0.0);
-        color += surfaceColor.rgb * effectiveDiffuse.rgb * diffuse.rgb * diffuseFactor;
-        color += surfaceColor.rgb * effectiveAmbient.rgb * ambient.rgb * scale;
-        if (shininess > 0.0 && diffuseFactor > 0.0)
-        {
-            vec3 halfDir = normalize(direction + vd);
-            color += specularColor * specularStrength * specular.rgb
-                * pow(max(dot(halfDir, nd), 0.0), shininess) * scale;
-        }
+    }
+    else
+    {
+        for (int i = 0; i < openmwPointLightCount; ++i)
+            addOpenMwPointLight(i, eyePos, nd, vd,
+                localSurfaceDiffuse, localSurfaceAmbient, localMaterialSpecular, shininess, color);
     }
 
     for (int i = 0; i < numSpotLights; ++i)

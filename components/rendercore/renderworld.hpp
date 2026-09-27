@@ -157,6 +157,35 @@ namespace RenderCore
             return updateVersionedRecord(mChunks, handle, std::move(record));
         }
 
+        // Independent chunk replacements cannot alter the dependency graph or
+        // membership. Prepare/copy every replacement and validate the entire
+        // transaction before touching live storage; the final moves cannot fail.
+        // Repeated handles use the general ordered-batch publisher instead.
+        bool updateChunksAtomically(std::vector<std::pair<ChunkHandle, ChunkRecord>> replacements)
+        {
+            static_assert(std::is_nothrow_move_constructible_v<ChunkRecord>
+                && std::is_nothrow_move_assignable_v<ChunkRecord>);
+            auto nextRevision = mRevision;
+            std::vector<ChunkRecord*> destinations;
+            destinations.reserve(replacements.size());
+            for (const auto& [handle, record] : replacements)
+            {
+                auto* current = mChunks.get(handle);
+                const auto advanced = advanceMonotonic(nextRevision);
+                if (!current || !advanced || !record.revision.valid() || record.revision <= current->revision
+                    || record.members != current->members || !validateChunkRecord(record)
+                    || std::ranges::find(destinations, current) != destinations.end())
+                    return false;
+                destinations.push_back(current);
+                nextRevision = *advanced;
+            }
+            for (std::size_t i = 0; i < replacements.size(); ++i)
+                *destinations[i] = std::move(replacements[i].second);
+            if (!replacements.empty())
+                mStaticRevision = mRevision = nextRevision;
+            return true;
+        }
+
         bool update(InstanceHandle handle, InstanceRecord record)
         {
             const InstanceRecord* current = mInstances.get(handle);
@@ -522,7 +551,7 @@ namespace RenderCore
             return record.revision.valid() && (!record.payload || validSkeletonPayload(*record.payload));
         }
 
-        [[nodiscard]] bool validateChunkRecord(const ChunkRecord& record) const noexcept
+        [[nodiscard]] bool validateChunkRecord(const ChunkRecord& record) const
         {
             const bool knownKind = record.kind == ChunkRecord::Kind::SceneCell
                 || record.kind == ChunkRecord::Kind::Terrain || record.kind == ChunkRecord::Kind::StaticPopulation

@@ -17,6 +17,7 @@
 #include <components/sceneutil/util.hpp>
 #include <components/vfs/pathutil.hpp>
 
+#include <array>
 #include <map>
 #include <optional>
 #include <span>
@@ -24,6 +25,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+#include <glm/mat4x4.hpp>
+#endif
 
 namespace ESM
 {
@@ -34,6 +38,11 @@ namespace ESM
 namespace Resource
 {
     class ResourceSystem;
+}
+
+namespace ToUTF8
+{
+    class StatelessUtf8Encoder;
 }
 
 namespace NifOsg
@@ -233,6 +242,10 @@ namespace MWRender
 
         unsigned int mAnimSourceBatchDepth = 0;
         bool mAnimSourceBatchNeedsControllerAssignment = false;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        bool mV4ControllerClockAssigned = false;
+        std::uint64_t mV4ObjectRootRevision = 0;
+#endif
 
         struct V325PendingControllerClone
         {
@@ -282,6 +295,14 @@ namespace MWRender
         VFS::Path::Normalized mV4SourceModel;
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
         std::unique_ptr<V4PersistentObject> mV4PersistentObject;
+        struct V4ObjectCaptureAdmission
+        {
+            std::uint64_t worldEpoch = 0;
+            std::uint64_t rootRevision = 0;
+            VFS::Path::Normalized correctedModel;
+            bool needsEvaluatedCapture = false;
+        };
+        std::optional<V4ObjectCaptureAdmission> mV4ObjectCaptureAdmission;
 #endif
 
         const NodeMap& getNodeMap() const;
@@ -387,7 +408,45 @@ namespace MWRender
         osg::Group* getObjectRoot();
         osg::Group* getV4EffectRoot() const noexcept { return mInsert.get(); }
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        struct V4NativeAnimationLayer
+        {
+            std::string_view sourcePath;
+            float time = 0.0f;
+            std::span<const std::string> boneNames;
+        };
+
+        struct V4NativeAnimationState
+        {
+            std::array<std::optional<V4NativeAnimationLayer>, sNumBlendMasks> layers;
+            std::string_view accumulationBone;
+            std::array<float, 3> accumulationAxes{ 0.0f, 0.0f, 0.0f };
+            const ToUTF8::StatelessUtf8Encoder* encoder = nullptr;
+        };
+
+        // Snapshot only gameplay-owned animation selection/time state. No bone
+        // matrices or evaluated scenegraph state cross this boundary. The
+        // Vulkan adapter may evaluate the selected authored KF tracks directly.
+        [[nodiscard]] bool captureV4NativeAnimationState(
+            V4NativeAnimationState& state, std::string& diagnostic) const;
         V4PersistentObject* prepareV4PersistentObject();
+        [[nodiscard]] bool captureV4ObjectControllerClock(std::optional<float>& time, std::string& diagnostic) const;
+        // One seed at admission/re-entry, not a per-frame geometry/material capture.
+        [[nodiscard]] bool seedV4ObjectNodeTransforms(const std::vector<std::string>& names,
+            const std::vector<bool>& used, std::vector<glm::mat4>& matrices, std::string& diagnostic) const;
+        [[nodiscard]] std::uint64_t getV4ObjectRootRevision() const noexcept { return mV4ObjectRootRevision; }
+        [[nodiscard]] const V4ObjectCaptureAdmission* getV4ObjectCaptureAdmission(
+            std::uint64_t worldEpoch) const noexcept
+        {
+            return mV4ObjectCaptureAdmission && mV4ObjectCaptureAdmission->worldEpoch == worldEpoch
+                    && mV4ObjectCaptureAdmission->rootRevision == mV4ObjectRootRevision
+                ? &*mV4ObjectCaptureAdmission : nullptr;
+        }
+        void setV4ObjectCaptureAdmission(std::uint64_t worldEpoch,
+            const VFS::Path::Normalized& correctedModel, bool needsEvaluatedCapture)
+        {
+            mV4ObjectCaptureAdmission = V4ObjectCaptureAdmission{
+                worldEpoch, mV4ObjectRootRevision, correctedModel, needsEvaluatedCapture};
+        }
 #endif
 
         // Transitional V4 producer access. The evaluated OSG skeleton remains

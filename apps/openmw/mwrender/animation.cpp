@@ -541,6 +541,13 @@ namespace MWRender
         const SceneUtil::TextKeyMap& getTextKeys() const;
 
         osg::ref_ptr<const SceneUtil::AnimBlendRules> mAnimBlendRules;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        // Stable source-to-bone binding metadata derived once from the exact
+        // compatibility binding pass. Per-frame native capture reuses these
+        // names instead of walking the OSG node hierarchy again.
+        std::array<std::vector<std::string>, sNumBlendMasks> mV4NativeBoneNames;
+        bool mV4NativeKf = false;
+#endif
     };
 
     void UpdateVfxCallback::operator()(osg::Node* node, osg::NodeVisitor* nv)
@@ -792,6 +799,9 @@ namespace MWRender
         {
             SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);
             mObjectRoot->accept(assignVisitor);
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+            mV4ControllerClockAssigned = true;
+#endif
         }
     }
 
@@ -977,6 +987,32 @@ namespace MWRender
             }
         }
 
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        // External NIF keyframes are the Phase 3C direct-runtime subset. Build
+        // the exact folded bone-group membership from the same node map and
+        // blend-mask rules used by the compatibility controller binding above.
+        // This is load-time metadata only; no evaluated transform is copied.
+        constexpr VFS::Path::ExtensionView kfExtension("kf");
+        if (kfname.extension() == kfExtension)
+        {
+            animsrc->mV4NativeKf = true;
+            for (const auto& [sourceName, controller] : controllerMap)
+            {
+                std::string boneName = Misc::StringUtils::lowerCase(sourceName);
+                const NodeMap::const_iterator found = nodeMap.find(boneName);
+                if (found == nodeMap.end())
+                    continue;
+                const size_t blendMask = detectBlendMask(found->second, controller->getName());
+                if (hybridVisual
+                    && ((blendMask == BoneGroup_LowerBody && boneName != "bip01"
+                            && boneName != "bip01 pelvis" && boneName != "bip01 spine")
+                        || boneName.find("finger") != std::string::npos || boneName == "bip01 head"))
+                    continue;
+                animsrc->mV4NativeBoneNames[blendMask].push_back(std::move(boneName));
+            }
+        }
+#endif
+
         if (hybridVisual)
             mHybridVisualSources.push_back(animsrc);
         else
@@ -997,6 +1033,9 @@ namespace MWRender
             {
                 SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);
                 mObjectRoot->accept(assignVisitor);
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+                mV4ControllerClockAssigned = true;
+#endif
             }
         }
 
@@ -1476,6 +1515,9 @@ namespace MWRender
 
     void Animation::resetActiveGroups()
     {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4PersistentObject.reset();
+#endif
         // remove all previous external controllers from the scene graph
         for (auto it = mActiveControllers.begin(); it != mActiveControllers.end(); ++it)
         {
@@ -2099,10 +2141,15 @@ namespace MWRender
         mV4SourceModel = VFS::Path::toNormalized(model);
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
         mV4PersistentObject.reset();
+        mV4ObjectCaptureAdmission.reset();
 #endif
 
         mNodeMap.clear();
         mNodeMapCreated = false;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4ControllerClockAssigned = false;
+        ++mV4ObjectRootRevision;
+#endif
         mActiveControllers.clear();
         mAccumRoot = nullptr;
         mAccumCtrl = nullptr;
@@ -2247,6 +2294,9 @@ namespace MWRender
 
     void Animation::addSpellCastGlow(const osg::Vec4f& color, float glowDuration)
     {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4PersistentObject.reset();
+#endif
         if (!mGlowUpdater || (mGlowUpdater->isDone() || (mGlowUpdater->isPermanentGlowUpdater() == true)))
         {
             if (mGlowUpdater && mGlowUpdater->isDone())
@@ -2264,6 +2314,9 @@ namespace MWRender
 
     void Animation::addExtraLight(osg::ref_ptr<osg::Group> parent, const SceneUtil::LightCommon& esmLight)
     {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4PersistentObject.reset();
+#endif
         bool exterior = mPtr.isInCell() && mPtr.getCell()->getCell()->isExterior();
 
         mExtraLightSource = SceneUtil::addLight(parent, esmLight, Mask_Lighting, exterior);
@@ -2414,6 +2467,9 @@ namespace MWRender
         // We can use a bool flag to check in spellcasting effect found.
         if (!mHasMagicEffects)
             return;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4PersistentObject.reset();
+#endif
 
         // TODO: objects without animation still will have
         // transformation nodes with finished callbacks
@@ -2449,6 +2505,9 @@ namespace MWRender
     {
         if ((alpha == mAlpha && actorFade == mActorFade) || !mObjectRoot)
             return;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4PersistentObject.reset();
+#endif
         mAlpha = alpha;
         mActorFade = actorFade;
 
@@ -2474,6 +2533,9 @@ namespace MWRender
 
     void Animation::setLightEffect(float effect)
     {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        if (effect != 0 || mGlowLight) mV4PersistentObject.reset();
+#endif
         if (effect == 0)
         {
             if (mGlowLight)
@@ -2698,13 +2760,156 @@ namespace MWRender
     }
 
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+    bool Animation::captureV4ObjectControllerClock(std::optional<float>& time, std::string& diagnostic) const
+    {
+        time.reset();
+        if (hasV4EffectAttachments() || hasV4DynamicLightAttachments() || hasV4TransparencyOverride())
+        {
+            diagnostic = "skeletal object has engine visual overrides";
+            return false;
+        }
+        for (const auto& [node, callback] : mActiveControllers)
+            if (!dynamic_cast<const NifOsg::KeyframeController*>(callback.get())
+                && !dynamic_cast<const NifAnimBlendController*>(callback.get())
+                && !dynamic_cast<const ResetAccumRootCallback*>(callback.get()))
+            {
+                diagnostic = "skeletal object has an unsupported external callback";
+                return false;
+            }
+        if (mV4ControllerClockAssigned)
+        {
+            const auto selected = mAnimationTimePtr[0]->getTimePtr();
+            time = selected ? *selected : 0.0f;
+        }
+        return true;
+    }
+
+    bool Animation::seedV4ObjectNodeTransforms(const std::vector<std::string>& names,
+        const std::vector<bool>& required, std::vector<glm::mat4>& matrices, std::string& diagnostic) const
+    {
+        if (names.size() != required.size() || matrices.size() != names.size()) return false;
+        const auto& nodes = getNodeMap();
+        for (std::size_t i = 0; i < names.size(); ++i)
+        {
+            const auto found = nodes.find(names[i]);
+            const auto* node = found == nodes.end() ? nullptr : dynamic_cast<const NifOsg::MatrixTransform*>(found->second.get());
+            if (!node)
+            {
+                // Only immutable identity groups may be absent. Where a matrix
+                // does exist, seed it even without active tracks: stopped KF
+                // controllers can leave channel values behind.
+                if (!required[i] && found == nodes.end()) continue;
+                diagnostic = "skeletal object cannot seed authored NIF node: " + names[i];
+                return false;
+            }
+            const auto& matrix = node->getMatrix();
+            for (int c = 0; c < 4; ++c)
+                for (int r = 0; r < 4; ++r) matrices[i][c][r] = static_cast<float>(matrix(c,r));
+        }
+        return true;
+    }
+
+    bool Animation::captureV4NativeAnimationState(
+        V4NativeAnimationState& state, std::string& diagnostic) const
+    {
+        state = {};
+        diagnostic.clear();
+
+        if (std::getenv("OPENMW_V4_LEGACY_ANIMATION_CAPTURE_CONTROL"))
+        {
+            diagnostic = "legacy animation capture control requested";
+            return false;
+        }
+        if (!mResourceSystem || !mResourceSystem->getKeyframeManager())
+        {
+            diagnostic = "animation has no keyframe resource manager";
+            return false;
+        }
+
+        // Only callbacks attached to the current animation selection matter.
+        // The blend-controller caches intentionally outlive a group switch, so
+        // inspecting the cache maps would let a detached, unfinished controller
+        // force compatibility fallback forever.
+        for (const auto& [node, callback] : mActiveControllers)
+        {
+            if (const auto* controller = dynamic_cast<const NifAnimBlendController*>(callback.get());
+                controller && controller->isInterpolating())
+            {
+                diagnostic = "NIF animation blend interpolation is active";
+                return false;
+            }
+            if (const auto* controller = dynamic_cast<const BoneAnimBlendController*>(callback.get());
+                controller && controller->isInterpolating())
+            {
+                diagnostic = "OSG bone animation blend interpolation is active";
+                return false;
+            }
+            if (const auto* controller = dynamic_cast<const HybridNifAnimController*>(callback.get());
+                controller && controller->hasActiveBlend())
+            {
+                diagnostic = "hybrid first-person visual animation blend is active";
+                return false;
+            }
+
+            // Head/body/weapon pitch controllers are gameplay/view-driven
+            // post-transforms. Until their neutral equivalent is published, any
+            // enabled instance forces exact compatibility capture for this actor.
+            const auto* rotate = dynamic_cast<const RotateController*>(callback.get());
+            if (rotate && rotate->isEnabled())
+            {
+                diagnostic = "procedural actor rotation is active";
+                return false;
+            }
+        }
+
+        for (std::size_t blendMask = 0; blendMask < sNumBlendMasks; ++blendMask)
+        {
+            AnimStateMap::const_iterator active = mStates.end();
+            for (auto it = mStates.begin(); it != mStates.end(); ++it)
+            {
+                if (!it->second.blendMaskContains(blendMask))
+                    continue;
+                if (active == mStates.end()
+                    || active->second.mPriority[static_cast<BoneGroup>(blendMask)]
+                        < it->second.mPriority[static_cast<BoneGroup>(blendMask)])
+                    active = it;
+            }
+            if (active == mStates.end())
+                continue;
+
+            const std::shared_ptr<AnimSource>& source = active->second.mSource;
+            if (!source || !source->mV4NativeKf)
+            {
+                diagnostic = "active animation source is not a native NIF keyframe clip";
+                return false;
+            }
+
+            state.layers[blendMask] = V4NativeAnimationLayer{
+                source->mPath,
+                active->second.getTime(),
+                std::span<const std::string>(source->mV4NativeBoneNames[blendMask]),
+            };
+        }
+
+        if (mAccumRoot && mAccumCtrl)
+        {
+            state.accumulationBone = mAccumRoot->getName();
+            state.accumulationAxes
+                = { mAccumulate.x(), mAccumulate.y(), mAccumulate.z() };
+        }
+        state.encoder = mResourceSystem->getKeyframeManager()->getEncoder();
+        return true;
+    }
+
     V4PersistentObject* Animation::prepareV4PersistentObject()
     {
         // Custom OSG importers/callbacks keep their evaluated compatibility path.
         // The NIF loader and engine controllers own the supported mutation contract.
         if (Misc::environmentFlag<"OPENMW_V4_NATIVE_OBJECT_PRODUCERS">()
             && mInsert && mV4SourceModel.value().ends_with(".nif") && !mV4PersistentObject)
-            mV4PersistentObject = std::make_unique<V4PersistentObject>(*mInsert);
+            mV4PersistentObject = std::make_unique<V4PersistentObject>(*mInsert, 64u * 1024u * 1024u,
+                typeid(*this) == typeid(ObjectAnimation) && !hasV4EffectAttachments()
+                    && !hasV4DynamicLightAttachments() && !hasV4TransparencyOverride());
         return mV4PersistentObject.get();
     }
 #endif
@@ -2714,6 +2919,9 @@ namespace MWRender
         const MWWorld::ContainerStore& store = ptr.getClass().getContainerStore(ptr);
         if (!store.hasVisibleItems())
         {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+            mV4PersistentObject.reset();
+#endif
             HarvestVisitor visitor;
             mObjectRoot->accept(visitor);
         }

@@ -6,6 +6,7 @@
 
 #include <components/rendercore/framerenderstate.hpp>
 #include <components/rendercore/posedmodel.hpp>
+#include <components/rendercore/actorprogram.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -34,6 +35,7 @@ namespace RenderVsg
         std::vector<StaticResourceDependency<RenderCore::MeshHandle>> meshes;
         std::vector<StaticResourceDependency<RenderCore::MaterialHandle>> materials;
         std::vector<StaticResourceDependency<RenderCore::TextureHandle>> textures;
+        std::shared_ptr<const RenderCore::ActorProgram> program;
     };
 
     struct DynamicActorWorldPlan
@@ -270,6 +272,61 @@ namespace RenderVsg
     private:
         RenderCore::WorldEpoch mEpoch;
         std::unordered_map<std::uint64_t, DynamicActorPlan> mPlans;
+    };
+
+    struct PersistentActorWorldPlan
+    {
+        RenderCore::WorldEpoch epoch;
+        RenderCore::RenderWorldRevision revision;
+        StaticPlanOptions options;
+        std::vector<std::shared_ptr<const DynamicActorPlan>> actors;
+        std::string diagnostic;
+        bool valid() const noexcept { return epoch.valid() && revision.valid() && diagnostic.empty(); }
+    };
+
+    // The published actor plans are stable owners, not a copied frame snapshot.
+    // A world revision is an invalidation boundary; unchanged dependencies keep
+    // their owner and bound execution program even when lights/placements change.
+    // Retired plans survive only in fence-owned residents, never a growing cache.
+    class PersistentActorPlanCache
+    {
+    public:
+        std::size_t rebuilt = 0, reused = 0;
+        const PersistentActorWorldPlan& prepare(const RenderCore::RenderWorld& world, StaticPlanOptions options = {})
+        {
+            options.includeDeformableMeshes = true;
+            rebuilt = reused = 0;
+            if (mSnapshot.valid() && mSnapshot.epoch == world.epoch()
+                && mSnapshot.revision == world.revision() && mSnapshot.options == options)
+            { reused = mSnapshot.actors.size(); return mSnapshot; }
+            PersistentActorWorldPlan next;
+            next.epoch = world.epoch(); next.revision = world.revision(); next.options = options;
+            std::unordered_map<std::uint64_t, std::shared_ptr<const DynamicActorPlan>> previous;
+            if (mSnapshot.epoch == world.epoch() && mSnapshot.options == options)
+                for (const auto& actor : mSnapshot.actors) previous.emplace(key(actor->instance), actor);
+            world.forEachInstance([&](RenderCore::InstanceHandle handle, const RenderCore::InstanceRecord& instance) {
+                if (!instance.skeleton) return;
+                const auto found = previous.find(key(handle));
+                if (found != previous.end() && dynamicActorPlanCurrent(world, *found->second))
+                { ++reused; next.actors.push_back(found->second); return; }
+                ++rebuilt;
+                std::string diagnostic;
+                auto actor = buildDynamicActorPlan(world, handle, options, &diagnostic);
+                if (!actor)
+                {
+                    if (next.diagnostic.empty()) next.diagnostic = diagnostic.empty() ? "invalid persistent actor" : diagnostic;
+                    return;
+                }
+                actor->program = RenderCore::ActorProgram::bind(world, actor->model, actor->skeleton);
+                next.actors.push_back(std::make_shared<const DynamicActorPlan>(std::move(*actor)));
+            });
+            mSnapshot = std::move(next);
+            return mSnapshot;
+        }
+    private:
+        static std::uint64_t key(RenderCore::InstanceHandle handle)
+        { return (std::uint64_t(handle.generation()) << 32u) | handle.slot(); }
+        PersistentActorWorldPlan mSnapshot;
     };
 
     [[nodiscard]] inline std::optional<StaticAssetPlan> evaluateDynamicActorAssetPlan(

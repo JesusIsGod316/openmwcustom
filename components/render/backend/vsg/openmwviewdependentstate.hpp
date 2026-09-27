@@ -58,9 +58,11 @@ namespace RenderVsg
             const std::optional<RenderCore::WorldClipPlane>& clipPlane, const RenderCore::CameraState& camera) noexcept;
 
         [[nodiscard]] std::size_t localLightCount() const noexcept { return mPlan.lights.size(); }
+        void setPostProcessingLights(vsg::ref_ptr<vsg::ubyteArray> data) { mPostProcessingLights = std::move(data); }
 
     private:
         void updateUnshadowedLightData() const;
+        [[nodiscard]] bool recordStableSunShadows(vsg::RecordTraversal& traversal) const;
 
         struct LocalLightTemporalState
         {
@@ -79,6 +81,7 @@ namespace RenderVsg
 
         LocalLightBufferPlan mPlan;
         vsg::ref_ptr<vsg::vec4Array> mOpenMwLightData;
+        vsg::ref_ptr<vsg::ubyteArray> mPostProcessingLights;
         vsg::ref_ptr<vsg::BufferInfo> mOpenMwLightBufferInfo;
         vsg::ref_ptr<vsg::vec4Array> mOpenMwEnvironmentData;
         vsg::ref_ptr<vsg::BufferInfo> mOpenMwEnvironmentBufferInfo;

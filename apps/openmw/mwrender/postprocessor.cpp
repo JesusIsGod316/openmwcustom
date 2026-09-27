@@ -18,6 +18,7 @@
 #include <components/debug/v36gpuprofiler.hpp>
 #include <components/files/conversion.hpp>
 #include <components/misc/pathhelpers.hpp>
+#include <components/misc/environmentflag.hpp>
 #include <components/misc/strings/algorithm.hpp>
 #include <components/misc/strings/lower.hpp>
 #include <components/resource/scenemanager.hpp>
@@ -201,12 +202,15 @@ namespace MWRender
             // for existing CPU-side state consumers, but do not initialize or attach its OpenGL presentation path.
             mWidth = std::max(1, static_cast<int>(Settings::video().mResolutionX));
             mHeight = std::max(1, static_cast<int>(Settings::video().mResolutionY));
-            mGLSLVersion = 0;
-            mUBO = false;
+            mNativeBackend = Misc::environmentFlag<"OPENMW_VK_OMWFX">();
+            mGLSLVersion = mNativeBackend ? 450 : 0;
+            mUBO = mNativeBackend;
             mNormalsSupported = false;
-            mUsePostProcessing = false;
+            mUsePostProcessing = mNativeBackend && Settings::postProcessing().mEnabled;
             mStateUpdater = new Fx::StateUpdater(false);
             Log(Debug::Info) << "V4 Vulkan headless OSG route: legacy OpenGL post-processing presentation disabled";
+            if (mNativeBackend)
+                Log(Debug::Info) << "Native Vulkan OMWFX frontend enabled; scene distortion and supplied normal targets remain unavailable";
             return;
         }
         osg::GLExtensions* ext = gc->getState()->get<osg::GLExtensions>();
@@ -252,6 +256,11 @@ namespace MWRender
 
     void PostProcessor::resize()
     {
+        if (mNativeBackend)
+        {
+            dirtyTechniques(true);
+            return;
+        }
         mHUDCamera->resize(mWidth, mHeight);
         mViewer->getCamera()->resize(mWidth, mHeight);
         if (Stereo::getStereo())
@@ -580,6 +589,13 @@ namespace MWRender
 
     void PostProcessor::dirtyTechniques(bool dirtyAttachments)
     {
+        if (mNativeBackend)
+        {
+            ++mNativeGeneration;
+            if (auto hud = MWBase::Environment::get().getWindowManager()->getPostProcessorHud())
+                hud->updateTechniques();
+            return;
+        }
         size_t frameId = frame() % 2;
 
         mDirty = true;
@@ -858,6 +874,73 @@ namespace MWRender
     PostProcessor::TechniqueList PostProcessor::getChain()
     {
         return mTechniques;
+    }
+
+    std::shared_ptr<const Fx::NativeFrame> PostProcessor::prepareNativeFrame(double simulationTime, double delta)
+    {
+        if (!mNativeBackend) return {};
+        while (!mQueuedTemplates.empty())
+        {
+            mTemplates.push_back(std::move(mQueuedTemplates.back()));
+            mQueuedTemplates.pop_back();
+        }
+        updateLiveReload();
+        if (mReload)
+        {
+            mReload = false;
+            loadChain();
+        }
+        if (!mNativeChain || mNativeChain->generation != mNativeGeneration)
+        {
+            auto chain = std::make_shared<Fx::NativeChain>();
+            chain->generation = mNativeGeneration;
+            TechniqueList sources;
+            for (const auto& technique : mTechniques)
+            {
+                // The old distortion pass requires a separate geometry output,
+                // not the ordinary post-processing chain. Do not execute its
+                // OpenGL framebuffer capture in the native path.
+                if (technique->getInternal()) continue;
+                if (!technique->isValid())
+                {
+                    Log(Debug::Error) << "Native OMWFX rejected " << technique->getName() << ": " << technique->getLastError();
+                    continue;
+                }
+                try
+                {
+                    chain->techniques.push_back(Fx::makeNativeTechnique(*technique));
+                    sources.push_back(technique);
+                }
+                catch (const std::exception& error)
+                {
+                    Log(Debug::Error) << "Native OMWFX rejected " << technique->getName() << ": " << error.what();
+                }
+            }
+            mNativeChain = std::move(chain);
+            mNativeSources = std::move(sources);
+        }
+        auto result = std::make_shared<Fx::NativeFrame>();
+        result->chain = mNativeChain;
+        result->enabled = mUsePostProcessing;
+        result->interior = !mExteriorFlag;
+        result->underwater = mUnderwater;
+        bool sunglare = true;
+        if (result->enabled)
+            for (const auto& technique : mNativeChain->techniques)
+                if (!(technique.flags & (result->interior ? Fx::Technique::Flag_Disable_Interiors : Fx::Technique::Flag_Disable_Exteriors))
+                    && !(technique.flags & (result->underwater ? Fx::Technique::Flag_Disable_Underwater : Fx::Technique::Flag_Disable_Abovewater))
+                    && (technique.flags & Fx::Technique::Flag_Disable_SunGlare))
+                    sunglare = false;
+        mRendering.getSkyManager()->setSunglare(sunglare);
+        result->exposureSpeed = Settings::postProcessing().mAutoExposureSpeed;
+        mStateUpdater->setResolution({static_cast<float>(renderWidth()), static_cast<float>(renderHeight())});
+        mStateUpdater->setSimulationTime(static_cast<float>(simulationTime));
+        mStateUpdater->setDeltaSimulationTime(static_cast<float>(delta));
+        mStateUpdater->setFrameNumber(static_cast<int>(frame()));
+        result->state = mStateUpdater->snapshot();
+        for (std::size_t i = 0; i < mNativeSources.size(); ++i)
+            result->parameters.push_back(Fx::packNativeParameters(mNativeChain->techniques[i], *mNativeSources[i]));
+        return result;
     }
 
     void PostProcessor::loadChain()

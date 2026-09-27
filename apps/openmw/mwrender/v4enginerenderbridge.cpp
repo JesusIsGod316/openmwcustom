@@ -5,16 +5,19 @@
 #include "v4effectcapture.hpp"
 #include "v4objectcaptureplan.hpp"
 #include "v4persistentobject.hpp"
+#include "v4animatedobjectcapture.hpp"
 #include "v4rigidactorpose.hpp"
 #include "v4scenerenderlifecycle.hpp"
 #include "v4semanticsource.hpp"
 #include "v4terrainsource.hpp"
 #include "vulkanmw/groundcoversource.hpp"
+#include "vulkanmw/nativeanimationruntime.hpp"
 
 #include "animation.hpp"
 #include "groundcover.hpp"
 #include "npcanimation.hpp"
 #include "renderingmanager.hpp"
+#include "postprocessor.hpp"
 
 #include "../mwworld/cell.hpp"
 #include "../mwworld/cellstore.hpp"
@@ -30,6 +33,8 @@
 
 #include <components/debug/debuglog.hpp>
 #include <components/esm3/loadcell.hpp>
+#include <components/esm3/loadacti.hpp>
+#include <components/esm3/loadstat.hpp>
 
 #include <components/misc/strings/lower.hpp>
 #include <components/misc/convert.hpp>
@@ -205,85 +210,6 @@ namespace MWRender
             bool consumed = false;
         };
 
-        // Whole-object compatibility capture must not absorb attached UpdateVfx
-        // subtrees. Those subtrees carry Effect semantics and are captured in a
-        // second pass below. Keeping this filter local to the object bridge also
-        // leaves the established actor-effect capture path unchanged.
-        class AnimatedObjectCaptureVisitor final : public osg::NodeVisitor
-        {
-        public:
-            AnimatedObjectCaptureVisitor(std::string identityPrefix, const VFS::Manager& vfs,
-                NifRender::TextureIdentityCache* identities)
-                : osg::NodeVisitor(TRAVERSE_ACTIVE_CHILDREN)
-                , mIdentityPrefix(std::move(identityPrefix))
-                , mVfs(vfs)
-                , mTextureIdentities(identities)
-            {
-            }
-
-            void apply(osg::Node& node) override
-            {
-                if (nestedEffectRoot(node))
-                    return;
-                if (const auto* particles = dynamic_cast<const osgParticle::ParticleSystem*>(&node))
-                {
-                    if (!v4_effect_detail::captureParticleSystem(*particles, getNodePath(), mVfs,
-                            nextIdentity("system"), mResult.draws, mResult.diagnostic, mTextureIdentities))
-                        return;
-                }
-                if (mResult.valid())
-                    traverse(node);
-            }
-
-            void apply(osg::Geode& geode) override
-            {
-                if (nestedEffectRoot(geode))
-                    return;
-                if (mResult.valid())
-                    traverse(geode);
-            }
-
-            void apply(osg::Drawable& drawable) override
-            {
-                if (nestedEffectRoot(drawable))
-                    return;
-                if (auto* geometry = v4_effect_detail::evaluatedGeometry(drawable, *this, mResult.diagnostic))
-                {
-                    RenderCore::ImmediateEffectDraw draw;
-                    if (v4_effect_detail::captureGeometry(*geometry, getNodePath(), mVfs,
-                            nextIdentity("geometry"), draw, mResult.diagnostic, mTextureIdentities))
-                        mResult.draws.push_back(std::move(draw));
-                }
-                else if (auto* particles = dynamic_cast<osgParticle::ParticleSystem*>(&drawable))
-                {
-                    if (!v4_effect_detail::captureParticleSystem(*particles, getNodePath(), mVfs,
-                            nextIdentity("system"), mResult.draws, mResult.diagnostic, mTextureIdentities))
-                        return;
-                }
-                if (mResult.valid())
-                    traverse(drawable);
-            }
-
-            [[nodiscard]] V4EffectCaptureResult take() { return std::move(mResult); }
-
-        private:
-            [[nodiscard]] bool nestedEffectRoot(const osg::Node& node) const noexcept
-            {
-                return getNodePath().size() > 1u && v4_effect_detail::isEffectRoot(node);
-            }
-
-            [[nodiscard]] std::string nextIdentity(std::string_view kind)
-            {
-                return mIdentityPrefix + ":" + std::string(kind) + ":" + std::to_string(mOrdinal++);
-            }
-
-            std::string mIdentityPrefix;
-            const VFS::Manager& mVfs;
-            NifRender::TextureIdentityCache* mTextureIdentities;
-            std::size_t mOrdinal = 0;
-            V4EffectCaptureResult mResult;
-        };
-
         [[nodiscard]] std::string modelDynamicRequirementDiagnostic(std::uint32_t requirements)
         {
             using RenderCore::ModelDynamicRequirement;
@@ -356,6 +282,7 @@ namespace MWRender
         , mRouteStatus(std::make_shared<V4RenderRouteStatus>())
         , mNativeTerrain(std::make_unique<RenderNative::TerrainWorldService>(
               mSession->world(), mSession->publisher()))
+        , mNativeAnimation(std::make_unique<V4NativeAnimationRuntime>(mVfs))
     {
     }
 
@@ -569,6 +496,11 @@ namespace MWRender
     bool V4EngineRenderBridge::captureDynamicFrameState(const RenderingManager& rendering, V4MainFrameSource& source)
     {
         Debug::GameplayDiagnostics::Stage diagnostic("dynamic_capture");
+        // Snapshot the parser/UI/Lua-owned effect state on the gameplay thread.
+        // The Vulkan draw path never reads mutable Fx or OSG state concurrently.
+        if (auto* post = rendering.getPostProcessor())
+            mSession->bootstrap().renderer().setPostProcessingFrame(
+                post->prepareNativeFrame(source.simulationTime, source.frameDelta));
         auto textureSnapshot = [&] {
             Debug::GameplayDiagnostics::Stage stage("texture_identity_prepare");
             return NifRender::TextureIdentityCache::CaptureScope(mTextureIdentities);
@@ -584,11 +516,16 @@ namespace MWRender
         }
         const RenderCore::WorldEpoch worldEpoch = mSession->world().epoch();
         const bool persistentDraws = Misc::environmentFlag<"OPENMW_V4_PERSISTENT_DRAW_STREAM">();
+        const bool cachedObjectAdmission = Misc::environmentFlag<"OPENMW_VK_CACHED_OBJECT_ADMISSION">();
+        unsigned reusedObjectAdmissions = 0, skippedObjectAdmissions = 0;
+        std::uint64_t cleanObjectPublications = 0, objectBindingInspections = 0;
         if (persistentDraws) mPersistentDraws.begin(worldEpoch.value());
         if (mEvaluatedObjectPlaybackEpoch != worldEpoch)
         {
             if (mObjectCapturePlans) mObjectCapturePlans->clear();
             mEvaluatedObjectPlayback.clear();
+            mNativeSkeletalAssets.clear();
+            mNativeSkeletalObjects.clear();
             mEvaluatedObjectPlaybackEpoch = worldEpoch;
         }
         if (mComposedActorEpoch != worldEpoch)
@@ -603,9 +540,20 @@ namespace MWRender
             mActorLightEpoch = worldEpoch;
         }
         std::set<std::string, std::less<>> currentActorLights;
+        std::map<std::string, NativeSkeletalInstance, std::less<>> currentSkeletalObjects;
+        unsigned skeletalObjectFallbacks = 0;
+        unsigned skeletalPosesValidated = 0;
+        float skeletalPoseMaximumError = 0;
+        std::uint32_t nativeActorPoses = 0;
+        std::uint32_t legacyActorPoses = 0;
+        std::uint32_t nativeSampledTracks = 0;
+        std::uint32_t nativeFallbackEvents = 0;
+        std::uint32_t nativeSeedFailures = 0;
         bool compatible = true;
         if (++mPoseTraversal == 0u)
             ++mPoseTraversal;
+        if (mNativeAnimation)
+            mNativeAnimation->beginFrame();
 
         rendering.forEachAnimation([&](Animation& animation) {
             if (!compatible)
@@ -617,12 +565,31 @@ namespace MWRender
             Debug::GameplayDiagnostics::CaptureWork captureWork(ptr.getClass().isActor());
             if (!ptr.getClass().isActor())
             {
-                const VFS::Path::Normalized modelPath = ptr.getClass().getCorrectedModel(ptr);
+                // The animation root is replaced through setObjectRoot(), which
+                // invalidates this engine-owned decision. A new RenderWorld
+                // epoch likewise requires a fresh model/playback lookup. This
+                // avoids repeating it for unchanged objects, including the
+                // numerous non-playing objects in a modded exterior.
+                const auto* admission = cachedObjectAdmission
+                    ? animation.getV4ObjectCaptureAdmission(worldEpoch.value()) : nullptr;
+                if (admission)
+                {
+                    ++reusedObjectAdmissions;
+                    if (!admission->needsEvaluatedCapture)
+                    {
+                        ++skippedObjectAdmissions;
+                        return;
+                    }
+                }
+                VFS::Path::Normalized uncachedModelPath;
+                if (!admission) uncachedModelPath = ptr.getClass().getCorrectedModel(ptr);
+                const VFS::Path::Normalized& modelPath
+                    = admission ? admission->correctedModel : uncachedModelPath;
                 if (modelPath.empty() || Misc::ResourceHelpers::isHiddenMarker(ptr.getCellRef().getRefId()))
                     return;
 
-                bool needsEvaluatedCapture = ptr.getClass().useAnim();
-                if (Debug::GameplayDiagnostics::sampling() && needsEvaluatedCapture)
+                bool needsEvaluatedCapture = admission ? admission->needsEvaluatedCapture : ptr.getClass().useAnim();
+                if (Debug::GameplayDiagnostics::sampling() && ptr.getClass().useAnim())
                     ++Debug::GameplayDiagnostics::context.useAnimObjects;
                 if (!needsEvaluatedCapture)
                 {
@@ -646,6 +613,8 @@ namespace MWRender
                         mEvaluatedObjectPlayback.emplace(std::string(modelPath.value()), needsEvaluatedCapture);
                     }
                 }
+                if (cachedObjectAdmission && !admission)
+                    animation.setV4ObjectCaptureAdmission(worldEpoch.value(), modelPath, needsEvaluatedCapture);
                 if (!needsEvaluatedCapture)
                     return;
 
@@ -655,6 +624,89 @@ namespace MWRender
                     compatible = false;
                     mLastDiagnostic = "evaluated non-actor object has no stable content identity";
                     return;
+                }
+                // Native skeletal props bypass binding-plan and evaluated mesh
+                // capture. Engine state gates admission; source coverage binds once.
+                const auto nativeModelPath = animation.getV4SourceModel();
+                if (Misc::environmentFlag<"OPENMW_VK_NATIVE_SKELETAL_OBJECTS">()
+                    && (ptr.getType() == ESM::Activator::sRecordId || ptr.getType() == ESM::Static::sRecordId)
+                    && nativeModelPath.value().ends_with(".nif"))
+                {
+                    auto entry = mNativeSkeletalAssets.find(nativeModelPath.value());
+                    const bool inserted = entry == mNativeSkeletalAssets.end();
+                    if (inserted) entry = mNativeSkeletalAssets.try_emplace(std::string(nativeModelPath.value())).first;
+                    auto& native = entry->second;
+                    if (inserted)
+                    {
+                        native.asset = mNativeAssets->resolve(nativeModelPath);
+                        const auto* model = native.asset.available() ? mSession->world().get(native.asset.model) : nullptr;
+                        const auto* skeleton = native.asset.skeleton ? mSession->world().get(*native.asset.skeleton) : nullptr;
+                        if (model && skeleton && native.asset.controllers && native.asset.namedVisualCapabilities == 0)
+                            native.program = RenderNative::SkeletalObjectProgram::bind(
+                                mSession->world(), *model, *skeleton, *native.asset.controllers);
+                        if (Debug::GameplayDiagnostics::sampling())
+                            Debug::GameplayDiagnostics::recordEvent("native_skeletal_asset",
+                                {{"model", std::string(nativeModelPath.value())}, {"reason", native.program.diagnostic()},
+                                    {"skeleton", skeleton ? "1" : "0"},
+                                    {"named_visuals", std::to_string(native.asset.namedVisualCapabilities)},
+                                    {"asset", native.asset.diagnostic}});
+                    }
+                    std::vector<glm::mat4> pose;
+                    const auto* model = native.asset.available() ? mSession->world().get(native.asset.model) : nullptr;
+                    const auto* skeleton = native.asset.skeleton ? mSession->world().get(*native.asset.skeleton) : nullptr;
+                    V4NativeAnimationPoseResult playback;
+                    if (model && skeleton && mNativeAnimation)
+                        playback = mNativeAnimation->captureSkeletalObjectPose(*identity, animation,
+                            native.program, static_cast<float>(source.simulationTime), pose);
+                    if (playback.applied())
+                    {
+                        skeletalPosesValidated += playback.poseValidated ? 1u : 0u;
+                        skeletalPoseMaximumError = std::max(skeletalPoseMaximumError, playback.poseMaximumError);
+                        auto dynamic = makeV4DynamicInstanceSource(ptr, native.asset.model,
+                            *native.asset.skeleton, model->bounds, true);
+                        if (!dynamic)
+                        {
+                            compatible = false;
+                            mLastDiagnostic = "native skeletal prop has no placement: " + *identity;
+                            return;
+                        }
+                        auto handle = mSession->cells().findInstance(*identity);
+                        const auto* bound = handle ? mSession->world().get(*handle) : nullptr;
+                        if (!bound || bound->model != native.asset.model || bound->skeleton != native.asset.skeleton)
+                        {
+                            const auto publication = mSession->cells().upsertDynamicInstance(*dynamic);
+                            if (publication.status != RenderCore::ActiveCellPublishStatus::Applied
+                                && publication.status != RenderCore::ActiveCellPublishStatus::AlreadyPresent)
+                            {
+                                compatible = false;
+                                mLastDiagnostic = "native skeletal prop publication failed: " + *identity;
+                                return;
+                            }
+                            handle = mSession->cells().findInstance(*identity);
+                        }
+                        if (!handle)
+                        {
+                            compatible = false;
+                            mLastDiagnostic = "native skeletal prop lost its instance: " + *identity;
+                            return;
+                        }
+                        RenderCore::SkeletonPoseInput input;
+                        input.instance = *handle;
+                        input.skeleton = *native.asset.skeleton;
+                        input.localTransforms = std::move(pose);
+                        source.skeletonPoses.push_back(std::move(input));
+                        RenderCore::DynamicTransformInput placement;
+                        placement.instance = *handle;
+                        placement.transform = dynamic->transform;
+                        source.dynamicTransforms.push_back(std::move(placement));
+                        currentSkeletalObjects.emplace(*identity,
+                            NativeSkeletalInstance{*handle, native.asset.model, *native.asset.skeleton});
+                        return;
+                    }
+                    if (Debug::GameplayDiagnostics::sampling() && (++skeletalObjectFallbacks <= 4 || skeleton))
+                        Debug::GameplayDiagnostics::recordEvent("native_skeletal_object_fallback",
+                            {{"model", std::string(nativeModelPath.value())}, {"reason", native.program.diagnostic()},
+                                {"playback", playback.diagnostic}, {"asset", native.asset.diagnostic}});
                 }
                 osg::Group* const evaluatedRoot = animation.getV4EffectRoot();
                 if (!evaluatedRoot)
@@ -666,16 +718,22 @@ namespace MWRender
                 }
 
                 std::optional<V4EffectCaptureResult> planned;
+                V4PersistentObject* objectProducer = nullptr;
                 if (Misc::environmentFlag<"OPENMW_V4_NATIVE_OBJECT_PRODUCERS">())
                 {
                     if (auto* producer = animation.prepareV4PersistentObject())
                     {
+                        objectProducer = producer;
                         const auto builds = producer->geometryBuilds;
                         const auto updates = producer->materialUpdates;
                         const auto reuses = producer->reusedDraws;
+                        const auto clean = producer->cleanPublications;
+                        const auto inspections = producer->bindingInspections;
                         planned = producer->publish("animated-object:" + *identity, mVfs, mTextureIdentities,
                             persistentDraws ? &mPersistentDraws : nullptr,
                             Settings::shaders().mApplyLightingToEnvironmentMaps);
+                        cleanObjectPublications += producer->cleanPublications - clean;
+                        objectBindingInspections += producer->bindingInspections - inspections;
                         if (Debug::GameplayDiagnostics::sampling())
                         {
                             auto& c = Debug::GameplayDiagnostics::context;
@@ -688,6 +746,27 @@ namespace MWRender
                         }
                     }
                 }
+                if (planned && objectProducer && objectProducer->hasIntrinsicParticles())
+                {
+                    V4AnimatedObjectCaptureVisitor particlesVisitor("animated-object:" + *identity, mVfs,
+                        &mTextureIdentities, V4AnimatedObjectCaptureVisitor::Mode::ParticlesOnly);
+                    particlesVisitor.setTraversalNumber(mPoseTraversal);
+                    evaluatedRoot->accept(particlesVisitor);
+                    auto particles = particlesVisitor.take();
+                    if (particles.valid())
+                    {
+                        for (auto& draw : particles.draws)
+                            planned->draws.push_back(std::move(draw));
+                    }
+                    else
+                    {
+                        // The known static body and the live particle path are
+                        // atomic from the caller's perspective. Retire any
+                        // retained slots before the whole-object fallback.
+                        objectProducer->invalidate("intrinsic particle capture: " + particles.diagnostic);
+                        planned.reset();
+                    }
+                }
                 if (!planned && Misc::environmentFlag<"OPENMW_V4_OBJECT_BINDING_PLANS">())
                 {
                     if (!mObjectCapturePlans) mObjectCapturePlans = std::make_unique<V4ObjectCapturePlans>();
@@ -698,7 +777,7 @@ namespace MWRender
                 if (planned) capturedObject = std::move(*planned);
                 else
                 {
-                    AnimatedObjectCaptureVisitor objectVisitor("animated-object:" + *identity, mVfs, &mTextureIdentities);
+                    V4AnimatedObjectCaptureVisitor objectVisitor("animated-object:" + *identity, mVfs, &mTextureIdentities);
                     objectVisitor.setTraversalNumber(mPoseTraversal);
                     evaluatedRoot->accept(objectVisitor);
                     capturedObject = objectVisitor.take();
@@ -1219,73 +1298,130 @@ namespace MWRender
                 }
 
                 SceneUtil::Skeleton* evaluated = animation.getSkeleton();
-                std::vector<glm::mat4> global;
-                if (!evaluated)
-                {
-                    const bool skinned = std::any_of(model->payload->nodes.begin(), model->payload->nodes.end(),
-                        [&](const RenderCore::ModelNodeRecord& node) {
-                            const auto* mesh = node.mesh ? mSession->world().get(*node.mesh) : nullptr;
-                            return mesh && mesh->skinned;
-                        });
-                    if (skinned || !animation.getObjectRoot()
-                        || !captureV4RigidActorPose(
-                            *animation.getObjectRoot(), *skeleton->payload, global, mLastDiagnostic))
-                    {
-                        compatible = false;
-                        if (mLastDiagnostic.empty())
-                            mLastDiagnostic = "actor cannot supply its evaluated pose";
-                        mLastDiagnostic
-                            += " actor=" + *identity + " model=" + std::string(animation.getV4SourceModel().value());
-                        return;
-                    }
-                }
-                else
-                {
-                    std::vector<SceneUtil::Bone*> evaluatedBones;
-                    evaluatedBones.reserve(skeleton->payload->bones.size());
-                    for (const RenderCore::BoneRecord& bone : skeleton->payload->bones)
-                    {
-                        SceneUtil::Bone* sourceBone = evaluated->getBone(bone.name);
-                        if (!sourceBone)
-                        {
-                            compatible = false;
-                            mLastDiagnostic = "evaluated actor skeleton is missing required bone " + bone.name
-                                + " from " + skeleton->sourceIdentity;
-                            return;
-                        }
-                        evaluatedBones.push_back(sourceBone);
-                    }
-                    evaluated->updateBoneMatrices(mPoseTraversal);
-                    global.reserve(evaluatedBones.size());
-                    for (const SceneUtil::Bone* bone : evaluatedBones)
-                        global.push_back(toGlm(bone->mMatrixInSkeletonSpace));
-                }
-
                 RenderCore::SkeletonPoseInput pose;
                 pose.instance = *handle;
                 pose.skeleton = *instance->skeleton;
-                pose.localTransforms.resize(global.size());
-                for (std::size_t i = 0; i < global.size(); ++i)
+
+                V4NativeAnimationPoseResult nativePose;
+                if (evaluated && mNativeAnimation)
+                    nativePose = mNativeAnimation->captureSkeletonPose(
+                        *identity, animation, *skeleton, pose.localTransforms);
+
+                std::vector<glm::mat4> global;
+                if (nativePose.applied())
                 {
-                    const std::int32_t parent = skeleton->payload->bones[i].parent;
-                    pose.localTransforms[i]
-                        = parent < 0 ? global[i] : glm::inverse(global[static_cast<std::size_t>(parent)]) * global[i];
-                    if (!finite(pose.localTransforms[i]))
+                    ++nativeActorPoses;
+                    nativeSampledTracks += nativePose.sampledTracks;
+                }
+                else
+                {
+                    ++legacyActorPoses;
+                    if (Debug::GameplayDiagnostics::sampling() && evaluated
+                        && nativeFallbackEvents++ < 4 && !nativePose.diagnostic.empty())
+                        Debug::GameplayDiagnostics::recordEvent("native_animation_fallback",
+                            { { "identity", *identity }, { "reason", nativePose.diagnostic } });
+
+                    if (!evaluated)
+                    {
+                        const bool skinned = std::any_of(model->payload->nodes.begin(), model->payload->nodes.end(),
+                            [&](const RenderCore::ModelNodeRecord& node) {
+                                const auto* mesh = node.mesh ? mSession->world().get(*node.mesh) : nullptr;
+                                return mesh && mesh->skinned;
+                            });
+                        if (skinned || !animation.getObjectRoot()
+                            || !captureV4RigidActorPose(
+                                *animation.getObjectRoot(), *skeleton->payload, global, mLastDiagnostic))
+                        {
+                            compatible = false;
+                            if (mLastDiagnostic.empty())
+                                mLastDiagnostic = "actor cannot supply its evaluated pose";
+                            mLastDiagnostic
+                                += " actor=" + *identity + " model=" + std::string(animation.getV4SourceModel().value());
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        std::vector<SceneUtil::Bone*> evaluatedBones;
+                        evaluatedBones.reserve(skeleton->payload->bones.size());
+                        for (const RenderCore::BoneRecord& bone : skeleton->payload->bones)
+                        {
+                            SceneUtil::Bone* sourceBone = evaluated->getBone(bone.name);
+                            if (!sourceBone)
+                            {
+                                compatible = false;
+                                mLastDiagnostic = "evaluated actor skeleton is missing required bone " + bone.name
+                                    + " from " + skeleton->sourceIdentity;
+                                return;
+                            }
+                            evaluatedBones.push_back(sourceBone);
+                        }
+                        evaluated->updateBoneMatrices(mPoseTraversal);
+                        global.reserve(evaluatedBones.size());
+                        for (const SceneUtil::Bone* bone : evaluatedBones)
+                            global.push_back(toGlm(bone->mMatrixInSkeletonSpace));
+                    }
+
+                    pose.localTransforms.resize(global.size());
+                    for (std::size_t i = 0; i < global.size(); ++i)
+                    {
+                        const std::int32_t parent = skeleton->payload->bones[i].parent;
+                        pose.localTransforms[i]
+                            = parent < 0 ? global[i]
+                                       : glm::inverse(global[static_cast<std::size_t>(parent)]) * global[i];
+                        if (!finite(pose.localTransforms[i]))
+                        {
+                            compatible = false;
+                            mLastDiagnostic = "evaluated actor pose contains a non-finite local transform";
+                            return;
+                        }
+                    }
+                }
+
+                if (pose.localTransforms.size() != skeleton->payload->bones.size())
+                {
+                    compatible = false;
+                    mLastDiagnostic = "actor pose does not match the published skeleton bone count";
+                    return;
+                }
+                for (const glm::mat4& local : pose.localTransforms)
+                {
+                    if (!finite(local))
                     {
                         compatible = false;
-                        mLastDiagnostic = "evaluated actor pose contains a non-finite local transform";
+                        mLastDiagnostic = "actor pose contains a non-finite local transform";
                         return;
                     }
                 }
+
+                // The forced legacy benchmark arm never resumes native posing.
+                // Do not charge it for native history decomposition/maintenance.
+                // Ordinary compatibility fallback still refreshes the exact seed.
+                if (!nativePose.applied() && mNativeAnimation
+                    && !std::getenv("OPENMW_V4_LEGACY_ANIMATION_CAPTURE_CONTROL"))
+                {
+                    std::string seedDiagnostic;
+                    if (!mNativeAnimation->seedSkeletonPose(
+                            *identity, *skeleton, pose.localTransforms, seedDiagnostic))
+                    {
+                        ++nativeSeedFailures;
+                        if (Debug::GameplayDiagnostics::sampling() && nativeFallbackEvents++ < 4
+                            && !seedDiagnostic.empty())
+                            Debug::GameplayDiagnostics::recordEvent("native_animation_seed_fallback",
+                                { { "identity", *identity }, { "reason", seedDiagnostic } });
+                    }
+                }
+
                 if (Debug::GameplayDiagnostics::detailedSampling() && source.skeletonPoses.size() < 16)
                     Debug::GameplayDiagnostics::recordEvent("actor_pose",
                         { { "actor",
                               std::to_string(mSession->world().epoch().value()) + ":" + std::to_string(handle->slot())
                                   + ":" + std::to_string(handle->generation()) },
                             { "identity", *identity }, { "skeleton", skeleton->sourceIdentity },
-                            { "bones", std::to_string(global.size()) },
-                            { "global_hash",
-                                std::to_string(Debug::GameplayDiagnostics::fingerprint(
+                            { "bones", std::to_string(pose.localTransforms.size()) },
+                            { "source", nativePose.applied() ? "native_kf" : "legacy_osg" },
+                            { "global_hash", nativePose.applied() ? "not_captured"
+                                : std::to_string(Debug::GameplayDiagnostics::fingerprint(
                                     global.data(), global.size() * sizeof(glm::mat4))) },
                             { "local_hash",
                                 std::to_string(Debug::GameplayDiagnostics::fingerprint(
@@ -1438,6 +1574,48 @@ namespace MWRender
                 currentActorLights.insert(light.identity);
             }
         });
+        if (cachedObjectAdmission && Debug::GameplayDiagnostics::sampling())
+            Debug::GameplayDiagnostics::recordEvent("object_admission_cache", {
+                {"reused", std::to_string(reusedObjectAdmissions)},
+                {"skipped", std::to_string(skippedObjectAdmissions)}});
+        if (mNativeAnimation)
+            mNativeAnimation->endFrame();
+        // Withdraw only this producer's instances on unload/disable or newly
+        // unsupported state. Backend retirement preserves in-flight GPU lifetime.
+        if (compatible)
+        {
+            for (const auto& [identity, owned] : mNativeSkeletalObjects)
+                if (!currentSkeletalObjects.contains(identity))
+                {
+                    const auto handle = mSession->cells().findInstance(identity);
+                    const auto* bound = handle ? mSession->world().get(*handle) : nullptr;
+                    if (!bound || *handle != owned.instance || bound->model != owned.model
+                        || bound->skeleton != owned.skeleton) continue;
+                    const auto retired = mSession->cells().removeDynamicInstance(identity);
+                    if (retired.status != RenderCore::ActiveCellPublishStatus::Applied
+                        && retired.status != RenderCore::ActiveCellPublishStatus::NotFound)
+                    {
+                        compatible = false;
+                        mLastDiagnostic = "native skeletal prop retirement failed: " + identity;
+                        break;
+                    }
+                }
+            if (compatible) mNativeSkeletalObjects = std::move(currentSkeletalObjects);
+        }
+        if (Debug::GameplayDiagnostics::sampling())
+            Debug::GameplayDiagnostics::recordEvent("native_skeletal_objects",
+                {{"skeletal_objects_published", std::to_string(mNativeSkeletalObjects.size())},
+                    {"skeletal_poses_validated", std::to_string(skeletalPosesValidated)},
+                    {"skeletal_pose_max_error", std::to_string(skeletalPoseMaximumError)},
+                    {"skeletal_object_fallbacks", std::to_string(skeletalObjectFallbacks)}});
+        if (Debug::GameplayDiagnostics::sampling())
+            Debug::GameplayDiagnostics::recordEvent("native_animation_runtime",
+                { { "native_actor_poses", std::to_string(nativeActorPoses) },
+                    { "legacy_actor_poses", std::to_string(legacyActorPoses) },
+                    { "sampled_tracks", std::to_string(nativeSampledTracks) },
+                    { "seed_failures", std::to_string(nativeSeedFailures) },
+                    { "legacy_control",
+                        std::getenv("OPENMW_V4_LEGACY_ANIMATION_CAPTURE_CONTROL") ? "1" : "0" } });
         if (compatible)
         {
             for (const std::string& identity : mActorLights)
@@ -1463,6 +1641,10 @@ namespace MWRender
             source.morphWeights.clear();
             source.immediateEffectDraws.clear();
         }
+        if (Debug::GameplayDiagnostics::sampling())
+            Debug::GameplayDiagnostics::recordEvent("object_producer_work", {
+                {"clean_publications", std::to_string(cleanObjectPublications)},
+                {"binding_inspections", std::to_string(objectBindingInspections)}});
         if (compatible && persistentDraws) source.persistentDraws = mPersistentDraws.finish();
         return compatible;
     }

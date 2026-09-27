@@ -119,6 +119,7 @@ namespace SceneUtil
 
     void CompositeStateSetUpdater::addController(StateSetUpdater* ctrl)
     {
+        invalidateRenderMutationBindings();
         mCtrls.emplace_back(ctrl);
     }
 

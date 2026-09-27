@@ -275,6 +275,18 @@ namespace
             check(actual.ready(), "neutral deformation rejected");
             auto uncached = deformMesh(world, *frame, *instance, draw.mesh, draw.node);
             check(uncached.ready() && uncached.positions == actual.positions, "shared posed-node evaluation differs");
+            const auto native = ActorProgram::bind(world, model, *skeletonHandle);
+            check(bool(native), "native actor binding rejected canonical skin fixture");
+            ActorProgram::Pose nativePose;
+            check(native->evaluatePose(frame->skeletonPoses().front(), nativePose), "native actor pose rejected");
+            check(nativePose.nodes == evaluatedNodes, "native node bindings differ from canonical posed model");
+            MeshPayload nativeStreams;
+            const auto binding = std::find_if(native->meshes().begin(), native->meshes().end(),
+                [&](const auto& value) { return value.node == draw.node; });
+            check(binding != native->meshes().end() && native->deform(*binding, nativePose, nullptr, nativeStreams),
+                "native skin program failed");
+            check(nativeStreams.positions == actual.positions && nativeStreams.normals == actual.normals,
+                "native program differs from compatibility skin result");
             if (phase == 2)
             {
                 auto previous = deformMesh(world, *frame, *instance, draw.mesh, draw.node, true, &evaluatedNodes);
@@ -286,6 +298,10 @@ namespace
             check(RenderVsg::updateDeformedAssetRealization(world, *asset,
                 [&](MeshHandle, ModelNodeIndex) { return &updated; }, resident), "resident update rejected skin-local geometry");
             check(resident[0].positions.get() == originalBuffer, "skin repair reallocated resident stream");
+            const std::array<glm::mat4, 1> placements{draw.worldTransform};
+            check(RenderVsg::updateDeformedAssetRealization(world, plan->asset,
+                [&](MeshHandle, ModelNodeIndex) { return &nativeStreams; }, resident, placements, true),
+                "persistent stream update rejected native skin result");
             check(!deformMesh(world, *frame, *instance, draw.mesh, ModelNodeIndex{9999}).ready(),
                 "invalid geometry path silently accepted");
             for (std::size_t i = 0; i < expected->size(); ++i)

@@ -79,7 +79,8 @@ namespace RenderVsg
     // fence-completed resident first. All destinations are checked before writes.
     [[nodiscard]] bool updateDeformedAssetRealization(const RenderCore::RenderWorld& world,
         const StaticAssetPlan& plan, const MeshPayloadResolver& resolve,
-        std::vector<StaticRealizationResult::MutableDrawStreams>& streams);
+        std::vector<StaticRealizationResult::MutableDrawStreams>& streams,
+        std::span<const glm::mat4> placements = {}, bool persistentStreams = false);
 
     // CP3B3 backend-private VSG realization. RenderCore remains VSG/Vulkan free;
     // the realizer consumes only published neutral records plus the deterministic
