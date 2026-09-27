@@ -211,14 +211,10 @@ void main(void)
 #if @optimizedmwGroundcoverGpuPath >= 1
     gl_Position = viewToClip(viewPos);
 #else
-#if @optimizedmwGroundcoverGpuPath >= 1
-    gl_Position = viewToClip(viewPos);
-#else
     if (length(gl_ModelViewMatrix * vec4(position, 1.0)) > @groundcoverFadeEnd)
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
     else
         gl_Position = viewToClip(viewPos);
-#endif
 #endif
 
     linearDepth = getLinearDepth(gl_Position.z, viewPos.z);
