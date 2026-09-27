@@ -1282,6 +1282,8 @@ if(WIN32)
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p6/OptimizedMW_GL-P6_Test.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p7/START-OptimizedMW-GL-P7-Test.bat"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p7/OptimizedMW_GL-P7_Test.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8/START-OptimizedMW-GL-P8-HL1-Test.bat"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8/OptimizedMW_GL-P8_HL1_Test.ps1"
         "${CMAKE_SOURCE_DIR}/tools/v3/v3_trace_to_chrome.py"
         "${CMAKE_SOURCE_DIR}/V3-applied-source.patch"
         "${CMAKE_SOURCE_DIR}/V3-applied-source-stat.txt"
