@@ -3,23 +3,331 @@ on:
   workflow_dispatch:
   push:
     branches: [vulkanmw/phase3c-producer-dirty-queues]
-    paths: ['.github/workflows/vulkanmw-producer-queues.yml']
 permissions:
   contents: read
+concurrency:
+  group: vulkanmw-producer-queues-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  SourceWorkspace:
-    runs-on: ubuntu-22.04
+  Source:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      source_head: ${{ steps.source.outputs.source_head }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Export exact source for offline implementation and tests
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Publish the reviewed source patch as a normal commit
+        id: source
         shell: bash
         run: |
           set -euo pipefail
-          git archive --format=tar 348bfe6b087b7c8b83738e12a11a7e10f9e592ef | gzip > "$RUNNER_TEMP/vulkanmw-348bfe6-source.tar.gz"
+          test "$GITHUB_REF_NAME" = "vulkanmw/phase3c-producer-dirty-queues"
+          git merge-base --is-ancestor 348bfe6b087b7c8b83738e12a11a7e10f9e592ef HEAD
+          if test -f .github/vulkanmw-producer-update.patch.sha256; then
+            python - <<'PYDECODE'
+          import base64, hashlib, lzma
+          from pathlib import Path
+          encoded = b''.join(p.read_bytes().strip() for p in sorted(Path('.github').glob('vulkanmw-producer-update.patch.xz.b64.*')))
+          raw = lzma.decompress(base64.b64decode(encoded, validate=True))
+          expected = Path('.github/vulkanmw-producer-update.patch.sha256').read_text().strip()
+          if hashlib.sha256(raw).hexdigest() != expected:
+              raise SystemExit('Producer patch checksum mismatch')
+          Path('/tmp/vulkanmw-producer.patch').write_bytes(raw)
+          PYDECODE
+            git apply --check /tmp/vulkanmw-producer.patch
+            git apply --index /tmp/vulkanmw-producer.patch
+            git rm .github/vulkanmw-producer-update.patch.xz.b64.* .github/vulkanmw-producer-update.patch.sha256
+            git config user.name 'VulkanMW source publication'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'VulkanMW: consume producer-owned dirty queues and retire explicit draw lifetimes'
+            git push origin HEAD:"$GITHUB_REF_NAME"
+          fi
+          git diff --check
+          test -z "$(git status --porcelain)"
+          echo "source_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git show --stat --oneline HEAD
+      - name: Exact inherited boundary comparison and producer integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/vulkanmw-producer-base" 348bfe6b087b7c8b83738e12a11a7e10f9e592ef
+          python tools/vulkanmw/check-producer-boundaries.py --baseline "$RUNNER_TEMP/vulkanmw-producer-base" | tee producer-boundary-results.txt
+          python tools/vulkanmw/check-producer-queues.py
+          python tools/vulkanmw/check-phase1-nif-compiler.py
+          python tools/vulkanmw/check-phase2-static-world.py
+          python tools/vulkanmw/check-phase3-controller-animation.py
+          python tools/vulkanmw/check-phase3-kf-compiler.py
+          python tools/vulkanmw/check-phase3c-native-runtime.py
+          git diff --check 348bfe6b087b7c8b83738e12a11a7e10f9e592ef HEAD
+      - name: Install lightweight native test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libglm-dev ninja-build clang
+      - name: Build and run complete metadata and native tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S tools/vulkanmw/tests -B build-producer-tests -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build-producer-tests --parallel 2
+          ctest --test-dir build-producer-tests --output-on-failure | tee producer-native-results.txt
+      - name: Address and undefined behavior sanitizers on queues and ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          for case in producer-queue change-driven; do
+            clang++ -std=c++20 -O1 -g -Wall -Wextra -Wpedantic -Werror -pthread -I. \
+              -fsanitize=address,undefined -fno-omit-frame-pointer \
+              "tools/vulkanmw/tests/${case}-tests.cpp" -o "/tmp/${case}-sanitized"
+            "/tmp/${case}-sanitized" | tee "producer-${case}-sanitizer-results.txt"
+          done
+      - name: Export exact tested source and lightweight math dependency
+        if: always()
+        shell: bash
+        run: |
+          git archive HEAD | gzip > "$RUNNER_TEMP/vulkanmw-producer-source.tar.gz"
+          if test -d /usr/include/glm; then tar -czf "$RUNNER_TEMP/glm-test-headers.tar.gz" -C /usr/include glm; fi
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: vulkanmw-producer-source-348bfe6
-          path: ${{ runner.temp }}/vulkanmw-348bfe6-source.tar.gz
-          retention-days: 7
+          name: vulkanmw-producer-source-evidence-${{ steps.source.outputs.source_head }}
+          retention-days: 14
+          path: |
+            producer-*-results.txt
+            build-producer-tests/Testing/Temporary/LastTest.log
+            ${{ runner.temp }}/vulkanmw-producer-source.tar.gz
+            ${{ runner.temp }}/glm-test-headers.tar.gz
+
+  Windows:
+    needs: Source
+    runs-on: windows-2022
+    env:
+      VCPKG_FEATURE_FLAGS: manifests,versions
+      archive: FAILEDTODOWNLOAD
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.Source.outputs.source_head }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: seanmiddleditch/gha-setup-ninja@master
+      - name: Ensure pinned VSG vcpkg baseline
+        shell: pwsh
+        run: |
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --no-tags --depth=1 origin 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+      - name: Configure static VSG conformance support
+        shell: pwsh
+        run: |
+          cmake `
+            -S "$env:GITHUB_WORKSPACE/tools/v4/cp3b3" `
+            -B "$env:GITHUB_WORKSPACE/build-vulkanmw-static" `
+            -G Ninja `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D CMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -D VCPKG_MANIFEST_DIR="$env:GITHUB_WORKSPACE/tools/v4/cp3b3" `
+            -D VCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE/vulkanmw-vcpkg" `
+            -D VCPKG_TARGET_TRIPLET=x64-windows
+          if ($LASTEXITCODE -ne 0) { throw "Static VSG configure failed" }
+      - name: Build and test static VSG conformance support
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-static" --verbose
+          if ($LASTEXITCODE -ne 0) { throw "Static VSG build failed" }
+          ctest --test-dir "$env:GITHUB_WORKSPACE/build-vulkanmw-static" -C RelWithDebInfo --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Static VSG tests failed" }
+      - name: Test native metadata and producer ownership with MSVC
+        shell: pwsh
+        run: |
+          cmake -S tools/vulkanmw/tests -B build-phase3c-metadata -G Ninja `
+            -D CMAKE_BUILD_TYPE=Release `
+            -D CMAKE_PREFIX_PATH="$env:GITHUB_WORKSPACE/vulkanmw-vcpkg/x64-windows"
+          if ($LASTEXITCODE -ne 0) { throw "Metadata configure failed" }
+          cmake --build build-phase3c-metadata
+          if ($LASTEXITCODE -ne 0) { throw "Metadata build failed" }
+          ctest --test-dir build-phase3c-metadata --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Metadata tests failed" }
+      - name: Load OpenMW dependency identity
+        shell: bash
+        run: |
+          sed '/^\s*#/d; /^\s*$/d' "${{ github.workspace }}/CI/deps_versions.msvc.sh" >> $GITHUB_ENV
+      - name: Download OpenMW Windows dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE/deps" | Out-Null
+          Set-Location "$env:GITHUB_WORKSPACE/deps"
+          $MANIFEST = "vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}-manifest.txt"
+          curl.exe --fail --retry 3 -L -o "$MANIFEST" "https://gitlab.com/OpenMW/openmw-deps/-/raw/main/windows/$MANIFEST"
+          if ($LASTEXITCODE -ne 0) { throw "Dependency manifest download failed" }
+          $lines = Get-Content "$MANIFEST"
+          $URL = $lines[0]
+          $split = -split $lines[1]
+          $HASH = $split[0]
+          $FILE = $split[1]
+          curl.exe --fail --retry 3 -L -o "$FILE" "$URL"
+          if ($LASTEXITCODE -ne 0) { throw "Dependency archive download failed" }
+          $filehash = Get-FileHash "$FILE" -Algorithm SHA512
+          if ($filehash.hash -ne $HASH) { throw "Dependency archive hash mismatch" }
+          "archive=$FILE" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Extract OpenMW Windows dependencies
+        shell: pwsh
+        working-directory: ${{ github.workspace }}/deps
+        run: |
+          7z x -y -ovcpkg-x64-windows-2022-${{ env.VCPKG_TAG }} $env:archive
+          if ($LASTEXITCODE -ne 0) { throw "Dependency extraction failed" }
+      - name: Configure production VulkanMW producer tree
+        shell: pwsh
+        run: |
+          $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
+          $vsgPrefix = "$env:GITHUB_WORKSPACE/vulkanmw-vcpkg/x64-windows"
+          cmake `
+            -S "$env:GITHUB_WORKSPACE" `
+            -B "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c" `
+            -G Ninja `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D CMAKE_EXPORT_COMPILE_COMMANDS=ON `
+            -D CMAKE_TOOLCHAIN_FILE="$openmwDeps/scripts/buildsystems/vcpkg.cmake" `
+            -D CMAKE_PREFIX_PATH="$vsgPrefix" `
+            -D CMAKE_PROJECT_INCLUDE="$env:GITHUB_WORKSPACE/tools/v4/cp3b3/OpenMWRealNifTool.cmake" `
+            -D LuaJit_INCLUDE_DIR="$openmwDeps/installed/x64-windows/include/luajit" `
+            -D LuaJit_LIBRARY="$openmwDeps/installed/x64-windows/lib/lua51.lib" `
+            -D BUILD_OPENMW=ON `
+            -D OPENMW_ENABLE_V4_VULKAN_RUNTIME=ON `
+            -D OPENMW_V4_BUILD_RECOVERY_TESTS=ON `
+            -D BUILD_LAUNCHER=OFF `
+            -D BUILD_WIZARD=OFF `
+            -D BUILD_MWINIIMPORTER=OFF `
+            -D BUILD_OPENCS=OFF `
+            -D BUILD_ESSIMPORTER=OFF `
+            -D BUILD_BSATOOL=OFF `
+            -D BUILD_ESMTOOL=OFF `
+            -D BUILD_NIFTEST=OFF `
+            -D BUILD_DOCS=OFF `
+            -D BUILD_COMPONENTS_TESTS=OFF `
+            -D BUILD_BENCHMARKS=OFF `
+            -D BUILD_NAVMESHTOOL=OFF `
+            -D BUILD_BULLETOBJECTTOOL=OFF `
+            -D BUILD_OPENCS_TESTS=OFF `
+            -D BUILD_OPENMW_TESTS=OFF `
+            -D OPENMW_USE_SYSTEM_SQLITE3=OFF `
+            -D OPENMW_USE_SYSTEM_YAML_CPP=OFF `
+            -D OPENMW_LTO_BUILD=OFF
+          if ($LASTEXITCODE -ne 0) { throw "Production configure failed" }
+      - name: Build real-NIF VulkanMW conformance executable
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c" --target openmw-vulkan-nif-conformance --verbose
+          if ($LASTEXITCODE -ne 0) { throw "Real-NIF conformance build failed" }
+      - name: Build production OpenMW
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c" --target openmw --verbose
+          if ($LASTEXITCODE -ne 0) { throw "Production OpenMW build/link failed" }
+      - name: Build production-linked producer capture tests
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c" --target openmw-v4-rendering-capture-tests --verbose
+          if ($LASTEXITCODE -ne 0) { throw "Producer capture fixture build failed" }
+      - name: Stage runnable producer queue package
+        shell: pwsh
+        run: |
+          $build = "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c"
+          $stage = "$env:GITHUB_WORKSPACE/VulkanMW-PRODUCER-TEST"
+          $openmwDeps = "$env:GITHUB_WORKSPACE/deps/vcpkg-x64-windows-2022-${{ env.VCPKG_TAG }}"
+          $vsg = "$env:GITHUB_WORKSPACE/vulkanmw-vcpkg/x64-windows"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          cmake --install $build --prefix $stage
+          if ($LASTEXITCODE -ne 0) { throw "Install staging failed" }
+          if (-not (Test-Path "$stage/openmw.exe")) { Copy-Item "$build/openmw.exe" "$stage/openmw.exe" -Force }
+          Get-ChildItem "$openmwDeps/installed/x64-windows/bin" -Filter *.dll -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage -Force
+          Get-ChildItem "$openmwDeps/installed/x64-windows/bin/Release" -Filter *.dll -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage -Force
+          Get-ChildItem "$vsg/bin" -Filter *.dll -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage -Force
+          $sdlRoots = @("$build/_deps/SDL3-3.4.10/lib/x64", "$build/_deps/SDL3-build", "$build/_deps/SDL3-build/Release")
+          foreach ($root in $sdlRoots) {
+            if (Test-Path $root) {
+              Get-ChildItem $root -Filter *.dll -File -Recurse -ErrorAction SilentlyContinue |
+                Copy-Item -Destination $stage -Force
+            }
+          }
+          $osgPluginSrc = "$openmwDeps/installed/x64-windows/bin/osgPlugins-3.6.5"
+          if (Test-Path $osgPluginSrc) {
+            New-Item -ItemType Directory -Force "$stage/osgPlugins-3.6.5" | Out-Null
+            Get-ChildItem $osgPluginSrc -Filter *.dll -File | Copy-Item -Destination "$stage/osgPlugins-3.6.5" -Force
+          }
+          @(
+            "VulkanMW PRODUCER DIRTY QUEUE TEST PACKAGE",
+            "source_head=${{ needs.Source.outputs.source_head }}",
+            "parent_checkpoint=348bfe6b087b7c8b83738e12a11a7e10f9e592ef",
+            "renderer_test=Vulkan/VSG",
+            "runtime_substitution=producer owned dirty queues and explicit draw retirement",
+            "candidate_control=OPENMW_VK_PRODUCER_DIRTY_QUEUES",
+            "launcher=START-VulkanMW-Test.bat",
+            "status=build green only; hardware runtime acceptance pending"
+          ) | Set-Content -LiteralPath "$stage/VULKANMW-PRODUCER-TEST.txt" -Encoding Ascii
+          foreach ($required in @(
+            "openmw.exe", "START-VulkanMW-Test.bat", "START-VulkanMW-Producer-Test.bat",
+            "architecture-benchmark.py", "architecture-benchmark.lua", "gameplay-diagnostics.py", "diagnosticconfig.py",
+            "tools/vulkanmw/run-producer-queues.py", "tools/vulkanmw/run-publication-cohort.py",
+            "tools/vulkanmw/vulkan-profile.py", "tools/vulkanmw/vulkan-clean-settings.cfg", "tools/vulkanmw/frame-profile-report.py",
+            "tools/v4/cp4/diagnosticconfig.py", "tools/v4/cp4/gameplay-diagnostics.py", "tools/v4/cp4/architecture-benchmark.lua"
+          )) {
+            if (-not (Test-Path "$stage/$required")) { throw "Package is missing $required" }
+          }
+      - name: Run real OSG producer capture regression suite
+        shell: pwsh
+        run: |
+          $stage = "$env:GITHUB_WORKSPACE/VulkanMW-PRODUCER-TEST"
+          $env:PATH = "$stage;$stage/osgPlugins-3.6.5;" + $env:PATH
+          Get-ChildItem Env: | Where-Object { $_.Name -like "OPENMW_*" } | Remove-Item
+          & "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c/openmw-v4-rendering-capture-tests.exe" 2>&1 |
+            Tee-Object -FilePath "$env:GITHUB_WORKSPACE/producer-capture-results.txt"
+          if ($LASTEXITCODE -ne 0) { throw "Producer capture regression suite failed" }
+      - name: Validate packaged executable and launcher
+        shell: pwsh
+        run: |
+          $stage = "$env:GITHUB_WORKSPACE/VulkanMW-PRODUCER-TEST"
+          $env:PATH = "$stage;$stage/osgPlugins-3.6.5;" + $env:PATH
+          & "$stage/openmw.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "openmw.exe --version failed" }
+          & "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c/openmw-vulkan-nif-conformance.exe" --help
+          if ($LASTEXITCODE -ne 0) { throw "real-NIF conformance --help failed" }
+          python "$stage/tools/vulkanmw/run-producer-queues.py" --help
+          if ($LASTEXITCODE -ne 0) { throw "Installed producer harness import failed" }
+          $identity = @{
+            source_head = "${{ needs.Source.outputs.source_head }}"
+            executable_sha256 = (Get-FileHash "$stage/openmw.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+            changed_source_files = @{}
+            build_run = "${{ github.run_id }}"
+            source_identity_basis = "CI checkout of exact tested source commit"
+          }
+          $identity | ConvertTo-Json -Depth 4 | Set-Content "$stage/source-changes.json" -Encoding utf8
+      - name: Upload producer build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulkanmw-producer-build-evidence-${{ needs.Source.outputs.source_head }}
+          if-no-files-found: ignore
+          path: |
+            producer-capture-results.txt
+            build-vulkanmw-static/CMakeCache.txt
+            build-vulkanmw-static/Testing/Temporary/LastTest.log
+            build-phase3c-metadata/Testing/Temporary/LastTest.log
+            build-vulkanmw-phase3c/CMakeCache.txt
+            build-vulkanmw-phase3c/.ninja_log
+      - name: Upload runnable VulkanMW producer package
+        uses: actions/upload-artifact@v4
+        with:
+          name: VulkanMW-PRODUCER-TEST-${{ needs.Source.outputs.source_head }}
+          if-no-files-found: error
+          compression-level: 6
+          path: VulkanMW-PRODUCER-TEST/**
