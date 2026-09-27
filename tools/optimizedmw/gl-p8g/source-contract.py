@@ -24,6 +24,9 @@ checks = {
         and "(*eulerRotations)[i] = mInstances[i].mPos.asRotationVec3();" in groundcover,
     "basis_attributes": all(token in groundcover for token in (
         "rotationColumn0", "rotationColumn1", "rotationColumn2",
+        "cosZ * cosY + sinX * sinY * sinZ",
+        "-sinZ * cosX",
+        "-sinY * cosX",
         "VertexAttribDivisor(8, 1)", "VertexAttribDivisor(9, 1)",
         'addBindAttribLocation("aRotation0", 7)',
         'addBindAttribLocation("aRotation1", 8)',
@@ -34,7 +37,8 @@ checks = {
         "attribute vec3 aRotation2",
         "mat3 optimizedmwInstanceRotation()",
         "instanceRotation * gl_Vertex.xyz",
-        "instanceRotation * gl_Normal.xyz")),
+        "instanceRotation * gl_Normal.xyz",
+        "gl_MultiTexCoord7.xyz * instanceRotation")),
     "early_reject": "instanceBaseViewPos" in vert
         and vert.index("instanceBaseViewPos") < vert.index("groundcoverDisplacement(worldPos.xyz"),
     "wind_probe": "@optimizedmwGroundcoverGpuPath >= 2" in vert
