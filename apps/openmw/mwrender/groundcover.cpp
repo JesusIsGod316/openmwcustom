@@ -4,6 +4,7 @@
 
 #include <components/sceneutil/occlusionculling.hpp>
 
+#include <cmath>
 #include <span>
 
 #include <osg/AlphaFunc>
@@ -247,26 +248,46 @@ namespace MWRender
 
                 geom.setInitialBound(box);
 
-                osg::ref_ptr<osg::Array> rotations;
+                osg::ref_ptr<osg::Vec3Array> eulerRotations;
+                osg::ref_ptr<osg::Vec3Array> rotationColumn0;
+                osg::ref_ptr<osg::Vec3Array> rotationColumn1;
+                osg::ref_ptr<osg::Vec3Array> rotationColumn2;
                 if (mOptimizedGpuPath >= 1)
                 {
-                    osg::ref_ptr<osg::Vec4Array> quaternionRotations
-                        = new osg::Vec4Array(static_cast<unsigned>(mInstances.size()));
-                    for (unsigned int i = 0; i < quaternionRotations->getNumElements(); ++i)
+                    const unsigned int count = static_cast<unsigned>(mInstances.size());
+                    rotationColumn0 = new osg::Vec3Array(count);
+                    rotationColumn1 = new osg::Vec3Array(count);
+                    rotationColumn2 = new osg::Vec3Array(count);
+                    for (unsigned int i = 0; i < count; ++i)
                     {
-                        const osg::Quat rotation = Misc::Convert::makeOsgQuat(mInstances[i].mPos);
-                        (*quaternionRotations)[i]
-                            = osg::Vec4f(rotation.x(), rotation.y(), rotation.z(), rotation.w());
+                        const osg::Vec3f angle = mInstances[i].mPos.asRotationVec3();
+                        const float sinX = std::sin(angle.x());
+                        const float cosX = std::cos(angle.x());
+                        const float sinY = std::sin(angle.y());
+                        const float cosY = std::cos(angle.y());
+                        const float sinZ = std::sin(angle.z());
+                        const float cosZ = std::cos(angle.z());
+
+                        // Exact columns of the established GLSL groundcover rotation().
+                        (*rotationColumn0)[i] = osg::Vec3f(
+                            cosZ * cosY + sinX * sinY * sinZ,
+                            -sinZ * cosX,
+                            cosZ * sinY + sinZ * sinX * cosY);
+                        (*rotationColumn1)[i] = osg::Vec3f(
+                            sinZ * cosY + cosZ * sinX * sinY,
+                            cosZ * cosX,
+                            sinZ * sinY - cosZ * sinX * cosY);
+                        (*rotationColumn2)[i] = osg::Vec3f(
+                            -sinY * cosX,
+                            sinX,
+                            cosX * cosY);
                     }
-                    rotations = quaternionRotations;
                 }
                 else
                 {
-                    osg::ref_ptr<osg::Vec3Array> eulerRotations
-                        = new osg::Vec3Array(static_cast<unsigned>(mInstances.size()));
+                    eulerRotations = new osg::Vec3Array(static_cast<unsigned>(mInstances.size()));
                     for (unsigned int i = 0; i < eulerRotations->getNumElements(); ++i)
                         (*eulerRotations)[i] = mInstances[i].mPos.asRotationVec3();
-                    rotations = eulerRotations;
                 }
 
                 // Display lists do not support instancing in OSG 3.4
@@ -274,7 +295,14 @@ namespace MWRender
                 geom.setUseVertexBufferObjects(true);
 
                 geom.setVertexAttribArray(6, transforms.get(), osg::Array::BIND_PER_VERTEX);
-                geom.setVertexAttribArray(7, rotations.get(), osg::Array::BIND_PER_VERTEX);
+                if (mOptimizedGpuPath >= 1)
+                {
+                    geom.setVertexAttribArray(7, rotationColumn0.get(), osg::Array::BIND_PER_VERTEX);
+                    geom.setVertexAttribArray(8, rotationColumn1.get(), osg::Array::BIND_PER_VERTEX);
+                    geom.setVertexAttribArray(9, rotationColumn2.get(), osg::Array::BIND_PER_VERTEX);
+                }
+                else
+                    geom.setVertexAttribArray(7, eulerRotations.get(), osg::Array::BIND_PER_VERTEX);
 
                 geom.addCullCallback(new InstancedComputeNearFarCullCallback(mInstances, mChunkPosition, originalBox));
             }
@@ -416,12 +444,25 @@ namespace MWRender
         mStateset->setRenderBinDetails(0, "RenderBin", osg::StateSet::OVERRIDE_RENDERBIN_DETAILS);
         mStateset->setAttribute(new osg::VertexAttribDivisor(6, 1));
         mStateset->setAttribute(new osg::VertexAttribDivisor(7, 1));
+        const int optimizedGpuPath = static_cast<int>(Settings::groundcover().mOptimizedMWGpuPath);
+        if (optimizedGpuPath >= 1)
+        {
+            mStateset->setAttribute(new osg::VertexAttribDivisor(8, 1));
+            mStateset->setAttribute(new osg::VertexAttribDivisor(9, 1));
+        }
 
         mProgramTemplate = mSceneManager->getShaderManager().getProgramTemplate()
             ? Shader::ShaderManager::cloneProgram(mSceneManager->getShaderManager().getProgramTemplate())
             : osg::ref_ptr<osg::Program>(new osg::Program);
         mProgramTemplate->addBindAttribLocation("aOffset", 6);
-        mProgramTemplate->addBindAttribLocation("aRotation", 7);
+        if (optimizedGpuPath >= 1)
+        {
+            mProgramTemplate->addBindAttribLocation("aRotation0", 7);
+            mProgramTemplate->addBindAttribLocation("aRotation1", 8);
+            mProgramTemplate->addBindAttribLocation("aRotation2", 9);
+        }
+        else
+            mProgramTemplate->addBindAttribLocation("aRotation", 7);
     }
 
     Groundcover::~Groundcover() = default;
