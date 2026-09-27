@@ -2,6 +2,7 @@
 #include <components/sceneutil/rendermutation.hpp>
 #include <iostream>
 #include <stdexcept>
+#include <thread>
 
 namespace
 {
@@ -116,6 +117,32 @@ int main()
         auto live = std::make_shared<RenderCore::PersistentDrawOwner>(); live->eventDriven = true;
         queued.touchOwner(live);
         require(queued.update(rejectedClosed,value,true,live), "rejected closed write leaked budget");
+        // Deferred producer destruction may signal while the render owner
+        // detaches its registration. The ticket is atomically owned; stale
+        // signals never touch the recycled slot or the next world stream.
+        RenderCore::PersistentDrawWorld concurrent(1);
+        for (unsigned iteration = 0; iteration < 200; ++iteration)
+        {
+            concurrent.begin(iteration + 100);
+            auto oldOwner = std::make_shared<RenderCore::PersistentDrawOwner>();
+            oldOwner->eventDriven = true;
+            RenderCore::PersistentDrawHandle oldHandle;
+            require(concurrent.update(oldHandle,value,true,oldOwner), "concurrent seed failed");
+            concurrent.finish();
+            std::thread notifier([oldOwner] {
+                for (unsigned signal = 0; signal < 1000; ++signal) oldOwner->retire();
+            });
+            concurrent.remove(oldHandle);
+            auto newOwner = std::make_shared<RenderCore::PersistentDrawOwner>();
+            newOwner->eventDriven = true;
+            RenderCore::PersistentDrawHandle newHandle;
+            const bool updated = concurrent.update(newHandle,value,true,newOwner);
+            notifier.join();
+            require(updated, "concurrent retirement pinned replacement slot");
+            const auto replaced = concurrent.finish();
+            require(replaced->size()==1 && concurrent.get(newHandle) && !concurrent.get(oldHandle),
+                "concurrent stale retirement removed new owner");
+        }
         std::cout << "change notifications, ownership, hidden/disabled/unload/epoch, queued retirement and immutable frames PASS\n";
     }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

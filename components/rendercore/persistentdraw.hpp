@@ -51,11 +51,13 @@ namespace RenderCore
         bool eventDriven = false;
         std::atomic_bool retired{false};
         std::uint64_t registrationStream = 0;
-        std::shared_ptr<Misc::ProducerQueue::Ticket> retirement;
+        // Producer destruction can race renderer-side slot retirement. Publish
+        // and detach only the ticket atomically; all slot tables stay owner-thread-only.
+        std::atomic<std::shared_ptr<Misc::ProducerQueue::Ticket>> retirement;
         void retire() noexcept
         {
             retired.store(true, std::memory_order_release);
-            if (retirement) retirement->notify();
+            if (const auto ticket = retirement.load(std::memory_order_acquire)) ticket->notify();
         }
     };
     struct PersistentDrawEntry
@@ -152,14 +154,16 @@ namespace RenderCore
             }
             // Register before allocating a draw slot: rejection must not consume
             // the slot budget or leave an unpublished live registration behind.
+            auto retirement = owner ? owner->retirement.load(std::memory_order_acquire)
+                                    : std::shared_ptr<Misc::ProducerQueue::Ticket>{};
             if (owner && owner->eventDriven
-                && (owner->registrationStream != mStream || !owner->retirement))
+                && (owner->registrationStream != mStream || !retirement))
             {
-                auto ticket = mRetirements->add();
-                if (!ticket) return false;
-                owner->retirement = std::move(ticket);
+                retirement = mRetirements->add();
+                if (!retirement) return false;
+                owner->retirement.store(retirement, std::memory_order_release);
                 owner->registrationStream = mStream;
-                mOwned.emplace(owner->retirement->token(), OwnedSlots{owner, {}});
+                mOwned.emplace(retirement->token(), OwnedSlots{owner, {}});
             }
             if (!previous)
             {
@@ -173,7 +177,7 @@ namespace RenderCore
             mSeen[handle.slot] = mCapture;
             if (owner && owner->eventDriven)
             {
-                mOwned.at(owner->retirement->token()).slots.insert(handle.slot);
+                mOwned.at(retirement->token()).slots.insert(handle.slot);
                 mEphemeral.erase(handle.slot);
             }
             else mEphemeral.insert(handle.slot);
@@ -242,16 +246,17 @@ namespace RenderCore
             if (const auto& owner = mOwners[slot])
             {
                 owner->invalidated = true;
-                if (owner->eventDriven && owner->registrationStream == mStream && owner->retirement)
+                const auto retirement = owner->retirement.load(std::memory_order_acquire);
+                if (owner->eventDriven && owner->registrationStream == mStream && retirement)
                 {
-                    const auto found = mOwned.find(owner->retirement->token());
+                    const auto found = mOwned.find(retirement->token());
                     if (found != mOwned.end())
                     {
                         found->second.slots.erase(slot);
                         if (found->second.slots.empty())
                         {
-                            owner->retirement->cancel();
-                            owner->retirement.reset();
+                            retirement->cancel();
+                            owner->retirement.store({}, std::memory_order_release);
                             mOwned.erase(found);
                         }
                     }

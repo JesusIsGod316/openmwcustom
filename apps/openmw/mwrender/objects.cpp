@@ -159,9 +159,9 @@ namespace MWRender
         {
             osg::ref_ptr<ESM4NpcAnimation> anim(
                 new ESM4NpcAnimation(ptr, osg::ref_ptr<osg::Group>(ptr.getRefData().getBaseNode()), mResourceSystem));
-            mObjects.emplace(ptr.mRef, anim);
+            [[maybe_unused]] const auto inserted = mObjects.emplace(ptr.mRef, anim);
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
-            registerV4Animation(*anim);
+            if (inserted.second) registerV4Animation(*anim);
 #endif
         }
         else

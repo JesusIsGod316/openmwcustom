@@ -71,7 +71,7 @@ bounded; retired owners can release capacity for a replacement in the same frame
 
 Executable coverage includes queue coalescing, late notification, generation
 reuse, cancellation after snapshot, bounded overflow, destruction/copy behavior,
-concurrent signalling, and 10,000 registered owners with only 4 continuous + 1
+concurrent signalling and atomically owned retirement tickets, and 10,000 registered owners with only 4 continuous + 1
 dirty owner dispatched per frame. RenderCore tests cover untouched snapshots,
 hide/reveal, full-capacity unload/reload, stale retirements and epochs. The actual
 OSG capture fixture covers movement/scale, hidden UV updates, source invalidation,
