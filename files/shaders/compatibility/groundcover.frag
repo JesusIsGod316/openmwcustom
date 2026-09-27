@@ -72,7 +72,10 @@ void main()
     vec3 viewNormal = normalToView(normalize(passNormal));
 #endif
 
-    float shadowing = unshadowedLightRatio(linearDepth);
+    float shadowing = 1.0;
+#if @optimizedmwGroundcoverShadowReceive
+    shadowing = unshadowedLightRatio(linearDepth);
+#endif
 
     vec3 lighting;
 #if !PER_PIXEL_LIGHTING
@@ -91,5 +94,7 @@ void main()
     gl_FragData[1].xyz = viewNormal * 0.5 + 0.5;
 #endif
 
+#if @optimizedmwGroundcoverShadowReceive
     applyShadowDebugOverlay();
+#endif
 }
