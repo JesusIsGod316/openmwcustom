@@ -1,4 +1,7 @@
 #include "vsgruntimehost.hpp"
+#include "omwfx.hpp"
+#include "fximagecapture.hpp"
+#include <components/misc/environmentflag.hpp>
 #include <components/debug/gameplaydiagnostics.hpp>
 
 #include "dynamicactorplan.hpp"
@@ -7,10 +10,13 @@
 #include <bit>
 #include "runtimememorydiagnostics.hpp"
 #include "immediateeffectrealizer.hpp"
+#include "effectidlebudget.hpp"
 #include "isolatedscene.hpp"
 #include "legacymaterialshader.hpp"
 #include "populationvisibility.hpp"
+#include "populationplacementreuse.hpp"
 #include "parallelrecordtask.hpp"
+#include "parallelshadowrecord.hpp"
 #include "staticassetconformance.hpp"
 
 #include <components/vsgmygui/rendermanager.hpp>
@@ -267,6 +273,8 @@ namespace RenderVsg
         // after ordinary View children and would paint over a direct GUI node.
         static_assert(UiOverlayBinNumber > StaticBackToFrontBinNumber);
         const char* postMode = std::getenv("OPENMW_V4_POSTPROCESS");
+        const bool omwfx = Misc::environmentFlag<"OPENMW_VK_OMWFX">();
+        if (omwfx) postMode = "copy";
         if (postMode)
         {
             const std::string_view mode(postMode);
@@ -283,8 +291,16 @@ namespace RenderVsg
             mOutputView->addChild(createUiOverlayLayer(mGuiRoot));
             mOutputView->bins.push_back(vsg::Bin::create(UiOverlayBinNumber, vsg::Bin::NO_SORT));
             mPostTarget.renderGraph->addChild(mView);
-            Log(Debug::Warning) << "Experimental native postprocess=" << mode
-                << ": linear HDR scene + depth; UI after processing. This does not execute the configured .omwfx chain.";
+            if (omwfx)
+            {
+                mOmwfxCommands = vsg::Group::create();
+                mOmwfxLights = vsg::ubyteArray::create(40 * 3 * 16 + 16, std::uint8_t(0));
+                mOmwfxLights->properties.dataVariance = vsg::DYNAMIC_DATA_TRANSFER_AFTER_RECORD;
+                mOpenMwViewState->setPostProcessingLights(mOmwfxLights);
+                Log(Debug::Info) << "Native Vulkan OMWFX executor enabled; effects before UI";
+            }
+            else Log(Debug::Warning) << "Experimental native postprocess=" << mode
+                    << ": linear HDR scene + depth; UI after processing. This does not execute the configured .omwfx chain.";
         }
         else mMainOnlyRoot->addChild(createUiOverlayLayer(mGuiRoot));
         mView->addChild(mMainOnlyRoot);
@@ -299,6 +315,7 @@ namespace RenderVsg
         if (mRefractionView && !parallelRecording)
             mCommandGraph->addChild(mRefractionView->target.renderGraph);
         if (mPostTarget) mCommandGraph->addChild(mPostTarget.renderGraph);
+        if (mOmwfxCommands) mCommandGraph->addChild(mOmwfxCommands);
         mCommandGraph->addChild(mRenderGraph);
         mWaterProbeCommands = vsg::Group::create();
         mCommandGraph->addChild(mWaterProbeCommands);
@@ -312,7 +329,7 @@ namespace RenderVsg
             const auto addWaterGraph = [&](const std::optional<WaterViewRuntime>& water, int order) {
                 if (!water) return;
                 auto graph = vsg::CommandGraph::create(mWindow);
-                graph->submitOrder = order;
+                graph->submitOrder = std::getenv("OPENMW_VK_PARALLEL_SHADOW_RECORD") ? order * 100 : order;
                 graph->addChild(water->target.renderGraph);
                 task->commandGraphs.push_back(graph);
             };
@@ -354,6 +371,23 @@ namespace RenderVsg
             if (mRefractionView)
                 mViewer->compileManager->add(*mRefractionView->target.renderGraph->framebuffer, mRefractionView->view);
         }
+        if (std::getenv("OPENMW_VK_PARALLEL_SHADOW_RECORD") && mOpenMwViewState
+            && mOpenMwViewState->preRenderCommandGraph && mOpenMwViewState->preRenderSwitch)
+            mOpenMwViewState->preRenderCommandGraph = ParallelShadowRecordGraph::create(
+                *mOpenMwViewState->preRenderCommandGraph, mOpenMwViewState->preRenderSwitch);
+        if (Debug::GameplayDiagnostics::enabled() && Debug::GameplayDiagnostics::frameProfileEnabled())
+        {
+            const auto addProfile = [&](vsg::CommandGraph* graph, std::string label) {
+                if (!graph) return;
+                if (auto profile = installFrameGpuProfile(*graph, std::move(label)))
+                    mFrameGpuProfiles.push_back(std::move(profile));
+            };
+            for (const auto& task : mViewer->recordAndSubmitTasks)
+                for (const auto& graph : task->commandGraphs)
+                    addProfile(graph.get(), graph->submitOrder == -4 || graph->submitOrder == -400 ? "reflection"
+                        : graph->submitOrder == -3 || graph->submitOrder == -300 ? "refraction" : "main");
+            if (mOpenMwViewState) addProfile(mOpenMwViewState->preRenderCommandGraph.get(), "shadows");
+        }
     }
 
     void VsgRuntimeHost::attachGuiRenderer(VsgMyGui::RenderManager* renderer) noexcept
@@ -387,6 +421,8 @@ namespace RenderVsg
             (void)mIsolatedSceneRetirements.collect(*mGuiLastUse);
         }
         mAuxiliaryViews.clear();
+        mOmwfx.reset();
+        mOmwfxCommands = {};
         mReflectionView.reset();
         mRefractionView.reset();
         mRenderGraph = {};
@@ -601,7 +637,14 @@ namespace RenderVsg
         // This cache owns descriptors/configurators, not just cheap lookup keys.
         // Prune only cache-exclusive objects; live and fence-retired graphs keep
         // their own references. Never clear the live graph to recover memory.
-        mSharedObjects->prune();
+        const bool placementDeltas = Misc::environmentFlag<"OPENMW_VK_POPULATION_DELTAS">();
+        bool resourceChanges = !mutation.upserts.empty() || !mutation.removals.empty()
+            || !populationMutation.removals.empty();
+        if (!placementDeltas || resourceChanges)
+        {
+            Debug::GameplayDiagnostics::ProfileScope profile("static_shared_prune");
+            mSharedObjects->prune();
+        }
 
         // CompileManager::compile records transfers and waits for completion.
         // Loading N placements must not perform N synchronous upload round trips.
@@ -662,6 +705,10 @@ namespace RenderVsg
                 return false;
             }
             auto placed = vsg::MatrixTransform::create(toVsgMatrix(staticInstancePlacementMatrix(plan.placement)));
+            // The mesh/material topology belongs to this resident, not to the
+            // cell traversal list rebuilt after an unrelated object moves.
+            if (Misc::environmentFlag<"OPENMW_VK_RESOURCE_INVENTORIES">())
+                realized.root = sealPipelineInventory(realized.root);
             const bool terrain = hasSemanticFlag(plan.semanticFlags, RenderCore::InstanceSemanticFlag::Terrain);
             const bool castsShadow = hasSemanticFlag(plan.semanticFlags, RenderCore::InstanceSemanticFlag::ShadowCaster)
                 && (terrain ? mOptions.shadows.terrainCasters : mOptions.shadows.objectCasters);
@@ -690,6 +737,9 @@ namespace RenderVsg
         }
 
         std::vector<StaticPopulationResident> populationReplacements;
+        std::size_t placementNodesReused = 0, placementNodesBuilt = 0;
+        const bool placementFrustum = mNativeFrustumEnabled
+            && Misc::environmentFlag<"OPENMW_VK_PLACEMENT_FRUSTUM">();
         populationReplacements.reserve(populationMutation.upserts.size());
         for (const StaticPopulationPlan& plan : populationMutation.upserts)
         {
@@ -711,7 +761,8 @@ namespace RenderVsg
                 [&](const RenderCore::PopulationInstanceRecord& placement) {
                     return placementMask(castsShadow(placement), placement.semanticFlags) != firstPlacementMask;
                 });
-            const bool persistentPlacements = Misc::environmentFlag<"OPENMW_V4_PERSISTENT_POPULATION_ASSETS">();
+            const bool persistentPlacements = placementDeltas
+                || Misc::environmentFlag<"OPENMW_V4_PERSISTENT_POPULATION_ASSETS">();
             const auto identity = populationIdentity(plan);
             const auto* oldPlan = mStaticPopulationResidency.residentPlan(world.epoch(), identity);
             const auto* oldResident = oldPlan ? mStaticPopulationResidency.residentObject(identity) : nullptr;
@@ -729,6 +780,12 @@ namespace RenderVsg
                 });
             const bool reuseAsset = persistentPlacements && requiresIndividualPlacement && sameAsset
                 && oldResident && oldResident->placementFreeAsset;
+            if (!reuseAsset) resourceChanges = true;
+            const auto reusePlacements = placementDeltas && reuseAsset && oldResident
+                    && oldResident->placements.size() == oldPlan->placements.size()
+                ? reusablePopulationPlacements(*oldPlan, plan)
+                : std::vector<std::optional<std::size_t>>(plan.placements.size());
+            std::vector<StaticPopulationResident::Placement> placementResidents;
             StaticRealizationResult realized;
             if (reuseAsset) realized.root = oldResident->placementFreeAsset;
             else realized = requiresIndividualPlacement
@@ -743,6 +800,8 @@ namespace RenderVsg
                     : realized.diagnostics.front();
                 return false;
             }
+            if (!reuseAsset && Misc::environmentFlag<"OPENMW_VK_RESOURCE_INVENTORIES">())
+                realized.root = sealPipelineInventory(realized.root);
             auto group = vsg::Group::create();
             if (!requiresIndividualPlacement)
             {
@@ -754,13 +813,38 @@ namespace RenderVsg
             else
             {
                 group->children.reserve(plan.placements.size());
-                for (const RenderCore::PopulationInstanceRecord& placement : plan.placements)
+                if (placementDeltas) placementResidents.reserve(plan.placements.size());
+                for (std::size_t index = 0; index < plan.placements.size(); ++index)
                 {
+                    const auto& placement = plan.placements[index];
+                    if (reusePlacements[index])
+                    {
+                        const auto& retained = oldResident->placements[*reusePlacements[index]];
+                        group->addChild(retained.node);
+                        placementResidents.push_back(retained);
+                        ++placementNodesReused;
+                        continue;
+                    }
                     auto placed
                         = vsg::MatrixTransform::create(toVsgMatrix(staticInstancePlacementMatrix(placement.transform)));
                     placed->addChild(realized.root);
-                    group->addChild(maskedNode(
-                        placementMask(castsShadow(placement), placement.semanticFlags), std::move(placed)));
+                    auto masked = maskedNode(
+                        placementMask(castsShadow(placement), placement.semanticFlags), std::move(placed));
+                    vsg::ref_ptr<vsg::Node> placementNode = masked;
+                    vsg::ref_ptr<MainViewVisibility> bounds;
+                    if (mNativeFrustumEnabled && (placementDeltas || placementFrustum))
+                    {
+                        bounds = persistentPlacementVisibility(world, plan.asset, placement.transform);
+                        if (placementFrustum)
+                        {
+                            bounds->addChild(placementNode);
+                            placementNode = bounds;
+                        }
+                    }
+                    group->addChild(placementNode);
+                    if (placementDeltas)
+                        placementResidents.push_back({std::move(placementNode), std::move(bounds)});
+                    ++placementNodesBuilt;
                 }
             }
             const RenderCore::ModelRecord* model = world.get(plan.model);
@@ -777,18 +861,30 @@ namespace RenderVsg
             {
                 auto bounds = MainViewVisibility::create();
                 bounds->mainViewId = mView->viewID;
-                for (const auto& placement : plan.placements)
-                    if (!bounds->include(world, plan.asset, placement.transform, false))
+                if (placementDeltas && requiresIndividualPlacement)
+                {
+                    // No vertex walk for unchanged placements. Failed bounds
+                    // remain fail-open, including after reordering or removal.
+                    for (const auto& placement : placementResidents)
                     {
-                        bounds->bounded = false;
-                        break;
+                        if (!placement.bounds || !placement.bounds->bounded)
+                        { bounds->bounded = false; break; }
+                        bounds->minimum = glm::min(bounds->minimum, placement.bounds->minimum);
+                        bounds->maximum = glm::max(bounds->maximum, placement.bounds->maximum);
+                        bounds->bounded = true;
                     }
+                }
+                else
+                    for (const auto& placement : plan.placements)
+                        if (!bounds->include(world, plan.asset, placement.transform, false))
+                        { bounds->bounded = false; break; }
                 bounds->addChild(group);
                 visibility->addChild(vsg::MASK_ALL, bounds);
             }
             else visibility->addChild(vsg::MASK_ALL, std::move(group));
             populationReplacements.push_back({ std::move(visibility),
-                persistentPlacements && requiresIndividualPlacement ? realized.root : vsg::ref_ptr<vsg::Group>{} });
+                persistentPlacements && requiresIndividualPlacement ? realized.root : vsg::ref_ptr<vsg::Group>{},
+                std::move(placementResidents) });
         }
 
         if (!pendingCompile->children.empty())
@@ -866,6 +962,18 @@ namespace RenderVsg
                         nextVisibility.emplace_back(populationBounds);
             }
         }
+        std::optional<RetainedPipelineInventory> nextInventory;
+        if (Misc::environmentFlag<"OPENMW_V4_PIPELINE_INVENTORIES">())
+        {
+            Debug::GameplayDiagnostics::ProfileScope profile("static_inventory_seal");
+            auto retained = vsg::Group::create(); retained->children.swap(nextChildren);
+            if (Misc::environmentFlag<"OPENMW_VK_RESOURCE_INVENTORIES">())
+            {
+                nextInventory.emplace(retained, mStaticPipelineInventory);
+                nextChildren.push_back(nextInventory->root());
+            }
+            else nextChildren.push_back(sealPipelineInventory(retained));
+        }
         if ((!populationMutation.upserts.empty() || !populationMutation.removals.empty())
             && !mStaticPopulationResidency.commit(world, populationMutation, std::move(populationReplacements)).committed)
         {
@@ -878,15 +986,22 @@ namespace RenderVsg
             mLastDiagnostic = "static world changed while its replacement graph was being realized";
             return false;
         }
-        if (Misc::environmentFlag<"OPENMW_V4_PIPELINE_INVENTORIES">())
-        {
-            auto retained = vsg::Group::create(); retained->children.swap(nextChildren);
-            mStaticRoot->children = {sealPipelineInventory(retained)};
-        }
-        else mStaticRoot->children.swap(nextChildren);
+        if (nextInventory) mStaticPipelineInventory = std::move(*nextInventory);
+        else mStaticPipelineInventory = {};
+        mStaticRoot->children.swap(nextChildren);
         mVisibilityNodes.swap(nextVisibility);
         nextChildren.clear(); // release the old traversal references before pruning
-        mSharedObjects->prune();
+        if (!placementDeltas || resourceChanges)
+        {
+            Debug::GameplayDiagnostics::ProfileScope profile("static_shared_prune");
+            mSharedObjects->prune();
+        }
+        if (Debug::GameplayDiagnostics::sampling())
+            Debug::GameplayDiagnostics::recordEvent("population_deltas", {
+                {"enabled", std::to_string(placementDeltas)},
+                {"nodes_reused", std::to_string(placementNodesReused)},
+                {"nodes_built", std::to_string(placementNodesBuilt)},
+                {"resource_changes", std::to_string(resourceChanges)}});
         mStaticSyncState.synchronized();
         return true;
     }
@@ -894,6 +1009,7 @@ namespace RenderVsg
     bool VsgRuntimeHost::synchronizePopulationVisibility(
         const RenderCore::RenderWorld& world, const RenderCore::FrameView& mainView)
     {
+        Debug::GameplayDiagnostics::ProfileScope profile("population_distance_visibility");
         bool valid = true;
         mStaticPopulationResidency.forEachResident(
             [&](const StaticPopulationPlan& plan, StaticPopulationResident& resident) {
@@ -932,19 +1048,30 @@ namespace RenderVsg
         }
         unsigned diagnosticActors = 0;
         unsigned reusedActors = 0, rebuiltActors = 0;
+        const bool persistentActors = Misc::environmentFlag<"OPENMW_VK_PERSISTENT_ACTORS">()
+            && !std::getenv("OPENMW_V4_REBUILD_ACTOR_PLANS_CONTROL");
+        const PersistentActorWorldPlan* retainedPlan = nullptr;
         const DynamicActorWorldPlan plan = [&] {
             Debug::GameplayDiagnostics::Stage planningDiagnostic("actor_plan");
+            if (persistentActors)
+            {
+                retainedPlan = &mPersistentActorPlans.prepare(world, mOptions.staticPlan);
+                return DynamicActorWorldPlan{};
+            }
             return mActorPlanCache.prepare(world, mOptions.staticPlan,
                 std::getenv("OPENMW_V4_REBUILD_ACTOR_PLANS_CONTROL") != nullptr);
         }();
         if (Debug::GameplayDiagnostics::sampling())
-            Debug::GameplayDiagnostics::recordEvent("actor_plan_cache", {{"reused", std::to_string(mActorPlanCache.reused)},
-                {"rebuilt", std::to_string(mActorPlanCache.rebuilt)}});
-        if (!plan.valid())
+            Debug::GameplayDiagnostics::recordEvent("actor_plan_cache", {
+                {"persistent", std::to_string(persistentActors)},
+                {"reused", std::to_string(retainedPlan ? mPersistentActorPlans.reused : mActorPlanCache.reused)},
+                {"rebuilt", std::to_string(retainedPlan ? mPersistentActorPlans.rebuilt : mActorPlanCache.rebuilt)}});
+        if (retainedPlan ? !retainedPlan->valid() : !plan.valid())
         {
-            mLastDiagnostic = plan.diagnostic.empty()
+            const auto& planDiagnostic = retainedPlan ? retainedPlan->diagnostic : plan.diagnostic;
+            mLastDiagnostic = planDiagnostic.empty()
                 ? "dynamic actor world contains an invalid model/skeleton dependency"
-                : "dynamic actor world contains an invalid model/skeleton dependency: " + plan.diagnostic;
+                : "dynamic actor world contains an invalid model/skeleton dependency: " + planDiagnostic;
             return false;
         }
 
@@ -967,8 +1094,9 @@ namespace RenderVsg
         }
 
         auto nextRoot = retainedMembership ? mRetainedDynamicScene.root() : vsg::Group::create();
+        const auto actorCount = retainedPlan ? retainedPlan->actors.size() : plan.actors.size();
         if (retainedMembership) mRetainedDynamicScene.begin();
-        else nextRoot->children.reserve(plan.actors.size());
+        else nextRoot->children.reserve(actorCount);
         const auto selectDynamic = [&](const std::string& identity, vsg::ref_ptr<vsg::Node> node) {
             if (retainedMembership) mRetainedDynamicScene.select(identity, std::move(node));
             else nextRoot->addChild(std::move(node));
@@ -976,6 +1104,7 @@ namespace RenderVsg
         auto pendingCompile = vsg::Group::create();
         mLastCompiledDynamicRootCount = 0;
         const bool parallelActors = std::getenv("OPENMW_V4_PARALLEL_ACTOR_PREPARATION") != nullptr;
+        const bool actorStreams = Misc::environmentFlag<"OPENMW_VK_ACTOR_STREAMS">();
         if (parallelActors && !mActorPreparationWorkers)
             mActorPreparationWorkers = std::make_unique<RenderCore::BoundedParallelFor>(3, 4, 1);
         // Do not retain deformed copies of every actor in a modded exterior.
@@ -984,20 +1113,25 @@ namespace RenderVsg
         const std::size_t preparationBatchSize = parallelActors ? 8 : 1;
         std::vector<PreparedDynamicActor> preparedActors;
         mDynamicActorResidents.beginFrame(frame.frameId(), mCompletedThrough);
-        for (std::size_t actorIndex = 0; actorIndex < plan.actors.size(); ++actorIndex)
+        for (std::size_t actorIndex = 0; actorIndex < actorCount; ++actorIndex)
         {
+            Debug::GameplayDiagnostics::ProfileScope actorProfile("actor_realization_loop");
             if (actorIndex % preparationBatchSize == 0)
             {
                 preparedActors.clear(); // Release the previous batch before allocating another.
                 Debug::GameplayDiagnostics::Stage preparation("actor_cpu_prepare");
-                const auto batch = std::span<const DynamicActorPlan>(plan.actors).subspan(actorIndex,
-                    std::min(preparationBatchSize, plan.actors.size() - actorIndex));
-                preparedActors = prepareDynamicActors(world, frame, batch,
-                    parallelActors ? mActorPreparationWorkers.get() : nullptr);
+                const auto count = std::min(preparationBatchSize, actorCount - actorIndex);
+                auto* workers = parallelActors ? mActorPreparationWorkers.get() : nullptr;
+                if (retainedPlan)
+                    preparedActors = preparePersistentActors(world, frame,
+                        std::span(retainedPlan->actors).subspan(actorIndex, count), workers);
+                else
+                    preparedActors = prepareDynamicActors(world, frame,
+                        std::span<const DynamicActorPlan>(plan.actors).subspan(actorIndex, count), workers, actorStreams);
                 for (const auto& prepared : preparedActors)
                     if (!prepared.diagnostic.empty()) { mLastDiagnostic = prepared.diagnostic; return false; }
             }
-            const DynamicActorPlan& actor = plan.actors[actorIndex];
+            const DynamicActorPlan& actor = retainedPlan ? *retainedPlan->actors[actorIndex] : plan.actors[actorIndex];
             if (!actor.lightingEnabled)
             {
                 mLastDiagnostic = "per-actor disabled lighting is not implemented by the CP3D host";
@@ -1005,12 +1139,15 @@ namespace RenderVsg
             }
             const auto& prepared = preparedActors[actorIndex % preparationBatchSize];
             const auto* transform = prepared.transform;
-            const auto& evaluatedAsset = prepared.asset;
+            const auto* evaluatedAsset = prepared.assetPlan();
             const auto& deformed = prepared.deformed;
-            const MeshPayloadResolver resolve
+            const MeshPayloadResolver resolveStreams
                 = [&](RenderCore::MeshHandle, RenderCore::ModelNodeIndex node) -> const RenderCore::MeshPayload* {
                 const auto found = deformed.find(node.value());
                 return found == deformed.end() ? nullptr : &found->second;
+            };
+            const MeshPayloadResolver resolve = [&](RenderCore::MeshHandle mesh, RenderCore::ModelNodeIndex node) {
+                return prepared.realizationPayload(world, mesh, node);
             };
             const std::string residentIdentity = std::to_string(world.epoch().value()) + ":"
                 + std::to_string(actor.instance.slot()) + ":" + std::to_string(actor.instance.generation());
@@ -1018,11 +1155,26 @@ namespace RenderVsg
             const bool canReuse = !std::getenv("OPENMW_V4_REBUILD_ACTORS") && resident.published && resident.contract
                 && resident.epoch == world.epoch() && resident.opacity == transform->opacity
                 && dynamicActorPlanCurrent(world, *resident.contract);
-            if (!canReuse || !updateDeformedAssetRealization(world, *evaluatedAsset, resolve, resident.mutableDraws))
+            const bool updated = canReuse && [&] {
+                Debug::GameplayDiagnostics::ProfileScope streamProfile("actor_stream_update");
+                return updateDeformedAssetRealization(world, *evaluatedAsset, resolveStreams, resident.mutableDraws,
+                    prepared.drawTransforms, prepared.retainedAsset != nullptr);
+            }();
+            if (!updated)
             {
+                Debug::GameplayDiagnostics::ProfileScope rebuildProfile("actor_resident_rebuild");
                 ++rebuiltActors;
+                // Full draw metadata is materialized only when a GPU-safe
+                // resident is constructed/rebound, not on every pose update.
+                std::optional<StaticAssetPlan> coldAsset;
+                if (prepared.retainedAsset)
+                {
+                    coldAsset = *evaluatedAsset;
+                    for (std::size_t i = 0; i < coldAsset->draws.size(); ++i)
+                        coldAsset->draws[i].worldTransform = prepared.drawTransforms[i];
+                }
                 StaticRealizationResult realized = realizeStaticAssetConformant(
-                    world, actor.model, *evaluatedAsset, mTextureResolver, frameSharedObjects, resolve, {}, {},
+                    world, actor.model, coldAsset ? *coldAsset : *evaluatedAsset, mTextureResolver, frameSharedObjects, resolve, {}, {},
                     transform->opacity, true);
                 if (!realized.valid() || realized.stats.runtimeContextEffects != 0
                     || realized.stats.unsupportedTextureBindings != 0)
@@ -1102,6 +1254,7 @@ namespace RenderVsg
             ? frame.ownedImmediateEffects() : nullptr;
         std::size_t effectIndex = 0;
         const auto updateEffect = [&](const RenderCore::ImmediateEffectDraw& effect, auto& streams) {
+            Debug::GameplayDiagnostics::ProfileScope streamProfile("effect_stream_update");
             return validatedEffects
                 ? updateImmediateEffectRealization(*validatedEffects, effectIndex, streams, bulkEffectStreams)
                 : updateImmediateEffectRealization(effect, streams, bulkEffectStreams);
@@ -1110,6 +1263,7 @@ namespace RenderVsg
         const bool shareUnchangedEffects = std::getenv("OPENMW_V4_IMMUTABLE_RESIDENTS") != nullptr;
         for (const RenderCore::ImmediateEffectDraw& effect : frame.immediateEffectDraws())
         {
+            Debug::GameplayDiagnostics::ProfileScope effectProfile("effect_realization_loop");
             if (shareUnchangedEffects && effect.meshSnapshot)
             {
                 const auto* unchanged = mImmediateEffectResidents.selectUnchanged(effect.identity,
@@ -1201,8 +1355,10 @@ namespace RenderVsg
                                 {"width", effect.textures.front().texture.width}, {"height", effect.textures.front().texture.height}});
                 }
             }
-            ImmediateEffectRealization realized
-                = realizeImmediateEffectDraw(effect, mTextureResolver, frameSharedObjects);
+            ImmediateEffectRealization realized = [&] {
+                Debug::GameplayDiagnostics::ProfileScope rebuildProfile("effect_resident_rebuild");
+                return realizeImmediateEffectDraw(effect, mTextureResolver, frameSharedObjects);
+            }();
             if (!realized.valid())
             {
                 mLastDiagnostic = realized.diagnostic.empty()
@@ -1292,7 +1448,11 @@ namespace RenderVsg
         }
         mDynamicPublishedRoot = std::move(nextRoot);
         mDynamicLastUse.reset();
-        mImmediateEffectResidents.collectUnused();
+        FrameResourcePool<ImmediateEffectResident>::IdleUsage idleEffects;
+        if (Misc::environmentFlag<"OPENMW_VK_RETAIN_PARTICLE_SLOTS">())
+            idleEffects = mImmediateEffectResidents.collectUnused({256, 32 * 1024 * 1024, 120},
+                [](const ImmediateEffectResident& resident) { return smallEffectIdleCost(resident.contract); });
+        else mImmediateEffectResidents.collectUnused();
         mDynamicActorResidents.collectUnused();
         if (Debug::GameplayDiagnostics::sampling())
             Debug::GameplayDiagnostics::recordEvent("residency", {{"actors_reused", std::to_string(reusedActors)},
@@ -1300,10 +1460,12 @@ namespace RenderVsg
                 {"effects_reused", std::to_string(reusedEffects)}, {"effects_rebuilt", std::to_string(rebuiltEffects)},
                 {"effect_frustum_enabled", std::to_string(cullEffects)},
                 {"effect_frustum_bounds", std::to_string(boundedEffects)},
+                {"effect_idle_versions", std::to_string(idleEffects.versions)},
+                {"effect_idle_budget_bytes", std::to_string(idleEffects.bytes)},
                 {"bulk_effect_streams", std::to_string(bulkEffectStreams)},
                 {"validated_effect_reuse", std::to_string(validatedEffects != nullptr)},
                 {"actor_prepare_workers", std::to_string(parallelActors
-                    ? mActorPreparationWorkers->workersFor(plan.actors.size()) : 0)},
+                    ? mActorPreparationWorkers->workersFor(actorCount) : 0)},
                 {"effect_versions", std::to_string(mImmediateEffectResidents.size())}});
         return true;
     }
@@ -1311,6 +1473,15 @@ namespace RenderVsg
     bool VsgRuntimeHost::synchronizeLocalLights(const RenderCore::RenderWorld& world)
     {
         Debug::GameplayDiagnostics::Stage phase("local_light_sync");
+        if (Debug::FrameProfile::accumulator.active)
+            Debug::GameplayDiagnostics::recordEvent("profile_render_workload", {
+                {"local_lights", std::to_string(mOpenMwViewState->localLightCount())},
+                {"shadow_cascades", std::to_string(mOptions.shadows.cascadeCount)},
+                {"shadow_resolution", std::to_string(mOptions.shadows.mapResolution)},
+                {"shadow_distance", std::to_string(mOptions.shadows.maximumDistance)},
+                {"shadow_enabled", std::to_string(mOptions.shadows.enabled)},
+                {"reflection", std::to_string(mOptions.water.reflection)},
+                {"refraction", std::to_string(mOptions.water.refraction)}});
         bool allCurrent = mOpenMwViewState->localLightsCurrent(world)
             && (!mReflectionView || mReflectionView->state->localLightsCurrent(world))
             && (!mRefractionView || mRefractionView->state->localLightsCurrent(world));
@@ -1775,11 +1946,78 @@ namespace RenderVsg
         mPostTarget.depth = replacement.depth;
         mPostTarget.extent = extent;
         mPostRoot->children.assign(1, post);
+        if (mOmwfxCommands) mOmwfxCommands->children.clear();
+        mOmwfx.reset();
+        mOmwfxRejectedFrame.reset();
         return true;
+    }
+
+    bool VsgRuntimeHost::synchronizePostProcessing(const RenderCore::FrameRenderState& frame,
+        const RenderCore::FrameView& view)
+    {
+        if (!mOmwfxCommands || !mOmwfxFrame) return true;
+        const auto& snapshot = *mOmwfxFrame;
+        if (mOmwfxRejectedFrame && mOmwfxRejectedFrame->chain == snapshot.chain
+            && mOmwfxRejectedFrame->interior == snapshot.interior && mOmwfxRejectedFrame->underwater == snapshot.underwater)
+            return true; // Retry on an edited/reloaded chain, not every frame.
+        if (!snapshot.enabled || !snapshot.chain)
+        {
+            if (!mOmwfx) return true;
+            waitIdle();
+            auto copy = createNativePostProcess(mPostTarget.color, mPostTarget.depth, NativePostProcessMode::Copy);
+            if (!compileForViewerView(*mViewer, *mOutputView, copy)) return false;
+            mPostRoot->children.assign(1, copy);
+            mOmwfxCommands->children.clear();
+            mOmwfx.reset();
+            return true;
+        }
+        try
+        {
+            if (!mOmwfx || mOmwfx->chain != snapshot.chain || mOmwfx->interior != snapshot.interior
+                || mOmwfx->underwater != snapshot.underwater)
+            {
+                // Only a chain/scene-mode/extent change drains in-flight work.
+                // Ordinary frames reuse every pass, pipeline and image.
+                waitIdle();
+                auto replacement = std::make_unique<OmwFxRuntime>(*mViewer, mWindow->getOrCreateDevice(),
+                    mPostTarget.color, mPostTarget.depth, mPostTarget.extent, snapshot, mOmwfxLights);
+                auto present = createNativePostProcess(replacement->output, mPostTarget.depth, NativePostProcessMode::Copy);
+                if (!compileForViewerView(*mViewer, *mOutputView, present))
+                    throw std::runtime_error("OMWFX output compilation failed");
+                mPostRoot->children.assign(1, present);
+                mOmwfxCommands->children.assign(1, replacement->commands);
+                mOmwfx = std::move(replacement);
+                mOmwfxRejectedFrame.reset();
+                Log(Debug::Info) << "Native Vulkan OMWFX graph published: techniques=" << snapshot.chain->techniques.size()
+                    << " generation=" << snapshot.chain->generation;
+            }
+            mOmwfx->update(snapshot, view, frame.simulationTime(), frame.frameDelta());
+            return true;
+        }
+        catch (const std::exception& error)
+        {
+            // Unsupported authored effects must not destroy gameplay or saves.
+            // Report explicitly, drop this chain, and retain ordinary native
+            // presentation until the chain is edited/reloaded in F2.
+            Log(Debug::Error) << "Native OMWFX chain bypassed: " << error.what();
+            waitIdle();
+            auto copy = createNativePostProcess(mPostTarget.color, mPostTarget.depth, NativePostProcessMode::Copy);
+            if (!compileForViewerView(*mViewer, *mOutputView, copy))
+            {
+                mLastDiagnostic = "Native OMWFX recovery presentation failed";
+                return false;
+            }
+            mPostRoot->children.assign(1, copy);
+            mOmwfxCommands->children.clear();
+            mOmwfx.reset();
+            mOmwfxRejectedFrame = mOmwfxFrame;
+            return true;
+        }
     }
 
     bool VsgRuntimeHost::synchronizeGui()
     {
+        Debug::GameplayDiagnostics::ProfileScope profile("gui_sync");
         // GUI-only transition frames do not pass through the gameplay coordinator,
         // so retain a safe synchronous fallback. Ordinary gameplay frames arrive
         // with an immutable generation prepared before Lua was released.
@@ -2060,6 +2298,7 @@ namespace RenderVsg
     RenderCore::RenderFrameResult VsgRuntimeHost::renderFrameImpl(
         const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame, bool guiOnly)
     {
+        Debug::GameplayDiagnostics::ProfileScope hostProfile("vsg_host");
         mLastDiagnostic.clear();
         // One-shot diagnostic copies must never be resubmitted on a later frame.
         // Their staging buffers/commands remain owned until completion below.
@@ -2104,8 +2343,11 @@ namespace RenderVsg
             return finish(RenderCore::RenderFrameResult::Failed,
                 "CP3C host requires explicit reversed zero-to-one/down-Y projection and no temporal jitter");
 
-        reportStrictFrameDiagnostics(frame, *mainView);
-        reportRuntimeMemory(world, frame);
+        {
+            Debug::GameplayDiagnostics::ProfileScope telemetryProfile("runtime_memory_reporting");
+            reportStrictFrameDiagnostics(frame, *mainView);
+            reportRuntimeMemory(world, frame);
+        }
 
         // VSG skips swapchain acquisition for invisible windows, but its record/submit
         // task still owns the window and can otherwise reuse the previous image's
@@ -2222,6 +2464,8 @@ namespace RenderVsg
                 !guiOnly && refractionView && !frame.environment().interior && frame.environment().underwater))
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
         mCamera.update(*mainView);
+        if (!synchronizePostProcessing(frame, *mainView))
+            return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
         mView->LODScale = mainView->lodScale;
         const RenderCore::FrameEnvironmentState& environment = frame.environment();
         mOpenMwViewState->setRadiusFadeEnabled(environment.localLightRadiusFade);
@@ -2348,6 +2592,9 @@ namespace RenderVsg
         }
         const VsgSubmitPresentResult submission = [&] {
             Debug::GameplayDiagnostics::Stage submitDiagnostic("submit_present");
+            for (const auto& profile : mFrameGpuProfiles)
+                profile->prepare(frame.frameId().value(), mCompletedThrough
+                    ? std::optional<std::uint64_t>(mCompletedThrough->value()) : std::nullopt);
             return submitAndPresentChecked(*mViewer);
         }();
         if (Debug::GameplayDiagnostics::sampling())
@@ -2357,6 +2604,7 @@ namespace RenderVsg
             return finish(RenderCore::RenderFrameResult::Failed,
                 "Vulkan record/submit failed with VkResult " + std::to_string(submission.submit));
         mWaitedIdle = false;
+        Debug::GameplayDiagnostics::ProfileScope retirementProfile("resource_mark_submitted");
         if (!mCompletion.registerSubmission(*mViewer, frame.frameId())
             || (!guiOnly && (!mImmediateEffectResidents.markSubmitted(frame.frameId())
             || !mDynamicActorResidents.markSubmitted(frame.frameId())
@@ -2381,6 +2629,21 @@ namespace RenderVsg
         if (!submission.success())
             return finish(RenderCore::RenderFrameResult::Failed,
                 "Vulkan presentation failed with VkResult " + std::to_string(submission.present));
+        if (mOmwfx && !guiOnly)
+            if (const char* directory = std::getenv("OPENMW_VK_FX_CAPTURE_DIR"); directory && ++mOmwfxCaptureFrames == 120)
+            {
+                try
+                {
+                    waitIdle(); // Explicit one-shot visual diagnostic, never a benchmark.
+                    const std::filesystem::path destination(directory);
+                    std::filesystem::create_directories(destination);
+                    captureFxImage(mWindow->getOrCreateDevice(),mPostTarget.color,destination/"scene-before-fx.png");
+                    captureFxImage(mWindow->getOrCreateDevice(),mOmwfx->output,destination/"scene-after-fx.png");
+                    Log(Debug::Info)<<"Native OMWFX visual capture saved; run is not performance-qualified";
+                }
+                catch(const std::exception& error)
+                { Log(Debug::Warning)<<"Native OMWFX visual capture failed: "<<error.what(); }
+            }
         return finish(RenderCore::RenderFrameResult::Presented);
     }
 

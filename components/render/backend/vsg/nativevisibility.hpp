@@ -2,6 +2,8 @@
 #define OPENMW_COMPONENTS_RENDER_VSG_NATIVEVISIBILITY_H
 
 #include "staticworldplan.hpp"
+#include "landdepthoccluder.hpp"
+#include <components/misc/environmentflag.hpp>
 #include <components/rendercore/framerenderstate.hpp>
 #include <extern/maskedoc/MaskedOcclusionCulling.h>
 #include <vsg/nodes/Group.h>
@@ -84,12 +86,10 @@ namespace RenderVsg
                     maximum = glm::max(maximum, glm::dvec3(point));
                     bounded = true;
                 }
-                // Only exact opaque LAND geometry writes the software depth.
-                // Alpha cutouts, decals and blended LAND overlays cannot occlude.
-                if (isTerrain && material->terrainLayer && !material->alphaBlendEnabled
-                    && !material->alphaTestEnabled && material->alpha == 1.f
-                    && material->depthTest && material->depthWrite && !material->wireframe
-                    && !material->decal && !material->stencil.enabled
+                // Only exact depth-covering LAND geometry writes software depth.
+                // Color-weighted base layers are opt-in; overlays/cutouts stay out.
+                if (isTerrain && landDepthOccluder(*material,
+                        Misc::environmentFlag<"OPENMW_VK_LAND_DEPTH_OCCLUDERS">())
                     && draw.surface.topology == RenderCore::PrimitiveTopology::Triangles)
                     occluders.push_back({mesh->payload, draw.surface, transform,
                         draw.pipeline.fixedFunction.raster.cullMode, draw.pipeline.fixedFunction.raster.frontFace});
@@ -97,6 +97,21 @@ namespace RenderVsg
             return true;
         }
     };
+
+    // Immutable world-space placement bounds, compiled with the resident rather
+    // than rediscovered per frame. May be retained as metadata or attached above
+    // the placement transform to reject its draw DAG for each view separately.
+    // Not registered with main-camera occlusion: auxiliary views own visibility.
+    inline vsg::ref_ptr<MainViewVisibility> persistentPlacementVisibility(
+        const RenderCore::RenderWorld& world, const StaticAssetPlan& asset,
+        const RenderCore::WorldTransform& placement)
+    {
+        auto result = MainViewVisibility::create();
+        result->perViewFrustum = true;
+        if (!result->include(world, asset, placement, false))
+            result->bounded = false;
+        return result;
+    }
 
     struct ProjectedVisibilityBounds
     {

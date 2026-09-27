@@ -14,6 +14,7 @@ namespace RenderCore
 {
     struct SkeletonRecord;
 }
+namespace RenderNative { class SkeletalObjectProgram; }
 
 namespace VFS
 {
@@ -34,6 +35,8 @@ namespace MWRender
     {
         V4NativeAnimationPoseStatus status = V4NativeAnimationPoseStatus::CompatibilityFallback;
         std::uint32_t sampledTracks = 0;
+        bool poseValidated = false;
+        float poseMaximumError = 0.0f;
         std::string diagnostic;
 
         [[nodiscard]] bool applied() const noexcept
@@ -64,6 +67,10 @@ namespace MWRender
         [[nodiscard]] V4NativeAnimationPoseResult captureSkeletonPose(
             std::string_view actorIdentity, const Animation& animation,
             const RenderCore::SkeletonRecord& skeleton, std::vector<glm::mat4>& localTransforms);
+
+        [[nodiscard]] V4NativeAnimationPoseResult captureSkeletalObjectPose(std::string_view identity,
+            const Animation& animation, const RenderNative::SkeletalObjectProgram& program,
+            float simulationTime, std::vector<glm::mat4>& localTransforms);
 
         // Compatibility fallback seeds the exact current local pose once. Later
         // native frames then preserve the legacy controller's missing-channel

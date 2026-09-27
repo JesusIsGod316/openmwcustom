@@ -9,6 +9,7 @@
 
 #include <components/render/backend/vsg/vsgruntimebootstrap.hpp>
 #include <components/render/native/nifassetservice.hpp>
+#include <components/render/native/skeletalobjectprogram.hpp>
 #include <components/render/native/staticworldservice.hpp>
 #include <components/render/native/terrainworldservice.hpp>
 #include <components/render/backend/vsg/vsgsemanticsession.hpp>
@@ -132,6 +133,19 @@ namespace MWRender
         };
         std::map<std::string, bool, std::less<>> mEvaluatedObjectPlayback;
         RenderCore::WorldEpoch mEvaluatedObjectPlaybackEpoch;
+        struct NativeSkeletalAsset
+        {
+            RenderNative::NifAssetResolveResult asset;
+            RenderNative::SkeletalObjectProgram program;
+        };
+        std::map<std::string, NativeSkeletalAsset, std::less<>> mNativeSkeletalAssets;
+        struct NativeSkeletalInstance
+        {
+            RenderCore::InstanceHandle instance;
+            RenderCore::ModelHandle model;
+            RenderCore::SkeletonHandle skeleton;
+        };
+        std::map<std::string, NativeSkeletalInstance, std::less<>> mNativeSkeletalObjects;
         std::map<std::string, RenderCore::SkeletonHandle, std::less<>> mForcedActorSkeletons;
         std::map<std::string, ComposedActorEntry, std::less<>> mComposedActors;
         RenderCore::WorldEpoch mComposedActorEpoch;

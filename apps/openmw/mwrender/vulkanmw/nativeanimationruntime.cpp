@@ -4,6 +4,7 @@
 
 #include <components/misc/strings/lower.hpp>
 #include <components/render/native/nifkeyframeclip.hpp>
+#include <components/render/native/skeletalobjectprogram.hpp>
 #include <components/rendercore/records.hpp>
 #include <components/vfs/manager.hpp>
 #include <components/vfs/pathutil.hpp>
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <optional>
@@ -153,6 +155,13 @@ namespace MWRender
             std::vector<NifLocalTransform> sourceLocal;
             bool collapsedParentAnimation = false;
         };
+        struct ObjectPose
+        {
+            const Animation* owner = nullptr;
+            std::uint64_t rootRevision = 0;
+            const RenderNative::SkeletalObjectProgram* program = nullptr;
+            RenderNative::SkeletalObjectProgram::State state;
+        };
 
         explicit Impl(const VFS::Manager& vfs)
             : mVfs(vfs)
@@ -243,6 +252,8 @@ namespace MWRender
         std::map<std::string, BoneBinding, std::less<>> mSkeletons;
         std::map<std::string, ActorPose, std::less<>> mActors;
         std::set<std::string, std::less<>> mSeenActors;
+        std::map<std::string, ObjectPose, std::less<>> mObjects;
+        std::set<std::string, std::less<>> mSeenObjects;
     };
 
     V4NativeAnimationRuntime::V4NativeAnimationRuntime(const VFS::Manager& vfs)
@@ -255,6 +266,110 @@ namespace MWRender
     void V4NativeAnimationRuntime::beginFrame()
     {
         mImpl->mSeenActors.clear();
+        mImpl->mSeenObjects.clear();
+    }
+
+    V4NativeAnimationPoseResult V4NativeAnimationRuntime::captureSkeletalObjectPose(std::string_view identity,
+        const Animation& animation, const RenderNative::SkeletalObjectProgram& program,
+        float simulationTime, std::vector<glm::mat4>& localTransforms)
+    {
+        V4NativeAnimationPoseResult result;
+        if (!program.valid()) { result.diagnostic = program.diagnostic(); return result; }
+        Animation::V4NativeAnimationState selection;
+        std::optional<float> clock;
+        if (!animation.captureV4NativeAnimationState(selection, result.diagnostic)
+            || !animation.captureV4ObjectControllerClock(clock, result.diagnostic)) return result;
+        std::vector<RenderNative::SkeletalObjectProgram::ExternalChannel> channels;
+        for (const auto& layer : selection.layers)
+        {
+            if (!layer) continue;
+            auto& cached = mImpl->clip(layer->sourcePath, selection.encoder);
+            if (!cached.clip || cached.clip->unsupportedControllers)
+            {
+                result.diagnostic = "skeletal object KF is not completely supported: " + cached.diagnostic;
+                return result;
+            }
+            for (const auto& name : layer->boneNames)
+            {
+                const auto track = cached.foldedControllers.find(name);
+                if (track == cached.foldedControllers.end())
+                {
+                    result.diagnostic = "skeletal object KF lost bound node: " + name;
+                    return result;
+                }
+                channels.push_back({name, track->second, layer->time});
+            }
+        }
+        const std::string key(identity);
+        auto& object = mImpl->mObjects[key];
+        std::vector<glm::mat4> reference;
+        if (object.owner != &animation || object.rootRevision != animation.getV4ObjectRootRevision()
+            || object.program != &program)
+        {
+            object = {};
+            reference = program.initialState().locals;
+            if (!animation.seedV4ObjectNodeTransforms(program.nodeNames(), program.requiredSeedNodes(), reference, result.diagnostic))
+                return result;
+            auto state = program.initialState();
+            for (std::size_t i = 0; i < reference.size(); ++i)
+                if (program.usedNodes()[i]) state.locals[i] = reference[i];
+            if (!program.seed(state.locals, object.state))
+            {
+                result.diagnostic = "skeletal object seed is not uniform NIF TRS";
+                return result;
+            }
+            object.owner = &animation;
+            object.rootRevision = animation.getV4ObjectRootRevision();
+            object.program = &program;
+        }
+        if (!program.evaluate(simulationTime, clock, channels, selection.accumulationBone,
+                selection.accumulationAxes, object.state, localTransforms))
+        {
+            result.diagnostic = "skeletal object playback has uncovered tracks or invalid transforms";
+            for (const auto& channel : channels)
+            {
+                const auto found = std::find(program.nodeNames().begin(), program.nodeNames().end(), channel.node);
+                if (found == program.nodeNames().end()) result.diagnostic += " missing=" + std::string(channel.node);
+                else if (!program.usedNodes()[static_cast<std::size_t>(found - program.nodeNames().begin())])
+                    result.diagnostic += " outside-skin=" + std::string(channel.node);
+                if (result.diagnostic.size() > 700) break;
+            }
+            return result;
+        }
+        const char* validation = std::getenv("OPENMW_VK_VALIDATE_SKELETAL_OBJECT_POSES");
+        if (reference.empty() && validation && validation[0] == '1')
+        {
+            reference = program.initialState().locals;
+            if (!animation.seedV4ObjectNodeTransforms(program.nodeNames(), program.requiredSeedNodes(), reference, result.diagnostic))
+                return result;
+        }
+        // Always validate admission; the separate diagnostic arm additionally
+        // checks every frame. Its overhead is excluded from performance arms.
+        if (!reference.empty())
+        {
+            for (std::size_t i = 0; i < reference.size(); ++i)
+                if (program.usedNodes()[i])
+                    for (int c = 0; c < 4; ++c)
+                        for (int r = 0; r < 4; ++r)
+                        {
+                            const float expected = reference[i][c][r];
+                            const float error = std::abs(object.state.locals[i][c][r] - expected);
+                            result.poseMaximumError = std::max(result.poseMaximumError, error);
+                            if (!finite(expected) || error > 1e-3f + 1e-4f * std::abs(expected))
+                            {
+                                result.diagnostic = "skeletal object pose differs at " + program.nodeNames()[i]
+                                    + " error=" + std::to_string(error);
+                                return result;
+                            }
+                        }
+            result.poseValidated = true;
+        }
+        // Only successful frames retain history. A compatibility frame forces a
+        // fresh seed next time; partial channels must never resume stale state.
+        mImpl->mSeenObjects.insert(key);
+        result.sampledTracks = static_cast<std::uint32_t>(program.channelCount() + channels.size());
+        result.status = V4NativeAnimationPoseStatus::Applied;
+        return result;
     }
 
     V4NativeAnimationPoseResult V4NativeAnimationRuntime::captureSkeletonPose(
@@ -458,6 +573,7 @@ namespace MWRender
 
     void V4NativeAnimationRuntime::endFrame()
     {
+        std::erase_if(mImpl->mObjects, [&](const auto& entry) { return !mImpl->mSeenObjects.contains(entry.first); });
         for (auto it = mImpl->mActors.begin(); it != mImpl->mActors.end();)
         {
             if (!mImpl->mSeenActors.contains(it->first))
@@ -473,5 +589,7 @@ namespace MWRender
         mImpl->mSkeletons.clear();
         mImpl->mActors.clear();
         mImpl->mSeenActors.clear();
+        mImpl->mObjects.clear();
+        mImpl->mSeenObjects.clear();
     }
 }

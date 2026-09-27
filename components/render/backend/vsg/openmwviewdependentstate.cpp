@@ -1,4 +1,5 @@
 #include "openmwviewdependentstate.hpp"
+#include "locallighttiles.hpp"
 
 #include <vsg/app/Camera.h>
 #include <vsg/app/RecordTraversal.h>
@@ -8,9 +9,11 @@
 #include <vsg/state/DescriptorBuffer.h>
 #include <vsg/state/DescriptorSet.h>
 #include <vsg/state/DescriptorSetLayout.h>
+#include <vsg/state/ViewportState.h>
 #include <vsg/ui/FrameStamp.h>
 #include <vsg/lighting/AmbientLight.h>
 #include <vsg/lighting/DirectionalLight.h>
+#include <vsg/lighting/HardShadows.h>
 #include <vsg/lighting/PointLight.h>
 #include <vsg/lighting/SpotLight.h>
 #include <vsg/maths/transform.h>
@@ -18,6 +21,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -328,6 +332,146 @@ namespace RenderVsg
             lightData->dirty();
     }
 
+    bool OpenMwViewDependentState::recordStableSunShadows(vsg::RecordTraversal& traversal) const
+    {
+        if (!view || !view->camera || !lightData || !(view->features & vsg::RECORD_SHADOW_MAPS))
+            return false;
+        // Keep the library path for shadow modes not implemented by this fitter.
+        for (const auto& entry : directionalLights)
+            if (auto settings = getActiveShadowSettings(entry.second);
+                settings && settings->type_info() != typeid(vsg::HardShadows))
+                return false;
+        for (const auto& entry : spotLights)
+            if (auto settings = getActiveShadowSettings(entry.second); settings && settings->shadowMapCount)
+                return false;
+
+        const auto projection = view->camera->projectionMatrix->transform();
+        const auto viewMatrix = view->camera->viewMatrix->transform();
+        const auto inverseView = vsg::inverse(viewMatrix);
+        const auto inverseProjection = vsg::inverse(projection);
+        const double nearDistance = -(inverseProjection * vsg::dvec3(0, 0, 1)).z;
+        const double farDistance = std::min(maxShadowDistance,
+            -(inverseProjection * vsg::dvec3(0, 0, 0)).z);
+        if (!(nearDistance > 0 && farDistance > nearDistance && std::isfinite(farDistance)))
+            return false;
+
+        if (preRenderSwitch) preRenderSwitch->setAllChildren(false);
+        const auto capacity = preRenderSwitch ? std::min(shadowMaps.size(), preRenderSwitch->children.size()) : 0;
+        std::size_t shadowIndex = 0;
+        auto output = lightData->begin();
+        bool changed = false;
+        const auto write = [&](const vsg::vec4& value) {
+            if (output == lightData->end()) throw std::runtime_error("stable shadow light buffer capacity exceeded");
+            changed = changed || *output != value;
+            *output++ = value;
+        };
+        const auto color = [&](const vsg::Light* light) {
+            write({light->color.r, light->color.g, light->color.b, light->intensity});
+        };
+        const auto writeMatrix = [&](const vsg::dmat4& matrix) {
+            for (unsigned i = 0; i < 4; ++i) write(vsg::vec4(matrix[i]));
+        };
+        write({float(ambientLights.size()), float(directionalLights.size()),
+            float(pointLights.size()), float(spotLights.size())});
+        for (const auto& entry : ambientLights) color(entry.second);
+        for (const auto& [modelView, light] : directionalLights)
+        {
+            color(light);
+            const auto eyeDirection = vsg::normalize(light->direction * vsg::inverse_3x3(modelView));
+            write({float(eyeDirection.x), float(eyeDirection.y), float(eyeDirection.z), 0});
+            const auto settings = getActiveShadowSettings(light);
+            const std::size_t count = settings ? std::min<std::size_t>(settings->shadowMapCount, capacity - shadowIndex) : 0;
+            write({float(count), -1, -1, 0});
+            if (!count) continue;
+
+            // A direction has w=0. Never project it as a position: the stock
+            // fitter's vec3 * projection-view expression divides by a camera-
+            // dependent homogeneous w, producing NaNs even at the world origin.
+            // A world-fixed light basis also avoids rotating the shadow grid
+            // with the main camera, independently of that singularity.
+            const auto direction = vsg::normalize(light->direction * vsg::inverse_3x3(modelView * inverseView));
+            const vsg::dvec3 axis = std::abs(direction.z) < .9 ? vsg::dvec3(0, 0, 1) : vsg::dvec3(0, 1, 0);
+            const auto side = vsg::normalize(vsg::cross(direction, axis));
+            const auto up = vsg::cross(side, direction);
+            const auto split = [&](std::size_t index) {
+                const double fraction = double(index) / double(count);
+                return std::clamp(lambda, 0.0, 1.0) * nearDistance * std::pow(farDistance / nearDistance, fraction)
+                    + (1.0 - std::clamp(lambda, 0.0, 1.0)) * (nearDistance + (farDistance - nearDistance) * fraction);
+            };
+            for (std::size_t cascade = 0; cascade < count; ++cascade, ++shadowIndex)
+            {
+                std::array<vsg::dvec3, 8> eyeCorners;
+                unsigned corner = 0;
+                for (const double distance : {split(cascade), split(cascade + 1)})
+                {
+                    const double depth = (projection * vsg::dvec3(0, 0, -distance)).z;
+                    for (double x : {-1.0, 1.0})
+                        for (double y : {-1.0, 1.0})
+                            eyeCorners[corner++] = inverseProjection * vsg::dvec3(x, y, depth);
+                }
+                vsg::dvec3 center;
+                for (const auto& point : eyeCorners) center += point / 8.0;
+                double radius = 0;
+                for (const auto& point : eyeCorners) radius = std::max(radius, vsg::length(point - center));
+                radius = std::ceil(std::max(.01, radius) * 16.0) / 16.0;
+                center = inverseView * center;
+
+                const auto& camera = shadowMaps[shadowIndex].view->camera;
+                const auto extent = shadowMaps[shadowIndex].renderGraph->renderArea.extent;
+                // Reserve one texel around the enclosing sphere before snapping
+                // its center so receiver coverage cannot shrink at a grid edge.
+                const double resolution = std::max(4u, std::min(extent.width, extent.height));
+                radius *= resolution / (resolution - 2.0);
+                const double texel = 2.0 * radius / resolution;
+                center += side * (std::round(vsg::dot(center, side) / texel) * texel - vsg::dot(center, side));
+                center += up * (std::round(vsg::dot(center, up) / texel) * texel - vsg::dot(center, up));
+                auto lookAt = camera->viewMatrix.cast<vsg::LookAt>();
+                auto ortho = camera->projectionMatrix.cast<vsg::Orthographic>();
+                if (!lookAt) camera->viewMatrix = lookAt = vsg::LookAt::create();
+                if (!ortho) camera->projectionMatrix = ortho = vsg::Orthographic::create();
+                // Include off-camera casters upstream of the visible receivers.
+                // Main-view visibility must not decide shadow participation.
+                const double casterReach = farDistance;
+                lookAt->eye = center - direction * (radius + casterReach);
+                lookAt->center = lookAt->eye + direction;
+                lookAt->up = up;
+                ortho->left = ortho->bottom = -radius;
+                ortho->right = ortho->top = radius;
+                ortho->nearDistance = .001;
+                ortho->farDistance = 2.0 * radius + casterReach;
+                const double bias = shadowMapBias * (2.0 * radius) / ortho->farDistance;
+                const auto matrix = vsg::scale(.5, .5, 1.0) * vsg::translate(1.0, 1.0, bias)
+                    * ortho->transform() * lookAt->transform() * inverseView;
+                writeMatrix(matrix);
+                writeMatrix(vsg::inverse(matrix));
+                preRenderSwitch->children[shadowIndex].mask = vsg::MASK_ALL;
+            }
+        }
+        for (const auto& [matrix, light] : pointLights)
+        {
+            const auto position = matrix * light->position;
+            color(light);
+            write({float(position.x), float(position.y), float(position.z), 0});
+        }
+        for (const auto& [matrix, light] : spotLights)
+        {
+            const auto position = matrix * light->position;
+            const auto direction = vsg::normalize(light->direction * vsg::inverse_3x3(matrix));
+            color(light);
+            write({float(position.x), float(position.y), float(position.z), float(std::cos(light->innerAngle))});
+            write({float(direction.x), float(direction.y), float(direction.z), float(std::cos(light->outerAngle))});
+            write({0, 0, 0, 0});
+        }
+        if (changed) lightData->dirty();
+        if (shadowIndex && preRenderCommandGraph)
+        {
+            if (traversal.instrumentation && !preRenderCommandGraph->instrumentation)
+                preRenderCommandGraph->instrumentation = traversal.instrumentation->shareOrDuplicateForThreadSafety();
+            preRenderCommandGraph->accept(traversal);
+        }
+        return true;
+    }
+
     void OpenMwViewDependentState::traverse(vsg::RecordTraversal& traversal) const
     {
         // Absence of RECORD_SHADOW_MAPS does not imply a lit view. VSG's
@@ -339,7 +483,7 @@ namespace RenderVsg
             && (view->features & vsg::RECORD_SHADOW_MAPS) == 0
             && std::getenv("OPENMW_V4_LEGACY_UNSHADOWED_LIGHTS_CONTROL") == nullptr)
             updateUnshadowedLightData();
-        else
+        else if (!(std::getenv("OPENMW_VK_STABLE_SUN_SHADOWS") && recordStableSunShadows(traversal)))
             vsg::ViewDependentState::traverse(traversal);
         const vsg::FrameStamp* const frameStamp = traversal.getFrameStamp();
         const double simulationTime = frameStamp ? frameStamp->simulationTime : 0.0;
@@ -389,6 +533,12 @@ namespace RenderVsg
         *output++ = header;
 
         const vsg::dmat4 viewMatrix = view->camera->viewMatrix->transform();
+        std::vector<LocalLightTileSource> tileSources;
+        if (std::getenv("OPENMW_VK_TILED_LIGHTS") && mRadiusFadeEnabled && mPlan.lights.size() >= 16)
+            tileSources.reserve(mPlan.lights.size());
+        struct PostLight { double distance; std::array<vsg::vec4, 3> values; };
+        std::vector<PostLight> postLights;
+        if (mPostProcessingLights) postLights.reserve(mPlan.lights.size());
         for (const PackedLocalLightEntry& entry : mPlan.lights)
         {
             const PackedLocalLight& source = entry.data;
@@ -398,6 +548,12 @@ namespace RenderVsg
                 = viewMatrix * vsg::dvec3(worldPosition.x, worldPosition.y, worldPosition.z);
             const float enabledFade = source.semantics.x == 0u ? 0.0f : source.attenuationFade.w;
             const float modulation = evaluateLocalLightModulation(entry, simulationTime);
+            if (mPostProcessingLights && enabledFade > 0.0f)
+                postLights.push_back({vsg::length2(eyePosition), {{
+                    {static_cast<float>(worldPosition.x), static_cast<float>(worldPosition.y), static_cast<float>(worldPosition.z), 1.0f},
+                    {source.diffuse.r * modulation * enabledFade, source.diffuse.g * modulation * enabledFade,
+                        source.diffuse.b * modulation * enabledFade, 1.0f},
+                    {source.attenuationFade.x, source.attenuationFade.y, source.attenuationFade.z, source.positionRadius.w}}}});
             const vsg::vec4 values[OpenMwLocalLightVec4Stride] = {
                 { static_cast<float>(eyePosition.x), static_cast<float>(eyePosition.y),
                     static_cast<float>(eyePosition.z), source.positionRadius.w },
@@ -408,6 +564,8 @@ namespace RenderVsg
                 { source.ambient.r, source.ambient.g, source.ambient.b, source.ambient.a },
                 { source.attenuationFade.x, source.attenuationFade.y, source.attenuationFade.z, enabledFade },
             };
+            if (tileSources.capacity())
+                tileSources.push_back({{values[0].x, values[0].y, values[0].z}, values[0].w, enabledFade});
             for (const vsg::vec4& value : values)
             {
                 changed = changed || *output != value;
@@ -415,7 +573,48 @@ namespace RenderVsg
             }
         }
 
+        if (!tileSources.empty() && view->camera->viewportState
+            && view->camera->viewportState->viewports.size() == 1)
+        {
+            const VkViewport& viewport = view->camera->viewportState->viewports.front();
+            if (viewport.x == 0.0f && viewport.y == 0.0f && viewport.width > 0.0f
+                && viewport.height > 0.0f && viewport.width <= 131072.0f
+                && viewport.height <= 131072.0f
+                && std::floor(viewport.width) == viewport.width
+                && std::floor(viewport.height) == viewport.height)
+            {
+                const auto grid = buildLocalLightTileGrid(tileSources,
+                    view->camera->projectionMatrix->transform(), mProjection.nearPlane,
+                    static_cast<std::uint32_t>(viewport.width), static_cast<std::uint32_t>(viewport.height),
+                    mOpenMwLightData->size() - 1, mRadiusFadeEnabled);
+                if (grid.active())
+                {
+                    // Append bit masks after the five-vec4 light records in
+                    // the already allocated per-view storage buffer. No new
+                    // descriptor or secondary upload is needed.
+                    std::memcpy(mOpenMwLightData->data() + 1 + mPlan.lights.size() * OpenMwLocalLightVec4Stride,
+                        grid.words.data(), grid.words.size() * sizeof(std::uint32_t));
+                    mOpenMwLightData->at(0).w = static_cast<float>(grid.columns);
+                    changed = true;
+                }
+            }
+        }
+
         if (changed)
             mOpenMwLightData->dirty();
+        if (mPostProcessingLights)
+        {
+            const std::size_t count = std::min<std::size_t>(40, postLights.size());
+            std::partial_sort(postLights.begin(), postLights.begin() + count, postLights.end(),
+                [](const PostLight& a, const PostLight& b) { return a.distance < b.distance; });
+            std::array<vsg::vec4, 120> values{};
+            for (std::size_t i = 0; i < count; ++i)
+                std::copy(postLights[i].values.begin(), postLights[i].values.end(), values.begin() + i * 3);
+            static_assert(sizeof(values) == 1920);
+            const std::int32_t lightCount = static_cast<std::int32_t>(count);
+            std::memcpy(mPostProcessingLights->dataPointer(), values.data(), sizeof(values));
+            std::memcpy(mPostProcessingLights->data() + sizeof(values), &lightCount, sizeof(lightCount));
+            mPostProcessingLights->dirty();
+        }
     }
 }

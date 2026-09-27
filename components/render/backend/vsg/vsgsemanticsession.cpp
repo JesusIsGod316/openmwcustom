@@ -1,5 +1,6 @@
 #include "vsgsemanticsession.hpp"
 #include <components/debug/gameplaydiagnostics.hpp>
+#include <components/misc/environmentflag.hpp>
 
 #include <optional>
 #include <stdexcept>
@@ -16,10 +17,10 @@ namespace RenderVsg
 
     VsgSemanticSession::VsgSemanticSession(
         StaticTextureResolver textureResolver, VsgRuntimeBootstrapOptions options)
-        : mPublisher(mWorld)
+        : mPublisher(mWorld, Misc::environmentFlag<"OPENMW_VK_CHUNK_TRANSACTIONS">())
         , mModels(mWorld, mPublisher)
         , mCells(mWorld, mPublisher)
-        , mPopulations(mWorld, mPublisher)
+        , mPopulations(mWorld, mPublisher, Misc::environmentFlag<"OPENMW_VK_GROUP_PUBLICATION">())
         , mShadowViews{ options.host.shadows.enabled, options.host.shadows.cascadeCount,
               { options.host.shadows.mapResolution, options.host.shadows.mapResolution },
               static_cast<float>(options.host.shadows.maximumDistance) }
@@ -56,8 +57,10 @@ namespace RenderVsg
         mLastDiagnostic.clear();
         // Progress refreshes occur inside cell insertion. Do not publish partial
         // population batches or realize an incomplete world to draw the GUI.
-        const RenderCore::StaticPopulationPublishStatus populationStatus = guiOnly
-            ? RenderCore::StaticPopulationPublishStatus::AlreadyPresent : mPopulations.flush();
+        const RenderCore::StaticPopulationPublishStatus populationStatus = [&] {
+            Debug::GameplayDiagnostics::ProfileScope profile("population_publish_flush");
+            return guiOnly ? RenderCore::StaticPopulationPublishStatus::AlreadyPresent : mPopulations.flush();
+        }();
         if (populationStatus != RenderCore::StaticPopulationPublishStatus::Applied
             && populationStatus != RenderCore::StaticPopulationPublishStatus::AlreadyPresent)
             return fail("static population publication failed at the frame boundary");

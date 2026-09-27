@@ -10,6 +10,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <tuple>
 
 namespace Std140
@@ -126,6 +127,18 @@ namespace Std140
 
         using BufferType = std::array<char, getGPUSize()>;
         using TupleType = std::tuple<CArgs...>;
+
+        // Patch a published CPU snapshot using the same authoritative layout
+        // as copyTo, without duplicating byte offsets in another renderer.
+        template <class T>
+        static void writeField(char* buffer, std::size_t size, const typename T::Value& value)
+        {
+            static_assert((std::is_same_v<T, CArgs> || ...));
+            constexpr auto offset = getOffset<T>();
+            if (size < offset + sizeof(value))
+                throw std::length_error("std140 snapshot is smaller than its declared field");
+            std::memcpy(buffer + offset, &value, sizeof(value));
+        }
 
         template <class T>
         typename T::Value& get()

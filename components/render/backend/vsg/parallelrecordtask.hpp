@@ -39,9 +39,20 @@ namespace RenderVsg
             if (instrumentation && !dynamic_cast<SubmitTaskDiagnostics*>(instrumentation.get()))
                 return vsg::RecordAndSubmitTask::record(recorded, frame);
             Debug::GameplayDiagnostics::Stage stage("submit_record");
+            const bool profiling = Debug::FrameProfile::accumulator.active;
+            std::vector<double> wallMs(profiling ? commandGraphs.size() : 0);
             mWorkers.forEach(commandGraphs.size(), [&](std::size_t index) {
+                const auto start = profiling ? Debug::GameplayDiagnostics::Clock::now()
+                    : Debug::GameplayDiagnostics::Clock::time_point{};
                 commandGraphs[index]->record(recorded, frame, databasePager);
+                if (profiling) wallMs[index] = std::chrono::duration<double, std::milli>(
+                    Debug::GameplayDiagnostics::Clock::now() - start).count();
             });
+            if (profiling)
+                for (std::size_t i = 0; i < wallMs.size(); ++i)
+                    Debug::GameplayDiagnostics::recordEvent("profile_record_graph", {
+                        {"index", std::to_string(i)}, {"order", std::to_string(commandGraphs[i]->submitOrder)},
+                        {"wall_ms", std::to_string(wallMs[i])}});
             return VK_SUCCESS;
         }
 

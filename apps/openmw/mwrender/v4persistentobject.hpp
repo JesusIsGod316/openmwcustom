@@ -4,11 +4,15 @@
 #include "v4effectcapture.hpp"
 #include <components/rendercore/persistentdraw.hpp>
 #include <components/nifosg/matrixtransform.hpp>
+#include <components/nifosg/particle.hpp>
 #include <components/sceneutil/positionattitudetransform.hpp>
 #include <components/sceneutil/rendermutation.hpp>
 #include <components/sceneutil/skeleton.hpp>
 #include <osg/MatrixTransform>
+#include <osg/LOD>
 #include <osg/PositionAttitudeTransform>
+#include <osgParticle/ModularProgram>
+#include <osgParticle/ParticleSystemUpdater>
 #include <atomic>
 
 namespace MWRender
@@ -19,7 +23,8 @@ namespace MWRender
     class V4PersistentObject
     {
     public:
-        explicit V4PersistentObject(osg::Node& root, std::size_t budget = 64u * 1024u * 1024u)
+        explicit V4PersistentObject(osg::Node& root, std::size_t budget = 64u * 1024u * 1024u,
+            bool engineOwnedNif = false)
             : mBudget(budget)
         {
             osg::NodePath path;
@@ -27,18 +32,39 @@ namespace MWRender
             std::size_t bytes = mNodes.capacity() * sizeof(Binding) + mDrawCount * 4096;
             for (const auto& b : mNodes)
                 bytes += b.path.capacity() * sizeof(osg::Node*) + b.children.capacity() * sizeof(osg::Node*)
-                    + b.controllers.capacity() * sizeof(Controller);
+                    + b.controllers.capacity() * sizeof(Controller)
+                    + b.lodRanges.capacity() * sizeof(osg::LOD::MinMaxPair);
             if (mSupported && !charge(bytes))
                 reject("producer budget");
             if (!mSupported) std::vector<Binding>().swap(mNodes);
+            // Only ObjectAnimation's imported NIF hierarchy opts into this
+            // ownership contract. Arbitrary OSG assets retain all edge guards.
+            // Bound controllers and root movement publish notifications; engine
+            // attachment/controller/harvest operations invalidate this producer.
+            mChangeDriven = mSupported && engineOwnedNif
+                && Misc::environmentFlag<"OPENMW_VK_CHANGE_DRIVEN_OBJECTS">()
+                && Misc::environmentFlag<"OPENMW_V4_LOAD_BOUND_TEXTURES">();
+            if (mChangeDriven)
+            {
+                mSubscription = std::make_shared<SceneUtil::RenderMutationSource::Subscription>();
+                mOwner = std::make_shared<RenderCore::PersistentDrawOwner>();
+                for (const auto& b : mNodes)
+                {
+                    if (b.transformSource) b.transformSource->subscribeRenderMutations(mSubscription);
+                    for (const auto& c : b.controllers) c.source->subscribeRenderMutations(mSubscription);
+                }
+            }
         }
         ~V4PersistentObject() { sBytes.fetch_sub(mCharged, std::memory_order_relaxed); }
         V4PersistentObject(const V4PersistentObject&) = delete;
         V4PersistentObject& operator=(const V4PersistentObject&) = delete;
         bool supported() const noexcept { return mSupported; }
+        bool hasIntrinsicParticles() const noexcept { return mHasIntrinsicParticles; }
         const std::string& fallbackReason() const noexcept { return mFallback; }
+        void invalidate(std::string reason) { fallback(std::move(reason)); }
         static std::size_t retainedBytes() { return sBytes.load(std::memory_order_relaxed); }
         std::uint64_t geometryBuilds = 0, materialUpdates = 0, uvUpdates = 0, reusedDraws = 0;
+        std::uint64_t cleanPublications = 0, bindingInspections = 0;
 
         std::optional<V4EffectCaptureResult> publish(const std::string& prefix,
             const VFS::Manager& vfs, NifRender::TextureIdentityCache& identities,
@@ -48,12 +74,26 @@ namespace MWRender
             if (!mSupported) return {};
             if (mPrefix.empty()) mPrefix = prefix;
             else if (mPrefix != prefix) return fallback("instance identity replaced");
+            if (mChangeDriven && mSubscription->invalidated) return fallback("mutation source destroyed");
+            const bool retainedOwner = mChangeDriven && persistent;
+            const bool currentOwner = retainedOwner && persistent->touchOwner(mOwner);
+            // No node, controller, transform, texture or material inspection on
+            // a clean publication. The root mask remains an O(1) engine gate.
+            const auto rootMask = mNodes.empty() || !mNodes.front().node.valid()
+                ? 0 : mNodes.front().node->getNodeMask();
+            if (currentOwner && mPublished && !mSubscription->changed
+                && rootMask == mRootMask && mEnvironmentPreLight == environmentPreLight)
+            {
+                ++cleanPublications;
+                return V4EffectCaptureResult{};
+            }
             auto& counters = Debug::GameplayDiagnostics::context;
             Debug::GameplayDiagnostics::CapturePhase phase(counters.nativeBindingMs);
             // Flat pointer/edge guards protect engine attachment replacement.
             // This never scans vertex streams, material values or inherited state.
-            for (const auto& b : mNodes)
+            if (!mChangeDriven) for (const auto& b : mNodes)
             {
+                ++bindingInspections;
                 if (!b.node.valid() || b.node->getUpdateCallback() != b.callbackHead
                     || (b.group && b.group->getNumChildren() != b.children.size()))
                     return fallback("binding replaced");
@@ -64,6 +104,9 @@ namespace MWRender
                         return fallback("controller chain replaced");
                     else if (c.source->renderMutationMask() & SceneUtil::RenderUntracked)
                         return fallback("untracked controller added");
+                if (b.lod && (b.lod->getRangeMode() != b.lodMode
+                    || b.lod->getRangeList() != b.lodRanges))
+                    return fallback("LOD selection changed");
                 if (b.node->getStateSet() && b.node->getStateSet()->requiresUpdateTraversal())
                     return fallback("state update callback added");
             }
@@ -80,6 +123,18 @@ namespace MWRender
                     const auto& p = mNodes[b.parent];
                     transformChanged |= p.transformChanged;
                     b.active = b.active && p.active && (!p.selection || p.selection->getValue(b.childIndex));
+                    if (p.lod)
+                    {
+                        // AnimatedObjectCaptureVisitor uses an ordinary
+                        // TRAVERSE_ACTIVE_CHILDREN NodeVisitor, not a cull
+                        // visitor. Its distance range is therefore zero; its
+                        // pixel-size fallback selects the greatest minimum.
+                        const float range = p.lodMode == osg::LOD::DISTANCE_FROM_EYE_POINT
+                            ? 0.0f : p.lodFallbackRange;
+                        b.active = b.active && b.childIndex < p.lodRanges.size()
+                            && p.lodRanges[b.childIndex].first <= range
+                            && range < p.lodRanges[b.childIndex].second;
+                    }
                     b.dirty = p.dirty;
                 }
                 // Engine movement setters publish revisions. Other supported
@@ -205,11 +260,14 @@ namespace MWRender
                         | RenderCore::semanticFlag(RenderCore::InstanceSemanticFlag::RefractionEligible);
                     resourceChanged |= b.draw.material.environmentMapPreLight != environmentPreLight;
                     b.draw.material.environmentMapPreLight = environmentPreLight;
-                    if (!persistent->update(b.handle, b.draw, resourceChanged)) return fallback("persistent slot budget");
+                    if (!persistent->update(b.handle, b.draw, resourceChanged, retainedOwner ? mOwner : nullptr))
+                        return fallback("persistent slot budget");
                 }
                 else result.draws.push_back(b.draw);
                 phase.next(counters.nativeBindingMs);
             }
+            mPublished = true; mRootMask = rootMask; mEnvironmentPreLight = environmentPreLight;
+            if (mSubscription) mSubscription->changed = false;
             return result;
         }
 
@@ -228,6 +286,10 @@ namespace MWRender
             osg::Group* group = nullptr;
             osg::Transform* transform = nullptr;
             osg::Switch* selection = nullptr;
+            osg::LOD* lod = nullptr;
+            osg::LOD::RangeMode lodMode = osg::LOD::DISTANCE_FROM_EYE_POINT;
+            osg::LOD::RangeList lodRanges;
+            float lodFallbackRange = 0.0f;
             osg::Geometry* geometry = nullptr;
             SceneUtil::RenderMutationSource* transformSource = nullptr;
             std::uint64_t transformRevision = 0;
@@ -307,8 +369,23 @@ namespace MWRender
             if (mNodes.size() >= 512 || path.size() >= 64
                 || std::find(path.begin(), path.end(), &node) != path.end()) return reject("hierarchy limit");
             const auto& type = typeid(node);
+            // NIF particle simulation stays in OpenMW's update-only world.
+            // Its authored hierarchy edge is still guarded by the retained
+            // parent's child list; particle draws are captured separately.
+            if (Misc::environmentFlag<"OPENMW_VK_SPLIT_PARTICLE_CAPTURE">()
+                && (type == typeid(NifOsg::Emitter) || type == typeid(osgParticle::ModularProgram)
+                    || type == typeid(osgParticle::ParticleSystemUpdater)
+                    || type == typeid(NifOsg::ParticleSystem)))
+            {
+                if (node.asGroup() && node.asGroup()->getNumChildren() != 0)
+                    return reject("particle infrastructure has unexpected children");
+                if (type == typeid(NifOsg::ParticleSystem)) mHasIntrinsicParticles = true;
+                return true;
+            }
             if (type != typeid(osg::Node) && type != typeid(osg::Group) && type != typeid(osg::Geode)
                 && type != typeid(osg::Geometry) && type != typeid(osg::Switch)
+                && !(type == typeid(osg::LOD)
+                    && Misc::environmentFlag<"OPENMW_VK_PERSISTENT_EVALUATED_LOD">())
                 && type != typeid(osg::MatrixTransform) && type != typeid(NifOsg::MatrixTransform)
                 && type != typeid(SceneUtil::Skeleton)
                 && type != typeid(osg::PositionAttitudeTransform)
@@ -320,6 +397,15 @@ namespace MWRender
             b.transformSource = dynamic_cast<SceneUtil::RenderMutationSource*>(&node);
             if (b.transformSource) b.transformSource->watchRenderMutations();
             b.selection = dynamic_cast<osg::Switch*>(&node);
+            b.lod = dynamic_cast<osg::LOD*>(&node);
+            if (b.lod)
+            {
+                b.lodMode = b.lod->getRangeMode();
+                b.lodRanges = b.lod->getRangeList();
+                if (b.lodMode == osg::LOD::PIXEL_SIZE_ON_SCREEN)
+                    for (const auto& range : b.lodRanges)
+                        b.lodFallbackRange = std::max(b.lodFallbackRange, range.first);
+            }
             b.geometry = dynamic_cast<osg::Geometry*>(&node);
             b.callbackHead = node.getUpdateCallback(); b.state = node.getStateSet();
             if (b.state && b.state->requiresUpdateTraversal()) return reject("state update callback");
@@ -344,6 +430,11 @@ namespace MWRender
         const std::size_t mBudget;
         std::size_t mCharged = 0, mDrawCount = 0;
         bool mSupported = false;
+        bool mHasIntrinsicParticles = false;
+        bool mChangeDriven = false, mPublished = false, mEnvironmentPreLight = false;
+        osg::Node::NodeMask mRootMask = 0;
+        std::shared_ptr<SceneUtil::RenderMutationSource::Subscription> mSubscription;
+        std::shared_ptr<RenderCore::PersistentDrawOwner> mOwner;
         std::string mFallback;
         std::string mPrefix;
         std::vector<Binding> mNodes;

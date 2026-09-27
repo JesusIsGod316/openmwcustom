@@ -99,9 +99,10 @@ namespace RenderCore
     class RenderWorldPublisher final
     {
     public:
-        explicit RenderWorldPublisher(RenderWorld& world)
+        explicit RenderWorldPublisher(RenderWorld& world, bool chunkTransactions = false)
             : mWorld(world)
             , mObservedEpoch(world.epoch())
+            , mChunkTransactions(chunkTransactions)
         {
         }
 
@@ -130,6 +131,30 @@ namespace RenderCore
                 // correctness baseline and may be replaced by an undo-log/COW commit
                 // without changing the batch contract before high-volume CP3C use.
                 const bool fullValidation = std::getenv("OPENMW_V4_FULL_WORLD_PUBLICATION") != nullptr;
+                if (mChunkTransactions && !fullValidation && !batch.operations().empty()
+                    && std::ranges::all_of(batch.operations(), [](const auto& op) {
+                        return std::holds_alternative<UpdateChunk>(op);
+                    }))
+                {
+                    std::vector<std::pair<ChunkHandle, ChunkRecord>> replacements;
+                    replacements.reserve(batch.operations().size());
+                    bool repeated = false;
+                    for (const auto& operation : batch.operations())
+                    {
+                        const auto& update = std::get<UpdateChunk>(operation);
+                        if (std::ranges::any_of(replacements, [&](const auto& entry) {
+                            return entry.first == update.handle;
+                        })) { repeated = true; break; }
+                        replacements.emplace_back(update.handle, update.record);
+                    }
+                    if (!repeated)
+                    {
+                        if (!mWorld.updateChunksAtomically(std::move(replacements)))
+                            return PublishStatus::OperationRejected;
+                        mLastSequence = batch.sequence();
+                        return PublishStatus::Applied;
+                    }
+                }
                 // Light records own no heap data or cross-resource handles.
                 // Their validated single-operation commit is already atomic:
                 // validation/revision/handle checks precede a no-throw move.
@@ -221,6 +246,7 @@ namespace RenderCore
 
         RenderWorld& mWorld;
         WorldEpoch mObservedEpoch;
+        bool mChunkTransactions = false;
         UpdateSequence mLastSequence;
     };
 }

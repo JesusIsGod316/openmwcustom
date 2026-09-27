@@ -38,6 +38,13 @@ namespace RenderCore
         std::uint32_t slot = 0;
         bool operator==(const PersistentDrawHandle&) const = default;
     };
+    // One update-thread liveness marker per producer, not per node or draw.
+    // Immutable submitted frames deliberately do not hold this mutable marker.
+    struct PersistentDrawOwner
+    {
+        std::uint64_t stream = 0, capture = 0;
+        bool invalidated = true;
+    };
     struct PersistentDrawEntry
     {
         PersistentDrawHandle handle;
@@ -92,9 +99,15 @@ namespace RenderCore
             if (epoch != mEpoch)
             {
                 mEpoch = epoch; mStream = ++sStream; mPages.clear(); mSeen.clear();
-                mFree.clear(); mDirty.clear(); mChanges.clear(); mFrame.reset(); mSize = 0;
+                mFree.clear(); mDirty.clear(); mChanges.clear(); mOwners.clear(); mFrame.reset(); mSize = 0;
             }
             ++mCapture;
+        }
+        bool touchOwner(const std::shared_ptr<PersistentDrawOwner>& owner)
+        {
+            const bool current = owner->stream == mStream && !owner->invalidated;
+            owner->stream = mStream; owner->capture = mCapture; owner->invalidated = false;
+            return current;
         }
         const PersistentDrawEntry* get(PersistentDrawHandle handle) const noexcept
         {
@@ -102,7 +115,8 @@ namespace RenderCore
             return handle.stream == mStream && entry && entry->handle == handle ? entry : nullptr;
         }
         // Returns false at the bounded slot limit, permitting object-local fallback.
-        bool update(PersistentDrawHandle& handle, const ImmediateEffectDraw& draw, bool resourceChanged)
+        bool update(PersistentDrawHandle& handle, const ImmediateEffectDraw& draw, bool resourceChanged,
+            const std::shared_ptr<PersistentDrawOwner>& owner = {})
         {
             auto* previous = get(handle);
             if (!semantic_detail::finite(draw.worldTransform))
@@ -117,11 +131,12 @@ namespace RenderCore
                 if (mFree.empty() && mSeen.size() >= mMaximumSlots) return false;
                 const auto slot = mFree.empty() ? static_cast<std::uint32_t>(mSeen.size()) : mFree.back();
                 if (!mFree.empty()) mFree.pop_back();
-                else { mSeen.push_back(0); mDirty.push_back(false); }
+                else { mSeen.push_back(0); mDirty.push_back(false); mOwners.emplace_back(); }
                 handle = {mStream, ++mGeneration, slot};
                 resourceChanged = true;
             }
             mSeen[handle.slot] = mCapture;
+            mOwners[handle.slot] = owner;
             if (!resourceChanged && previous->visible && previous->transform == draw.worldTransform) return true;
             auto entry = std::make_shared<PersistentDrawEntry>();
             entry->handle = handle; entry->transform = draw.worldTransform;
@@ -143,12 +158,16 @@ namespace RenderCore
         void remove(PersistentDrawHandle handle)
         {
             if (!get(handle)) return;
+            if (mOwners[handle.slot]) mOwners[handle.slot]->invalidated = true;
+            mOwners[handle.slot].reset();
             assign(handle.slot, {}); mFree.push_back(handle.slot); --mSize;
         }
         std::shared_ptr<const PersistentDrawFrame> finish()
         {
             for (std::uint32_t slot = 0; slot < mSeen.size(); ++slot)
-                if (const auto* entry = at(slot); entry && mSeen[slot] != mCapture) remove(entry->handle);
+                if (const auto* entry = at(slot); entry && (mOwners[slot]
+                        ? mOwners[slot]->capture != mCapture : mSeen[slot] != mCapture))
+                    remove(entry->handle);
             if (mChanges.empty() && mFrame) return mFrame;
             auto frame = std::make_shared<PersistentDrawFrame>();
             frame->mStream = mStream; frame->mSize = mSize;
@@ -176,6 +195,7 @@ namespace RenderCore
         std::uint64_t mStream = ++sStream, mEpoch = 0, mCapture = 0, mGeneration = 0;
         std::vector<std::shared_ptr<PersistentDrawFrame::Page>> mPages;
         std::vector<std::uint64_t> mSeen;
+        std::vector<std::shared_ptr<PersistentDrawOwner>> mOwners;
         std::vector<bool> mDirty;
         std::vector<std::uint32_t> mFree, mChanges;
         std::shared_ptr<const PersistentDrawFrame> mFrame;

@@ -18,10 +18,12 @@
 #include <initializer_list>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace Debug::RuntimeDiagnostics
 {
@@ -103,6 +105,12 @@ namespace Debug::RuntimeDiagnostics
             return true;
         }
         std::size_t size() const noexcept { return mSize; }
+        bool pushBatch(std::span<const Record> records) noexcept
+        {
+            if (records.size() > N - mSize) return false;
+            for (const auto& record : records) push(record);
+            return true;
+        }
     private:
         std::array<Record, N> mRecords{};
         std::size_t mRead = 0, mSize = 0;
@@ -189,6 +197,16 @@ namespace Debug::RuntimeDiagnostics
             mStopping.store(true, std::memory_order_relaxed);
             mWake.notify_one();
             if (mThread.joinable()) mThread.join();
+        }
+        void pushBatch(std::span<const Record> records) noexcept
+        {
+            if (mStopping.load(std::memory_order_relaxed)) { dropped += records.size(); return; }
+            static thread_local const std::size_t shard = mNextShard.fetch_add(1) % QueueShards;
+            auto& queue = (*mQueues)[shard];
+            std::unique_lock lock(queue.mutex, std::try_to_lock);
+            if (!lock.owns_lock() || mStopping.load(std::memory_order_relaxed) || !queue.ring.pushBatch(records))
+                dropped += records.size();
+            mWake.notify_one();
         }
     private:
         struct Shard { std::mutex mutex; Ring<QueueCapacity / QueueShards> ring; };
@@ -277,6 +295,37 @@ namespace Debug::RuntimeDiagnostics
         }();
         return instance.get();
     }
+    // A sparse frame profile must be enqueued atomically: individually dropped
+    // totals would turn loss into a plausible but incomplete accounting tree.
+    // Fixed upper bound, reusable scratch, try-lock only; overflow loses an
+    // entire sample rather than ever blocking rendering or dropping one child.
+    inline thread_local std::vector<Record>* legacyBatch = nullptr;
+    struct ScopedLegacyBatch
+    {
+        std::vector<Record>* records = nullptr;
+        ScopedLegacyBatch() noexcept
+        {
+            if (!enabled() || legacyBatch) return;
+            try
+            {
+                static thread_local std::vector<Record> scratch;
+                scratch.reserve(QueueCapacity / QueueShards);
+                scratch.clear();
+                records = &scratch;
+                legacyBatch = records;
+            }
+            catch (...) {}
+        }
+        ~ScopedLegacyBatch()
+        {
+            if (!records) return;
+            legacyBatch = nullptr;
+            if (auto* sink = recorder()) sink->pushBatch(*records);
+            else dropped += records->size();
+        }
+        ScopedLegacyBatch(const ScopedLegacyBatch&) = delete;
+        ScopedLegacyBatch& operator=(const ScopedLegacyBatch&) = delete;
+    };
     using Fields = std::initializer_list<std::pair<std::string_view, std::uint64_t>>;
     inline void recordEvent(std::string_view type, std::string_view owner, std::string_view identity, Fields fields = {}) noexcept
     {
@@ -312,7 +361,10 @@ namespace Debug::RuntimeDiagnostics
         }
         ++attempted;
         if (r.truncated) ++clipped;
-        if (auto* sink = recorder()) sink->push(r); else ++dropped;
+        if (legacyBatch && legacyBatch->size() < QueueCapacity / QueueShards)
+            legacyBatch->push_back(r);
+        else if (auto* sink = recorder()) sink->push(r);
+        else ++dropped;
         producerUs.fetch_add(nowUs() - start, std::memory_order_relaxed);
     }
     class Sampler

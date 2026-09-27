@@ -111,6 +111,64 @@ namespace RenderVsg
             }
         }
 
+        struct IdleBudget
+        {
+            std::size_t versions = 0;
+            std::size_t bytes = 0;
+            std::uint64_t frames = 0;
+        };
+        struct IdleUsage { std::size_t versions = 0, bytes = 0; };
+
+        // Short gaps in an emitter's population must not force every returning
+        // quad through allocation/compilation. Keep only completed idle versions
+        // within explicit age/count/estimated-byte limits. In-flight and active
+        // resources retain the original fence/ring policy; retention never
+        // marks a disappeared resource selected or submits it for drawing.
+        // A zero cost declares the object ineligible for idle retention.
+        template<class Cost>
+        IdleUsage collectUnused(IdleBudget budget, Cost&& cost)
+        {
+            if (!mPreparedFrame)
+                throw std::invalid_argument("idle collection requires a prepared frame");
+            struct Candidate { Version* version; std::size_t bytes; };
+            std::vector<Candidate> candidates;
+            for (auto& [identity, versions] : mObjects)
+            {
+                const bool active = std::any_of(versions.begin(), versions.end(),
+                    [](const Version& version) { return version.selected; });
+                for (auto& version : versions)
+                {
+                    version.retainedIdle = false;
+                    if (active || !writable(version) || !version.lastUse
+                        || mPreparedFrame->value() - version.lastUse->value() > budget.frames) continue;
+                    const auto bytes = cost(std::as_const(version.object));
+                    if (bytes && bytes <= budget.bytes) candidates.push_back({&version, bytes});
+                }
+            }
+            std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
+                return a.version->lastUse > b.version->lastUse;
+            });
+            IdleUsage usage;
+            for (const auto& candidate : candidates)
+                if (usage.versions < budget.versions && candidate.bytes <= budget.bytes - usage.bytes)
+                {
+                    candidate.version->retainedIdle = true;
+                    ++usage.versions;
+                    usage.bytes += candidate.bytes;
+                }
+            for (auto it = mObjects.begin(); it != mObjects.end();)
+            {
+                auto& versions = it->second;
+                if (std::none_of(versions.begin(), versions.end(), [](const Version& version) { return version.selected; }))
+                    std::erase_if(versions, [&](const Version& version) {
+                        return writable(version) && !version.retainedIdle;
+                    });
+                if (versions.empty()) it = mObjects.erase(it);
+                else ++it;
+            }
+            return usage;
+        }
+
         [[nodiscard]] bool markSubmitted(RenderCore::FrameId frame) noexcept
         {
             if (!mPreparedFrame || frame != *mPreparedFrame || (mLastSubmitted && frame <= *mLastSubmitted))
@@ -148,6 +206,7 @@ namespace RenderVsg
             Object object{};
             std::optional<RenderCore::FrameId> lastUse;
             bool selected = false;
+            bool retainedIdle = false;
         };
 
         [[nodiscard]] bool writable(const Version& version) const noexcept

@@ -147,6 +147,17 @@ if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
         vsgXchange::vsgXchange)
     target_compile_features(openmw-v4-vulkan-runtime PUBLIC cxx_std_20)
 
+    # Read-only real-effect conformance tool; never loads saves or starts a game.
+    add_executable(openmw-vulkan-fx-conformance EXCLUDE_FROM_ALL
+        ${CMAKE_SOURCE_DIR}/tools/vulkanmw/tests/fx-conformance.cpp)
+    target_include_directories(openmw-vulkan-fx-conformance PRIVATE ${CMAKE_SOURCE_DIR})
+    target_link_libraries(openmw-vulkan-fx-conformance PRIVATE components vsg::vsg)
+    target_compile_features(openmw-vulkan-fx-conformance PRIVATE cxx_std_20)
+
+    add_executable(openmw-vulkan-fx-render-tests EXCLUDE_FROM_ALL
+        ${CMAKE_SOURCE_DIR}/tools/vulkanmw/tests/fx-native-render-tests.cpp)
+    target_link_libraries(openmw-vulkan-fx-render-tests PRIVATE openmw-v4-vulkan-runtime)
+
     target_sources(openmw-lib PRIVATE ${OPENMW_V4_ENGINE_RUNTIME_SOURCES})
     # openmw-lib uses CMake's plain target_link_libraries signature below.
     # Mixing the keyword and plain signatures is rejected at configure time.
@@ -359,7 +370,8 @@ if (OPENMW_V4_BUILD_RECOVERY_TESTS)
     add_test(NAME openmw-v4-rendering-view-features-tests COMMAND openmw-v4-rendering-view-features-tests)
     # Headless Vulkan pixel suite: compile on Windows, execute only on an explicitly
     # provisioned Vulkan host. It creates no gameplay window and reads no assets/saves.
-    add_executable(openmw-v4-rendering-pixel-tests ../../tools/v4/cp4/rendering-pixel-tests.cpp)
+    add_executable(openmw-v4-rendering-pixel-tests ../../tools/v4/cp4/rendering-pixel-tests.cpp
+        ../../tools/v4/cp4/authored-material-fixture.cpp)
     target_link_libraries(openmw-v4-rendering-pixel-tests PRIVATE openmw-lib)
     foreach(pressure_case host-memory cache-pressure)
         add_executable(openmw-v4-${pressure_case}-tests ../../tools/v4/cp4/${pressure_case}-tests.cpp)

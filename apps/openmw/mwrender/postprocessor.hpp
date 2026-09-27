@@ -18,6 +18,7 @@
 #include <components/debug/debuglog.hpp>
 #include <components/fx/stateupdater.hpp>
 #include <components/fx/technique.hpp>
+#include <components/fx/nativeplan.hpp>
 #include <components/misc/strings/algorithm.hpp>
 
 #include "pingpongcanvas.hpp"
@@ -182,6 +183,9 @@ namespace MWRender
         TechniqueList getChain();
 
         bool isEnabled() const { return mUsePostProcessing; }
+        bool hasNativeFrontend() const noexcept { return mNativeBackend; }
+
+        std::shared_ptr<const Fx::NativeFrame> prepareNativeFrame(double simulationTime, double delta);
 
         void disable();
 
@@ -250,6 +254,10 @@ namespace MWRender
         bool mReload = true;
         bool mTriggerShaderReload = false;
         bool mUsePostProcessing = false;
+        bool mNativeBackend = false;
+        std::uint64_t mNativeGeneration = 1;
+        std::shared_ptr<const Fx::NativeChain> mNativeChain;
+        TechniqueList mNativeSources;
 
         bool mUBO = false;
         bool mHDR = false;

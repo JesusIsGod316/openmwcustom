@@ -1,6 +1,7 @@
 // Actual OSG state/geometry capture and neutral frame publication. No GPU or game.
 #include <apps/openmw/mwrender/v4skycapture.hpp>
 #include <apps/openmw/mwrender/v4effectcapture.hpp>
+#include <apps/openmw/mwrender/v4animatedobjectcapture.hpp>
 #include <apps/openmw/mwrender/v4objectcaptureplan.hpp>
 #include <apps/openmw/mwrender/v4persistentobject.hpp>
 #include <components/sceneutil/nodecallback.hpp>
@@ -13,6 +14,7 @@
 #include <cstring>
 #include <chrono>
 #include <osg/Group>
+#include <osg/LOD>
 #include <osg/MatrixTransform>
 #include <osg/Switch>
 #include <functional>
@@ -81,6 +83,17 @@ namespace
         void changed() { publishRenderMutation(); }
         void operator()(osg::Node* node, osg::NodeVisitor* visitor) { traverse(node, visitor); }
     };
+    struct ScopedFlag
+    {
+        explicit ScopedFlag(const char* key) : name(key)
+        {
+            if (const char* value = std::getenv(name)) original = value;
+        }
+        ~ScopedFlag() { _putenv_s(name, original ? original->c_str() : ""); }
+        void set(const char* value) const { _putenv_s(name, value); }
+        const char* name;
+        std::optional<std::string> original;
+    };
 }
 int main()
 {
@@ -100,6 +113,100 @@ int main()
         require(control.valid() && control.draws.size()==1,"control capture");
         require(control.draws[0].meshData().positions==again->draws[0].meshData().positions,"position parity");
         require(control.draws[0].worldTransform==again->draws[0].worldTransform,"transform parity");
+    });
+    test("opt-in evaluated LOD retains only the active source branch", [] {
+        Scene s;
+        ScopedFlag lodFlag("OPENMW_VK_PERSISTENT_EVALUATED_LOD");
+        osg::ref_ptr<osg::LOD> lod = new osg::LOD;
+        auto nearMesh = geometry();
+        auto farMesh = geometry();
+        lod->addChild(nearMesh, 0.0f, 10.0f);
+        lod->addChild(farMesh, 10.0f, 100.0f);
+        s.root->addChild(lod);
+        lodFlag.set("");
+        MWRender::V4PersistentObject control(*s.root);
+        require(!control.supported() && control.fallbackReason() == "node:LOD", "LOD control path changed");
+        lodFlag.set("1");
+        struct Counter final : osg::NodeVisitor
+        {
+            Counter() : osg::NodeVisitor(TRAVERSE_ACTIVE_CHILDREN) {}
+            void apply(osg::Geometry&) override { ++count; }
+            unsigned count = 0;
+        };
+        Counter expected;
+        s.root->accept(expected);
+        MWRender::V4PersistentObject producer(*s.root);
+        auto first = producer.publish("lod", s.vfs, s.identities);
+        auto again = producer.publish("lod", s.vfs, s.identities);
+        require(first && again && first->valid() && again->valid()
+            && first->draws.size() == expected.count && expected.count == 1,
+            "retained LOD differs from evaluated active traversal");
+        require(producer.geometryBuilds == 1 && producer.reusedDraws == 1
+            && first->draws[0].meshSnapshot == again->draws[0].meshSnapshot,
+            "LOD geometry recaptured after a stable frame");
+        lod->setRange(0, 10.0f, 100.0f);
+        require(!producer.publish("lod", s.vfs, s.identities), "unannounced LOD range mutation was ignored");
+        lod->setRangeMode(osg::LOD::PIXEL_SIZE_ON_SCREEN);
+        Counter pixelExpected;
+        s.root->accept(pixelExpected);
+        MWRender::V4PersistentObject pixelProducer(*s.root);
+        auto pixel = pixelProducer.publish("pixel-lod", s.vfs, s.identities);
+        require(pixel && pixel->valid() && pixel->draws.size() == pixelExpected.count,
+            "pixel-size LOD fallback selection differs from evaluated traversal");
+    });
+    test("intrinsic particles retain static geometry without losing evaluated effects", [] {
+        Scene s;
+        ScopedFlag splitFlag("OPENMW_VK_SPLIT_PARTICLE_CAPTURE");
+        s.root->addChild(geometry());
+        osg::ref_ptr<NifOsg::Emitter> emitter = new NifOsg::Emitter;
+        osg::ref_ptr<osgParticle::ModularProgram> program = new osgParticle::ModularProgram;
+        osg::ref_ptr<osgParticle::ParticleSystemUpdater> updater = new osgParticle::ParticleSystemUpdater;
+        osg::ref_ptr<NifOsg::ParticleSystem> particles = new NifOsg::ParticleSystem;
+        auto* particle = particles->createParticle(nullptr);
+        require(particle && particle->isAlive(), "particle fixture did not start alive");
+        particle->setPosition({1,2,3});
+        emitter->setParticleSystem(particles);
+        program->setParticleSystem(particles);
+        updater->addParticleSystem(particles);
+        s.root->addChild(emitter);
+        s.root->addChild(program);
+        s.root->addChild(updater);
+        s.root->addChild(particles);
+        splitFlag.set("");
+        MWRender::V4PersistentObject control(*s.root);
+        require(!control.supported() && control.fallbackReason() == "node:Emitter",
+            "particle control path changed");
+        splitFlag.set("1");
+        MWRender::V4PersistentObject retained(*s.root);
+        require(retained.supported() && retained.hasIntrinsicParticles(), "known NIF particle hierarchy not split");
+        auto first = retained.publish("mixed", s.vfs, s.identities);
+        auto second = retained.publish("mixed", s.vfs, s.identities);
+        require(first && second && first->valid() && second->valid() && first->draws.size()==1
+            && second->draws.size()==1 && first->draws[0].meshSnapshot==second->draws[0].meshSnapshot
+            && retained.geometryBuilds==1 && retained.reusedDraws==1, "ordinary body was not retained");
+        using Visitor = MWRender::V4AnimatedObjectCaptureVisitor;
+        Visitor whole("mixed", s.vfs, &s.identities);
+        s.root->accept(whole);
+        auto expected = whole.take();
+        Visitor split("mixed", s.vfs, &s.identities, Visitor::Mode::ParticlesOnly);
+        s.root->accept(split);
+        auto live = split.take();
+        require(expected.valid() && live.valid() && expected.draws.size()==2 && live.draws.size()==1,
+            "split path dropped or duplicated evaluated particles");
+        require(expected.draws[1].identity==live.draws[0].identity
+            && expected.draws[1].meshData().positions==live.draws[0].meshData().positions
+            && expected.draws[1].worldTransform==live.draws[0].worldTransform,
+            "particle identity or geometry differs from whole-object capture");
+        particle->setPosition({4,5,6});
+        Visitor advanced("mixed", s.vfs, &s.identities, Visitor::Mode::ParticlesOnly);
+        s.root->accept(advanced);
+        auto next = advanced.take();
+        require(next.valid() && next.draws.size()==1
+            && next.draws[0].worldTransform!=live.draws[0].worldTransform,
+            "live particle update was frozen by static retention");
+        s.root->removeChild(particles);
+        require(!retained.publish("mixed", s.vfs, s.identities),
+            "particle attachment replacement bypassed fallback");
     });
     test("native movement and inherited transforms do not rebuild geometry", [] {
         Scene s;osg::ref_ptr<NifOsg::MatrixTransform> parent=new NifOsg::MatrixTransform;
@@ -196,6 +303,47 @@ int main()
         require(!bounded.publish("uv-budget",s.vfs,s.identities),"over-budget UV growth did not use fallback");
         require(MWRender::V4PersistentObject::retainedBytes()==baseline,"fallback retained producer lease");
         require(retained->valid() && retained->draws[0].meshData().texCoordSets.size()==1,"fallback invalidated old frame");
+    });
+    test("engine owned NIF publication skips clean inspection and preserves updates and retirement", [] {
+        ScopedFlag driven("OPENMW_VK_CHANGE_DRIVEN_OBJECTS"), textures("OPENMW_V4_LOAD_BOUND_TEXTURES");
+        driven.set("1"); textures.set("1");
+        Scene s;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root = new SceneUtil::PositionAttitudeTransform;
+        auto g=geometry(); root->addChild(g);
+        auto* state=g->getOrCreateStateSet(); state->setTextureAttribute(0,texture());
+        osg::ref_ptr<osg::TexMat> texmat=new osg::TexMat; state->setTextureAttribute(0,texmat);
+        osg::ref_ptr<TrackedCallback> callback=new TrackedCallback; g->setUpdateCallback(callback);
+        MWRender::V4PersistentObject producer(*root,64u*1024u*1024u,true);
+        RenderCore::PersistentDrawWorld world;
+        world.begin(1);
+        require(producer.publish("events",s.vfs,s.identities,&world).has_value(),"initial event publication");
+        auto before=world.finish();
+        for(unsigned i=0;i<100;++i)
+        {
+            world.begin(1); auto result=producer.publish("events",s.vfs,s.identities,&world);
+            require(result && result->valid() && world.finish()==before,"clean owner rebuilt or disappeared");
+        }
+        require(producer.cleanPublications==100 && producer.bindingInspections==0,"clean bindings inspected");
+        root->setPosition(osg::Vec3f(4,5,6));
+        world.begin(1); producer.publish("events",s.vfs,s.identities,&world); auto moved=world.finish();
+        require(moved->get(0)->transform[3].x==4 && before->get(0)->transform[3].x==0,"root movement lost");
+        texmat->setMatrix(osg::Matrix::translate(0.5,0.25,0)); callback->changed();
+        world.begin(1); producer.publish("events",s.vfs,s.identities,&world); auto updated=world.finish();
+        require(updated->get(0)->resource->draw().meshData().texCoordSets[0][0]==glm::vec2(.5f,.25f),"UV event lost");
+        root->setNodeMask(0); world.begin(1); producer.publish("events",s.vfs,s.identities,&world);
+        require(!world.finish()->get(0)->visible,"root visibility lost");
+        root->setNodeMask(~0u); world.begin(1); producer.publish("events",s.vfs,s.identities,&world);
+        require(world.finish()->get(0)->visible,"root unhide lost");
+        world.begin(1); require(world.finish()->size()==0,"disabled owner retained");
+        world.begin(1); producer.publish("events",s.vfs,s.identities,&world);
+        require(world.finish()->size()==1,"reenabled owner not republished");
+        world.begin(2); producer.publish("events",s.vfs,s.identities,&world);
+        require(world.finish()->size()==1,"new world lost persistent object");
+        // Engine topology setters invalidate before removing/replacing bindings.
+        producer.invalidate("engine attachment replacement"); root->removeChild(g);
+        world.begin(2);
+        require(!producer.publish("events",s.vfs,s.identities,&world),"invalidated producer accepted");
+        require(world.finish()->size()==0 && before->size()==1,"retirement changed submitted frame");
     });
     test("untracked custom controllers and replaced bindings use compatibility fallback", [] {
         Scene s;s.root->addChild(geometry());s.root->setUpdateCallback(new Callback);

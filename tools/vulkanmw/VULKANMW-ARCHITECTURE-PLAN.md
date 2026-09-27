@@ -1,6 +1,6 @@
 # VulkanMW Native Renderer Architecture Plan
 
-Status: Phase 3C in progress; performance-led sequencing update 2026-09-26
+Status: Phase 3C in progress; work/plan audit and execution gates updated 2026-09-27
 Project: VulkanMW
 Repository: JesusIsGod316/openmwcustom
 Foundation branch: vulkanmw/phase0-foundation
@@ -10,6 +10,32 @@ Donor/reference: vsgopenmw-dev/vsgopenmw
 Date: 2026-09-25
 
 ## Current sequencing decision — 2026-09-26
+
+### Audit correction — 2026-09-27
+
+The focused work/source/evidence audit is in
+`tools/vulkanmw/WORK-AND-PLAN-AUDIT-20260927.md`. Its execution gates take
+precedence over feature-completion sequencing below. No new runtime acceptance
+is granted by this documentation update.
+
+- Maintain one settings-isolated, cumulative candidate. Later admission and
+  specular cohorts omitted the measured publication trio; they establish local
+  comparisons, not an integrated progression or additive gains.
+- Prioritize removal of recurring producer inspection, CPU actor deformation/
+  stream updates, and dominant-graph recording cost. Existing independent-view
+  recording is not parallel recording within the main graph. Use a bounded
+  CPU/driver attribution step before choosing its replacement.
+- Place per-view eligibility before expensive render preparation where bounds
+  permit; preserve gameplay, other views and conservative fallbacks.
+- Treat postfx normal/distortion placeholders, blending rejection, convention
+  gaps and chain bypass as incomplete compatibility. Tests of shader execution
+  are not complete F2/Rafael or scene-equivalence validation.
+- Gate the next broad user-facing repair on a combined, repeated whole-frame
+  improvement and representative visuals/interaction/streaming/private-save
+  checks. Stop using a phase number, OSG coverage count or isolated GPU saving
+  as the success metric. Preserve controls and failed-experiment evidence.
+
+### Retained sequencing principles
 
 The user has clarified that phases are dependency/coverage milestones, not a
 mandatory serial schedule. The outcome is correct, mod/save-compatible Vulkan
@@ -55,7 +81,15 @@ OpenMW game/mod semantics
 -> direct VSG/Vulkan realization and delta updates
 -> Vulkan
 
-The RenderWorld/FrameRenderState layer is retained. It is not the source of the observed fourfold frame-cost gap. The expensive debt is primarily the producer side: deriving renderer semantics from an already-evaluated OSG scene, repeatedly capturing dynamic geometry/material state, CPU-deforming actors, and continuing an OSG update-only scene while VSG owns presentation.
+The RenderWorld/FrameRenderState contracts are retained, but their implementations
+are subject to the same performance scrutiny as producers and the backend. The
+publication repair measured substantial cost in neutral-world publication and
+consumer inventory maintenance. General transactions still copy the world.
+Producer capture, CPU actor deformation, OSG updates, command recording and GPU
+passes all contribute; no single layer has been exonerated or proven to explain
+the entire gap. Historical cross-backend ratios also require effective-quality
+qualification. Preserve semantic separation while removing repeated inspection,
+copying, duplication and synchronization wherever current evidence locates it.
 
 Core rule:
 

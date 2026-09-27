@@ -53,16 +53,19 @@ namespace RenderCore
     };
 
     // Stages independently addressable gameplay objects, then publishes one
-    // immutable, model-grouped transform payload per exterior cell. The staging
+    // immutable, model-grouped transform payload per exterior cell (control) or
+    // per cell/model group. A moved object then rebuilds only its own model's
+    // placements, not every building/tree in the cell. The staging
     // map is source-side bookkeeping; RenderWorld and the backend never allocate
     // one authoritative InstanceRecord/VSG node per placement.
     class StaticPopulationProducer final
     {
     public:
-        StaticPopulationProducer(RenderWorld& world, RenderWorldPublisher& publisher)
+        StaticPopulationProducer(RenderWorld& world, RenderWorldPublisher& publisher, bool groupPublication = false)
             : mWorld(world)
             , mPublisher(publisher)
             , mEpoch(world.epoch())
+            , mGroupPublication(groupPublication)
         {
         }
 
@@ -84,9 +87,7 @@ namespace RenderCore
             std::string identity = source.identity;
             mCells.emplace(std::move(identity), Cell{
                                                     .source = std::move(source),
-                                                    .instances = {},
-                                                    .handle = std::nullopt,
-                                                    .dirty = false,
+                                                    .groups = {},
                                                 });
             return StaticPopulationPublishStatus::Applied;
         }
@@ -100,22 +101,32 @@ namespace RenderCore
             if (cell == mCells.end())
                 return StaticPopulationPublishStatus::InvalidSource;
 
+            const std::uint64_t groupKey = mGroupPublication ? modelKey(source.model) : 0;
             const auto owner = mOwners.find(source.identity);
-            if (owner != mOwners.end() && owner->second != source.cellIdentity)
+            if (owner != mOwners.end())
             {
-                const auto previous = mCells.find(owner->second);
-                if (previous == mCells.end() || previous->second.instances.erase(source.identity) != 1)
+                const auto previous = mCells.find(owner->second.cell);
+                if (previous == mCells.end())
                     return StaticPopulationPublishStatus::PublishRejected;
-                previous->second.dirty = true;
+                const auto group = previous->second.groups.find(owner->second.group);
+                if (group == previous->second.groups.end())
+                    return StaticPopulationPublishStatus::PublishRejected;
+                const auto existing = group->second.instances.find(source.identity);
+                if (existing == group->second.instances.end())
+                    return StaticPopulationPublishStatus::PublishRejected;
+                if (equivalent(existing->second, source))
+                    return StaticPopulationPublishStatus::AlreadyPresent;
+                if (owner->second.cell != source.cellIdentity || owner->second.group != groupKey)
+                {
+                    group->second.instances.erase(existing);
+                    group->second.dirty = true;
+                }
             }
-            const bool unchanged = owner != mOwners.end() && owner->second == source.cellIdentity
-                && cell->second.instances.contains(source.identity) && equivalent(cell->second.instances.at(source.identity), source);
-            if (unchanged)
-                return StaticPopulationPublishStatus::AlreadyPresent;
             std::string sourceIdentity = source.identity;
-            cell->second.instances.insert_or_assign(sourceIdentity, std::move(source));
-            mOwners.insert_or_assign(std::move(sourceIdentity), cell->first);
-            cell->second.dirty = true;
+            Group& group = cell->second.groups[groupKey];
+            group.instances.insert_or_assign(sourceIdentity, std::move(source));
+            mOwners.insert_or_assign(std::move(sourceIdentity), Owner{cell->first, groupKey});
+            group.dirty = true;
             return StaticPopulationPublishStatus::Applied;
         }
 
@@ -125,14 +136,17 @@ namespace RenderCore
             const auto owner = mOwners.find(identity);
             if (owner == mOwners.end())
                 return StaticPopulationPublishStatus::AlreadyPresent;
-            const auto cell = mCells.find(owner->second);
+            const auto cell = mCells.find(owner->second.cell);
             if (cell == mCells.end())
                 return StaticPopulationPublishStatus::PublishRejected;
-            const auto instance = cell->second.instances.find(identity);
-            if (instance == cell->second.instances.end())
+            const auto group = cell->second.groups.find(owner->second.group);
+            if (group == cell->second.groups.end())
                 return StaticPopulationPublishStatus::PublishRejected;
-            cell->second.instances.erase(instance);
-            cell->second.dirty = true;
+            const auto instance = group->second.instances.find(identity);
+            if (instance == group->second.instances.end())
+                return StaticPopulationPublishStatus::PublishRejected;
+            group->second.instances.erase(instance);
+            group->second.dirty = true;
             mOwners.erase(owner);
             return StaticPopulationPublishStatus::Applied;
         }
@@ -143,18 +157,24 @@ namespace RenderCore
             const auto cell = mCells.find(identity);
             if (cell == mCells.end())
                 return StaticPopulationPublishStatus::AlreadyPresent;
-            if (cell->second.handle)
+            const bool published = std::ranges::any_of(cell->second.groups,
+                [](const auto& entry) { return entry.second.handle.has_value(); });
+            if (published)
             {
                 RenderWorldUpdateBatch batch(mWorld.epoch(), mPublisher.nextSequence(), cell->first);
                 if (!batch.sequence().valid())
                     return StaticPopulationPublishStatus::SequenceExhausted;
-                if (!batch.add(RetireChunk{ *cell->second.handle }) || !batch.seal())
+                for (const auto& [key, group] : cell->second.groups)
+                    if (group.handle && !batch.add(RetireChunk{*group.handle}))
+                        return StaticPopulationPublishStatus::BatchBuildFailed;
+                if (!batch.seal())
                     return StaticPopulationPublishStatus::BatchBuildFailed;
                 if (mPublisher.apply(batch) != PublishStatus::Applied)
                     return StaticPopulationPublishStatus::PublishRejected;
             }
-            for (const auto& [sourceIdentity, source] : cell->second.instances)
-                mOwners.erase(sourceIdentity);
+            for (const auto& [key, group] : cell->second.groups)
+                for (const auto& [sourceIdentity, source] : group.instances)
+                    mOwners.erase(sourceIdentity);
             mCells.erase(cell);
             return StaticPopulationPublishStatus::Applied;
         }
@@ -162,8 +182,9 @@ namespace RenderCore
         [[nodiscard]] StaticPopulationPublishStatus flush()
         {
             synchronizeEpoch();
-            std::vector<std::pair<Cell*, ChunkHandle>> creations;
-            for (auto& [identity, cell] : mCells)
+            std::vector<std::pair<Group*, ChunkHandle>> creations;
+            for (auto& [identity, sourceCell] : mCells)
+            for (auto& [key, cell] : sourceCell.groups)
             {
                 if (cell.dirty && cell.instances.empty() && !cell.handle)
                 {
@@ -189,7 +210,8 @@ namespace RenderCore
             }
             RenderWorldUpdateBatch batch(mWorld.epoch(), sequence, "static-populations");
             bool changed = false;
-            for (auto& [identity, cell] : mCells)
+            for (auto& [identity, sourceCell] : mCells)
+            for (auto& [key, cell] : sourceCell.groups)
             {
                 if (!cell.dirty)
                     continue;
@@ -208,7 +230,9 @@ namespace RenderCore
                 }
 
                 ChunkHandle handle = cell.handle.value_or(findCreation(creations, cell));
-                ChunkRecord record = makeRecord(cell);
+                ChunkRecord record = makeRecord(sourceCell.source, cell);
+                if (mGroupPublication)
+                    record.producerIdentity += ":model:" + std::to_string(key);
                 changed = true;
                 if (cell.handle)
                 {
@@ -236,6 +260,10 @@ namespace RenderCore
             if (!changed)
             {
                 cancel(creations);
+                for (auto& [identity, cell] : mCells)
+                    std::erase_if(cell.groups, [](const auto& entry) {
+                        return entry.second.instances.empty() && !entry.second.handle;
+                    });
                 return StaticPopulationPublishStatus::AlreadyPresent;
             }
             if (!batch.seal())
@@ -250,11 +278,17 @@ namespace RenderCore
             }
             for (auto& [cell, handle] : creations)
                 cell->handle = handle;
-            for (auto& [identity, cell] : mCells)
+            for (auto& [identity, sourceCell] : mCells)
             {
-                if (cell.dirty && cell.instances.empty())
-                    cell.handle.reset();
-                cell.dirty = false;
+                for (auto& [key, cell] : sourceCell.groups)
+                {
+                    if (cell.dirty && cell.instances.empty())
+                        cell.handle.reset();
+                    cell.dirty = false;
+                }
+                std::erase_if(sourceCell.groups, [](const auto& entry) {
+                    return entry.second.instances.empty() && !entry.second.handle;
+                });
             }
             return StaticPopulationPublishStatus::Applied;
         }
@@ -266,12 +300,21 @@ namespace RenderCore
         }
 
     private:
-        struct Cell
+        struct Group
         {
-            StaticPopulationCellSource source;
             std::map<std::string, StaticPopulationInstanceSource, std::less<>> instances;
             std::optional<ChunkHandle> handle;
             bool dirty = false;
+        };
+        struct Cell
+        {
+            StaticPopulationCellSource source;
+            std::map<std::uint64_t, Group> groups;
+        };
+        struct Owner
+        {
+            std::string cell;
+            std::uint64_t group;
         };
 
         [[nodiscard]] static bool valid(const StaticPopulationCellSource& source) noexcept
@@ -317,7 +360,7 @@ namespace RenderCore
             return (static_cast<std::uint64_t>(handle.generation()) << 32u) | handle.slot();
         }
 
-        [[nodiscard]] static ChunkRecord makeRecord(const Cell& cell)
+        [[nodiscard]] static ChunkRecord makeRecord(const StaticPopulationCellSource& sourceCell, const Group& cell)
         {
             std::map<std::uint64_t, ModelPopulationRecord> groups;
             AxisAlignedBounds bounds;
@@ -328,7 +371,7 @@ namespace RenderCore
                 ModelPopulationRecord& group = groups[modelKey(source.model)];
                 group.model = source.model;
                 std::uint64_t semanticFlags = source.semanticFlags;
-                if (cell.source.groundcover)
+                if (sourceCell.groundcover)
                     semanticFlags |= semanticFlag(InstanceSemanticFlag::Groundcover);
                 group.instances.push_back({ .sourceIdentity = identity,
                     .transform = source.transform,
@@ -357,26 +400,26 @@ namespace RenderCore
                 payload->groups.push_back(std::move(group));
 
             ChunkRecord record;
-            record.producerIdentity = "population:" + cell.source.identity;
-            record.worldspaceIdentity = cell.source.worldspaceIdentity;
+            record.producerIdentity = "population:" + sourceCell.identity;
+            record.worldspaceIdentity = sourceCell.worldspaceIdentity;
             record.bounds = bounds;
-            record.kind = cell.source.groundcover ? ChunkRecord::Kind::Groundcover : ChunkRecord::Kind::StaticPopulation;
-            record.gridX = cell.source.gridX;
-            record.gridY = cell.source.gridY;
+            record.kind = sourceCell.groundcover ? ChunkRecord::Kind::Groundcover : ChunkRecord::Kind::StaticPopulation;
+            record.gridX = sourceCell.gridX;
+            record.gridY = sourceCell.gridY;
             record.population = std::move(payload);
-            if (cell.source.groundcover)
+            if (sourceCell.groundcover)
                 record.semanticFlags |= semanticFlag(InstanceSemanticFlag::Groundcover);
             return record;
         }
 
         [[nodiscard]] static ChunkHandle findCreation(
-            const std::vector<std::pair<Cell*, ChunkHandle>>& creations, const Cell& cell) noexcept
+            const std::vector<std::pair<Group*, ChunkHandle>>& creations, const Group& cell) noexcept
         {
             const auto found = std::ranges::find_if(creations, [&](const auto& entry) { return entry.first == &cell; });
             return found == creations.end() ? ChunkHandle{} : found->second;
         }
 
-        void cancel(const std::vector<std::pair<Cell*, ChunkHandle>>& creations) noexcept
+        void cancel(const std::vector<std::pair<Group*, ChunkHandle>>& creations) noexcept
         {
             for (const auto& [cell, handle] : creations)
                 static_cast<void>(mWorld.cancel(handle));
@@ -394,8 +437,9 @@ namespace RenderCore
         RenderWorld& mWorld;
         RenderWorldPublisher& mPublisher;
         WorldEpoch mEpoch;
+        bool mGroupPublication = false;
         std::map<std::string, Cell, std::less<>> mCells;
-        std::map<std::string, std::string, std::less<>> mOwners;
+        std::map<std::string, Owner, std::less<>> mOwners;
     };
 }
 

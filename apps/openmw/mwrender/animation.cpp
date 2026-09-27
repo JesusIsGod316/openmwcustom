@@ -799,6 +799,9 @@ namespace MWRender
         {
             SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);
             mObjectRoot->accept(assignVisitor);
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+            mV4ControllerClockAssigned = true;
+#endif
         }
     }
 
@@ -1030,6 +1033,9 @@ namespace MWRender
             {
                 SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);
                 mObjectRoot->accept(assignVisitor);
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+                mV4ControllerClockAssigned = true;
+#endif
             }
         }
 
@@ -1509,6 +1515,9 @@ namespace MWRender
 
     void Animation::resetActiveGroups()
     {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4PersistentObject.reset();
+#endif
         // remove all previous external controllers from the scene graph
         for (auto it = mActiveControllers.begin(); it != mActiveControllers.end(); ++it)
         {
@@ -2132,10 +2141,15 @@ namespace MWRender
         mV4SourceModel = VFS::Path::toNormalized(model);
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
         mV4PersistentObject.reset();
+        mV4ObjectCaptureAdmission.reset();
 #endif
 
         mNodeMap.clear();
         mNodeMapCreated = false;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4ControllerClockAssigned = false;
+        ++mV4ObjectRootRevision;
+#endif
         mActiveControllers.clear();
         mAccumRoot = nullptr;
         mAccumCtrl = nullptr;
@@ -2280,6 +2294,9 @@ namespace MWRender
 
     void Animation::addSpellCastGlow(const osg::Vec4f& color, float glowDuration)
     {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4PersistentObject.reset();
+#endif
         if (!mGlowUpdater || (mGlowUpdater->isDone() || (mGlowUpdater->isPermanentGlowUpdater() == true)))
         {
             if (mGlowUpdater && mGlowUpdater->isDone())
@@ -2297,6 +2314,9 @@ namespace MWRender
 
     void Animation::addExtraLight(osg::ref_ptr<osg::Group> parent, const SceneUtil::LightCommon& esmLight)
     {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4PersistentObject.reset();
+#endif
         bool exterior = mPtr.isInCell() && mPtr.getCell()->getCell()->isExterior();
 
         mExtraLightSource = SceneUtil::addLight(parent, esmLight, Mask_Lighting, exterior);
@@ -2447,6 +2467,9 @@ namespace MWRender
         // We can use a bool flag to check in spellcasting effect found.
         if (!mHasMagicEffects)
             return;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4PersistentObject.reset();
+#endif
 
         // TODO: objects without animation still will have
         // transformation nodes with finished callbacks
@@ -2482,6 +2505,9 @@ namespace MWRender
     {
         if ((alpha == mAlpha && actorFade == mActorFade) || !mObjectRoot)
             return;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mV4PersistentObject.reset();
+#endif
         mAlpha = alpha;
         mActorFade = actorFade;
 
@@ -2507,6 +2533,9 @@ namespace MWRender
 
     void Animation::setLightEffect(float effect)
     {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        if (effect != 0 || mGlowLight) mV4PersistentObject.reset();
+#endif
         if (effect == 0)
         {
             if (mGlowLight)
@@ -2731,6 +2760,55 @@ namespace MWRender
     }
 
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+    bool Animation::captureV4ObjectControllerClock(std::optional<float>& time, std::string& diagnostic) const
+    {
+        time.reset();
+        if (hasV4EffectAttachments() || hasV4DynamicLightAttachments() || hasV4TransparencyOverride())
+        {
+            diagnostic = "skeletal object has engine visual overrides";
+            return false;
+        }
+        for (const auto& [node, callback] : mActiveControllers)
+            if (!dynamic_cast<const NifOsg::KeyframeController*>(callback.get())
+                && !dynamic_cast<const NifAnimBlendController*>(callback.get())
+                && !dynamic_cast<const ResetAccumRootCallback*>(callback.get()))
+            {
+                diagnostic = "skeletal object has an unsupported external callback";
+                return false;
+            }
+        if (mV4ControllerClockAssigned)
+        {
+            const auto selected = mAnimationTimePtr[0]->getTimePtr();
+            time = selected ? *selected : 0.0f;
+        }
+        return true;
+    }
+
+    bool Animation::seedV4ObjectNodeTransforms(const std::vector<std::string>& names,
+        const std::vector<bool>& required, std::vector<glm::mat4>& matrices, std::string& diagnostic) const
+    {
+        if (names.size() != required.size() || matrices.size() != names.size()) return false;
+        const auto& nodes = getNodeMap();
+        for (std::size_t i = 0; i < names.size(); ++i)
+        {
+            const auto found = nodes.find(names[i]);
+            const auto* node = found == nodes.end() ? nullptr : dynamic_cast<const NifOsg::MatrixTransform*>(found->second.get());
+            if (!node)
+            {
+                // Only immutable identity groups may be absent. Where a matrix
+                // does exist, seed it even without active tracks: stopped KF
+                // controllers can leave channel values behind.
+                if (!required[i] && found == nodes.end()) continue;
+                diagnostic = "skeletal object cannot seed authored NIF node: " + names[i];
+                return false;
+            }
+            const auto& matrix = node->getMatrix();
+            for (int c = 0; c < 4; ++c)
+                for (int r = 0; r < 4; ++r) matrices[i][c][r] = static_cast<float>(matrix(c,r));
+        }
+        return true;
+    }
+
     bool Animation::captureV4NativeAnimationState(
         V4NativeAnimationState& state, std::string& diagnostic) const
     {
@@ -2829,7 +2907,9 @@ namespace MWRender
         // The NIF loader and engine controllers own the supported mutation contract.
         if (Misc::environmentFlag<"OPENMW_V4_NATIVE_OBJECT_PRODUCERS">()
             && mInsert && mV4SourceModel.value().ends_with(".nif") && !mV4PersistentObject)
-            mV4PersistentObject = std::make_unique<V4PersistentObject>(*mInsert);
+            mV4PersistentObject = std::make_unique<V4PersistentObject>(*mInsert, 64u * 1024u * 1024u,
+                typeid(*this) == typeid(ObjectAnimation) && !hasV4EffectAttachments()
+                    && !hasV4DynamicLightAttachments() && !hasV4TransparencyOverride());
         return mV4PersistentObject.get();
     }
 #endif
@@ -2839,6 +2919,9 @@ namespace MWRender
         const MWWorld::ContainerStore& store = ptr.getClass().getContainerStore(ptr);
         if (!store.hasVisibleItems())
         {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+            mV4PersistentObject.reset();
+#endif
             HarvestVisitor visitor;
             mObjectRoot->accept(visitor);
         }

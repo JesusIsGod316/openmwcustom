@@ -302,6 +302,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update input
         {
             ScopedProfile<UserStatsType::Input> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::GameplayDiagnostics::ProfileScope profileInput("input");
             mInputManager->update(frametime, false);
         }
 
@@ -311,6 +312,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // https://github.com/MyGUI/mygui/issues/21)
         {
             ScopedProfile<UserStatsType::Sound> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::GameplayDiagnostics::ProfileScope profileSound("sound");
 
             if (!mWindowManager->isWindowVisible())
             {
@@ -327,6 +329,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 
         {
             ScopedProfile<UserStatsType::LuaSyncUpdate> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::GameplayDiagnostics::ProfileScope profileLua("lua_synchronized_update");
             // Should be called after input manager update and before any change to the game world.
             // It applies to the game world queued changes from the previous frame.
             mLuaManager->synchronizedUpdate();
@@ -335,6 +338,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update game state
         {
             ScopedProfile<UserStatsType::State> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::GameplayDiagnostics::ProfileScope profileState("game_state_update");
             mStateManager->update(frametime);
         }
 
@@ -342,6 +346,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 
         {
             ScopedProfile<UserStatsType::Script> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::GameplayDiagnostics::ProfileScope profileScripts("legacy_scripts");
 
             if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
             {
@@ -411,6 +416,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update GUI
         {
             ScopedProfile<UserStatsType::Gui> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::GameplayDiagnostics::ProfileScope profileGui("gui_update");
             mWindowManager->update(frametime);
         }
     }
@@ -421,6 +427,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 
     {
         Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(Debug::V3HitchTelemetry::FrameTailStage::PreViewer);
+        Debug::GameplayDiagnostics::ProfileScope profilePreViewer("pre_viewer");
         const bool reportResource = stats->collectStats("resource");
 
         if (reportResource)
@@ -924,7 +931,10 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 #endif
         }
         else
+        {
+            Debug::GameplayDiagnostics::ProfileScope profileOpenGl("opengl_render_traversal");
             mViewer->renderingTraversals();
+        }
     }
 
     {
