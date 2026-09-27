@@ -73,6 +73,7 @@ namespace SceneUtil
         float mNear = 0.f;
         float mFar = 0.f;
         float mWindSpeed = 0.f;
+        osg::Vec4f mGroundcoverWindCoefficients{};
         float mSkyBlendingStartCoef = 0.f;
         osg::Vec3f mPlayerPos;
         osg::Vec2f mScreenRes;
