@@ -38,6 +38,7 @@ FLAGS = {
     'placement-frustum': 'OPENMW_VK_PLACEMENT_FRUSTUM',
     'particle-slots': 'OPENMW_VK_RETAIN_PARTICLE_SLOTS',
     'change-driven': 'OPENMW_VK_CHANGE_DRIVEN_OBJECTS',
+    'queues': 'OPENMW_VK_PRODUCER_DIRTY_QUEUES',
     'shadow-record': 'OPENMW_VK_PARALLEL_SHADOW_RECORD',
     # Process-local diagnostic, not a renderer repair or a global RTSS change.
     'no-overlay': 'DISABLE_RTSS_LAYER',

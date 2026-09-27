@@ -345,6 +345,86 @@ int main()
         require(!producer.publish("events",s.vfs,s.identities,&world),"invalidated producer accepted");
         require(world.finish()->size()==0 && before->size()==1,"retirement changed submitted frame");
     });
+    test("producer queue consumes deltas and retires without clean object visits", [] {
+        ScopedFlag driven("OPENMW_VK_CHANGE_DRIVEN_OBJECTS"), textures("OPENMW_V4_LOAD_BOUND_TEXTURES");
+        driven.set("1"); textures.set("1");
+        Scene s;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root = new SceneUtil::PositionAttitudeTransform;
+        auto g = geometry(); root->addChild(g);
+        auto* state = g->getOrCreateStateSet(); state->setTextureAttribute(0, texture());
+        osg::ref_ptr<osg::TexMat> texmat = new osg::TexMat; state->setTextureAttribute(0, texmat);
+        osg::ref_ptr<TrackedCallback> callback = new TrackedCallback; g->setUpdateCallback(callback);
+        Misc::ProducerQueue queue;
+        auto ticket = queue.add();
+        const std::weak_ptr<Misc::ProducerQueue::Ticket> weak = ticket;
+        auto wake = [weak] { if (auto live = weak.lock()) live->notify(); };
+        auto producer = std::make_unique<MWRender::V4PersistentObject>(*root, 64u*1024u*1024u, true, wake);
+        require(producer->eventDriven(), "owned tracked NIF fixture not queued");
+        RenderCore::PersistentDrawWorld world(2);
+        unsigned visits = 0;
+        auto frame = [&](std::uint64_t epoch = 1) {
+            world.begin(epoch);
+            for (const auto& change : queue.take())
+            {
+                if (!queue.valid(change.token)) continue;
+                ++visits;
+                const auto result = producer->publish("queue-fixture", s.vfs, s.identities, &world);
+                require(result && result->valid(), "queued publication failed");
+            }
+            return world.finish();
+        };
+        auto initial = frame(); require(initial->size() == 1, "queued seed missing");
+        for (unsigned i=0; i<1000; ++i) require(frame() == initial, "clean object or frame rebuilt");
+        require(visits == 1 && producer->cleanPublications == 0 && producer->bindingInspections == 0,
+            "clean object reached inspection or publication");
+        root->setPosition({4,5,6}); root->setScale({2,2,2});
+        auto moved = frame(); require(visits == 2, "engine deltas not coalesced");
+        require(moved->get(0)->transform[3].x == 4 && moved->get(0)->transform[0][0] == 2,
+            "queued movement/scale lost");
+        require(initial->get(0)->transform[3].x == 0, "movement mutated old frame");
+        root->setNodeMask(0); auto hidden = frame();
+        require(!hidden->get(0)->visible, "hidden root not queued");
+        texmat->setMatrix(osg::Matrix::translate(.5,.25,0)); callback->changed();
+        frame(); root->setNodeMask(~0u); auto shown = frame();
+        require(shown->get(0)->visible
+            && shown->get(0)->resource->draw().meshData().texCoordSets[0][0] == glm::vec2(.5f,.25f),
+            "hidden UV delta lost when shown");
+        // A new consumer/world requires a one-off replay, not polling forever.
+        queue.invalidateAll(); auto rebuilt = frame(2);
+        require(rebuilt->size() == 1 && rebuilt->stream() != shown->stream(), "epoch replay missing");
+        // Removed sources publish invalidation before any stale binding is used.
+        callback->mask = SceneUtil::RenderUntracked; callback->changed();
+        world.begin(2); require(queue.take().size() == 1, "unknown mutation did not queue");
+        require(!producer->publish("queue-fixture", s.vfs, s.identities, &world), "unknown mutation accepted");
+        require(world.finish()->size() == 0 && rebuilt->size() == 1, "fallback retirement lost snapshot safety");
+        ticket->cancel(); producer.reset();
+        auto newTicket = queue.add();
+        const std::weak_ptr<Misc::ProducerQueue::Ticket> newWeak = newTicket;
+        callback->mask = SceneUtil::RenderMaterial | SceneUtil::RenderTexCoords;
+        producer = std::make_unique<MWRender::V4PersistentObject>(*root, 64u*1024u*1024u, true,
+            [newWeak] { if (auto live = newWeak.lock()) live->notify(); });
+        auto reloaded = frame(2); require(reloaded->size() == 1, "unload/reload lost new owner");
+        ticket->notify(); require(queue.take().empty(), "stale generation queued replacement");
+        newTicket->cancel(); producer.reset(); world.begin(2);
+        require(world.finish()->size() == 0 && reloaded->size() == 1, "destruction retained live slot or freed old frame");
+    });
+    test("unnotified raw OSG transforms never join dirty-only scheduling", [] {
+        ScopedFlag driven("OPENMW_VK_CHANGE_DRIVEN_OBJECTS"), textures("OPENMW_V4_LOAD_BOUND_TEXTURES");
+        driven.set("1"); textures.set("1");
+        Scene s;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root = new SceneUtil::PositionAttitudeTransform;
+        osg::ref_ptr<osg::MatrixTransform> raw = new osg::MatrixTransform;
+        raw->addChild(geometry()); root->addChild(raw);
+        unsigned wakes = 0;
+        MWRender::V4PersistentObject producer(*root,64u*1024u*1024u,true,[&]{++wakes;});
+        require(!producer.eventDriven() && !producer.queueFallbackReason().empty(), "raw OSG setter trusted");
+        const auto first = producer.publish("raw",s.vfs,s.identities);
+        raw->setMatrix(osg::Matrix::translate(9,0,0));
+        const auto changed = producer.publish("raw",s.vfs,s.identities);
+        require(first && changed && changed->draws[0].worldTransform[3].x == 9,
+            "guarded raw transform fallback lost movement");
+        require(wakes == 0, "unsupported transform accidentally subscribed to queue");
+    });
     test("untracked custom controllers and replaced bindings use compatibility fallback", [] {
         Scene s;s.root->addChild(geometry());s.root->setUpdateCallback(new Callback);
         MWRender::V4PersistentObject unknown(*s.root);

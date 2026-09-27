@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <memory>
+#include <cstdint>
 #include <set>
 #include <string>
 
@@ -39,6 +41,9 @@ namespace MWRender
 {
 
     class Animation;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+    class V4ObjectQueue;
+#endif
 
     class PtrHolder : public osg::Object
     {
@@ -88,6 +93,11 @@ namespace MWRender
         SceneUtil::UnrefQueue& mUnrefQueue;
 
         void insertBegin(const MWWorld::Ptr& ptr);
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        mutable std::unique_ptr<V4ObjectQueue> mV4ObjectQueue;
+        void registerV4Animation(Animation& animation);
+        void unregisterV4Animation(Animation& animation);
+#endif
 
     public:
         Objects(Resource::ResourceSystem* resourceSystem, const osg::ref_ptr<osg::Group>& rootNode,
@@ -104,6 +114,11 @@ namespace MWRender
         const Animation* getAnimation(const MWWorld::ConstPtr& ptr) const;
 
         void forEachAnimation(const std::function<void(Animation&)>& visitor) const;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        void forEachV4Animation(const std::function<void(Animation&)>& visitor,
+            std::uint64_t stream, bool preLight) const;
+        void invalidateV4Producers();
+#endif
 
         bool removeObject(const MWWorld::Ptr& ptr);
         ///< \return found?

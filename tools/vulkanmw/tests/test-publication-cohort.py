@@ -63,6 +63,15 @@ class CohortTests(unittest.TestCase):
         self.assertEqual(cohort.selected('change-driven+shadow-record'), {
             'OPENMW_VK_CHANGE_DRIVEN_OBJECTS': '1', 'OPENMW_VK_PARALLEL_SHADOW_RECORD': '1'})
 
+    def test_producer_queue_arm_is_independent(self):
+        base = 'groups+transactions+inventories+actors+admission+change-driven'
+        control = cohort.selected(base)
+        candidate = cohort.selected(base + '+queues')
+        self.assertEqual(candidate, control | {'OPENMW_VK_PRODUCER_DIRTY_QUEUES': '1'})
+        self.assertNotIn('OPENMW_VK_PRODUCER_DIRTY_QUEUES', control)
+        self.assertNotIn('OPENMW_VK_PARALLEL_SHADOW_RECORD', candidate)
+        self.assertNotIn('OPENMW_VK_TILED_LIGHTS', candidate)
+
     def test_overlay_diagnostic_is_explicit_and_process_local(self):
         parent = {'PATH': 'unchanged', 'DISABLE_RTSS_LAYER': '1'}
         child, removed = cohort.profile.environment(parent, cohort.selected('actors'))

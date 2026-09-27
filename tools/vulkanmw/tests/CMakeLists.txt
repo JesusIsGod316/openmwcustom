@@ -3,6 +3,7 @@ project(VulkanMWPhase3CMetadataTests LANGUAGES CXX)
 
 find_package(glm CONFIG REQUIRED)
 enable_testing()
+find_package(Threads REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME vulkanmw-isolated-profile
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-vulkan-profile.py)
@@ -10,6 +11,8 @@ add_test(NAME vulkanmw-frame-profile-report
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-frame-profile-report.py)
 add_test(NAME vulkanmw-phase3c-benchmark-control
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-benchmark-control.py)
+add_test(NAME vulkanmw-producer-launcher
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-producer-launcher.py)
 add_test(NAME vulkanmw-publication-cohort
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-publication-cohort.py)
 add_executable(vulkanmw-phase3c-metadata-tests phase3c-metadata-tests.cpp)
@@ -23,7 +26,7 @@ else()
 endif()
 add_test(NAME vulkanmw-phase3c-metadata COMMAND vulkanmw-phase3c-metadata-tests)
 
-foreach(name IN ITEMS population-delta actor-preparation skeletal-object frame-profile group-publication fx-interface frame-resource-pool change-driven)
+foreach(name IN ITEMS population-delta actor-preparation skeletal-object frame-profile group-publication fx-interface frame-resource-pool change-driven producer-queue)
     if(name STREQUAL "actor-preparation")
         set(source "../../v4/cp4/actor-preparation-tests.cpp")
     elseif(name STREQUAL "skeletal-object")
@@ -38,13 +41,15 @@ foreach(name IN ITEMS population-delta actor-preparation skeletal-object frame-p
         set(source "frame-resource-pool-tests.cpp")
     elseif(name STREQUAL "change-driven")
         set(source "change-driven-tests.cpp")
+    elseif(name STREQUAL "producer-queue")
+        set(source "producer-queue-tests.cpp")
     else()
         set(source "population-delta-tests.cpp")
     endif()
     add_executable(vulkanmw-${name}-tests ${source})
     target_compile_features(vulkanmw-${name}-tests PRIVATE cxx_std_20)
     target_include_directories(vulkanmw-${name}-tests PRIVATE ../../..)
-    target_link_libraries(vulkanmw-${name}-tests PRIVATE glm::glm)
+    target_link_libraries(vulkanmw-${name}-tests PRIVATE glm::glm Threads::Threads)
     if(MSVC)
         target_compile_definitions(vulkanmw-${name}-tests PRIVATE _CRT_SECURE_NO_WARNINGS)
         target_compile_options(vulkanmw-${name}-tests PRIVATE /W4 /WX /permissive-)

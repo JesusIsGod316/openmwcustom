@@ -1,6 +1,8 @@
 #ifndef OPENMW_SCENEUTIL_RENDERMUTATION_H
 #define OPENMW_SCENEUTIL_RENDERMUTATION_H
 
+#include <atomic>
+#include <functional>
 #include <cstdint>
 #include <algorithm>
 #include <memory>
@@ -25,11 +27,23 @@ namespace SceneUtil
     public:
         // Update-thread subscription. No scene pointers escape to rendering workers.
         // A destroyed source invalidates bindings before they can be dereferenced.
-        struct Subscription { bool changed = true, invalidated = false; };
+        struct Subscription
+        {
+            std::atomic_bool changed{true}, invalidated{false};
+            // Bound once before subscribing; only enqueues an owner token. It
+            // never inspects nodes or invokes rendering during a mutation.
+            std::function<void()> wake;
+            void notify(bool invalid = false) noexcept
+            {
+                changed.store(true, std::memory_order_release);
+                if (invalid) invalidated.store(true, std::memory_order_release);
+                if (wake) wake();
+            }
+        };
         virtual ~RenderMutationSource()
         {
             for (auto& weak : mSubscriptions)
-                if (auto observer = weak.lock()) observer->invalidated = true;
+                if (auto observer = weak.lock()) observer->notify(true);
         }
         void subscribeRenderMutations(const std::shared_ptr<Subscription>& observer)
         {
@@ -54,14 +68,13 @@ namespace SceneUtil
             for (auto& weak : mSubscriptions)
                 if (auto observer = weak.lock())
                 {
-                    observer->changed = true;
-                    observer->invalidated |= (renderMutationMask() & RenderUntracked) != 0;
+                    observer->notify((renderMutationMask() & RenderUntracked) != 0);
                 }
         }
         void invalidateRenderMutationBindings() noexcept
         {
             for (auto& weak : mSubscriptions)
-                if (auto observer = weak.lock()) observer->invalidated = true;
+                if (auto observer = weak.lock()) observer->notify(true);
         }
     private:
         bool mWatched = false;

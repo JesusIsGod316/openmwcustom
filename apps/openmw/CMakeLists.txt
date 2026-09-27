@@ -340,9 +340,24 @@ if (WIN32 AND BUILD_OPENMW)
     if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
         INSTALL(FILES
             ../../tools/vulkanmw/START-VulkanMW-Test.bat
+            ../../tools/vulkanmw/START-VulkanMW-Producer-Test.bat
             ../../tools/v4/cp4/architecture-benchmark.py
             ../../tools/v4/cp4/architecture-benchmark.lua
             DESTINATION ".")
+        # Preserve the source-relative tool layout so isolated profiles work
+        # from installed packages without requiring a Git checkout.
+        INSTALL(FILES
+            ../../tools/vulkanmw/run-producer-queues.py
+            ../../tools/vulkanmw/run-publication-cohort.py
+            ../../tools/vulkanmw/vulkan-profile.py
+            ../../tools/vulkanmw/vulkan-clean-settings.cfg
+            ../../tools/vulkanmw/frame-profile-report.py
+            DESTINATION "tools/vulkanmw")
+        INSTALL(FILES
+            ../../tools/v4/cp4/architecture-benchmark.lua
+            ../../tools/v4/cp4/gameplay-diagnostics.py
+            ../../tools/v4/cp4/diagnosticconfig.py
+            DESTINATION "tools/v4/cp4")
     endif()
 endif()
 

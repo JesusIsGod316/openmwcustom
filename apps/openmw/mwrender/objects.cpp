@@ -1,4 +1,7 @@
 #include "objects.hpp"
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+#include "v4objectqueue.hpp"
+#endif
 
 #include <osg/Group>
 #include <osg/UserDataContainer>
@@ -6,6 +9,7 @@
 #include <components/esm3/loaddoor.hpp>
 #include <components/esm4/loaddoor.hpp>
 #include <components/debug/v32rendererprofiling.hpp>
+#include <components/debug/gameplaydiagnostics.hpp>
 #include <components/misc/resourcehelpers.hpp>
 #include <components/misc/strings/algorithm.hpp>
 #include <components/sceneutil/positionattitudetransform.hpp>
@@ -34,6 +38,11 @@ namespace MWRender
 
     Objects::~Objects()
     {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        if (mV4ObjectQueue)
+            for (const auto& [_, animation] : mObjects) mV4ObjectQueue->remove(*animation);
+        mV4ObjectQueue.reset();
+#endif
         mRestoredObjects.clear();
         mHibernatedCells.clear();
         mObjects.clear();
@@ -107,7 +116,10 @@ namespace MWRender
         osg::ref_ptr<ObjectAnimation> anim(
             new ObjectAnimation(ptr, animationMesh, mResourceSystem, animated, allowLight));
 
-        mObjects.emplace(ptr.mRef, std::move(anim));
+        [[maybe_unused]] const auto inserted = mObjects.emplace(ptr.mRef, std::move(anim));
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        if (inserted.second) registerV4Animation(*inserted.first->second);
+#endif
     }
 
     void Objects::insertCreature(const MWWorld::Ptr& ptr, const std::string& mesh, bool weaponsShields)
@@ -130,7 +142,12 @@ namespace MWRender
             anim = new CreatureAnimation(ptr, animationMesh, mResourceSystem, animated);
 
         if (mObjects.emplace(ptr.mRef, anim).second)
+        {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+            registerV4Animation(*anim);
+#endif
             ptr.getClass().getContainerStore(ptr).setContListener(static_cast<ActorAnimation*>(anim.get()));
+        }
     }
 
     void Objects::insertNPC(const MWWorld::Ptr& ptr)
@@ -143,6 +160,9 @@ namespace MWRender
             osg::ref_ptr<ESM4NpcAnimation> anim(
                 new ESM4NpcAnimation(ptr, osg::ref_ptr<osg::Group>(ptr.getRefData().getBaseNode()), mResourceSystem));
             mObjects.emplace(ptr.mRef, anim);
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+            registerV4Animation(*anim);
+#endif
         }
         else
         {
@@ -151,6 +171,9 @@ namespace MWRender
 
             if (mObjects.emplace(ptr.mRef, anim).second)
             {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+                registerV4Animation(*anim);
+#endif
                 ptr.getClass().getInventoryStore(ptr).setInvListener(anim.get());
                 ptr.getClass().getInventoryStore(ptr).setContListener(anim.get());
             }
@@ -165,6 +188,9 @@ namespace MWRender
         const auto iter = mObjects.find(ptr.mRef);
         if (iter != mObjects.end())
         {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+            unregisterV4Animation(*iter->second);
+#endif
             iter->second->removeFromScene();
             mUnrefQueue.push(std::move(iter->second));
             mObjects.erase(iter);
@@ -199,6 +225,9 @@ namespace MWRender
                     ptr.getClass().getContainerStore(ptr).setContListener(nullptr);
                 }
 
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+                unregisterV4Animation(*iter->second);
+#endif
                 iter->second->removeFromScene();
                 mUnrefQueue.push(std::move(iter->second));
                 iter = mObjects.erase(iter);
@@ -257,6 +286,9 @@ namespace MWRender
             if (safeStatic)
             {
                 HibernatedObject object;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+                unregisterV4Animation(*iter->second);
+#endif
                 object.mAnimation = std::move(iter->second);
                 object.mBaseNode = ptr.getRefData().getBaseNode();
                 retained.mObjects.emplace(ptr.mRef, std::move(object));
@@ -274,6 +306,9 @@ namespace MWRender
             }
 
             osg::ref_ptr<SceneUtil::PositionAttitudeTransform> baseNode = ptr.getRefData().getBaseNode();
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+            unregisterV4Animation(*iter->second);
+#endif
             iter->second->removeFromScene();
             mUnrefQueue.push(std::move(iter->second));
             iter = mObjects.erase(iter);
@@ -335,7 +370,10 @@ namespace MWRender
             object.mBaseNode->setScale(scaleVec);
 
             ptr.getRefData().setBaseNode(object.mBaseNode);
-            mObjects.emplace(ref, std::move(object.mAnimation));
+            [[maybe_unused]] const auto inserted = mObjects.emplace(ref, std::move(object.mAnimation));
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+            if (inserted.second) registerV4Animation(*inserted.first->second);
+#endif
             mRestoredObjects.insert(ref);
             ++restoredCount;
         }
@@ -442,6 +480,43 @@ namespace MWRender
                 visitor(*animation);
         }
     }
+
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+    void Objects::registerV4Animation(Animation& animation)
+    {
+        if (mV4ObjectQueue) mV4ObjectQueue->add(animation);
+    }
+
+    void Objects::unregisterV4Animation(Animation& animation)
+    {
+        if (mV4ObjectQueue) mV4ObjectQueue->remove(animation);
+    }
+
+    void Objects::invalidateV4Producers()
+    {
+        if (mV4ObjectQueue) mV4ObjectQueue->invalidate();
+    }
+
+    void Objects::forEachV4Animation(const std::function<void(Animation&)>& visitor,
+        std::uint64_t stream, bool preLight) const
+    {
+        if (!mV4ObjectQueue)
+        {
+            auto queue = std::make_unique<V4ObjectQueue>();
+            // One bootstrap inventory walk. Later membership comes exclusively
+            // from insert/remove/hibernate/restore operations above.
+            for (const auto& [_, animation] : mObjects)
+                if (animation) queue->add(*animation);
+            mV4ObjectQueue = std::move(queue);
+        }
+        mV4ObjectQueue->visit(visitor, stream, preLight);
+        if (Debug::GameplayDiagnostics::sampling())
+            Debug::GameplayDiagnostics::recordEvent("producer_queue", {
+                {"registered", std::to_string(mV4ObjectQueue->registered())},
+                {"continuous", std::to_string(mV4ObjectQueue->continuous())},
+                {"visited", std::to_string(mV4ObjectQueue->visited())}});
+    }
+#endif
 
     void Objects::setOcclusionCuller(SceneUtil::OcclusionCuller* culler, float occluderMinRadius,
         float occluderMaxRadius, float occluderShrinkFactor, int occluderMeshResolution, int occluderMaxMeshResolution,
