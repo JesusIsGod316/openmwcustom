@@ -200,7 +200,7 @@ void main(void)
     normalToViewMatrix = gl_NormalMatrix;
 #if @normalMap
 #if @optimizedmwGroundcoverGpuPath >= 1
-    vec4 rotatedTangent = vec4(instanceRotation * gl_MultiTexCoord7.xyz, gl_MultiTexCoord7.w);
+    vec4 rotatedTangent = vec4(gl_MultiTexCoord7.xyz * instanceRotation, gl_MultiTexCoord7.w);
     normalToViewMatrix *= generateTangentSpace(rotatedTangent, passNormal);
 #else
     normalToViewMatrix *= generateTangentSpace(gl_MultiTexCoord7.xyzw * rotation, passNormal);
