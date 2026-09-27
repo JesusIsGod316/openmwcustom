@@ -1,5 +1,7 @@
 #include "stateupdater.hpp"
 
+#include <cmath>
+
 #include <osg/Fog>
 #include <osg/PolygonMode>
 
@@ -86,6 +88,7 @@ namespace SceneUtil
         stateset->addUniform(new osg::Uniform("screenRes", osg::Vec2f{}));
         stateset->addUniform(new osg::Uniform("isReflection", false));
         stateset->addUniform(new osg::Uniform("windSpeed", 0.0f));
+        stateset->addUniform(new osg::Uniform("groundcoverWindCoefficients", osg::Vec4f{}));
         stateset->addUniform(new osg::Uniform("playerPos", osg::Vec3f(0.f, 0.f, 0.f)));
         stateset->addUniform(new osg::Uniform("useTreeAnim", false));
     }
@@ -97,6 +100,7 @@ namespace SceneUtil
         stateset->getUniform("skyBlendingStart")->set(mFar * mSkyBlendingStartCoef);
         stateset->getUniform("screenRes")->set(mScreenRes);
         stateset->getUniform("windSpeed")->set(mWindSpeed);
+        stateset->getUniform("groundcoverWindCoefficients")->set(mGroundcoverWindCoefficients);
         stateset->getUniform("playerPos")->set(mPlayerPos);
     }
 
@@ -118,6 +122,13 @@ namespace SceneUtil
     void SharedUniformStateUpdater::setWindSpeed(float windSpeed)
     {
         mWindSpeed = windSpeed;
+        const float magnitude = std::sqrt(2.f * windSpeed * windSpeed + 1.f);
+        const float displacement = 2.f * windSpeed + 0.1f;
+        mGroundcoverWindCoefficients = osg::Vec4f(
+            (1.f - 0.10f * magnitude) * displacement,
+            (1.f - 0.04f * magnitude) * displacement,
+            (1.f + 0.14f * magnitude) * displacement,
+            (1.f + 0.28f * magnitude) * displacement);
     }
 
     void SharedUniformStateUpdater::setPlayerPos(osg::Vec3f playerPos)
