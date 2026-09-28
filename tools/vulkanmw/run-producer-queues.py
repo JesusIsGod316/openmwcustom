@@ -21,7 +21,10 @@ cohort = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cohort)
 BASE = 'groups+transactions+inventories+actors+admission+change-driven'
 CANDIDATE = BASE + '+queues'
-SUPPORTED_BASE = CANDIDATE
+# Split-particle capture must be identical in both supported-producer arms.
+# Otherwise the candidate cannot ever exercise the supported particle lane and
+# the comparison conflates feature availability with scheduling ownership.
+SUPPORTED_BASE = CANDIDATE + '+particles'
 SUPPORTED_CANDIDATE = SUPPORTED_BASE + '+supported-continuous'
 
 
