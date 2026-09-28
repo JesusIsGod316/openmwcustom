@@ -110,6 +110,7 @@ class ProducerLauncherTests(unittest.TestCase):
         candidate = self.module.cohort.selected(calls[1])
         self.assertEqual(candidate, baseline | {'OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS': '1'})
         self.assertEqual(baseline.get('OPENMW_VK_PRODUCER_DIRTY_QUEUES'), '1')
+        self.assertEqual(baseline.get('OPENMW_VK_SPLIT_PARTICLE_CAPTURE'), '1')
 
     def test_failure_keeps_evidence_and_preserves_normal_data(self):
         self.assertEqual(len(self.run_sequence(failing=True)), 1)
