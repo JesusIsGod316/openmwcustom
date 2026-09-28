@@ -28,6 +28,11 @@ require(queue, 'animation->setV4ProducerDemandDriven(false);', 'exception fail-c
 require(queue, 'mSupportedActors', 'supported actor accounting')
 require(queue, 'mSupportedParticles', 'supported particle accounting')
 require(queue, 'mCompatibilityContinuous', 'compatibility accounting')
+require(queue, 'v4ProducerClassIsSupportedContinuous(producerClass)', 'dedicated supported-continuous lane')
+require(queue, 'genericContinuous()', 'generic fallback-continuous accounting')
+require(queue, 'supportedContinuous()', 'direct supported-continuous accounting')
+require(queue, '!handled.contains(token)', 'dirty supported producer duplicate suppression')
+require(producer, 'v4ProducerClassUsesCompatibilityContinuousQueue', 'compatibility-only generic queue policy')
 
 require(bridge, 'animation.setV4ProducerSupportedActor()', 'actor promotion after successful route')
 require(bridge, 'animation.setV4ProducerSupportedParticle()', 'particle promotion after successful route')
@@ -48,11 +53,14 @@ require(persistent, 'return bodyEventDriven() && !mHasIntrinsicParticles;',
         'particles stay continuous while body can be event-driven')
 require(persistent, '!mSubscription->changed.load', 'body clean reuse checks late mutation race')
 
-for needle in ['"supported_actors"', '"supported_particles"', '"compatibility_continuous"']:
+for needle in ['"supported_actors"', '"supported_particles"', '"compatibility_continuous"',
+               '"generic_continuous"', '"direct_continuous"']:
     require(objects, needle, 'runtime producer class diagnostics')
 
 # Negative guard: supported continuous is not the same thing as demand driven.
 if 'SupportedContinuousActor = DemandDrivenObject' in producer or 'SupportedContinuousParticle = DemandDrivenObject' in producer:
     raise SystemExit('supported continuous producer accidentally aliased to demand-driven scheduling')
+if 'mV4ProducerTicket->continuous(v4ProducerClassIsContinuous' in (ROOT / 'apps/openmw/mwrender/animation.cpp').read_text(encoding='utf-8'):
+    raise SystemExit('supported producers regained generic ProducerQueue continuous membership')
 
 print('supported continuous producer source contract passed')
