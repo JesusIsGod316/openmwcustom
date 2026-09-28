@@ -40,7 +40,7 @@ jobs:
                   text = ''.join((root/f'payload-5-{part}.b64').read_text().strip() for part in range(1,5))
               else:
                   text = (root/f'payload-{i}.b64').read_text().strip()
-              assert hashlib.sha256((text+'\n').encode()).hexdigest() == manifest['chunk_sha256'][i-1], f'chunk {i}'
+              assert hashlib.sha256(text.encode()).hexdigest() == manifest['chunk_sha256'][i-1], f'chunk {i}'
               chunks.append(text)
           payload = base64.b64decode(''.join(chunks), validate=True)
           assert hashlib.sha256(payload).hexdigest() == manifest['payload_sha256']
