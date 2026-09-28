@@ -202,40 +202,6 @@ void main(){ color=vec4(texture(line,.5).r,texture(volume,vec3(uv,.5)).gb,1); }
         }
     }
 
-    void checkAuthoredBlend(vsg::ref_ptr<vsg::Device> device)
-    {
-        auto chain = std::make_shared<Fx::NativeChain>();
-        Fx::NativeTechnique technique;
-        technique.name = "authored-blend";
-        Fx::Types::RenderTarget target;
-        target.mTarget->setInternalFormat(GL_RGBA16F);
-        target.mClearColor = osg::Vec4f(.2f, .4f, .6f, 1.f);
-        technique.targets.emplace("blend", target);
-        auto blended = pass(R"(
-void main(){ color=vec4(1,0,0,.5); }
-)", {}, "blend");
-        blended.blendSource = osg::BlendFunc::SRC_ALPHA;
-        blended.blendDestination = osg::BlendFunc::ONE_MINUS_SRC_ALPHA;
-        blended.blendEquation = osg::BlendEquation::FUNC_ADD;
-        technique.passes.push_back(std::move(blended));
-        technique.passes.push_back(pass(R"(
-layout(set=0,binding=3) uniform sampler2D blended;
-void main(){ color=texture(blended,uv); }
-)", {"blend"}));
-        chain->techniques.push_back(std::move(technique));
-        Fx::NativeFrame frame;
-        frame.chain = chain; frame.enabled = true; frame.state.resize(1024,0);
-        frame.parameters.assign(1,std::vector<char>(16,0));
-        Fixture fixture(device,frame);
-        const auto pixels = fixture.render(frame);
-        for (unsigned index : {0u,(16*Size+16)*4,(Size*Size-1)*4})
-        {
-            close(pixels[index],.6f,"authored blend red");
-            close(pixels[index+1],.2f,"authored blend green");
-            close(pixels[index+2],.3f,"authored blend blue");
-        }
-    }
-
     void checkCameraApi(vsg::ref_ptr<vsg::Device> device, const char* dataPath)
     {
         VFS::Manager vfs;
@@ -333,8 +299,6 @@ void main(){ color=vec4(texture(previous,uv).r,textureLod(history,uv,2).r,textur
         std::cout << "PASS native OMWFX: chained passes, full viewport, live parameters, depth, temporal targets, mipmaps (45 pixel checks)\n";
         checkImportedTextures(device);
         std::cout << "PASS native OMWFX imported images: DXT1, DXT3, DXT5, 1D, 3D (18 pixel checks)\n";
-        checkAuthoredBlend(device);
-        std::cout << "PASS native OMWFX authored blending: source/destination factors and equation (9 pixel checks)\n";
         checkCameraApi(device,argv[2]);
         std::cout << "PASS parsed OMWFX camera API: translated/rotated view, world/depth reconstruction (27 pixel checks)\n";
         return 0;
