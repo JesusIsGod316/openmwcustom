@@ -6,6 +6,7 @@ on:
       - vulkanmw/phase3c-producer-dirty-queues
       - vulkanmw/phase3c-supported-continuous-producers
       - vulkanmw/clockwork-p1-producers-postfx
+      - vulkanmw/clockwork-p1b-postfx-boundary
 permissions:
   contents: read
 concurrency:
@@ -31,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$GITHUB_REF_NAME" in
-            vulkanmw/phase3c-producer-dirty-queues|vulkanmw/phase3c-supported-continuous-producers|vulkanmw/clockwork-p1-producers-postfx) ;;
+            vulkanmw/phase3c-producer-dirty-queues|vulkanmw/phase3c-supported-continuous-producers|vulkanmw/clockwork-p1-producers-postfx|vulkanmw/clockwork-p1b-postfx-boundary) ;;
             *) echo "Unexpected producer branch: $GITHUB_REF_NAME" >&2; exit 1 ;;
           esac
           git merge-base --is-ancestor 348bfe6b087b7c8b83738e12a11a7e10f9e592ef HEAD
@@ -65,6 +66,7 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/vulkanmw-producer-base" 348bfe6b087b7c8b83738e12a11a7e10f9e592ef
           python tools/vulkanmw/check-producer-boundaries.py --baseline "$RUNNER_TEMP/vulkanmw-producer-base" | tee producer-boundary-results.txt
           python tools/vulkanmw/check-producer-queues.py
+          if test -f tools/vulkanmw/check-clockwork-p1-postfx.py; then python tools/vulkanmw/check-clockwork-p1-postfx.py; fi
           python tools/vulkanmw/check-phase1-nif-compiler.py
           python tools/vulkanmw/check-phase2-static-world.py
           python tools/vulkanmw/check-phase3-controller-animation.py
@@ -243,11 +245,13 @@ jobs:
         run: |
           cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c" --target openmw --verbose
           if ($LASTEXITCODE -ne 0) { throw "Production OpenMW build/link failed" }
-      - name: Build production-linked producer capture tests
+      - name: Build production-linked producer and native FX tests
         shell: pwsh
         run: |
           cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c" --target openmw-v4-rendering-capture-tests --verbose
           if ($LASTEXITCODE -ne 0) { throw "Producer capture fixture build failed" }
+          cmake --build "$env:GITHUB_WORKSPACE/build-vulkanmw-phase3c" --target openmw-vulkan-fx-render-tests --verbose
+          if ($LASTEXITCODE -ne 0) { throw "Native Vulkan OMWFX render test build failed" }
       - name: Stage runnable producer queue package
         shell: pwsh
         run: |
