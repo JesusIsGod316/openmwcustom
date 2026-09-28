@@ -16,11 +16,11 @@ jobs:
           fetch-depth: 0
       - name: Receive and verify candidate source
         env:
-          CANDIDATE_URL: 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-7ab0-81f5-bf82-b459640e3558/raw?se=2026-09-28T03%3A43%3A36Z&sp=r&sv=2026-02-06&sr=b&scid=99987a06-e3d9-5c94-afb9-140c5fa3a3a1&skoid=d1cabc79-3240-4866-94fe-6005330cb49e&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-28T00%3A17%3A30Z&ske=2026-09-29T00%3A17%3A30Z&sks=b&skv=2026-02-06&sig=2l%2BdmD44lK2wKkJo4qy8DIoB8ygz8dI/i2Dy6sk3vG4%3D'
+          CANDIDATE_URL: 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-3260-81f5-9e56-15bf4921a0eb/raw?se=2026-09-28T03%3A49%3A42Z&sp=r&sv=2026-02-06&sr=b&scid=6052e50b-2d2d-5b54-819e-10b880c327c0&skoid=d1cabc79-3240-4866-94fe-6005330cb49e&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-28T00%3A15%3A01Z&ske=2026-09-29T00%3A15%3A01Z&sks=b&skv=2026-02-06&sig=65iH9w9WEKws7vGEymx3/6LNWqC1dEVHO1D2M6%2BV3aE%3D'
         run: |
           set -euo pipefail
           curl --fail --retry 2 "$CANDIDATE_URL" -o /tmp/candidate.zip
-          echo '8aad221d007183f900f3d6551ffbaa9059111975ed6af4d1d3d13e77af9281cf  /tmp/candidate.zip' | sha256sum -c -
+          echo '983a8820f4f68817903ee61efff45ce584cbd10bd3e5298b86c281e5d8fe83a3  /tmp/candidate.zip' | sha256sum -c -
           python - <<'PY'
           import zipfile,json,hashlib,pathlib,subprocess
           z=zipfile.ZipFile('/tmp/candidate.zip')
@@ -47,10 +47,19 @@ jobs:
           set -euo pipefail
           for p in 3 4 6 7 8 8g2 8g3; do python tools/optimizedmw/gl-p$p/source-contract.py; done
           git diff --cached --check
+      - name: Validate packaged PowerShell syntax without executing launcher
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          $path = (Resolve-Path 'tools/optimizedmw/gl-p8g3/OptimizedMW_GL-P8G3_Test.ps1').Path
+          $null = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { $errors | Format-List; throw 'Invalid P8G3 launcher syntax' }
       - name: Compile production integration and native tests
         run: |
+          set -o pipefail
           cmake -S tools/optimizedmw/gl-p8g3 -B build-p8g3 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DP8G3_SANITIZERS=ON
-          cmake --build build-p8g3 --parallel 2
+          cmake --build build-p8g3 --parallel 2 2>&1 | tee /tmp/p8g3-build.log
       - name: Native and actual production shader tests
         run: ctest --test-dir build-p8g3 -V --output-on-failure
       - name: Publish only validated production source
@@ -67,9 +76,11 @@ jobs:
         run: |
           mkdir -p /tmp/p8g3-evidence
           cp /tmp/candidate.zip /tmp/p8g3-evidence/ 2>/dev/null || true
+          cp /tmp/p8g3-build.log /tmp/p8g3-evidence/ 2>/dev/null || true
           cp build-p8g3/published-*.txt /tmp/p8g3-evidence/ 2>/dev/null || true
           cp build-p8g3/Testing/Temporary/LastTest.log /tmp/p8g3-evidence/ 2>/dev/null || true
           cp /tmp/manifest.json /tmp/p8g3-evidence/ 2>/dev/null || true
+          cp -r build-p8g3/shader-sources /tmp/p8g3-evidence/ 2>/dev/null || true
           git diff --cached --binary > /tmp/p8g3-evidence/unpublished.patch
           git ls-tree -r HEAD > /tmp/p8g3-evidence/blobs.txt
           tar czf /tmp/p8g3-evidence/source.tar.gz --exclude=.git --exclude=build-p8g3 .
