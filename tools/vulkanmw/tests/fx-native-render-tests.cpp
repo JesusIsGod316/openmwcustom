@@ -142,7 +142,7 @@ void main(){ uv=vec2((gl_VertexIndex<<1)&2,gl_VertexIndex&2);gl_Position=vec4(uv
             texture->setName(name);
             texture->setFilter(osg::Texture::MIN_FILTER, osg::Texture::NEAREST);
             texture->setFilter(osg::Texture::MAG_FILTER, osg::Texture::NEAREST);
-            technique.textures.push_back(texture);
+            technique.textures.push_back(Fx::makeNativeTexture(*texture));
         };
         compressed("dxt1", GL_COMPRESSED_RGB_S3TC_DXT1_EXT, {0,248,0,0,0,0,0,0});
         compressed("dxt3", GL_COMPRESSED_RGBA_S3TC_DXT3_EXT,
@@ -186,7 +186,7 @@ void main(){ color=vec4(texture(dxt1,uv).r,texture(dxt3,uv).a,texture(dxt5,uv).a
         line->setName("line");
         line->setFilter(osg::Texture::MIN_FILTER,osg::Texture::LINEAR);
         auto& plan = chain->techniques.front();
-        plan.textures = {volume,line};
+        plan.textures = {Fx::makeNativeTexture(*volume), Fx::makeNativeTexture(*line)};
         plan.passes = {pass(R"(
 layout(set=0,binding=3) uniform sampler3D volume;
 layout(set=0,binding=4) uniform sampler1D line;
@@ -199,6 +199,40 @@ void main(){ color=vec4(texture(line,.5).r,texture(volume,vec3(uv,.5)).gb,1); }
             close(pixels[index],.2f,"1D image upload");
             close(pixels[index+1],.4f,"3D float green upload");
             close(pixels[index+2],.6f,"3D float blue upload");
+        }
+    }
+
+    void checkAuthoredBlend(vsg::ref_ptr<vsg::Device> device)
+    {
+        auto chain = std::make_shared<Fx::NativeChain>();
+        Fx::NativeTechnique technique;
+        technique.name = "authored-blend";
+        Fx::Types::RenderTarget sourceTarget;
+        sourceTarget.mTarget->setInternalFormat(GL_RGBA16F);
+        sourceTarget.mClearColor = osg::Vec4f(.2f, .4f, .6f, 1.f);
+        technique.targets.emplace("blend", Fx::makeNativeRenderTarget(sourceTarget));
+        auto blended = pass(R"(
+void main(){ color=vec4(1,0,0,.5); }
+)", {}, "blend");
+        blended.blendSource = Fx::NativeBlendFactor::SourceAlpha;
+        blended.blendDestination = Fx::NativeBlendFactor::OneMinusSourceAlpha;
+        blended.blendEquation = Fx::NativeBlendOperation::Add;
+        technique.passes.push_back(std::move(blended));
+        technique.passes.push_back(pass(R"(
+layout(set=0,binding=3) uniform sampler2D blended;
+void main(){ color=texture(blended,uv); }
+)", {"blend"}));
+        chain->techniques.push_back(std::move(technique));
+        Fx::NativeFrame frame;
+        frame.chain = chain; frame.enabled = true; frame.state.resize(1024,0);
+        frame.parameters.assign(1,std::vector<char>(16,0));
+        Fixture fixture(device,frame);
+        const auto pixels = fixture.render(frame);
+        for (unsigned index : {0u,(16*Size+16)*4,(Size*Size-1)*4})
+        {
+            close(pixels[index],.6f,"authored blend red");
+            close(pixels[index+1],.2f,"authored blend green");
+            close(pixels[index+2],.3f,"authored blend blue");
         }
     }
 
@@ -269,7 +303,7 @@ void main(){ color=texture(scene,uv)*factor; }
         history.mTarget->setInternalFormat(GL_RGBA32F);
         history.mTarget->setFilter(osg::Texture::MIN_FILTER,osg::Texture::LINEAR_MIPMAP_LINEAR);
         history.mMipMap = true;
-        second.targets.emplace("history",history);
+        second.targets.emplace("history", Fx::makeNativeRenderTarget(history));
         second.passes.push_back(pass(R"(
 layout(set=0,binding=3) uniform sampler2D history;
 void main(){ color=vec4(textureLod(history,uv,2).r*.5+.1,0,0,1); }
@@ -299,6 +333,8 @@ void main(){ color=vec4(texture(previous,uv).r,textureLod(history,uv,2).r,textur
         std::cout << "PASS native OMWFX: chained passes, full viewport, live parameters, depth, temporal targets, mipmaps (45 pixel checks)\n";
         checkImportedTextures(device);
         std::cout << "PASS native OMWFX imported images: DXT1, DXT3, DXT5, 1D, 3D (18 pixel checks)\n";
+        checkAuthoredBlend(device);
+        std::cout << "PASS native OMWFX authored blending: source/destination factors and equation (9 pixel checks)\n";
         checkCameraApi(device,argv[2]);
         std::cout << "PASS parsed OMWFX camera API: translated/rotated view, world/depth reconstruction (27 pixel checks)\n";
         return 0;
