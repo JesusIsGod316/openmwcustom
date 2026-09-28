@@ -46,6 +46,10 @@ varying vec3 passNormal;
 
 centroid varying vec4 passColor;
 
+#if @optimizedmwGroundcoverLod
+varying float p8g3Coverage;
+#endif
+
 void main()
 {
     Material material = getMaterial();
@@ -59,6 +63,9 @@ void main()
     if (euclideanDepth > @groundcoverFadeStart)
         gl_FragData[0].a *= 1.0-smoothstep(@groundcoverFadeStart, @groundcoverFadeEnd, euclideanDepth);
 
+#if @optimizedmwGroundcoverLod
+    gl_FragData[0].a *= p8g3Coverage;
+#endif
     gl_FragData[0].a = alphaTest(gl_FragData[0].a, alphaRef);
 
 #if @normalMap

@@ -909,6 +909,8 @@ namespace Shader
             { "numViews", "1" },
             { "particle", "0" },
             { "particlePointLighting", "1" },
+            { "optimizedmwGroundcoverFastWind", "0" },
+            { "optimizedmwGroundcoverLod", "0" },
         };
     }
 }

@@ -287,6 +287,11 @@ namespace MWRender
         globalDefines["optimizedmwGroundcoverShadowReceive"]
             = Settings::groundcover().mOptimizedMWShadowReceive ? "1" : "0";
 
+        const int fastWind = Settings::groundcover().mOptimizedMWFastWind;
+        globalDefines["optimizedmwGroundcoverFastWind"] =
+            (fastWind >= 0 ? fastWind != 0 : static_cast<int>(Settings::groundcover().mOptimizedMWGpuPath) >= 2) ? "1" : "0";
+        globalDefines["optimizedmwGroundcoverLod"] = Settings::groundcover().mOptimizedMWDensityLod ? "1" : "0";
+
         globalDefines["reverseZ"] = reverseZ ? "1" : "0";
 
         // It is unnecessary to stop/start the viewer as no frames are being rendered yet.

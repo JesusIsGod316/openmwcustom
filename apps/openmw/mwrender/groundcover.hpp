@@ -2,6 +2,8 @@
 #define OPENMW_MWRENDER_GROUNDCOVER_H
 
 #include <atomic>
+#include <memory>
+#include <thread>
 
 #include <components/esm3/loadcell.hpp>
 #include <components/resource/scenemanager.hpp>
@@ -21,6 +23,7 @@ namespace osg
 namespace SceneUtil
 {
     class OcclusionCuller;
+    namespace GroundcoverBatch { struct Counters; }
 }
 
 namespace MWRender
@@ -72,8 +75,10 @@ namespace MWRender
         osg::ref_ptr<osg::Program> mProgramTemplate;
         const MWWorld::GroundcoverStore& mGroundcoverStore;
         std::atomic_uint64_t mV314CompileQueued{ 0 };
+        std::shared_ptr<SceneUtil::GroundcoverBatch::Counters> mP8G3Counters;
+        const std::thread::id mOwnerThread = std::this_thread::get_id();
 
-        osg::ref_ptr<osg::Node> createChunk(InstanceMap& instances, const osg::Vec2f& center);
+        osg::ref_ptr<osg::Node> createChunk(InstanceMap& instances, const osg::Vec2f& center, bool background);
         void collectInstances(InstanceMap& instances, float size, const osg::Vec2f& center) const;
     };
 }

@@ -9,7 +9,16 @@
 #define GROUNDCOVER
 
 attribute vec4 aOffset;
+#if @optimizedmwGroundcoverLod
+// Rank occupies the previously unused fourth component of slot 7, never a new UV-aliased slot.
+attribute vec4 aRotation;
+varying float p8g3Coverage;
+uniform vec4 p8g3LodParams;
+uniform mat4 projectionMatrix;
+#include "groundcover_lod.glsl"
+#else
 attribute vec3 aRotation;
+#endif
 
 #if @diffuseMap
 varying vec2 diffuseMapUV;
@@ -66,7 +75,7 @@ vec2 groundcoverDisplacement(in vec3 worldpos, float h)
     vec2 harmonics = vec2(0.0);
 
 #if @optimizedmwGroundcoverGpuPath >= 1
-#if @optimizedmwGroundcoverGpuPath >= 2
+#if @optimizedmwGroundcoverFastWind
     // Deliberately visual-risk ceiling probe: keep the largest and finest wind terms.
     harmonics += vec2(groundcoverWindCoefficients.x
         * sin(1.0*osg_SimulationTime + worldpos.xy / 1100.0));
@@ -91,8 +100,10 @@ vec2 groundcoverDisplacement(in vec3 worldpos, float h)
     vec2 displace = vec2(2.0 * windVec + 0.1);
 
     harmonics += vec2((1.0 - 0.10*v) * sin(1.0*osg_SimulationTime + worldpos.xy / 1100.0));
+#if !@optimizedmwGroundcoverFastWind
     harmonics += vec2((1.0 - 0.04*v) * cos(2.0*osg_SimulationTime + worldpos.xy / 750.0));
     harmonics += vec2((1.0 + 0.14*v) * sin(3.0*osg_SimulationTime + worldpos.xy / 500.0));
+#endif
     harmonics += vec2((1.0 + 0.28*v) * sin(5.0*osg_SimulationTime + worldpos.xy / 200.0));
     harmonics *= displace;
 #endif
@@ -164,6 +175,28 @@ void main(void)
     vec3 position = aOffset.xyz;
     float scale = aOffset.w;
 
+#if @optimizedmwGroundcoverLod
+    p8g3Coverage = 1.0;
+    if (p8g3LodParams.x > 0.0)
+    {
+        vec4 baseView = gl_ModelViewMatrix * vec4(position, 1.0);
+        float instanceDistance = length(baseView.xyz);
+        float transformBound = sqrt(dot(gl_ModelViewMatrix[0].xyz, gl_ModelViewMatrix[0].xyz)
+            + dot(gl_ModelViewMatrix[1].xyz, gl_ModelViewMatrix[1].xyz)
+            + dot(gl_ModelViewMatrix[2].xyz, gl_ModelViewMatrix[2].xyz));
+        float projectedRadius = p8g3LodParams.w * transformBound * abs(projectionMatrix[1][1])
+            / max(1.0, instanceDistance);
+        float density = p8g3Density(instanceDistance, projectedRadius, p8g3LodParams.xyz);
+        p8g3Coverage = clamp((density + 0.05 - aRotation.w) / 0.05, 0.0, 1.0);
+        if (p8g3Coverage <= 0.0)
+        {
+            gl_ClipVertex = baseView;
+            gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+        }
+    }
+#endif
+
 #if @optimizedmwGroundcoverGpuPath >= 1
     vec4 instanceBaseViewPos = gl_ModelViewMatrix * vec4(position, 1.0);
     if (dot(instanceBaseViewPos.xyz, instanceBaseViewPos.xyz)
@@ -192,10 +225,10 @@ void main(void)
             0.0,    0.0,   0.0, 1.0);
     }
     else
-        instanceRotation = rotation(aRotation);
+        instanceRotation = rotation(aRotation.xyz);
     mat4 rotation = instanceRotation;
 #else
-    mat4 rotation = rotation(aRotation);
+    mat4 rotation = rotation(aRotation.xyz);
 #endif
     vec4 displacedVertex = rotation * scale * gl_Vertex;
 

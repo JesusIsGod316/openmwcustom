@@ -2,6 +2,13 @@
 
 #include "occlusionculling.hpp"
 
+#include <components/sceneutil/groundcoverbatch.hpp>
+#include <components/sceneutil/prepjobservice.hpp>
+#include <components/misc/constants.hpp>
+
+#include <bit>
+#include <limits>
+
 #include <components/sceneutil/occlusionculling.hpp>
 
 #include <span>
@@ -360,7 +367,7 @@ namespace MWRender
                     << ",0";
                 Debug::V3Diagnostics::renderWriter().writeLine(row.str());
             }
-            osg::ref_ptr<osg::Node> node = createChunk(instances, center);
+            osg::ref_ptr<osg::Node> node = createChunk(instances, center, compile);
 
             const int v314CompileMode = static_cast<int>(Settings::cells().mV314GroundcoverCompileMode);
             const bool v314ShouldCompile = v314CompileMode >= 2 || (v314CompileMode == 1 && compile);
@@ -404,6 +411,14 @@ namespace MWRender
             : osg::ref_ptr<osg::Program>(new osg::Program);
         mProgramTemplate->addBindAttribLocation("aOffset", 6);
         mProgramTemplate->addBindAttribLocation("aRotation", 7);
+        if (Settings::groundcover().mOptimizedMWFrontToBack)
+            SceneUtil::GroundcoverBatch::enableFrontToBack(*mStateset);
+        if (const char* counters = std::getenv("OPENMW_P8G3_STATS"); counters && *counters)
+            mP8G3Counters = std::make_shared<SceneUtil::GroundcoverBatch::Counters>();
+        Log(Debug::Info) << "OptimizedMW P8G3: hierarchy=" << Settings::groundcover().mOptimizedMWHierarchy
+            << " lod=" << Settings::groundcover().mOptimizedMWDensityLod
+            << " front_to_back=" << Settings::groundcover().mOptimizedMWFrontToBack
+            << " fast_wind=" << static_cast<int>(Settings::groundcover().mOptimizedMWFastWind);
     }
 
     Groundcover::~Groundcover() = default;
@@ -480,10 +495,31 @@ namespace MWRender
         }
     }
 
-    osg::ref_ptr<osg::Node> Groundcover::createChunk(InstanceMap& instances, const osg::Vec2f& center)
+    osg::ref_ptr<osg::Node> Groundcover::createChunk(InstanceMap& instances, const osg::Vec2f& center, bool background)
     {
         osg::ref_ptr<osg::Group> group = new osg::Group;
         osg::Vec3f worldCenter = osg::Vec3f(center.x(), center.y(), 0) * ESM::Land::REAL_SIZE;
+        const bool hierarchy = Settings::groundcover().mOptimizedMWHierarchy;
+        const bool densityLod = Settings::groundcover().mOptimizedMWDensityLod;
+        const bool derived = hierarchy || densityLod;
+        SceneUtil::GroundcoverPolicy::Options options;
+        options.minInstances = static_cast<std::size_t>(static_cast<int>(Settings::groundcover().mOptimizedMWMinBatch));
+        options.nearDistance = Settings::groundcover().mOptimizedMWLodNear;
+        options.farDistance = std::max(options.nearDistance + 1.f,
+            static_cast<float>(Settings::groundcover().mOptimizedMWLodFar));
+        std::size_t eligibleModels = 0, fallbackModels = 0, tilesBuilt = 0, eligibleInstances = 0, threadedModels = 0;
+        std::size_t remainingExtraDraws = 32; // Per-chunk ceiling, in addition to the per-template cap.
+        SceneUtil::GroundcoverBatch::OcclusionTest occlusion;
+        if (derived && mV35CoarseChunkOcclusion && mOcclusionCuller)
+        {
+            osg::ref_ptr<SceneUtil::OcclusionCuller> culler = mOcclusionCuller;
+            occlusion = [culler](osgUtil::CullVisitor& cv, const osg::BoundingBox& world, std::uint64_t count) {
+                if (!culler->isFrameActive() || !cv.getCurrentCamera()
+                    || cv.getCurrentCamera()->getName() != Constants::SceneCamera)
+                    return true;
+                return culler->testVisibleCoarseAABB(world, SceneUtil::OcclusionTestCategory::GroundcoverChunk, count);
+            };
+        }
         for (const auto& [model, entries] : instances)
         {
             const osg::Node* temp = mSceneManager->getTemplate(model);
@@ -494,6 +530,65 @@ namespace MWRender
             // Keep link to original mesh to keep it in cache
             group->getOrCreateUserDataContainer()->addUserObject(new Resource::TemplateRef(temp));
 
+            if (derived && !entries.empty() && entries.size() <= static_cast<std::size_t>(std::numeric_limits<int>::max()))
+            {
+                SceneUtil::GroundcoverBatch::EligibilityVisitor eligibility;
+                node->accept(eligibility);
+                if (eligibility.eligible && eligibility.drawables != 0)
+                {
+                    // All worker inputs are copied numeric data. Templates, caches, shader generation,
+                    // live scene attachment and GL realization remain on the existing owning path.
+                    std::vector<SceneUtil::GroundcoverPolicy::Instance> prepared(entries.size());
+                    auto prepareRange = [&](std::size_t begin, std::size_t end) {
+                        for (std::size_t i = begin; i < end; ++i)
+                        {
+                            const auto& entry = entries[i];
+                            auto& value = prepared[i];
+                            const auto position = entry.mPos.asVec3() - worldCenter;
+                            const auto rotation = entry.mPos.asRotationVec3();
+                            value.position = { position.x(), position.y(), position.z() };
+                            value.rotation = { rotation.x(), rotation.y(), rotation.z() };
+                            value.scale = entry.mScale;
+                            value.identity = static_cast<std::uint64_t>(entry.mRefNum.mIndex)
+                                | (static_cast<std::uint64_t>(static_cast<std::uint32_t>(entry.mRefNum.mContentFile)) << 32);
+                            value.rank = SceneUtil::GroundcoverPolicy::rank(value.identity);
+                        }
+                    };
+                    bool paired = false;
+                    // Never create a same-frame visibility wait. Only an already-background
+                    // chunk build may join bounded preparation on the reserved background lane.
+                    if (background && std::this_thread::get_id() != mOwnerThread
+                        && Settings::groundcover().mOptimizedMWParallelPrep && entries.size() >= 2048)
+                    {
+                        const auto middle = entries.size() / 2;
+                        paired = SceneUtil::PrepJobService::instance().runPair(SceneUtil::PrepJobService::Lane::Background,
+                            [&] { prepareRange(0, middle); }, [&] { prepareRange(middle, entries.size()); });
+                    }
+                    if (!paired)
+                        prepareRange(0, entries.size());
+                    threadedModels += paired ? 1u : 0u;
+                    if (std::all_of(prepared.begin(), prepared.end(), SceneUtil::GroundcoverPolicy::valid))
+                    {
+                        options.maxExtraDraws = std::min<std::size_t>(16, remainingExtraDraws);
+                        auto partitions = SceneUtil::GroundcoverPolicy::partition(prepared, options, eligibility.drawables, hierarchy);
+                        remainingExtraDraws -= (partitions.size() - 1) * eligibility.drawables;
+                        for (const auto& ids : partitions)
+                        {
+                            std::vector<SceneUtil::GroundcoverPolicy::Instance> tile;
+                            tile.reserve(ids.size());
+                            for (const auto id : ids) tile.push_back(prepared[id]);
+                            if (densityLod) SceneUtil::GroundcoverPolicy::sortRanks(tile);
+                            group->addChild(SceneUtil::GroundcoverBatch::buildTile(*node, tile, densityLod,
+                                options, getViewDistance(), occlusion, mP8G3Counters));
+                        }
+                        ++eligibleModels;
+                        eligibleInstances += entries.size();
+                        tilesBuilt += partitions.size();
+                        continue;
+                    }
+                }
+            }
+            if (derived) ++fallbackModels;
             InstancingVisitor visitor(entries, worldCenter);
             node->accept(visitor);
             group->addChild(node);
@@ -506,10 +601,31 @@ namespace MWRender
         osg::ComputeBoundsVisitor cbv;
         group->accept(cbv);
         osg::BoundingBox box = cbv.getBoundingBox();
-        group->addCullCallback(new ViewDistanceCallback(getViewDistance(), box));
-        if (mV35CoarseChunkOcclusion && mOcclusionCuller && box.valid())
-            group->addCullCallback(
-                new CoarseOcclusionCallback(mOcclusionCuller, box, true, v36InstanceCount));
+        if (derived && eligibleModels != 0)
+        {
+            group->setCullingActive(false);
+            // Unknown fallback graphs keep their own established visibility rules; do not
+            // let an aggregate static bound reject animated unsupported content.
+            if (fallbackModels == 0)
+                group->addCullCallback(new SceneUtil::GroundcoverBatch::VisibilityCallback(box,
+                    getViewDistance(), v36InstanceCount, occlusion, nullptr));
+        }
+        else
+        {
+            group->addCullCallback(new ViewDistanceCallback(getViewDistance(), box));
+            if (mV35CoarseChunkOcclusion && mOcclusionCuller && box.valid())
+                group->addCullCallback(
+                    new CoarseOcclusionCallback(mOcclusionCuller, box, true, v36InstanceCount));
+        }
+        if (derived && Debug::V3Diagnostics::renderWriter().enabled())
+        {
+            std::ostringstream row;
+            row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs()
+                << ",p8g3_chunk,\"eligible_models=" << eligibleModels << " fallback_models=" << fallbackModels
+                << " eligible_instances=" << eligibleInstances << " tiles=" << tilesBuilt
+                << " threaded_models=" << threadedModels << " lod=" << densityLod << "\",0";
+            Debug::V3Diagnostics::renderWriter().writeLine(row.str());
+        }
 
         group->setStateSet(mStateset);
         group->setNodeMask(Mask_Groundcover);
@@ -531,5 +647,20 @@ namespace MWRender
         Resource::reportStats("Groundcover Chunk", frameNumber, mCache->getStats(), *stats);
         stats->setAttribute(frameNumber, "V3.14 Groundcover Compile Queued",
             static_cast<double>(mV314CompileQueued.load(std::memory_order_relaxed)));
+        if (mP8G3Counters)
+        {
+            const auto report = [&](const char* name, const std::atomic_uint64_t& counter) {
+                stats->setAttribute(frameNumber, name, static_cast<double>(counter.load(std::memory_order_relaxed)));
+            };
+            report("P8G3 Groups Tested", mP8G3Counters->groupsTested);
+            report("P8G3 Groups Rejected", mP8G3Counters->groupsRejected);
+            report("P8G3 Instances Rejected", mP8G3Counters->instancesRejected);
+            report("P8G3 Full Instances", mP8G3Counters->fullInstances);
+            report("P8G3 Submitted Instances", mP8G3Counters->submittedInstances);
+            report("P8G3 Drawable Visits", mP8G3Counters->drawableVisits);
+            report("P8G3 Tier Full", mP8G3Counters->tiers[0]);
+            report("P8G3 Tier Mid", mP8G3Counters->tiers[1]);
+            report("P8G3 Tier Far", mP8G3Counters->tiers[2]);
+        }
     }
 }

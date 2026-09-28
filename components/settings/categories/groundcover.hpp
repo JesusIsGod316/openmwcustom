@@ -32,6 +32,16 @@ namespace Settings
         SettingValue<int> mOptimizedMWGpuPath{
             mIndex, "Groundcover", "optimizedmw gpu path",
             makeClampSanitizerInt(0, 2) };
+        // P8G3 startup-only, independently switchable. All derived topology is off by default.
+        SettingValue<bool> mOptimizedMWHierarchy{ mIndex, "Groundcover", "optimizedmw hierarchy" };
+        SettingValue<bool> mOptimizedMWDensityLod{ mIndex, "Groundcover", "optimizedmw density lod" };
+        SettingValue<bool> mOptimizedMWFrontToBack{ mIndex, "Groundcover", "optimizedmw front to back" };
+        SettingValue<bool> mOptimizedMWParallelPrep{ mIndex, "Groundcover", "optimizedmw parallel preparation" };
+        // -1 preserves the P8G2 mode-2 wind behavior; 0=full, 1=reduced independent of arithmetic path.
+        SettingValue<int> mOptimizedMWFastWind{ mIndex, "Groundcover", "optimizedmw fast wind", makeClampSanitizerInt(-1, 1) };
+        SettingValue<int> mOptimizedMWMinBatch{ mIndex, "Groundcover", "optimizedmw minimum batch", makeClampSanitizerInt(32, 1024) };
+        SettingValue<float> mOptimizedMWLodNear{ mIndex, "Groundcover", "optimizedmw lod near", makeClampSanitizerFloat(1000, 50000) };
+        SettingValue<float> mOptimizedMWLodFar{ mIndex, "Groundcover", "optimizedmw lod far", makeClampSanitizerFloat(2000, 100000) };
         // Quality-risk ceiling probe. True preserves current shadow receiving.
         SettingValue<bool> mOptimizedMWShadowReceive{
             mIndex, "Groundcover", "optimizedmw shadow receive" };

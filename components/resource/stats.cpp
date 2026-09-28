@@ -1,6 +1,7 @@
 #include "stats.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <iomanip>
 #include <span>
 #include <sstream>
@@ -129,6 +130,12 @@ namespace Resource
             };
 
             std::vector<std::string> statNames;
+            if (std::getenv("OPENMW_P8G3_STATS"))
+                for (const char* name : { "P8G3 Groups Tested", "P8G3 Groups Rejected", "P8G3 Instances Rejected",
+                         "P8G3 Full Instances", "P8G3 Submitted Instances", "P8G3 Drawable Visits",
+                         "P8G3 Tier Full", "P8G3 Tier Mid", "P8G3 Tier Far" })
+                    statNames.emplace_back(name);
+
 
             for (std::string_view name : firstPage)
                 statNames.emplace_back(name);
