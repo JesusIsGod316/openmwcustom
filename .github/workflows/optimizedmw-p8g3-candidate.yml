@@ -1,53 +1,21 @@
-name: OptimizedMW P8G3 candidate validation
+name: OptimizedMW P8G3 standalone native validation
 on:
-  push:
-    branches: [optimizedmw/gl-p8g3-visibility-lod]
-    paths: [.github/workflows/optimizedmw-p8g3-candidate.yml]
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 jobs:
-  Candidate:
+  Native:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Receive and verify candidate source
-        env:
-          CANDIDATE_URL: 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-05c4-81f5-bb02-ea3cde69cc16/raw?se=2026-09-28T03%3A56%3A16Z&sp=r&sv=2026-02-06&sr=b&scid=9cdd8a1e-9ae9-5558-b511-35390f099b7d&skoid=d1cabc79-3240-4866-94fe-6005330cb49e&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-28T00%3A22%3A03Z&ske=2026-09-29T00%3A22%3A03Z&sks=b&skv=2026-02-06&sig=bxzHgSAZDEeY6PThduBnND3AKWsVKcv4vldOQedn/g4%3D'
-        run: |
-          set -euo pipefail
-          curl --fail --retry 2 "$CANDIDATE_URL" -o /tmp/candidate.zip
-          echo '3ed9d9d47e845566ade9a268e71ff63772a64725190cf3ed4b0748f2795e239f  /tmp/candidate.zip' | sha256sum -c -
-          python - <<'PY'
-          import zipfile,json,hashlib,pathlib,subprocess
-          z=zipfile.ZipFile('/tmp/candidate.zip')
-          assert set(z.namelist()) == {'candidate.patch','manifest.json','parent.txt'}
-          assert z.read('parent.txt').decode().strip() == 'ea34526461103643ef804b6b8afab11288a82966'
-          subprocess.run(['git','merge-base','--is-ancestor',z.read('parent.txt').decode().strip(),'HEAD'],check=True)
-          manifest=json.loads(z.read('manifest.json'))
-          for name,checks in manifest.items():
-              p=pathlib.Path(name)
-              assert not p.is_absolute() and '..' not in p.parts and not str(p).startswith('.git')
-              actual=hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None
-              assert actual == checks['before_sha256'], (name,actual,'source changed')
-          pathlib.Path('/tmp/candidate.patch').write_bytes(z.read('candidate.patch'))
-          pathlib.Path('/tmp/manifest.json').write_bytes(z.read('manifest.json'))
-          subprocess.run(['git','apply','--index','/tmp/candidate.patch'],check=True)
-          for name,checks in manifest.items():
-              assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() == checks['after_sha256'],name
-          print('Verified and materialized',len(manifest),'actual production/test files')
-          PY
-      - name: Install real native and graphics test dependencies
+      - name: Install native graphics dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y libopenscenegraph-dev libmygui-dev libbullet-dev libglm-dev libboost-dev libyaml-cpp-dev libgl1-mesa-dev xvfb xauth
-      - name: Retained contracts and new source contracts
+      - name: Retained contracts
         run: |
           set -euo pipefail
           for p in 3 4 6 7 8 8g2 8g3; do python tools/optimizedmw/gl-p$p/source-contract.py; done
-          git diff --cached --check
-      - name: Validate packaged PowerShell syntax without executing launcher
+      - name: Validate launcher syntax without running the game
         shell: pwsh
         run: |
           $tokens = $null
@@ -55,39 +23,16 @@ jobs:
           $path = (Resolve-Path 'tools/optimizedmw/gl-p8g3/OptimizedMW_GL-P8G3_Test.ps1').Path
           $null = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
           if ($errors.Count) { $errors | Format-List; throw 'Invalid P8G3 launcher syntax' }
-      - name: Compile production integration and native tests
+      - name: Production integration and native shader validation
         run: |
-          set -o pipefail
           cmake -S tools/optimizedmw/gl-p8g3 -B build-p8g3 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DP8G3_SANITIZERS=ON
-          cmake --build build-p8g3 --parallel 2 2>&1 | tee /tmp/p8g3-build.log
-      - name: Native and actual production shader tests
-        if: ${{ !cancelled() }}
-        run: ctest --test-dir build-p8g3 -V --output-on-failure
-      - name: Publish only validated production source
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'OptimizedMW P8G3: adaptive visibility, stable LOD, shared buffers and independent vegetation controls'
-          git push origin HEAD:optimizedmw/gl-p8g3-visibility-lod
-          git rev-parse HEAD > build-p8g3/published-commit.txt
-          git rev-parse HEAD^{tree} > build-p8g3/published-tree.txt
-      - name: Collect source and validation evidence
-        if: always()
-        run: |
-          mkdir -p /tmp/p8g3-evidence
-          cp /tmp/candidate.zip /tmp/p8g3-evidence/ 2>/dev/null || true
-          cp /tmp/p8g3-build.log /tmp/p8g3-evidence/ 2>/dev/null || true
-          cp build-p8g3/published-*.txt /tmp/p8g3-evidence/ 2>/dev/null || true
-          cp build-p8g3/Testing/Temporary/LastTest.log /tmp/p8g3-evidence/ 2>/dev/null || true
-          cp /tmp/manifest.json /tmp/p8g3-evidence/ 2>/dev/null || true
-          cp -r build-p8g3/shader-sources /tmp/p8g3-evidence/ 2>/dev/null || true
-          git diff --cached --binary > /tmp/p8g3-evidence/unpublished.patch
-          git ls-tree -r HEAD > /tmp/p8g3-evidence/blobs.txt
-          tar czf /tmp/p8g3-evidence/source.tar.gz --exclude=.git --exclude=build-p8g3 .
+          cmake --build build-p8g3 --parallel 2
+          ctest --test-dir build-p8g3 -V --output-on-failure
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: OptimizedMW-P8G3-source-validation
-          path: /tmp/p8g3-evidence/
+          name: P8G3-native-validation-${{ github.sha }}
+          path: |
+            build-p8g3/Testing/Temporary/LastTest.log
+            build-p8g3/shader-sources
           retention-days: 14
