@@ -2,6 +2,7 @@
 #define OPENMW_MWRENDER_V4OBJECTQUEUE_H
 
 #include "animation.hpp"
+#include "v4producerclass.hpp"
 #include <components/misc/producerqueue.hpp>
 #include <osg/observer_ptr>
 #include <cstdint>
@@ -13,8 +14,8 @@
 namespace MWRender
 {
     // Objects owns membership. This registry is consulted by Vulkan rendering
-    // only, never by gameplay/update traversal. Clean supported objects are NOT
-    // visited; actors, live particles and unsupported content stay continuous.
+    // only, never by gameplay/update traversal. Producer scheduling distinguishes
+    // understood continuous actors/particles from true compatibility fallback.
     class V4ObjectQueue
     {
     public:
@@ -28,7 +29,10 @@ namespace MWRender
                 return;
             }
             ticket->continuous(true); // fail closed until a successful publication
-            mAnimations.emplace(ticket->token(), &animation);
+            const auto token = ticket->token();
+            mAnimations.emplace(token, &animation);
+            mClasses.emplace(token, V4ProducerClass::CompatibilityContinuous);
+            ++mCompatibilityContinuous;
             mTickets.emplace(&animation, ticket);
             animation.attachV4ProducerTicket(std::move(ticket));
         }
@@ -37,8 +41,10 @@ namespace MWRender
             const auto it = mTickets.find(&animation);
             if (it != mTickets.end())
             {
+                const auto token = it->second->token();
                 it->second->cancel();
-                mAnimations.erase(it->second->token());
+                mAnimations.erase(token);
+                eraseClass(token);
                 animation.attachV4ProducerTicket({});
                 mTickets.erase(it);
             }
@@ -71,7 +77,8 @@ namespace MWRender
                 if (found == mAnimations.end() || !mQueue.valid(change.token)) continue;
                 osg::ref_ptr<Animation> animation;
                 if (!found->second.lock(animation)) continue;
-                animation->setV4ProducerDemandDriven(false);
+                const auto previous = classFor(change.token);
+                animation->beginV4ProducerVisit(previous, change.reasons);
                 ++mLastVisited;
                 try { visitor(*animation); }
                 catch (...)
@@ -79,10 +86,10 @@ namespace MWRender
                     // Retry an interrupted publication on the compatibility
                     // work set; never strand a now-unsupported dirty object.
                     animation->setV4ProducerDemandDriven(false);
-                    animation->finishV4ProducerVisit();
+                    updateClass(change.token, animation->finishV4ProducerVisit());
                     throw;
                 }
-                animation->finishV4ProducerVisit();
+                updateClass(change.token, animation->finishV4ProducerVisit());
             }
             // Capacity is bounded. Overflow is explicit compatibility work,
             // never an omitted object. Snapshot protects re-entrant removal.
@@ -91,21 +98,74 @@ namespace MWRender
                 if (mOverflow.contains(animation))
                 {
                     osg::ref_ptr<Animation> keepAlive(animation);
+                    animation->beginV4ProducerVisit(V4ProducerClass::CompatibilityContinuous, 1);
                     ++mLastVisited;
                     visitor(*animation);
+                    (void)animation->finishV4ProducerVisit();
                 }
         }
         std::size_t registered() const { return mQueue.size() + mOverflow.size(); }
         std::size_t visited() const noexcept { return mLastVisited; }
         std::size_t continuous() const { return mQueue.continuousSize() + mOverflow.size(); }
+        std::size_t demandDriven() const noexcept { return mDemandDriven; }
+        std::size_t supportedActors() const noexcept { return mSupportedActors; }
+        std::size_t supportedParticles() const noexcept { return mSupportedParticles; }
+        std::size_t compatibilityContinuous() const noexcept
+        { return mCompatibilityContinuous + mOverflow.size(); }
     private:
+        V4ProducerClass classFor(Misc::ProducerQueue::Token token) const noexcept
+        {
+            const auto it = mClasses.find(token);
+            return it == mClasses.end() ? V4ProducerClass::CompatibilityContinuous : it->second;
+        }
+        void decrement(V4ProducerClass value) noexcept
+        {
+            switch (value)
+            {
+                case V4ProducerClass::DemandDrivenObject: --mDemandDriven; break;
+                case V4ProducerClass::SupportedContinuousActor: --mSupportedActors; break;
+                case V4ProducerClass::SupportedContinuousParticle: --mSupportedParticles; break;
+                case V4ProducerClass::CompatibilityContinuous: --mCompatibilityContinuous; break;
+            }
+        }
+        void increment(V4ProducerClass value) noexcept
+        {
+            switch (value)
+            {
+                case V4ProducerClass::DemandDrivenObject: ++mDemandDriven; break;
+                case V4ProducerClass::SupportedContinuousActor: ++mSupportedActors; break;
+                case V4ProducerClass::SupportedContinuousParticle: ++mSupportedParticles; break;
+                case V4ProducerClass::CompatibilityContinuous: ++mCompatibilityContinuous; break;
+            }
+        }
+        void updateClass(Misc::ProducerQueue::Token token, V4ProducerClass value)
+        {
+            const auto it = mClasses.find(token);
+            if (it == mClasses.end() || it->second == value) return;
+            decrement(it->second);
+            it->second = value;
+            increment(value);
+        }
+        void eraseClass(Misc::ProducerQueue::Token token)
+        {
+            const auto it = mClasses.find(token);
+            if (it == mClasses.end()) return;
+            decrement(it->second);
+            mClasses.erase(it);
+        }
+
         Misc::ProducerQueue mQueue;
         std::map<Misc::ProducerQueue::Token, osg::observer_ptr<Animation>> mAnimations;
+        std::map<Misc::ProducerQueue::Token, V4ProducerClass> mClasses;
         std::map<Animation*, std::shared_ptr<Misc::ProducerQueue::Ticket>> mTickets;
         std::set<Animation*> mOverflow;
         std::uint64_t mStream = 0;
         bool mPreLight = false;
         std::size_t mLastVisited = 0;
+        std::size_t mDemandDriven = 0;
+        std::size_t mSupportedActors = 0;
+        std::size_t mSupportedParticles = 0;
+        std::size_t mCompatibilityContinuous = 0;
     };
 }
 #endif
