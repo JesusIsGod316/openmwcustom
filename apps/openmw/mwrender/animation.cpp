@@ -2933,7 +2933,7 @@ namespace MWRender
     V4ProducerClass Animation::finishV4ProducerVisit()
     {
         if (mV4ProducerTicket)
-            mV4ProducerTicket->continuous(v4ProducerClassIsContinuous(mV4ProducerClass));
+            mV4ProducerTicket->continuous(v4ProducerClassUsesCompatibilityContinuousQueue(mV4ProducerClass));
         return mV4ProducerClass;
     }
 
