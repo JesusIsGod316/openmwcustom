@@ -16,11 +16,11 @@ jobs:
           fetch-depth: 0
       - name: Receive and verify candidate source
         env:
-          CANDIDATE_URL: 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-3260-81f5-9e56-15bf4921a0eb/raw?se=2026-09-28T03%3A49%3A42Z&sp=r&sv=2026-02-06&sr=b&scid=6052e50b-2d2d-5b54-819e-10b880c327c0&skoid=d1cabc79-3240-4866-94fe-6005330cb49e&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-28T00%3A15%3A01Z&ske=2026-09-29T00%3A15%3A01Z&sks=b&skv=2026-02-06&sig=65iH9w9WEKws7vGEymx3/6LNWqC1dEVHO1D2M6%2BV3aE%3D'
+          CANDIDATE_URL: 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-0324-81f5-821c-4311a483b655/raw?se=2026-09-28T03%3A53%3A23Z&sp=r&sv=2026-02-06&sr=b&scid=8bd9153f-e1dd-5a54-a64b-6e73d3f9aa1c&skoid=d1cabc79-3240-4866-94fe-6005330cb49e&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-28T00%3A19%3A43Z&ske=2026-09-29T00%3A19%3A43Z&sks=b&skv=2026-02-06&sig=HnvFUYbvSOedXnwjM/Y6K/6U8c8gvyXFuJ1wzzd8oCc%3D'
         run: |
           set -euo pipefail
           curl --fail --retry 2 "$CANDIDATE_URL" -o /tmp/candidate.zip
-          echo '983a8820f4f68817903ee61efff45ce584cbd10bd3e5298b86c281e5d8fe83a3  /tmp/candidate.zip' | sha256sum -c -
+          echo '782fc403823fe5a414a07f05e9e8cceb0518faf28a22faa2db184ddd7ff23f48  /tmp/candidate.zip' | sha256sum -c -
           python - <<'PY'
           import zipfile,json,hashlib,pathlib,subprocess
           z=zipfile.ZipFile('/tmp/candidate.zip')
@@ -61,6 +61,7 @@ jobs:
           cmake -S tools/optimizedmw/gl-p8g3 -B build-p8g3 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DP8G3_SANITIZERS=ON
           cmake --build build-p8g3 --parallel 2 2>&1 | tee /tmp/p8g3-build.log
       - name: Native and actual production shader tests
+        if: ${{ !cancelled() }}
         run: ctest --test-dir build-p8g3 -V --output-on-failure
       - name: Publish only validated production source
         run: |
