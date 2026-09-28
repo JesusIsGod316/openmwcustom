@@ -1,0 +1,27 @@
+name: OptimizedMW P8G4 native SDK
+on:
+  push:
+    branches: [optimizedmw/gl-p8g4-work]
+    paths: [.github/workflows/p8g4-native-deps.yml]
+permissions:
+  contents: read
+jobs:
+  SDK:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download native validation headers and libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libopenscenegraph-dev libmygui-dev libbullet-dev libglm-dev libyaml-cpp-dev libgl1-mesa-dev xvfb xauth
+          mkdir -p sdk
+          for p in libopenscenegraph-dev libopenscenegraph161 libopenthreads-dev libopenthreads21 libmygui-dev libmyguiengine3debian1v5 libbullet-dev libbullet3.24 libglm-dev libyaml-cpp-dev libyaml-cpp0.8; do
+            dpkg -L "$p" 2>/dev/null || true
+          done | sort -u | while read -r f; do
+            if [ -f "$f" ] || [ -L "$f" ]; then printf '%s\n' "$f"; fi
+          done > sdk/files.txt
+          sudo tar -czf sdk/native-sdk.tar.gz -T sdk/files.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: P8G4-native-sdk
+          path: sdk/
+          retention-days: 3
