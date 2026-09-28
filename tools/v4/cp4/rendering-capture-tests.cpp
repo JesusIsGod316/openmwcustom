@@ -345,6 +345,42 @@ int main()
         require(!producer.publish("events",s.vfs,s.identities,&world),"invalidated producer accepted");
         require(world.finish()->size()==0 && before->size()==1,"retirement changed submitted frame");
     });
+    test("intrinsic particle body is event-owned while simulation remains continuous", [] {
+        ScopedFlag splitFlag("OPENMW_VK_SPLIT_PARTICLE_CAPTURE"),
+            driven("OPENMW_VK_CHANGE_DRIVEN_OBJECTS"), textures("OPENMW_V4_LOAD_BOUND_TEXTURES");
+        splitFlag.set("1"); driven.set("1"); textures.set("1");
+        Scene s;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root = new SceneUtil::PositionAttitudeTransform;
+        root->addChild(geometry());
+        osg::ref_ptr<NifOsg::Emitter> emitter = new NifOsg::Emitter;
+        osg::ref_ptr<osgParticle::ModularProgram> program = new osgParticle::ModularProgram;
+        osg::ref_ptr<osgParticle::ParticleSystemUpdater> updater = new osgParticle::ParticleSystemUpdater;
+        osg::ref_ptr<NifOsg::ParticleSystem> particles = new NifOsg::ParticleSystem;
+        emitter->setParticleSystem(particles); program->setParticleSystem(particles); updater->addParticleSystem(particles);
+        root->addChild(emitter); root->addChild(program); root->addChild(updater); root->addChild(particles);
+        unsigned wakes = 0;
+        MWRender::V4PersistentObject producer(*root, 64u*1024u*1024u, true, [&] { ++wakes; });
+        require(producer.supported() && producer.hasIntrinsicParticles(), "particle producer not recognized");
+        require(producer.bodyEventDriven() && !producer.eventDriven(),
+            "particle body ownership was not separated from continuous simulation cadence");
+        RenderCore::PersistentDrawWorld world(4);
+        world.begin(1);
+        auto first = producer.publish("particle-owner", s.vfs, s.identities, &world);
+        auto retained = world.finish();
+        require(first && first->valid() && retained->size() == 1 && producer.canReuseBodyWithoutVisit(),
+            "particle body did not become reusable retained state");
+        world.begin(1);
+        require(world.finish() == retained,
+            "event-owned particle body required a per-frame touch despite no body mutation");
+        root->setPosition({7,0,0});
+        require(wakes != 0 && !producer.canReuseBodyWithoutVisit(),
+            "late body mutation did not invalidate clean particle-body reuse");
+        world.begin(1);
+        auto changed = producer.publish("particle-owner", s.vfs, s.identities, &world);
+        auto moved = world.finish();
+        require(changed && changed->valid() && moved->get(0)->transform[3].x == 7,
+            "particle body mutation was not republished");
+    });
     test("producer queue consumes deltas and retires without clean object visits", [] {
         ScopedFlag driven("OPENMW_VK_CHANGE_DRIVEN_OBJECTS"), textures("OPENMW_V4_LOAD_BOUND_TEXTURES");
         driven.set("1"); textures.set("1");
