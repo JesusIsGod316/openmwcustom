@@ -4,8 +4,6 @@
 #include "vsgsubmission.hpp"
 #include <components/fx/stateupdater.hpp>
 
-#include <osg/Texture1D>
-#include <osg/Texture3D>
 #include <SDL3/SDL_opengl_glext.h>
 #include <cmath>
 #include <cstring>
@@ -18,49 +16,86 @@ namespace RenderVsg
         using ImageInfo = vsg::ref_ptr<vsg::ImageInfo>;
         constexpr std::size_t ImageBudget = 384u * 1024u * 1024u;
 
-        VkSamplerAddressMode wrap(osg::Texture::WrapMode mode)
+        VkSamplerAddressMode wrap(Fx::NativeWrap mode)
         {
             switch (mode)
             {
-                case osg::Texture::REPEAT: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
-                case osg::Texture::MIRROR: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
-                case osg::Texture::CLAMP_TO_BORDER: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-                default: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                case Fx::NativeWrap::Repeat: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                case Fx::NativeWrap::MirroredRepeat: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+                case Fx::NativeWrap::ClampBorder: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+                case Fx::NativeWrap::ClampEdge: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
             }
+            return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         }
 
-        vsg::ref_ptr<vsg::Sampler> sampler(const osg::Texture* texture = nullptr, unsigned levels = 1)
+        vsg::ref_ptr<vsg::Sampler> sampler(Fx::NativeSampler settings = {}, unsigned levels = 1)
         {
             auto result = vsg::Sampler::create();
-            const auto min = texture ? texture->getFilter(osg::Texture::MIN_FILTER) : osg::Texture::LINEAR;
-            const auto mag = texture ? texture->getFilter(osg::Texture::MAG_FILTER) : osg::Texture::LINEAR;
-            result->minFilter = min == osg::Texture::NEAREST || min == osg::Texture::NEAREST_MIPMAP_NEAREST
-                || min == osg::Texture::NEAREST_MIPMAP_LINEAR ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
-            result->magFilter = mag == osg::Texture::NEAREST ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
-            result->mipmapMode = min == osg::Texture::LINEAR_MIPMAP_LINEAR || min == osg::Texture::NEAREST_MIPMAP_LINEAR
+            result->minFilter = settings.min == Fx::NativeFilter::Nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+            result->magFilter = settings.mag == Fx::NativeFilter::Nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+            result->mipmapMode = settings.mipmap == Fx::NativeMipmapMode::Linear
                 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
-            result->maxLod = min == osg::Texture::LINEAR || min == osg::Texture::NEAREST ? 0.0f : static_cast<float>(levels - 1);
-            result->addressModeU = texture ? wrap(texture->getWrap(osg::Texture::WRAP_S)) : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-            result->addressModeV = texture ? wrap(texture->getWrap(osg::Texture::WRAP_T)) : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-            result->addressModeW = texture ? wrap(texture->getWrap(osg::Texture::WRAP_R)) : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            result->maxLod = settings.mipmap == Fx::NativeMipmapMode::None ? 0.0f : static_cast<float>(levels - 1);
+            result->addressModeU = wrap(settings.u);
+            result->addressModeV = wrap(settings.v);
+            result->addressModeW = wrap(settings.w);
             return result;
         }
 
-        VkFormat targetFormat(int value)
+        VkFormat targetFormat(Fx::NativeImageFormat value)
         {
             switch (value)
             {
-                case GL_RED: return VK_FORMAT_R8_UNORM;
-                case GL_R16F: return VK_FORMAT_R16_SFLOAT;
-                case GL_R32F: return VK_FORMAT_R32_SFLOAT;
-                case GL_RG: return VK_FORMAT_R8G8_UNORM;
-                case GL_RG16F: return VK_FORMAT_R16G16_SFLOAT;
-                case GL_RG32F: return VK_FORMAT_R32G32_SFLOAT;
-                case GL_RGB: case GL_RGBA: return VK_FORMAT_R8G8B8A8_UNORM;
-                case GL_RGB16F: case GL_RGBA16F: return VK_FORMAT_R16G16B16A16_SFLOAT;
-                case GL_RGB32F: case GL_RGBA32F: return VK_FORMAT_R32G32B32A32_SFLOAT;
-                default: throw std::runtime_error("OMWFX target format is not a supported color attachment: " + std::to_string(value));
+                case Fx::NativeImageFormat::R8: return VK_FORMAT_R8_UNORM;
+                case Fx::NativeImageFormat::R16Float: return VK_FORMAT_R16_SFLOAT;
+                case Fx::NativeImageFormat::R32Float: return VK_FORMAT_R32_SFLOAT;
+                case Fx::NativeImageFormat::Rg8: return VK_FORMAT_R8G8_UNORM;
+                case Fx::NativeImageFormat::Rg16Float: return VK_FORMAT_R16G16_SFLOAT;
+                case Fx::NativeImageFormat::Rg32Float: return VK_FORMAT_R32G32_SFLOAT;
+                case Fx::NativeImageFormat::Rgb8:
+                case Fx::NativeImageFormat::Rgba8: return VK_FORMAT_R8G8B8A8_UNORM;
+                case Fx::NativeImageFormat::Rgb16Float:
+                case Fx::NativeImageFormat::Rgba16Float: return VK_FORMAT_R16G16B16A16_SFLOAT;
+                case Fx::NativeImageFormat::Rgb32Float:
+                case Fx::NativeImageFormat::Rgba32Float: return VK_FORMAT_R32G32B32A32_SFLOAT;
             }
+            throw std::runtime_error("OMWFX target format is invalid");
+        }
+
+        VkBlendFactor blendFactor(Fx::NativeBlendFactor value)
+        {
+            switch (value)
+            {
+                case Fx::NativeBlendFactor::Zero: return VK_BLEND_FACTOR_ZERO;
+                case Fx::NativeBlendFactor::One: return VK_BLEND_FACTOR_ONE;
+                case Fx::NativeBlendFactor::SourceColor: return VK_BLEND_FACTOR_SRC_COLOR;
+                case Fx::NativeBlendFactor::OneMinusSourceColor: return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+                case Fx::NativeBlendFactor::DestinationColor: return VK_BLEND_FACTOR_DST_COLOR;
+                case Fx::NativeBlendFactor::OneMinusDestinationColor: return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+                case Fx::NativeBlendFactor::SourceAlpha: return VK_BLEND_FACTOR_SRC_ALPHA;
+                case Fx::NativeBlendFactor::OneMinusSourceAlpha: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                case Fx::NativeBlendFactor::DestinationAlpha: return VK_BLEND_FACTOR_DST_ALPHA;
+                case Fx::NativeBlendFactor::OneMinusDestinationAlpha: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+                case Fx::NativeBlendFactor::ConstantColor: return VK_BLEND_FACTOR_CONSTANT_COLOR;
+                case Fx::NativeBlendFactor::OneMinusConstantColor: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
+                case Fx::NativeBlendFactor::ConstantAlpha: return VK_BLEND_FACTOR_CONSTANT_ALPHA;
+                case Fx::NativeBlendFactor::OneMinusConstantAlpha: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+                case Fx::NativeBlendFactor::SourceAlphaSaturate: return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
+            }
+            throw std::runtime_error("OMWFX blend factor is invalid");
+        }
+
+        VkBlendOp blendOperation(Fx::NativeBlendOperation value)
+        {
+            switch (value)
+            {
+                case Fx::NativeBlendOperation::Add: return VK_BLEND_OP_ADD;
+                case Fx::NativeBlendOperation::Subtract: return VK_BLEND_OP_SUBTRACT;
+                case Fx::NativeBlendOperation::ReverseSubtract: return VK_BLEND_OP_REVERSE_SUBTRACT;
+                case Fx::NativeBlendOperation::Minimum: return VK_BLEND_OP_MIN;
+                case Fx::NativeBlendOperation::Maximum: return VK_BLEND_OP_MAX;
+            }
+            throw std::runtime_error("OMWFX blend equation is invalid");
         }
 
         struct Target
@@ -80,7 +115,7 @@ namespace RenderVsg
             std::size_t bytes = 0;
             // Share the GPU image, not just its CPU pixels. Different nearest/
             // linear samplers of Rafael's large sky image must not duplicate VRAM.
-            std::map<std::tuple<const osg::Image*, unsigned, bool>, vsg::ref_ptr<vsg::Image>> loadedImages;
+            std::map<std::tuple<std::uintptr_t, unsigned, bool>, vsg::ref_ptr<vsg::Image>> loadedImages;
 
             void reserve(std::size_t size)
             {
@@ -89,8 +124,8 @@ namespace RenderVsg
                 bytes += size;
             }
 
-            Target target(unsigned width, unsigned height, int format, bool mipmaps,
-                VkClearColorValue clear, const osg::Texture* settings = nullptr)
+            Target target(unsigned width, unsigned height, Fx::NativeImageFormat format, bool mipmaps,
+                VkClearColorValue clear, const Fx::NativeSampler* settings = nullptr)
             {
                 if (!width || !height || width > 16384 || height > 16384)
                     throw std::runtime_error("Invalid OMWFX target extent");
@@ -125,14 +160,16 @@ namespace RenderVsg
                 result.attachment = vsg::ImageView::create(result.image, VK_IMAGE_ASPECT_COLOR_BIT);
                 result.attachment->subresourceRange.levelCount = 1;
                 result.attachment->compile(device);
-                if (format == GL_RGB || format == GL_RGB16F || format == GL_RGB32F)
+                if (format == Fx::NativeImageFormat::Rgb8 || format == Fx::NativeImageFormat::Rgb16Float
+                    || format == Fx::NativeImageFormat::Rgb32Float)
                 {
                     allocated = vsg::ImageView::create(result.image, VK_IMAGE_ASPECT_COLOR_BIT);
                     allocated->subresourceRange.levelCount = image.mipLevels;
                     allocated->components.a = VK_COMPONENT_SWIZZLE_ONE;
                     allocated->compile(device);
                 }
-                result.sampled = vsg::ImageInfo::create(sampler(settings, image.mipLevels), allocated, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                result.sampled = vsg::ImageInfo::create(sampler(settings ? *settings : Fx::NativeSampler{}, image.mipLevels),
+                    allocated, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                 auto color = vsg::defaultColorAttachment(image.format);
                 color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
                 color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -153,71 +190,56 @@ namespace RenderVsg
                 return result;
             }
 
-            ImageInfo texture(const osg::Texture& texture)
+            ImageInfo texture(const Fx::NativeTexture& texture)
             {
-                const auto* image = texture.getImage(0);
-                if (!image || !image->data()) throw std::runtime_error("OMWFX texture has no image: " + texture.getName());
-                // Reuse the same OSG 3.6 S3TC decoder used by ImageManager's
-                // software fallback, once at asset publication, never per frame.
-                if (image->isCompressed() && image->getPixelFormat() != GL_COMPRESSED_RGB_S3TC_DXT1_EXT
-                    && image->getPixelFormat() != GL_COMPRESSED_RGBA_S3TC_DXT1_EXT
-                    && image->getPixelFormat() != GL_COMPRESSED_RGBA_S3TC_DXT3_EXT
-                    && image->getPixelFormat() != GL_COMPRESSED_RGBA_S3TC_DXT5_EXT)
-                    throw std::runtime_error("OMWFX unsupported compressed texture format: " + texture.getName());
-                const unsigned width = image->s(), height = image->t(), depth = image->r();
-                const bool one = dynamic_cast<const osg::Texture1D*>(&texture) != nullptr;
-                const bool three = dynamic_cast<const osg::Texture3D*>(&texture) != nullptr;
-                if (!width || !height || !depth) throw std::runtime_error("OMWFX image has an empty extent");
-                const bool bytes8 = image->isCompressed() || image->getDataType() == GL_UNSIGNED_BYTE;
-                const auto minFilter = texture.getFilter(osg::Texture::MIN_FILTER);
-                const bool mipmaps = minFilter != osg::Texture::NEAREST && minFilter != osg::Texture::LINEAR;
-                const auto levels = mipmaps ? 1u + static_cast<unsigned>(std::floor(std::log2(std::max({width, height, depth})))) : 1u;
-                auto sampled = sampler(&texture, levels);
-                auto& gpuImage = loadedImages[{image, one ? 1u : three ? 3u : 2u, mipmaps}];
+                if (!texture.payload || !texture.payload->width || !texture.payload->height || !texture.payload->depth)
+                    throw std::runtime_error("OMWFX native texture payload is invalid: " + texture.name);
+                const auto& payload = *texture.payload;
+                const bool one = texture.dimension == Fx::NativeTextureDimension::One;
+                const bool three = texture.dimension == Fx::NativeTextureDimension::Three;
+                const bool bytes8 = payload.storage == Fx::NativePixelStorage::Rgba8;
+                const bool mipmaps = texture.sampler.mipmap != Fx::NativeMipmapMode::None;
+                const auto levels = mipmaps ? 1u + static_cast<unsigned>(std::floor(std::log2(
+                    std::max({payload.width, payload.height, payload.depth})))) : 1u;
+                auto sampled = sampler(texture.sampler, levels);
+                auto& gpuImage = loadedImages[{texture.imageIdentity, static_cast<unsigned>(texture.dimension), mipmaps}];
                 if (!gpuImage)
                 {
-                reserve(static_cast<std::size_t>(width) * height * depth * (bytes8 ? 4 : 16) * (mipmaps ? 2 : 1));
-                vsg::ref_ptr<vsg::Data> data;
-                vsg::Data::Properties properties;
-                properties.format = bytes8 ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R32G32B32A32_SFLOAT;
-                properties.origin = image->getOrigin() == osg::Image::BOTTOM_LEFT ? vsg::BOTTOM_LEFT : vsg::TOP_LEFT;
-                if (bytes8)
-                {
-                    if (one) data = vsg::ubvec4Array::create(width, properties);
-                    else if (three) data = vsg::ubvec4Array3D::create(width, height, depth, properties);
-                    else data = vsg::ubvec4Array2D::create(width, height, properties);
+                    reserve(static_cast<std::size_t>(payload.width) * payload.height * payload.depth
+                        * (bytes8 ? 4 : 16) * (mipmaps ? 2 : 1));
+                    vsg::ref_ptr<vsg::Data> data;
+                    vsg::Data::Properties properties;
+                    properties.format = bytes8 ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R32G32B32A32_SFLOAT;
+                    properties.origin = payload.bottomLeft ? vsg::BOTTOM_LEFT : vsg::TOP_LEFT;
+                    if (bytes8)
+                    {
+                        if (one) data = vsg::ubvec4Array::create(payload.width, properties);
+                        else if (three) data = vsg::ubvec4Array3D::create(payload.width, payload.height, payload.depth, properties);
+                        else data = vsg::ubvec4Array2D::create(payload.width, payload.height, properties);
+                        if (payload.bytes.size() != static_cast<std::size_t>(payload.width) * payload.height * payload.depth * 4)
+                            throw std::runtime_error("OMWFX byte texture payload size mismatch: " + texture.name);
+                        std::memcpy(data->dataPointer(), payload.bytes.data(), payload.bytes.size());
+                    }
+                    else
+                    {
+                        if (one) data = vsg::vec4Array::create(payload.width, properties);
+                        else if (three) data = vsg::vec4Array3D::create(payload.width, payload.height, payload.depth, properties);
+                        else data = vsg::vec4Array2D::create(payload.width, payload.height, properties);
+                        if (payload.floats.size() != static_cast<std::size_t>(payload.width) * payload.height * payload.depth * 4)
+                            throw std::runtime_error("OMWFX float texture payload size mismatch: " + texture.name);
+                        std::memcpy(data->dataPointer(), payload.floats.data(), payload.floats.size() * sizeof(float));
+                    }
+                    gpuImage = vsg::ImageInfo::create(sampled, data)->imageView->image;
                 }
-                else
-                {
-                    if (one) data = vsg::vec4Array::create(width, properties);
-                    else if (three) data = vsg::vec4Array3D::create(width, height, depth, properties);
-                    else data = vsg::vec4Array2D::create(width, height, properties);
-                }
-                std::size_t index = 0;
-                for (unsigned z = 0; z < depth; ++z)
-                    for (unsigned y = 0; y < height; ++y)
-                        for (unsigned x = 0; x < width; ++x)
-                        {
-                            const auto color = image->getColor(x, y, z);
-                            if (bytes8)
-                            {
-                                auto& output = static_cast<vsg::ubvec4*>(data->dataPointer())[index++];
-                                for (unsigned c = 0; c < 4; ++c)
-                                    output[c] = static_cast<unsigned char>(std::clamp(std::round(color[c] * 255.0f), 0.0f, 255.0f));
-                            }
-                            else static_cast<vsg::vec4*>(data->dataPointer())[index++] = vsg::vec4(color.r(), color.g(), color.b(), color.a());
-                        }
-                gpuImage = vsg::ImageInfo::create(sampled, data)->imageView->image;
-                }
-                auto result = vsg::ImageInfo::create(sampled, vsg::ImageView::create(gpuImage), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                const int internal = texture.getInternalFormat();
-                if (internal == GL_RED || internal == GL_R16F || internal == GL_R32F)
+                auto result = vsg::ImageInfo::create(sampled, vsg::ImageView::create(gpuImage),
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                if (texture.sourceComponents == 1)
                     result->imageView->components = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO,
                         VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE};
-                else if (internal == GL_RG || internal == GL_RG16F || internal == GL_RG32F)
+                else if (texture.sourceComponents == 2)
                     result->imageView->components = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,
                         VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE};
-                else if (internal == GL_RGB || internal == GL_RGB16F || internal == GL_RGB32F)
+                else if (texture.sourceComponents == 3)
                     result->imageView->components.a = VK_COMPONENT_SWIZZLE_ONE;
                 return result;
             }
@@ -244,8 +266,22 @@ namespace RenderVsg
                 auto depth = vsg::DepthStencilState::create();
                 depth->depthTestEnable = depth->depthWriteEnable = VK_FALSE;
                 auto blend = vsg::ColorBlendState::create();
-                if (pass.blendSource || pass.blendDestination || pass.blendEquation)
-                    throw std::runtime_error("OMWFX authored blending is not implemented: " + pass.name);
+                if (pass.blendSource.has_value() != pass.blendDestination.has_value())
+                    throw std::runtime_error("OMWFX authored blending requires both factors: " + pass.name);
+                if (pass.blendSource && pass.blendDestination)
+                {
+                    if (blend->attachments.empty()) blend->attachments.emplace_back();
+                    auto& attachment = blend->attachments.front();
+                    attachment.blendEnable = VK_TRUE;
+                    attachment.srcColorBlendFactor = blendFactor(*pass.blendSource);
+                    attachment.dstColorBlendFactor = blendFactor(*pass.blendDestination);
+                    attachment.colorBlendOp = pass.blendEquation ? blendOperation(*pass.blendEquation) : VK_BLEND_OP_ADD;
+                    attachment.srcAlphaBlendFactor = attachment.srcColorBlendFactor;
+                    attachment.dstAlphaBlendFactor = attachment.dstColorBlendFactor;
+                    attachment.alphaBlendOp = attachment.colorBlendOp;
+                    attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+                        | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+                }
                 auto pipeline = vsg::GraphicsPipeline::create(pipelineLayout, vsg::ShaderStages{
                     vsg::ShaderStage::create(VK_SHADER_STAGE_VERTEX_BIT, "main", pass.shaders.vertex),
                     vsg::ShaderStage::create(VK_SHADER_STAGE_FRAGMENT_BIT, "main", pass.shaders.fragment)},
@@ -318,10 +354,10 @@ void main() { uv=vec2((gl_VertexIndex<<1)&2,gl_VertexIndex&2); gl_Position=vec4(
         {
             // Same log-luminance range and exponential adaptation law as the
             // existing OpenMW postprocessor. Entire reduction/history is GPU-side.
-            auto luminance = build.target(256, 256, GL_R16F, true, {{0,0,0,0}});
+            auto luminance = build.target(256, 256, Fx::NativeImageFormat::R16Float, true, {{0,0,0,0}});
             luminance.sampled->sampler->maxLod = 8;
-            auto history = build.target(1, 1, GL_R32F, false, {{1,0,0,0}});
-            auto adapted = build.target(1, 1, GL_R32F, false, {{1,0,0,0}});
+            auto history = build.target(1, 1, Fx::NativeImageFormat::R32Float, false, {{1,0,0,0}});
+            auto adapted = build.target(1, 1, Fx::NativeImageFormat::R32Float, false, {{1,0,0,0}});
             mExposure = vsg::vec4Value::create(vsg::vec4(0, frame.exposureSpeed, 0, 0));
             mExposure->properties.dataVariance = vsg::DYNAMIC_DATA_TRANSFER_AFTER_RECORD;
             Fx::NativePass pass;
@@ -358,14 +394,14 @@ color=vec4(prev+(current-prev)*(1.0-exp(-exposure.x*exposure.y))); }
             std::map<std::string, Target> histories, current;
             for (const auto& [name, target] : technique.targets)
             {
-                const auto [width, height] = target.mSize.get(static_cast<int>(extent.width), static_cast<int>(extent.height));
-                auto resource = build.target(width, height, target.mTarget->getInternalFormat(), target.mMipMap,
-                    {{target.mClearColor.r(), target.mClearColor.g(), target.mClearColor.b(), target.mClearColor.a()}}, target.mTarget);
+                const auto [width, height] = target.size.get(static_cast<int>(extent.width), static_cast<int>(extent.height));
+                auto resource = build.target(width, height, target.format, target.mipMap,
+                    {{target.clearColor[0], target.clearColor[1], target.clearColor[2], target.clearColor[3]}}, &target.sampler);
                 histories.emplace(name, resource);
                 current.emplace(name, std::move(resource));
             }
             std::map<std::string, ImageInfo> textures;
-            for (const auto& texture : technique.textures) textures.emplace(texture->getName(), build.texture(*texture));
+            for (const auto& texture : technique.textures) textures.emplace(texture.name, build.texture(texture));
             auto lastPass = lastShader;
             for (const auto& pass : technique.passes)
             {
@@ -387,7 +423,7 @@ color=vec4(prev+(current-prev)*(1.0-exp(-exposure.x*exposure.y))); }
                     const auto& previous = current.at(pass.target);
                     const auto& spec = technique.targets.at(pass.target);
                     destination = build.target(previous.image->extent.width, previous.image->extent.height,
-                        spec.mTarget->getInternalFormat(), spec.mMipMap, {{0,0,0,0}}, spec.mTarget);
+                        spec.format, spec.mipMap, {{0,0,0,0}}, &spec.sampler);
                     // Preserve authored clear values, partial writes and blending
                     // while avoiding attachment/sampler feedback aliasing.
                     commands->addChild(FxCopyImage::create(previous.image, destination.image));
@@ -401,7 +437,7 @@ color=vec4(prev+(current-prev)*(1.0-exp(-exposure.x*exposure.y))); }
                     });
                     if (candidate == pingPong.end())
                     {
-                        pingPong.push_back(build.target(extent.width, extent.height, GL_RGBA16F, false, {{0,0,0,0}}));
+                        pingPong.push_back(build.target(extent.width, extent.height, Fx::NativeImageFormat::Rgba16Float, false, {{0,0,0,0}}));
                         destination = pingPong.back();
                     }
                     else destination = *candidate;
@@ -429,10 +465,10 @@ color=vec4(prev+(current-prev)*(1.0-exp(-exposure.x*exposure.y))); }
         // ray even though inverse projection itself is correct.
         auto state = frame.state;
         const glm::mat4 currentView(view.current.view), previousView(view.previous.view);
-        Fx::StateUpdater::updateNativeCameraSnapshot(state,
-            osg::Matrixf(&view.current.projection.matrix[0][0]), osg::Matrixf(&currentView[0][0]),
-            osg::Matrixf(&previousView[0][0]), static_cast<float>(view.current.projection.nearPlane),
-            static_cast<float>(view.current.projection.farPlane), osg::Vec2f(extent.width, extent.height));
+        Fx::StateUpdater::updateNativeCameraSnapshot(state, &view.current.projection.matrix[0][0],
+            &currentView[0][0], &previousView[0][0], static_cast<float>(view.current.projection.nearPlane),
+            static_cast<float>(view.current.projection.farPlane), static_cast<float>(extent.width),
+            static_cast<float>(extent.height));
         std::memcpy(mState->dataPointer(), state.data(), state.size());
         mState->dirty();
         if (frame.parameters.size() != mParameters.size()) throw std::runtime_error("OMWFX parameter chain mismatch");
