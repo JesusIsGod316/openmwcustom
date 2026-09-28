@@ -758,7 +758,10 @@ namespace MWRender
                                 Settings::shaders().mApplyLightingToEnvironmentMaps);
                         cleanObjectPublications += producer->cleanPublications - clean;
                         objectBindingInspections += producer->bindingInspections - inspections;
-                        if (!producer->eventDriven() && Debug::GameplayDiagnostics::sampling()
+                        const bool supportedParticleBody = supportedContinuousProducers
+                            && producer->hasIntrinsicParticles() && producer->bodyEventDriven();
+                        if (!producer->eventDriven() && !supportedParticleBody
+                            && Debug::GameplayDiagnostics::sampling()
                             && Misc::environmentFlag<"OPENMW_VK_PRODUCER_DIRTY_QUEUES">()
                             && queueFallbackEvents++ < 4)
                             Debug::GameplayDiagnostics::recordEvent("producer_queue_fallback", {
@@ -869,7 +872,7 @@ namespace MWRender
                         source.immediateEffectDraws.push_back(std::move(draw));
                 }
                 if (supportedContinuousProducers && objectProducer && objectProducer->hasIntrinsicParticles()
-                    && !capturedEffects)
+                    && objectProducer->bodyEventDriven() && !capturedEffects)
                     animation.setV4ProducerSupportedParticle();
                 else if (queuedPublication && !capturedEffects)
                     animation.setV4ProducerDemandDriven(true);
