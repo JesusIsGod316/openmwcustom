@@ -1,0 +1,39 @@
+name: P8U1 sound header repair
+on:
+  push:
+    branches: [optimizedmw/p8u1-source-work]
+    paths: [.github/workflows/p8u1-sound-header-repair.yml]
+permissions:
+  contents: write
+jobs:
+  Repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: optimizedmw/p8u1-resource-donors
+          fetch-depth: 0
+      - name: Apply only the verified missing direct include
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = e00ede5530c4ed795e8f40a8c6a6090211e67c2b
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          path = 'apps/openmw/mwsound/soundmanagerimp.cpp'
+          assert subprocess.check_output(['git','hash-object',path]).decode().strip() == '18c9007cdbc05d979bbe9f28ceb210bb4780b8fc'
+          p = Path(path)
+          data = p.read_bytes()
+          old = b'#include <components/esm3/loadinfo.hpp>\n'
+          assert data.count(old) == 1
+          p.write_bytes(data.replace(old, old + b'#include <components/esm3/loadsoun.hpp>\n'))
+          assert subprocess.check_output(['git','hash-object',path]).decode().strip() == '4b4ade1b98cc0026b61e773d5a0db3665e442b49'
+          PY
+          git diff --check
+          python tools/optimizedmw/p8u1/source-contract.py
+          git add apps/openmw/mwsound/soundmanagerimp.cpp
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'P8U1: include complete ESM sound record where loading-time warming reads its fields'
+          git push origin HEAD:refs/heads/optimizedmw/p8u1-resource-donors
+          git rev-parse HEAD >> "$GITHUB_STEP_SUMMARY"
