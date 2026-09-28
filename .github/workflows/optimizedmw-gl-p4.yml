@@ -1,29 +1,107 @@
-name: OptimizedMW P8G3 shader deployment repair hold
+name: OptimizedMW GL-P8G3 visibility LOD and deployed PBR gate
 on:
   push:
     branches: [optimizedmw/gl-p8g3-visibility-lod]
-    paths: [.github/workflows/optimizedmw-gl-p4.yml]
   workflow_dispatch:
 permissions:
   contents: read
-  actions: write
+  actions: read
+concurrency:
+  group: optimizedmw-p8g3-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  StopObsoleteGate:
+  Source:
     runs-on: ubuntu-24.04
     steps:
-      - name: Stop only superseded P8G3 gate with unpatched PBR overlay
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install native graphics dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y libopenscenegraph-dev libmygui-dev libbullet-dev libglm-dev libboost-dev libyaml-cpp-dev libgl1-mesa-dev xvfb xauth
+      - name: Verify retained contracts and validated source ancestry
         run: |
           set -euo pipefail
-          gh api repos/JesusIsGod316/openmwcustom/actions/runs/36375563293 > /tmp/run.json
+          for p in 3 4 6 7 8 8g2 8g3; do python tools/optimizedmw/gl-p$p/source-contract.py; done
+          git merge-base --is-ancestor 4a11bd6f8ab2582390da8e8b398102453f6e4f18 HEAD
+          git diff 4a11bd6f8ab2582390da8e8b398102453f6e4f18 --check
+      - name: Compile actual integration and test deployed PBR shader matrix
+        run: |
+          cmake -S tools/optimizedmw/gl-p8g3 -B build-p8g3 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DP8G3_SANITIZERS=ON
+          cmake --build build-p8g3 --parallel 2
+          ctest --test-dir build-p8g3 -V --output-on-failure
+      - name: Validate launcher syntax and deployed shader preflight
+        shell: pwsh
+        run: |
+          $tokens=$null; $errors=$null
+          $path=(Resolve-Path 'tools/optimizedmw/gl-p8g3/OptimizedMW_GL-P8G3_Test.ps1').Path
+          $null=[System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors)
+          if($errors.Count){throw 'Invalid P8G3 launcher syntax'}
+          $bat=Get-Content -Raw 'tools/optimizedmw/gl-p8g3/START-OptimizedMW-GL-P8G3-Test.bat'
+          $command=[regex]::Match($bat,'(?m)^powershell.exe .* -Command "(.*)"').Groups[1].Value
+          if(-not $command){throw 'Missing deployed shader preflight'}
+          $null=[System.Management.Automation.Language.Parser]::ParseInput($command,[ref]$tokens,[ref]$errors)
+          if($errors.Count){throw 'Invalid shader preflight syntax'}
+          Push-Location 'build-p8g3/deployment/staged'
+          try { & ([scriptblock]::Create($command)) } finally { Pop-Location }
+      - name: Retained P3 tests
+        run: |
+          cmake -S tools/optimizedmw/gl-p3 -B build-p3 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOPTIMIZEDMW_P3_SANITIZERS=ON
+          cmake --build build-p3 --parallel 2
+          ctest --test-dir build-p3 -V --output-on-failure
+      - name: Retained P4 tests
+        run: |
+          cmake -S tools/optimizedmw/gl-p4 -B build-p4 -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build-p4 --parallel 2
+          ctest --test-dir build-p4 -V --output-on-failure
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: P8G3-native-gate-${{ github.sha }}
+          path: |
+            build-p8g3/Testing/Temporary/LastTest.log
+            build-p8g3/deployed-shader-sources
+            build-p8g3/deployment/staged/resources/shaders/shader-package.json
+            build-p3/Testing/Temporary/LastTest.log
+            build-p4/Testing/Temporary/LastTest.log
+          retention-days: 14
+  Windows:
+    needs: Source
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
+  InstalledPackage:
+    needs: Windows
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: openmw-windows-2022-${{ github.sha }}
+          path: installed
+      - name: Verify installed runtime shaders, identity and launchers
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          python tools/v4/cp4/shader_resources.py verify installed/resources/shaders
           python - <<'PY'
-          import json
-          r=json.load(open('/tmp/run.json'))
-          assert r['head_sha']=='85933fed0d00b0e6fa8b39964650cb9456cf9055'
-          assert r['head_branch']=='optimizedmw/gl-p8g3-visibility-lod'
-          assert r['path']=='.github/workflows/optimizedmw-gl-p4.yml'
+          import pathlib,json,hashlib,os
+          root=pathlib.Path('installed')
+          for name in ('openmw.exe','START-OptimizedMW-GL-P8G3-Test.bat','OptimizedMW_GL-P8G3_Test.ps1'):
+              assert (root/name).is_file(),name
+          assert os.environ['EXPECTED_COMMIT'] in (root/'CI-ID.txt').read_text()
+          manifest=json.loads((root/'resources/shaders/shader-package.json').read_text())
+          expected=json.loads(pathlib.Path('files/shaders/v3overlay/p8g3/manifest.json').read_text())
+          assert manifest['groundcover_patch']==expected
+          assert 'compatibility/groundcover_lod.glsl' in manifest['files']
+          names=['openmw.exe','resources/shaders/compatibility/groundcover.vert','resources/shaders/compatibility/groundcover.frag','resources/shaders/compatibility/groundcover_lod.glsl']
+          lines=[hashlib.sha256((root/n).read_bytes()).hexdigest()+'  '+n for n in names]
+          pathlib.Path('P8G3-INSTALLED-SHA256.txt').write_text('\n'.join(lines)+'\n')
+          print('\n'.join(lines))
           PY
-          if [ "$(python -c 'import json; print(json.load(open("/tmp/run.json"))["status"])')" != completed ]; then
-            gh api --method POST repos/JesusIsGod316/openmwcustom/actions/runs/36375563293/cancel
-          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: P8G3-installed-identity-${{ github.sha }}
+          path: P8G3-INSTALLED-SHA256.txt
+          retention-days: 14
