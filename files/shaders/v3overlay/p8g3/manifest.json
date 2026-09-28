@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "id": "optimizedmw-p8g3-pbr-groundcover",
+  "files": {
+    "compatibility/groundcover.vert": {
+      "before_sha256": "2415fc47f342adf2d9c67f994e398e193c0a9955e349f7ddf1371c0790a84a13",
+      "after_sha256": "af888e6b59fd67773dc1ab1aaa91e53cfd6977a900023bd7aa799105189028b2"
+    },
+    "compatibility/groundcover.frag": {
+      "before_sha256": "26bd63149c8098744f7c16ed7cdaa7aff61abeaa42997513743418f8f6b62ec3",
+      "after_sha256": "aeb81404ff0d8d778ddf94083bb7e081adb2087caac704a0560a2c52bde4de2f"
+    }
+  }
+}

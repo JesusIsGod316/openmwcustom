@@ -66,6 +66,10 @@ try
             std::string log; pcp->getInfoLog(log);
             throw std::runtime_error("production groundcover program failed variant "+std::to_string(linked)+" "+log);
         }
+        if ((pcp->getUniformLocation("p8g3LodParams") >= 0) != (lod != 0))
+            throw std::runtime_error("LOD switch not active in actual linked shader");
+        if (pcp->getAttribLocation("aOffset") != 6 || pcp->getAttribLocation("aRotation") != 7)
+            throw std::runtime_error("groundcover instance attributes moved");
         ++linked;
         program->releaseGLObjects(context->getState());
     }

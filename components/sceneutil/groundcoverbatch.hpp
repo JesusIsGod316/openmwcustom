@@ -78,7 +78,7 @@ namespace SceneUtil::GroundcoverBatch
                 {
                     float value = 0.f;
                     if (uniform->get(value))
-                        result = std::max(result, GroundcoverPolicy::windMargin(std::abs(value)));
+                        result = std::max(result, GroundcoverPolicy::windMargin(value));
                 }
                 if (const auto* uniform = state->getUniform("groundcoverWindCoefficients"))
                 {

@@ -37,3 +37,13 @@ require('settings_restore_verified' in l and '$originalEnv' in l, 'launcher rest
 for file in ['START-OptimizedMW-GL-P8G3-Test.bat','OptimizedMW_GL-P8G3_Test.ps1']:
     require(file in read('CMakeLists.txt'), 'packaged '+file)
 print('P8G3 source integration contracts passed; runtime and native tests are separate')
+
+cm = read('files/shaders/CMakeLists.txt')
+require('compatibility/groundcover_lod.glsl' in cm, 'LOD helper is actually packaged')
+require(cm.count('--groundcover-patch "${_groundcover_patch}"') == 2, 'configure and incremental PBR deployment')
+pv = read('files/shaders/v3overlay/p8g3/compatibility/groundcover.vert')
+pf = read('files/shaders/v3overlay/p8g3/compatibility/groundcover.frag')
+require('optimizedmwGroundcoverLod' in pv and 'optimizedmwGroundcoverFastWind' in pv, 'deployed shader switches')
+require('alpha *= p8g3Coverage;' in pf and pf.index('alpha *= p8g3Coverage;') > pf.index('alpha = mix(alpha'), 'PBR edge refinement cannot restore omitted grass')
+require('ProcessLighting' in pf and 'GROUNDCOVER_SSS' in pf and 'Gust' in pv, 'retain PBR shader semantics')
+require('40.0 * std::abs(w)' in p, 'PBR long-wind lean covered')

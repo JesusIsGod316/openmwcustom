@@ -73,3 +73,19 @@ hill/building reveal, fast turns, teleport/cell return, looking down, water/refl
 cutouts, torch lighting and night/weather. Then wind-only/order-only or combined modes if useful. Require real GPU/wall
 improvement and neutral-or-better p95/p99/transition/memory behavior; higher rejection alone is not a performance win.
 The rejected P8G1 basis attributes, SHADOW-LITE, old stronger MSOC and global sorter are not revived.
+
+## Pinned PBR deployment correction
+
+The P8G2 runtime ZIP was inspected directly: its two groundcover shaders are byte-identical to the pinned Rafael overlay,
+and contain none of the P8G2 experiment switches. Those shader-only performance interpretations are withdrawn.
+P8G3 explicitly adapts the two **deployed PBR** shaders after the pinned overlay, with parent/output hashes in the
+package manifest. The remaining overlay files are unchanged. CONTROL with both new switches disabled is token-equivalent
+to the original PBR shaders. PBR lighting, subsurface response, edge refinement, distance fade, shadows and fog remain.
+
+The standalone FAST-WIND option now removes only the middle cosine harmonic from the actual three-term PBR wind,
+retaining the low-frequency term, gust term and long-distance wind lean. This new effective variant needs runtime QA;
+the user's previous no-difference report cannot qualify it because the old switch was not deployed.
+LOD opacity is applied AFTER PBR edge refinement, so that filter cannot resurrect omitted instances. Tight culling
+bounds cover the actual PBR gust and 40*windSpeed lean, as well as the legacy shader family. The LOD helper is in the
+explicit package list. Native CI runs the real CMake configure and incremental staging path, checks unrelated PBR
+bytes and CONTROL equivalence, rejects missing/stale payloads, then compiles the **staged PBR** shader matrix.

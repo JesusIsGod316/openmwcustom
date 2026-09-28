@@ -86,6 +86,17 @@ int main()
                     + (1 - .04 * v) * std::cos(2 * time) + (1 + .14 * v) * std::sin(3 * time)
                     + (1 + .28 * v) * std::sin(5 * time));
                 require(std::abs(x) + 60 < bound, "analytic margin covers four harmonics plus stomp");
+                const double pv = std::sqrt(2.0 * (wind + .3) * (wind + .3) + 1.0);
+                const double c = std::max(0.0, std::cos(3.7 * time));
+                const double gust = .8 * c * c + .4 * std::sin(3.7 * time);
+                for (bool fast : { false, true })
+                {
+                    const double h = (1 - .13 * pv) * std::sin(2.3 * time)
+                        + (fast ? 0.0 : (1 - .17 * pv) * std::cos(4.4 * time))
+                        + (1 + .41 * pv) * gust;
+                    const double displacement = (2.0 * (wind + .3) + .1) * h + 40.0 * wind;
+                    require(std::abs(displacement) + 60 < bound, "deployed PBR gust and long lean bounded");
+                }
             }
         }
         require(!std::isfinite(P::windMargin(std::numeric_limits<float>::infinity())), "invalid wind fails open");

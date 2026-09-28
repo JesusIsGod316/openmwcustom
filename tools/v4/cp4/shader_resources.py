@@ -79,6 +79,14 @@ def verify(root):
     if manifest.get('schema') != 1 or manifest.get('overlay_sha256') != OVERLAY_SHA256 or not manifest.get('files'):
         raise ValueError('Unrecognized or empty shader package manifest')
     errors = []
+    if 'groundcover_patch' in manifest:
+        patch = manifest['groundcover_patch']
+        if (patch.get('id') != 'optimizedmw-p8g3-pbr-groundcover'
+                or set(patch.get('files', {})) != {'compatibility/groundcover.vert', 'compatibility/groundcover.frag'}):
+            raise ValueError('Invalid deployed groundcover patch provenance')
+        for name, hashes in patch['files'].items():
+            if manifest['files'].get(name) != hashes.get('after_sha256'):
+                raise ValueError('Deployed groundcover patch hash mismatch: ' + name)
     for name, expected in manifest['files'].items():
         path = safe_path(root, name)
         if not path.is_file():
@@ -94,7 +102,28 @@ def verify(root):
             'overlay_sha256': manifest['overlay_sha256']}
 
 
-def stage(source, base_list, overlay, destination):
+def apply_groundcover_patch(payload, patch_manifest):
+    if patch_manifest is None:
+        return None
+    patch_manifest = Path(patch_manifest)
+    patch = json.loads(patch_manifest.read_text(encoding='utf-8'))
+    allowed = {'compatibility/groundcover.vert', 'compatibility/groundcover.frag'}
+    if (patch.get('schema') != 1 or patch.get('id') != 'optimizedmw-p8g3-pbr-groundcover'
+            or set(patch.get('files', {})) != allowed):
+        raise ValueError('Unrecognized groundcover overlay patch')
+    replacements = {}
+    for name, hashes in patch['files'].items():
+        if name not in payload or digest(payload[name]) != hashes['before_sha256']:
+            raise ValueError('Groundcover patch parent mismatch: ' + name)
+        data = safe_path(patch_manifest.parent, name).read_bytes()
+        if digest(data) != hashes['after_sha256']:
+            raise ValueError('Groundcover patch output mismatch: ' + name)
+        replacements[name] = data
+    payload.update(replacements)
+    return patch
+
+
+def stage(source, base_list, overlay, destination, groundcover_patch=None):
     source, destination, overlay = Path(source), Path(destination), Path(overlay)
     if digest(overlay.read_bytes()) != OVERLAY_SHA256:
         raise ValueError('Pinned shader overlay checksum mismatch')
@@ -107,6 +136,7 @@ def stage(source, base_list, overlay, destination):
             if not entry.is_dir():
                 safe_path(destination, entry.filename)
                 payload[entry.filename] = archive.read(entry)
+    patch = apply_groundcover_patch(payload, groundcover_patch)
     for name, data in payload.items():
         path = safe_path(destination, name)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,6 +147,8 @@ def stage(source, base_list, overlay, destination):
         raise ValueError('Shader deployment has unresolved dependencies:\n' + '\n'.join(errors))
     manifest = {'schema': 1, 'overlay_sha256': OVERLAY_SHA256,
                 'files': {name: digest(data) for name, data in sorted(payload.items())}}
+    if patch is not None:
+        manifest['groundcover_patch'] = patch
     (destination / MANIFEST).write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     return verify(destination)
 
@@ -129,10 +161,11 @@ def main():
     copy = sub.add_parser('stage')
     for name in ('source', 'base-list', 'overlay', 'destination'):
         copy.add_argument('--' + name, required=True)
+    copy.add_argument('--groundcover-patch')
     args = parser.parse_args()
     try:
         result = verify(args.destination) if args.mode == 'verify' else stage(
-            args.source, args.base_list, args.overlay, args.destination)
+            args.source, args.base_list, args.overlay, args.destination, args.groundcover_patch)
     except (OSError, ValueError, zipfile.BadZipFile) as error:
         parser.exit(1, str(error) + '\n')
     print('Shader package QC PASS: ' + json.dumps(result))

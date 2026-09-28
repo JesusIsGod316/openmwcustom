@@ -122,9 +122,17 @@ namespace SceneUtil::GroundcoverPolicy
         const double v = std::sqrt(2.0 * w * w + 1.0);
         // Each sine/cosine is bounded by one; full wind bounds reduced wind too.
         // Stomp is bounded by STOMP_DISTANCE (max 60), including height-sensitive mode.
-        const double result = std::abs(2.0 * w + 0.1)
+        const double legacy = std::abs(2.0 * w + 0.1)
             * (std::abs(1.0 - .10 * v) + std::abs(1.0 - .04 * v)
                 + std::abs(1.0 + .14 * v) + std::abs(1.0 + .28 * v)) + 60.0;
+        const double pbrV = std::sqrt(2.0 * (w + .3) * (w + .3) + 1.0);
+        // The shipped Rafael PBR shader uses a bounded Gust (<= 1.2), three
+        // harmonics and a permanent 40*windSpeed world-space lean. This term
+        // is essential: the raw-source four-harmonic bound does not cover it.
+        const double pbr = std::abs(2.0 * (w + .3) + .1)
+            * (std::abs(1.0 - .13 * pbrV) + std::abs(1.0 - .17 * pbrV)
+                + 1.2 * std::abs(1.0 + .41 * pbrV)) + 60.0 + 40.0 * std::abs(w);
+        const double result = std::max(legacy, pbr);
         return result < std::numeric_limits<float>::max()
             ? static_cast<float>(result + 1.0) : std::numeric_limits<float>::infinity();
     }

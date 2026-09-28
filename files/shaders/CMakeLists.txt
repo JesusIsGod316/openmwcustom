@@ -45,6 +45,7 @@ set(SHADER_FILES
     compatibility/fog.glsl
     compatibility/groundcover.vert
     compatibility/groundcover.frag
+    compatibility/groundcover_lod.glsl
     compatibility/globalmap.vert
     compatibility/globalmap.frag
     compatibility/water.vert
@@ -176,6 +177,11 @@ endif()
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(_shader_tool "${PROJECT_SOURCE_DIR}/tools/v4/cp4/shader_resources.py")
 set(_shader_list "${CMAKE_CURRENT_BINARY_DIR}/shader-base-files.txt")
+set(_groundcover_patch "${CMAKE_CURRENT_SOURCE_DIR}/v3overlay/p8g3/manifest.json")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${_shader_tool}" "${_groundcover_patch}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v3overlay/p8g3/compatibility/groundcover.vert"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v3overlay/p8g3/compatibility/groundcover.frag")
 string(REPLACE ";" "\n" _shader_list_text "${SHADER_FILES}")
 file(WRITE "${_shader_list}" "${_shader_list_text}\n")
 get_generator_is_multi_config(_shader_multi_config)
@@ -189,14 +195,15 @@ endif()
 foreach(_shader_configuration IN LISTS _shader_configurations)
     execute_process(COMMAND "${Python3_EXECUTABLE}" "${_shader_tool}" stage
         --source "${CMAKE_CURRENT_SOURCE_DIR}" --base-list "${_shader_list}"
-        --overlay "${_v3_raf_pbr_zip}"
+        --overlay "${_v3_raf_pbr_zip}" --groundcover-patch "${_groundcover_patch}"
         --destination "${OPENMW_RESOURCES_ROOT}/${_shader_configuration}/${DDIRRELATIVE}"
         COMMAND_ERROR_IS_FATAL ANY)
 endforeach()
 add_custom_target(openmw-shader-resources
     COMMAND "${Python3_EXECUTABLE}" "${_shader_tool}" stage
         --source "${CMAKE_CURRENT_SOURCE_DIR}" --base-list "${_shader_list}"
-        --overlay "${_v3_raf_pbr_zip}" --destination "${_shader_destination}"
+        --overlay "${_v3_raf_pbr_zip}" --groundcover-patch "${_groundcover_patch}"
+        --destination "${_shader_destination}"
     VERBATIM)
 add_test(NAME openmw-shader-package
     COMMAND "${Python3_EXECUTABLE}" "${_shader_tool}" verify "${_shader_destination}")

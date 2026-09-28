@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 3.20)
+project(P8G3_ActualShaderDeployment LANGUAGES NONE)
+get_filename_component(ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
+# Exercise the production shader CMake target, not a mirrored list/stager.
+set(PROJECT_SOURCE_DIR "${ROOT}")
+set(OPENMW_RESOURCES_ROOT "${CMAKE_BINARY_DIR}/staged")
+function(get_generator_is_multi_config output)
+    get_property(multi GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+    set(${output} "${multi}" PARENT_SCOPE)
+endfunction()
+enable_testing()
+add_subdirectory("${ROOT}/files/shaders" shader-package)
