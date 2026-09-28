@@ -514,6 +514,10 @@ namespace MWRender
             Debug::GameplayDiagnostics::recordEvent("producer_queue", {
                 {"registered", std::to_string(mV4ObjectQueue->registered())},
                 {"continuous", std::to_string(mV4ObjectQueue->continuous())},
+                {"demand_driven", std::to_string(mV4ObjectQueue->demandDriven())},
+                {"supported_actors", std::to_string(mV4ObjectQueue->supportedActors())},
+                {"supported_particles", std::to_string(mV4ObjectQueue->supportedParticles())},
+                {"compatibility_continuous", std::to_string(mV4ObjectQueue->compatibilityContinuous())},
                 {"visited", std::to_string(mV4ObjectQueue->visited())}});
     }
 #endif
