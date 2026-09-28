@@ -48,7 +48,9 @@ namespace MWRender
             {
                 mSubscription = std::make_shared<SceneUtil::RenderMutationSource::Subscription>();
                 mOwner = std::make_shared<RenderCore::PersistentDrawOwner>();
-                mOwner->eventDriven = static_cast<bool>(wake);
+                mOwner->eventDriven = static_cast<bool>(wake)
+                    && (!mHasIntrinsicParticles
+                        || Misc::environmentFlag<"OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS">());
                 mSubscription->wake = std::move(wake);
                 for (const auto& b : mNodes)
                 {

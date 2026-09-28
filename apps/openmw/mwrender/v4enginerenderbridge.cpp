@@ -521,6 +521,9 @@ namespace MWRender
         std::uint64_t cleanObjectPublications = 0, objectBindingInspections = 0;
         unsigned queueFallbackEvents = 0;
         unsigned particleBodySleeps = 0;
+        const bool supportedContinuousProducers
+            = Misc::environmentFlag<"OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS">()
+            && Misc::environmentFlag<"OPENMW_VK_PRODUCER_DIRTY_QUEUES">();
         if (persistentDraws) mPersistentDraws.begin(worldEpoch.value());
         if (mEvaluatedObjectPlaybackEpoch != worldEpoch)
         {
@@ -740,7 +743,7 @@ namespace MWRender
                         const auto reuses = producer->reusedDraws;
                         const auto clean = producer->cleanPublications;
                         const auto inspections = producer->bindingInspections;
-                        const bool particleBodyCanSleep = persistentDraws
+                        const bool particleBodyCanSleep = supportedContinuousProducers && persistentDraws
                             && animation.previousV4ProducerClass() == V4ProducerClass::SupportedContinuousParticle
                             && !animation.v4ProducerVisitIsDirty() && producer->hasIntrinsicParticles()
                             && producer->canReuseBodyWithoutVisit();
@@ -865,7 +868,8 @@ namespace MWRender
                     for (RenderCore::ImmediateEffectDraw& draw : capturedEffects->draws)
                         source.immediateEffectDraws.push_back(std::move(draw));
                 }
-                if (objectProducer && objectProducer->hasIntrinsicParticles() && !capturedEffects)
+                if (supportedContinuousProducers && objectProducer && objectProducer->hasIntrinsicParticles()
+                    && !capturedEffects)
                     animation.setV4ProducerSupportedParticle();
                 else if (queuedPublication && !capturedEffects)
                     animation.setV4ProducerDemandDriven(true);
@@ -1611,10 +1615,13 @@ namespace MWRender
                 }
                 currentActorLights.insert(light.identity);
             }
-            if (actorParticleProducer)
-                animation.setV4ProducerSupportedParticle();
-            else
-                animation.setV4ProducerSupportedActor();
+            if (supportedContinuousProducers)
+            {
+                if (actorParticleProducer)
+                    animation.setV4ProducerSupportedParticle();
+                else
+                    animation.setV4ProducerSupportedActor();
+            }
         }, mPersistentDraws.stream());
         if (cachedObjectAdmission && Debug::GameplayDiagnostics::sampling())
             Debug::GameplayDiagnostics::recordEvent("object_admission_cache", {

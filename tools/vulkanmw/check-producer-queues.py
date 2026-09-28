@@ -19,7 +19,7 @@ def main():
         'rendering.forEachV4Animation(', 'mPersistentDraws.stream()',
         'producer->eventDriven()', 'animation.setV4ProducerDemandDriven(true)',
         'animation.setV4ProducerSupportedActor()', 'animation.setV4ProducerSupportedParticle()',
-        'const bool queuedPublication', 'particleBodyCanSleep')
+        'const bool queuedPublication', 'particleBodyCanSleep', 'OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS')
     if 'rendering.forEachAnimation(' in bridge:
         raise AssertionError('Bridge regained broad per-frame object inventory traversal')
     require('apps/openmw/mwrender/renderingmanager.cpp',
@@ -52,7 +52,8 @@ def main():
         raise AssertionError('Clean explicitly owned draws regained the full liveness sweep')
     require('components/sceneutil/rendermutation.hpp', 'observer->notify(true)', 'std::atomic_bool', 'if (wake) wake()')
     require('components/sceneutil/positionattitudetransform.hpp', 'void setNodeMask(', 'void setReferenceFrame(')
-    require('apps/openmw/CMakeLists.txt', 'START-VulkanMW-Producer-Test.bat', 'run-producer-queues.py')
+    require('apps/openmw/CMakeLists.txt', 'START-VulkanMW-Producer-Test.bat',
+        'START-VulkanMW-Supported-Producers-Test.bat', 'run-producer-queues.py')
     print('Producer dirty queue source integration PASS')
 
 if __name__ == '__main__':

@@ -32,12 +32,14 @@ require(queue, 'mCompatibilityContinuous', 'compatibility accounting')
 require(bridge, 'animation.setV4ProducerSupportedActor()', 'actor promotion after successful route')
 require(bridge, 'animation.setV4ProducerSupportedParticle()', 'particle promotion after successful route')
 require(bridge, 'particleBodyCanSleep', 'particle body clean-frame bypass')
+require(bridge, 'OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS', 'same-executable supported producer control')
 require(bridge, 'animation.previousV4ProducerClass() == V4ProducerClass::SupportedContinuousParticle',
         'particle bypass restricted to established supported particle lane')
 require(bridge, '!animation.v4ProducerVisitIsDirty()', 'particle body bypass refuses dirty visits')
 require(bridge, 'producer->canReuseBodyWithoutVisit()', 'particle body bypass checks producer-owned mutation state')
 
 require(persistent, 'bool bodyEventDriven() const noexcept', 'body ownership distinct from simulation cadence')
+require(persistent, 'OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS', 'particle body ownership switch')
 require(persistent, 'return bodyEventDriven() && !mHasIntrinsicParticles;',
         'particles stay continuous while body can be event-driven')
 require(persistent, '!mSubscription->changed.load', 'body clean reuse checks late mutation race')

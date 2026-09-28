@@ -44,6 +44,7 @@ class ProducerLauncherTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(self.script), '--help'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--single', result.stdout)
+        self.assertIn('--supported-continuous', result.stdout)
         self.assertEqual(list(self.package.glob('source-changes.json')), [])
 
     def test_identity_is_from_manifest_and_rechecks_executable(self):
@@ -62,7 +63,7 @@ class ProducerLauncherTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.module.source_identity(self.package)
 
-    def run_sequence(self, single=None, failing=False):
+    def run_sequence(self, single=None, failing=False, supported_continuous=False):
         before = {p.name: p.read_bytes() for p in self.normal.iterdir()}
         calls = []
         def fake_run(package, user_config, source, name, arm):
@@ -77,6 +78,8 @@ class ProducerLauncherTests(unittest.TestCase):
         argv = [str(self.script), '--package', str(self.package), '--user-config', str(self.normal)]
         if single:
             argv += ['--single', single]
+        if supported_continuous:
+            argv += ['--supported-continuous']
         with patch.object(sys, 'argv', argv), patch.object(self.module.cohort, 'run', side_effect=fake_run):
             if failing:
                 with self.assertRaisesRegex(RuntimeError, 'synthetic'):
@@ -98,6 +101,15 @@ class ProducerLauncherTests(unittest.TestCase):
         baseline = self.module.cohort.selected(calls[0])
         candidate = self.module.cohort.selected(calls[1])
         self.assertEqual(candidate, baseline | {'OPENMW_VK_PRODUCER_DIRTY_QUEUES': '1'})
+
+    def test_supported_continuous_abba_changes_only_supported_control(self):
+        calls = self.run_sequence(supported_continuous=True)
+        self.assertEqual(calls, [self.module.SUPPORTED_BASE, self.module.SUPPORTED_CANDIDATE,
+                                 self.module.SUPPORTED_CANDIDATE, self.module.SUPPORTED_BASE])
+        baseline = self.module.cohort.selected(calls[0])
+        candidate = self.module.cohort.selected(calls[1])
+        self.assertEqual(candidate, baseline | {'OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS': '1'})
+        self.assertEqual(baseline.get('OPENMW_VK_PRODUCER_DIRTY_QUEUES'), '1')
 
     def test_failure_keeps_evidence_and_preserves_normal_data(self):
         self.assertEqual(len(self.run_sequence(failing=True)), 1)

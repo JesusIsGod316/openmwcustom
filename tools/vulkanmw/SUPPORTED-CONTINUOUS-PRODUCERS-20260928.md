@@ -17,7 +17,9 @@ unknown callbacks/raw mutable OSG compatibility.
 - `CompatibilityContinuous`: fail-closed lane for uncovered/unknown mutation or unsupported content.
 
 Classification is committed only after a successful visit. Each visit starts fail-closed, so a route that stops being
-supported cannot remain mislabeled. Queue registration and generation safety are unchanged.
+supported cannot remain mislabeled. Queue registration and generation safety are unchanged. The complete slice is
+same-executable switchable with `OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS=1`; without it, the green producer-queue
+checkpoint keeps the prior compatibility-continuous behavior.
 
 ## Particle body/simulation split
 
@@ -35,8 +37,9 @@ particles, and unsupported/custom particle graphs are not reclassified by this s
 `compatibility_continuous` in addition to registered/continuous/visited. `object_producer_work` reports
 `particle_body_sleeps`.
 
-The first runtime goal is classification stability: steady supported actors/particles should stop inflating the true
-compatibility count. For intrinsic-particle objects, clean body sleeps should be nonzero where present. Whole-frame
+The packaged `START-VulkanMW-Supported-Producers-Test.bat` runs A/B/B/A with dirty queues enabled in every arm and
+changes only `OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS`. The first runtime goal is classification stability: steady
+supported actors/particles should stop inflating the true compatibility count. For intrinsic-particle objects, clean body sleeps should be nonzero where present. Whole-frame
 performance remains secondary until the same-executable benchmark shows a repeatable effect. Do not infer a win from
 counter changes alone.
 
