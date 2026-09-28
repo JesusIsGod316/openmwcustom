@@ -520,6 +520,10 @@ namespace MWRender
         unsigned reusedObjectAdmissions = 0, skippedObjectAdmissions = 0;
         std::uint64_t cleanObjectPublications = 0, objectBindingInspections = 0;
         unsigned queueFallbackEvents = 0;
+        unsigned particleBodySleeps = 0;
+        const bool supportedContinuousProducers
+            = Misc::environmentFlag<"OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS">()
+            && Misc::environmentFlag<"OPENMW_VK_PRODUCER_DIRTY_QUEUES">();
         if (persistentDraws) mPersistentDraws.begin(worldEpoch.value());
         if (mEvaluatedObjectPlaybackEpoch != worldEpoch)
         {
@@ -739,12 +743,25 @@ namespace MWRender
                         const auto reuses = producer->reusedDraws;
                         const auto clean = producer->cleanPublications;
                         const auto inspections = producer->bindingInspections;
-                        planned = producer->publish("animated-object:" + *identity, mVfs, mTextureIdentities,
-                            persistentDraws ? &mPersistentDraws : nullptr,
-                            Settings::shaders().mApplyLightingToEnvironmentMaps);
+                        const bool particleBodyCanSleep = supportedContinuousProducers && persistentDraws
+                            && animation.previousV4ProducerClass() == V4ProducerClass::SupportedContinuousParticle
+                            && !animation.v4ProducerVisitIsDirty() && producer->hasIntrinsicParticles()
+                            && producer->canReuseBodyWithoutVisit();
+                        if (particleBodyCanSleep)
+                        {
+                            planned.emplace();
+                            ++particleBodySleeps;
+                        }
+                        else
+                            planned = producer->publish("animated-object:" + *identity, mVfs, mTextureIdentities,
+                                persistentDraws ? &mPersistentDraws : nullptr,
+                                Settings::shaders().mApplyLightingToEnvironmentMaps);
                         cleanObjectPublications += producer->cleanPublications - clean;
                         objectBindingInspections += producer->bindingInspections - inspections;
-                        if (!producer->eventDriven() && Debug::GameplayDiagnostics::sampling()
+                        const bool supportedParticleBody = supportedContinuousProducers
+                            && producer->hasIntrinsicParticles() && producer->bodyEventDriven();
+                        if (!producer->eventDriven() && !supportedParticleBody
+                            && Debug::GameplayDiagnostics::sampling()
                             && Misc::environmentFlag<"OPENMW_VK_PRODUCER_DIRTY_QUEUES">()
                             && queueFallbackEvents++ < 4)
                             Debug::GameplayDiagnostics::recordEvent("producer_queue_fallback", {
@@ -854,7 +871,10 @@ namespace MWRender
                     for (RenderCore::ImmediateEffectDraw& draw : capturedEffects->draws)
                         source.immediateEffectDraws.push_back(std::move(draw));
                 }
-                if (queuedPublication && !capturedEffects)
+                if (supportedContinuousProducers && objectProducer && objectProducer->hasIntrinsicParticles()
+                    && objectProducer->bodyEventDriven() && !capturedEffects)
+                    animation.setV4ProducerSupportedParticle();
+                else if (queuedPublication && !capturedEffects)
                     animation.setV4ProducerDemandDriven(true);
                 return;
             }
@@ -888,6 +908,7 @@ namespace MWRender
                 for (RenderCore::ImmediateEffectDraw& draw : captured.draws)
                     source.immediateEffectDraws.push_back(std::move(draw));
             }
+            bool actorParticleProducer = false;
             const std::optional<NifRender::StaticModelCacheResult> base
                 = ensureModelPublished(*mSession, mVfs, animation.getV4SourceModel(), &mTextureIdentities);
             if (!base)
@@ -909,6 +930,7 @@ namespace MWRender
                 && std::getenv("OPENMW_V4_REJECT_PARTICLE_ACTORS") == nullptr;
             if (particleActor)
             {
+                actorParticleProducer = true;
                 osg::Node* root = animation.getV4EffectRoot();
                 if (!root)
                 {
@@ -1596,6 +1618,13 @@ namespace MWRender
                 }
                 currentActorLights.insert(light.identity);
             }
+            if (supportedContinuousProducers)
+            {
+                if (actorParticleProducer)
+                    animation.setV4ProducerSupportedParticle();
+                else
+                    animation.setV4ProducerSupportedActor();
+            }
         }, mPersistentDraws.stream());
         if (cachedObjectAdmission && Debug::GameplayDiagnostics::sampling())
             Debug::GameplayDiagnostics::recordEvent("object_admission_cache", {
@@ -1667,7 +1696,8 @@ namespace MWRender
         if (Debug::GameplayDiagnostics::sampling())
             Debug::GameplayDiagnostics::recordEvent("object_producer_work", {
                 {"clean_publications", std::to_string(cleanObjectPublications)},
-                {"binding_inspections", std::to_string(objectBindingInspections)}});
+                {"binding_inspections", std::to_string(objectBindingInspections)},
+                {"particle_body_sleeps", std::to_string(particleBodySleeps)}});
         if (compatible && persistentDraws) source.persistentDraws = mPersistentDraws.finish();
         return compatible;
     }

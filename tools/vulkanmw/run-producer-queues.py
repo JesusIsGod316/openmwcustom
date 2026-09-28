@@ -1,8 +1,10 @@
-"""Matched producer-queue A/B/B/A on one installed VulkanMW executable.
+"""Matched producer A/B/B/A on one installed VulkanMW executable.
 
-Only the queue switch differs. Each run has fresh isolated settings and user
-storage, preserves the content order, and exits naturally. Normal saves are not
-loaded. The generated ZIP includes identity, effective settings and diagnostics.
+Default mode changes only the dirty-queue switch. --supported-continuous keeps
+queues enabled in both arms and changes only supported actor/particle producer
+classification plus the clean intrinsic-particle body reuse path. Each run has
+fresh isolated settings and user storage, preserves content order, and exits
+naturally. Normal saves are not loaded.
 """
 from datetime import datetime
 import argparse
@@ -19,6 +21,8 @@ cohort = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cohort)
 BASE = 'groups+transactions+inventories+actors+admission+change-driven'
 CANDIDATE = BASE + '+queues'
+SUPPORTED_BASE = CANDIDATE
+SUPPORTED_CANDIDATE = SUPPORTED_BASE + '+supported-continuous'
 
 
 def source_identity(package):
@@ -50,12 +54,16 @@ def main():
     parser.add_argument('--package', type=Path, default=HERE.parents[1])
     parser.add_argument('--user-config', type=Path, default=cohort.profile.dc.normal_default())
     parser.add_argument('--single', choices=('candidate', 'control'), help='One smoke run, not a performance verdict')
+    parser.add_argument('--supported-continuous', action='store_true',
+                        help='A/B supported actor/particle producers with dirty queues enabled in both arms')
     args = parser.parse_args()
     package = args.package.resolve()
     source = source_identity(package)
-    sequence = [('control', BASE), ('candidate', CANDIDATE), ('candidate', CANDIDATE), ('control', BASE)]
+    baseline = SUPPORTED_BASE if args.supported_continuous else BASE
+    candidate = SUPPORTED_CANDIDATE if args.supported_continuous else CANDIDATE
+    sequence = [('control', baseline), ('candidate', candidate), ('candidate', candidate), ('control', baseline)]
     if args.single:
-        sequence = [(args.single, CANDIDATE if args.single == 'candidate' else BASE)]
+        sequence = [(args.single, candidate if args.single == 'candidate' else baseline)]
     prefix = 'producer-' + datetime.now().strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:6]
     evidence = []
     try:

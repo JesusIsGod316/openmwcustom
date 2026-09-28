@@ -2,7 +2,9 @@ name: VulkanMW producer dirty queues
 on:
   workflow_dispatch:
   push:
-    branches: [vulkanmw/phase3c-producer-dirty-queues]
+    branches:
+      - vulkanmw/phase3c-producer-dirty-queues
+      - vulkanmw/phase3c-supported-continuous-producers
 permissions:
   contents: read
 concurrency:
@@ -27,7 +29,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_NAME" = "vulkanmw/phase3c-producer-dirty-queues"
+          case "$GITHUB_REF_NAME" in
+            vulkanmw/phase3c-producer-dirty-queues|vulkanmw/phase3c-supported-continuous-producers) ;;
+            *) echo "Unexpected producer branch: $GITHUB_REF_NAME" >&2; exit 1 ;;
+          esac
           git merge-base --is-ancestor 348bfe6b087b7c8b83738e12a11a7e10f9e592ef HEAD
           if test -f .github/vulkanmw-producer-update.patch.sha256; then
             python - <<'PYDECODE'
@@ -277,13 +282,13 @@ jobs:
             "parent_checkpoint=348bfe6b087b7c8b83738e12a11a7e10f9e592ef",
             "renderer_test=Vulkan/VSG",
             "runtime_substitution=producer owned dirty queues and explicit draw retirement",
-            "candidate_control=OPENMW_VK_PRODUCER_DIRTY_QUEUES",
+            "candidate_control=OPENMW_VK_PRODUCER_DIRTY_QUEUES;OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS",
             "launcher=START-VulkanMW-Test.bat",
             "status=build green only; hardware runtime acceptance pending"
           ) | Set-Content -LiteralPath "$stage/VULKANMW-PRODUCER-TEST.txt" -Encoding Ascii
           foreach ($required in @(
             "openmw.exe", "START-VulkanMW-Test.bat", "START-VulkanMW-Producer-Test.bat",
-            "architecture-benchmark.py", "architecture-benchmark.lua", "gameplay-diagnostics.py", "diagnosticconfig.py",
+            "START-VulkanMW-Supported-Producers-Test.bat", "architecture-benchmark.py", "architecture-benchmark.lua", "gameplay-diagnostics.py", "diagnosticconfig.py",
             "tools/vulkanmw/run-producer-queues.py", "tools/vulkanmw/run-publication-cohort.py",
             "tools/vulkanmw/vulkan-profile.py", "tools/vulkanmw/vulkan-clean-settings.cfg", "tools/vulkanmw/frame-profile-report.py",
             "tools/v4/cp4/diagnosticconfig.py", "tools/v4/cp4/gameplay-diagnostics.py", "tools/v4/cp4/architecture-benchmark.lua"

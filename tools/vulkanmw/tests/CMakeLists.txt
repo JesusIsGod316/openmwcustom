@@ -17,6 +17,8 @@ add_test(NAME vulkanmw-phase3c-benchmark-control
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-benchmark-control.py)
 add_test(NAME vulkanmw-producer-launcher
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-producer-launcher.py)
+add_test(NAME vulkanmw-supported-continuous-producers
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-supported-continuous-producers.py)
 add_test(NAME vulkanmw-publication-cohort
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-publication-cohort.py)
 add_executable(vulkanmw-phase3c-metadata-tests phase3c-metadata-tests.cpp)
