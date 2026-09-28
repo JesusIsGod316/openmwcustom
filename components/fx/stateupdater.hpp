@@ -143,6 +143,16 @@ namespace Fx
             write(RcpResolution{}, osg::Vec2f(1.f / resolution.x(), 1.f / resolution.y()));
         }
 
+        // Backend-neutral entry point. Native renderers pass contiguous column-major
+        // 4x4 float matrices and dimensions without depending on OSG types.
+        static void updateNativeCameraSnapshot(std::vector<char>& bytes, const float* projection,
+            const float* view, const float* previousView, float nearPlane, float farPlane,
+            float width, float height)
+        {
+            updateNativeCameraSnapshot(bytes, osg::Matrixf(projection), osg::Matrixf(view), osg::Matrixf(previousView),
+                nearPlane, farPlane, osg::Vec2f(width, height));
+        }
+
         void setDefaults(osg::StateSet* stateset) override;
 
         void apply(osg::StateSet* stateset, osg::NodeVisitor* nv) override;
