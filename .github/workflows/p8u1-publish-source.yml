@@ -1,0 +1,80 @@
+name: Publish verified P8U1 production source
+on:
+  push:
+    branches: [optimizedmw/p8u1-source-work]
+    paths: [.github/workflows/p8u1-publish-source.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: p8u1-source-publication
+  cancel-in-progress: false
+jobs:
+  Publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconstruct and verify exact audited source
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y zstd
+          python - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, json, os, subprocess
+          root = Path('tools/optimizedmw/p8u1-staging')
+          manifest = json.loads((root/'manifest.json').read_text())
+          assert manifest['base'] == '8ed1f63beed5fa2d7b3e46e272cbaa2f9b27f228'
+          assert manifest['tree'] == '9d1f21cf9038b903d5a442fbf840c4e7872806d5'
+          assert manifest['patch_sha256'] == '10651651d66a54cd7f3955a0af796b4e2523a5562de97d003c880e89243aca97'
+          temp = Path(os.environ['RUNNER_TEMP'])/'p8u1-publication'
+          temp.mkdir()
+          dictionary = b''.join(subprocess.check_output(['git','show',manifest['base']+':'+p]) for p in manifest['dictionary_paths'])
+          assert hashlib.sha256(dictionary).hexdigest() == manifest['dictionary_sha256']
+          (temp/'dictionary').write_bytes(dictionary)
+          chunks = []
+          for i in range(1, manifest['chunks']+1):
+              if i == 5:
+                  text = ''.join((root/f'payload-5-{part}.b64').read_text().strip() for part in range(1,5))
+              else:
+                  text = (root/f'payload-{i}.b64').read_text().strip()
+              assert hashlib.sha256((text+'\n').encode()).hexdigest() == manifest['chunk_sha256'][i-1], f'chunk {i}'
+              chunks.append(text)
+          payload = base64.b64decode(''.join(chunks), validate=True)
+          assert hashlib.sha256(payload).hexdigest() == manifest['payload_sha256']
+          (temp/'payload.zst').write_bytes(payload)
+          subprocess.run(['zstd','-q','-d','-D',str(temp/'dictionary'),str(temp/'payload.zst'),'-o',str(temp/'source.patch')],check=True)
+          assert hashlib.sha256((temp/'source.patch').read_bytes()).hexdigest() == manifest['patch_sha256']
+          (temp/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          print('Every transport chunk, dictionary and original patch is verified.')
+          PY
+      - name: Publish real source on isolated branch without replacing P8G4
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/p8u1-publication"
+          test -z "$(git ls-remote --heads origin refs/heads/optimizedmw/p8u1-resource-donors)"
+          git switch --detach 8ed1f63beed5fa2d7b3e46e272cbaa2f9b27f228
+          git apply --check --index "$dir/source.patch"
+          git apply --index "$dir/source.patch"
+          git diff --cached --check
+          test "$(git write-tree)" = 9d1f21cf9038b903d5a442fbf840c4e7872806d5
+          for p in gl-p3 gl-p4 gl-p6 gl-p7 gl-p8 gl-p8g2 gl-p8g3 gl-p8g4 p8u1 p8g5; do
+            python "tools/optimizedmw/$p/source-contract.py"
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'P8U1: resource reuse, cooperative composites, Lua and audio donors, guarded shadow settings; preserve DLSS temporal foundation'
+          git rev-parse HEAD > "$dir/SOURCE-COMMIT.txt"
+          git rev-parse HEAD^{tree} > "$dir/SOURCE-TREE.txt"
+          git diff --stat HEAD^ HEAD > "$dir/CHANGES.txt"
+          git push origin HEAD:refs/heads/optimizedmw/p8u1-resource-donors
+          cat "$dir/SOURCE-COMMIT.txt" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Published source only. Full real-SDK and Windows gates must follow before a playable artifact is accepted.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: P8U1-source-publication
+          path: ${{ runner.temp }}/p8u1-publication/
+          retention-days: 30
