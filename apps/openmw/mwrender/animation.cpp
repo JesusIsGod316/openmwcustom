@@ -2930,9 +2930,11 @@ namespace MWRender
         if (mV4ProducerTicket) mV4ProducerTicket->notify();
     }
 
-    void Animation::finishV4ProducerVisit()
+    V4ProducerClass Animation::finishV4ProducerVisit()
     {
-        if (mV4ProducerTicket) mV4ProducerTicket->continuous(!mV4ProducerDemandDriven);
+        if (mV4ProducerTicket)
+            mV4ProducerTicket->continuous(v4ProducerClassIsContinuous(mV4ProducerClass));
+        return mV4ProducerClass;
     }
 
     V4PersistentObject* Animation::prepareV4PersistentObject()
