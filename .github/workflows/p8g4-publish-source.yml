@@ -29,8 +29,8 @@ jobs:
           assert hashlib.sha256(dictionary).hexdigest()=='909fd283adc82bdbb0bfdd0aacf1e16d3be7fefd2d78c7ade33d233cce73a91c'
           Path('/tmp/p8g4-dict').write_bytes(dictionary)
           text=''.join(Path('tools/optimizedmw/gl-p8g4-staging/payload-'+str(i)+'.b64').read_text().strip() for i in range(1,4))
-          # Repair the identified duplicated transport token before the mandatory byte hash.
-          text=text.replace('BRaoYaYa2','BRaoYa2')
+          # Correct two verified transport duplications, then require the exact original bytes.
+          text=text.replace('BRaoYaYa2','BRaoYa2').replace('AnZ3d3d3d3d3d3d9','AnZ3d3d3d3d3d9')
           payload=base64.b64decode(text,validate=True)
           actual=hashlib.sha256(payload).hexdigest()
           print('Compressed payload SHA256:',actual)
