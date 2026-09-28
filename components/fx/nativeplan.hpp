@@ -325,7 +325,7 @@ namespace Fx
                     for (unsigned component = 0; component < 4; ++component)
                         if (bytes8)
                             payload->bytes[index++] = static_cast<std::uint8_t>(
-                                std::clamp(std::round(color[component] * 255.f), 0.f, 255.f));
+                                std::clamp(std::round(static_cast<double>(color[component]) * 255.0), 0.0, 255.0));
                         else payload->floats[index++] = color[component];
                 }
         result.payload = payload;
