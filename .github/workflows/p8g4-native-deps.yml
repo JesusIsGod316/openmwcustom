@@ -14,7 +14,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y libopenscenegraph-dev libmygui-dev libbullet-dev libglm-dev libyaml-cpp-dev libgl1-mesa-dev xvfb xauth
           mkdir -p sdk
-          for p in libopenscenegraph-dev libopenscenegraph161 libopenthreads-dev libopenthreads21 libmygui-dev libmyguiengine3debian1v5 libbullet-dev libbullet3.24 libglm-dev libyaml-cpp-dev libyaml-cpp0.8; do
+          for p in libopenscenegraph-dev libopenscenegraph161 libopenthreads-dev libopenthreads21 libmygui-dev libmyguiengine3debian1v5 libbullet-dev libbullet3.24 libglm-dev libyaml-cpp-dev libyaml-cpp0.8 libgl-dev libglx-dev libopengl-dev libglvnd-core-dev libegl-dev libgles-dev libx11-dev libxext-dev libxrandr-dev libxrender-dev libxfixes-dev libxinerama-dev x11proto-dev libxau-dev libxdmcp-dev; do
             dpkg -L "$p" 2>/dev/null || true
           done | sort -u | while read -r f; do
             if [ -f "$f" ] || [ -L "$f" ]; then printf '%s\n' "$f"; fi
