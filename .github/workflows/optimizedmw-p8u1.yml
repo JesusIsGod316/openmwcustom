@@ -20,6 +20,18 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y libopenscenegraph-dev libmygui-dev libbullet-dev libglm-dev libboost-dev libyaml-cpp-dev libgl1-mesa-dev xvfb xauth libluajit-5.1-dev libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libopenal-dev
+      - name: Prepare project-pinned SDL3 headers for production sound integration
+        run: |
+          set -euo pipefail
+          SDL_COMMIT=8e37db5e797b6167f3a00d697d816a684bd259c7
+          SDL_SOURCE="$RUNNER_TEMP/p8u1-sdl3"
+          git init "$SDL_SOURCE"
+          git -C "$SDL_SOURCE" remote add origin https://github.com/libsdl-org/SDL.git
+          git -C "$SDL_SOURCE" fetch --depth 1 origin "$SDL_COMMIT"
+          git -C "$SDL_SOURCE" checkout --detach FETCH_HEAD
+          test "$(git -C "$SDL_SOURCE" rev-parse HEAD)" = "$SDL_COMMIT"
+          test -f "$SDL_SOURCE/include/SDL3/SDL.h"
+          echo "CPLUS_INCLUDE_PATH=$SDL_SOURCE/include" >> "$GITHUB_ENV"
       - name: Verify exact base and retained source contracts
         run: |
           set -euo pipefail
