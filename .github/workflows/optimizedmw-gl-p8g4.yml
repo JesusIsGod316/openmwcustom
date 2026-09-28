@@ -1,0 +1,110 @@
+name: OptimizedMW GL-P8G4 substantive build
+on:
+  push:
+    branches: [optimizedmw/gl-p8g4]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: optimizedmw-p8g4-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  Source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install native graphics dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y libopenscenegraph-dev libmygui-dev libbullet-dev libglm-dev libboost-dev libyaml-cpp-dev libgl1-mesa-dev xvfb xauth
+      - name: Verify retained contracts and source ancestry
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 901fd5c38e8448a279dea8cfe76a286a7334d75b HEAD
+          git diff 901fd5c38e8448a279dea8cfe76a286a7334d75b HEAD --check
+          for p in 3 4 6 7 8 8g2 8g3 8g4; do python tools/optimizedmw/gl-p$p/source-contract.py; done
+      - name: Compile actual integration and run sanitized policy, OSG and shader tests
+        run: |
+          set -euo pipefail
+          cmake -S tools/optimizedmw/gl-p8g4 -B build-p8g4 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DP8G4_SANITIZERS=ON
+          cmake --build build-p8g4 --parallel 2
+          ctest --test-dir build-p8g4 -V --output-on-failure
+      - name: Validate one-launcher syntax, installed shader preflight and offline report
+        shell: pwsh
+        run: ./tools/optimizedmw/gl-p8g4/launcher-tests.ps1 -StagedDir (Resolve-Path build-p8g4/deployment/staged).Path
+      - name: Retained P3 and P4 regression tests
+        run: |
+          set -euo pipefail
+          cmake -S tools/optimizedmw/gl-p3 -B build-p3 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOPTIMIZEDMW_P3_SANITIZERS=ON
+          cmake --build build-p3 --parallel 2
+          ctest --test-dir build-p3 -V --output-on-failure
+          cmake -S tools/optimizedmw/gl-p4 -B build-p4 -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build-p4 --parallel 2
+          ctest --test-dir build-p4 -V --output-on-failure
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: P8G4-native-gate-${{ github.sha }}
+          path: |
+            build-p8g4/Testing/Temporary/LastTest.log
+            build-p8g4/deployed-shader-sources
+            build-p8g4/deployment/staged/resources/shaders/shader-package.json
+            build-p8g4/capture-test
+            build-p3/Testing/Temporary/LastTest.log
+            build-p4/Testing/Temporary/LastTest.log
+          retention-days: 14
+  WindowsLauncher:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test launcher and report on Windows PowerShell 5.1
+        shell: powershell
+        run: ./tools/optimizedmw/gl-p8g4/launcher-tests.ps1
+  Windows:
+    needs: [Source, WindowsLauncher]
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
+  InstalledPackage:
+    needs: Windows
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: openmw-windows-2022-${{ github.sha }}
+          path: installed
+      - name: Verify actual installed package identity, shaders and one test BAT
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          python tools/v4/cp4/shader_resources.py verify installed/resources/shaders
+          python - <<'PY'
+          import pathlib,json,hashlib,os
+          root=pathlib.Path('installed')
+          public=['openmw.exe','START-OptimizedMW-Test.bat','OptimizedMW_Test.ps1','OptimizedMW_Benchmark_Report.ps1','OptimizedMW-P8G4-README.txt']
+          for name in public:
+              assert (root/name).is_file(),name
+          assert sorted(p.name for p in root.glob('*.bat'))==['START-OptimizedMW-Test.bat']
+          assert os.environ['EXPECTED_COMMIT'] in (root/'CI-ID.txt').read_text()
+          manifest=json.loads((root/'resources/shaders/shader-package.json').read_text())
+          expected=json.loads(pathlib.Path('files/shaders/v3overlay/p8g3/manifest.json').read_text())
+          assert expected['id']=='optimizedmw-p8g4-pbr-groundcover'
+          assert manifest['groundcover_patch']==expected
+          assert 'compatibility/groundcover_lod.glsl' in manifest['files']
+          names=public+['resources/shaders/compatibility/groundcover.vert','resources/shaders/compatibility/groundcover.frag','resources/shaders/compatibility/groundcover_lod.glsl']
+          lines=[hashlib.sha256((root/n).read_bytes()).hexdigest()+'  '+n for n in names]
+          pathlib.Path('P8G4-INSTALLED-SHA256.txt').write_text('\n'.join(lines)+'\n')
+          print('\n'.join(lines))
+          PY
+      - name: Execute installed shader preflight
+        shell: pwsh
+        run: ./tools/optimizedmw/gl-p8g4/launcher-tests.ps1 -StagedDir (Resolve-Path installed).Path
+      - uses: actions/upload-artifact@v4
+        with:
+          name: P8G4-installed-identity-${{ github.sha }}
+          path: P8G4-INSTALLED-SHA256.txt
+          retention-days: 14
