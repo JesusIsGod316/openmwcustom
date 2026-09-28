@@ -66,6 +66,7 @@ target_link_libraries(p8u1-shadow-settings PRIVATE ${OPENSCENEGRAPH_LIBRARIES})
 add_test(NAME p8u1-shadow-settings COMMAND p8u1-shadow-settings)
 if(P8U1_REQUIRE_GAME_SDK)
   find_package(PkgConfig REQUIRED)
+  find_package(OpenAL REQUIRED)
   pkg_check_modules(P8U1_AV REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil libswresample)
   add_executable(p8u1-ffmpeg ffmpeg-tests.cpp
       ${ROOT}/apps/openmw/mwsound/ffmpegdecoder.cpp
@@ -94,5 +95,5 @@ if(P8U1_REQUIRE_GAME_SDK)
   target_include_directories(p8u1-production PRIVATE ${P8U1_MYGUI_INCLUDE} ${P8U1_LUAJIT_INCLUDE}
       ${ROOT}/extern/sol_config ${ROOT}/extern/sol3
       ${ROOT}/extern/osg-ffmpeg-videoplayer/include /usr/include/bullet)
-  target_link_libraries(p8u1-production PRIVATE PkgConfig::P8U1_AV)
+  target_link_libraries(p8u1-production PRIVATE PkgConfig::P8U1_AV OpenAL::OpenAL)
 endif()
