@@ -38,7 +38,9 @@ class ProducerLauncherTests(unittest.TestCase):
         (self.normal / 'save.omwsave').write_bytes(b'normal save must remain unchanged')
 
     def test_installed_layout_and_default_package(self):
-        self.assertEqual(self.module.HERE.parents[1], self.package)
+        # The imported launcher canonicalizes __file__; TEMP may use an 8.3
+        # spelling on Windows. Verify directory identity, not path spelling.
+        self.assertTrue(self.module.HERE.parents[1].samefile(self.package))
         result = subprocess.run([sys.executable, str(self.script), '--help'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--single', result.stdout)
@@ -64,7 +66,7 @@ class ProducerLauncherTests(unittest.TestCase):
         before = {p.name: p.read_bytes() for p in self.normal.iterdir()}
         calls = []
         def fake_run(package, user_config, source, name, arm):
-            self.assertEqual(user_config, self.normal)
+            self.assertTrue(user_config.samefile(self.normal))
             self.assertEqual(source['source_head'], HEAD)
             calls.append(arm)
             target = package / 'Benchmarks' / name

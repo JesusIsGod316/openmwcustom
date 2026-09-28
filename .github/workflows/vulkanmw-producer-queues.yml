@@ -117,6 +117,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Check Windows profile and launcher isolation before dependencies
+        shell: pwsh
+        run: |
+          foreach ($test in @("test-vulkan-profile.py", "test-producer-launcher.py")) {
+            python "tools/vulkanmw/tests/$test"
+            if ($LASTEXITCODE -ne 0) { throw "Windows profile/launcher preflight failed: $test" }
+          }
       - uses: ilammy/msvc-dev-cmd@v1
       - uses: seanmiddleditch/gha-setup-ninja@master
       - name: Ensure pinned VSG vcpkg baseline

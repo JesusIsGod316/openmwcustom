@@ -220,6 +220,10 @@ def prepare(executable, normal, output):
 
 
 def verify(output):
+    # prepare() and CLI launchers resolve paths. Library callers may still pass
+    # a Windows 8.3 alias, junction, or a path containing '..'. Compare canonical
+    # directories, not their spellings, before classifying writable settings.
+    output = output.resolve()
     manifest = json.loads((output / 'profile.json').read_text(encoding='utf-8'))
     if manifest.get('schema') != 1:
         raise ValueError('Unsupported profile schema')
@@ -228,14 +232,15 @@ def verify(output):
     for path, digest in manifest['pinned_files'].items():
         if not Path(path).is_file() or dc.digest(Path(path)) != digest:
             raise ValueError('Pinned runtime/profile changed: ' + path)
+    original_directories = {Path(path).resolve() for path in manifest['original_chain'][1:]}
     for index, arg in enumerate(manifest['command']):
         if arg == '--config':
-            directory = Path(manifest['command'][index + 1])
+            # Relative command arguments are interpreted from the launch cwd.
+            directory = (Path(manifest['cwd']) / manifest['command'][index + 1]).resolve()
+            if directory in original_directories:
+                raise ValueError('Original config directory leaked into launch')
             if directory != output and (directory / 'settings.cfg').exists():
                 raise ValueError('Content-only snapshot acquired settings.cfg: ' + str(directory))
-    for arg in manifest['command']:
-        if arg in manifest['original_chain'][1:]:
-            raise ValueError('Original config directory leaked into launch')
     current = settings((output / 'settings.cfg').read_text(encoding='utf-8-sig'))
     defaults = settings(base64.b64decode((Path(manifest['cwd']) / 'defaults.bin').read_bytes()).decode('utf-8-sig'))
     if set(current) - set(defaults):
