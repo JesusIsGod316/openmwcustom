@@ -32,6 +32,10 @@ require(queue, 'mCompatibilityContinuous', 'compatibility accounting')
 require(bridge, 'animation.setV4ProducerSupportedActor()', 'actor promotion after successful route')
 require(bridge, 'animation.setV4ProducerSupportedParticle()', 'particle promotion after successful route')
 require(bridge, 'particleBodyCanSleep', 'particle body clean-frame bypass')
+require(bridge, 'objectProducer->bodyEventDriven() && !capturedEffects',
+        'particle classification requires a supported event-driven ordinary body')
+require(bridge, '!producer->eventDriven() && !supportedParticleBody',
+        'supported particle bodies do not report as compatibility fallbacks')
 require(bridge, 'OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS', 'same-executable supported producer control')
 require(bridge, 'animation.previousV4ProducerClass() == V4ProducerClass::SupportedContinuousParticle',
         'particle bypass restricted to established supported particle lane')
