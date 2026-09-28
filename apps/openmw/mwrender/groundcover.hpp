@@ -23,7 +23,7 @@ namespace osg
 namespace SceneUtil
 {
     class OcclusionCuller;
-    namespace GroundcoverBatch { struct Counters; }
+    namespace GroundcoverBatch { struct Counters; class Lod2States; }
 }
 
 namespace MWRender
@@ -76,6 +76,7 @@ namespace MWRender
         const MWWorld::GroundcoverStore& mGroundcoverStore;
         std::atomic_uint64_t mV314CompileQueued{ 0 };
         std::shared_ptr<SceneUtil::GroundcoverBatch::Counters> mP8G3Counters;
+        std::shared_ptr<const SceneUtil::GroundcoverBatch::Lod2States> mP8G4LodStates;
         const std::thread::id mOwnerThread = std::this_thread::get_id();
 
         osg::ref_ptr<osg::Node> createChunk(InstanceMap& instances, const osg::Vec2f& center, bool background);

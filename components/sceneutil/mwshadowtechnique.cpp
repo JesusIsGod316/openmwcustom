@@ -568,6 +568,7 @@ MWShadowTechnique::ShadowData::ShadowData(
     // set up the camera
     _camera = new osg::Camera;
     _camera->setName("ShadowCamera");
+    _camera->setUserValue("p8g4CascadeIndex", shadowMapIndex);
     _camera->setReferenceFrame(osg::Camera::ABSOLUTE_RF_INHERIT_VIEWPOINT);
 #ifndef __APPLE__ // workaround shadow issue on macOS, https://gitlab.com/OpenMW/openmw/-/issues/6057
     _camera->setImplicitBufferAttachmentMask(0, 0);
@@ -3115,7 +3116,9 @@ void MWShadowTechnique::cullShadowCastingScene(osgUtil::CullVisitor* cv, osg::Ca
     cv->setTraversalMask( traversalMask & _shadowedScene->getShadowSettings()->getCastsShadowTraversalMask() );
 
     {
-        ShadowTraversalScope shadowTraversal;
+        unsigned cascade = 0;
+        if (camera) camera->getUserValue("p8g4CascadeIndex", cascade);
+        ShadowTraversalScope shadowTraversal(cascade);
         if (camera)
             camera->accept(*cv);
     }

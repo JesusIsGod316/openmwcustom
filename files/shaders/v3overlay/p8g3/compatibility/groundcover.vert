@@ -157,9 +157,7 @@ void main(void)
     {
         vec4 baseView = gl_ModelViewMatrix * vec4(position, 1.0);
         float instanceDistance = length(baseView.xyz);
-        float transformBound = sqrt(dot(gl_ModelViewMatrix[0].xyz, gl_ModelViewMatrix[0].xyz)
-            + dot(gl_ModelViewMatrix[1].xyz, gl_ModelViewMatrix[1].xyz)
-            + dot(gl_ModelViewMatrix[2].xyz, gl_ModelViewMatrix[2].xyz));
+        float transformBound = p8g4TransformBound(gl_ModelViewMatrix);
         float projectedRadius = p8g3LodParams.w * transformBound * abs(projectionMatrix[1][1])
             / max(1.0, instanceDistance);
         float density = p8g3Density(instanceDistance, projectedRadius, p8g3LodParams.xyz);

@@ -8,14 +8,18 @@ namespace SceneUtil
     class ShadowTraversalScope final
     {
     public:
-        ShadowTraversalScope() noexcept { ++sDepth; }
-        ~ShadowTraversalScope() { --sDepth; }
+        explicit ShadowTraversalScope(unsigned cascade = 0) noexcept : mPrevious(sCascade)
+        { ++sDepth; sCascade = cascade; }
+        ~ShadowTraversalScope() { --sDepth; sCascade = mPrevious; }
+        static unsigned cascade() noexcept { return sCascade; }
         ShadowTraversalScope(const ShadowTraversalScope&) = delete;
         ShadowTraversalScope& operator=(const ShadowTraversalScope&) = delete;
         static bool active() noexcept { return sDepth != 0; }
 
     private:
         inline static thread_local unsigned sDepth = 0;
+        inline static thread_local unsigned sCascade = 0;
+        unsigned mPrevious;
     };
 
     class ShadowProxyGroup final : public osg::Group

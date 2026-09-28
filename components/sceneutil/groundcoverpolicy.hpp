@@ -25,6 +25,8 @@ namespace SceneUtil::GroundcoverPolicy
 
     struct Options
     {
+        bool fastCull = false;
+        bool lod2 = false;
         std::size_t minInstances = 64;
         std::size_t maxLeaves = 8;
         std::size_t maxExtraDraws = 16;

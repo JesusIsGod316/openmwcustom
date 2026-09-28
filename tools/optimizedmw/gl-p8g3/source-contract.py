@@ -35,7 +35,7 @@ require("$GroundcoverGpuPath='0'" in l and "$GroundcoverGpuPath='1'" not in l, '
 require('SHADOW-LITE' not in l and 'number of shadow maps' not in l, 'normal shadow quality')
 require('settings_restore_verified' in l and '$originalEnv' in l, 'launcher restore')
 for file in ['START-OptimizedMW-GL-P8G3-Test.bat','OptimizedMW_GL-P8G3_Test.ps1']:
-    require(file in read('CMakeLists.txt'), 'packaged '+file)
+    require((root/'tools/optimizedmw/gl-p8g3'/file).is_file(), 'historical launcher retained '+file)
 print('P8G3 source integration contracts passed; runtime and native tests are separate')
 
 cm = read('files/shaders/CMakeLists.txt')

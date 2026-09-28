@@ -34,6 +34,8 @@ namespace Settings
             makeClampSanitizerInt(0, 2) };
         // P8G3 startup-only, independently switchable. All derived topology is off by default.
         SettingValue<bool> mOptimizedMWHierarchy{ mIndex, "Groundcover", "optimizedmw hierarchy" };
+        SettingValue<bool> mOptimizedMWCullInputs{ mIndex, "Groundcover", "optimizedmw cull input reuse" };
+        SettingValue<bool> mOptimizedMWLod2{ mIndex, "Groundcover", "optimizedmw lod2" };
         SettingValue<bool> mOptimizedMWDensityLod{ mIndex, "Groundcover", "optimizedmw density lod" };
         SettingValue<bool> mOptimizedMWFrontToBack{ mIndex, "Groundcover", "optimizedmw front to back" };
         SettingValue<bool> mOptimizedMWParallelPrep{ mIndex, "Groundcover", "optimizedmw parallel preparation" };

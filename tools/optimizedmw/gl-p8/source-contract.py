@@ -61,8 +61,8 @@ checks = {
         and "OPENMW_P4_COMPILE_FILE" in hl1_launcher
         and "$env:OPENMW_P8_DYNAMIC_DRAW_FILE=" not in hl1_launcher
         and "$env:OPENMW_P8_DEFORM_FILE=" not in hl1_launcher,
-    "hl1_packaged": "START-OptimizedMW-GL-P8-HL1-Test.bat" in cmake
-        and "OptimizedMW_GL-P8_HL1_Test.ps1" in cmake,
+    "historical_hl1_retained": (root / "tools/optimizedmw/gl-p8/START-OptimizedMW-GL-P8-HL1-Test.bat").is_file()
+        and (root / "tools/optimizedmw/gl-p8/OptimizedMW_GL-P8_HL1_Test.ps1").is_file(),
 }
 failed = [name for name, ok in checks.items() if not ok]
 if failed:

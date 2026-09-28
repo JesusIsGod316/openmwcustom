@@ -82,8 +82,8 @@ checks = {
         "P6-QUARANTINE-VERTEX-REUSE", "P6-TERRAIN-RESOURCE-PHASES", "P6-TERRAIN-VBO-SPLIT")),
     "crash_capture": "openmw-crash*.dmp" in launcher
         and "exitCode -ne 0" in launcher,
-    "launcher_packaged": "START-OptimizedMW-GL-P6-Test.bat" in cmake
-        and "OptimizedMW_GL-P6_Test.ps1" in cmake,
+    "historical_launcher_retained": (root / "tools/optimizedmw/gl-p6/START-OptimizedMW-GL-P6-Test.bat").is_file()
+        and (root / "tools/optimizedmw/gl-p6/OptimizedMW_GL-P6_Test.ps1").is_file(),
 }
 failed = [name for name, ok in checks.items() if not ok]
 if failed:

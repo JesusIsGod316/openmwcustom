@@ -32,6 +32,7 @@ namespace Settings
             mIndex, "Cells", "optimizedmw distant display lists" };
         SettingValue<bool> mOptimizedMWNormalizedStaticPackets{
             mIndex, "Cells", "optimizedmw normalized static packets" };
+        SettingValue<bool> mOptimizedMWActiveShadowBatching{ mIndex, "Cells", "optimizedmw active shadow batching" };
         SettingValue<bool> mOptimizedMWShadowStaticBatching{
             mIndex, "Cells", "optimizedmw shadow static batching" };
         SettingValue<bool> mOptimizedMWRenderHandoffAttribution{

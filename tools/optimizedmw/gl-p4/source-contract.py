@@ -96,8 +96,8 @@ checks = {
         "CONTROL-B1", "CONTROL-B1-C", "P4R-B1", "P4R-B1-C",
         "P4R-B1-C-HEAVY", "P4R-B1-C-TERRAIN", "P4R-B1-C-HEAVY-TERRAIN",
         "OPENMW_P4_COMPILE_FILE", "optimizedmw compile scheduler mode")),
-    "launcher_packaged": "START-OptimizedMW-GL-P4-Test.bat" in root_cmake
-        and "OptimizedMW_GL-P4_Test.ps1" in root_cmake,
+    "historical_launcher_retained": (root / "tools/optimizedmw/gl-p4/START-OptimizedMW-GL-P4-Test.bat").is_file()
+        and (root / "tools/optimizedmw/gl-p4/OptimizedMW_GL-P4_Test.ps1").is_file(),
 }
 failed = [name for name, ok in checks.items() if not ok]
 if failed:

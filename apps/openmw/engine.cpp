@@ -1,4 +1,6 @@
 #include "engine.hpp"
+
+#include <components/resource/benchmarkcapture.hpp>
 #include <components/debug/runtimeprocessmemory.hpp>
 #include <components/debug/gameplaydiagnostics.hpp>
 
@@ -757,7 +759,8 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 
     {
         Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(Debug::V3HitchTelemetry::FrameTailStage::PreViewer);
-        const bool reportResource = stats->collectStats("resource");
+        const bool reportResource = stats->collectStats("resource")
+            && (!Debug::DeferredCapture::enabled() || frameNumber % 60 == 0);
 
         if (reportResource)
             stats->setAttribute(frameNumber, "UnrefQueue", static_cast<double>(mUnrefQueue->getSize()));
@@ -2232,8 +2235,11 @@ void OMW::Engine::go()
     if (statsFile != nullptr)
         path = statsFile;
 
+    const bool cleanCapture = Debug::DeferredCapture::enabled();
+    Debug::V3HitchTelemetry::state().prepare();
+    Resource::BenchmarkCapture numericCapture;
     std::ofstream stats;
-    if (!path.empty())
+    if (!cleanCapture && !path.empty())
     {
         stats.open(path, std::ios_base::out);
         if (stats.is_open())
@@ -2244,16 +2250,16 @@ void OMW::Engine::go()
     }
 
     // Setup profiler
-    osg::ref_ptr<Resource::Profiler> statsHandler = new Resource::Profiler(stats.is_open(), *mVFS);
+    osg::ref_ptr<Resource::Profiler> statsHandler = new Resource::Profiler(stats.is_open() || cleanCapture, *mVFS);
 
     initStatsHandler(*statsHandler);
 
     mViewer->addEventHandler(statsHandler);
 
-    osg::ref_ptr<Resource::StatsHandler> resourcesHandler = new Resource::StatsHandler(stats.is_open(), *mVFS);
+    osg::ref_ptr<Resource::StatsHandler> resourcesHandler = new Resource::StatsHandler(stats.is_open() || cleanCapture, *mVFS);
     mViewer->addEventHandler(resourcesHandler);
 
-    if (stats.is_open())
+    if (stats.is_open() || cleanCapture)
         Resource::collectStatistics(*mViewer);
 
     // Start the game
@@ -2317,7 +2323,9 @@ void OMW::Engine::go()
             timeManager.setRenderingSimulationTime(timeManager.getRenderingSimulationTime() + dt);
         }
 
-        if (stats)
+        if (cleanCapture)
+            numericCapture.capture(mViewer->getFrameStamp()->getFrameNumber(), *mViewer);
+        if (!cleanCapture && stats.is_open())
         {
             // The delay is required because rendering happens in parallel to the main thread and stats from there is
             // available with delay.
@@ -2339,6 +2347,9 @@ void OMW::Engine::go()
         }
     }
 
+    // The gameplay interval ends BEFORE deferred CSV formatting and disk output.
+    Debug::V3HitchTelemetry::state().finish();
+    numericCapture.finish();
     mLuaWorker->join();
 
     // Save user settings

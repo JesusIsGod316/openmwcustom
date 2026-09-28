@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -14,6 +15,7 @@
 #include <string_view>
 
 #include "v33framestats.hpp"
+#include "deferredcapture.hpp"
 
 namespace Debug::V3HitchTelemetry
 {
@@ -61,8 +63,61 @@ namespace Debug::V3HitchTelemetry
     class State
     {
     public:
+        ~State() { finish(false); }
+
+        void prepare()
+        {
+            if (!DeferredCapture::enabled() || mPrepared) return;
+            mPrepared = true;
+            mCleanFrames.prepare(131072);
+        }
+
+        void finish(bool includeLastFrame = true) noexcept
+        {
+            if (!DeferredCapture::enabled() || mFinished) return;
+            mFinished = true;
+            try
+            {
+                if (includeLastFrame && mStarted)
+                    emitPreviousFrame(std::chrono::duration<double, std::milli>(Clock::now() - mFrameStart).count());
+                mStarted = false;
+                ensureAllFrameStream();
+                ensureStream();
+                for (const auto& record : mCleanFrames)
+                {
+                    auto write = [&](std::ostream& out) {
+                        out << record.frame << ',' << record.epochMs << ',' << std::fixed << std::setprecision(3)
+                            << record.wallMs;
+                        for (double value : record.stages) out << ',' << value;
+                        for (double value : record.tail) out << ',' << value;
+                        out << ',' << record.accountedMs << ',' << record.otherMs;
+                    };
+                    if (mAllFrameStream.is_open()) { write(mAllFrameStream); mAllFrameStream << '\n'; }
+                    if (mStream.is_open() && record.reason)
+                    {
+                        write(mStream);
+                        mStream << ',' << (record.reason == 1 ? "hitch" : record.reason == 2 ? "slow_stage" : "baseline") << '\n';
+                    }
+                }
+                mAllFrameStream.flush();
+                mStream.flush();
+                if (const char* file = std::getenv("OPENMW_V3_FRAME_FILE"); file && *file)
+                {
+                    std::ofstream status(std::filesystem::path(reinterpret_cast<const char8_t*>(file)) += ".capture-status.txt");
+                    status << "format=p8g4-deferred-v1\nrows=" << mCleanFrames.size()
+                           << "\ncapacity=" << mCleanFrames.capacity() << "\ndropped=" << mCleanFrames.dropped()
+                           << "\nallocation_failed=" << mCleanFrames.allocationFailed()
+                           << "\nnormal_finish=" << includeLastFrame
+                           << "\nframe_output_ok=" << (mAllFrameStream.is_open() && mAllFrameStream.good())
+                           << "\nlegacy_summary_suppressed=1\n";
+                }
+            }
+            catch (...) { /* Shutdown cannot throw. Missing status makes the capture incomplete. */ }
+        }
+
         void beginFrame(unsigned frameNumber)
         {
+            prepare(); // The engine calls this before loading; stand-alone users remain safe.
             sCurrentFrame.store(frameNumber, std::memory_order_relaxed);
             const auto now = Clock::now();
             if (mStarted)
@@ -178,6 +233,15 @@ namespace Debug::V3HitchTelemetry
             const auto epochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 mFrameStartSystem.time_since_epoch()).count();
 
+            if (DeferredCapture::enabled())
+            {
+                const double largestTail = *std::max_element(mFrameTailMs.begin(), mFrameTailMs.end());
+                const unsigned reason = wallMs >= HitchThresholdMs ? 1u
+                    : std::max(largestStage, largestTail) >= StageThresholdMs ? 2u
+                    : mFrame % BaselineInterval == 0 ? 3u : 0u;
+                mCleanFrames.push({ mFrame, reason, epochMs, wallMs, mStageMs, mFrameTailMs, totalAccountedMs, otherMs });
+                return;
+            }
             V33FrameStats::record(mFrame, epochMs, wallMs);
             emitAllFrame(wallMs, totalAccountedMs, otherMs);
 
@@ -207,6 +271,17 @@ namespace Debug::V3HitchTelemetry
             }
         }
 
+        struct FrameRecord
+        {
+            unsigned frame, reason;
+            std::int64_t epochMs;
+            double wallMs;
+            std::array<double, StageCount> stages;
+            std::array<double, static_cast<std::size_t>(FrameTailStage::Count)> tail;
+            double accountedMs, otherMs;
+        };
+        DeferredCapture::Buffer<FrameRecord> mCleanFrames;
+        bool mPrepared = false, mFinished = false;
         bool mStarted = false;
         bool mStreamAttempted = false;
         bool mAllFrameStreamAttempted = false;

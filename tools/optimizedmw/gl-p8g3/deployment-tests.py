@@ -13,7 +13,7 @@ archive_path = out / 'shader-package/v3-rafael-pbr-0.52-overlay.zip'
 spec = importlib.util.spec_from_file_location('resources', root/'tools/v4/cp4/shader_resources.py')
 resources = importlib.util.module_from_spec(spec); spec.loader.exec_module(resources)
 manifest = json.loads((staged/resources.MANIFEST).read_text())
-assert manifest['groundcover_patch']['id'] == 'optimizedmw-p8g3-pbr-groundcover'
+assert manifest['groundcover_patch']['id'] == 'optimizedmw-p8g4-pbr-groundcover'
 assert 'compatibility/groundcover_lod.glsl' in manifest['files']
 
 # Resolve ONLY the added controls; retain every original PBR conditional exactly.

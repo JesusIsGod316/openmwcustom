@@ -2,6 +2,7 @@
 #define OPENMW_SCENEUTIL_GROUNDCOVERBATCH_H
 
 #include "groundcoverpolicy.hpp"
+#include "groundcoverlod2policy.hpp"
 
 #include <osg/AutoTransform>
 #include <osg/Billboard>
@@ -36,6 +37,9 @@ namespace SceneUtil::GroundcoverBatch
         std::atomic_uint64_t groupsTested{ 0 }, groupsRejected{ 0 }, instancesRejected{ 0 };
         std::atomic_uint64_t fullInstances{ 0 }, submittedInstances{ 0 }, drawableVisits{ 0 };
         std::array<std::atomic_uint64_t, 3> tiers{};
+        std::array<std::atomic_uint64_t, 4> lod2Tiers{};
+        std::atomic_uint64_t lod2NearProtected{ 0 }, lod2ProminentProtected{ 0 }, lod2TierLimited{ 0 };
+        std::atomic_uint64_t lod2FullFallback{ 0 };
     };
 
     inline osg::BoundingBox transformBox(const osg::BoundingBox& box, const osg::Matrix& matrix)
@@ -63,15 +67,35 @@ namespace SceneUtil::GroundcoverBatch
         for (unsigned int r = 0; r < 3; ++r)
             for (unsigned int c = 0; c < 3; ++c)
                 sum += matrix(r, c) * matrix(r, c);
-        return static_cast<float>(std::sqrt(sum)); // Frobenius norm bounds every singular value.
+        return static_cast<float>(std::sqrt(sum) * 1.0002); // Frobenius norm bounds every singular value.
     }
 
-    inline float currentMargin(osgUtil::CullVisitor& cv)
+    // Gershgorin bound on A*A^T. Unlike the Frobenius bound this is tight for
+    // rigid/uniform transforms, while remaining conservative for arbitrary shear.
+    inline float lod2ScaleUpper(const osg::Matrix& matrix)
+    {
+        double maximum = 0.0;
+        for (unsigned r = 0; r < 3; ++r)
+        {
+            double row = 0.0;
+            for (unsigned c = 0; c < 3; ++c)
+            {
+                double product = 0.0;
+                for (unsigned k = 0; k < 3; ++k) product += matrix(r, k) * matrix(c, k);
+                row += std::abs(product);
+            }
+            maximum = std::max(maximum, row);
+        }
+        return static_cast<float>(std::sqrt(maximum) * 1.0002); // CPU >= GLSL roundoff guard.
+    }
+
+    inline float currentMargin(osgUtil::CullVisitor& cv, const osgUtil::StateGraph* stop = nullptr,
+        float initial = GroundcoverPolicy::windMargin(0.f))
     {
         // The maximum across inherited candidates is conservative even with OVERRIDE /
         // PROTECTED uniform state. Also cover the precomputed P8G2 coefficient path.
-        float result = GroundcoverPolicy::windMargin(0.f);
-        for (auto* graph = cv.getCurrentStateGraph(); graph; graph = graph->_parent)
+        float result = initial;
+        for (auto* graph = cv.getCurrentStateGraph(); graph && graph != stop; graph = graph->_parent)
             if (const auto* state = graph->getStateSet())
             {
                 if (const auto* uniform = state->getUniform("windSpeed"))
@@ -117,20 +141,89 @@ namespace SceneUtil::GroundcoverBatch
         osg::BoundingBox world;
     };
 
+    // Lifetime is one synchronous subtree traversal, never a frame-number cache.
+    // Exact camera AND matrix values guard cross-view/transform reuse. Descendant
+    // wind uniforms are still inspected; the already-seen inherited suffix is reused.
+    // Thread-local nesting also handles concurrent cameras and recursive views.
+    class CullInputScope
+    {
+    public:
+        inline static thread_local CullInputScope* current = nullptr;
+        explicit CullInputScope(osgUtil::CullVisitor& cv)
+            : parent(current), camera(cv.getCurrentCamera()), graph(cv.getCurrentStateGraph())
+        {
+            if (camera && cv.getModelViewMatrix())
+            {
+                view = camera->getViewMatrix();
+                modelView = *cv.getModelViewMatrix();
+                if (parent && parent->matches(cv))
+                {
+                    localToWorld = parent->localToWorld;
+                    worldToLocal = parent->worldToLocal;
+                    valid = parent->valid;
+                }
+                else
+                {
+                    osg::Matrix inverseView;
+                    valid = inverseView.invert(view);
+                    if (valid)
+                    {
+                        localToWorld = modelView * inverseView;
+                        valid = worldToLocal.invert(localToWorld);
+                    }
+                }
+            }
+            bool inherited = false;
+            if (parent)
+                for (auto* state = graph; state; state = state->_parent)
+                    if (state == parent->graph) { inherited = true; break; }
+            margin = inherited ? currentMargin(cv, parent->graph, parent->margin) : currentMargin(cv);
+            current = this;
+        }
+        ~CullInputScope() { current = parent; }
+        CullInputScope(const CullInputScope&) = delete;
+        CullInputScope& operator=(const CullInputScope&) = delete;
+        bool matches(osgUtil::CullVisitor& cv) const
+        {
+            return valid && camera && camera == cv.getCurrentCamera() && cv.getModelViewMatrix()
+                && view == camera->getViewMatrix() && modelView == *cv.getModelViewMatrix();
+        }
+        CullInputScope* parent;
+        osg::Camera* camera;
+        const osgUtil::StateGraph* graph;
+        osg::Matrix view, modelView, localToWorld, worldToLocal;
+        float margin = 0.f;
+        bool valid = false;
+        osg::BoundingBox cachedRest;
+        float cachedMargin = 0.f;
+        std::optional<AnimatedBounds> cachedBounds;
+    };
+
     inline std::optional<AnimatedBounds> animatedBounds(const osg::BoundingBox& rest, osgUtil::CullVisitor& cv)
     {
         if (!finiteBox(rest) || !cv.getCurrentCamera() || !cv.getModelViewMatrix())
             return std::nullopt;
-        const float margin = currentMargin(cv);
+        auto* scope = CullInputScope::current;
+        if (scope && !scope->matches(cv)) scope = nullptr;
+        const float margin = scope ? currentMargin(cv, scope->graph, scope->margin) : currentMargin(cv);
         if (!std::isfinite(margin))
             return std::nullopt;
-        osg::Matrix inverseView;
-        if (!inverseView.invert(cv.getCurrentCamera()->getViewMatrix()))
-            return std::nullopt;
-        const osg::Matrix localToWorld = *cv.getModelViewMatrix() * inverseView;
-        osg::Matrix worldToLocal;
-        if (!worldToLocal.invert(localToWorld))
-            return std::nullopt;
+        if (scope && scope->cachedBounds && scope->cachedMargin == margin
+            && scope->cachedRest._min == rest._min && scope->cachedRest._max == rest._max)
+            return scope->cachedBounds;
+        osg::Matrix localToWorld, worldToLocal;
+        if (scope)
+        {
+            localToWorld = scope->localToWorld;
+            worldToLocal = scope->worldToLocal;
+        }
+        else
+        {
+            osg::Matrix inverseView;
+            if (!inverseView.invert(cv.getCurrentCamera()->getViewMatrix())) return std::nullopt;
+            localToWorld = *cv.getModelViewMatrix() * inverseView;
+            if (!worldToLocal.invert(localToWorld)) return std::nullopt;
+        }
         auto world = transformBox(rest, localToWorld);
         // The production shader displaces world X/Y only. Add a numeric guard in Z.
         world._min -= osg::Vec3f(margin, margin, 1.f);
@@ -138,15 +231,23 @@ namespace SceneUtil::GroundcoverBatch
         auto local = transformBox(world, worldToLocal);
         if (!finiteBox(world) || !finiteBox(local))
             return std::nullopt;
-        return AnimatedBounds{ local, world };
+        const AnimatedBounds result{ local, world };
+        if (scope)
+        {
+            scope->cachedRest = rest;
+            scope->cachedMargin = margin;
+            scope->cachedBounds = result;
+        }
+        return result;
     }
 
     class VisibilityCallback final : public osg::NodeCallback
     {
     public:
         VisibilityCallback(osg::BoundingBox rest, float distance, std::uint64_t count,
-            OcclusionTest test, std::shared_ptr<Counters> counters)
-            : mRest(rest), mDistance(distance), mCount(count), mTest(std::move(test)), mCounters(std::move(counters))
+            OcclusionTest test, std::shared_ptr<Counters> counters, bool fastCull = false)
+            : mRest(rest), mDistance(distance), mCount(count), mTest(std::move(test)), mCounters(std::move(counters)),
+              mFastCull(fastCull)
         {
         }
         void operator()(osg::Node* node, osg::NodeVisitor* nv) override
@@ -159,6 +260,8 @@ namespace SceneUtil::GroundcoverBatch
             }
             if (mCounters)
                 mCounters->groupsTested.fetch_add(1, std::memory_order_relaxed);
+            std::optional<CullInputScope> inputs;
+            if (mFastCull) inputs.emplace(*cv);
             bool visible = true;
             if (auto bounds = animatedBounds(mRest, *cv))
             {
@@ -198,6 +301,7 @@ namespace SceneUtil::GroundcoverBatch
         std::uint64_t mCount;
         OcclusionTest mTest;
         std::shared_ptr<Counters> mCounters;
+        bool mFastCull;
     };
 
     class NearFarCallback final : public osg::DrawableCullCallback
@@ -294,6 +398,108 @@ namespace SceneUtil::GroundcoverBatch
         std::size_t mNextView = 0;
     };
 
+    class Lod2States
+    {
+    public:
+        explicit Lod2States(Options options) : mOptions(options)
+        {
+            for (std::size_t i = 0; i < mStates.size(); ++i)
+            {
+                mStates[i] = new osg::StateSet;
+                mStates[i]->setDataVariance(osg::Object::STATIC);
+                const bool full = i == GroundcoverLod2::RadiusBuckets;
+                mStates[i]->addUniform(new osg::Uniform("p8g3LodParams", osg::Vec4f(
+                    full ? 0.f : options.nearDistance, options.farDistance, options.minimumDensity,
+                    full ? 0.f : GroundcoverLod2::radiusForBucket(i))),
+                    osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
+            }
+        }
+        const Options& options() const { return mOptions; }
+        osg::StateSet* state(std::size_t bucket) const { return mStates.at(bucket).get(); }
+    private:
+        Options mOptions;
+        std::array<osg::ref_ptr<osg::StateSet>, GroundcoverLod2::RadiusBuckets + 1> mStates;
+    };
+
+    class Lod2Callback final : public osg::NodeCallback
+    {
+    public:
+        Lod2Callback(osg::BoundingBox bases, float meshRadius, Options options,
+            std::array<unsigned int, 4> counts, std::shared_ptr<Counters> counters)
+            : mBases(bases), mMeshRadius(meshRadius), mOptions(options), mCounts(counts), mCounters(std::move(counters))
+        {
+        }
+        void operator()(osg::Node* node, osg::NodeVisitor* nv) override
+        {
+            auto* cv = nv->asCullVisitor();
+            auto* group = node->asGroup();
+            if (!cv || !group || group->getNumChildren() != 4)
+            {
+                traverse(node, nv); // Compile/resource visitors must see every prepared tier.
+                return;
+            }
+            const auto viewBox = transformBox(mBases, *cv->getModelViewMatrix());
+            float maximumDensity = 1.f;
+            if (finiteBox(viewBox) && mMeshRadius >= 0.f)
+            {
+                const float minimumDistance = std::max(0.f, viewBox.center().length() - viewBox.radius());
+                const float radius = mMeshRadius * lod2ScaleUpper(*cv->getModelViewMatrix());
+                const float projectionY = projectionScaleUpper(*cv);
+                const float projected = radius * projectionY / std::max(1.f, minimumDistance);
+                maximumDensity = GroundcoverPolicy::density(minimumDistance, projected, mOptions);
+                if (mCounters)
+                {
+                    if (minimumDistance <= mOptions.nearDistance)
+                        mCounters->lod2NearProtected.fetch_add(1, std::memory_order_relaxed);
+                    else if (projected >= .025f)
+                        mCounters->lod2ProminentProtected.fetch_add(1, std::memory_order_relaxed);
+                    else if (GroundcoverLod2::desiredTier(maximumDensity) == 0)
+                        mCounters->lod2TierLimited.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            unsigned int tier = GroundcoverLod2::desiredTier(maximumDensity);
+            // Bounded per-camera hysteresis. No wait on contention, no shared geometry mutation,
+            // no previous-camera result ever allowed to suppress required detail.
+            std::unique_lock lock(mMutex, std::try_to_lock);
+            if (lock.owns_lock())
+            {
+                const osg::Camera* camera = cv->getCurrentCamera();
+                auto it = std::find_if(mViews.begin(), mViews.end(),
+                    [camera](const View& view) { return view.camera == camera; });
+                if (it == mViews.end())
+                {
+                    it = mViews.begin() + mNextView;
+                    mNextView = (mNextView + 1) % mViews.size();
+                    *it = View{ camera, tier };
+                }
+                else
+                    tier = GroundcoverLod2::hystereticTier(it->tier, tier, maximumDensity);
+                it->tier = tier;
+                lock.unlock();
+            }
+            if (mCounters)
+            {
+                mCounters->fullInstances.fetch_add(mCounts[0], std::memory_order_relaxed);
+                mCounters->submittedInstances.fetch_add(mCounts[tier], std::memory_order_relaxed);
+                mCounters->drawableVisits.fetch_add(1, std::memory_order_relaxed);
+                mCounters->lod2Tiers[tier].fetch_add(1, std::memory_order_relaxed);
+                if (mMeshRadius < 0.f) mCounters->lod2FullFallback.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (mCounts[tier] != 0)
+                group->getChild(tier)->accept(*nv);
+        }
+    private:
+        struct View { const osg::Camera* camera = nullptr; unsigned int tier = 0; };
+        osg::BoundingBox mBases;
+        float mMeshRadius;
+        Options mOptions;
+        std::array<unsigned int, 4> mCounts;
+        std::shared_ptr<Counters> mCounters;
+        std::mutex mMutex;
+        std::array<View, 4> mViews{};
+        std::size_t mNextView = 0;
+    };
+
     // Eligibility is checked on a private template, before publication. Unknown dynamic
     // graphs keep the established renderer; no broad update suppression or animation stripping.
     class EligibilityVisitor final : public osg::NodeVisitor
@@ -354,10 +560,11 @@ namespace SceneUtil::GroundcoverBatch
     class InstanceVisitor final : public osg::NodeVisitor
     {
     public:
-        InstanceVisitor(std::span<const Instance> instances, bool lod, Options options, std::shared_ptr<Counters> counters)
+        InstanceVisitor(std::span<const Instance> instances, bool lod, Options options, std::shared_ptr<Counters> counters,
+            std::shared_ptr<const Lod2States> lod2States = {})
             : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN), mInstances(instances), mLod(lod), mOptions(options),
               mCounters(std::move(counters)), mOffsets(new osg::Vec4Array), mRotations(new osg::Vec4Array),
-              mLegacyRotations(new osg::Vec3Array)
+              mLegacyRotations(new osg::Vec3Array), mLod2States(std::move(lod2States))
         {
             mOffsets->reserve(instances.size());
             mRotations->reserve(lod ? instances.size() : 0);
@@ -402,6 +609,27 @@ namespace SceneUtil::GroundcoverBatch
                 primitive->setNumInstances(static_cast<int>(mInstances.size()));
             if (!mLod)
                 return;
+            if (mOptions.lod2 && mLod2States)
+            {
+                const auto bucket = GroundcoverLod2::radiusBucket(sourceBox.radius() * mMaxScale);
+                const float radius = bucket == GroundcoverLod2::RadiusBuckets
+                    ? -1.f : GroundcoverLod2::radiusForBucket(bucket);
+                osg::ref_ptr<osg::Group> tiers = new osg::Group;
+                tiers->setCullingActive(false);
+                tiers->setStateSet(mLod2States->state(bucket));
+                std::array<unsigned int, 4> counts{};
+                for (unsigned tier = 0; tier < counts.size(); ++tier)
+                {
+                    counts[tier] = static_cast<unsigned>(GroundcoverLod2::tierCount(mInstances, tier));
+                    osg::ref_ptr<osg::Geometry> copy = new osg::Geometry(geometry, osg::CopyOp::DEEP_COPY_PRIMITIVES);
+                    for (auto& primitive : copy->getPrimitiveSetList())
+                        primitive->setNumInstances(static_cast<int>(counts[tier]));
+                    tiers->addChild(copy);
+                }
+                tiers->setCullCallback(new Lod2Callback(mBases, radius, mLod2States->options(), counts, mCounters));
+                mReplacements.emplace_back(&geometry, tiers);
+                return; // No per-geometry StateSet/uniform copies on LOD2.
+            }
             auto state = geometry.getStateSet()
                 ? osg::ref_ptr<osg::StateSet>(new osg::StateSet(*geometry.getStateSet(), osg::CopyOp::SHALLOW_COPY))
                 : osg::ref_ptr<osg::StateSet>(new osg::StateSet);
@@ -443,25 +671,27 @@ namespace SceneUtil::GroundcoverBatch
         std::shared_ptr<Counters> mCounters;
         osg::ref_ptr<osg::Vec4Array> mOffsets, mRotations;
         osg::ref_ptr<osg::Vec3Array> mLegacyRotations;
+        std::shared_ptr<const Lod2States> mLod2States;
         osg::BoundingBox mBases;
         float mMaxScale = 0.f;
         std::vector<std::pair<osg::ref_ptr<osg::Geometry>, osg::ref_ptr<osg::Group>>> mReplacements;
     };
 
     inline osg::ref_ptr<osg::Group> buildTile(const osg::Node& preparedTemplate, std::span<const Instance> instances,
-        bool lod, const Options& options, float viewDistance, OcclusionTest occlusion, std::shared_ptr<Counters> counters)
+        bool lod, const Options& options, float viewDistance, OcclusionTest occlusion, std::shared_ptr<Counters> counters,
+        std::shared_ptr<const Lod2States> lod2States = {})
     {
         osg::ref_ptr<osg::Group> root = new osg::Group;
         root->setCullingActive(false);
         root->addChild(static_cast<osg::Node*>(preparedTemplate.clone(osg::CopyOp::DEEP_COPY_NODES
             | osg::CopyOp::DEEP_COPY_DRAWABLES | osg::CopyOp::DEEP_COPY_PRIMITIVES)));
-        InstanceVisitor visitor(instances, lod, options, counters);
+        InstanceVisitor visitor(instances, lod, options, counters, std::move(lod2States));
         root->accept(visitor);
         visitor.finish();
         osg::ComputeBoundsVisitor bounds;
         root->accept(bounds);
         root->setCullCallback(new VisibilityCallback(bounds.getBoundingBox(), viewDistance,
-            instances.size(), std::move(occlusion), std::move(counters)));
+            instances.size(), std::move(occlusion), std::move(counters), options.fastCull));
         return root;
     }
 

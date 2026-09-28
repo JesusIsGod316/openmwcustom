@@ -53,6 +53,7 @@
 #include <components/sceneutil/pagingwork.hpp>
 #include <components/sceneutil/positionattitudetransform.hpp>
 #include <components/sceneutil/shadowproxygroup.hpp>
+#include <components/sceneutil/opaqueshadowbatch.hpp>
 #include <components/sceneutil/riggeometry.hpp>
 #include <components/sceneutil/riggeometryosgaextension.hpp>
 #include <components/sceneutil/util.hpp>
@@ -143,8 +144,10 @@ namespace MWRender
         const ChunkId id = std::make_tuple(center, size, activeGrid);
         const bool p2RequiredReadiness = SceneUtil::PagingWorkScope::requiredReadiness();
         const unsigned char p3OptionalMask
-            = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
-            ? p3OptionalDistantMask() : 0;
+            = compile && SceneUtil::PagingWorkScope::optionalOptimization()
+            ? (!activeGrid ? p3OptionalDistantMask()
+                : (Settings::cells().mOptimizedMWActiveShadowBatching
+                    ? static_cast<unsigned char>(p3OptionalDistantMask() & (1u << 3u)) : 0)) : 0;
         const int v311PrepareMode = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode);
         const int v313QualityMode = static_cast<int>(Settings::cells().mV313ChunkQualityMode);
 
@@ -275,10 +278,10 @@ namespace MWRender
         }
 
         const V313ChunkQuality v313BuiltQuality{
-            activeGrid && compile && !p2RequiredReadiness && v311PrepareMode > 0
-                ? static_cast<unsigned char>(v311PrepareMode) : 0,
-            activeGrid && compile && !p2RequiredReadiness
-                && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0 ? 1 : 0,
+            static_cast<unsigned char>(activeGrid && compile && !p2RequiredReadiness && v311PrepareMode > 0
+                ? v311PrepareMode : 0),
+            static_cast<unsigned char>(activeGrid && compile && !p2RequiredReadiness
+                && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0),
             p3OptionalMask };
         if (v313RepairBuild)
             mV313UpgradeBuilt.fetch_add(1, std::memory_order_relaxed);
@@ -333,114 +336,10 @@ namespace MWRender
 
     namespace
     {
-        struct P3ShadowBatchResult
-        {
-            osg::ref_ptr<osg::Group> mShadowRoot;
-            std::size_t mCandidateDrawables = 0;
-            std::size_t mEligibleDrawables = 0;
-            std::size_t mRejectedState = 0;
-            std::size_t mRejectedGeometry = 0;
-            std::size_t mSourceIndices = 0;
-        };
-
-        bool p3ShadowStateOpaque(const osg::Geometry& geometry)
-        {
-            const osg::StateSet* state = geometry.getStateSet();
-            if (!state)
-                return true;
-            if (state->getRenderingHint() == osg::StateSet::TRANSPARENT_BIN)
-                return false;
-            if ((state->getMode(GL_BLEND) & osg::StateAttribute::ON) != 0)
-                return false;
-            if (const auto* alpha = dynamic_cast<const osg::AlphaFunc*>(
-                    state->getAttribute(osg::StateAttribute::ALPHAFUNC)))
-            {
-                if (alpha->getFunction() != GL_ALWAYS)
-                    return false;
-            }
-            if (state->getAttribute(osg::StateAttribute::FRONTFACE)
-                || state->getAttribute(osg::StateAttribute::CULLFACE))
-                return false;
-            return true;
-        }
-
-        bool p3AppendShadowGeometry(const osg::Geometry& geometry, osg::Vec3Array& vertices,
-            osg::DrawElementsUInt& indices)
-        {
-            const auto* sourceVertices = dynamic_cast<const osg::Vec3Array*>(geometry.getVertexArray());
-            if (!sourceVertices || sourceVertices->empty() || geometry.getNumPrimitiveSets() == 0)
-                return false;
-
-            for (unsigned int i = 0; i < geometry.getNumPrimitiveSets(); ++i)
-            {
-                const osg::PrimitiveSet* primitive = geometry.getPrimitiveSet(i);
-                if (!primitive || primitive->getMode() != osg::PrimitiveSet::TRIANGLES
-                    || primitive->getNumInstances() != 0)
-                    return false;
-                for (unsigned int index = 0; index < primitive->getNumIndices(); ++index)
-                    if (primitive->index(index) >= sourceVertices->size())
-                        return false;
-            }
-
-            const unsigned base = static_cast<unsigned>(vertices.size());
-            vertices.insert(vertices.end(), sourceVertices->begin(), sourceVertices->end());
-            for (unsigned int i = 0; i < geometry.getNumPrimitiveSets(); ++i)
-            {
-                const osg::PrimitiveSet* primitive = geometry.getPrimitiveSet(i);
-                for (unsigned int index = 0; index < primitive->getNumIndices(); ++index)
-                    indices.push_back(base + primitive->index(index));
-            }
-            return true;
-        }
-
+        using P3ShadowBatchResult = SceneUtil::OpaqueShadowBatch::Result;
         P3ShadowBatchResult p3BuildShadowBatch(osg::Group& normal)
         {
-            P3ShadowBatchResult result;
-            osg::ref_ptr<osg::Group> shadowRoot = new osg::Group;
-            osg::ref_ptr<osg::Vec3Array> proxyVertices = new osg::Vec3Array;
-            osg::ref_ptr<osg::DrawElementsUInt> proxyIndices
-                = new osg::DrawElementsUInt(osg::PrimitiveSet::TRIANGLES);
-
-            for (unsigned int childIndex = 0; childIndex < normal.getNumChildren(); ++childIndex)
-            {
-                osg::Node* child = normal.getChild(childIndex);
-                osg::Geometry* geometry = child ? child->asGeometry() : nullptr;
-                const std::size_t oldVertexCount = proxyVertices->size();
-                const std::size_t oldIndexCount = proxyIndices->size();
-
-                if (geometry && geometry->getDataVariance() != osg::Object::DYNAMIC)
-                {
-                    ++result.mCandidateDrawables;
-                    if (!p3ShadowStateOpaque(*geometry))
-                        ++result.mRejectedState;
-                    else if (p3AppendShadowGeometry(*geometry, *proxyVertices, *proxyIndices))
-                    {
-                        ++result.mEligibleDrawables;
-                        result.mSourceIndices += proxyIndices->size() - oldIndexCount;
-                        continue;
-                    }
-                    else
-                        ++result.mRejectedGeometry;
-                }
-
-                proxyVertices->resize(oldVertexCount);
-                proxyIndices->resize(oldIndexCount);
-                if (child)
-                    shadowRoot->addChild(child);
-            }
-
-            if (result.mEligibleDrawables < 2 || proxyIndices->empty())
-                return result;
-
-            osg::ref_ptr<osg::Geometry> proxy = new osg::Geometry;
-            proxy->setDataVariance(osg::Object::STATIC);
-            proxy->setVertexArray(proxyVertices);
-            proxy->addPrimitiveSet(proxyIndices);
-            proxy->setUseVertexBufferObjects(true);
-            proxy->setUseDisplayList(false);
-            shadowRoot->addChild(proxy);
-            result.mShadowRoot = shadowRoot;
-            return result;
+            return SceneUtil::OpaqueShadowBatch::build(normal);
         }
 
         class CanOptimizeCallback : public SceneUtil::Optimizer::IsOperationPermissibleForObjectCallback
@@ -1280,7 +1179,7 @@ namespace MWRender
             }
             else
                 analyzeVisitor.addInstance(emplaced.first->second.mAnalyzeResult);
-                emplaced.first->second.mInstances.push_back(&ref);
+            emplaced.first->second.mInstances.push_back(&ref);
             }
         }
 
@@ -1735,11 +1634,12 @@ namespace MWRender
             if ((v39BatchOptimizerMode == 0 && v38BatchingMode >= 2) || v39ShareState)
                 mSceneManager->shareState(mergeGroup);
 
-            osg::ref_ptr<osg::Node> publishedMergeNode = mergeGroup;
+            osg::ref_ptr<osg::Node> wrappedMergeNode = mergeGroup;
             osg::ref_ptr<osg::Group> p3ShadowRoot;
             const bool p3ShadowStaticBatching
                 = static_cast<bool>(Settings::cells().mOptimizedMWShadowStaticBatching)
-                && p3OptionalDistant;
+                && (p3OptionalDistant || (activeGrid && Settings::cells().mOptimizedMWActiveShadowBatching
+                    && compile && !p2RequiredReadiness && SceneUtil::PagingWorkScope::optionalOptimization()));
             if (p3ShadowStaticBatching)
             {
                 P3ShadowBatchResult shadowBatch = p3BuildShadowBatch(*mergeGroup);
@@ -1752,11 +1652,11 @@ namespace MWRender
                 {
                     ++p3ShadowProxyBatches;
                     p3ShadowRoot = shadowBatch.mShadowRoot;
-                    publishedMergeNode = new SceneUtil::ShadowProxyGroup(mergeGroup, p3ShadowRoot);
+                    wrappedMergeNode = new SceneUtil::ShadowProxyGroup(mergeGroup, p3ShadowRoot);
                 }
             }
 
-            group->addChild(publishedMergeNode);
+            group->addChild(wrappedMergeNode);
 
             if (mDebugBatches)
             {
@@ -2061,6 +1961,23 @@ namespace MWRender
 
     void ObjectPaging::reportStats(unsigned int frameNumber, osg::Stats* stats) const
     {
+        if (SceneUtil::ShadowBatchCounters::enabled())
+        {
+            namespace C = SceneUtil::ShadowBatchCounters;
+            const auto report = [&](const std::string& name, const std::atomic_uint64_t& value) {
+                stats->setAttribute(frameNumber, name, static_cast<double>(value.load(std::memory_order_relaxed)));
+            };
+            report("P8G4 Shadow Built", C::built);
+            report("P8G4 Shadow Wrapped", C::wrapped);
+            report("P8G4 Shadow Built Indices", C::builtIndices);
+            for (unsigned i = 0; i < C::proxyVisits.size(); ++i)
+            {
+                report("P8G4 Shadow Proxy Visits " + std::to_string(i), C::proxyVisits[i]);
+                report("P8G4 Shadow Proxy Indices " + std::to_string(i), C::proxyIndices[i]);
+                report("P8G4 Shadow Original Fallback " + std::to_string(i), C::normalFallback[i]);
+            }
+        }
+
         Resource::reportStats("Object Chunk", frameNumber, mCache->getStats(), *stats);
         stats->setAttribute(frameNumber, "V3.11 Prepared Active Built",
             static_cast<double>(mV311PreparedActiveBuilt.load(std::memory_order_relaxed)));

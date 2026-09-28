@@ -1266,32 +1266,14 @@ if (USE_QT)
 endif()
 
 
-# V3 OPTIMIZATION LAB PACKAGING
+# OptimizedMW P8G4: exactly one public benchmark launcher.
+# Historical V3/P3/P4/P6/P7/P8 launchers remain in the repository, not the package.
 if(WIN32)
     install(FILES
-        "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Unified_Test.bat"
-        "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_City_Frametime.bat"
-        "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Transition_Deep.bat"
-        "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Render_Deep.bat"
-        "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Lab.ps1"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p3/START-OptimizedMW-GL-P3-Test.bat"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p3/OptimizedMW_GL-P3_Test.ps1"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p4/START-OptimizedMW-GL-P4-Test.bat"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p4/OptimizedMW_GL-P4_Test.ps1"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p6/START-OptimizedMW-GL-P6-Test.bat"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p6/OptimizedMW_GL-P6_Test.ps1"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p7/START-OptimizedMW-GL-P7-Test.bat"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p7/OptimizedMW_GL-P7_Test.ps1"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8/START-OptimizedMW-GL-P8-HL1-Test.bat"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8/OptimizedMW_GL-P8_HL1_Test.ps1"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g2/START-OptimizedMW-GL-P8G2-Test.bat"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g2/OptimizedMW_GL-P8G2_Test.ps1"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g3/START-OptimizedMW-GL-P8G3-Test.bat"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g3/OptimizedMW_GL-P8G3_Test.ps1"
-        "${CMAKE_SOURCE_DIR}/tools/v3/v3_trace_to_chrome.py"
-        "${CMAKE_SOURCE_DIR}/V3-applied-source.patch"
-        "${CMAKE_SOURCE_DIR}/V3-applied-source-stat.txt"
-        "${CMAKE_SOURCE_DIR}/V3-LAB-README.txt"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g4/START-OptimizedMW-Test.bat"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g4/OptimizedMW_Test.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g4/OptimizedMW_Benchmark_Report.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g4/OptimizedMW-P8G4-README.txt"
         DESTINATION "."
     )
 endif()

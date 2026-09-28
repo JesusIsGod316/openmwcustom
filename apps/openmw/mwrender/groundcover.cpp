@@ -415,7 +415,17 @@ namespace MWRender
             SceneUtil::GroundcoverBatch::enableFrontToBack(*mStateset);
         if (const char* counters = std::getenv("OPENMW_P8G3_STATS"); counters && *counters)
             mP8G3Counters = std::make_shared<SceneUtil::GroundcoverBatch::Counters>();
-        Log(Debug::Info) << "OptimizedMW P8G3: hierarchy=" << Settings::groundcover().mOptimizedMWHierarchy
+        if (Settings::groundcover().mOptimizedMWLod2)
+        {
+            SceneUtil::GroundcoverPolicy::Options options;
+            options.nearDistance = Settings::groundcover().mOptimizedMWLodNear;
+            options.farDistance = Settings::groundcover().mOptimizedMWLodFar;
+            options = SceneUtil::GroundcoverLod2::effectiveOptions(options, viewDistance);
+            mP8G4LodStates = std::make_shared<SceneUtil::GroundcoverBatch::Lod2States>(options);
+        }
+        Log(Debug::Info) << "OptimizedMW P8G4: cull_input_reuse=" << Settings::groundcover().mOptimizedMWCullInputs
+            << " lod2=" << Settings::groundcover().mOptimizedMWLod2
+            << " hierarchy=" << Settings::groundcover().mOptimizedMWHierarchy
             << " lod=" << Settings::groundcover().mOptimizedMWDensityLod
             << " front_to_back=" << Settings::groundcover().mOptimizedMWFrontToBack
             << " fast_wind=" << static_cast<int>(Settings::groundcover().mOptimizedMWFastWind);
@@ -503,6 +513,8 @@ namespace MWRender
         const bool densityLod = Settings::groundcover().mOptimizedMWDensityLod;
         const bool derived = hierarchy || densityLod;
         SceneUtil::GroundcoverPolicy::Options options;
+        options.fastCull = Settings::groundcover().mOptimizedMWCullInputs;
+        options.lod2 = Settings::groundcover().mOptimizedMWLod2;
         options.minInstances = static_cast<std::size_t>(static_cast<int>(Settings::groundcover().mOptimizedMWMinBatch));
         options.nearDistance = Settings::groundcover().mOptimizedMWLodNear;
         options.farDistance = std::max(options.nearDistance + 1.f,
@@ -579,7 +591,7 @@ namespace MWRender
                             for (const auto id : ids) tile.push_back(prepared[id]);
                             if (densityLod) SceneUtil::GroundcoverPolicy::sortRanks(tile);
                             group->addChild(SceneUtil::GroundcoverBatch::buildTile(*node, tile, densityLod,
-                                options, getViewDistance(), occlusion, mP8G3Counters));
+                                options, getViewDistance(), occlusion, mP8G3Counters, mP8G4LodStates));
                         }
                         ++eligibleModels;
                         eligibleInstances += entries.size();
@@ -608,7 +620,7 @@ namespace MWRender
             // let an aggregate static bound reject animated unsupported content.
             if (fallbackModels == 0)
                 group->addCullCallback(new SceneUtil::GroundcoverBatch::VisibilityCallback(box,
-                    getViewDistance(), v36InstanceCount, occlusion, nullptr));
+                    getViewDistance(), v36InstanceCount, occlusion, nullptr, options.fastCull));
         }
         else
         {
@@ -661,6 +673,14 @@ namespace MWRender
             report("P8G3 Tier Full", mP8G3Counters->tiers[0]);
             report("P8G3 Tier Mid", mP8G3Counters->tiers[1]);
             report("P8G3 Tier Far", mP8G3Counters->tiers[2]);
+            report("P8G4 LOD2 Full", mP8G3Counters->lod2Tiers[0]);
+            report("P8G4 LOD2 Early", mP8G3Counters->lod2Tiers[1]);
+            report("P8G4 LOD2 Mid", mP8G3Counters->lod2Tiers[2]);
+            report("P8G4 LOD2 Far", mP8G3Counters->lod2Tiers[3]);
+            report("P8G4 LOD2 Near Protected", mP8G3Counters->lod2NearProtected);
+            report("P8G4 LOD2 Prominent Protected", mP8G3Counters->lod2ProminentProtected);
+            report("P8G4 LOD2 Tier Limited", mP8G3Counters->lod2TierLimited);
+            report("P8G4 LOD2 Full Fallback", mP8G3Counters->lod2FullFallback);
         }
     }
 }

@@ -69,8 +69,8 @@ checks = {
         "$TerrainResourcePhases='true'", "$TerrainSplitVbo='true'",
         "$ParallelActor='true'", "$ParallelTerrainCpu='true'",
         "$OsgThreadingMode='0'")),
-    "packaged": "START-OptimizedMW-GL-P8G2-Test.bat" in cmake
-        and "OptimizedMW_GL-P8G2_Test.ps1" in cmake,
+    "packaged": (root / "tools/optimizedmw/gl-p8g2/START-OptimizedMW-GL-P8G2-Test.bat").is_file()
+        and (root / "tools/optimizedmw/gl-p8g2/OptimizedMW_GL-P8G2_Test.ps1").is_file(),
 }
 
 failed = [name for name, ok in checks.items() if not ok]

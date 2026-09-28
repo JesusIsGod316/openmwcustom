@@ -32,8 +32,8 @@ checks = {
         "P3-CORE-B2-D-F", "P3-ALL-REPAIRED",
         "optimizedmw render handoff attribution", "settings-effective-test.cfg",
         "OPENMW_V36_BATCHING_FILE"))
-        and "START-OptimizedMW-GL-P3-Test.bat" in cmake_root
-        and "OptimizedMW_GL-P3_Test.ps1" in cmake_root,
+        and (root / "tools/optimizedmw/gl-p3/START-OptimizedMW-GL-P3-Test.bat").is_file()
+        and (root / "tools/optimizedmw/gl-p3/OptimizedMW_GL-P3_Test.ps1").is_file(),
     "switchable_optimizer": "setMergeCompatibleIndexTypes" in optimizer_h
         and "setPreferDisplayListsForMergedGeometry" in optimizer_h
         and "setNormalizeIgnoredVertexColors" in optimizer_h,
@@ -57,7 +57,9 @@ checks = {
         and "geometry->setColorArray(nullptr)" in optimizer_cpp
         and "p3_normalized_colors=" in objectpaging,
     "p3f_optional_only": "const bool p3ShadowStaticBatching" in objectpaging
-        and "&& p3OptionalDistant;" in objectpaging,
+        and "(p3OptionalDistant || (activeGrid" in objectpaging
+        and "mOptimizedMWActiveShadowBatching" in objectpaging
+        and "&& compile && !p2RequiredReadiness && SceneUtil::PagingWorkScope::optionalOptimization()" in objectpaging,
     "p3f_diagnostics": all(token in objectpaging for token in (
         "p3_shadow_candidates=", "p3_shadow_eligible=", "p3_shadow_rejected_state=",
         "p3_shadow_rejected_geometry=", "p3_shadow_batches=", "p3_shadow_indices=")),

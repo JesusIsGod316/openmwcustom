@@ -40,8 +40,8 @@ checks = {
         and "OPENMW_V325_JOBGROUP_STATS_FILE" in launcher
         and "OPENMW_P7_PREP_STATS_FILE" in launcher
         and "preload num threads' '1'" in launcher,
-    "launcher_packaged": "START-OptimizedMW-GL-P7-Test.bat" in cmake
-        and "OptimizedMW_GL-P7_Test.ps1" in cmake,
+    "historical_launcher_retained": (root / "tools/optimizedmw/gl-p7/START-OptimizedMW-GL-P7-Test.bat").is_file()
+        and (root / "tools/optimizedmw/gl-p7/OptimizedMW_GL-P7_Test.ps1").is_file(),
 }
 failed = [name for name, ok in checks.items() if not ok]
 if failed:
