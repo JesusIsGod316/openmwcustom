@@ -75,3 +75,32 @@ else:raise AssertionError('missing LOD helper passed verification')
 run('cmake','--build',str(out),'--target','openmw-shader-resources')
 resources.verify(staged)
 print('P8G3 deployed PBR: two audited overrides; CONTROL token-equivalent; other overlay files byte-identical; missing-helper and stale-patch controls passed')
+# Reproduce the Windows autocrlf failure without changing the real checkout.
+# The audited payloads must retain LF while an ordinary file still becomes CRLF.
+import tempfile
+with tempfile.TemporaryDirectory(prefix='p8g3-checkout-') as temp:
+    checkout=Path(temp)
+    names=['files/shaders/v3overlay/p8g3/'+n for n in manifest['groundcover_patch']['files']]
+    def git(*args):
+        return subprocess.run(['git','-C',str(checkout),*args],check=True,
+                              stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    git('init','-q')
+    git('config','core.autocrlf','false')
+    for name in names:
+        target=checkout/name;target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes((root/name).read_bytes())
+    (checkout/'ordinary.txt').write_bytes(b'ordinary\nline endings\n')
+    git('add','.')
+    git('config','core.autocrlf','true')
+    for name in names+['ordinary.txt']:(checkout/name).unlink()
+    git('checkout-index','--all','--force')
+    for name in names:
+        assert b'\r\n' in (checkout/name).read_bytes(), 'negative control did not use CRLF'
+        assert (checkout/name).read_bytes() != (root/name).read_bytes()
+    (checkout/'.gitattributes').write_bytes((root/'.gitattributes').read_bytes())
+    for name in names+['ordinary.txt']:(checkout/name).unlink()
+    git('checkout-index','--all','--force')
+    for name in names:
+        assert (checkout/name).read_bytes() == (root/name).read_bytes(), ('LF payload changed',name)
+    assert b'\r\n' in (checkout/'ordinary.txt').read_bytes(), 'unrelated checkout policy was changed'
+print('P8G3 Windows-autocrlf regression: old checkout differs; scoped LF policy preserves exact audited bytes')
