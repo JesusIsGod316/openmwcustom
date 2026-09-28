@@ -347,8 +347,9 @@ int main()
     });
     test("intrinsic particle body is event-owned while simulation remains continuous", [] {
         ScopedFlag splitFlag("OPENMW_VK_SPLIT_PARTICLE_CAPTURE"),
-            driven("OPENMW_VK_CHANGE_DRIVEN_OBJECTS"), textures("OPENMW_V4_LOAD_BOUND_TEXTURES");
-        splitFlag.set("1"); driven.set("1"); textures.set("1");
+            driven("OPENMW_VK_CHANGE_DRIVEN_OBJECTS"), textures("OPENMW_V4_LOAD_BOUND_TEXTURES"),
+            supported("OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS");
+        splitFlag.set("1"); driven.set("1"); textures.set("1"); supported.set("");
         Scene s;
         osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root = new SceneUtil::PositionAttitudeTransform;
         root->addChild(geometry());
@@ -359,6 +360,13 @@ int main()
         emitter->setParticleSystem(particles); program->setParticleSystem(particles); updater->addParticleSystem(particles);
         root->addChild(emitter); root->addChild(program); root->addChild(updater); root->addChild(particles);
         unsigned wakes = 0;
+        {
+            MWRender::V4PersistentObject control(*root, 64u*1024u*1024u, true, [&] { ++wakes; });
+            require(control.supported() && control.hasIntrinsicParticles(), "particle producer control not recognized");
+            require(!control.bodyEventDriven() && !control.eventDriven(),
+                "supported-continuous control unexpectedly enabled particle body ownership");
+        }
+        supported.set("1");
         MWRender::V4PersistentObject producer(*root, 64u*1024u*1024u, true, [&] { ++wakes; });
         require(producer.supported() && producer.hasIntrinsicParticles(), "particle producer not recognized");
         require(producer.bodyEventDriven() && !producer.eventDriven(),
