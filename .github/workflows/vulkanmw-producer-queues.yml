@@ -2,7 +2,9 @@ name: VulkanMW producer dirty queues
 on:
   workflow_dispatch:
   push:
-    branches: [vulkanmw/phase3c-producer-dirty-queues]
+    branches:
+      - vulkanmw/phase3c-producer-dirty-queues
+      - vulkanmw/phase3c-supported-continuous-producers
 permissions:
   contents: read
 concurrency:
@@ -27,7 +29,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_NAME" = "vulkanmw/phase3c-producer-dirty-queues"
+          case "$GITHUB_REF_NAME" in
+            vulkanmw/phase3c-producer-dirty-queues|vulkanmw/phase3c-supported-continuous-producers) ;;
+            *) echo "Unexpected producer branch: $GITHUB_REF_NAME" >&2; exit 1 ;;
+          esac
           git merge-base --is-ancestor 348bfe6b087b7c8b83738e12a11a7e10f9e592ef HEAD
           if test -f .github/vulkanmw-producer-update.patch.sha256; then
             python - <<'PYDECODE'
