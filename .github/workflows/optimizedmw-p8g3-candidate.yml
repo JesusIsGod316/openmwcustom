@@ -16,11 +16,11 @@ jobs:
           fetch-depth: 0
       - name: Receive and verify candidate source
         env:
-          CANDIDATE_URL: 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-0324-81f5-821c-4311a483b655/raw?se=2026-09-28T03%3A53%3A23Z&sp=r&sv=2026-02-06&sr=b&scid=8bd9153f-e1dd-5a54-a64b-6e73d3f9aa1c&skoid=d1cabc79-3240-4866-94fe-6005330cb49e&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-28T00%3A19%3A43Z&ske=2026-09-29T00%3A19%3A43Z&sks=b&skv=2026-02-06&sig=HnvFUYbvSOedXnwjM/Y6K/6U8c8gvyXFuJ1wzzd8oCc%3D'
+          CANDIDATE_URL: 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-05c4-81f5-bb02-ea3cde69cc16/raw?se=2026-09-28T03%3A56%3A16Z&sp=r&sv=2026-02-06&sr=b&scid=9cdd8a1e-9ae9-5558-b511-35390f099b7d&skoid=d1cabc79-3240-4866-94fe-6005330cb49e&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-28T00%3A22%3A03Z&ske=2026-09-29T00%3A22%3A03Z&sks=b&skv=2026-02-06&sig=bxzHgSAZDEeY6PThduBnND3AKWsVKcv4vldOQedn/g4%3D'
         run: |
           set -euo pipefail
           curl --fail --retry 2 "$CANDIDATE_URL" -o /tmp/candidate.zip
-          echo '782fc403823fe5a414a07f05e9e8cceb0518faf28a22faa2db184ddd7ff23f48  /tmp/candidate.zip' | sha256sum -c -
+          echo '3ed9d9d47e845566ade9a268e71ff63772a64725190cf3ed4b0748f2795e239f  /tmp/candidate.zip' | sha256sum -c -
           python - <<'PY'
           import zipfile,json,hashlib,pathlib,subprocess
           z=zipfile.ZipFile('/tmp/candidate.zip')
