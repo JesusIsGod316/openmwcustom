@@ -32,6 +32,7 @@
 #include <components/misc/thread.hpp>
 #include <components/esm3/loaddial.hpp>
 #include <components/esm3/loadinfo.hpp>
+#include <components/esm3/loadsoun.hpp>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
