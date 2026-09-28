@@ -18,7 +18,8 @@ def main():
     bridge = require('apps/openmw/mwrender/v4enginerenderbridge.cpp',
         'rendering.forEachV4Animation(', 'mPersistentDraws.stream()',
         'producer->eventDriven()', 'animation.setV4ProducerDemandDriven(true)',
-        'const bool queuedPublication', 'if (queuedPublication && !capturedEffects)')
+        'animation.setV4ProducerSupportedActor()', 'animation.setV4ProducerSupportedParticle()',
+        'const bool queuedPublication', 'particleBodyCanSleep')
     if 'rendering.forEachAnimation(' in bridge:
         raise AssertionError('Bridge regained broad per-frame object inventory traversal')
     require('apps/openmw/mwrender/renderingmanager.cpp',
@@ -31,14 +32,17 @@ def main():
     animation = require('apps/openmw/mwrender/animation.cpp',
         'void Animation::invalidateV4PersistentObject()',
         'void Animation::attachV4ProducerTicket(', 'mV4ProducerTicket->notify()',
-        'source->subscribeRenderMutations(mV4ProducerWake)', 'mV4ProducerTicket->continuous(!mV4ProducerDemandDriven)')
+        'source->subscribeRenderMutations(mV4ProducerWake)',
+        'mV4ProducerTicket->continuous(v4ProducerClassIsContinuous(mV4ProducerClass))')
     if animation.count('mV4PersistentObject.reset();') != 1:
         raise AssertionError('A producer reset bypasses engine dirty notification')
     require('apps/openmw/mwrender/v4objectqueue.hpp', 'mQueue.take()',
-        'mQueue.valid(change.token)', 'mOverflow', 'setV4ProducerDemandDriven(false)',
+        'mQueue.valid(change.token)', 'mOverflow', 'beginV4ProducerVisit',
+        'SupportedContinuousActor', 'SupportedContinuousParticle',
         'mQueue.invalidateAll()', 'it->second->cancel()')
     producer = require('apps/openmw/mwrender/v4persistentobject.hpp',
         'mNotificationCovered', 'mOwner->eventDriven', 'mOwner->retire()',
+        'bodyEventDriven()', 'canReuseBodyWithoutVisit()',
         'mSubscription->changed.exchange(false', 'mSubscription->wake', 'resetWorld')
     if 'mSubscription->changed = false' in producer:
         raise AssertionError('Publication can discard a notification raised during consumption')
