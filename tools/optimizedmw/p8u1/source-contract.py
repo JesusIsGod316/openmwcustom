@@ -25,6 +25,8 @@ require(engine.count("mSoundManager->warmStoreSounds();") == 1, "warming discove
 prepare = engine[engine.index("void OMW::Engine::prepareEngine()") :]
 require("mSoundManager->warmStoreSounds();" in prepare, "warming outside loading setup")
 sound = text("apps/openmw/mwsound/soundmanagerimp.cpp")
+require("#include <components/esm3/loadsoun.hpp>" in sound,
+        "warming reads ESM::Sound fields and must include their complete declaration directly")
 update = sound[sound.index("void SoundManager::update(float duration)"):]
 require("warmStoreSounds(" not in update and "warmCellSounds(" not in update,
         "ordinary update must not discover the world for warming")
