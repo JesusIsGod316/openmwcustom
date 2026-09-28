@@ -1,0 +1,28 @@
+name: OptimizedMW P8G4 source snapshot
+on:
+  push:
+    branches: [optimizedmw/gl-p8g4-work]
+    paths: [.github/workflows/p8g4-source-access.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  Snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 901fd5c38e8448a279dea8cfe76a286a7334d75b
+      - name: Export exact baseline and blob identities
+        run: |
+          mkdir -p export
+          git rev-parse HEAD > export/COMMIT.txt
+          git rev-parse HEAD^{tree} > export/TREE.txt
+          git ls-tree -r HEAD > export/BLOBS.txt
+          git archive --format=tar.gz HEAD > export/source.tar.gz
+          sha256sum export/source.tar.gz > export/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: P8G4-baseline-source
+          path: export/
+          retention-days: 7
