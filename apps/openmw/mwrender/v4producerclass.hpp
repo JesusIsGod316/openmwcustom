@@ -21,9 +21,25 @@ namespace MWRender
         return value != V4ProducerClass::CompatibilityContinuous;
     }
 
+    [[nodiscard]] constexpr bool v4ProducerClassIsSupportedContinuous(V4ProducerClass value) noexcept
+    {
+        return value == V4ProducerClass::SupportedContinuousActor
+            || value == V4ProducerClass::SupportedContinuousParticle;
+    }
+
+    // Only unknown/compatibility work belongs to ProducerQueue's generic
+    // continuous set. Supported actors and particles are scheduled explicitly
+    // by V4ObjectQueue so they cannot inflate or rediscover that fallback lane.
+    [[nodiscard]] constexpr bool v4ProducerClassUsesCompatibilityContinuousQueue(
+        V4ProducerClass value) noexcept
+    {
+        return value == V4ProducerClass::CompatibilityContinuous;
+    }
+
     [[nodiscard]] constexpr bool v4ProducerClassIsContinuous(V4ProducerClass value) noexcept
     {
-        return value != V4ProducerClass::DemandDrivenObject;
+        return value == V4ProducerClass::CompatibilityContinuous
+            || v4ProducerClassIsSupportedContinuous(value);
     }
 }
 
