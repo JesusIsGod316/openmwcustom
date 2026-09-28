@@ -1,0 +1,28 @@
+name: OptimizedMW P8G3 source preparation
+on:
+  push:
+    branches: [optimizedmw/gl-p8g3-visibility-lod]
+    paths: [.github/workflows/optimizedmw-p8g3-source-prep.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  Source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Export exact source and identity
+        run: |
+          mkdir -p /tmp/p8g3-source
+          git rev-parse HEAD > /tmp/p8g3-source/commit.txt
+          git rev-parse HEAD^{tree} > /tmp/p8g3-source/tree.txt
+          git ls-tree -r HEAD > /tmp/p8g3-source/blobs.txt
+          git archive --format=tar.gz -o /tmp/p8g3-source/source.tar.gz HEAD
+          sha256sum /tmp/p8g3-source/source.tar.gz > /tmp/p8g3-source/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OptimizedMW-P8G3-exact-source
+          path: /tmp/p8g3-source/
+          retention-days: 14
