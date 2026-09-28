@@ -5,6 +5,7 @@ on:
     branches:
       - vulkanmw/phase3c-producer-dirty-queues
       - vulkanmw/phase3c-supported-continuous-producers
+      - vulkanmw/clockwork-p1-producers-postfx
 permissions:
   contents: read
 concurrency:
@@ -30,7 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$GITHUB_REF_NAME" in
-            vulkanmw/phase3c-producer-dirty-queues|vulkanmw/phase3c-supported-continuous-producers) ;;
+            vulkanmw/phase3c-producer-dirty-queues|vulkanmw/phase3c-supported-continuous-producers|vulkanmw/clockwork-p1-producers-postfx) ;;
             *) echo "Unexpected producer branch: $GITHUB_REF_NAME" >&2; exit 1 ;;
           esac
           git merge-base --is-ancestor 348bfe6b087b7c8b83738e12a11a7e10f9e592ef HEAD
