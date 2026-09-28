@@ -48,7 +48,7 @@ namespace MWRender
             {
                 mSubscription = std::make_shared<SceneUtil::RenderMutationSource::Subscription>();
                 mOwner = std::make_shared<RenderCore::PersistentDrawOwner>();
-                mOwner->eventDriven = static_cast<bool>(wake) && !mHasIntrinsicParticles;
+                mOwner->eventDriven = static_cast<bool>(wake);
                 mSubscription->wake = std::move(wake);
                 for (const auto& b : mNodes)
                 {
@@ -66,9 +66,21 @@ namespace MWRender
         V4PersistentObject& operator=(const V4PersistentObject&) = delete;
         bool supported() const noexcept { return mSupported; }
         bool hasIntrinsicParticles() const noexcept { return mHasIntrinsicParticles; }
-        bool eventDriven() const noexcept
+        bool bodyEventDriven() const noexcept
         {
             return mSupported && mChangeDriven && mOwner && mOwner->eventDriven
+                && !mSubscription->invalidated.load(std::memory_order_acquire);
+        }
+        bool eventDriven() const noexcept
+        {
+            // Intrinsic particle simulation still needs a continuous visit, but
+            // the ordinary body can keep explicit event-driven draw ownership.
+            return bodyEventDriven() && !mHasIntrinsicParticles;
+        }
+        bool canReuseBodyWithoutVisit() const noexcept
+        {
+            return bodyEventDriven() && mPublished && mSubscription
+                && !mSubscription->changed.load(std::memory_order_acquire)
                 && !mSubscription->invalidated.load(std::memory_order_acquire);
         }
         const std::string& queueFallbackReason() const noexcept { return mQueueFallback; }
