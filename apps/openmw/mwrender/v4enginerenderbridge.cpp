@@ -519,6 +519,7 @@ namespace MWRender
         const bool cachedObjectAdmission = Misc::environmentFlag<"OPENMW_VK_CACHED_OBJECT_ADMISSION">();
         unsigned reusedObjectAdmissions = 0, skippedObjectAdmissions = 0;
         std::uint64_t cleanObjectPublications = 0, objectBindingInspections = 0;
+        unsigned queueFallbackEvents = 0;
         if (persistentDraws) mPersistentDraws.begin(worldEpoch.value());
         if (mEvaluatedObjectPlaybackEpoch != worldEpoch)
         {
@@ -555,12 +556,15 @@ namespace MWRender
         if (mNativeAnimation)
             mNativeAnimation->beginFrame();
 
-        rendering.forEachAnimation([&](Animation& animation) {
+        rendering.forEachV4Animation([&](Animation& animation) {
             if (!compatible)
                 return;
             const MWWorld::Ptr ptr = animation.getPtr();
             if (ptr.isEmpty() || !ptr.getRefData().isEnabled())
+            {
+                animation.invalidateV4PersistentObject();
                 return;
+            }
 
             Debug::GameplayDiagnostics::CaptureWork captureWork(ptr.getClass().isActor());
             if (!ptr.getClass().isActor())
@@ -578,6 +582,8 @@ namespace MWRender
                     if (!admission->needsEvaluatedCapture)
                     {
                         ++skippedObjectAdmissions;
+                        if (auto* producer = animation.prepareV4PersistentObject(); producer && producer->eventDriven())
+                            animation.setV4ProducerDemandDriven(true);
                         return;
                     }
                 }
@@ -616,7 +622,11 @@ namespace MWRender
                 if (cachedObjectAdmission && !admission)
                     animation.setV4ObjectCaptureAdmission(worldEpoch.value(), modelPath, needsEvaluatedCapture);
                 if (!needsEvaluatedCapture)
+                {
+                    if (auto* producer = animation.prepareV4PersistentObject(); producer && producer->eventDriven())
+                        animation.setV4ProducerDemandDriven(true);
                     return;
+                }
 
                 const std::optional<std::string> identity = makeV4ReferenceIdentity(ptr);
                 if (!identity)
@@ -734,6 +744,15 @@ namespace MWRender
                             Settings::shaders().mApplyLightingToEnvironmentMaps);
                         cleanObjectPublications += producer->cleanPublications - clean;
                         objectBindingInspections += producer->bindingInspections - inspections;
+                        if (!producer->eventDriven() && Debug::GameplayDiagnostics::sampling()
+                            && Misc::environmentFlag<"OPENMW_VK_PRODUCER_DIRTY_QUEUES">()
+                            && queueFallbackEvents++ < 4)
+                            Debug::GameplayDiagnostics::recordEvent("producer_queue_fallback", {
+                                {"model", std::string(modelPath.value())},
+                                {"reason", !producer->queueFallbackReason().empty() ? producer->queueFallbackReason()
+                                    : !producer->supported() ? producer->fallbackReason()
+                                    : producer->hasIntrinsicParticles() ? "intrinsic particles require continuous capture"
+                                    : "ownership or mutation coverage requires compatibility capture"}});
                         if (Debug::GameplayDiagnostics::sampling())
                         {
                             auto& c = Debug::GameplayDiagnostics::context;
@@ -763,7 +782,8 @@ namespace MWRender
                         // The known static body and the live particle path are
                         // atomic from the caller's perspective. Retire any
                         // retained slots before the whole-object fallback.
-                        objectProducer->invalidate("intrinsic particle capture: " + particles.diagnostic);
+                        objectProducer->invalidate("intrinsic particle capture: " + particles.diagnostic,
+                            persistentDraws ? &mPersistentDraws : nullptr);
                         planned.reset();
                     }
                 }
@@ -773,6 +793,7 @@ namespace MWRender
                     planned = mObjectCapturePlans->capture(*evaluatedRoot, "animated-object:" + *identity,
                         mVfs, mTextureIdentities);
                 }
+                const bool queuedPublication = planned && objectProducer && objectProducer->eventDriven();
                 V4EffectCaptureResult capturedObject;
                 if (planned) capturedObject = std::move(*planned);
                 else
@@ -833,6 +854,8 @@ namespace MWRender
                     for (RenderCore::ImmediateEffectDraw& draw : capturedEffects->draws)
                         source.immediateEffectDraws.push_back(std::move(draw));
                 }
+                if (queuedPublication && !capturedEffects)
+                    animation.setV4ProducerDemandDriven(true);
                 return;
             }
 
@@ -1573,7 +1596,7 @@ namespace MWRender
                 }
                 currentActorLights.insert(light.identity);
             }
-        });
+        }, mPersistentDraws.stream());
         if (cachedObjectAdmission && Debug::GameplayDiagnostics::sampling())
             Debug::GameplayDiagnostics::recordEvent("object_admission_cache", {
                 {"reused", std::to_string(reusedObjectAdmissions)},

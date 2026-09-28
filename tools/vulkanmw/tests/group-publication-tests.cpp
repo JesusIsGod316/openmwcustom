@@ -38,8 +38,8 @@ namespace
         StaticPopulationProducer producer(world, publisher, groups);
         constexpr auto applied = StaticPopulationPublishStatus::Applied;
         constexpr auto present = StaticPopulationPublishStatus::AlreadyPresent;
-        check(producer.addCell({.identity="a", .worldspaceIdentity="world"}) == applied, "cell a");
-        check(producer.addCell({.identity="b", .worldspaceIdentity="world", .groundcover=true}) == applied, "cell b");
+        check(producer.addCell({.identity="a", .worldspaceIdentity="world", .bounds={}}) == applied, "cell a");
+        check(producer.addCell({.identity="b", .worldspaceIdentity="world", .bounds={}, .groundcover=true}) == applied, "cell b");
         std::vector<StaticPopulationInstanceSource> sources;
         for (unsigned i = 0; i < 32; ++i)
         {
@@ -143,7 +143,7 @@ namespace
         }
         for (auto* producer : {&control, &repair})
             for (const auto* cell : {"left", "right"})
-                check(producer->addCell({.identity=cell, .worldspaceIdentity="world"})
+                check(producer->addCell({.identity=cell, .worldspaceIdentity="world", .bounds={}})
                     == StaticPopulationPublishStatus::Applied, "parity cell");
         // Deterministic mixed moves, model swaps, repeated updates, deletions,
         // and reinsertions. Compare authoritative placements, not chunk layout.

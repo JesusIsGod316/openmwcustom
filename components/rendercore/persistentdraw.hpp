@@ -2,6 +2,9 @@
 #define OPENMW_COMPONENTS_RENDERCORE_PERSISTENTDRAW_H
 
 #include "effectframe.hpp"
+#include <components/misc/producerqueue.hpp>
+#include <map>
+#include <set>
 #include <array>
 #include <atomic>
 #include <limits>
@@ -44,6 +47,18 @@ namespace RenderCore
     {
         std::uint64_t stream = 0, capture = 0;
         bool invalidated = true;
+        // Explicit lifetime is opt-in. Legacy producers still renew each frame.
+        bool eventDriven = false;
+        std::atomic_bool retired{false};
+        std::uint64_t registrationStream = 0;
+        // Producer destruction can race renderer-side slot retirement. Publish
+        // and detach only the ticket atomically; all slot tables stay owner-thread-only.
+        std::atomic<std::shared_ptr<Misc::ProducerQueue::Ticket>> retirement;
+        void retire() noexcept
+        {
+            retired.store(true, std::memory_order_release);
+            if (const auto ticket = retirement.load(std::memory_order_acquire)) ticket->notify();
+        }
     };
     struct PersistentDrawEntry
     {
@@ -93,14 +108,19 @@ namespace RenderCore
     class PersistentDrawWorld
     {
     public:
-        explicit PersistentDrawWorld(std::size_t maximumSlots = 131072) : mMaximumSlots(maximumSlots) {}
+        explicit PersistentDrawWorld(std::size_t maximumSlots = 131072)
+            : mMaximumSlots(maximumSlots), mRetirements(std::make_unique<Misc::ProducerQueue>(maximumSlots)) {}
+        std::uint64_t stream() const noexcept { return mStream; }
         void begin(std::uint64_t epoch)
         {
             if (epoch != mEpoch)
             {
                 mEpoch = epoch; mStream = ++sStream; mPages.clear(); mSeen.clear();
                 mFree.clear(); mDirty.clear(); mChanges.clear(); mOwners.clear(); mFrame.reset(); mSize = 0;
+                mEphemeral.clear(); mOwned.clear();
+                mRetirements = std::make_unique<Misc::ProducerQueue>(mMaximumSlots);
             }
+            retireOwners();
             ++mCapture;
         }
         bool touchOwner(const std::shared_ptr<PersistentDrawOwner>& owner)
@@ -126,16 +146,41 @@ namespace RenderCore
             std::shared_ptr<const PersistentDrawResource> resource;
             if (!previous || resourceChanged)
                 resource = std::make_shared<const PersistentDrawResource>(draw);
+            if (owner && owner->eventDriven && owner->retired.load(std::memory_order_acquire)) return false;
+            if (!previous && mFree.empty() && mSeen.size() >= mMaximumSlots)
+            {
+                retireOwners();
+                if (mFree.empty()) return false;
+            }
+            // Register before allocating a draw slot: rejection must not consume
+            // the slot budget or leave an unpublished live registration behind.
+            auto retirement = owner ? owner->retirement.load(std::memory_order_acquire)
+                                    : std::shared_ptr<Misc::ProducerQueue::Ticket>{};
+            if (owner && owner->eventDriven
+                && (owner->registrationStream != mStream || !retirement))
+            {
+                retirement = mRetirements->add();
+                if (!retirement) return false;
+                owner->retirement.store(retirement, std::memory_order_release);
+                owner->registrationStream = mStream;
+                mOwned.emplace(retirement->token(), OwnedSlots{owner, {}});
+            }
             if (!previous)
             {
-                if (mFree.empty() && mSeen.size() >= mMaximumSlots) return false;
                 const auto slot = mFree.empty() ? static_cast<std::uint32_t>(mSeen.size()) : mFree.back();
                 if (!mFree.empty()) mFree.pop_back();
                 else { mSeen.push_back(0); mDirty.push_back(false); mOwners.emplace_back(); }
                 handle = {mStream, ++mGeneration, slot};
                 resourceChanged = true;
             }
+            if (mOwners[handle.slot] != owner) detachOwner(handle.slot);
             mSeen[handle.slot] = mCapture;
+            if (owner && owner->eventDriven)
+            {
+                mOwned.at(retirement->token()).slots.insert(handle.slot);
+                mEphemeral.erase(handle.slot);
+            }
+            else mEphemeral.insert(handle.slot);
             mOwners[handle.slot] = owner;
             if (!resourceChanged && previous->visible && previous->transform == draw.worldTransform) return true;
             auto entry = std::make_shared<PersistentDrawEntry>();
@@ -158,16 +203,20 @@ namespace RenderCore
         void remove(PersistentDrawHandle handle)
         {
             if (!get(handle)) return;
-            if (mOwners[handle.slot]) mOwners[handle.slot]->invalidated = true;
-            mOwners[handle.slot].reset();
+            detachOwner(handle.slot);
+            mEphemeral.erase(handle.slot);
             assign(handle.slot, {}); mFree.push_back(handle.slot); --mSize;
         }
         std::shared_ptr<const PersistentDrawFrame> finish()
         {
-            for (std::uint32_t slot = 0; slot < mSeen.size(); ++slot)
+            retireOwners();
+            for (auto it = mEphemeral.begin(); it != mEphemeral.end();)
+            {
+                const auto slot = *it++;
                 if (const auto* entry = at(slot); entry && (mOwners[slot]
                         ? mOwners[slot]->capture != mCapture : mSeen[slot] != mCapture))
                     remove(entry->handle);
+            }
             if (mChanges.empty() && mFrame) return mFrame;
             auto frame = std::make_shared<PersistentDrawFrame>();
             frame->mStream = mStream; frame->mSize = mSize;
@@ -179,6 +228,42 @@ namespace RenderCore
             mChanges.clear(); mFrame = frame; return frame;
         }
     private:
+        void retireOwners()
+        {
+            for (const auto& change : mRetirements->take())
+            {
+                const auto found = mOwned.find(change.token);
+                if (found == mOwned.end() || !found->second.owner->retired.load(std::memory_order_acquire))
+                    continue;
+                // remove() updates membership and may erase the last owner slot.
+                const auto slots = found->second.slots;
+                for (auto slot : slots)
+                    if (const auto* entry = at(slot)) remove(entry->handle);
+            }
+        }
+        void detachOwner(std::uint32_t slot)
+        {
+            if (const auto& owner = mOwners[slot])
+            {
+                owner->invalidated = true;
+                const auto retirement = owner->retirement.load(std::memory_order_acquire);
+                if (owner->eventDriven && owner->registrationStream == mStream && retirement)
+                {
+                    const auto found = mOwned.find(retirement->token());
+                    if (found != mOwned.end())
+                    {
+                        found->second.slots.erase(slot);
+                        if (found->second.slots.empty())
+                        {
+                            retirement->cancel();
+                            owner->retirement.store({}, std::memory_order_release);
+                            mOwned.erase(found);
+                        }
+                    }
+                }
+            }
+            mOwners[slot].reset();
+        }
         const PersistentDrawEntry* at(std::uint32_t slot) const noexcept
         { return slot / PersistentDrawFrame::PageSize < mPages.size()
             ? (*mPages[slot / PersistentDrawFrame::PageSize])[slot % PersistentDrawFrame::PageSize].get() : nullptr; }
@@ -199,6 +284,14 @@ namespace RenderCore
         std::vector<bool> mDirty;
         std::vector<std::uint32_t> mFree, mChanges;
         std::shared_ptr<const PersistentDrawFrame> mFrame;
+        struct OwnedSlots
+        {
+            std::shared_ptr<PersistentDrawOwner> owner;
+            std::set<std::uint32_t> slots;
+        };
+        std::set<std::uint32_t> mEphemeral;
+        std::map<Misc::ProducerQueue::Token, OwnedSlots> mOwned;
+        std::unique_ptr<Misc::ProducerQueue> mRetirements;
     };
 }
 #endif

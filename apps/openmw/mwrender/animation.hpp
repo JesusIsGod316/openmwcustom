@@ -2,6 +2,9 @@
 #define GAME_RENDER_ANIMATION_H
 
 #include "animationpriority.hpp"
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+#include <components/misc/producerqueue.hpp>
+#endif
 #include "animblendcontroller.hpp"
 #include "blendmask.hpp"
 #include "bonegroup.hpp"
@@ -295,6 +298,9 @@ namespace MWRender
         VFS::Path::Normalized mV4SourceModel;
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
         std::unique_ptr<V4PersistentObject> mV4PersistentObject;
+        std::shared_ptr<Misc::ProducerQueue::Ticket> mV4ProducerTicket;
+        bool mV4ProducerDemandDriven = false;
+        std::shared_ptr<SceneUtil::RenderMutationSource::Subscription> mV4ProducerWake;
         struct V4ObjectCaptureAdmission
         {
             std::uint64_t worldEpoch = 0;
@@ -429,6 +435,10 @@ namespace MWRender
         [[nodiscard]] bool captureV4NativeAnimationState(
             V4NativeAnimationState& state, std::string& diagnostic) const;
         V4PersistentObject* prepareV4PersistentObject();
+        void attachV4ProducerTicket(std::shared_ptr<Misc::ProducerQueue::Ticket> ticket);
+        void invalidateV4PersistentObject();
+        void setV4ProducerDemandDriven(bool value) { mV4ProducerDemandDriven = value; }
+        void finishV4ProducerVisit();
         [[nodiscard]] bool captureV4ObjectControllerClock(std::optional<float>& time, std::string& diagnostic) const;
         // One seed at admission/re-entry, not a per-frame geometry/material capture.
         [[nodiscard]] bool seedV4ObjectNodeTransforms(const std::vector<std::string>& names,

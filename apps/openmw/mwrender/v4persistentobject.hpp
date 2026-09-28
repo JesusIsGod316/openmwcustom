@@ -24,7 +24,7 @@ namespace MWRender
     {
     public:
         explicit V4PersistentObject(osg::Node& root, std::size_t budget = 64u * 1024u * 1024u,
-            bool engineOwnedNif = false)
+            bool engineOwnedNif = false, std::function<void()> wake = {})
             : mBudget(budget)
         {
             osg::NodePath path;
@@ -41,13 +41,15 @@ namespace MWRender
             // ownership contract. Arbitrary OSG assets retain all edge guards.
             // Bound controllers and root movement publish notifications; engine
             // attachment/controller/harvest operations invalidate this producer.
-            mChangeDriven = mSupported && engineOwnedNif
+            mChangeDriven = mSupported && engineOwnedNif && mNotificationCovered
                 && Misc::environmentFlag<"OPENMW_VK_CHANGE_DRIVEN_OBJECTS">()
                 && Misc::environmentFlag<"OPENMW_V4_LOAD_BOUND_TEXTURES">();
             if (mChangeDriven)
             {
                 mSubscription = std::make_shared<SceneUtil::RenderMutationSource::Subscription>();
                 mOwner = std::make_shared<RenderCore::PersistentDrawOwner>();
+                mOwner->eventDriven = static_cast<bool>(wake) && !mHasIntrinsicParticles;
+                mSubscription->wake = std::move(wake);
                 for (const auto& b : mNodes)
                 {
                     if (b.transformSource) b.transformSource->subscribeRenderMutations(mSubscription);
@@ -55,13 +57,28 @@ namespace MWRender
                 }
             }
         }
-        ~V4PersistentObject() { sBytes.fetch_sub(mCharged, std::memory_order_relaxed); }
+        ~V4PersistentObject()
+        {
+            if (mOwner) mOwner->retire();
+            sBytes.fetch_sub(mCharged, std::memory_order_relaxed);
+        }
         V4PersistentObject(const V4PersistentObject&) = delete;
         V4PersistentObject& operator=(const V4PersistentObject&) = delete;
         bool supported() const noexcept { return mSupported; }
         bool hasIntrinsicParticles() const noexcept { return mHasIntrinsicParticles; }
+        bool eventDriven() const noexcept
+        {
+            return mSupported && mChangeDriven && mOwner && mOwner->eventDriven
+                && !mSubscription->invalidated.load(std::memory_order_acquire);
+        }
+        const std::string& queueFallbackReason() const noexcept { return mQueueFallback; }
         const std::string& fallbackReason() const noexcept { return mFallback; }
-        void invalidate(std::string reason) { fallback(std::move(reason)); }
+        void invalidate(std::string reason, RenderCore::PersistentDrawWorld* world = nullptr)
+        {
+            mPublishingWorld = world;
+            fallback(std::move(reason));
+            mPublishingWorld = nullptr;
+        }
         static std::size_t retainedBytes() { return sBytes.load(std::memory_order_relaxed); }
         std::uint64_t geometryBuilds = 0, materialUpdates = 0, uvUpdates = 0, reusedDraws = 0;
         std::uint64_t cleanPublications = 0, bindingInspections = 0;
@@ -71,17 +88,25 @@ namespace MWRender
             RenderCore::PersistentDrawWorld* persistent = nullptr, bool environmentPreLight = false)
         {
             mPublishingWorld = persistent;
+            // A borrowed world never outlives this call. Out-of-call retirement
+            // uses the owner token, not a dangling bridge/world pointer.
+            struct ResetWorld
+            {
+                RenderCore::PersistentDrawWorld*& world;
+                ~ResetWorld() { world = nullptr; }
+            } resetWorld{mPublishingWorld};
             if (!mSupported) return {};
             if (mPrefix.empty()) mPrefix = prefix;
             else if (mPrefix != prefix) return fallback("instance identity replaced");
             if (mChangeDriven && mSubscription->invalidated) return fallback("mutation source destroyed");
+            const bool dirty = mSubscription && mSubscription->changed.exchange(false, std::memory_order_acq_rel);
             const bool retainedOwner = mChangeDriven && persistent;
             const bool currentOwner = retainedOwner && persistent->touchOwner(mOwner);
             // No node, controller, transform, texture or material inspection on
             // a clean publication. The root mask remains an O(1) engine gate.
             const auto rootMask = mNodes.empty() || !mNodes.front().node.valid()
                 ? 0 : mNodes.front().node->getNodeMask();
-            if (currentOwner && mPublished && !mSubscription->changed
+            if (currentOwner && mPublished && !dirty
                 && rootMask == mRootMask && mEnvironmentPreLight == environmentPreLight)
             {
                 ++cleanPublications;
@@ -267,7 +292,6 @@ namespace MWRender
                 phase.next(counters.nativeBindingMs);
             }
             mPublished = true; mRootMask = rootMask; mEnvironmentPreLight = environmentPreLight;
-            if (mSubscription) mSubscription->changed = false;
             return result;
         }
 
@@ -323,6 +347,8 @@ namespace MWRender
         std::optional<V4EffectCaptureResult> fallback(std::string reason)
         {
             reject(std::move(reason));
+            if (mOwner) mOwner->retire();
+            if (mSubscription) mSubscription->notify(true);
             if (mPublishingWorld) for (const auto& b : mNodes) mPublishingWorld->remove(b.handle);
             std::vector<Binding>().swap(mNodes); // submitted immutable frames survive
             sBytes.fetch_sub(mCharged, std::memory_order_relaxed); mCharged = 0;
@@ -396,8 +422,23 @@ namespace MWRender
             b.group = node.asGroup(); b.transform = dynamic_cast<osg::Transform*>(&node);
             b.transformSource = dynamic_cast<SceneUtil::RenderMutationSource*>(&node);
             if (b.transformSource) b.transformSource->watchRenderMutations();
+            // Plain OSG transforms expose setters that bypass our sources.
+            // Imported NIF transforms are driven by the tracked NIF callbacks;
+            // arbitrary mutable transforms and skeleton active-state changes
+            // remain on the guarded compatibility lane.
+            if ((b.transform && !b.transformSource && type != typeid(NifOsg::MatrixTransform))
+                || type == typeid(SceneUtil::Skeleton))
+            {
+                mNotificationCovered = false;
+                mQueueFallback = "transform without owned mutation notifications";
+            }
             b.selection = dynamic_cast<osg::Switch*>(&node);
             b.lod = dynamic_cast<osg::LOD*>(&node);
+            if (b.lod)
+            {
+                mNotificationCovered = false;
+                mQueueFallback = "LOD range mutation remains guarded";
+            }
             if (b.lod)
             {
                 b.lodMode = b.lod->getRangeMode();
@@ -430,6 +471,8 @@ namespace MWRender
         const std::size_t mBudget;
         std::size_t mCharged = 0, mDrawCount = 0;
         bool mSupported = false;
+        bool mNotificationCovered = true;
+        std::string mQueueFallback;
         bool mHasIntrinsicParticles = false;
         bool mChangeDriven = false, mPublished = false, mEnvironmentPreLight = false;
         osg::Node::NodeMask mRootMask = 0;

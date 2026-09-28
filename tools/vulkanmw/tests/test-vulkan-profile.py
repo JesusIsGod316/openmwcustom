@@ -1,5 +1,6 @@
 import base64
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -97,7 +98,7 @@ class ProfileTests(unittest.TestCase):
                 manifest = profile.prepare(package / 'openmw.exe', normal, output)
             verified, effective = profile.verify(output)
             self.assertEqual(verified['command'], manifest['command'])
-            self.assertNotIn(str(normal), manifest['command'])
+            self.assertNotIn(str(normal.resolve()), manifest['command'])
             self.assertFalse((output / 'content/0/settings.cfg').exists())
             self.assertFalse((output / 'user-data/saves').exists())
             self.assertEqual(effective[('V3', 'v3.6 performance profile')], 'false')
@@ -114,6 +115,77 @@ class ProfileTests(unittest.TestCase):
             (package / 'settings.cfg').write_text('[Video]\nrender scale=.5\n')
             with self.assertRaises(ValueError):
                 profile.verify(output)
+
+    def prepare_alias_fixture(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        package, normal, output = root / "runtime with ' spaces", root / 'normal', root / 'clean'
+        (package / 'resources').mkdir(parents=True)
+        normal.mkdir()
+        (package / 'openmw.exe').write_bytes(b'fixture only; never execute')
+        (package / 'openmw.cfg').write_text('config="?userconfig?"\n')
+        defaults = (profile.ROOT / 'files/settings-default.cfg').read_bytes()
+        (package / 'defaults.bin').write_bytes(base64.b64encode(defaults))
+        (normal / 'openmw.cfg').write_text('content=test.esm\n')
+        # Deliberately no normal settings.cfg: directory leakage must be
+        # rejected even before settings are later added there.
+        with patch.object(profile.dc, 'normal_default', return_value=normal):
+            manifest = profile.prepare(package / 'openmw.exe', normal, output)
+        return package, normal, output, manifest
+
+    def test_verify_accepts_alias_of_private_writable_directory(self):
+        _, _, output, manifest = self.prepare_alias_fixture()
+        alias = output / '..' / output.name
+        self.assertNotEqual(alias, output.resolve())
+        self.assertTrue(alias.samefile(output))
+        for spelling in (output, alias, output.resolve()):
+            with self.subTest(spelling=str(spelling)):
+                verified, _ = profile.verify(spelling)
+                self.assertEqual(verified['command'], manifest['command'])
+
+    def test_command_alias_does_not_turn_private_settings_into_content(self):
+        _, _, output, manifest = self.prepare_alias_fixture()
+        private = str(output.resolve())
+        alias = str(output / '..' / output.name)
+        command = manifest['command']
+        index = next(i + 1 for i, arg in enumerate(command[:-1])
+                     if arg == '--config' and command[i + 1] == private)
+        command[index] = alias
+        (output / 'profile.json').write_text(json.dumps(manifest), encoding='utf-8')
+        verified, _ = profile.verify(output)
+        self.assertEqual(verified['command'][index], alias)
+
+    def test_original_config_alias_still_fails_without_settings_file(self):
+        _, normal, output, manifest = self.prepare_alias_fixture()
+        for spelling in (normal.resolve(), normal / '..' / normal.name):
+            with self.subTest(spelling=str(spelling)):
+                changed = dict(manifest, command=manifest['command'] + ['--config', str(spelling)])
+                (output / 'profile.json').write_text(json.dumps(changed), encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'Original config directory leaked'):
+                    profile.verify(output.resolve())
+        self.assertFalse((normal / 'settings.cfg').exists())
+
+    def test_alias_verification_keeps_all_isolation_guards(self):
+        package, normal, output, _ = self.prepare_alias_fixture()
+        alias = output / '..' / output.name
+        before = {p.name: p.read_bytes() for p in normal.iterdir()}
+        snapshot = output / 'content/0/settings.cfg'
+        snapshot.write_text('[Video]\nrender scale=.5\n')
+        with self.assertRaisesRegex(ValueError, 'Content-only snapshot acquired'):
+            profile.verify(alias)
+        snapshot.unlink()
+        profile.verify(alias)
+        settings_path = package / 'settings.cfg'
+        settings_path.write_text('[Video]\nrender scale=.5\n')
+        with self.assertRaisesRegex(ValueError, 'Runtime acquired a settings.cfg'):
+            profile.verify(alias)
+        settings_path.unlink()
+        profile.verify(alias)
+        (output / 'content/0/openmw.cfg').write_text('content=changed.esm\n')
+        with self.assertRaisesRegex(ValueError, 'Pinned runtime/profile changed'):
+            profile.verify(alias)
+        self.assertEqual(before, {p.name: p.read_bytes() for p in normal.iterdir()})
 
     def test_existing_output_or_package_settings_never_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:

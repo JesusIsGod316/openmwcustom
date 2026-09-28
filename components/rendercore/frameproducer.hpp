@@ -246,11 +246,14 @@ namespace RenderCore
                         .historyEpoch = candidateHistoryEpoch,
                         .temporal = false,
                         .historyValid = false,
+                        .isolatedScene = {},
                     });
                     desc.renderPasses.push_back(RenderPassDesc{
                         .identity = pass,
                         .view = identity,
                         .output = target,
+                        .inputs = {},
+                        .dependencies = {},
                         .colorLoad = RenderPassLoad::Clear,
                         .depthLoad = RenderPassLoad::Clear,
                         .colorStore = RenderPassStore::Store,
@@ -318,6 +321,8 @@ namespace RenderCore
                     .identity = pass,
                     .view = identity,
                     .output = target,
+                    .inputs = {},
+                    .dependencies = {},
                     .colorLoad = RenderPassLoad::Clear,
                     .depthLoad = RenderPassLoad::Clear,
                     .colorStore = RenderPassStore::Store,

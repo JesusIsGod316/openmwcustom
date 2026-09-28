@@ -3,6 +3,13 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 title VulkanMW Automated Test / Benchmark
 
+rem New packages use the settings-isolated cumulative producer A/B/B/A harness.
+rem The legacy single-run driver below remains for older launcher-only installs.
+if exist "%~dp0tools\vulkanmw\run-producer-queues.py" (
+    call "%~dp0START-VulkanMW-Producer-Test.bat" %*
+    exit /b
+)
+
 rem Permanent VulkanMW benchmark launcher.
 rem Profile matches the Phase 2 automated comparison:
 rem Vulkan/VSG, retained fast paths, 1920x1080, uncapped,

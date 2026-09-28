@@ -1,6 +1,8 @@
 #ifndef OPENMW_MWRENDER_RENDERINGMANAGER_H
 #define OPENMW_MWRENDER_RENDERINGMANAGER_H
 
+#include <cstdint>
+
 #include "fogstate.hpp"
 #include "objects.hpp"
 #include "renderinginterface.hpp"
@@ -239,6 +241,9 @@ namespace MWRender
         const Animation* getAnimation(const MWWorld::ConstPtr& ptr) const;
 
         void forEachAnimation(const std::function<void(Animation&)>& visitor) const;
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        void forEachV4Animation(const std::function<void(Animation&)>& visitor, std::uint64_t stream) const;
+#endif
 
         PostProcessor* getPostProcessor();
         PostProcessor* getPostProcessor() const { return mPostProcessor.get(); }

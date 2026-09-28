@@ -48,7 +48,17 @@ namespace SceneUtil
             dirtyBound();
         }
         inline const osg::Vec3f& getScale() const { return _scale; }
-        unsigned renderMutationMask() const noexcept override { return RenderTransform; }
+        void setNodeMask(osg::Node::NodeMask mask)
+        {
+            if (getNodeMask() != mask) publishRenderMutation();
+            osg::Node::setNodeMask(mask);
+        }
+        void setReferenceFrame(osg::Transform::ReferenceFrame frame)
+        {
+            if (getReferenceFrame() != frame) publishRenderMutation();
+            osg::Transform::setReferenceFrame(frame);
+        }
+        unsigned renderMutationMask() const noexcept override { return RenderTransform | RenderVisibility; }
 
         bool computeLocalToWorldMatrix(osg::Matrix& matrix, osg::NodeVisitor* nv) const override;
         bool computeWorldToLocalMatrix(osg::Matrix& matrix, osg::NodeVisitor* nv) const override;

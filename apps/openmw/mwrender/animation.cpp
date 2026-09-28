@@ -652,6 +652,9 @@ namespace MWRender
 
     void Animation::updatePtr(const MWWorld::Ptr& ptr)
     {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        invalidateV4PersistentObject();
+#endif
         mPtr = ptr;
     }
 
@@ -1516,7 +1519,7 @@ namespace MWRender
     void Animation::resetActiveGroups()
     {
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
-        mV4PersistentObject.reset();
+        invalidateV4PersistentObject();
 #endif
         // remove all previous external controllers from the scene graph
         for (auto it = mActiveControllers.begin(); it != mActiveControllers.end(); ++it)
@@ -2140,7 +2143,7 @@ namespace MWRender
         mSkeleton = nullptr;
         mV4SourceModel = VFS::Path::toNormalized(model);
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
-        mV4PersistentObject.reset();
+        invalidateV4PersistentObject();
         mV4ObjectCaptureAdmission.reset();
 #endif
 
@@ -2295,7 +2298,7 @@ namespace MWRender
     void Animation::addSpellCastGlow(const osg::Vec4f& color, float glowDuration)
     {
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
-        mV4PersistentObject.reset();
+        invalidateV4PersistentObject();
 #endif
         if (!mGlowUpdater || (mGlowUpdater->isDone() || (mGlowUpdater->isPermanentGlowUpdater() == true)))
         {
@@ -2315,7 +2318,7 @@ namespace MWRender
     void Animation::addExtraLight(osg::ref_ptr<osg::Group> parent, const SceneUtil::LightCommon& esmLight)
     {
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
-        mV4PersistentObject.reset();
+        invalidateV4PersistentObject();
 #endif
         bool exterior = mPtr.isInCell() && mPtr.getCell()->getCell()->isExterior();
 
@@ -2418,7 +2421,7 @@ namespace MWRender
         // Notify that this animation has attached magic effects
         mHasMagicEffects = true;
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
-        mV4PersistentObject.reset();
+        invalidateV4PersistentObject();
 #endif
 
         overrideFirstRootTexture(VFS::Path::toNormalized(texture), mResourceSystem, *node);
@@ -2427,7 +2430,7 @@ namespace MWRender
     void Animation::removeEffect(std::string_view effectId)
     {
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
-        mV4PersistentObject.reset();
+        invalidateV4PersistentObject();
 #endif
         RemoveCallbackVisitor visitor(effectId);
         mInsert->accept(visitor);
@@ -2468,7 +2471,7 @@ namespace MWRender
         if (!mHasMagicEffects)
             return;
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
-        mV4PersistentObject.reset();
+        invalidateV4PersistentObject();
 #endif
 
         // TODO: objects without animation still will have
@@ -2506,7 +2509,7 @@ namespace MWRender
         if ((alpha == mAlpha && actorFade == mActorFade) || !mObjectRoot)
             return;
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
-        mV4PersistentObject.reset();
+        invalidateV4PersistentObject();
 #endif
         mAlpha = alpha;
         mActorFade = actorFade;
@@ -2534,7 +2537,7 @@ namespace MWRender
     void Animation::setLightEffect(float effect)
     {
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
-        if (effect != 0 || mGlowLight) mV4PersistentObject.reset();
+        if (effect != 0 || mGlowLight) invalidateV4PersistentObject();
 #endif
         if (effect == 0)
         {
@@ -2901,6 +2904,37 @@ namespace MWRender
         return true;
     }
 
+    void Animation::attachV4ProducerTicket(std::shared_ptr<Misc::ProducerQueue::Ticket> ticket)
+    {
+        // Resetting an owner retires its draw lifetime even when the Animation
+        // is held in the hibernation/unref queue rather than destroyed now.
+        invalidateV4PersistentObject();
+        mV4ProducerWake.reset();
+        mV4ProducerTicket = std::move(ticket);
+        if (!mV4ProducerTicket) return;
+        mV4ProducerWake = std::make_shared<SceneUtil::RenderMutationSource::Subscription>();
+        const std::weak_ptr<Misc::ProducerQueue::Ticket> weak = mV4ProducerTicket;
+        mV4ProducerWake->wake = [weak] {
+            if (auto live = weak.lock()) live->notify();
+        };
+        if (typeid(*this) == typeid(ObjectAnimation))
+            if (auto* source = dynamic_cast<SceneUtil::RenderMutationSource*>(mInsert.get()))
+                source->subscribeRenderMutations(mV4ProducerWake);
+        mV4ProducerTicket->notify();
+    }
+
+    void Animation::invalidateV4PersistentObject()
+    {
+        mV4PersistentObject.reset();
+        mV4ObjectCaptureAdmission.reset();
+        if (mV4ProducerTicket) mV4ProducerTicket->notify();
+    }
+
+    void Animation::finishV4ProducerVisit()
+    {
+        if (mV4ProducerTicket) mV4ProducerTicket->continuous(!mV4ProducerDemandDriven);
+    }
+
     V4PersistentObject* Animation::prepareV4PersistentObject()
     {
         // Custom OSG importers/callbacks keep their evaluated compatibility path.
@@ -2909,7 +2943,8 @@ namespace MWRender
             && mInsert && mV4SourceModel.value().ends_with(".nif") && !mV4PersistentObject)
             mV4PersistentObject = std::make_unique<V4PersistentObject>(*mInsert, 64u * 1024u * 1024u,
                 typeid(*this) == typeid(ObjectAnimation) && !hasV4EffectAttachments()
-                    && !hasV4DynamicLightAttachments() && !hasV4TransparencyOverride());
+                    && !hasV4DynamicLightAttachments() && !hasV4TransparencyOverride(),
+                mV4ProducerWake ? mV4ProducerWake->wake : std::function<void()>{});
         return mV4PersistentObject.get();
     }
 #endif
@@ -2920,7 +2955,7 @@ namespace MWRender
         if (!store.hasVisibleItems())
         {
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
-            mV4PersistentObject.reset();
+            invalidateV4PersistentObject();
 #endif
             HarvestVisitor visitor;
             mObjectRoot->accept(visitor);

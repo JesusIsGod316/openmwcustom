@@ -121,6 +121,7 @@ namespace RenderVsg
             .meshes = {},
             .materials = {},
             .textures = {},
+            .program = {},
         };
 
         const auto addUnique = []<class Handle>(std::vector<StaticResourceDependency<Handle>>& dependencies,

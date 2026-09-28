@@ -2,6 +2,7 @@
 #include <components/sceneutil/rendermutation.hpp>
 #include <iostream>
 #include <stdexcept>
+#include <thread>
 
 namespace
 {
@@ -75,7 +76,74 @@ int main()
         world.begin(2); require(!world.touchOwner(owner), "epoch reset kept obsolete handles");
         require(!world.get(a) && world.update(a,value,false,owner), "epoch recovery failed");
         require(world.finish()->size()==1, "recovered owner wrong size");
-        std::cout << "change notifications, ownership, hidden/disabled/unload/epoch and immutable frames PASS\n";
+        // Demand-driven owners are kept by explicit lifecycle, not frame touch.
+        RenderCore::PersistentDrawWorld queued(2);
+        auto retained = std::make_shared<RenderCore::PersistentDrawOwner>();
+        retained->eventDriven = true;
+        RenderCore::PersistentDrawHandle q1, q2;
+        queued.begin(10); queued.touchOwner(retained);
+        require(queued.update(q1,value,true,retained) && queued.update(q2,value,true,retained), "queued seed failed");
+        auto immutable = queued.finish();
+        for (unsigned i = 0; i < 10000; ++i)
+        {
+            queued.begin(10);
+            require(queued.finish() == immutable, "clean owner required frame touch or copied a snapshot");
+        }
+        queued.begin(10); queued.hide(q1); auto invisible = queued.finish();
+        queued.begin(10); require(queued.finish() == invisible && !invisible->get(q1.slot)->visible,
+            "hidden explicit lifetime was lost");
+        require(immutable->get(q1.slot)->visible, "visibility mutation changed submitted frame");
+        // Full budget still allows unload/reload in the same frame; an expired
+        // owner cannot pin the slot budget while waiting for finish().
+        queued.begin(10); retained->retire();
+        auto replacement = std::make_shared<RenderCore::PersistentDrawOwner>();
+        replacement->eventDriven = true; queued.touchOwner(replacement);
+        RenderCore::PersistentDrawHandle fresh;
+        require(queued.update(fresh,value,true,replacement), "retired slots blocked same-frame replacement");
+        auto reloaded = queued.finish();
+        require(reloaded->size() == 1 && !queued.get(q1) && !queued.get(q2), "retirement or generation mismatch");
+        require(immutable->size() == 2, "unload changed old frame");
+        retained->retire(); queued.begin(10);
+        require(queued.finish() == reloaded, "stale retirement removed replacement");
+        // Tokens from a previous world stream must never retire new residents.
+        queued.begin(11); queued.touchOwner(replacement);
+        require(queued.update(fresh,value,false,replacement), "epoch republish failed");
+        auto reset = queued.finish(); retained->retire(); queued.begin(11);
+        require(queued.finish() == reset && reset->size() == 1, "old stream notification removed current owner");
+        replacement->retire(); queued.begin(11);
+        require(queued.finish()->size() == 0, "explicit unload did not retire queued owner");
+        RenderCore::PersistentDrawHandle rejectedClosed;
+        require(!queued.update(rejectedClosed,value,true,replacement), "closed lifetime accepted writes");
+        auto live = std::make_shared<RenderCore::PersistentDrawOwner>(); live->eventDriven = true;
+        queued.touchOwner(live);
+        require(queued.update(rejectedClosed,value,true,live), "rejected closed write leaked budget");
+        // Deferred producer destruction may signal while the render owner
+        // detaches its registration. The ticket is atomically owned; stale
+        // signals never touch the recycled slot or the next world stream.
+        RenderCore::PersistentDrawWorld concurrent(1);
+        for (unsigned iteration = 0; iteration < 200; ++iteration)
+        {
+            concurrent.begin(iteration + 100);
+            auto oldOwner = std::make_shared<RenderCore::PersistentDrawOwner>();
+            oldOwner->eventDriven = true;
+            RenderCore::PersistentDrawHandle oldHandle;
+            require(concurrent.update(oldHandle,value,true,oldOwner), "concurrent seed failed");
+            concurrent.finish();
+            std::thread notifier([oldOwner] {
+                for (unsigned signal = 0; signal < 1000; ++signal) oldOwner->retire();
+            });
+            concurrent.remove(oldHandle);
+            auto newOwner = std::make_shared<RenderCore::PersistentDrawOwner>();
+            newOwner->eventDriven = true;
+            RenderCore::PersistentDrawHandle newHandle;
+            const bool updated = concurrent.update(newHandle,value,true,newOwner);
+            notifier.join();
+            require(updated, "concurrent retirement pinned replacement slot");
+            const auto replaced = concurrent.finish();
+            require(replaced->size()==1 && concurrent.get(newHandle) && !concurrent.get(oldHandle),
+                "concurrent stale retirement removed new owner");
+        }
+        std::cout << "change notifications, ownership, hidden/disabled/unload/epoch, queued retirement and immutable frames PASS\n";
     }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

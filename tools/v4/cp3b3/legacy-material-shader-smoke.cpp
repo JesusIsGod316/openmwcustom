@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -45,7 +46,7 @@ namespace
     }
 }
 
-int main()
+int main() try
 {
     using namespace RenderCore;
 
@@ -164,9 +165,23 @@ int main()
         "two-sided legacy lighting semantic is absent from the shader");
     require(source.find("binding = 5) readonly buffer OpenMwLocalLightData") != std::string_view::npos
             && source.find("attenuationFade.x + attenuationFade.y * lightDistance") != std::string_view::npos
-            && source.find("surfaceColor.rgb * effectiveAmbient.rgb * ambient.rgb * scale") != std::string_view::npos
-            && source.find("specularColor * specularStrength * specular.rgb") != std::string_view::npos,
+            && source.find("color += surfaceDiffuse * diffuse.rgb * diffuseFactor") != std::string_view::npos
+            && source.find("color += surfaceAmbient * ambient.rgb * scale") != std::string_view::npos
+            && source.find("color += materialSpecular * specular.rgb") != std::string_view::npos,
         "exact OpenMW local-light descriptor or lighting channels are absent from the shader");
+    // The tiled and unfiltered routes share a lighting helper. Check its input
+    // preparation as well as the helper math; do not require the old inlined
+    // ambient/specular expressions or silently stop testing those channels.
+    require(source.find("vec3 localSurfaceDiffuse = surfaceColor.rgb * effectiveDiffuse.rgb;") != std::string_view::npos
+            && source.find("vec3 localSurfaceAmbient = surfaceColor.rgb * effectiveAmbient.rgb;") != std::string_view::npos
+            && source.find("vec3 localMaterialSpecular = specularColor * specularStrength;") != std::string_view::npos,
+        "OpenMW local-light material inputs are absent from the shader");
+    constexpr std::string_view localLightArguments
+        = "localSurfaceDiffuse, localSurfaceAmbient, localMaterialSpecular, shininess, color);";
+    const auto firstLocalLightCall = source.find(localLightArguments);
+    require(firstLocalLightCall != std::string_view::npos
+            && source.find(localLightArguments, firstLocalLightCall + localLightArguments.size()) != std::string_view::npos,
+        "tiled and unfiltered local-light routes must both pass the material inputs to the shared helper");
     require(source.find("lightDistance > positionRadius.w") != std::string_view::npos
             && source.find("scale *= 1.0 - radiusFade") != std::string_view::npos,
         "OpenMW non-classic radius cutoff/fade is absent from the shader");
@@ -396,4 +411,16 @@ int main()
         "legacy material path regressed reverse-depth comparison");
 
     return 0;
+}
+catch (const std::exception& error)
+{
+    // An uncaught require() failure used to surface as an opaque Windows
+    // fast-fail code. Preserve the failing assertion in CTest's output.
+    std::cerr << "openmw-vulkan-legacy-material-shader-smoke: " << error.what() << '\n';
+    return 1;
+}
+catch (...)
+{
+    std::cerr << "openmw-vulkan-legacy-material-shader-smoke: unknown exception\n";
+    return 1;
 }

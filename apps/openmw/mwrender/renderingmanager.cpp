@@ -55,6 +55,7 @@
 #include <components/sceneutil/writescene.hpp>
 
 #include <components/misc/constants.hpp>
+#include <components/misc/environmentflag.hpp>
 
 #include <components/terrain/quadtreeworld.hpp>
 #include <components/terrain/terraingrid.hpp>
@@ -1540,6 +1541,24 @@ namespace MWRender
         mObjects->forEachAnimation(visitor);
     }
 
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+    void RenderingManager::forEachV4Animation(const std::function<void(Animation&)>& visitor,
+        std::uint64_t stream) const
+    {
+        if (!Misc::environmentFlag<"OPENMW_VK_PRODUCER_DIRTY_QUEUES">()
+            || !Misc::environmentFlag<"OPENMW_V4_PERSISTENT_DRAW_STREAM">()
+            || !Misc::environmentFlag<"OPENMW_V4_NATIVE_OBJECT_PRODUCERS">()
+            || !Misc::environmentFlag<"OPENMW_VK_CHANGE_DRIVEN_OBJECTS">()
+            || !Misc::environmentFlag<"OPENMW_V4_LOAD_BOUND_TEXTURES">())
+        {
+            forEachAnimation(visitor); // explicit same-executable legacy control
+            return;
+        }
+        if (mPlayerAnimation) visitor(*mPlayerAnimation);
+        mObjects->forEachV4Animation(visitor, stream, Settings::shaders().mApplyLightingToEnvironmentMaps);
+    }
+#endif
+
     PostProcessor* RenderingManager::getPostProcessor()
     {
         return mPostProcessor;
@@ -1781,6 +1800,11 @@ namespace MWRender
 
     void RenderingManager::processChangedSettings(const Settings::CategorySettingVector& changed)
     {
+#ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
+        // Global shader/filter/material changes have no per-object setter.
+        // Invalidate once at the engine settings boundary, never poll each frame.
+        if (!changed.empty()) mObjects->invalidateV4Producers();
+#endif
         // Only perform a projection matrix update once if a relevant setting is changed.
         bool updateProjection = false;
 
