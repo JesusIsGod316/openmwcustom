@@ -12,6 +12,7 @@ import zipfile
 
 OVERLAY_SHA256 = '6f42a686e2a6a9038bbd4a9e2d0d1be6d8812b9b3e681d8b569560c2fe110255'
 MANIFEST = 'shader-package.json'
+GROUNDCOVER_PATCH_IDS = {'optimizedmw-p8g3-pbr-groundcover', 'optimizedmw-p8g4-pbr-groundcover'}
 REFERENCE = re.compile(r'(#\s*include|@link)\s+"([^"\r\n]+)"')
 SHADER_SUFFIXES = {'.glsl', '.vert', '.frag', '.geom', '.comp', '.tesc', '.tese'}
 
@@ -81,7 +82,7 @@ def verify(root):
     errors = []
     if 'groundcover_patch' in manifest:
         patch = manifest['groundcover_patch']
-        if (patch.get('id') != 'optimizedmw-p8g3-pbr-groundcover'
+        if (patch.get('id') not in GROUNDCOVER_PATCH_IDS
                 or set(patch.get('files', {})) != {'compatibility/groundcover.vert', 'compatibility/groundcover.frag'}):
             raise ValueError('Invalid deployed groundcover patch provenance')
         for name, hashes in patch['files'].items():
@@ -108,7 +109,7 @@ def apply_groundcover_patch(payload, patch_manifest):
     patch_manifest = Path(patch_manifest)
     patch = json.loads(patch_manifest.read_text(encoding='utf-8'))
     allowed = {'compatibility/groundcover.vert', 'compatibility/groundcover.frag'}
-    if (patch.get('schema') != 1 or patch.get('id') != 'optimizedmw-p8g3-pbr-groundcover'
+    if (patch.get('schema') != 1 or patch.get('id') not in GROUNDCOVER_PATCH_IDS
             or set(patch.get('files', {})) != allowed):
         raise ValueError('Unrecognized groundcover overlay patch')
     replacements = {}
