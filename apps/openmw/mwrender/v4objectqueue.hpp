@@ -69,7 +69,13 @@ namespace MWRender
                 // produced no object delta. No transform/material polling.
                 mQueue.invalidateAll();
             }
+
+            // Generic ProducerQueue continuous membership is reserved for
+            // compatibility fallback. Supported actors/particles have explicit
+            // scheduling lanes below; dirty notifications still arrive through
+            // this same coalescing queue so a producer is never visited twice.
             const auto work = mQueue.take();
+            std::set<Misc::ProducerQueue::Token> handled;
             mLastVisited = 0;
             for (const auto& change : work)
             {
@@ -77,6 +83,7 @@ namespace MWRender
                 if (found == mAnimations.end() || !mQueue.valid(change.token)) continue;
                 osg::ref_ptr<Animation> animation;
                 if (!found->second.lock(animation)) continue;
+                handled.insert(change.token);
                 const auto previous = classFor(change.token);
                 animation->beginV4ProducerVisit(previous, change.reasons);
                 ++mLastVisited;
@@ -91,6 +98,35 @@ namespace MWRender
                 }
                 updateClass(change.token, animation->finishV4ProducerVisit());
             }
+
+            // Clockwork-style explicit dynamic scheduling: once an actor or
+            // particle producer has proven its semantic lane, visit it directly
+            // for the frame continuity it actually needs instead of keeping it
+            // in ProducerQueue's generic compatibility-continuous set.
+            std::vector<Misc::ProducerQueue::Token> supported;
+            supported.reserve(mSupportedActors + mSupportedParticles);
+            for (const auto& [token, producerClass] : mClasses)
+                if (v4ProducerClassIsSupportedContinuous(producerClass) && !handled.contains(token))
+                    supported.push_back(token);
+            for (const auto token : supported)
+            {
+                const auto found = mAnimations.find(token);
+                if (found == mAnimations.end() || !mQueue.valid(token)) continue;
+                osg::ref_ptr<Animation> animation;
+                if (!found->second.lock(animation)) continue;
+                const auto previous = classFor(token);
+                animation->beginV4ProducerVisit(previous, 0);
+                ++mLastVisited;
+                try { visitor(*animation); }
+                catch (...)
+                {
+                    animation->setV4ProducerDemandDriven(false);
+                    updateClass(token, animation->finishV4ProducerVisit());
+                    throw;
+                }
+                updateClass(token, animation->finishV4ProducerVisit());
+            }
+
             // Capacity is bounded. Overflow is explicit compatibility work,
             // never an omitted object. Snapshot protects re-entrant removal.
             const std::vector<Animation*> overflow(mOverflow.begin(), mOverflow.end());
@@ -106,7 +142,9 @@ namespace MWRender
         }
         std::size_t registered() const { return mQueue.size() + mOverflow.size(); }
         std::size_t visited() const noexcept { return mLastVisited; }
-        std::size_t continuous() const { return mQueue.continuousSize() + mOverflow.size(); }
+        std::size_t genericContinuous() const { return mQueue.continuousSize() + mOverflow.size(); }
+        std::size_t supportedContinuous() const noexcept { return mSupportedActors + mSupportedParticles; }
+        std::size_t continuous() const { return genericContinuous() + supportedContinuous(); }
         std::size_t demandDriven() const noexcept { return mDemandDriven; }
         std::size_t supportedActors() const noexcept { return mSupportedActors; }
         std::size_t supportedParticles() const noexcept { return mSupportedParticles; }
