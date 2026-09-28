@@ -33,12 +33,14 @@ def main():
         'void Animation::invalidateV4PersistentObject()',
         'void Animation::attachV4ProducerTicket(', 'mV4ProducerTicket->notify()',
         'source->subscribeRenderMutations(mV4ProducerWake)',
-        'mV4ProducerTicket->continuous(v4ProducerClassIsContinuous(mV4ProducerClass))')
+        'mV4ProducerTicket->continuous(v4ProducerClassUsesCompatibilityContinuousQueue(mV4ProducerClass))')
     if animation.count('mV4PersistentObject.reset();') != 1:
         raise AssertionError('A producer reset bypasses engine dirty notification')
     require('apps/openmw/mwrender/v4objectqueue.hpp', 'mQueue.take()',
         'mQueue.valid(change.token)', 'mOverflow', 'beginV4ProducerVisit',
         'SupportedContinuousActor', 'SupportedContinuousParticle',
+        'v4ProducerClassIsSupportedContinuous(producerClass)', '!handled.contains(token)',
+        'genericContinuous()', 'supportedContinuous()',
         'mQueue.invalidateAll()', 'it->second->cancel()')
     producer = require('apps/openmw/mwrender/v4persistentobject.hpp',
         'mNotificationCovered', 'mOwner->eventDriven', 'mOwner->retire()',
