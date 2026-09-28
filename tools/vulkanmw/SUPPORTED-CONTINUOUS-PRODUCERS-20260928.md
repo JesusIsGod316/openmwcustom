@@ -24,9 +24,12 @@ checkpoint keeps the prior compatibility-continuous behavior.
 ## Particle body/simulation split
 
 An intrinsic-particle object's ordinary NIF body can now own persistent draw slots event-driven even while its particle
-simulation remains continuous. Once a particle producer has been proven and its body is clean, a continuous-only queue
-visit can skip the body publication entirely and capture only current particles. Stream changes, dirty notifications,
-late mutation-source `changed` state, invalidation, or lack of persistent draws force a normal body publication.
+simulation remains continuous. A particle object is classified as supported-continuous only when its ordinary body has
+a valid producer-owned event-driven mutation contract; if that body falls back to generic binding/subtree capture, the
+whole object remains compatibility-continuous rather than hiding partial fallback behind the particle label. Once a
+particle producer has been proven and its body is clean, a continuous-only queue visit can skip the body publication
+entirely and capture only current particles. Stream changes, dirty notifications, late mutation-source `changed` state,
+invalidation, or lack of persistent draws force a normal body publication.
 
 This is intentionally narrower than native particle simulation. Free EffectManager VFX, projectile VFX, weather/ripple
 particles, and unsupported/custom particle graphs are not reclassified by this slice.
