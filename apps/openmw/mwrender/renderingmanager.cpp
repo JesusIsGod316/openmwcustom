@@ -55,6 +55,7 @@
 #include <components/sceneutil/writescene.hpp>
 
 #include <components/misc/constants.hpp>
+#include <components/misc/environmentflag.hpp>
 
 #include <components/terrain/quadtreeworld.hpp>
 #include <components/terrain/terraingrid.hpp>
