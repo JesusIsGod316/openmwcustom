@@ -1,0 +1,5 @@
+# These audited shader payloads are hashed byte-for-byte at configure time.
+# Preserve the same bytes on Windows (including core.autocrlf=true checkouts).
+/files/shaders/v3overlay/p8g3/compatibility/groundcover.vert text eol=lf
+/files/shaders/v3overlay/p8g3/compatibility/groundcover.frag text eol=lf
+/files/shaders/v3overlay/p8g3/manifest.json text eol=lf
