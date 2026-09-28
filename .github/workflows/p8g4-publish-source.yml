@@ -1,0 +1,72 @@
+name: OptimizedMW P8G4 publish source
+on:
+  push:
+    branches: [optimizedmw/gl-p8g4-work]
+    paths: [.github/workflows/p8g4-publish-source.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  Publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify transport and reconstruct audited patch
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y zstd
+          mkdir -p /tmp/p8g4-evidence
+          cp tools/optimizedmw/gl-p8g4-staging/payload-*.b64 /tmp/p8g4-evidence/
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess,hashlib,base64
+          base='901fd5c38e8448a279dea8cfe76a286a7334d75b'
+          paths=['CMakeLists.txt','apps/openmw/engine.cpp','apps/openmw/mwrender/groundcover.cpp','apps/openmw/mwrender/groundcover.hpp','apps/openmw/mwrender/objectpaging.cpp','components/debug/v3hitchtelemetry.hpp','components/sceneutil/groundcoverbatch.hpp','components/sceneutil/groundcoverpolicy.hpp','components/sceneutil/mwshadowtechnique.cpp','components/sceneutil/shadowproxygroup.cpp','components/sceneutil/shadowproxygroup.hpp','components/settings/categories/cells.hpp','components/settings/categories/groundcover.hpp','files/settings-default.cfg','files/shaders/compatibility/groundcover.vert','files/shaders/compatibility/groundcover_lod.glsl','files/shaders/v3overlay/p8g3/compatibility/groundcover.vert','files/shaders/v3overlay/p8g3/manifest.json','tools/optimizedmw/gl-p3/source-contract.py','tools/optimizedmw/gl-p4/source-contract.py','tools/optimizedmw/gl-p6/source-contract.py','tools/optimizedmw/gl-p7/source-contract.py','tools/optimizedmw/gl-p8/source-contract.py','tools/optimizedmw/gl-p8g2/source-contract.py','tools/optimizedmw/gl-p8g3/deployment-tests.py','tools/optimizedmw/gl-p8g3/source-contract.py','tools/optimizedmw/gl-p8g3/OptimizedMW_GL-P8G3_Test.ps1','tools/optimizedmw/gl-p8g3/batch-tests.cpp']
+          dictionary=b''.join(subprocess.check_output(['git','show',base+':'+p]) for p in paths)
+          assert hashlib.sha256(dictionary).hexdigest()=='909fd283adc82bdbb0bfdd0aacf1e16d3be7fefd2d78c7ade33d233cce73a91c'
+          Path('/tmp/p8g4-dict').write_bytes(dictionary)
+          text=''.join(Path('tools/optimizedmw/gl-p8g4-staging/payload-'+str(i)+'.b64').read_text().strip() for i in range(1,4))
+          # Repair the identified duplicated transport token before the mandatory byte hash.
+          text=text.replace('BRaoYaYa2','BRaoYa2')
+          payload=base64.b64decode(text,validate=True)
+          actual=hashlib.sha256(payload).hexdigest()
+          print('Compressed payload SHA256:',actual)
+          assert actual=='8d5b12ba801908305e5bafd293cc30c035bf31d519d922cbd716419b27e0bec6'
+          Path('/tmp/p8g4.zstd').write_bytes(payload)
+          PY
+          zstd -q -d -D /tmp/p8g4-dict /tmp/p8g4.zstd -o /tmp/p8g4.patch
+          echo '341ce45521a9c5d72bb01a191baaa86172a0daedb90440034d939df402b0d623  /tmp/p8g4.patch' | sha256sum --check
+      - name: Materialize real production files and publish isolated branch
+        run: |
+          set -euo pipefail
+          git checkout -b optimizedmw/gl-p8g4 901fd5c38e8448a279dea8cfe76a286a7334d75b
+          git apply --check --index /tmp/p8g4.patch
+          git apply --index /tmp/p8g4.patch
+          git diff --cached --check
+          python - <<'PY'
+          import pathlib,subprocess,hashlib
+          paths=subprocess.check_output(['git','diff','--cached','--name-only']).decode().splitlines()
+          manifest=''.join(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()+'  '+p+'\n' for p in paths)
+          assert len(paths)==40
+          assert hashlib.sha256(manifest.encode()).hexdigest()=='c31c841df63dc030514af7ba8f1574992c2f926fdc6d5e8b3f96fa820b27476c'
+          pathlib.Path('/tmp/p8g4-evidence/SOURCE-SHA256.txt').write_text(manifest)
+          print('All 40 production files match the locally compiled implementation')
+          PY
+          for p in 3 4 6 7 8 8g2 8g3 8g4; do python tools/optimizedmw/gl-p$p/source-contract.py; done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'OptimizedMW P8G4: shared-state LOD2, cheaper conservative culling, safe shadow proxies and clean capture'
+          git push origin HEAD:refs/heads/optimizedmw/gl-p8g4
+          git rev-parse HEAD > /tmp/p8g4-evidence/COMMIT.txt
+          git rev-parse HEAD^{tree} > /tmp/p8g4-evidence/TREE.txt
+          git diff --stat HEAD^ HEAD > /tmp/p8g4-evidence/CHANGES.txt
+          cat /tmp/p8g4-evidence/COMMIT.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: P8G4-source-publication
+          path: /tmp/p8g4-evidence/
+          retention-days: 14
