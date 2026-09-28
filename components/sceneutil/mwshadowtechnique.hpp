@@ -84,6 +84,8 @@ namespace SceneUtil {
         virtual void setPolygonOffset(float factor, float units);
 
         virtual void setShadowFadeStart(float shadowFadeStart);
+        void setMaximumShadowMapDistance(float distance);
+        void setRuntimeSettingConsistency(bool enabled) { _runtimeSettingConsistency = enabled; }
 
         virtual void enableFrontFaceCulling();
 
@@ -321,6 +323,7 @@ namespace SceneUtil {
         bool                                    _useFrontFaceCulling = true;
 
         float                                   _shadowFadeStart = 0.0f;
+        bool                                    _runtimeSettingConsistency = false;
 
         unsigned int                            _worldMask = ~0u;
         unsigned int                            _v33FarCascadeUpdateInterval = 1;

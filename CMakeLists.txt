@@ -1271,9 +1271,9 @@ endif()
 if(WIN32)
     install(FILES
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g4/START-OptimizedMW-Test.bat"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g4/OptimizedMW_Test.ps1"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g4/OptimizedMW_Benchmark_Report.ps1"
-        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g4/OptimizedMW-P8G4-README.txt"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/p8u1/OptimizedMW_Test.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/p8u1/OptimizedMW_Benchmark_Report.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/p8u1/OptimizedMW-P8U1-README.txt"
         DESTINATION "."
     )
 endif()

@@ -174,7 +174,7 @@ namespace MWSound
         return *it->second;
     }
 
-    void HeadCache::insert(VFS::Path::NormalizedView name, const std::istream& stream)
+    void HeadCache::insert(VFS::Path::NormalizedView name, const std::istream& stream, bool allowEviction)
     {
         const auto* const recording = dynamic_cast<const RecordingBuf*>(stream.rdbuf());
         if (recording == nullptr)
@@ -209,29 +209,79 @@ namespace MWSound
                 return;
         }
 
-        insert(name, std::move(head), std::move(suffix), suffixStart, fileSize);
+        insert(name, std::move(head), std::move(suffix), suffixStart, fileSize, allowEviction);
     }
 
-    void HeadCache::insert(VFS::Path::NormalizedView name, std::vector<char>&& head, std::vector<char>&& suffix,
-        std::streamoff suffixStart, std::streamoff fileSize)
+    bool HeadCache::contains(VFS::Path::NormalizedView name) const
+    { std::lock_guard lock(mMutex); return mEntries.contains(name); }
+
+    bool HeadCache::full() const
+    { std::lock_guard lock(mMutex); return mBytes >= mMaxBytes; }
+
+    std::size_t HeadCache::cachedBytes() const
+    { std::lock_guard lock(mMutex); return mBytes; }
+
+    bool HeadCache::warmWholeFile(VFS::Path::NormalizedView name)
+    {
+        constexpr std::streamoff limit = 1024 * 1024;
+        {
+            std::lock_guard lock(mMutex);
+            if (const auto it = mEntries.find(name); it != mEntries.end())
+            {
+                const auto& old = **it->second;
+                if (static_cast<std::streamoff>(old.mHead.size()) == old.mFileSize) return true;
+                if (old.mFileSize > limit) return false;
+            }
+        }
+        Files::IStreamPtr stream = mVfs.get(name);
+        stream->seekg(0, std::ios_base::end);
+        const auto size = static_cast<std::streamoff>(stream->tellg());
+        if (size <= 0 || size > limit || static_cast<std::uint64_t>(size) > mMaxBytes) return false;
+        std::vector<char> data(static_cast<std::size_t>(size));
+        stream->seekg(0);
+        stream->read(data.data(), size);
+        if (stream->gcount() != size) return false;
+        return insert(name, std::move(data), {}, size, size, false);
+    }
+
+    bool HeadCache::insert(VFS::Path::NormalizedView name, std::vector<char>&& head, std::vector<char>&& suffix,
+        std::streamoff suffixStart, std::streamoff fileSize, bool allowEviction)
     {
         const std::size_t bytes = head.size() + suffix.size();
-        if (bytes > mMaxBytes)
-            return;
-        const std::lock_guard lock(mMutex);
-        if (mEntries.contains(name))
-            return;
-        while (!mLru.empty() && mBytes + bytes > mMaxBytes)
+        if (bytes > mMaxBytes) return false;
+        // Allocate before the lock; move LRU nodes to release outside it.
+        std::list<std::shared_ptr<const HeadBuffer>> incoming, release;
+        incoming.push_back(std::make_shared<const HeadBuffer>(
+            VFS::Path::Normalized(name), std::move(head), std::move(suffix), suffixStart, fileSize));
+        std::lock_guard lock(mMutex);
+        auto existing = mEntries.find(name);
+        std::size_t oldBytes = 0;
+        if (existing != mEntries.end())
         {
-            const HeadBuffer& evicted = *mLru.back();
+            const auto& old = **existing->second;
+            oldBytes = old.mHead.size() + old.mSuffix.size();
+            if (bytes <= oldBytes) return true;
+        }
+        if (!allowEviction && bytes > mMaxBytes - (mBytes - oldBytes)) return false;
+        // Reserve the map entry before changing residency. Allocation failure
+        // leaves the old cache intact; subsequent list splices do not allocate.
+        if (existing == mEntries.end())
+            existing = mEntries.emplace(VFS::Path::Normalized(name), mLru.end()).first;
+        else
+        {
+            release.splice(release.end(), mLru, existing->second);
+            mBytes -= oldBytes;
+        }
+        while (!mLru.empty() && bytes > mMaxBytes - mBytes)
+        {
+            const auto& evicted = *mLru.back();
             mBytes -= evicted.mHead.size() + evicted.mSuffix.size();
             mEntries.erase(evicted.mName);
-            mLru.pop_back();
+            release.splice(release.end(), mLru, std::prev(mLru.end()));
         }
-        const LruIt lruIt = mLru.insert(mLru.begin(),
-            std::make_shared<const HeadBuffer>(
-                VFS::Path::Normalized(name), std::move(head), std::move(suffix), suffixStart, fileSize));
-        mEntries.emplace((*lruIt)->mName, lruIt);
+        mLru.splice(mLru.begin(), incoming);
+        existing->second = mLru.begin();
         mBytes += bytes;
+        return true;
     }
 }

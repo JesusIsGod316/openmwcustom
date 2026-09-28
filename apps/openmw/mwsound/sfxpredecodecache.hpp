@@ -24,6 +24,7 @@ namespace VFS
 
 namespace MWSound
 {
+    class HeadCache;
     struct PredecodedSound
     {
         std::vector<char> mData;
@@ -40,7 +41,7 @@ namespace MWSound
     class SfxPredecodeCache
     {
     public:
-        SfxPredecodeCache(const VFS::Manager& vfs, std::size_t maxBytes, unsigned workers);
+        SfxPredecodeCache(const VFS::Manager& vfs, std::size_t maxBytes, unsigned workers, HeadCache* headCache = nullptr);
         ~SfxPredecodeCache();
 
         SfxPredecodeCache(const SfxPredecodeCache&) = delete;
@@ -55,6 +56,7 @@ namespace MWSound
         std::optional<PredecodedSound> decode(VFS::Path::NormalizedView name) const;
 
         const VFS::Manager& mVfs;
+        HeadCache* const mHeadCache; // owner joins this worker before destroying cache
         const std::size_t mMaxBytes;
         std::mutex mMutex;
         std::condition_variable mCondition;

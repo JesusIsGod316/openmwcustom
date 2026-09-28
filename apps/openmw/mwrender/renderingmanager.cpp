@@ -1832,6 +1832,7 @@ namespace MWRender
     {
         // Only perform a projection matrix update once if a relevant setting is changed.
         bool updateProjection = false;
+        bool updateShadowParameters = false;
 
         for (Settings::CategorySettingVector::const_iterator it = changed.begin(); it != changed.end(); ++it)
         {
@@ -1913,6 +1914,12 @@ namespace MWRender
                 if (!lightManagersUpdated)
                     mViewer->getSceneData()->accept(visitor);
             }
+            else if (it->first == "Shadows" && Settings::shadows().mOptimizedMWSettingConsistency
+                && (it->second == "maximum shadow map distance" || it->second == "shadow fade start"
+                    || it->second == "shadow map resolution"))
+            {
+                updateShadowParameters = true;
+            }
             else if (it->first == "Post Processing" && it->second == "enabled")
             {
                 if (Settings::postProcessing().mEnabled)
@@ -1924,6 +1931,25 @@ namespace MWRender
                         hud->setVisible(false);
                 }
             }
+        }
+
+        if (updateShadowParameters)
+        {
+            // This rare settings operation must not race cull/draw consumers.
+            // Preserve the existing threading model, including single-threaded mode.
+            const bool threaded = mViewer->areThreadsRunning();
+            if (threaded) mViewer->stopThreading();
+            try
+            {
+                if (!mShadowManager->applyRuntimeShadowParameters(Settings::shadows()))
+                    Log(Debug::Warning) << "P8U1 shadow update ignored: invalid values or shadows initially disabled";
+            }
+            catch (...)
+            {
+                if (threaded) mViewer->startThreading();
+                throw;
+            }
+            if (threaded) mViewer->startThreading();
         }
 
         if (updateProjection)

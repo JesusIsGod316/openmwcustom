@@ -48,17 +48,22 @@ namespace MWSound
         explicit HeadCache(const VFS::Manager& vfs, std::size_t maxBytes);
 
         std::shared_ptr<const HeadBuffer> lookup(VFS::Path::NormalizedView name);
-        void insert(VFS::Path::NormalizedView name, const std::istream& stream);
+        void insert(VFS::Path::NormalizedView name, const std::istream& stream, bool allowEviction = true);
+        bool contains(VFS::Path::NormalizedView name) const;
+        bool full() const;
+        // Worker-only raw-byte warming. Does not evict playback entries.
+        bool warmWholeFile(VFS::Path::NormalizedView name);
+        std::size_t cachedBytes() const;
 
     private:
         using LruIt = std::list<std::shared_ptr<const HeadBuffer>>::iterator;
 
-        void insert(VFS::Path::NormalizedView name, std::vector<char>&& head, std::vector<char>&& suffix,
-            std::streamoff suffixStart, std::streamoff fileSize);
+        bool insert(VFS::Path::NormalizedView name, std::vector<char>&& head, std::vector<char>&& suffix,
+            std::streamoff suffixStart, std::streamoff fileSize, bool allowEviction);
 
         const VFS::Manager& mVfs;
         const std::size_t mMaxBytes;
-        std::mutex mMutex;
+        mutable std::mutex mMutex;
         std::list<std::shared_ptr<const HeadBuffer>> mLru;
         std::unordered_map<VFS::Path::Normalized, LruIt, VFS::Path::Hash, std::equal_to<>> mEntries;
         std::size_t mBytes = 0;

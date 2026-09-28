@@ -193,6 +193,38 @@ namespace Resource
             }
         }
 
+        // Publish one canonical resource for concurrent producers. Unlike addEntry,
+        // never replaces a winner another chunk may already be using. Construction
+        // and speculative charging happen outside the cache lock; a losing object
+        // (including its final release) also outlives that lock.
+        template <class K>
+        std::pair<osg::ref_ptr<osg::Object>, bool> getOrInsert(K&& key, osg::Object* object,
+            double timestamp = 0.0)
+        {
+            Item incoming(object, timestamp);
+            if (mBudget && object)
+            {
+                const auto* image = dynamic_cast<const osg::Image*>(object);
+                const auto* identity = image && image->data() ? static_cast<const void*>(image->data()) : object;
+                incoming.mCharge = SpeculativeScope::track(mBudget, {identity, image ? 1u : 2u},
+                    image ? image->getTotalSizeInBytesIncludingMipmaps() : 0, image != nullptr);
+            }
+            osg::ref_ptr<osg::Object> result;
+            bool inserted = false;
+            {
+                std::lock_guard lock(mMutex);
+                if (Item* existing = find(key))
+                    result = existing->mValue;
+                else
+                {
+                    auto it = mItems.emplace(std::forward<K>(key), std::move(incoming)).first;
+                    result = it->second.mValue;
+                    inserted = true;
+                }
+            }
+            return {std::move(result), inserted};
+        }
+
         /** Remove Object from cache.*/
         void removeFromObjectCache(const auto& key)
         {

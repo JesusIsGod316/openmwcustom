@@ -14,6 +14,7 @@
 #include <components/esm/util.hpp>
 #include <components/resource/objectcache.hpp>
 #include <components/resource/openmwcompileoperation.hpp>
+#include <components/resource/preparedterraintexture.hpp>
 #include <components/debug/v3diagnostics.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/v321classifiedcompileset.hpp>
@@ -205,7 +206,9 @@ namespace Terrain
                         if (!attribute || !seen.insert(attribute).second)
                             continue;
 
-                        if (auto* texture = dynamic_cast<osg::Texture*>(attribute))
+                        if (auto* prepared = dynamic_cast<Resource::PreparedTerrainTexture*>(attribute))
+                            list.add(new Resource::PreparedTerrainTextureCompileOp(prepared));
+                        else if (auto* texture = dynamic_cast<osg::Texture*>(attribute))
                             list.add(new osgUtil::IncrementalCompileOperation::CompileTextureOp(texture));
                         else
                             list.add(new TerrainStateAttributeCompileOp(attribute));

@@ -43,6 +43,7 @@ namespace MWSound
     class Sound;
     class Stream;
     class HeadCache;
+    class WarmQueue;
 
     using SoundPtr = Misc::ObjectPtr<Sound>;
     using StreamPtr = Misc::ObjectPtr<Stream>;
@@ -52,6 +53,9 @@ namespace MWSound
         const VFS::Manager* mVFS;
 
         std::unique_ptr<HeadCache> mHeadCache;
+        const bool mUseWarmCache;
+        std::unique_ptr<WarmQueue> mWarmQueue;
+        bool mWarmStoreQueued = false;
 
         std::unique_ptr<SoundOutput> mOutput;
 
@@ -285,6 +289,9 @@ namespace MWSound
         void resumePlayback() override;
 
         void queueSfxPredecode();
+        // Called once while the loading screen is active; no active-cell walk
+        // is added to SoundManager::update().
+        void warmStoreSounds();
         void update(float duration);
 
         // V3.16: move one-time ESM sound-record map construction under the

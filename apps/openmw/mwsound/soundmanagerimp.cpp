@@ -28,6 +28,16 @@
 #include "constants.hpp"
 #include "ffmpegdecoder.hpp"
 #include "headcache.hpp"
+#include "warmqueue.hpp"
+#include <components/misc/thread.hpp>
+#include <components/esm3/loaddial.hpp>
+#include <components/esm3/loadinfo.hpp>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #include "openaloutput.hpp"
 #include "sound.hpp"
 #include "soundbuffer.hpp"
@@ -121,6 +131,7 @@ namespace MWSound
     SoundManager::SoundManager(const VFS::Manager* vfs, bool useSound)
         : mVFS(vfs)
         , mHeadCache(makeHeadCache(*vfs))
+        , mUseWarmCache(Settings::sound().mWarmSounds && mHeadCache != nullptr)
         , mOutput(std::make_unique<OpenALOutput>(*this))
         , mWaterSoundUpdater(makeWaterSoundUpdaterSettings())
         , mSoundBuffers(*mOutput)
@@ -172,6 +183,15 @@ namespace MWSound
 
     SoundManager::~SoundManager()
     {
+        if (mWarmQueue)
+        {
+            const auto stats = mWarmQueue->stats();
+            Log(Debug::Info) << "P8U1 sound warming shutdown snapshot: accepted=" << stats.accepted
+                << " processed=" << stats.processed << " skipped=" << stats.skipped
+                << " failed=" << stats.failed << " pending=" << stats.pending
+                << " dropped=" << stats.dropped << " peak=" << stats.peakPending;
+        }
+        mWarmQueue.reset(); // join before VFS/cache/output lifetimes end
         SoundManager::clear();
         mSoundBuffers.clear();
         mOutput.reset();
@@ -180,7 +200,7 @@ namespace MWSound
     // Return a new decoder instance, used as needed by the output implementations
     DecoderPtr SoundManager::getDecoder()
     {
-        return std::make_shared<FFmpegDecoder>(mVFS, nullptr);
+        return std::make_shared<FFmpegDecoder>(mVFS, mUseWarmCache ? mHeadCache.get() : nullptr, false);
     }
 
     DecoderPtr SoundManager::getStreamDecoder()
@@ -1099,6 +1119,82 @@ namespace MWSound
         }
     }
 
+    void SoundManager::warmStoreSounds()
+    {
+        if (mWarmStoreQueued || !isEnabled() || !mUseWarmCache)
+            return;
+        mWarmStoreQueued = true;
+        Log(Debug::Info) << "P8U1 sound warming enabled: bounded loading-time discovery; head cache MiB="
+            << Settings::sound().mHeadCacheSize.get();
+        try
+        {
+            mWarmQueue = std::make_unique<WarmQueue>([this](const WarmQueue::Item& item) {
+                const VFS::Path::Normalized name(item.path);
+                if (mHeadCache->full())
+                    return false;
+                if (item.wholeFile && mHeadCache->warmWholeFile(name))
+                    return true;
+                if (mHeadCache->contains(name))
+                    return true;
+                // A worker-owned decoder warms initialization byte ranges. No
+                // decoded-playback object or live engine pointer is published.
+                FFmpegDecoder decoder(mVFS, mHeadCache.get(), true, false);
+                decoder.open(name);
+                return mHeadCache->contains(name);
+            }, [] {
+                Misc::setCurrentThreadIdlePriority();
+#ifdef _WIN32
+                // Do not change the shared priority helper used by terrain workers.
+                if (!SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN))
+                    Log(Debug::Warning) << "Audio warming could not lower I/O priority";
+#endif
+            });
+            const auto resolve = [this](std::string_view name) {
+                return Misc::ResourceHelpers::correctSoundPath(
+                    Misc::ResourceHelpers::correctSoundPath(VFS::Path::toNormalized(name)), *mVFS);
+            };
+            const MWWorld::ESMStore& store = *MWBase::Environment::get().getESMStore();
+            // Discovery is loading-only, with a finite number of submitted paths.
+            // Steady gameplay does not rescan cells, animations, or the whole store.
+            std::size_t offered = 0;
+            const auto enqueue = [&](VFS::Path::NormalizedView path, bool wholeFile) {
+                if (++offered > 4096)
+                    return false;
+                return mWarmQueue->enqueue({ std::string(path.value()), wholeFile }) != WarmQueue::Result::Full;
+            };
+            // Streamed heads are not covered by the decoded-SFX cache.
+            for (const ESM::Dialogue& topic : store.get<ESM::Dialogue>())
+            {
+                if (topic.mType != ESM::Dialogue::Voice)
+                    continue;
+                for (const ESM::DialInfo& info : topic.mInfo)
+                    if (!info.mSound.empty() && !enqueue(resolve(info.mSound), false))
+                        return;
+            }
+            constexpr VFS::Path::NormalizedView musicDir("music/");
+            for (const VFS::Path::Normalized& name : mVFS->getRecursiveDirectoryIterator(musicDir))
+            {
+                const std::string_view path = name.value();
+                if (!path.ends_with(".mp3") && !path.ends_with(".ogg") && !path.ends_with(".wav")
+                    && !path.ends_with(".flac"))
+                    continue;
+                if (!enqueue(name, false))
+                    return;
+            }
+            const bool pcmAlreadyCoversEffects = Settings::sound().mSfxPredecodeCacheSize != 0
+                && Settings::sound().mSfxPredecodeWorkers != 0;
+            if (!pcmAlreadyCoversEffects)
+                for (const ESM::Sound& sound : store.get<ESM::Sound>())
+                    if (!sound.mSound.empty() && !enqueue(resolve(sound.mSound), true))
+                        return;
+        }
+        catch (const std::exception& error)
+        {
+            mWarmQueue.reset();
+            Log(Debug::Warning) << "Optional audio warming disabled: " << error.what();
+        }
+    }
+
     void SoundManager::queueSfxPredecode()
     {
         if (mV316SfxPrewarmQueued || Settings::sound().mSfxPredecodeCacheSize == 0
@@ -1207,94 +1303,6 @@ namespace MWSound
 
         if (const auto it = mActiveSaySounds.find(old.mRef); it != mActiveSaySounds.end())
             it->second.mCell = updated.mCell;
-    }
-
-    // Default readAll implementation, for decoders that can't do anything
-    // better
-    void SoundDecoder::readAll(std::vector<char>& output)
-    {
-        size_t total = output.size();
-        size_t got;
-
-        output.resize(total + 32768);
-        while ((got = read(&output[total], output.size() - total)) > 0)
-        {
-            total += got;
-            output.resize(total * 2);
-        }
-        output.resize(total);
-    }
-
-    const char* getSampleTypeName(SampleType type)
-    {
-        switch (type)
-        {
-            case SampleType_UInt8:
-                return "U8";
-            case SampleType_Int16:
-                return "S16";
-            case SampleType_Float32:
-                return "Float32";
-        }
-        return "(unknown sample type)";
-    }
-
-    const char* getChannelConfigName(ChannelConfig config)
-    {
-        switch (config)
-        {
-            case ChannelConfig_Mono:
-                return "Mono";
-            case ChannelConfig_Stereo:
-                return "Stereo";
-            case ChannelConfig_Quad:
-                return "Quad";
-            case ChannelConfig_5point1:
-                return "5.1 Surround";
-            case ChannelConfig_7point1:
-                return "7.1 Surround";
-        }
-        return "(unknown channel config)";
-    }
-
-    size_t framesToBytes(size_t frames, ChannelConfig config, SampleType type)
-    {
-        switch (config)
-        {
-            case ChannelConfig_Mono:
-                frames *= 1;
-                break;
-            case ChannelConfig_Stereo:
-                frames *= 2;
-                break;
-            case ChannelConfig_Quad:
-                frames *= 4;
-                break;
-            case ChannelConfig_5point1:
-                frames *= 6;
-                break;
-            case ChannelConfig_7point1:
-                frames *= 8;
-                break;
-        }
-        switch (type)
-        {
-            case SampleType_UInt8:
-                frames *= 1;
-                break;
-            case SampleType_Int16:
-                frames *= 2;
-                break;
-            case SampleType_Float32:
-                frames *= 4;
-                break;
-        }
-        return frames;
-    }
-
-    size_t bytesToFrames(size_t bytes, ChannelConfig config, SampleType type)
-    {
-        return bytes / framesToBytes(1, config, type);
     }
 
     void SoundManager::clear()

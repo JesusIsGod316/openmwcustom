@@ -1,6 +1,7 @@
 #include "openmwcompileoperation.hpp"
 
 #include "v321classifiedcompileset.hpp"
+#include "preparedterraintexture.hpp"
 
 #include <components/debug/v3diagnostics.hpp>
 
@@ -418,6 +419,7 @@ namespace Resource
         unsigned int heavyObjects = 0;
         unsigned int quarantinedCandidates = 0;
         unsigned int predictionMisses = 0;
+        unsigned int texturePreparationReuses = 0;
         std::uint64_t candidateScans = 0;
         std::uint64_t candidateBuilds = 0;
         std::uint64_t estimateCalls = 0;
@@ -549,8 +551,11 @@ namespace Resource
                 // Dynamic measured risk is intentionally refreshed every pass,
                 // but the OSG estimator, map lookup, RTTI classification and age
                 // lookup are not repeated for every candidate.
-                candidate.mPredictionMs
-                    = predictedMs(candidate.mOsgEstimateMs, candidate.mCostBucket, candidate.mStaticPriorMs);
+                CompileInfo readyInfo(context, this);
+                const auto* prepared = dynamic_cast<const PreparedTerrainTextureCompileOp*>(candidate.mOp);
+                const bool alreadyPrepared = prepared && prepared->reusable(readyInfo);
+                candidate.mPredictionMs = alreadyPrepared ? 0.001
+                    : predictedMs(candidate.mOsgEstimateMs, candidate.mCostBucket, candidate.mStaticPriorMs);
                 const bool fits = candidate.mPredictionMs <= std::max(0.05, remainingBudgetMs);
                 const bool heavy = candidate.mPredictionMs >= mConfig.mHeavyThresholdMs;
                 const V321CompileUrgency urgency = getV321CompileUrgency(candidate.mSet);
@@ -632,10 +637,14 @@ namespace Resource
             compileInfo.allocatedTime = 3600.0;
             compileInfo.compileAll = false;
 
+            const auto* prepared = dynamic_cast<const PreparedTerrainTextureCompileOp*>(selected.mOp);
+            const bool reusedPreparation = prepared && prepared->reusable(compileInfo);
             const auto start = Debug::V3Diagnostics::Clock::now();
             const bool completedSet = selected.mSet->compile(compileInfo);
             const double actualMs = Debug::V3Diagnostics::elapsedMs(start);
-            observe(selected.mCostBucket, actualMs);
+            // A no-op must not teach the cost model that a fresh allocation is cheap.
+            if (reusedPreparation) ++texturePreparationReuses;
+            else observe(selected.mCostBucket, actualMs);
             consumeP4CompileCredit(mPolicyState, mode, actualMs);
             compileActualMs += actualMs;
             ++compiledObjects;
@@ -739,6 +748,7 @@ namespace Resource
                    << " heavy=" << heavyObjects
                    << " quarantined_candidates=" << quarantinedCandidates
                    << " prediction_miss=" << predictionMisses
+                   << " texture_preparation_reuses=" << texturePreparationReuses
                    << " candidate_build_ms=" << std::fixed << std::setprecision(3) << candidateBuildActualMs
                    << " selection_ms=" << selectionActualMs
                    << " scheduler_total_ms=" << schedulerTotalMs

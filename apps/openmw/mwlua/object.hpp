@@ -83,6 +83,36 @@ namespace MWLua
     {
         Obj mObj;
     };
+    void initializeObjectCaches(lua_State* state, bool enabled);
+    void clearObjectCaches(lua_State* state);
+    int pushCachedObject(lua_State* state, const LObject& value);
+    int pushCachedObject(lua_State* state, const GObject& value);
+    int pushCachedObject(lua_State* state, const LCell& value);
+    int pushCachedObject(lua_State* state, const GCell& value);
+}
+
+namespace sol::stack
+{
+    template<> struct unqualified_pusher<MWLua::LObject>
+    {
+        static int push(lua_State* state, const MWLua::LObject& value)
+        { return MWLua::pushCachedObject(state, value); }
+    };
+    template<> struct unqualified_pusher<MWLua::GObject>
+    {
+        static int push(lua_State* state, const MWLua::GObject& value)
+        { return MWLua::pushCachedObject(state, value); }
+    };
+    template<> struct unqualified_pusher<MWLua::LCell>
+    {
+        static int push(lua_State* state, const MWLua::LCell& value)
+        { return MWLua::pushCachedObject(state, value); }
+    };
+    template<> struct unqualified_pusher<MWLua::GCell>
+    {
+        static int push(lua_State* state, const MWLua::GCell& value)
+        { return MWLua::pushCachedObject(state, value); }
+    };
 }
 
 #endif // MWLUA_OBJECT_H

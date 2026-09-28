@@ -112,6 +112,12 @@ namespace Settings
         SettingValue<bool> mOptimizedMWTerrainSplitVertexBuffers{
             mIndex, "Cells", "optimizedmw terrain split vertex buffers" };
 
+        // P8U1: first resource-repair slice, independently startup-switchable.
+        SettingValue<bool> mOptimizedMWCanonicalTerrainTextures{
+            mIndex, "Cells", "optimizedmw canonical terrain textures" };
+        SettingValue<bool> mOptimizedMWCompositeSlicing{
+            mIndex, "Cells", "optimizedmw composite slicing" };
+
         // P7 CPU preparation. These remain backend-neutral and default-off.
         SettingValue<bool> mOptimizedMWParallelActorBinding{
             mIndex, "Cells", "optimizedmw parallel actor binding" };

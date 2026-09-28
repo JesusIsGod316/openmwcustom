@@ -1,0 +1,4 @@
+# Debian Mesa GLX process-lifetime allocations (libGLX_mesa.so.0 only).
+# Used only by the two real-context tests in local validation. All other
+# allocations remain leak-checked; ASan/UBSan checks remain enabled.
+leak:libGLX_mesa.so.0

@@ -18,6 +18,8 @@ namespace Settings
     {
         using WithIndex::WithIndex;
 
+        // Startup-only. Registry state is not mutated by settings on another thread.
+        SettingValue<bool> mOptimizedMWObjectUserdataCache{mIndex, "Lua", "optimizedmw object userdata cache"};
         SettingValue<bool> mLuaDebug{ mIndex, "Lua", "lua debug" };
         SettingValue<int> mLuaNumThreads{ mIndex, "Lua", "lua num threads", makeEnumSanitizerInt({ 0, 1 }) };
         SettingValue<bool> mLuaProfiler{ mIndex, "Lua", "lua profiler" };

@@ -44,6 +44,7 @@
 
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/openmwcompileoperation.hpp>
+#include <components/resource/preparedterraintexture.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/stats.hpp>
 
@@ -1989,6 +1990,7 @@ void OMW::Engine::prepareEngine()
             asyncListener.update();
         dataLoading.get();
     }
+    mSoundManager->warmStoreSounds();
     if (static_cast<bool>(Settings::cells().mV316SfxMetadataFrontload))
     {
         mSoundManager->prepareSfxMetadata();
@@ -2350,6 +2352,10 @@ void OMW::Engine::go()
     // The gameplay interval ends BEFORE deferred CSV formatting and disk output.
     Debug::V3HitchTelemetry::state().finish();
     numericCapture.finish();
+    const auto preparedTextureStats = Resource::PreparedTerrainTextureCompileOp::stats();
+    Log(Debug::Info) << "P8U1 terrain preparation snapshot: requested=" << preparedTextureStats.requested
+        << " reused=" << preparedTextureStats.reused << " submitted=" << preparedTextureStats.completed
+        << " (precompile calls, not GPU-completion or uploaded-byte counters)";
     mLuaWorker->join();
 
     // Save user settings

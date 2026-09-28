@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_TERRAIN_TEXTUREMANAGER_H
 
 #include <components/resource/resourcemanager.hpp>
+#include <atomic>
 #include <components/vfs/pathutil.hpp>
 
 namespace Resource
@@ -20,7 +21,7 @@ namespace Terrain
     class TextureManager : public Resource::ResourceManager
     {
     public:
-        explicit TextureManager(Resource::SceneManager* sceneMgr, double expiryDelay);
+        explicit TextureManager(Resource::SceneManager* sceneMgr, double expiryDelay, bool canonicalPublication = false);
 
         void updateTextureFiltering();
 
@@ -30,6 +31,8 @@ namespace Terrain
 
     private:
         Resource::SceneManager* mSceneManager;
+        const bool mCanonicalPublication; // startup-only; preserves the old path when off
+        std::atomic_uint64_t mPublicationRaces{0};
     };
 
 }

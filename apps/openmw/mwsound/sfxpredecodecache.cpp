@@ -18,8 +18,9 @@ namespace MWSound
         constexpr std::size_t sMaxPredecodedEntryBytes = 16 * 1024 * 1024;
     }
 
-    SfxPredecodeCache::SfxPredecodeCache(const VFS::Manager& vfs, std::size_t maxBytes, unsigned workers)
+    SfxPredecodeCache::SfxPredecodeCache(const VFS::Manager& vfs, std::size_t maxBytes, unsigned workers, HeadCache* headCache)
         : mVfs(vfs)
+        , mHeadCache(headCache)
         , mMaxBytes(maxBytes)
     {
         if (mMaxBytes == 0)
@@ -99,7 +100,7 @@ namespace MWSound
     {
         try
         {
-            std::unique_ptr<SoundDecoder> decoder = std::make_unique<FFmpegDecoder>(&mVfs, nullptr);
+            std::unique_ptr<SoundDecoder> decoder = std::make_unique<FFmpegDecoder>(&mVfs, mHeadCache, false);
             decoder->open(Misc::ResourceHelpers::correctSoundPath(name, mVfs));
 
             PredecodedSound decoded;

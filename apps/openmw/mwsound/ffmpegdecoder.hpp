@@ -126,7 +126,7 @@ namespace MWSound
         FFmpegDecoder(const FFmpegDecoder& rhs);
 
     public:
-        explicit FFmpegDecoder(const VFS::Manager* vfs, HeadCache* headCache);
+        explicit FFmpegDecoder(const VFS::Manager* vfs, HeadCache* headCache, bool recordHead = true, bool allowCacheEviction = true);
 
         virtual ~FFmpegDecoder();
 
@@ -134,6 +134,8 @@ namespace MWSound
 
     private:
         HeadCache* mHeadCache;
+        const bool mRecordHead;
+        const bool mAllowCacheEviction;
     };
 }
 

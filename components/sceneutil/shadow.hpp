@@ -37,6 +37,10 @@ namespace SceneUtil
 
         void setupShadowSettings(const Settings::ShadowsCategory& settings, Shader::ShaderManager& shaderManager);
 
+        // Caller stops drawing threads before changing shared settings. Does not
+        // enable initially-disabled shadows or change cascade/caster/shader policy.
+        bool applyRuntimeShadowParameters(const Settings::ShadowsCategory& settings);
+
         void setupShaders(Shader::ShaderManager& shaderManager) const;
 
         void disableShadowsForStateSet(osg::StateSet& stateset) const;
@@ -51,6 +55,7 @@ namespace SceneUtil
         static ShadowManager* sInstance;
 
         bool mEnableShadows;
+        bool mRuntimeSettingConsistency = false;
 
         osg::ref_ptr<osgShadow::ShadowedScene> mShadowedScene;
         osg::ref_ptr<osgShadow::ShadowSettings> mShadowSettings;

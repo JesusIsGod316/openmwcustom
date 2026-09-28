@@ -1,4 +1,5 @@
 #include "shadow.hpp"
+#include "shadowsettingsupdate.hpp"
 #include "disabledshadowtexture.hpp"
 
 #include <osgShadow/ShadowSettings>
@@ -31,6 +32,8 @@ namespace SceneUtil
         const Settings::ShadowsCategory& settings, Shader::ShaderManager& shaderManager)
     {
         mEnableShadows = settings.mEnableShadows;
+        mRuntimeSettingConsistency = settings.mOptimizedMWSettingConsistency;
+        mShadowTechnique->setRuntimeSettingConsistency(mRuntimeSettingConsistency);
 
         if (!mEnableShadows)
         {
@@ -99,6 +102,20 @@ namespace SceneUtil
             mShadowTechnique->disableDebugHUD();
     }
 
+    bool ShadowManager::applyRuntimeShadowParameters(const Settings::ShadowsCategory& settings)
+    {
+        if (!mRuntimeSettingConsistency || !mEnableShadows)
+            return false;
+        const auto parameters = shadowRuntimeParameters(settings.mMaximumShadowMapDistance,
+            settings.mShadowFadeStart, settings.mShadowMapResolution);
+        if (!parameters)
+            return false;
+        mShadowTechnique->setMaximumShadowMapDistance(parameters->distance);
+        mShadowTechnique->setShadowFadeStart(parameters->fadeStart);
+        mShadowSettings->setTextureSize(osg::Vec2s(parameters->resolution, parameters->resolution));
+        return true;
+    }
+
     void ShadowManager::setupShaders(Shader::ShaderManager& shaderManager) const
     {
         mShadowTechnique->setupCastingShader(shaderManager);
@@ -146,6 +163,8 @@ namespace SceneUtil
         mShadowSettings = mShadowedScene->getShadowSettings();
         setupShadowSettings(settings, shaderManager);
 
+        if (mRuntimeSettingConsistency)
+            applyRuntimeShadowParameters(settings);
         mShadowTechnique->setWorldMask(worldMask);
 
         enableOutdoorMode();

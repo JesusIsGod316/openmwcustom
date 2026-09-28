@@ -3,3 +3,9 @@
 /files/shaders/v3overlay/p8g3/compatibility/groundcover.vert text eol=lf
 /files/shaders/v3overlay/p8g3/compatibility/groundcover.frag text eol=lf
 /files/shaders/v3overlay/p8g3/manifest.json text eol=lf
+
+# P8U1 cross-platform installed-package identity and preserved temporal shader bytes.
+tools/optimizedmw/p8u1/*.ps1 text eol=lf
+tools/optimizedmw/p8u1/OptimizedMW-P8U1-README.txt text eol=lf
+tools/optimizedmw/gl-p8g4/START-OptimizedMW-Test.bat text eol=lf
+files/shaders/compatibility/temporal_camera_motion.frag text eol=lf

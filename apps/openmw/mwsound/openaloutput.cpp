@@ -1625,7 +1625,8 @@ namespace MWSound
         const unsigned predecodeWorkers = static_cast<unsigned>(Settings::sound().mSfxPredecodeWorkers);
         if (predecodeMb != 0 && predecodeWorkers != 0)
             mSfxPredecodeCache = std::make_unique<SfxPredecodeCache>(
-                *mgr.mVFS, predecodeMb * 1024 * 1024, predecodeWorkers);
+                *mgr.mVFS, predecodeMb * 1024 * 1024, predecodeWorkers,
+                mgr.mUseWarmCache ? mgr.mHeadCache.get() : nullptr);
     }
 
     OpenALOutput::~OpenALOutput()

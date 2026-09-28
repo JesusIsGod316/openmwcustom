@@ -1,0 +1,2 @@
+# Narrow local Mesa GLX process-lifetime leak exclusion, not engine allocations.
+leak:libGLX_mesa.so.0

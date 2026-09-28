@@ -30,7 +30,9 @@ namespace Terrain
         double conservativeTimeRatio(0.75);
         double availableTime = std::max((targetFrameTime - dt) * conservativeTimeRatio, mMinimumTimeAvailable);
 
-        std::lock_guard<std::mutex> lock(mMutex);
+        const auto frameDeadline = std::chrono::steady_clock::now()
+            + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(availableTime));
+        std::unique_lock<std::mutex> lock(mMutex);
 
         if (mImmediateCompileSet.empty() && mCompileSet.empty())
             return;
@@ -40,32 +42,57 @@ namespace Terrain
             osg::ref_ptr<CompositeMap> node = *mImmediateCompileSet.begin();
             mImmediateCompileSet.erase(node);
 
-            mMutex.unlock();
+            lock.unlock();
             compile(*node, renderInfo);
-            mMutex.lock();
+            lock.lock();
         }
 
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(availableTime);
+        const auto deadline = mCooperativeBackgroundCompile ? frameDeadline
+            : std::chrono::steady_clock::now()
+                + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(availableTime));
         while (!mCompileSet.empty() && std::chrono::steady_clock::now() < deadline)
         {
             osg::ref_ptr<CompositeMap> node = *mCompileSet.begin();
             mCompileSet.erase(node);
 
-            mMutex.unlock();
-            compile(*node, renderInfo);
-            mMutex.lock();
+            lock.unlock();
+            compileUntil(*node, renderInfo, mCooperativeBackgroundCompile ? deadline : Deadline::max());
+            lock.lock();
 
             if (node->mCompiled < node->mDrawables.size())
             {
                 // We did not compile the map fully.
                 // Place it back to queue to continue work in the next time.
-                mCompileSet.insert(node);
+                if (mCooperativeBackgroundCompile && node->mRequired.load(std::memory_order_acquire))
+                    mImmediateCompileSet.insert(node);
+                else
+                    mCompileSet.insert(node);
+            }
+        }
+        // A cull-side promotion may have happened after compileUntil decided
+        // to yield while the map was temporarily outside both queues. Drain
+        // those required maps before this renderer returns to visible drawing.
+        if (mCooperativeBackgroundCompile)
+        {
+            while (!mImmediateCompileSet.empty())
+            {
+                osg::ref_ptr<CompositeMap> node = *mImmediateCompileSet.begin();
+                mImmediateCompileSet.erase(node);
+                lock.unlock();
+                compile(*node, renderInfo);
+                lock.lock();
             }
         }
         mTimer.setStartTick();
     }
 
     void CompositeMapRenderer::compile(CompositeMap& compositeMap, osg::RenderInfo& renderInfo) const
+    {
+        compileUntil(compositeMap, renderInfo, Deadline::max());
+    }
+
+    void CompositeMapRenderer::compileUntil(
+        CompositeMap& compositeMap, osg::RenderInfo& renderInfo, Deadline deadline) const
     {
         // if there are no more external references we can assume the texture is no longer required
         if (compositeMap.mTexture->referenceCount() <= 1)
@@ -104,6 +131,12 @@ namespace Terrain
 
         for (size_t i = compositeMap.mCompiled; i < compositeMap.mDrawables.size(); ++i)
         {
+            if (deadline != Deadline::max() && !compositeMap.mRequired.load(std::memory_order_acquire)
+                && std::chrono::steady_clock::now() >= deadline)
+            {
+                mBackgroundYields.fetch_add(1, std::memory_order_relaxed);
+                break;
+            }
             osg::Drawable* drw = compositeMap.mDrawables[i];
             osg::StateSet* stateset = drw->getStateSet();
 
@@ -145,13 +178,18 @@ namespace Terrain
     {
         std::lock_guard<std::mutex> lock(mMutex);
         if (immediate)
+        {
+            compositeMap->mRequired.store(true, std::memory_order_release);
+            mCompileSet.erase(compositeMap);
             mImmediateCompileSet.insert(compositeMap);
-        else
+        }
+        else if (!mImmediateCompileSet.contains(compositeMap))
             mCompileSet.insert(compositeMap);
     }
 
     void CompositeMapRenderer::setImmediate(CompositeMap* compositeMap)
     {
+        compositeMap->mRequired.store(true, std::memory_order_release);
         std::lock_guard<std::mutex> lock(mMutex);
         CompileSet::iterator found = mCompileSet.find(compositeMap);
         if (found == mCompileSet.end())

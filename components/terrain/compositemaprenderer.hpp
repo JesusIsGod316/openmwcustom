@@ -3,6 +3,8 @@
 
 #include <osg/Drawable>
 
+#include <atomic>
+#include <chrono>
 #include <mutex>
 #include <set>
 
@@ -24,6 +26,9 @@ namespace Terrain
         std::vector<osg::ref_ptr<osg::Drawable>> mDrawables;
         osg::ref_ptr<osg::Texture2D> mTexture;
         size_t mCompiled;
+        // Requiredness survives removal from the queue while the GL thread works.
+        // The cull thread must not lose its promotion when a map is in flight.
+        std::atomic_bool mRequired{false};
     };
 
     /**
@@ -40,6 +45,11 @@ namespace Terrain
 
         void compile(CompositeMap& compositeMap, osg::RenderInfo& renderInfo) const;
 
+        // Startup only. The limit is cooperative between drawables, not a
+        // preemptive GL deadline; a single driver call can still overrun it.
+        void setCooperativeBackgroundCompile(bool enabled) { mCooperativeBackgroundCompile = enabled; }
+        std::uint64_t backgroundYields() const { return mBackgroundYields.load(std::memory_order_relaxed); }
+
         /// Set the available time in seconds for compiling (non-immediate) composite maps each frame
         void setMinimumTimeAvailableForCompile(double time);
 
@@ -55,6 +65,10 @@ namespace Terrain
         size_t getCompileSetSize() const;
 
     private:
+        using Deadline = std::chrono::steady_clock::time_point;
+        void compileUntil(CompositeMap& compositeMap, osg::RenderInfo& renderInfo, Deadline deadline) const;
+        bool mCooperativeBackgroundCompile = false;
+        mutable std::atomic_uint64_t mBackgroundYields{0};
         float mTargetFrameRate;
         double mMinimumTimeAvailable;
         mutable osg::Timer mTimer;

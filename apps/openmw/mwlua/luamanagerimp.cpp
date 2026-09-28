@@ -231,6 +231,7 @@ namespace MWLua
         : mLua(vfs, &mConfiguration, createLuaStateSettings())
         , mV320LuaProfilerRecorder(std::make_unique<V320LuaProfilerRecorder>())
     {
+        initializeObjectCaches(mLua.unsafeState(), Settings::lua().mOptimizedMWObjectUserdataCache);
         Log(Debug::Info) << "Lua version: " << LuaUtil::getLuaVersion();
         mLua.addInternalLibSearchPath(libsDir);
 
@@ -808,6 +809,8 @@ namespace MWLua
         mInputActions.clear();
         mInputTriggers.clear();
         mQueuedAutoStartedScripts.clear();
+        // Clear before GC and before CellStore/RefNum identities can be reused.
+        clearObjectCaches(mLua.unsafeState());
         for (int i = 0; i < 5; ++i)
             lua_gc(mLua.unsafeState(), LUA_GCCOLLECT, 0);
     }

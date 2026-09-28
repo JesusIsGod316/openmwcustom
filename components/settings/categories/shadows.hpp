@@ -18,6 +18,7 @@ namespace Settings
     {
         using WithIndex::WithIndex;
 
+        SettingValue<bool> mOptimizedMWSettingConsistency{ mIndex, "Shadows", "optimizedmw setting consistency" };
         SettingValue<bool> mEnableShadows{ mIndex, "Shadows", "enable shadows" };
         SettingValue<int> mNumberOfShadowMaps{ mIndex, "Shadows", "number of shadow maps",
             makeClampSanitizerInt(1, 8) };

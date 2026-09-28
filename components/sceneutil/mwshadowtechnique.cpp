@@ -18,6 +18,7 @@
 */
 
 #include "mwshadowtechnique.hpp"
+#include "shadowsettingsupdate.hpp"
 
 #include <osgShadow/ShadowedScene>
 #include <osg/CullFace>
@@ -535,16 +536,8 @@ MWShadowTechnique::ShadowData::ShadowData(
     // set up the texture
     _texture = new osg::Texture2D;
 
-    osg::Vec2s textureSize = debug ? osg::Vec2s(512,512) : settings->getTextureSize();
-    const unsigned int v33ResolutionDivisor
-        = vdd->getViewDependentShadowMap()->getV33FarCascadeResolutionDivisor();
-    if (!debug && v33ResolutionDivisor > 1 && shadowMapCount > 1 && shadowMapIndex + 1 == shadowMapCount)
-    {
-        textureSize.set(static_cast<short>(std::max(1, static_cast<int>(textureSize.x())
-                                                        / static_cast<int>(v33ResolutionDivisor))),
-            static_cast<short>(std::max(1, static_cast<int>(textureSize.y())
-                                            / static_cast<int>(v33ResolutionDivisor))));
-    }
+    const osg::Vec2s textureSize = shadowTextureExtent(settings->getTextureSize(), debug,
+        shadowMapIndex, shadowMapCount, vdd->getViewDependentShadowMap()->getV33FarCascadeResolutionDivisor());
     _texture->setTextureSize(textureSize.x(), textureSize.y());
 
     if (debug)
@@ -835,6 +828,7 @@ MWShadowTechnique::MWShadowTechnique(const MWShadowTechnique& vdsm, const osg::C
     _shadowRecievingPlaceholderStateSet = new osg::StateSet;
     _enableShadows = vdsm._enableShadows;
     mSetDummyStateWhenDisabled = vdsm.mSetDummyStateWhenDisabled;
+    _runtimeSettingConsistency = vdsm._runtimeSettingConsistency;
 }
 
 MWShadowTechnique::~MWShadowTechnique()
@@ -906,6 +900,15 @@ void SceneUtil::MWShadowTechnique::setPolygonOffset(float factor, float units)
 void SceneUtil::MWShadowTechnique::setShadowFadeStart(float shadowFadeStart)
 {
     _shadowFadeStart = shadowFadeStart;
+    if (_runtimeSettingConsistency)
+        replaceShadowUniform(_uniforms, "shadowFadeStart", shadowFadeStart);
+}
+
+void SceneUtil::MWShadowTechnique::setMaximumShadowMapDistance(float distance)
+{
+    if (_shadowedScene && _shadowedScene->getShadowSettings())
+        _shadowedScene->getShadowSettings()->setMaximumShadowMapDistance(distance);
+    replaceShadowUniform(_uniforms, "maximumShadowMapDistance", distance);
 }
 
 void SceneUtil::MWShadowTechnique::setV33FarCascadeReuse(
@@ -1374,6 +1377,22 @@ void MWShadowTechnique::cull(osgUtil::CullVisitor& cv)
                 OSG_INFO<<"Taking ShadowData from from of previous_sdl"<<std::endl;
                 sd = previous_sdl.front();
                 previous_sdl.erase(previous_sdl.begin());
+                if (_runtimeSettingConsistency)
+                {
+                    const auto extent = shadowTextureExtent(settings->getTextureSize(), settings->getDebugDraw(),
+                        sm_i, numShadowMapsPerLight, _v33FarCascadeResolutionDivisor);
+                    const GLint format = settings->getDebugDraw() ? GL_RGB : GL_DEPTH_COMPONENT;
+                    if (sd->_texture->getTextureWidth() != extent.x()
+                        || sd->_texture->getTextureHeight() != extent.y()
+                        || sd->_texture->getInternalFormat() != format)
+                    {
+                        // Keep old texture/camera objects alive for any captured render state.
+                        // New ShadowData coherently recreates viewport and FBO attachment.
+                        sd = new ShadowData(vdd, sm_i, numShadowMapsPerLight);
+                        if (_v36AsyncGpuProfiler)
+                            Debug::V36GpuProfiler::attachCamera(*sd->_camera, "shadow_cascade_" + std::to_string(sm_i));
+                    }
+                }
             }
 
             osg::ref_ptr<osg::Camera> camera = sd->_camera;

@@ -329,8 +329,10 @@ namespace MWSound
                 mDataStream = makeHeadStream(std::move(buffer), *mResourceMgr);
                 cached = true;
             }
-            else
+            else if (mRecordHead)
                 mDataStream = makeRecordingStream(mResourceMgr->get(fname));
+            else
+                mDataStream = mResourceMgr->get(fname);
         }
         else
             mDataStream = mResourceMgr->get(fname);
@@ -361,8 +363,8 @@ namespace MWSound
         if (!opened && !openContext(fname.value().data(), nullptr, false, ioCtx, formatCtxPtr, stream))
             throw std::runtime_error("Failed to open input");
 
-        if (mHeadCache != nullptr && !cached)
-            mHeadCache->insert(fname, *mDataStream);
+        if (mHeadCache != nullptr && !cached && mRecordHead)
+            mHeadCache->insert(fname, *mDataStream, mAllowCacheEviction);
 
         const AVCodec* codec = avcodec_find_decoder((*stream)->codecpar->codec_id);
         if (codec == nullptr)
@@ -601,7 +603,7 @@ namespace MWSound
         return static_cast<std::size_t>(mNextPts * mCodecCtx->sample_rate) - delay;
     }
 
-    FFmpegDecoder::FFmpegDecoder(const VFS::Manager* vfs, HeadCache* headCache)
+    FFmpegDecoder::FFmpegDecoder(const VFS::Manager* vfs, HeadCache* headCache, bool recordHead, bool allowCacheEviction)
         : SoundDecoder(vfs)
         , mStream(nullptr)
         , mFrameSize(0)
@@ -618,6 +620,8 @@ namespace MWSound
         , mFrameData(nullptr)
         , mDataBufLen(0)
         , mHeadCache(headCache)
+        , mRecordHead(recordHead)
+        , mAllowCacheEviction(allowCacheEviction)
     {
         memset(&mPacket, 0, sizeof(mPacket));
 

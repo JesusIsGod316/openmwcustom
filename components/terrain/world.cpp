@@ -41,11 +41,12 @@ namespace Terrain
         compileRoot->addChild(compositeCam);
 
         mCompositeMapRenderer = new CompositeMapRenderer;
+        mCompositeMapRenderer->setCooperativeBackgroundCompile(Settings::cells().mOptimizedMWCompositeSlicing);
         compositeCam->addChild(mCompositeMapRenderer);
 
         mParent->addChild(mTerrainRoot);
 
-        mTextureManager = std::make_unique<TextureManager>(mResourceSystem->getSceneManager(), expiryDelay);
+        mTextureManager = std::make_unique<TextureManager>(mResourceSystem->getSceneManager(), expiryDelay, Settings::cells().mOptimizedMWCanonicalTerrainTextures);
         mChunkManager = std::make_unique<ChunkManager>(mStorage, mResourceSystem->getSceneManager(),
             mTextureManager.get(), mCompositeMapRenderer, mWorldspace, expiryDelay);
         mChunkManager->setNodeMask(nodeMask);
