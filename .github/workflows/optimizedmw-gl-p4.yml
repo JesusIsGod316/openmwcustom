@@ -1,69 +1,29 @@
-name: OptimizedMW GL-P8G3 visibility and LOD gate
-
+name: OptimizedMW P8G3 shader deployment repair hold
 on:
   push:
-    branches: [optimizedmw/gl-p4r-heavy-gl, optimizedmw/gl-p4r-scheduler-repair, optimizedmw/gl-p6-stutter-residency, optimizedmw/gl-p7-cpu-prep, optimizedmw/gl-p8-dynamic-draw, optimizedmw/gl-p8-hl1-probes, optimizedmw/gl-p8g2-groundcover-shader, optimizedmw/gl-p8g3-visibility-lod]
+    branches: [optimizedmw/gl-p8g3-visibility-lod]
+    paths: [.github/workflows/optimizedmw-gl-p4.yml]
   workflow_dispatch:
-
 permissions:
   contents: read
-  actions: read
-
+  actions: write
 jobs:
-  Source:
+  StopObsoleteGate:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install native graphics dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y libopenscenegraph-dev libmygui-dev libbullet-dev libglm-dev libboost-dev libyaml-cpp-dev libgl1-mesa-dev xvfb xauth
-      - name: Verify retained and P8G3 contracts
+      - name: Stop only superseded P8G3 gate with unpatched PBR overlay
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for p in 3 4 6 7 8 8g2 8g3; do python tools/optimizedmw/gl-p$p/source-contract.py; done
-          git merge-base --is-ancestor 90182a5228656bf1435b74267c72a7ce3073dd5c HEAD
-          git diff 90182a5228656bf1435b74267c72a7ce3073dd5c --check
-      - name: Validate packaged PowerShell syntax without executing launcher
-        shell: pwsh
-        run: |
-          $tokens = $null
-          $errors = $null
-          $path = (Resolve-Path 'tools/optimizedmw/gl-p8g3/OptimizedMW_GL-P8G3_Test.ps1').Path
-          $null = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
-          if ($errors.Count) { $errors | Format-List; throw 'Invalid P8G3 launcher syntax' }
-      - name: Compile actual groundcover integration and run native shader matrix
-        run: |
-          cmake -S tools/optimizedmw/gl-p8g3 -B build-p8g3 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DP8G3_SANITIZERS=ON
-          cmake --build build-p8g3 --parallel 2
-          ctest --test-dir build-p8g3 -V --output-on-failure
-      - name: Configure P3
-        run: cmake -S tools/optimizedmw/gl-p3 -B build-p3 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOPTIMIZEDMW_P3_SANITIZERS=ON
-      - name: Test retained P3
-        run: |
-          cmake --build build-p3 --parallel 2
-          ctest --test-dir build-p3 -V --output-on-failure
-      - name: Configure P4
-        run: cmake -S tools/optimizedmw/gl-p4 -B build-p4 -DCMAKE_BUILD_TYPE=RelWithDebInfo
-      - name: Build and test P4
-        run: |
-          cmake --build build-p4 --parallel 2
-          ctest --test-dir build-p4 -V --output-on-failure
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: P8G3-native-gate-${{ github.sha }}
-          path: |
-            build-p8g3/Testing/Temporary/LastTest.log
-            build-p8g3/shader-sources
-            build-p3/Testing/Temporary/LastTest.log
-            build-p4/Testing/Temporary/LastTest.log
-          retention-days: 14
-
-  Windows:
-    needs: Source
-    uses: ./.github/workflows/windows.yml
-    with:
-      image: '2022'
-      tests: true
-      package: false
+          gh api repos/JesusIsGod316/openmwcustom/actions/runs/36375563293 > /tmp/run.json
+          python - <<'PY'
+          import json
+          r=json.load(open('/tmp/run.json'))
+          assert r['head_sha']=='85933fed0d00b0e6fa8b39964650cb9456cf9055'
+          assert r['head_branch']=='optimizedmw/gl-p8g3-visibility-lod'
+          assert r['path']=='.github/workflows/optimizedmw-gl-p4.yml'
+          PY
+          if [ "$(python -c 'import json; print(json.load(open("/tmp/run.json"))["status"])')" != completed ]; then
+            gh api --method POST repos/JesusIsGod316/openmwcustom/actions/runs/36375563293/cancel
+          fi
