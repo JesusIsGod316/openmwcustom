@@ -63,50 +63,6 @@ namespace RenderVsg
             }
         }
 
-        VkBlendFactor blendFactor(osg::BlendFunc::BlendFuncMode mode)
-        {
-            switch (mode)
-            {
-                case osg::BlendFunc::ZERO: return VK_BLEND_FACTOR_ZERO;
-                case osg::BlendFunc::ONE: return VK_BLEND_FACTOR_ONE;
-                case osg::BlendFunc::SRC_COLOR: return VK_BLEND_FACTOR_SRC_COLOR;
-                case osg::BlendFunc::ONE_MINUS_SRC_COLOR: return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
-                case osg::BlendFunc::DST_COLOR: return VK_BLEND_FACTOR_DST_COLOR;
-                case osg::BlendFunc::ONE_MINUS_DST_COLOR: return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
-                case osg::BlendFunc::SRC_ALPHA: return VK_BLEND_FACTOR_SRC_ALPHA;
-                case osg::BlendFunc::ONE_MINUS_SRC_ALPHA: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-                case osg::BlendFunc::DST_ALPHA: return VK_BLEND_FACTOR_DST_ALPHA;
-                case osg::BlendFunc::ONE_MINUS_DST_ALPHA: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
-                case osg::BlendFunc::CONSTANT_COLOR: return VK_BLEND_FACTOR_CONSTANT_COLOR;
-                case osg::BlendFunc::ONE_MINUS_CONSTANT_COLOR: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
-                case osg::BlendFunc::CONSTANT_ALPHA: return VK_BLEND_FACTOR_CONSTANT_ALPHA;
-                case osg::BlendFunc::ONE_MINUS_CONSTANT_ALPHA: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
-                case osg::BlendFunc::SRC_ALPHA_SATURATE: return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
-                default:
-                    throw std::runtime_error("OMWFX blend factor is not supported by the native Vulkan executor: "
-                        + std::to_string(static_cast<unsigned int>(mode)));
-            }
-        }
-
-        VkBlendOp blendOperation(osg::BlendEquation::Equation equation)
-        {
-            switch (equation)
-            {
-                case osg::BlendEquation::FUNC_ADD: return VK_BLEND_OP_ADD;
-                case osg::BlendEquation::FUNC_SUBTRACT: return VK_BLEND_OP_SUBTRACT;
-                case osg::BlendEquation::FUNC_REVERSE_SUBTRACT: return VK_BLEND_OP_REVERSE_SUBTRACT;
-                case osg::BlendEquation::RGBA_MIN:
-                case osg::BlendEquation::ALPHA_MIN:
-                    return VK_BLEND_OP_MIN;
-                case osg::BlendEquation::RGBA_MAX:
-                case osg::BlendEquation::ALPHA_MAX:
-                    return VK_BLEND_OP_MAX;
-                default:
-                    throw std::runtime_error("OMWFX blend equation is not supported by the native Vulkan executor: "
-                        + std::to_string(static_cast<unsigned int>(equation)));
-            }
-        }
-
         struct Target
         {
             vsg::ref_ptr<vsg::Image> image;
@@ -288,24 +244,8 @@ namespace RenderVsg
                 auto depth = vsg::DepthStencilState::create();
                 depth->depthTestEnable = depth->depthWriteEnable = VK_FALSE;
                 auto blend = vsg::ColorBlendState::create();
-                if (pass.blendSource.has_value() != pass.blendDestination.has_value())
-                    throw std::runtime_error("OMWFX authored blending requires both source and destination factors: "
-                        + pass.name);
-                if (pass.blendSource && pass.blendDestination)
-                {
-                    if (blend->attachments.empty())
-                        blend->attachments.emplace_back();
-                    auto& attachment = blend->attachments.front();
-                    attachment.blendEnable = VK_TRUE;
-                    attachment.srcColorBlendFactor = blendFactor(*pass.blendSource);
-                    attachment.dstColorBlendFactor = blendFactor(*pass.blendDestination);
-                    attachment.colorBlendOp = pass.blendEquation ? blendOperation(*pass.blendEquation) : VK_BLEND_OP_ADD;
-                    attachment.srcAlphaBlendFactor = attachment.srcColorBlendFactor;
-                    attachment.dstAlphaBlendFactor = attachment.dstColorBlendFactor;
-                    attachment.alphaBlendOp = attachment.colorBlendOp;
-                    attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
-                        | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-                }
+                if (pass.blendSource || pass.blendDestination || pass.blendEquation)
+                    throw std::runtime_error("OMWFX authored blending is not implemented: " + pass.name);
                 auto pipeline = vsg::GraphicsPipeline::create(pipelineLayout, vsg::ShaderStages{
                     vsg::ShaderStage::create(VK_SHADER_STAGE_VERTEX_BIT, "main", pass.shaders.vertex),
                     vsg::ShaderStage::create(VK_SHADER_STAGE_FRAGMENT_BIT, "main", pass.shaders.fragment)},
