@@ -4,6 +4,7 @@
 #include "animationpriority.hpp"
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
 #include <components/misc/producerqueue.hpp>
+#include "v4producerclass.hpp"
 #endif
 #include "animblendcontroller.hpp"
 #include "blendmask.hpp"
@@ -299,7 +300,9 @@ namespace MWRender
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
         std::unique_ptr<V4PersistentObject> mV4PersistentObject;
         std::shared_ptr<Misc::ProducerQueue::Ticket> mV4ProducerTicket;
-        bool mV4ProducerDemandDriven = false;
+        V4ProducerClass mV4ProducerClass = V4ProducerClass::CompatibilityContinuous;
+        V4ProducerClass mV4PreviousProducerClass = V4ProducerClass::CompatibilityContinuous;
+        unsigned mV4ProducerVisitReasons = 0;
         std::shared_ptr<SceneUtil::RenderMutationSource::Subscription> mV4ProducerWake;
         struct V4ObjectCaptureAdmission
         {
@@ -437,8 +440,26 @@ namespace MWRender
         V4PersistentObject* prepareV4PersistentObject();
         void attachV4ProducerTicket(std::shared_ptr<Misc::ProducerQueue::Ticket> ticket);
         void invalidateV4PersistentObject();
-        void setV4ProducerDemandDriven(bool value) { mV4ProducerDemandDriven = value; }
-        void finishV4ProducerVisit();
+        void beginV4ProducerVisit(V4ProducerClass previous, unsigned reasons) noexcept
+        {
+            mV4PreviousProducerClass = previous;
+            mV4ProducerVisitReasons = reasons;
+            // Fail closed unless this visit proves a supported scheduling lane.
+            mV4ProducerClass = V4ProducerClass::CompatibilityContinuous;
+        }
+        void setV4ProducerDemandDriven(bool value)
+        {
+            mV4ProducerClass = value ? V4ProducerClass::DemandDrivenObject
+                                     : V4ProducerClass::CompatibilityContinuous;
+        }
+        void setV4ProducerSupportedActor() noexcept
+        { mV4ProducerClass = V4ProducerClass::SupportedContinuousActor; }
+        void setV4ProducerSupportedParticle() noexcept
+        { mV4ProducerClass = V4ProducerClass::SupportedContinuousParticle; }
+        [[nodiscard]] V4ProducerClass finishV4ProducerVisit();
+        [[nodiscard]] V4ProducerClass v4ProducerClass() const noexcept { return mV4ProducerClass; }
+        [[nodiscard]] V4ProducerClass previousV4ProducerClass() const noexcept { return mV4PreviousProducerClass; }
+        [[nodiscard]] bool v4ProducerVisitIsDirty() const noexcept { return mV4ProducerVisitReasons != 0; }
         [[nodiscard]] bool captureV4ObjectControllerClock(std::optional<float>& time, std::string& diagnostic) const;
         // One seed at admission/re-entry, not a per-frame geometry/material capture.
         [[nodiscard]] bool seedV4ObjectNodeTransforms(const std::vector<std::string>& names,
