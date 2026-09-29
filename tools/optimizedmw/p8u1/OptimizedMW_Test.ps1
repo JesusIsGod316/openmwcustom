@@ -379,11 +379,60 @@ try{
     "Offline report failed: $_" | Set-Content -LiteralPath (Join-Path $ProfileDir 'REPORT-ERROR.txt')
     Write-Host 'Report generation failed; raw evidence is still included in the ZIP.' -ForegroundColor Yellow
 }
-$zipPath="$ProfileDir.zip"
-if(Test-Path -LiteralPath $zipPath){Remove-Item -LiteralPath $zipPath -Force}
-Compress-Archive -Path (Join-Path $ProfileDir '*') -DestinationPath $zipPath -CompressionLevel Optimal
+function New-VerifiedProfileZip {
+    param([Parameter(Mandatory=$true)][string]$SourceDir,[Parameter(Mandatory=$true)][string]$DestinationPath)
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $required=@('TEST_MODE.txt','v3-frame.csv','p6-render-traversal.csv','openmw.log')
+    $tempPath="$DestinationPath.tmp"
+    foreach($path in @($DestinationPath,$tempPath)){
+        if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}
+    }
+
+    $lastError=$null
+    for($attempt=1;$attempt -le 3;++$attempt){
+        try{
+            if(Test-Path -LiteralPath $tempPath){Remove-Item -LiteralPath $tempPath -Force}
+            [System.IO.Compression.ZipFile]::CreateFromDirectory(
+                $SourceDir,$tempPath,[System.IO.Compression.CompressionLevel]::Optimal,$false)
+
+            $archive=[System.IO.Compression.ZipFile]::OpenRead($tempPath)
+            try{
+                $names=@($archive.Entries | ForEach-Object {$_.FullName})
+                if($archive.Entries.Count -lt $required.Count){throw "archive has too few entries: $($archive.Entries.Count)"}
+                foreach($name in $required){
+                    if($names -notcontains $name){throw "archive is missing required evidence: $name"}
+                }
+            }finally{
+                if($null -ne $archive){$archive.Dispose()}
+            }
+
+            Move-Item -LiteralPath $tempPath -Destination $DestinationPath -Force
+            if(-not (Test-Path -LiteralPath $DestinationPath)){throw 'verified archive was not published'}
+            if((Get-Item -LiteralPath $DestinationPath).Length -le 0){throw 'verified archive is empty'}
+            return
+        }catch{
+            $lastError=$_
+            Start-Sleep -Milliseconds (250*$attempt)
+        }
+    }
+
+    throw "Could not create and verify profile ZIP after 3 attempts: $lastError"
+}
+
+$zipName=(Split-Path -Leaf $ProfileDir)+'.zip'
+$zipPath=Join-Path $GameDir $zipName
+try{
+    New-VerifiedProfileZip -SourceDir $ProfileDir -DestinationPath $zipPath
+}catch{
+    "ZIP creation failed: $_" | Set-Content -LiteralPath (Join-Path $ProfileDir 'ZIP-ERROR.txt') -Encoding UTF8
+    Write-Host "ZIP CREATION FAILED. Raw profile remains at: $ProfileDir" -ForegroundColor Red
+    Write-Host "$_" -ForegroundColor Red
+    Read-Host 'Press Enter to close'
+    exit 2
+}
 Write-Host ''
 Write-Host 'P8U1 profile complete. Your normal settings have been restored.' -ForegroundColor Green
-Write-Host "Upload this ZIP to ChatGPT: $zipPath" -ForegroundColor Cyan
+Write-Host "Verified ZIP created beside the launcher: $zipPath" -ForegroundColor Cyan
 try{Start-Process explorer.exe -ArgumentList "/select,`"$zipPath`""}catch{}
 Read-Host 'Press Enter to close'
