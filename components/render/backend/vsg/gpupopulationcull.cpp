@@ -1,6 +1,6 @@
 #include "gpupopulationcull.hpp"
 
-#include <vsg/commands/BindDescriptorSet.h>
+#include <vsg/state/BindDescriptorSet.h>
 #include <vsg/commands/BindIndexBuffer.h>
 #include <vsg/commands/Dispatch.h>
 #include <vsg/commands/PipelineBarrier.h>
