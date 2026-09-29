@@ -1,0 +1,41 @@
+name: Phase 9 exact source and SDK snapshot
+on:
+  push:
+    branches: [optimizedmw/phase9-source-work]
+    paths: [.github/workflows/phase9-source-snapshot.yml]
+permissions:
+  contents: read
+jobs:
+  Snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3d80eb3910b1a3b16db2be3ba05fe2b770ff29e3
+      - name: Export pinned source without user data
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 3d80eb3910b1a3b16db2be3ba05fe2b770ff29e3
+          mkdir -p snapshot
+          git archive --format=tar.gz HEAD > snapshot/source.tar.gz
+          git cat-file commit HEAD > snapshot/commit.raw
+          git rev-parse HEAD HEAD^{tree} > snapshot/identity.txt
+          git ls-tree -r HEAD > snapshot/tree.txt
+      - name: Export native compilation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libopenscenegraph-dev libglm-dev libmygui-dev libbullet-dev librecast-dev libluajit-5.1-dev libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libopenal-dev libboost-all-dev libvulkan-dev
+          packages='libopenscenegraph-dev libopenscenegraph161 libopenthreads-dev libopenthreads21 libglm-dev libmygui-dev libbullet-dev librecast-dev libluajit-5.1-dev libluajit-5.1-2 libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libopenal-dev libvulkan-dev'
+          dpkg-query -L $packages | while read -r path; do test ! -f "$path" || printf '%s\n' "$path"; done | sort -u > snapshot/sdk-files.txt
+          tar -czhf snapshot/sdk.tar.gz --files-from=snapshot/sdk-files.txt
+          dpkg-query -W $packages > snapshot/sdk-versions.txt
+          cd snapshot
+          sha256sum source.tar.gz commit.raw tree.txt sdk.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Phase9-exact-source-sdk-3d80eb39
+          path: snapshot/
+          retention-days: 14
