@@ -41,6 +41,7 @@ FLAGS = {
     'queues': 'OPENMW_VK_PRODUCER_DIRTY_QUEUES',
     'supported-continuous': 'OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS',
     'gpu-tables': 'OPENMW_VK_GPU_SCENE_TABLES',
+    'gpu-cull-queue': 'OPENMW_VK_GPU_CULL_QUEUE',
     'gpu-cull-indirect': 'OPENMW_VK_GPU_CULL_INDIRECT',
     'shadow-record': 'OPENMW_VK_PARALLEL_SHADOW_RECORD',
     # Process-local diagnostic, not a renderer repair or a global RTSS change.
