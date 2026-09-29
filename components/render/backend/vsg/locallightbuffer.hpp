@@ -57,6 +57,10 @@ namespace RenderVsg
     {
         RenderCore::WorldEpoch worldEpoch;
         RenderCore::RenderWorldRevision worldRevision;
+        // Non-zero only for the P2 exact-delta backend. This serial changes
+        // exclusively when an authoritative light batch commits, so unrelated
+        // world revisions do not invalidate an already packed light buffer.
+        std::uint64_t sourceSerial = 0;
         glm::dvec3 coordinateOrigin{ 0.0 };
         std::vector<PackedLocalLightEntry> lights;
         LocalLightBufferStatus status = LocalLightBufferStatus::InvalidWorldPlan;
