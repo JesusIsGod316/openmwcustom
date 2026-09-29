@@ -187,10 +187,10 @@ namespace MWSound
         if (mWarmQueue)
         {
             const auto stats = mWarmQueue->stats();
-            Log(Debug::Info) << "P8U1 sound warming shutdown snapshot: accepted=" << stats.accepted
-                << " processed=" << stats.processed << " skipped=" << stats.skipped
-                << " failed=" << stats.failed << " pending=" << stats.pending
-                << " dropped=" << stats.dropped << " peak=" << stats.peakPending;
+            Log(Debug::Info) << "P8U1 sound warming shutdown snapshot: accepted=" + std::to_string(stats.accepted)
+                + " processed=" + std::to_string(stats.processed) + " skipped=" + std::to_string(stats.skipped)
+                + " failed=" + std::to_string(stats.failed) + " pending=" + std::to_string(stats.pending)
+                + " dropped=" + std::to_string(stats.dropped) + " peak=" + std::to_string(stats.peakPending);
         }
         mWarmQueue.reset(); // join before VFS/cache/output lifetimes end
         SoundManager::clear();
@@ -1126,7 +1126,7 @@ namespace MWSound
             return;
         mWarmStoreQueued = true;
         Log(Debug::Info) << "P8U1 sound warming enabled: bounded loading-time discovery; head cache MiB="
-            << Settings::sound().mHeadCacheSize.get();
+            + std::to_string(Settings::sound().mHeadCacheSize.get());
         try
         {
             mWarmQueue = std::make_unique<WarmQueue>([this](const WarmQueue::Item& item) {
