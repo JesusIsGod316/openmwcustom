@@ -24,6 +24,19 @@ jobs:
           git ls-tree -r HEAD > /tmp/phase9-source/BLOBS.txt
           git archive --format=tar.gz HEAD > /tmp/phase9-source/source.tar.gz
           sha256sum /tmp/phase9-source/source.tar.gz > /tmp/phase9-source/SHA256SUMS.txt
+      - name: Preserve project-pinned SDL3 headers for production translation units
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDL_COMMIT=8e37db5e797b6167f3a00d697d816a684bd259c7
+          git init /tmp/phase9-sdl
+          git -C /tmp/phase9-sdl remote add origin https://github.com/libsdl-org/SDL.git
+          git -C /tmp/phase9-sdl fetch --depth 1 origin "$SDL_COMMIT"
+          git -C /tmp/phase9-sdl checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/phase9-sdl rev-parse HEAD)" = "$SDL_COMMIT"
+          git -C /tmp/phase9-sdl archive --format=tar.gz HEAD include > /tmp/phase9-source/sdl3-headers.tar.gz
+          echo "$SDL_COMMIT" > /tmp/phase9-source/SDL-COMMIT.txt
+          sha256sum /tmp/phase9-source/sdl3-headers.tar.gz >> /tmp/phase9-source/SHA256SUMS.txt
       - name: Verify launcher report and real archive creation
         shell: pwsh
         run: ./tools/optimizedmw/p8u1/launcher-tests.ps1
