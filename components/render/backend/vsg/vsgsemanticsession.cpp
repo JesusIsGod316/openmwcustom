@@ -32,10 +32,21 @@ namespace RenderVsg
     {
         if (!mBootstrap)
             throw std::runtime_error("VSG semantic session bootstrap returned no runtime");
+
+        if (Misc::environmentFlag<"OPENMW_VK_GPU_SCENE_TABLES">())
+        {
+            mBootstrap->renderer().resetGpuSceneTables(mWorld);
+            mPublisher.setAppliedObserver([this](const RenderCore::RenderWorldUpdateBatch& batch,
+                                             const RenderCore::RenderWorld& world) {
+                if (mBootstrap)
+                    mBootstrap->renderer().applyWorldUpdateBatch(world, batch);
+            });
+        }
     }
 
     VsgSemanticSession::~VsgSemanticSession()
     {
+        mPublisher.setAppliedObserver({});
         waitIdle();
     }
 
@@ -126,6 +137,8 @@ namespace RenderVsg
             mLastDiagnostic = "semantic world epoch exhausted during reset";
             return false;
         }
+        if (Misc::environmentFlag<"OPENMW_VK_GPU_SCENE_TABLES">())
+            mBootstrap->renderer().resetGpuSceneTables(mWorld);
         mLastDiagnostic.clear();
         return true;
     }
