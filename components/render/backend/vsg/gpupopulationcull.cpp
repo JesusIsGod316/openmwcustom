@@ -217,6 +217,51 @@ namespace RenderVsg
             return true;
         }
 
+        [[nodiscard]] bool compactPopulationSafe(
+            const RenderCore::RenderWorld& world, const StaticPopulationPlan& plan) noexcept
+        {
+            // Atomic compaction changes visible instance order. Keep P3A's
+            // placement-ordered command stream for any draw whose result can
+            // depend on submission order.
+            for (const StaticDrawPlan& draw : plan.asset.draws)
+            {
+                const RenderCore::MaterialRecord* material = world.get(draw.material);
+                if (!material || material->alphaBlendEnabled || material->decal
+                    || material->stencil.enabled || !material->depthWrite)
+                    return false;
+            }
+            return true;
+        }
+
+        [[nodiscard]] bool packCompactPlacement(vsg::vec4Array& packed, std::size_t index,
+            const AssetBounds& asset, const RenderCore::PopulationInstanceRecord& placement,
+            const RenderCore::WorldPosition& origin)
+        {
+            const std::size_t base = index * 6u;
+            auto boundsAndLod = vsg::vec4Array::create(3);
+            if (!packPlacement(*boundsAndLod, 0, asset, placement))
+                return false;
+            packed.set(base + 0u, (*boundsAndLod)[0]);
+            packed.set(base + 1u, (*boundsAndLod)[1]);
+            packed.set(base + 2u, (*boundsAndLod)[2]);
+
+            const glm::dvec3 relative = placement.transform.translation - origin;
+            const auto finiteFloat = [](double value) {
+                return std::isfinite(value)
+                    && value >= -static_cast<double>(std::numeric_limits<float>::max())
+                    && value <= static_cast<double>(std::numeric_limits<float>::max());
+            };
+            if (!finiteFloat(relative.x) || !finiteFloat(relative.y) || !finiteFloat(relative.z))
+                return false;
+            packed.set(base + 3u, vsg::vec4(static_cast<float>(relative.x),
+                static_cast<float>(relative.y), static_cast<float>(relative.z), 0.0f));
+            packed.set(base + 4u, vsg::vec4(placement.transform.rotation.x, placement.transform.rotation.y,
+                placement.transform.rotation.z, placement.transform.rotation.w));
+            packed.set(base + 5u, vsg::vec4(
+                placement.transform.scale.x, placement.transform.scale.y, placement.transform.scale.z, 0.0f));
+            return true;
+        }
+
         void collectDraws(vsg::Group& group, std::vector<vsg::VertexIndexDraw*>& draws)
         {
             for (auto& child : group.children)
