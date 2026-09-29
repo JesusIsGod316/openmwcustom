@@ -1,0 +1,29 @@
+name: Phase 9 pinned SDL3 headers
+on:
+  push:
+    branches: [optimizedmw/phase9-source-work]
+    paths: [.github/workflows/phase9-sdl-sdk.yml]
+permissions:
+  contents: read
+jobs:
+  Export:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Obtain the existing project SDL revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init sdk
+          git -C sdk remote add origin https://github.com/libsdl-org/SDL.git
+          git -C sdk fetch --depth=1 origin 8e37db5e797b6167f3a00d697d816a684bd259c7
+          git -C sdk checkout --detach FETCH_HEAD
+          test "$(git -C sdk rev-parse HEAD)" = 8e37db5e797b6167f3a00d697d816a684bd259c7
+          mkdir export
+          tar -czf export/SDL3-headers.tar.gz -C sdk include
+          git -C sdk rev-parse HEAD > export/SDL3-identity.txt
+          sha256sum export/SDL3-headers.tar.gz > export/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Phase9-SDL3-8e37db5e
+          path: export/
+          retention-days: 14
