@@ -1,0 +1,35 @@
+name: OptimizedMW Phase 9 native development
+on:
+  push:
+    branches: [optimizedmw/phase9]
+    paths: [.github/workflows/optimizedmw-phase9-native.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  SourceAndLauncher:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Record exact source snapshot for reproducible local work
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/phase9-source
+          git rev-parse HEAD > /tmp/phase9-source/COMMIT.txt
+          git rev-parse HEAD^{tree} > /tmp/phase9-source/TREE.txt
+          git ls-tree -r HEAD > /tmp/phase9-source/BLOBS.txt
+          git archive --format=tar.gz HEAD > /tmp/phase9-source/source.tar.gz
+          sha256sum /tmp/phase9-source/source.tar.gz > /tmp/phase9-source/SHA256SUMS.txt
+      - name: Verify launcher report and real archive creation
+        shell: pwsh
+        run: ./tools/optimizedmw/p8u1/launcher-tests.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Phase9-source-${{ github.sha }}
+          path: /tmp/phase9-source/
+          retention-days: 30
