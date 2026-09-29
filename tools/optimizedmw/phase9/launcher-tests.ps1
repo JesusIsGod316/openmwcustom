@@ -116,8 +116,11 @@ try{
     @('frame,dlss_ready','1,0') | Set-Content -LiteralPath (Join-Path $temp 'p9-temporal-inputs.csv')
     @('context,gl_vulkan_bridge_candidate','0,1') | Set-Content -LiteralPath (Join-Path $temp 'p9-dlss-capabilities.csv')
     $goodTemporal=Test-Phase9TemporalCapture -ProfileDir $temp -TemporalRequested $true
-    if($goodTemporal.valid_temporal_capture -ne $true -or $goodTemporal.temporal_input_rows -ne 1
-        -or $goodTemporal.interop_capability_rows -ne 1){throw 'Complete temporal capture rejected'}
+    if(($goodTemporal.valid_temporal_capture -ne $true) -or
+       ($goodTemporal.temporal_input_rows -ne 1) -or
+       ($goodTemporal.interop_capability_rows -ne 1)){
+        throw 'Complete temporal capture rejected'
+    }
     @('frame,dlss_ready','1,1') | Set-Content -LiteralPath (Join-Path $temp 'p9-temporal-inputs.csv')
     $badTemporal=Test-Phase9TemporalCapture -ProfileDir $temp -TemporalRequested $true
     if($badTemporal.valid_temporal_capture -ne $false -or $badTemporal.unexpected_dlss_ready_rows -ne 1){
