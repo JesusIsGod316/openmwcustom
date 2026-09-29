@@ -48,6 +48,10 @@ namespace RenderVsg
             std::uint32_t indirectViewId = 0;
             vsg::ref_ptr<vsg::BufferInfo> indirect;
             std::uint32_t indirectDrawCount = 0;
+            bool compacted = false;
+            vsg::ref_ptr<vsg::BufferInfo> compactTranslations;
+            vsg::ref_ptr<vsg::BufferInfo> compactRotations;
+            vsg::ref_ptr<vsg::BufferInfo> compactScales;
 
             void compile(vsg::Context& context) override
             {
@@ -82,21 +86,43 @@ namespace RenderVsg
             {
                 const auto& data = mVulkanData[commandBuffer.deviceID];
                 VkCommandBuffer commands = commandBuffer;
-                vkCmdBindVertexBuffers(commands, firstBinding, static_cast<std::uint32_t>(data.vkBuffers.size()),
-                    data.vkBuffers.data(), data.offsets.data());
-                vkCmdBindIndexBuffer(commands, indices->buffer->vk(commandBuffer.deviceID), indices->offset, mIndexType);
+                const bool indirectMain = commandBuffer.viewID == indirectViewId
+                    && indirect && indirect->buffer && indirectDrawCount != 0;
 
-                if (commandBuffer.viewID == indirectViewId && indirect && indirect->buffer
-                    && indirectDrawCount != 0)
+                if (indirectMain && compacted)
                 {
-                    vkCmdDrawIndexedIndirect(commands, indirect->buffer->vk(commandBuffer.deviceID),
-                        indirect->offset, indirectDrawCount, sizeof(VkDrawIndexedIndirectCommand));
+                    if (data.vkBuffers.size() < 4 || !compactTranslations || !compactTranslations->buffer
+                        || !compactRotations || !compactRotations->buffer || !compactScales
+                        || !compactScales->buffer)
+                        return;
+
+                    vkCmdBindVertexBuffers(commands, firstBinding, 1, data.vkBuffers.data(), data.offsets.data());
+                    const VkBuffer compactBuffers[] = {
+                        compactTranslations->buffer->vk(commandBuffer.deviceID),
+                        compactRotations->buffer->vk(commandBuffer.deviceID),
+                        compactScales->buffer->vk(commandBuffer.deviceID),
+                    };
+                    const VkDeviceSize compactOffsets[] = {
+                        compactTranslations->offset, compactRotations->offset, compactScales->offset,
+                    };
+                    vkCmdBindVertexBuffers(commands, firstBinding + 1, 3, compactBuffers, compactOffsets);
+                    if (data.vkBuffers.size() > 4)
+                        vkCmdBindVertexBuffers(commands, firstBinding + 4,
+                            static_cast<std::uint32_t>(data.vkBuffers.size() - 4),
+                            data.vkBuffers.data() + 4, data.offsets.data() + 4);
                 }
                 else
                 {
-                    vkCmdDrawIndexed(commands, indexCount, instanceCount, firstIndex,
-                        vertexOffset, firstInstance);
+                    vkCmdBindVertexBuffers(commands, firstBinding, static_cast<std::uint32_t>(data.vkBuffers.size()),
+                        data.vkBuffers.data(), data.offsets.data());
                 }
+
+                vkCmdBindIndexBuffer(commands, indices->buffer->vk(commandBuffer.deviceID), indices->offset, mIndexType);
+                if (indirectMain)
+                    vkCmdDrawIndexedIndirect(commands, indirect->buffer->vk(commandBuffer.deviceID),
+                        indirect->offset, indirectDrawCount, sizeof(VkDrawIndexedIndirectCommand));
+                else
+                    vkCmdDrawIndexed(commands, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
             }
 
         private:
