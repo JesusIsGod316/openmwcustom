@@ -1,0 +1,93 @@
+name: OptimizedMW Phase 9 verified source publication
+on:
+  push:
+    branches: [optimizedmw/phase9-publish-20260929]
+    paths: [.github/workflows/phase9-publish-source.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  Publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconstruct the exact locally compiled source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y zstd
+          mkdir -p "$RUNNER_TEMP/phase9-publication"
+          cp tools/optimizedmw/phase9-publication/manifest.json "$RUNNER_TEMP/phase9-publication/"
+          python - <<'PY'
+          import base64, hashlib, json, os, subprocess
+          from pathlib import Path
+          src = Path('tools/optimizedmw/phase9-publication')
+          out = Path(os.environ['RUNNER_TEMP']) / 'phase9-publication'
+          m = json.loads((out / 'manifest.json').read_text())
+          assert m['base'] == '8d2ceac87eb263bc4c49dddc257abe1b84b35ef0'
+          dictionary = b''.join(subprocess.check_output(['git', 'show', m['base'] + ':' + p]) for p in m['dictionary_paths'])
+          assert hashlib.sha256(dictionary).hexdigest() == m['dictionary_sha256'], 'dictionary differs'
+          (out / 'dictionary.bin').write_bytes(dictionary)
+          text = ''.join((src / p).read_text().strip() for p in m['parts'])
+          payload = base64.b64decode(text, validate=True)
+          actual = hashlib.sha256(payload).hexdigest()
+          print('Payload:', len(payload), actual)
+          assert actual == m['payload_sha256'], 'transport differs; do not publish'
+          (out / 'patch.zstd').write_bytes(payload)
+          subprocess.run(['zstd', '-q', '-d', '-D', str(out/'dictionary.bin'), str(out/'patch.zstd'), '-o', str(out/'source.patch')], check=True)
+          patch = (out / 'source.patch').read_bytes()
+          assert hashlib.sha256(patch).hexdigest() == m['patch_sha256'], 'patch differs'
+          print('Verified exact source patch:', len(patch), m['patch_sha256'])
+          PY
+      - name: Materialize production files on the exact current branch base
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=8d2ceac87eb263bc4c49dddc257abe1b84b35ef0
+          CURRENT=$(git ls-remote origin refs/heads/optimizedmw/phase9 | cut -f1)
+          test "$CURRENT" = "$BASE"
+          git checkout --detach "$BASE"
+          test "$(git rev-parse HEAD^{tree})" = d1b89259d824e9529373ddc369490a8de1262235
+          git apply --check --index "$RUNNER_TEMP/phase9-publication/source.patch"
+          git apply --index "$RUNNER_TEMP/phase9-publication/source.patch"
+          git diff --cached --check
+          python - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          out = Path(os.environ['RUNNER_TEMP']) / 'phase9-publication'
+          m = json.loads((out/'manifest.json').read_text())
+          paths = subprocess.check_output(['git','diff','--cached','--name-only']).decode().splitlines()
+          assert set(paths) == set(m['paths']) and len(paths) == 34, 'changed path set differs'
+          for p, expected in m['paths'].items():
+              assert hashlib.sha256(Path(p).read_bytes()).hexdigest() == expected, 'file differs: ' + p
+          tree = subprocess.check_output(['git','write-tree']).decode().strip()
+          assert tree == m['tree'], 'complete source tree differs'
+          (out/'TREE.txt').write_text(tree+'\n')
+          print('All 34 production files and complete tree verified:', tree)
+          PY
+          for p in gl-p3 gl-p4 gl-p6 gl-p7 gl-p8 gl-p8g2 gl-p8g3 gl-p8g4 p8u1 p8g5 phase9; do python tools/optimizedmw/$p/source-contract.py; done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'OptimizedMW Phase 9: private animated VBO refresh, draw-state attribution, game motion pass and reliable profile ZIPs'
+          git push origin HEAD:refs/heads/optimizedmw/phase9
+          git rev-parse HEAD > "$RUNNER_TEMP/phase9-publication/COMMIT.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/phase9-publication/source.tar.gz"
+          sha256sum "$RUNNER_TEMP/phase9-publication/source.tar.gz" > "$RUNNER_TEMP/phase9-publication/SOURCE-SHA256.txt"
+          cat "$RUNNER_TEMP/phase9-publication/COMMIT.txt" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Production source published. Full Windows build and hardware validation remain required.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Phase9-source-publication
+          path: |
+            ${{ runner.temp }}/phase9-publication/manifest.json
+            ${{ runner.temp }}/phase9-publication/source.patch
+            ${{ runner.temp }}/phase9-publication/COMMIT.txt
+            ${{ runner.temp }}/phase9-publication/TREE.txt
+            ${{ runner.temp }}/phase9-publication/source.tar.gz
+            ${{ runner.temp }}/phase9-publication/SOURCE-SHA256.txt
+          retention-days: 30
