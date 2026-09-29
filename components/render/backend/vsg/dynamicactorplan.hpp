@@ -1,6 +1,7 @@
 #ifndef OPENMW_COMPONENTS_RENDER_BACKEND_VSG_DYNAMICACTORPLAN_H
 #define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_DYNAMICACTORPLAN_H
 
+#include "gpuscenetables.hpp"
 #include "staticassetplan.hpp"
 #include "staticworldplan.hpp"
 
@@ -294,8 +295,9 @@ namespace RenderVsg
     {
     public:
         std::size_t rebuilt = 0, reused = 0;
-        const PersistentActorWorldPlan& prepare(
-            const RenderCore::RenderWorld& world, StaticPlanOptions options = {}, std::uint64_t sourceSerial = 0)
+        const PersistentActorWorldPlan& prepare(const RenderCore::RenderWorld& world,
+            StaticPlanOptions options = {}, std::uint64_t sourceSerial = 0,
+            const GpuSceneTables* sceneTables = nullptr)
         {
             options.includeDeformableMeshes = true;
             rebuilt = reused = 0;
@@ -316,8 +318,14 @@ namespace RenderVsg
             std::unordered_map<std::uint64_t, std::shared_ptr<const DynamicActorPlan>> previous;
             if (mSnapshot.epoch == world.epoch() && mSnapshot.options == options)
                 for (const auto& actor : mSnapshot.actors) previous.emplace(key(actor->instance), actor);
-            world.forEachInstance([&](RenderCore::InstanceHandle handle, const RenderCore::InstanceRecord& instance) {
-                if (!instance.skeleton) return;
+            const auto appendActor = [&](RenderCore::InstanceHandle handle) {
+                const RenderCore::InstanceRecord* instance = world.get(handle);
+                if (!instance || !instance->skeleton)
+                {
+                    if (next.diagnostic.empty())
+                        next.diagnostic = "P2 actor index referenced a missing or non-actor instance";
+                    return;
+                }
                 const auto found = previous.find(key(handle));
                 if (found != previous.end() && dynamicActorPlanCurrent(world, *found->second))
                 { ++reused; next.actors.push_back(found->second); return; }
@@ -331,7 +339,13 @@ namespace RenderVsg
                 }
                 actor->program = RenderCore::ActorProgram::bind(world, actor->model, actor->skeleton);
                 next.actors.push_back(std::make_shared<const DynamicActorPlan>(std::move(*actor)));
-            });
+            };
+            if (sceneTables && sourceSerial != 0 && sceneTables->current(world))
+                sceneTables->forEachActorInstance(appendActor);
+            else
+                world.forEachInstance([&](RenderCore::InstanceHandle handle, const RenderCore::InstanceRecord& instance) {
+                    if (instance.skeleton) appendActor(handle);
+                });
             mSnapshot = std::move(next);
             return mSnapshot;
         }
