@@ -172,9 +172,6 @@ namespace RenderVsg
                     break;
             }
             if (!valid)
-                    break;
-            }
-            if (!valid)
             {
                 mHealthy = false;
                 return false;
