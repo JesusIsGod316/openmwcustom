@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_VSGRUNTIMEHOST_H
 
 #include "gpuscenetables.hpp"
+#include "gpupopulationcull.hpp"
 #include "framecamera.hpp"
 #include "framegpuprofile.hpp"
 #include <components/debug/runtimediagnostics.hpp>
@@ -186,6 +187,9 @@ namespace RenderVsg
             vsg::ref_ptr<vsg::Switch> visibility;
             vsg::ref_ptr<vsg::Group> placementFreeAsset;
             std::vector<Placement> placements;
+            // P3A main-view compute commands. Other view IDs retain direct
+            // instanced draws inside visibility, so shared-scene semantics stay exact.
+            vsg::ref_ptr<vsg::Group> gpuCullCompute;
         };
         struct WaterViewRuntime
         {
@@ -272,6 +276,12 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::Group> mSceneRoot;
         vsg::ref_ptr<vsg::Switch> mSceneVisibility;
         vsg::ref_ptr<vsg::Group> mStaticRoot;
+        // Stable P3 compute holder recorded immediately before the main scene.
+        // Population residents publish/retire their compute graphs with the same
+        // generation as their graphics graph.
+        vsg::ref_ptr<vsg::Group> mGpuPopulationCullRoot;
+        vsg::ref_ptr<vsg::vec4Array> mGpuPopulationCullViewData;
+        bool mGpuPopulationCullEnabled = false;
         // Stable holder attached to the shared scene plus separately-owned published
         // dynamic content. Replacement never mutates mSceneRoot child ordering and
         // the old generation stays strongly owned through frame-safe retirement.
