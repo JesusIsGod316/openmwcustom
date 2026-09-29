@@ -760,6 +760,7 @@ namespace RenderVsg
 
         std::vector<StaticPopulationResident> populationReplacements;
         std::size_t placementNodesReused = 0, placementNodesBuilt = 0;
+        std::size_t gpuCullGroups = 0, gpuCullPlacements = 0, gpuIndirectCommands = 0;
         const bool placementFrustum = mNativeFrustumEnabled
             && Misc::environmentFlag<"OPENMW_VK_PLACEMENT_FRUSTUM">();
         populationReplacements.reserve(populationMutation.upserts.size());
@@ -824,6 +825,26 @@ namespace RenderVsg
             }
             if (!reuseAsset && Misc::environmentFlag<"OPENMW_VK_RESOURCE_INVENTORIES">())
                 realized.root = sealPipelineInventory(realized.root);
+
+            GpuPopulationCullBuild gpuCull;
+            std::string gpuCullFallback;
+            if (mGpuPopulationCullEnabled && !requiresIndividualPlacement)
+            {
+                gpuCull = enableGpuPopulationCull(world, plan, *realized.root,
+                    *mWindow->getOrCreateDevice(), mView->viewID,
+                    mGpuPopulationCullViewData, gpuCullFallback);
+                if (gpuCull.active)
+                {
+                    ++gpuCullGroups;
+                    gpuCullPlacements += gpuCull.stats.placements;
+                    gpuIndirectCommands += gpuCull.stats.indirectCommands;
+                }
+                else if (!gpuCullFallback.empty() && Debug::GameplayDiagnostics::sampling())
+                    Debug::GameplayDiagnostics::recordEvent("p3_gpu_cull_fallback", {
+                        {"reason", gpuCullFallback},
+                        {"placements", std::to_string(plan.placements.size())}});
+            }
+
             auto group = vsg::Group::create();
             if (!requiresIndividualPlacement)
             {
@@ -874,9 +895,18 @@ namespace RenderVsg
                 ? "incremental VSG population model '" + model->sourceIdentity + "'"
                 : "incremental VSG population model";
             subject += " with " + std::to_string(plan.placements.size()) + " placements";
-            if (!reuseAsset && !prepareGraph(group, subject))
+            if (!reuseAsset)
             {
-                return false;
+                vsg::ref_ptr<vsg::Node> compileRoot = group;
+                if (gpuCull.active)
+                {
+                    auto package = vsg::Group::create();
+                    package->addChild(group);
+                    package->addChild(gpuCull.compute);
+                    compileRoot = package;
+                }
+                if (!prepareGraph(std::move(compileRoot), subject))
+                    return false;
             }
             auto visibility = vsg::Switch::create();
             if (mNativeFrustumEnabled)
@@ -906,7 +936,8 @@ namespace RenderVsg
             else visibility->addChild(vsg::MASK_ALL, std::move(group));
             populationReplacements.push_back({ std::move(visibility),
                 persistentPlacements && requiresIndividualPlacement ? realized.root : vsg::ref_ptr<vsg::Group>{},
-                std::move(placementResidents) });
+                std::move(placementResidents),
+                gpuCull.active ? std::move(gpuCull.compute) : vsg::ref_ptr<vsg::Group>{} });
         }
 
         if (!pendingCompile->children.empty())
