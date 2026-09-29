@@ -439,6 +439,7 @@ finally{
 
 try{
     $traceStatus=Test-Phase9TraceCapture -ProfileDir $ProfileDir -TraceRequested ($mode.Trace -eq '1')
+    $temporalStatus=Test-Phase9TemporalCapture -ProfileDir $ProfileDir -TemporalRequested ($mode.Temporal -eq '1')
     $zip=Complete-Phase9Profile -ProfileDir $ProfileDir -GameDir $GameDir
     Write-Host ''
     if($restoreVerified){Write-Host 'Your normal settings have been restored.' -ForegroundColor Green}
