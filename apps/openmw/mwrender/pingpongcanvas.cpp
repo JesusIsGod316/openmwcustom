@@ -13,6 +13,7 @@
 #include <components/stereo/multiview.hpp>
 #include <components/stereo/stereomanager.hpp>
 
+#include <osg/GLExtensions>
 #include <osg/Texture2DArray>
 
 #include "postprocessor.hpp"
