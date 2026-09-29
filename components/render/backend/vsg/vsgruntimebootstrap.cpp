@@ -5,6 +5,7 @@
 
 #include <vsg/app/WindowTraits.h>
 
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -107,6 +108,11 @@ namespace RenderVsg
 
             auto traits = vsg::WindowTraits::create(options.width, options.height, options.title);
             traits->vulkanVersion = VK_API_VERSION_1_2;
+            // P3 dispatches visibility work on the same ordered queue as main-view
+            // rendering. Ask VSG to select a present-capable family that supports
+            // both graphics and compute before the physical device is chosen.
+            if (std::getenv("OPENMW_VK_GPU_CULL_INDIRECT"))
+                traits->queueFlags |= VK_QUEUE_COMPUTE_BIT;
             // Make the CP4F display-transfer contract explicit instead of
             // inheriting a VSG-version default. UI and ordinary color textures
             // are sampled into linear space and the swapchain owns the final
