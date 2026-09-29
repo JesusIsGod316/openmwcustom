@@ -118,57 +118,60 @@ namespace RenderVsg
                 std::visit([&](const auto& value) {
                     using T = std::decay_t<decltype(value)>;
                     if constexpr (std::is_same_v<T, RenderCore::CreateMesh>)
-                        valid = valid && upsert(Kind::Mesh, value.handle, world.get(value.handle), true);
+                    { ++mStats.creates; valid = valid && sync(Kind::Mesh, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateMesh>)
-                        valid = valid && upsert(Kind::Mesh, value.handle, world.get(value.handle), false);
+                    { ++mStats.updates; valid = valid && sync(Kind::Mesh, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireMesh>)
-                        valid = valid && retire(Kind::Mesh, value.handle);
+                    { ++mStats.retires; valid = valid && sync(Kind::Mesh, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateModel>)
-                        valid = valid && upsert(Kind::Model, value.handle, world.get(value.handle), true);
+                    { ++mStats.creates; valid = valid && sync(Kind::Model, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateModel>)
-                        valid = valid && upsert(Kind::Model, value.handle, world.get(value.handle), false);
+                    { ++mStats.updates; valid = valid && sync(Kind::Model, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireModel>)
-                        valid = valid && retire(Kind::Model, value.handle);
+                    { ++mStats.retires; valid = valid && sync(Kind::Model, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateMaterial>)
-                        valid = valid && upsert(Kind::Material, value.handle, world.get(value.handle), true);
+                    { ++mStats.creates; valid = valid && sync(Kind::Material, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateMaterial>)
-                        valid = valid && upsert(Kind::Material, value.handle, world.get(value.handle), false);
+                    { ++mStats.updates; valid = valid && sync(Kind::Material, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireMaterial>)
-                        valid = valid && retire(Kind::Material, value.handle);
+                    { ++mStats.retires; valid = valid && sync(Kind::Material, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateTexture>)
-                        valid = valid && upsert(Kind::Texture, value.handle, world.get(value.handle), true);
+                    { ++mStats.creates; valid = valid && sync(Kind::Texture, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateTexture>)
-                        valid = valid && upsert(Kind::Texture, value.handle, world.get(value.handle), false);
+                    { ++mStats.updates; valid = valid && sync(Kind::Texture, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireTexture>)
-                        valid = valid && retire(Kind::Texture, value.handle);
+                    { ++mStats.retires; valid = valid && sync(Kind::Texture, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateSkeleton>)
-                        valid = valid && upsert(Kind::Skeleton, value.handle, world.get(value.handle), true);
+                    { ++mStats.creates; valid = valid && sync(Kind::Skeleton, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateSkeleton>)
-                        valid = valid && upsert(Kind::Skeleton, value.handle, world.get(value.handle), false);
+                    { ++mStats.updates; valid = valid && sync(Kind::Skeleton, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireSkeleton>)
-                        valid = valid && retire(Kind::Skeleton, value.handle);
+                    { ++mStats.retires; valid = valid && sync(Kind::Skeleton, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateInstance>)
-                        valid = valid && upsert(Kind::Instance, value.handle, world.get(value.handle), true);
+                    { ++mStats.creates; valid = valid && sync(Kind::Instance, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateInstance>)
-                        valid = valid && upsert(Kind::Instance, value.handle, world.get(value.handle), false);
+                    { ++mStats.updates; valid = valid && sync(Kind::Instance, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::ReparentInstance>)
-                        valid = valid && upsert(Kind::Instance, value.handle, world.get(value.handle), false, true);
+                    { ++mStats.reparents; valid = valid && sync(Kind::Instance, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireInstance>)
-                        valid = valid && retire(Kind::Instance, value.handle);
+                    { ++mStats.retires; valid = valid && sync(Kind::Instance, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateChunk>)
-                        valid = valid && upsert(Kind::Chunk, value.handle, world.get(value.handle), true);
+                    { ++mStats.creates; valid = valid && sync(Kind::Chunk, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateChunk>)
-                        valid = valid && upsert(Kind::Chunk, value.handle, world.get(value.handle), false);
+                    { ++mStats.updates; valid = valid && sync(Kind::Chunk, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireChunk>)
-                        valid = valid && retire(Kind::Chunk, value.handle);
+                    { ++mStats.retires; valid = valid && sync(Kind::Chunk, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateLight>)
-                        valid = valid && upsert(Kind::Light, value.handle, world.get(value.handle), true);
+                    { ++mStats.creates; valid = valid && sync(Kind::Light, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateLight>)
-                        valid = valid && upsert(Kind::Light, value.handle, world.get(value.handle), false);
+                    { ++mStats.updates; valid = valid && sync(Kind::Light, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireLight>)
-                        valid = valid && retire(Kind::Light, value.handle);
+                    { ++mStats.retires; valid = valid && sync(Kind::Light, value.handle, world.get(value.handle)); }
                 }, operation);
                 if (!valid)
+                    break;
+            }
+            if (!valid)
                     break;
             }
             if (!valid)
@@ -222,45 +225,20 @@ namespace RenderVsg
         }
 
         template <class Handle, class Record>
-        [[nodiscard]] bool upsert(
-            Kind kind, Handle handle, const Record* record, bool create, bool reparent = false) noexcept
-        {
-            if (!handle.valid() || !record || !record->revision.valid())
-                return false;
-            auto& table = mTables[index(kind)];
-            if (handle.slot() >= table.size())
-                table.resize(static_cast<std::size_t>(handle.slot()) + 1);
-            Slot& slot = table[handle.slot()];
-            if (!create && (!slot.live || slot.generation != handle.generation()))
-                return false;
-            slot.generation = handle.generation();
-            slot.revision = record->revision;
-            slot.live = true;
-            mDirty[index(kind)].include(handle.slot());
-            if (create)
-                ++mStats.creates;
-            else if (reparent)
-                ++mStats.reparents;
-            else
-                ++mStats.updates;
-            return true;
-        }
-
-        template <class Handle>
-        [[nodiscard]] bool retire(Kind kind, Handle handle) noexcept
+        [[nodiscard]] bool sync(Kind kind, Handle handle, const Record* record) noexcept
         {
             if (!handle.valid())
                 return false;
             auto& table = mTables[index(kind)];
             if (handle.slot() >= table.size())
-                return false;
+                table.resize(static_cast<std::size_t>(handle.slot()) + 1);
             Slot& slot = table[handle.slot()];
-            if (!slot.live || slot.generation != handle.generation())
+            slot.generation = handle.generation();
+            slot.revision = record ? record->revision : RenderCore::ResourceRevision{};
+            slot.live = record != nullptr;
+            if (record && !record->revision.valid())
                 return false;
-            slot.live = false;
-            slot.revision = {};
             mDirty[index(kind)].include(handle.slot());
-            ++mStats.retires;
             return true;
         }
 
