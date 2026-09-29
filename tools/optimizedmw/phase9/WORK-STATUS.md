@@ -1,3 +1,46 @@
+# OptimizedMW Phase 9 telemetry + DLSS-input continuation (2026-09-29)
+
+Active staging branch: `optimizedmw/phase9-telemetry-dlss`.
+Parent: current `optimizedmw/phase9`.
+
+The user ROOT-CAUSE-TRACE capture established that dynamic_draw_wait is primarily
+downstream of draw-thread stalls. Large TerrainDrawable State::apply events are
+concentrated in RefractionCamera/SceneCam and include synchronous compressed
+texture realization. A persistent unnamed osg::Drawable also dominates many slow
+draw submissions. OPTIMIZED-TRACE separately crashed inside nvoglv64.dll while
+the new static actor-resource prewarm was enabled; that experiment is rejected
+for this continuation.
+
+## This continuation
+
+- Static actor-resource prewarm is removed from RigGeometry/MorphGeometry
+  production hooks and is not selectable by the launcher.
+- TerrainCompositeMapRenderer and its PRE_RENDER camera now have explicit
+  identities. Direct composite telemetry separates FBO setup, State::apply and
+  inner draw work, queue state, required work and yields.
+- Slow leaf rows retain node-path/owner identity, geometry size, camera class and
+  largest StateSet texture image paths/bytes. Camera totals cover scene,
+  refraction, reflection, shadow and terrain-composite views.
+- Selected GL hooks retain up to eight integral arguments and an in-memory
+  entered-call breadcrumb for crash-dump attribution. No GL waits/flushes were
+  added.
+- Existing asynchronous GPU timestamp telemetry is enabled in trace/temporal
+  launcher modes and now covers terrain composite work and the temporal motion
+  pass.
+- TemporalMotion publishes a consumer-ready frame: RG16F motion, current/
+  previous/inverse view-projection matrices, history/reset state, jitter
+  metadata and render/output extents.
+- p9-temporal-inputs.csv reports scene color/depth/motion/matrix readiness.
+  Dense dynamic actor/morph/grass motion remains false, so dlss_ready remains
+  false and scene jitter remains off. NGX/Streamline evaluation is not yet
+  integrated.
+
+This is a substantive diagnostic + temporal-input checkpoint, not a telemetry-
+only performance promotion and not a working DLSS release. Full Windows/package
+CI and user runtime validation are still required.
+
+---
+
 # Phase 9 root-cause and static-prewarm checkpoint (2026-09-29)
 
 Publication base: bb4876a6ea287745c8f535f5525c5381a631a24c.
