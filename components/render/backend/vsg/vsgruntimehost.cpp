@@ -192,9 +192,13 @@ namespace RenderVsg
 
         mGpuSceneTablesEnabled = std::getenv("OPENMW_VK_GPU_SCENE_TABLES") != nullptr;
         mGpuPopulationCullEnabled = std::getenv("OPENMW_VK_GPU_CULL_INDIRECT") != nullptr;
+        mGpuPopulationCompactEnabled = std::getenv("OPENMW_VK_GPU_CULL_COMPACT") != nullptr;
         if (mGpuPopulationCullEnabled && !mGpuSceneTablesEnabled)
             throw std::invalid_argument(
                 "OPENMW_VK_GPU_CULL_INDIRECT requires OPENMW_VK_GPU_SCENE_TABLES");
+        if (mGpuPopulationCompactEnabled && !mGpuPopulationCullEnabled)
+            throw std::invalid_argument(
+                "OPENMW_VK_GPU_CULL_COMPACT requires OPENMW_VK_GPU_CULL_INDIRECT");
         if (mGpuPopulationCullEnabled)
         {
             const auto traits = mWindow->traits();
@@ -760,7 +764,7 @@ namespace RenderVsg
 
         std::vector<StaticPopulationResident> populationReplacements;
         std::size_t placementNodesReused = 0, placementNodesBuilt = 0;
-        std::size_t gpuCullGroups = 0, gpuCullPlacements = 0, gpuIndirectCommands = 0;
+        std::size_t gpuCullGroups = 0, gpuCullPlacements = 0, gpuIndirectCommands = 0, gpuCompactGroups = 0;
         const bool placementFrustum = mNativeFrustumEnabled
             && Misc::environmentFlag<"OPENMW_VK_PLACEMENT_FRUSTUM">();
         populationReplacements.reserve(populationMutation.upserts.size());
@@ -832,10 +836,11 @@ namespace RenderVsg
             {
                 gpuCull = enableGpuPopulationCull(world, plan, *realized.root,
                     *mWindow->getOrCreateDevice(), mView->viewID,
-                    mGpuPopulationCullViewData, gpuCullFallback);
+                    mGpuPopulationCullViewData, mGpuPopulationCompactEnabled, gpuCullFallback);
                 if (gpuCull.active)
                 {
                     ++gpuCullGroups;
+                    gpuCompactGroups += gpuCull.stats.compacted ? 1u : 0u;
                     gpuCullPlacements += gpuCull.stats.placements;
                     gpuIndirectCommands += gpuCull.stats.indirectCommands;
                 }
@@ -1066,6 +1071,7 @@ namespace RenderVsg
                 {"nodes_built", std::to_string(placementNodesBuilt)},
                 {"resource_changes", std::to_string(resourceChanges)},
                 {"gpu_cull_groups", std::to_string(gpuCullGroups)},
+                {"gpu_compact_groups", std::to_string(gpuCompactGroups)},
                 {"gpu_cull_placements", std::to_string(gpuCullPlacements)},
                 {"gpu_indirect_commands", std::to_string(gpuIndirectCommands)}});
         mStaticSyncState.synchronized();
