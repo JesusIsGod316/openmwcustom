@@ -9,6 +9,7 @@ on:
       - vulkanmw/clockwork-p1b-postfx-boundary
       - vulkanmw/p2-gpu-tables-p1-repair
       - vulkanmw/p3-gpu-cull-indirect
+      - vulkanmw/p3b-compacted-indirect
 permissions:
   contents: read
 concurrency:
@@ -34,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$GITHUB_REF_NAME" in
-            vulkanmw/phase3c-producer-dirty-queues|vulkanmw/phase3c-supported-continuous-producers|vulkanmw/clockwork-p1-producers-postfx|vulkanmw/clockwork-p1b-postfx-boundary|vulkanmw/p2-gpu-tables-p1-repair|vulkanmw/p3-gpu-cull-indirect) ;;
+            vulkanmw/phase3c-producer-dirty-queues|vulkanmw/phase3c-supported-continuous-producers|vulkanmw/clockwork-p1-producers-postfx|vulkanmw/clockwork-p1b-postfx-boundary|vulkanmw/p2-gpu-tables-p1-repair|vulkanmw/p3-gpu-cull-indirect|vulkanmw/p3b-compacted-indirect) ;;
             *) echo "Unexpected producer branch: $GITHUB_REF_NAME" >&2; exit 1 ;;
           esac
           git merge-base --is-ancestor 348bfe6b087b7c8b83738e12a11a7e10f9e592ef HEAD
@@ -72,6 +73,7 @@ jobs:
           if test -f tools/vulkanmw/tests/test-p1-runtime-repairs.py; then python tools/vulkanmw/tests/test-p1-runtime-repairs.py; fi
           if test -f tools/vulkanmw/check-p2-gpu-tables.py; then python tools/vulkanmw/check-p2-gpu-tables.py; fi
           if test -f tools/vulkanmw/check-p3-gpu-cull.py; then python tools/vulkanmw/check-p3-gpu-cull.py; fi
+          if test -f tools/vulkanmw/check-p3b-compact.py; then python tools/vulkanmw/check-p3b-compact.py; fi
           python tools/vulkanmw/check-phase1-nif-compiler.py
           python tools/vulkanmw/check-phase2-static-world.py
           python tools/vulkanmw/check-phase3-controller-animation.py
@@ -291,14 +293,14 @@ jobs:
             "source_head=${{ needs.Source.outputs.source_head }}",
             "parent_checkpoint=348bfe6b087b7c8b83738e12a11a7e10f9e592ef",
             "renderer_test=Vulkan/VSG",
-            "runtime_substitution=producer dirty queues + persistent GPU tables + switchable P3 GPU population culling/indirect draws",
-            "candidate_control=OPENMW_VK_PRODUCER_DIRTY_QUEUES;OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS;OPENMW_VK_GPU_SCENE_TABLES;OPENMW_VK_GPU_CULL_INDIRECT",
+            "runtime_substitution=producer dirty queues + persistent GPU tables + P3 GPU culling/indirect + switchable P3B compacted transforms/commands",
+            "candidate_control=OPENMW_VK_PRODUCER_DIRTY_QUEUES;OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS;OPENMW_VK_GPU_SCENE_TABLES;OPENMW_VK_GPU_CULL_INDIRECT;OPENMW_VK_GPU_CULL_COMPACT",
             "launcher=START-VulkanMW-Test.bat",
             "status=build green only; hardware runtime acceptance pending"
           ) | Set-Content -LiteralPath "$stage/VULKANMW-PRODUCER-TEST.txt" -Encoding Ascii
           foreach ($required in @(
             "openmw.exe", "START-VulkanMW-Test.bat", "START-VulkanMW-Producer-Test.bat",
-            "START-VulkanMW-Supported-Producers-Test.bat", "START-VulkanMW-P2-Test.bat", "START-VulkanMW-P3-Test.bat", "START-VulkanMW-Play.bat",
+            "START-VulkanMW-Supported-Producers-Test.bat", "START-VulkanMW-P2-Test.bat", "START-VulkanMW-P3-Test.bat", "START-VulkanMW-P3B-Test.bat", "START-VulkanMW-Play.bat",
             "architecture-benchmark.py", "architecture-benchmark.lua", "gameplay-diagnostics.py", "diagnosticconfig.py",
             "tools/vulkanmw/run-producer-queues.py", "tools/vulkanmw/run-publication-cohort.py",
             "tools/vulkanmw/vulkan-profile.py", "tools/vulkanmw/vulkan-play.py",
