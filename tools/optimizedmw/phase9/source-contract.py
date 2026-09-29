@@ -86,6 +86,10 @@ def main() -> None:
     need('p9TemporalInputWriter()' in canvas and 'requiredForDlss' in canvas
          and 'status.denseDynamicMotion' in canvas,
          'DLSS input-readiness telemetry must fail closed until dense motion exists')
+    temporal_test = read('tools/optimizedmw/phase9/temporal-render-tests.cpp')
+    need('consumer-ready matrix/motion contract' in temporal_test
+         and 'consumerFrame(state->getContextID())' in temporal_test,
+         'consumer-frame runtime regression coverage missing')
     need('Debug::V36GpuProfiler::ScopedPass' in canvas and '"temporal/camera_motion"' in canvas,
          'nonblocking GPU timing for temporal input pass missing')
     need('luminancecalculator pingpongcanvas nisscaler temporalmotion' in read('apps/openmw/CMakeLists.txt'),
@@ -103,8 +107,11 @@ def main() -> None:
          'terrain composite state/draw attribution missing')
     gltrace = read('components/sceneutil/glcalltrace.hpp')
     need('std::array<std::uint64_t, 8> args' in gltrace and 'mBreadcrumbs' in gltrace
-         and '.gl-last.csv' in gltrace,
+         and 'breadcrumb(unsigned context)' in gltrace and '.gl-last.csv' in gltrace,
          'extended GL arguments/crash breadcrumb contract missing')
+    gltest = read('tools/optimizedmw/phase9/gl-hook-contract-tests.cpp')
+    need('active crash breadcrumb' in gltest and '8388608' in gltest and 'CompressedTexImage2D' in gltest,
+         'active breadcrumb/texture-upload argument regression coverage missing')
     for token in ('nodePathHash', 'ownerName', 'cameraBucket', 'texture0Bytes', 'camera_bucket='):
         need(token in trace, 'draw identity/camera/resource telemetry missing: ' + token)
 
