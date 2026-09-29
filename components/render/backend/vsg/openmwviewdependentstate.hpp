@@ -51,6 +51,8 @@ namespace RenderVsg
 
         [[nodiscard]] bool setLocalLights(LocalLightBufferPlan plan);
         [[nodiscard]] bool localLightsCurrent(const RenderCore::RenderWorld& world) const noexcept;
+        [[nodiscard]] bool localLightsCurrent(
+            const RenderCore::RenderWorld& world, std::uint64_t sourceSerial) const noexcept;
         void setRadiusFadeEnabled(bool enabled) noexcept { mRadiusFadeEnabled = enabled; }
         void setEnvironment(const RenderCore::FrameEnvironmentState& environment,
             const RenderCore::ProjectionState& projection) noexcept;
