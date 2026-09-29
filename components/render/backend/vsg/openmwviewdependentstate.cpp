@@ -179,6 +179,13 @@ namespace RenderVsg
         return localLightBufferPlanCurrent(world, mPlan);
     }
 
+    bool OpenMwViewDependentState::localLightsCurrent(
+        const RenderCore::RenderWorld& world, std::uint64_t sourceSerial) const noexcept
+    {
+        return sourceSerial != 0 && mPlan.ready() && mPlan.worldEpoch == world.epoch()
+            && mPlan.sourceSerial == sourceSerial;
+    }
+
     float OpenMwViewDependentState::evaluateLocalLightModulation(
         const PackedLocalLightEntry& entry, double simulationTime) const noexcept
     {
