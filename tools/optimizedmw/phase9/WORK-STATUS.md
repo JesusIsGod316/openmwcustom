@@ -34,6 +34,11 @@ for this continuation.
   Dense dynamic actor/morph/grass motion remains false, so dlss_ready remains
   false and scene jitter remains off. NGX/Streamline evaluation is not yet
   integrated.
+- Temporal modes also emit p9-dlss-capabilities.csv once per GL context. It
+  records GL_EXT_memory_object[_win32], GL_EXT_semaphore[_win32] and the actual
+  import/storage/wait/signal function pointers needed by the planned Vulkan
+  shared-image bridge. This is capability evidence only; it does not create a
+  Vulkan device or initialize NGX.
 
 This is a substantive diagnostic + temporal-input checkpoint, not a telemetry-
 only performance promotion and not a working DLSS release. Full Windows/package
