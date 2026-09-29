@@ -1,55 +1,53 @@
-OptimizedMW Phase 9 - root-cause capture and shared-static preparation
+OptimizedMW Phase 9 - root-cause telemetry + DLSS temporal-input continuation
 
 Extract into a NEW directory and use the one START-OptimizedMW-Test.bat.
 Your normal saves/mods remain in their existing locations.
 
-PRIMARY MENU
-1 REFERENCE: same P8U1 donor/resource foundation; old HITCH1 refresh off.
-2 OPTIMIZED: reference plus shared static rig/morph attribute/index precompile.
-3 ROOT-CAUSE-TRACE: reference plus draw/state/selected GL-call attribution.
-4 OPTIMIZED-TRACE: identical attribution plus static precompile.
-Use 3 first for the recurring hitch investigation, then 4 on the same route.
-Use untraced 1/2 for performance claims. Instrumentation has nonzero overhead.
-The static-prewarm mechanism has NOT been promoted by gameplay measurements.
+SAFE TEST MATRIX
+1 REFERENCE: unchanged P8U1/Phase 9 foundation.
+2 TEMPORAL-INPUTS: camera/static RG16F motion plus consumer-input telemetry.
+3 ROOT-CAUSE-TRACE: reference plus draw/state/selected-GL/composite attribution.
+4 TEMPORAL-TRACE: modes 2 and 3 together for one diagnostic capture.
+5 MOTION-VIEW: visualize the generated camera/static motion field.
+Type A for retained old HITCH1 diagnostic controls: 6 HITCH, 7 HITCH-TRACE.
 
-Type A for retained advanced controls: 5 TEMPORAL, 6 OPTIMIZED-TEMPORAL,
-7 MOTION-VIEW, 8 old HITCH, 9 old HITCH-TRACE, 10 HITCH-TEMPORAL.
-Temporal is still camera/static motion only, not correct dense actor/wind motion.
-Jitter stays off. DLSS/DLAA/frame generation are NOT implemented or selectable.
-No temporal input/rendered image behavior changed in this checkpoint.
+The static actor-resource prewarm experiment that crashed OPTIMIZED-TRACE is not
+selectable and is no longer wired into RigGeometry/MorphGeometry compile paths.
+Do not compare traced-mode FPS against normal gameplay: tracing has overhead.
 
 ROOT-CAUSE EVIDENCE
-p9-draw-phases.csv: slow leaf envelopes; matrices/state/draw/retire, camera,
-StateSet, drawable identity, names and steady-clock start time.
-*.frames.csv: ALL measured leaf contributions per frame, including cheap calls.
-*.gl.csv: selected slow OSG extension-dispatch calls, phase, arguments and time.
-*.gl-frames.csv and *.gl-totals.csv: sums/counts/maxima of selected calls.
-*.renderer.csv: renderer-entry CPU envelope (can include queue wait). The last
-observed leaf frame is not an assertion all outer work belongs to that frame.
-Check all status files, ROOT-CAUSE-CAPTURE.json, TEST_MODE.txt and exit status.
-Coverage/overflow failure is explicit. Direct core GL calls, renderstage work
-outside leaves, swap and driver internals are not magically split by these timers.
-Scopes overlap: do not sum outer/leaf/API times or subtract async GPU timings.
-Trace attachment now occurs before Viewer::realize; unsupported startup fails
-loudly instead of silently collecting zero visitors. Normal modes are unchanged.
+p9-draw-phases.csv records slow leaf matrices/state/draw/retire timing plus
+camera bucket, drawable/StateSet identity, node-path hash, nearest named owner,
+geometry size and the two largest Texture2D image identities for slow state work.
+Its status file also aggregates SceneCam, RefractionCamera, ReflectionCamera,
+ShadowCamera and TerrainCompositeMapCamera CPU envelopes across all leaves.
 
-OPTIMIZATION SCOPE
-Static prewarm touches only shared STATIC_DRAW buffers using the existing ICO
-context owner. No live pose evaluation, private VBO creation, display-list draw,
-new context, synchronization-barrier removal or first-use completeness claim.
-Per-backing 4 MiB / per-call 8 MiB admission bounds are not hard GL time limits.
-Counters in p9-static-prewarm.txt identify engagement, not GPU completion.
+p9-terrain-composite.csv directly measures TerrainCompositeMapRenderer work:
+queue state, required maps, composite drawables, FBO setup, State::apply, draw
+submission and cooperative yields. TerrainCompositeMapRenderer and its camera
+now have explicit identities. p9-gpu-passes.csv uses existing nonblocking GPU
+timestamp queries for named camera/pass timing.
 
-CULLING AND QUALITY
-Audit found existing whole-cell, per-object, paged-chunk and HIER-CULL coverage.
-No duplicate hierarchy or speculative actor culling has been installed. Existing
-main/shadow/reflection visibility rules, grass density and 3 x 2048 shadows at
-4096 distance remain. LOD2 and opaque shadow proxies remain off, not deleted.
+The selected GL trace now records up to eight integral call arguments. Compressed
+texture uploads therefore retain width/height/image-size fields where supplied by
+the OSG extension dispatch. p9-draw-phases.csv.gl-last.csv records each context's
+last normal-exit hook breadcrumb. An in-flight breadcrumb also remains in process
+memory if the driver crashes inside a wrapped call, for crash-dump inspection.
+This is NOT interception of every core OpenGL call or NVIDIA driver internals.
+
+DLSS INPUT PROGRESS
+Phase 9 now exposes a consumer-ready temporal frame containing the RG16F motion
+texture, current/previous/inverse view-projection matrices, reset/history state,
+jitter metadata and render/output extents. p9-temporal-inputs.csv records whether
+scene color, depth, motion, extents and this matrix contract are present.
+
+Dense dynamic motion for actors/morphs/grass is still false, so dlss_ready remains
+false by design. Scene jitter remains OFF and no NGX/Streamline evaluation is
+performed yet. Normal PostFX/NIS/presentation are unchanged. This checkpoint is
+progress toward DLSS/DLAA input correctness, not a working DLSS release. Frame
+generation remains out of scope.
 
 PACKAGING
-On exit, normal settings/environment are restored, coverage status is recorded,
-and a SHA256-verified RAW ZIP is created BEFORE the optional 30-second report.
-Report failure cannot remove that raw ZIP. ZIP appears beside openmw.exe; a
-protected folder falls back to the profile parent under Documents/My Games/OpenMW.
-Partial/crashed/invalid traces are still preserved and clearly marked. Keep the
-launcher open until it reports the final ZIP and selects it in Explorer.
+On exit the launcher restores settings/environment, records capture validity and
+creates a SHA256-verified RAW ZIP before the bounded offline report. Crashed or
+partial runs are still archived and explicitly marked rather than discarded.
