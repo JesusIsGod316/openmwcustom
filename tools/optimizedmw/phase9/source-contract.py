@@ -128,13 +128,18 @@ def main() -> None:
                   'phase9_dense_dynamic_motion=false', 'phase9_scene_jitter=false',
                   'phase9_static_prewarm=disabled_after_optimized_trace_driver_crash',
                   'phase9_temporal_contract=consumer_frame_v1',
-                  'Test-Phase9TraceCapture -ProfileDir'):
+                  'Test-Phase9TraceCapture -ProfileDir',
+                  'Test-Phase9TemporalCapture -ProfileDir'):
         need(token in launcher, 'missing actual launcher control/provenance: ' + token)
     need('$mode.Prewarm' not in launcher and 'OPENMW_P9_STATIC_PREWARM=$mode.Prewarm' not in launcher,
          'rejected prewarm must not be selectable from the shipped launcher')
     need(launcher.index('settings_restore_verified=$restoreVerified') < launcher.index('Complete-Phase9Profile -ProfileDir'),
          'restore settings before packaging')
     archive = read('tools/optimizedmw/phase9/OptimizedMW_ProfileArchive.ps1')
+    need('function Test-Phase9TemporalCapture' in archive
+         and 'unexpected_dlss_ready_rows' in archive
+         and 'p9-dlss-capabilities.csv' in archive,
+         'temporal capture validation/fail-closed readiness evidence missing')
     complete = archive.split('function Complete-Phase9Profile', 1)[1]
     need(complete.index('New-VerifiedProfileZip -SourceDir') < complete.index('Invoke-BoundedOfflineReport -ReportScript'),
          'a report must never block creation of the raw evidence archive')
