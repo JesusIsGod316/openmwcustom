@@ -85,6 +85,7 @@ namespace RenderVsg
             mWorldRevision = revision;
             mLastSequence = {};
             mLightSerial = 1;
+            mActorPlanSerial = 1;
             mHealthy = epoch.valid() && revision.valid();
             mStats = {};
         }
@@ -115,48 +116,49 @@ namespace RenderVsg
 
             bool valid = true;
             bool lightTouched = false;
+            bool actorPlanTouched = false;
             for (const RenderCore::RenderWorldUpdateOperation& operation : batch.operations())
             {
                 std::visit([&](const auto& value) {
                     using T = std::decay_t<decltype(value)>;
                     if constexpr (std::is_same_v<T, RenderCore::CreateMesh>)
-                    { ++mStats.creates; valid = valid && sync(Kind::Mesh, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.creates; valid = valid && sync(Kind::Mesh, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateMesh>)
-                    { ++mStats.updates; valid = valid && sync(Kind::Mesh, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.updates; valid = valid && sync(Kind::Mesh, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireMesh>)
-                    { ++mStats.retires; valid = valid && sync(Kind::Mesh, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.retires; valid = valid && sync(Kind::Mesh, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateModel>)
-                    { ++mStats.creates; valid = valid && sync(Kind::Model, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.creates; valid = valid && sync(Kind::Model, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateModel>)
-                    { ++mStats.updates; valid = valid && sync(Kind::Model, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.updates; valid = valid && sync(Kind::Model, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireModel>)
-                    { ++mStats.retires; valid = valid && sync(Kind::Model, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.retires; valid = valid && sync(Kind::Model, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateMaterial>)
-                    { ++mStats.creates; valid = valid && sync(Kind::Material, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.creates; valid = valid && sync(Kind::Material, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateMaterial>)
-                    { ++mStats.updates; valid = valid && sync(Kind::Material, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.updates; valid = valid && sync(Kind::Material, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireMaterial>)
-                    { ++mStats.retires; valid = valid && sync(Kind::Material, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.retires; valid = valid && sync(Kind::Material, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateTexture>)
-                    { ++mStats.creates; valid = valid && sync(Kind::Texture, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.creates; valid = valid && sync(Kind::Texture, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateTexture>)
-                    { ++mStats.updates; valid = valid && sync(Kind::Texture, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.updates; valid = valid && sync(Kind::Texture, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireTexture>)
-                    { ++mStats.retires; valid = valid && sync(Kind::Texture, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.retires; valid = valid && sync(Kind::Texture, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateSkeleton>)
-                    { ++mStats.creates; valid = valid && sync(Kind::Skeleton, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.creates; valid = valid && sync(Kind::Skeleton, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateSkeleton>)
-                    { ++mStats.updates; valid = valid && sync(Kind::Skeleton, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.updates; valid = valid && sync(Kind::Skeleton, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireSkeleton>)
-                    { ++mStats.retires; valid = valid && sync(Kind::Skeleton, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.retires; valid = valid && sync(Kind::Skeleton, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateInstance>)
-                    { ++mStats.creates; valid = valid && sync(Kind::Instance, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.creates; valid = valid && sync(Kind::Instance, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateInstance>)
-                    { ++mStats.updates; valid = valid && sync(Kind::Instance, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.updates; valid = valid && sync(Kind::Instance, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::ReparentInstance>)
-                    { ++mStats.reparents; valid = valid && sync(Kind::Instance, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.reparents; valid = valid && sync(Kind::Instance, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireInstance>)
-                    { ++mStats.retires; valid = valid && sync(Kind::Instance, value.handle, world.get(value.handle)); }
+                    { actorPlanTouched = true; ++mStats.retires; valid = valid && sync(Kind::Instance, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateChunk>)
                     { ++mStats.creates; valid = valid && sync(Kind::Chunk, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateChunk>)
@@ -188,6 +190,15 @@ namespace RenderVsg
                 }
                 ++mLightSerial;
             }
+            if (actorPlanTouched)
+            {
+                if (mActorPlanSerial == std::numeric_limits<std::uint64_t>::max())
+                {
+                    mHealthy = false;
+                    return false;
+                }
+                ++mActorPlanSerial;
+            }
             mLastSequence = batch.sequence();
             mWorldRevision = world.revision();
             return true;
@@ -203,6 +214,7 @@ namespace RenderVsg
         [[nodiscard]] RenderCore::RenderWorldRevision worldRevision() const noexcept { return mWorldRevision; }
         [[nodiscard]] RenderCore::UpdateSequence lastSequence() const noexcept { return mLastSequence; }
         [[nodiscard]] std::uint64_t lightSerial() const noexcept { return mLightSerial; }
+        [[nodiscard]] std::uint64_t actorPlanSerial() const noexcept { return mActorPlanSerial; }
         [[nodiscard]] const DeltaStats& stats() const noexcept { return mStats; }
 
         [[nodiscard]] const DirtyRange& dirty(Kind kind) const noexcept
@@ -258,6 +270,7 @@ namespace RenderVsg
         RenderCore::RenderWorldRevision mWorldRevision;
         RenderCore::UpdateSequence mLastSequence;
         std::uint64_t mLightSerial = 1;
+        std::uint64_t mActorPlanSerial = 1;
         DeltaStats mStats;
         bool mHealthy = false;
     };
