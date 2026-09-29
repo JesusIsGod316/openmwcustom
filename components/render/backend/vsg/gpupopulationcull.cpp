@@ -329,6 +329,170 @@ namespace RenderVsg
             }
         }
 
+        [[nodiscard]] const char* compactResetShaderSource()
+        {
+            return R"glsl(
+#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer CountBuffer
+{
+    uint visibleCount[];
+};
+
+void main()
+{
+    if (visibleCount.length() != 0)
+        visibleCount[0] = 0u;
+}
+)glsl";
+        }
+
+        [[nodiscard]] const char* compactCullShaderSource()
+        {
+            return R"glsl(
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer PlacementBuffer
+{
+    vec4 placementData[];
+};
+
+layout(set = 0, binding = 1, std430) buffer CountBuffer
+{
+    uint visibleCount[];
+};
+
+layout(set = 0, binding = 2, std430) writeonly buffer TranslationBuffer
+{
+    float translations[];
+};
+
+layout(set = 0, binding = 3, std430) writeonly buffer RotationBuffer
+{
+    float rotations[];
+};
+
+layout(set = 0, binding = 4, std430) writeonly buffer ScaleBuffer
+{
+    float scales[];
+};
+
+layout(set = 0, binding = 5, std430) readonly buffer ViewBuffer
+{
+    vec4 viewData[];
+};
+
+void main()
+{
+    uint placement = gl_GlobalInvocationID.x;
+    uint placementCount = uint(placementData.length()) / 6u;
+    if (placementCount == 0u || placement >= placementCount
+        || visibleCount.length() == 0 || viewData.length() < 5)
+        return;
+
+    uint base = placement * 6u;
+    vec3 minimum = placementData[base + 0u].xyz;
+    vec3 maximum = placementData[base + 1u].xyz;
+    vec4 lod = placementData[base + 2u];
+    mat4 clipMatrix = mat4(viewData[0], viewData[1], viewData[2], viewData[3]);
+
+    bool outsideLeft = true;
+    bool outsideRight = true;
+    bool outsideBottom = true;
+    bool outsideTop = true;
+    bool outsideNear = true;
+    bool outsideFar = true;
+    for (uint corner = 0u; corner < 8u; ++corner)
+    {
+        vec3 world = vec3(
+            (corner & 1u) != 0u ? maximum.x : minimum.x,
+            (corner & 2u) != 0u ? maximum.y : minimum.y,
+            (corner & 4u) != 0u ? maximum.z : minimum.z);
+        vec4 clip = clipMatrix * vec4(world, 1.0);
+        float epsilon = 1.0e-5 * max(1.0, abs(clip.w));
+        outsideLeft = outsideLeft && clip.x < -clip.w - epsilon;
+        outsideRight = outsideRight && clip.x > clip.w + epsilon;
+        outsideBottom = outsideBottom && clip.y < -clip.w - epsilon;
+        outsideTop = outsideTop && clip.y > clip.w + epsilon;
+        outsideNear = outsideNear && clip.z < -epsilon;
+        outsideFar = outsideFar && clip.z > clip.w + epsilon;
+    }
+
+    bool visible = !(outsideLeft || outsideRight || outsideBottom
+        || outsideTop || outsideNear || outsideFar);
+    float maximumDistance = lod.w;
+    if (maximumDistance <= 0.0)
+        visible = false;
+    else if (maximumDistance < 3.0e38)
+        visible = visible && distance(lod.xyz, viewData[4].xyz) <= maximumDistance;
+    if (!visible)
+        return;
+
+    uint slot = atomicAdd(visibleCount[0], 1u);
+    vec3 translation = placementData[base + 3u].xyz;
+    vec4 rotation = placementData[base + 4u];
+    vec3 scale = placementData[base + 5u].xyz;
+    translations[slot * 3u + 0u] = translation.x;
+    translations[slot * 3u + 1u] = translation.y;
+    translations[slot * 3u + 2u] = translation.z;
+    rotations[slot * 4u + 0u] = rotation.x;
+    rotations[slot * 4u + 1u] = rotation.y;
+    rotations[slot * 4u + 2u] = rotation.z;
+    rotations[slot * 4u + 3u] = rotation.w;
+    scales[slot * 3u + 0u] = scale.x;
+    scales[slot * 3u + 1u] = scale.y;
+    scales[slot * 3u + 2u] = scale.z;
+}
+)glsl";
+        }
+
+        [[nodiscard]] const char* compactCommandShaderSource()
+        {
+            return R"glsl(
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer DrawTemplateBuffer
+{
+    uvec4 drawTemplates[];
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer CountBuffer
+{
+    uint visibleCount[];
+};
+
+struct DrawCommand
+{
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+
+layout(set = 0, binding = 2, std430) writeonly buffer DrawCommandBuffer
+{
+    DrawCommand commands[];
+};
+
+void main()
+{
+    uint draw = gl_GlobalInvocationID.x;
+    if (draw >= drawTemplates.length() || visibleCount.length() == 0)
+        return;
+    uvec4 source = drawTemplates[draw];
+    commands[draw].indexCount = source.x;
+    commands[draw].instanceCount = visibleCount[0];
+    commands[draw].firstIndex = source.y;
+    commands[draw].vertexOffset = int(source.z);
+    commands[draw].firstInstance = 0u;
+}
+)glsl";
+        }
+
         [[nodiscard]] const char* cullShaderSource()
         {
             return R"glsl(
