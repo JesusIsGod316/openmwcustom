@@ -39,7 +39,21 @@ function New-VerifiedProfileZip {
     for($attempt=1;$attempt -le 3;$attempt++){
         try{
             if([IO.File]::Exists($temp)){[IO.File]::Delete($temp)}
-            [IO.Compression.ZipFile]::CreateFromDirectory($source,$temp,[IO.Compression.CompressionLevel]::Optimal,$false)
+            # Windows PowerShell targets an older .NET runtime contract whose
+            # CreateFromDirectory may write backslash entry names. Specify ZIP
+            # entry names explicitly so Linux and Windows verify/extract alike.
+            $output=[IO.File]::Open($temp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+            $writer=$null
+            try{
+                $writer=[IO.Compression.ZipArchive]::new($output,[IO.Compression.ZipArchiveMode]::Create,$true)
+                foreach($file in $inventory){
+                    [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($writer,
+                        (Join-Path $source $file.name),$file.name,[IO.Compression.CompressionLevel]::Optimal)
+                }
+            }finally{
+                if($null -ne $writer){$writer.Dispose()}
+                $output.Dispose()
+            }
             $zip=[IO.Compression.ZipFile]::OpenRead($temp)
             try{
                 $entries=@{};foreach($entry in $zip.Entries){
