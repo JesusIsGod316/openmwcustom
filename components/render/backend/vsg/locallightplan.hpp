@@ -1,6 +1,8 @@
 #ifndef OPENMW_COMPONENTS_RENDER_BACKEND_VSG_LOCALLIGHTPLAN_H
 #define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_LOCALLIGHTPLAN_H
 
+#include "gpuscenetables.hpp"
+
 #include <components/rendercore/renderworld.hpp>
 
 #include <cstdint>
@@ -44,6 +46,27 @@ namespace RenderVsg
         result.worldRevision = world.revision();
         result.lights.reserve(world.lightCount());
         world.forEachLight([&](RenderCore::LightHandle handle, const RenderCore::LightRecord& record) {
+            result.lights.push_back({ handle, record.revision, record });
+            if (record.modulation != RenderCore::LightModulation::Constant)
+                ++result.modulatedLights;
+            if ((record.semanticFlags & RenderCore::lightSemanticFlag(RenderCore::LightSemanticFlag::Spot)) != 0)
+                ++result.spotLights;
+            if (!record.enabled)
+                ++result.disabledLights;
+        });
+        return result;
+    }
+
+    [[nodiscard]] inline LocalLightWorldPlan buildLocalLightWorldPlan(
+        const GpuSceneTables& tables, const RenderCore::RenderWorld& world)
+    {
+        LocalLightWorldPlan result;
+        if (!tables.current(world))
+            return result;
+        result.worldEpoch = world.epoch();
+        result.worldRevision = world.revision();
+        result.lights.reserve(tables.live(GpuSceneTables::Kind::Light));
+        tables.forEachLight([&](RenderCore::LightHandle handle, const RenderCore::LightRecord& record) {
             result.lights.push_back({ handle, record.revision, record });
             if (record.modulation != RenderCore::LightModulation::Constant)
                 ++result.modulatedLights;
