@@ -111,7 +111,8 @@ namespace RenderVsg
             // P3 dispatches visibility work on the same ordered queue as main-view
             // rendering. Ask VSG to select a present-capable family that supports
             // both graphics and compute before the physical device is chosen.
-            if (std::getenv("OPENMW_VK_GPU_CULL_INDIRECT"))
+            if (std::getenv("OPENMW_VK_GPU_CULL_QUEUE")
+                || std::getenv("OPENMW_VK_GPU_CULL_INDIRECT"))
                 traits->queueFlags |= VK_QUEUE_COMPUTE_BIT;
             // Make the CP4F display-transfer contract explicit instead of
             // inheriting a VSG-version default. UI and ordinary color textures
