@@ -646,6 +646,240 @@ void main()
             diagnostic = "P3 GPU population cull could not derive conservative model bounds";
             return result;
         }
+        const auto placementCount = static_cast<std::uint32_t>(plan.placements.size());
+        bool compacted = compactCommands && compactPopulationSafe(world, plan)
+            && plan.placements.size() <= std::numeric_limits<std::uint32_t>::max() / 6u;
+        if (compacted)
+        {
+            for (const auto* draw : draws)
+            {
+                compacted = draw && draw->instanceCount == placementCount && draw->arrays.size() >= 4
+                    && draw->arrays[1] && draw->arrays[1]->data
+                    && draw->arrays[2] && draw->arrays[2]->data
+                    && draw->arrays[3] && draw->arrays[3]->data
+                    && draw->arrays[1]->data->properties.stride == sizeof(vsg::vec3)
+                    && draw->arrays[2]->data->properties.stride == sizeof(vsg::vec4)
+                    && draw->arrays[3]->data->properties.stride == sizeof(vsg::vec3);
+                if (!compacted)
+                    break;
+            }
+        }
+
+        if (compacted)
+        {
+            auto compactPlacements = vsg::vec4Array::create(
+                static_cast<std::uint32_t>(plan.placements.size() * 6u));
+            for (std::size_t i = 0; i < plan.placements.size(); ++i)
+            {
+                if (!packCompactPlacement(*compactPlacements, i, *assetBounds,
+                        plan.placements[i], plan.coordinateOrigin))
+                {
+                    diagnostic = "P3B GPU population compaction could not pack finite placement data";
+                    return result;
+                }
+            }
+
+            auto drawTemplates = vsg::uivec4Array::create(static_cast<std::uint32_t>(draws.size()));
+            for (std::size_t i = 0; i < draws.size(); ++i)
+            {
+                const auto* draw = draws[i];
+                if (draw->vertexOffset != 0)
+                {
+                    diagnostic = "P3B compacted indirect currently requires zero indexed vertexOffset";
+                    return result;
+                }
+                drawTemplates->set(i, vsg::uivec4(
+                    draw->indexCount, draw->firstIndex, static_cast<std::uint32_t>(draw->vertexOffset), 0u));
+            }
+
+            const VkDeviceSize commandBytes
+                = static_cast<VkDeviceSize>(draws.size()) * sizeof(VkDrawIndexedIndirectCommand);
+            const VkDeviceSize countBytes = sizeof(std::uint32_t);
+            const VkDeviceSize translationBytes
+                = static_cast<VkDeviceSize>(placementCount) * 3u * sizeof(float);
+            const VkDeviceSize rotationBytes
+                = static_cast<VkDeviceSize>(placementCount) * 4u * sizeof(float);
+            const VkDeviceSize scaleBytes
+                = static_cast<VkDeviceSize>(placementCount) * 3u * sizeof(float);
+
+            auto commandBuffer = vsg::createBufferAndMemory(&device, commandBytes,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            auto countBuffer = vsg::createBufferAndMemory(&device, countBytes,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            auto translationBuffer = vsg::createBufferAndMemory(&device, translationBytes,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            auto rotationBuffer = vsg::createBufferAndMemory(&device, rotationBytes,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            auto scaleBuffer = vsg::createBufferAndMemory(&device, scaleBytes,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            if (!commandBuffer || !countBuffer || !translationBuffer || !rotationBuffer || !scaleBuffer)
+            {
+                diagnostic = "P3B GPU population compaction could not allocate persistent GPU buffers";
+                return result;
+            }
+
+            auto commandInfo = vsg::BufferInfo::create(commandBuffer, 0, commandBytes);
+            auto countInfo = vsg::BufferInfo::create(countBuffer, 0, countBytes);
+            auto translationInfo = vsg::BufferInfo::create(translationBuffer, 0, translationBytes);
+            auto rotationInfo = vsg::BufferInfo::create(rotationBuffer, 0, rotationBytes);
+            auto scaleInfo = vsg::BufferInfo::create(scaleBuffer, 0, scaleBytes);
+
+            std::vector<vsg::ref_ptr<vsg::BufferInfo>> indirectRanges;
+            indirectRanges.reserve(draws.size());
+            for (std::size_t draw = 0; draw < draws.size(); ++draw)
+                indirectRanges.push_back(vsg::BufferInfo::create(commandBuffer,
+                    static_cast<VkDeviceSize>(draw) * sizeof(VkDrawIndexedIndirectCommand),
+                    sizeof(VkDrawIndexedIndirectCommand)));
+
+            auto resetLayout = vsg::DescriptorSetLayout::create(vsg::DescriptorSetLayoutBindings{
+                {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}});
+            auto resetPipelineLayout = vsg::PipelineLayout::create(
+                vsg::DescriptorSetLayouts{resetLayout}, vsg::PushConstantRanges{});
+            auto resetPipeline = vsg::ComputePipeline::create(resetPipelineLayout,
+                vsg::ShaderStage::create(VK_SHADER_STAGE_COMPUTE_BIT, "main", compactResetShaderSource()));
+            auto resetSet = vsg::DescriptorSet::create(resetLayout, vsg::Descriptors{
+                vsg::DescriptorBuffer::create(vsg::BufferInfoList{countInfo}, 0, 0,
+                    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)});
+            auto resetState = vsg::StateGroup::create();
+            resetState->add(vsg::BindComputePipeline::create(resetPipeline));
+            resetState->add(vsg::BindDescriptorSet::create(
+                VK_PIPELINE_BIND_POINT_COMPUTE, resetPipelineLayout, 0, resetSet));
+            resetState->addChild(vsg::Dispatch::create(1, 1, 1));
+
+            auto cullLayout = vsg::DescriptorSetLayout::create(vsg::DescriptorSetLayoutBindings{
+                {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}});
+            auto cullPipelineLayout = vsg::PipelineLayout::create(
+                vsg::DescriptorSetLayouts{cullLayout}, vsg::PushConstantRanges{});
+            auto cullPipeline = vsg::ComputePipeline::create(cullPipelineLayout,
+                vsg::ShaderStage::create(VK_SHADER_STAGE_COMPUTE_BIT, "main", compactCullShaderSource()));
+            auto cullSet = vsg::DescriptorSet::create(cullLayout, vsg::Descriptors{
+                vsg::DescriptorBuffer::create(compactPlacements, 0, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER),
+                vsg::DescriptorBuffer::create(vsg::BufferInfoList{countInfo}, 1, 0,
+                    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER),
+                vsg::DescriptorBuffer::create(vsg::BufferInfoList{translationInfo}, 2, 0,
+                    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER),
+                vsg::DescriptorBuffer::create(vsg::BufferInfoList{rotationInfo}, 3, 0,
+                    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER),
+                vsg::DescriptorBuffer::create(vsg::BufferInfoList{scaleInfo}, 4, 0,
+                    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER),
+                vsg::DescriptorBuffer::create(viewData, 5, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)});
+            auto cullState = vsg::StateGroup::create();
+            cullState->add(vsg::BindComputePipeline::create(cullPipeline));
+            cullState->add(vsg::BindDescriptorSet::create(
+                VK_PIPELINE_BIND_POINT_COMPUTE, cullPipelineLayout, 0, cullSet));
+            cullState->addChild(vsg::Dispatch::create(
+                (placementCount + CullWorkgroupSize - 1u) / CullWorkgroupSize, 1, 1));
+
+            auto commandLayout = vsg::DescriptorSetLayout::create(vsg::DescriptorSetLayoutBindings{
+                {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}});
+            auto commandPipelineLayout = vsg::PipelineLayout::create(
+                vsg::DescriptorSetLayouts{commandLayout}, vsg::PushConstantRanges{});
+            auto commandPipeline = vsg::ComputePipeline::create(commandPipelineLayout,
+                vsg::ShaderStage::create(VK_SHADER_STAGE_COMPUTE_BIT, "main", compactCommandShaderSource()));
+            auto commandSet = vsg::DescriptorSet::create(commandLayout, vsg::Descriptors{
+                vsg::DescriptorBuffer::create(drawTemplates, 0, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER),
+                vsg::DescriptorBuffer::create(vsg::BufferInfoList{countInfo}, 1, 0,
+                    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER),
+                vsg::DescriptorBuffer::create(vsg::BufferInfoList{commandInfo}, 2, 0,
+                    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)});
+            auto commandState = vsg::StateGroup::create();
+            commandState->add(vsg::BindComputePipeline::create(commandPipeline));
+            commandState->add(vsg::BindDescriptorSet::create(
+                VK_PIPELINE_BIND_POINT_COMPUTE, commandPipelineLayout, 0, commandSet));
+            commandState->addChild(vsg::Dispatch::create(
+                (static_cast<std::uint32_t>(draws.size()) + CullWorkgroupSize - 1u) / CullWorkgroupSize, 1, 1));
+
+            auto commandBefore = vsg::BufferMemoryBarrier::create(
+                VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, commandBuffer, 0, commandBytes);
+            auto translationBefore = vsg::BufferMemoryBarrier::create(
+                VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, translationBuffer, 0, translationBytes);
+            auto rotationBefore = vsg::BufferMemoryBarrier::create(
+                VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, rotationBuffer, 0, rotationBytes);
+            auto scaleBefore = vsg::BufferMemoryBarrier::create(
+                VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, scaleBuffer, 0, scaleBytes);
+            auto countBefore = vsg::BufferMemoryBarrier::create(
+                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, countBuffer, 0, countBytes);
+            auto beforeWrite = vsg::PipelineBarrier::create(
+                VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT
+                    | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                commandBefore, translationBefore, rotationBefore, scaleBefore, countBefore);
+
+            auto countResetToCull = vsg::BufferMemoryBarrier::create(
+                VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, countBuffer, 0, countBytes);
+            auto resetToCull = vsg::PipelineBarrier::create(
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, countResetToCull);
+
+            auto countCullToCommand = vsg::BufferMemoryBarrier::create(
+                VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, countBuffer, 0, countBytes);
+            auto cullToCommand = vsg::PipelineBarrier::create(
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, countCullToCommand);
+
+            auto commandAfter = vsg::BufferMemoryBarrier::create(
+                VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, commandBuffer, 0, commandBytes);
+            auto translationAfter = vsg::BufferMemoryBarrier::create(
+                VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, translationBuffer, 0, translationBytes);
+            auto rotationAfter = vsg::BufferMemoryBarrier::create(
+                VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, rotationBuffer, 0, rotationBytes);
+            auto scaleAfter = vsg::BufferMemoryBarrier::create(
+                VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, scaleBuffer, 0, scaleBytes);
+            auto afterWrite = vsg::PipelineBarrier::create(
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                0, commandAfter, translationAfter, rotationAfter, scaleAfter);
+
+            result.compute = vsg::Group::create();
+            result.compute->addChild(beforeWrite);
+            result.compute->addChild(resetState);
+            result.compute->addChild(resetToCull);
+            result.compute->addChild(cullState);
+            result.compute->addChild(cullToCommand);
+            result.compute->addChild(commandState);
+            result.compute->addChild(afterWrite);
+
+            std::size_t replacementIndex = 0;
+            replaceDraws(graphicsRoot, indirectRanges, indirectViewId, placementCount, true,
+                translationInfo, rotationInfo, scaleInfo, replacementIndex);
+            if (replacementIndex != draws.size())
+            {
+                diagnostic = "P3B compacted indirect draw replacement lost graph identity";
+                result.compute = {};
+                return result;
+            }
+
+            result.stats.placements = plan.placements.size();
+            result.stats.draws = draws.size();
+            result.stats.indirectCommands = draws.size();
+            result.stats.compacted = true;
+            result.active = true;
+            return result;
+        }
+
         const auto placementVectorCount = static_cast<std::uint32_t>(plan.placements.size() * 3u);
         auto placements = vsg::vec4Array::create(placementVectorCount);
         for (std::size_t i = 0; i < plan.placements.size(); ++i)
