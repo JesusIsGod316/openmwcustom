@@ -90,6 +90,21 @@ int main() try
         const auto status=pass.status(state->getContextID());
         require(status.submitted && !status.denseDynamicMotion,"incomplete camera field advertised as DLSS-ready");
         require((status.resetReasons!=0)==reset,"incorrect frame-history reset");
+        require(status.historyValid==!reset,"consumer history-valid flag disagrees with reset state");
+        require(status.renderWidth==camera.renderWidth && status.renderHeight==camera.renderHeight
+            && status.outputWidth==camera.outputWidth && status.outputHeight==camera.outputHeight,
+            "consumer extents differ from rendered frame");
+        const auto consumer=pass.consumerFrame(state->getContextID());
+        require(consumer.has_value(),"submitted temporal frame did not publish a consumer contract");
+        require(consumer->motion.get()==flow && consumer->motionInPixels,
+            "consumer motion surface or convention changed");
+        require(consumer->status.frame==status.frame && consumer->status.previousFrame==status.previousFrame
+            && consumer->status.targetRevision==status.targetRevision
+            && consumer->status.resetReasons==status.resetReasons,
+            "consumer status snapshot differs from render status");
+        bool matrixData=false;
+        for(float value:consumer->currentViewProjection) matrixData |= std::abs(value)>.00001f;
+        require(matrixData,"consumer current view-projection matrix was not published");
         verifyState();
         osg::ref_ptr<osg::FrameBufferObject> read=new osg::FrameBufferObject;
         read->setAttachment(osg::Camera::COLOR_BUFFER0,osg::FrameBufferAttachment(flow));read->apply(*state);
@@ -117,18 +132,22 @@ int main() try
     (*projection)(0,0)=3;draw(8,0,0,true);
     (*projection)(2,2)=.5;draw(9,0,0,false);
     stamp->setFrameNumber(10);camera.frame=10;camera.renderWidth=15;
-    require(!pass.render(info,camera,depth,*quad),"wrong-sized depth accepted");verifyState();
+    require(!pass.render(info,camera,depth,*quad),"wrong-sized depth accepted");
+    require(!pass.consumerFrame(state->getContextID()),"invalid frame left a stale DLSS consumer contract");
+    verifyState();
     camera.renderWidth=16;draw(11,0,0,true);
     image=depthImage(8);depth->setImage(image);depth->setTextureSize(8,8);
     camera.renderWidth=8;camera.renderHeight=8;
     const auto resized=draw(12,0,0,true);require(resized.targetRevision==2,"target resize generation missing");
     camera.zeroToOne=true;camera.clearDepth=0;draw(13,0,0,true);
     camera.view=osg::Matrixd::translate(-.5,1,0);draw(14,1.5,2,false);
-    pass.releaseGLObjects(state);draw(15,0,0,true);
+    pass.releaseGLObjects(state);
+    require(!pass.consumerFrame(state->getContextID()),"GL release left stale temporal consumer state");
+    draw(15,0,0,true);
     require(glGetError()==GL_NO_ERROR,"GL errors from temporal production adapter");
     pass.releaseGLObjects(state);depth->releaseGLObjects(state);quad->releaseGLObjects(state);
     state->popStateSet();state->apply();ext->glBindFramebuffer(GL_FRAMEBUFFER_EXT,0);ext->glDeleteFramebuffers(2,sentinel);
     context->releaseContext();context->close(true);
-    std::cout<<"PASS: real production motion adapter, retained final projection, camera/world/lens/gap/resize resets, near-far continuity, duplicate rejection, frame/depth validation and raster/FBO/viewport restoration\n";
+    std::cout<<"PASS: real production motion adapter, consumer-ready matrix/motion contract, retained final projection, camera/world/lens/gap/resize resets, near-far continuity, duplicate rejection, frame/depth validation and raster/FBO/viewport restoration\n";
 }
 catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
