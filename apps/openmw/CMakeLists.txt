@@ -342,6 +342,7 @@ if (WIN32 AND BUILD_OPENMW)
             ../../tools/vulkanmw/START-VulkanMW-Test.bat
             ../../tools/vulkanmw/START-VulkanMW-Producer-Test.bat
             ../../tools/vulkanmw/START-VulkanMW-Supported-Producers-Test.bat
+            ../../tools/vulkanmw/START-VulkanMW-P2-Test.bat
             ../../tools/v4/cp4/architecture-benchmark.py
             ../../tools/v4/cp4/architecture-benchmark.lua
             DESTINATION ".")
