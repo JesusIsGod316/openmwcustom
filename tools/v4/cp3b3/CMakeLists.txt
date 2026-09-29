@@ -17,6 +17,7 @@ find_package(vsgXchange CONFIG REQUIRED)
 get_filename_component(OPENMW_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 
 add_library(openmw_cp3b3_vsg STATIC
+    "${OPENMW_ROOT}/components/render/backend/vsg/gpupopulationcull.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/legacymaterialshader.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/openmwviewdependentstate.cpp"
     "${OPENMW_ROOT}/components/render/backend/vsg/staticassetrealizer.cpp"
