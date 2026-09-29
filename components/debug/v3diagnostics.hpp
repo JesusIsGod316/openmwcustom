@@ -495,6 +495,16 @@ namespace Debug::V3Diagnostics
         return writer;
     }
 
+    inline CsvWriter& p9DlssCapabilitiesWriter()
+    {
+        static CsvWriter writer("OPENMW_P9_DLSS_CAPS_FILE",
+            "epoch_ms,context,vendor,renderer,version,gl_version,memory_object,memory_object_win32,"
+            "semaphore,semaphore_win32,import_memory_win32_fn,texture_storage_mem_2d_fn,"
+            "import_semaphore_win32_fn,wait_semaphore_fn,signal_semaphore_fn,copy_image_fn,"
+            "gl_vulkan_bridge_candidate");
+        return writer;
+    }
+
     inline CsvWriter& streamingWriter()
     {
         static CsvWriter writer("OPENMW_V3_STREAMING_FILE",
