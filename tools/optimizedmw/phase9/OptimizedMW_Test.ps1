@@ -35,39 +35,37 @@ function Set-IniValue {
 
 function Get-P9Mode {
     param([string]$Choice)
-    # Identical P8U1 foundation; new switches remain independent.
-    $result=@{Name='REFERENCE';Stream='0';Temporal='0';View='0';Trace='0';Prewarm='0'}
+    # Identical P8U1 foundation. The driver-crashing static prewarm experiment
+    # is intentionally unavailable in this continuation build.
+    $result=@{Name='REFERENCE';Stream='0';Temporal='0';View='0';Trace='0'}
     switch($Choice){
         '1'{}
-        '2'{$result.Name='OPTIMIZED';$result.Prewarm='1'}
+        '2'{$result.Name='TEMPORAL-INPUTS';$result.Temporal='1'}
         '3'{$result.Name='ROOT-CAUSE-TRACE';$result.Trace='1'}
-        '4'{$result.Name='OPTIMIZED-TRACE';$result.Prewarm='1';$result.Trace='1'}
-        '5'{$result.Name='TEMPORAL';$result.Temporal='1'}
-        '6'{$result.Name='OPTIMIZED-TEMPORAL';$result.Prewarm='1';$result.Temporal='1'}
-        '7'{$result.Name='MOTION-VIEW';$result.Temporal='1';$result.View='1'}
-        '8'{$result.Name='HITCH';$result.Stream='1'}
-        '9'{$result.Name='HITCH-TRACE';$result.Stream='1';$result.Trace='1'}
-        '10'{$result.Name='HITCH-TEMPORAL';$result.Stream='1';$result.Temporal='1'}
+        '4'{$result.Name='TEMPORAL-TRACE';$result.Temporal='1';$result.Trace='1'}
+        '5'{$result.Name='MOTION-VIEW';$result.Temporal='1';$result.View='1'}
+        '6'{$result.Name='HITCH';$result.Stream='1'}
+        '7'{$result.Name='HITCH-TRACE';$result.Stream='1';$result.Trace='1'}
         default{throw 'Invalid Phase 9 mode'}
     }
     return $result
 }
 
 Write-Host ''
-Write-Host 'OptimizedMW Phase 9 - root-cause capture and shared-static preparation' -ForegroundColor Cyan
-Write-Host '  1 = REFERENCE          unchanged P8U1 foundation; prior HITCH1 off'
-Write-Host '  2 = OPTIMIZED          shared-static rig/morph buffer precompile only'
-Write-Host '  3 = ROOT-CAUSE-TRACE   reference plus verified draw/state/GL attribution'
-Write-Host '  4 = OPTIMIZED-TRACE    identical capture plus static precompile'
-Write-Host '  A = show advanced temporal and earlier HITCH controls'
-Write-Host 'Tracing is diagnostic, not a clean performance comparison. DLSS is not yet implemented.'
+Write-Host 'OptimizedMW Phase 9 - root-cause telemetry + DLSS temporal inputs' -ForegroundColor Cyan
+Write-Host '  1 = REFERENCE          unchanged P8U1 foundation'
+Write-Host '  2 = TEMPORAL-INPUTS    camera/static motion + DLSS input-contract telemetry'
+Write-Host '  3 = ROOT-CAUSE-TRACE   state/draw/GL + composite/camera attribution'
+Write-Host '  4 = TEMPORAL-TRACE     modes 2 and 3 together for one diagnostic run'
+Write-Host '  5 = MOTION-VIEW        visualize generated motion vectors'
+Write-Host '  A = show old unpromoted HITCH1 diagnostic controls'
+Write-Host 'Unsafe static prewarm is disabled. DLSS evaluation/jitter remain off until dense dynamic motion is valid.'
 do{
-    $choice=Read-Host 'Choose mode (start with 3 for the hitch investigation)'
+    $choice=Read-Host 'Choose mode (1-5, or A for old HITCH1 diagnostics)'
     if($choice -eq 'A'){
-        Write-Host '  5 TEMPORAL | 6 OPTIMIZED-TEMPORAL | 7 MOTION-VIEW'
-        Write-Host '  8 HITCH (old unpromoted refresh) | 9 HITCH-TRACE | 10 HITCH-TEMPORAL'
+        Write-Host '  6 HITCH (old unpromoted refresh) | 7 HITCH-TRACE'
     }
-}until($choice -in @('1','2','3','4','5','6','7','8','9','10'))
+}until($choice -in @('1','2','3','4','5','6','7'))
 $mode=Get-P9Mode $choice
 
 $SchedulerMode='2'
@@ -97,6 +95,7 @@ $CleanCapture='1'
 $FrontToBack='false'
 $FastWind='0'
 $Experiment=$mode.Name
+$GpuDiagnostics=if($mode.Trace -eq '1' -or $mode.Temporal -eq '1'){'true'}else{'false'}
 $ResourceRepair='true'
 $LuaCache='true'
 $SoundWarm='true'
@@ -195,6 +194,7 @@ try{
     Set-IniValue $SettingsPath 'Cells' 'target framerate' '60'
     Set-IniValue $SettingsPath 'V3' 'v3.8 compile pacing mode' '3'
     Set-IniValue $SettingsPath 'V3' 'v3.15 adaptive compile governor' '1'
+    Set-IniValue $SettingsPath 'V3' 'v3.6 async gpu profiler' $GpuDiagnostics
     Set-IniValue $SettingsPath 'V3' 'v3.21 completion governor mode' $Completion
     Set-IniValue $SettingsPath 'V3' 'v3.21 CP2 fairness mode' '0'
     Set-IniValue $SettingsPath 'V3' 'v3.21 compile objects per frame' '4'
@@ -247,14 +247,16 @@ try{
 
     @(
         "experiment=$Experiment",
-        "expected_lineage=optimizedmw/phase9",
+        "expected_lineage=optimizedmw/phase9-telemetry-dlss",
         "phase9_reference=P8U1_COMBINED_SAME_BINARY",
         "phase9_dynamic_stream=$($mode.Stream)",
         "phase9_temporal_inputs=$($mode.Temporal)",
         "phase9_motion_view=$($mode.View)",
         "phase9_draw_trace=$($mode.Trace)",
-        "phase9_static_prewarm=$($mode.Prewarm)",
-        "phase9_trace_schema=2",
+        "phase9_static_prewarm=disabled_after_optimized_trace_driver_crash",
+        "phase9_trace_schema=3",
+        "phase9_temporal_contract=consumer_frame_v1",
+        "phase9_dlss_ready_requires_dense_dynamic_motion=true",
         "phase9_culling=retained_existing_cell_paged_and_groundcover_hierarchy_no_new_visibility_policy",
         "phase9_dense_dynamic_motion=false",
         "phase9_scene_jitter=false",
@@ -348,19 +350,27 @@ try{
     $env:OPENMW_P8G4_STATS='1'
     $env:OPENMW_OSG_STATS_LIST='times;resource'
     $env:OPENMW_P8G3_STATS='1'
-    $env:OPENMW_P9_STATIC_PREWARM=$mode.Prewarm
-    $env:OPENMW_P9_STATIC_PREWARM_FILE=Join-Path $ProfileDir 'p9-static-prewarm.txt'
+    Remove-Item 'Env:OPENMW_P9_STATIC_PREWARM' -ErrorAction SilentlyContinue
+    Remove-Item 'Env:OPENMW_P9_STATIC_PREWARM_FILE' -ErrorAction SilentlyContinue
     $env:OPENMW_P9_DYNAMIC_STREAM=$mode.Stream
     $env:OPENMW_P9_TEMPORAL_INPUTS=$mode.Temporal
     $env:OPENMW_P9_MOTION_VIEW=$mode.View
+    if($mode.Temporal -eq '1'){
+        $env:OPENMW_P9_TEMPORAL_FILE=Join-Path $ProfileDir 'p9-temporal-inputs.csv'
+    }
     if($mode.Trace -eq '1'){
         $env:OPENMW_P9_LEAF_TRACE_FILE=Join-Path $ProfileDir 'p9-draw-phases.csv'
         $env:OPENMW_P9_DYNAMIC_TRACE_FILE=Join-Path $ProfileDir 'p9-dynamic-stream.csv'
+        $env:OPENMW_P9_COMPOSITE_FILE=Join-Path $ProfileDir 'p9-terrain-composite.csv'
+    }
+    if($mode.Trace -eq '1' -or $mode.Temporal -eq '1'){
+        $env:OPENMW_V36_GPU_PASS_FILE=Join-Path $ProfileDir 'p9-gpu-passes.csv'
     }
 
     Write-Host ''
     Write-Host "Starting OptimizedMW Phase 9 test: $Experiment" -ForegroundColor Green
     Write-Host 'Use the SAME outdoor save, fixed heavy view, walking route, and frame-cap state.' -ForegroundColor Yellow
+    if($mode.Trace -eq '1'){Write-Host 'Trace modes are diagnostic; do not use their FPS as a promotion result.' -ForegroundColor Yellow}
     Write-Host 'Hold the fixed view ~45 sec, then walk the same 2-3 minute route across the same cell boundaries. Quit normally.'
     Write-Host ''
 
