@@ -477,6 +477,24 @@ namespace Debug::V3Diagnostics
         return writer;
     }
 
+    inline CsvWriter& p9TemporalInputWriter()
+    {
+        static CsvWriter writer("OPENMW_P9_TEMPORAL_FILE",
+            "frame,epoch_ms,context,submitted,history_valid,previous_frame,reset_reasons,"
+            "render_w,render_h,output_w,output_h,target_revision,jitter_x,jitter_y,"
+            "previous_jitter_x,previous_jitter_y,dense_dynamic_motion,color_ptr,depth_ptr,motion_ptr,"
+            "input_mask,dlss_ready");
+        return writer;
+    }
+
+    inline CsvWriter& p9CompositeWriter()
+    {
+        static CsvWriter writer("OPENMW_P9_COMPOSITE_FILE",
+            "frame,epoch_ms,context,total_ms,available_ms,immediate_start,queued_start,maps,"
+            "required_maps,drawables,fbo_ms,state_ms,draw_ms,yields_delta,immediate_end,queued_end");
+        return writer;
+    }
+
     inline CsvWriter& streamingWriter()
     {
         static CsvWriter writer("OPENMW_V3_STREAMING_FILE",
