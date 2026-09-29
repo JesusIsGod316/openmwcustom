@@ -1,6 +1,7 @@
 #include "temporalmotion.hpp"
 
 #include <components/rendercore/temporalframe.hpp>
+#include <components/debug/v36gpuprofiler.hpp>
 #include <osg/ColorMask>
 #include <osg/FrameBufferObject>
 #include <osg/FrameStamp>
@@ -89,6 +90,7 @@ namespace MWRender
             std::uint64_t lensEpoch = 1, targetRevision = 0;
             bool haveProjection = false, programFailed = false;
             Status status;
+            ConsumerFrame consumer;
         };
         osg::ref_ptr<osg::Program> program;
         // The integration is mono/single-context initially. Additional contexts
@@ -150,6 +152,7 @@ namespace MWRender
         const auto id = state->getContextID();
         auto& c = mImpl->get(id);
         c.status = {};
+        c.consumer = {};
         const auto* stamp = state->getFrameStamp();
         if (!camera.projection || !depth || !stamp || stamp->getFrameNumber() != camera.frame
             || depth == c.motion.get()
@@ -241,9 +244,34 @@ namespace MWRender
             return nullptr;
         }
         glViewport(0, 0, camera.renderWidth, camera.renderHeight);
-        fullscreen.osg::Geometry::drawImplementation(info);
+        {
+            Debug::V36GpuProfiler::ScopedPass gpuPass(info, "temporal/camera_motion");
+            fullscreen.osg::Geometry::drawImplementation(info);
+        }
         if (!c.history.commit(frame->ticket)) return nullptr;
-        c.status = {camera.frame, frame->previousFrame, c.targetRevision, frame->resetReasons, true, false};
+
+        c.status.frame = camera.frame;
+        c.status.previousFrame = frame->previousFrame;
+        c.status.targetRevision = c.targetRevision;
+        c.status.resetReasons = frame->resetReasons;
+        c.status.renderWidth = camera.renderWidth;
+        c.status.renderHeight = camera.renderHeight;
+        c.status.outputWidth = camera.outputWidth;
+        c.status.outputHeight = camera.outputHeight;
+        c.status.jitterPixels = osg::Vec2f(
+            static_cast<float>(frame->jitterPixels.x), static_cast<float>(frame->jitterPixels.y));
+        c.status.previousJitterPixels = osg::Vec2f(
+            static_cast<float>(frame->previousJitterPixels.x), static_cast<float>(frame->previousJitterPixels.y));
+        c.status.submitted = true;
+        c.status.historyValid = frame->hasHistory();
+        c.status.denseDynamicMotion = false;
+
+        c.consumer.status = c.status;
+        c.consumer.motion = c.motion;
+        c.consumer.currentViewProjection = RenderCore::Temporal::rowMajor(frame->currentViewProjection);
+        c.consumer.previousViewProjection = RenderCore::Temporal::rowMajor(frame->previousViewProjection);
+        c.consumer.inverseViewProjection = RenderCore::Temporal::rowMajor(frame->inverseViewProjection);
+        c.consumer.motionInPixels = true;
         return c.motion;
     }
 
@@ -252,6 +280,16 @@ namespace MWRender
         if (context >= mImpl->contexts.size() || !mImpl->contexts[context]) return {};
         return mImpl->contexts[context]->status;
     }
+
+    std::optional<TemporalMotion::ConsumerFrame> TemporalMotion::consumerFrame(unsigned context) const
+    {
+        if (context >= mImpl->contexts.size() || !mImpl->contexts[context]
+            || !mImpl->contexts[context]->consumer.status.submitted
+            || !mImpl->contexts[context]->consumer.motion)
+            return std::nullopt;
+        return mImpl->contexts[context]->consumer;
+    }
+
     void TemporalMotion::resizeGLObjectBuffers(unsigned size)
     {
         if (mImpl->program) mImpl->program->resizeGLObjectBuffers(size);
@@ -270,6 +308,7 @@ namespace MWRender
                 auto& c = *mImpl->contexts[i];
                 c.history.invalidate();
                 c.status = {};
+                c.consumer = {};
                 c.programFailed = false;
                 if (c.fbo) c.fbo->releaseGLObjects(state);
                 if (c.motion) c.motion->releaseGLObjects(state);
