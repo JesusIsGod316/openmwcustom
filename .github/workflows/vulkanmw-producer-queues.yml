@@ -296,10 +296,11 @@ jobs:
           ) | Set-Content -LiteralPath "$stage/VULKANMW-PRODUCER-TEST.txt" -Encoding Ascii
           foreach ($required in @(
             "openmw.exe", "START-VulkanMW-Test.bat", "START-VulkanMW-Producer-Test.bat",
-            "START-VulkanMW-Supported-Producers-Test.bat", "START-VulkanMW-P2-Test.bat",
+            "START-VulkanMW-Supported-Producers-Test.bat", "START-VulkanMW-P2-Test.bat", "START-VulkanMW-Play.bat",
             "architecture-benchmark.py", "architecture-benchmark.lua", "gameplay-diagnostics.py", "diagnosticconfig.py",
             "tools/vulkanmw/run-producer-queues.py", "tools/vulkanmw/run-publication-cohort.py",
-            "tools/vulkanmw/vulkan-profile.py", "tools/vulkanmw/vulkan-clean-settings.cfg", "tools/vulkanmw/frame-profile-report.py",
+            "tools/vulkanmw/vulkan-profile.py", "tools/vulkanmw/vulkan-play.py",
+            "tools/vulkanmw/vulkan-clean-settings.cfg", "tools/vulkanmw/frame-profile-report.py",
             "tools/v4/cp4/diagnosticconfig.py", "tools/v4/cp4/gameplay-diagnostics.py", "tools/v4/cp4/architecture-benchmark.lua"
           )) {
             if (-not (Test-Path "$stage/$required")) { throw "Package is missing $required" }
@@ -324,6 +325,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "real-NIF conformance --help failed" }
           python "$stage/tools/vulkanmw/run-producer-queues.py" --help
           if ($LASTEXITCODE -ne 0) { throw "Installed producer harness import failed" }
+          python "$stage/tools/vulkanmw/vulkan-play.py" --help
+          if ($LASTEXITCODE -ne 0) { throw "Installed normal-play harness import failed" }
           $identity = @{
             source_head = "${{ needs.Source.outputs.source_head }}"
             executable_sha256 = (Get-FileHash "$stage/openmw.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
