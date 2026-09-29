@@ -1,6 +1,7 @@
 #include "pingpongcanvas.hpp"
 
 #include <cassert>
+#include <atomic>
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
@@ -18,6 +19,60 @@
 
 namespace MWRender
 {
+    namespace
+    {
+        void emitDlssInteropCapabilities(osg::State& state)
+        {
+            auto& writer = Debug::V3Diagnostics::p9DlssCapabilitiesWriter();
+            if (!writer.enabled())
+                return;
+            const unsigned context = state.getContextID();
+            static std::array<std::atomic_bool, 16> emitted{};
+            if (context >= emitted.size() || emitted[context].exchange(true, std::memory_order_acq_rel))
+                return;
+
+            auto extension = [context](const char* name) {
+                return osg::isGLExtensionSupported(context, name);
+            };
+            auto function = [](const char* name) {
+                return osg::getGLExtensionFuncPtr(name) != nullptr;
+            };
+            const bool memoryObject = extension("GL_EXT_memory_object");
+            const bool memoryObjectWin32 = extension("GL_EXT_memory_object_win32");
+            const bool semaphore = extension("GL_EXT_semaphore");
+            const bool semaphoreWin32 = extension("GL_EXT_semaphore_win32");
+            const bool importMemory = function("glImportMemoryWin32HandleEXT");
+            const bool storageMemory2D = function("glTextureStorageMem2DEXT");
+            const bool importSemaphore = function("glImportSemaphoreWin32HandleEXT");
+            const bool waitSemaphore = function("glWaitSemaphoreEXT");
+            const bool signalSemaphore = function("glSignalSemaphoreEXT");
+            const bool copyImage = function("glCopyImageSubData") || function("glCopyImageSubDataNV");
+            const bool bridgeCandidate = memoryObject && memoryObjectWin32 && semaphore && semaphoreWin32
+                && importMemory && storageMemory2D && importSemaphore && waitSemaphore && signalSemaphore;
+
+            const auto* vendorRaw = glGetString(GL_VENDOR);
+            const auto* rendererRaw = glGetString(GL_RENDERER);
+            const auto* versionRaw = glGetString(GL_VERSION);
+            const std::string vendor = vendorRaw ? reinterpret_cast<const char*>(vendorRaw) : std::string{};
+            const std::string renderer = rendererRaw ? reinterpret_cast<const char*>(rendererRaw) : std::string{};
+            const std::string version = versionRaw ? reinterpret_cast<const char*>(versionRaw) : std::string{};
+
+            std::ostringstream row;
+            row << Debug::V3Diagnostics::epochMs() << ',' << context << ','
+                << Debug::V3Diagnostics::csvQuote(vendor) << ','
+                << Debug::V3Diagnostics::csvQuote(renderer) << ','
+                << Debug::V3Diagnostics::csvQuote(version) << ','
+                << std::fixed << std::setprecision(2) << osg::getGLVersionNumber() << ','
+                << (memoryObject ? 1 : 0) << ',' << (memoryObjectWin32 ? 1 : 0) << ','
+                << (semaphore ? 1 : 0) << ',' << (semaphoreWin32 ? 1 : 0) << ','
+                << (importMemory ? 1 : 0) << ',' << (storageMemory2D ? 1 : 0) << ','
+                << (importSemaphore ? 1 : 0) << ',' << (waitSemaphore ? 1 : 0) << ','
+                << (signalSemaphore ? 1 : 0) << ',' << (copyImage ? 1 : 0) << ','
+                << (bridgeCandidate ? 1 : 0);
+            writer.writeLine(row.str());
+        }
+    }
+
     PingPongCanvas::PingPongCanvas(
         Shader::ShaderManager& shaderManager, const std::shared_ptr<LuminanceCalculator>& luminanceCalculator)
         : mFallbackStateSet(new osg::StateSet)
@@ -140,6 +195,7 @@ namespace MWRender
         // PostFX, render scale, NIS, culling and camera jitter unchanged.
         if (mTemporalMotion && !Stereo::getStereo())
         {
+            emitDlssInteropCapabilities(state);
             auto* depth = dynamic_cast<osg::Texture2D*>(mTextureDepth.get());
             osg::Texture2D* flow = nullptr;
             {
