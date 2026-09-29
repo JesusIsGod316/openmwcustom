@@ -170,3 +170,56 @@ function Test-Phase9TraceCapture {
     $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ProfileDir 'ROOT-CAUSE-CAPTURE.json') -Encoding UTF8
     return $result
 }
+
+
+# Temporal input modes are useful only if the render-owned consumer contract and
+# hardware capability probe actually emitted evidence. Missing rows are preserved
+# in the raw archive but are never treated as a successful temporal capture.
+function Test-Phase9TemporalCapture {
+    param([Parameter(Mandatory=$true)][string]$ProfileDir,[bool]$TemporalRequested)
+    $reasons=[Collections.Generic.List[string]]::new()
+    $inputRows=0
+    $capabilityRows=0
+    $unexpectedReady=0
+    if($TemporalRequested){
+        $input=Join-Path $ProfileDir 'p9-temporal-inputs.csv'
+        $caps=Join-Path $ProfileDir 'p9-dlss-capabilities.csv'
+        if(-not (Test-Path -LiteralPath $input)){
+            [void]$reasons.Add('Missing temporal input telemetry')
+        }else{
+            $lines=@(Get-Content -LiteralPath $input -ErrorAction SilentlyContinue)
+            $inputRows=[Math]::Max(0,$lines.Count-1)
+            if($inputRows -eq 0){[void]$reasons.Add('Temporal input telemetry has no frame rows')}
+            foreach($line in @($lines | Select-Object -Skip 1)){
+                if($line -match ',1\s*$'){$unexpectedReady++}
+            }
+            if($unexpectedReady -gt 0){
+                [void]$reasons.Add('DLSS-ready became true before dense dynamic motion/runtime integration')
+            }
+        }
+        if(-not (Test-Path -LiteralPath $caps)){
+            [void]$reasons.Add('Missing GL/Vulkan interop capability telemetry')
+        }else{
+            $lines=@(Get-Content -LiteralPath $caps -ErrorAction SilentlyContinue)
+            $capabilityRows=[Math]::Max(0,$lines.Count-1)
+            if($capabilityRows -eq 0){[void]$reasons.Add('Interop capability telemetry has no context row')}
+        }
+    }
+    $valid=if($TemporalRequested){$reasons.Count -eq 0}else{$null}
+    if($TemporalRequested -and -not $valid){
+        Write-Warning ('INVALID TEMPORAL CAPTURE: '+($reasons -join '; ')+'. Raw evidence will still be zipped.')
+    }
+    $result=[pscustomobject]@{
+        schema=1
+        temporal_requested=$TemporalRequested
+        valid_temporal_capture=$valid
+        temporal_input_rows=$inputRows
+        interop_capability_rows=$capabilityRows
+        unexpected_dlss_ready_rows=$unexpectedReady
+        dense_dynamic_motion_expected=$false
+        ngx_evaluation_expected=$false
+        reasons=$reasons.ToArray()
+    }
+    $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ProfileDir 'TEMPORAL-CAPTURE.json') -Encoding UTF8
+    return $result
+}
