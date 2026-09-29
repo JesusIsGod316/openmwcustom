@@ -1056,7 +1056,9 @@ namespace RenderVsg
             Debug::GameplayDiagnostics::Stage planningDiagnostic("actor_plan");
             if (persistentActors)
             {
-                retainedPlan = &mPersistentActorPlans.prepare(world, mOptions.staticPlan);
+                const std::uint64_t actorPlanSerial
+                    = mGpuSceneTablesEnabled ? mGpuSceneTables.actorPlanSerial() : 0;
+                retainedPlan = &mPersistentActorPlans.prepare(world, mOptions.staticPlan, actorPlanSerial);
                 return DynamicActorWorldPlan{};
             }
             return mActorPlanCache.prepare(world, mOptions.staticPlan,
