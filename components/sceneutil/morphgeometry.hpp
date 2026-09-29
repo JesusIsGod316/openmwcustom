@@ -22,10 +22,6 @@ namespace SceneUtil
         /// @note The source geometry will not be modified.
         void setSourceGeometry(osg::ref_ptr<osg::Geometry> sourceGeom);
 
-        // Optional preparation of shared static attributes/indices only.
-        // The two private pose buffers remain owned by normal animation/draw.
-        void compileGLObjects(osg::RenderInfo& renderInfo) const override;
-
 
         class MorphTarget
         {
