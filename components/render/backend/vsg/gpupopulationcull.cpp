@@ -481,7 +481,7 @@ layout(set = 0, binding = 2, std430) writeonly buffer DrawCommandBuffer
 void main()
 {
     uint draw = gl_GlobalInvocationID.x;
-    if (draw >= drawTemplates.length() || visibleCount.length() == 0)
+    if (draw >= uint(drawTemplates.length()) || visibleCount.length() == 0)
         return;
     uvec4 source = drawTemplates[draw];
     commands[draw].indexCount = source.x;
