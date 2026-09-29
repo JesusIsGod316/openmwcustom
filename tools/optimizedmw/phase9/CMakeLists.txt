@@ -26,6 +26,9 @@ add_test(NAME p9-dynamic-stream COMMAND p9-dynamic-stream)
 set_tests_properties(p9-dynamic-stream PROPERTIES TIMEOUT 30)
 add_library(p9-temporal-production STATIC "${ROOT}/apps/openmw/mwrender/temporalmotion.cpp")
 target_link_libraries(p9-temporal-production PRIVATE glm::glm ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
+# Catch Windows-only enum gaps even on hosts providing newer core GL headers.
+add_library(p9-temporal-header-compat OBJECT temporal-header-compat-tests.cpp)
+target_link_libraries(p9-temporal-header-compat PRIVATE glm::glm ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
 add_executable(p9-temporal-render temporal-render-tests.cpp)
 target_link_libraries(p9-temporal-render PRIVATE p9-temporal-production glm::glm ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
 target_compile_definitions(p9-temporal-render PRIVATE
