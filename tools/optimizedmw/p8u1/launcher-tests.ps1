@@ -14,6 +14,9 @@ $ast=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 
 $fn=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-P8U1Mode'},$true)
 if(-not $fn){throw 'Missing P8U1 mode function'}
 . ([scriptblock]::Create($fn.Extent.Text))
+$zipFn=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'New-VerifiedProfileZip'},$true)
+if(-not $zipFn){throw 'Missing verified ZIP packaging function'}
+. ([scriptblock]::Create($zipFn.Extent.Text))
 $expected=@(
     @('REFERENCE',0,0,0,0),@('COMBINED',1,1,1,1),@('RESOURCE-REPAIR',1,0,0,0),
     @('LUA-CACHE',0,1,0,0),@('SOUND-WARM',0,0,1,0),@('SHADOW-SETTINGS',0,0,0,1))
@@ -61,5 +64,24 @@ try{
     if($result.malformed_frame_rows -ne 0){throw 'Valid fixture counted malformed'}
     $context=Get-Content (Join-Path $temp 'cluster-context-v3-events.csv')
     if($context.Count -ne 3 -or $context[1] -ne '2,"quoted,event"'){throw 'Context lost CSV quoting or +/-1 frame alignment'}
-    Write-Host 'P8U1 launcher syntax, preflight and offline report fixture passed.'
+
+    'experiment=ZIP-TEST' | Set-Content (Join-Path $temp 'TEST_MODE.txt')
+    'frame,total_ms' | Set-Content (Join-Path $temp 'p6-render-traversal.csv')
+    'launcher ZIP fixture' | Set-Content (Join-Path $temp 'openmw.log')
+    $zipFixture="$temp.zip"
+    try{
+        New-VerifiedProfileZip -SourceDir $temp -DestinationPath $zipFixture
+        if(-not (Test-Path -LiteralPath $zipFixture)){throw 'Verified ZIP was not created'}
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive=[System.IO.Compression.ZipFile]::OpenRead($zipFixture)
+        try{
+            $zipNames=@($archive.Entries | ForEach-Object {$_.FullName})
+            foreach($required in @('TEST_MODE.txt','v3-frame.csv','p6-render-traversal.csv','openmw.log')){
+                if($zipNames -notcontains $required){throw ('Verified ZIP fixture missing '+$required)}
+            }
+        }finally{$archive.Dispose()}
+    }finally{
+        if(Test-Path -LiteralPath $zipFixture){Remove-Item -LiteralPath $zipFixture -Force}
+    }
+    Write-Host 'P8U1 launcher syntax, preflight, verified ZIP and offline report fixture passed.'
 }finally{Remove-Item -Recurse -Force -LiteralPath $temp}
