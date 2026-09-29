@@ -55,7 +55,7 @@ jobs:
             git rm .github/vulkanmw-producer-update.patch.xz.b64.* .github/vulkanmw-producer-update.patch.sha256
             git config user.name 'VulkanMW source publication'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git commit -m 'VulkanMW: consume producer-owned dirty queues and retire explicit draw lifetimes'
+            git commit -m 'VulkanMW: repair P3 pre-seal graph integration and indirect device features'
             git push origin HEAD:"$GITHUB_REF_NAME"
           fi
           git diff --check
@@ -118,8 +118,65 @@ jobs:
             ${{ runner.temp }}/vulkanmw-producer-source.tar.gz
             ${{ runner.temp }}/glm-test-headers.tar.gz
 
-  Windows:
+
+  GpuRouting:
     needs: Source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.Source.outputs.source_head }}
+      - name: Install real headless Vulkan test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libglm-dev libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers glslang-dev glslang-tools spirv-tools ninja-build
+      - name: Build exact pinned VSG 1.1.15
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/p3-vsg"
+          git -C "$RUNNER_TEMP/p3-vsg" remote add origin https://github.com/vsg-dev/VulkanSceneGraph.git
+          git -C "$RUNNER_TEMP/p3-vsg" fetch --depth 1 origin 599a8c5c61cbb993079261b2ada99bd843badf5b
+          git -C "$RUNNER_TEMP/p3-vsg" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/p3-vsg" rev-parse HEAD)" = 599a8c5c61cbb993079261b2ada99bd843badf5b
+          cmake -S "$RUNNER_TEMP/p3-vsg" -B "$RUNNER_TEMP/p3-vsg-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DVSG_SUPPORTS_Windowing=OFF -DVSG_SUPPORTS_ShaderCompiler=ON -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/p3-vsg-prefix"
+          cmake --build "$RUNNER_TEMP/p3-vsg-build" --parallel 2
+          cmake --install "$RUNNER_TEMP/p3-vsg-build"
+      - name: Build real production P3 source and pixel fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S tools/vulkanmw/tests/p3-gpu -B build-p3-gpu -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/p3-vsg-prefix"
+          cmake --build build-p3-gpu --parallel 2
+      - name: Execute P3A and P3B with both inventories and exact secondary fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
+          test -n "$VK_ICD_FILENAMES"
+          ctest --test-dir build-p3-gpu --verbose --output-on-failure 2>&1 | tee p3-gpu-results.txt
+          if grep -E 'VUID-|Validation Error|runtime error:|ERROR: AddressSanitizer' p3-gpu-results.txt; then exit 1; fi
+      - name: Export regression evidence and reusable pinned SDK
+        if: always()
+        shell: bash
+        run: |
+          git rev-parse HEAD > p3-gpu-source-head.txt
+          if test -d "$RUNNER_TEMP/p3-vsg-prefix"; then
+            tar -czf "$RUNNER_TEMP/p3-vsg-sdk.tar.gz" -C "$RUNNER_TEMP" p3-vsg-prefix
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vulkanmw-p3-gpu-evidence-${{ needs.Source.outputs.source_head }}
+          path: |
+            p3-gpu-results.txt
+            p3-gpu-source-head.txt
+            build-p3-gpu/Testing/Temporary/LastTest.log
+            ${{ runner.temp }}/p3-vsg-sdk.tar.gz
+
+  Windows:
+    needs: [Source, GpuRouting]
     runs-on: windows-2022
     env:
       VCPKG_FEATURE_FLAGS: manifests,versions
