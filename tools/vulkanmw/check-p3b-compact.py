@@ -60,6 +60,12 @@ def main() -> None:
     require(host, "mGpuPopulationCompactEnabled, gpuCullFallback", "explicit compact builder routing")
     require(host_header, "bool mGpuPopulationCompactEnabled = false", "host P3B state")
     require(host, '"gpu_compact_groups"', "runtime compact coverage telemetry")
+    require(host, "const bool p3GroupedPopulation = mGpuPopulationCullEnabled && plan.placements.size() > 1",
+            "eligible multi-placement GPU grouping policy")
+    require(host, '"gpu_grouped_eligible"', "grouping-reason telemetry")
+    require(host, '"gpu_grouped_singleton"', "singleton fallback telemetry")
+    require(host, '"gpu_grouped_mixed_masks"', "mixed-mask fallback telemetry")
+    require(host, '"gpu_grouped_order_sensitive"', "order-sensitive fallback telemetry")
 
     require(cohort, "'gpu-cull-compact': 'OPENMW_VK_GPU_CULL_COMPACT'", "benchmark feature mapping")
     require(launcher, "GPU_COMPACT_BASE = GPU_CULL_CANDIDATE", "P3A common baseline")
