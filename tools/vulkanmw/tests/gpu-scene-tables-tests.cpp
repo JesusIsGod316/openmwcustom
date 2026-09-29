@@ -10,6 +10,8 @@ int main()
     RenderWorldPublisher publisher(world);
     RenderVsg::GpuSceneTables tables;
     tables.reset(world.epoch(), world.revision());
+    const std::uint64_t initialLightSerial = tables.lightSerial();
+    assert(initialLightSerial != 0);
 
     std::size_t observerCalls = 0;
     publisher.setAppliedObserver([&](const RenderWorldUpdateBatch& batch, const RenderWorld& committed) {
@@ -34,6 +36,19 @@ int main()
     assert(tables.dirty(RenderVsg::GpuSceneTables::Kind::Light).last
         == std::max(first->slot(), second->slot()) + 1);
     assert(tables.stats().creates == 2);
+    const std::uint64_t createdLightSerial = tables.lightSerial();
+    assert(createdLightSerial == initialLightSerial + 1);
+
+    // Unrelated authoritative world deltas do not invalidate the packed light
+    // source. This is the P2 O(1) fast path used by every derived view.
+    const auto mesh = world.reserveMesh();
+    assert(mesh);
+    RenderWorldUpdateBatch meshBatch(world.epoch(), publisher.nextSequence(), "gpu-scene-table-non-light");
+    assert(meshBatch.add(CreateMesh{*mesh, MeshRecord{}}));
+    assert(meshBatch.seal());
+    assert(publisher.apply(meshBatch) == PublishStatus::Applied);
+    assert(observerCalls == 2);
+    assert(tables.lightSerial() == createdLightSerial);
 
     tables.clearDirty();
     LightRecord stale = *world.get(*first);
@@ -41,7 +56,8 @@ int main()
     assert(rejected.add(UpdateLight{*first, stale}));
     assert(rejected.seal());
     assert(publisher.apply(rejected) == PublishStatus::OperationRejected);
-    assert(observerCalls == 1);
+    assert(observerCalls == 2);
+    assert(tables.lightSerial() == createdLightSerial);
     assert(!tables.dirty(RenderVsg::GpuSceneTables::Kind::Light).dirty());
 
     LightRecord moved = *world.get(*first);
@@ -51,7 +67,8 @@ int main()
     assert(update.add(UpdateLight{*first, moved}));
     assert(update.seal());
     assert(publisher.apply(update) == PublishStatus::Applied);
-    assert(observerCalls == 2);
+    assert(observerCalls == 3);
+    assert(tables.lightSerial() == createdLightSerial + 1);
     assert(tables.current(world));
     const auto& firstSlot = tables.table(RenderVsg::GpuSceneTables::Kind::Light).at(first->slot());
     assert(firstSlot.live && firstSlot.generation == first->generation());
@@ -65,7 +82,8 @@ int main()
     assert(retire.add(RetireLight{*second}));
     assert(retire.seal());
     assert(publisher.apply(retire) == PublishStatus::Applied);
-    assert(observerCalls == 3);
+    assert(observerCalls == 4);
+    assert(tables.lightSerial() == createdLightSerial + 2);
     assert(tables.current(world));
     assert(tables.live(RenderVsg::GpuSceneTables::Kind::Light) == 1);
     const auto& secondSlot = tables.table(RenderVsg::GpuSceneTables::Kind::Light).at(second->slot());
@@ -83,7 +101,8 @@ int main()
     assert(transientBatch.add(RetireLight{*transient}));
     assert(transientBatch.seal());
     assert(publisher.apply(transientBatch) == PublishStatus::Applied);
-    assert(observerCalls == 4);
+    assert(observerCalls == 5);
+    assert(tables.lightSerial() == createdLightSerial + 3);
     assert(tables.current(world));
     const auto& transientSlot = tables.table(RenderVsg::GpuSceneTables::Kind::Light).at(transient->slot());
     assert(!transientSlot.live && transientSlot.generation == transient->generation());
