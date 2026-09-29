@@ -40,11 +40,14 @@ def main() -> None:
     for token in ('valid_leaf_capture=', '.frames.csv', '.renderer.csv', 'installBeforeRealize', 'GLCallTrace::Scope'):
         need(token in trace, 'missing root-cause coverage or scope: ' + token)
     for path in ('riggeometry.cpp', 'morphgeometry.cpp'):
-        need('StaticGeometryPrewarm::prepare(renderInfo, mGeometry[0].get())' in read('components/sceneutil/'+path),
-             'shared-static preparation must be wired to actual rig/morph compile methods')
+        production = read('components/sceneutil/' + path)
+        need('StaticGeometryPrewarm::prepare' not in production,
+             'crash-correlated static actor prewarm must not remain wired to production')
+        need('staticgeometryprewarm.hpp' not in production,
+             'production actor/morph source must not include the rejected prewarm helper')
     prewarm = read('components/sceneutil/staticgeometryprewarm.hpp')
-    for token in ('OPENMW_P9_STATIC_PREWARM', 'b==privatePose', 'GL_STATIC_DRAW_ARB', '8u*1024u*1024u'):
-        need(token in prewarm, 'static-only ownership/budget guard missing: '+token)
+    need('OPENMW_P9_STATIC_PREWARM' in prewarm,
+         'rejected helper may remain as isolated historical source but must stay explicit opt-in')
     need('viewer.areThreadsRunning()' in trace and '"3.6.5"' in trace, 'trace installation guard missing')
     need('typeid(*cv) != typeid(osgUtil::CullVisitor)' in trace, 'unknown cull visitor must remain unchanged')
     need('osgUtil::RenderLeaf::render(info, previous)' in trace, 'stock trace-off leaf fallback missing')
@@ -59,7 +62,13 @@ def main() -> None:
     need('depth == c.motion.get()' in temporal, 'motion output/depth input alias must be rejected')
     need('RestoreDrawState' in temporal and 'GL_READ_FRAMEBUFFER_BINDING' in temporal,
          'independent framebuffer/read/viewport restoration missing')
-    need('true, false};' in temporal, 'camera-only submission must not advertise dense dynamic motion')
+    need('c.status.denseDynamicMotion = false;' in temporal,
+         'camera/static submission must not advertise dense dynamic motion')
+    need('consumerFrame(unsigned context)' in read('apps/openmw/mwrender/temporalmotion.hpp')
+         and 'RenderCore::Temporal::rowMajor(frame->currentViewProjection)' in temporal,
+         'consumer-ready temporal matrix contract missing')
+    need('Debug::V36GpuProfiler::ScopedPass' in temporal and '"temporal/camera_motion"' in temporal,
+         'nonblocking GPU timing for temporal input pass missing')
     for forbidden in ('glFinish(', 'glClientWaitSync(', 'glReadPixels(', 'glGetTexImage('):
         need(forbidden not in stream + temporal + trace, 'production path contains a wait/readback: ' + forbidden)
 
@@ -74,16 +83,41 @@ def main() -> None:
          'real presentation hook missing')
     need('setDataVariance(osg::Object::DYNAMIC)' in canvas, 'temporal frame slot must retain CPU ownership barrier')
     need('TemporalMotion::debugView()' in canvas, 'normal color must not be replaced by the debug view')
+    need('p9TemporalInputWriter()' in canvas and 'requiredForDlss' in canvas
+         and 'status.denseDynamicMotion' in canvas,
+         'DLSS input-readiness telemetry must fail closed until dense motion exists')
     need('luminancecalculator pingpongcanvas nisscaler temporalmotion' in read('apps/openmw/CMakeLists.txt'),
          'new production implementation is not in the game target')
+
+    composite_h = read('components/terrain/compositemaprenderer.hpp')
+    composite_cpp = read('components/terrain/compositemaprenderer.cpp')
+    terrain_world = read('components/terrain/world.cpp')
+    need('return "CompositeMapRenderer"' in composite_h
+         and 'setName("TerrainCompositeMapRenderer")' in composite_cpp
+         and 'setName("TerrainCompositeMapCamera")' in terrain_world,
+         'persistent terrain composite drawable/camera identity is missing')
+    need('p9CompositeWriter()' in composite_cpp and 'telemetry->stateMs' in composite_cpp
+         and 'telemetry->drawMs' in composite_cpp,
+         'terrain composite state/draw attribution missing')
+    gltrace = read('components/sceneutil/glcalltrace.hpp')
+    need('std::array<std::uint64_t, 8> args' in gltrace and 'mBreadcrumbs' in gltrace
+         and '.gl-last.csv' in gltrace,
+         'extended GL arguments/crash breadcrumb contract missing')
+    for token in ('nodePathHash', 'ownerName', 'cameraBucket', 'texture0Bytes', 'camera_bucket='):
+        need(token in trace, 'draw identity/camera/resource telemetry missing: ' + token)
 
     launcher = read('tools/optimizedmw/phase9/OptimizedMW_Test.ps1')
     for token in ('Get-P9Mode', 'OPENMW_P9_DYNAMIC_STREAM=$mode.Stream',
                   'OPENMW_P9_TEMPORAL_INPUTS=$mode.Temporal', 'OPENMW_P9_MOTION_VIEW=$mode.View',
                   'OPENMW_P9_LEAF_TRACE_FILE', 'OPENMW_P9_DYNAMIC_TRACE_FILE',
+                  'OPENMW_P9_TEMPORAL_FILE', 'OPENMW_P9_COMPOSITE_FILE', 'OPENMW_V36_GPU_PASS_FILE',
                   'phase9_dense_dynamic_motion=false', 'phase9_scene_jitter=false',
-                  'OPENMW_P9_STATIC_PREWARM=$mode.Prewarm', 'Test-Phase9TraceCapture -ProfileDir'):
+                  'phase9_static_prewarm=disabled_after_optimized_trace_driver_crash',
+                  'phase9_temporal_contract=consumer_frame_v1',
+                  'Test-Phase9TraceCapture -ProfileDir'):
         need(token in launcher, 'missing actual launcher control/provenance: ' + token)
+    need('$mode.Prewarm' not in launcher and 'OPENMW_P9_STATIC_PREWARM=$mode.Prewarm' not in launcher,
+         'rejected prewarm must not be selectable from the shipped launcher')
     need(launcher.index('settings_restore_verified=$restoreVerified') < launcher.index('Complete-Phase9Profile -ProfileDir'),
          'restore settings before packaging')
     archive = read('tools/optimizedmw/phase9/OptimizedMW_ProfileArchive.ps1')
