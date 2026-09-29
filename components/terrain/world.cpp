@@ -3,6 +3,7 @@
 #include <osg/Camera>
 #include <osg/Group>
 
+#include <components/debug/v36gpuprofiler.hpp>
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/settings/values.hpp>
@@ -36,6 +37,9 @@ namespace Terrain
         compositeCam->setReferenceFrame(osg::Camera::ABSOLUTE_RF);
         compositeCam->setClearMask(0);
         compositeCam->setNodeMask(preCompileMask);
+        compositeCam->setName("TerrainCompositeMapCamera");
+        if (Settings::cells().mV36AsyncGpuProfiler)
+            Debug::V36GpuProfiler::attachCamera(*compositeCam, "terrain_composite");
         mCompositeMapCamera = compositeCam;
 
         compileRoot->addChild(compositeCam);
