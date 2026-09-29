@@ -12,9 +12,12 @@ required = [
     (tables, "class GpuSceneTables final"),
     (tables, "RenderCore::ReparentInstance"),
     (tables, "DirtyRange"),
+    (tables, "lightSerial()"),
     (session, 'environmentFlag<"OPENMW_VK_GPU_SCENE_TABLES">()'),
     (session, "setAppliedObserver"),
     (host, "applyWorldUpdateBatch"),
+    (host, "mGpuSceneTables.lightSerial()"),
+    (host, "plan.sourceSerial = lightSerial"),
     (host, "P2 GPU scene tables missed or rejected an authoritative RenderWorld delta"),
 ]
 for text, needle in required:
