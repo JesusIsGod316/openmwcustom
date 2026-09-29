@@ -950,7 +950,6 @@ void main()
         dispatchState->add(vsg::BindComputePipeline::create(pipeline));
         dispatchState->add(vsg::BindDescriptorSet::create(
             VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, descriptorSet));
-        const auto placementCount = static_cast<std::uint32_t>(plan.placements.size());
         dispatchState->addChild(vsg::Dispatch::create(
             (placementCount + CullWorkgroupSize - 1u) / CullWorkgroupSize, 1, 1));
 
@@ -979,7 +978,8 @@ void main()
         result.compute->addChild(afterWriteCommand);
 
         std::size_t replacementIndex = 0;
-        replaceDraws(graphicsRoot, indirectRanges, indirectViewId, placementCount, replacementIndex);
+        replaceDraws(graphicsRoot, indirectRanges, indirectViewId, placementCount, false,
+            {}, {}, {}, replacementIndex);
         if (replacementIndex != draws.size())
         {
             diagnostic = "P3 GPU population cull draw replacement lost graph identity";
