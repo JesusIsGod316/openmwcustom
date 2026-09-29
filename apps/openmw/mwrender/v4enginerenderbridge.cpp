@@ -785,7 +785,8 @@ namespace MWRender
                 if (planned && objectProducer && objectProducer->hasIntrinsicParticles())
                 {
                     V4AnimatedObjectCaptureVisitor particlesVisitor("animated-object:" + *identity, mVfs,
-                        &mTextureIdentities, V4AnimatedObjectCaptureVisitor::Mode::ParticlesOnly);
+                        &mTextureIdentities, V4AnimatedObjectCaptureVisitor::Mode::ParticlesOnly,
+                        source.camera.worldPosition, source.lodScale);
                     particlesVisitor.setTraversalNumber(mPoseTraversal);
                     evaluatedRoot->accept(particlesVisitor);
                     auto particles = particlesVisitor.take();
@@ -815,7 +816,9 @@ namespace MWRender
                 if (planned) capturedObject = std::move(*planned);
                 else
                 {
-                    V4AnimatedObjectCaptureVisitor objectVisitor("animated-object:" + *identity, mVfs, &mTextureIdentities);
+                    V4AnimatedObjectCaptureVisitor objectVisitor("animated-object:" + *identity, mVfs,
+                        &mTextureIdentities, V4AnimatedObjectCaptureVisitor::Mode::WholeObject,
+                        source.camera.worldPosition, source.lodScale);
                     objectVisitor.setTraversalNumber(mPoseTraversal);
                     evaluatedRoot->accept(objectVisitor);
                     capturedObject = objectVisitor.take();
