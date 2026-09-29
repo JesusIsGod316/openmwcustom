@@ -26,6 +26,8 @@ CANDIDATE = BASE + '+queues'
 # the comparison conflates feature availability with scheduling ownership.
 SUPPORTED_BASE = CANDIDATE + '+particles'
 SUPPORTED_CANDIDATE = SUPPORTED_BASE + '+supported-continuous'
+GPU_TABLE_BASE = SUPPORTED_CANDIDATE
+GPU_TABLE_CANDIDATE = GPU_TABLE_BASE + '+gpu-tables'
 
 
 def source_identity(package):
@@ -57,13 +59,20 @@ def main():
     parser.add_argument('--package', type=Path, default=HERE.parents[1])
     parser.add_argument('--user-config', type=Path, default=cohort.profile.dc.normal_default())
     parser.add_argument('--single', choices=('candidate', 'control'), help='One smoke run, not a performance verdict')
-    parser.add_argument('--supported-continuous', action='store_true',
-                        help='A/B supported actor/particle producers with dirty queues enabled in both arms')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--supported-continuous', action='store_true',
+                      help='A/B supported actor/particle producers with dirty queues enabled in both arms')
+    mode.add_argument('--gpu-scene-tables', action='store_true',
+                      help='A/B P2 direct-delta GPU scene tables with repaired P1 producer stack in both arms')
     args = parser.parse_args()
     package = args.package.resolve()
     source = source_identity(package)
-    baseline = SUPPORTED_BASE if args.supported_continuous else BASE
-    candidate = SUPPORTED_CANDIDATE if args.supported_continuous else CANDIDATE
+    if args.gpu_scene_tables:
+        baseline, candidate = GPU_TABLE_BASE, GPU_TABLE_CANDIDATE
+    elif args.supported_continuous:
+        baseline, candidate = SUPPORTED_BASE, SUPPORTED_CANDIDATE
+    else:
+        baseline, candidate = BASE, CANDIDATE
     sequence = [('control', baseline), ('candidate', candidate), ('candidate', candidate), ('control', baseline)]
     if args.single:
         sequence = [(args.single, candidate if args.single == 'candidate' else baseline)]
