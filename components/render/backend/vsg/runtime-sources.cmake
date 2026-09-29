@@ -11,6 +11,7 @@ set(OPENMW_V4_VSG_RUNTIME_SOURCES
     "${CMAKE_SOURCE_DIR}/components/nifrender/staticniftranslator.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/auxiliaryreadback.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/legacymaterialshader.cpp"
+    "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/gpupopulationcull.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/openmwviewdependentstate.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/offscreenrendertarget.cpp"
     "${CMAKE_SOURCE_DIR}/components/render/backend/vsg/nativepostprocess.cpp"
