@@ -1,7 +1,6 @@
 #include "temporalmotion.hpp"
 
 #include <components/rendercore/temporalframe.hpp>
-#include <components/debug/v36gpuprofiler.hpp>
 #include <osg/ColorMask>
 #include <osg/FrameBufferObject>
 #include <osg/FrameStamp>
@@ -244,10 +243,7 @@ namespace MWRender
             return nullptr;
         }
         glViewport(0, 0, camera.renderWidth, camera.renderHeight);
-        {
-            Debug::V36GpuProfiler::ScopedPass gpuPass(info, "temporal/camera_motion");
-            fullscreen.osg::Geometry::drawImplementation(info);
-        }
+        fullscreen.osg::Geometry::drawImplementation(info);
         if (!c.history.commit(frame->ticket)) return nullptr;
 
         c.status.frame = camera.frame;
