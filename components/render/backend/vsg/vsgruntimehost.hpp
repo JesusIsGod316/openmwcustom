@@ -282,6 +282,7 @@ namespace RenderVsg
         vsg::ref_ptr<vsg::Group> mGpuPopulationCullRoot;
         vsg::ref_ptr<vsg::vec4Array> mGpuPopulationCullViewData;
         bool mGpuPopulationCullEnabled = false;
+        bool mGpuPopulationCompactEnabled = false;
         // Stable holder attached to the shared scene plus separately-owned published
         // dynamic content. Replacement never mutates mSceneRoot child ordering and
         // the old generation stays strongly owned through frame-safe retirement.
