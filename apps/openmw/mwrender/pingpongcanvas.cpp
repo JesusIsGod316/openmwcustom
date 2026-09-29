@@ -1,6 +1,7 @@
 #include "pingpongcanvas.hpp"
 
 #include <cassert>
+#include <cstdint>
 #include <iomanip>
 #include <sstream>
 
@@ -141,6 +142,40 @@ namespace MWRender
         {
             auto* depth = dynamic_cast<osg::Texture2D*>(mTextureDepth.get());
             osg::Texture2D* flow = mTemporalMotion->render(renderInfo, mTemporalCamera, depth, *this);
+
+            auto& temporalWriter = Debug::V3Diagnostics::p9TemporalInputWriter();
+            if (temporalWriter.enabled())
+            {
+                const auto status = mTemporalMotion->status(state.getContextID());
+                const auto consumer = mTemporalMotion->consumerFrame(state.getContextID());
+                std::uint32_t inputMask = 0;
+                if (mTextureScene) inputMask |= 1u << 0;
+                if (depth) inputMask |= 1u << 1;
+                if (flow) inputMask |= 1u << 2;
+                if (status.renderWidth && status.renderHeight && status.outputWidth && status.outputHeight)
+                    inputMask |= 1u << 3;
+                if (consumer) inputMask |= 1u << 4;
+                if (status.historyValid) inputMask |= 1u << 5;
+                if (status.denseDynamicMotion) inputMask |= 1u << 6;
+                constexpr std::uint32_t requiredForDlss
+                    = (1u << 0) | (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 6);
+                const bool dlssReady = status.submitted && (inputMask & requiredForDlss) == requiredForDlss;
+                std::ostringstream row;
+                row << status.frame << ',' << Debug::V3Diagnostics::epochMs() << ',' << state.getContextID() << ','
+                    << (status.submitted ? 1 : 0) << ',' << (status.historyValid ? 1 : 0) << ','
+                    << status.previousFrame << ',' << status.resetReasons << ','
+                    << status.renderWidth << ',' << status.renderHeight << ',' << status.outputWidth << ','
+                    << status.outputHeight << ',' << status.targetRevision << ','
+                    << std::fixed << std::setprecision(4) << status.jitterPixels.x() << ',' << status.jitterPixels.y()
+                    << ',' << status.previousJitterPixels.x() << ',' << status.previousJitterPixels.y() << ','
+                    << (status.denseDynamicMotion ? 1 : 0) << ','
+                    << reinterpret_cast<std::uintptr_t>(mTextureScene.get()) << ','
+                    << reinterpret_cast<std::uintptr_t>(depth) << ','
+                    << reinterpret_cast<std::uintptr_t>(flow) << ','
+                    << inputMask << ',' << (dlssReady ? 1 : 0);
+                temporalWriter.writeLine(row.str());
+            }
+
             if (flow && mMotionViewState && TemporalMotion::debugView())
             {
                 state.pushStateSet(mMotionViewState);
