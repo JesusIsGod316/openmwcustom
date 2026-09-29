@@ -67,8 +67,8 @@ def main() -> None:
     need('consumerFrame(unsigned context)' in read('apps/openmw/mwrender/temporalmotion.hpp')
          and 'RenderCore::Temporal::rowMajor(frame->currentViewProjection)' in temporal,
          'consumer-ready temporal matrix contract missing')
-    need('Debug::V36GpuProfiler::ScopedPass' in temporal and '"temporal/camera_motion"' in temporal,
-         'nonblocking GPU timing for temporal input pass missing')
+    # GPU timing lives at the canvas seam so the standalone temporal math/render
+    # target does not inherit the full legacy diagnostics header graph.
     for forbidden in ('glFinish(', 'glClientWaitSync(', 'glReadPixels(', 'glGetTexImage('):
         need(forbidden not in stream + temporal + trace, 'production path contains a wait/readback: ' + forbidden)
 
@@ -86,6 +86,8 @@ def main() -> None:
     need('p9TemporalInputWriter()' in canvas and 'requiredForDlss' in canvas
          and 'status.denseDynamicMotion' in canvas,
          'DLSS input-readiness telemetry must fail closed until dense motion exists')
+    need('Debug::V36GpuProfiler::ScopedPass' in canvas and '"temporal/camera_motion"' in canvas,
+         'nonblocking GPU timing for temporal input pass missing')
     need('luminancecalculator pingpongcanvas nisscaler temporalmotion' in read('apps/openmw/CMakeLists.txt'),
          'new production implementation is not in the game target')
 
