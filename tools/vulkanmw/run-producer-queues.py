@@ -28,6 +28,8 @@ SUPPORTED_BASE = CANDIDATE + '+particles'
 SUPPORTED_CANDIDATE = SUPPORTED_BASE + '+supported-continuous'
 GPU_TABLE_BASE = SUPPORTED_CANDIDATE
 GPU_TABLE_CANDIDATE = GPU_TABLE_BASE + '+gpu-tables'
+GPU_CULL_BASE = GPU_TABLE_CANDIDATE
+GPU_CULL_CANDIDATE = GPU_CULL_BASE + '+gpu-cull-indirect'
 
 
 def source_identity(package):
@@ -64,10 +66,14 @@ def main():
                       help='A/B supported actor/particle producers with dirty queues enabled in both arms')
     mode.add_argument('--gpu-scene-tables', action='store_true',
                       help='A/B P2 direct-delta GPU scene tables with repaired P1 producer stack in both arms')
+    mode.add_argument('--gpu-cull-indirect', action='store_true',
+                      help='A/B P3 GPU population cull + indirect draw with the complete P2 stack in both arms')
     args = parser.parse_args()
     package = args.package.resolve()
     source = source_identity(package)
-    if args.gpu_scene_tables:
+    if args.gpu_cull_indirect:
+        baseline, candidate = GPU_CULL_BASE, GPU_CULL_CANDIDATE
+    elif args.gpu_scene_tables:
         baseline, candidate = GPU_TABLE_BASE, GPU_TABLE_CANDIDATE
     elif args.supported_continuous:
         baseline, candidate = SUPPORTED_BASE, SUPPORTED_CANDIDATE
