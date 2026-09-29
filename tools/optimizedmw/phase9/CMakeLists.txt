@@ -54,6 +54,7 @@ if(P9_REQUIRE_GAME_SDK)
   add_library(p9-game-integration OBJECT
     ${ROOT}/apps/openmw/mwrender/postprocessor.cpp
     ${ROOT}/apps/openmw/mwrender/camera.cpp
+    ${ROOT}/apps/openmw/mwrender/occlusionculling.cpp
     ${ROOT}/apps/openmw/mwrender/pingpongcanvas.cpp
     ${ROOT}/apps/openmw/mwrender/pingpongcull.cpp
     ${ROOT}/components/sceneutil/riggeometry.cpp
@@ -68,3 +69,17 @@ if(P9_REQUIRE_GAME_SDK)
     target_compile_options(p9-game-integration PRIVATE -Wno-error)
   endif()
 endif()
+
+add_executable(p9-rootcause rootcause-tests.cpp)
+target_link_libraries(p9-rootcause PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
+foreach(fixture cull prep gl startup)
+  add_test(NAME p9-rootcause-${fixture} COMMAND p9-rootcause ${fixture})
+  set_tests_properties(p9-rootcause-${fixture} PROPERTIES TIMEOUT 30
+    ENVIRONMENT "OPENMW_P9_SHARED_PREP=1;OPENMW_P9_SHARED_PREP_FILE=${CMAKE_CURRENT_BINARY_DIR}/${fixture}-shared.txt;OPENMW_P9_LEAF_TRACE_FILE=${CMAKE_CURRENT_BINARY_DIR}/${fixture}-leaf.csv;OPENMW_P9_GL_TRACE_FILE=${CMAKE_CURRENT_BINARY_DIR}/${fixture}-gl.csv")
+endforeach()
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME p9-rootcause-evidence
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/trace-output-tests.py ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(p9-rootcause-evidence PROPERTIES
+  DEPENDS "p9-rootcause-gl;p9-rootcause-startup;p9-rootcause-prep" TIMEOUT 30)

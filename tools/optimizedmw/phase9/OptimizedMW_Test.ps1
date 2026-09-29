@@ -35,35 +35,40 @@ function Set-IniValue {
 
 function Get-P9Mode {
     param([string]$Choice)
-    # All normal Phase 9 comparisons retain the SAME P8U1 donor/resource stack.
-    $result=@{Name='REFERENCE';Stream='0';Temporal='0';View='0';Trace='0'}
+    # The P8U1 foundation is identical. Primary modes never enable HITCH1.
+    $result=@{Name='REFERENCE';Stream='0';Temporal='0';View='0';Trace='0';Prep='0';Cull='0'}
     switch($Choice){
         '1'{}
-        '2'{$result.Name='HITCH';$result.Stream='1'}
-        '3'{$result.Name='TEMPORAL';$result.Temporal='1'}
-        '4'{$result.Name='COMBINED';$result.Stream='1';$result.Temporal='1'}
-        '5'{$result.Name='MOTION-VIEW';$result.Temporal='1';$result.View='1'}
-        '6'{$result.Name='HITCH-TRACE';$result.Stream='1';$result.Trace='1'}
-        '7'{$result.Name='REFERENCE-TRACE';$result.Trace='1'}
+        '2'{$result.Name='OPTIMIZED';$result.Prep='1';$result.Cull='1'}
+        '3'{$result.Name='ROOT-CAUSE-TRACE';$result.Trace='1'}
+        '4'{$result.Name='OPTIMIZED-TRACE';$result.Prep='1';$result.Cull='1';$result.Trace='1'}
+        '5'{$result.Name='TEMPORAL';$result.Temporal='1'}
+        '6'{$result.Name='COMBINED';$result.Prep='1';$result.Cull='1';$result.Temporal='1'}
+        '7'{$result.Name='MOTION-VIEW';$result.Temporal='1';$result.View='1'}
+        '8'{$result.Name='HITCH';$result.Stream='1'}
+        '9'{$result.Name='HITCH-TRACE';$result.Stream='1';$result.Trace='1'}
+        '10'{$result.Name='CULL-INPUTS';$result.Cull='1'}
+        '11'{$result.Name='SHARED-PREP';$result.Prep='1'}
         default{throw 'Invalid Phase 9 mode'}
     }
     return $result
 }
 
 Write-Host ''
-Write-Host 'OptimizedMW Phase 9 - draw-side hitch experiment and temporal integration' -ForegroundColor Cyan
-Write-Host '  1 = REFERENCE        same P8U1 COMBINED foundation, new Phase 9 work off'
-Write-Host '  2 = HITCH            private rig/morph vertex-buffer refresh'
-Write-Host '  3 = TEMPORAL         camera/static motion inputs; normal image retained'
-Write-Host '  4 = COMBINED         HITCH + TEMPORAL'
-Write-Host ''
-Write-Host 'Diagnostic views (not clean performance runs):'
-Write-Host '  5 = MOTION-VIEW      visualize camera/static motion; not complete actor motion'
-Write-Host '  6 = HITCH-TRACE      HITCH plus bounded state/draw/stream attribution'
-Write-Host '  7 = REFERENCE-TRACE  same tracing with the buffer experiment off'
+Write-Host 'OptimizedMW Phase 9 - root-cause trace and shared-resource preparation' -ForegroundColor Cyan
+Write-Host '  1 = REFERENCE          P8U1 foundation; new preparation/cull reuse off'
+Write-Host '  2 = OPTIMIZED          shared static actor buffers + traversal-local inverse reuse'
+Write-Host '  3 = ROOT-CAUSE-TRACE   reference plus state/draw and selected GL-call attribution'
+Write-Host '  4 = OPTIMIZED-TRACE    same diagnostics with preparation and inverse reuse on'
+Write-Host '  A = Show advanced temporal, isolated optimization and old HITCH1 modes'
 Write-Host 'DLSS/DLAA are NOT implemented. Scene jitter stays OFF; native/NIS remain intact.'
-Write-Host ''
-do{$choice=Read-Host 'Choose mode (1-7; compare 1 then 2 first)'}until($choice -in @('1','2','3','4','5','6','7'))
+do{
+    $choice=Read-Host 'Choose mode (1-4, or A for advanced)'
+    if($choice -eq 'A'){
+        Write-Host '  5 TEMPORAL | 6 COMBINED (optimized + temporal) | 7 MOTION-VIEW'
+        Write-Host '  8 HITCH1 (unpromoted) | 9 HITCH1-TRACE | 10 CULL-INPUTS only | 11 SHARED-PREP only'
+    }
+}until($choice -in @('1','2','3','4','5','6','7','8','9','10','11'))
 $mode=Get-P9Mode $choice
 
 $SchedulerMode='2'
@@ -246,6 +251,9 @@ try{
         "expected_lineage=optimizedmw/phase9",
         "phase9_reference=P8U1_COMBINED_SAME_BINARY",
         "phase9_dynamic_stream=$($mode.Stream)",
+        "phase9_shared_prep=$($mode.Prep)",
+        "phase9_cull_input_reuse=$($mode.Cull)",
+        "phase9_rootcause_revision=2",
         "phase9_temporal_inputs=$($mode.Temporal)",
         "phase9_motion_view=$($mode.View)",
         "phase9_draw_trace=$($mode.Trace)",
@@ -341,11 +349,15 @@ try{
     $env:OPENMW_P8G4_STATS='1'
     $env:OPENMW_OSG_STATS_LIST='times;resource'
     $env:OPENMW_P8G3_STATS='1'
+    $env:OPENMW_P9_SHARED_PREP=$mode.Prep
+    $env:OPENMW_P9_CULL_INPUT_REUSE=$mode.Cull
+    $env:OPENMW_P9_SHARED_PREP_FILE=Join-Path $ProfileDir 'p9-shared-prep.txt'
     $env:OPENMW_P9_DYNAMIC_STREAM=$mode.Stream
     $env:OPENMW_P9_TEMPORAL_INPUTS=$mode.Temporal
     $env:OPENMW_P9_MOTION_VIEW=$mode.View
     if($mode.Trace -eq '1'){
         $env:OPENMW_P9_LEAF_TRACE_FILE=Join-Path $ProfileDir 'p9-draw-phases.csv'
+        $env:OPENMW_P9_GL_TRACE_FILE=Join-Path $ProfileDir 'p9-gl-calls.csv'
         $env:OPENMW_P9_DYNAMIC_TRACE_FILE=Join-Path $ProfileDir 'p9-dynamic-stream.csv'
     }
 
@@ -416,6 +428,20 @@ finally{
     try{if($ownsMutex){$mutex.ReleaseMutex()}}finally{$mutex.Dispose()}
 }
 
+# Missing instrumentation is an invalid diagnostic capture, not a zero-cost result.
+# Still package every available byte before reporting failure to the user.
+try{
+    $traceHealth=Test-Phase9TraceCapture -ProfileDir $ProfileDir -Requested ($mode.Trace -eq '1')
+}catch{
+    $traceHealth=[pscustomobject]@{valid=$false;complete=$false;errors=@([string]$_);warnings=@()}
+    Write-Host "Trace-health verification failed: $_. Raw evidence will still be packaged." -ForegroundColor Red
+}
+if(-not $traceHealth.valid){
+    Write-Host 'TRACE INVALID: the diagnostic did not collect the required live rendering data.' -ForegroundColor Red
+    Write-Host ($traceHealth.errors -join '; ') -ForegroundColor Red
+}elseif(-not $traceHealth.complete){
+    Write-Host ('TRACE PARTIAL: '+($traceHealth.warnings -join '; ')) -ForegroundColor Yellow
+}
 try{
     $zip=Complete-Phase9Profile -ProfileDir $ProfileDir -GameDir $GameDir
     Write-Host ''
@@ -431,3 +457,4 @@ try{
 }
 Read-Host 'Press Enter to close'
 if(-not $restoreVerified -or $null -ne $launchFailure){exit 1}
+if(-not $traceHealth.valid){exit 3}

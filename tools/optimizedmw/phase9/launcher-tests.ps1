@@ -13,12 +13,22 @@ if(-not $fn){throw 'Missing Phase 9 mode function'}
 . ([scriptblock]::Create($fn.Extent.Text))
 . (Join-Path $root 'OptimizedMW_ProfileArchive.ps1')
 $expected=@(
-    @('REFERENCE','0','0','0','0'),@('HITCH','1','0','0','0'),@('TEMPORAL','0','1','0','0'),
-    @('COMBINED','1','1','0','0'),@('MOTION-VIEW','0','1','1','0'),
-    @('HITCH-TRACE','1','0','0','1'),@('REFERENCE-TRACE','0','0','0','1'))
+    @('REFERENCE','0','0','0','0','0','0'),
+    @('OPTIMIZED','0','0','0','0','1','1'),
+    @('ROOT-CAUSE-TRACE','0','0','0','1','0','0'),
+    @('OPTIMIZED-TRACE','0','0','0','1','1','1'),
+    @('TEMPORAL','0','1','0','0','0','0'),
+    @('COMBINED','0','1','0','0','1','1'),
+    @('MOTION-VIEW','0','1','1','0','0','0'),
+    @('HITCH','1','0','0','0','0','0'),
+    @('HITCH-TRACE','1','0','0','1','0','0'),
+    @('CULL-INPUTS','0','0','0','0','0','1'),
+    @('SHARED-PREP','0','0','0','0','1','0'))
 for($i=0;$i -lt $expected.Count;$i++){
-    $m=Get-P9Mode ([string]($i+1));$keys=@('Name','Stream','Temporal','View','Trace')
-    for($k=0;$k -lt $keys.Count;$k++){if($m[$keys[$k]] -ne $expected[$i][$k]){throw 'Mode isolation changed'}}
+    $m=Get-P9Mode ([string]($i+1));$keys=@('Name','Stream','Temporal','View','Trace','Prep','Cull')
+    for($k=0;$k -lt $keys.Count;$k++){
+        if($m[$keys[$k]] -ne $expected[$i][$k]){throw ('Mode isolation changed: '+($i+1)+' '+$keys[$k])}
+    }
 }
 $bad=$false;try{$null=Get-P9Mode '99'}catch{$bad=$true};if(-not $bad){throw 'Unknown mode accepted'}
 $launcher=Get-Content -Raw -LiteralPath (Join-Path $root 'OptimizedMW_Test.ps1')
@@ -87,13 +97,44 @@ try{
     $zip=New-VerifiedProfileZip -SourceDir $temp -DestinationPath $zipFile -ReplaceExisting
     $archive=[IO.Compression.ZipFile]::OpenRead($zipFile)
     try{if(-not $archive.GetEntry('Phase9-BENCHMARK-REPORT.json') -or -not $archive.GetEntry('nested/binary.bin')){throw 'Verified archive omitted report or nested binary'}}finally{$archive.Dispose()}
+    # Trace health must distinguish a deliberately untraced run from failed
+    # installation, lost aggregates and bounded-pool overflow. No fast-frame
+    # trace is required to contain any slow-call rows.
+    $health=Test-Phase9TraceCapture -ProfileDir $temp -Requested $false
+    if(-not $health.valid){throw 'An ordinary performance run requires no deep trace'}
+    $health=Test-Phase9TraceCapture -ProfileDir $temp -Requested $true
+    if($health.valid -or $health.errors.Count -lt 2){throw 'Missing live trace accepted'}
+    @('total_calls=0','visitor_instances=0','rows_dropped=0') |
+        Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.status.txt')
+    @('calls=0','rows_dropped=0') | Set-Content -LiteralPath (Join-Path $temp 'p9-gl-calls.csv.status.txt')
+    foreach($file in @('p9-draw-phases.csv.frames.csv','p9-gl-calls.csv.frames.csv')){
+        @('frame,calls','1,5') | Set-Content -LiteralPath (Join-Path $temp $file)
+    }
+    $health=Test-Phase9TraceCapture -ProfileDir $temp -Requested $true
+    if($health.valid){throw 'The previous zero-installed-visitors failure passed trace health'}
+    @('total_calls=5','visitor_instances=2','rows_dropped=0','uninstrumented_pool_overflow=0') |
+        Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.status.txt')
+    @('calls=25','rows_dropped=0','frames_dropped=0','unsupported_contexts=0') |
+        Set-Content -LiteralPath (Join-Path $temp 'p9-gl-calls.csv.status.txt')
+    $health=Test-Phase9TraceCapture -ProfileDir $temp -Requested $true
+    if(-not $health.valid -or -not $health.complete){throw 'A complete live trace was rejected'}
+    'rows_dropped=3' | Set-Content -LiteralPath (Join-Path $temp 'p9-gl-calls.csv.status.txt')
+    'calls=25' | Add-Content -LiteralPath (Join-Path $temp 'p9-gl-calls.csv.status.txt')
+    $health=Test-Phase9TraceCapture -ProfileDir $temp -Requested $true
+    if(-not $health.valid -or $health.complete -or $health.warnings.Count -ne 1){throw 'Bounded trace loss not reported'}
+    Remove-Item -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.frames.csv')
+    $health=Test-Phase9TraceCapture -ProfileDir $temp -Requested $true
+    if($health.valid){throw 'Missing per-frame accounting accepted'}
+    $zip=New-VerifiedProfileZip -SourceDir $temp -DestinationPath $zipFile -ReplaceExisting
+    $archive=[IO.Compression.ZipFile]::OpenRead($zipFile)
+    try{if(-not $archive.GetEntry('TRACE-HEALTH.json')){throw 'Invalid trace evidence was not packaged'}}finally{$archive.Dispose()}
     # Crash/early failure evidence must still be packaged, not rejected for missing CSVs.
     Remove-Item -LiteralPath (Join-Path $temp 'v3-frame.csv')
     $zip=New-VerifiedProfileZip -SourceDir $temp -DestinationPath $zipFile -ReplaceExisting
     if($zip.Missing -notcontains 'v3-frame.csv'){throw 'Partial-capture provenance missing'}
     $bad=$false;try{$null=New-VerifiedProfileZip -SourceDir $temp -DestinationPath (Join-Path $temp 'bad.zip')}catch{$bad=$true}
     if(-not $bad){throw 'Self-containing archive accepted'}
-    Write-Host 'PASS Phase 9: 7 isolated modes, shader preflight, report fixtures, nested/spaced/bracket paths, real SHA256 ZIP verification, partial capture, report failure/timeout and verified replacement.'
+    Write-Host 'PASS Phase 9: 4 primary / 7 advanced isolated modes, trace health and failed instrumentation provenance, shader preflight, report fixtures, nested/spaced/bracket paths, real SHA256 ZIP verification, partial capture, report failure/timeout and verified replacement.'
 }finally{
     if(Test-Path -LiteralPath $zipFile){Remove-Item -LiteralPath $zipFile -Force}
     Remove-Item -LiteralPath $temp -Recurse -Force

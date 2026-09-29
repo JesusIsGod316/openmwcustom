@@ -1,5 +1,8 @@
 #include "occlusionculling.hpp"
 
+#include <components/sceneutil/cullviewcache.hpp>
+#include <optional>
+
 #include "objects.hpp"
 
 #include <algorithm>
@@ -10,6 +13,7 @@
 #include <osg/BoundingSphere>
 #include <osg/Camera>
 #include <osg/Group>
+#include <osg/Geometry>
 #include <osgUtil/CullVisitor>
 
 #include <components/debug/debuglog.hpp>
@@ -242,6 +246,11 @@ namespace MWRender
                 mCuller->rasterizeTerrainOccluder(mPositions, mIndices);
         }
 
+        // Scope is tied to this exact camera/matrix and this synchronous traversal.
+        // Secondary views and changed matrices always use their own inverse.
+        std::optional<SceneUtil::CullViewCache::Scope> p9View;
+        if (SceneUtil::CullViewCache::enabled()) p9View.emplace(*cam);
+
         // Continue normal cull traversal — CellOcclusionCallbacks will test against the buffer
         traverse(node, cv);
 
@@ -322,8 +331,14 @@ namespace MWRender
             viewInverse = &mCuller->getCachedViewInverse();
         else
         {
-            localViewInverse.invert(cv->getCurrentCamera()->getViewMatrix());
-            viewInverse = &localViewInverse;
+            const auto* cached = SceneUtil::CullViewCache::enabled()
+                ? SceneUtil::CullViewCache::Scope::find(*cv->getCurrentCamera()) : nullptr;
+            if (cached) viewInverse = cached;
+            else
+            {
+                localViewInverse.invert(cv->getCurrentCamera()->getViewMatrix());
+                viewInverse = &localViewInverse;
+            }
         }
         const osg::Matrixd modelToWorld = *cv->getModelViewMatrix() * (*viewInverse);
 
@@ -424,8 +439,14 @@ namespace MWRender
             viewInverse = &mCuller->getCachedViewInverse();
         else
         {
-            localViewInverse.invert(cv->getCurrentCamera()->getViewMatrix());
-            viewInverse = &localViewInverse;
+            const auto* cached = SceneUtil::CullViewCache::enabled()
+                ? SceneUtil::CullViewCache::Scope::find(*cv->getCurrentCamera()) : nullptr;
+            if (cached) viewInverse = cached;
+            else
+            {
+                localViewInverse.invert(cv->getCurrentCamera()->getViewMatrix());
+                viewInverse = &localViewInverse;
+            }
         }
         const osg::Matrixd modelToWorld = *cv->getModelViewMatrix() * (*viewInverse);
         const osg::BoundingBox worldBounds = transformLocalBounds(mLocalBounds, modelToWorld);

@@ -1,5 +1,7 @@
 #include "engine.hpp"
 
+#include <components/sceneutil/drawphasetrace.hpp>
+
 #include <components/resource/benchmarkcapture.hpp>
 #include <components/debug/runtimeprocessmemory.hpp>
 #include <components/debug/gameplaydiagnostics.hpp>
@@ -1344,6 +1346,16 @@ OMW::Engine::Engine(Files::ConfigurationManager& configurationManager)
 
 OMW::Engine::~Engine()
 {
+    if (mViewer && SceneUtil::GLCallTrace::Capture::instance().enabled())
+    {
+        // Restore diagnostic dispatch before tearing down owners/contexts. No
+        // GL operations are issued here; graphics workers must first be joined.
+        mViewer->stopThreading();
+        osgViewer::ViewerBase::Contexts contexts;
+        mViewer->getContexts(contexts);
+        for (auto* context : contexts)
+            if (context && context->getState()) SceneUtil::GLCallTrace::restore(*context->getState());
+    }
     if (mScreenCaptureOperation != nullptr)
     {
         mScreenCaptureOperation->stop();
@@ -1676,7 +1688,19 @@ void OMW::Engine::createWindow()
         realizeOperations->add(new Stereo::InitializeStereoOperation(settings));
     }
 
+    // Install before realize(): realize may start DrawThreadPerContext. The
+    // old PostProcessor installation happened too late and recorded no leaves.
+    const unsigned p9TraceViews = SceneUtil::DrawPhaseTrace::installRequired(*mViewer, Stereo::getStereo());
+    if (p9TraceViews)
+    {
+        realizeOperations->add(new SceneUtil::GLCallTrace::InstallOperation);
+        Log(Debug::Info) << "Phase 9 draw/state trace scene views installed=" + std::to_string(p9TraceViews)
+            + "; before realize; deferred numeric capture";
+    }
     mViewer->realize();
+    if (SceneUtil::GLCallTrace::Capture::instance().enabled()
+        && !SceneUtil::GLCallTrace::Capture::instance().installed(graphicsWindow->getState()->getContextID()))
+        throw std::runtime_error("Phase 9 selected GL-call trace failed to attach; no valid root-cause capture");
     mGlMaxTextureImageUnits = identifyOp->getMaxTextureImageUnits();
 
     mViewer->getEventQueue()->getCurrentEventState()->setWindowRectangle(

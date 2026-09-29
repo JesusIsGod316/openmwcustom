@@ -140,3 +140,36 @@ function Complete-Phase9Profile {
     }
     return $zip
 }
+
+# This check is independent of the optional report and never deletes raw evidence.
+function Test-Phase9TraceCapture {
+    param([Parameter(Mandatory=$true)][string]$ProfileDir,[bool]$Requested=$false)
+    $errors=[Collections.Generic.List[string]]::new()
+    $warnings=[Collections.Generic.List[string]]::new()
+    if($Requested){
+        foreach($spec in @(
+            @('p9-draw-phases.csv.status.txt','total_calls'),
+            @('p9-gl-calls.csv.status.txt','calls'))){
+            $path=Join-Path $ProfileDir $spec[0]
+            if(-not (Test-Path -LiteralPath $path)){[void]$errors.Add('Missing '+$spec[0]);continue}
+            $status=Get-Content -Raw -LiteralPath $path
+            $pattern='(?m)^'+[regex]::Escape($spec[1])+'=(\d+)\s*$'
+            $match=[regex]::Match($status,$pattern)
+            if(-not $match.Success -or [long]$match.Groups[1].Value -le 0){[void]$errors.Add('No live calls: '+$spec[0])}
+            foreach($drop in @('rows_dropped','frames_dropped','uninstrumented_pool_overflow','unsupported_contexts')){
+                $m=[regex]::Match($status,('(?m)^'+$drop+'=(\d+)\s*$'))
+                if($m.Success -and [long]$m.Groups[1].Value -gt 0){[void]$warnings.Add($spec[0]+': '+$drop+'='+$m.Groups[1].Value)}
+            }
+        }
+        foreach($name in @('p9-draw-phases.csv.frames.csv','p9-gl-calls.csv.frames.csv')){
+            $path=Join-Path $ProfileDir $name
+            if(-not (Test-Path -LiteralPath $path) -or @(Get-Content -LiteralPath $path -TotalCount 2 -ErrorAction SilentlyContinue).Count -lt 2){
+                [void]$errors.Add('Missing/empty frame aggregates: '+$name)
+            }
+        }
+    }
+    $result=[pscustomobject]@{requested=$Requested;valid=($errors.Count -eq 0);complete=($errors.Count -eq 0 -and $warnings.Count -eq 0);
+        errors=@($errors.ToArray());warnings=@($warnings.ToArray());scope='CPU leaf and selected extension calls; not all GL calls or GPU internals'}
+    $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ProfileDir 'TRACE-HEALTH.json') -Encoding UTF8
+    return $result
+}

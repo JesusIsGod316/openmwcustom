@@ -98,18 +98,20 @@ foreach($name in @('v3-frame.csv.capture-status.txt','p8g4-render.capture-status
     $statuses[$name]=if(Test-Path -LiteralPath $file){Get-Content -LiteralPath $file}else{@('MISSING: deferred capture not confirmed complete; legacy mode has no deferred status')}
 }
 $context=[ordered]@{}
-foreach($name in @('v3-shadow.csv','p6-render-traversal.csv','p6-render-phase.csv','p4-compile.csv','v3-events.csv','v3-paging.csv','p8g4-render.csv','p9-draw-phases.csv','p9-dynamic-stream.csv')){
+foreach($name in @('v3-shadow.csv','p6-render-traversal.csv','p6-render-phase.csv','p4-compile.csv','v3-events.csv','v3-paging.csv','p8g4-render.csv','p9-draw-phases.csv','p9-draw-phases.csv.frames.csv','p9-dynamic-stream.csv','p9-gl-calls.csv','p9-gl-calls.csv.frames.csv')){
     $file=Join-Path $ProfileDir $name
     if(Test-Path -LiteralPath $file){$context[$name]=[Phase9.Report]::Context($file,(Join-Path $ProfileDir ('cluster-context-'+$name)),$result.context_frames)}
 }
 $summary=[ordered]@{
-    format='phase9-offline-v1';scope='whole capture; historical matched route NOT automatically selected'
+    format='phase9-offline-v2';scope='whole capture; historical matched route NOT automatically selected'
     cluster_rule='wall >=25ms; bridge at most two intervening non-slow frames; context includes frame +/-1'
     attribution='largest recorded component on the peak frame, NOT causal proof; nested/parallel scopes must not be summed'
     unfiltered=$result.unfiltered;ordinary_under100=$result.ordinary_under100
     severe_frames_ge100=$result.severe_frames;clusters=$result.clusters
     other_ms_ge15_intervals_frames=$result.other_spike_intervals
     malformed_frame_rows=$result.malformed_rows;capture_status=$statuses;auxiliary_context=$context
+    trace_health=$(if(Test-Path -LiteralPath (Join-Path $ProfileDir 'TRACE-HEALTH.json')){Get-Content -Raw -LiteralPath (Join-Path $ProfileDir 'TRACE-HEALTH.json') | ConvertFrom-Json}else{'NOT_RECORDED'})
+    render_trace_limits='Leaf time includes selected GL calls: do not sum them. Core GL entry points, render-stage setup and driver internals remain outside the selected API coverage. Adjacent-frame extraction is context, not forced causality.'
     integrity_rule='Reject performance promotion when records dropped, allocation/output failed, normal_finish=0, malformed rows or missing clean-mode status'
     caveat='Periodic other_ms spikes are an unresolved instrumentation hypothesis, not removed or subtracted'
 }

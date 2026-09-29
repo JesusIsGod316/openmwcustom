@@ -146,3 +146,16 @@ are NOT working features of this checkpoint. Frame generation is out of scope.
 Clockwork/VulkanMW data-ownership principles inform the design; no wholesale
 renderer code has been imported. The newer archive events 155/156/157 belong to the
 separate VulkanMW track and are not overwritten.
+
+## Root-cause revision 2 (base bb4876a6)
+
+Supersedes the earlier trace installation and primary mode ordering. The old
+PostProcessor installation was too late: this revision installs before realization
+and verifies actual threaded rendering and post-exit evidence. Primary modes are
+REFERENCE / OPTIMIZED / ROOT-CAUSE-TRACE / OPTIMIZED-TRACE; HITCH1 and temporal
+controls remain advanced. Shared STATIC actor-buffer preparation and MSOC camera
+inverse reuse are independently switchable. No second visibility hierarchy was
+added; see CULLING-ROOTCAUSE-AUDIT.md for the audited coverage and exclusions.
+Selected GL-call diagnostics are explicitly incomplete API interception, never
+GPU timing or a unique driver-root-cause claim. Deployment/Windows/gameplay status
+must be read from the exact CI run and capture, not inferred from this source note.

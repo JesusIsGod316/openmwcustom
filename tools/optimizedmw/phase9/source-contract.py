@@ -40,6 +40,39 @@ def main() -> None:
          'metadata cannot be read after the dynamic safe point releases update')
     need('capture.append(row);' in leaf, 'post-safe-point record must own its metadata')
 
+    engine = read('apps/openmw/engine.cpp')
+    window = engine.split('void OMW::Engine::createWindow()', 1)[1].split('mGlMaxTextureImageUnits =', 1)[0]
+    need(window.index('DrawPhaseTrace::installRequired') < window.index('mViewer->realize()'),
+         'trace must install before realization starts graphics workers')
+    need('DrawPhaseTrace::install' not in read('apps/openmw/mwrender/postprocessor.cpp'),
+         'do not reintroduce late PostProcessor installation')
+    need('installed != 2' in trace and 'total_calls=' in trace and '.frames.csv' in trace,
+         'live-coverage failure and aggregate trace accounting required')
+    gl = read('components/sceneutil/glcalltrace.hpp')
+    for token in ('GL_APIENTRY', 'original[Id](args...)', 'glBufferSubData', 'glLinkProgram',
+                  'glGetQueryObjectui64v', 'FrameCapacity = 32768', 'OutsideLeaf', 'rows_dropped='):
+        need(token in gl, 'selected API trace contract missing: ' + token)
+    need('mViewer->stopThreading()' in engine and 'GLCallTrace::restore' in engine,
+         'restore diagnostic dispatch only after joining graphics workers')
+    prep = read('components/sceneutil/sharedgeometryprep.hpp')
+    for token in ('OPENMW_P9_SHARED_PREP', 'GL_STATIC_DRAW_ARB', 'osg::Object::DYNAMIC',
+                  'byteLimit = 2u * 1024u * 1024u', 'gl->compileBuffer()', 'gl->isDirty()'):
+        need(token in prep, 'shared buffer safety missing: ' + token)
+    for path in ('riggeometry.hpp', 'morphgeometry.hpp'):
+        need('SharedGeometryPrep::prepare' in read('components/sceneutil/' + path),
+             'shared buffer preparation not wired into real drawable: ' + path)
+    need('glBufferData(' not in prep and 'setDrawCallback(' not in prep,
+         'shared preparation must not orphan or intercept live pose drawing')
+    cull = read('components/sceneutil/cullviewcache.hpp')
+    need('thread_local' in cull and 'mView == camera.getViewMatrix()' in cull and 'mCamera == &camera' in cull,
+         'cull calculation cache must be thread/traversal/camera/matrix specific')
+    occlusion = read('apps/openmw/mwrender/occlusionculling.cpp')
+    need(occlusion.count('CullViewCache::Scope::find') == 2 and 'p9View.emplace' in occlusion,
+         'reuse must enter through the existing MSOC callbacks, not an extra hierarchy')
+    game_cmake = read('tools/optimizedmw/phase9/CMakeLists.txt')
+    need('occlusionculling.cpp' in game_cmake and 'rootcause-tests.cpp' in game_cmake,
+         'compile real culling source and run startup/preparation/dispatch regressions')
+
     temporal = read('apps/openmw/mwrender/temporalmotion.cpp')
     need('input.jitterEnabled = false;' in temporal, 'do not jitter gameplay without a reconstruction consumer')
     need('PendingTicket' in temporal and 'history.abort(ticket)' in temporal, 'uncommitted history must abort')
@@ -68,6 +101,8 @@ def main() -> None:
     for token in ('Get-P9Mode', 'OPENMW_P9_DYNAMIC_STREAM=$mode.Stream',
                   'OPENMW_P9_TEMPORAL_INPUTS=$mode.Temporal', 'OPENMW_P9_MOTION_VIEW=$mode.View',
                   'OPENMW_P9_LEAF_TRACE_FILE', 'OPENMW_P9_DYNAMIC_TRACE_FILE',
+                  'OPENMW_P9_GL_TRACE_FILE', 'OPENMW_P9_SHARED_PREP=$mode.Prep',
+                  'OPENMW_P9_CULL_INPUT_REUSE=$mode.Cull', 'Test-Phase9TraceCapture',
                   'phase9_dense_dynamic_motion=false', 'phase9_scene_jitter=false'):
         need(token in launcher, 'missing actual launcher control/provenance: ' + token)
     need(launcher.index('settings_restore_verified=$restoreVerified') < launcher.index('Complete-Phase9Profile -ProfileDir'),
@@ -82,6 +117,8 @@ def main() -> None:
                   '[IO.Compression.ZipFileExtensions]::CreateEntryFromFile'):
         # Behavioral ZIP/timeout/replacement fixtures run on both real PS hosts.
         need(token in archive, 'archive reliability guard missing: ' + token)
+    need('total_calls' in archive and 'TRACE-HEALTH.json' in archive,
+         'the launcher must reject zero-live-call diagnostic captures')
     installation = read('CMakeLists.txt')
     need('tools/optimizedmw/phase9/OptimizedMW_Test.ps1' in installation
          and 'tools/optimizedmw/phase9/OptimizedMW_ProfileArchive.ps1' in installation,
