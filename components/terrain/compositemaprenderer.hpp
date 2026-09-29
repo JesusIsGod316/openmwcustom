@@ -41,6 +41,9 @@ namespace Terrain
         CompositeMapRenderer();
         ~CompositeMapRenderer();
 
+        const char* className() const override { return "CompositeMapRenderer"; }
+        const char* libraryName() const override { return "Terrain"; }
+
         void drawImplementation(osg::RenderInfo& renderInfo) const override;
 
         void compile(CompositeMap& compositeMap, osg::RenderInfo& renderInfo) const;
@@ -66,7 +69,17 @@ namespace Terrain
 
     private:
         using Deadline = std::chrono::steady_clock::time_point;
-        void compileUntil(CompositeMap& compositeMap, osg::RenderInfo& renderInfo, Deadline deadline) const;
+        struct CompileTelemetry
+        {
+            std::uint64_t maps = 0;
+            std::uint64_t requiredMaps = 0;
+            std::uint64_t drawables = 0;
+            double fboMs = 0.0;
+            double stateMs = 0.0;
+            double drawMs = 0.0;
+        };
+        void compileUntil(CompositeMap& compositeMap, osg::RenderInfo& renderInfo, Deadline deadline,
+            CompileTelemetry* telemetry = nullptr) const;
         bool mCooperativeBackgroundCompile = false;
         mutable std::atomic_uint64_t mBackgroundYields{0};
         float mTargetFrameRate;
