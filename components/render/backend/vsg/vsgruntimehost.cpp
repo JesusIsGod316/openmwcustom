@@ -42,6 +42,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <functional>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -662,6 +663,7 @@ namespace RenderVsg
                 return true;
             }
             Debug::GameplayDiagnostics::Stage compiling("static_compile");
+            mPipelineAuditGate.invalidate();
             const auto compileResult = compileForViewer(*mViewer, graph);
             if (!compileResult)
                 mLastDiagnostic = compileFailureDiagnostic(subject, compileResult);
@@ -891,6 +893,7 @@ namespace RenderVsg
         if (!pendingCompile->children.empty())
         {
             Debug::GameplayDiagnostics::Stage compiling("static_compile");
+            mPipelineAuditGate.invalidate();
             const auto result = compileForViewer(*mViewer, pendingCompile);
             if (!result)
             {
@@ -1035,6 +1038,7 @@ namespace RenderVsg
             Debug::GameplayDiagnostics::Stage persistent("persistent_draw_sync");
             if (!mPersistentDrawScene.synchronize(frame.persistentDraws(), mCompletedThrough, mTextureResolver,
                 [&](auto root) {
+                    mPipelineAuditGate.invalidate();
                     const auto result = compileForViewer(*mViewer, root);
                     if (!result) mLastDiagnostic = compileFailureDiagnostic("persistent draw changes", result);
                     return bool(result);
@@ -1415,6 +1419,7 @@ namespace RenderVsg
             }
             mLastCompiledDynamicRootCount = compileRoot->children.size();
             Debug::GameplayDiagnostics::Stage compileDiagnostic("dynamic_compile");
+            mPipelineAuditGate.invalidate();
             return compileForViewer(*mViewer, compileRoot);
         }();
         if (!compileResult)
@@ -1750,6 +1755,7 @@ namespace RenderVsg
                 if (!retainContextControl)
                     created.compilation = static_cast<ViewCompileManager&>(*mViewer->compileManager)
                         .registerFramebufferView(*created.target.renderGraph->framebuffer, created.view);
+                mPipelineAuditGate.invalidate();
                 const vsg::CompileResult auxiliaryCompile = retainContextControl
                     ? compileForNewFramebufferView(*mViewer, *created.target.renderGraph->framebuffer,
                         created.view, created.target.renderGraph)
@@ -1799,6 +1805,7 @@ namespace RenderVsg
             {
                 auto replacement = realizeIsolatedScene(*view.isolatedScene, mTextureResolver, mSharedObjects, mLastDiagnostic);
                 if (!replacement) return false;
+                mPipelineAuditGate.invalidate();
                 const auto compiled = compileForViewerView(*mViewer, *runtime->view, replacement);
                 if (!compiled || !graphicsPipelinesRealizedForView(*replacement, *runtime->view))
                 {
@@ -1913,6 +1920,7 @@ namespace RenderVsg
         if (overlay)
             nextRoot->addChild(overlay);
         const auto guiView = mOutputView ? mOutputView : mView;
+        if (guiView) mPipelineAuditGate.invalidate();
         if (!guiView || !compileForViewerView(*mViewer, *guiView, nextRoot))
         {
             mLastDiagnostic = "incremental VSG MyGUI main-view compilation failed before overlay publication";
@@ -1942,6 +1950,7 @@ namespace RenderVsg
             return false;
         }
         auto post = createNativePostProcess(replacement.color, replacement.depth, mPostMode);
+        if (post) mPipelineAuditGate.invalidate();
         if (!post || !compileForViewerView(*mViewer, *mOutputView, post))
         {
             mLastDiagnostic = "native postprocessing resize pipeline compilation failed";
@@ -1977,6 +1986,7 @@ namespace RenderVsg
             if (!mOmwfx) return true;
             waitIdle();
             auto copy = createNativePostProcess(mPostTarget.color, mPostTarget.depth, NativePostProcessMode::Copy);
+            mPipelineAuditGate.invalidate();
             if (!compileForViewerView(*mViewer, *mOutputView, copy)) return false;
             mPostRoot->children.assign(1, copy);
             mOmwfxCommands->children.clear();
@@ -1994,6 +2004,7 @@ namespace RenderVsg
                 auto replacement = std::make_unique<OmwFxRuntime>(*mViewer, mWindow->getOrCreateDevice(),
                     mPostTarget.color, mPostTarget.depth, mPostTarget.extent, snapshot, mOmwfxLights);
                 auto present = createNativePostProcess(replacement->output, mPostTarget.depth, NativePostProcessMode::Copy);
+                mPipelineAuditGate.invalidate();
                 if (!compileForViewerView(*mViewer, *mOutputView, present))
                     throw std::runtime_error("OMWFX output compilation failed");
                 mPostRoot->children.assign(1, present);
@@ -2014,6 +2025,7 @@ namespace RenderVsg
             Log(Debug::Error) << "Native OMWFX chain bypassed: " << error.what();
             waitIdle();
             auto copy = createNativePostProcess(mPostTarget.color, mPostTarget.depth, NativePostProcessMode::Copy);
+            mPipelineAuditGate.invalidate();
             if (!compileForViewerView(*mViewer, *mOutputView, copy))
             {
                 mLastDiagnostic = "Native OMWFX recovery presentation failed";
@@ -2096,25 +2108,29 @@ namespace RenderVsg
                 views.push_back({ "shadow", shadow.view });
         }
 
-        if (strictQcEnabled())
-        {
-            std::uint64_t signature = 0;
-            std::ostringstream inventory;
+        const bool strictQc = strictQcEnabled();
+        std::uint64_t viewSignature = static_cast<std::uint64_t>(views.size());
+        std::ostringstream inventory;
+        if (strictQc)
             inventory << "V4 strict QC active views=" << views.size();
-            for (const ActiveView& active : views)
-            {
-                if (!active.view)
-                    continue;
-                hashCombine(signature, active.view->viewID);
-                hashCombine(signature, std::hash<std::string_view>{}(active.family));
+        for (const ActiveView& active : views)
+        {
+            if (!active.view)
+                continue;
+            hashCombine(viewSignature, active.view->viewID);
+            hashCombine(viewSignature, std::hash<std::string_view>{}(active.family));
+            hashCombine(viewSignature, std::hash<const void*>{}(active.view.get()));
+            if (strictQc)
                 inventory << " [" << active.family << " vsg=" << active.view->viewID << ']';
-            }
-            if (!mStrictQcLastViewSignature || *mStrictQcLastViewSignature != signature)
-            {
-                Log(Debug::Info) << inventory.str();
-                mStrictQcLastViewSignature = signature;
-            }
         }
+        if (strictQc && (!mStrictQcLastViewSignature || *mStrictQcLastViewSignature != viewSignature))
+        {
+            Log(Debug::Info) << inventory.str();
+            mStrictQcLastViewSignature = viewSignature;
+        }
+
+        if (!mPipelineAuditGate.needsAudit(viewSignature, strictQc))
+            return true;
 
         std::vector<std::string> unresolved;
         for (const ActiveView& active : views)
@@ -2125,7 +2141,7 @@ namespace RenderVsg
             if (audit.valid())
                 continue;
 
-            if (strictQcEnabled())
+            if (strictQc)
                 Log(Debug::Warning) << "V4 strict QC repairing " << audit.unrealized.size()
                                     << " unrealized pipeline(s) for " << active.family << " view "
                                     << active.view->viewID;
@@ -2133,6 +2149,7 @@ namespace RenderVsg
             // A graph can acquire new immutable draws after a view's context was
             // introduced. Compile the exact active view once, then census it
             // again before record traversal reaches VSG's unchecked vk(viewID).
+            mPipelineAuditGate.invalidate();
             const vsg::CompileResult repair = compileForViewerView(*mViewer, *active.view, active.view);
             if (repair)
                 audit = auditGraphicsPipelinesForView(*active.view, *active.view);
@@ -2150,7 +2167,10 @@ namespace RenderVsg
         }
 
         if (unresolved.empty())
+        {
+            mPipelineAuditGate.accept(viewSignature);
             return true;
+        }
         std::ostringstream diagnostic;
         diagnostic << "Vulkan pre-submit pipeline census found " << unresolved.size()
                    << " unrealized active pipeline(s)";
@@ -2493,6 +2513,7 @@ namespace RenderVsg
             return sky.prepare(frame.nativeSky().get(), frame.environment(), semantic, frame.frameId(),
                 mCompletedThrough, mTextureResolver, mSharedObjects,
                 [&](vsg::ref_ptr<vsg::Node> node) {
+                    mPipelineAuditGate.invalidate();
                     const auto result = compileForViewerView(*mViewer, targetView, node);
                     return result && graphicsPipelinesRealizedForView(*node, targetView);
                 }, mLastDiagnostic, visible);
