@@ -14,6 +14,12 @@ class P3GraphBoundary(unittest.TestCase):
         self.assertIn('result.stats.runtimeContextEffects == 0', source)
         self.assertIn('result.stats.unsupportedTextureBindings == 0', source)
 
+    def test_inventory_accessor_has_explicit_return_type(self):
+        source = (ROOT / 'components/render/backend/vsg/pipelineinventory.hpp').read_text()
+        self.assertIn('const std::vector<vsg::ref_ptr<vsg::GraphicsPipeline>>& pipelines() const', source)
+        self.assertNotIn('const auto& pipelines()', source)
+        self.assertIn('inventory->pipelines()', source)
+
     def test_host_rewrites_only_in_finalizer(self):
         source = (ROOT / 'components/render/backend/vsg/vsgruntimehost.cpp').read_text()
         self.assertEqual(source.count('enableGpuPopulationCull(world, plan'), 1)

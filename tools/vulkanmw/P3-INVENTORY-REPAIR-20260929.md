@@ -50,3 +50,19 @@ These are sampled population-construction counters, not per-frame visible counts
 Preserve visual QA and matched performance/memory rules. Headless fixture results
 are not user RTX 5050 performance or comprehensive modded-world acceptance. Do not
 start P3C from a supposed validated base until the new path is actually exercised.
+
+
+## GCC inventory-header compile repair
+
+Run `36646264104` passed Source (native/metadata and sanitizers) but failed
+GpuRouting job `109670234862` while compiling `staticassetconformance.cpp`.
+GCC 13.3 diagnosed `PipelineInventoryNode::pipelines()` being called from the
+constructor-local `Gather` class before its deduced `auto` return type was known.
+Windows and GPU execution were not reached by that run.
+
+The accessor now explicitly returns the same const vector reference, with no
+runtime logic, ownership, sealing-order, shader, or feature-gate change. The source
+guard forbids reintroducing the deduced return. The mandatory production-linked
+VSG/GPU compile and pixel tests remain the real integration gate; no warning or
+validation check is disabled. This repairs the compiler error, not yet proof of
+successful GPU execution or user runtime acceptance.

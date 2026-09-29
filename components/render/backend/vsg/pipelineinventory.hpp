@@ -7,6 +7,7 @@
 #include <vsg/state/GraphicsPipeline.h>
 #include <unordered_set>
 #include <unordered_map>
+#include <vector>
 
 namespace RenderVsg
 {
@@ -51,7 +52,9 @@ namespace RenderVsg
         void traverse(vsg::Visitor& v) override { mChild->accept(v); }
         void traverse(vsg::ConstVisitor& v) const override { mChild->accept(v); }
         void traverse(vsg::RecordTraversal& v) const override { mChild->accept(v); }
-        const auto& pipelines() const { return mPipelines; }
+        // Gather's local class calls this before the enclosing class is complete.
+        // Keep the return type explicit; GCC cannot deduce a later auto return here.
+        const std::vector<vsg::ref_ptr<vsg::GraphicsPipeline>>& pipelines() const { return mPipelines; }
     private:
         vsg::ref_ptr<vsg::Node> mChild;
         std::vector<vsg::ref_ptr<vsg::GraphicsPipeline>> mPipelines;
