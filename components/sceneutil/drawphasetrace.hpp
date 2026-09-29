@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <osg/Geometry>
 #include <osg/State>
+#include <osg/Texture2D>
 #include <osg/Version>
 #include <osgUtil/CullVisitor>
 #include <osgUtil/RenderLeaf>
@@ -26,6 +27,35 @@
 
 namespace SceneUtil::DrawPhaseTrace
 {
+    enum CameraBucket : unsigned
+    {
+        CameraUnknown = 0,
+        CameraScene,
+        CameraRefraction,
+        CameraReflection,
+        CameraShadow,
+        CameraTerrainComposite,
+        CameraBucketCount
+    };
+
+    inline const char* cameraBucketName(unsigned bucket)
+    {
+        static constexpr const char* names[] = {
+            "unknown", "scene", "refraction", "reflection", "shadow", "terrain_composite"
+        };
+        return bucket < CameraBucketCount ? names[bucket] : "invalid";
+    }
+
+    inline unsigned classifyCamera(const std::string& name)
+    {
+        if (name == "SceneCam") return CameraScene;
+        if (name == "RefractionCamera") return CameraRefraction;
+        if (name == "ReflectionCamera") return CameraReflection;
+        if (name == "ShadowCamera") return CameraShadow;
+        if (name == "TerrainCompositeMapCamera") return CameraTerrainComposite;
+        return CameraUnknown;
+    }
+
     // Diagnostic-only. Timers are CPU envelopes and may include driver waits;
     // none is a GPU timer. No output, formatting or allocation during a draw.
     class Capture
@@ -34,13 +64,19 @@ namespace SceneUtil::DrawPhaseTrace
         struct Row
         {
             unsigned frame = 0, context = 0;
-            std::uint64_t drawable = 0, camera = 0, stateSet = 0;
+            std::uint64_t drawable = 0, camera = 0, stateSet = 0, nodePathHash = 0;
+            std::uint64_t texture0Bytes = 0, texture1Bytes = 0;
             std::int64_t startNs = 0;
             double matricesMs = 0, stateMs = 0, drawMs = 0, retireMs = 0;
+            std::uint32_t vertices = 0, primitiveSets = 0, cameraBucket = CameraUnknown;
             bool dynamic = false;
             std::array<char, 96> name{};
+            std::array<char, 64> ownerName{};
+            std::array<char, 32> ownerClass{};
             std::array<char, 48> cameraName{};
             std::array<char, 32> drawableClass{};
+            std::array<char, 128> texture0{};
+            std::array<char, 128> texture1{};
         };
         struct Totals
         {
@@ -80,6 +116,12 @@ namespace SceneUtil::DrawPhaseTrace
                 auto& t = mTotals[row.context];
                 ++t.calls; t.matricesMs += row.matricesMs; t.stateMs += row.stateMs;
                 t.drawMs += row.drawMs; t.retireMs += row.retireMs;
+                if (row.cameraBucket < mCameraTotals.size())
+                {
+                    auto& camera = mCameraTotals[row.cameraBucket];
+                    ++camera.calls; camera.matricesMs += row.matricesMs; camera.stateMs += row.stateMs;
+                    camera.drawMs += row.drawMs; camera.retireMs += row.retireMs;
+                }
             }
             if (row.matricesMs + row.stateMs + row.drawMs + row.retireMs < .25) return;
             const auto index = mCount.fetch_add(1, std::memory_order_relaxed);
@@ -97,7 +139,9 @@ namespace SceneUtil::DrawPhaseTrace
             try
             {
                 std::ofstream out(mPath);
-                out << "frame,context,drawable,matrices_ms,state_ms,draw_ms,retire_ms,dynamic,name,camera,stateset,start_ns,camera_name,drawable_class\n" << std::setprecision(8);
+                out << "frame,context,drawable,matrices_ms,state_ms,draw_ms,retire_ms,dynamic,name,camera,stateset,start_ns,"
+                    << "camera_name,drawable_class,camera_bucket,node_path_hash,owner_name,owner_class,vertices,primitive_sets,"
+                    << "texture0,texture0_bytes,texture1,texture1_bytes\n" << std::setprecision(8);
                 for (std::size_t i = 0; i < count(); ++i)
                 {
                     const auto& r = (*mRows)[i];
@@ -113,7 +157,15 @@ namespace SceneUtil::DrawPhaseTrace
                     for(char c:r.cameraName) { if(!c)break;if(c=='"')out<<'"';out<<c; }
                     out<<"\",\"";
                     for(char c:r.drawableClass) { if(!c)break;if(c=='"')out<<'"';out<<c; }
-                    out<<"\"\n";
+                    out<<"\","<<r.cameraBucket<<','<<r.nodePathHash<<",\"";
+                    for(char c:r.ownerName) { if(!c)break;if(c=='"')out<<'"';out<<c; }
+                    out<<"\",\"";
+                    for(char c:r.ownerClass) { if(!c)break;if(c=='"')out<<'"';out<<c; }
+                    out<<"\","<<r.vertices<<','<<r.primitiveSets<<",\"";
+                    for(char c:r.texture0) { if(!c)break;if(c=='"')out<<'"';out<<c; }
+                    out<<"\","<<r.texture0Bytes<<",\"";
+                    for(char c:r.texture1) { if(!c)break;if(c=='"')out<<'"';out<<c; }
+                    out<<"\","<<r.texture1Bytes<<'\n';
                 }
                 for(auto& frame:mCurrentFrame) if(frame.totals.calls) saveFrame(frame);
                 std::ofstream frames(mPath+".frames.csv");
@@ -149,6 +201,13 @@ namespace SceneUtil::DrawPhaseTrace
                     if (t.calls) status << "context=" << i << " calls=" << t.calls << " matrices_ms=" << t.matricesMs
                         << " state_ms=" << t.stateMs << " draw_ms=" << t.drawMs << " retire_ms=" << t.retireMs << '\n';
                 }
+                for (unsigned i = 0; i < mCameraTotals.size(); ++i)
+                {
+                    const auto& t = mCameraTotals[i];
+                    if (t.calls) status << "camera_bucket=" << cameraBucketName(i) << " calls=" << t.calls
+                        << " matrices_ms=" << t.matricesMs << " state_ms=" << t.stateMs
+                        << " draw_ms=" << t.drawMs << " retire_ms=" << t.retireMs << '\n';
+                }
             }
             catch (...) {}
         }
@@ -180,6 +239,7 @@ namespace SceneUtil::DrawPhaseTrace
         std::atomic<std::uint64_t> mUncovered{0};
         std::atomic<unsigned> mVisitors{0};
         std::array<Totals, 16> mTotals{};
+        std::array<Totals, CameraBucketCount> mCameraTotals{};
         std::unique_ptr<std::array<FrameRow,FrameCapacity>> mFrames;
         std::array<FrameRow,16> mCurrentFrame{};
         std::atomic<std::size_t> mFrameCount{0};
@@ -193,6 +253,10 @@ namespace SceneUtil::DrawPhaseTrace
     public:
         Leaf(osg::Drawable* drawable, osg::RefMatrix* projection, osg::RefMatrix* modelview)
             : osgUtil::RenderLeaf(drawable, projection, modelview) {}
+        std::uint64_t nodePathHash = 0;
+        std::uint32_t vertices = 0, primitiveSets = 0, cameraBucket = CameraUnknown;
+        std::array<char, 64> ownerName{};
+        std::array<char, 32> ownerClass{};
         void render(osg::RenderInfo& info, osgUtil::RenderLeaf* previous) override
         {
             auto& capture = Capture::instance();
@@ -241,6 +305,12 @@ namespace SceneUtil::DrawPhaseTrace
             row.matricesMs = ms(start, matrices); row.stateMs = ms(matrices, applied);
             row.drawMs = ms(applied, drawn); row.dynamic = _dynamic;
             row.drawable = reinterpret_cast<std::uintptr_t>(_drawable.get());
+            row.nodePathHash = nodePathHash;
+            row.vertices = vertices;
+            row.primitiveSets = primitiveSets;
+            row.cameraBucket = cameraBucket;
+            row.ownerName = ownerName;
+            row.ownerClass = ownerClass;
             // Copy scene-owned metadata BEFORE signalling dynamic completion.
             // The released update thread may then rename/rebind scene objects.
             if (row.matricesMs + row.stateMs + row.drawMs >= .25)
@@ -252,6 +322,48 @@ namespace SceneUtil::DrawPhaseTrace
                 { const auto& n=camera->getName();std::memcpy(row.cameraName.data(),n.data(),(std::min)(n.size(),row.cameraName.size()-1)); }
                 const char* cls=_drawable->className();
                 if(cls) std::memcpy(row.drawableClass.data(),cls,(std::min)(std::strlen(cls),row.drawableClass.size()-1));
+
+                // State application can lazily realize terrain/material textures.
+                // Snapshot only slow state rows so normal draw overhead stays tiny.
+                if (row.stateMs >= 2.0)
+                {
+                    if (const osg::StateSet* stateSet = _parent ? _parent->getStateSet() : nullptr)
+                    {
+                        const auto& attributes = stateSet->getTextureAttributeList();
+                        auto recordTexture = [&](const osg::Texture2D* texture) {
+                            if (!texture) return;
+                            const osg::Image* image = texture->getImage();
+                            const std::uint64_t bytes = image ? image->getTotalSizeInBytesIncludingMipmaps() : 0;
+                            const std::string& label = image && !image->getFileName().empty()
+                                ? image->getFileName() : texture->getName();
+                            auto store = [&](std::array<char, 128>& dest) {
+                                const auto amount = (std::min)(label.size(), dest.size() - 1);
+                                if (amount) std::memcpy(dest.data(), label.data(), amount);
+                            };
+                            if (bytes >= row.texture0Bytes)
+                            {
+                                row.texture1Bytes = row.texture0Bytes;
+                                row.texture1 = row.texture0;
+                                row.texture0Bytes = bytes;
+                                row.texture0 = {};
+                                store(row.texture0);
+                            }
+                            else if (bytes >= row.texture1Bytes)
+                            {
+                                row.texture1Bytes = bytes;
+                                row.texture1 = {};
+                                store(row.texture1);
+                            }
+                        };
+                        for (unsigned unit = 0; unit < attributes.size(); ++unit)
+                        {
+                            osg::StateAttribute* attribute
+                                = stateSet->getTextureAttribute(unit, osg::StateAttribute::TEXTURE);
+                            osg::Texture* texture = attribute ? attribute->asTexture() : nullptr;
+                            recordTexture(dynamic_cast<osg::Texture2D*>(texture));
+                        }
+                    }
+                }
             }
             GLCallTrace::location.phase=GLCallTrace::Retire;
             const auto retireStart = Clock::now();
@@ -282,6 +394,53 @@ namespace SceneUtil::DrawPhaseTrace
         CullVisitor(const CullVisitor& other) : CullVisitor(static_cast<const osgUtil::CullVisitor&>(other)) {}
         using osgUtil::CullVisitor::clone;
         osgUtil::CullVisitor* clone() const override { return new CullVisitor(*this); }
+        using osgUtil::CullVisitor::apply;
+        void apply(osg::Drawable& drawable) override
+        {
+            const unsigned first = _currentReuseRenderLeafIndex;
+            osgUtil::CullVisitor::apply(drawable);
+            for (unsigned i = first; i < _currentReuseRenderLeafIndex && i < (mInstrumented ? PoolSize : 0); ++i)
+            {
+                auto* leaf = static_cast<Leaf*>(_reuseRenderLeafList[i].get());
+                leaf->nodePathHash = 1469598103934665603ull;
+                leaf->vertices = 0;
+                leaf->primitiveSets = 0;
+                leaf->cameraBucket = CameraUnknown;
+                leaf->ownerName = {};
+                leaf->ownerClass = {};
+
+                if (const osg::Camera* camera = getCurrentCamera())
+                    leaf->cameraBucket = classifyCamera(camera->getName());
+
+                const auto& path = getNodePath();
+                for (osg::Node* node : path)
+                {
+                    leaf->nodePathHash ^= static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(node));
+                    leaf->nodePathHash *= 1099511628211ull;
+                }
+                for (auto it = path.rbegin(); it != path.rend(); ++it)
+                {
+                    osg::Node* node = *it;
+                    if (!node || node->getName().empty())
+                        continue;
+                    const auto& name = node->getName();
+                    std::memcpy(leaf->ownerName.data(), name.data(),
+                        (std::min)(name.size(), leaf->ownerName.size() - 1));
+                    const char* cls = node->className();
+                    if (cls)
+                        std::memcpy(leaf->ownerClass.data(), cls,
+                            (std::min)(std::strlen(cls), leaf->ownerClass.size() - 1));
+                    break;
+                }
+
+                if (osg::Geometry* geometry = drawable.asGeometry())
+                {
+                    if (const osg::Array* array = geometry->getVertexArray())
+                        leaf->vertices = array->getNumElements();
+                    leaf->primitiveSets = geometry->getNumPrimitiveSets();
+                }
+            }
+        }
         void reset() override
         {
             if (_currentReuseRenderLeafIndex > (mInstrumented ? PoolSize : 0))
