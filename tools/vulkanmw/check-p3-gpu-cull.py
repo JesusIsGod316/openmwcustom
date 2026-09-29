@@ -76,8 +76,10 @@ def main() -> None:
     if compute_add >= first_main:
         raise SystemExit("P3 compute graph must record before the main-view render graph")
 
+    require(bootstrap, 'std::getenv("OPENMW_VK_GPU_CULL_QUEUE")',
+            "common pre-device queue capability gate")
     require(bootstrap, 'std::getenv("OPENMW_VK_GPU_CULL_INDIRECT")',
-            "pre-device queue capability gate")
+            "candidate pre-device queue capability gate")
     require(bootstrap, "traits->queueFlags |= VK_QUEUE_COMPUTE_BIT",
             "graphics+compute queue request")
     require(sources, "gpupopulationcull.cpp", "production source closure")
@@ -86,7 +88,8 @@ def main() -> None:
     require(cohort, "'gpu-cull-indirect': 'OPENMW_VK_GPU_CULL_INDIRECT'",
             "benchmark feature mapping")
     require(launcher, "--gpu-cull-indirect", "matched A/B command-line mode")
-    require(launcher, "GPU_CULL_BASE = GPU_TABLE_CANDIDATE", "P2 common baseline")
+    require(launcher, "GPU_CULL_BASE = GPU_TABLE_CANDIDATE + '+gpu-cull-queue'",
+            "P2 plus identical compute-queue baseline")
     require(bat, "OPENMW_VK_GPU_CULL_INDIRECT", "public P3 launcher explanation")
 
     print("VulkanMW P3 GPU cull/indirect source contract: PASS")
