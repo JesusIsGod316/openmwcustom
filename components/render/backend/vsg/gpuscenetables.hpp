@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <set>
 #include <type_traits>
 #include <vector>
 
@@ -81,6 +82,7 @@ namespace RenderVsg
             for (auto& table : mTables)
                 table.clear();
             mLightRecords.clear();
+            mActorInstanceSlots.clear();
             clearDirty();
             mEpoch = epoch;
             mWorldRevision = revision;
@@ -249,6 +251,26 @@ namespace RenderVsg
             }
         }
 
+        template <class Visitor>
+        void forEachActorInstance(Visitor&& visitor) const
+        {
+            const auto& slots = mTables[index(Kind::Instance)];
+            for (const std::uint32_t indexValue : mActorInstanceSlots)
+            {
+                if (indexValue >= slots.size())
+                    continue;
+                const Slot& slot = slots[indexValue];
+                if (!slot.live)
+                    continue;
+                visitor(RenderCore::InstanceHandle::fromParts(indexValue, slot.generation));
+            }
+        }
+
+        [[nodiscard]] std::size_t actorInstanceCount() const noexcept
+        {
+            return mActorInstanceSlots.size();
+        }
+
         void clearDirty() noexcept
         {
             for (auto& range : mDirty)
@@ -283,6 +305,15 @@ namespace RenderVsg
                     mLightRecords.resize(static_cast<std::size_t>(handle.slot()) + 1);
                 mLightRecords[handle.slot()] = record ? *record : RenderCore::LightRecord{};
             }
+            if constexpr (std::is_same_v<Record, RenderCore::InstanceRecord>)
+            {
+                if (kind != Kind::Instance)
+                    return false;
+                if (record && record->skeleton)
+                    mActorInstanceSlots.insert(handle.slot());
+                else
+                    mActorInstanceSlots.erase(handle.slot());
+            }
             mDirty[index(kind)].include(handle.slot());
             return true;
         }
@@ -291,6 +322,7 @@ namespace RenderVsg
         std::array<std::vector<Slot>, TableCount> mTables;
         std::array<DirtyRange, TableCount> mDirty;
         std::vector<RenderCore::LightRecord> mLightRecords;
+        std::set<std::uint32_t> mActorInstanceSlots;
         RenderCore::WorldEpoch mEpoch;
         RenderCore::RenderWorldRevision mWorldRevision;
         RenderCore::UpdateSequence mLastSequence;
