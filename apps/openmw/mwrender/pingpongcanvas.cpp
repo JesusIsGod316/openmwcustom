@@ -141,7 +141,11 @@ namespace MWRender
         if (mTemporalMotion && !Stereo::getStereo())
         {
             auto* depth = dynamic_cast<osg::Texture2D*>(mTextureDepth.get());
-            osg::Texture2D* flow = mTemporalMotion->render(renderInfo, mTemporalCamera, depth, *this);
+            osg::Texture2D* flow = nullptr;
+            {
+                Debug::V36GpuProfiler::ScopedPass gpuPass(renderInfo, "temporal/camera_motion");
+                flow = mTemporalMotion->render(renderInfo, mTemporalCamera, depth, *this);
+            }
 
             auto& temporalWriter = Debug::V3Diagnostics::p9TemporalInputWriter();
             if (temporalWriter.enabled())
