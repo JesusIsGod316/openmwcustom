@@ -1,7 +1,7 @@
 name: OptimizedMW Phase 9 draw-side and temporal build
 on:
   push:
-    branches: [optimizedmw/phase9]
+    branches: [optimizedmw/phase9, optimizedmw/phase9-telemetry-dlss]
   workflow_dispatch:
 permissions:
   contents: read
