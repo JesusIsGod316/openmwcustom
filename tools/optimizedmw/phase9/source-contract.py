@@ -86,6 +86,10 @@ def main() -> None:
     need('p9TemporalInputWriter()' in canvas and 'requiredForDlss' in canvas
          and 'status.denseDynamicMotion' in canvas,
          'DLSS input-readiness telemetry must fail closed until dense motion exists')
+    need('emitDlssInteropCapabilities(state)' in canvas
+         and 'GL_EXT_memory_object_win32' in canvas and 'GL_EXT_semaphore_win32' in canvas
+         and 'glImportMemoryWin32HandleEXT' in canvas and 'glImportSemaphoreWin32HandleEXT' in canvas,
+         'OpenGL/Vulkan external-memory capability probe missing')
     temporal_test = read('tools/optimizedmw/phase9/temporal-render-tests.cpp')
     need('consumer-ready matrix/motion contract' in temporal_test
          and 'consumerFrame(state->getContextID())' in temporal_test,
@@ -119,7 +123,8 @@ def main() -> None:
     for token in ('Get-P9Mode', 'OPENMW_P9_DYNAMIC_STREAM=$mode.Stream',
                   'OPENMW_P9_TEMPORAL_INPUTS=$mode.Temporal', 'OPENMW_P9_MOTION_VIEW=$mode.View',
                   'OPENMW_P9_LEAF_TRACE_FILE', 'OPENMW_P9_DYNAMIC_TRACE_FILE',
-                  'OPENMW_P9_TEMPORAL_FILE', 'OPENMW_P9_COMPOSITE_FILE', 'OPENMW_V36_GPU_PASS_FILE',
+                  'OPENMW_P9_TEMPORAL_FILE', 'OPENMW_P9_DLSS_CAPS_FILE',
+                  'OPENMW_P9_COMPOSITE_FILE', 'OPENMW_V36_GPU_PASS_FILE',
                   'phase9_dense_dynamic_motion=false', 'phase9_scene_jitter=false',
                   'phase9_static_prewarm=disabled_after_optimized_trace_driver_crash',
                   'phase9_temporal_contract=consumer_frame_v1',
