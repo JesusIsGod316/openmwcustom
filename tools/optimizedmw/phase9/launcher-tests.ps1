@@ -112,7 +112,19 @@ try{
     @('frame,context,leaves','1,0,4') | Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.frames.csv')
     $goodTrace=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
     if($goodTrace.valid_leaf_capture -ne $true){throw 'Complete runtime trace rejected'}
-    Write-Host 'PASS Phase 9: 7 safe isolated modes, rejected prewarm absent, live/empty trace validation, shader preflight, report fixtures, nested/spaced/bracket paths, real SHA256 ZIP verification, partial capture, report failure/timeout and verified replacement.'
+
+    @('frame,dlss_ready','1,0') | Set-Content -LiteralPath (Join-Path $temp 'p9-temporal-inputs.csv')
+    @('context,gl_vulkan_bridge_candidate','0,1') | Set-Content -LiteralPath (Join-Path $temp 'p9-dlss-capabilities.csv')
+    $goodTemporal=Test-Phase9TemporalCapture -ProfileDir $temp -TemporalRequested $true
+    if($goodTemporal.valid_temporal_capture -ne $true -or $goodTemporal.temporal_input_rows -ne 1
+        -or $goodTemporal.interop_capability_rows -ne 1){throw 'Complete temporal capture rejected'}
+    @('frame,dlss_ready','1,1') | Set-Content -LiteralPath (Join-Path $temp 'p9-temporal-inputs.csv')
+    $badTemporal=Test-Phase9TemporalCapture -ProfileDir $temp -TemporalRequested $true
+    if($badTemporal.valid_temporal_capture -ne $false -or $badTemporal.unexpected_dlss_ready_rows -ne 1){
+        throw 'Premature DLSS-ready telemetry was accepted'
+    }
+
+    Write-Host 'PASS Phase 9: 7 safe isolated modes, rejected prewarm absent, live/empty trace validation, temporal/capability validation, fail-closed DLSS readiness, shader preflight, report fixtures, nested/spaced/bracket paths, real SHA256 ZIP verification, partial capture, report failure/timeout and verified replacement.'
 }finally{
     if(Test-Path -LiteralPath $zipFile){Remove-Item -LiteralPath $zipFile -Force}
     Remove-Item -LiteralPath $temp -Recurse -Force
