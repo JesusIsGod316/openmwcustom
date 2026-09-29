@@ -1,4 +1,5 @@
 #include <components/render/backend/vsg/gpuscenetables.hpp>
+#include <components/render/backend/vsg/locallightplan.hpp>
 
 #include <cassert>
 #include <iostream>
@@ -38,6 +39,16 @@ int main()
     assert(tables.dirty(RenderVsg::GpuSceneTables::Kind::Light).last
         == std::max(first->slot(), second->slot()) + 1);
     assert(tables.stats().creates == 2);
+    const auto mirroredCreateLights = RenderVsg::buildLocalLightWorldPlan(tables, world);
+    const auto scannedCreateLights = RenderVsg::buildLocalLightWorldPlan(world);
+    assert(mirroredCreateLights.valid() && mirroredCreateLights.lights.size() == 2);
+    assert(mirroredCreateLights.lights.size() == scannedCreateLights.lights.size());
+    for (std::size_t i = 0; i < mirroredCreateLights.lights.size(); ++i)
+    {
+        assert(mirroredCreateLights.lights[i].light == scannedCreateLights.lights[i].light);
+        assert(mirroredCreateLights.lights[i].revision == scannedCreateLights.lights[i].revision);
+        assert(mirroredCreateLights.lights[i].record.position == scannedCreateLights.lights[i].record.position);
+    }
     const std::uint64_t createdLightSerial = tables.lightSerial();
     assert(createdLightSerial == initialLightSerial + 1);
     assert(tables.actorPlanSerial() == initialActorPlanSerial);
@@ -83,6 +94,11 @@ int main()
     assert(tables.dirty(RenderVsg::GpuSceneTables::Kind::Light).first == first->slot());
     assert(tables.dirty(RenderVsg::GpuSceneTables::Kind::Light).last == first->slot() + 1);
     assert(tables.stats().updates == 1);
+    const auto mirroredUpdateLights = RenderVsg::buildLocalLightWorldPlan(tables, world);
+    assert(mirroredUpdateLights.lights.size() == 2);
+    const auto movedEntry = std::find_if(mirroredUpdateLights.lights.begin(), mirroredUpdateLights.lights.end(),
+        [&](const RenderVsg::LocalLightPlan& entry) { return entry.light == *first; });
+    assert(movedEntry != mirroredUpdateLights.lights.end() && movedEntry->record.position.x == 1.0);
 
     tables.clearDirty();
     RenderWorldUpdateBatch retire(world.epoch(), publisher.nextSequence(), "gpu-scene-table-retire");
@@ -97,6 +113,8 @@ int main()
     const auto& secondSlot = tables.table(RenderVsg::GpuSceneTables::Kind::Light).at(second->slot());
     assert(!secondSlot.live && secondSlot.generation == second->generation());
     assert(tables.stats().retires == 1);
+    const auto mirroredRetireLights = RenderVsg::buildLocalLightWorldPlan(tables, world);
+    assert(mirroredRetireLights.lights.size() == 1 && mirroredRetireLights.lights.front().light == *first);
 
     // Post-commit observers see final world state. A valid create->retire
     // transaction must produce a tombstone rather than trying to replay the
