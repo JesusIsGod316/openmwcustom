@@ -18,6 +18,7 @@
 
 #include <osg/Texture1D>
 #include <osg/Texture3D>
+#include <SDL3/SDL_opengl_glext.h>
 
 namespace Fx
 {
