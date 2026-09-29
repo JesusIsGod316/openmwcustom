@@ -4,6 +4,7 @@
 #include "renderworld.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <cstdlib>
 #include <type_traits>
 #include <optional>
@@ -99,11 +100,18 @@ namespace RenderCore
     class RenderWorldPublisher final
     {
     public:
+        using AppliedObserver = std::function<void(const RenderWorldUpdateBatch&, const RenderWorld&)>;
+
         explicit RenderWorldPublisher(RenderWorld& world, bool chunkTransactions = false)
             : mWorld(world)
             , mObservedEpoch(world.epoch())
             , mChunkTransactions(chunkTransactions)
         {
+        }
+
+        void setAppliedObserver(AppliedObserver observer)
+        {
+            mAppliedObserver = std::move(observer);
         }
 
         [[nodiscard]] PublishStatus apply(const RenderWorldUpdateBatch& batch) noexcept
@@ -151,8 +159,7 @@ namespace RenderCore
                     {
                         if (!mWorld.updateChunksAtomically(std::move(replacements)))
                             return PublishStatus::OperationRejected;
-                        mLastSequence = batch.sequence();
-                        return PublishStatus::Applied;
+                        return applied(batch);
                     }
                 }
                 // Light records own no heap data or cross-resource handles.
@@ -174,8 +181,7 @@ namespace RenderCore
                     if (lightResult)
                     {
                         if (!*lightResult) return PublishStatus::OperationRejected;
-                        mLastSequence = batch.sequence();
-                        return PublishStatus::Applied;
+                        return applied(batch);
                     }
                 }
                 RenderWorld candidate = mWorld;
@@ -188,8 +194,7 @@ namespace RenderCore
                     return PublishStatus::InvariantFailure;
 
                 mWorld = std::move(candidate);
-                mLastSequence = batch.sequence();
-                return PublishStatus::Applied;
+                return applied(batch);
             }
             catch (...)
             {
@@ -210,6 +215,27 @@ namespace RenderCore
         }
 
     private:
+        [[nodiscard]] PublishStatus applied(const RenderWorldUpdateBatch& batch) noexcept
+        {
+            mLastSequence = batch.sequence();
+            // The semantic world has already committed at this point. Backend
+            // observers are deliberately one-way: they may mark their own
+            // mirror stale, but can never roll the authoritative world back.
+            if (mAppliedObserver)
+            {
+                try
+                {
+                    mAppliedObserver(batch, mWorld);
+                }
+                catch (...)
+                {
+                    // A later renderer coherence check will reject a stale
+                    // backend mirror. Publication itself remains successful.
+                }
+            }
+            return PublishStatus::Applied;
+        }
+
         [[nodiscard]] UpdateSequence expectedSequence() const noexcept
         {
             if (!mLastSequence.valid())
@@ -248,6 +274,7 @@ namespace RenderCore
         WorldEpoch mObservedEpoch;
         bool mChunkTransactions = false;
         UpdateSequence mLastSequence;
+        AppliedObserver mAppliedObserver;
     };
 }
 
