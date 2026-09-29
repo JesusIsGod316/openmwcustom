@@ -12,6 +12,8 @@ required = [
     (tables, "class GpuSceneTables final"),
     (tables, "RenderCore::ReparentInstance"),
     (tables, "DirtyRange"),
+    (tables, "actorPlanSerial"),
+    (host, "mGpuSceneTables.actorPlanSerial()"),
     (tables, "lightSerial()"),
     (session, 'environmentFlag<"OPENMW_VK_GPU_SCENE_TABLES">()'),
     (session, "setAppliedObserver"),
