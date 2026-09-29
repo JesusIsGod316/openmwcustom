@@ -23,6 +23,7 @@
 #include <fstream>
 #include <iomanip>
 #include <memory>
+#include <string>
 #include <typeinfo>
 
 namespace SceneUtil::DrawPhaseTrace
@@ -327,7 +328,7 @@ namespace SceneUtil::DrawPhaseTrace
                 // Snapshot only slow state rows so normal draw overhead stays tiny.
                 if (row.stateMs >= 2.0)
                 {
-                    if (const osg::StateSet* stateSet = _parent ? _parent->getStateSet() : nullptr)
+                    if (osg::StateSet* stateSet = _parent ? _parent->getStateSet() : nullptr)
                     {
                         const auto& attributes = stateSet->getTextureAttributeList();
                         auto recordTexture = [&](const osg::Texture2D* texture) {
