@@ -964,6 +964,9 @@ namespace RenderVsg
         // the final scene-root publication is an allocation-free swap.
         vsg::Group::Children nextChildren;
         nextChildren.reserve(mutation.orderedInstances.size() + populationMutation.orderedPopulations.size());
+        vsg::Group::Children nextGpuCullChildren;
+        if (mGpuPopulationCullEnabled)
+            nextGpuCullChildren.reserve(populationMutation.orderedPopulations.size());
         for (const RenderCore::InstanceHandle handle : mutation.orderedInstances)
         {
             const auto replacement = replacementIndices.find(staticInstanceKey(handle));
@@ -989,6 +992,8 @@ namespace RenderVsg
                 const std::size_t index
                     = static_cast<std::size_t>(replacement - populationMutation.upserts.begin());
                 nextChildren.push_back(populationReplacements[index].visibility);
+                if (populationReplacements[index].gpuCullCompute)
+                    nextGpuCullChildren.push_back(populationReplacements[index].gpuCullCompute);
                 continue;
             }
             const StaticPopulationResident* resident = mStaticPopulationResidency.residentObject(identity);
@@ -998,6 +1003,8 @@ namespace RenderVsg
                 return false;
             }
             nextChildren.push_back(resident->visibility);
+            if (resident->gpuCullCompute)
+                nextGpuCullChildren.push_back(resident->gpuCullCompute);
         }
 
         // Cache only this generation's candidates; old roots remain fence-owned
@@ -1043,6 +1050,8 @@ namespace RenderVsg
         if (nextInventory) mStaticPipelineInventory = std::move(*nextInventory);
         else mStaticPipelineInventory = {};
         mStaticRoot->children.swap(nextChildren);
+        if (mGpuPopulationCullRoot)
+            mGpuPopulationCullRoot->children.swap(nextGpuCullChildren);
         mVisibilityNodes.swap(nextVisibility);
         nextChildren.clear(); // release the old traversal references before pruning
         if (!placementDeltas || resourceChanges)
@@ -1055,7 +1064,10 @@ namespace RenderVsg
                 {"enabled", std::to_string(placementDeltas)},
                 {"nodes_reused", std::to_string(placementNodesReused)},
                 {"nodes_built", std::to_string(placementNodesBuilt)},
-                {"resource_changes", std::to_string(resourceChanges)}});
+                {"resource_changes", std::to_string(resourceChanges)},
+                {"gpu_cull_groups", std::to_string(gpuCullGroups)},
+                {"gpu_cull_placements", std::to_string(gpuCullPlacements)},
+                {"gpu_indirect_commands", std::to_string(gpuIndirectCommands)}});
         mStaticSyncState.synchronized();
         return true;
     }
