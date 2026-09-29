@@ -1483,19 +1483,24 @@ namespace RenderVsg
                 {"shadow_enabled", std::to_string(mOptions.shadows.enabled)},
                 {"reflection", std::to_string(mOptions.water.reflection)},
                 {"refraction", std::to_string(mOptions.water.refraction)}});
-        bool allCurrent = mOpenMwViewState->localLightsCurrent(world)
-            && (!mReflectionView || mReflectionView->state->localLightsCurrent(world))
-            && (!mRefractionView || mRefractionView->state->localLightsCurrent(world));
+        const std::uint64_t lightSerial = mGpuSceneTablesEnabled ? mGpuSceneTables.lightSerial() : 0;
+        const auto lightsCurrent = [&](const OpenMwViewDependentState& state) {
+            return lightSerial != 0 ? state.localLightsCurrent(world, lightSerial) : state.localLightsCurrent(world);
+        };
+        bool allCurrent = lightsCurrent(*mOpenMwViewState)
+            && (!mReflectionView || lightsCurrent(*mReflectionView->state))
+            && (!mRefractionView || lightsCurrent(*mRefractionView->state));
         for (const AuxiliaryViewRuntime& auxiliary : mAuxiliaryViews)
         {
             if (auxiliary.active && !auxiliary.isolated && auxiliary.kind != RenderCore::ViewKind::Map
-                && !auxiliary.state->localLightsCurrent(world))
+                && !lightsCurrent(*auxiliary.state))
                 allCurrent = false;
         }
         if (allCurrent)
             return true;
 
         LocalLightBufferPlan plan = buildLocalLightBufferPlan(buildLocalLightWorldPlan(world), glm::dvec3(0.0));
+        plan.sourceSerial = lightSerial;
         if (!plan.ready())
         {
             switch (plan.status)
