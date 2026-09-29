@@ -384,7 +384,8 @@ void main()
             diagnostic = "P3 GPU population cull could not derive conservative model bounds";
             return result;
         }
-        auto placements = vsg::vec4Array::create(plan.placements.size() * 3);
+        const auto placementVectorCount = static_cast<std::uint32_t>(plan.placements.size() * 3u);
+        auto placements = vsg::vec4Array::create(placementVectorCount);
         for (std::size_t i = 0; i < plan.placements.size(); ++i)
         {
             if (!packPlacement(*placements, i, *assetBounds, plan.placements[i]))
@@ -394,7 +395,7 @@ void main()
             }
         }
 
-        auto drawTemplates = vsg::uivec4Array::create(draws.size());
+        auto drawTemplates = vsg::uivec4Array::create(static_cast<std::uint32_t>(draws.size()));
         for (std::size_t i = 0; i < draws.size(); ++i)
         {
             const auto* draw = draws[i];
