@@ -2353,9 +2353,10 @@ void OMW::Engine::go()
     Debug::V3HitchTelemetry::state().finish();
     numericCapture.finish();
     const auto preparedTextureStats = Resource::PreparedTerrainTextureCompileOp::stats();
-    Log(Debug::Info) << "P8U1 terrain preparation snapshot: requested=" << preparedTextureStats.requested
-        << " reused=" << preparedTextureStats.reused << " submitted=" << preparedTextureStats.completed
-        << " (precompile calls, not GPU-completion or uploaded-byte counters)";
+    Log(Debug::Info) << "P8U1 terrain preparation snapshot: requested="
+        + std::to_string(preparedTextureStats.requested) + " reused=" + std::to_string(preparedTextureStats.reused)
+        + " submitted=" + std::to_string(preparedTextureStats.completed)
+        + " (precompile calls, not GPU-completion or uploaded-byte counters)";
     mLuaWorker->join();
 
     // Save user settings
