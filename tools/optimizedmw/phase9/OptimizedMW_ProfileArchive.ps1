@@ -165,7 +165,7 @@ function Test-Phase9TraceCapture {
         $valid=($reasons.Count -eq 0)
         if(-not $valid){Write-Warning ('INVALID ROOT-CAUSE CAPTURE: '+($reasons -join '; ')+'. Raw evidence will still be zipped.')}
     }
-    $result=[pscustomobject]@{schema=2;trace_requested=$TraceRequested;valid_leaf_capture=$valid;reasons=$reasons.ToArray();
+    $result=[pscustomobject]@{schema=3;trace_requested=$TraceRequested;valid_leaf_capture=$valid;reasons=$reasons.ToArray();
         scope='CPU leaf envelopes plus selected OSG GL dispatch; not complete GPU/driver profiling'}
     $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ProfileDir 'ROOT-CAUSE-CAPTURE.json') -Encoding UTF8
     return $result
