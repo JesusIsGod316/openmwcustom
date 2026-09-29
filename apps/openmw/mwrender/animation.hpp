@@ -419,6 +419,7 @@ namespace MWRender
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
         struct V4NativeAnimationLayer
         {
+            std::string_view groupName;
             std::string_view sourcePath;
             float time = 0.0f;
             std::span<const std::string> boneNames;
