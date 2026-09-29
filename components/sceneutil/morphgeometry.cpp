@@ -1,6 +1,5 @@
 #include "morphgeometry.hpp"
 #include "dynamicstream.hpp"
-#include "staticgeometryprewarm.hpp"
 #include "deformationintersectionvisitor.hpp"
 
 #include <osgUtil/CullVisitor>
@@ -86,11 +85,6 @@ namespace SceneUtil
         mDirty = true;
         if (!mMorphedBoundingBox)
             dirtyBound();
-    }
-
-    void MorphGeometry::compileGLObjects(osg::RenderInfo& renderInfo) const
-    {
-        StaticGeometryPrewarm::prepare(renderInfo, mGeometry[0].get());
     }
 
     osg::ref_ptr<osg::Geometry> MorphGeometry::getSourceGeometry() const
