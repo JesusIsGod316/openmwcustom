@@ -39,6 +39,8 @@ This is a substantive diagnostic + temporal-input checkpoint, not a telemetry-
 only performance promotion and not a working DLSS release. Full Windows/package
 CI and user runtime validation are still required.
 
+Validation trigger after chat-stream recovery: branch contents re-read and CI requested from this exact checkpoint.
+
 ---
 
 # Phase 9 root-cause and static-prewarm checkpoint (2026-09-29)
