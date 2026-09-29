@@ -29,6 +29,7 @@
 #include "persistentdrawscene.hpp"
 #include "retainedscenemembership.hpp"
 #include "pipelineinventory.hpp"
+#include "pipelineauditgate.hpp"
 
 #include <components/rendercore/namedvisualsemantics.hpp>
 #include <components/rendercore/renderer.hpp>
@@ -173,6 +174,7 @@ namespace RenderVsg
             const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame, bool guiOnly);
         using StaticResident = vsg::ref_ptr<vsg::Node>;
         RetainedPipelineInventory mStaticPipelineInventory;
+        PipelineAuditGate mPipelineAuditGate;
         struct StaticPopulationResident
         {
             struct Placement
