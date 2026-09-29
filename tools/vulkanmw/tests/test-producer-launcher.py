@@ -45,6 +45,7 @@ class ProducerLauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--single', result.stdout)
         self.assertIn('--supported-continuous', result.stdout)
+        self.assertIn('--gpu-scene-tables', result.stdout)
         self.assertEqual(list(self.package.glob('source-changes.json')), [])
 
     def test_identity_is_from_manifest_and_rechecks_executable(self):
@@ -63,7 +64,7 @@ class ProducerLauncherTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.module.source_identity(self.package)
 
-    def run_sequence(self, single=None, failing=False, supported_continuous=False):
+    def run_sequence(self, single=None, failing=False, supported_continuous=False, gpu_scene_tables=False):
         before = {p.name: p.read_bytes() for p in self.normal.iterdir()}
         calls = []
         def fake_run(package, user_config, source, name, arm):
@@ -80,6 +81,8 @@ class ProducerLauncherTests(unittest.TestCase):
             argv += ['--single', single]
         if supported_continuous:
             argv += ['--supported-continuous']
+        if gpu_scene_tables:
+            argv += ['--gpu-scene-tables']
         with patch.object(sys, 'argv', argv), patch.object(self.module.cohort, 'run', side_effect=fake_run):
             if failing:
                 with self.assertRaisesRegex(RuntimeError, 'synthetic'):
@@ -111,6 +114,16 @@ class ProducerLauncherTests(unittest.TestCase):
         self.assertEqual(candidate, baseline | {'OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS': '1'})
         self.assertEqual(baseline.get('OPENMW_VK_PRODUCER_DIRTY_QUEUES'), '1')
         self.assertEqual(baseline.get('OPENMW_VK_SPLIT_PARTICLE_CAPTURE'), '1')
+
+    def test_gpu_scene_table_abba_changes_only_p2_control(self):
+        calls = self.run_sequence(gpu_scene_tables=True)
+        self.assertEqual(calls, [self.module.GPU_TABLE_BASE, self.module.GPU_TABLE_CANDIDATE,
+                                 self.module.GPU_TABLE_CANDIDATE, self.module.GPU_TABLE_BASE])
+        baseline = self.module.cohort.selected(calls[0])
+        candidate = self.module.cohort.selected(calls[1])
+        self.assertEqual(candidate, baseline | {'OPENMW_VK_GPU_SCENE_TABLES': '1'})
+        self.assertEqual(baseline.get('OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS'), '1')
+        self.assertEqual(baseline.get('OPENMW_VK_PRODUCER_DIRTY_QUEUES'), '1')
 
     def test_failure_keeps_evidence_and_preserves_normal_data(self):
         self.assertEqual(len(self.run_sequence(failing=True)), 1)
