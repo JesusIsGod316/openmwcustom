@@ -2888,6 +2888,7 @@ namespace MWRender
             }
 
             state.layers[blendMask] = V4NativeAnimationLayer{
+                active->first,
                 source->mPath,
                 active->second.getTime(),
                 std::span<const std::string>(source->mV4NativeBoneNames[blendMask]),
