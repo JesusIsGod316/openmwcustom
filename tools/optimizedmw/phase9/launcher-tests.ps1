@@ -13,19 +13,29 @@ if(-not $fn){throw 'Missing Phase 9 mode function'}
 . ([scriptblock]::Create($fn.Extent.Text))
 . (Join-Path $root 'OptimizedMW_ProfileArchive.ps1')
 $expected=@(
-    @('REFERENCE','0','0','0','0','0'),@('OPTIMIZED','0','0','0','0','1'),
-    @('ROOT-CAUSE-TRACE','0','0','0','1','0'),@('OPTIMIZED-TRACE','0','0','0','1','1'),
-    @('TEMPORAL','0','1','0','0','0'),@('OPTIMIZED-TEMPORAL','0','1','0','0','1'),
-    @('MOTION-VIEW','0','1','1','0','0'),@('HITCH','1','0','0','0','0'),
-    @('HITCH-TRACE','1','0','0','1','0'),@('HITCH-TEMPORAL','1','1','0','0','0'))
+    @('REFERENCE','0','0','0','0'),
+    @('TEMPORAL-INPUTS','0','1','0','0'),
+    @('ROOT-CAUSE-TRACE','0','0','0','1'),
+    @('TEMPORAL-TRACE','0','1','0','1'),
+    @('MOTION-VIEW','0','1','1','0'),
+    @('HITCH','1','0','0','0'),
+    @('HITCH-TRACE','1','0','0','1'))
 for($i=0;$i -lt $expected.Count;$i++){
-    $m=Get-P9Mode ([string]($i+1));$keys=@('Name','Stream','Temporal','View','Trace','Prewarm')
+    $m=Get-P9Mode ([string]($i+1));$keys=@('Name','Stream','Temporal','View','Trace')
     for($k=0;$k -lt $keys.Count;$k++){if($m[$keys[$k]] -ne $expected[$i][$k]){throw 'Mode isolation changed'}}
+    if($m.ContainsKey('Prewarm')){throw 'Rejected prewarm mode leaked back into launcher'}
 }
 $bad=$false;try{$null=Get-P9Mode '99'}catch{$bad=$true};if(-not $bad){throw 'Unknown mode accepted'}
 $launcher=Get-Content -Raw -LiteralPath (Join-Path $root 'OptimizedMW_Test.ps1')
 foreach($line in @("`$ResourceRepair='true'","`$LuaCache='true'","`$SoundWarm='true'","`$ShadowConsistency='true'")){
     if(-not $launcher.Contains($line)){throw 'P8U1 foundation differs between Phase 9 modes'}
+}
+if($launcher.Contains('OPENMW_P9_STATIC_PREWARM=$mode.Prewarm') -or $launcher.Contains('$mode.Prewarm')){
+    throw 'Rejected static prewarm is still selectable'
+}
+foreach($token in @('OPENMW_P9_TEMPORAL_FILE','OPENMW_P9_COMPOSITE_FILE','OPENMW_V36_GPU_PASS_FILE',
+                    'phase9_temporal_contract=consumer_frame_v1')){
+    if(-not $launcher.Contains($token)){throw ('Missing Phase 9 continuation control: '+$token)}
 }
 if($launcher.IndexOf('Complete-Phase9Profile -ProfileDir') -lt $launcher.IndexOf('settings_restore_verified=$restoreVerified')){
     throw 'Packaging precedes configuration restoration'
@@ -101,7 +111,7 @@ try{
     @('frame,context,leaves','1,0,4') | Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.frames.csv')
     $goodTrace=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
     if($goodTrace.valid_leaf_capture -ne $true){throw 'Complete runtime trace rejected'}
-    Write-Host 'PASS Phase 9: 10 isolated modes, live/empty trace validation, shader preflight, report fixtures, nested/spaced/bracket paths, real SHA256 ZIP verification, partial capture, report failure/timeout and verified replacement.'
+    Write-Host 'PASS Phase 9: 7 safe isolated modes, rejected prewarm absent, live/empty trace validation, shader preflight, report fixtures, nested/spaced/bracket paths, real SHA256 ZIP verification, partial capture, report failure/timeout and verified replacement.'
 }finally{
     if(Test-Path -LiteralPath $zipFile){Remove-Item -LiteralPath $zipFile -Force}
     Remove-Item -LiteralPath $temp -Recurse -Force
