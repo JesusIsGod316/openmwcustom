@@ -1,6 +1,7 @@
 #ifndef OPENMW_COMPONENTS_RENDER_BACKEND_VSG_VSGRUNTIMEHOST_H
 #define OPENMW_COMPONENTS_RENDER_BACKEND_VSG_VSGRUNTIMEHOST_H
 
+#include "gpuscenetables.hpp"
 #include "framecamera.hpp"
 #include "framegpuprofile.hpp"
 #include <components/debug/runtimediagnostics.hpp>
@@ -124,6 +125,13 @@ namespace RenderVsg
         RenderCore::RenderFrameResult renderGuiFrame(
             const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame);
         void waitIdle() override;
+
+        // P2 semantic-delta seam. The first slice mirrors stable handle
+        // identity/revision into backend-private persistent tables; later
+        // storage-buffer upload consumes the same dirty ranges.
+        void resetGpuSceneTables(const RenderCore::RenderWorld& world) noexcept;
+        void applyWorldUpdateBatch(
+            const RenderCore::RenderWorld& world, const RenderCore::RenderWorldUpdateBatch& batch) noexcept;
 
         [[nodiscard]] bool configureNamedSwitchState(
             RenderCore::NightDaySwitchState state, bool dayNightSwitchesEnabled) noexcept
@@ -303,6 +311,8 @@ namespace RenderVsg
         unsigned mWaterProbeSamples = 0;
         std::chrono::steady_clock::time_point mNextWaterProbe{};
         FrameCameraObjects mCamera;
+        GpuSceneTables mGpuSceneTables;
+        bool mGpuSceneTablesEnabled = false;
         StaticWorldResidency<StaticResident> mStaticResidency;
         StaticWorldSyncState mStaticSyncState;
         NativeVisibility mNativeVisibility;
