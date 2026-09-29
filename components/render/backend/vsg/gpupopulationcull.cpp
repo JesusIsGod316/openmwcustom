@@ -277,7 +277,9 @@ namespace RenderVsg
         }
 
         void replaceDraws(vsg::Group& group, const std::vector<vsg::ref_ptr<vsg::BufferInfo>>& indirectRanges,
-            std::uint32_t indirectViewId, std::uint32_t placementCount, std::size_t& drawIndex)
+            std::uint32_t indirectViewId, std::uint32_t placementCount, bool compacted,
+            vsg::ref_ptr<vsg::BufferInfo> compactTranslations, vsg::ref_ptr<vsg::BufferInfo> compactRotations,
+            vsg::ref_ptr<vsg::BufferInfo> compactScales, std::size_t& drawIndex)
         {
             for (auto& child : group.children)
             {
@@ -294,12 +296,17 @@ namespace RenderVsg
                     replacement->indices = direct->indices;
                     replacement->indirectViewId = indirectViewId;
                     replacement->indirect = indirectRanges.at(drawIndex++);
-                    replacement->indirectDrawCount = placementCount;
+                    replacement->indirectDrawCount = compacted ? 1u : placementCount;
+                    replacement->compacted = compacted;
+                    replacement->compactTranslations = compactTranslations;
+                    replacement->compactRotations = compactRotations;
+                    replacement->compactScales = compactScales;
                     child = replacement;
                     continue;
                 }
                 if (auto* nested = dynamic_cast<vsg::Group*>(child.get()))
-                    replaceDraws(*nested, indirectRanges, indirectViewId, placementCount, drawIndex);
+                    replaceDraws(*nested, indirectRanges, indirectViewId, placementCount, compacted,
+                        compactTranslations, compactRotations, compactScales, drawIndex);
             }
         }
 
