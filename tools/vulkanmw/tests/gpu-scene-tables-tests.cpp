@@ -108,7 +108,9 @@ int main()
     assert(!transientSlot.live && transientSlot.generation == transient->generation());
     assert(tables.dirty(RenderVsg::GpuSceneTables::Kind::Light).first == transient->slot());
     assert(tables.dirty(RenderVsg::GpuSceneTables::Kind::Light).last == transient->slot() + 1);
-    assert(tables.stats().creates == 3);
+    // DeltaStats are global across table kinds; the non-light mesh create
+    // above is intentionally counted even though it did not advance lightSerial.
+    assert(tables.stats().creates == 4);
     assert(tables.stats().retires == 2);
 
     publisher.setAppliedObserver({});
