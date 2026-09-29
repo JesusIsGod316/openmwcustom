@@ -1058,7 +1058,8 @@ namespace RenderVsg
             {
                 const std::uint64_t actorPlanSerial
                     = mGpuSceneTablesEnabled ? mGpuSceneTables.actorPlanSerial() : 0;
-                retainedPlan = &mPersistentActorPlans.prepare(world, mOptions.staticPlan, actorPlanSerial);
+                retainedPlan = &mPersistentActorPlans.prepare(world, mOptions.staticPlan, actorPlanSerial,
+                    mGpuSceneTablesEnabled ? &mGpuSceneTables : nullptr);
                 return DynamicActorWorldPlan{};
             }
             return mActorPlanCache.prepare(world, mOptions.staticPlan,
