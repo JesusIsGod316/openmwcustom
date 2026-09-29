@@ -72,6 +72,26 @@ int main()
     assert(!secondSlot.live && secondSlot.generation == second->generation());
     assert(tables.stats().retires == 1);
 
+    // Post-commit observers see final world state. A valid create->retire
+    // transaction must produce a tombstone rather than trying to replay the
+    // already-retired intermediate record.
+    tables.clearDirty();
+    const auto transient = world.reserveLight();
+    assert(transient);
+    RenderWorldUpdateBatch transientBatch(world.epoch(), publisher.nextSequence(), "gpu-scene-table-transient");
+    assert(transientBatch.add(CreateLight{*transient, LightRecord{}}));
+    assert(transientBatch.add(RetireLight{*transient}));
+    assert(transientBatch.seal());
+    assert(publisher.apply(transientBatch) == PublishStatus::Applied);
+    assert(observerCalls == 4);
+    assert(tables.current(world));
+    const auto& transientSlot = tables.table(RenderVsg::GpuSceneTables::Kind::Light).at(transient->slot());
+    assert(!transientSlot.live && transientSlot.generation == transient->generation());
+    assert(tables.dirty(RenderVsg::GpuSceneTables::Kind::Light).first == transient->slot());
+    assert(tables.dirty(RenderVsg::GpuSceneTables::Kind::Light).last == transient->slot() + 1);
+    assert(tables.stats().creates == 3);
+    assert(tables.stats().retires == 2);
+
     publisher.setAppliedObserver({});
     assert(world.reset());
     assert(!tables.current(world));
