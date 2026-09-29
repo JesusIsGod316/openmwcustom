@@ -30,6 +30,8 @@ GPU_TABLE_BASE = SUPPORTED_CANDIDATE
 GPU_TABLE_CANDIDATE = GPU_TABLE_BASE + '+gpu-tables'
 GPU_CULL_BASE = GPU_TABLE_CANDIDATE + '+gpu-cull-queue'
 GPU_CULL_CANDIDATE = GPU_CULL_BASE + '+gpu-cull-indirect'
+GPU_COMPACT_BASE = GPU_CULL_CANDIDATE
+GPU_COMPACT_CANDIDATE = GPU_COMPACT_BASE + '+gpu-cull-compact'
 
 
 def source_identity(package):
@@ -68,10 +70,14 @@ def main():
                       help='A/B P2 direct-delta GPU scene tables with repaired P1 producer stack in both arms')
     mode.add_argument('--gpu-cull-indirect', action='store_true',
                       help='A/B P3 GPU population cull + indirect draw with the complete P2 stack in both arms')
+    mode.add_argument('--gpu-cull-compact', action='store_true',
+                      help='A/B P3B compact visible transforms + one indirect command per draw with P3A in both arms')
     args = parser.parse_args()
     package = args.package.resolve()
     source = source_identity(package)
-    if args.gpu_cull_indirect:
+    if args.gpu_cull_compact:
+        baseline, candidate = GPU_COMPACT_BASE, GPU_COMPACT_CANDIDATE
+    elif args.gpu_cull_indirect:
         baseline, candidate = GPU_CULL_BASE, GPU_CULL_CANDIDATE
     elif args.gpu_scene_tables:
         baseline, candidate = GPU_TABLE_BASE, GPU_TABLE_CANDIDATE
