@@ -22,6 +22,7 @@ def main() -> None:
     host_header = text("components/render/backend/vsg/vsgruntimehost.hpp")
     bootstrap = text("components/render/backend/vsg/vsgruntimebootstrap.cpp")
     sources = text("components/render/backend/vsg/runtime-sources.cmake")
+    openmw_cmake = text("apps/openmw/CMakeLists.txt")
     cohort = text("tools/vulkanmw/run-publication-cohort.py")
     launcher = text("tools/vulkanmw/run-producer-queues.py")
     bat = text("tools/vulkanmw/START-VulkanMW-P3-Test.bat")
@@ -41,6 +42,10 @@ def main() -> None:
         ("VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT", "indirect consumer stage"),
         ("VK_ACCESS_SHADER_WRITE_BIT", "compute write barrier"),
         ("VK_ACCESS_INDIRECT_COMMAND_READ_BIT", "indirect read barrier"),
+        ("VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT",
+         "cross-frame draw-read to compute-write dependency"),
+        ("VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT",
+         "same-frame compute-write to draw-read dependency"),
         ("commands[commandIndex].instanceCount = visible ? 1u : 0u",
          "GPU visibility decision"),
         ("commands[commandIndex].firstInstance = placement",
@@ -76,6 +81,7 @@ def main() -> None:
     require(bootstrap, "traits->queueFlags |= VK_QUEUE_COMPUTE_BIT",
             "graphics+compute queue request")
     require(sources, "gpupopulationcull.cpp", "production source closure")
+    require(openmw_cmake, "START-VulkanMW-P3-Test.bat", "installed P3 benchmark launcher")
 
     require(cohort, "'gpu-cull-indirect': 'OPENMW_VK_GPU_CULL_INDIRECT'",
             "benchmark feature mapping")
