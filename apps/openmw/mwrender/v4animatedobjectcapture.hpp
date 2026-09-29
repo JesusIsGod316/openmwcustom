@@ -6,6 +6,9 @@
 #include <osg/LOD>
 #include <osg/Transform>
 
+#include <glm/vec3.hpp>
+
+#include <algorithm>
 #include <optional>
 
 namespace MWRender
@@ -65,10 +68,10 @@ namespace MWRender
                 center.z() - mEyePoint->z);
             const double range = glm::length(delta) * static_cast<double>(mLodScale);
             const auto& ranges = lod.getRangeList();
-            const unsigned count = std::min<unsigned>(lod.getNumChildren(), ranges.size());
-            for (unsigned i = 0; i < count && mResult.valid(); ++i)
+            const std::size_t count = std::min<std::size_t>(lod.getNumChildren(), ranges.size());
+            for (std::size_t i = 0; i < count && mResult.valid(); ++i)
                 if (ranges[i].first <= range && range < ranges[i].second)
-                    lod.getChild(i)->accept(*this);
+                    lod.getChild(static_cast<unsigned>(i))->accept(*this);
         }
 
         void apply(osg::Geode& geode) override
