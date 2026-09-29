@@ -70,3 +70,14 @@ add_test(NAME openmw-vulkan-static-realizer-smoke COMMAND openmw-vulkan-static-r
 add_test(NAME openmw-vulkan-legacy-material-shader-smoke COMMAND openmw-vulkan-legacy-material-shader-smoke)
 add_test(NAME openmw-vulkan-enchanted-material-shader-smoke COMMAND openmw-vulkan-enchanted-material-shader-smoke)
 add_test(NAME openmw-vulkan-static-conformance-routing-smoke COMMAND openmw-vulkan-static-conformance-routing-smoke)
+
+# Mandatory real-VSG construction regression; no Vulkan device required.
+add_executable(openmw-vulkan-gpu-population-routing-smoke gpu-population-routing-smoke.cpp)
+target_link_libraries(openmw-vulkan-gpu-population-routing-smoke PRIVATE openmw_cp3b3_vsg)
+if(MSVC)
+    target_compile_options(openmw-vulkan-gpu-population-routing-smoke PRIVATE /W4 /WX /permissive-)
+endif()
+foreach(inventory IN ITEMS none pipeline resource both)
+    add_test(NAME openmw-vulkan-p3-routing-${inventory}
+        COMMAND openmw-vulkan-gpu-population-routing-smoke ${inventory})
+endforeach()

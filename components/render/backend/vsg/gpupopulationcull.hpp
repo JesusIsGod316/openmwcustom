@@ -42,6 +42,11 @@ namespace RenderVsg
     // graphicsRoot with commands that issue vkCmdDrawIndexedIndirect for
     // indirectViewId. All other view IDs retain the exact direct draw fallback.
     //
+    // Call only from the unsealed StaticGraphFinalizer construction seam.
+    // Empty, incomplete or already-sealed topology returns an explicit reason
+    // and retains the exact direct graph. Compaction downgrade also reports a
+    // reason even when the P3A build is active.
+    //
     // The compute graph writes every VkDrawIndexedIndirectCommand field each
     // frame and never reads results back to the CPU. P3A writes one command per
     // placement. P3B can instead compact visible transforms on the GPU and emit

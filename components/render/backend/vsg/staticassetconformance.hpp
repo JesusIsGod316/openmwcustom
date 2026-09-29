@@ -9,6 +9,7 @@
 #include <glm/vec3.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -39,6 +40,11 @@ namespace RenderVsg
     // DESCENDING consumes DepthSorted camera distance as far-to-near.
     [[nodiscard]] std::vector<vsg::ref_ptr<vsg::Bin>> createStaticConformanceBins();
 
+    // Construction-only topology edits run after conformance but BEFORE the
+    // immutable pipeline inventory is sealed. No mutable graph escapes that
+    // boundary. Retained assets never run this finalizer again.
+    using StaticGraphFinalizer = std::function<void(vsg::Group&)>;
+
     // Authoritative CP3B3 static realization entry. StaticAssetRealizer builds
     // backend objects and descriptors; this seam then applies the effective
     // loader-global V3.25 sort policy and reinstates the exact billboard
@@ -52,7 +58,7 @@ namespace RenderVsg
         const MeshPayloadResolver& meshPayloadResolver = {},
         std::span<const RenderCore::PopulationInstanceRecord> placements = {},
         glm::dvec3 placementOrigin = {}, float opacityMultiplier = 1.0f,
-        bool dynamicData = false);
+        bool dynamicData = false, const StaticGraphFinalizer& beforeSeal = {});
 }
 
 #endif

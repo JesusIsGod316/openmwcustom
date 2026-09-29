@@ -1,3 +1,4 @@
+#include <vsg/vk/PhysicalDevice.h>
 #include "gpupopulationcull.hpp"
 
 #include <vsg/state/BindDescriptorSet.h>
@@ -622,8 +623,17 @@ void main()
         std::string& diagnostic)
     {
         GpuPopulationCullBuild result;
-        if (plan.placements.empty() || !viewData || viewData->size() < 5)
+        diagnostic.clear();
+        if (plan.placements.empty())
+        {
+            diagnostic = "P3 GPU population cull received no placements";
             return result;
+        }
+        if (!viewData || viewData->size() < 5)
+        {
+            diagnostic = "P3 GPU population cull is missing the current view buffer";
+            return result;
+        }
         if (plan.placements.size() > std::numeric_limits<std::uint32_t>::max() / 3u)
         {
             diagnostic = "P3 GPU population cull exceeds packed placement-buffer range";
@@ -633,7 +643,17 @@ void main()
         std::vector<vsg::VertexIndexDraw*> draws;
         collectDraws(graphicsRoot, draws);
         if (draws.empty())
+        {
+            diagnostic = "P3 GPU population cull found no rewritable draws; finalize before inventory sealing";
             return result;
+        }
+        // Never activate a partial walk through an ordered/opaque wrapper.
+        // This entire population must retain its direct graph on rejection.
+        if (draws.size() != plan.asset.draws.size())
+        {
+            diagnostic = "P3 GPU population cull did not reach every planned draw";
+            return result;
+        }
         if (draws.size() > std::numeric_limits<std::uint32_t>::max())
         {
             diagnostic = "P3 GPU population cull exceeds Vulkan draw-template range";
@@ -647,6 +667,14 @@ void main()
             return result;
         }
         const auto placementCount = static_cast<std::uint32_t>(plan.placements.size());
+        for (const auto* draw : draws)
+        {
+            if (!draw || draw->instanceCount != placementCount || draw->firstInstance != 0)
+            {
+                diagnostic = "P3 GPU population cull requires the complete zero-based instance stream";
+                return result;
+            }
+        }
         bool compacted = compactCommands && compactPopulationSafe(world, plan)
             && plan.placements.size() <= std::numeric_limits<std::uint32_t>::max() / 6u;
         if (compacted)
@@ -880,6 +908,13 @@ void main()
             return result;
         }
 
+        if (compactCommands)
+            diagnostic = "P3B compaction retained P3A for order-sensitive material or incompatible transform streams";
+        if (placementCount > device.getPhysicalDevice()->getProperties().limits.maxDrawIndirectCount)
+        {
+            diagnostic = "P3 GPU population cull exceeds the device indirect draw-count limit";
+            return result;
+        }
         const auto placementVectorCount = static_cast<std::uint32_t>(plan.placements.size() * 3u);
         auto placements = vsg::vec4Array::create(placementVectorCount);
         for (std::size_t i = 0; i < plan.placements.size(); ++i)

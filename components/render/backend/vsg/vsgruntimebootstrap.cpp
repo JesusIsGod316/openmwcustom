@@ -1,3 +1,5 @@
+#include <vsg/vk/DeviceFeatures.h>
+#include <vsg/vk/PhysicalDevice.h>
 #include "vsgruntimebootstrap.hpp"
 
 #include <SDL3/SDL.h>
@@ -131,8 +133,22 @@ namespace RenderVsg
                 VK_PHYSICAL_DEVICE_TYPE_CPU,
             };
             result->mVsgWindow = SdlVulkanWindow::create(result->mSdlWindow, traits);
-            if (!result->mVsgWindow->getOrCreatePhysicalDevice())
+            const auto physical = result->mVsgWindow->getOrCreatePhysicalDevice();
+            if (!physical)
                 throw std::runtime_error("VSG could not select a Vulkan physical device");
+            // The shared P3 queue selection also owns device capabilities, so
+            // matched P3A/P3B controls create identically configured devices.
+            // VSG 1.1.15 defaults request anisotropy, not indirect draw features.
+            if (std::getenv("OPENMW_VK_GPU_CULL_QUEUE")
+                || std::getenv("OPENMW_VK_GPU_CULL_INDIRECT"))
+            {
+                const auto& supported = physical->getFeatures();
+                if (!supported.multiDrawIndirect || !supported.drawIndirectFirstInstance)
+                    throw std::runtime_error(
+                        "P3 requires multiDrawIndirect and drawIndirectFirstInstance device support");
+                traits->deviceFeatures->get().multiDrawIndirect = VK_TRUE;
+                traits->deviceFeatures->get().drawIndirectFirstInstance = VK_TRUE;
+            }
 
             result->mRenderer = std::make_unique<VsgRuntimeHost>(
                 result->mVsgWindow, std::move(textureResolver), std::move(options.host));

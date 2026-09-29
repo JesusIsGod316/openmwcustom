@@ -15,6 +15,8 @@ add_test(NAME vulkanmw-frame-profile-report
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-frame-profile-report.py)
 add_test(NAME vulkanmw-phase3c-benchmark-control
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-benchmark-control.py)
+add_test(NAME vulkanmw-p3-graph-boundary
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-p3-graph-boundary.py)
 add_test(NAME vulkanmw-producer-launcher
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-producer-launcher.py)
 add_test(NAME vulkanmw-supported-continuous-producers

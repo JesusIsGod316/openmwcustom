@@ -830,11 +830,19 @@ namespace RenderVsg
                 : std::vector<std::optional<std::size_t>>(plan.placements.size());
             std::vector<StaticPopulationResident::Placement> placementResidents;
             StaticRealizationResult realized;
+            GpuPopulationCullBuild gpuCull;
+            std::string gpuCullFallback;
+            const StaticGraphFinalizer finalizePopulation = [&](vsg::Group& graphicsRoot) {
+                if (mGpuPopulationCullEnabled)
+                    gpuCull = enableGpuPopulationCull(world, plan, graphicsRoot,
+                        *mWindow->getOrCreateDevice(), mView->viewID,
+                        mGpuPopulationCullViewData, mGpuPopulationCompactEnabled, gpuCullFallback);
+            };
             if (reuseAsset) realized.root = oldResident->placementFreeAsset;
             else realized = requiresIndividualPlacement
                 ? realizeStaticAssetConformant(world, plan.model, plan.asset, mTextureResolver, mSharedObjects)
                 : realizeStaticAssetConformant(world, plan.model, plan.asset, mTextureResolver, mSharedObjects, {},
-                    plan.placements, plan.coordinateOrigin);
+                    plan.placements, plan.coordinateOrigin, 1.0f, false, finalizePopulation);
             if (!realized.valid() || realized.stats.runtimeContextEffects != 0
                 || realized.stats.unsupportedTextureBindings != 0)
             {
@@ -846,13 +854,10 @@ namespace RenderVsg
             if (!reuseAsset && Misc::environmentFlag<"OPENMW_VK_RESOURCE_INVENTORIES">())
                 realized.root = sealPipelineInventory(realized.root);
 
-            GpuPopulationCullBuild gpuCull;
-            std::string gpuCullFallback;
+            // Both inventory wrappers now describe the final draw topology.
+            // Report the construction result; do not walk a sealed graph here.
             if (mGpuPopulationCullEnabled && !requiresIndividualPlacement)
             {
-                gpuCull = enableGpuPopulationCull(world, plan, *realized.root,
-                    *mWindow->getOrCreateDevice(), mView->viewID,
-                    mGpuPopulationCullViewData, mGpuPopulationCompactEnabled, gpuCullFallback);
                 if (gpuCull.active)
                 {
                     ++gpuCullGroups;
@@ -860,9 +865,11 @@ namespace RenderVsg
                     gpuCullPlacements += gpuCull.stats.placements;
                     gpuIndirectCommands += gpuCull.stats.indirectCommands;
                 }
-                else if (!gpuCullFallback.empty() && Debug::GameplayDiagnostics::sampling())
+                if (!gpuCullFallback.empty() && Debug::GameplayDiagnostics::sampling())
                     Debug::GameplayDiagnostics::recordEvent("p3_gpu_cull_fallback", {
                         {"reason", gpuCullFallback},
+                        {"active", std::to_string(gpuCull.active)},
+                        {"compacted", std::to_string(gpuCull.stats.compacted)},
                         {"placements", std::to_string(plan.placements.size())}});
             }
 

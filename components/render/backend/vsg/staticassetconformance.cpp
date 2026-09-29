@@ -293,7 +293,7 @@ namespace RenderVsg
         RenderCore::ModelHandle modelHandle, const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
         vsg::ref_ptr<vsg::SharedObjects> sharedObjects, const MeshPayloadResolver& meshPayloadResolver,
         std::span<const RenderCore::PopulationInstanceRecord> placements, glm::dvec3 placementOrigin,
-        float opacityMultiplier, bool dynamicData)
+        float opacityMultiplier, bool dynamicData, const StaticGraphFinalizer& beforeSeal)
     {
         StaticAssetRealizer realizer(std::move(sharedObjects));
         StaticRealizationResult result
@@ -400,8 +400,13 @@ namespace RenderVsg
         }
 
         result.root = routedRoot;
-        // Seal only AFTER billboard/sort conformance has completed topology
-        // rewriting. The raw realizer contract remains one child per draw.
+        // GPU population draw replacement is also topology construction. Run
+        // it before sealing, never by unwrapping or mutating a live inventory.
+        if (beforeSeal && result.stats.runtimeContextEffects == 0
+            && result.stats.unsupportedTextureBindings == 0)
+            beforeSeal(*result.root);
+        // Seal only AFTER billboard/sort conformance and final topology edits.
+        // The raw realizer contract remains one child per draw.
         if (Misc::environmentFlag<"OPENMW_V4_PIPELINE_INVENTORIES">())
             result.root = sealPipelineInventory(result.root);
         return result;
