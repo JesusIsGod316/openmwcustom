@@ -23,6 +23,7 @@
 #include <components/resource/scenemanager.hpp>
 #include <components/sceneutil/color.hpp>
 #include <components/sceneutil/depth.hpp>
+#include <components/sceneutil/drawphasetrace.hpp>
 #include <components/sceneutil/nodecallback.hpp>
 #include <components/settings/values.hpp>
 #include <components/shader/shadermanager.hpp>
@@ -36,6 +37,8 @@
 
 #include "../mwgui/postprocessorhud.hpp"
 
+#include "camera.hpp"
+#include "temporalmotion.hpp"
 #include "distortion.hpp"
 #include "pingpongcull.hpp"
 #include "renderbin.hpp"
@@ -138,6 +141,29 @@ namespace MWRender
         for (auto& canvas : mCanvases)
             canvas = new PingPongCanvas(shaderManager, luminanceCalculator);
 
+        if (TemporalMotion::enabled() && !Stereo::getStereo() && viewer->getCamera()->getGraphicsContext())
+        {
+            try
+            {
+                auto program = shaderManager.getProgram("temporal_camera_motion");
+                auto debugProgram = TemporalMotion::debugView() ? shaderManager.getProgram("temporal_motion_view") : nullptr;
+                if (program)
+                {
+                    mTemporalMotion = std::make_shared<TemporalMotion>(program);
+                    for (auto& canvas : mCanvases) canvas->setTemporalMotion(mTemporalMotion, debugProgram);
+                    Log(Debug::Info) << "Phase 9 camera/static motion capture enabled; dense dynamic motion and DLSS are not integrated";
+                }
+                else
+                    Log(Debug::Warning) << "Phase 9 motion shader unavailable; retaining normal rendering";
+            }
+            catch (const std::exception& error)
+            {
+                for (auto& canvas : mCanvases) canvas->setTemporalMotion(nullptr, nullptr);
+                mTemporalMotion.reset();
+                Log(Debug::Warning) << "Phase 9 motion setup failed; retaining normal rendering: " << error.what();
+            }
+        }
+
         mHUDCamera->setReferenceFrame(osg::Camera::ABSOLUTE_RF);
         mHUDCamera->setRenderOrder(osg::Camera::POST_RENDER);
         mHUDCamera->setClearColor(osg::Vec4(0.45f, 0.45f, 0.14f, 1.f));
@@ -234,6 +260,12 @@ namespace MWRender
         addChild(mRootNode);
 
         mViewer->setSceneData(this);
+        if (!Stereo::getStereo() && SceneUtil::DrawPhaseTrace::Capture::instance().enabled())
+        {
+            const unsigned installed = SceneUtil::DrawPhaseTrace::install(*mViewer);
+            Log(Debug::Info) << "Phase 9 draw/state trace scene views installed=" + std::to_string(installed)
+                + "; diagnostic-only, coverage/overflow recorded on shutdown";
+        }
         mViewer->getCamera()->setRenderTargetImplementation(osg::Camera::FRAME_BUFFER_OBJECT);
         mViewer->getCamera()->getGraphicsContext()->setResizedCallback(new ResizedCallback(this));
         mViewer->getCamera()->setUserData(this);
@@ -304,6 +336,24 @@ namespace MWRender
             update(frameId);
 
         osg::Group::traverse(nv);
+    }
+
+    void PostProcessor::captureTemporalCamera(osgUtil::CullVisitor* cv)
+    {
+        if (!mTemporalMotion || !cv || Stereo::getStereo()) return;
+        TemporalCamera camera;
+        camera.projection = cv->getProjectionMatrix();
+        camera.view = cv->getCurrentCamera()->getViewMatrix();
+        camera.frame = cv->getTraversalNumber();
+        camera.cameraEpoch = mRendering.getCamera()->temporalEpoch();
+        camera.worldEpoch = mTemporalWorldEpoch;
+        camera.renderWidth = renderWidth();
+        camera.renderHeight = renderHeight();
+        camera.outputWidth = outputWidth();
+        camera.outputHeight = outputHeight();
+        camera.zeroToOne = SceneUtil::AutoDepth::isReversed();
+        camera.clearDepth = cv->getCurrentCamera()->getClearDepth();
+        mCanvases[camera.frame % 2]->setTemporalCamera(std::move(camera));
     }
 
     void PostProcessor::cull(unsigned frameId, osgUtil::CullVisitor* cv)

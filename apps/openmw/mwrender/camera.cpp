@@ -277,6 +277,7 @@ namespace MWRender
             mQueuedMode = newMode;
             return;
         }
+        ++mTemporalEpoch;
         mMode = newMode;
         mQueuedMode = std::nullopt;
         if (newMode == Mode::FirstPerson)
@@ -460,6 +461,7 @@ namespace MWRender
 
     void Camera::instantTransition()
     {
+        ++mTemporalEpoch;
         mSkipFocalPointTransition = true;
         mDeferredRotationDisabled = false;
         mDeferredRotation = osg::Vec3f();

@@ -1,6 +1,7 @@
 #ifndef GAME_MWRENDER_CAMERA_H
 #define GAME_MWRENDER_CAMERA_H
 
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -39,7 +40,12 @@ namespace MWRender
         ~Camera();
 
         /// Attach camera to object
-        void attachTo(const MWWorld::Ptr& ptr) { mTrackingPtr = ptr; }
+        void attachTo(const MWWorld::Ptr& ptr)
+        {
+            if (mTrackingPtr != ptr) ++mTemporalEpoch;
+            mTrackingPtr = ptr;
+        }
+        std::uint64_t temporalEpoch() const { return mTemporalEpoch; }
         MWWorld::Ptr getTrackingPtr() const { return mTrackingPtr; }
 
         void setFocalPointTransitionSpeed(float v) { mFocalPointTransitionSpeedCoef = v; }
@@ -53,7 +59,7 @@ namespace MWRender
         void updateCamera(osg::Camera* cam);
 
         /// Reset to defaults
-        void reset() { setMode(Mode::FirstPerson); }
+        void reset() { ++mTemporalEpoch; setMode(Mode::FirstPerson); }
 
         void rotateCameraToTrackingPtr();
 
@@ -128,6 +134,7 @@ namespace MWRender
         [[nodiscard]] osg::Matrixf calculateViewMatrix() const;
 
     private:
+        std::uint64_t mTemporalEpoch = 1;
         MWWorld::Ptr mTrackingPtr;
         osg::ref_ptr<const osg::Node> mTrackingNode;
         osg::Vec3d mTrackedPosition;

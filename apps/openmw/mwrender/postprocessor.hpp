@@ -131,6 +131,7 @@ namespace MWRender
         const auto& getTechniqueFiles() const { return mTechniqueFiles; }
 
         void resize();
+        void captureTemporalCamera(osgUtil::CullVisitor* cv);
 
         Status enableTechnique(std::shared_ptr<Fx::Technique> technique, std::optional<int> location = std::nullopt);
 
@@ -170,7 +171,11 @@ namespace MWRender
 
         bool isTechniqueEnabled(const std::shared_ptr<Fx::Technique>& technique) const;
 
-        void setExteriorFlag(bool exterior) { mExteriorFlag = exterior; }
+        void setExteriorFlag(bool exterior)
+        {
+            if (mExteriorFlag != exterior) ++mTemporalWorldEpoch;
+            mExteriorFlag = exterior;
+        }
 
         void setUnderwaterFlag(bool underwater) { mUnderwater = underwater; }
 
@@ -272,6 +277,8 @@ namespace MWRender
         osg::ref_ptr<Fx::StateUpdater> mStateUpdater;
         osg::ref_ptr<PingPongCull> mPingPongCull;
         std::array<osg::ref_ptr<PingPongCanvas>, 2> mCanvases;
+        std::shared_ptr<TemporalMotion> mTemporalMotion;
+        std::uint64_t mTemporalWorldEpoch = 1;
         osg::ref_ptr<TransparentDepthBinCallback> mTransparentDepthPostPass;
         osg::ref_ptr<DistortionCallback> mDistortionCallback;
 

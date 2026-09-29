@@ -1,12 +1,13 @@
 #version 120
-// Candidate static/camera motion stage. Not installed or selected by the game
-// yet. Dynamic actors, moving objects and vertex-deformed grass need overlays.
+// Phase 9 opt-in camera/static motion stage. This is not a dense-motion
+// or DLSS implementation; actors, moving objects and grass need overlays.
 uniform sampler2D temporalDepth;
 uniform mat4 clipToPreviousClip;
 uniform vec2 renderSize;
 uniform vec2 jitterPixels;
 uniform bool depthZeroToOne;
 uniform bool resetHistory;
+uniform float clearDepth = -1.0;
 
 void main()
 {
@@ -17,6 +18,7 @@ void main()
     }
     vec2 raster = gl_FragCoord.xy / renderSize;
     float depth = texture2D(temporalDepth, raster).r;
+    if (depth == clearDepth) { gl_FragColor = vec4(0.0); return; }
     vec2 jitterClip = vec2(2.0, -2.0) * jitterPixels / renderSize;
     vec2 currentClip = raster * 2.0 - 1.0 - jitterClip;
     float clipZ = depthZeroToOne ? depth : depth * 2.0 - 1.0;

@@ -1,4 +1,5 @@
 #include "morphgeometry.hpp"
+#include "dynamicstream.hpp"
 #include "deformationintersectionvisitor.hpp"
 
 #include <osgUtil/CullVisitor>
@@ -67,6 +68,7 @@ namespace SceneUtil
                 to.setVertexArray(vertexArray);
             }
 
+            DynamicStream::install(to, vbo, "morph_geometry");
             Debug::P8DynamicDrawTelemetry::install(to, "morph_geometry");
         }
     }

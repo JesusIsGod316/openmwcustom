@@ -74,6 +74,33 @@ namespace MWRender
         osg::Geometry::resizeGLObjectBuffers(maxSize);
         mEmptyUniformStacks.resize(maxSize);
         mNisScaler->resizeGLObjectBuffers(maxSize);
+        if (mTemporalMotion) mTemporalMotion->resizeGLObjectBuffers(maxSize);
+        if (mMotionViewState) mMotionViewState->resizeGLObjectBuffers(maxSize);
+    }
+
+    void PingPongCanvas::setTemporalMotion(std::shared_ptr<TemporalMotion> motion, osg::Program* debugProgram)
+    {
+        mTemporalMotion = std::move(motion);
+        if (mTemporalMotion)
+        {
+            // Captured frame metadata is consumed on the draw thread. Retain
+            // the existing safe-point synchronization for this new consumer.
+            setDataVariance(osg::Object::DYNAMIC);
+            if (debugProgram)
+            {
+                mMotionViewState = new osg::StateSet;
+                mMotionViewState->setAttributeAndModes(debugProgram, osg::StateAttribute::ON
+                    | osg::StateAttribute::OVERRIDE | osg::StateAttribute::PROTECTED);
+                mMotionViewState->addUniform(new osg::Uniform("lastShader", 0));
+            }
+        }
+    }
+
+    void PingPongCanvas::releaseGLObjects(osg::State* state) const
+    {
+        osg::Geometry::releaseGLObjects(state);
+        if (mTemporalMotion) mTemporalMotion->releaseGLObjects(state);
+        if (mMotionViewState) mMotionViewState->releaseGLObjects(state);
     }
 
     static void attachCloneOfTemplate(
@@ -107,6 +134,25 @@ namespace MWRender
         osg::GLExtensions* ext = state.get<osg::GLExtensions>();
 
         size_t frameId = state.getFrameStamp()->getFrameNumber() % 2;
+
+        // Capture uses a separate RG16F surface and leaves normal scene color,
+        // PostFX, render scale, NIS, culling and camera jitter unchanged.
+        if (mTemporalMotion && !Stereo::getStereo())
+        {
+            auto* depth = dynamic_cast<osg::Texture2D*>(mTextureDepth.get());
+            osg::Texture2D* flow = mTemporalMotion->render(renderInfo, mTemporalCamera, depth, *this);
+            if (flow && mMotionViewState && TemporalMotion::debugView())
+            {
+                state.pushStateSet(mMotionViewState);
+                state.apply();
+                state.applyTextureAttribute(0, flow);
+                drawGeometry(renderInfo);
+                state.popStateSet();
+                state.apply();
+                cacheEmptyUniformStacks(uniformMap, emptyUniformStacks);
+                return;
+            }
+        }
 
         std::vector<size_t> filtered;
 

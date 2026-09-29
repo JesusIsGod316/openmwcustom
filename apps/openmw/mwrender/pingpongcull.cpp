@@ -34,6 +34,7 @@ namespace MWRender
         osgUtil::RenderStage* renderStage = cv->getCurrentRenderStage();
         unsigned frame = cv->getTraversalNumber();
         unsigned frameId = frame % 2;
+        mPostProcessor->captureTemporalCamera(cv);
 
         if (Stereo::getStereo())
         {

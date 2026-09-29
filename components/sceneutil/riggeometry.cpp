@@ -1,4 +1,5 @@
 #include "riggeometry.hpp"
+#include "dynamicstream.hpp"
 
 #include <osg/MatrixTransform>
 
@@ -93,6 +94,7 @@ namespace SceneUtil
             else
                 mSourceTangents = nullptr;
 
+            DynamicStream::install(to, vbo, "rig_geometry");
             Debug::P8DynamicDrawTelemetry::install(to, "rig_geometry");
         }
     }

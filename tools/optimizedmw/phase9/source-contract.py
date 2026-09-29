@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Focused Phase 9 source/staging guards, not runtime or performance proof."""
+from pathlib import Path
+import argparse
+import hashlib
+import json
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[3])
+    parser.add_argument('--staged-shaders', type=Path)
+    args = parser.parse_args()
+    root = args.root
+    def read(path: str) -> str:
+        return (root / path).read_text(encoding='utf-8')
+    def need(condition: bool, message: str) -> None:
+        if not condition:
+            raise SystemExit('Phase 9 source contract FAILED: ' + message)
+
+    stream = read('components/sceneutil/dynamicstream.hpp')
+    need('OPENMW_P9_DYNAMIC_STREAM' in stream and 'std::strcmp(v, "1") == 0' in stream,
+         'dynamic stream must remain explicit opt-in')
+    for token in ('profile._size', 'data->getModifiedCount() == 0xffffffu', 'BudgetFallback',
+                  'getNumBufferData() != mCount', 'glBuffer->compileBuffer()', 'CatalogCapacity = 65536'):
+        need(token in stream, 'missing stream ownership/budget guard: ' + token)
+    for path, kind in (('riggeometry.cpp', 'rig_geometry'), ('morphgeometry.cpp', 'morph_geometry')):
+        code = read('components/sceneutil/' + path)
+        install = 'DynamicStream::install(to, vbo, "' + kind + '")'
+        need(install in code, 'missing production installation on the actual Geometry reference')
+        need(code.index(install) < code.index('Debug::P8DynamicDrawTelemetry::install'),
+             'old outer draw callback must include the stream experiment')
+
+    trace = read('components/sceneutil/drawphasetrace.hpp')
+    need('viewer.areThreadsRunning()' in trace and '"3.6.5"' in trace, 'trace installation guard missing')
+    need('typeid(*cv) != typeid(osgUtil::CullVisitor)' in trace, 'unknown cull visitor must remain unchanged')
+    need('osgUtil::RenderLeaf::render(info, previous)' in trace, 'stock trace-off leaf fallback missing')
+    leaf = trace.split('class Leaf final', 1)[1].split('class CullVisitor final', 1)[0]
+    need(leaf.index('_drawable->getName()') < leaf.index('state.decrementDynamicObjectCount()'),
+         'metadata cannot be read after the dynamic safe point releases update')
+    need('capture.append(row);' in leaf, 'post-safe-point record must own its metadata')
+
+    temporal = read('apps/openmw/mwrender/temporalmotion.cpp')
+    need('input.jitterEnabled = false;' in temporal, 'do not jitter gameplay without a reconstruction consumer')
+    need('PendingTicket' in temporal and 'history.abort(ticket)' in temporal, 'uncommitted history must abort')
+    need('depth == c.motion.get()' in temporal, 'motion output/depth input alias must be rejected')
+    need('RestoreDrawState' in temporal and 'GL_READ_FRAMEBUFFER_BINDING' in temporal,
+         'independent framebuffer/read/viewport restoration missing')
+    need('true, false};' in temporal, 'camera-only submission must not advertise dense dynamic motion')
+    for forbidden in ('glFinish(', 'glClientWaitSync(', 'glReadPixels(', 'glGetTexImage('):
+        need(forbidden not in stream + temporal + trace, 'production path contains a wait/readback: ' + forbidden)
+
+    post = read('apps/openmw/mwrender/postprocessor.cpp')
+    need('camera.projection = cv->getProjectionMatrix()' in post, 'must retain cull-owned final projection')
+    need('camera.cameraEpoch = mRendering.getCamera()->temporalEpoch()' in post, 'camera identity reset missing')
+    need('catch (const std::exception& error)' in post, 'shader setup must preserve normal fallback')
+    need('mPostProcessor->captureTemporalCamera(cv);' in read('apps/openmw/mwrender/pingpongcull.cpp'),
+         'real camera capture hook missing')
+    canvas = read('apps/openmw/mwrender/pingpongcanvas.cpp')
+    need('mTemporalMotion->render(renderInfo, mTemporalCamera, depth, *this)' in canvas,
+         'real presentation hook missing')
+    need('setDataVariance(osg::Object::DYNAMIC)' in canvas, 'temporal frame slot must retain CPU ownership barrier')
+    need('TemporalMotion::debugView()' in canvas, 'normal color must not be replaced by the debug view')
+    need('luminancecalculator pingpongcanvas nisscaler temporalmotion' in read('apps/openmw/CMakeLists.txt'),
+         'new production implementation is not in the game target')
+
+    launcher = read('tools/optimizedmw/phase9/OptimizedMW_Test.ps1')
+    for token in ('Get-P9Mode', 'OPENMW_P9_DYNAMIC_STREAM=$mode.Stream',
+                  'OPENMW_P9_TEMPORAL_INPUTS=$mode.Temporal', 'OPENMW_P9_MOTION_VIEW=$mode.View',
+                  'OPENMW_P9_LEAF_TRACE_FILE', 'OPENMW_P9_DYNAMIC_TRACE_FILE',
+                  'phase9_dense_dynamic_motion=false', 'phase9_scene_jitter=false'):
+        need(token in launcher, 'missing actual launcher control/provenance: ' + token)
+    need(launcher.index('settings_restore_verified=$restoreVerified') < launcher.index('Complete-Phase9Profile -ProfileDir'),
+         'restore settings before packaging')
+    archive = read('tools/optimizedmw/phase9/OptimizedMW_ProfileArchive.ps1')
+    complete = archive.split('function Complete-Phase9Profile', 1)[1]
+    need(complete.index('New-VerifiedProfileZip -SourceDir') < complete.index('Invoke-BoundedOfflineReport -ReportScript'),
+         'a report must never block creation of the raw evidence archive')
+    for token in ('ComputeHash($stream)', 'missing_expected_files=$missing',
+                  '$report.WaitForExit($TimeoutSeconds*1000)', '[IO.File]::Replace($temp,$destination,$null)'):
+        need(token in archive, 'archive reliability guard missing: ' + token)
+    installation = read('CMakeLists.txt')
+    need('tools/optimizedmw/phase9/OptimizedMW_Test.ps1' in installation
+         and 'tools/optimizedmw/phase9/OptimizedMW_ProfileArchive.ps1' in installation,
+         'the actual installed launcher must expose Phase 9, not old P8U1 modes')
+    need('P9_REQUIRE_GAME_SDK' in read('tools/optimizedmw/phase9/CMakeLists.txt'),
+         'production integration compile gate is missing')
+
+    cmake = read('files/shaders/CMakeLists.txt')
+    names = ('temporal_camera_motion.vert', 'temporal_camera_motion.frag',
+             'temporal_motion_view.vert', 'temporal_motion_view.frag')
+    for name in names:
+        relative = 'compatibility/' + name
+        need(relative in cmake, 'shader absent from actual staging list: ' + relative)
+        source = root / 'files/shaders' / relative
+        need(source.is_file(), 'missing shader source: ' + relative)
+        if args.staged_shaders:
+            staged = args.staged_shaders / relative
+            need(staged.is_file() and source.read_bytes() == staged.read_bytes(),
+                 'deployed shader differs from tested source: ' + relative)
+    print(json.dumps({'source_contract': 'PASS', 'deployed_temporal_shaders':
+                      'PASS' if args.staged_shaders else 'NOT_CHECKED',
+                      'dlss_runtime': 'NOT_IMPLEMENTED', 'performance': 'NOT_MEASURED'}))
+
+
+if __name__ == '__main__':
+    main()

@@ -75,6 +75,10 @@ set(SHADER_FILES
     compatibility/sky.frag
     compatibility/fullscreen_tri.vert
     compatibility/fullscreen_tri.frag
+    compatibility/temporal_camera_motion.vert
+    compatibility/temporal_camera_motion.frag
+    compatibility/temporal_motion_view.vert
+    compatibility/temporal_motion_view.frag
     compatibility/bs/default.vert
     compatibility/bs/default.frag
     compatibility/bs/nolighting.vert

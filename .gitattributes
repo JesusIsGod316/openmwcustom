@@ -9,3 +9,9 @@ tools/optimizedmw/p8u1/*.ps1 text eol=lf
 tools/optimizedmw/p8u1/OptimizedMW-P8U1-README.txt text eol=lf
 tools/optimizedmw/gl-p8g4/START-OptimizedMW-Test.bat text eol=lf
 files/shaders/compatibility/temporal_camera_motion.frag text eol=lf
+
+# Phase 9 installed launcher/shader identities are byte-exact across Windows/Linux.
+tools/optimizedmw/phase9/*.ps1 text eol=lf
+tools/optimizedmw/phase9/*.txt text eol=lf
+files/shaders/compatibility/temporal_*.vert text eol=lf
+files/shaders/compatibility/temporal_*.frag text eol=lf

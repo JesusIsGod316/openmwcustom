@@ -22,7 +22,7 @@ add_openmw_dir (mwrender
     creatureanimation effectmanager util renderinginterface pathgrid rendermode weaponanimation screenshotmanager
     bulletdebugdraw globalmap characterpreview camera localmap localmapnative water terrainstorage ripplesimulation
     renderbin actoranimation landmanager navmesh actorspaths recastmesh fogmanager fogstate celllighting objectpaging groundcover
-    postprocessor pingpongcull luminancecalculator pingpongcanvas nisscaler transparentpass precipitationocclusion ripples
+    postprocessor pingpongcull luminancecalculator pingpongcanvas nisscaler temporalmotion transparentpass precipitationocclusion ripples
     actorutil distortion animationpriority bonegroup blendmask animblendcontroller occlusionculling
     )
 
@@ -122,6 +122,25 @@ add_library(openmw-lib STATIC
     ${OPENMW_FILES}
     ${OPENMW_SOURCES}
 )
+
+# Phase 9's backend-neutral temporal math is consumed by the OpenGL adapter.
+# No Vulkan runtime or VSG dependency is introduced by this header-only math.
+find_package(glm CONFIG QUIET)
+if(NOT TARGET glm::glm)
+    # Older OpenGL-only dependency bundles do not contain GLM. Reuse a system
+    # package when present; otherwise fetch only the exact headers tested by
+    # the temporal foundation. No library/DLL or Vulkan runtime is introduced.
+    include(FetchContent)
+    FetchContent_Declare(openmw_temporal_glm
+        GIT_REPOSITORY https://github.com/g-truc/glm.git
+        GIT_TAG bf71a834948186f4097caa076cd2663c69a10e1e
+        SOURCE_SUBDIR openmw-headers-only)
+    FetchContent_MakeAvailable(openmw_temporal_glm)
+    add_library(openmw-temporal-glm INTERFACE)
+    target_include_directories(openmw-temporal-glm SYSTEM INTERFACE "${openmw_temporal_glm_SOURCE_DIR}")
+    add_library(glm::glm ALIAS openmw-temporal-glm)
+endif()
+target_link_libraries(openmw-lib glm::glm)
 
 if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
     if(NOT BUILD_OPENMW)

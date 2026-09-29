@@ -14,6 +14,7 @@
 
 #include "luminancecalculator.hpp"
 #include "nisscaler.hpp"
+#include "temporalmotion.hpp"
 
 namespace Shader
 {
@@ -33,6 +34,10 @@ namespace MWRender
         void drawImplementation(osg::RenderInfo& renderInfo) const override;
 
         void resizeGLObjectBuffers(unsigned int maxSize) override;
+        void releaseGLObjects(osg::State* state = nullptr) const override;
+
+        void setTemporalMotion(std::shared_ptr<TemporalMotion> motion, osg::Program* debugProgram);
+        void setTemporalCamera(TemporalCamera camera) { mTemporalCamera = std::move(camera); }
 
         void dirty() { mDirty = true; }
 
@@ -62,6 +67,9 @@ namespace MWRender
         const osg::ref_ptr<osg::Texture>& getSceneTexture(size_t frameId) const { return mTextureScene; }
 
     private:
+        std::shared_ptr<TemporalMotion> mTemporalMotion;
+        TemporalCamera mTemporalCamera;
+        osg::ref_ptr<osg::StateSet> mMotionViewState;
         bool mAvgLum = false;
         bool mPostprocessing = false;
 
