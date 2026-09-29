@@ -618,6 +618,7 @@ void main()
         vsg::Device& device,
         std::uint32_t indirectViewId,
         vsg::ref_ptr<vsg::vec4Array> viewData,
+        bool compactCommands,
         std::string& diagnostic)
     {
         GpuPopulationCullBuild result;
