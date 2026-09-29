@@ -280,6 +280,7 @@ namespace RenderVsg
         RenderCore::WorldEpoch epoch;
         RenderCore::RenderWorldRevision revision;
         StaticPlanOptions options;
+        std::uint64_t sourceSerial = 0;
         std::vector<std::shared_ptr<const DynamicActorPlan>> actors;
         std::string diagnostic;
         bool valid() const noexcept { return epoch.valid() && revision.valid() && diagnostic.empty(); }
@@ -293,15 +294,25 @@ namespace RenderVsg
     {
     public:
         std::size_t rebuilt = 0, reused = 0;
-        const PersistentActorWorldPlan& prepare(const RenderCore::RenderWorld& world, StaticPlanOptions options = {})
+        const PersistentActorWorldPlan& prepare(
+            const RenderCore::RenderWorld& world, StaticPlanOptions options = {}, std::uint64_t sourceSerial = 0)
         {
             options.includeDeformableMeshes = true;
             rebuilt = reused = 0;
-            if (mSnapshot.valid() && mSnapshot.epoch == world.epoch()
-                && mSnapshot.revision == world.revision() && mSnapshot.options == options)
-            { reused = mSnapshot.actors.size(); return mSnapshot; }
+            if (mSnapshot.valid() && mSnapshot.epoch == world.epoch() && mSnapshot.options == options
+                && ((sourceSerial != 0 && mSnapshot.sourceSerial == sourceSerial)
+                    || (sourceSerial == 0 && mSnapshot.revision == world.revision())))
+            {
+                // Exact P2 source serial proves no actor/model/skeleton/material
+                // dependency changed. A light/chunk-only world revision can be
+                // acknowledged without rediscovering every actor.
+                mSnapshot.revision = world.revision();
+                reused = mSnapshot.actors.size();
+                return mSnapshot;
+            }
             PersistentActorWorldPlan next;
             next.epoch = world.epoch(); next.revision = world.revision(); next.options = options;
+            next.sourceSerial = sourceSerial;
             std::unordered_map<std::uint64_t, std::shared_ptr<const DynamicActorPlan>> previous;
             if (mSnapshot.epoch == world.epoch() && mSnapshot.options == options)
                 for (const auto& actor : mSnapshot.actors) previous.emplace(key(actor->instance), actor);
