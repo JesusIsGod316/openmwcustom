@@ -384,6 +384,24 @@ namespace MWRender
         if (!animation.captureV4NativeAnimationState(state, result.diagnostic))
             return result;
 
+        // Seated animation groups remain on the evaluated OSG pose path for now.
+        // The current native KF adapter intentionally does not own every
+        // lower-body/root composition edge used by seated NPCs; allowing those
+        // groups through can separate body parts even though the matrices remain
+        // finite. This is an actor-local compatibility fallback, not a global
+        // producer fallback, so supported actor scheduling remains intact.
+        for (const auto& optionalLayer : state.layers)
+        {
+            if (!optionalLayer)
+                continue;
+            const std::string group = Misc::StringUtils::lowerCase(optionalLayer->groupName);
+            if (group.starts_with("sit"))
+            {
+                result.diagnostic = "seated actor pose retained on evaluated OSG compatibility path";
+                return result;
+            }
+        }
+
         Impl::BoneBinding& binding = mImpl->bones(skeleton);
         if (!binding.diagnostic.empty())
         {
