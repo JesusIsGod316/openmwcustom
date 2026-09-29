@@ -77,7 +77,10 @@ def main() -> None:
     need(complete.index('New-VerifiedProfileZip -SourceDir') < complete.index('Invoke-BoundedOfflineReport -ReportScript'),
          'a report must never block creation of the raw evidence archive')
     for token in ('ComputeHash($stream)', 'missing_expected_files=$missing',
-                  '$report.WaitForExit($TimeoutSeconds*1000)', '[IO.File]::Replace($temp,$destination,$null)'):
+                  '$report.WaitForExit($TimeoutSeconds*1000)',
+                  '[IO.File]::Replace($temp,$destination,[System.Management.Automation.Language.NullString]::Value)',
+                  '[IO.Compression.ZipFileExtensions]::CreateEntryFromFile'):
+        # Behavioral ZIP/timeout/replacement fixtures run on both real PS hosts.
         need(token in archive, 'archive reliability guard missing: ' + token)
     installation = read('CMakeLists.txt')
     need('tools/optimizedmw/phase9/OptimizedMW_Test.ps1' in installation
