@@ -257,6 +257,7 @@ try{
         "phase9_trace_schema=3",
         "phase9_temporal_contract=consumer_frame_v1",
         "phase9_dlss_ready_requires_dense_dynamic_motion=true",
+        "phase9_gl_vulkan_interop_probe=$($mode.Temporal)",
         "phase9_culling=retained_existing_cell_paged_and_groundcover_hierarchy_no_new_visibility_policy",
         "phase9_dense_dynamic_motion=false",
         "phase9_scene_jitter=false",
@@ -357,6 +358,7 @@ try{
     $env:OPENMW_P9_MOTION_VIEW=$mode.View
     if($mode.Temporal -eq '1'){
         $env:OPENMW_P9_TEMPORAL_FILE=Join-Path $ProfileDir 'p9-temporal-inputs.csv'
+        $env:OPENMW_P9_DLSS_CAPS_FILE=Join-Path $ProfileDir 'p9-dlss-capabilities.csv'
     }
     if($mode.Trace -eq '1'){
         $env:OPENMW_P9_LEAF_TRACE_FILE=Join-Path $ProfileDir 'p9-draw-phases.csv'
