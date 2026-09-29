@@ -97,8 +97,8 @@ try{
     if(-not $bad){throw 'Self-containing archive accepted'}
     $badTrace=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
     if($badTrace.valid_leaf_capture -ne $false){throw 'Empty runtime trace was accepted'}
-    @('visitor_instances=2','valid_leaf_capture=1') | Set-Content (Join-Path $temp 'p9-draw-phases.csv.status.txt')
-    @('frame,context,leaves','1,0,4') | Set-Content (Join-Path $temp 'p9-draw-phases.csv.frames.csv')
+    @('visitor_instances=2','valid_leaf_capture=1') | Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.status.txt')
+    @('frame,context,leaves','1,0,4') | Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.frames.csv')
     $goodTrace=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
     if($goodTrace.valid_leaf_capture -ne $true){throw 'Complete runtime trace rejected'}
     Write-Host 'PASS Phase 9: 10 isolated modes, live/empty trace validation, shader preflight, report fixtures, nested/spaced/bracket paths, real SHA256 ZIP verification, partial capture, report failure/timeout and verified replacement.'
