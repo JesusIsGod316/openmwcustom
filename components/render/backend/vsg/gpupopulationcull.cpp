@@ -330,7 +330,7 @@ void main()
         auto result = vsg::vec4Array::create(5);
         result->properties.dataVariance = vsg::DYNAMIC_DATA_TRANSFER_AFTER_RECORD;
         for (std::size_t i = 0; i < result->size(); ++i)
-            result->set(i, vsg::vec4(0.0f));
+            result->set(i, vsg::vec4(0.0f, 0.0f, 0.0f, 0.0f));
         result->dirty();
         return result;
     }
@@ -340,8 +340,9 @@ void main()
         if (data.size() < 5)
             return;
         const glm::mat4 clip = view.current.projection.matrix * view.current.view;
-        for (std::size_t column = 0; column < 4; ++column)
-            data.set(column, vsg::vec4(clip[column].x, clip[column].y, clip[column].z, clip[column].w));
+        for (glm::length_t column = 0; column < 4; ++column)
+            data.set(static_cast<std::size_t>(column),
+                vsg::vec4(clip[column].x, clip[column].y, clip[column].z, clip[column].w));
         data.set(4, vsg::vec4(
             static_cast<float>(view.current.worldPosition.x),
             static_cast<float>(view.current.worldPosition.y),
