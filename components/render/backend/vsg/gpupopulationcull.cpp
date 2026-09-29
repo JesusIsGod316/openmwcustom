@@ -362,9 +362,9 @@ void main()
         GpuPopulationCullBuild result;
         if (plan.placements.empty() || !viewData || viewData->size() < 5)
             return result;
-        if (plan.placements.size() > std::numeric_limits<std::uint32_t>::max())
+        if (plan.placements.size() > std::numeric_limits<std::uint32_t>::max() / 3u)
         {
-            diagnostic = "P3 GPU population cull exceeds Vulkan indirect draw-count range";
+            diagnostic = "P3 GPU population cull exceeds packed placement-buffer range";
             return result;
         }
 
