@@ -1501,7 +1501,10 @@ namespace RenderVsg
         if (allCurrent)
             return true;
 
-        LocalLightBufferPlan plan = buildLocalLightBufferPlan(buildLocalLightWorldPlan(world), glm::dvec3(0.0));
+        const LocalLightWorldPlan lightWorld = lightSerial != 0
+            ? buildLocalLightWorldPlan(mGpuSceneTables, world)
+            : buildLocalLightWorldPlan(world);
+        LocalLightBufferPlan plan = buildLocalLightBufferPlan(lightWorld, glm::dvec3(0.0));
         plan.sourceSerial = lightSerial;
         if (!plan.ready())
         {
