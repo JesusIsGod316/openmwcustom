@@ -21,6 +21,7 @@ namespace RenderVsg
         std::size_t placements = 0;
         std::size_t draws = 0;
         std::size_t indirectCommands = 0;
+        bool compacted = false;
     };
 
     struct GpuPopulationCullBuild
@@ -42,9 +43,10 @@ namespace RenderVsg
     // indirectViewId. All other view IDs retain the exact direct draw fallback.
     //
     // The compute graph writes every VkDrawIndexedIndirectCommand field each
-    // frame and never reads results back to the CPU. The first P3 slice performs
-    // conservative per-placement frustum and authored maximum-distance culling.
-    // Hi-Z and command compaction intentionally remain later P3 slices.
+    // frame and never reads results back to the CPU. P3A writes one command per
+    // placement. P3B can instead compact visible transforms on the GPU and emit
+    // one command per draw for order-independent populations. Hi-Z remains a
+    // later P3 slice.
     [[nodiscard]] GpuPopulationCullBuild enableGpuPopulationCull(
         const RenderCore::RenderWorld& world,
         const StaticPopulationPlan& plan,
@@ -52,6 +54,7 @@ namespace RenderVsg
         vsg::Device& device,
         std::uint32_t indirectViewId,
         vsg::ref_ptr<vsg::vec4Array> viewData,
+        bool compactCommands,
         std::string& diagnostic);
 }
 
