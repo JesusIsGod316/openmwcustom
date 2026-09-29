@@ -1,6 +1,7 @@
 #include "engine.hpp"
 
 #include <components/resource/benchmarkcapture.hpp>
+#include <components/sceneutil/drawphasetrace.hpp>
 #include <components/debug/runtimeprocessmemory.hpp>
 #include <components/debug/gameplaydiagnostics.hpp>
 
@@ -1676,6 +1677,14 @@ void OMW::Engine::createWindow()
         realizeOperations->add(new Stereo::InitializeStereoOperation(settings));
     }
 
+    if (SceneUtil::DrawPhaseTrace::Capture::instance().enabled())
+    {
+        if (Settings::stereo().mStereoEnabled || osg::DisplaySettings::instance()->getStereo())
+            throw std::runtime_error("Phase 9 root-cause trace currently requires a mono view");
+        const unsigned installed = SceneUtil::DrawPhaseTrace::installBeforeRealize(*mViewer);
+        Log(Debug::Info) << "Phase 9 draw/state trace scene views installed=" + std::to_string(installed)
+            + "; installed before realize; runtime leaf coverage must also be checked";
+    }
     mViewer->realize();
     mGlMaxTextureImageUnits = identifyOp->getMaxTextureImageUnits();
 

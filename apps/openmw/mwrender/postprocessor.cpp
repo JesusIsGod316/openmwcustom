@@ -23,7 +23,6 @@
 #include <components/resource/scenemanager.hpp>
 #include <components/sceneutil/color.hpp>
 #include <components/sceneutil/depth.hpp>
-#include <components/sceneutil/drawphasetrace.hpp>
 #include <components/sceneutil/nodecallback.hpp>
 #include <components/settings/values.hpp>
 #include <components/shader/shadermanager.hpp>
@@ -260,12 +259,6 @@ namespace MWRender
         addChild(mRootNode);
 
         mViewer->setSceneData(this);
-        if (!Stereo::getStereo() && SceneUtil::DrawPhaseTrace::Capture::instance().enabled())
-        {
-            const unsigned installed = SceneUtil::DrawPhaseTrace::install(*mViewer);
-            Log(Debug::Info) << "Phase 9 draw/state trace scene views installed=" + std::to_string(installed)
-                + "; diagnostic-only, coverage/overflow recorded on shutdown";
-        }
         mViewer->getCamera()->setRenderTargetImplementation(osg::Camera::FRAME_BUFFER_OBJECT);
         mViewer->getCamera()->getGraphicsContext()->setResizedCallback(new ResizedCallback(this));
         mViewer->getCamera()->setUserData(this);

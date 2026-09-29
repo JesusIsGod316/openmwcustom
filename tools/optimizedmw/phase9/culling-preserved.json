@@ -1,0 +1,15 @@
+{
+  "base": "bb4876a6ea287745c8f535f5525c5381a631a24c",
+  "scope": "This checkpoint preserves the audited visibility policies byte-for-byte. Not a new culling implementation.",
+  "sha256": {
+    "apps/openmw/mwrender/occlusionculling.cpp": "da207b32db657cbe92ea19e4414dbed57de9fd11308cd4d2ff947148d2f4f4ea",
+    "apps/openmw/mwrender/occlusionculling.hpp": "3e4039257ed9585677afd4d8db527b1d015246bdb8dcd63e08054debf554f624",
+    "apps/openmw/mwrender/objectpaging.cpp": "2ef2c43e70718aa812b7772d3a777ed37aa6b4501781aaf554b014bb5782d6ba",
+    "apps/openmw/mwrender/groundcover.cpp": "10e1f1de1a38fcd34288ac98df09d20eb6e596ce9f42b8abb9d5bd6f2982bddd",
+    "apps/openmw/mwrender/objects.cpp": "9bf5045f1c8c4323b2cc286c2912b5fef73ff813f5e472929ec4be79829f7935",
+    "components/sceneutil/occlusionculling.cpp": "1aa1ebea417b9b4eff232d78fbf29b78cae92b68e23e0f8ba8b5ac1b46f6c19f",
+    "components/sceneutil/groundcoverbatch.hpp": "377ed69299f6c3bdc9f9ff9fa75c3ccf8c3f46ed9a819966eafe497d3b2da564",
+    "components/sceneutil/groundcoverpolicy.hpp": "1b0bc6969f8f13550abb9d64d3bdb20e692eeae57096d6bc95679d2675cd2d4c",
+    "components/sceneutil/mwshadowtechnique.cpp": "4e7808cb4669f6e405ff3c70c3ff64f6eee5f40bf8cbb264b00e8e2cd59eec69"
+  }
+}

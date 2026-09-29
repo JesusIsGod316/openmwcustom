@@ -1,3 +1,30 @@
+# Phase 9 root-cause and static-prewarm checkpoint (2026-09-29)
+
+Publication base: bb4876a6ea287745c8f535f5525c5381a631a24c.
+The complete base tree was recovered and verified as
+78ac535aa941cb703707a42fc946910fc0b03c61 before editing. The later named
+RootCause source ZIP from the interrupted turn was not available in the active
+runtime or indexed file search, so these changes were implemented from the
+verified published source, not claimed restored from that missing archive.
+
+See CULLING-AUDIT.md and the installed README for exact scope and limitations.
+The lifecycle bug is fixed at Engine pre-realize, not by stopping running draw
+threads. New startup, static-buffer and dispatch-contract tests complement the
+retained native/sanitizer/pixel gates. A pinned Windows header compile is added
+before the long engine compile. Source validation is not hardware hitch proof.
+
+The independent optimization is shared-static rig/morph buffer preparation.
+There is no second culling hierarchy, new DLSS evaluation, dynamic motion-vector
+implementation, or promotion of the old orphan/refill experiment. Current source
+supports the same camera/static temporal input pass with scene jitter off.
+
+Local source/tests and the Windows/package run are recorded in the release
+checkpoint/archive. Never infer a finished binary or performance improvement
+from this document's presence.
+
+---
+## Retained implementation history (superseded where the checkpoint above differs)
+
 # OptimizedMW Phase 9 — first implementation slice
 
 Publication base: `8d2ceac87eb263bc4c49dddc257abe1b84b35ef0` on

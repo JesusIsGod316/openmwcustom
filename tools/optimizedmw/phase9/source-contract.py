@@ -32,6 +32,19 @@ def main() -> None:
              'old outer draw callback must include the stream experiment')
 
     trace = read('components/sceneutil/drawphasetrace.hpp')
+    engine = read('apps/openmw/engine.cpp')
+    need(engine.index('DrawPhaseTrace::installBeforeRealize(*mViewer)') < engine.index('mViewer->realize();'),
+         'root-cause tracer must install before realize can start rendering threads')
+    need('DrawPhaseTrace::install(*mViewer)' not in read('apps/openmw/mwrender/postprocessor.cpp'),
+         'late PostProcessor trace installation is forbidden')
+    for token in ('valid_leaf_capture=', '.frames.csv', '.renderer.csv', 'installBeforeRealize', 'GLCallTrace::Scope'):
+        need(token in trace, 'missing root-cause coverage or scope: ' + token)
+    for path in ('riggeometry.cpp', 'morphgeometry.cpp'):
+        need('StaticGeometryPrewarm::prepare(renderInfo, mGeometry[0].get())' in read('components/sceneutil/'+path),
+             'shared-static preparation must be wired to actual rig/morph compile methods')
+    prewarm = read('components/sceneutil/staticgeometryprewarm.hpp')
+    for token in ('OPENMW_P9_STATIC_PREWARM', 'b==privatePose', 'GL_STATIC_DRAW_ARB', '8u*1024u*1024u'):
+        need(token in prewarm, 'static-only ownership/budget guard missing: '+token)
     need('viewer.areThreadsRunning()' in trace and '"3.6.5"' in trace, 'trace installation guard missing')
     need('typeid(*cv) != typeid(osgUtil::CullVisitor)' in trace, 'unknown cull visitor must remain unchanged')
     need('osgUtil::RenderLeaf::render(info, previous)' in trace, 'stock trace-off leaf fallback missing')
@@ -68,7 +81,8 @@ def main() -> None:
     for token in ('Get-P9Mode', 'OPENMW_P9_DYNAMIC_STREAM=$mode.Stream',
                   'OPENMW_P9_TEMPORAL_INPUTS=$mode.Temporal', 'OPENMW_P9_MOTION_VIEW=$mode.View',
                   'OPENMW_P9_LEAF_TRACE_FILE', 'OPENMW_P9_DYNAMIC_TRACE_FILE',
-                  'phase9_dense_dynamic_motion=false', 'phase9_scene_jitter=false'):
+                  'phase9_dense_dynamic_motion=false', 'phase9_scene_jitter=false',
+                  'OPENMW_P9_STATIC_PREWARM=$mode.Prewarm', 'Test-Phase9TraceCapture -ProfileDir'):
         need(token in launcher, 'missing actual launcher control/provenance: ' + token)
     need(launcher.index('settings_restore_verified=$restoreVerified') < launcher.index('Complete-Phase9Profile -ProfileDir'),
          'restore settings before packaging')
@@ -101,6 +115,10 @@ def main() -> None:
             staged = args.staged_shaders / relative
             need(staged.is_file() and source.read_bytes() == staged.read_bytes(),
                  'deployed shader differs from tested source: ' + relative)
+    culling = json.loads(read('tools/optimizedmw/phase9/culling-preserved.json'))
+    for path, digest in culling['sha256'].items():
+        need(hashlib.sha256((root/path).read_bytes()).hexdigest() == digest,
+             'this root-cause checkpoint must preserve audited culling: '+path)
     print(json.dumps({'source_contract': 'PASS', 'deployed_temporal_shaders':
                       'PASS' if args.staged_shaders else 'NOT_CHECKED',
                       'dlss_runtime': 'NOT_IMPLEMENTED', 'performance': 'NOT_MEASURED'}))

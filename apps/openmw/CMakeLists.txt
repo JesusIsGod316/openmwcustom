@@ -123,6 +123,25 @@ add_library(openmw-lib STATIC
     ${OPENMW_SOURCES}
 )
 
+# Check the actual pinned platform/OSG header surface before engine compilation.
+# This compile-only object is not linked into the game. The custom-command
+# dependency also establishes a Ninja order barrier before openmw-lib sources.
+if(BUILD_COMPONENTS_TESTS)
+    add_library(openmw-phase9-header-check OBJECT
+        ${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/rootcause-header-check.cpp)
+    target_include_directories(openmw-phase9-header-check PRIVATE
+        ${CMAKE_SOURCE_DIR} ${OPENSCENEGRAPH_INCLUDE_DIRS})
+    target_compile_features(openmw-phase9-header-check PRIVATE cxx_std_20)
+    target_compile_definitions(openmw-phase9-header-check PRIVATE _CRT_SECURE_NO_WARNINGS)
+    add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/phase9-headers.checked
+        COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/phase9-headers.checked
+        DEPENDS $<TARGET_OBJECTS:openmw-phase9-header-check>
+        VERBATIM)
+    add_custom_target(openmw-phase9-header-gate
+        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/phase9-headers.checked)
+    add_dependencies(openmw-lib openmw-phase9-header-gate)
+endif()
+
 # Phase 9's backend-neutral temporal math is consumed by the OpenGL adapter.
 # No Vulkan runtime or VSG dependency is introduced by this header-only math.
 find_package(glm CONFIG QUIET)

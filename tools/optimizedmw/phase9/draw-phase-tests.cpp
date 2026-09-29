@@ -4,6 +4,7 @@
 #include <osg/MatrixTransform>
 #include <osg/Program>
 #include <osg/Shader>
+#include <osg/Texture2D>
 #include <osgUtil/SceneView>
 #include <chrono>
 #include <iostream>
@@ -48,7 +49,8 @@ struct Pixels : osg::Camera::DrawCallback
 int main(int argc, char** argv) try
 {
     require(Capture::instance().enabled(),"test must explicitly enable bounded trace");
-    const bool threaded=argc>1 && std::string(argv[1])=="--threaded";
+    const bool startup=argc>1 && std::string(argv[1])=="--startup";
+    const bool threaded=startup || (argc>1 && std::string(argv[1])=="--threaded");
     osgViewer::Viewer viewer;
     viewer.setThreadingModel(threaded ? osgViewer::Viewer::DrawThreadPerContext : osgViewer::Viewer::SingleThreaded);
     osg::ref_ptr<osg::GraphicsContext::Traits> traits=new osg::GraphicsContext::Traits;
@@ -88,15 +90,33 @@ int main(int argc, char** argv) try
         }
         else root->addChild(geode);
     }
-    viewer.setSceneData(root);
+    if(startup)
+    {
+        osg::ref_ptr<osg::Camera> aux=new osg::Camera;
+        aux->setName("Phase9-Aux-Fixture");aux->setReferenceFrame(osg::Transform::ABSOLUTE_RF);
+        aux->setViewMatrix(osg::Matrix::identity());aux->setProjectionMatrix(osg::Matrix::identity());
+        aux->setRenderOrder(osg::Camera::PRE_RENDER);aux->setViewport(0,0,32,32);
+        aux->setRenderTargetImplementation(osg::Camera::FRAME_BUFFER_OBJECT);
+        osg::ref_ptr<osg::Texture2D> target=new osg::Texture2D;
+        target->setTextureSize(32,32);target->setInternalFormat(GL_RGBA);
+        aux->attach(osg::Camera::COLOR_BUFFER0,target);
+        aux->addChild(root->getChild(0));root->addChild(aux);
+    }
+    if(startup) require(installBeforeRealize(viewer)==2,"production pre-realize installation failed");
+    else viewer.setSceneData(root);
     viewer.realize();require(viewer.isRealized(),"context could not realize");
+    if(startup) viewer.setSceneData(root); // Actual engine order: PostProcessor is attached after realize.
     if(!threaded) context->getState()->setDynamicObjectCount(4);
     viewer.frame(); pixels->wait(viewer.getFrameStamp()->getFrameNumber());
+    if(threaded && !startup) require(install(viewer)==0,"negative control: late install should fail with running draw threads");
     viewer.stopThreading();
     const auto reference=pixels->data;
     const auto referenceDynamic=context->getState()->getDynamicObjectCount();
     require(std::count(reference.begin(),reference.end(),255)>1024,"reference geometry did not render");
-    require(install(viewer)==2,"real viewer double-buffered cull installation failed");
+    if(!startup) require(install(viewer)==2,"real viewer double-buffered cull installation failed");
+    bool rejectedLate=false;
+    try { installBeforeRealize(viewer); } catch(const std::runtime_error&) { rejectedLate=true; }
+    require(rejectedLate,"late production install silently produced empty coverage");
     auto* renderer=dynamic_cast<osgViewer::Renderer*>(camera->getRenderer());
     for(unsigned i=0;i<2;++i)
     {
@@ -124,6 +144,8 @@ int main(int argc, char** argv) try
     }
     require(slowState&&slowDraw,"state application and drawable delay were not separated");
     require(context->getState()->getDynamicObjectCount()==referenceDynamic,"dynamic draw completion semantics changed");
+    if(startup) require(SceneUtil::GLCallTrace::Capture::instance().total(context->getState()->getContextID(),
+        SceneUtil::GLCallTrace::BufferData).calls>0,"actual OSG buffer dispatch was not traced");
     viewer.setDone(true);viewer.stopThreading();viewer.setSceneData(nullptr);context->close(true);
     std::cout<<"PASS "<<(threaded ? "DrawThreadPerContext" : "SingleThreaded")<<": exact control/traced pixels, real double-buffer cull pools, nested visitor cloning, state-vs-draw delay attribution, and dynamic completion count\n";
 }

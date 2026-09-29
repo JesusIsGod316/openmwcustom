@@ -140,3 +140,33 @@ function Complete-Phase9Profile {
     }
     return $zip
 }
+
+# Presence of a ZIP is not proof the renderer tracer was attached or complete.
+function Test-Phase9TraceCapture {
+    param([Parameter(Mandatory=$true)][string]$ProfileDir,[bool]$TraceRequested)
+    $reasons=[Collections.Generic.List[string]]::new()
+    $valid=$null
+    if($TraceRequested){
+        $status=Join-Path $ProfileDir 'p9-draw-phases.csv.status.txt'
+        $frames=Join-Path $ProfileDir 'p9-draw-phases.csv.frames.csv'
+        if(-not (Test-Path -LiteralPath $status)){[void]$reasons.Add('Missing renderer coverage status')}
+        else{
+            $content=Get-Content -Raw -LiteralPath $status
+            if($content -notmatch '(?m)^visitor_instances=[1-9][0-9]*\r?$'){
+                [void]$reasons.Add('No instrumented cull visitors')
+            }
+            if($content -notmatch '(?m)^valid_leaf_capture=1\r?$'){
+                [void]$reasons.Add('No live leaves or trace overflow: inspect coverage status')
+            }
+        }
+        if(-not (Test-Path -LiteralPath $frames) -or @(Get-Content -LiteralPath $frames -TotalCount 2 -ErrorAction SilentlyContinue).Count -lt 2){
+            [void]$reasons.Add('Missing per-frame leaf evidence')
+        }
+        $valid=($reasons.Count -eq 0)
+        if(-not $valid){Write-Warning ('INVALID ROOT-CAUSE CAPTURE: '+($reasons -join '; ')+'. Raw evidence will still be zipped.')}
+    }
+    $result=[pscustomobject]@{schema=2;trace_requested=$TraceRequested;valid_leaf_capture=$valid;reasons=$reasons.ToArray();
+        scope='CPU leaf envelopes plus selected OSG GL dispatch; not complete GPU/driver profiling'}
+    $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ProfileDir 'ROOT-CAUSE-CAPTURE.json') -Encoding UTF8
+    return $result
+}

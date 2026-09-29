@@ -68,3 +68,18 @@ if(P9_REQUIRE_GAME_SDK)
     target_compile_options(p9-game-integration PRIVATE -Wno-error)
   endif()
 endif()
+
+add_test(NAME p9-production-startup COMMAND p9-draw-phases --startup)
+set_tests_properties(p9-production-startup PROPERTIES TIMEOUT 30
+  ENVIRONMENT "OPENMW_P9_LEAF_TRACE_FILE=${CMAKE_CURRENT_BINARY_DIR}/draw-production-startup.csv")
+add_executable(p9-static-prewarm static-prewarm-tests.cpp)
+target_link_libraries(p9-static-prewarm PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
+add_test(NAME p9-static-prewarm COMMAND p9-static-prewarm)
+set_tests_properties(p9-static-prewarm PROPERTIES TIMEOUT 30)
+
+add_library(p9-rootcause-header OBJECT rootcause-header-check.cpp)
+target_link_libraries(p9-rootcause-header PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
+add_executable(p9-gl-hook-contract gl-hook-contract-tests.cpp)
+target_link_libraries(p9-gl-hook-contract PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
+add_test(NAME p9-gl-hook-contract COMMAND p9-gl-hook-contract ${CMAKE_CURRENT_BINARY_DIR}/gl-hook-contract)
+set_tests_properties(p9-gl-hook-contract PROPERTIES TIMEOUT 30)

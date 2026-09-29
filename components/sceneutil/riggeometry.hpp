@@ -15,7 +15,7 @@ namespace SceneUtil
     // - We require too many workarounds to ensure safety.
     // - mSourceGeometry should be const, but can not be const because of a use case in shadervisitor.cpp.
     // - We create useless mGeometry clones in template RigGeometries.
-    // - We do not support compileGLObjects.
+    // - Only shared-static backing supports optional precompile, not private poses.
     // - We duplicate some code in MorphGeometry.
 
     /// @brief Mesh skinning implementation.
@@ -33,10 +33,10 @@ namespace SceneUtil
 
         META_Object(SceneUtil, RigGeometry)
 
-        // Currently empty as this is difficult to implement. Technically we would need to compile both internal
-        // geometries in separate frames but this method is only called once. Alternatively we could compile just the
-        // static parts of the model.
-        void compileGLObjects(osg::RenderInfo& renderInfo) const override {}
+        // Optional preparation of shared static attributes/indices only.
+        // The two private pose buffers remain owned by normal animation/draw.
+        void compileGLObjects(osg::RenderInfo& renderInfo) const override;
+
 
         struct BoneInfo
         {

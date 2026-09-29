@@ -1,50 +1,55 @@
-OptimizedMW Phase 9 - first draw-side/temporal test build
+OptimizedMW Phase 9 - root-cause capture and shared-static preparation
 
-Extract the complete ZIP into a NEW folder. Use START-OptimizedMW-Test.bat.
-Do not copy it over an older build. Your mods/saves stay in their normal locations.
+Extract into a NEW directory and use the one START-OptimizedMW-Test.bat.
+Your normal saves/mods remain in their existing locations.
 
-PRIMARY TEST
-1 REFERENCE: P8U1 COMBINED foundation, Phase 9 buffer/motion work off.
-2 HITCH: identical foundation plus private rig/morph vertex-buffer refresh.
-Use the same save, scene, route, shadows, grass, frame cap and power state.
-The experiment is NOT promoted; report visual defects or worse frame pacing.
+PRIMARY MENU
+1 REFERENCE: same P8U1 donor/resource foundation; old HITCH1 refresh off.
+2 OPTIMIZED: reference plus shared static rig/morph attribute/index precompile.
+3 ROOT-CAUSE-TRACE: reference plus draw/state/selected GL-call attribution.
+4 OPTIMIZED-TRACE: identical attribution plus static precompile.
+Use 3 first for the recurring hitch investigation, then 4 on the same route.
+Use untraced 1/2 for performance claims. Instrumentation has nonzero overhead.
+The static-prewarm mechanism has NOT been promoted by gameplay measurements.
 
-TEMPORAL TEST
-3 TEMPORAL: camera/static RG16F motion inputs without replacing normal scene color.
-4 COMBINED: HITCH plus those temporal inputs.
-5 MOTION-VIEW: visualize camera/static motion. Moving actors/grass are NOT complete.
-Jitter, DLSS, DLAA and frame generation are NOT implemented/selectable here.
-Native rendering, bilinear/NIS and existing PostFX remain the ordinary outputs.
+Type A for retained advanced controls: 5 TEMPORAL, 6 OPTIMIZED-TEMPORAL,
+7 MOTION-VIEW, 8 old HITCH, 9 old HITCH-TRACE, 10 HITCH-TEMPORAL.
+Temporal is still camera/static motion only, not correct dense actor/wind motion.
+Jitter stays off. DLSS/DLAA/frame generation are NOT implemented or selectable.
+No temporal input/rendered image behavior changed in this checkpoint.
 
-ATTRIBUTION ONLY
-6 HITCH-TRACE and 7 REFERENCE-TRACE add bounded state/draw/private-buffer records.
-Compare these with their untraced counterparts to quantify observer overhead.
-CPU scopes can include driver waits; they are not GPU timers and must not be summed
-with overlapping cull/draw/frame counters. Missing data never means zero time.
+ROOT-CAUSE EVIDENCE
+p9-draw-phases.csv: slow leaf envelopes; matrices/state/draw/retire, camera,
+StateSet, drawable identity, names and steady-clock start time.
+*.frames.csv: ALL measured leaf contributions per frame, including cheap calls.
+*.gl.csv: selected slow OSG extension-dispatch calls, phase, arguments and time.
+*.gl-frames.csv and *.gl-totals.csv: sums/counts/maxima of selected calls.
+*.renderer.csv: renderer-entry CPU envelope (can include queue wait). The last
+observed leaf frame is not an assertion all outer work belongs to that frame.
+Check all status files, ROOT-CAUSE-CAPTURE.json, TEST_MODE.txt and exit status.
+Coverage/overflow failure is explicit. Direct core GL calls, renderstage work
+outside leaves, swap and driver internals are not magically split by these timers.
+Scopes overlap: do not sum outer/leaf/API times or subtract async GPU timings.
+Trace attachment now occurs before Viewer::realize; unsupported startup fails
+loudly instead of silently collecting zero visitors. Normal modes are unchanged.
 
-The shared foundation keeps P1/P2/P7, HIER-CULL/CULL-CPU, resource repair, Lua cache,
-audio warming and shadow-setting consistency. LOD2 and inactive shadow proxies
-remain off for these comparisons, not deleted. Shadows remain 3 x 2048 at 4096.
-There are no lowered-quality shadow modes or global OSG threading changes.
+OPTIMIZATION SCOPE
+Static prewarm touches only shared STATIC_DRAW buffers using the existing ICO
+context owner. No live pose evaluation, private VBO creation, display-list draw,
+new context, synchronization-barrier removal or first-use completeness claim.
+Per-backing 4 MiB / per-call 8 MiB admission bounds are not hard GL time limits.
+Counters in p9-static-prewarm.txt identify engagement, not GPU completion.
+
+CULLING AND QUALITY
+Audit found existing whole-cell, per-object, paged-chunk and HIER-CULL coverage.
+No duplicate hierarchy or speculative actor culling has been installed. Existing
+main/shadow/reflection visibility rules, grass density and 3 x 2048 shadows at
+4096 distance remain. LOD2 and opaque shadow proxies remain off, not deleted.
 
 PACKAGING
-After the game exits, settings/environment are restored and a SHA256-verified RAW
-ZIP is created BEFORE the optional offline report. The report has a 30-second
-limit and cannot remove the raw ZIP. A verified enriched archive replaces it only
-if successful. The ZIP is beside openmw.exe; a protected install folder falls back
-to the profile parent under Documents/My Games/OpenMW/OptimizedMW-Phase9-Profiles.
-The launcher selects the final ZIP in Explorer. Raw folders are retained.
-Crashes can lose deferred engine CSVs; partial evidence is still zipped and clearly
-marked in PROFILE-CAPTURE.json. Check TEST_MODE.txt and all capture-status files.
-Do not assume that a successful ZIP or build proves complete/correct telemetry.
-
-SCOPE
-The VBO experiment refreshes existing eligible PRIVATE position/normal/tangent
-storage, preserving the GL name, index buffers, CPU double buffering and OSG's
-safe-point barrier. It does not use a fence-owned ring or prove GPU completion.
-Requests are bounded at 4 MiB per buffer / 32 MiB per frame-context; driver memory
-retention is a separate measurement. Cold/unsupported/over-budget data use OSG.
-The temporal pass initially supports the normal mono view. Unsupported contexts,
-invalid histories or missing resources retain normal rendering. Dense actor,
-morph, wind and effect motion and the OpenGL/Vulkan-to-DLSS bridge are still future
-work. There is no performance or gameplay-compatibility promotion from CI alone.
+On exit, normal settings/environment are restored, coverage status is recorded,
+and a SHA256-verified RAW ZIP is created BEFORE the optional 30-second report.
+Report failure cannot remove that raw ZIP. ZIP appears beside openmw.exe; a
+protected folder falls back to the profile parent under Documents/My Games/OpenMW.
+Partial/crashed/invalid traces are still preserved and clearly marked. Keep the
+launcher open until it reports the final ZIP and selects it in Explorer.

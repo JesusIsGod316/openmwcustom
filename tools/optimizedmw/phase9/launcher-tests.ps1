@@ -13,11 +13,13 @@ if(-not $fn){throw 'Missing Phase 9 mode function'}
 . ([scriptblock]::Create($fn.Extent.Text))
 . (Join-Path $root 'OptimizedMW_ProfileArchive.ps1')
 $expected=@(
-    @('REFERENCE','0','0','0','0'),@('HITCH','1','0','0','0'),@('TEMPORAL','0','1','0','0'),
-    @('COMBINED','1','1','0','0'),@('MOTION-VIEW','0','1','1','0'),
-    @('HITCH-TRACE','1','0','0','1'),@('REFERENCE-TRACE','0','0','0','1'))
+    @('REFERENCE','0','0','0','0','0'),@('OPTIMIZED','0','0','0','0','1'),
+    @('ROOT-CAUSE-TRACE','0','0','0','1','0'),@('OPTIMIZED-TRACE','0','0','0','1','1'),
+    @('TEMPORAL','0','1','0','0','0'),@('OPTIMIZED-TEMPORAL','0','1','0','0','1'),
+    @('MOTION-VIEW','0','1','1','0','0'),@('HITCH','1','0','0','0','0'),
+    @('HITCH-TRACE','1','0','0','1','0'),@('HITCH-TEMPORAL','1','1','0','0','0'))
 for($i=0;$i -lt $expected.Count;$i++){
-    $m=Get-P9Mode ([string]($i+1));$keys=@('Name','Stream','Temporal','View','Trace')
+    $m=Get-P9Mode ([string]($i+1));$keys=@('Name','Stream','Temporal','View','Trace','Prewarm')
     for($k=0;$k -lt $keys.Count;$k++){if($m[$keys[$k]] -ne $expected[$i][$k]){throw 'Mode isolation changed'}}
 }
 $bad=$false;try{$null=Get-P9Mode '99'}catch{$bad=$true};if(-not $bad){throw 'Unknown mode accepted'}
@@ -93,7 +95,13 @@ try{
     if($zip.Missing -notcontains 'v3-frame.csv'){throw 'Partial-capture provenance missing'}
     $bad=$false;try{$null=New-VerifiedProfileZip -SourceDir $temp -DestinationPath (Join-Path $temp 'bad.zip')}catch{$bad=$true}
     if(-not $bad){throw 'Self-containing archive accepted'}
-    Write-Host 'PASS Phase 9: 7 isolated modes, shader preflight, report fixtures, nested/spaced/bracket paths, real SHA256 ZIP verification, partial capture, report failure/timeout and verified replacement.'
+    $badTrace=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+    if($badTrace.valid_leaf_capture -ne $false){throw 'Empty runtime trace was accepted'}
+    @('visitor_instances=2','valid_leaf_capture=1') | Set-Content (Join-Path $temp 'p9-draw-phases.csv.status.txt')
+    @('frame,context,leaves','1,0,4') | Set-Content (Join-Path $temp 'p9-draw-phases.csv.frames.csv')
+    $goodTrace=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+    if($goodTrace.valid_leaf_capture -ne $true){throw 'Complete runtime trace rejected'}
+    Write-Host 'PASS Phase 9: 10 isolated modes, live/empty trace validation, shader preflight, report fixtures, nested/spaced/bracket paths, real SHA256 ZIP verification, partial capture, report failure/timeout and verified replacement.'
 }finally{
     if(Test-Path -LiteralPath $zipFile){Remove-Item -LiteralPath $zipFile -Force}
     Remove-Item -LiteralPath $temp -Recurse -Force

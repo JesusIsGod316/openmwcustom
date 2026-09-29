@@ -1,5 +1,6 @@
 #include "riggeometry.hpp"
 #include "dynamicstream.hpp"
+#include "staticgeometryprewarm.hpp"
 
 #include <osg/MatrixTransform>
 
@@ -97,6 +98,11 @@ namespace SceneUtil
             DynamicStream::install(to, vbo, "rig_geometry");
             Debug::P8DynamicDrawTelemetry::install(to, "rig_geometry");
         }
+    }
+
+    void RigGeometry::compileGLObjects(osg::RenderInfo& renderInfo) const
+    {
+        StaticGeometryPrewarm::prepare(renderInfo, mGeometry[0].get());
     }
 
     osg::ref_ptr<osg::Geometry> RigGeometry::getSourceGeometry() const
