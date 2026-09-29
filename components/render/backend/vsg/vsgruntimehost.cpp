@@ -163,6 +163,7 @@ namespace RenderVsg
         , mViewer(vsg::Viewer::create())
         , mSceneRoot(vsg::Group::create())
         , mStaticRoot(vsg::Group::create())
+        , mGpuPopulationCullRoot(vsg::Group::create())
         , mDynamicRoot(vsg::Group::create())
         , mGuiRoot(vsg::Group::create())
         , mMainOnlyRoot(vsg::Group::create())
@@ -190,6 +191,17 @@ namespace RenderVsg
             throw std::invalid_argument("VsgRuntimeHost received unsafe or invalid CP4E water settings");
 
         mGpuSceneTablesEnabled = std::getenv("OPENMW_VK_GPU_SCENE_TABLES") != nullptr;
+        mGpuPopulationCullEnabled = std::getenv("OPENMW_VK_GPU_CULL_INDIRECT") != nullptr;
+        if (mGpuPopulationCullEnabled && !mGpuSceneTablesEnabled)
+            throw std::invalid_argument(
+                "OPENMW_VK_GPU_CULL_INDIRECT requires OPENMW_VK_GPU_SCENE_TABLES");
+        if (mGpuPopulationCullEnabled)
+        {
+            const auto traits = mWindow->traits();
+            if (!traits || (traits->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0)
+                throw std::runtime_error("P3 GPU culling requires a compute-capable graphics queue");
+            mGpuPopulationCullViewData = createGpuPopulationCullViewData();
+        }
         mNativeOcclusionEnabled = std::getenv("OPENMW_V4_TERRAIN_OCCLUSION") != nullptr;
         mNativeFrustumEnabled = mNativeOcclusionEnabled || std::getenv("OPENMW_V4_STATIC_FRUSTUM") != nullptr;
         mViewer->addWindow(mWindow);
@@ -316,6 +328,11 @@ namespace RenderVsg
             mCommandGraph->addChild(mReflectionView->target.renderGraph);
         if (mRefractionView && !parallelRecording)
             mCommandGraph->addChild(mRefractionView->target.renderGraph);
+        // Secondary views use the unchanged direct-instanced fallback. Generate
+        // main-view commands only after those views have recorded, immediately
+        // before the main scene consumes the indirect buffers.
+        if (mGpuPopulationCullEnabled)
+            mCommandGraph->addChild(mGpuPopulationCullRoot);
         if (mPostTarget) mCommandGraph->addChild(mPostTarget.renderGraph);
         if (mOmwfxCommands) mCommandGraph->addChild(mOmwfxCommands);
         mCommandGraph->addChild(mRenderGraph);
@@ -408,6 +425,8 @@ namespace RenderVsg
         waitIdle();
         if (mDynamicRoot)
             mDynamicRoot->children.clear();
+        if (mGpuPopulationCullRoot)
+            mGpuPopulationCullRoot->children.clear();
         if (mGuiRoot)
             mGuiRoot->children.clear();
         mDynamicPublishedRoot = {};
@@ -2532,6 +2551,8 @@ namespace RenderVsg
                 !guiOnly && refractionView && !frame.environment().interior && frame.environment().underwater))
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
         mCamera.update(*mainView);
+        if (mGpuPopulationCullEnabled)
+            updateGpuPopulationCullViewData(*mGpuPopulationCullViewData, *mainView);
         if (!synchronizePostProcessing(frame, *mainView))
             return finish(RenderCore::RenderFrameResult::Failed, mLastDiagnostic);
         mView->LODScale = mainView->lodScale;
