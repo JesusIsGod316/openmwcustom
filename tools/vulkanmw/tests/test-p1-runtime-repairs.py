@@ -15,8 +15,9 @@ required = [
     (bridge, "source.camera.worldPosition, source.lodScale"),
     (animation_h, "std::string_view groupName;"),
     (animation_cpp, "active->first,"),
-    (native, 'group.starts_with("sit")'),
-    (native, "seated actor pose retained on evaluated OSG compatibility path"),
+    (native, "selectionSignature"),
+    (native, "active animation selection changed; exact compatibility reseed required"),
+    (native, "mPendingActorSelections"),
 ]
 for text, needle in required:
     if needle not in text:
