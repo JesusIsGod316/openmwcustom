@@ -21,6 +21,7 @@
 #include <glm/common.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -163,9 +164,15 @@ namespace RenderVsg
             return result;
         }
 
-        [[nodiscard]] bool packPlacement(
-            vsg::vec4Array& packed, std::size_t index, const AssetBounds& asset,
-            const RenderCore::PopulationInstanceRecord& placement)
+        struct PackedPlacementVisibility
+        {
+            vsg::vec4 minimum;
+            vsg::vec4 maximum;
+            vsg::vec4 lod;
+        };
+
+        [[nodiscard]] std::optional<PackedPlacementVisibility> packPlacementVisibility(
+            const AssetBounds& asset, const RenderCore::PopulationInstanceRecord& placement)
         {
             const glm::dmat4 matrix = staticInstancePlacementMatrix(placement.transform);
             glm::dvec3 minimum(std::numeric_limits<double>::max());
@@ -179,14 +186,14 @@ namespace RenderVsg
                 const glm::dvec4 point = matrix * glm::dvec4(local, 1.0);
                 if (!std::isfinite(point.x) || !std::isfinite(point.y)
                     || !std::isfinite(point.z) || std::abs(point.w - 1.0) > 1e-6)
-                    return false;
+                    return std::nullopt;
                 minimum = glm::min(minimum, glm::dvec3(point));
                 maximum = glm::max(maximum, glm::dvec3(point));
             }
             const glm::dvec4 lodCenter = matrix * glm::dvec4(placement.lod.center, 1.0);
             if (!std::isfinite(lodCenter.x) || !std::isfinite(lodCenter.y)
                 || !std::isfinite(lodCenter.z) || std::abs(lodCenter.w - 1.0) > 1e-6)
-                return false;
+                return std::nullopt;
 
             double maximumDistance = static_cast<double>(placement.lod.maximumDistance)
                 * static_cast<double>(placement.lod.scale);
@@ -203,17 +210,29 @@ namespace RenderVsg
             for (const double value : {minimum.x, minimum.y, minimum.z, maximum.x, maximum.y, maximum.z,
                      lodCenter.x, lodCenter.y, lodCenter.z})
                 if (!finiteFloat(value))
-                    return false;
+                    return std::nullopt;
 
-            packed.set(index * 3 + 0, vsg::vec4(
-                static_cast<float>(minimum.x), static_cast<float>(minimum.y),
-                static_cast<float>(minimum.z), 0.0f));
-            packed.set(index * 3 + 1, vsg::vec4(
-                static_cast<float>(maximum.x), static_cast<float>(maximum.y),
-                static_cast<float>(maximum.z), 0.0f));
-            packed.set(index * 3 + 2, vsg::vec4(
-                static_cast<float>(lodCenter.x), static_cast<float>(lodCenter.y),
-                static_cast<float>(lodCenter.z), static_cast<float>(maximumDistance)));
+            return PackedPlacementVisibility{
+                .minimum = vsg::vec4(static_cast<float>(minimum.x), static_cast<float>(minimum.y),
+                    static_cast<float>(minimum.z), 0.0f),
+                .maximum = vsg::vec4(static_cast<float>(maximum.x), static_cast<float>(maximum.y),
+                    static_cast<float>(maximum.z), 0.0f),
+                .lod = vsg::vec4(static_cast<float>(lodCenter.x), static_cast<float>(lodCenter.y),
+                    static_cast<float>(lodCenter.z), static_cast<float>(maximumDistance)),
+            };
+        }
+
+        [[nodiscard]] bool packPlacement(
+            vsg::vec4Array& packed, std::size_t index, const AssetBounds& asset,
+            const RenderCore::PopulationInstanceRecord& placement)
+        {
+            const auto visibility = packPlacementVisibility(asset, placement);
+            if (!visibility)
+                return false;
+            const std::size_t base = index * 3u;
+            packed.set(base + 0u, visibility->minimum);
+            packed.set(base + 1u, visibility->maximum);
+            packed.set(base + 2u, visibility->lod);
             return true;
         }
 
@@ -237,13 +256,13 @@ namespace RenderVsg
             const AssetBounds& asset, const RenderCore::PopulationInstanceRecord& placement,
             const RenderCore::WorldPosition& origin)
         {
-            const std::size_t base = index * 6u;
-            auto boundsAndLod = vsg::vec4Array::create(3);
-            if (!packPlacement(*boundsAndLod, 0, asset, placement))
+            const auto visibility = packPlacementVisibility(asset, placement);
+            if (!visibility)
                 return false;
-            packed.set(base + 0u, (*boundsAndLod)[0]);
-            packed.set(base + 1u, (*boundsAndLod)[1]);
-            packed.set(base + 2u, (*boundsAndLod)[2]);
+            const std::size_t base = index * 6u;
+            packed.set(base + 0u, visibility->minimum);
+            packed.set(base + 1u, visibility->maximum);
+            packed.set(base + 2u, visibility->lod);
 
             const glm::dvec3 relative = placement.transform.translation - origin;
             const auto finiteFloat = [](double value) {
