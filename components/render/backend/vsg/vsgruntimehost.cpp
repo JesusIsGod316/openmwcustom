@@ -765,6 +765,8 @@ namespace RenderVsg
         std::vector<StaticPopulationResident> populationReplacements;
         std::size_t placementNodesReused = 0, placementNodesBuilt = 0;
         std::size_t gpuCullGroups = 0, gpuCullPlacements = 0, gpuIndirectCommands = 0, gpuCompactGroups = 0;
+        std::size_t gpuGroupedEligible = 0, gpuGroupedSingleton = 0, gpuGroupedMixedMasks = 0,
+                    gpuGroupedOrderSensitive = 0;
         const bool placementFrustum = mNativeFrustumEnabled
             && Misc::environmentFlag<"OPENMW_VK_PLACEMENT_FRUSTUM">();
         populationReplacements.reserve(populationMutation.upserts.size());
@@ -794,17 +796,31 @@ namespace RenderVsg
             const auto* oldPlan = mStaticPopulationResidency.residentPlan(world.epoch(), identity);
             const auto* oldResident = oldPlan ? mStaticPopulationResidency.residentObject(identity) : nullptr;
             const bool sameAsset = oldPlan && reusablePopulationAsset(*oldPlan, plan);
-            // Stable groups retain instancing. A placement-changing group is
-            // converted once to shared immutable geometry plus CPU placement
-            // nodes, instead of recompiling/uploading its mesh on every move.
-            const bool requiresIndividualPlacement = mixedTraversalMasks
-                || (persistentPlacements && (plan.placements.size() == 1 || sameAsset))
-                || std::ranges::any_of(plan.asset.draws,
+            // Stable groups retain instancing. The pre-P3 retained path converts
+            // same-asset placement changes into CPU placement nodes to avoid mesh
+            // re-realization. P3 deliberately keeps eligible multi-placement groups
+            // instanced so GPU visibility/command generation can own their transform
+            // stream. Singletons, mixed traversal masks and ordering-sensitive assets
+            // remain on the exact CPU-placement fallback.
+            const bool orderSensitivePopulation = std::ranges::any_of(plan.asset.draws,
                 [&](const StaticDrawPlan& draw) {
                     const RenderCore::MaterialRecord* material = world.get(draw.material);
                     return !material || material->transparentSort == RenderCore::TransparentSortPolicy::Sorted
                         || draw.billboard.has_value();
                 });
+            const bool p3GroupedPopulation = mGpuPopulationCullEnabled && plan.placements.size() > 1
+                && !mixedTraversalMasks && !orderSensitivePopulation;
+            if (mGpuPopulationCullEnabled)
+            {
+                if (p3GroupedPopulation) ++gpuGroupedEligible;
+                else if (plan.placements.size() <= 1) ++gpuGroupedSingleton;
+                else if (mixedTraversalMasks) ++gpuGroupedMixedMasks;
+                else if (orderSensitivePopulation) ++gpuGroupedOrderSensitive;
+            }
+            const bool requiresIndividualPlacement = mixedTraversalMasks
+                || (persistentPlacements
+                    && (plan.placements.size() == 1 || (sameAsset && !p3GroupedPopulation)))
+                || orderSensitivePopulation;
             const bool reuseAsset = persistentPlacements && requiresIndividualPlacement && sameAsset
                 && oldResident && oldResident->placementFreeAsset;
             if (!reuseAsset) resourceChanges = true;
@@ -1073,7 +1089,11 @@ namespace RenderVsg
                 {"gpu_cull_groups", std::to_string(gpuCullGroups)},
                 {"gpu_compact_groups", std::to_string(gpuCompactGroups)},
                 {"gpu_cull_placements", std::to_string(gpuCullPlacements)},
-                {"gpu_indirect_commands", std::to_string(gpuIndirectCommands)}});
+                {"gpu_indirect_commands", std::to_string(gpuIndirectCommands)},
+                {"gpu_grouped_eligible", std::to_string(gpuGroupedEligible)},
+                {"gpu_grouped_singleton", std::to_string(gpuGroupedSingleton)},
+                {"gpu_grouped_mixed_masks", std::to_string(gpuGroupedMixedMasks)},
+                {"gpu_grouped_order_sensitive", std::to_string(gpuGroupedOrderSensitive)}});
         mStaticSyncState.synchronized();
         return true;
     }
