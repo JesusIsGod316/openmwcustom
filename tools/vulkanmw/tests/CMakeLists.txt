@@ -65,6 +65,12 @@ foreach(name IN ITEMS population-delta actor-preparation skeletal-object frame-p
     if(MSVC)
         target_compile_definitions(vulkanmw-${name}-tests PRIVATE _CRT_SECURE_NO_WARNINGS)
         target_compile_options(vulkanmw-${name}-tests PRIVATE /W4 /WX /permissive-)
+        # These fixtures use assert() as executable correctness oracles. Release
+        # builds define NDEBUG globally; keep assertions live for tests whose
+        # values otherwise disappear entirely and trigger /WX unused warnings.
+        if(name STREQUAL "gpu-scene-tables" OR name STREQUAL "pipeline-audit-gate")
+            target_compile_options(vulkanmw-${name}-tests PRIVATE /UNDEBUG)
+        endif()
     else()
         target_compile_options(vulkanmw-${name}-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
