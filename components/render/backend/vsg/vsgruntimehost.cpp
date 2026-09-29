@@ -1920,7 +1920,10 @@ namespace RenderVsg
         if (overlay)
             nextRoot->addChild(overlay);
         const auto guiView = mOutputView ? mOutputView : mView;
-        if (guiView) mPipelineAuditGate.invalidate();
+        // MyGUI rebuilds its immutable draw generation every frame, but it uses
+        // the fixed UiPipeline and verifies that exact view immediately below.
+        // Treating this routine data refresh as scene-pipeline topology would
+        // force the expensive global census every frame and defeat the P2 gate.
         if (!guiView || !compileForViewerView(*mViewer, *guiView, nextRoot))
         {
             mLastDiagnostic = "incremental VSG MyGUI main-view compilation failed before overlay publication";
