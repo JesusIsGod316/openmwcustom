@@ -240,7 +240,8 @@ namespace SceneUtil::DynamicStream
         Callback() : mPrivate(nullptr) {}
         Callback(osg::VertexBufferObject* buffer, osg::Drawable::DrawCallback* inner,
             bool refresh, const char* kind, const std::string& name)
-            : mPrivate(buffer), mInner(inner), mRefresh(rhs.mRefresh), mId(rhs.mId) {}
+            : mPrivate(buffer), mInner(inner), mRefresh(refresh)
+            , mId(Capture::instance().registerGeometry(kind, name)) {}
         Callback(const Callback& rhs, const osg::CopyOp& op)
             : osg::Object(rhs, op), osg::Drawable::DrawCallback(rhs, op)
             , mPrivate(rhs.mPrivate), mInner(rhs.mInner), mRefresh(rhs.mRefresh), mId(rhs.mId) {}
