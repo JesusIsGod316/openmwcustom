@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <iostream>
+#include <memory>
 
 int main()
 {
@@ -139,6 +140,54 @@ int main()
     // above is intentionally counted even though it did not advance lightSerial.
     assert(tables.stats().creates == 4);
     assert(tables.stats().retires == 2);
+
+    // Actor membership comes directly from committed instance deltas rather
+    // than a later scan over every static instance.
+    const auto skeleton = world.reserveSkeleton();
+    const auto model = world.reserveModel();
+    assert(skeleton && model);
+    auto skeletonPayload = std::make_shared<SkeletonPayload>();
+    BoneRecord rootBone;
+    rootBone.name = "root";
+    skeletonPayload->bones.push_back(rootBone);
+    SkeletonRecord skeletonRecord;
+    skeletonRecord.payload = skeletonPayload;
+    auto modelPayload = std::make_shared<ModelPayload>();
+    ModelNodeRecord rootNode;
+    rootNode.name = "root";
+    modelPayload->nodes.push_back(rootNode);
+    modelPayload->roots.push_back(ModelNodeIndex{0});
+    ModelRecord modelRecord;
+    modelRecord.payload = modelPayload;
+    RenderWorldUpdateBatch actorResources(world.epoch(), publisher.nextSequence(), "gpu-scene-table-actor-resources");
+    assert(actorResources.add(CreateSkeleton{*skeleton, skeletonRecord}));
+    assert(actorResources.add(CreateModel{*model, modelRecord}));
+    assert(actorResources.seal());
+    assert(publisher.apply(actorResources) == PublishStatus::Applied);
+
+    const auto actor = world.reserveInstance();
+    const auto staticObject = world.reserveInstance();
+    assert(actor && staticObject);
+    InstanceRecord actorRecord;
+    actorRecord.model = *model;
+    actorRecord.skeleton = *skeleton;
+    InstanceRecord staticRecord;
+    staticRecord.model = *model;
+    RenderWorldUpdateBatch instances(world.epoch(), publisher.nextSequence(), "gpu-scene-table-actor-membership");
+    assert(instances.add(CreateInstance{*actor, actorRecord}));
+    assert(instances.add(CreateInstance{*staticObject, staticRecord}));
+    assert(instances.seal());
+    assert(publisher.apply(instances) == PublishStatus::Applied);
+    assert(tables.actorInstanceCount() == 1);
+    std::vector<InstanceHandle> indexedActors;
+    tables.forEachActorInstance([&](InstanceHandle handle) { indexedActors.push_back(handle); });
+    assert(indexedActors.size() == 1 && indexedActors.front() == *actor);
+
+    RenderWorldUpdateBatch actorRetire(world.epoch(), publisher.nextSequence(), "gpu-scene-table-actor-retire");
+    assert(actorRetire.add(RetireInstance{*actor}));
+    assert(actorRetire.seal());
+    assert(publisher.apply(actorRetire) == PublishStatus::Applied);
+    assert(tables.actorInstanceCount() == 0);
 
     publisher.setAppliedObserver({});
     assert(world.reset());
