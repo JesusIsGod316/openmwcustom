@@ -27,6 +27,11 @@ required = [
     (host, "mGpuSceneTables.lightSerial()"),
     (host, "plan.sourceSerial = lightSerial"),
     (host, "P2 GPU scene tables missed or rejected an authoritative RenderWorld delta"),
+    ((ROOT / "components/render/backend/vsg/pipelineauditgate.hpp").read_text(encoding="utf-8"),
+     "class PipelineAuditGate final"),
+    (host, "mPipelineAuditGate.needsAudit(viewSignature, strictQc)"),
+    (host, "mPipelineAuditGate.accept(viewSignature)"),
+    (host, "mPipelineAuditGate.invalidate()"),
 ]
 for text, needle in required:
     if needle not in text:
