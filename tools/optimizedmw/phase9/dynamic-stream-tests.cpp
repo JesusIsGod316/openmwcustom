@@ -1,6 +1,22 @@
-#include <components/sceneutil/dynamicstream.hpp>
+// Preload the real OSG dependencies, then remove the optional core alias.
+// Windows' GL headers do not supply it; Linux headers must not hide that gap.
+#include <osg/Array>
+#include <osg/BufferObject>
+#include <osg/FrameStamp>
+#include <osg/Geometry>
+#include <osg/GLExtensions>
+#include <osg/RenderInfo>
+#include <osg/State>
 #include <osgViewer/Viewer>
 #include <osg/GraphicsContext>
+#ifdef GL_ARRAY_BUFFER
+static_assert(GL_ARRAY_BUFFER == GL_ARRAY_BUFFER_ARB);
+#undef GL_ARRAY_BUFFER
+#endif
+#include <components/sceneutil/dynamicstream.hpp>
+#ifdef GL_ARRAY_BUFFER
+#error The regression must compile the production header without the core alias
+#endif
 #include <iostream>
 #include <stdexcept>
 using namespace SceneUtil::DynamicStream;
@@ -39,14 +55,14 @@ int main() try
     const auto name=glbo->getGLObjectID();
     require(owned.refresh(*state,*geometry,drawBudget).result==Result::ColdOrClean, "clean VBO was unnecessarily orphaned");
     auto verify=[&]{
-        ext->glBindBuffer(GL_ARRAY_BUFFER,name);
+        ext->glBindBuffer(GL_ARRAY_BUFFER_ARB,name);
         std::array<float,12> actual{};
-        ext->glGetBufferSubData(GL_ARRAY_BUFFER,0,sizeof(actual),actual.data());
+        ext->glGetBufferSubData(GL_ARRAY_BUFFER_ARB,0,sizeof(actual),actual.data());
         const float* wanted=reinterpret_cast<const float*>(vertices->getDataPointer());
         for (int i=0;i<6;++i) require(actual[i]==wanted[i],"position storage was not fully restored");
         wanted=reinterpret_cast<const float*>(normals->getDataPointer());
         for (int i=0;i<6;++i) require(actual[i+6]==wanted[i],"unchanged normals lost during full refill");
-        ext->glBindBuffer(GL_ARRAY_BUFFER,0);
+        ext->glBindBuffer(GL_ARRAY_BUFFER_ARB,0);
     };
     verify();
     for (unsigned frame=2;frame<202;++frame)
@@ -72,6 +88,6 @@ int main() try
     require(glGetError()==GL_NO_ERROR,"GL error from streaming experiment");
     vbo->releaseGLObjects(state); state->unbindVertexBufferObject();
     context->releaseContext(); context->close(true);
-    std::cout << "PASS: private VBO 200 revisions, all-stream refill, stable name, multiview reuse, sentinel/rebind/static fallback and bounded admission\n";
+    std::cout << "PASS: ARB-only header compatibility, private VBO 200 revisions, all-stream refill, stable name, multiview reuse, sentinel/rebind/static fallback and bounded admission\n";
 }
 catch (const std::exception& e) { std::cerr<<e.what()<<'\n';return 1; }
