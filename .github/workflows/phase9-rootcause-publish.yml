@@ -1,0 +1,71 @@
+name: Phase 9 audited root-cause source publication
+on:
+  push:
+    branches: [optimizedmw/phase9-rootcause-publish-20260929]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: phase9-rootcause-source-publication
+  cancel-in-progress: false
+jobs:
+  PublishSource:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore hash-verified real source on the exact tested parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/p9-evidence"
+          python - <<'PY'
+          import base64, bz2, hashlib, os
+          from pathlib import Path
+          parts = Path('.phase9-rootcause-transport')
+          encoded = ''.join((parts / ('payload-%d.txt' % i)).read_text().strip() for i in range(6))
+          patch = bz2.decompress(base64.b64decode(encoded, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == 'e8d0a4011aa8d3de519bf8d1f6114b3dade50eac87dae5893ba7e5dfa019ea7a'
+          Path(os.environ['RUNNER_TEMP'], 'p9-evidence', 'source.patch').write_bytes(patch)
+          PY
+          BASE=bb4876a6ea287745c8f535f5525c5381a631a24c
+          test "$(git rev-parse "$BASE^{tree}")" = 78ac535aa941cb703707a42fc946910fc0b03c61
+          git worktree add --detach "$RUNNER_TEMP/p9-real-source" "$BASE"
+          cd "$RUNNER_TEMP/p9-real-source"
+          git apply --check --index --unidiff-zero "$RUNNER_TEMP/p9-evidence/source.patch"
+          git apply --index --unidiff-zero "$RUNNER_TEMP/p9-evidence/source.patch"
+          test "$(git write-tree)" = 2201bfed5df1ff91a4f4f655e678ea3a80a5c24f
+          test "$(git diff --cached --name-only | wc -l)" = 20
+          git diff --cached --check
+          for p in gl-p3 gl-p4 gl-p6 gl-p7 gl-p8 gl-p8g2 gl-p8g3 gl-p8g4 p8u1 p8g5 phase9; do python "tools/optimizedmw/$p/source-contract.py"; done
+      - name: Validate source launcher and trace-health fixtures before publication
+        shell: pwsh
+        run: |
+          Set-Location (Join-Path $env:RUNNER_TEMP 'p9-real-source')
+          ./tools/optimizedmw/phase9/launcher-tests.ps1
+      - name: Commit only readable production source to an isolated ready branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/p9-real-source"
+          test "$(git write-tree)" = 2201bfed5df1ff91a4f4f655e678ea3a80a5c24f
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Phase 9: attach live root-cause tracing, prepare shared actor buffers and reuse audited cull inputs'
+          test "$(git rev-parse HEAD^)" = bb4876a6ea287745c8f535f5525c5381a631a24c
+          test "$(git rev-parse HEAD^{tree})" = 2201bfed5df1ff91a4f4f655e678ea3a80a5c24f
+          git push origin HEAD:refs/heads/optimizedmw/phase9-rootcause-ready-20260929
+          git rev-parse HEAD > "$RUNNER_TEMP/p9-evidence/COMMIT.txt"
+          git rev-parse HEAD^{tree} > "$RUNNER_TEMP/p9-evidence/TREE.txt"
+          git ls-tree -r HEAD > "$RUNNER_TEMP/p9-evidence/BLOBS.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/p9-evidence/source.tar.gz"
+          sha256sum "$RUNNER_TEMP/p9-evidence/source.tar.gz" > "$RUNNER_TEMP/p9-evidence/SHA256SUMS.txt"
+          echo 'Canonical optimizedmw/phase9 was not advanced; no full Windows build was dispatched by this job.'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Phase9-rootcause-source-publication
+          path: ${{ runner.temp }}/p9-evidence/
+          retention-days: 30
