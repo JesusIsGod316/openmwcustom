@@ -12,6 +12,8 @@ int main()
     tables.reset(world.epoch(), world.revision());
     const std::uint64_t initialLightSerial = tables.lightSerial();
     assert(initialLightSerial != 0);
+    const std::uint64_t initialActorPlanSerial = tables.actorPlanSerial();
+    assert(initialActorPlanSerial != 0);
 
     std::size_t observerCalls = 0;
     publisher.setAppliedObserver([&](const RenderWorldUpdateBatch& batch, const RenderWorld& committed) {
@@ -38,6 +40,7 @@ int main()
     assert(tables.stats().creates == 2);
     const std::uint64_t createdLightSerial = tables.lightSerial();
     assert(createdLightSerial == initialLightSerial + 1);
+    assert(tables.actorPlanSerial() == initialActorPlanSerial);
 
     // Unrelated authoritative world deltas do not invalidate the packed light
     // source. This is the P2 O(1) fast path used by every derived view.
@@ -49,6 +52,8 @@ int main()
     assert(publisher.apply(meshBatch) == PublishStatus::Applied);
     assert(observerCalls == 2);
     assert(tables.lightSerial() == createdLightSerial);
+    const std::uint64_t meshActorPlanSerial = tables.actorPlanSerial();
+    assert(meshActorPlanSerial == initialActorPlanSerial + 1);
 
     tables.clearDirty();
     LightRecord stale = *world.get(*first);
@@ -58,6 +63,7 @@ int main()
     assert(publisher.apply(rejected) == PublishStatus::OperationRejected);
     assert(observerCalls == 2);
     assert(tables.lightSerial() == createdLightSerial);
+    assert(tables.actorPlanSerial() == meshActorPlanSerial);
     assert(!tables.dirty(RenderVsg::GpuSceneTables::Kind::Light).dirty());
 
     LightRecord moved = *world.get(*first);
@@ -69,6 +75,7 @@ int main()
     assert(publisher.apply(update) == PublishStatus::Applied);
     assert(observerCalls == 3);
     assert(tables.lightSerial() == createdLightSerial + 1);
+    assert(tables.actorPlanSerial() == meshActorPlanSerial);
     assert(tables.current(world));
     const auto& firstSlot = tables.table(RenderVsg::GpuSceneTables::Kind::Light).at(first->slot());
     assert(firstSlot.live && firstSlot.generation == first->generation());
@@ -84,6 +91,7 @@ int main()
     assert(publisher.apply(retire) == PublishStatus::Applied);
     assert(observerCalls == 4);
     assert(tables.lightSerial() == createdLightSerial + 2);
+    assert(tables.actorPlanSerial() == meshActorPlanSerial);
     assert(tables.current(world));
     assert(tables.live(RenderVsg::GpuSceneTables::Kind::Light) == 1);
     const auto& secondSlot = tables.table(RenderVsg::GpuSceneTables::Kind::Light).at(second->slot());
@@ -103,6 +111,7 @@ int main()
     assert(publisher.apply(transientBatch) == PublishStatus::Applied);
     assert(observerCalls == 5);
     assert(tables.lightSerial() == createdLightSerial + 3);
+    assert(tables.actorPlanSerial() == meshActorPlanSerial);
     assert(tables.current(world));
     const auto& transientSlot = tables.table(RenderVsg::GpuSceneTables::Kind::Light).at(transient->slot());
     assert(!transientSlot.live && transientSlot.generation == transient->generation());
