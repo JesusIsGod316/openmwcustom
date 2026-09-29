@@ -46,12 +46,23 @@ int main()
         SingleViewFrameProducer producer; auto frame = producer.produce(world, input); require(bool(frame), "frame");
         const auto plan = buildDynamicActorWorldPlan(world); require(plan.valid() && plan.actors.size() == 48, "plan");
         PersistentActorPlanCache retained;
-        const auto& persistent = retained.prepare(world);
+        constexpr std::uint64_t actorSourceSerial = 17;
+        const auto& persistent = retained.prepare(world, {}, actorSourceSerial);
         require(persistent.valid() && persistent.actors.size() == 48 && retained.rebuilt == 48, "persistent plan");
         const auto owner = persistent.actors.front();
         require(owner->program != nullptr, "native program not bound");
-        require(retained.prepare(world).actors.front() == owner && retained.rebuilt == 0 && retained.reused == 48,
-            "unchanged world rebuilt persistent actor plans");
+        require(retained.prepare(world, {}, actorSourceSerial).actors.front() == owner
+                && retained.rebuilt == 0 && retained.reused == 48,
+            "unchanged actor source rebuilt persistent actor plans");
+        // A light-only world revision is unrelated to actor planning. The exact
+        // P2 source serial must acknowledge the new global revision without
+        // scanning/revalidating all 48 actor dependencies.
+        auto unrelatedLight = *world.reserveLight();
+        require(world.commit(unrelatedLight, LightRecord{}), "unrelated light");
+        const auto& afterLight = retained.prepare(world, {}, actorSourceSerial);
+        require(afterLight.actors.front() == owner && retained.rebuilt == 0 && retained.reused == 48
+                && afterLight.revision == world.revision(),
+            "light-only world delta invalidated persistent actor plans");
         BoundedParallelFor workers(3,4,1);
         auto serial = prepareDynamicActors(world, *frame, plan);
         const auto native = preparePersistentActors(world, *frame, persistent.actors, &workers);
