@@ -87,7 +87,7 @@ namespace SceneUtil::DynamicStream
         {
             if (!mBuffer || !geometry.getVertexArray()
                 || geometry.getVertexArray()->getBufferObject() != mBuffer.get()
-                || mBuffer->getTarget() != GL_ARRAY_BUFFER
+                || mBuffer->getTarget() != GL_ARRAY_BUFFER_ARB
                 || mBuffer->getUsage() != GL_DYNAMIC_DRAW_ARB
                 || !mCount || mBuffer->getNumBufferData() != mCount)
                 return {Result::Ineligible, 0};
@@ -109,7 +109,7 @@ namespace SceneUtil::DynamicStream
                 return {Result::ColdOrClean, 0};
             const auto& profile = glBuffer->getProfile();
             const auto required = mBuffer->computeRequiredBufferSize();
-            if (profile._target != GL_ARRAY_BUFFER || !profile._size || required > profile._size)
+            if (profile._target != GL_ARRAY_BUFFER_ARB || !profile._size || required > profile._size)
                 return {Result::Ineligible, 0};
             const auto* stamp = state.getFrameStamp();
             if (!stamp || !budget.admit(stamp->getFrameNumber(), profile._size))
@@ -122,12 +122,13 @@ namespace SceneUtil::DynamicStream
             // Invalidate OSG's binding cache before issuing a direct bind.
             // The GL name remains stable, so existing VAO attribute references
             // remain valid. Full contents are refilled before normal drawing.
+            // Use the ARB spelling supplied by OSG on Windows GL headers.
             state.unbindVertexBufferObject();
-            ext->glBindBuffer(GL_ARRAY_BUFFER, glBuffer->getGLObjectID());
-            ext->glBufferData(GL_ARRAY_BUFFER, profile._size, nullptr, GL_DYNAMIC_DRAW_ARB);
+            ext->glBindBuffer(GL_ARRAY_BUFFER_ARB, glBuffer->getGLObjectID());
+            ext->glBufferData(GL_ARRAY_BUFFER_ARB, profile._size, nullptr, GL_DYNAMIC_DRAW_ARB);
             glBuffer->clear();
             glBuffer->compileBuffer();
-            ext->glBindBuffer(GL_ARRAY_BUFFER, 0);
+            ext->glBindBuffer(GL_ARRAY_BUFFER_ARB, 0);
             return {Result::Refreshed, profile._size};
         }
 
@@ -239,8 +240,7 @@ namespace SceneUtil::DynamicStream
         Callback() : mPrivate(nullptr) {}
         Callback(osg::VertexBufferObject* buffer, osg::Drawable::DrawCallback* inner,
             bool refresh, const char* kind, const std::string& name)
-            : mPrivate(buffer), mInner(inner), mRefresh(refresh)
-            , mId(Capture::instance().registerGeometry(kind, name)) {}
+            : mPrivate(buffer), mInner(inner), mRefresh(rhs.mRefresh), mId(rhs.mId) {}
         Callback(const Callback& rhs, const osg::CopyOp& op)
             : osg::Object(rhs, op), osg::Drawable::DrawCallback(rhs, op)
             , mPrivate(rhs.mPrivate), mInner(rhs.mInner), mRefresh(rhs.mRefresh), mId(rhs.mId) {}
