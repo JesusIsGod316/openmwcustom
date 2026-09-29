@@ -136,6 +136,7 @@ class ProducerLauncherTests(unittest.TestCase):
         baseline = self.module.cohort.selected(calls[0])
         candidate = self.module.cohort.selected(calls[1])
         self.assertEqual(candidate, baseline | {'OPENMW_VK_GPU_CULL_INDIRECT': '1'})
+        self.assertEqual(baseline.get('OPENMW_VK_GPU_CULL_QUEUE'), '1')
         self.assertEqual(baseline.get('OPENMW_VK_GPU_SCENE_TABLES'), '1')
         self.assertEqual(baseline.get('OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS'), '1')
 
