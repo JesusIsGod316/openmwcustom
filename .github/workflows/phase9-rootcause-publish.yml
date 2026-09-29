@@ -1,0 +1,78 @@
+name: Phase9 audited root-cause source publication
+on:
+  push:
+    branches: [optimizedmw/phase9-rootcause-stage-20260929]
+    paths: [.github/workflows/phase9-rootcause-publish.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: phase9-rootcause-source-publication
+  cancel-in-progress: false
+jobs:
+  Publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Retrieve only the authorized source patch and its manifest
+        env:
+          SOURCE_URL: 'https://sdmntpreastus.oaiusercontent.com/files/00000000-0da8-81f9-91e9-de69cab12dd4/raw?se=2026-09-29T15%3A58%3A34Z&sp=r&sv=2026-02-06&sr=b&scid=47a6ddd2-3fe4-52a9-af81-b84cadcafa13&skoid=d1cabc79-3240-4866-94fe-6005330cb49e&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-29T12%3A24%3A26Z&ske=2026-09-30T12%3A24%3A26Z&sks=b&skv=2026-02-06&sig=CiJRvPguOf9ttwUU83N1uHY9pstOToNQOg1DsTl2udk%3D'
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$SOURCE_URL"
+          mkdir -p "$RUNNER_TEMP/p9-payload"
+          curl --fail --location --retry 2 --max-time 60 "$SOURCE_URL" -o "$RUNNER_TEMP/p9-payload/source.zip"
+          echo '7636733fc0f1a2e407b0c9c833824612594e39c62217f07e21b1071af308334d  '"$RUNNER_TEMP/p9-payload/source.zip" | sha256sum -c -
+          python - <<'PY'
+          import os, pathlib, zipfile
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'p9-payload'
+          with zipfile.ZipFile(root/'source.zip') as z:
+              assert sorted(z.namelist()) == ['changes.patch', 'manifest.json']
+              assert z.testzip() is None
+              z.extractall(root)
+          PY
+      - uses: actions/checkout@v4
+        with:
+          ref: bb4876a6ea287745c8f535f5525c5381a631a24c
+          fetch-depth: 0
+      - name: Apply exact source patch without importing staging transport
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^{tree})" = 78ac535aa941cb703707a42fc946910fc0b03c61
+          echo 'a9d0dc934f6d3257e5eaff5c99678bcceab9ceaebf72084d09d2f9214639dd99  '"$RUNNER_TEMP/p9-payload/changes.patch" | sha256sum -c -
+          git apply --check "$RUNNER_TEMP/p9-payload/changes.patch"
+          git apply --index "$RUNNER_TEMP/p9-payload/changes.patch"
+          git diff --cached --check
+          test "$(git write-tree)" = edea90af613ccda6d8b797415f62e500bff00bd6
+          python - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          m = json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'p9-payload/manifest.json').read_text())
+          assert m['base'] == 'bb4876a6ea287745c8f535f5525c5381a631a24c'
+          assert m['tree'] == 'edea90af613ccda6d8b797415f62e500bff00bd6'
+          paths = subprocess.check_output(['git','diff','--cached','--name-only'], text=True).splitlines()
+          assert set(paths) == set(m['files']) and len(paths) == 23
+          assert not any(p.startswith('.github/') for p in paths)
+          for p, expected in m['files'].items():
+              assert hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() == expected, p
+          print('Verified all 23 actual source paths and complete source tree.')
+          PY
+          for p in gl-p3 gl-p4 gl-p6 gl-p7 gl-p8 gl-p8g2 gl-p8g3 gl-p8g4 p8u1 p8g5 phase9; do python tools/optimizedmw/$p/source-contract.py; done
+      - name: Publish real source to isolated candidate branch
+        run: |
+          set -euo pipefail
+          git config user.name 'OpenMW source checkpoint'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Phase 9: repair live render attribution, prepare shared static actor buffers, preserve audited culling'
+          test "$(git rev-parse HEAD^{tree})" = edea90af613ccda6d8b797415f62e500bff00bd6
+          git push origin HEAD:refs/heads/optimizedmw/phase9-rootcause-candidate-20260929
+          mkdir -p "$RUNNER_TEMP/p9-evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/p9-evidence/SOURCE-COMMIT.txt"
+          git rev-parse HEAD^{tree} > "$RUNNER_TEMP/p9-evidence/SOURCE-TREE.txt"
+          git diff HEAD^ HEAD --stat > "$RUNNER_TEMP/p9-evidence/SOURCE-STAT.txt"
+          cp "$RUNNER_TEMP/p9-payload/manifest.json" "$RUNNER_TEMP/p9-evidence/manifest.json"
+          cp "$RUNNER_TEMP/p9-payload/changes.patch" "$RUNNER_TEMP/p9-evidence/changes.patch"
+          git archive HEAD | gzip > "$RUNNER_TEMP/p9-evidence/source.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Phase9-rootcause-source-publication
+          path: ${{ runner.temp }}/p9-evidence
+          retention-days: 30
