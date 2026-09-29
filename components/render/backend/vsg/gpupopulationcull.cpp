@@ -457,17 +457,29 @@ void main()
         dispatchState->addChild(vsg::Dispatch::create(
             (placementCount + CullWorkgroupSize - 1u) / CullWorkgroupSize, 1, 1));
 
-        auto barrier = vsg::BufferMemoryBarrier::create(
+        // The command table is persistent across frames. Close both halves of
+        // the dependency chain: a later frame must not overwrite commands while
+        // an earlier main-view draw can still read them, and this frame's draw
+        // must not consume commands before compute has finished writing them.
+        auto beforeWrite = vsg::BufferMemoryBarrier::create(
+            VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+            commandBuffer, 0, commandBytes);
+        auto beforeWriteCommand = vsg::PipelineBarrier::create(
+            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, beforeWrite);
+        auto afterWrite = vsg::BufferMemoryBarrier::create(
             VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
             VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
             commandBuffer, 0, commandBytes);
-        auto barrierCommand = vsg::PipelineBarrier::create(
+        auto afterWriteCommand = vsg::PipelineBarrier::create(
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-            0, barrier);
+            0, afterWrite);
 
         result.compute = vsg::Group::create();
+        result.compute->addChild(beforeWriteCommand);
         result.compute->addChild(dispatchState);
-        result.compute->addChild(barrierCommand);
+        result.compute->addChild(afterWriteCommand);
 
         std::size_t replacementIndex = 0;
         replaceDraws(graphicsRoot, indirectRanges, indirectViewId, placementCount, replacementIndex);
