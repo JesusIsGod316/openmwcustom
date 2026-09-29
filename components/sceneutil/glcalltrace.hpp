@@ -94,6 +94,10 @@ namespace SceneUtil::GLCallTrace
             if (i<mRows->size()) (*mRows)[i]=row;
         }
         Total total(unsigned context,Api api) const { return mTotals[context][api]; }
+        Breadcrumb breadcrumb(unsigned context) const
+        {
+            return context < mBreadcrumbs.size() ? mBreadcrumbs[context] : Breadcrumb{};
+        }
         ~Capture()
         {
             if (!mRows) return;
