@@ -74,7 +74,9 @@ function New-VerifiedProfileZip {
             # Preserve any already-verified raw ZIP until its replacement is verified.
             if([IO.File]::Exists($destination)){
                 if(-not $ReplaceExisting){throw 'Archive destination appeared during packaging'}
-                [IO.File]::Replace($temp,$destination,$null)
+                # PowerShell 5.1 coerces ordinary $null to an empty string here.
+                # Pass a true null backup path without deleting the verified raw ZIP.
+                [IO.File]::Replace($temp,$destination,[System.Management.Automation.Language.NullString]::Value)
             }else{[IO.File]::Move($temp,$destination)}
             return [pscustomobject]@{Path=$destination;Files=$inventory.Count;Missing=$missing}
         }catch{
