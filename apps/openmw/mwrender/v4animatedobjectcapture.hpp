@@ -3,6 +3,11 @@
 
 #include "v4effectcapture.hpp"
 
+#include <osg/LOD>
+#include <osg/Transform>
+
+#include <optional>
+
 namespace MWRender
 {
     // Captures the evaluated object without advancing its OSG update callbacks.
@@ -14,12 +19,15 @@ namespace MWRender
         enum class Mode { WholeObject, ParticlesOnly };
 
         V4AnimatedObjectCaptureVisitor(std::string identityPrefix, const VFS::Manager& vfs,
-            NifRender::TextureIdentityCache* identities, Mode mode = Mode::WholeObject)
+            NifRender::TextureIdentityCache* identities, Mode mode = Mode::WholeObject,
+            std::optional<glm::dvec3> eyePoint = std::nullopt, float lodScale = 1.0f)
             : osg::NodeVisitor(TRAVERSE_ACTIVE_CHILDREN)
             , mIdentityPrefix(std::move(identityPrefix))
             , mVfs(vfs)
             , mTextureIdentities(identities)
             , mMode(mode)
+            , mEyePoint(std::move(eyePoint))
+            , mLodScale(std::max(lodScale, 1.0e-6f))
         {
         }
 
@@ -33,6 +41,34 @@ namespace MWRender
                     return;
             }
             if (mResult.valid()) traverse(node);
+        }
+
+        // Update-only visitors have no CullVisitor eye point, so osg::LOD's
+        // TRAVERSE_ACTIVE_CHILDREN path otherwise evaluates distance from zero.
+        // That made compatibility-captured LOD particle objects (notably
+        // chimney smoke) switch or overlap the wrong child. Use the semantic
+        // main-camera eye when available and preserve the existing path for
+        // non-distance LOD modes until their screen-size contract is native.
+        void apply(osg::LOD& lod) override
+        {
+            if (nestedEffectRoot(lod) || !mResult.valid())
+                return;
+            if (!mEyePoint || lod.getRangeMode() != osg::LOD::DISTANCE_FROM_EYE_POINT)
+            {
+                traverse(lod);
+                return;
+            }
+
+            const osg::Matrixd localToWorld = osg::computeLocalToWorld(getNodePath());
+            const osg::Vec3d center = lod.getCenter() * localToWorld;
+            const glm::dvec3 delta(center.x() - mEyePoint->x, center.y() - mEyePoint->y,
+                center.z() - mEyePoint->z);
+            const double range = glm::length(delta) * static_cast<double>(mLodScale);
+            const auto& ranges = lod.getRangeList();
+            const unsigned count = std::min<unsigned>(lod.getNumChildren(), ranges.size());
+            for (unsigned i = 0; i < count && mResult.valid(); ++i)
+                if (ranges[i].first <= range && range < ranges[i].second)
+                    lod.getChild(i)->accept(*this);
         }
 
         void apply(osg::Geode& geode) override
@@ -88,6 +124,8 @@ namespace MWRender
         const VFS::Manager& mVfs;
         NifRender::TextureIdentityCache* mTextureIdentities;
         Mode mMode;
+        std::optional<glm::dvec3> mEyePoint;
+        float mLodScale = 1.0f;
         std::size_t mOrdinal = 0;
         V4EffectCaptureResult mResult;
     };
