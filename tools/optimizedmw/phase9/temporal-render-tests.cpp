@@ -7,6 +7,7 @@
 #include <osg/GLExtensions>
 #include <osg/Geometry>
 #include <osg/Image>
+#include <osg/Multisample>
 #include <osg/RenderInfo>
 #include <osg/Shader>
 #include <array>
@@ -59,18 +60,20 @@ int main() try
     original->setMode(GL_BLEND,osg::StateAttribute::ON);
     original->setMode(GL_DEPTH_TEST,osg::StateAttribute::ON);
     original->setMode(GL_CULL_FACE,osg::StateAttribute::ON);
+    original->setMode(GL_SAMPLE_ALPHA_TO_COVERAGE_ARB,osg::StateAttribute::ON);
     original->setAttribute(new osg::ColorMask(false,true,false,true));
     state->pushStateSet(original);state->apply();
     GLuint sentinel[2]{};ext->glGenFramebuffers(2,sentinel);
-    ext->glBindFramebuffer(GL_DRAW_FRAMEBUFFER,sentinel[0]);ext->glBindFramebuffer(GL_READ_FRAMEBUFFER,sentinel[1]);
+    ext->glBindFramebuffer(GL_DRAW_FRAMEBUFFER_EXT,sentinel[0]);ext->glBindFramebuffer(GL_READ_FRAMEBUFFER_EXT,sentinel[1]);
     glViewport(3,2,31,27);
     auto verifyState=[&]{
         GLint draw=0,read=0;std::array<GLint,4> viewport{};GLboolean mask[4]{};
-        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING,&draw);glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&read);
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING_EXT,&draw);glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_EXT,&read);
         glGetIntegerv(GL_VIEWPORT,viewport.data());glGetBooleanv(GL_COLOR_WRITEMASK,mask);
         require(draw==static_cast<GLint>(sentinel[0]) && read==static_cast<GLint>(sentinel[1]),"motion pass leaked framebuffer bindings");
         require(viewport==std::array<GLint,4>{3,2,31,27},"motion pass leaked render viewport");
         require(glIsEnabled(GL_BLEND)&&glIsEnabled(GL_DEPTH_TEST)&&glIsEnabled(GL_CULL_FACE),"motion pass leaked raster state");
+        require(glIsEnabled(GL_SAMPLE_ALPHA_TO_COVERAGE_ARB),"motion pass leaked alpha-to-coverage state");
         require(!mask[0]&&mask[1]&&!mask[2]&&mask[3],"motion pass leaked color mask");
     };
     MWRender::TemporalCamera camera;
@@ -90,7 +93,7 @@ int main() try
         verifyState();
         osg::ref_ptr<osg::FrameBufferObject> read=new osg::FrameBufferObject;
         read->setAttachment(osg::Camera::COLOR_BUFFER0,osg::FrameBufferAttachment(flow));read->apply(*state);
-        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        glReadBuffer(GL_COLOR_ATTACHMENT0_EXT);
         std::array<float,512> values{};
         glReadPixels(0,0,camera.renderWidth,camera.renderHeight,GL_RG,GL_FLOAT,values.data());
         for(unsigned i=0;i<camera.renderWidth*camera.renderHeight;++i)
@@ -101,7 +104,7 @@ int main() try
                 throw std::runtime_error("production adapter motion differs from independent pixel expectation");
             }
         }
-        ext->glBindFramebuffer(GL_DRAW_FRAMEBUFFER,sentinel[0]);ext->glBindFramebuffer(GL_READ_FRAMEBUFFER,sentinel[1]);
+        ext->glBindFramebuffer(GL_DRAW_FRAMEBUFFER_EXT,sentinel[0]);ext->glBindFramebuffer(GL_READ_FRAMEBUFFER_EXT,sentinel[1]);
         return status;
     };
     draw(1,0,0,true);
@@ -124,7 +127,7 @@ int main() try
     pass.releaseGLObjects(state);draw(15,0,0,true);
     require(glGetError()==GL_NO_ERROR,"GL errors from temporal production adapter");
     pass.releaseGLObjects(state);depth->releaseGLObjects(state);quad->releaseGLObjects(state);
-    state->popStateSet();state->apply();ext->glBindFramebuffer(GL_FRAMEBUFFER,0);ext->glDeleteFramebuffers(2,sentinel);
+    state->popStateSet();state->apply();ext->glBindFramebuffer(GL_FRAMEBUFFER_EXT,0);ext->glDeleteFramebuffers(2,sentinel);
     context->releaseContext();context->close(true);
     std::cout<<"PASS: real production motion adapter, retained final projection, camera/world/lens/gap/resize resets, near-far continuity, duplicate rejection, frame/depth validation and raster/FBO/viewport restoration\n";
 }
