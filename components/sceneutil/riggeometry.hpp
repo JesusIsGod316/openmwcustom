@@ -33,10 +33,6 @@ namespace SceneUtil
 
         META_Object(SceneUtil, RigGeometry)
 
-        // Optional preparation of shared static attributes/indices only.
-        // The two private pose buffers remain owned by normal animation/draw.
-        void compileGLObjects(osg::RenderInfo& renderInfo) const override;
-
 
         struct BoneInfo
         {
