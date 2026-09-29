@@ -80,6 +80,7 @@ namespace RenderVsg
         {
             for (auto& table : mTables)
                 table.clear();
+            mLightRecords.clear();
             clearDirty();
             mEpoch = epoch;
             mWorldRevision = revision;
@@ -233,6 +234,21 @@ namespace RenderVsg
                 [](const Slot& slot) { return slot.live; });
         }
 
+        template <class Visitor>
+        void forEachLight(Visitor&& visitor) const
+        {
+            const auto& slots = mTables[index(Kind::Light)];
+            const std::size_t count = std::min(slots.size(), mLightRecords.size());
+            for (std::size_t i = 0; i < count; ++i)
+            {
+                const Slot& slot = slots[i];
+                if (!slot.live)
+                    continue;
+                visitor(RenderCore::LightHandle::fromParts(
+                    static_cast<RenderCore::LightHandle::Slot>(i), slot.generation), mLightRecords[i]);
+            }
+        }
+
         void clearDirty() noexcept
         {
             for (auto& range : mDirty)
@@ -259,6 +275,14 @@ namespace RenderVsg
             slot.live = record != nullptr;
             if (record && !record->revision.valid())
                 return false;
+            if constexpr (std::is_same_v<Record, RenderCore::LightRecord>)
+            {
+                if (kind != Kind::Light)
+                    return false;
+                if (handle.slot() >= mLightRecords.size())
+                    mLightRecords.resize(static_cast<std::size_t>(handle.slot()) + 1);
+                mLightRecords[handle.slot()] = record ? *record : RenderCore::LightRecord{};
+            }
             mDirty[index(kind)].include(handle.slot());
             return true;
         }
@@ -266,6 +290,7 @@ namespace RenderVsg
         static constexpr std::size_t TableCount = static_cast<std::size_t>(Kind::Count);
         std::array<std::vector<Slot>, TableCount> mTables;
         std::array<DirtyRange, TableCount> mDirty;
+        std::vector<RenderCore::LightRecord> mLightRecords;
         RenderCore::WorldEpoch mEpoch;
         RenderCore::RenderWorldRevision mWorldRevision;
         RenderCore::UpdateSequence mLastSequence;
