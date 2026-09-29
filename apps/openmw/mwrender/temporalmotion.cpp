@@ -6,6 +6,7 @@
 #include <osg/FrameStamp>
 #include <osg/Geometry>
 #include <osg/GLExtensions>
+#include <osg/Multisample>
 #include <osg/PolygonMode>
 #include <osg/RenderInfo>
 #include <osg/State>
@@ -50,6 +51,8 @@ namespace MWRender
                     if (col != 2 && a(row, col) != b(row, col)) return true;
             return false;
         }
+        // Use the EXT/ARB spellings supplied by OSG on Windows. They have
+        // the same values as the core aliases; keep separate read/draw state.
         struct RestoreDrawState
         {
             osg::State& state;
@@ -59,15 +62,15 @@ namespace MWRender
             bool pushed = false;
             RestoreDrawState(osg::State& s, osg::GLExtensions& e) : state(s), ext(e)
             {
-                glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
-                glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+                glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING_EXT, &draw);
+                glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_EXT, &read);
                 glGetIntegerv(GL_VIEWPORT, viewport.data());
             }
             ~RestoreDrawState()
             {
                 if (pushed) { state.popStateSet(); state.apply(); }
-                ext.glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(draw));
-                ext.glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(read));
+                ext.glBindFramebuffer(GL_DRAW_FRAMEBUFFER_EXT, static_cast<GLuint>(draw));
+                ext.glBindFramebuffer(GL_READ_FRAMEBUFFER_EXT, static_cast<GLuint>(read));
                 glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
             }
         };
@@ -108,7 +111,7 @@ namespace MWRender
                 c.state->setMode(GL_SCISSOR_TEST, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE | osg::StateAttribute::PROTECTED);
                 c.state->setMode(GL_STENCIL_TEST, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE | osg::StateAttribute::PROTECTED);
                 c.state->setMode(GL_ALPHA_TEST, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE | osg::StateAttribute::PROTECTED);
-                c.state->setMode(GL_SAMPLE_ALPHA_TO_COVERAGE, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE | osg::StateAttribute::PROTECTED);
+                c.state->setMode(GL_SAMPLE_ALPHA_TO_COVERAGE_ARB, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE | osg::StateAttribute::PROTECTED);
                 c.state->setAttribute(new osg::ColorMask(true, true, true, true), osg::StateAttribute::OVERRIDE | osg::StateAttribute::PROTECTED);
                 c.state->setAttribute(new osg::PolygonMode(osg::PolygonMode::FRONT_AND_BACK, osg::PolygonMode::FILL),
                     osg::StateAttribute::OVERRIDE | osg::StateAttribute::PROTECTED);
@@ -213,15 +216,15 @@ namespace MWRender
             ++c.targetRevision;
         }
         c.fbo->apply(*state);
-        if (ext->glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        if (ext->glCheckFramebufferStatus(GL_FRAMEBUFFER_EXT) != GL_FRAMEBUFFER_COMPLETE_EXT)
         {
             c.history.abort(frame->ticket);
             c.history.invalidate();
             return nullptr;
         }
-        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT);
         c.transform->set(toOsgMatrix(frame->clipToPreviousClip));
-        c.extent->set(osg::Vec2f(camera.renderWidth, camera.renderHeight));
+        c.extent->set(osg::Vec2f(static_cast<float>(camera.renderWidth), static_cast<float>(camera.renderHeight)));
         c.clear->set(static_cast<float>(camera.clearDepth));
         c.reset->set(!frame->hasHistory());
         c.depthRange->set(camera.zeroToOne);
