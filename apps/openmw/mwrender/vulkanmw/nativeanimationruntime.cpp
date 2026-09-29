@@ -153,6 +153,7 @@ namespace MWRender
             const RenderCore::SkeletonPayload* payload = nullptr;
             std::string skeletonIdentity;
             std::vector<NifLocalTransform> sourceLocal;
+            std::uint64_t selectionSignature = 0;
             bool collapsedParentAnimation = false;
         };
         struct ObjectPose
@@ -251,6 +252,7 @@ namespace MWRender
         std::map<std::string, CachedClip, std::less<>> mClips;
         std::map<std::string, BoneBinding, std::less<>> mSkeletons;
         std::map<std::string, ActorPose, std::less<>> mActors;
+        std::map<std::string, std::uint64_t, std::less<>> mPendingActorSelections;
         std::set<std::string, std::less<>> mSeenActors;
         std::map<std::string, ObjectPose, std::less<>> mObjects;
         std::set<std::string, std::less<>> mSeenObjects;
@@ -384,23 +386,35 @@ namespace MWRender
         if (!animation.captureV4NativeAnimationState(state, result.diagnostic))
             return result;
 
-        // Seated animation groups remain on the evaluated OSG pose path for now.
-        // The current native KF adapter intentionally does not own every
-        // lower-body/root composition edge used by seated NPCs; allowing those
-        // groups through can separate body parts even though the matrices remain
-        // finite. This is an actor-local compatibility fallback, not a global
-        // producer fallback, so supported actor scheduling remains intact.
-        for (const auto& optionalLayer : state.layers)
+        // Native history is valid only while the active animation selection has
+        // the same group/source/bone coverage. OSG detaches and replaces
+        // controllers on transitions; retaining untouched native bone channels
+        // across that boundary can leave one body section in the previous pose.
+        // A changed signature therefore requests exactly one evaluated OSG seed
+        // frame, after which native sampling resumes from the authoritative pose.
+        std::uint64_t selectionSignature = 1469598103934665603ull;
+        const auto hashText = [&](std::string_view value) {
+            for (const unsigned char c : value)
+            {
+                selectionSignature ^= c;
+                selectionSignature *= 1099511628211ull;
+            }
+            selectionSignature ^= 0xffu;
+            selectionSignature *= 1099511628211ull;
+        };
+        for (std::size_t layerIndex = 0; layerIndex < state.layers.size(); ++layerIndex)
         {
+            selectionSignature ^= static_cast<std::uint64_t>(layerIndex + 1);
+            selectionSignature *= 1099511628211ull;
+            const auto& optionalLayer = state.layers[layerIndex];
             if (!optionalLayer)
                 continue;
-            const std::string group = Misc::StringUtils::lowerCase(optionalLayer->groupName);
-            if (group.starts_with("sit"))
-            {
-                result.diagnostic = "seated actor pose retained on evaluated OSG compatibility path";
-                return result;
-            }
+            hashText(optionalLayer->groupName);
+            hashText(optionalLayer->sourcePath);
+            for (const std::string& bone : optionalLayer->boneNames)
+                hashText(bone);
         }
+        mImpl->mPendingActorSelections.insert_or_assign(actorKey, selectionSignature);
 
         Impl::BoneBinding& binding = mImpl->bones(skeleton);
         if (!binding.diagnostic.empty())
@@ -423,6 +437,12 @@ namespace MWRender
             return result;
         }
         Impl::ActorPose& actorPose = actorIt->second;
+        if (actorPose.selectionSignature != selectionSignature)
+        {
+            actorPose.selectionSignature = selectionSignature;
+            result.diagnostic = "active animation selection changed; exact compatibility reseed required";
+            return result;
+        }
         if (actorPose.collapsedParentAnimation)
         {
             result.diagnostic = "actor previously animated a collapsed skeleton parent node";
@@ -564,7 +584,13 @@ namespace MWRender
 
         const auto previous = mImpl->mActors.find(actorKey);
         if (previous != mImpl->mActors.end())
+        {
             seeded.collapsedParentAnimation = previous->second.collapsedParentAnimation;
+            seeded.selectionSignature = previous->second.selectionSignature;
+        }
+        else if (const auto pending = mImpl->mPendingActorSelections.find(actorKey);
+                 pending != mImpl->mPendingActorSelections.end())
+            seeded.selectionSignature = pending->second;
 
         for (std::size_t i = 0; i < localTransforms.size(); ++i)
         {
@@ -595,7 +621,10 @@ namespace MWRender
         for (auto it = mImpl->mActors.begin(); it != mImpl->mActors.end();)
         {
             if (!mImpl->mSeenActors.contains(it->first))
+            {
+                mImpl->mPendingActorSelections.erase(it->first);
                 it = mImpl->mActors.erase(it);
+            }
             else
                 ++it;
         }
@@ -606,6 +635,7 @@ namespace MWRender
         mImpl->mClips.clear();
         mImpl->mSkeletons.clear();
         mImpl->mActors.clear();
+        mImpl->mPendingActorSelections.clear();
         mImpl->mSeenActors.clear();
         mImpl->mObjects.clear();
         mImpl->mSeenObjects.clear();
