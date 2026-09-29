@@ -84,6 +84,7 @@ namespace RenderVsg
             mEpoch = epoch;
             mWorldRevision = revision;
             mLastSequence = {};
+            mLightSerial = 1;
             mHealthy = epoch.valid() && revision.valid();
             mStats = {};
         }
@@ -113,6 +114,7 @@ namespace RenderVsg
             }
 
             bool valid = true;
+            bool lightTouched = false;
             for (const RenderCore::RenderWorldUpdateOperation& operation : batch.operations())
             {
                 std::visit([&](const auto& value) {
@@ -162,11 +164,11 @@ namespace RenderVsg
                     else if constexpr (std::is_same_v<T, RenderCore::RetireChunk>)
                     { ++mStats.retires; valid = valid && sync(Kind::Chunk, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::CreateLight>)
-                    { ++mStats.creates; valid = valid && sync(Kind::Light, value.handle, world.get(value.handle)); }
+                    { lightTouched = true; ++mStats.creates; valid = valid && sync(Kind::Light, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::UpdateLight>)
-                    { ++mStats.updates; valid = valid && sync(Kind::Light, value.handle, world.get(value.handle)); }
+                    { lightTouched = true; ++mStats.updates; valid = valid && sync(Kind::Light, value.handle, world.get(value.handle)); }
                     else if constexpr (std::is_same_v<T, RenderCore::RetireLight>)
-                    { ++mStats.retires; valid = valid && sync(Kind::Light, value.handle, world.get(value.handle)); }
+                    { lightTouched = true; ++mStats.retires; valid = valid && sync(Kind::Light, value.handle, world.get(value.handle)); }
                 }, operation);
                 if (!valid)
                     break;
@@ -177,6 +179,15 @@ namespace RenderVsg
                 return false;
             }
 
+            if (lightTouched)
+            {
+                if (mLightSerial == std::numeric_limits<std::uint64_t>::max())
+                {
+                    mHealthy = false;
+                    return false;
+                }
+                ++mLightSerial;
+            }
             mLastSequence = batch.sequence();
             mWorldRevision = world.revision();
             return true;
@@ -191,6 +202,7 @@ namespace RenderVsg
         [[nodiscard]] RenderCore::WorldEpoch epoch() const noexcept { return mEpoch; }
         [[nodiscard]] RenderCore::RenderWorldRevision worldRevision() const noexcept { return mWorldRevision; }
         [[nodiscard]] RenderCore::UpdateSequence lastSequence() const noexcept { return mLastSequence; }
+        [[nodiscard]] std::uint64_t lightSerial() const noexcept { return mLightSerial; }
         [[nodiscard]] const DeltaStats& stats() const noexcept { return mStats; }
 
         [[nodiscard]] const DirtyRange& dirty(Kind kind) const noexcept
@@ -245,6 +257,7 @@ namespace RenderVsg
         RenderCore::WorldEpoch mEpoch;
         RenderCore::RenderWorldRevision mWorldRevision;
         RenderCore::UpdateSequence mLastSequence;
+        std::uint64_t mLightSerial = 1;
         DeltaStats mStats;
         bool mHealthy = false;
     };
