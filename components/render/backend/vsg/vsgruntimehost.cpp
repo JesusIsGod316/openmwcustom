@@ -188,6 +188,7 @@ namespace RenderVsg
                 || options.water.reflectionLodScale <= 0.0f || options.water.refractionLodScale <= 0.0f))
             throw std::invalid_argument("VsgRuntimeHost received unsafe or invalid CP4E water settings");
 
+        mGpuSceneTablesEnabled = std::getenv("OPENMW_VK_GPU_SCENE_TABLES") != nullptr;
         mNativeOcclusionEnabled = std::getenv("OPENMW_V4_TERRAIN_OCCLUSION") != nullptr;
         mNativeFrustumEnabled = mNativeOcclusionEnabled || std::getenv("OPENMW_V4_STATIC_FRUSTUM") != nullptr;
         mViewer->addWindow(mWindow);
@@ -2283,6 +2284,35 @@ namespace RenderVsg
             << report.str();
     }
 
+    void VsgRuntimeHost::resetGpuSceneTables(const RenderCore::RenderWorld& world) noexcept
+    {
+        if (!mGpuSceneTablesEnabled)
+            return;
+        mGpuSceneTables.reset(world.epoch(), world.revision());
+    }
+
+    void VsgRuntimeHost::applyWorldUpdateBatch(
+        const RenderCore::RenderWorld& world, const RenderCore::RenderWorldUpdateBatch& batch) noexcept
+    {
+        if (!mGpuSceneTablesEnabled)
+            return;
+        const bool applied = mGpuSceneTables.apply(world, batch);
+        if (Debug::GameplayDiagnostics::sampling())
+        {
+            const auto& stats = mGpuSceneTables.stats();
+            Debug::GameplayDiagnostics::recordEvent("gpu_scene_delta", {
+                {"accepted", std::to_string(applied)},
+                {"sequence", std::to_string(batch.sequence().value())},
+                {"creates", std::to_string(stats.creates)},
+                {"updates", std::to_string(stats.updates)},
+                {"reparents", std::to_string(stats.reparents)},
+                {"retires", std::to_string(stats.retires)},
+                {"instance_dirty", std::to_string(mGpuSceneTables.dirty(GpuSceneTables::Kind::Instance).count())},
+                {"chunk_dirty", std::to_string(mGpuSceneTables.dirty(GpuSceneTables::Kind::Chunk).count())},
+                {"light_dirty", std::to_string(mGpuSceneTables.dirty(GpuSceneTables::Kind::Light).count())}});
+        }
+    }
+
     RenderCore::RenderFrameResult VsgRuntimeHost::renderFrame(
         const RenderCore::RenderWorld& world, const RenderCore::FrameRenderState& frame)
     {
@@ -2316,6 +2346,9 @@ namespace RenderVsg
         }();
         if (!compatible)
             return finish(RenderCore::RenderFrameResult::Failed, "invalid or stale semantic frame state");
+        if (mGpuSceneTablesEnabled && !mGpuSceneTables.current(world))
+            return finish(RenderCore::RenderFrameResult::Failed,
+                "P2 GPU scene tables missed or rejected an authoritative RenderWorld delta");
         if (frame.dynamicMaterials().empty() == false)
             return finish(
                 RenderCore::RenderFrameResult::Failed, "dynamic materials require a later compatibility facet");
