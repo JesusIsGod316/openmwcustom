@@ -1,0 +1,149 @@
+name: OptimizedMW Phase 9 draw-side and temporal build
+on:
+  push:
+    branches: [optimizedmw/phase9]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: optimizedmw-phase9-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  Source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install native graphics, production LuaJIT and FFmpeg SDKs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libopenscenegraph-dev libmygui-dev libbullet-dev libglm-dev libboost-dev libyaml-cpp-dev libgl1-mesa-dev xvfb xauth libluajit-5.1-dev libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libopenal-dev
+      - name: Prepare project-pinned SDL3 headers for production sound integration
+        run: |
+          set -euo pipefail
+          SDL_COMMIT=8e37db5e797b6167f3a00d697d816a684bd259c7
+          SDL_SOURCE="$RUNNER_TEMP/p8u1-sdl3"
+          git init "$SDL_SOURCE"
+          git -C "$SDL_SOURCE" remote add origin https://github.com/libsdl-org/SDL.git
+          git -C "$SDL_SOURCE" fetch --depth 1 origin "$SDL_COMMIT"
+          git -C "$SDL_SOURCE" checkout --detach FETCH_HEAD
+          test "$(git -C "$SDL_SOURCE" rev-parse HEAD)" = "$SDL_COMMIT"
+          test -f "$SDL_SOURCE/include/SDL3/SDL.h"
+          echo "CPLUS_INCLUDE_PATH=$SDL_SOURCE/include" >> "$GITHUB_ENV"
+      - name: Verify exact base and retained source contracts
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 8ed1f63beed5fa2d7b3e46e272cbaa2f9b27f228 HEAD
+          git diff 8ed1f63beed5fa2d7b3e46e272cbaa2f9b27f228 HEAD --check
+          for p in gl-p3 gl-p4 gl-p6 gl-p7 gl-p8 gl-p8g2 gl-p8g3 gl-p8g4 p8u1 p8g5 phase9; do python tools/optimizedmw/$p/source-contract.py; done
+      - name: Compile actual camera, PostProcessor, canvas and animated-geometry integration
+        run: |
+          set -euo pipefail
+          cmake -S tools/optimizedmw/phase9 -B build-phase9 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DP9_REQUIRE_GAME_SDK=ON
+          cmake --build build-phase9 --parallel 2
+          xvfb-run -a ctest --test-dir build-phase9 -V --output-on-failure
+      - name: Sanitize the production motion adapter, VBO and threaded draw paths
+        env:
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/optimizedmw/p8g5/lsan-glx.supp
+        run: |
+          set -euo pipefail
+          cmake -S tools/optimizedmw/phase9 -B build-phase9-asan -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug -DP9_SANITIZERS=ON
+          cmake --build build-phase9-asan --parallel 2
+          xvfb-run -a ctest --test-dir build-phase9-asan -V --output-on-failure
+      - name: Compile real donor integration and run native tests
+        run: |
+          set -euo pipefail
+          cmake -S tools/optimizedmw/p8u1 -B build-p8u1 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DP8U1_REQUIRE_GAME_SDK=ON
+          cmake --build build-p8u1 --parallel 2
+          xvfb-run -a ctest --test-dir build-p8u1 -V --output-on-failure
+      - name: Run sanitized resource, LuaJIT and audio tests
+        env:
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/optimizedmw/p8u1/lsan-glx.supp
+        run: |
+          set -euo pipefail
+          cmake -S tools/optimizedmw/p8u1 -B build-p8u1-asan -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug -DP8U1_REQUIRE_GAME_SDK=ON -DP8U1_SANITIZERS=ON
+          cmake --build build-p8u1-asan --parallel 2 --target p8u1-cache p8u1-composite p8u1-preparedtexture p8u1-lua p8u1-sol-object p8u1-warmqueue p8u1-headcache p8u1-ffmpeg p8u1-shadow-settings
+          xvfb-run -a ctest --test-dir build-p8u1-asan -V --output-on-failure
+      - name: Preserve and test temporal source without pretending DLSS is integrated
+        run: |
+          set -euo pipefail
+          cmake -S tools/optimizedmw/p8g5 -B build-p8g5 -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build-p8g5 --parallel 2
+          xvfb-run -a ctest --test-dir build-p8g5 -V --output-on-failure
+      - name: Retained groundcover, shadow, shader deployment and regression gates
+        run: |
+          set -euo pipefail
+          cmake -S tools/optimizedmw/gl-p8g4 -B build-p8g4 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DP8G4_SANITIZERS=ON
+          cmake --build build-p8g4 --parallel 2
+          ctest --test-dir build-p8g4 -V --output-on-failure
+          python tools/optimizedmw/phase9/source-contract.py --staged-shaders build-p8g4/deployment/staged/resources/shaders
+          cmake -S tools/optimizedmw/gl-p3 -B build-p3 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOPTIMIZEDMW_P3_SANITIZERS=ON
+          cmake --build build-p3 --parallel 2
+          ctest --test-dir build-p3 -V --output-on-failure
+          cmake -S tools/optimizedmw/gl-p4 -B build-p4 -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build-p4 --parallel 2
+          ctest --test-dir build-p4 -V --output-on-failure
+      - name: Test Phase 9 modes, verified ZIP, partial captures and report timeouts on PowerShell 7
+        shell: pwsh
+        run: ./tools/optimizedmw/phase9/launcher-tests.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Phase9-native-evidence-${{ github.sha }}
+          path: |
+            build-phase9/Testing/Temporary/LastTest.log
+            build-phase9/CMakeCache.txt
+            build-phase9/*.csv*
+            build-phase9-asan/Testing/Temporary/LastTest.log
+            build-phase9-asan/CMakeCache.txt
+            build-p8u1/Testing/Temporary/LastTest.log
+            build-p8u1/CMakeCache.txt
+            build-p8u1-asan/Testing/Temporary/LastTest.log
+            build-p8u1-asan/CMakeCache.txt
+            build-p8g5/Testing/Temporary/LastTest.log
+            build-p8g4/Testing/Temporary/LastTest.log
+            build-p8g4/deployment/staged/resources/shaders/shader-package.json
+            build-p3/Testing/Temporary/LastTest.log
+            build-p4/Testing/Temporary/LastTest.log
+          retention-days: 30
+  WindowsLauncher:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Phase 9 ZIP, partial capture and timeout behavior on Windows PowerShell 5.1
+        shell: powershell
+        run: ./tools/optimizedmw/phase9/launcher-tests.ps1
+  Windows:
+    needs: [Source, WindowsLauncher]
+    uses: ./.github/workflows/windows.yml
+    with:
+      image: '2022'
+      tests: true
+      package: false
+  InstalledPackage:
+    needs: Windows
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: openmw-windows-2022-${{ github.sha }}
+          path: installed
+      - name: Verify actual installed binary, shader identity, settings and one test BAT
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python tools/v4/cp4/shader_resources.py verify installed/resources/shaders
+          python tools/optimizedmw/phase9/verify-package.py installed
+          python tools/optimizedmw/phase9/source-contract.py --staged-shaders installed/resources/shaders
+      - name: Execute installed launcher and deployed-shader preflight
+        shell: pwsh
+        run: ./tools/optimizedmw/phase9/launcher-tests.ps1 -StagedDir (Resolve-Path installed).Path
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Phase9-installed-identity-${{ github.sha }}
+          path: Phase9-INSTALLED-SHA256.txt
+          retention-days: 30
