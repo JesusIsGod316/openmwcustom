@@ -33,8 +33,9 @@ foreach($line in @("`$ResourceRepair='true'","`$LuaCache='true'","`$SoundWarm='t
 if($launcher.Contains('OPENMW_P9_STATIC_PREWARM=$mode.Prewarm') -or $launcher.Contains('$mode.Prewarm')){
     throw 'Rejected static prewarm is still selectable'
 }
-foreach($token in @('OPENMW_P9_TEMPORAL_FILE','OPENMW_P9_COMPOSITE_FILE','OPENMW_V36_GPU_PASS_FILE',
-                    'phase9_temporal_contract=consumer_frame_v1')){
+foreach($token in @('OPENMW_P9_TEMPORAL_FILE','OPENMW_P9_DLSS_CAPS_FILE','OPENMW_P9_COMPOSITE_FILE',
+                    'OPENMW_V36_GPU_PASS_FILE','phase9_temporal_contract=consumer_frame_v1',
+                    'phase9_gl_vulkan_interop_probe=')){
     if(-not $launcher.Contains($token)){throw ('Missing Phase 9 continuation control: '+$token)}
 }
 if($launcher.IndexOf('Complete-Phase9Profile -ProfileDir') -lt $launcher.IndexOf('settings_restore_verified=$restoreVerified')){
