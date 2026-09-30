@@ -79,7 +79,7 @@ add_executable(p9-draw-phases draw-phase-tests.cpp ${ROOT}/components/terrain/te
 if(NOT MSVC)
   target_compile_options(p9-draw-phases PRIVATE -Wno-error=unused-parameter)
 endif()
-target_link_libraries(p9-draw-phases PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
+target_link_libraries(p9-draw-phases PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
 add_test(NAME p9-draw-phases COMMAND p9-draw-phases)
 set_tests_properties(p9-draw-phases PROPERTIES TIMEOUT 30
   ENVIRONMENT "OPENMW_P9_LEAF_TRACE_FILE=${CMAKE_CURRENT_BINARY_DIR}/draw-phase-test.csv")
