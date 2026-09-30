@@ -74,7 +74,8 @@ add_executable(p9-composite-preparation composite-preparation-tests.cpp
 target_link_libraries(p9-composite-preparation PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
 add_test(NAME p9-composite-preparation COMMAND p9-composite-preparation)
 set_tests_properties(p9-composite-preparation PROPERTIES TIMEOUT 45)
-add_executable(p9-draw-phases draw-phase-tests.cpp ${ROOT}/components/terrain/terraindrawable.cpp)
+add_executable(p9-draw-phases draw-phase-tests.cpp ${ROOT}/components/terrain/terraindrawable.cpp
+  ${ROOT}/components/terrain/compositemaprenderer.cpp ${ROOT}/components/resource/openmwcompileoperation.cpp)
 if(NOT MSVC)
   target_compile_options(p9-draw-phases PRIVATE -Wno-error=unused-parameter)
 endif()
@@ -165,7 +166,7 @@ if(NOT MSVC)
   # These production diagnostic/deformation headers retain u8path for their
   # cross-platform UTF-8 contract. GCC 13 deprecates that C++17 helper in C++20;
   # preserve the warning without changing legacy Windows path behavior here.
-  foreach(target p9-gpu-owner p9-composite-preparation p9-temporal-dynamic)
+  foreach(target p9-gpu-owner p9-composite-preparation p9-draw-phases p9-temporal-dynamic)
     target_compile_options(${target} PRIVATE -Wno-error=deprecated-declarations)
   endforeach()
 endif()

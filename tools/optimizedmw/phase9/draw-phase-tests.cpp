@@ -1,6 +1,5 @@
 #include <components/sceneutil/drawphasetrace.hpp>
 #include <components/terrain/terraindrawable.hpp>
-#include <components/terrain/compositemaprenderer.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <osg/Geode>
 #include <osg/Material>
@@ -14,12 +13,10 @@
 #include <stdexcept>
 #include <thread>
 using namespace SceneUtil::DrawPhaseTrace;
-// Optional services are absent in this pixel fixture. Fail if the tested
-// production terrain path unexpectedly tries to use either.
+// Dynamic lights are absent in this pixel fixture. Composite renderer symbols
+// come from the real implementation, including RTTI required by UBSan vptr.
 bool SceneUtil::LightListCallback::pushLightState(osg::Node*,osgUtil::CullVisitor*)
 { throw std::runtime_error("fixture unexpectedly requested lights"); }
-void Terrain::CompositeMapRenderer::setImmediate(Terrain::CompositeMap*)
-{ throw std::runtime_error("fixture unexpectedly requested a composite"); }
 void require(bool condition,const char* message){if(!condition)throw std::runtime_error(message);}
 struct SlowAttribute : osg::StateAttribute
 {
