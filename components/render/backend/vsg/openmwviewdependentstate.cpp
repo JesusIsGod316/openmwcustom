@@ -20,6 +20,7 @@
 #include <vsg/vk/ResourceRequirements.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <cstdint>
@@ -599,8 +600,16 @@ namespace RenderVsg
                     // Append bit masks after the five-vec4 light records in
                     // the already allocated per-view storage buffer. No new
                     // descriptor or secondary upload is needed.
-                    std::memcpy(mOpenMwLightData->data() + 1 + mPlan.lights.size() * OpenMwLocalLightVec4Stride,
-                        grid.words.data(), grid.words.size() * sizeof(std::uint32_t));
+                    auto* maskOutput = mOpenMwLightData->data()
+                        + 1 + mPlan.lights.size() * OpenMwLocalLightVec4Stride;
+                    for (std::size_t word = 0; word < grid.words.size(); word += 4)
+                    {
+                        maskOutput[word / 4] = vsg::vec4(
+                            std::bit_cast<float>(grid.words[word]),
+                            std::bit_cast<float>(grid.words[word + 1]),
+                            std::bit_cast<float>(grid.words[word + 2]),
+                            std::bit_cast<float>(grid.words[word + 3]));
+                    }
                     mOpenMwLightData->at(0).w = static_cast<float>(grid.columns);
                     changed = true;
                 }
