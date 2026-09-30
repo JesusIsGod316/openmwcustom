@@ -2,11 +2,15 @@ OptimizedMW Phase 9 - audited temporal ownership and terrain preparation
 
 This candidate resumes the Event 161 audit from e017315a, whose engine parent
 was the user-tested 651edc7b. Runtime promotion requires matched user testing.
-Extract into a NEW directory and use START-OptimizedMW-Test.bat.
+Use START-OptimizedMW-Test.bat in the delivered OptimizedMW_Test directory.
+This repair addresses the September 29 mode 9 crash, lost capture rows, saturated
+resource catalogs and the custom-PostFX ownership fallback. Start with 1 and 9
+to check stability, then compare 2 and 8; test 10 after the isolated modes.
 
 The launcher uses the existing configuration and saves, temporarily applies the
 common OptimizedMW foundation, restores settings on exit, and records hashes.
-All three new mechanisms are independently disabled in the reference mode.
+Temporal ownership, composite preparation and dynamic motion are independently
+disabled in the reference mode. All modes use the repaired capture transport.
 
 TEST MATRIX
  1 REFERENCE: retained OptimizedMW foundation, new candidates off.
@@ -25,8 +29,12 @@ Type A to display retained unpromoted HITCH controls: 6 HITCH, 7 HITCH-TRACE.
 
 Ownership preserves the global dynamic completion barrier and normal actor
 ownership. Only an acquired supported OSG 3.6.5 SceneView's immutable native
-presentation uses the new path. Custom mutable PostFX, stereo, unknown renderers
-and unsupported threading retain the normal DYNAMIC canvas fallback. Resize and
+presentation and supported custom PostFX inputs use the new path. Private pass
+uniforms, current point lights, UBO storage and retained target generations keep
+delayed draws independent of later culls/reloads. Stereo, unknown state bindings,
+unknown renderers and unsupported threading retain the DYNAMIC canvas. The CSV
+reports ownership_requested, ownership_active and ownership_fallback_reason;
+requested ownership alone does not prove the candidate was active. Resize and
 camera resources must belong to the same submission. A temporal ConsumerFrame
 is draw-local; future asynchronous consumers still need separately retired slots.
 
@@ -52,6 +60,11 @@ uninstrumented core calls and callbacks remain unknown. The resource catalog is
 bounded and records effective inherited textures; saturation/loss is explicit.
 GPU query ownership uses the draw State's FrameStamp, with separate query and
 writer loss counts. CSV readers use named columns and ignore status footers.
+All launcher modes use the same bounded concurrent writer transport; status
+sidecars record normal finish, output success and loss. WRITER-CAPTURE.json keeps
+GPU/auxiliary writer failures visible without discarding complete CPU/temporal
+substreams. Trace catalogs default to 131,072 truthful descriptors with hard
+capacity/allocation limits. Saturation still invalidates resource attribution.
 
 On exit the launcher restores settings/environment and creates a SHA256-verified
 RAW ZIP before the bounded report. Partial/crashed captures are retained with

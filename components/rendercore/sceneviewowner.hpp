@@ -16,6 +16,19 @@ namespace RenderCore
     template <class Payload> class SceneViewOwner final
     {
     public:
+        Payload* find(const osgUtil::CullVisitor* visitor) const
+        {
+            for (const auto& slot : mSlots)
+                if (slot.visitor.valid() && slot.visitor.get() == visitor) return slot.payload.get();
+            return nullptr;
+        }
+
+        template <class Visit> void forEach(Visit&& visit) const
+        {
+            for (const auto& slot : mSlots)
+                if (slot.payload) visit(*slot.payload);
+        }
+
         template <class Factory, class Capture>
         Payload* acquire(osgUtil::CullVisitor* visitor, Factory&& factory, Capture&& capture)
         {

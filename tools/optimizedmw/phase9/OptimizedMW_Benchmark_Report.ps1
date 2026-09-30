@@ -98,20 +98,26 @@ foreach($name in @('v3-frame.csv.capture-status.txt','p8g4-render.capture-status
     $file=Join-Path $ProfileDir $name
     $statuses[$name]=if(Test-Path -LiteralPath $file){Get-Content -LiteralPath $file}else{@('MISSING: deferred capture not confirmed complete; legacy mode has no deferred status')}
 }
+$qualifications=[ordered]@{}
+foreach($name in @('WRITER-CAPTURE.json','TEMPORAL-CAPTURE.json','ROOT-CAUSE-CAPTURE.json')){
+    $file=Join-Path $ProfileDir $name
+    $qualifications[$name]=if(Test-Path -LiteralPath $file){Get-Content -Raw -LiteralPath $file | ConvertFrom-Json}else{$null}
+}
 $context=[ordered]@{}
 foreach($name in @('v3-shadow.csv','p6-render-traversal.csv','p6-render-phase.csv','p4-compile.csv','v3-events.csv','v3-paging.csv','p8g4-render.csv','p9-draw-phases.csv','p9-dynamic-stream.csv')){
     $file=Join-Path $ProfileDir $name
     if(Test-Path -LiteralPath $file){$context[$name]=[Phase9.Report]::Context($file,(Join-Path $ProfileDir ('cluster-context-'+$name)),$result.context_frames)}
 }
 $summary=[ordered]@{
-    format='phase9-offline-v1';scope='whole capture; historical matched route NOT automatically selected'
+    format='phase9-offline-v2';scope='whole capture; historical matched route NOT automatically selected'
     cluster_rule='wall >=25ms; bridge at most two intervening non-slow frames; context includes frame +/-1'
     attribution='largest recorded component on the peak frame, NOT causal proof; nested/parallel scopes must not be summed'
     unfiltered=$result.unfiltered;ordinary_under100=$result.ordinary_under100
     severe_frames_ge100=$result.severe_frames;clusters=$result.clusters
     other_ms_ge15_intervals_frames=$result.other_spike_intervals
     malformed_frame_rows=$result.malformed_rows;capture_status=$statuses;auxiliary_context=$context
-    integrity_rule='Reject performance promotion when records dropped, allocation/output failed, normal_finish=0, malformed rows or missing clean-mode status'
+    channel_qualifications=$qualifications
+    integrity_rule='Assess channels independently. A complete CPU series survives auxiliary loss; a claim requiring a lost channel remains unqualified. Reject promotion when its required records/output/normal finish are incomplete.'
     caveat='Periodic other_ms spikes are an unresolved instrumentation hypothesis, not removed or subtracted'
 }
 $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $ProfileDir 'Phase9-BENCHMARK-REPORT.json') -Encoding UTF8
@@ -120,6 +126,7 @@ $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Profil
     ('Frames: {0}; median: {1:F3} ms; p95: {2:F3} ms; p99: {3:F3} ms; max: {4:F3} ms' -f $result.unfiltered['frames'],$result.unfiltered['median_ms'],$result.unfiltered['p95_ms'],$result.unfiltered['p99_ms'],$result.unfiltered['max_ms']),
     ('Clusters >=25ms: {0}; severe frames >=100ms: {1}; malformed rows: {2}' -f $result.clusters.Count,$result.severe_frames.Count,$result.malformed_rows),
     'Inspect capture-status files before comparing. A missing GPU value is not zero.',
+    'Inspect WRITER-CAPTURE, TEMPORAL-CAPTURE and ROOT-CAUSE-CAPTURE separately; requested ownership does not prove activation.',
     'cluster-context CSVs retain original frame identities, including adjacent frames.',
     'No telemetry cost has been subtracted. Largest scope is attribution, not proof.'
 ) | Set-Content -LiteralPath (Join-Path $ProfileDir 'Phase9-BENCHMARK-REPORT.txt') -Encoding UTF8

@@ -286,9 +286,9 @@ jobs:
       if: ${{ ! inputs.package && inputs.tests }}
       run: build/openmw-tests.exe
 
-    - name: Run Phase 9 production postprocess graphics fixture
+    - name: Run Phase 9 production cache and postprocess fixtures
       if: ${{ ! inputs.package && inputs.tests && inputs.phase9-fixtures }}
-      run: ctest --test-dir build -R '^p9-owned-postpasses$' --output-on-failure --timeout 45
+      run: ctest --test-dir build -R '^p9-(owned-postpasses|compile-cache|postfx-ownership)' --output-on-failure --timeout 60
 
     - name: Run OpenMW-CS tests
       if: ${{ ! inputs.package && inputs.tests }}

@@ -30,6 +30,8 @@
 #include <vector>
 #include <map>
 #include <algorithm>
+#include <charconv>
+#include <new>
 
 namespace SceneUtil::DrawPhaseTrace
 {
@@ -67,6 +69,9 @@ namespace SceneUtil::DrawPhaseTrace
     class Capture
     {
     public:
+        static constexpr std::size_t ResourceDefaultCapacity = 131072;
+        static constexpr std::size_t ResourceMinimumCapacity = 32768;
+        static constexpr std::size_t ResourceMaximumCapacity = 262144;
         struct ResourceRow
         {
             unsigned firstFrame=0, lastFrame=0, context=~0u, unit=0, imageRevision=0, scope=0;
@@ -80,26 +85,35 @@ namespace SceneUtil::DrawPhaseTrace
             if (!mResources) return;
             std::lock_guard<std::mutex> lock(mResourceMutex);
             const ResourceKey key{row.texture,row.image,row.stateSet,row.submitCamera,row.labelHash,
-                row.context,row.unit,row.imageRevision,row.scope};
+                row.bytes,row.context,row.unit,row.imageRevision,row.scope};
             const auto existing=mResourceIndex.find(key);
             if(existing!=mResourceIndex.end())
             {
-                auto& value=(*mResources)[existing->second];
+                auto& value=mResources[existing->second];
                 value.firstFrame=std::min(value.firstFrame,row.firstFrame);
                 value.lastFrame=std::max(value.lastFrame,row.lastFrame);
                 return;
             }
-            if(mResourceIndex.size()>=ResourceCapacity)
+            if(mResourceIndex.size()>=mResourceCapacity)
             {
                 mResourceDropped.fetch_add(1,std::memory_order_relaxed);
                 return;
             }
             const std::size_t index=mResourceIndex.size();
-            (*mResources)[index]=row;
-            mResourceIndex.emplace(key,index);
+            try
+            {
+                mResourceIndex.emplace(key,index);
+                mResources[index]=row;
+            }
+            catch(const std::bad_alloc&)
+            {
+                mResourceAllocationFailures.fetch_add(1,std::memory_order_relaxed);
+                mResourceDropped.fetch_add(1,std::memory_order_relaxed);
+            }
         }
         void noteResourceUncovered() { mResourceDropped.fetch_add(1,std::memory_order_relaxed); }
         std::uint64_t resourceDropped() const { return mResourceDropped.load(std::memory_order_relaxed); }
+        std::size_t resourceCapacity() const { return mResourceCapacity; }
         std::size_t resourceCount() const
         {
             std::lock_guard<std::mutex> lock(mResourceMutex);
@@ -108,7 +122,7 @@ namespace SceneUtil::DrawPhaseTrace
         ResourceRow resource(std::size_t index) const
         {
             std::lock_guard<std::mutex> lock(mResourceMutex);
-            return mResources && index<mResourceIndex.size() ? (*mResources)[index] : ResourceRow{};
+            return mResources && index<mResourceIndex.size() ? mResources[index] : ResourceRow{};
         }
         struct Row
         {
@@ -186,7 +200,16 @@ namespace SceneUtil::DrawPhaseTrace
         Row row(std::size_t index) const { return enabled() && index < count() ? (*mRows)[index] : Row{}; }
         ~Capture()
         {
-            if (!enabled()) return;
+            if (!enabled())
+            {
+                if(mResourceAllocationFailures.load())
+                {
+                    std::ofstream status(mPath + ".status.txt");
+                    status << "valid_leaf_capture=0\nresource_catalog_allocation_failures="
+                        << mResourceAllocationFailures.load() << '\n';
+                }
+                return;
+            }
             try
             {
                 std::ofstream out(mPath);
@@ -243,6 +266,11 @@ namespace SceneUtil::DrawPhaseTrace
                     << "\nvalid_leaf_capture=" << (calls && !mUncovered.load() && mCount<=Capacity && mFrameCount<=FrameCapacity ? 1:0)
                     << "\nrenderer_rows_dropped=" << (mOuterCount>FrameCapacity?mOuterCount-FrameCapacity:0)
                     << "\nresource_catalog_rows=" << mResourceIndex.size()
+                    << "\nresource_catalog_capacity=" << mResourceCapacity
+                    << "\nresource_catalog_maximum_capacity=" << ResourceMaximumCapacity
+                    << "\nresource_catalog_descriptor_bytes=" << mResourceCapacity*sizeof(ResourceRow)
+                    << "\nresource_catalog_index_entry_limit=" << mResourceCapacity
+                    << "\nresource_catalog_allocation_failures=" << mResourceAllocationFailures.load()
                     << "\nresource_catalog_dropped_attempts=" << mResourceDropped.load()
                     << "\nresource_catalog_scope=effective_cull_materials_and_terrain_composite_producer_layers"
                     << "\nresource_source_image_scope=first_source_image_per_effective_texture_attribute"
@@ -280,7 +308,7 @@ namespace SceneUtil::DrawPhaseTrace
                 };
                 for(std::size_t i=0;i<mResourceIndex.size();++i)
                 {
-                    const auto& row=(*mResources)[i];
+                    const auto& row=mResources[i];
                     resources<<row.firstFrame<<','<<row.lastFrame<<','<<row.context<<','<<row.unit<<','<<row.texture<<','
                         <<row.image<<','<<row.imageRevision<<','<<row.stateSet<<','<<row.submitCamera<<','<<row.bytes<<','
                         <<row.scope<<',';
@@ -292,10 +320,9 @@ namespace SceneUtil::DrawPhaseTrace
         }
     private:
         static constexpr std::size_t Capacity = 32768, FrameCapacity = 65536;
-        static constexpr std::size_t ResourceCapacity=32768;
         struct ResourceKey
         {
-            std::uint64_t texture,image,stateSet,submitCamera,labelHash;
+            std::uint64_t texture,image,stateSet,submitCamera,labelHash,bytes;
             unsigned context,unit,imageRevision,scope;
             friend bool operator==(const ResourceKey&,const ResourceKey&)=default;
         };
@@ -304,7 +331,7 @@ namespace SceneUtil::DrawPhaseTrace
             std::size_t operator()(const ResourceKey& key) const
             {
                 std::uint64_t hash=1469598103934665603ull;
-                for(const auto value:{key.texture,key.image,key.stateSet,key.submitCamera,key.labelHash,
+                for(const auto value:{key.texture,key.image,key.stateSet,key.submitCamera,key.labelHash,key.bytes,
                     std::uint64_t(key.context),std::uint64_t(key.unit),std::uint64_t(key.imageRevision),std::uint64_t(key.scope)})
                 { hash^=value;hash*=1099511628211ull; }
                 return static_cast<std::size_t>(hash);
@@ -321,11 +348,32 @@ namespace SceneUtil::DrawPhaseTrace
             if (const char* value = std::getenv("OPENMW_P9_LEAF_TRACE_FILE"); value && *value)
             {
                 mPath = value;
-                mRows = std::make_unique<std::array<Row, Capacity>>();
-                mFrames=std::make_unique<std::array<FrameRow,FrameCapacity>>();
-                mOuterRows=std::make_unique<std::array<OuterRow,FrameCapacity>>();
-                mResources=std::make_unique<std::array<ResourceRow,ResourceCapacity>>();
-                GLCallTrace::Capture::instance().enable(mPath);
+                if(const char* capacity=std::getenv("OPENMW_P9_RESOURCE_CAPACITY");capacity && *capacity)
+                {
+                    std::size_t requested=0;
+                    const auto end=capacity+std::strlen(capacity);
+                    const auto parsed=std::from_chars(capacity,end,requested);
+                    if(parsed.ec==std::errc{} && parsed.ptr==end && requested>=ResourceMinimumCapacity
+                        && requested<=ResourceMaximumCapacity)
+                        mResourceCapacity=requested;
+                }
+                try
+                {
+                    mRows = std::make_unique<std::array<Row, Capacity>>();
+                    mFrames=std::make_unique<std::array<FrameRow,FrameCapacity>>();
+                    mOuterRows=std::make_unique<std::array<OuterRow,FrameCapacity>>();
+                    mResources=std::make_unique<ResourceRow[]>(mResourceCapacity);
+                    // Preserve the full observed texture/image/StateSet/camera
+                    // tuple. Collapsing transient material or camera pointers
+                    // would fabricate joins. Pre-reserve only when trace is on.
+                    mResourceIndex.reserve(mResourceCapacity);
+                    GLCallTrace::Capture::instance().enable(mPath);
+                }
+                catch(const std::bad_alloc&)
+                {
+                    mResourceAllocationFailures.fetch_add(1,std::memory_order_relaxed);
+                    mRows.reset();mFrames.reset();mOuterRows.reset();mResources.reset();
+                }
             }
         }
         struct OuterRow { unsigned context=0,kind=0,frame=0;std::int64_t startNs=0;double ms=0; };
@@ -344,10 +392,12 @@ namespace SceneUtil::DrawPhaseTrace
         std::array<std::uint64_t,16> mOuterCalls{};
         std::array<double,16> mOuterMs{};
         std::array<unsigned,16> mOuterKind{};
-        std::unique_ptr<std::array<ResourceRow,ResourceCapacity>> mResources;
+        std::unique_ptr<ResourceRow[]> mResources;
+        std::size_t mResourceCapacity=ResourceDefaultCapacity;
         mutable std::mutex mResourceMutex;
         std::unordered_map<ResourceKey,std::size_t,ResourceKeyHash> mResourceIndex;
         std::atomic<std::uint64_t> mResourceDropped{0};
+        std::atomic<std::uint64_t> mResourceAllocationFailures{0};
     };
 
     // Called during cull or terrain CPU production, never from render/GL

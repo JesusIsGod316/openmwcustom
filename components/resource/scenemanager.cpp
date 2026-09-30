@@ -1321,12 +1321,27 @@ namespace Resource
             for (osgUtil::IncrementalCompileOperation::CompileSets::iterator it = sets.begin(); it != sets.end();)
             {
                 if (auto* budget = CacheMaintenanceScope::current(); budget && !budget->scan()) break;
-                int refcount = (*it)->_subgraphToCompile->referenceCount();
-                if ((*it)->_subgraphToCompile->asDrawable())
-                    refcount -= 1; // ref by CompileList.
-                if (refcount <= 2 && (!CacheMaintenanceScope::current() || CacheMaintenanceScope::current()->release())) // cache + compile
+                bool unused = !*it;
+                if (*it)
                 {
-                    // no other ref = not needed anymore.
+                    const auto* classified = dynamic_cast<const V321ClassifiedCompileSet*>(it->get());
+                    if (classified && classified->resourceOnly())
+                        unused = !classified->resourceCompilePending();
+                    else if (const auto* subgraph = (*it)->_subgraphToCompile.get())
+                    {
+                        int refcount = subgraph->referenceCount();
+                        if (subgraph->asDrawable())
+                            refcount -= 1; // ref by CompileList.
+                        unused = refcount <= 2; // cache + compile
+                    }
+                    // Unknown resource-only sets keep their ordinary ICO
+                    // completion owner. A missing scene node proves neither
+                    // cancellation nor permission to discard their resources.
+                }
+                if (unused && (!CacheMaintenanceScope::current() || CacheMaintenanceScope::current()->release()))
+                {
+                    // Producer retired, or scene no longer externally owned.
+                    // Destruction stays outside the shared compile-queue lock.
                     auto released = it++;
                     releasedCompiles.splice(releasedCompiles.end(), sets, released);
                 }

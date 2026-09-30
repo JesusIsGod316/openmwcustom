@@ -29,7 +29,7 @@ option(DEPLOY_QT_TRANSLATIONS "Deploy standard Qt translations to resources fold
 
 # Apps and tools
 option(BUILD_OPENMW             "Build OpenMW" ON)
-option(OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS "Build the separate Phase 9 production postprocess GL fixture" OFF)
+option(OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS "Build the separate Phase 9 production cache and postprocess fixtures" OFF)
 if (OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS)
     if (NOT BUILD_OPENMW)
         message(FATAL_ERROR "Phase 9 production postprocess tests require BUILD_OPENMW")

@@ -4,6 +4,7 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <limits>
 
 #include <osg/FrameBufferObject>
 #include <osg/Geometry>
@@ -22,9 +23,18 @@ namespace Shader
     class ShaderManager;
 }
 
+namespace osgUtil { class CullVisitor; }
+
 namespace MWRender
 {
     struct TemporalCanvasOwner;
+    struct PostFxTargetGeneration
+    {
+        std::vector<Fx::Types::RenderTarget> attachments;
+        // Only the verified single graphics context's serialized draw owner
+        // reads/writes this field. Cull never tests initialization state.
+        unsigned initializedContext = std::numeric_limits<unsigned>::max();
+    };
     class PingPongCanvas : public osg::Geometry
     {
     public:
@@ -35,8 +45,15 @@ namespace MWRender
         // A shared two-SceneView owner is installed only after the main
         // renderer's actual CullVisitor identity/lifecycle has been verified.
         void setTemporalOwner(std::shared_ptr<TemporalCanvasOwner> owner) { mTemporalOwner = std::move(owner); }
-        void setTemporalOwnershipAvailable(bool value) { mTemporalOwnershipAvailable = value; }
+        void setTemporalOwnershipAvailable(bool value, std::string reason = "unverified_owner")
+        {
+            mTemporalOwnershipAvailable = value;
+            mOwnershipFallback = std::move(reason);
+        }
+        void setOwnedFxState(osg::StateSet* value) { mOwnedFxState = value; }
         static std::shared_ptr<TemporalCanvasOwner> createTemporalOwner();
+        static void finalizeTemporalOwner(const std::shared_ptr<TemporalCanvasOwner>& owner,
+            osgUtil::CullVisitor* visitor, osg::StateSet* fxState);
 
         void drawGeometry(osg::RenderInfo& renderInfo) const;
 
@@ -52,12 +69,14 @@ namespace MWRender
 
         void setDirtyAttachments(const std::vector<Fx::Types::RenderTarget>& attachments)
         {
+            mDeclaredAttachments = attachments;
             mDirtyAttachments = attachments;
         }
 
         const Fx::DispatchArray& getPasses() { return mPasses; }
 
-        void setPasses(Fx::DispatchArray&& passes);
+        void setPasses(Fx::DispatchArray&& passes, std::shared_ptr<PostFxTargetGeneration> generation = {});
+        void setTargetGenerationSingleContext(bool qualified) { mTargetGenerationSingleContext = qualified; }
 
         void setMask(bool underwater, bool exterior);
 
@@ -81,6 +100,12 @@ namespace MWRender
         std::shared_ptr<TemporalCanvasOwner> mTemporalOwner;
         bool mTemporalOwnershipAvailable = false;
         bool mOwnedSubmission = false;
+        std::string mOwnershipFallback = "unverified_owner";
+        osg::ref_ptr<osg::StateSet> mOwnedFxState;
+        osg::ref_ptr<osg::StateSet> mDrawFxState;
+        osg::ref_ptr<osg::StateSet> mOwnedFxBindings = new osg::StateSet;
+        std::vector<std::string> mOwnedTechniqueNames;
+        std::shared_ptr<PostFxTargetGeneration> mTargetGeneration;
         bool mOwnedNis = false;
         float mOwnedNisSharpness = 0.0f;
         std::shared_ptr<TemporalMotion> mTemporalMotion;
@@ -104,6 +129,8 @@ namespace MWRender
 
         mutable bool mDirty = false;
         mutable std::vector<Fx::Types::RenderTarget> mDirtyAttachments;
+        std::vector<Fx::Types::RenderTarget> mDeclaredAttachments;
+        bool mTargetGenerationSingleContext = false;
         mutable osg::ref_ptr<osg::Viewport> mRenderViewport;
         mutable osg::ref_ptr<osg::FrameBufferObject> mMultiviewResolveFramebuffer;
         mutable osg::ref_ptr<osg::FrameBufferObject> mDestinationFBO;

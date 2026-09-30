@@ -57,8 +57,17 @@ def main() -> None:
     need('capture.append(row);' in leaf, 'post-safe-point record must own its metadata')
     need('SubmissionScope' in read('components/terrain/terraindrawable.cpp')
          and 'stampSubmissions' in trace, 'direct terrain submissions bypass metadata initialization')
-    for token in ('.resources.csv', 'resource_catalog_dropped_attempts=', 'OVERRIDE', 'PROTECTED', 'ResourceCapacity=32768'):
+    for token in ('.resources.csv', 'resource_catalog_dropped_attempts=', 'OVERRIDE', 'PROTECTED',
+                  'ResourceDefaultCapacity = 131072', 'ResourceMaximumCapacity = 262144',
+                  'resource_catalog_capacity=', 'resource_catalog_allocation_failures=', 'row.bytes,row.context'):
         need(token in trace, 'missing bounded effective resource attribution: ' + token)
+    transport = read('components/debug/diagnostictransport.hpp')
+    for token in ('OPENMW_P9_CAPTURE_TRANSPORT', 'QueueCapacity = 32768', 'ByteCapacity = 32u * 1024u * 1024u',
+                  'RowCapacity = 64u * 1024u', 'attempt < 128', 'slot.sequence.store(position + 1, std::memory_order_release)',
+                  '.writer-status.txt', 'normal_finish=1', 'output_ok=', 'allocation_dropped=', 'contention_dropped='):
+        need(token in transport, 'missing bounded MPSC capture publication/output contract: ' + token)
+    need('"diagnostictransport.hpp"' in read('components/debug/v3diagnostics.hpp'),
+         'actual CSV channels must use the qualified capture hub')
 
     temporal = read('apps/openmw/mwrender/temporalmotion.cpp')
     need('input.jitterEnabled = false;' in temporal, 'do not jitter gameplay without a reconstruction consumer')
@@ -154,7 +163,8 @@ def main() -> None:
                   'OPENMW_P9_COMPOSITE_FILE', 'OPENMW_V36_GPU_PASS_FILE',
                   'phase9_dense_dynamic_motion=false', 'phase9_scene_jitter=false',
                   'phase9_static_prewarm=disabled_after_optimized_trace_driver_crash',
-                  'phase9_temporal_contract=consumer_frame_v1',
+                  'phase9_temporal_contract=consumer_frame_v2_ownership',
+                  'phase9_capture_transport=bounded_mpsc_v1',
                   'Test-Phase9TraceCapture -ProfileDir',
                   'Test-Phase9TemporalCapture -ProfileDir',
                   'OPENMW_P9_TEMPORAL_OWNERSHIP=$mode.Ownership',

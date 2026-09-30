@@ -37,7 +37,8 @@ namespace Terrain
         osg::observer_ptr<osg::GraphicsContext> context;
         std::size_t bytes = 0;
         std::uint64_t generation = 0;
-        std::atomic_bool cancelled{false};
+        std::shared_ptr<Resource::V321ResourceCompileLifetime> lifetime
+            = std::make_shared<Resource::V321ResourceCompileLifetime>();
         bool completed = false, failed = false;
         GLuint fboName = 0;
     };
@@ -64,7 +65,7 @@ namespace Terrain
             bool required() const override { return mMap->mRequired.load(std::memory_order_acquire); }
             bool cancelled() const override
             {
-                return mPreparation->cancelled.load(std::memory_order_acquire)
+                return mPreparation->lifetime->cancelled()
                     || mMap->mPreparationGeneration.load(std::memory_order_acquire) != mPreparation->generation
                     || mMap->mTexture.get() != mPreparation->target.get();
             }
@@ -108,7 +109,7 @@ namespace Terrain
             {
                 if (info.incrementalCompileOperation->getContextSet().size() != 1)
                 {
-                    mPreparation->cancelled.store(true, std::memory_order_release);
+                    mPreparation->lifetime->cancel();
                     return true;
                 }
                 if (cancelled() || mPreparation->context.get() != info.getState()->getGraphicsContext())
@@ -119,7 +120,7 @@ namespace Terrain
                     auto& dep = mPreparation->dependencies[mDependency];
                     if (!retainedDependency(dep))
                     {
-                        mPreparation->cancelled.store(true, std::memory_order_release);
+                        mPreparation->lifetime->cancel();
                         return true;
                     }
                     if (dep.texture)
@@ -183,9 +184,16 @@ namespace Terrain
 
         struct CompositeCompileCompleted final : osgUtil::IncrementalCompileOperation::CompileCompletedCallback
         {
+            explicit CompositeCompileCompleted(std::shared_ptr<Resource::V321ResourceCompileLifetime> lifetime)
+                : mLifetime(std::move(lifetime)) {}
             // There is no duplicate scene publication/merge queue for these
             // producer-owned dependencies.
-            bool compileCompleted(osgUtil::IncrementalCompileOperation::CompileSet*) override { return true; }
+            bool compileCompleted(osgUtil::IncrementalCompileOperation::CompileSet*) override
+            {
+                mLifetime->complete();
+                return true;
+            }
+            std::shared_ptr<Resource::V321ResourceCompileLifetime> mLifetime;
         };
     }
 
@@ -220,10 +228,10 @@ namespace Terrain
             if (preparation && map.mTexture.get() == preparation->target.get()
                 && map.mTexture->referenceCount() <= (preparation->fbo->hasAttachment(osg::Camera::COLOR_BUFFER) ? 2 : 1))
             {
-                preparation->cancelled.store(true, std::memory_order_release);
+                preparation->lifetime->cancel();
                 ++mPreparationStats.cancelled;
             }
-            if (!preparation || preparation->cancelled.load(std::memory_order_acquire)
+            if (!preparation || preparation->lifetime->cancelled()
                 || map.mDrawables.empty())
             {
                 if (preparation)
@@ -232,7 +240,7 @@ namespace Terrain
                 {
                     // A completed map keeps its output, not a hidden residency
                     // cache of every source layer/program/preparation FBO.
-                    preparation->cancelled.store(true, std::memory_order_release);
+                    preparation->lifetime->cancel();
                     map.mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel);
                     map.mPreparation.reset();
                 }
@@ -247,7 +255,7 @@ namespace Terrain
     {
         const auto& preparation = map.mPreparation;
         if (!preparation || !preparation->completed || preparation->failed
-            || preparation->cancelled.load(std::memory_order_acquire)
+            || preparation->lifetime->cancelled()
             || preparation->generation != map.mPreparationGeneration.load(std::memory_order_acquire)
             || preparation->context.get() != state.getGraphicsContext()
             || preparation->target.get() != map.mTexture.get()
@@ -290,11 +298,11 @@ namespace Terrain
                 && map.mPreparation->context.get() == state.getGraphicsContext()
                 && map.mPreparation->target.get() == map.mTexture.get())
                 return true; // preserve complete old rendering after preparation failure
-            if (!map.mPreparation->completed && !map.mPreparation->cancelled.load(std::memory_order_acquire)
+            if (!map.mPreparation->completed && !map.mPreparation->lifetime->cancelled()
                 && map.mPreparation->target.get() == map.mTexture.get()
                 && map.mPreparation->context.get() == state.getGraphicsContext())
                 return false;
-            map.mPreparation->cancelled.store(true, std::memory_order_release);
+            map.mPreparation->lifetime->cancel();
             ++mPreparationStats.invalidated;
             retirePreparations();
             map.mPreparation.reset();
@@ -361,7 +369,7 @@ namespace Terrain
         if (preparation->bytes > sMaxPreparationBytes - mPreparationStats.pendingBytes)
             return false;
         osg::ref_ptr<Resource::V321ClassifiedCompileSet> set = new Resource::V321ClassifiedCompileSet(
-            nullptr, Resource::V321CompileClass::Terrain, Resource::V321CompileUrgency::Background);
+            preparation->lifetime, Resource::V321CompileClass::Terrain, Resource::V321CompileUrgency::Background);
         auto& list = set->_compileMap[state.getGraphicsContext()];
         for (std::size_t i = 0; i < preparation->dependencies.size(); ++i)
         {
@@ -378,7 +386,7 @@ namespace Terrain
         list.add(new CompositeDependencyCompileOp(&map, preparation, end,
             Resource::OpenMWCompositeCompileOp::Kind::Target, 0));
         ++set->_numberCompileListsToCompile;
-        set->_compileCompletedCallback = new CompositeCompileCompleted;
+        set->_compileCompletedCallback = new CompositeCompileCompleted(preparation->lifetime);
         map.mPreparation = preparation;
         mPendingPreparations.push_back(&map);
         mPreparationStats.pendingBytes += preparation->bytes;
@@ -403,7 +411,7 @@ namespace Terrain
         for (const auto& map : mPendingPreparations)
             if (map->mPreparation)
             {
-                map->mPreparation->cancelled.store(true, std::memory_order_release);
+                map->mPreparation->lifetime->cancel();
                 map->mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel);
             }
     }
@@ -414,7 +422,7 @@ namespace Terrain
         for (const auto& map : mPendingPreparations)
             if (map->mPreparation)
             {
-                map->mPreparation->cancelled.store(true, std::memory_order_release);
+                map->mPreparation->lifetime->cancel();
                 map->mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel);
                 map->mPreparation->fbo->releaseGLObjects(state);
                 map->mCompiled = 0;
@@ -611,7 +619,7 @@ namespace Terrain
             if (preparationActive)
             {
                 if (compositeMap.mPreparation)
-                    compositeMap.mPreparation->cancelled.store(true, std::memory_order_release);
+                    compositeMap.mPreparation->lifetime->cancel();
                 compositeMap.mDrawables.clear();
             }
             return;
@@ -626,7 +634,7 @@ namespace Terrain
             // speculative preparation must never delay or partially publish it.
             ++mPreparationStats.requiredFallbacks;
             if (compositeMap.mPreparation)
-                compositeMap.mPreparation->cancelled.store(true, std::memory_order_release);
+                compositeMap.mPreparation->lifetime->cancel();
         }
 
         auto admitted = [&](bool includeFbo) {

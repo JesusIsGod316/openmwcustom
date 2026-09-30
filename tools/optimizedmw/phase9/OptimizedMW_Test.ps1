@@ -267,8 +267,10 @@ try{
         "phase9_motion_view=$($mode.View)",
         "phase9_draw_trace=$($mode.Trace)",
         "phase9_static_prewarm=disabled_after_optimized_trace_driver_crash",
-        "phase9_trace_schema=4",
-        "phase9_temporal_contract=consumer_frame_v1",
+        "phase9_trace_schema=5",
+        "phase9_temporal_contract=consumer_frame_v2_ownership",
+        "phase9_capture_transport=bounded_mpsc_v1",
+        "phase9_resource_capacity=131072",
         "phase9_dlss_ready_requires_dense_dynamic_motion=true",
         "phase9_gl_vulkan_interop_probe=$($mode.Temporal)",
         "phase9_culling=retained_existing_cell_paged_and_groundcover_hierarchy_no_new_visibility_policy",
@@ -342,6 +344,8 @@ try{
     Remove-Item 'Env:OPENMW_V325_PARALLEL_ACTOR_BINDING' -ErrorAction SilentlyContinue
 
     # Focused nonblocking diagnostics. Avoid deep trace/profilers in performance runs.
+    $env:OPENMW_P9_CAPTURE_TRANSPORT='1'
+    $env:OPENMW_P9_RESOURCE_CAPACITY='131072'
     $env:OPENMW_V3_PAGING_FILE=Join-Path $ProfileDir 'v3-paging.csv'
     $env:OPENMW_V3_RENDER_FILE=Join-Path $ProfileDir 'v3-render.csv'
     $env:OPENMW_V3_EVENT_FILE=Join-Path $ProfileDir 'v3-events.csv'
@@ -456,6 +460,7 @@ finally{
 try{
     $traceStatus=Test-Phase9TraceCapture -ProfileDir $ProfileDir -TraceRequested ($mode.Trace -eq '1')
     $temporalStatus=Test-Phase9TemporalCapture -ProfileDir $ProfileDir -TemporalRequested ($mode.Temporal -eq '1')
+    $writerStatus=Test-Phase9WriterCapture -ProfileDir $ProfileDir
     $zip=Complete-Phase9Profile -ProfileDir $ProfileDir -GameDir $GameDir
     Write-Host ''
     if($restoreVerified){Write-Host 'Your normal settings have been restored.' -ForegroundColor Green}

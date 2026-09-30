@@ -291,6 +291,7 @@ namespace MWRender
         osg::ref_ptr<DistortionCallback> mDistortionCallback;
 
         Fx::DispatchArray mTemplateData;
+        std::shared_ptr<PostFxTargetGeneration> mTemplateTargetGeneration;
     };
 }
 

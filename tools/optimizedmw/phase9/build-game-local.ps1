@@ -57,7 +57,7 @@ if ($Stage -eq 'Configure') {
         & (Join-Path $BuildDirectory "$suite.exe") "--gtest_output=xml:$BuildDirectory/$suite-results.xml"
         if ($LASTEXITCODE -ne 0) { throw "$suite failed with exit code $LASTEXITCODE" }
     }
-    & (Join-Path $cmakeDirectory 'ctest.exe') --test-dir $BuildDirectory -R '^p9-owned-postpasses$' --output-on-failure --timeout 45
+    & (Join-Path $cmakeDirectory 'ctest.exe') --test-dir $BuildDirectory -R '^p9-(owned-postpasses|compile-cache|postfx-ownership)' --output-on-failure --timeout 60
 } else {
     $revision = (& git -C $sourceDirectory rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the game source revision' }

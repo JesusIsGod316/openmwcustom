@@ -31,6 +31,11 @@ include_directories(SYSTEM ${OPENSCENEGRAPH_INCLUDE_DIRS})
 enable_testing()
 find_package(Threads REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_executable(p9-capture-transport capture-transport-tests.cpp)
+target_link_libraries(p9-capture-transport PRIVATE Threads::Threads)
+add_test(NAME p9-capture-transport COMMAND p9-capture-transport
+  ${CMAKE_CURRENT_BINARY_DIR}/capture-transport-output)
+set_tests_properties(p9-capture-transport PROPERTIES TIMEOUT 45)
 add_executable(p9-gpu-owner gpu-owner-tests.cpp)
 target_link_libraries(p9-gpu-owner PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
 add_test(NAME p9-gpu-owner COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/verify-gpu-owner.py
@@ -105,6 +110,7 @@ if(P9_REQUIRE_GAME_SDK)
     ${ROOT}/apps/openmw/mwrender/postprocessor.cpp
     ${ROOT}/apps/openmw/mwrender/camera.cpp
     ${ROOT}/apps/openmw/mwrender/pingpongcanvas.cpp
+    ${ROOT}/apps/openmw/mwrender/luminancecalculator.cpp
     ${ROOT}/apps/openmw/mwrender/pingpongcull.cpp
     ${ROOT}/apps/openmw/mwrender/transparentpass.cpp
     ${ROOT}/apps/openmw/mwrender/distortion.cpp
@@ -114,6 +120,8 @@ if(P9_REQUIRE_GAME_SDK)
     ${ROOT}/components/terrain/world.cpp
     ${ROOT}/components/terrain/chunkmanager.cpp
     ${ROOT}/components/resource/openmwcompileoperation.cpp
+    ${ROOT}/components/resource/scenemanager.cpp
+    ${ROOT}/components/fx/stateupdater.cpp
     ${ROOT}/apps/openmw/mwrender/renderingmanager.cpp
     ${ROOT}/components/sceneutil/riggeometry.cpp
     ${ROOT}/components/sceneutil/morphgeometry.cpp)
@@ -171,7 +179,7 @@ if(NOT MSVC)
   # These production diagnostic/deformation headers retain u8path for their
   # cross-platform UTF-8 contract. GCC 13 deprecates that C++17 helper in C++20;
   # preserve the warning without changing legacy Windows path behavior here.
-  foreach(target p9-gpu-owner p9-composite-preparation p9-draw-phases p9-temporal-dynamic)
+  foreach(target p9-capture-transport p9-gpu-owner p9-composite-preparation p9-draw-phases p9-temporal-dynamic)
     target_compile_options(${target} PRIVATE -Wno-error=deprecated-declarations)
   endforeach()
 endif()

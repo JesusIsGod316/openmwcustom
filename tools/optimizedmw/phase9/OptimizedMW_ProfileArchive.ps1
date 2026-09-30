@@ -90,24 +90,45 @@ function New-VerifiedProfileZip {
 function Invoke-BoundedOfflineReport {
     param([Parameter(Mandatory=$true)][string]$ReportScript,
           [Parameter(Mandatory=$true)][string]$ProfileDir,
-          [ValidateRange(1,120)][int]$TimeoutSeconds=30)
+          [ValidateRange(1,120)][int]$TimeoutSeconds=90)
     if(-not [IO.File]::Exists($ReportScript)){throw 'Offline report script is missing'}
     $hostExe=(Get-Process -Id $PID).Path
     # Windows file names cannot contain quotes. Quote paths containing spaces or brackets.
     if($ReportScript.Contains('"') -or $ProfileDir.Contains('"')){throw 'Unsupported quoted report path'}
     $args=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"'+$ReportScript+'"'),
         '-ProfileDir',('"'+$ProfileDir+'"'))
-    $report=Start-Process -FilePath $hostExe -ArgumentList $args -PassThru -NoNewWindow `
-        -RedirectStandardOutput (Join-Path $ProfileDir 'report-stdout.txt') `
-        -RedirectStandardError (Join-Path $ProfileDir 'report-stderr.txt')
+    # ProcessStartInfo owns the live handle and literal .NET output paths avoid
+    # Start-Process's Windows PowerShell wildcard handling for [bracket] paths.
+    $info=[Diagnostics.ProcessStartInfo]::new()
+    $info.FileName=$hostExe;$info.Arguments=$args -join ' '
+    $info.UseShellExecute=$false;$info.CreateNoWindow=$true
+    $info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
+    $report=[Diagnostics.Process]::new();$report.StartInfo=$info
+    $stdout=$null;$stderr=$null;$stdoutTask=$null;$stderrTask=$null;$started=$false
     try{
+        $stdout=[IO.File]::Create((Join-Path $ProfileDir 'report-stdout.txt'))
+        $stderr=[IO.File]::Create((Join-Path $ProfileDir 'report-stderr.txt'))
+        $started=$report.Start()
+        if(-not $started){throw 'Offline report process did not start'}
+        $null=$report.Handle
+        # Drain both pipes concurrently using bounded stream buffers; waiting
+        # before draining would deadlock a child whose error output fills a pipe.
+        $stdoutTask=$report.StandardOutput.BaseStream.CopyToAsync($stdout)
+        $stderrTask=$report.StandardError.BaseStream.CopyToAsync($stderr)
         if(-not $report.WaitForExit($TimeoutSeconds*1000)){
             $report.Kill();$report.WaitForExit()
             throw "Offline report exceeded $TimeoutSeconds seconds; verified raw ZIP is retained"
         }
         $report.WaitForExit()
+        $stdoutTask.GetAwaiter().GetResult();$stderrTask.GetAwaiter().GetResult()
         if($report.ExitCode -ne 0){throw "Offline report exited with code $($report.ExitCode); verified raw ZIP is retained"}
-    }finally{$report.Dispose()}
+    }finally{
+        if($started -and -not $report.HasExited){$report.Kill();$report.WaitForExit()}
+        if($stdoutTask){$stdoutTask.GetAwaiter().GetResult()}
+        if($stderrTask){$stderrTask.GetAwaiter().GetResult()}
+        if($stdout){$stdout.Dispose()};if($stderr){$stderr.Dispose()}
+        $report.Dispose()
+    }
 }
 
 function Complete-Phase9Profile {
@@ -147,7 +168,7 @@ function Test-Phase9TraceCapture {
     $reasons=[Collections.Generic.List[string]]::new()
     $valid=$null
     $streamLoss=[ordered]@{}
-    $resourceRows=0;$resourceIncoherent=0;$resourceReported=$null
+    $resourceRows=0;$resourceIncoherent=0;$resourceReported=$null;$resourceCapacity=32768
     if($TraceRequested){
         $status=Join-Path $ProfileDir 'p9-draw-phases.csv.status.txt'
         $frames=Join-Path $ProfileDir 'p9-draw-phases.csv.frames.csv'
@@ -166,9 +187,19 @@ function Test-Phase9TraceCapture {
                     if($streamLoss[$field] -gt 0){[void]$reasons.Add("Trace loss: $field=$($streamLoss[$field])")}
                 }else{[void]$reasons.Add("Missing explicit trace loss: $field")}
             }
+            if($content -match '(?m)^resource_catalog_capacity=(\d+)\r?$'){
+                $number=0L
+                if([long]::TryParse($matches[1],[ref]$number) -and $number -ge 32768 -and $number -le 262144){$resourceCapacity=$number}
+                else{[void]$reasons.Add('Invalid resource catalog capacity')}
+                if($content -notmatch '(?m)^resource_catalog_allocation_failures=0\r?$'){
+                    [void]$reasons.Add('Resource catalog allocation failed or its outcome is missing')
+                }
+            }elseif($content -match '(?m)^resource_catalog_capacity='){
+                [void]$reasons.Add('Malformed resource catalog capacity')
+            }
             if($content -match '(?m)^resource_catalog_rows=(\d+)\r?$'){
                 $number=0L
-                if([long]::TryParse($matches[1],[ref]$number) -and $number -le 32768){$resourceReported=$number}
+                if([long]::TryParse($matches[1],[ref]$number) -and $number -le $resourceCapacity){$resourceReported=$number}
                 else{[void]$reasons.Add('Invalid resource catalog row count')}
             }else{[void]$reasons.Add('Missing resource catalog row count')}
         }
@@ -201,7 +232,7 @@ function Test-Phase9TraceCapture {
             $capture=Read-Phase9CaptureCsv $catalog @('first_frame','last_frame','context','texture_unit','texture',
                 'image','image_revision','stateset','submit_camera','bytes','scope','texture_class','filename','semantic_role') -StrictShape
             $resourceRows=$capture.Rows.Count
-            if($capture.Malformed -gt 0 -or $capture.Loss -gt 0 -or $resourceRows -gt 32768){
+            if($capture.Malformed -gt 0 -or $capture.Loss -gt 0 -or $resourceRows -gt $resourceCapacity){
                 [void]$reasons.Add('Malformed, incomplete or oversized resource catalog')
             }
             if($null -ne $resourceReported -and $resourceRows -ne $resourceReported){
@@ -234,7 +265,8 @@ function Test-Phase9TraceCapture {
         $valid=($reasons.Count -eq 0)
         if(-not $valid){Write-Warning ('INVALID ROOT-CAUSE CAPTURE: '+($reasons -join '; ')+'. Raw evidence will still be zipped.')}
     }
-    $result=[pscustomobject]@{schema=5;trace_requested=$TraceRequested;valid_leaf_capture=$valid;stream_loss=$streamLoss;
+    $result=[pscustomobject]@{schema=6;trace_requested=$TraceRequested;valid_leaf_capture=$valid;stream_loss=$streamLoss;
+        resource_catalog_capacity=$resourceCapacity;
         resource_catalog_rows=$resourceRows;resource_catalog_incoherent_rows=$resourceIncoherent;reasons=$reasons.ToArray();
         scope='CPU leaf envelopes plus selected OSG GL dispatch; not complete GPU/driver profiling'}
     $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ProfileDir 'ROOT-CAUSE-CAPTURE.json') -Encoding UTF8
@@ -245,15 +277,96 @@ function Test-Phase9TraceCapture {
 # Temporal input modes are useful only if the render-owned consumer contract and
 # hardware capability probe actually emitted evidence. Missing rows are preserved
 # in the raw archive but are never treated as a successful temporal capture.
+function Read-Phase9WriterStatus {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $fields=@{}
+    foreach($line in [IO.File]::ReadAllLines($Path)){
+        if($line -notmatch '^([a-z_]+)=(\d+)$' -or $fields.ContainsKey($matches[1])){throw 'Malformed or duplicate writer status field'}
+        $number=0L
+        if(-not [long]::TryParse($matches[2],[ref]$number)){throw 'Writer status integer overflow'}
+        $fields[$matches[1]]=$number
+    }
+    foreach($key in @('normal_finish','output_ok','rows_dropped')){
+        if(-not $fields.ContainsKey($key)){throw "Missing writer status field: $key"}
+    }
+    if($fields.normal_finish -notin @(0,1) -or $fields.output_ok -notin @(0,1)){throw 'Invalid writer finish/output flag'}
+    if($fields.output_ok -eq 1){
+        foreach($bound in @(@('queue_capacity',32768),@('byte_capacity',33554432),@('row_capacity',65536))){
+            if(-not $fields.ContainsKey($bound[0]) -or $fields[$bound[0]] -le 0 -or $fields[$bound[0]] -gt $bound[1]){
+                throw 'Writer exceeds its declared item, byte or row bound'
+            }
+        }
+        $sum=0L
+        foreach($key in @('capacity_dropped','contention_dropped','oversized_dropped','allocation_dropped','io_dropped','stopped_dropped')){
+            if(-not $fields.ContainsKey($key)){throw "Missing writer loss reason: $key"}
+            $sum += $fields[$key]
+        }
+        if($sum -ne $fields.rows_dropped -or $fields.initialization_failed -ne 0){throw 'Writer loss reasons or initialization outcome are incoherent'}
+    }
+    return [pscustomobject]@{OutputOk=($fields.normal_finish -eq 1 -and $fields.output_ok -eq 1);
+        Loss=$fields.rows_dropped;Fields=$fields}
+}
+
+function Test-Phase9WriterCapture {
+    param([Parameter(Mandatory=$true)][string]$ProfileDir)
+    $modePath=Join-Path $ProfileDir 'TEST_MODE.txt'
+    $mode=if(Test-Path -LiteralPath $modePath){Get-Content -Raw -LiteralPath $modePath}else{''}
+    $requested=$mode -match '(?m)^phase9_capture_transport=bounded_mpsc_v1\r?$'
+    $reasons=[Collections.Generic.List[string]]::new();$channels=[ordered]@{};$loss=0L
+    if($requested){
+        # Separate from deferred CPU/native trace channels. Failure in GPU or
+        # auxiliary transport does not erase an independently complete CPU file.
+        $names=@('v3-paging.csv','v3-render.csv','v3-events.csv','v3-transition.csv','v3-resource.csv',
+            'v3-streaming.csv','v3-shadow.csv','v36-batching.csv','v3-gpu-memory.csv','p4-compile.csv',
+            'p6-render-phase.csv','p6-render-traversal.csv','p9-temporal-inputs.csv','p9-dlss-capabilities.csv',
+            'p9-gpu-passes.csv','p9-terrain-composite.csv')
+        $required=@('v3-render.csv','p6-render-traversal.csv')
+        if($mode -match '(?m)^phase9_temporal_inputs=1\r?$'){$required+=@('p9-temporal-inputs.csv','p9-dlss-capabilities.csv')}
+        if($mode -match '(?m)^phase9_(temporal_inputs|draw_trace)=1\r?$'){$required+='p9-gpu-passes.csv'}
+        foreach($name in $names){
+            $csv=Join-Path $ProfileDir $name
+            if(-not (Test-Path -LiteralPath $csv)){
+                if($required -contains $name){[void]$reasons.Add("Missing requested writer channel: $name")}
+                continue
+            }
+            try{
+                $status=Read-Phase9WriterStatus ($csv+'.writer-status.txt')
+                $channels[$name]=$status.Fields;$loss+=$status.Loss
+                if(-not $status.OutputOk){[void]$reasons.Add("Writer output did not finish: $name")}
+                if($status.Loss -gt 0){[void]$reasons.Add("Writer loss: $name=$($status.Loss)")}
+                # Footer is within the last bounded 4 KiB, independent of CSV
+                # volume. Do not materialize renderer/GPU streams just to check
+                # that their final completion marker reached disk.
+                $stream=[IO.File]::OpenRead($csv);$reader=$null
+                try{
+                    [void]$stream.Seek([Math]::Max(0,$stream.Length-4096),[IO.SeekOrigin]::Begin)
+                    $reader=[IO.StreamReader]::new($stream);$tail=$reader.ReadToEnd()
+                }finally{if($reader){$reader.Dispose()}else{$stream.Dispose()}}
+                if($tail -notmatch '(?m)^# p9_capture_transport=bounded_mpsc_v1\r?$' -or
+                    $tail -notmatch '(?m)^# v3_async_diagnostics_dropped_lines=(\d+)\r?$' -or
+                    [long]$matches[1] -ne $status.Loss){[void]$reasons.Add("Missing or incoherent writer footer: $name")}
+            }catch{[void]$reasons.Add("Invalid writer completion for ${name}: $_")}
+        }
+    }
+    $valid=if($requested){$reasons.Count -eq 0}else{$null}
+    $result=[pscustomobject]@{schema=1;bounded_transport_requested=$requested;valid_writer_capture=$valid;
+        csv_writer_dropped=$loss;channels=$channels;reasons=$reasons.ToArray();
+        scope='Shared diagnostic transport only; CPU frame/native trace validity is assessed separately'}
+    $result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $ProfileDir 'WRITER-CAPTURE.json') -Encoding UTF8
+    if($requested -and -not $valid){Write-Warning ('INVALID DIAGNOSTIC WRITER CAPTURE: '+($reasons -join '; ')+'. Raw evidence will still be zipped.')}
+    return $result
+}
+
 function Read-Phase9CaptureCsv {
-    param([string]$Path,[string[]]$Required,[switch]$StrictShape)
+    param([string]$Path,[string[]]$Required,[switch]$StrictShape,[switch]$RequireWriterStatus)
     $lines=[Collections.Generic.List[string]]::new()
-    $loss=0L;$malformed=0L
+    $loss=0L;$malformed=0L;$transport=$false;$lossFooter=$false
     $reader=[IO.StreamReader]::new($Path)
     try {
         while($null -ne ($line=$reader.ReadLine())) {
             if($line.StartsWith('#')) {
-                if($line -match '^# v3_async_diagnostics_dropped_lines=(\d+)\s*$'){$loss += [long]$matches[1]}
+                if($line -match '^# v3_async_diagnostics_dropped_lines=(\d+)\s*$'){$loss += [long]$matches[1];$lossFooter=$true}
+                if($line -eq '# p9_capture_transport=bounded_mpsc_v1'){$transport=$true}
                 continue
             }
             if([string]::IsNullOrWhiteSpace($line)){continue}
@@ -261,6 +374,12 @@ function Read-Phase9CaptureCsv {
             [void]$lines.Add($line)
         }
     } finally {$reader.Dispose()}
+    if($RequireWriterStatus -or $transport){
+        if(-not $transport -or -not $lossFooter){throw 'Missing bounded writer transport/completeness footer'}
+        $writerStatus=Read-Phase9WriterStatus ($Path+'.writer-status.txt')
+        if(-not $writerStatus.OutputOk){throw 'CSV output did not finish successfully'}
+        if($writerStatus.Loss -ne $loss){throw 'CSV footer differs from independent writer loss status'}
+    }
     if($lines.Count -eq 0){throw 'CSV has no header'}
     $headers=@($lines[0].Split(','))
     if(@($headers | Select-Object -Unique).Count -ne $headers.Count){throw 'Duplicate CSV columns'}
@@ -290,13 +409,22 @@ function Test-Phase9TemporalCapture {
     param([Parameter(Mandatory=$true)][string]$ProfileDir,[bool]$TemporalRequested)
     $reasons=[Collections.Generic.List[string]]::new()
     $inputRows=0;$capabilityRows=0;$unexpectedReady=0;$loss=0L;$incoherent=0
+    $ownershipRequestedRows=0;$ownershipActiveRows=0;$ownershipFallbacks=[ordered]@{};$ownershipFields=$false
+    $modePath=Join-Path $ProfileDir 'TEST_MODE.txt'
+    $mode=if(Test-Path -LiteralPath $modePath){Get-Content -Raw -LiteralPath $modePath}else{''}
+    $requireWriter=$mode -match '(?m)^phase9_capture_transport=bounded_mpsc_v1\r?$'
+    $requireOwnership=$mode -match '(?m)^phase9_temporal_contract=consumer_frame_v2_ownership\r?$'
+    $ownershipControl=$null
+    if($mode -match '(?m)^phase9_temporal_ownership=([01])\r?$'){$ownershipControl=[long]$matches[1]}
     if($TemporalRequested){
         $input=Join-Path $ProfileDir 'p9-temporal-inputs.csv'
         $caps=Join-Path $ProfileDir 'p9-dlss-capabilities.csv'
         try {
             $capture=Read-Phase9CaptureCsv $input @('frame','context','submitted','history_valid','previous_frame',
-                'render_w','render_h','output_w','output_h','color_ptr','depth_ptr','motion_ptr','input_mask','dlss_ready')
+                'render_w','render_h','output_w','output_h','color_ptr','depth_ptr','motion_ptr','input_mask','dlss_ready') -RequireWriterStatus:$requireWriter
             $inputRows=$capture.Rows.Count;$loss=$capture.Loss
+            $ownershipFields=@('ownership_requested','ownership_active','ownership_fallback_reason' | Where-Object {$capture.Columns -contains $_}).Count -eq 3
+            if($requireOwnership -and -not $ownershipFields){[void]$reasons.Add('Missing effective ownership columns required by this launcher')}
             if($inputRows -eq 0){[void]$reasons.Add('Temporal input telemetry has no frame rows')}
             if($capture.Malformed){[void]$reasons.Add('Malformed temporal input rows')}
             foreach($row in $capture.Rows){
@@ -312,6 +440,24 @@ function Test-Phase9TemporalCapture {
                 if($ready -notin @(0,1) -or $submitted -notin @(0,1) -or $history -notin @(0,1) -or $frame -lt 0 -or $context -lt 0 -or $previous -lt 0 -or $mask -lt 0 -or $mask -gt 127){$valid=$false}
                 if($history -eq 1 -and ($submitted -ne 1 -or $previous -ne ($frame-1))){$valid=$false}
                 if((($mask -band 32) -ne 0) -ne ($history -eq 1)){$valid=$false}
+                if($ownershipFields){
+                    $requested=0L;$active=0L;$fallback=[string]$row.ownership_fallback_reason
+                    if(-not [long]::TryParse([string]$row.ownership_requested,[ref]$requested) -or $requested -notin @(0,1) -or
+                        -not [long]::TryParse([string]$row.ownership_active,[ref]$active) -or $active -notin @(0,1)){$valid=$false}
+                    if($requireOwnership -and $null -ne $ownershipControl -and $requested -ne $ownershipControl){$valid=$false}
+                    if($requested -eq 1){$ownershipRequestedRows++}
+                    if($active -eq 1){
+                        $ownershipActiveRows++
+                        if($requested -ne 1 -or $fallback -ne 'active'){$valid=$false}
+                    }else{
+                        if($requested -eq 0 -and $fallback -ne 'not_requested'){$valid=$false}
+                        if($requested -eq 1 -and $fallback -notin @('stereo','no_temporal_input','unsupported_osg',
+                            'unsupported_renderer','unsupported_visitor','unsupported_threading','multiple_contexts',
+                            'unknown_sceneview','unsupported_fx_state','unsupported_fx_targets','owner_slots_exhausted')){$valid=$false}
+                        if(-not $ownershipFallbacks.Contains($fallback)){$ownershipFallbacks[$fallback]=0}
+                        $ownershipFallbacks[$fallback]++
+                    }
+                }
                 if($submitted -eq 1){
                     foreach($column in @('render_w','render_h','output_w','output_h','color_ptr','depth_ptr','motion_ptr')){
                         $number=0L
@@ -325,7 +471,7 @@ function Test-Phase9TemporalCapture {
             if($unexpectedReady){[void]$reasons.Add('DLSS-ready became true before runtime and complete motion integration')}
         } catch {[void]$reasons.Add("Invalid temporal input telemetry: $_")}
         try {
-            $capture=Read-Phase9CaptureCsv $caps @('context','gl_vulkan_bridge_candidate')
+            $capture=Read-Phase9CaptureCsv $caps @('context','gl_vulkan_bridge_candidate') -RequireWriterStatus:$requireWriter
             $capabilityRows=$capture.Rows.Count;$loss += $capture.Loss
             if($capabilityRows -eq 0){[void]$reasons.Add('Interop capability telemetry has no context row')}
             if($capture.Malformed){[void]$reasons.Add('Malformed interop capability rows')}
@@ -341,7 +487,10 @@ function Test-Phase9TemporalCapture {
     }
     $valid=if($TemporalRequested){$reasons.Count -eq 0}else{$null}
     if($TemporalRequested -and -not $valid){Write-Warning ('INVALID TEMPORAL CAPTURE: '+($reasons -join '; ')+'. Raw evidence will still be zipped.')}
-    $result=[pscustomobject]@{schema=2;temporal_requested=$TemporalRequested;valid_temporal_capture=$valid;
+    $ownershipValid=if($ownershipRequestedRows -gt 0){$valid -and $ownershipActiveRows -eq $ownershipRequestedRows}else{$null}
+    $result=[pscustomobject]@{schema=3;temporal_requested=$TemporalRequested;valid_temporal_capture=$valid;
+        effective_ownership_columns=$ownershipFields;ownership_requested_rows=$ownershipRequestedRows;
+        ownership_active_rows=$ownershipActiveRows;ownership_fallbacks=$ownershipFallbacks;valid_ownership_capture=$ownershipValid;
         temporal_input_rows=$inputRows;interop_capability_rows=$capabilityRows;unexpected_dlss_ready_rows=$unexpectedReady;
         incoherent_rows=$incoherent;csv_writer_dropped=$loss;dense_dynamic_motion_expected=$false;
         ngx_evaluation_expected=$false;reasons=$reasons.ToArray()}

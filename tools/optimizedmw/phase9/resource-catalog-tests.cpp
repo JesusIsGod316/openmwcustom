@@ -75,15 +75,35 @@ int main() try
         && std::string(capture.resource(5).semanticRole.data())=="terrain_composite_diffuse"
         && std::string(capture.resource(6).semanticRole.data())=="terrain_composite_blendmap",
         "composite producer context or sampler roles were invented/lost");
-    for(std::size_t i=0;i<32768;++i)
+    // Size changes invalidate metadata even if a producer did not dirty its
+    // image. Camera and effective StateSet identities must remain truthful
+    // joins instead of being collapsed to avoid the old catalog bound.
+    auto changed=capture.resource(5);
+    changed.bytes+=16;changed.firstFrame=changed.lastFrame=20;
+    capture.catalogResource(changed);
+    require(capture.resourceCount()==8 && capture.resource(7).bytes==changed.bytes,
+        "resource size change retained stale descriptor metadata");
+    changed.submitCamera=777;capture.catalogResource(changed);
+    changed.stateSet=888;capture.catalogResource(changed);
+    require(capture.resourceCount()==10,"camera or effective material identity was erased by deduplication");
+    const auto initial=capture.resourceCount();
+    require(capture.resourceCapacity()>=Capture::ResourceMinimumCapacity
+        && capture.resourceCapacity()<=Capture::ResourceMaximumCapacity,"resource override escaped the hard memory bound");
+    for(std::size_t i=0;i<capture.resourceCapacity();++i)
     {
         Capture::ResourceRow row;
         row.texture=100000+i;row.image=200000+i;row.stateSet=300000+i;
         row.context=7;row.unit=2;row.scope=1;
         capture.catalogResource(row);
     }
-    require(capture.resourceCount()==32768 && capture.resourceDropped()==7,
+    require(capture.resourceCount()==capture.resourceCapacity() && capture.resourceDropped()==initial,
         "resource catalogue capacity or explicit drop accounting changed");
-    std::cout<<"PASS: effective inherited texture/sampler OVERRIDE and PROTECTED, actual pointer/context/unit/revision joins, static dedup, producer role/unknown context, hard catalog bound and explicit losses\n";
+    auto repeated=capture.resource(0);repeated.lastFrame=100;
+    capture.catalogResource(repeated);
+    require(capture.resourceDropped()==initial && capture.resource(0).lastFrame==100,
+        "a full catalog dropped repeat observations of a known descriptor");
+    std::cout<<"PASS: effective inherited texture/sampler OVERRIDE and PROTECTED, truthful pointer/context/unit/revision/byte joins, static dedup, producer role/unknown context, bounded capacity="
+        <<capture.resourceCapacity()<<", descriptors_bytes="<<capture.resourceCapacity()*sizeof(Capture::ResourceRow)
+        <<", explicit overflow and dedup after full\n";
 }
 catch(const std::exception& error) { std::cerr<<error.what()<<'\n';return 1; }

@@ -365,19 +365,30 @@ namespace MWRender
         if (!mTemporalMotion || !cv || Stereo::getStereo())
         {
             mTemporalOwnershipAvailable = false;
-            for (auto& canvas : mCanvases) canvas->setTemporalOwnershipAvailable(false);
+            for (auto& canvas : mCanvases)
+            {
+                canvas->setTargetGenerationSingleContext(false);
+                canvas->setTemporalOwnershipAvailable(false, Stereo::getStereo() ? "stereo" : "no_temporal_input");
+            }
             return;
         }
         bool owned = false;
+        std::string fallback = "not_requested";
         auto* renderer = dynamic_cast<osgViewer::Renderer*>(mViewer->getCamera()->getRenderer());
         const auto threading = mViewer->getThreadingModel();
-        if (TemporalMotion::ownershipEnabled() && std::string_view(osgGetVersion()) == "3.6.5"
+        osgViewer::ViewerBase::Contexts contexts;
+        mViewer->getContexts(contexts, false);
+        auto* primaryContext = mViewer->getCamera()->getGraphicsContext();
+        const bool generationDrawContext = std::string_view(osgGetVersion()) == "3.6.5"
             && renderer && (typeid(*renderer) == typeid(osgViewer::Renderer)
                 || typeid(*renderer) == typeid(SceneUtil::DrawPhaseTrace::Renderer))
-            && (typeid(*cv) == typeid(osgUtil::CullVisitor)
-                || typeid(*cv) == typeid(SceneUtil::DrawPhaseTrace::CullVisitor))
             && (threading == osgViewer::ViewerBase::DrawThreadPerContext
-                || threading == osgViewer::ViewerBase::SingleThreaded))
+                || threading == osgViewer::ViewerBase::SingleThreaded)
+            && primaryContext && primaryContext->valid() && primaryContext->getState()
+            && contexts.size() == 1 && contexts.front() == primaryContext;
+        if (TemporalMotion::ownershipEnabled() && generationDrawContext
+            && (typeid(*cv) == typeid(osgUtil::CullVisitor)
+                || typeid(*cv) == typeid(SceneUtil::DrawPhaseTrace::CullVisitor)))
         {
             // This is the actual SceneView-local visitor acquired through
             // Renderer::availableQueue, not a frame-parity approximation.
@@ -391,8 +402,38 @@ namespace MWRender
                 for (auto& canvas : mCanvases) canvas->setTemporalOwner(mTemporalCanvasOwner);
             }
         }
-        for (auto& canvas : mCanvases) canvas->setTemporalOwnershipAvailable(owned);
-        mTemporalOwnershipAvailable = owned && !mUsePostProcessing;
+        // The generation's shared initialization marker is draw-owned only
+        // under this one-context qualification. A later unsupported Fx binding
+        // can use the DYNAMIC source without clearing already-written history.
+        osg::ref_ptr<osg::StateSet> fxState;
+        if (owned)
+        {
+            // Qualify the exact updater binding types BEFORE admitting a
+            // STATIC canvas. Late world light values are finalized below.
+            fxState = mStateUpdater->ownedFrame(cv);
+            owned = fxState.valid();
+            fallback = owned ? "active" : "unsupported_fx_state";
+        }
+        else if (TemporalMotion::ownershipEnabled())
+        {
+            if (std::string_view(osgGetVersion()) != "3.6.5") fallback = "unsupported_osg";
+            else if (!renderer || (typeid(*renderer) != typeid(osgViewer::Renderer)
+                    && typeid(*renderer) != typeid(SceneUtil::DrawPhaseTrace::Renderer)))
+                fallback = "unsupported_renderer";
+            else if (typeid(*cv) != typeid(osgUtil::CullVisitor)
+                && typeid(*cv) != typeid(SceneUtil::DrawPhaseTrace::CullVisitor)) fallback = "unsupported_visitor";
+            else if (threading != osgViewer::ViewerBase::DrawThreadPerContext
+                && threading != osgViewer::ViewerBase::SingleThreaded) fallback = "unsupported_threading";
+            else if (contexts.size() != 1) fallback = "multiple_contexts";
+            else fallback = "unknown_sceneview";
+        }
+        for (auto& canvas : mCanvases)
+        {
+            canvas->setTargetGenerationSingleContext(generationDrawContext);
+            canvas->setOwnedFxState(fxState);
+            canvas->setTemporalOwnershipAvailable(owned, fallback);
+        }
+        mTemporalOwnershipAvailable = owned;
         TemporalCamera camera;
         camera.projection = cv->getProjectionMatrix();
         camera.view = cv->getCurrentCamera()->getViewMatrix();
@@ -421,6 +462,11 @@ namespace MWRender
         const unsigned frameId = cv->getTraversalNumber() % 2;
         if (mTemporalOwnershipAvailable && cv->getCurrentRenderStage())
         {
+            // HUD is culled before the world. Only now have all point lights
+            // been collected. Freeze the complete cv-local uniform/UBO data
+            // into the exact acquired leaf before Renderer publishes draw.
+            auto fxState = mStateUpdater->ownedFrame(cv);
+            PingPongCanvas::finalizeTemporalOwner(mTemporalCanvasOwner, cv, fxState);
             auto freezeBin = [&](auto&& self, osgUtil::RenderBin& bin) -> void {
                 if (const auto* callback = bin.getDrawCallback())
                 {
@@ -564,7 +610,7 @@ namespace MWRender
             createObjectsForFrame(frameId);
 
             mDirty = false;
-            mCanvases[frameId]->setPasses(Fx::DispatchArray(mTemplateData));
+            mCanvases[frameId]->setPasses(Fx::DispatchArray(mTemplateData), mTemplateTargetGeneration);
         }
 
         if ((mNormalsSupported && mNormals != mPrevNormals) || (mPassLights != mPrevPassLights))
@@ -734,6 +780,16 @@ namespace MWRender
         mPassLights = false;
 
         std::vector<Fx::Types::RenderTarget> attachmentsToDirty;
+        osgViewer::ViewerBase::Contexts contexts;
+        mViewer->getContexts(contexts, false);
+        auto* primaryContext = mViewer->getCamera()->getGraphicsContext();
+        // Initial chain setup precedes the final threading-model selection.
+        // Require an assigned single native context here; draw qualification
+        // independently checks its serialized Renderer/threading contract.
+        const bool ownedTargets = TemporalMotion::ownershipEnabled() && !Stereo::getStereo()
+            && primaryContext && primaryContext->valid() && primaryContext->getState()
+            && contexts.size() == 1 && contexts.front() == primaryContext;
+        mTemplateTargetGeneration = ownedTargets ? std::make_shared<PostFxTargetGeneration>() : nullptr;
 
         for (const auto& technique : mTechniques)
         {
@@ -748,6 +804,15 @@ namespace MWRender
             }
 
             Fx::DispatchNode node;
+
+            if (ownedTargets)
+            {
+                // A delayed acquired SceneView may still sample any old
+                // target. Replace generation objects before resizing or
+                // dirtying; never modify those retained by an unfinished draw.
+                for (auto& [name, target] : technique->getRenderTargetsMap())
+                    target.mTarget = new osg::Texture2D(*target.mTarget, osg::CopyOp::SHALLOW_COPY);
+            }
 
             node.mFlags = technique->getFlags();
 
@@ -875,7 +940,8 @@ namespace MWRender
             mTemplateData.emplace_back(std::move(node));
         }
 
-        mCanvases[frameId]->setPasses(Fx::DispatchArray(mTemplateData));
+        if (mTemplateTargetGeneration) mTemplateTargetGeneration->attachments = attachmentsToDirty;
+        mCanvases[frameId]->setPasses(Fx::DispatchArray(mTemplateData), mTemplateTargetGeneration);
 
         if (static_cast<bool>(Settings::cells().mV314PostfxCompileWarmup))
         {

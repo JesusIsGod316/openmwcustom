@@ -4,7 +4,15 @@ This implements the engine work paused at Event 161. Its preparation parent is
 `e017315a1b8ce5dce6f7156bf4ac8efe5bbab5af`, whose engine parent is the user-tested
 `651edc7bc31be01c5351733f5ab800bb9a012e8d`. The shared archive remains the authority
 for history and decisions, the ledger for benchmark evidence, and Git for source.
-This candidate makes no performance promotion and does not alter VulkanMW.
+Current user instructions take precedence over archived constraints. This
+candidate makes no performance promotion and does not alter VulkanMW.
+
+The September 29 test captures exposed a mode 9 cache-worker null dereference,
+lost writer rows, saturated resource catalogs, and mode 8 falling back with a
+custom PostFX chain. The repair adds explicit producer lifetimes to shared ICO
+jobs, bounded concurrent capture transport, a larger truthful catalog, and
+owned PostFX inputs with activation/fallback telemetry. The crash fix is shared
+correctness behavior; the terrain and temporal candidates remain selectable.
 
 ## Implemented mechanisms
 
@@ -12,10 +20,12 @@ This candidate makes no performance promotion and does not alter VulkanMW.
 | --- | --- |
 | Prove temporal lifetime before relaxing the canvas dependency | Exactly two acquired OSG 3.6.5 SceneView owners, immutable camera/resource inputs and successful-draw-only history; delayed native single/threaded pixels, repeated/skipped IDs, resize/restart and stale consumer tests. [Ownership proof](TEMPORAL-OWNERSHIP.md). |
 | Prepare composite producer dependencies | Existing OpenMW ICO prepares diffuse/blendmap textures, the actual producer program variant, destination texture and FBO. Exact revision/context/GL object and program generation are checked again before baking. Actual GL tests invalidate images, programs, targets, contexts and producer passes. |
+| Retire resource-only jobs safely in the shared cache | Explicit pending/cancelled/completed producer lifetime replaces node reference-count assumptions. The actual SceneManager worker and composite producer fixture cover partial work, completion, required fallback, abandonment, release/rebuild, teardown, ordinary node pruning and release budgets. Unknown null-subgraph jobs retain normal ICO completion. |
 | Coordinate admission without starving content | One context/frame account charges preparation and baking, repeated traversals cannot replenish it, observed expensive cost informs admission, and one shared age allowance enables bounded progress. At most eight pending maps and 32 MiB; required terrain uses the complete original bake. Pixel tests retain first/subsequent layer blend/depth/order behavior and in-flight promotion. |
 | Repair terrain leaf metadata | Ordinary geometry and TerrainDrawable's direct submission both clear and initialize pooled metadata at the actual cull seam. Tests alternate those routes through reused pools across main/refraction/shadow cameras. |
 | Attribute resources without inventing upload identity | Cull/CPU producer catalog records effective inherited texture attributes and sampler roles with OVERRIDE/PROTECTED semantics. Callback-free PreparedTerrainTexture applies give compressed-upload hooks exact numeric object/image/revision/unit state. Uninstrumented or callback-managed applies remain unknown. Bounded catalog/drop tests and exact GL hook tests cover that distinction. |
 | Repair GPU frame ownership and capture readers | Queries use draw State FrameStamp and camera; query-ring and writer losses are separate. Named-column readers ignore comment footers, reject incoherent history/input/extents and explicit loss, and preserve raw ZIPs before bounded reporting. Both real PowerShell hosts run the behavioral fixtures. |
+| Avoid loss from the disk worker's queue mutex | Phase 9 launcher arms all modes with a bounded MPSC transport: 32,768 rows, 32 MiB payload and 64 KiB per row. Producers publish owned rows without the disk worker mutex; pressure, allocation, output, close and initialization failures remain explicit. Writer sidecars and WRITER-CAPTURE.json fail closed while preserving independent complete substreams. |
 | Advance DLSS prerequisites independently | Supported opaque rigid/CPU rig/morph surfaces produce immutable deformation motion with depth agreement, conservative fallback and memory bounds. A separate process proves one Windows GL/Vulkan RGBA8 sharing contract on the intended GPU. [Interop contract and evidence](interop/README.md). |
 
 The dynamic geometry fixture also exposed a retained RigGeometry skin-to-skeleton
@@ -28,7 +38,7 @@ separate cloned actor identities. This correctness fix applies to the control to
 `OPENMW_P9_TEMPORAL_OWNERSHIP`, `OPENMW_P9_COMPOSITE_PREPARE` and
 `OPENMW_P9_DYNAMIC_MOTION` require an exact value of `1`. One public BAT exposes
 the retained seven modes and five additional isolated/combined modes. Temporal
-ownership versus original temporal mode uses the same diagnostic cost; composite
+ownership versus original temporal mode enables the same diagnostic channels; composite
 versus reference uses the common foundation. The shipped README defines the
 comparison matrix.
 
@@ -44,6 +54,14 @@ image. Multiple images, truncated labels/bindings or saturation produce explicit
 uncovered counts. It is a diagnostic scope with selected extension hooks; direct
 core GL and driver internals are not intercepted. Largest local labels are not
 proof of duplicate allocation or of the actual timed upload.
+
+Deep tracing defaults to 131,072 resource descriptors, bounded between 32,768
+and 262,144 by OPENMW_P9_RESOURCE_CAPACITY. The supplied largest trace retained
+32,768 descriptors and rejected 92,064 attempts, so at most 124,832 distinct
+descriptors could have occurred. This is a capacity bound, not proof that unseen
+rows were unique. Camera/material/unit/image revision and byte size remain part
+of the truthful identity; capacity and allocation failures are reported. Normal
+untraced runs allocate no resource catalog.
 
 `ConsumerFrame` is valid for its exact draw owner only. Its motion texture can be
 rewritten by the next draw; future asynchronous external consumers require

@@ -3,10 +3,61 @@
 This candidate is independently selected by `OPENMW_P9_TEMPORAL_OWNERSHIP=1`.
 The ordinary canvas stays DYNAMIC as the fallback. Only a verified, acquired
 SceneView's immutable native-presentation submission is STATIC. Actors and the
-global dynamic completion barrier are unchanged. Custom mutable PostFX chains,
-stereo, other thread models, unknown renderer visitors and other OSG versions
-retain the fallback. This scope is deliberate: the temporal camera's frame ID
-alone does not prove ownership of arbitrary mutable PostFX state.
+global dynamic completion barrier are unchanged. Supported mono PostFX chains
+capture private pass/root uniforms and the exact global uniform/UBO and point-light
+inputs after world cull. Stereo, other thread models, unknown renderer visitors,
+unknown state bindings and other OSG versions retain the fallback. The temporal
+camera's frame ID alone does not prove ownership of mutable PostFX state.
+
+ownership_requested, ownership_active and ownership_fallback_reason report the
+actual acquired submission, independently of the launch mode. A requested path
+that falls back preserves valid camera motion but cannot count as an ownership
+performance result. The earlier custom-PostFX mode 8 capture was a fallback.
+
+Each acquired canvas copies the pass order, flags, names, uniforms, their backing
+arrays and resource references. Fx::Pass creates a new Program with copied Shader
+sources for each dispatch build, so technique reload cannot alter already captured programs.
+ShaderManager hot reload and global-define changes retain their existing viewer
+thread stop/start protection. Candidate technique target rebuilds create fresh
+textures before changing sizes or dirtying GL objects. Captured generation records
+have five fixed holders: two acquired canvases, two legacy source canvases and the
+current rebuild template. No retained-generation queue grows through reloads;
+this bound excludes textures retained by the ordinary technique/asset cache.
+Custom target history is initialized once per generation and serialized context.
+
+The global FX state is first qualified before accepting a STATIC leaf, then its
+exact placeholder StateSet is filled after world cull and before draw publication.
+This captures late collected point lights. The current traversal selects provider
+light arrays explicitly, even when the same visitor returns on a different frame
+parity. Known UBO data receives private storage. A slot reuses its compatible GPU
+buffer only after that exact SceneView's preceding draw has retired, avoiding a
+new GPU buffer each frame. Unknown bindings use the fallback.
+Context release visits retained owner canvases as well as the ordinary graph.
+Internal source-canvas programs, FBOs and textures are released too. Context
+teardown clears generation initialization; the next eligible DYNAMIC or owned
+draw initializes that generation once. Switching to a DYNAMIC fallback on the
+same supported context preserves already initialized target history. Unknown
+or multiple-context paths keep the legacy initialization list and do not access
+the shared generation marker.
+
+The captured FX inputs also remain on the inherited state stack throughout the
+canvas draw. In OSG 3.6.5, applying the leaf's final StateSet alone does not push
+its uniforms and UBO bindings onto that stack. Internal PostFX applications could
+otherwise restore live ancestor values. This scoped draw state contains only FX
+inputs; it excludes the leaf's presentation viewport so intermediate passes keep
+their own viewport. It is removed on every return and during exception unwinding.
+
+The game-linked `p9-postfx-ownership` tests exercise the actual canvas and FX
+updater, user/pass uniforms, late world point lights, private UBO storage,
+retained target generations, intermediate/presentation viewports, actual
+luminance passes and NIS presentation. Serial and DrawThreadPerContext cases
+cover a delayed draw while the other acquired SceneView culls, repeated/skipped
+frame IDs, resize/rebuild, same-generation DYNAMIC fallback, serialized native
+context teardown/ID reuse and target reinitialization. The `-uniforms` variants
+use scalar/array global uniforms instead of UBOs. These are synthetic production
+canvas fixtures; they do not validate the user's complete modded PostFX chain.
+Fresh result logs and the bounded MSVC AddressSanitizer scope are indexed in
+the delivered Validation directory.
 
 The proof uses the pinned upstream **OpenSceneGraph 3.6.5** implementation:
 
@@ -114,4 +165,7 @@ pixel tests validate separate object/deformation motion with a static camera,
 snapshot retention, reset/new-visibility, occlusion and conservative fallback.
 Their real direct-child rig fixture also exposed and fixed an existing skin-to-
 skeleton iterator overrun when the skin root preceded the skeleton in its path;
-MSVC AddressSanitizer verifies that case and the independent cloned-actor identity.
+the retained MSVC AddressSanitizer evidence covers that earlier repair and the
+independent cloned-actor identity. Fresh native and CI results are indexed in the
+delivered Validation directory; historical sanitizer evidence is not a new
+whole-game sanitizer run.
