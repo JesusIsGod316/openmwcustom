@@ -33,6 +33,27 @@ namespace
     }
     struct Unsupported : std::runtime_error { using std::runtime_error::runtime_error; };
 
+    class CallerStateScope
+    {
+    public:
+        CallerStateScope(osg::State& state, const osg::StateSet& caller) : mState(state)
+        {
+            mState.pushStateSet(&caller);
+            mState.apply();
+        }
+        ~CallerStateScope() { if (mActive) restore(); }
+        void restore()
+        {
+            mState.popStateSet();
+            mState.apply();
+            mState.disableAllVertexArrays();
+            mActive = false;
+        }
+    private:
+        osg::State& mState;
+        bool mActive = true;
+    };
+
     void cacheOnly()
     {
         osg::ref_ptr<Resource::OpenMWIncrementalCompileOperation> ico
@@ -191,6 +212,34 @@ int main(int argc, char** argv) try
     osg::ref_ptr<osg::FrameStamp> stamp = new osg::FrameStamp;
     state.setFrameStamp(stamp);
     osg::RenderInfo info(&state, nullptr);
+    // Real composite rendering runs inside caller state. The empty Program
+    // deliberately owns no PCP, so a stale source PCP is observable without
+    // depending on whether the allocator reuses its former Program address.
+    osg::ref_ptr<osg::StateSet> caller = new osg::StateSet;
+    osg::ref_ptr<osg::Program> callerProgram = new osg::Program;
+    caller->setAttributeAndModes(callerProgram, osg::StateAttribute::ON);
+    caller->setMode(GL_BLEND, osg::StateAttribute::ON);
+    CallerStateScope callerScope(state, *caller);
+    auto callerRestored = [&] {
+        GLint program = -1;
+        glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+        require(state.getStateSetStackSize() == 1
+            && state.getLastAppliedAttribute(osg::StateAttribute::PROGRAM) == callerProgram.get()
+            && state.getLastAppliedProgramObject() == nullptr && program == 0
+            && state.getLastAppliedMode(GL_BLEND),
+            "composite bake did not restore caller state before releasing its source Program/PCP");
+        const auto* arrays = state.getCurrentVertexArrayState();
+        auto retiredArray = [](const osg::VertexArrayState::ArrayDispatch* dispatch) {
+            return !dispatch || (!dispatch->array && !dispatch->active && dispatch->modifiedCount == 0xffffffff);
+        };
+        require(arrays && retiredArray(arrays->_vertexArray) && retiredArray(arrays->_normalArray)
+            && retiredArray(arrays->_colorArray)
+            && std::all_of(arrays->_texCoordArrays.begin(), arrays->_texCoordArrays.end(),
+                [&](const auto& dispatch) { return retiredArray(dispatch.get()); })
+            && glIsEnabled(GL_VERTEX_ARRAY) == GL_FALSE
+            && glIsEnabled(GL_TEXTURE_COORD_ARRAY) == GL_FALSE,
+            "composite bake retained client-array dispatchers after releasing source geometry");
+    };
 
     Resource::OpenMWCompileSchedulerConfig config;
     config.mMode = 1; config.mCompositePreparation = true; config.mTargetFrameRate = 1;
@@ -281,6 +330,7 @@ int main(int argc, char** argv) try
     require(queued() == 0 && complete.map->mDrawables.empty() && complete.map->mCompiled == 1
         && !complete.map->mPreparation && renderer->preparationStats().pendingBytes == 0,
         "completed composite retained queued/source preparation resources");
+    callerRestored();
     const auto expected = pixel(*complete.map->mTexture, state);
     require(expected == std::array<unsigned char, 4>{64, 128, 192, 255}, "prepared composite pixels changed");
 
@@ -293,6 +343,7 @@ int main(int argc, char** argv) try
     require(queued() == 0 && required.map->mDrawables.empty() && required.map->mCompiled == 1
         && renderer->preparationStats().pendingBytes == 0,
         "required fallback did not retire pending resource-only work");
+    callerRestored();
     require(pixel(*required.map->mTexture, state) == expected, "required fallback lost complete terrain content");
 
     MapFixture abandoned;
@@ -318,7 +369,22 @@ int main(int argc, char** argv) try
     require(released.map->mDrawables.empty() && queued() == 0
         && renderer->preparationStats().pendingBytes == 0,
         "GL release prevented demanded terrain from rebuilding");
+    callerRestored();
     require(pixel(*released.map->mTexture, state) == expected, "release/rebuild changed terrain content");
+
+    // The same temporary source retirement also occurs on the original bake.
+    MapFixture legacy;
+    osg::ref_ptr<Terrain::CompositeMapRenderer> legacyRenderer = new Terrain::CompositeMapRenderer;
+    legacyRenderer->setMinimumTimeAvailableForCompile(.1);
+    legacyRenderer->addCompositeMap(legacy.map, true);
+    stamp->setFrameNumber(frame++);
+    context->clear();
+    legacyRenderer->drawImplementation(info);
+    require(legacy.map->mDrawables.empty() && legacy.map->mCompiled == 1 && queued() == 0,
+        "original composite bake did not complete its temporary source retirement");
+    callerRestored();
+    require(pixel(*legacy.map->mTexture, state) == expected, "original composite bake changed terrain content");
+    legacyRenderer->releaseGLObjects(&state);
 
     MapFixture teardown;
     osg::ref_ptr<Terrain::CompositeMapRenderer> temporary = new Terrain::CompositeMapRenderer;
@@ -343,11 +409,13 @@ int main(int argc, char** argv) try
     renderer->releaseGLObjects(&state);
     sceneManager.setIncrementalCompileOperation(nullptr);
     ico->removeContexts(contexts);
+    callerScope.restore();
     require(glGetError() == GL_NO_ERROR, "GL error during actual cache/preparation integration");
     context->releaseContext(); context->close(true);
     std::cout << "PASS: real SceneManager maintenance with pending/partial/completed composite preparation, "
                  "required fallback, cancellation, release/rebuild, teardown, budget, ordinary Terrain pruning "
-                 "and unknown null-subgraph completion\n";
+                 "and unknown null-subgraph completion, caller Program/PCP restoration and client-array retirement "
+                 "on prepared and original bakes\n";
 }
 catch (const Unsupported& error)
 {

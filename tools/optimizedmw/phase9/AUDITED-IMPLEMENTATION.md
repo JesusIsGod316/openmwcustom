@@ -33,6 +33,16 @@ traversal overrun for a direct child with equal empty root names. The bounded
 ordered-iterator fix is exercised by the actual Skeleton/RigGeometry test, with
 separate cloned actor identities. This correctness fix applies to the control too.
 
+The actual terrain fixture exposed a second lifetime defect at the direct bake
+seam: popping a temporary StateSet did not apply the restored caller state before
+the one-shot producer Program was released. OSG could retain raw Program/PCP
+pointers and later dereference them after address reuse. Each bake now restores
+the caller while the producer is alive and clears temporary client-array
+dispatchers before retiring geometry. Cleanup costs are charged to state and bake
+timings. The fixture asserts caller restoration and array retirement for both the
+original and prepared paths; this is separate from the user capture's cache-worker
+null dereference and makes no claim about its crash stack.
+
 ## Controls and retained boundaries
 
 `OPENMW_P9_TEMPORAL_OWNERSHIP`, `OPENMW_P9_COMPOSITE_PREPARE` and

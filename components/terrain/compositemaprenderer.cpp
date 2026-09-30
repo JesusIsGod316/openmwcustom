@@ -735,8 +735,21 @@ namespace Terrain
                 ++telemetry->drawables;
             }
 
+            const auto restoreStart = telemetry ? Debug::V3Diagnostics::Clock::now()
+                                                : Debug::V3Diagnostics::Clock::time_point{};
             if (stateset)
+            {
                 renderInfo.getState()->popStateSet();
+                // State caches the last applied Program and PCP as raw pointers.
+                // Restore the caller while this one-shot pass still owns them;
+                // completing the map below can release its last source owner.
+                renderInfo.getState()->apply();
+            }
+            // Composite quads use client arrays. Clear the dispatchers' raw
+            // Array pointers before these temporary geometries can be retired.
+            state.disableAllVertexArrays();
+            if (telemetry)
+                telemetry->stateMs += Debug::V3Diagnostics::elapsedMs(restoreStart);
 
             if (preparationActive)
             {

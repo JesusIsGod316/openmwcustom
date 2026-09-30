@@ -8,6 +8,9 @@ The mode 9 resource-only compile lifetime is explicit and the shared cache
 worker does not dereference an absent scene node. Actual cache-worker and
 terrain-composite integration fixtures cover resource-only and ordinary jobs,
 completion, cancellation, abandonment, release and required fallback.
+Direct composite baking also restores caller shader state and clears temporary
+client arrays before retiring producer resources. Both control and prepared
+paths have actual GL assertions for this lifetime boundary.
 
 Supported custom PostFX uses acquired SceneView snapshots with private uniforms
 and UBOs, retained target generations and scoped inherited FX state throughout
