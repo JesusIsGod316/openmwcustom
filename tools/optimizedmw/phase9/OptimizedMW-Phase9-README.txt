@@ -67,7 +67,10 @@ not prove production color/depth/motion sharing or a playable DLSS integration.
 RUNTIME VALIDATION
 Use the same executable and save/location, identical assets/settings, separate
 cold and warm runs, and whole-frame tails rather than isolated pass timings.
-Test 2 versus 8, 1 versus 9, then 10 and the isolated 11 motion candidate.
+Test 2 versus 8 for ownership and 1 versus 9 for terrain preparation.
+Compare 10 versus 2 for the combined candidate, or 10 versus 8 to isolate terrain
+preparation with ownership enabled in both. Compare 11 versus 8 to isolate
+dynamic motion; mode 11 also enables temporal inputs and ownership.
 Exercise resize/fullscreen, cell transitions, camera cuts and moving actors.
 Do not carry old benchmark claims onto this binary. No FPS gain is claimed here.
 

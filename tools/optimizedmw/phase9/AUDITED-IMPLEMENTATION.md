@@ -82,9 +82,11 @@ the precise fixture source. A software skip never proves shared-image pixels.
 
 First compare candidate reference against the old 651edc7b control with identical
 assets, save, route, cap, resolution, power/thermal conditions and settings. Then
-compare the same candidate executable's 2/8 temporal pair and 1/9 composite pair,
-followed by combined mode 10. Keep cold resource runs separate from warm routes.
-Use mode 11 to inspect supported moving geometry independently. Exercise resize,
+compare the same candidate executable's 2/8 temporal pair and 1/9 composite pair.
+Compare 2/10 for the combined candidate, or 8/10 to isolate composite preparation
+with ownership enabled in both. Compare 8/11 to isolate supported moving geometry;
+mode 11 also enables temporal inputs and ownership. Keep cold resource runs separate
+from warm routes. Exercise resize,
 fullscreen, cuts, cell transitions, water/shadows and first-person rendering.
 
 Measure whole-frame median/p95/p99, >33/>50 ms tails and hitch clusters, queue
