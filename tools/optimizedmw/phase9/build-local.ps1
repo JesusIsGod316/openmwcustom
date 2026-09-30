@@ -8,13 +8,18 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $visualStudio = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools'
-Import-Module (Join-Path $visualStudio 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
-Enter-VsDevShell -VsInstallPath $visualStudio -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
+if (-not $env:VSINSTALLDIR -or $env:VSCMD_ARG_TGT_ARCH -ne 'x64' -or
+    $env:VSINSTALLDIR.TrimEnd('\') -ne $visualStudio.TrimEnd('\')) {
+    Import-Module (Join-Path $visualStudio 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
+    Enter-VsDevShell -VsInstallPath $visualStudio -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
+}
 $cmake = Join-Path $visualStudio 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
 $ninja = Join-Path $visualStudio 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
 $ctest = Join-Path (Split-Path -Parent $cmake) 'ctest.exe'
 $installed = Join-Path $DependencyDirectory 'installed\x64-windows'
-$env:PATH = "$installed\bin;$installed\bin\Release;$(Join-Path $SdlDirectory 'lib\x64');$env:PATH"
+foreach ($runtimeDirectory in @((Join-Path $SdlDirectory 'lib\x64'), "$installed\bin\Release", "$installed\bin")) {
+    if (($env:PATH -split ';') -notcontains $runtimeDirectory) { $env:PATH = "$runtimeDirectory;$env:PATH" }
+}
 if ($Stage -eq 'Configure') {
     foreach ($required in @($cmake,$ninja,(Join-Path $installed 'include\osg\Version'),(Join-Path $SdlDirectory 'include\SDL3\SDL.h'))) {
         if (-not (Test-Path -LiteralPath $required)) { throw "Required native dependency missing: $required" }

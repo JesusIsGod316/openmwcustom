@@ -8,16 +8,22 @@ param(
 $ErrorActionPreference = 'Stop'
 $sourceDirectory = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $visualStudio = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools'
-Import-Module (Join-Path $visualStudio 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
-Enter-VsDevShell -VsInstallPath $visualStudio -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
+if (-not $env:VSINSTALLDIR -or $env:VSCMD_ARG_TGT_ARCH -ne 'x64' -or
+    $env:VSINSTALLDIR.TrimEnd('\') -ne $visualStudio.TrimEnd('\')) {
+    Import-Module (Join-Path $visualStudio 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
+    Enter-VsDevShell -VsInstallPath $visualStudio -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
+}
 $cmakeDirectory = Join-Path $visualStudio 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
 $cmake = Join-Path $cmakeDirectory 'cmake.exe'
 $ninja = Join-Path $visualStudio 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
 $installed = Join-Path $DependencyDirectory 'installed\x64-windows'
-$env:PATH = "$installed\bin;$installed\bin\Release;$env:PATH"
+foreach ($runtimeDirectory in @("$installed\bin\Release", "$installed\bin")) {
+    if (($env:PATH -split ';') -notcontains $runtimeDirectory) { $env:PATH = "$runtimeDirectory;$env:PATH" }
+}
 if (Test-Path -LiteralPath (Join-Path $BuildDirectory '_deps')) {
     foreach ($sdl in (Get-ChildItem -LiteralPath (Join-Path $BuildDirectory '_deps') -Directory -Filter 'SDL3-*')) {
-        $env:PATH = "$(Join-Path $sdl.FullName 'lib\x64');$env:PATH"
+        $runtimeDirectory = Join-Path $sdl.FullName 'lib\x64'
+        if (($env:PATH -split ';') -notcontains $runtimeDirectory) { $env:PATH = "$runtimeDirectory;$env:PATH" }
     }
 }
 $env:PKG_CONFIG_PATH = "$installed\lib\pkgconfig;$installed\share\pkgconfig"
