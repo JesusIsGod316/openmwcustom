@@ -1,0 +1,37 @@
+name: OptimizedMW Phase 9 isolated workspace
+on:
+  push:
+    branches: [optimizedmw/phase9-audited-work]
+    paths: [.github/workflows/optimizedmw-phase9-workspace.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  Workspace:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 651edc7bc31be01c5351733f5ab800bb9a012e8d
+          fetch-depth: 1
+      - name: Export pinned source and native SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p workspace/debs
+          git archive --format=tar HEAD > workspace/source-651edc7b.tar
+          git ls-tree -r HEAD > workspace/source-tree.txt
+          git rev-parse HEAD HEAD^{tree} > workspace/source-identity.txt
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libopenscenegraph-dev libbullet-dev libmygui-dev libglm-dev libboost-filesystem-dev libboost-system-dev libboost-thread-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libluajit-5.1-dev liblz4-dev xvfb
+          cd workspace/debs
+          apt-get download libopenscenegraph-dev libopenscenegraph161 libopenthreads-dev libopenthreads21 libbullet-dev libbullet3.24 libmygui-dev libmyguiengine3debian1v5 libglm-dev libgl-dev libglx-dev libglu1-mesa-dev libglu1-mesa libglvnd-dev libgl1-mesa-dev libegl-dev libgles-dev libgles1 libgles2 libglvnd-core-dev libboost-filesystem1.83-dev libboost-filesystem1.83.0 libboost-system1.83-dev libboost-system1.83.0 libboost-thread1.83-dev libboost-thread1.83.0 libboost-atomic1.83-dev libboost-atomic1.83.0 libboost-chrono1.83-dev libboost-chrono1.83.0 libboost-date-time1.83-dev libboost-serialization1.83-dev libboost-serialization1.83.0 libboost1.83-dev liblua5.2-0 libcollada-dom2.5-dp0 libcoin80c libpoppler-glib8 libjpeg8 libjpeg-turbo8 libtiff6 libboost-iostreams1.83.0 || true
+          cp -a /opt/microsoft/powershell/7 ../powershell || true
+          cd ../..
+          tar -czf workspace/native-headers.tar.gz -C /usr/include osg osgDB osgGA osgUtil osgViewer osgText osgAnimation osgParticle osgShadow osgFX osgSim OpenThreads bullet MYGUI glm 2>/dev/null || true
+          sha256sum workspace/source-651edc7b.tar workspace/native-headers.tar.gz > workspace/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OptimizedMW-651edc7b-workspace
+          path: workspace/
+          retention-days: 7
