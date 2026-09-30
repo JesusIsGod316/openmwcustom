@@ -155,3 +155,12 @@ add_executable(p9-gl-hook-contract gl-hook-contract-tests.cpp)
 target_link_libraries(p9-gl-hook-contract PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
 add_test(NAME p9-gl-hook-contract COMMAND p9-gl-hook-contract ${CMAKE_CURRENT_BINARY_DIR}/gl-hook-contract)
 set_tests_properties(p9-gl-hook-contract PROPERTIES TIMEOUT 30)
+
+if(NOT MSVC)
+  # These production diagnostic/deformation headers retain u8path for their
+  # cross-platform UTF-8 contract. GCC 13 deprecates that C++17 helper in C++20;
+  # preserve the warning without changing legacy Windows path behavior here.
+  foreach(target p9-gpu-owner p9-composite-preparation p9-temporal-dynamic)
+    target_compile_options(${target} PRIVATE -Wno-error=deprecated-declarations)
+  endforeach()
+endif()
