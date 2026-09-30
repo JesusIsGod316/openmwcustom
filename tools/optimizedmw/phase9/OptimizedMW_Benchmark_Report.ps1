@@ -53,6 +53,7 @@ namespace Phase9 {
     if(fi<0||wi<0||oi<0)throw new FormatException("Missing frame/wall/other columns");
     Cluster current=null;uint? previousOther=null;string line;
     while((line=reader.ReadLine())!=null){
+     if(line.StartsWith("#")||string.IsNullOrWhiteSpace(line))continue;
      if(all.Count>=2000000)throw new InvalidOperationException("Frame report exceeds two-million-row safety bound; raw files retained");
      try {
       var row=Csv(line);uint frame=uint.Parse(row[fi],CI);double wall=Number(row[wi]);
@@ -81,7 +82,7 @@ namespace Phase9 {
     for(int i=0;i<headers.Length;i++)if(new[]{"frame","frame_number","frameNumber","osg_frame"}.Contains(headers[i])){index=i;break;}
     if(index<0)return "no_supported_frame_column";
     writer.WriteLine(first);string line;long read=0,selected=0,bad=0;
-    while((line=reader.ReadLine())!=null){read++;try{var row=Csv(line);uint frame;if(index<row.Length&&uint.TryParse(row[index],out frame)&&frames.Contains(frame)){writer.WriteLine(line);selected++;}}catch(FormatException){bad++;}}
+    while((line=reader.ReadLine())!=null){if(line.StartsWith("#")||string.IsNullOrWhiteSpace(line))continue;read++;try{var row=Csv(line);uint frame;if(index<row.Length&&uint.TryParse(row[index],out frame)&&frames.Contains(frame)){writer.WriteLine(line);selected++;}}catch(FormatException){bad++;}}
     return "read="+read+";selected="+selected+";malformed="+bad;
    }
   }

@@ -321,11 +321,17 @@ namespace MWRender
         if (getenv("OPENMW_DONT_PRECOMPILE") == nullptr)
         {
             osg::ref_ptr<osgUtil::IncrementalCompileOperation> ico;
-            const int p4CompileSchedulerMode
-                = static_cast<int>(Settings::cells().mOptimizedMWCompileSchedulerMode);
+            const bool p9CompositePreparation = [] {
+                const char* value = std::getenv("OPENMW_P9_COMPOSITE_PREPARE");
+                return value && std::string_view(value) == "1";
+            }();
+            const int configuredCompileScheduler = static_cast<int>(Settings::cells().mOptimizedMWCompileSchedulerMode);
+            const int p4CompileSchedulerMode = p9CompositePreparation && configuredCompileScheduler == 0
+                ? 2 : configuredCompileScheduler;
             if (p4CompileSchedulerMode > 0)
             {
                 Resource::OpenMWCompileSchedulerConfig config;
+                config.mCompositePreparation = p9CompositePreparation;
                 config.mMode = p4CompileSchedulerMode;
                 config.mTargetFrameRate = static_cast<double>(Settings::cells().mTargetFramerate);
                 config.mMaxBudgetMs

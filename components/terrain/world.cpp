@@ -6,6 +6,7 @@
 #include <components/debug/v36gpuprofiler.hpp>
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/scenemanager.hpp>
+#include <components/resource/openmwcompileoperation.hpp>
 #include <components/settings/values.hpp>
 
 #include "chunkmanager.hpp"
@@ -13,6 +14,9 @@
 #include "heightcull.hpp"
 #include "storage.hpp"
 #include "texturemanager.hpp"
+
+#include <cstdlib>
+#include <string_view>
 
 namespace Terrain
 {
@@ -46,11 +50,16 @@ namespace Terrain
 
         mCompositeMapRenderer = new CompositeMapRenderer;
         mCompositeMapRenderer->setCooperativeBackgroundCompile(Settings::cells().mOptimizedMWCompositeSlicing);
+        const char* preparationOption = std::getenv("OPENMW_P9_COMPOSITE_PREPARE");
+        if (preparationOption && std::string_view(preparationOption) == "1")
+            mCompositeMapRenderer->configurePreparation(dynamic_cast<Resource::OpenMWIncrementalCompileOperation*>(
+                mResourceSystem->getSceneManager()->getIncrementalCompileOperation()));
         compositeCam->addChild(mCompositeMapRenderer);
 
         mParent->addChild(mTerrainRoot);
 
-        mTextureManager = std::make_unique<TextureManager>(mResourceSystem->getSceneManager(), expiryDelay, Settings::cells().mOptimizedMWCanonicalTerrainTextures);
+        mTextureManager = std::make_unique<TextureManager>(mResourceSystem->getSceneManager(), expiryDelay,
+            Settings::cells().mOptimizedMWCanonicalTerrainTextures || mCompositeMapRenderer->preparationEnabled());
         mChunkManager = std::make_unique<ChunkManager>(mStorage, mResourceSystem->getSceneManager(),
             mTextureManager.get(), mCompositeMapRenderer, mWorldspace, expiryDelay);
         mChunkManager->setNodeMask(nodeMask);

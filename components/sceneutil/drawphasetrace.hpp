@@ -25,6 +25,11 @@
 #include <memory>
 #include <string>
 #include <typeinfo>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
+#include <map>
+#include <algorithm>
 
 namespace SceneUtil::DrawPhaseTrace
 {
@@ -62,10 +67,54 @@ namespace SceneUtil::DrawPhaseTrace
     class Capture
     {
     public:
+        struct ResourceRow
+        {
+            unsigned firstFrame=0, lastFrame=0, context=~0u, unit=0, imageRevision=0, scope=0;
+            std::uint64_t texture=0, image=0, stateSet=0, submitCamera=0, bytes=0, labelHash=0;
+            std::array<char,32> textureClass{};
+            std::array<char,256> filename{};
+            std::array<char,128> semanticRole{};
+        };
+        void catalogResource(const ResourceRow& row)
+        {
+            if (!mResources) return;
+            std::lock_guard<std::mutex> lock(mResourceMutex);
+            const ResourceKey key{row.texture,row.image,row.stateSet,row.submitCamera,row.labelHash,
+                row.context,row.unit,row.imageRevision,row.scope};
+            const auto existing=mResourceIndex.find(key);
+            if(existing!=mResourceIndex.end())
+            {
+                auto& value=(*mResources)[existing->second];
+                value.firstFrame=std::min(value.firstFrame,row.firstFrame);
+                value.lastFrame=std::max(value.lastFrame,row.lastFrame);
+                return;
+            }
+            if(mResourceIndex.size()>=ResourceCapacity)
+            {
+                mResourceDropped.fetch_add(1,std::memory_order_relaxed);
+                return;
+            }
+            const std::size_t index=mResourceIndex.size();
+            (*mResources)[index]=row;
+            mResourceIndex.emplace(key,index);
+        }
+        void noteResourceUncovered() { mResourceDropped.fetch_add(1,std::memory_order_relaxed); }
+        std::uint64_t resourceDropped() const { return mResourceDropped.load(std::memory_order_relaxed); }
+        std::size_t resourceCount() const
+        {
+            std::lock_guard<std::mutex> lock(mResourceMutex);
+            return mResourceIndex.size();
+        }
+        ResourceRow resource(std::size_t index) const
+        {
+            std::lock_guard<std::mutex> lock(mResourceMutex);
+            return mResources && index<mResourceIndex.size() ? (*mResources)[index] : ResourceRow{};
+        }
         struct Row
         {
             unsigned frame = 0, context = 0;
             std::uint64_t drawable = 0, camera = 0, stateSet = 0, nodePathHash = 0;
+            std::uint64_t submitCamera = 0;
             std::uint64_t texture0Bytes = 0, texture1Bytes = 0;
             std::int64_t startNs = 0;
             double matricesMs = 0, stateMs = 0, drawMs = 0, retireMs = 0;
@@ -75,6 +124,7 @@ namespace SceneUtil::DrawPhaseTrace
             std::array<char, 64> ownerName{};
             std::array<char, 32> ownerClass{};
             std::array<char, 48> cameraName{};
+            std::array<char, 48> submitCameraName{};
             std::array<char, 32> drawableClass{};
             std::array<char, 128> texture0{};
             std::array<char, 128> texture1{};
@@ -117,9 +167,9 @@ namespace SceneUtil::DrawPhaseTrace
                 auto& t = mTotals[row.context];
                 ++t.calls; t.matricesMs += row.matricesMs; t.stateMs += row.stateMs;
                 t.drawMs += row.drawMs; t.retireMs += row.retireMs;
-                if (row.cameraBucket < mCameraTotals.size())
+                if (row.cameraBucket < CameraBucketCount)
                 {
-                    auto& camera = mCameraTotals[row.cameraBucket];
+                    auto& camera = mCameraTotals[row.context][row.cameraBucket];
                     ++camera.calls; camera.matricesMs += row.matricesMs; camera.stateMs += row.stateMs;
                     camera.drawMs += row.drawMs; camera.retireMs += row.retireMs;
                 }
@@ -142,7 +192,7 @@ namespace SceneUtil::DrawPhaseTrace
                 std::ofstream out(mPath);
                 out << "frame,context,drawable,matrices_ms,state_ms,draw_ms,retire_ms,dynamic,name,camera,stateset,start_ns,"
                     << "camera_name,drawable_class,camera_bucket,node_path_hash,owner_name,owner_class,vertices,primitive_sets,"
-                    << "texture0,texture0_bytes,texture1,texture1_bytes\n" << std::setprecision(8);
+                    << "texture0,texture0_bytes,texture1,texture1_bytes,submit_camera,submit_camera_name\n" << std::setprecision(8);
                 for (std::size_t i = 0; i < count(); ++i)
                 {
                     const auto& r = (*mRows)[i];
@@ -166,7 +216,9 @@ namespace SceneUtil::DrawPhaseTrace
                     for(char c:r.texture0) { if(!c)break;if(c=='"')out<<'"';out<<c; }
                     out<<"\","<<r.texture0Bytes<<",\"";
                     for(char c:r.texture1) { if(!c)break;if(c=='"')out<<'"';out<<c; }
-                    out<<"\","<<r.texture1Bytes<<'\n';
+                    out<<"\","<<r.texture1Bytes<<','<<r.submitCamera<<",\"";
+                    for(char c:r.submitCameraName) { if(!c)break;if(c=='"')out<<'"';out<<c; }
+                    out<<"\"\n";
                 }
                 for(auto& frame:mCurrentFrame) if(frame.totals.calls) saveFrame(frame);
                 std::ofstream frames(mPath+".frames.csv");
@@ -190,6 +242,11 @@ namespace SceneUtil::DrawPhaseTrace
                     << "\nframe_rows_dropped=" << (mFrameCount>FrameCapacity?mFrameCount-FrameCapacity:0)
                     << "\nvalid_leaf_capture=" << (calls && !mUncovered.load() && mCount<=Capacity && mFrameCount<=FrameCapacity ? 1:0)
                     << "\nrenderer_rows_dropped=" << (mOuterCount>FrameCapacity?mOuterCount-FrameCapacity:0)
+                    << "\nresource_catalog_rows=" << mResourceIndex.size()
+                    << "\nresource_catalog_dropped_attempts=" << mResourceDropped.load()
+                    << "\nresource_catalog_scope=effective_cull_materials_and_terrain_composite_producer_layers"
+                    << "\nresource_source_image_scope=first_source_image_per_effective_texture_attribute"
+                    << "\nresource_unknown_context=4294967295_resource_scope_1_cull_2_composite_producer"
                     << "\nscope=instrumented_render_leaves_not_renderstage_setup_swap_or_gpu_time\n"
                     << "renderer_kind=1_draw_including_queue_wait_6_cull_draw_7_compile_nested_do_not_sum\n"
                     << "last_leaf_frame=last_observed_not_a_claim_all_outer_work_belongs_to_that_frame\n";
@@ -202,18 +259,57 @@ namespace SceneUtil::DrawPhaseTrace
                     if (t.calls) status << "context=" << i << " calls=" << t.calls << " matrices_ms=" << t.matricesMs
                         << " state_ms=" << t.stateMs << " draw_ms=" << t.drawMs << " retire_ms=" << t.retireMs << '\n';
                 }
-                for (unsigned i = 0; i < mCameraTotals.size(); ++i)
+                for (unsigned i = 0; i < CameraBucketCount; ++i)
                 {
-                    const auto& t = mCameraTotals[i];
+                    Totals t;
+                    for(const auto& context : mCameraTotals) {
+                        const auto& camera=context[i];t.calls+=camera.calls;t.matricesMs+=camera.matricesMs;
+                        t.stateMs+=camera.stateMs;t.drawMs+=camera.drawMs;t.retireMs+=camera.retireMs;
+                    }
                     if (t.calls) status << "camera_bucket=" << cameraBucketName(i) << " calls=" << t.calls
                         << " matrices_ms=" << t.matricesMs << " state_ms=" << t.stateMs
                         << " draw_ms=" << t.drawMs << " retire_ms=" << t.retireMs << '\n';
+                }
+                std::ofstream resources(mPath+".resources.csv");
+                resources<<"first_frame,last_frame,context,texture_unit,texture,image,image_revision,stateset,submit_camera,"
+                    "bytes,scope,texture_class,filename,semantic_role\n";
+                auto quoted=[&resources](const auto& value) {
+                    resources<<'"';
+                    for(char character:value) { if(!character)break;if(character=='"')resources<<'"';resources<<character; }
+                    resources<<'"';
+                };
+                for(std::size_t i=0;i<mResourceIndex.size();++i)
+                {
+                    const auto& row=(*mResources)[i];
+                    resources<<row.firstFrame<<','<<row.lastFrame<<','<<row.context<<','<<row.unit<<','<<row.texture<<','
+                        <<row.image<<','<<row.imageRevision<<','<<row.stateSet<<','<<row.submitCamera<<','<<row.bytes<<','
+                        <<row.scope<<',';
+                    quoted(row.textureClass);resources<<',';quoted(row.filename);resources<<',';
+                    quoted(row.semanticRole);resources<<'\n';
                 }
             }
             catch (...) {}
         }
     private:
         static constexpr std::size_t Capacity = 32768, FrameCapacity = 65536;
+        static constexpr std::size_t ResourceCapacity=32768;
+        struct ResourceKey
+        {
+            std::uint64_t texture,image,stateSet,submitCamera,labelHash;
+            unsigned context,unit,imageRevision,scope;
+            friend bool operator==(const ResourceKey&,const ResourceKey&)=default;
+        };
+        struct ResourceKeyHash
+        {
+            std::size_t operator()(const ResourceKey& key) const
+            {
+                std::uint64_t hash=1469598103934665603ull;
+                for(const auto value:{key.texture,key.image,key.stateSet,key.submitCamera,key.labelHash,
+                    std::uint64_t(key.context),std::uint64_t(key.unit),std::uint64_t(key.imageRevision),std::uint64_t(key.scope)})
+                { hash^=value;hash*=1099511628211ull; }
+                return static_cast<std::size_t>(hash);
+            }
+        };
         void saveFrame(FrameRow& f)
         {
             const auto i=mFrameCount.fetch_add(1,std::memory_order_relaxed);
@@ -228,6 +324,7 @@ namespace SceneUtil::DrawPhaseTrace
                 mRows = std::make_unique<std::array<Row, Capacity>>();
                 mFrames=std::make_unique<std::array<FrameRow,FrameCapacity>>();
                 mOuterRows=std::make_unique<std::array<OuterRow,FrameCapacity>>();
+                mResources=std::make_unique<std::array<ResourceRow,ResourceCapacity>>();
                 GLCallTrace::Capture::instance().enable(mPath);
             }
         }
@@ -240,24 +337,135 @@ namespace SceneUtil::DrawPhaseTrace
         std::atomic<std::uint64_t> mUncovered{0};
         std::atomic<unsigned> mVisitors{0};
         std::array<Totals, 16> mTotals{};
-        std::array<Totals, CameraBucketCount> mCameraTotals{};
+        std::array<std::array<Totals, CameraBucketCount>,16> mCameraTotals{};
         std::unique_ptr<std::array<FrameRow,FrameCapacity>> mFrames;
         std::array<FrameRow,16> mCurrentFrame{};
         std::atomic<std::size_t> mFrameCount{0};
         std::array<std::uint64_t,16> mOuterCalls{};
         std::array<double,16> mOuterMs{};
         std::array<unsigned,16> mOuterKind{};
+        std::unique_ptr<std::array<ResourceRow,ResourceCapacity>> mResources;
+        mutable std::mutex mResourceMutex;
+        std::unordered_map<ResourceKey,std::size_t,ResourceKeyHash> mResourceIndex;
+        std::atomic<std::uint64_t> mResourceDropped{0};
     };
+
+    // Called during cull or terrain CPU production, never from render/GL
+    // hooks. Build the effective root-to-leaf attributes and sampler bindings,
+    // including OSG OVERRIDE/PROTECTED semantics, instead of cataloguing every
+    // ancestor texture as though it were the texture used by this submission.
+    inline void catalogStateSets(const std::vector<const osg::StateSet*>& stateSets,
+        unsigned frame,unsigned context,std::uint64_t camera,unsigned scope,Capture::Row* descriptor=nullptr)
+    {
+        auto& capture=Capture::instance();
+        if(!capture.enabled()) return;
+        struct Binding { const osg::Texture* texture=nullptr;const osg::StateSet* stateSet=nullptr;unsigned flags=0; };
+        std::map<unsigned,Binding> textures;
+        std::map<std::string,osg::StateSet::RefUniformPair> uniforms;
+        constexpr std::size_t MaxBindings=512;
+        for(const auto* stateSet:stateSets)
+        {
+            if(!stateSet) continue;
+            const auto& attributes=stateSet->getTextureAttributeList();
+            for(unsigned unit=0;unit<attributes.size();++unit)
+            {
+                const auto* pair=stateSet->getTextureAttributePair(unit,osg::StateAttribute::TEXTURE);
+                const auto* texture=pair && pair->first ? pair->first->asTexture() : nullptr;
+                if(!texture) continue;
+                auto existing=textures.find(unit);
+                if(existing!=textures.end() && (existing->second.flags & osg::StateAttribute::OVERRIDE)
+                    && !(pair->second & osg::StateAttribute::PROTECTED)) continue;
+                if(existing==textures.end() && textures.size()>=MaxBindings) { capture.noteResourceUncovered();continue; }
+                textures[unit]={texture,stateSet,pair->second};
+            }
+            for(const auto& [name,pair]:stateSet->getUniformList())
+            {
+                auto existing=uniforms.find(name);
+                if(existing!=uniforms.end() && (existing->second.second & osg::StateAttribute::OVERRIDE)
+                    && !(pair.second & osg::StateAttribute::PROTECTED)) continue;
+                if(existing==uniforms.end() && uniforms.size()>=MaxBindings) { capture.noteResourceUncovered();continue; }
+                uniforms[name]=pair;
+            }
+        }
+        for(const auto& [unit,binding]:textures)
+        {
+            const auto* image=binding.texture->getNumImages()>0 ? binding.texture->getImage(0) : nullptr;
+            Capture::ResourceRow row;
+            row.firstFrame=row.lastFrame=frame;row.context=context;row.unit=unit;row.scope=scope;
+            row.texture=reinterpret_cast<std::uintptr_t>(binding.texture);
+            row.image=reinterpret_cast<std::uintptr_t>(image);
+            row.imageRevision=image ? image->getModifiedCount() : 0;
+            row.bytes=image ? image->getTotalSizeInBytesIncludingMipmaps() : 0;
+            row.stateSet=reinterpret_cast<std::uintptr_t>(binding.stateSet);row.submitCamera=camera;
+            const std::string& filename=image && !image->getFileName().empty() ? image->getFileName() : binding.texture->getName();
+            std::string role;
+            for(const auto& [name,pair]:uniforms)
+            {
+                if(!pair.first || pair.first->getType()!=osg::Uniform::SAMPLER_2D) continue;
+                if(pair.first->getNumElements()>512) capture.noteResourceUncovered();
+                for(unsigned element=0;element<std::min(512u,pair.first->getNumElements());++element)
+                {
+                    int boundUnit=-1;
+                    if(pair.first->getElement(element,boundUnit) && boundUnit>=0 && static_cast<unsigned>(boundUnit)==unit)
+                    {
+                        std::string bindingName=name;
+                        if(pair.first->getNumElements()>1) bindingName+='['+std::to_string(element)+']';
+                        if(role.size()+bindingName.size()+1>=row.semanticRole.size())
+                        { capture.noteResourceUncovered();continue; }
+                        if(!role.empty()) role+='|';
+                        role+=bindingName;
+                    }
+                }
+            }
+            if(role.empty() && scope==2 && unit<=1)
+                role=unit==0 ? "terrain_composite_diffuse" : "terrain_composite_blendmap";
+            if(role.empty()) role="unknown";
+            auto copyText=[](auto& output,const char* value) {
+                std::memcpy(output.data(),value,std::min(std::strlen(value),output.size()-1));
+            };
+            copyText(row.textureClass,binding.texture->className());
+            copyText(row.filename,filename.c_str());copyText(row.semanticRole,role.c_str());
+            if(filename.size()>=row.filename.size()) capture.noteResourceUncovered();
+            if(std::strlen(binding.texture->className())>=row.textureClass.size()) capture.noteResourceUncovered();
+            if(binding.texture->getNumImages()>1) capture.noteResourceUncovered();
+            row.labelHash=1469598103934665603ull;
+            for(const auto* value:std::array<const std::string*,2>{&filename,&role})
+            {
+                row.labelHash^=value->size();row.labelHash*=1099511628211ull;
+                for(unsigned char character:*value) { row.labelHash^=character;row.labelHash*=1099511628211ull; }
+            }
+            for(const char* character=binding.texture->className();*character;++character)
+            { row.labelHash^=static_cast<unsigned char>(*character);row.labelHash*=1099511628211ull; }
+            capture.catalogResource(row);
+            if(descriptor)
+            {
+                if(row.bytes>=descriptor->texture0Bytes)
+                {
+                    descriptor->texture1Bytes=descriptor->texture0Bytes;descriptor->texture1=descriptor->texture0;
+                    descriptor->texture0Bytes=row.bytes;descriptor->texture0={};
+                    copyText(descriptor->texture0,filename.c_str());
+                }
+                else if(row.bytes>=descriptor->texture1Bytes)
+                {
+                    descriptor->texture1Bytes=row.bytes;descriptor->texture1={};
+                    copyText(descriptor->texture1,filename.c_str());
+                }
+            }
+        }
+    }
 
     class Leaf final : public osgUtil::RenderLeaf
     {
     public:
         Leaf(osg::Drawable* drawable, osg::RefMatrix* projection, osg::RefMatrix* modelview)
             : osgUtil::RenderLeaf(drawable, projection, modelview) {}
+        Capture::Row descriptor;
         std::uint64_t nodePathHash = 0;
         std::uint32_t vertices = 0, primitiveSets = 0, cameraBucket = CameraUnknown;
         std::array<char, 64> ownerName{};
         std::array<char, 32> ownerClass{};
+        std::uint64_t submitCamera = 0;
+        std::array<char, 48> submitCameraName{};
         void render(osg::RenderInfo& info, osgUtil::RenderLeaf* previous) override
         {
             auto& capture = Capture::instance();
@@ -269,7 +477,8 @@ namespace SceneUtil::DrawPhaseTrace
             const auto* stamp = state.getFrameStamp();
             const unsigned frame=stamp?stamp->getFrameNumber():0;
             GLCallTrace::Scope scope({state.getContextID(),frame,GLCallTrace::Matrices,
-                reinterpret_cast<std::uintptr_t>(_drawable.get())});
+                reinterpret_cast<std::uintptr_t>(_drawable.get()), &state,
+                reinterpret_cast<std::uintptr_t>(info.getCurrentCamera())});
             state.applyProjectionMatrix(_projection.get());
             state.applyModelViewMatrix(_modelview.get());
             const auto matrices = Clock::now();
@@ -297,7 +506,7 @@ namespace SceneUtil::DrawPhaseTrace
             _drawable->draw(info);
             const auto drawn = Clock::now();
             const auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
-            Capture::Row row;
+            Capture::Row row = descriptor;
             row.frame = frame;
             row.startNs=std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count();
             row.camera=reinterpret_cast<std::uintptr_t>(info.getCurrentCamera());
@@ -310,62 +519,10 @@ namespace SceneUtil::DrawPhaseTrace
             row.vertices = vertices;
             row.primitiveSets = primitiveSets;
             row.cameraBucket = cameraBucket;
+            row.submitCamera = submitCamera;
+            row.submitCameraName = submitCameraName;
             row.ownerName = ownerName;
             row.ownerClass = ownerClass;
-            // Copy scene-owned metadata BEFORE signalling dynamic completion.
-            // The released update thread may then rename/rebind scene objects.
-            if (row.matricesMs + row.stateMs + row.drawMs >= .25)
-            {
-                const auto& name = _drawable->getName();
-                const auto size = (std::min)(name.size(), row.name.size() - 1);
-                std::memcpy(row.name.data(), name.data(), size);
-                if(const auto* camera=info.getCurrentCamera())
-                { const auto& n=camera->getName();std::memcpy(row.cameraName.data(),n.data(),(std::min)(n.size(),row.cameraName.size()-1)); }
-                const char* cls=_drawable->className();
-                if(cls) std::memcpy(row.drawableClass.data(),cls,(std::min)(std::strlen(cls),row.drawableClass.size()-1));
-
-                // State application can lazily realize terrain/material textures.
-                // Snapshot only slow state rows so normal draw overhead stays tiny.
-                if (row.stateMs >= 2.0)
-                {
-                    if (const osg::StateSet* stateSet = _parent ? _parent->getStateSet() : nullptr)
-                    {
-                        const auto& attributes = stateSet->getTextureAttributeList();
-                        auto recordTexture = [&](const osg::Texture2D* texture) {
-                            if (!texture) return;
-                            const osg::Image* image = texture->getImage();
-                            const std::uint64_t bytes = image ? image->getTotalSizeInBytesIncludingMipmaps() : 0;
-                            const std::string& label = image && !image->getFileName().empty()
-                                ? image->getFileName() : texture->getName();
-                            auto store = [&](std::array<char, 128>& dest) {
-                                const auto amount = (std::min)(label.size(), dest.size() - 1);
-                                if (amount) std::memcpy(dest.data(), label.data(), amount);
-                            };
-                            if (bytes >= row.texture0Bytes)
-                            {
-                                row.texture1Bytes = row.texture0Bytes;
-                                row.texture1 = row.texture0;
-                                row.texture0Bytes = bytes;
-                                row.texture0 = {};
-                                store(row.texture0);
-                            }
-                            else if (bytes >= row.texture1Bytes)
-                            {
-                                row.texture1Bytes = bytes;
-                                row.texture1 = {};
-                                store(row.texture1);
-                            }
-                        };
-                        for (unsigned unit = 0; unit < attributes.size(); ++unit)
-                        {
-                            const osg::StateAttribute* attribute
-                                = stateSet->getTextureAttribute(unit, osg::StateAttribute::TEXTURE);
-                            const osg::Texture* texture = attribute ? attribute->asTexture() : nullptr;
-                            recordTexture(dynamic_cast<const osg::Texture2D*>(texture));
-                        }
-                    }
-                }
-            }
             GLCallTrace::location.phase=GLCallTrace::Retire;
             const auto retireStart = Clock::now();
             if (_dynamic) state.decrementDynamicObjectCount();
@@ -400,6 +557,13 @@ namespace SceneUtil::DrawPhaseTrace
         {
             const unsigned first = _currentReuseRenderLeafIndex;
             osgUtil::CullVisitor::apply(drawable);
+            stampSubmissions(first, drawable);
+        }
+        unsigned submissionIndex() const { return _currentReuseRenderLeafIndex; }
+        // TerrainDrawable submits directly and bypasses apply(Drawable). Both
+        // paths call this while their real node path and camera are still live.
+        void stampSubmissions(unsigned first, osg::Drawable& drawable)
+        {
             for (unsigned i = first; i < _currentReuseRenderLeafIndex && i < (mInstrumented ? PoolSize : 0); ++i)
             {
                 auto* leaf = static_cast<Leaf*>(_reuseRenderLeafList[i].get());
@@ -409,9 +573,35 @@ namespace SceneUtil::DrawPhaseTrace
                 leaf->cameraBucket = CameraUnknown;
                 leaf->ownerName = {};
                 leaf->ownerClass = {};
+                leaf->descriptor = {};
+                auto copyText = [](auto& destination, const auto& text) {
+                    const auto length = (std::min)(std::strlen(text), destination.size()-1);
+                    std::memcpy(destination.data(), text, length);
+                };
+                copyText(leaf->descriptor.name, drawable.getName().c_str());
+                copyText(leaf->descriptor.drawableClass, drawable.className());
+                leaf->submitCamera = 0;
+                leaf->submitCameraName = {};
 
                 if (const osg::Camera* camera = getCurrentCamera())
+                {
                     leaf->cameraBucket = classifyCamera(camera->getName());
+                    leaf->submitCamera = reinterpret_cast<std::uintptr_t>(camera);
+                    const auto& name = camera->getName();
+                    std::memcpy(leaf->submitCameraName.data(), name.data(),
+                        (std::min)(name.size(), leaf->submitCameraName.size()-1));
+                }
+
+                std::vector<const osg::StateSet*> materialPath;
+                for(auto* graph=leaf->_parent;graph;graph=graph->_parent)
+                    if(graph->getStateSet()) materialPath.push_back(graph->getStateSet());
+                std::reverse(materialPath.begin(),materialPath.end());
+                const auto* camera=getCurrentCamera();
+                const auto* context=camera ? camera->getGraphicsContext() : nullptr;
+                const auto* stamp=getFrameStamp();
+                catalogStateSets(materialPath,stamp ? stamp->getFrameNumber() : 0,
+                    context && context->getState() ? context->getState()->getContextID() : ~0u,
+                    leaf->submitCamera,1,&leaf->descriptor);
 
                 const auto& path = getNodePath();
                 for (osg::Node* node : path)
@@ -451,6 +641,19 @@ namespace SceneUtil::DrawPhaseTrace
     private:
         static constexpr unsigned PoolSize = 8192;
         bool mInstrumented = false;
+    };
+
+    class SubmissionScope
+    {
+    public:
+        SubmissionScope(osgUtil::CullVisitor& visitor, osg::Drawable& drawable)
+            : mVisitor(Capture::instance().enabled() ? dynamic_cast<CullVisitor*>(&visitor) : nullptr)
+            , mDrawable(drawable), mFirst(mVisitor ? mVisitor->submissionIndex() : 0) {}
+        ~SubmissionScope() { if (mVisitor) mVisitor->stampSubmissions(mFirst, mDrawable); }
+    private:
+        CullVisitor* mVisitor;
+        osg::Drawable& mDrawable;
+        unsigned mFirst;
     };
 
     inline unsigned install(osgViewer::Viewer& viewer)

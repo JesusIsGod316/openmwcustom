@@ -37,7 +37,7 @@ function Get-P9Mode {
     param([string]$Choice)
     # Identical P8U1 foundation. The driver-crashing static prewarm experiment
     # is intentionally unavailable in this continuation build.
-    $result=@{Name='REFERENCE';Stream='0';Temporal='0';View='0';Trace='0'}
+    $result=@{Name='REFERENCE';Stream='0';Temporal='0';View='0';Trace='0';Ownership='0';Composite='0';DynamicMotion='0'}
     switch($Choice){
         '1'{}
         '2'{$result.Name='TEMPORAL-INPUTS';$result.Temporal='1'}
@@ -46,26 +46,36 @@ function Get-P9Mode {
         '5'{$result.Name='MOTION-VIEW';$result.Temporal='1';$result.View='1'}
         '6'{$result.Name='HITCH';$result.Stream='1'}
         '7'{$result.Name='HITCH-TRACE';$result.Stream='1';$result.Trace='1'}
+        '8'{$result.Name='TEMPORAL-OWNERSHIP';$result.Temporal='1';$result.Ownership='1'}
+        '9'{$result.Name='COMPOSITE-PREPARE';$result.Composite='1'}
+        '10'{$result.Name='AUDITED-COMBINED';$result.Temporal='1';$result.Ownership='1';$result.Composite='1'}
+        '11'{$result.Name='DYNAMIC-MOTION';$result.Temporal='1';$result.Ownership='1';$result.DynamicMotion='1'}
+        '12'{$result.Name='AUDITED-TRACE';$result.Temporal='1';$result.Ownership='1';$result.Composite='1';$result.Trace='1'}
         default{throw 'Invalid Phase 9 mode'}
     }
     return $result
 }
 
 Write-Host ''
-Write-Host 'OptimizedMW Phase 9 - root-cause telemetry + DLSS temporal inputs' -ForegroundColor Cyan
+Write-Host 'OptimizedMW Phase 9 - audited temporal and terrain candidates' -ForegroundColor Cyan
 Write-Host '  1 = REFERENCE          unchanged P8U1 foundation'
 Write-Host '  2 = TEMPORAL-INPUTS    camera/static motion + DLSS input-contract telemetry'
 Write-Host '  3 = ROOT-CAUSE-TRACE   state/draw/GL + composite/camera attribution'
 Write-Host '  4 = TEMPORAL-TRACE     modes 2 and 3 together for one diagnostic run'
 Write-Host '  5 = MOTION-VIEW        visualize generated motion vectors'
+Write-Host '  8 = TEMPORAL-OWNERSHIP retained cull inputs (compare with mode 2)'
+Write-Host '  9 = COMPOSITE-PREPARE terrain dependency preparation (compare with mode 1)'
+Write-Host ' 10 = AUDITED-COMBINED   both candidates'
+Write-Host ' 11 = DYNAMIC-MOTION     experimental moving geometry inputs'
+Write-Host ' 12 = AUDITED-TRACE      combined candidate with deep diagnostics'
 Write-Host '  A = show old unpromoted HITCH1 diagnostic controls'
 Write-Host 'Unsafe static prewarm is disabled. DLSS evaluation/jitter remain off until dense dynamic motion is valid.'
 do{
-    $choice=Read-Host 'Choose mode (1-5, or A for old HITCH1 diagnostics)'
+    $choice=Read-Host 'Choose mode (1-5, 8-12, or A for old HITCH1 diagnostics)'
     if($choice -eq 'A'){
         Write-Host '  6 HITCH (old unpromoted refresh) | 7 HITCH-TRACE'
     }
-}until($choice -in @('1','2','3','4','5','6','7'))
+}until($choice -in @('1','2','3','4','5','6','7','8','9','10','11','12'))
 $mode=Get-P9Mode $choice
 
 $SchedulerMode='2'
@@ -247,14 +257,17 @@ try{
 
     @(
         "experiment=$Experiment",
-        "expected_lineage=optimizedmw/phase9-telemetry-dlss",
+        "expected_lineage=codex/optimizedmw-phase9-audited",
         "phase9_reference=P8U1_COMBINED_SAME_BINARY",
         "phase9_dynamic_stream=$($mode.Stream)",
         "phase9_temporal_inputs=$($mode.Temporal)",
+        "phase9_temporal_ownership=$($mode.Ownership)",
+        "phase9_composite_prepare=$($mode.Composite)",
+        "phase9_dynamic_motion=$($mode.DynamicMotion)",
         "phase9_motion_view=$($mode.View)",
         "phase9_draw_trace=$($mode.Trace)",
         "phase9_static_prewarm=disabled_after_optimized_trace_driver_crash",
-        "phase9_trace_schema=3",
+        "phase9_trace_schema=4",
         "phase9_temporal_contract=consumer_frame_v1",
         "phase9_dlss_ready_requires_dense_dynamic_motion=true",
         "phase9_gl_vulkan_interop_probe=$($mode.Temporal)",
@@ -355,6 +368,9 @@ try{
     Remove-Item 'Env:OPENMW_P9_STATIC_PREWARM_FILE' -ErrorAction SilentlyContinue
     $env:OPENMW_P9_DYNAMIC_STREAM=$mode.Stream
     $env:OPENMW_P9_TEMPORAL_INPUTS=$mode.Temporal
+    $env:OPENMW_P9_TEMPORAL_OWNERSHIP=$mode.Ownership
+    $env:OPENMW_P9_COMPOSITE_PREPARE=$mode.Composite
+    $env:OPENMW_P9_DYNAMIC_MOTION=$mode.DynamicMotion
     $env:OPENMW_P9_MOTION_VIEW=$mode.View
     if($mode.Temporal -eq '1'){
         $env:OPENMW_P9_TEMPORAL_FILE=Join-Path $ProfileDir 'p9-temporal-inputs.csv'

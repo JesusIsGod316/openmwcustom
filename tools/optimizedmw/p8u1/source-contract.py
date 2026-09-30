@@ -36,7 +36,16 @@ texture = text("components/resource/preparedterraintexture.hpp")
 for token in ("previous->context.get() == state.getGraphicsContext()", "getModifiedCount()",
               "isDirty(context)", "getForceTextureDownloadGeometry()", "getSubloadCallback()"):
     require(token in texture, "missing texture identity/side-effect condition: " + token)
-require("void apply(" not in texture, "draw-time apply must remain stock")
+# Event 161 adds exact diagnostic attribution around callback-free terrain
+# applies. Both branches still delegate once to the retained OSG implementation;
+# readiness never substitutes a skipped apply or forces a download at draw time.
+apply_body = texture.split("void apply(", 1)[1].split("bool preparationUnchanged", 1)[0]
+require(apply_body.count("osg::Texture2D::apply(state);") == 2
+        and "if (getSubloadCallback())" in apply_body
+        and "SceneUtil::GLCallTrace::ScopedTextureApply" in apply_body,
+        "diagnostic wrapper must retain stock apply and callback passthrough")
+for forbidden in ("glFinish(", "compileGLObjects(", "rememberPreparation(", "preparationUnchanged("):
+    require(forbidden not in apply_body, "draw-time readiness/download behavior changed: " + forbidden)
 composite = text("components/terrain/compositemaprenderer.cpp")
 require("compileUntil" in composite and "mRequired.load" in composite, "required composite progress missing")
 lua = text("apps/openmw/mwlua/luamanagerimp.cpp")

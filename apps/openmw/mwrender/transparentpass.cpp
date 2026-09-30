@@ -17,6 +17,11 @@
 
 namespace MWRender
 {
+    TransparentDepthBinCallback::TransparentDepthBinCallback(osg::StateSet* immutableState, bool postPass)
+        : mStateSet(immutableState), mPostPass(postPass) {}
+
+    TransparentDepthBinCallback::~TransparentDepthBinCallback() = default;
+
     TransparentDepthBinCallback::TransparentDepthBinCallback(Shader::ShaderManager& shaderManager, bool postPass)
         : mStateSet(new osg::StateSet)
         , mPostPass(postPass)
@@ -40,6 +45,24 @@ namespace MWRender
         mStateSet->setAttributeAndModes(new osg::BlendFunc, modeOff);
         mStateSet->setAttributeAndModes(shaderManager.getProgram("depthclipped", defines), modeOn);
         mStateSet->setAttributeAndModes(new SceneUtil::AutoDepth, modeOn);
+    }
+
+    TransparentDepthBinCallback::TransparentDepthBinCallback(const TransparentDepthBinCallback& source, unsigned frameId)
+        : mStateSet(source.mStateSet), mPostPass(source.mPostPass)
+    {
+        // A RenderBin belongs to the acquired SceneView, so its callback can
+        // own the exact resources for this submission even for repeated IDs.
+        for (unsigned i = 0; i < 2; ++i)
+        {
+            mFbo[i] = source.mFbo[frameId];
+            mMsaaFbo[i] = source.mMsaaFbo[frameId];
+            mOpaqueFbo[i] = source.mOpaqueFbo[frameId];
+        }
+    }
+
+    osg::ref_ptr<TransparentDepthBinCallback> TransparentDepthBinCallback::ownedFrame(unsigned frameId) const
+    {
+        return new TransparentDepthBinCallback(*this,frameId);
     }
 
     void TransparentDepthBinCallback::drawImplementation(

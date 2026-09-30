@@ -240,6 +240,14 @@ endif()
 
 # Sound stuff - here so CMake doesn't stupidly recompile EVERYTHING
 # when we change the backend.
+if (OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS)
+    add_executable(p9-owned-postpasses ../../tools/optimizedmw/phase9/owned-postpasses-tests.cpp)
+    target_include_directories(p9-owned-postpasses PRIVATE ${PROJECT_SOURCE_DIR})
+    target_link_libraries(p9-owned-postpasses PRIVATE openmw-lib)
+    add_test(NAME p9-owned-postpasses COMMAND p9-owned-postpasses)
+    set_tests_properties(p9-owned-postpasses PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77)
+endif()
+
 include_directories(
     ${FFmpeg_INCLUDE_DIRS}
 )

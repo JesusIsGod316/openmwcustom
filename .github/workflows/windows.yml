@@ -24,6 +24,10 @@ on:
       release:
         default: false
         type: boolean
+      phase9-fixtures:
+        description: Compile and run the separate production postprocess graphics fixture
+        default: false
+        type: boolean
 
 jobs:
   Windows:
@@ -157,6 +161,7 @@ jobs:
         -D OPENMW_USE_SYSTEM_SQLITE3=OFF
         -D OPENMW_USE_SYSTEM_YAML_CPP=OFF
         -D OPENMW_LTO_BUILD=ON
+        -D OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS=${{ inputs.phase9-fixtures }}
         ${{ inputs.package && '-D "VCREDIST64=$env:VCToolsRedistDir/vc_redist.x64.exe"' || '' }}
         -D CMAKE_EXPORT_COMPILE_COMMANDS=ON
 
@@ -280,6 +285,10 @@ jobs:
     - name: Run OpenMW tests
       if: ${{ ! inputs.package && inputs.tests }}
       run: build/openmw-tests.exe
+
+    - name: Run Phase 9 production postprocess graphics fixture
+      if: ${{ ! inputs.package && inputs.tests && inputs.phase9-fixtures }}
+      run: ctest --test-dir build -R '^p9-owned-postpasses$' --output-on-failure --timeout 45
 
     - name: Run OpenMW-CS tests
       if: ${{ ! inputs.package && inputs.tests }}

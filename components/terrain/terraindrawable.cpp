@@ -4,6 +4,7 @@
 #include <osgUtil/CullVisitor>
 
 #include <components/sceneutil/lightmanager.hpp>
+#include <components/sceneutil/drawphasetrace.hpp>
 
 #include "compositemaprenderer.hpp"
 
@@ -61,6 +62,7 @@ namespace Terrain
 
     void TerrainDrawable::cull(osgUtil::CullVisitor* cv)
     {
+        SceneUtil::DrawPhaseTrace::SubmissionScope submission(*cv, *this);
         const osg::BoundingBox& bb = getBoundingBox();
 
         if (_cullingActive && cv->isCulled(getBoundingBox()))

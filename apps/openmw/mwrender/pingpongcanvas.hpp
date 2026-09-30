@@ -2,6 +2,7 @@
 #define OPENMW_MWRENDER_PINGPONGCANVAS_H
 
 #include <array>
+#include <memory>
 #include <optional>
 
 #include <osg/FrameBufferObject>
@@ -23,11 +24,19 @@ namespace Shader
 
 namespace MWRender
 {
+    struct TemporalCanvasOwner;
     class PingPongCanvas : public osg::Geometry
     {
     public:
         PingPongCanvas(
             Shader::ShaderManager& shaderManager, const std::shared_ptr<LuminanceCalculator>& luminanceCalculator);
+
+        void accept(osg::NodeVisitor& visitor) override;
+        // A shared two-SceneView owner is installed only after the main
+        // renderer's actual CullVisitor identity/lifecycle has been verified.
+        void setTemporalOwner(std::shared_ptr<TemporalCanvasOwner> owner) { mTemporalOwner = std::move(owner); }
+        void setTemporalOwnershipAvailable(bool value) { mTemporalOwnershipAvailable = value; }
+        static std::shared_ptr<TemporalCanvasOwner> createTemporalOwner();
 
         void drawGeometry(osg::RenderInfo& renderInfo) const;
 
@@ -67,6 +76,13 @@ namespace MWRender
         const osg::ref_ptr<osg::Texture>& getSceneTexture(size_t frameId) const { return mTextureScene; }
 
     private:
+        PingPongCanvas(const PingPongCanvas& source);
+        void copyFrameInputs(const PingPongCanvas& source);
+        std::shared_ptr<TemporalCanvasOwner> mTemporalOwner;
+        bool mTemporalOwnershipAvailable = false;
+        bool mOwnedSubmission = false;
+        bool mOwnedNis = false;
+        float mOwnedNisSharpness = 0.0f;
         std::shared_ptr<TemporalMotion> mTemporalMotion;
         TemporalCamera mTemporalCamera;
         osg::ref_ptr<osg::StateSet> mMotionViewState;

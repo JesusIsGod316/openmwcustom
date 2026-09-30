@@ -1,4 +1,7 @@
 #include <components/sceneutil/drawphasetrace.hpp>
+#include <components/terrain/terraindrawable.hpp>
+#include <components/terrain/compositemaprenderer.hpp>
+#include <components/sceneutil/lightmanager.hpp>
 #include <osg/Geode>
 #include <osg/Material>
 #include <osg/MatrixTransform>
@@ -11,6 +14,12 @@
 #include <stdexcept>
 #include <thread>
 using namespace SceneUtil::DrawPhaseTrace;
+// Optional services are absent in this pixel fixture. Fail if the tested
+// production terrain path unexpectedly tries to use either.
+bool SceneUtil::LightListCallback::pushLightState(osg::Node*,osgUtil::CullVisitor*)
+{ throw std::runtime_error("fixture unexpectedly requested lights"); }
+void Terrain::CompositeMapRenderer::setImmediate(Terrain::CompositeMap*)
+{ throw std::runtime_error("fixture unexpectedly requested a composite"); }
 void require(bool condition,const char* message){if(!condition)throw std::runtime_error(message);}
 struct SlowAttribute : osg::StateAttribute
 {
@@ -66,6 +75,9 @@ int main(int argc, char** argv) try
     viewer.setLightingMode(osgViewer::View::NO_LIGHT);
     osg::ref_ptr<Pixels> pixels=new Pixels;camera->setFinalDrawCallback(pixels);
     osg::ref_ptr<osg::Group> root=new osg::Group;
+    std::array<osg::ref_ptr<osg::Geode>,4> geodes;
+    std::array<osg::ref_ptr<osg::Geometry>,4> ordinary;
+    std::array<osg::ref_ptr<Terrain::TerrainDrawable>,4> terrain;
     root->getOrCreateStateSet()->setMode(GL_LIGHTING,osg::StateAttribute::OFF);
     for(int i=0;i<4;++i)
     {
@@ -82,6 +94,15 @@ int main(int argc, char** argv) try
         if(i==0)g->getOrCreateStateSet()->setAttribute(new SlowAttribute);
         if(i==1)g->setDrawCallback(new SlowDraw);
         osg::ref_ptr<osg::Geode> geode=new osg::Geode;geode->addDrawable(g);
+        ordinary[i]=g;geodes[i]=geode;
+        terrain[i]=new Terrain::TerrainDrawable;
+        terrain[i]->setVertexArray(v);terrain[i]->addPrimitiveSet(new osg::DrawArrays(GL_TRIANGLES,0,3));
+        terrain[i]->setColorArray(color,osg::Array::BIND_OVERALL);
+        terrain[i]->setDataVariance(osg::Object::DYNAMIC);
+        terrain[i]->setUseDisplayList(false);terrain[i]->setUseVertexBufferObjects(true);
+        terrain[i]->setName("TerrainTraceFixture");terrain[i]->setDrawCallback(new SlowDraw);
+        osg::ref_ptr<osg::StateSet> pass=new osg::StateSet;
+        pass->setAttribute(new SlowAttribute);terrain[i]->setPasses({pass});
         if(i>=2)
         {
             osg::ref_ptr<osg::Group> branch=new osg::Group;
@@ -128,6 +149,9 @@ int main(int argc, char** argv) try
     if(threaded) viewer.startThreading();
     for(int frame=0;frame<4;++frame)
     {
+        camera->setName(frame%3==0 ? "SceneCam" : frame%3==1 ? "RefractionCamera" : "ShadowCamera");
+        for(unsigned i=0;i<4;++i){geodes[i]->removeDrawables(0,geodes[i]->getNumDrawables());
+            geodes[i]->addDrawable(frame%2 ? static_cast<osg::Geometry*>(terrain[i].get()) : ordinary[i].get());}
         if(!threaded) context->getState()->setDynamicObjectCount(4);
         viewer.frame(); pixels->wait(viewer.getFrameStamp()->getFrameNumber());
         require(pixels->data==reference,"traced renderer changed exact RGBA output");
@@ -136,13 +160,20 @@ int main(int argc, char** argv) try
     viewer.stopThreading();
     const auto totals=Capture::instance().totals(context->getState()->getContextID());
     require(totals.calls>=16,"pooled traced RenderLeaves were not actually used");
-    bool slowState=false,slowDraw=false;
+    bool slowState=false,slowDraw=false,terrainMetadata=false,ordinaryAfterTerrain=false;
     for(std::size_t i=0;i<Capture::instance().count();++i)
     {
         const auto row=Capture::instance().row(i);
         slowState |= row.stateMs>1.;slowDraw |= row.drawMs>2.;
+        require(row.submitCamera==row.camera,"submission and draw camera identity differ");
+        require(row.cameraBucket==classifyCamera(row.submitCameraName.data()),"pooled camera bucket stale");
+        if(std::string(row.drawableClass.data())=="TerrainDrawable"){
+            require(std::string(row.ownerName.data())=="TerrainTraceFixture" && row.vertices==3 && row.primitiveSets==1,
+                "terrain direct submission inherited pooled geometry/owner metadata");terrainMetadata=true;
+        }else if(terrainMetadata && row.cameraBucket==CameraShadow){ordinaryAfterTerrain=true;}
     }
     require(slowState&&slowDraw,"state application and drawable delay were not separated");
+    require(terrainMetadata&&ordinaryAfterTerrain,"alternating terrain/ordinary pooled regression was not exercised");
     require(context->getState()->getDynamicObjectCount()==referenceDynamic,"dynamic draw completion semantics changed");
     if(startup) require(SceneUtil::GLCallTrace::Capture::instance().total(context->getState()->getContextID(),
         SceneUtil::GLCallTrace::BufferData).calls>0,"actual OSG buffer dispatch was not traced");

@@ -27,7 +27,7 @@ for key in ('optimizedmw canonical terrain textures','optimizedmw composite slic
             'optimizedmw object userdata cache','warm sounds','optimizedmw setting consistency'):
     assert key+' = false' in settings,key
 for name in ('groundcover.vert','groundcover.frag','groundcover_lod.glsl','temporal_camera_motion.vert',
-             'temporal_camera_motion.frag','temporal_motion_view.vert','temporal_motion_view.frag'):
+             'temporal_camera_motion.frag','temporal_motion_view.vert','temporal_motion_view.frag','temporal_dynamic_motion.vert','temporal_dynamic_motion.frag'):
     relative='compatibility/'+name; deployed=root/'resources/shaders'/relative
     assert deployed.is_file() and hashlib.sha256(deployed.read_bytes()).hexdigest()==manifest['files'][relative],relative
     if name.startswith('temporal_'):

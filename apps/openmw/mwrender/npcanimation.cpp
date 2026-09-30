@@ -44,6 +44,7 @@
 #include "../mwbase/world.hpp"
 
 #include "actorutil.hpp"
+#include "depthclear.hpp"
 #include "postprocessor.hpp"
 #include "renderbin.hpp"
 #include "renderingmanager.hpp"
@@ -350,58 +351,6 @@ namespace MWRender
         }
     }
 
-    /// @brief A RenderBin callback to clear the depth buffer before rendering.
-    /// Switches depth attachments to a proxy renderbuffer, reattaches original depth then redraws first person root.
-    /// This gives a complete depth buffer which can be used for postprocessing, buffer resolves as if depth was never
-    /// cleared.
-    class DepthClearCallback : public osgUtil::RenderBin::DrawCallback
-    {
-    public:
-        DepthClearCallback()
-        {
-            mDepth = new SceneUtil::AutoDepth;
-            mDepth->setWriteMask(true);
-
-            mStateSet = new osg::StateSet;
-            mStateSet->setAttributeAndModes(new osg::ColorMask(false, false, false, false), osg::StateAttribute::ON);
-        }
-
-        void drawImplementation(
-            osgUtil::RenderBin* bin, osg::RenderInfo& renderInfo, osgUtil::RenderLeaf*& previous) override
-        {
-            osg::State* state = renderInfo.getState();
-
-            PostProcessor* postProcessor = static_cast<PostProcessor*>(renderInfo.getCurrentCamera()->getUserData());
-
-            state->applyAttribute(mDepth);
-
-            unsigned int frameId = state->getFrameStamp()->getFrameNumber() % 2;
-
-            postProcessor->getFbo(PostProcessor::FBO_FirstPerson, frameId)->apply(*state);
-            glClear(GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-            // color accumulation pass
-            bin->drawImplementation(renderInfo, previous);
-
-            auto primaryFBO = postProcessor->getPrimaryFbo(frameId);
-            primaryFBO->apply(*state);
-
-            postProcessor->getFbo(PostProcessor::FBO_OpaqueDepth, frameId)->apply(*state);
-
-            // depth accumulation pass
-            osg::ref_ptr<osg::StateSet> restore = bin->getStateSet();
-            bin->setStateSet(mStateSet);
-            bin->drawImplementation(renderInfo, previous);
-            bin->setStateSet(restore);
-
-            primaryFBO->apply(*state);
-
-            state->checkGLErrors("after DepthClearCallback::drawImplementation");
-        }
-
-        osg::ref_ptr<osg::Depth> mDepth;
-        osg::ref_ptr<osg::StateSet> mStateSet;
-    };
-
     /// Overrides Field of View to given value for rendering the subgraph.
     /// Must be added as cull callback.
     class OverrideFieldOfViewCallback : public osg::NodeCallback
@@ -455,7 +404,14 @@ namespace MWRender
         {
             [[maybe_unused]] static const bool prototypeAdded = [&] {
                 osg::ref_ptr<osgUtil::RenderBin> depthClearBin(new osgUtil::RenderBin);
-                depthClearBin->setDrawCallback(new DepthClearCallback());
+                depthClearBin->setDrawCallback(new DepthClearCallback([](osg::RenderInfo& info) {
+                    auto* camera = info.getCurrentCamera();
+                    auto* processor = camera ? dynamic_cast<PostProcessor*>(camera->getUserData()) : nullptr;
+                    if (!processor) return DepthClearCallback::Resources{};
+                    const unsigned frameId = info.getState()->getFrameStamp()->getFrameNumber() % 2;
+                    return DepthClearCallback::Resources{processor->getFbo(PostProcessor::FBO_FirstPerson,frameId),
+                        processor->getFbo(PostProcessor::FBO_OpaqueDepth,frameId),processor->getPrimaryFbo(frameId)};
+                }));
                 osgUtil::RenderBin::addRenderBinPrototype("DepthClear", depthClearBin);
                 return true;
             }();

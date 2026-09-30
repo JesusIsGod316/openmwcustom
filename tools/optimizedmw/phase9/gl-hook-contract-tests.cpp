@@ -23,6 +23,10 @@ void GL_APIENTRY query(GLuint id,GLenum pname,GLuint* result)
 GLboolean GL_APIENTRY unmap(GLenum target){return target==5?GL_TRUE:GL_FALSE;}
 
 bool expectCompressedBreadcrumb=false;
+bool expectTextureIdentity=false;
+std::uintptr_t expectedTexture=0, expectedObject=0, expectedImage=0;
+unsigned expectedRevision=0;
+struct NoApplyTexture : osg::Texture2D { void apply(osg::State&) const override {} };
 void GL_APIENTRY compressed(GLenum target,GLint level,GLenum internalFormat,GLsizei width,GLsizei height,
     GLint border,GLsizei imageSize,const void* data)
 {
@@ -37,6 +41,14 @@ void GL_APIENTRY compressed(GLenum target,GLint level,GLenum internalFormat,GLsi
             || breadcrumb.row.args[3]!=2048 || breadcrumb.row.args[4]!=1024
             || breadcrumb.row.args[5]!=0 || breadcrumb.row.args[6]!=8388608)
             throw std::runtime_error("extended texture-upload breadcrumb missing");
+    }
+    if(expectTextureIdentity)
+    {
+        const auto row=Capture::instance().breadcrumb(15).row;
+        if(row.texture!=expectedTexture || row.textureObject!=expectedObject || row.glName!=73
+            || row.image!=expectedImage || row.imageRevision!=expectedRevision || row.textureUnit!=0
+            || row.allocated || !row.dirty || !row.firstUse || row.where.camera!=88)
+            throw std::runtime_error("actual OSG texture/object/revision/unit attribution wrong");
     }
 }
 
@@ -72,6 +84,23 @@ int main(int argc,char** argv) try
     expectCompressedBreadcrumb=false;
     if(Capture::instance().total(15,CompressedTexImage2D).calls!=1)
         throw std::runtime_error("compressed upload dispatch not counted");
+    osg::ref_ptr<osg::State> state=new osg::State;state->setContextID(15);
+    osg::ref_ptr<NoApplyTexture> texture=new NoApplyTexture;
+    osg::ref_ptr<osg::Image> image=new osg::Image;
+    image->allocateImage(4,4,1,GL_RGBA,GL_UNSIGNED_BYTE);image->dirty();texture->setImage(image);
+    texture->resizeGLObjectBuffers(16);
+    osg::ref_ptr<osg::Texture::TextureObject> object=new osg::Texture::TextureObject(texture,73,GL_TEXTURE_2D);
+    texture->setTextureObject(15,object);
+    state->applyTextureAttribute(0,texture);
+    expectedTexture=reinterpret_cast<std::uintptr_t>(texture.get());expectedObject=reinterpret_cast<std::uintptr_t>(object.get());
+    expectedImage=reinterpret_cast<std::uintptr_t>(image.get());expectedRevision=image->getModifiedCount();
+    expectTextureIdentity=true;
+    { Scope scope({15,45,State,11,state.get(),88});ScopedTextureApply apply(*state,*texture);
+      compressedFn(1,2,3,2048,1024,0,8388608,&payload); }
+    expectTextureIdentity=false;
+    { Scope scope({15,46,State,11,state.get(),88});compressedFn(1,2,3,2048,1024,0,8388608,&payload); }
+    if(Capture::instance().breadcrumb(15).row.texture!=0)
+        throw std::runtime_error("unscoped direct apply inherited previous texture identity");
 
     Hook<15,GetQueryObjectuiv,decltype(fn)>::install(fn);
     { Scope scope({15,43,State,9});fn(7,9,&result); }

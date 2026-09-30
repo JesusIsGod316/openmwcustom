@@ -16,6 +16,7 @@
 #include <osg/GLExtensions>
 #include <osg/RenderInfo>
 #include <osg/State>
+#include <osg/FrameStamp>
 #include <osg/ref_ptr>
 
 #include "v3diagnostics.hpp"
@@ -23,10 +24,15 @@
 
 namespace Debug::V36GpuProfiler
 {
+    // Windows' core OpenGL 1.1 header omits these standard query enums. Keep
+    // header-local names so including this tracer never depends on SDL order.
+    inline constexpr GLenum QueryTimestamp = 0x8e28;
+    inline constexpr GLenum QueryResultAvailable = 0x8867;
+    inline constexpr GLenum QueryResult = 0x8866;
     inline V3Diagnostics::CsvWriter& writer()
     {
         static V3Diagnostics::CsvWriter writer("OPENMW_V36_GPU_PASS_FILE",
-            "source_frame,report_frame,epoch_ms,pass,gpu_ms,latency_frames,context,dropped_total");
+            "source_frame,report_frame,epoch_ms,pass,gpu_ms,latency_frames,context,dropped_total,camera,writer_dropped_total");
         return writer;
     }
 
@@ -52,7 +58,10 @@ namespace Debug::V36GpuProfiler
             const unsigned int context = state->getContextID();
             std::lock_guard<std::mutex> lock(mMutex);
             Context& data = mContexts[context];
-            collect(*gl, context, data);
+            const auto* stamp = state->getFrameStamp();
+            if (!stamp) return;
+            const auto frame = stamp->getFrameNumber();
+            collect(*gl, context, data, frame);
             if (data.mActive >= 0)
                 return;
 
@@ -69,8 +78,9 @@ namespace Debug::V36GpuProfiler
                 }
                 if (slot.mBeginQuery == 0 || slot.mEndQuery == 0)
                     return;
-                slot.mFrame = V3HitchTelemetry::currentFrame();
-                gl->glQueryCounter(slot.mBeginQuery, GL_TIMESTAMP);
+                slot.mFrame = frame;
+                slot.mCamera = reinterpret_cast<std::uintptr_t>(renderInfo.getCurrentCamera());
+                gl->glQueryCounter(slot.mBeginQuery, QueryTimestamp);
                 data.mActive = static_cast<int>(index);
                 data.mNext = (index + 1) % data.mSlots.size();
                 return;
@@ -94,10 +104,10 @@ namespace Debug::V36GpuProfiler
                 return;
             Context& data = found->second;
             Slot& slot = data.mSlots[static_cast<std::size_t>(data.mActive)];
-            gl->glQueryCounter(slot.mEndQuery, GL_TIMESTAMP);
+            gl->glQueryCounter(slot.mEndQuery, QueryTimestamp);
             slot.mPending = true;
             data.mActive = -1;
-            collect(*gl, context, data);
+            collect(*gl, context, data, state->getFrameStamp() ? state->getFrameStamp()->getFrameNumber() : slot.mFrame);
         }
 
     private:
@@ -106,6 +116,7 @@ namespace Debug::V36GpuProfiler
             GLuint mBeginQuery = 0;
             GLuint mEndQuery = 0;
             std::uint64_t mFrame = 0;
+            std::uintptr_t mCamera = 0;
             bool mPending = false;
         };
 
@@ -123,25 +134,24 @@ namespace Debug::V36GpuProfiler
                 && gl->glGetQueryObjectui64v;
         }
 
-        void collect(osg::GLExtensions& gl, unsigned int contextId, Context& data)
+        void collect(osg::GLExtensions& gl, unsigned int contextId, Context& data, std::uint64_t reportFrame)
         {
-            const std::uint64_t reportFrame = V3HitchTelemetry::currentFrame();
             for (Slot& slot : data.mSlots)
             {
                 if (!slot.mPending)
                     continue;
                 GLuint beginReady = 0;
                 GLuint endReady = 0;
-                gl.glGetQueryObjectuiv(slot.mBeginQuery, GL_QUERY_RESULT_AVAILABLE, &beginReady);
-                gl.glGetQueryObjectuiv(slot.mEndQuery, GL_QUERY_RESULT_AVAILABLE, &endReady);
+                gl.glGetQueryObjectuiv(slot.mBeginQuery, QueryResultAvailable, &beginReady);
+                gl.glGetQueryObjectuiv(slot.mEndQuery, QueryResultAvailable, &endReady);
                 if (!beginReady || !endReady)
                     continue;
 
                 GLuint64 beginTimestamp = 0;
                 GLuint64 endTimestamp = 0;
                 // GL_QUERY_RESULT is read only after both availability checks succeeded. This never forces completion.
-                gl.glGetQueryObjectui64v(slot.mBeginQuery, GL_QUERY_RESULT, &beginTimestamp);
-                gl.glGetQueryObjectui64v(slot.mEndQuery, GL_QUERY_RESULT, &endTimestamp);
+                gl.glGetQueryObjectui64v(slot.mBeginQuery, QueryResult, &beginTimestamp);
+                gl.glGetQueryObjectui64v(slot.mEndQuery, QueryResult, &endTimestamp);
                 slot.mPending = false;
                 if (endTimestamp < beginTimestamp)
                     continue;
@@ -151,7 +161,7 @@ namespace Debug::V36GpuProfiler
                     << V3Diagnostics::csvQuote(mName) << ',' << std::fixed << std::setprecision(4)
                     << (static_cast<double>(endTimestamp - beginTimestamp) / 1000000.0) << ','
                     << (reportFrame >= slot.mFrame ? reportFrame - slot.mFrame : 0) << ',' << contextId << ','
-                    << data.mDropped;
+                    << data.mDropped << ',' << slot.mCamera << ',' << writer().droppedLines();
                 writer().writeLine(row.str());
             }
         }

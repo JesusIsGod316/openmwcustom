@@ -277,6 +277,11 @@ namespace Debug::V3Diagnostics
             DiagnosticWriterHub::instance().enqueue(mChannel, line);
         }
 
+        std::size_t droppedLines() const
+        {
+            return mChannel ? mChannel->mDroppedLines.load(std::memory_order_relaxed) : 0;
+        }
+
     private:
         void ensureOpen()
         {
@@ -483,7 +488,7 @@ namespace Debug::V3Diagnostics
             "frame,epoch_ms,context,submitted,history_valid,previous_frame,reset_reasons,"
             "render_w,render_h,output_w,output_h,target_revision,jitter_x,jitter_y,"
             "previous_jitter_x,previous_jitter_y,dense_dynamic_motion,color_ptr,depth_ptr,motion_ptr,"
-            "input_mask,dlss_ready");
+            "input_mask,dlss_ready,writer_dropped_total,dynamic_surfaces,unsupported_surfaces");
         return writer;
     }
 
@@ -491,7 +496,9 @@ namespace Debug::V3Diagnostics
     {
         static CsvWriter writer("OPENMW_P9_COMPOSITE_FILE",
             "frame,epoch_ms,context,total_ms,available_ms,immediate_start,queued_start,maps,"
-            "required_maps,drawables,fbo_ms,state_ms,draw_ms,yields_delta,immediate_end,queued_end");
+            "required_maps,drawables,fbo_ms,state_ms,draw_ms,yields_delta,immediate_end,queued_end,"
+            "prepare_scheduled_total,prepare_invalidated_total,prepare_cancelled_total,required_fallbacks_total,"
+            "age_progress_total,budget_yields_total,pending_prepare_bytes,shared_charged_ms,oldest_age_frames");
         return writer;
     }
 

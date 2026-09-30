@@ -1,4 +1,5 @@
 #include "riggeometry.hpp"
+#include "temporalmotionidentity.hpp"
 #include "dynamicstream.hpp"
 
 #include <osg/MatrixTransform>
@@ -38,6 +39,8 @@ namespace SceneUtil
 
         mSourceGeometry = sourceGeometry;
         mGeometryEvaluated = false;
+        osg::ref_ptr<TemporalMotionIdentity> motionIdentity = temporalDynamicMotionEnabled()
+            ? new TemporalMotionIdentity : nullptr;
 
         for (unsigned int i = 0; i < 2; ++i)
         {
@@ -50,6 +53,7 @@ namespace SceneUtil
             // - Arrays that we add or replace in the cloned geometry must be explicitely forbidden from reusing
             // BufferObjects of the original geometry. (ensured by vbo below)
             mGeometry[i] = new osg::Geometry(from, osg::CopyOp::SHALLOW_COPY);
+            if (motionIdentity) installTemporalMotionIdentity(*mGeometry[i], motionIdentity);
             mGeometry[i]->getOrCreateUserDataContainer()->addUserObject(new Resource::TemplateRef(mSourceGeometry));
 
             osg::Geometry& to = *mGeometry[i];
@@ -322,7 +326,11 @@ namespace SceneUtil
         }
         else
             skinRoot++;
-        for (auto it = skeletonRoot; it != skinRoot; ++it)
+        // A direct skeleton child can have the same (including empty) name
+        // as its parent. The fallback skinRoot then precedes skeletonRoot;
+        // there are no intervening transforms, rather than a range extending
+        // past nodePath.end(). evaluateGeometry supports direct children.
+        for (auto it = skeletonRoot; it < skinRoot; ++it)
         {
             const osg::Node* node = *it;
             if (const osg::Transform* trans = node->asTransform())

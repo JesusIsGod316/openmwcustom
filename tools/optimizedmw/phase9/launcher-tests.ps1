@@ -26,6 +26,12 @@ for($i=0;$i -lt $expected.Count;$i++){
     if($m.ContainsKey('Prewarm')){throw 'Rejected prewarm mode leaked back into launcher'}
 }
 $bad=$false;try{$null=Get-P9Mode '99'}catch{$bad=$true};if(-not $bad){throw 'Unknown mode accepted'}
+foreach($choice in @('8','9','10','11','12')){
+    $mode=Get-P9Mode $choice
+    if($mode.Ownership -ne $(if($choice -eq '9'){'0'}else{'1'})){throw 'Ownership control isolation changed'}
+    if($mode.Composite -ne $(if($choice -in @('9','10','12')){'1'}else{'0'})){throw 'Composite control isolation changed'}
+    if($mode.DynamicMotion -ne $(if($choice -eq '11'){'1'}else{'0'})){throw 'Dynamic motion control isolation changed'}
+}
 $launcher=Get-Content -Raw -LiteralPath (Join-Path $root 'OptimizedMW_Test.ps1')
 foreach($line in @("`$ResourceRepair='true'","`$LuaCache='true'","`$SoundWarm='true'","`$ShadowConsistency='true'")){
     if(-not $launcher.Contains($line)){throw 'P8U1 foundation differs between Phase 9 modes'}
@@ -48,7 +54,7 @@ if(-not $command){throw 'Missing shader preflight'}
 $tokens=$null;$errors=$null
 $null=[System.Management.Automation.Language.Parser]::ParseInput($command,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'Invalid BAT shader preflight'}
-foreach($shader in @('temporal_camera_motion.vert','temporal_camera_motion.frag','temporal_motion_view.vert','temporal_motion_view.frag')){
+foreach($shader in @('temporal_camera_motion.vert','temporal_camera_motion.frag','temporal_motion_view.vert','temporal_motion_view.frag','temporal_dynamic_motion.vert','temporal_dynamic_motion.frag')){
     if(-not $command.Contains($shader)){throw "Unverified temporal shader: $shader"}
 }
 if($StagedDir){
@@ -68,6 +74,7 @@ try{
     $rows=[Collections.Generic.List[string]]::new();[void]$rows.Add($header)
     $walls=@(10,30,12,40,15,150,10)
     for($i=0;$i -lt $walls.Count;$i++){$v=@(($i+1),1000,$walls[$i]);$v+=@(0)*17;$v+=@(0,$walls[$i]);[void]$rows.Add(($v -join ','))}
+    [void]$rows.Add('# v3_async_diagnostics_dropped_lines=0')
     [IO.File]::WriteAllLines((Join-Path $temp 'v3-frame.csv'),$rows)
     @('frame,name','2,"quoted,event"','7,adjacent','100,outside') | Set-Content -LiteralPath (Join-Path $temp 'v3-events.csv')
     'experiment=ARCHIVE-TEST' | Set-Content -LiteralPath (Join-Path $temp 'TEST_MODE.txt')
@@ -108,12 +115,79 @@ try{
     if(-not $bad){throw 'Self-containing archive accepted'}
     $badTrace=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
     if($badTrace.valid_leaf_capture -ne $false){throw 'Empty runtime trace was accepted'}
-    @('visitor_instances=2','valid_leaf_capture=1') | Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.status.txt')
+    $traceStatus=@('visitor_instances=2','valid_leaf_capture=1','rows_dropped=0','frame_rows_dropped=0',
+        'renderer_rows_dropped=0','uninstrumented_pool_overflow=0','resource_catalog_dropped_attempts=0','resource_catalog_rows=1')
+    $traceStatus | Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.status.txt')
+    @('rows_dropped=0','frame_rows_dropped=0') | Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.gl-status.txt')
     @('frame,context,leaves','1,0,4') | Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.frames.csv')
+    $resourcePath=Join-Path $temp 'p9-draw-phases.csv.resources.csv'
+    $resourceHeader='first_frame,last_frame,context,texture_unit,texture,image,image_revision,stateset,submit_camera,bytes,scope,texture_class,filename,semantic_role'
+    $resourceParts=@('1','9','4294967295','3','18446744073709551615','123','4','456','0','16','2',
+        '"PreparedTerrainTexture"','"terrain,""stone"".dds"','"terrain_composite_diffuse"')
+    $resourceRow=$resourceParts -join ','
+    @($resourceHeader,$resourceRow) | Set-Content -LiteralPath $resourcePath
     $goodTrace=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
-    if($goodTrace.valid_leaf_capture -ne $true){throw 'Complete runtime trace rejected'}
+    if($goodTrace.valid_leaf_capture -ne $true -or $goodTrace.resource_catalog_rows -ne 1){throw 'Complete runtime trace/unsigned pointer/unknown catalog context rejected'}
+    # A texture-free scene legitimately emits only the named catalog header.
+    $resourceHeader | Set-Content -LiteralPath $resourcePath
+    @($traceStatus | ForEach-Object {if($_ -eq 'resource_catalog_rows=1'){'resource_catalog_rows=0'}else{$_}}) |
+        Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.status.txt')
+    $emptyCatalog=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+    if($emptyCatalog.valid_leaf_capture -ne $true -or $emptyCatalog.resource_catalog_rows -ne 0){throw 'Texture-free header-only catalog rejected'}
+    $traceStatus | Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.status.txt')
+    @('semantic_role,filename,texture_class,scope,bytes,submit_camera,stateset,image_revision,image,texture,texture_unit,context,last_frame,first_frame',
+        '"terrain_composite_diffuse","terrain,""stone"".dds","PreparedTerrainTexture",2,16,0,456,4,123,18446744073709551615,3,4294967295,9,1') |
+        Set-Content -LiteralPath $resourcePath
+    $namedCatalog=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+    if($namedCatalog.valid_leaf_capture -ne $true){throw 'Catalog named columns or quoted filename parsing changed'}
+    $boundaryParts=$resourceParts.Clone()
+    foreach($index in @(0,1,3,6)){$boundaryParts[$index]='4294967295'}
+    @($resourceHeader,($boundaryParts -join ',')) | Set-Content -LiteralPath $resourcePath
+    $boundaries=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+    if($boundaries.valid_leaf_capture -ne $true){throw 'Inclusive unsigned32 catalog bounds rejected'}
+    Remove-Item -LiteralPath $resourcePath
+    $missingCatalog=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+    if($missingCatalog.valid_leaf_capture -ne $false){throw 'Missing resource catalog accepted'}
+    foreach($badHeader in @($resourceHeader.Replace('semantic_role','other'),$resourceHeader.Replace('semantic_role','filename'))){
+        @($badHeader,$resourceRow) | Set-Content -LiteralPath $resourcePath
+        $bad=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+        if($bad.valid_leaf_capture -ne $false){throw 'Missing/duplicate resource catalog column accepted'}
+    }
+    foreach($badCase in @(@(0,'-1'),@(0,'4294967296'),@(1,'0'),@(2,'16'),@(2,'-1'),@(2,'4294967296'),
+        @(3,'-1'),@(3,'4294967296'),@(4,'0'),@(4,'18446744073709551616'),@(5,'-1'),@(5,'0'),
+        @(6,'4294967296'),@(7,'0'),@(8,'-1'),@(8,'18446744073709551616'),@(9,'-1'),
+        @(9,'18446744073709551616'),@(10,'3'),@(11,'""'),@(13,'""'))){
+        $parts=$resourceParts.Clone();$parts[$badCase[0]]=$badCase[1]
+        @($resourceHeader,($parts -join ',')) | Set-Content -LiteralPath $resourcePath
+        $bad=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+        if($bad.valid_leaf_capture -ne $false -or $bad.resource_catalog_incoherent_rows -ne 1){throw 'Resource catalog numeric bound/coherence failure accepted'}
+    }
+    foreach($badRow in @(($resourceRow+',extra'),$resourceRow.Substring(0,$resourceRow.LastIndexOf(',')),($resourceRow+'"'))){
+        @($resourceHeader,$badRow) | Set-Content -LiteralPath $resourcePath
+        $bad=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+        if($bad.valid_leaf_capture -ne $false){throw 'Malformed catalog field count/quoting accepted'}
+    }
+    @($resourceHeader,$resourceRow,'# v3_async_diagnostics_dropped_lines=3') | Set-Content -LiteralPath $resourcePath
+    $lostCatalog=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+    if($lostCatalog.valid_leaf_capture -ne $false){throw 'Catalog CSV loss accepted'}
+    @($resourceHeader,$resourceRow,$resourceRow) | Set-Content -LiteralPath $resourcePath
+    $mismatchedCatalog=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+    if($mismatchedCatalog.valid_leaf_capture -ne $false){throw 'Catalog/status row-count mismatch accepted'}
+    @($resourceHeader,$resourceRow) | Set-Content -LiteralPath $resourcePath
+    foreach($field in @('resource_catalog_dropped_attempts','renderer_rows_dropped')){
+        @($traceStatus | ForEach-Object {if($_ -eq ($field+'=0')){$field+'=3'}else{$_}}) |
+            Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.status.txt')
+        $lost=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+        if($lost.valid_leaf_capture -ne $false -or $lost.stream_loss[$field] -ne 3){throw 'Catalog/outer trace loss was hidden by valid leaf status'}
+    }
+    $traceStatus | Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.status.txt')
+    @('rows_dropped=2','frame_rows_dropped=0') | Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.gl-status.txt')
+    $lost=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+    if($lost.valid_leaf_capture -ne $false -or $lost.stream_loss.gl_rows_dropped -ne 2){throw 'Selected GL trace loss ignored'}
 
-    @('frame,dlss_ready','1,0') | Set-Content -LiteralPath (Join-Path $temp 'p9-temporal-inputs.csv')
+    $temporalHeader='dlss_ready,frame,context,submitted,history_valid,previous_frame,render_w,render_h,output_w,output_h,color_ptr,depth_ptr,motion_ptr,input_mask,writer_dropped_total'
+    $temporalRow='0,2,0,1,1,1,32,32,64,64,123,456,789,63,0'
+    @($temporalHeader,$temporalRow,'# v3_async_diagnostics_dropped_lines=0') | Set-Content -LiteralPath (Join-Path $temp 'p9-temporal-inputs.csv')
     @('context,gl_vulkan_bridge_candidate','0,1') | Set-Content -LiteralPath (Join-Path $temp 'p9-dlss-capabilities.csv')
     $goodTemporal=Test-Phase9TemporalCapture -ProfileDir $temp -TemporalRequested $true
     if(($goodTemporal.valid_temporal_capture -ne $true) -or
@@ -121,13 +195,25 @@ try{
        ($goodTemporal.interop_capability_rows -ne 1)){
         throw 'Complete temporal capture rejected'
     }
-    @('frame,dlss_ready','1,1') | Set-Content -LiteralPath (Join-Path $temp 'p9-temporal-inputs.csv')
+    @($temporalHeader,('1'+$temporalRow.Substring(1))) | Set-Content -LiteralPath (Join-Path $temp 'p9-temporal-inputs.csv')
     $badTemporal=Test-Phase9TemporalCapture -ProfileDir $temp -TemporalRequested $true
     if($badTemporal.valid_temporal_capture -ne $false -or $badTemporal.unexpected_dlss_ready_rows -ne 1){
         throw 'Premature DLSS-ready telemetry was accepted'
     }
+    @($temporalHeader,$temporalRow,'# v3_async_diagnostics_dropped_lines=3') | Set-Content -LiteralPath (Join-Path $temp 'p9-temporal-inputs.csv')
+    $loss=Test-Phase9TemporalCapture -ProfileDir $temp -TemporalRequested $true
+    if($loss.valid_temporal_capture -ne $false -or $loss.csv_writer_dropped -ne 3 -or $loss.temporal_input_rows -ne 1){throw 'Footer loss was counted as a frame or ignored'}
+    @($temporalHeader,($temporalRow.Replace('1,1,32','1,2,32'))) | Set-Content -LiteralPath (Join-Path $temp 'p9-temporal-inputs.csv')
+    $incoherent=Test-Phase9TemporalCapture -ProfileDir $temp -TemporalRequested $true
+    if($incoherent.valid_temporal_capture -ne $false -or $incoherent.incoherent_rows -ne 1){throw 'Future/repeated history accepted'}
+    foreach($badRow in @($temporalRow.Replace(',63,0',',-1,0'),$temporalRow.Replace(',63,0',',31,0'),
+        $temporalRow.Replace('1,1,32','1,-1,32'),$temporalRow.Replace('0,2,0','0,4,0'))){
+        @($temporalHeader,$badRow) | Set-Content -LiteralPath (Join-Path $temp 'p9-temporal-inputs.csv')
+        $bad=Test-Phase9TemporalCapture -ProfileDir $temp -TemporalRequested $true
+        if($bad.valid_temporal_capture -ne $false -or $bad.incoherent_rows -ne 1){throw 'Negative mask/frame, history mask mismatch or skipped history accepted'}
+    }
 
-    Write-Host 'PASS Phase 9: 7 safe isolated modes, rejected prewarm absent, live/empty trace validation, temporal/capability validation, fail-closed DLSS readiness, shader preflight, report fixtures, nested/spaced/bracket paths, real SHA256 ZIP verification, partial capture, report failure/timeout and verified replacement.'
+    Write-Host 'PASS Phase 9: 12 isolated modes, rejected prewarm absent, live/empty trace validation, actual resource catalog presence/schema/quoting/unsigned identities/unknown context/zero rows/loss validation, temporal/capability validation, fail-closed DLSS readiness, shader preflight, report fixtures, nested/spaced/bracket paths, real SHA256 ZIP verification, partial capture, report failure/timeout and verified replacement.'
 }finally{
     if(Test-Path -LiteralPath $zipFile){Remove-Item -LiteralPath $zipFile -Force}
     Remove-Item -LiteralPath $temp -Recurse -Force

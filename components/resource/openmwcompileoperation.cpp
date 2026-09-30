@@ -63,6 +63,8 @@ namespace Resource
     OpenMWIncrementalCompileOperation::OpenMWIncrementalCompileOperation(OpenMWCompileSchedulerConfig config)
         : mConfig(std::move(config))
     {
+        if (mConfig.mCompositePreparation)
+            mCompositeAdmission = std::make_shared<P9DiscretionaryAdmission>();
     }
 
     void OpenMWIncrementalCompileOperation::publishRenderingTraversalMs(double value) noexcept
@@ -77,6 +79,15 @@ namespace Resource
 
     OpenMWIncrementalCompileOperation::CompileKind OpenMWIncrementalCompileOperation::classify(const CompileOp* op) const
     {
+        if (const auto* composite = dynamic_cast<const OpenMWCompositeCompileOp*>(op))
+        {
+            switch (composite->kind())
+            {
+                case OpenMWCompositeCompileOp::Kind::Texture: return CompileKind::Texture;
+                case OpenMWCompositeCompileOp::Kind::Program: return CompileKind::Program;
+                case OpenMWCompositeCompileOp::Kind::Target: return CompileKind::Other;
+            }
+        }
         if (dynamic_cast<const CompileDrawableOp*>(op)
             || dynamic_cast<const OpenMWDrawableCompileOp*>(op))
             return CompileKind::Drawable;
@@ -145,6 +156,8 @@ namespace Resource
 
     std::size_t OpenMWIncrementalCompileOperation::resourceSizeBytes(const CompileOp* op)
     {
+        if (const auto* composite = dynamic_cast<const OpenMWCompositeCompileOp*>(op))
+            return composite->resourceBytes();
         if (const auto* customDrawable = dynamic_cast<const OpenMWDrawableCompileOp*>(op))
         {
             const std::size_t bytes = customDrawable->resourceBytes();
@@ -412,6 +425,11 @@ namespace Resource
         const double diagnosticThresholdMs = mConfig.mDiagnosticThresholdMs;
 
         double remainingBudgetMs = policy.mBudgetMs;
+        if (mCompositeAdmission)
+        {
+            mCompositeAdmission->begin(context, frame, policy.mBudgetMs);
+            remainingBudgetMs = std::min(remainingBudgetMs, mCompositeAdmission->remainingMs());
+        }
         double compileActualMs = 0.0;
         unsigned int compiledObjects = 0;
         unsigned int budgetedObjects = 0;
@@ -516,6 +534,26 @@ namespace Resource
             CompileSet* set = setRef.get();
             if (!set)
                 continue;
+            // A cancelled producer-owned composite has no scene publication
+            // to perform. Retire its remaining operations together, without
+            // wasting object admission slots on each no-op texture/program.
+            auto compileMap = set->_compileMap.find(context);
+            if (compileMap != set->_compileMap.end() && !compileMap->second._compileOps.empty())
+            {
+                const auto* composite = dynamic_cast<const OpenMWCompositeCompileOp*>(
+                    compileMap->second._compileOps.front().get());
+                if (composite && composite->cancelled())
+                {
+                    compileMap->second._compileOps.clear();
+                    --set->_numberCompileListsToCompile;
+                    finishCompileSet(set);
+                    mSeen.erase(set);
+                    mPredictionCache.erase(set);
+                    if (localQueueDepth > 0)
+                        --localQueueDepth;
+                    continue;
+                }
+            }
             const auto seenIt = mSeen.find(set);
             const unsigned int age = seenIt != mSeen.end() && frame >= seenIt->second.mFirstFrame
                 ? frame - seenIt->second.mFirstFrame : 0;
@@ -553,10 +591,15 @@ namespace Resource
                 // lookup are not repeated for every candidate.
                 CompileInfo readyInfo(context, this);
                 const auto* prepared = dynamic_cast<const PreparedTerrainTextureCompileOp*>(candidate.mOp);
-                const bool alreadyPrepared = prepared && prepared->reusable(readyInfo);
+                const auto* composite = dynamic_cast<const OpenMWCompositeCompileOp*>(candidate.mOp);
+                const bool alreadyPrepared = (prepared && prepared->reusable(readyInfo))
+                    || (composite && composite->reusable(readyInfo));
+                const bool compositeRequired = composite && composite->required();
+                const bool compositeCancelled = composite && composite->cancelled();
                 candidate.mPredictionMs = alreadyPrepared ? 0.001
                     : predictedMs(candidate.mOsgEstimateMs, candidate.mCostBucket, candidate.mStaticPriorMs);
-                const bool fits = candidate.mPredictionMs <= std::max(0.05, remainingBudgetMs);
+                const bool fits = compositeRequired || compositeCancelled
+                    || candidate.mPredictionMs <= (mCompositeAdmission ? remainingBudgetMs : std::max(0.05, remainingBudgetMs));
                 const bool heavy = candidate.mPredictionMs >= mConfig.mHeavyThresholdMs;
                 const V321CompileUrgency urgency = getV321CompileUrgency(candidate.mSet);
                 const bool quarantineHeavy = mConfig.mResidencySchedulerMode > 0 && heavy
@@ -564,7 +607,8 @@ namespace Resource
                         || (mConfig.mResidencySchedulerMode >= 2
                             && urgency == V321CompileUrgency::NearFuture));
 
-                if (quarantineHeavy)
+                if (quarantineHeavy && !compositeRequired && !compositeCancelled
+                    && !(composite && candidate.mAge >= maxQueueAge))
                 {
                     ++quarantinedCandidates;
                     continue;
@@ -613,6 +657,8 @@ namespace Resource
             }
             else if (heavyReady)
             {
+                if (mCompositeAdmission && !mCompositeAdmission->takeProgress(maxQueueAge, maxQueueAge))
+                    break;
                 selected = heavyReady;
                 selectedIndex = heavyReadyIndex;
                 reason = "heavy_smooth_headroom";
@@ -623,6 +669,8 @@ namespace Resource
             {
                 const bool hardAgedOut = agedOverflow.mAge >= hardQueueAge;
                 if (policy.mSuppressedByHandoff && !hardAgedOut)
+                    break;
+                if (mCompositeAdmission && !mCompositeAdmission->takeProgress(agedOverflow.mAge, maxQueueAge))
                     break;
                 selected = agedOverflow;
                 selectedIndex = agedOverflowIndex;
@@ -638,7 +686,9 @@ namespace Resource
             compileInfo.compileAll = false;
 
             const auto* prepared = dynamic_cast<const PreparedTerrainTextureCompileOp*>(selected.mOp);
-            const bool reusedPreparation = prepared && prepared->reusable(compileInfo);
+            const auto* composite = dynamic_cast<const OpenMWCompositeCompileOp*>(selected.mOp);
+            const bool reusedPreparation = (prepared && prepared->reusable(compileInfo))
+                || (composite && composite->reusable(compileInfo));
             const auto start = Debug::V3Diagnostics::Clock::now();
             const bool completedSet = selected.mSet->compile(compileInfo);
             const double actualMs = Debug::V3Diagnostics::elapsedMs(start);
@@ -647,6 +697,8 @@ namespace Resource
             else observe(selected.mCostBucket, actualMs);
             consumeP4CompileCredit(mPolicyState, mode, actualMs);
             compileActualMs += actualMs;
+            if (mCompositeAdmission)
+                mCompositeAdmission->charge(actualMs);
             ++compiledObjects;
             if (heavyPrewarm)
                 ++heavyObjects;

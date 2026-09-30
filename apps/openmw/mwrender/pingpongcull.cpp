@@ -70,13 +70,22 @@ namespace MWRender
 
         if (mViewportStateset)
         {
-            mViewport->setViewport(0, 0, mPostProcessor->renderWidth(), mPostProcessor->renderHeight());
-            renderStage->setViewport(mViewport);
-            cv->pushStateSet(mViewportStateset.get());
+            osg::ref_ptr<osg::StateSet> viewportState = mViewportStateset;
+            osg::ref_ptr<osg::Viewport> viewport = mViewport;
+            if (TemporalMotion::ownershipEnabled() && !Stereo::getStereo())
+            {
+                viewport = new osg::Viewport;
+                viewportState = new osg::StateSet;
+                viewportState->setAttribute(viewport);
+            }
+            viewport->setViewport(0, 0, mPostProcessor->renderWidth(), mPostProcessor->renderHeight());
+            renderStage->setViewport(viewport);
+            cv->pushStateSet(viewportState);
             traverse(node, cv);
             cv->popStateSet();
         }
         else
             traverse(node, cv);
+        mPostProcessor->captureTemporalDynamic(cv);
     }
 }

@@ -7,6 +7,7 @@
 #include <sstream>
 
 #include <components/debug/v3diagnostics.hpp>
+#include <components/rendercore/sceneviewowner.hpp>
 #include <components/debug/v36gpuprofiler.hpp>
 #include <components/shader/shadermanager.hpp>
 #include <components/settings/values.hpp>
@@ -15,11 +16,17 @@
 
 #include <osg/GLExtensions>
 #include <osg/Texture2DArray>
+#include <osg/observer_ptr>
+#include <osgUtil/CullVisitor>
 
 #include "postprocessor.hpp"
 
 namespace MWRender
 {
+    struct TemporalCanvasOwner
+    {
+        RenderCore::SceneViewOwner<PingPongCanvas> submissions;
+    };
     namespace
     {
         void emitDlssInteropCapabilities(osg::State& state)
@@ -107,6 +114,70 @@ namespace MWRender
         mMultiviewResolveProgram = shaderManager.getProgram("multiview_resolve");
         mMultiviewResolveStateSet->setAttributeAndModes(mMultiviewResolveProgram);
         mMultiviewResolveStateSet->addUniform(new osg::Uniform("lastShader", 0));
+    }
+
+    std::shared_ptr<TemporalCanvasOwner> PingPongCanvas::createTemporalOwner()
+    {
+        return std::make_shared<TemporalCanvasOwner>();
+    }
+
+    PingPongCanvas::PingPongCanvas(const PingPongCanvas& source)
+        : osg::Geometry(source, osg::CopyOp::SHALLOW_COPY)
+        , mOwnedSubmission(true)
+        , mFallbackProgram(source.mFallbackProgram)
+        , mMultiviewResolveProgram(source.mMultiviewResolveProgram)
+        , mFallbackStateSet(new osg::StateSet(*source.mFallbackStateSet, osg::CopyOp::DEEP_COPY_UNIFORMS))
+        , mMultiviewResolveStateSet(new osg::StateSet(*source.mMultiviewResolveStateSet, osg::CopyOp::DEEP_COPY_UNIFORMS))
+        , mLuminanceCalculator(source.mLuminanceCalculator)
+        , mNisScaler(source.mNisScaler)
+    {
+        setDataVariance(osg::Object::STATIC);
+        copyFrameInputs(source);
+    }
+
+    void PingPongCanvas::copyFrameInputs(const PingPongCanvas& source)
+    {
+        // Only the acquired SceneView's cull owner can reach this method.
+        // Its previous draw has completed before Renderer returns that
+        // SceneView to availableQueue. Never key this ownership by frame%2.
+        mTemporalMotion = source.mTemporalMotion;
+        mTemporalCamera = source.mTemporalCamera;
+        mMotionViewState = source.mMotionViewState;
+        mTextureScene = source.mTextureScene;
+        mTextureDepth = source.mTextureDepth;
+        mTextureNormals = source.mTextureNormals;
+        mTextureDistortion = source.mTextureDistortion;
+        mAvgLum = source.mAvgLum;
+        mPostprocessing = false;
+        mMask = source.mMask;
+        // Video UI settings are update-owned. A delayed draw reads only the
+        // cull snapshot, while NisScaler itself stays draw-thread-owned.
+        mOwnedNis = Settings::video().mUpscaler.get() == "nis";
+        mOwnedNisSharpness = Settings::video().mUpscalerSharpness;
+    }
+
+    void PingPongCanvas::accept(osg::NodeVisitor& visitor)
+    {
+        // Custom PostFX render targets/uniforms have a separate mutable
+        // lifecycle; until that ownership is proven they retain the exact
+        // DYNAMIC fallback. The native presentation path has no such writes.
+        if (!mOwnedSubmission && mTemporalOwnershipAvailable && mTemporalOwner
+            && mTemporalMotion && !mPostprocessing && visitor.getVisitorType() == osg::NodeVisitor::CULL_VISITOR
+            && visitor.validNodeMask(*this))
+        {
+            auto* cv = static_cast<osgUtil::CullVisitor*>(&visitor);
+            if (auto* submission = mTemporalOwner->submissions.acquire(cv,
+                [&] { return new PingPongCanvas(*this); },
+                [&](PingPongCanvas& canvas) { canvas.copyFrameInputs(*this); }))
+            {
+                submission->setNodeMask(getNodeMask());
+                // Use the ordinary visitor path so state, culling and bounded
+                // draw attribution all see the actual immutable submission.
+                submission->osg::Geometry::accept(visitor);
+                return;
+            }
+        }
+        osg::Geometry::accept(visitor);
     }
 
     void PingPongCanvas::setPasses(Fx::DispatchArray&& passes)
@@ -208,7 +279,7 @@ namespace MWRender
             if (temporalWriter.enabled())
             {
                 const auto status = mTemporalMotion->status(state.getContextID());
-                const auto consumer = mTemporalMotion->consumerFrame(state.getContextID());
+                const auto consumer = mTemporalMotion->consumerFrame(state.getContextID(), mTemporalCamera.frame);
                 std::uint32_t inputMask = 0;
                 if (mTextureScene) inputMask |= 1u << 0;
                 if (depth) inputMask |= 1u << 1;
@@ -220,7 +291,11 @@ namespace MWRender
                 if (status.denseDynamicMotion) inputMask |= 1u << 6;
                 constexpr std::uint32_t requiredForDlss
                     = (1u << 0) | (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 6);
-                const bool dlssReady = status.submitted && (inputMask & requiredForDlss) == requiredForDlss;
+                // No reconstruction runtime has been integrated. Even a
+                // future complete motion producer cannot satisfy that gate.
+                constexpr bool dlssRuntimeAvailable = false;
+                const bool dlssReady = dlssRuntimeAvailable && status.submitted
+                    && (inputMask & requiredForDlss) == requiredForDlss;
                 std::ostringstream row;
                 row << status.frame << ',' << Debug::V3Diagnostics::epochMs() << ',' << state.getContextID() << ','
                     << (status.submitted ? 1 : 0) << ',' << (status.historyValid ? 1 : 0) << ','
@@ -233,7 +308,8 @@ namespace MWRender
                     << reinterpret_cast<std::uintptr_t>(mTextureScene.get()) << ','
                     << reinterpret_cast<std::uintptr_t>(depth) << ','
                     << reinterpret_cast<std::uintptr_t>(flow) << ','
-                    << inputMask << ',' << (dlssReady ? 1 : 0);
+                    << inputMask << ',' << (dlssReady ? 1 : 0) << ',' << temporalWriter.droppedLines()
+                    << ',' << status.dynamicSurfaces << ',' << status.unsupportedSurfaces;
                 temporalWriter.writeLine(row.str());
             }
 
@@ -281,12 +357,12 @@ namespace MWRender
             }
 
             osg::Texture* presentationTexture = mTextureScene;
-            if (scaledOutput && Settings::video().mUpscaler.get() == "nis")
+            if (scaledOutput && (mOwnedSubmission ? mOwnedNis : Settings::video().mUpscaler.get() == "nis"))
             {
                 if (osg::Texture* nisTexture = mNisScaler->dispatch(renderInfo, mTextureScene,
                         mTextureScene->getTextureWidth(), mTextureScene->getTextureHeight(),
                         static_cast<int>(resolveViewport->width()), static_cast<int>(resolveViewport->height()),
-                        Settings::video().mUpscalerSharpness))
+                        mOwnedSubmission ? mOwnedNisSharpness : Settings::video().mUpscalerSharpness.get()))
                     presentationTexture = nisTexture;
             }
             state.applyTextureAttribute(0, presentationTexture);
