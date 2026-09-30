@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "v3hitchtelemetry.hpp"
+#include "diagnostictransport.hpp"
 
 namespace Debug::V3Diagnostics
 {
@@ -71,189 +72,6 @@ namespace Debug::V3Diagnostics
         return !value.empty() && value != "0" && value != "off" && value != "false";
     }
 
-    struct DiagnosticChannel
-    {
-        DiagnosticChannel(std::string path, std::string header)
-            : mPath(std::move(path))
-            , mHeader(std::move(header))
-        {
-        }
-
-        std::string mPath;
-        std::string mHeader;
-        std::ofstream mStream;
-        std::atomic<std::size_t> mDroppedLines{ 0 };
-        std::atomic<bool> mCloseQueued{ false };
-        bool mOpenAttempted = false;
-    };
-
-    // V3.17: all V3 CsvWriter instances share one bounded, nonblocking producer
-    // queue and one disk writer. V3.16 removed direct producer-thread I/O but
-    // still created one writer thread per enabled CSV and periodically flushed
-    // each stream. The shared hub eliminates that thread/flush periodicity.
-    class DiagnosticWriterHub
-    {
-    public:
-        using ChannelHandle = std::shared_ptr<DiagnosticChannel>;
-
-        static DiagnosticWriterHub& instance()
-        {
-            static DiagnosticWriterHub hub;
-            return hub;
-        }
-
-        DiagnosticWriterHub(const DiagnosticWriterHub&) = delete;
-        DiagnosticWriterHub& operator=(const DiagnosticWriterHub&) = delete;
-
-        ChannelHandle registerChannel(std::string path, std::string header)
-        {
-            auto channel = std::make_shared<DiagnosticChannel>(std::move(path), std::move(header));
-            {
-                std::lock_guard<std::mutex> lock(mMutex);
-                if (mStopping)
-                    return {};
-                mChannels.push_back(channel);
-                // Queue an open/header operation so even an enabled stream with
-                // no data rows is materialized without producer-thread file I/O.
-                mQueue.push_back({ channel, {}, true, false });
-                if (!mWriterThread.joinable())
-                    mWriterThread = std::thread([this] { writerLoop(); });
-            }
-            mCondition.notify_one();
-            return channel;
-        }
-
-        void enqueue(const ChannelHandle& channel, const std::string& line)
-        {
-            if (!channel || channel->mCloseQueued.load(std::memory_order_acquire))
-                return;
-
-            // Instrumentation must never wait behind its own writer. A dropped
-            // row is less harmful than contaminating the frametime being measured.
-            std::unique_lock<std::mutex> lock(mMutex, std::try_to_lock);
-            if (!lock.owns_lock())
-            {
-                channel->mDroppedLines.fetch_add(1, std::memory_order_relaxed);
-                return;
-            }
-            if (mStopping || mQueue.size() >= sMaxQueuedItems)
-            {
-                channel->mDroppedLines.fetch_add(1, std::memory_order_relaxed);
-                return;
-            }
-            mQueue.push_back({ channel, line, false, false });
-            lock.unlock();
-            mCondition.notify_one();
-        }
-
-        void closeChannel(const ChannelHandle& channel)
-        {
-            if (!channel || channel->mCloseQueued.exchange(true, std::memory_order_acq_rel))
-                return;
-            {
-                std::lock_guard<std::mutex> lock(mMutex);
-                if (mStopping)
-                    return;
-                mQueue.push_back({ channel, {}, false, true });
-            }
-            mCondition.notify_one();
-        }
-
-        ~DiagnosticWriterHub()
-        {
-            {
-                std::lock_guard<std::mutex> lock(mMutex);
-                mStopping = true;
-            }
-            mCondition.notify_one();
-            if (mWriterThread.joinable())
-                mWriterThread.join();
-        }
-
-    private:
-        struct QueueItem
-        {
-            ChannelHandle mChannel;
-            std::string mLine;
-            bool mOpenOnly = false;
-            bool mClose = false;
-        };
-
-        DiagnosticWriterHub() = default;
-
-        static void openChannel(DiagnosticChannel& channel)
-        {
-            if (channel.mOpenAttempted)
-                return;
-            channel.mOpenAttempted = true;
-            channel.mStream.open(std::filesystem::u8path(channel.mPath), std::ios::out | std::ios::trunc);
-            if (channel.mStream.is_open())
-                channel.mStream << channel.mHeader << '\n';
-        }
-
-        static void finalizeChannel(DiagnosticChannel& channel)
-        {
-            openChannel(channel);
-            if (!channel.mStream.is_open())
-                return;
-            const std::size_t dropped = channel.mDroppedLines.load(std::memory_order_relaxed);
-            if (dropped > 0)
-                channel.mStream << "# v3_async_diagnostics_dropped_lines=" << dropped << '\n';
-            channel.mStream.flush();
-            channel.mStream.close();
-        }
-
-        void writerLoop()
-        {
-            std::deque<QueueItem> local;
-            for (;;)
-            {
-                {
-                    std::unique_lock<std::mutex> lock(mMutex);
-                    mCondition.wait(lock, [this] { return mStopping || !mQueue.empty(); });
-                    if (mQueue.empty() && mStopping)
-                        break;
-                    local.swap(mQueue);
-                }
-
-                while (!local.empty())
-                {
-                    QueueItem item = std::move(local.front());
-                    local.pop_front();
-                    if (!item.mChannel)
-                        continue;
-                    if (item.mClose)
-                    {
-                        finalizeChannel(*item.mChannel);
-                        continue;
-                    }
-                    openChannel(*item.mChannel);
-                    if (!item.mOpenOnly && item.mChannel->mStream.is_open())
-                        item.mChannel->mStream << item.mLine << '\n';
-                }
-            }
-
-            // No gameplay-cadence flushes. Drain first, then record losses and
-            // flush each enabled stream exactly once during orderly shutdown.
-            for (const ChannelHandle& channel : mChannels)
-            {
-                if (!channel)
-                    continue;
-                if (!channel->mCloseQueued.load(std::memory_order_acquire))
-                    finalizeChannel(*channel);
-            }
-        }
-
-        static constexpr std::size_t sMaxQueuedItems = 16384;
-
-        std::mutex mMutex;
-        std::condition_variable mCondition;
-        std::deque<QueueItem> mQueue;
-        std::vector<ChannelHandle> mChannels;
-        std::thread mWriterThread;
-        bool mStopping = false;
-    };
-
     class CsvWriter
     {
     public:
@@ -277,6 +95,11 @@ namespace Debug::V3Diagnostics
             DiagnosticWriterHub::instance().enqueue(mChannel, line);
         }
 
+        std::size_t droppedLines() const
+        {
+            return mChannel ? mChannel->mDroppedLines.load(std::memory_order_relaxed) : 0;
+        }
+
     private:
         void ensureOpen()
         {
@@ -290,9 +113,22 @@ namespace Debug::V3Diagnostics
             const char* raw = std::getenv(mEnvironmentVariable.c_str());
             if (raw && pathEnabled(raw))
             {
-                mPath = raw;
-                mChannel = DiagnosticWriterHub::instance().registerChannel(mPath, mHeader);
-                mEnabled.store(static_cast<bool>(mChannel), std::memory_order_release);
+                try
+                {
+                    mPath = raw;
+                    mChannel = DiagnosticWriterHub::instance().registerChannel(mPath, mHeader);
+                    mEnabled.store(static_cast<bool>(mChannel), std::memory_order_release);
+                }
+                catch(const std::bad_alloc&)
+                {
+                    const char* transport=std::getenv("OPENMW_P9_CAPTURE_TRANSPORT");
+                    if(!transport || std::string_view(transport)!="1")
+                        throw;
+                    // The requested output remains missing and therefore fails
+                    // capture qualification. Do not retry allocation each frame
+                    // or substitute synchronous producer-thread file output.
+                    mEnabled.store(false,std::memory_order_release);
+                }
             }
 
             mAttempted.store(true, std::memory_order_release);
@@ -483,7 +319,8 @@ namespace Debug::V3Diagnostics
             "frame,epoch_ms,context,submitted,history_valid,previous_frame,reset_reasons,"
             "render_w,render_h,output_w,output_h,target_revision,jitter_x,jitter_y,"
             "previous_jitter_x,previous_jitter_y,dense_dynamic_motion,color_ptr,depth_ptr,motion_ptr,"
-            "input_mask,dlss_ready");
+            "input_mask,dlss_ready,writer_dropped_total,dynamic_surfaces,unsupported_surfaces,"
+            "ownership_requested,ownership_active,ownership_fallback_reason");
         return writer;
     }
 
@@ -491,7 +328,9 @@ namespace Debug::V3Diagnostics
     {
         static CsvWriter writer("OPENMW_P9_COMPOSITE_FILE",
             "frame,epoch_ms,context,total_ms,available_ms,immediate_start,queued_start,maps,"
-            "required_maps,drawables,fbo_ms,state_ms,draw_ms,yields_delta,immediate_end,queued_end");
+            "required_maps,drawables,fbo_ms,state_ms,draw_ms,yields_delta,immediate_end,queued_end,"
+            "prepare_scheduled_total,prepare_invalidated_total,prepare_cancelled_total,required_fallbacks_total,"
+            "age_progress_total,budget_yields_total,pending_prepare_bytes,shared_charged_ms,oldest_age_frames");
         return writer;
     }
 

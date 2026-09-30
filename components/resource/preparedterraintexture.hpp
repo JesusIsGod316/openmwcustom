@@ -10,6 +10,7 @@
 #include <osg/GraphicsContext>
 #include <osg/observer_ptr>
 #include <osgUtil/IncrementalCompileOperation>
+#include <components/sceneutil/glcalltrace.hpp>
 
 namespace Resource
 {
@@ -17,7 +18,9 @@ namespace Resource
     // readiness test. Only Terrain::TextureManager opts into it at startup.
     // Draw-time apply() is never bypassed. The memo skips redundant *precompile*
     // calls only after this exact resource revision was submitted in this context.
-    // It does NOT claim GPU completion or cover composite/render-target textures.
+    // It does NOT claim GPU completion, residency or a nonblocking future apply.
+    // A producer may explicitly opt a render target into the same proof. Its
+    // dimensions/format/allocation replace the source image revision in the key.
     class PreparedTerrainTexture final : public osg::Texture2D
     {
     public:
@@ -25,8 +28,22 @@ namespace Resource
         explicit PreparedTerrainTexture(osg::Image* image) : osg::Texture2D(image) {}
         PreparedTerrainTexture(const PreparedTerrainTexture& other,
             const osg::CopyOp& copy = osg::CopyOp::SHALLOW_COPY)
-            : osg::Texture2D(other, copy) {} // clones never inherit preparation proofs
+            : osg::Texture2D(other, copy), mRenderTarget(other.mRenderTarget) {} // clones never inherit preparation proofs
         META_StateAttribute(Resource, PreparedTerrainTexture, TEXTURE);
+        void setPreparationRenderTarget(bool enabled) { mRenderTarget = enabled; mPrepared.setAllElementsTo(std::nullopt); }
+        void apply(osg::State& state) const override
+        {
+            if (getSubloadCallback())
+            {
+                osg::Texture2D::apply(state);
+                return;
+            }
+            // Direct ICO/FBO applies do not update OSG's cached last attribute.
+            // This scope is exact producer ownership, not cached-attribute
+            // inference. Callback-managed uploads deliberately remain unknown.
+            SceneUtil::GLCallTrace::ScopedTextureApply ownership(state,*this);
+            osg::Texture2D::apply(state);
+        }
 
         bool preparationUnchanged(const osg::State& state) const
         {
@@ -34,7 +51,7 @@ namespace Resource
             if (context >= mPrepared.size() || !state.getGraphicsContext()) return false;
             const auto current = signature(context);
             const auto& previous = mPrepared[context];
-            return current && previous && previous->image.valid() && previous->object.valid()
+            return current && previous && (_image ? previous->image.valid() : mRenderTarget) && previous->object.valid()
                 && previous->context.valid() && previous->context.get() == state.getGraphicsContext()
                 && previous->image.get() == _image.get()
                 && previous->object.get() == getTextureObject(context)
@@ -59,7 +76,7 @@ namespace Resource
 
         void releaseGLObjects(osg::State* state = nullptr) const override
         {
-            if (state) mPrepared[state->getContextID()].reset();
+            if (state && state->getContextID() < mPrepared.size()) mPrepared[state->getContextID()].reset();
             else mPrepared.setAllElementsTo(std::nullopt);
             osg::Texture2D::releaseGLObjects(state);
         }
@@ -83,10 +100,11 @@ namespace Resource
         std::optional<Signature> signature(unsigned context) const
         {
             const auto* object = getTextureObject(context);
-            if (!object || !object->isAllocated() || !object->id() || !_image || !_image->data()
+            if (!object || !object->isAllocated() || !object->id()
+                || (_image ? !_image->data() : !mRenderTarget || _textureWidth <= 0 || _textureHeight <= 0)
                 || getSubloadCallback() || getUpdateCallback() || getEventCallback() || getReadPBuffer()
                 || getDataVariance() == osg::Object::DYNAMIC
-                || _image->getDataVariance() == osg::Object::DYNAMIC || _image->requiresUpdateCall()
+                || (_image && (_image->getDataVariance() == osg::Object::DYNAMIC || _image->requiresUpdateCall()))
                 || isDirty(context) || _texParametersDirtyList[context] || _texMipmapGenerationDirtyList[context])
                 return std::nullopt;
             const auto& p = object->_profile;
@@ -96,8 +114,9 @@ namespace Resource
                 _resizeNonPowerOfTwoHint, _borderWidth, _internalFormatMode, _internalFormatType,
                 _internalFormat, _sourceFormat, _sourceType, _use_shadow_comparison,
                 _shadow_compare_func, _shadow_texture_mode, _textureWidth, _textureHeight, _numMipmapLevels,
-                _image->getModifiedCount(), _image->s(), _image->t(), _image->r(), _image->getPixelFormat(),
-                _image->getDataType(), _image->getPacking(), _image->getRowLength(),
+                _image ? _image->getModifiedCount() : 0, _image ? _image->s() : 0, _image ? _image->t() : 0,
+                _image ? _image->r() : 0, _image ? _image->getPixelFormat() : 0,
+                _image ? _image->getDataType() : 0, _image ? _image->getPacking() : 0, _image ? _image->getRowLength() : 0,
                 p._target, p._numMipmapLevels, p._internalFormat, p._width, p._height, p._depth, p._border};
             s.floats = {_maxAnisotropy, _minlod, _maxlod, _lodbias, _shadow_ambient};
             s.border = _borderColor;
@@ -105,6 +124,7 @@ namespace Resource
             return s;
         }
         mutable osg::buffered_object<std::optional<Record>> mPrepared;
+        bool mRenderTarget = false;
     };
 
     class PreparedTerrainTextureCompileOp final

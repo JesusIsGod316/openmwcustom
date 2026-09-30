@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <thread>
+#include <typeinfo>
 
 #include <osg/Texture1D>
 #include <osg/Texture2D>
@@ -16,6 +17,8 @@
 #include <osgUtil/IncrementalCompileOperation>
 
 #include <components/debug/v36gpuprofiler.hpp>
+#include <components/rendercore/ownedrenderstage.hpp>
+#include <components/sceneutil/drawphasetrace.hpp>
 #include <components/files/conversion.hpp>
 #include <components/misc/pathhelpers.hpp>
 #include <components/misc/strings/algorithm.hpp>
@@ -38,7 +41,12 @@
 
 #include "camera.hpp"
 #include "temporalmotion.hpp"
+#include "temporaldynamic.hpp"
+#include <osg/Version>
+#include <osgUtil/SceneView>
+#include <osgViewer/Renderer>
 #include "distortion.hpp"
+#include "depthclear.hpp"
 #include "pingpongcull.hpp"
 #include "renderbin.hpp"
 #include "renderingmanager.hpp"
@@ -69,11 +77,21 @@ namespace
     class HUDCullCallback : public SceneUtil::NodeCallback<HUDCullCallback, osg::Camera*, osgUtil::CullVisitor*>
     {
     public:
+        explicit HUDCullCallback(MWRender::PostProcessor* processor) : mPostProcessor(processor) {}
         void operator()(osg::Camera* camera, osgUtil::CullVisitor* cv)
         {
             osg::ref_ptr<osg::StateSet> stateset = new osg::StateSet;
             auto& sm = Stereo::Manager::instance();
             auto* fullViewport = camera->getViewport();
+            if (mPostProcessor->temporalOwnershipAvailable())
+            {
+                // RenderStage and inherited StateGraph must both retain a
+                // cull-owned viewport. A resize can otherwise mutate the
+                // Camera's shared viewport during a delayed static draw.
+                osg::ref_ptr<osg::Viewport> viewport = new osg::Viewport(*fullViewport);
+                cv->getCurrentRenderStage()->setViewport(viewport);
+                stateset->setAttributeAndModes(viewport);
+            }
             if (sm.getEye(cv) == Stereo::Eye::Left)
                 stateset->setAttributeAndModes(
                     new osg::Viewport(0, 0, fullViewport->width() / 2, fullViewport->height()));
@@ -84,7 +102,11 @@ namespace
             cv->pushStateSet(stateset);
             traverse(camera, cv);
             cv->popStateSet();
+            if (mPostProcessor->temporalOwnershipAvailable())
+                RenderCore::snapshotRenderStageCamera(*cv->getCurrentRenderStage(),camera);
         }
+    private:
+        MWRender::PostProcessor* mPostProcessor;
     };
 
     enum class Usage
@@ -131,7 +153,11 @@ namespace MWRender
         , mUsePostProcessing(Settings::postProcessing().mEnabled)
         , mSamples(Settings::video().mAntialiasing)
         , mPingPongCull(new PingPongCull(this))
-        , mDistortionCallback(new DistortionCallback)
+        , mDistortionCallback(new DistortionCallback([](osg::RenderInfo& info) -> osg::ref_ptr<osg::FrameBufferObject> {
+            auto* camera = info.getCurrentCamera();
+            auto* processor = camera ? dynamic_cast<PostProcessor*>(camera->getUserData()) : nullptr;
+            return processor ? processor->getPrimaryFbo(info.getState()->getFrameStamp()->getFrameNumber() % 2) : nullptr;
+        }))
     {
         auto& shaderManager = mRendering.getResourceSystem()->getSceneManager()->getShaderManager();
 
@@ -148,7 +174,9 @@ namespace MWRender
                 auto debugProgram = TemporalMotion::debugView() ? shaderManager.getProgram("temporal_motion_view") : nullptr;
                 if (program)
                 {
-                    mTemporalMotion = std::make_shared<TemporalMotion>(program);
+                    auto dynamicProgram = SceneUtil::temporalDynamicMotionEnabled()
+                        ? shaderManager.getProgram("temporal_dynamic_motion") : nullptr;
+                    mTemporalMotion = std::make_shared<TemporalMotion>(program, dynamicProgram);
                     for (auto& canvas : mCanvases) canvas->setTemporalMotion(mTemporalMotion, debugProgram);
                     Log(Debug::Info) << "Phase 9 camera/static motion capture enabled; dense dynamic motion and DLSS are not integrated";
                 }
@@ -174,7 +202,7 @@ namespace MWRender
         mHUDCamera->getOrCreateStateSet()->setMode(GL_DEPTH_TEST, osg::StateAttribute::OFF);
         mHUDCamera->addChild(mCanvases[0]);
         mHUDCamera->addChild(mCanvases[1]);
-        mHUDCamera->setCullCallback(new HUDCullCallback);
+        mHUDCamera->setCullCallback(new HUDCullCallback(this));
         if (Settings::cells().mV36AsyncGpuProfiler)
             Debug::V36GpuProfiler::attachCamera(*mHUDCamera, "postprocess_hud_composite");
         mViewer->getCamera()->addCullCallback(mPingPongCull);
@@ -277,6 +305,7 @@ namespace MWRender
 
     void PostProcessor::resize()
     {
+        ++mTemporalResourceEpoch;
         mHUDCamera->resize(mWidth, mHeight);
         mViewer->getCamera()->resize(mWidth, mHeight);
         if (Stereo::getStereo())
@@ -333,20 +362,134 @@ namespace MWRender
 
     void PostProcessor::captureTemporalCamera(osgUtil::CullVisitor* cv)
     {
-        if (!mTemporalMotion || !cv || Stereo::getStereo()) return;
+        if (!mTemporalMotion || !cv || Stereo::getStereo())
+        {
+            mTemporalOwnershipAvailable = false;
+            for (auto& canvas : mCanvases)
+            {
+                canvas->setTargetGenerationSingleContext(false);
+                canvas->setTemporalOwnershipAvailable(false, Stereo::getStereo() ? "stereo" : "no_temporal_input");
+            }
+            return;
+        }
+        bool owned = false;
+        std::string fallback = "not_requested";
+        auto* renderer = dynamic_cast<osgViewer::Renderer*>(mViewer->getCamera()->getRenderer());
+        const auto threading = mViewer->getThreadingModel();
+        osgViewer::ViewerBase::Contexts contexts;
+        mViewer->getContexts(contexts, false);
+        auto* primaryContext = mViewer->getCamera()->getGraphicsContext();
+        const bool generationDrawContext = std::string_view(osgGetVersion()) == "3.6.5"
+            && renderer && (typeid(*renderer) == typeid(osgViewer::Renderer)
+                || typeid(*renderer) == typeid(SceneUtil::DrawPhaseTrace::Renderer))
+            && (threading == osgViewer::ViewerBase::DrawThreadPerContext
+                || threading == osgViewer::ViewerBase::SingleThreaded)
+            && primaryContext && primaryContext->valid() && primaryContext->getState()
+            && contexts.size() == 1 && contexts.front() == primaryContext;
+        if (TemporalMotion::ownershipEnabled() && generationDrawContext
+            && (typeid(*cv) == typeid(osgUtil::CullVisitor)
+                || typeid(*cv) == typeid(SceneUtil::DrawPhaseTrace::CullVisitor)))
+        {
+            // This is the actual SceneView-local visitor acquired through
+            // Renderer::availableQueue, not a frame-parity approximation.
+            for (unsigned i = 0; i < 2; ++i)
+                owned |= renderer->getSceneView(i) && renderer->getSceneView(i)->getCullVisitor() == cv;
+            if (owned && mTemporalOwnerRenderer.get() != renderer)
+            {
+                ++mTemporalResourceEpoch;
+                mTemporalCanvasOwner = PingPongCanvas::createTemporalOwner();
+                mTemporalOwnerRenderer = renderer;
+                for (auto& canvas : mCanvases) canvas->setTemporalOwner(mTemporalCanvasOwner);
+            }
+        }
+        // The generation's shared initialization marker is draw-owned only
+        // under this one-context qualification. A later unsupported Fx binding
+        // can use the DYNAMIC source without clearing already-written history.
+        osg::ref_ptr<osg::StateSet> fxState;
+        if (owned)
+        {
+            // Qualify the exact updater binding types BEFORE admitting a
+            // STATIC canvas. Late world light values are finalized below.
+            fxState = mStateUpdater->ownedFrame(cv);
+            owned = fxState.valid();
+            fallback = owned ? "active" : "unsupported_fx_state";
+        }
+        else if (TemporalMotion::ownershipEnabled())
+        {
+            if (std::string_view(osgGetVersion()) != "3.6.5") fallback = "unsupported_osg";
+            else if (!renderer || (typeid(*renderer) != typeid(osgViewer::Renderer)
+                    && typeid(*renderer) != typeid(SceneUtil::DrawPhaseTrace::Renderer)))
+                fallback = "unsupported_renderer";
+            else if (typeid(*cv) != typeid(osgUtil::CullVisitor)
+                && typeid(*cv) != typeid(SceneUtil::DrawPhaseTrace::CullVisitor)) fallback = "unsupported_visitor";
+            else if (threading != osgViewer::ViewerBase::DrawThreadPerContext
+                && threading != osgViewer::ViewerBase::SingleThreaded) fallback = "unsupported_threading";
+            else if (contexts.size() != 1) fallback = "multiple_contexts";
+            else fallback = "unknown_sceneview";
+        }
+        for (auto& canvas : mCanvases)
+        {
+            canvas->setTargetGenerationSingleContext(generationDrawContext);
+            canvas->setOwnedFxState(fxState);
+            canvas->setTemporalOwnershipAvailable(owned, fallback);
+        }
+        mTemporalOwnershipAvailable = owned;
         TemporalCamera camera;
         camera.projection = cv->getProjectionMatrix();
         camera.view = cv->getCurrentCamera()->getViewMatrix();
         camera.frame = cv->getTraversalNumber();
         camera.cameraEpoch = mRendering.getCamera()->temporalEpoch();
         camera.worldEpoch = mTemporalWorldEpoch;
+        camera.resourceEpoch = mTemporalResourceEpoch;
         camera.renderWidth = renderWidth();
         camera.renderHeight = renderHeight();
         camera.outputWidth = outputWidth();
         camera.outputHeight = outputHeight();
         camera.zeroToOne = SceneUtil::AutoDepth::isReversed();
         camera.clearDepth = cv->getCurrentCamera()->getClearDepth();
+        if (SceneUtil::temporalDynamicMotionEnabled())
+        {
+            auto& dynamic = mTemporalDynamicFrames[camera.frame % 2];
+            dynamic = std::make_shared<TemporalDynamicFrame>();
+            camera.dynamic = dynamic;
+        }
         mCanvases[camera.frame % 2]->setTemporalCamera(std::move(camera));
+    }
+
+    void PostProcessor::captureTemporalDynamic(osgUtil::CullVisitor* cv)
+    {
+        if (!mTemporalMotion || !cv || Stereo::getStereo()) return;
+        const unsigned frameId = cv->getTraversalNumber() % 2;
+        if (mTemporalOwnershipAvailable && cv->getCurrentRenderStage())
+        {
+            // HUD is culled before the world. Only now have all point lights
+            // been collected. Freeze the complete cv-local uniform/UBO data
+            // into the exact acquired leaf before Renderer publishes draw.
+            auto fxState = mStateUpdater->ownedFrame(cv);
+            PingPongCanvas::finalizeTemporalOwner(mTemporalCanvasOwner, cv, fxState);
+            auto freezeBin = [&](auto&& self, osgUtil::RenderBin& bin) -> void {
+                if (const auto* callback = bin.getDrawCallback())
+                {
+                    if (typeid(*callback) == typeid(TransparentDepthBinCallback))
+                        bin.setDrawCallback(mTransparentDepthPostPass->ownedFrame(frameId));
+                    else if (typeid(*callback) == typeid(DistortionCallback))
+                        bin.setDrawCallback(mDistortionCallback->ownedFrame(mFbos[frameId][FBO_Distortion],
+                            mFbos[frameId][FBO_Primary], getPrimaryFbo(frameId)));
+                    else if (typeid(*callback) == typeid(DepthClearCallback))
+                        bin.setDrawCallback(static_cast<const DepthClearCallback*>(callback)->ownedFrame(
+                            mFbos[frameId][FBO_FirstPerson],mFbos[frameId][FBO_OpaqueDepth],getPrimaryFbo(frameId)));
+                }
+                for (const auto& child : bin.getRenderBinList()) self(self,*child.second);
+            };
+            freezeBin(freezeBin,*cv->getCurrentRenderStage());
+            RenderCore::snapshotRenderStageCamera(*cv->getCurrentRenderStage(),nullptr,true);
+        }
+        if (!SceneUtil::temporalDynamicMotionEnabled()) return;
+        auto& dynamic = mTemporalDynamicFrames[cv->getTraversalNumber() % 2];
+        // All HUD snapshot readers retain this per-submission frame, and the
+        // Renderer does not publish drawQueue until the whole cull returns.
+        // Capture exact already-visible/deformed RenderLeaves after traversal.
+        if (dynamic && cv->getCurrentRenderStage()) dynamic->capture(*cv->getCurrentRenderStage());
     }
 
     void PostProcessor::cull(unsigned frameId, osgUtil::CullVisitor* cv)
@@ -467,7 +610,7 @@ namespace MWRender
             createObjectsForFrame(frameId);
 
             mDirty = false;
-            mCanvases[frameId]->setPasses(Fx::DispatchArray(mTemplateData));
+            mCanvases[frameId]->setPasses(Fx::DispatchArray(mTemplateData), mTemplateTargetGeneration);
         }
 
         if ((mNormalsSupported && mNormals != mPrevNormals) || (mPassLights != mPrevPassLights))
@@ -501,6 +644,7 @@ namespace MWRender
 
     void PostProcessor::createObjectsForFrame(size_t frameId)
     {
+        ++mTemporalResourceEpoch;
         auto& textures = mTextures[frameId];
 
         int width = renderWidth();
@@ -508,7 +652,7 @@ namespace MWRender
 
         for (osg::ref_ptr<osg::Texture>& texture : textures)
         {
-            if (!texture)
+            if (!texture || (TemporalMotion::ownershipEnabled() && !Stereo::getStereo()))
             {
                 if (Stereo::getMultiview())
                     texture = new osg::Texture2DArray;
@@ -636,6 +780,16 @@ namespace MWRender
         mPassLights = false;
 
         std::vector<Fx::Types::RenderTarget> attachmentsToDirty;
+        osgViewer::ViewerBase::Contexts contexts;
+        mViewer->getContexts(contexts, false);
+        auto* primaryContext = mViewer->getCamera()->getGraphicsContext();
+        // Initial chain setup precedes the final threading-model selection.
+        // Require an assigned single native context here; draw qualification
+        // independently checks its serialized Renderer/threading contract.
+        const bool ownedTargets = TemporalMotion::ownershipEnabled() && !Stereo::getStereo()
+            && primaryContext && primaryContext->valid() && primaryContext->getState()
+            && contexts.size() == 1 && contexts.front() == primaryContext;
+        mTemplateTargetGeneration = ownedTargets ? std::make_shared<PostFxTargetGeneration>() : nullptr;
 
         for (const auto& technique : mTechniques)
         {
@@ -650,6 +804,15 @@ namespace MWRender
             }
 
             Fx::DispatchNode node;
+
+            if (ownedTargets)
+            {
+                // A delayed acquired SceneView may still sample any old
+                // target. Replace generation objects before resizing or
+                // dirtying; never modify those retained by an unfinished draw.
+                for (auto& [name, target] : technique->getRenderTargetsMap())
+                    target.mTarget = new osg::Texture2D(*target.mTarget, osg::CopyOp::SHALLOW_COPY);
+            }
 
             node.mFlags = technique->getFlags();
 
@@ -777,7 +940,8 @@ namespace MWRender
             mTemplateData.emplace_back(std::move(node));
         }
 
-        mCanvases[frameId]->setPasses(Fx::DispatchArray(mTemplateData));
+        if (mTemplateTargetGeneration) mTemplateTargetGeneration->attachments = attachmentsToDirty;
+        mCanvases[frameId]->setPasses(Fx::DispatchArray(mTemplateData), mTemplateTargetGeneration);
 
         if (static_cast<bool>(Settings::cells().mV314PostfxCompileWarmup))
         {

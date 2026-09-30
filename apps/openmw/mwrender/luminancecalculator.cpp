@@ -152,4 +152,21 @@ namespace MWRender
 
         mCompiled = false;
     }
+
+    void LuminanceCalculator::releaseGLObjects(osg::State* state)
+    {
+        for (auto& buffer : mBuffers)
+        {
+            for (auto* fbo : {buffer.sceneLumFbo.get(), buffer.resolveSceneLumFbo.get(),
+                     buffer.resolveFbo.get(), buffer.luminanceProxyFbo.get()})
+                if (fbo) fbo->releaseGLObjects(state);
+            for (auto* texture : {buffer.mipmappedSceneLuminanceTex.get(), buffer.luminanceTex.get(),
+                     buffer.luminanceProxyTex.get()})
+                if (texture) texture->releaseGLObjects(state);
+            if (buffer.sceneLumSS) buffer.sceneLumSS->releaseGLObjects(state);
+            if (buffer.resolveSS) buffer.resolveSS->releaseGLObjects(state);
+        }
+        mCompiled = false;
+        mIsBlank = true;
+    }
 }

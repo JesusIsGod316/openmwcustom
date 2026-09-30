@@ -1,8 +1,7 @@
 #include "distortion.hpp"
 
 #include <osg/FrameBufferObject>
-
-#include "postprocessor.hpp"
+#include <osgUtil/RenderStage>
 
 namespace MWRender
 {
@@ -12,15 +11,18 @@ namespace MWRender
         osg::State* state = renderInfo.getState();
         unsigned frameId = state->getFrameStamp()->getFrameNumber() % 2;
 
-        PostProcessor* postProcessor = dynamic_cast<PostProcessor*>(renderInfo.getCurrentCamera()->getUserData());
-
-        if (!postProcessor || bin->getStage()->getFrameBufferObject() != postProcessor->getPrimaryFbo(frameId))
+        osg::ref_ptr<osg::FrameBufferObject> primary = mOwnedPrimary;
+        if (!primary && mPrimaryProvider) primary = mPrimaryProvider(renderInfo);
+        if (!primary || bin->getStage()->getFrameBufferObject() != primary)
             return;
 
-        mFBO[frameId]->apply(*state);
+        osg::ref_ptr<osg::FrameBufferObject> distortion = mOwnedDistortion ? mOwnedDistortion.get() : mFBO[frameId].get();
+        osg::ref_ptr<osg::FrameBufferObject> original = mOwnedOriginal ? mOwnedOriginal.get() : mOriginalFBO[frameId].get();
+        if (!distortion || !original) return;
+        distortion->apply(*state);
 
         const osg::Texture* tex
-            = mFBO[frameId]->getAttachment(osg::FrameBufferObject::BufferComponent::COLOR_BUFFER0).getTexture();
+            = distortion->getAttachment(osg::FrameBufferObject::BufferComponent::COLOR_BUFFER0).getTexture();
 
         glViewport(0, 0, tex->getTextureWidth(), tex->getTextureHeight());
         glClearColor(0.0, 0.0, 0.0, 1.0);
@@ -30,8 +32,8 @@ namespace MWRender
 
         bin->drawImplementation(renderInfo, previous);
 
-        tex = mOriginalFBO[frameId]->getAttachment(osg::FrameBufferObject::BufferComponent::COLOR_BUFFER0).getTexture();
+        tex = original->getAttachment(osg::FrameBufferObject::BufferComponent::COLOR_BUFFER0).getTexture();
         glViewport(0, 0, tex->getTextureWidth(), tex->getTextureHeight());
-        mOriginalFBO[frameId]->apply(*state);
+        original->apply(*state);
     }
 }

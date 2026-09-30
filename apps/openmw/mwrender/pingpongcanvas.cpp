@@ -7,6 +7,7 @@
 #include <sstream>
 
 #include <components/debug/v3diagnostics.hpp>
+#include <components/rendercore/sceneviewowner.hpp>
 #include <components/debug/v36gpuprofiler.hpp>
 #include <components/shader/shadermanager.hpp>
 #include <components/settings/values.hpp>
@@ -14,12 +15,19 @@
 #include <components/stereo/stereomanager.hpp>
 
 #include <osg/GLExtensions>
+#include <osg/BufferIndexBinding>
 #include <osg/Texture2DArray>
+#include <osg/observer_ptr>
+#include <osgUtil/CullVisitor>
 
 #include "postprocessor.hpp"
 
 namespace MWRender
 {
+    struct TemporalCanvasOwner
+    {
+        RenderCore::SceneViewOwner<PingPongCanvas> submissions;
+    };
     namespace
     {
         void emitDlssInteropCapabilities(osg::State& state)
@@ -109,9 +117,145 @@ namespace MWRender
         mMultiviewResolveStateSet->addUniform(new osg::Uniform("lastShader", 0));
     }
 
-    void PingPongCanvas::setPasses(Fx::DispatchArray&& passes)
+    std::shared_ptr<TemporalCanvasOwner> PingPongCanvas::createTemporalOwner()
+    {
+        return std::make_shared<TemporalCanvasOwner>();
+    }
+
+    void PingPongCanvas::finalizeTemporalOwner(const std::shared_ptr<TemporalCanvasOwner>& owner,
+        osgUtil::CullVisitor* visitor, osg::StateSet* fxState)
+    {
+        if (!owner) return;
+        if (auto* canvas = owner->submissions.find(visitor))
+        {
+            // The placeholder StateSet was installed before creating the
+            // RenderLeaf. Fill that exact object only before draw publication.
+            // Qualification happened before accepting the STATIC leaf; a new
+            // unsupported binding during the same cull is a contract failure,
+            // never permission to publish a partially captured submission.
+            if (!fxState) throw std::runtime_error("Phase 9 PostFX state changed during its acquired cull");
+            Fx::StateUpdater::installOwnedFrame(*canvas->mDrawFxState, *fxState, *canvas->mOwnedFxBindings);
+            for (const auto& [name, uniform] : canvas->mDrawFxState->getUniformList())
+                canvas->mOwnedFxState->addUniform(uniform.first, uniform.second);
+            for (const auto& [key, attribute] : canvas->mDrawFxState->getAttributeList())
+                canvas->mOwnedFxState->setAttribute(attribute.first, attribute.second);
+        }
+    }
+
+    PingPongCanvas::PingPongCanvas(const PingPongCanvas& source)
+        : osg::Geometry(source, osg::CopyOp::SHALLOW_COPY)
+        , mOwnedSubmission(true)
+        , mFallbackProgram(source.mFallbackProgram)
+        , mMultiviewResolveProgram(source.mMultiviewResolveProgram)
+        , mFallbackStateSet(new osg::StateSet(*source.mFallbackStateSet,
+            osg::CopyOp::DEEP_COPY_UNIFORMS | osg::CopyOp::DEEP_COPY_ARRAYS))
+        , mMultiviewResolveStateSet(new osg::StateSet(*source.mMultiviewResolveStateSet,
+            osg::CopyOp::DEEP_COPY_UNIFORMS | osg::CopyOp::DEEP_COPY_ARRAYS))
+        , mLuminanceCalculator(source.mLuminanceCalculator)
+        , mNisScaler(source.mNisScaler)
+    {
+        setDataVariance(osg::Object::STATIC);
+        copyFrameInputs(source);
+    }
+
+    void PingPongCanvas::copyFrameInputs(const PingPongCanvas& source)
+    {
+        // Only the acquired SceneView's cull owner can reach this method.
+        // Its previous draw has completed before Renderer returns that
+        // SceneView to availableQueue. Never key this ownership by frame%2.
+        mTemporalMotion = source.mTemporalMotion;
+        mTemporalCamera = source.mTemporalCamera;
+        mMotionViewState = source.mMotionViewState;
+        mTextureScene = source.mTextureScene;
+        mTextureDepth = source.mTextureDepth;
+        mTextureNormals = source.mTextureNormals;
+        mTextureDistortion = source.mTextureDistortion;
+        mAvgLum = source.mAvgLum;
+        mPostprocessing = source.mPostprocessing;
+        mMask = source.mMask;
+        mOwnershipFallback = "active";
+        mTargetGeneration = source.mTargetGeneration;
+        mOwnedFxState = source.getStateSet()
+            ? new osg::StateSet(*source.getStateSet(), osg::CopyOp::DEEP_COPY_UNIFORMS | osg::CopyOp::DEEP_COPY_ARRAYS)
+            : new osg::StateSet;
+        if (source.mOwnedFxState) mOwnedFxState->merge(*source.mOwnedFxState);
+        mDrawFxState = new osg::StateSet;
+        setStateSet(mOwnedFxState);
+        mPasses.clear();
+        mOwnedTechniqueNames.clear();
+        mPasses.reserve(source.mPasses.size());
+        for (const auto& original : source.mPasses)
+        {
+            Fx::DispatchNode captured;
+            captured.mFlags = original.mFlags;
+            captured.mRootStateSet = new osg::StateSet(*original.mRootStateSet,
+                osg::CopyOp::DEEP_COPY_UNIFORMS | osg::CopyOp::DEEP_COPY_ARRAYS);
+            mOwnedTechniqueNames.push_back(original.mHandle ? original.mHandle->getName() : "unknown");
+            for (const auto& pass : original.mPasses)
+            {
+                // StateSets and uniforms are cull/update-owned. FBOs/targets
+                // are retained generation objects, touched only by serialized
+                // draw; rebuild replaces them rather than mutating them.
+                Fx::DispatchNode::SubPass owned;
+                owned.mStateSet = new osg::StateSet(*pass.mStateSet,
+                    osg::CopyOp::DEEP_COPY_UNIFORMS | osg::CopyOp::DEEP_COPY_ARRAYS);
+                owned.mRenderTarget = pass.mRenderTarget;
+                owned.mRenderTexture = pass.mRenderTexture;
+                owned.mResolve = pass.mResolve;
+                owned.mSize = pass.mSize;
+                owned.mMipMap = pass.mMipMap;
+                captured.mPasses.push_back(std::move(owned));
+            }
+            mPasses.push_back(std::move(captured));
+        }
+        // A source canvas's dirty flag belongs to its legacy draw path. Owned
+        // scratch FBOs reset only when their exact scene generation changes.
+        const auto* scratch = mFbos[0]
+            ? mFbos[0]->getAttachment(osg::Camera::COLOR_BUFFER0).getTexture() : nullptr;
+        mDirty = !scratch || scratch->getTextureWidth() != mTextureScene->getTextureWidth()
+            || scratch->getTextureHeight() != mTextureScene->getTextureHeight()
+            || scratch->getInternalFormat() != mTextureScene->getInternalFormat();
+        mDirtyAttachments.clear();
+        // Video UI settings are update-owned. A delayed draw reads only the
+        // cull snapshot, while NisScaler itself stays draw-thread-owned.
+        mOwnedNis = Settings::video().mUpscaler.get() == "nis";
+        mOwnedNisSharpness = Settings::video().mUpscalerSharpness;
+    }
+
+    void PingPongCanvas::accept(osg::NodeVisitor& visitor)
+    {
+        if (!mOwnedSubmission && mTemporalOwnershipAvailable)
+        {
+            if (!mOwnedFxState) mOwnershipFallback = "unsupported_fx_state";
+            else if (mPostprocessing && !mTargetGeneration) mOwnershipFallback = "unsupported_fx_targets";
+        }
+        if (!mOwnedSubmission && mTemporalOwnershipAvailable && mTemporalOwner
+            && mTemporalMotion && mOwnedFxState && (!mPostprocessing || mTargetGeneration)
+            && visitor.getVisitorType() == osg::NodeVisitor::CULL_VISITOR
+            && visitor.validNodeMask(*this))
+        {
+            auto* cv = static_cast<osgUtil::CullVisitor*>(&visitor);
+            if (auto* submission = mTemporalOwner->submissions.acquire(cv,
+                [&] { return new PingPongCanvas(*this); },
+                [&](PingPongCanvas& canvas) { canvas.copyFrameInputs(*this); }))
+            {
+                submission->setNodeMask(getNodeMask());
+                // Use the ordinary visitor path so state, culling and bounded
+                // draw attribution all see the actual immutable submission.
+                submission->osg::Geometry::accept(visitor);
+                return;
+            }
+            mOwnershipFallback = "owner_slots_exhausted";
+        }
+        osg::Geometry::accept(visitor);
+    }
+
+    void PingPongCanvas::setPasses(Fx::DispatchArray&& passes, std::shared_ptr<PostFxTargetGeneration> generation)
     {
         mPasses = std::move(passes);
+        mTargetGeneration = std::move(generation);
+        mDeclaredAttachments.clear();
+        if (mTargetGeneration) mDirtyAttachments = mTargetGeneration->attachments;
     }
 
     void PingPongCanvas::setMask(bool underwater, bool exterior)
@@ -133,6 +277,13 @@ namespace MWRender
         mNisScaler->resizeGLObjectBuffers(maxSize);
         if (mTemporalMotion) mTemporalMotion->resizeGLObjectBuffers(maxSize);
         if (mMotionViewState) mMotionViewState->resizeGLObjectBuffers(maxSize);
+        // OSG 3.6.5 BufferIndexBinding does not forward these lifecycle
+        // calls to its BufferData. The acquired slot owns that storage.
+        for (const auto& [key, attribute] : mOwnedFxBindings->getAttributeList())
+            if (auto* binding = dynamic_cast<osg::UniformBufferBinding*>(attribute.first.get()))
+                if (auto* data = binding->getBufferData()) data->resizeGLObjectBuffers(maxSize);
+        if (mTemporalOwner && !mOwnedSubmission)
+            mTemporalOwner->submissions.forEach([&](PingPongCanvas& canvas) { canvas.resizeGLObjectBuffers(maxSize); });
     }
 
     void PingPongCanvas::setTemporalMotion(std::shared_ptr<TemporalMotion> motion, osg::Program* debugProgram)
@@ -158,6 +309,51 @@ namespace MWRender
         osg::Geometry::releaseGLObjects(state);
         if (mTemporalMotion) mTemporalMotion->releaseGLObjects(state);
         if (mMotionViewState) mMotionViewState->releaseGLObjects(state);
+        if (mTemporalOwner && !mOwnedSubmission)
+            mTemporalOwner->submissions.forEach([&](PingPongCanvas& canvas) { canvas.releaseGLObjects(state); });
+        if (mOwnedFxState) mOwnedFxState->releaseGLObjects(state);
+        mOwnedFxBindings->releaseGLObjects(state);
+        for (const auto& [key, attribute] : mOwnedFxBindings->getAttributeList())
+            if (auto* binding = dynamic_cast<osg::UniformBufferBinding*>(attribute.first.get()))
+                if (auto* data = binding->getBufferData()) data->releaseGLObjects(state);
+        // The source canvas can still render a DYNAMIC fallback generation.
+        // Release those internal resources too: they are not scene children
+        // visited by GraphicsContext::close, and their old GL names must not
+        // survive until a later context reuses this context ID.
+        {
+            mFallbackStateSet->releaseGLObjects(state);
+            mMultiviewResolveStateSet->releaseGLObjects(state);
+            for (auto* texture : {mTextureScene.get(), mTextureDepth.get(), mTextureNormals.get(), mTextureDistortion.get()})
+                if (texture) texture->releaseGLObjects(state);
+            for (const auto& node : mPasses)
+            {
+                node.mRootStateSet->releaseGLObjects(state);
+                for (const auto& pass : node.mPasses)
+                {
+                    pass.mStateSet->releaseGLObjects(state);
+                    if (pass.mRenderTarget) pass.mRenderTarget->releaseGLObjects(state);
+                    if (pass.mRenderTexture) pass.mRenderTexture->releaseGLObjects(state);
+                }
+            }
+            for (auto& fbo : mFbos) if (fbo)
+            {
+                if (auto* texture = fbo->getAttachment(osg::Camera::COLOR_BUFFER0).getTexture())
+                    texture->releaseGLObjects(state);
+                fbo->releaseGLObjects(state);
+            }
+            if (mTargetGeneration)
+            {
+                for (const auto& attachment : mTargetGeneration->attachments) attachment.mTarget->releaseGLObjects(state);
+                if (mOwnedSubmission || mTargetGenerationSingleContext)
+                    mTargetGeneration->initializedContext = std::numeric_limits<unsigned>::max();
+                else
+                    mDirtyAttachments = mTargetGeneration->attachments;
+            }
+            else
+                mDirtyAttachments = mDeclaredAttachments;
+        }
+        mLuminanceCalculator->releaseGLObjects(state);
+        mNisScaler->releaseGLObjects(state);
     }
 
     static void attachCloneOfTemplate(
@@ -181,6 +377,26 @@ namespace MWRender
         }
     }
 
+    class ScopedOwnedFxState
+    {
+        osg::State& mState;
+        std::size_t mDepth;
+        bool mActive;
+    public:
+        ScopedOwnedFxState(osg::State& state, osg::StateSet* owned)
+            : mState(state), mDepth(state.getStateSetStack().size()), mActive(owned != nullptr)
+        {
+            if (owned) state.pushStateSet(owned);
+        }
+        void pop()
+        {
+            if (!mActive) return;
+            while (mState.getStateSetStack().size() > mDepth) mState.popStateSet();
+            mActive = false;
+        }
+        ~ScopedOwnedFxState() { pop(); }
+    };
+
     void PingPongCanvas::drawImplementation(osg::RenderInfo& renderInfo) const
     {
         osg::State& state = *renderInfo.getState();
@@ -188,6 +404,13 @@ namespace MWRender
         auto& emptyUniformStacks = mEmptyUniformStacks[state.getContextID()];
         uniformMap.merge(emptyUniformStacks);
         emptyUniformStacks.clear();
+        // RenderLeaf directly applies its last StateGraph StateSet; it does
+        // not push that set into the inherited uniform/attribute stacks.
+        // Internal PostFX state.apply() calls must keep the acquired snapshot
+        // effective throughout the draw rather than restoring live ancestors.
+        // Limit the draw scope to Fx inputs. The full leaf StateSet can also
+        // contain the presentation viewport, which internal passes override.
+        ScopedOwnedFxState ownedState(state, mOwnedSubmission ? mDrawFxState.get() : nullptr);
         osg::GLExtensions* ext = state.get<osg::GLExtensions>();
 
         size_t frameId = state.getFrameStamp()->getFrameNumber() % 2;
@@ -208,7 +431,7 @@ namespace MWRender
             if (temporalWriter.enabled())
             {
                 const auto status = mTemporalMotion->status(state.getContextID());
-                const auto consumer = mTemporalMotion->consumerFrame(state.getContextID());
+                const auto consumer = mTemporalMotion->consumerFrame(state.getContextID(), mTemporalCamera.frame);
                 std::uint32_t inputMask = 0;
                 if (mTextureScene) inputMask |= 1u << 0;
                 if (depth) inputMask |= 1u << 1;
@@ -220,7 +443,11 @@ namespace MWRender
                 if (status.denseDynamicMotion) inputMask |= 1u << 6;
                 constexpr std::uint32_t requiredForDlss
                     = (1u << 0) | (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 6);
-                const bool dlssReady = status.submitted && (inputMask & requiredForDlss) == requiredForDlss;
+                // No reconstruction runtime has been integrated. Even a
+                // future complete motion producer cannot satisfy that gate.
+                constexpr bool dlssRuntimeAvailable = false;
+                const bool dlssReady = dlssRuntimeAvailable && status.submitted
+                    && (inputMask & requiredForDlss) == requiredForDlss;
                 std::ostringstream row;
                 row << status.frame << ',' << Debug::V3Diagnostics::epochMs() << ',' << state.getContextID() << ','
                     << (status.submitted ? 1 : 0) << ',' << (status.historyValid ? 1 : 0) << ','
@@ -233,7 +460,12 @@ namespace MWRender
                     << reinterpret_cast<std::uintptr_t>(mTextureScene.get()) << ','
                     << reinterpret_cast<std::uintptr_t>(depth) << ','
                     << reinterpret_cast<std::uintptr_t>(flow) << ','
-                    << inputMask << ',' << (dlssReady ? 1 : 0);
+                    << inputMask << ',' << (dlssReady ? 1 : 0) << ',' << temporalWriter.droppedLines()
+                    << ',' << status.dynamicSurfaces << ',' << status.unsupportedSurfaces
+                    << ',' << (TemporalMotion::ownershipEnabled() ? 1 : 0)
+                    << ',' << (mOwnedSubmission ? 1 : 0)
+                    << ',' << Debug::V3Diagnostics::csvQuote(TemporalMotion::ownershipEnabled()
+                        ? mOwnershipFallback : std::string("not_requested"));
                 temporalWriter.writeLine(row.str());
             }
 
@@ -245,6 +477,7 @@ namespace MWRender
                 drawGeometry(renderInfo);
                 state.popStateSet();
                 state.apply();
+                ownedState.pop();
                 cacheEmptyUniformStacks(uniformMap, emptyUniformStacks);
                 return;
             }
@@ -281,12 +514,12 @@ namespace MWRender
             }
 
             osg::Texture* presentationTexture = mTextureScene;
-            if (scaledOutput && Settings::video().mUpscaler.get() == "nis")
+            if (scaledOutput && (mOwnedSubmission ? mOwnedNis : Settings::video().mUpscaler.get() == "nis"))
             {
                 if (osg::Texture* nisTexture = mNisScaler->dispatch(renderInfo, mTextureScene,
                         mTextureScene->getTextureWidth(), mTextureScene->getTextureHeight(),
                         static_cast<int>(resolveViewport->width()), static_cast<int>(resolveViewport->height()),
-                        Settings::video().mUpscalerSharpness))
+                        mOwnedSubmission ? mOwnedNisSharpness : Settings::video().mUpscalerSharpness.get()))
                     presentationTexture = nisTexture;
             }
             state.applyTextureAttribute(0, presentationTexture);
@@ -300,6 +533,7 @@ namespace MWRender
                 state.popStateSet();
             }
 
+            ownedState.pop();
             cacheEmptyUniformStacks(uniformMap, emptyUniformStacks);
             return;
         }
@@ -387,7 +621,13 @@ namespace MWRender
         // When textures are created (or resized) we need to either dirty them and/or clear them.
         // Otherwise, there will be undefined behavior when reading from a texture that has yet to be written to in a
         // later pass.
-        for (const auto& attachment : mDirtyAttachments)
+        const bool useTargetGeneration = mTargetGeneration && (mOwnedSubmission || mTargetGenerationSingleContext);
+        const bool initializeTargets = useTargetGeneration
+            && mTargetGeneration->initializedContext != state.getContextID();
+        const std::vector<Fx::Types::RenderTarget> alreadyInitialized;
+        const auto& dirtyAttachments = useTargetGeneration
+            ? (initializeTargets ? mTargetGeneration->attachments : alreadyInitialized) : mDirtyAttachments;
+        for (const auto& attachment : dirtyAttachments)
         {
             const auto [w, h]
                 = attachment.mSize.get(mTextureScene->getTextureWidth(), mTextureScene->getTextureHeight());
@@ -416,6 +656,7 @@ namespace MWRender
                 ext->glGenerateMipmap(GL_TEXTURE_2D);
             }
         }
+        if (initializeTargets) mTargetGeneration->initializedContext = state.getContextID();
 
         for (const size_t& index : filtered)
         {
@@ -500,8 +741,10 @@ namespace MWRender
                 if (!state.getLastAppliedProgramObject())
                     mFallbackProgram->apply(state);
 
+                const std::string techniqueName = mOwnedSubmission ? mOwnedTechniqueNames[index]
+                    : (node.mHandle ? node.mHandle->getName() : std::string("unknown"));
                 const std::string v36GpuPassName = std::string("postfx/")
-                    + (node.mHandle ? node.mHandle->getName() : std::string("unknown")) + "/"
+                    + techniqueName + "/"
                     + std::to_string(passIndex);
                 Debug::V36GpuProfiler::ScopedPass v36GpuPass(renderInfo, v36GpuPassName);
                 auto& v3PostFxWriter = Debug::V3Diagnostics::postFxWriter();
@@ -516,7 +759,7 @@ namespace MWRender
                     std::ostringstream row;
                     row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
                         << Debug::V3Diagnostics::threadId() << ','
-                        << Debug::V3Diagnostics::csvQuote(node.mHandle ? node.mHandle->getName() : std::string("unknown"))
+                        << Debug::V3Diagnostics::csvQuote(techniqueName)
                         << ',' << passIndex << ',' << std::fixed << std::setprecision(4) << v3CpuMs << ',' << v3Width
                         << ',' << v3Height << ',' << (pass.mRenderTarget ? 1 : 0) << ',' << (pass.mMipMap ? 1 : 0);
                     v3PostFxWriter.writeLine(row.str());
@@ -555,12 +798,12 @@ namespace MWRender
                                    ->getAttachment(osg::Camera::COLOR_BUFFER0)
                                    .getTexture();
             osg::Texture* presentationTexture = finalTexture;
-            if (Settings::video().mUpscaler.get() == "nis")
+            if (mOwnedSubmission ? mOwnedNis : Settings::video().mUpscaler.get() == "nis")
             {
                 if (osg::Texture* nisTexture = mNisScaler->dispatch(renderInfo, finalTexture,
                         finalTexture->getTextureWidth(), finalTexture->getTextureHeight(),
                         static_cast<int>(resolveViewport->width()), static_cast<int>(resolveViewport->height()),
-                        Settings::video().mUpscalerSharpness))
+                        mOwnedSubmission ? mOwnedNisSharpness : Settings::video().mUpscalerSharpness.get()))
                     presentationTexture = nisTexture;
             }
             state.applyTextureAttribute(0, presentationTexture);
@@ -590,6 +833,7 @@ namespace MWRender
             bindDestinationFbo();
         }
 
+        ownedState.pop();
         cacheEmptyUniformStacks(uniformMap, emptyUniformStacks);
         mDirtyAttachments.clear();
     }

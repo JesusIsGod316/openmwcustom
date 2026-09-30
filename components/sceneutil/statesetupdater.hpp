@@ -60,10 +60,14 @@ namespace SceneUtil
         /// Reset mStateSets, forcing a setDefaults() on the next frame. Can be used to change the defaults if needed.
         void reset();
 
+    protected:
+        // The caller remains the acquired CullVisitor's cull owner. This is
+        // the actual retained state, including data filled later in world cull.
+        osg::StateSet* getCvDependentStateset(osgUtil::CullVisitor* cv);
+
     private:
         void applyCull(osg::Node* node, osgUtil::CullVisitor* cv);
         void applyUpdate(osg::Node* node, osg::NodeVisitor* nv);
-        osg::StateSet* getCvDependentStateset(osgUtil::CullVisitor* cv);
 
         std::array<osg::ref_ptr<osg::StateSet>, 2> mStateSetsUpdate;
         std::map<osgUtil::CullVisitor*, osg::ref_ptr<osg::StateSet>> mStateSetsCull;

@@ -12,6 +12,7 @@
 #include <osg/FrameBufferObject>
 #include <osg/Group>
 #include <osg/Texture2D>
+#include <osg/observer_ptr>
 
 #include <osgViewer/Viewer>
 
@@ -132,6 +133,8 @@ namespace MWRender
 
         void resize();
         void captureTemporalCamera(osgUtil::CullVisitor* cv);
+        void captureTemporalDynamic(osgUtil::CullVisitor* cv);
+        bool temporalOwnershipAvailable() const { return mTemporalOwnershipAvailable; }
 
         Status enableTechnique(std::shared_ptr<Fx::Technique> technique, std::optional<int> location = std::nullopt);
 
@@ -278,11 +281,17 @@ namespace MWRender
         osg::ref_ptr<PingPongCull> mPingPongCull;
         std::array<osg::ref_ptr<PingPongCanvas>, 2> mCanvases;
         std::shared_ptr<TemporalMotion> mTemporalMotion;
+        std::array<std::shared_ptr<TemporalDynamicFrame>, 2> mTemporalDynamicFrames;
+        std::shared_ptr<TemporalCanvasOwner> mTemporalCanvasOwner;
+        bool mTemporalOwnershipAvailable = false;
+        osg::observer_ptr<osg::Referenced> mTemporalOwnerRenderer;
         std::uint64_t mTemporalWorldEpoch = 1;
+        std::uint64_t mTemporalResourceEpoch = 1;
         osg::ref_ptr<TransparentDepthBinCallback> mTransparentDepthPostPass;
         osg::ref_ptr<DistortionCallback> mDistortionCallback;
 
         Fx::DispatchArray mTemplateData;
+        std::shared_ptr<PostFxTargetGeneration> mTemplateTargetGeneration;
     };
 }
 

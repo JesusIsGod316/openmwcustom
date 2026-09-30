@@ -1,7 +1,7 @@
 name: OptimizedMW Phase 9 draw-side and temporal build
 on:
   push:
-    branches: [optimizedmw/phase9, optimizedmw/phase9-telemetry-dlss]
+    branches: [optimizedmw/phase9, optimizedmw/phase9-telemetry-dlss, codex/optimizedmw-phase9-audited]
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,7 +19,7 @@ jobs:
       - name: Install native graphics, production LuaJIT and FFmpeg SDKs
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y libopenscenegraph-dev libmygui-dev libbullet-dev libglm-dev libboost-dev libyaml-cpp-dev libgl1-mesa-dev xvfb xauth libluajit-5.1-dev libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libopenal-dev
+          sudo apt-get install -y libopenscenegraph-dev libmygui-dev libbullet-dev librecast-dev libglm-dev libboost-dev libyaml-cpp-dev libgl1-mesa-dev xvfb xauth libluajit-5.1-dev libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libopenal-dev
       - name: Prepare project-pinned SDL3 headers for production sound integration
         run: |
           set -euo pipefail
@@ -41,7 +41,7 @@ jobs:
       - name: Compile actual camera, PostProcessor, canvas and animated-geometry integration
         run: |
           set -euo pipefail
-          cmake -S tools/optimizedmw/phase9 -B build-phase9 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DP9_REQUIRE_GAME_SDK=ON
+          cmake -S tools/optimizedmw/phase9 -B build-phase9 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DP9_REQUIRE_GAME_SDK=ON -DOPENMW_PHASE9_INTEROP_FIXTURE=ON
           cmake --build build-phase9 --parallel 2
           xvfb-run -a ctest --test-dir build-phase9 -V --output-on-failure
       - name: Sanitize the production motion adapter, VBO and threaded draw paths
@@ -49,7 +49,7 @@ jobs:
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/optimizedmw/p8g5/lsan-glx.supp
         run: |
           set -euo pipefail
-          cmake -S tools/optimizedmw/phase9 -B build-phase9-asan -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug -DP9_SANITIZERS=ON
+          cmake -S tools/optimizedmw/phase9 -B build-phase9-asan -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug -DP9_SANITIZERS=ON -DP9_REQUIRE_GAME_SDK=ON -DOPENMW_PHASE9_INTEROP_FIXTURE=ON
           cmake --build build-phase9-asan --parallel 2
           xvfb-run -a ctest --test-dir build-phase9-asan -V --output-on-failure
       - name: Compile real donor integration and run native tests
@@ -122,6 +122,7 @@ jobs:
       image: '2022'
       tests: true
       package: false
+      phase9-fixtures: true
   InstalledPackage:
     needs: Windows
     runs-on: ubuntu-24.04

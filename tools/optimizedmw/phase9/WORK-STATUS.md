@@ -1,3 +1,42 @@
+# OptimizedMW Phase 9 repair checkpoint (2026-09-30)
+
+Current branch: `codex/optimizedmw-phase9-audited`. This repair starts from
+`f412af6e9819547ca5b1da6d3004695b13eee701`, the September 29 tested package.
+Current user instructions govern; archived constraints are historical reference.
+
+The mode 9 resource-only compile lifetime is explicit and the shared cache
+worker does not dereference an absent scene node. Actual cache-worker and
+terrain-composite integration fixtures cover resource-only and ordinary jobs,
+completion, cancellation, abandonment, release and required fallback.
+Direct composite baking also restores caller shader state and clears temporary
+client arrays before retiring producer resources. Both control and prepared
+paths have actual GL assertions for this lifetime boundary.
+
+Supported custom PostFX uses acquired SceneView snapshots with private uniforms
+and UBOs, retained target generations and scoped inherited FX state throughout
+nested draws. Same-generation DYNAMIC fallback preserves history. Serialized
+context teardown releases source and owned internals and reinitializes targets.
+Unsupported ownership paths retain the ordinary DYNAMIC canvas.
+
+All Phase 9 modes use bounded capture transport with explicit loss/completion
+status. Deep trace descriptors default to 131,072, preserving complete identity
+joins. The launcher retains independent valid channels, verified raw archives
+and actual child-process exit codes. This changes evidence delivery, not a
+benchmark conclusion.
+
+The complete local MSVC game compiles. All 16 focused native tests pass on the
+local graphics hardware. Four partial-TU MSVC AddressSanitizer PostFX variants
+pass with zero GL errors: serial/threaded, UBO/scalar-array globals. Final full
+game tests, CI and installed-package results are indexed in the delivered
+Validation directory, alongside corrected development failures and identities.
+Those final results, rather than older sections below, define the delivery state.
+
+Start user testing with 1/9, then 2/8, then 10. Gameplay stability, visual
+acceptance and controlled performance measurements remain pending. DLSS
+evaluation, scene jitter and frame generation remain off.
+
+The following September 29 notes are retained historical context.
+
 # OptimizedMW Phase 9 telemetry + DLSS-input continuation (2026-09-29)
 
 Active staging branch: `optimizedmw/phase9-telemetry-dlss`.

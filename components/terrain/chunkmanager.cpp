@@ -20,6 +20,7 @@
 #include <components/resource/v321classifiedcompileset.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
+#include <components/sceneutil/drawphasetrace.hpp>
 #include <components/sceneutil/prepjobservice.hpp>
 #include <components/settings/values.hpp>
 
@@ -359,7 +360,15 @@ namespace Terrain
 
     osg::ref_ptr<osg::Texture2D> ChunkManager::createCompositeMapRTT()
     {
-        osg::ref_ptr<osg::Texture2D> texture = new osg::Texture2D;
+        osg::ref_ptr<osg::Texture2D> texture;
+        if (mCompositeMapRenderer->preparationEnabled())
+        {
+            auto* prepared = new Resource::PreparedTerrainTexture;
+            prepared->setPreparationRenderTarget(true);
+            texture = prepared;
+        }
+        else
+            texture = new osg::Texture2D;
         texture->setTextureWidth(mCompositeMapSize);
         texture->setTextureHeight(mCompositeMapSize);
         texture->setInternalFormat(GL_RGB);
@@ -408,6 +417,8 @@ namespace Terrain
                 geom->setTexCoordArray(1, geom->getTexCoordArray(0), osg::Array::BIND_PER_VERTEX);
 
                 geom->setStateSet(*it);
+                if (SceneUtil::DrawPhaseTrace::Capture::instance().enabled())
+                    SceneUtil::DrawPhaseTrace::catalogStateSets({it->get()},0,~0u,0,2);
 
                 compositeMap.mDrawables.emplace_back(geom);
             }
@@ -443,7 +454,11 @@ namespace Terrain
         blendmapTextures.reserve(prepared.mBlendmaps.size());
         for (osg::ref_ptr<osg::Image>& image : prepared.mBlendmaps)
         {
-            osg::ref_ptr<osg::Texture2D> texture(new osg::Texture2D);
+            osg::ref_ptr<osg::Texture2D> texture;
+            if (forCompositeMap && mCompositeMapRenderer->preparationEnabled())
+                texture = new Resource::PreparedTerrainTexture;
+            else
+                texture = new osg::Texture2D;
             texture->setImage(image);
             texture->setWrap(osg::Texture::WRAP_S, osg::Texture::CLAMP_TO_EDGE);
             texture->setWrap(osg::Texture::WRAP_T, osg::Texture::CLAMP_TO_EDGE);

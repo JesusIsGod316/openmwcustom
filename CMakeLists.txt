@@ -29,6 +29,13 @@ option(DEPLOY_QT_TRANSLATIONS "Deploy standard Qt translations to resources fold
 
 # Apps and tools
 option(BUILD_OPENMW             "Build OpenMW" ON)
+option(OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS "Build the separate Phase 9 production cache and postprocess fixtures" OFF)
+if (OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS)
+    if (NOT BUILD_OPENMW)
+        message(FATAL_ERROR "Phase 9 production postprocess tests require BUILD_OPENMW")
+    endif()
+    enable_testing()
+endif()
 option(OPENMW_ENABLE_V4_VULKAN_RUNTIME "Compile and link the experimental V4 VSG/Vulkan runtime into OpenMW" OFF)
 option(OPENMW_V4_BUILD_RECOVERY_TESTS "Build CP4F CPU-side recovery regression tests" OFF)
 if (OPENMW_V4_BUILD_RECOVERY_TESTS)

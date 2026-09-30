@@ -2,17 +2,32 @@
 #define OPENMW_COMPONENTS_RESOURCE_OPENMWCOMPILEOPERATION_H
 
 #include "p4compilepolicy.hpp"
+#include "p9discretionaryadmission.hpp"
 
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <unordered_map>
+#include <memory>
 
 #include <osgUtil/IncrementalCompileOperation>
 
 namespace Resource
 {
+    // Producer-owned composite dependencies share the existing ICO queue and
+    // its observed cost buckets; this marker also carries live demand/cancel
+    // state while a map is temporarily outside the renderer's queue.
+    class OpenMWCompositeCompileOp : public osgUtil::IncrementalCompileOperation::CompileOp
+    {
+    public:
+        enum class Kind { Texture, Program, Target };
+        virtual Kind kind() const = 0;
+        virtual std::size_t resourceBytes() const = 0;
+        virtual bool required() const = 0;
+        virtual bool cancelled() const = 0;
+        virtual bool reusable(const osgUtil::IncrementalCompileOperation::CompileInfo&) const { return false; }
+    };
     // Marker base for custom ICO operations that retain Drawable/VBO cost
     // characteristics after a producer has split a monolithic drawable compile.
     class OpenMWDrawableCompileOp : public osgUtil::IncrementalCompileOperation::CompileOp
@@ -48,6 +63,7 @@ namespace Resource
         double mHeavyMinHeadroomMs = 5.0;
         double mTerrainDrawablePriorMs = 8.0;
         int mResidencySchedulerMode = 0;
+        bool mCompositePreparation = false;
     };
 
     class OpenMWIncrementalCompileOperation final : public osgUtil::IncrementalCompileOperation
@@ -59,6 +75,12 @@ namespace Resource
 
         static void publishRenderingTraversalMs(double value) noexcept;
         static double lastRenderingTraversalMs() noexcept;
+
+        std::shared_ptr<P9DiscretionaryAdmission> compositeAdmission() const { return mCompositeAdmission; }
+        unsigned compositeMaxQueueAge() const { return std::max(1u, mConfig.mMaxQueueAgeFrames); }
+        double compositeBudgetMs() const { return mConfig.mMaxBudgetMs; }
+        double compositeHeadroomRatio() const { return mConfig.mHeadroomRatio; }
+        double compositeTargetFrameMs() const { return 1000.0 / std::max(1.0, mConfig.mTargetFrameRate); }
 
     protected:
         ~OpenMWIncrementalCompileOperation() override = default;
@@ -121,6 +143,7 @@ namespace Resource
         std::unordered_map<const CompileSet*, PredictionCacheEntry> mPredictionCache;
         std::size_t mLastQueueDepth = 0;
         unsigned int mSmoothFrames = 0;
+        std::shared_ptr<P9DiscretionaryAdmission> mCompositeAdmission;
 
         inline static std::atomic<double> sLastRenderingTraversalMs{ 0.0 };
     };

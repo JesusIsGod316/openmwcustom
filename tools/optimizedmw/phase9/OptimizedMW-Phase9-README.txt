@@ -1,53 +1,91 @@
-OptimizedMW Phase 9 - root-cause telemetry + DLSS temporal-input continuation
+OptimizedMW Phase 9 - audited temporal ownership and terrain preparation
 
-Extract into a NEW directory and use the one START-OptimizedMW-Test.bat.
-Your normal saves/mods remain in their existing locations.
+This candidate resumes the Event 161 audit from e017315a, whose engine parent
+was the user-tested 651edc7b. Runtime promotion requires matched user testing.
+Use START-OptimizedMW-Test.bat in the delivered OptimizedMW_Test directory.
+This repair addresses the September 29 mode 9 crash, lost capture rows, saturated
+resource catalogs and the custom-PostFX ownership fallback. Start with 1 and 9
+to check stability, then compare 2 and 8; test 10 after the isolated modes.
 
-SAFE TEST MATRIX
-1 REFERENCE: unchanged P8U1/Phase 9 foundation.
-2 TEMPORAL-INPUTS: camera/static RG16F motion plus consumer-input telemetry.
-3 ROOT-CAUSE-TRACE: reference plus draw/state/selected-GL/composite attribution.
-4 TEMPORAL-TRACE: modes 2 and 3 together for one diagnostic capture.
-5 MOTION-VIEW: visualize the generated camera/static motion field.
-Type A for retained old HITCH1 diagnostic controls: 6 HITCH, 7 HITCH-TRACE.
+The launcher uses the existing configuration and saves, temporarily applies the
+common OptimizedMW foundation, restores settings on exit, and records hashes.
+Temporal ownership, composite preparation and dynamic motion are independently
+disabled in the reference mode. All modes use the repaired capture transport.
 
-The static actor-resource prewarm experiment that crashed OPTIMIZED-TRACE is not
-selectable and is no longer wired into RigGeometry/MorphGeometry compile paths.
-Do not compare traced-mode FPS against normal gameplay: tracing has overhead.
+TEST MATRIX
+ 1 REFERENCE: retained OptimizedMW foundation, new candidates off.
+ 2 TEMPORAL-INPUTS: original camera/static motion and input telemetry.
+ 3 ROOT-CAUSE-TRACE: reference with detailed diagnostic capture.
+ 4 TEMPORAL-TRACE: original temporal inputs with diagnostics.
+ 5 MOTION-VIEW: visualize original camera/static motion.
+ 8 TEMPORAL-OWNERSHIP: acquired SceneView owns immutable temporal submission.
+                       Compare with 2 using the same executable.
+ 9 COMPOSITE-PREPARE: producer-specific terrain dependency preparation.
+                      Compare with 1 using the same executable.
+10 AUDITED-COMBINED: ownership and composite preparation together.
+11 DYNAMIC-MOTION: ownership plus supported opaque rigid/CPU rig/morph motion.
+12 AUDITED-TRACE: combined candidate with detailed diagnostics.
+Type A to display retained unpromoted HITCH controls: 6 HITCH, 7 HITCH-TRACE.
 
-ROOT-CAUSE EVIDENCE
-p9-draw-phases.csv records slow leaf matrices/state/draw/retire timing plus
-camera bucket, drawable/StateSet identity, node-path hash, nearest named owner,
-geometry size and the two largest Texture2D image identities for slow state work.
-Its status file also aggregates SceneCam, RefractionCamera, ReflectionCamera,
-ShadowCamera and TerrainCompositeMapCamera CPU envelopes across all leaves.
+Ownership preserves the global dynamic completion barrier and normal actor
+ownership. Only an acquired supported OSG 3.6.5 SceneView's immutable native
+presentation and supported custom PostFX inputs use the new path. Private pass
+uniforms, current point lights, UBO storage and retained target generations keep
+delayed draws independent of later culls/reloads. Stereo, unknown state bindings,
+unknown renderers and unsupported threading retain the DYNAMIC canvas. The CSV
+reports ownership_requested, ownership_active and ownership_fallback_reason;
+requested ownership alone does not prove the candidate was active. Resize and
+camera resources must belong to the same submission. A temporal ConsumerFrame
+is draw-local; future asynchronous consumers still need separately retired slots.
 
-p9-terrain-composite.csv directly measures TerrainCompositeMapRenderer work:
-queue state, required maps, composite drawables, FBO setup, State::apply, draw
-submission and cooperative yields. TerrainCompositeMapRenderer and its camera
-now have explicit identities. p9-gpu-passes.csv uses existing nonblocking GPU
-timestamp queries for named camera/pass timing.
+Composite preparation uses the existing incremental compile operation and a
+shared discretionary preparation/bake budget. It validates exact image revision,
+texture object, program, target, framebuffer and context before use. Required
+terrain keeps the complete fallback. Optional work can defer; bounded age-based
+progress avoids starvation. An admitted driver GL call can still exceed its
+prediction or stall. Preparation does not guarantee GPU completion or savings.
 
-The selected GL trace now records up to eight integral call arguments. Compressed
-texture uploads therefore retain width/height/image-size fields where supplied by
-the OSG extension dispatch. p9-draw-phases.csv.gl-last.csv records each context's
-last normal-exit hook breadcrumb. An in-flight breadcrumb also remains in process
-memory if the driver crashes inside a wrapped call, for crash-dump inspection.
-This is NOT interception of every core OpenGL call or NVIDIA driver internals.
+Dynamic motion copies current visible opaque geometry and retains previous poses
+only after successful submission. It covers supported rigid transforms and actual
+CPU rig/morph deformation. Transparency, cutouts, wind, particles, custom vertex
+effects, instancing and first-person coverage remain unsupported or incomplete.
+Memory and traversal bounds fail back to camera/static motion.
 
-DLSS INPUT PROGRESS
-Phase 9 now exposes a consumer-ready temporal frame containing the RG16F motion
-texture, current/previous/inverse view-projection matrices, reset/history state,
-jitter metadata and render/output extents. p9-temporal-inputs.csv records whether
-scene color, depth, motion, extents and this matrix contract are present.
+DIAGNOSTIC EVIDENCE
+Detailed tracing adds overhead. Compare performance with tracing disabled and
+use separate traced runs to investigate causes. Leaf metadata includes direct
+TerrainDrawable submissions and the actual submission/draw camera. Numeric GL
+texture identity is recorded only at an explicitly instrumented texture apply;
+uninstrumented core calls and callbacks remain unknown. The resource catalog is
+bounded and records effective inherited textures; saturation/loss is explicit.
+GPU query ownership uses the draw State's FrameStamp, with separate query and
+writer loss counts. CSV readers use named columns and ignore status footers.
+All launcher modes use the same bounded concurrent writer transport; status
+sidecars record normal finish, output success and loss. WRITER-CAPTURE.json keeps
+GPU/auxiliary writer failures visible without discarding complete CPU/temporal
+substreams. Trace catalogs default to 131,072 truthful descriptors with hard
+capacity/allocation limits. Saturation still invalidates resource attribution.
 
-Dense dynamic motion for actors/morphs/grass is still false, so dlss_ready remains
-false by design. Scene jitter remains OFF and no NGX/Streamline evaluation is
-performed yet. Normal PostFX/NIS/presentation are unchanged. This checkpoint is
-progress toward DLSS/DLAA input correctness, not a working DLSS release. Frame
-generation remains out of scope.
+On exit the launcher restores settings/environment and creates a SHA256-verified
+RAW ZIP before the bounded report. Partial/crashed captures are retained with
+validity and loss status. A report timeout cannot discard the raw evidence.
 
-PACKAGING
-On exit the launcher restores settings/environment, records capture validity and
-creates a SHA256-verified RAW ZIP before the bounded offline report. Crashed or
-partial runs are still archived and explicitly marked rather than discarded.
+DLSS / DLAA STATUS
+denseDynamicMotion and dlss_ready remain false. Scene jitter, NVIDIA evaluation
+and frame generation are off. The separate developer GL/Vulkan fixture qualifies
+one shared RGBA8 image contract on supported Windows hardware. It is not connected
+to the game and does not modify the VulkanMW renderer track. Fixture success does
+not prove production color/depth/motion sharing or a playable DLSS integration.
+
+RUNTIME VALIDATION
+Use the same executable and save/location, identical assets/settings, separate
+cold and warm runs, and whole-frame tails rather than isolated pass timings.
+Test 2 versus 8 for ownership and 1 versus 9 for terrain preparation.
+Compare 10 versus 2 for the combined candidate, or 10 versus 8 to isolate terrain
+preparation with ownership enabled in both. Compare 11 versus 8 to isolate
+dynamic motion; mode 11 also enables temporal inputs and ownership.
+Exercise resize/fullscreen, cell transitions, camera cuts and moving actors.
+Do not carry old benchmark claims onto this binary. No FPS gain is claimed here.
+
+Detailed ownership and native test contracts are in the source tree under
+tools/optimizedmw/phase9/TEMPORAL-OWNERSHIP.md and interop/README.md.
