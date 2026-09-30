@@ -6,6 +6,7 @@
 #include <components/terrain/compositemaprenderer.hpp>
 
 #include <osg/FrameStamp>
+#include <osg/GLExtensions>
 #include <osg/Geometry>
 #include <osg/GraphicsContext>
 #include <osg/Group>
@@ -23,6 +24,8 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <tuple>
+#include <utility>
 
 namespace
 {
@@ -32,6 +35,54 @@ namespace
             throw std::runtime_error(message);
     }
     struct Unsupported : std::runtime_error { using std::runtime_error::runtime_error; };
+
+    // These are the entry points used by the fixture's GLSL 1.20 program,
+    // OSG shader linking/reflection, client arrays and texture-only FBO.
+    constexpr auto sRequiredGraphicsFunctions = std::tuple{
+        &osg::GLExtensions::glCreateShader, &osg::GLExtensions::glShaderSource,
+        &osg::GLExtensions::glCompileShader, &osg::GLExtensions::glGetShaderiv,
+        &osg::GLExtensions::glGetShaderInfoLog, &osg::GLExtensions::glDeleteShader,
+        &osg::GLExtensions::glCreateProgram, &osg::GLExtensions::glGetAttachedShaders,
+        &osg::GLExtensions::glAttachShader, &osg::GLExtensions::glDetachShader,
+        &osg::GLExtensions::glLinkProgram, &osg::GLExtensions::glGetProgramiv,
+        &osg::GLExtensions::glGetProgramInfoLog, &osg::GLExtensions::glGetActiveUniform,
+        &osg::GLExtensions::glGetUniformLocation, &osg::GLExtensions::glGetActiveAttrib,
+        &osg::GLExtensions::glGetAttribLocation, &osg::GLExtensions::glUseProgram,
+        &osg::GLExtensions::glUniform1iv, &osg::GLExtensions::glDeleteProgram,
+        &osg::GLExtensions::glGenFramebuffers, &osg::GLExtensions::glDeleteFramebuffers,
+        &osg::GLExtensions::glBindFramebuffer, &osg::GLExtensions::glFramebufferTexture2D,
+        &osg::GLExtensions::glCheckFramebufferStatus,
+        &osg::GLExtensions::glActiveTexture, &osg::GLExtensions::glClientActiveTexture};
+
+    void requireCompositeGraphics(const osg::GLExtensions* extensions)
+    {
+        if (!extensions || extensions->glVersion < 2.1f || extensions->glslLanguageVersion < 1.2f
+            || !extensions->isGlslSupported || !extensions->isFrameBufferObjectSupported
+            || !std::apply([&](auto... member) { return (... && (extensions->*member != nullptr)); },
+                sRequiredGraphicsFunctions))
+            throw Unsupported("OpenGL 2.1 / GLSL 1.20 framebuffer and program contract unavailable; "
+                              "the separate --cache-only test remains mandatory");
+    }
+
+    void verifyMissingCompositeGraphics(osg::GLExtensions& extensions)
+    {
+        // Exercise the actual gate with individual resolved capabilities absent.
+        // Restore every field before applying state or making any GL call.
+        auto rejected = [&](auto& capability) {
+            const auto saved = std::exchange(capability, {});
+            bool unsupported = false;
+            try { requireCompositeGraphics(&extensions); }
+            catch (const Unsupported&) { unsupported = true; }
+            capability = saved;
+            require(unsupported, "missing graphics capability was accepted before fixture state application");
+        };
+        rejected(extensions.glVersion);
+        rejected(extensions.glslLanguageVersion);
+        rejected(extensions.isGlslSupported);
+        rejected(extensions.isFrameBufferObjectSupported);
+        std::apply([&](auto... member) { (rejected(extensions.*member), ...); }, sRequiredGraphicsFunctions);
+        requireCompositeGraphics(&extensions);
+    }
 
     class CallerStateScope
     {
@@ -56,6 +107,10 @@ namespace
 
     void cacheOnly()
     {
+        bool missingGraphicsRejected = false;
+        try { requireCompositeGraphics(nullptr); }
+        catch (const Unsupported&) { missingGraphicsRejected = true; }
+        require(missingGraphicsRejected, "missing graphics capability object bypassed the native fixture gate");
         osg::ref_ptr<Resource::OpenMWIncrementalCompileOperation> ico
             = new Resource::OpenMWIncrementalCompileOperation({});
         Resource::SceneManager sceneManager(nullptr, nullptr, nullptr, nullptr, 0);
@@ -209,6 +264,11 @@ int main(int argc, char** argv) try
     if (!context || !context->realize() || !context->makeCurrent())
         throw Unsupported("native GL context unavailable; the separate --cache-only test remains mandatory");
     auto& state = *context->getState();
+    auto* extensions = state.get<osg::GLExtensions>();
+    // Context creation can succeed on Windows GDI's OpenGL 1.1 software
+    // renderer. Establish the required contract before caller state applies.
+    requireCompositeGraphics(extensions);
+    verifyMissingCompositeGraphics(*extensions);
     osg::ref_ptr<osg::FrameStamp> stamp = new osg::FrameStamp;
     state.setFrameStamp(stamp);
     osg::RenderInfo info(&state, nullptr);

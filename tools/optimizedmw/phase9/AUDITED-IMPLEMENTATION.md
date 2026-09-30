@@ -43,6 +43,13 @@ timings. The fixture asserts caller restoration and array retirement for both th
 original and prepared paths; this is separate from the user capture's cache-worker
 null dereference and makes no claim about its crash stack.
 
+The graphics fixture establishes its OpenGL 2.1/GLSL 1.20 and framebuffer
+function contract before applying caller shader state. Unsupported hosted
+software GL returns an explicit graphics skip. The separate cache-worker
+lifecycle test remains mandatory and does not require GL. Missing resolved
+capabilities and functions are checked without a public forced-skip option;
+supported local hardware must still pass all pixel and lifetime assertions.
+
 ## Controls and retained boundaries
 
 `OPENMW_P9_TEMPORAL_OWNERSHIP`, `OPENMW_P9_COMPOSITE_PREPARE` and
