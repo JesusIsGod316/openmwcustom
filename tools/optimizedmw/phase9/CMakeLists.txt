@@ -64,6 +64,11 @@ target_compile_definitions(p9-temporal-owner PRIVATE
 add_test(NAME p9-temporal-owner COMMAND p9-temporal-owner)
 add_test(NAME p9-temporal-owner-threaded COMMAND p9-temporal-owner --threaded)
 set_tests_properties(p9-temporal-owner p9-temporal-owner-threaded PROPERTIES TIMEOUT 45)
+if(NOT MSVC)
+  # Retained StateSetUpdater/depth headers contain unused virtual parameters.
+  # Keep their diagnostics visible when compiling the production owner fixture.
+  target_compile_options(p9-temporal-owner PRIVATE -Wno-error=unused-parameter)
+endif()
 add_executable(p9-composite-preparation composite-preparation-tests.cpp
   ${ROOT}/components/terrain/compositemaprenderer.cpp ${ROOT}/components/resource/openmwcompileoperation.cpp)
 target_link_libraries(p9-composite-preparation PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
