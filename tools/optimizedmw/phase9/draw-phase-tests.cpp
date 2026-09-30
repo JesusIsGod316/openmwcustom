@@ -1,4 +1,5 @@
 #include <components/sceneutil/drawphasetrace.hpp>
+#include <components/terrain/compositemaprenderer.hpp>
 #include <components/terrain/terraindrawable.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <osg/Geode>
