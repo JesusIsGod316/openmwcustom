@@ -143,6 +143,11 @@ target_compile_definitions(p9-temporal-dynamic PRIVATE
 if(NOT MSVC)
   target_compile_options(p9-temporal-dynamic PRIVATE -Wno-error=unused-parameter)
 endif()
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  # Retained recordEvent copies all three text fields using non-short-circuit |.
+  # Preserve its behavior and visible warning in the actual rig fixture.
+  target_compile_options(p9-temporal-dynamic PRIVATE -Wno-error=bitwise-instead-of-logical)
+endif()
 add_test(NAME p9-temporal-dynamic COMMAND p9-temporal-dynamic)
 set_tests_properties(p9-temporal-dynamic PROPERTIES TIMEOUT 45 ENVIRONMENT "OPENMW_P9_DYNAMIC_MOTION=1")
 add_executable(p9-nis-owner nis-owner-tests.cpp
