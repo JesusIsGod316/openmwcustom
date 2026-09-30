@@ -218,3 +218,6 @@ try{
     if(Test-Path -LiteralPath $zipFile){Remove-Item -LiteralPath $zipFile -Force}
     Remove-Item -LiteralPath $temp -Recurse -Force
 }
+# Expected report failures leave a nonzero native child exit code in the host.
+# Return success only after all assertions and cleanup have completed.
+exit 0
