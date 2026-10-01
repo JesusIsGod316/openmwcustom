@@ -19,7 +19,10 @@
 
 #include <array>
 #include <barrier>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <map>
 #include <thread>
 
 namespace
@@ -341,6 +344,54 @@ namespace
         std::string hash; ASSERT_TRUE(converted->getUserValue(Misc::OsgUserValues::sFileHash, hash));
         EXPECT_EQ(hash, file.mHash);
         EXPECT_EQ(static_cast<const Nif::NiNode*>(file.mRoots.front())->mChildren.front()->mName, "child");
+    }
+
+    TEST(ResourceLifecycleFinalStatus, PreservesLargeReceiptIdsAndCoverageOutsideTimeline)
+    {
+        const auto path = std::filesystem::temp_directory_path()
+            / ("p9-lifecycle-status-" + std::to_string(Debug::HitchTrace::Clock::now().time_since_epoch().count()) + ".txt");
+        struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code error; std::filesystem::remove(path, error); } } cleanup{path};
+        Lifecycle::Stats stats;
+        stats.publications = 6; stats.active = 2; stats.retirements = 4;
+        stats.firstDemands = 3; stats.prepareHits = 1; stats.unknownOrigins = 1;
+        stats.unknownGenerations = 2; stats.unknownUses = 3; stats.metadataTruncations = 4;
+        constexpr std::uint64_t receipt = 9007199254740993ULL;
+        ASSERT_TRUE(Lifecycle::writeStatusFile(path.string(), stats, receipt, receipt + 1));
+        std::ifstream input(path);
+        std::map<std::string, std::string> fields;
+        for (std::string line; std::getline(input, line);)
+        {
+            const auto separator = line.find('=');
+            ASSERT_NE(separator, std::string::npos);
+            ASSERT_TRUE(fields.emplace(line.substr(0, separator), line.substr(separator + 1)).second);
+        }
+        EXPECT_EQ(fields.at("status_span_id"), "9007199254740993");
+        EXPECT_EQ(fields.at("coverage_span_id"), "9007199254740994");
+        EXPECT_EQ(fields.at("publications"), "6");
+        EXPECT_EQ(fields.at("active"), "2");
+        EXPECT_EQ(fields.at("first_demands"), "3");
+        EXPECT_EQ(fields.at("prepare_hits"), "1");
+        EXPECT_EQ(fields.at("retirements"), "4");
+        EXPECT_EQ(fields.at("unknown_origins"), "1");
+        EXPECT_EQ(fields.at("unknown_generations"), "2");
+        EXPECT_EQ(fields.at("unknown_uses"), "3");
+        EXPECT_EQ(fields.at("metadata_truncations"), "4");
+        EXPECT_EQ(fields.at("normal_finish"), "1");
+        EXPECT_EQ(fields.at("output_ok"), "1");
+        input.close();
+        ASSERT_TRUE(Lifecycle::writeStatusFile(path.string(), {}, 1, 2));
+        std::ifstream zero(path);
+        const std::string zeroText{std::istreambuf_iterator<char>(zero), std::istreambuf_iterator<char>()};
+        EXPECT_NE(zeroText.find("publications=0\n"), std::string::npos);
+    }
+
+    TEST(ResourceLifecycleFinalStatus, RefusesUnwritableOutput)
+    {
+        const auto path = std::filesystem::temp_directory_path()
+            / ("p9-lifecycle-directory-" + std::to_string(Debug::HitchTrace::Clock::now().time_since_epoch().count()));
+        ASSERT_TRUE(std::filesystem::create_directory(path));
+        struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code error; std::filesystem::remove(path, error); } } cleanup{path};
+        EXPECT_FALSE(Lifecycle::writeStatusFile(path.string(), {}, 1, 2));
     }
 
     // Declared last: all prior fixture workers and resource owners have ended.

@@ -49,12 +49,22 @@ function New-ValidDiagnosticRows {
 
 function Set-DiagnosticCapture {
     param([string[]]$Rows,[bool]$Requested=$true,[UInt64]$Dropped=0)
+    [IO.File]::Delete((Join-Path $profile 'p9-hitch-spans.csv.lifecycle-status.txt'))
     $header='span,parent,frame,thread,start_ns,end_ns,epoch_ms,phase,identity,asset,wall_ms,children_ms,unattributed_ms,thread_cpu_ms,identity_truncated,link,metric1_name,metric1_value,metric2_name,metric2_value,metric3_name,metric3_value,metric4_name,metric4_value'
     $status=@("rows=$($Rows.Count)",'capacity=131072',"dropped=$Dropped",'allocation_failed=0','active_at_finish=0','normal_finish=1')
     [IO.File]::WriteAllLines((Join-Path $profile 'p9-hitch-spans.csv'),@($header)+$Rows+@($status | ForEach-Object {'# '+$_}))
     [IO.File]::WriteAllLines((Join-Path $profile 'p9-hitch-spans.csv.capture-status.txt'),$status+@('output_ok=1'))
     [IO.File]::WriteAllLines((Join-Path $profile 'TEST_MODE.txt'),@('phase9_hitch_spans=1','final_exit_code=0')+$(if($Requested){@('hitch_diagnostics_revision=1')}else{@()}))
     return (Test-Phase9HitchCapture -ProfileDir $profile)
+}
+
+function Set-IndependentLifecycleReceipt {
+    param([UInt64]$StatusId,[UInt64]$CoverageId,[UInt64]$Publications=1,[UInt64]$Active=0)
+    $receipt=[ordered]@{schema=1;registry_capacity=65536;status_span_id=$StatusId;coverage_span_id=$CoverageId;
+        publications=$Publications;active=$Active;first_demands=1;prepare_hits=1;retirements=1;
+        capacity_failures=0;allocation_failures=0;metadata_truncations=0;unknown_origins=0;unknown_generations=0;unknown_uses=0;normal_finish=1;output_ok=1}
+    [IO.File]::WriteAllLines((Join-Path $profile 'p9-hitch-spans.csv.lifecycle-status.txt'),@($receipt.Keys | ForEach-Object {$_+'='+$receipt[$_]}))
+    [IO.File]::AppendAllText((Join-Path $profile 'TEST_MODE.txt'),"hitch_diagnostics_revision=2`r`nhitch_lifecycle_status=1`r`n")
 }
 
 function New-InvalidatedDiagnosticRows {
@@ -134,6 +144,29 @@ try{
     )
     $empty=Invoke-DiagnosticCase -Name 'explicit zero-resource status' -Rows $zero -Valid $true
     if($empty.analysis.publications -ne 0 -or $empty.analysis.lua_vms -ne 0){throw 'Zero resources implied nonexistent VM or resource work'}
+    # Exact uint64 receipts must survive beyond floating-point integer precision.
+    [UInt64]$largeStatus=9007199254740993;[UInt64]$largeCoverage=9007199254740994
+    $largeRows=@(New-ValidDiagnosticRows | ForEach-Object {
+        if($_ -match '^"6",'){$_ -replace '^"6",',('"'+$largeStatus+'",')}
+        elseif($_ -match '^"7","6",'){$_ -replace '^"7","6",',('"'+$largeCoverage+'","'+$largeStatus+'",')}
+        else{$_}
+    })
+    $null=Set-DiagnosticCapture -Rows $largeRows
+    Set-IndependentLifecycleReceipt $largeStatus $largeCoverage
+    $receiptGood=Test-Phase9Diagnostics6Capture $profile
+    if(-not $receiptGood.valid_diagnostics_capture -or -not $receiptGood.independent_lifecycle_status_valid -or
+        $receiptGood.analysis.status_span_id -ne $largeStatus -or $receiptGood.independent_lifecycle_status.coverage_span_id -ne $largeCoverage){throw 'Independent lifecycle receipts lost exact uint64 IDs'}
+    Set-IndependentLifecycleReceipt $largeStatus $largeCoverage -Publications 2 -Active 1
+    $contradiction=Test-Phase9Diagnostics6Capture $profile
+    if($contradiction.valid_diagnostics_capture -or -not $contradiction.independent_lifecycle_status_valid -or
+        $contradiction.reasons -notmatch 'disagrees'){throw 'Contradictory retained/independent lifecycle counters qualified exact joins'}
+    [IO.File]::Delete((Join-Path $profile 'p9-hitch-spans.csv.lifecycle-status.txt'))
+    $missing=Test-Phase9Diagnostics6Capture $profile
+    if($missing.valid_diagnostics_capture -or $missing.independent_lifecycle_status_valid){throw 'Requested missing independent lifecycle sidecar accepted'}
+    $null=Set-DiagnosticCapture -Rows $largeRows -Dropped 1
+    Set-IndependentLifecycleReceipt $largeStatus $largeCoverage
+    $independent=Test-Phase9Diagnostics6Capture $profile
+    if($independent.valid_diagnostics_capture -or -not $independent.independent_lifecycle_status_valid -or $null -ne $independent.analysis){throw 'Independent registry snapshot invented missing lifetime joins or was hidden by CPU loss'}
     Write-Host 'PASS diagnostics6 qualification: legacy activation, mandatory new status, exact lifetime joins, independent provenance/capacity loss, actual group phase names, honest Lua coverage and unchanged CPU validity.'
 }finally{
     $absolute=[IO.Path]::GetFullPath($profile)

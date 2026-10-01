@@ -38,6 +38,12 @@ try{
         if($env:OPENMW_P9_FILE_POLICY_ACK -ne '1'){throw 'Requested startup acknowledgement not propagated'}
     }
     Set-Phase9CandidateEnvironment (Get-Phase9Candidate CONTROL) (Get-P9Mode 3)
+    Set-Phase9HitchRecorderEnvironment -Mode (Get-P9Mode 3) -Transport stream
+    if($env:OPENMW_P9_HITCH_TRANSPORT -ne 'stream'){throw 'Deep streaming recorder was not selected'}
+    Set-Phase9HitchRecorderEnvironment -Mode (Get-P9Mode 3) -Transport deferred
+    if($env:OPENMW_P9_HITCH_TRANSPORT -ne 'deferred'){throw 'Deferred recorder control was not selected'}
+    Set-Phase9HitchRecorderEnvironment -Mode (Get-P9Mode 1)
+    if(Test-Path Env:OPENMW_P9_HITCH_TRANSPORT){throw 'Normal retained a Deep recorder transport request'}
     if($env:OPENMW_P9_FILE_REFILL_BYTES -ne '8192' -or $env:OPENMW_P9_FILE_RESIDENT_SEEK -ne '0' -or
         $env:OPENMW_P9_CATALOG_OPTIMIZED -ne '0'){throw 'Deep reference inherited a candidate'}
     $candidate=Get-Phase9Candidate I1 -BufferBudgetBytes 65536

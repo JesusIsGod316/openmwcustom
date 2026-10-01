@@ -61,7 +61,7 @@ includes registry locking and receipt creation; it is never subtracted to
 fabricate a gameplay result. Thresholded missing child scopes remain unknown.
 
 Production-linked component fixture filter:
-`ResourceLifecycleRegistry.*:ResourceLifecycleProduction.*` (13 tests).
+`ResourceLifecycleRegistry.*:ResourceLifecycleProduction.*:ResourceLifecycleFinalStatus.*`.
 Launch a separate process with OPENMW_P9_HITCH_SPANS_FILE pointing to a fresh
 resource-lifecycle-spans.csv. The final test emits status after all previous
 fixture workers and owners end. Small isolated registries suppress receipts
@@ -74,3 +74,12 @@ rules, model hierarchy/transform/hash and controller-remapped shallow clones.
 The undeclared-speculation fixture intentionally reports one unknown origin;
 this is explicit coverage, not transport loss. Run the same filter in Normal
 to verify contract behavior (five Deep policy tests skip outside Deep).
+
+Revision 4 also writes `p9-hitch-spans.csv.lifecycle-status.txt` after joined
+workers, outside the recorder queue. It preserves exact 64-bit status/coverage
+receipt IDs, registry counters, unknown provenance and final output state.
+The validator compares it with retained receipts when the CPU timeline is
+complete. A valid final registry snapshot survives timeline loss but cannot
+restore missing lifetime events or establish exact first-use joins. Normal
+emits neither this file nor the timeline. Additional fixtures cover IDs above
+2^53, zero resources and unwritable output.

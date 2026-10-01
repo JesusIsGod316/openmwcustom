@@ -1,6 +1,8 @@
 #ifndef COMPONENTS_LUA_SERIALIZATION_H
 #define COMPONENTS_LUA_SERIALIZATION_H
 
+#include <cstdint>
+
 #include <sol/sol.hpp>
 
 #include <components/esm3/cellref.hpp>
@@ -51,7 +53,18 @@ namespace LuaUtil
     };
 
     BinaryData serialize(const sol::object&, const UserdataSerializer* customSerializer = nullptr);
+    // Opt-in same-pass observations. Logical string bytes include keys and are
+    // not allocation size; depth is visited depth, not a compatibility limit.
+    // Failed decoding preserves attempted-prefix counts; declared string sizes
+    // in that prefix do not claim a validated, complete payload.
+    struct DeserializeMetrics
+    {
+        std::uint64_t values = 0, tables = 0, strings = 0, stringBytes = 0;
+        std::uint64_t maxDepth = 0, customValues = 0, customBytes = 0;
+    };
     sol::object deserialize(lua_State* lua, std::string_view binaryData,
+        const UserdataSerializer* customSerializer = nullptr, bool readOnly = false);
+    sol::object deserializeWithMetrics(lua_State* lua, std::string_view binaryData, DeserializeMetrics& metrics,
         const UserdataSerializer* customSerializer = nullptr, bool readOnly = false);
 
 }

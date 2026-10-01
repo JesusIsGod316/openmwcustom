@@ -170,7 +170,7 @@ def main() -> None:
                   'OPENMW_P9_TEMPORAL_OWNERSHIP=$mode.Ownership',
                   'OPENMW_P9_COMPOSITE_PREPARE=$mode.Composite',
                   'OPENMW_P9_DYNAMIC_MOTION=$mode.DynamicMotion',
-                  'phase9_detail_revision=3', 'OPENMW_P9_HITCH_CAPACITY',
+                  'phase9_detail_revision=4', 'OPENMW_P9_HITCH_CAPACITY',
                   'New-Phase9SystemTraceLink -GameDir', 'Complete-Phase9SystemTraceLink -Link'):
         need(token in launcher, 'missing actual launcher control/provenance: ' + token)
     need(launcher.index('Complete-Phase9Profile -ProfileDir') < launcher.index('Complete-Phase9SystemTraceLink -Link'),

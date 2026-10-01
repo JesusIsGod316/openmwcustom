@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -299,22 +300,63 @@ namespace Debug::ResourceLifecycle
         std::uint64_t references, std::uint64_t estimate = 0) noexcept
     { if (enabled()) registry().retire(token, resource, reason, references, estimate); }
 
+    // Final registry status is independent of available HitchTrace queue slots.
+    // This describes registry coverage only; it cannot repair missing receipts.
+    inline bool writeStatusFile(const std::string& path, const Stats& stats,
+        std::uint64_t statusSpan, std::uint64_t coverageSpan) noexcept
+    {
+        try
+        {
+            std::ofstream output(path);
+            output << "schema=1\nregistry_capacity=" << Capacity
+                << "\nstatus_span_id=" << statusSpan << "\ncoverage_span_id=" << coverageSpan
+                << "\npublications=" << stats.publications << "\nactive=" << stats.active
+                << "\nfirst_demands=" << stats.firstDemands << "\nprepare_hits=" << stats.prepareHits
+                << "\nretirements=" << stats.retirements << "\ncapacity_failures=" << stats.capacityFailures
+                << "\nallocation_failures=" << stats.allocationFailures
+                << "\nmetadata_truncations=" << stats.metadataTruncations
+                << "\nunknown_origins=" << stats.unknownOrigins
+                << "\nunknown_generations=" << stats.unknownGenerations
+                << "\nunknown_uses=" << stats.unknownUses << '\n';
+            output.flush();
+            if (!output) return false;
+            output << "normal_finish=1\noutput_ok=1\n";
+            output.flush();
+            const bool flushed = bool(output);
+            output.close();
+            return flushed && !output.fail();
+        }
+        catch (...) { return false; }
+    }
+
     // Explicit engine hook: after workers join and before Capture::finish().
     // Always emits status when Deep is active, including zero-resource runs.
     inline void emitStatus() noexcept
     {
         if (!enabled()) return;
         const auto stats = registry().stats();
-        HitchTrace::Scope status("resource.lifecycle_status"); status.retain();
-        status.setMetric(0, "publications", stats.publications);
-        status.setMetric(1, "capacity_failures", stats.capacityFailures);
-        status.setMetric(2, "allocation_failures", stats.allocationFailures);
-        status.setMetric(3, "metadata_truncations", stats.metadataTruncations);
-        HitchTrace::Scope coverage("resource.lifecycle_coverage"); coverage.retain();
-        coverage.setMetric(0, "active", stats.active);
-        coverage.setMetric(1, "unknown_origins", stats.unknownOrigins);
-        coverage.setMetric(2, "unknown_generations", stats.unknownGenerations);
-        coverage.setMetric(3, "unknown_uses", stats.unknownUses);
+        std::uint64_t statusSpan = 0, coverageSpan = 0;
+        {
+            HitchTrace::Scope status("resource.lifecycle_status"); status.retain();
+            statusSpan = status.id();
+            status.setMetric(0, "publications", stats.publications);
+            status.setMetric(1, "capacity_failures", stats.capacityFailures);
+            status.setMetric(2, "allocation_failures", stats.allocationFailures);
+            status.setMetric(3, "metadata_truncations", stats.metadataTruncations);
+            HitchTrace::Scope coverage("resource.lifecycle_coverage"); coverage.retain();
+            coverageSpan = coverage.id();
+            coverage.setMetric(0, "active", stats.active);
+            coverage.setMetric(1, "unknown_origins", stats.unknownOrigins);
+            coverage.setMetric(2, "unknown_generations", stats.unknownGenerations);
+            coverage.setMetric(3, "unknown_uses", stats.unknownUses);
+        }
+        try
+        {
+            const char* spanPath = std::getenv("OPENMW_P9_HITCH_SPANS_FILE");
+            if (spanPath && *spanPath)
+                writeStatusFile(std::string(spanPath) + ".lifecycle-status.txt", stats, statusSpan, coverageSpan);
+        }
+        catch (...) { /* Missing/unfinished independent status fails its qualification. */ }
     }
 }
 

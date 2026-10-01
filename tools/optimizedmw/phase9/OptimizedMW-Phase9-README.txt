@@ -312,13 +312,25 @@ Frame-time consistency analysis (all modes):
   even when no individual frame is flagged. Engine wall times do not measure
   display presentation intervals. Compare the same route/cap/warmup conditions.
 
-Diagnostic detail revision 3:
+Diagnostic detail revision 4:
   Mode 3 adds causal terrain job/wait links, exterior transition scopes,
   all-read stream totals, hash bytes/blocks/rewind, and Lua allocation/cache
   activity. The resource catalog uses reusable scratch while reading live
   mutable state on every call; its diagnostic wall cost remains visible.
   Lua counters describe inclusive logical allocations, not retained memory.
   See HITCH-DIAGNOSTICS.md for coverage and interpretation limits.
+
+  Deep uses a bounded streaming queue and dedicated writer. Its 524,288 slots
+  cover backlog rather than the entire run; complete captures can exceed it.
+  Normal starts no hitch writer. Advanced -HitchTransport deferred retains
+  the previous whole-run arena control. The normal launcher selects streaming.
+  Accepted/written/pending counts, losses, queue pressure and final drain
+  qualify the raw timeline separately from clock mapping and report bounds.
+  Final observer/lifecycle snapshots are outside the queue. Observer counters
+  include filtered scopes and selected catalog/recorder work; intervals overlap.
+  Lua event decoding adds same-pass shape, bytes, outcome and delivery links.
+  Payload contents, automatic GC and private driver internals remain unavailable.
+  No diagnostic timing is subtracted to estimate Normal gameplay performance.
 
   Automatic Windows diagnostics: first-screen choice 1 (CONTROL) or 4 (ALL)
   starts the recorder, then the game, then saves one verified upload ZIP.
@@ -351,5 +363,5 @@ Six-group Deep diagnostic expansion:
   First retrieval is not first visible draw/GPU use. Owner release does not
   prove destruction. Automatic GC inside arbitrary Lua calls remains explicitly
   unavailable; the workload-altering LuaJIT sampler is disabled.
-  Additional receipts still share the bounded recorder: check loss/status before
+  Additional receipts share the bounded streaming recorder: check loss/status before
   making an exact attribution claim. No diagnostic timing cost is subtracted.

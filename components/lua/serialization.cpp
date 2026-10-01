@@ -1,5 +1,8 @@
 #include "serialization.hpp"
 
+#include <algorithm>
+#include <tuple>
+
 #include <osg/Matrixf>
 #include <osg/Quat>
 #include <osg/Vec2f>
@@ -235,13 +238,30 @@ namespace LuaUtil
             throw std::runtime_error("Unknown Lua type.");
     }
 
-    static void deserializeImpl(
-        lua_State* lua, std::string_view& binaryData, const UserdataSerializer* customSerializer, bool readOnly)
+    template <bool CollectMetrics, class... MetricArgs>
+    static void deserializeImpl(lua_State* lua, std::string_view& binaryData,
+        const UserdataSerializer* customSerializer, bool readOnly, MetricArgs... metricArgs)
     {
+        static_assert(sizeof...(MetricArgs) == (CollectMetrics ? 2 : 0));
+        // The control specialization retains its original four arguments and
+        // recursive calls. Only the diagnostic specialization carries metrics.
+        [[maybe_unused]] const auto metrics = [&] {
+            if constexpr (CollectMetrics) return std::get<0>(std::tie(metricArgs...));
+            else return nullptr;
+        }();
+        [[maybe_unused]] const auto depth = [&] {
+            if constexpr (CollectMetrics) return std::get<1>(std::tie(metricArgs...));
+            else return std::uint64_t{0};
+        }();
         if (binaryData.empty())
             throw std::runtime_error("Unexpected end of serialized data.");
         unsigned char type = binaryData[0];
         binaryData = binaryData.substr(1);
+        if constexpr (CollectMetrics)
+        {
+            ++metrics->values;
+            metrics->maxDepth = (std::max)(metrics->maxDepth, depth);
+        }
         if (type & (CUSTOM_COMPACT_FLAG | CUSTOM_FULL_FLAG))
         {
             size_t typeNameSize, dataSize;
@@ -258,6 +278,7 @@ namespace LuaUtil
             std::string_view typeName = binaryData.substr(0, typeNameSize);
             std::string_view data = binaryData.substr(typeNameSize, dataSize);
             binaryData = binaryData.substr(typeNameSize + dataSize);
+            if constexpr (CollectMetrics) { ++metrics->customValues; metrics->customBytes += dataSize; }
             if (!customSerializer || !customSerializer->deserialize(typeName, data, lua))
                 throw std::runtime_error("Unknown type in serialized data: " + std::string(typeName));
             return;
@@ -265,6 +286,7 @@ namespace LuaUtil
         if (type & SHORT_STRING_FLAG)
         {
             size_t size = type & 0x1f;
+            if constexpr (CollectMetrics) { ++metrics->strings; metrics->stringBytes += size; }
             sol::stack::push<std::string_view>(lua, binaryData.substr(0, size));
             binaryData = binaryData.substr(size);
             return;
@@ -280,17 +302,27 @@ namespace LuaUtil
             case SerializedType::LONG_STRING:
             {
                 uint32_t size = getValue<uint32_t>(binaryData);
+                if constexpr (CollectMetrics) { ++metrics->strings; metrics->stringBytes += size; }
                 sol::stack::push<std::string_view>(lua, binaryData.substr(0, size));
                 binaryData = binaryData.substr(size);
                 return;
             }
             case SerializedType::TABLE_START:
             {
+                if constexpr (CollectMetrics) ++metrics->tables;
                 lua_createtable(lua, 0, 0);
                 while (!binaryData.empty() && binaryData[0] != char(SerializedType::TABLE_END))
                 {
-                    deserializeImpl(lua, binaryData, customSerializer, readOnly);
-                    deserializeImpl(lua, binaryData, customSerializer, readOnly);
+                    if constexpr (CollectMetrics)
+                    {
+                        deserializeImpl<true>(lua, binaryData, customSerializer, readOnly, metrics, depth + 1);
+                        deserializeImpl<true>(lua, binaryData, customSerializer, readOnly, metrics, depth + 1);
+                    }
+                    else
+                    {
+                        deserializeImpl<false>(lua, binaryData, customSerializer, readOnly);
+                        deserializeImpl<false>(lua, binaryData, customSerializer, readOnly);
+                    }
                     lua_settable(lua, -3);
                 }
                 if (binaryData.empty())
@@ -366,8 +398,9 @@ namespace LuaUtil
         return res;
     }
 
-    sol::object deserialize(
-        lua_State* lua, std::string_view binaryData, const UserdataSerializer* customSerializer, bool readOnly)
+    template <bool CollectMetrics, class... MetricArgs>
+    static sol::object deserializeTop(lua_State* lua, std::string_view binaryData,
+        const UserdataSerializer* customSerializer, bool readOnly, MetricArgs... metricArgs)
     {
         if (binaryData.empty())
             return sol::nil;
@@ -375,10 +408,25 @@ namespace LuaUtil
             throw std::runtime_error("Incorrect version of Lua serialization format: "
                 + std::to_string(static_cast<unsigned>(binaryData[0])));
         binaryData = binaryData.substr(1);
-        deserializeImpl(lua, binaryData, customSerializer, readOnly);
+        deserializeImpl<CollectMetrics>(lua, binaryData, customSerializer, readOnly, metricArgs...);
         if (!binaryData.empty())
             throw std::runtime_error("Unexpected data after serialized object");
         return sol::stack::pop<sol::object>(lua);
+    }
+
+    sol::object deserialize(
+        lua_State* lua, std::string_view binaryData, const UserdataSerializer* customSerializer, bool readOnly)
+    {
+        // This specialization has no metric branches, counters or recursive
+        // clocks. The existing normal decoder semantics remain the control.
+        return deserializeTop<false>(lua, binaryData, customSerializer, readOnly);
+    }
+
+    sol::object deserializeWithMetrics(lua_State* lua, std::string_view binaryData, DeserializeMetrics& metrics,
+        const UserdataSerializer* customSerializer, bool readOnly)
+    {
+        metrics = {};
+        return deserializeTop<true>(lua, binaryData, customSerializer, readOnly, &metrics, std::uint64_t{1});
     }
 
 }

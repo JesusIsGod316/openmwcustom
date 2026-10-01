@@ -18,6 +18,13 @@ function Set-Phase9CandidateEnvironment {
     $env:OPENMW_P9_FILE_POLICY_ACK='1'
 }
 
+function Set-Phase9HitchRecorderEnvironment {
+    param([Parameter(Mandatory=$true)][object]$Mode,
+        [ValidateSet('stream','deferred')][string]$Transport='stream')
+    if($Mode.Trace -eq '1'){$env:OPENMW_P9_HITCH_TRANSPORT=$Transport}
+    else{Remove-Item Env:OPENMW_P9_HITCH_TRANSPORT -ErrorAction SilentlyContinue}
+}
+
 function Get-Phase9IdentityHash {
     param([Parameter(Mandatory=$true)][AllowEmptyCollection()][object]$Value)
     $json=ConvertTo-Json -InputObject $Value -Depth 12 -Compress
@@ -108,9 +115,21 @@ function New-Phase9RunManifest {
             coverage='Independent startup switches; resource denial, invalidation and demand fallback remain possible. Selection alone is not execution proof.'};
         hitch_v2_attribution=[ordered]@{requested=($Mode.Trace -eq '1');channel='p9-hitch-spans.csv';
             coverage='Additional nested UI, animation preparation, terrain publication and composite pass/restore spans. Existing threshold and loss qualification apply; child wall times are not additive.'};
-        hitch_diagnostics6=[ordered]@{requested=($Mode.Trace -eq '1');revision=1;channel='p9-hitch-spans.csv';
+        hitch_diagnostics6=[ordered]@{requested=($Mode.Trace -eq '1');revision=2;channel='p9-hitch-spans.csv';
             offline_report='HITCH-SPIKE-REPORT.json';
             coverage='Exact engine-wall spike joins; preparation/cache retrieval lifecycle; model construction; physics/navigation; work queues/cache retirement; allocator service and explicit Lua GC. Automatic VM GC phases remain unavailable without a VM sampler; completeness and unknown provenance are reported separately.'};
+        hitch_recorder=[ordered]@{requested=($Mode.Trace -eq '1');transport_schema=1;row_schema=2;
+            requested_transport=$env:OPENMW_P9_HITCH_TRANSPORT;
+            requested_storage_slots=$env:OPENMW_P9_HITCH_CAPACITY;
+            coverage='Owned numeric row transport; written row count can exceed queue capacity. Actual drain, loss, output and join qualification are independent of the requested transport.'};
+        diagnostic_observer=[ordered]@{requested=($Mode.Trace -eq '1');revision=1;
+            channels=@('p9-hitch-spans.csv.observer.csv','p9-hitch-spans.csv.observer-status.txt');
+            coverage='Fixed thread-local observer counters and measured observer regions plus writer batches. Inclusive diagnostic exposures can overlap; measuring them has its own cost and no estimated cost is subtracted from frame times.'};
+        lifecycle_final_status=[ordered]@{requested=($Mode.Trace -eq '1');revision=1;
+            channel='p9-hitch-spans.csv.lifecycle-status.txt';
+            coverage='Final registry snapshot outside the row queue. Registry status cannot establish missing lifetime-event joins or first GPU use.'};
+        lua_event_decode=[ordered]@{requested=($Mode.Trace -eq '1');revision=1;channel='p9-hitch-spans.csv';
+            coverage='Existing decode walk shape, encoded bytes, outcome and event/container/handler ownership; no payload contents or extra content scan. Exact receipt joins require a complete CPU timeline.'};
         io_policy_acknowledgement=[ordered]@{requested=$true;coverage='one new startup policy log line, including basic CONTROL; not per-stream effective allocation proof'};
         compile_attribution=[ordered]@{requested=($Mode.Trace -eq '1');channel='compile-attribution.csv';schema=1;
             coverage='additional P0 ownership/selected-operation metadata; differs from old deep reference; original p4-compile.csv unchanged'};

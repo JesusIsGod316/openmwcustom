@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_DEBUG_HITCHTRACE_H
 
 #include "v3hitchtelemetry.hpp"
+#include "diagnosticobserver.hpp"
 
 #include <array>
 #include <atomic>
@@ -16,6 +17,8 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <condition_variable>
+#include <mutex>
 namespace Debug::HitchTrace
 {
     using Clock = std::chrono::steady_clock;
@@ -53,102 +56,71 @@ namespace Debug::HitchTrace
         std::array<Metric, 4> metrics{};
     };
 
-    // One pre-touched arena shared by producers. No locks, allocation, text
-    // formatting, file I/O, or GL calls in append(). Flush only after workers
-    // and draw threads have joined. A full arena makes the capture incomplete.
+    // Producers copy owned fixed-size records into pre-touched storage. Only
+    // the consumer formats/writes streaming records. Neither transport waits,
+    // allocates, performs file I/O or calls GL on a producer. The deferred arena
+    // remains an independently selectable recorder control.
     class Capture
     {
     public:
         static constexpr std::size_t Capacity = 262144;
         static constexpr std::size_t MaximumCapacity = 524288;
         static Capture& instance() { static Capture capture; return capture; }
-        bool enabled() const { return mRows && !mStopped.load(std::memory_order_acquire); }
+        struct Options
+        {
+            std::string path;
+            bool streaming = false;
+            std::size_t capacity = Capacity;
+            // Native test seam: no environment variable enables this hook in
+            // the engine. Its context must outlive finish()/writer join.
+            void (*beforeConsumerRead)(void*) noexcept = nullptr;
+            void* consumerContext = nullptr;
+        };
+        explicit Capture(Options options) noexcept;
+        bool enabled() const { return mArmed && !mStopped.load(std::memory_order_acquire); }
         std::uint64_t nextId() { return mIds.fetch_add(1, std::memory_order_relaxed) + 1; }
         void enter() { mActive.fetch_add(1, std::memory_order_acq_rel); }
         void leave() { mActive.fetch_sub(1, std::memory_order_acq_rel); }
-        void append(const Row& row) noexcept
-        {
-            const auto index = mCount.fetch_add(1, std::memory_order_relaxed);
-            if (index < mCapacity) mRows[index] = row;
-            else mDropped.fetch_add(1, std::memory_order_relaxed);
-        }
-        void finish() noexcept
-        {
-            if (!requested() || mStopped.exchange(true)) return;
-            try
-            {
-                writeClockMap(mPath, true);
-                const auto active = mActive.load(std::memory_order_acquire);
-                const auto count = (std::min)(mCount.load(), mCapacity);
-                std::ofstream out(mPath);
-                out << "span,parent,frame,thread,start_ns,end_ns,epoch_ms,phase,identity,asset,wall_ms,children_ms,unattributed_ms,thread_cpu_ms,identity_truncated,link";
-                for (unsigned i = 1; i <= 4; ++i) out << ",metric" << i << "_name,metric" << i << "_value";
-                out << '\n';
-                if (!active && mRows)
-                    for (std::size_t i = 0; i < count; ++i)
-                    {
-                        const Row& r = mRows[i];
-                        const auto duration = r.end - r.start;
-                        out << r.id << ',' << r.parent << ',' << r.frame << ',' << r.thread << ',' << r.start
-                            << ',' << r.end << ',' << r.epoch << ',';
-                        quote(out, r.phase.data()); out << ','; quote(out, r.identity.data()); out << ',';
-                        quote(out, r.asset.data());
-                        out << std::fixed << std::setprecision(6) << ',' << duration / 1e6 << ',' << r.children / 1e6
-                            << ',' << (std::max)(std::int64_t(0), duration - r.children) / 1e6 << ','
-                            << (r.cpu < 0 ? -1.0 : r.cpu / 1e6) << ',' << r.truncated << ',' << r.link;
-                        for (const auto& metric : r.metrics)
-                        { out << ','; quote(out, metric.name.data()); out << ',' << metric.value; }
-                        out << '\n';
-                    }
-                out << "# rows=" << count << "\n# capacity=" << mCapacity << "\n# dropped=" << mDropped.load()
-                    << "\n# allocation_failed=" << mAllocationFailed << "\n# active_at_finish=" << active
-                    << "\n# minimum_detail_ms=0.25\n# schema=2\n# forced_dependency_events=retained\n# normal_finish=1\n";
-                out.flush();
-                const bool ok = bool(out) && !active && !mAllocationFailed;
-                out.close();
-                std::ofstream status(mPath + ".capture-status.txt");
-                status << "rows=" << count << "\ncapacity=" << mCapacity << "\ndropped=" << mDropped.load()
-                    << "\nallocation_failed=" << mAllocationFailed << "\nactive_at_finish=" << active
-                    << "\nschema=2\nnormal_finish=1\noutput_ok=" << (ok && !out.fail()) << '\n';
-            }
-            catch (...) { /* Missing/incomplete sidecar fails archive qualification. */ }
-        }
-        ~Capture() { finish(); }
+        void append(const Row& row) noexcept;
+        std::uint64_t pendingRows() const noexcept { return mPending.load(std::memory_order_acquire); }
+        void finish() noexcept;
+        ~Capture();
     private:
-        Capture() noexcept
-        {
-            if (!requested()) return;
-            try
-            {
-                mPath = std::getenv("OPENMW_P9_HITCH_SPANS_FILE");
-                if (const char* capacity = std::getenv("OPENMW_P9_HITCH_CAPACITY"); capacity && *capacity)
-                {
-                    std::size_t parsed = 0;
-                    const auto last = capacity + std::strlen(capacity);
-                    const auto result = std::from_chars(capacity, last, parsed);
-                    if (result.ec == std::errc{} && result.ptr == last
-                        && (parsed == 131072 || parsed == Capacity || parsed == MaximumCapacity)) mCapacity = parsed;
-                }
-                writeClockMap(mPath, false);
-                mRows = std::make_unique<Row[]>(mCapacity);
-                volatile unsigned char* pages = reinterpret_cast<unsigned char*>(mRows.get());
-                for (std::size_t i = 0; i < mCapacity * sizeof(Row); i += 4096) pages[i] = 0;
-            }
-            catch (...) { mAllocationFailed = true; }
-        }
-        static void quote(std::ostream& out, std::string_view text)
-        {
-            out << '"';
-            for (char c : text) { if (c == '"') out << '"'; out << c; }
-            out << '"';
-        }
+        Capture() noexcept;
+        void initialize(Options options) noexcept;
+        struct Slot { std::atomic<std::size_t> sequence{0}; Row row{}; };
+        enum class PushResult { Published, Full, Contended };
+        PushResult push(const Row& row) noexcept;
+        bool pop(Row& row) noexcept;
+        void writerEntry() noexcept;
+        void writeHeader(std::ostream& out);
+        void writeRow(std::ostream& out, const Row& row);
+        void writeStatus(std::ostream& out, std::string_view prefix, bool outputOk);
+        static void quote(std::ostream& out, std::string_view text);
+        static void nameWriter() noexcept;
+        static std::int64_t now() noexcept;
         std::string mPath;
         std::size_t mCapacity = Capacity;
+        bool mArmed = false, mStreaming = false;
         std::unique_ptr<Row[]> mRows;
+        std::unique_ptr<Slot[]> mSlots;
+        std::atomic<std::size_t> mProducer{0}, mConsumer{0}, mQueued{0}, mHighWater{0};
+        std::atomic<std::uint64_t> mAttempted{0}, mAccepted{0}, mWritten{0}, mPending{0};
+        std::atomic<std::uint64_t> mCapacityDropped{0}, mContentionDropped{0}, mAllocationDropped{0},
+            mIoDropped{0}, mStoppedDropped{0};
         std::atomic<std::uint64_t> mIds{0};
-        std::atomic<std::size_t> mCount{0}, mDropped{0}, mActive{0};
-        std::atomic<bool> mStopped{false};
-        bool mAllocationFailed = false;
+        std::atomic<std::size_t> mActive{0}, mAppenders{0};
+        std::atomic<bool> mStopped{false}, mFinishing{false};
+        bool mAllocationFailed = false, mInitializationFailed = false, mWriterFailed = false;
+        bool mDrainComplete = false, mOutputOk = false;
+        std::size_t mActiveAtFinish = 0, mAppendersAtFinish = 0;
+        std::uint64_t mWriterThreadId = 0, mFormatNs = 0, mWriteNs = 0, mBatches = 0, mBytes = 0;
+        std::int64_t mWriterStarted = 0, mWriterFinished = 0, mWriterCpu = -1;
+        std::thread mWriter;
+        std::mutex mWakeMutex;
+        std::condition_variable mWake;
+        void (*mBeforeConsumerRead)(void*) noexcept = nullptr;
+        void* mConsumerContext = nullptr;
     };
 
     class Scope;
@@ -160,6 +132,7 @@ namespace Debug::HitchTrace
             unsigned frame = std::numeric_limits<unsigned>::max(), CpuTiming cpu = CpuTiming::Root) noexcept
         {
             if (!requested() || !Capture::instance().enabled()) return;
+            const auto observerStart = DiagnosticObserver::begin();
             mRow = {};
             mRow.cpu = -1;
             mCapture = &Capture::instance();
@@ -183,6 +156,7 @@ namespace Debug::HitchTrace
             mRow.epoch = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             mRow.start = now();
+            DiagnosticObserver::record(DiagnosticObserver::Category::TraceScopeEntry, observerStart, mRow.start);
             current = this;
         }
         // Constrain deduction so Scope(phase, {}, asset) selects the identity /
@@ -201,6 +175,8 @@ namespace Debug::HitchTrace
                 if (end >= mCpuStart) mRow.cpu = end - mCpuStart;
             }
             const bool retain = mForced || mChildRetained || duration >= 250000;
+            DiagnosticObserver::count(retain ? DiagnosticObserver::Category::TraceRetained
+                                            : DiagnosticObserver::Category::TraceFiltered);
             if (mPrevious)
             {
                 mPrevious->mRow.children += duration;
@@ -209,10 +185,12 @@ namespace Debug::HitchTrace
             current = mPrevious;
             if (retain) mCapture->append(mRow);
             mCapture->leave();
+            DiagnosticObserver::end(DiagnosticObserver::Category::TraceScopeExit, mRow.end);
         }
         Scope(const Scope&) = delete;
         Scope& operator=(const Scope&) = delete;
         std::uint64_t id() const noexcept { return mCapture ? mRow.id : 0; }
+        std::int64_t startNs() const noexcept { return mCapture ? mRow.start : 0; }
         unsigned frame() const noexcept { return mCapture ? mRow.frame : V3HitchTelemetry::currentFrame(); }
         void retain() noexcept { mForced = true; }
         void setLink(std::uint64_t link) noexcept { mRow.link = link; }

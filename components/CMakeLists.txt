@@ -312,7 +312,7 @@ add_component_dir (stereo
     )
 
 add_component_dir (debug
-    debugging debuglog gldebug debugdraw writeflags runtimeprocessmemory hitchtrace
+    debugging debuglog gldebug debugdraw writeflags runtimeprocessmemory hitchtrace diagnosticobserver
     )
 
 IF(NOT WIN32 AND NOT APPLE)

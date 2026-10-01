@@ -391,10 +391,18 @@ namespace LuaUtil
 
     void ScriptsContainer::receiveEvent(std::string_view eventName, std::string_view eventData)
     {
+        const bool diagnostic = Debug::HitchTrace::requested();
         // Parent identifies container/event; nested handlers identify event/script.
         Debug::HitchTrace::Scope dispatch("lua.event.dispatch", Debug::HitchTrace::CpuTiming::WallEnvelope,
             mNamePrefix, eventName);
         dispatch.setMetric(0, "payload_bytes", eventData.size());
+        std::uint64_t invokedHandlers = 0;
+        if (diagnostic)
+        {
+            dispatch.setMetric(1, "handler_count", 0);
+            dispatch.setMetric(2, "decode_outcome", 0); // 0 unattempted, 1 decoded, 2 error, 3 empty/nil.
+            dispatch.setMetric(3, "invoked_handlers", invokedHandlers);
+        }
         Debug::V33LuaTrace::CallbackScope v33DispatchTrace(
             "lua_event_dispatch", eventName, mNamePrefix, -1, "", eventName);
         LoadedData& data = ensureLoaded();
@@ -409,10 +417,43 @@ namespace LuaUtil
                 Debug::HitchTrace::Scope deserializeEvent("lua.event.deserialize",
                     Debug::HitchTrace::CpuTiming::WallEnvelope, mNamePrefix, eventName);
                 deserializeEvent.setMetric(0, "payload_bytes", eventData.size());
-                object = LuaUtil::deserialize(view.sol(), eventData, mSerializer);
+                if (diagnostic)
+                {
+                    deserializeEvent.setLink(dispatch.id());
+                    DeserializeMetrics metrics;
+                    auto publishMetrics = [&] {
+                        deserializeEvent.setMetric(1, "value_count", metrics.values);
+                        deserializeEvent.setMetric(2, "table_count", metrics.tables);
+                        deserializeEvent.setMetric(3, "max_depth", metrics.maxDepth);
+                        const auto start = deserializeEvent.startNs();
+                        const auto end = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            Debug::HitchTrace::Clock::now().time_since_epoch()).count();
+                        Debug::DiagnosticObserver::count(Debug::DiagnosticObserver::Category::LuaDecodeTimerBoundary);
+                        // A single supplemental row only for slow decodes,
+                        // including slow failures. Fast events add no forced
+                        // metadata rows, even if another child keeps dispatch.
+                        if (start && end - start >= 250000)
+                        {
+                            Debug::HitchTrace::Scope shape("lua.event.payload_shape", Debug::HitchTrace::CpuTiming::None,
+                                mNamePrefix, eventName);
+                            shape.setLink(deserializeEvent.id());
+                            shape.setMetric(0, "string_count", metrics.strings);
+                            shape.setMetric(1, "string_bytes", metrics.stringBytes);
+                            shape.setMetric(2, "custom_values", metrics.customValues);
+                            shape.setMetric(3, "custom_bytes", metrics.customBytes);
+                            shape.retain();
+                        }
+                    };
+                    try { object = LuaUtil::deserializeWithMetrics(view.sol(), eventData, metrics, mSerializer); }
+                    catch (...) { dispatch.setMetric(2, "decode_outcome", 2); publishMetrics(); throw; }
+                    publishMetrics();
+                    dispatch.setMetric(2, "decode_outcome", eventData.empty() ? 3 : 1);
+                }
+                else object = LuaUtil::deserialize(view.sol(), eventData, mSerializer);
             }
             catch (std::exception& e)
             {
+                if (diagnostic) dispatch.setMetric(2, "decode_outcome", 2);
                 Log(Debug::Error) << mNamePrefix << " can not parse eventData for '" << eventName << "': " << e.what();
                 return;
             }
@@ -423,9 +464,11 @@ namespace LuaUtil
                 try
                 {
                     Debug::HitchTrace::Scope handler("lua.event.handler", Debug::HitchTrace::CpuTiming::WallEnvelope,
-                        eventName, Debug::HitchTrace::requested() ? scriptPath(h.mScriptId).value() : std::string_view{});
+                        eventName, diagnostic ? scriptPath(h.mScriptId).value() : std::string_view{});
+                    if (diagnostic) handler.setLink(dispatch.id());
                     handler.setMetric(0, "script_id", h.mScriptId);
                     handler.setMetric(1, "reverse_index", i - 1);
+                    if (diagnostic) dispatch.setMetric(3, "invoked_handlers", ++invokedHandlers);
                     const std::string_view v33ScriptPath = Debug::V33LuaTrace::enabled()
                         ? std::string_view(scriptPath(h.mScriptId).value())
                         : std::string_view{};

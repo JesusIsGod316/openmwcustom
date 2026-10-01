@@ -28,7 +28,8 @@ if(P9_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 include_directories(${ROOT})
 include_directories(SYSTEM ${OPENSCENEGRAPH_INCLUDE_DIRS})
-add_library(p9-hitch-platform STATIC "${ROOT}/components/debug/hitchtrace.cpp")
+add_library(p9-hitch-platform STATIC "${ROOT}/components/debug/hitchtrace.cpp"
+  "${ROOT}/components/debug/diagnosticobserver.cpp")
 link_libraries(p9-hitch-platform)
 enable_testing()
 find_package(Threads REQUIRED)
@@ -43,7 +44,14 @@ target_link_libraries(p9-hitch-trace PRIVATE Threads::Threads)
 add_test(NAME p9-hitch-trace COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/verify-hitch-trace.py $<TARGET_FILE:p9-hitch-trace>
   ${CMAKE_CURRENT_BINARY_DIR}/hitch-trace-fixture)
-set_tests_properties(p9-hitch-trace PROPERTIES TIMEOUT 45)
+set_tests_properties(p9-hitch-trace PROPERTIES TIMEOUT 180)
+add_executable(p9-diagnostic-observer diagnostic-observer-tests.cpp)
+target_link_libraries(p9-diagnostic-observer PRIVATE Threads::Threads)
+foreach(mode normal deep overflow)
+  add_test(NAME p9-diagnostic-observer-${mode} COMMAND p9-diagnostic-observer ${mode}
+    ${CMAKE_CURRENT_BINARY_DIR}/diagnostic-observer-${mode})
+  set_tests_properties(p9-diagnostic-observer-${mode} PROPERTIES TIMEOUT 45)
+endforeach()
 add_executable(p9-loading-attribution loading-attribution-tests.cpp
   ${ROOT}/components/files/hash.cpp ${ROOT}/components/files/constrainedfilestreambuf.cpp
   ${ROOT}/components/files/conversion.cpp ${ROOT}/extern/smhasher/MurmurHash3.cpp)

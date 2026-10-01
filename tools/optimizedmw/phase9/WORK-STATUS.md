@@ -1,4 +1,37 @@
-# OptimizedMW Phase 9 repair checkpoint (2026-09-30)
+# OptimizedMW Phase 9 work checkpoints
+
+## Recorder repair and diagnostic accounting (2026-10-01)
+
+Source branch: `codex/optimizedmw-phase9-audited`. This change starts from
+launcher commit `c81298ce6921dce8c9e9490bfda731fe347c7035`, whose engine was
+`ab1319a299a9dee06c28483d928b5bb96239a4e8`. The direct user resume governs.
+The September 30 checkpoint below is historical; exact installed identity
+and validation are in `C:\OptimizedMW_Test\CURRENT-BUILD.txt` and `Validation`.
+
+Deep now defaults to an owned-record MPSC queue and a dedicated CSV writer.
+The 524,288-slot bound covers backlog, rather than the whole recording.
+Deferred transport remains an advanced control. Normal starts neither the
+queue nor writer. Row schema, retention and causal ownership remain intact.
+Loss, initialization/output failure and final drain are explicit. Independent
+final observer and lifecycle files survive queue saturation. Reports separate
+transport receipts, internal joins, clock mapping and bounded offline analysis.
+
+The observer counts filtered work and splits selected recorder, resource-catalog
+and Lua allocator bookkeeping. Lua event decoding adds same-pass shape/outcome
+and delivery ownership; slow-only supplemental receipts preserve string/custom
+counts. Error counters describe attempted prefixes, and fast supplemental
+shape remains unavailable. Inclusive diagnostic exposures overlap and are
+never subtracted to estimate Normal performance. Automatic GC and private
+driver internals remain explicitly unobserved.
+
+The existing UI/BAKE/ANIM/TERRAIN switches, all sixteen combinations, Normal/Deep
+gameplay parity, I/O controls, six diagnostic groups, settings and saves remain
+the test foundation. The consolidated native gate passed 27/27, including
+2.5-million-row streaming, concurrent ring reuse, faults and observer overflow.
+Final compiler/component/report/package evidence is saved beside the installed
+build. Runtime acceptance and hitch/performance conclusions require user captures.
+
+## Phase 9 repair checkpoint (2026-09-30)
 
 Current branch: `codex/optimizedmw-phase9-audited`. This repair starts from
 `f412af6e9819547ca5b1da6d3004695b13eee701`, the September 29 tested package.

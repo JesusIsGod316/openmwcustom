@@ -24,7 +24,8 @@ def run(executable, output, deep):
     path = directory / "p9-hitch-spans.csv"
     if deep:
         environment["OPENMW_P9_HITCH_SPANS_FILE"] = str(path)
-    selected = "ResourceLifecycleRegistry.*:ResourceLifecycleProduction.*"
+        environment["OPENMW_P9_HITCH_TRANSPORT"] = "stream"
+    selected = "ResourceLifecycleRegistry.*:ResourceLifecycleProduction.*:ResourceLifecycleFinalStatus.*"
     result = subprocess.run([str(executable), f"--gtest_filter={selected}"], cwd=directory,
                             env=environment, capture_output=True, text=True, timeout=90)
     (directory / "components-tests.log").write_text(result.stdout + result.stderr, encoding="utf-8")
@@ -34,6 +35,7 @@ def run(executable, output, deep):
     assert count and int(count[1]) >= 12 and passed, "Missing production fixture tests"
     if not deep:
         assert not path.exists(), "Normal unexpectedly wrote a Deep timeline"
+        assert not Path(str(path) + ".lifecycle-status.txt").exists(), "Normal unexpectedly wrote lifecycle status"
         assert int(passed[1]) >= 7, "Normal model/cache equivalence contracts did not run"
         return {"tests": int(count[1]), "passed": int(passed[1]), "deep": False}
     assert int(passed[1]) == int(count[1]), "Deep policy tests were skipped"
@@ -72,6 +74,12 @@ def run(executable, output, deep):
     coverage = [row for row in rows if row["phase"] == "resource.lifecycle_coverage"]
     assert len(statuses) == len(coverage) == 1
     s, c = metrics(statuses[0]), metrics(coverage[0])
+    final = dict(line.split("=", 1) for line in Path(str(path) + ".lifecycle-status.txt")
+                 .read_text(encoding="utf-8").splitlines())
+    assert final["schema"] == final["normal_finish"] == final["output_ok"] == "1"
+    assert final["status_span_id"] == statuses[0]["span"] and final["coverage_span_id"] == coverage[0]["span"]
+    assert all(int(final[key]) == value for key, value in {**s, **c}.items())
+    assert int(final["first_demands"]) == len(first) and int(final["retirements"]) == len(retired)
     assert s["publications"] == len(publications) == len(retired) and c["active"] == 0
     assert s["capacity_failures"] == s["allocation_failures"] == s["metadata_truncations"] == 0
     assert len(first) >= 2

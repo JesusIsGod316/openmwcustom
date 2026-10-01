@@ -2,6 +2,7 @@
 #define OPENMW_SCENEUTIL_DRAWPHASETRACE_H
 
 #include "glcalltrace.hpp"
+#include <components/debug/diagnosticobserver.hpp>
 #include <components/debug/hitchtrace.hpp>
 #include <osgUtil/Statistics>
 #include <osg/FrameStamp>
@@ -87,6 +88,7 @@ namespace SceneUtil::DrawPhaseTrace
         void catalogResource(const ResourceRow& row)
         {
             if (!mResources) return;
+            Debug::DiagnosticObserver::Scope observer(Debug::DiagnosticObserver::Category::CatalogPublication);
             std::lock_guard<std::mutex> lock(mResourceMutex);
             const ResourceKey key{row.texture,row.image,row.stateSet,row.submitCamera,row.labelHash,
                 row.bytes,row.context,row.unit,row.imageRevision,row.scope};
@@ -118,6 +120,7 @@ namespace SceneUtil::DrawPhaseTrace
         void noteResourceUncovered() { mResourceDropped.fetch_add(1,std::memory_order_relaxed); }
         void noteCatalogCost(std::uint64_t nanoseconds, std::size_t textures, std::size_t uniforms)
         {
+            Debug::DiagnosticObserver::Scope observer(Debug::DiagnosticObserver::Category::CatalogCounterUpdate);
             mCatalogCalls.fetch_add(1, std::memory_order_relaxed);
             mCatalogWallNs.fetch_add(nanoseconds, std::memory_order_relaxed);
             mCatalogTextures.fetch_add(textures, std::memory_order_relaxed);
@@ -486,8 +489,14 @@ namespace SceneUtil::DrawPhaseTrace
             , mStart(Debug::HitchTrace::Clock::now()) { scratch.reset(); }
         ~CatalogDiagnostic()
         {
+            const auto end = Debug::HitchTrace::Clock::now();
             Capture::instance().noteCatalogCost(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                Debug::HitchTrace::Clock::now() - mStart).count(), mScratch.textureCount, mScratch.uniformCount);
+                end - mStart).count(), mScratch.textureCount, mScratch.uniformCount);
+            // Reuse the existing catalog boundary clocks. This inclusive body
+            // overlaps path/publication components; it is not additional work.
+            Debug::DiagnosticObserver::record(Debug::DiagnosticObserver::Category::CatalogWork,
+                std::chrono::duration_cast<std::chrono::nanoseconds>(mStart.time_since_epoch()).count(),
+                std::chrono::duration_cast<std::chrono::nanoseconds>(end.time_since_epoch()).count());
             // Inactive slots may contain old addresses, but cannot be consulted
             // by the next submission: reset runs before any effective lookup.
             mScratch.reset();
@@ -991,10 +1000,14 @@ namespace SceneUtil::DrawPhaseTrace
 
                 {
                     CatalogDiagnostic catalogDiagnostic(mCatalogScratch);
-                    mMaterialPath.clear();
-                    for(auto* graph=leaf->_parent;graph;graph=graph->_parent)
-                        if(graph->getStateSet()) mMaterialPath.push_back(graph->getStateSet());
-                    std::reverse(mMaterialPath.begin(),mMaterialPath.end());
+                    {
+                        Debug::DiagnosticObserver::Scope observer(
+                            Debug::DiagnosticObserver::Category::CatalogPathCollection);
+                        mMaterialPath.clear();
+                        for(auto* graph=leaf->_parent;graph;graph=graph->_parent)
+                            if(graph->getStateSet()) mMaterialPath.push_back(graph->getStateSet());
+                        std::reverse(mMaterialPath.begin(),mMaterialPath.end());
+                    }
                     const auto* camera=getCurrentCamera();
                     const auto* context=camera ? camera->getGraphicsContext() : nullptr;
                     const auto* stamp=getFrameStamp();

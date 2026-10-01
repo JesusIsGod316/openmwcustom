@@ -11,6 +11,7 @@
 #include <set>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/diagnosticobserver.hpp>
 #include <components/debug/v36luaaddscripttrace.hpp>
 #include <components/files/conversion.hpp>
 #include <components/settings/values.hpp>
@@ -109,6 +110,7 @@ namespace LuaUtil
         const bool diagnostic = Debug::HitchTrace::requested();
         if (diagnostic)
         {
+            Debug::DiagnosticObserver::Scope observer(Debug::DiagnosticObserver::Category::LuaAllocatorBookkeeping);
             auto& stats = self->mDiagnosticAllocations;
             ++stats.calls;
             if (!nsize)
@@ -139,6 +141,7 @@ namespace LuaUtil
         {
             if (diagnostic)
             {
+                Debug::DiagnosticObserver::Scope observer(Debug::DiagnosticObserver::Category::LuaAllocatorBookkeeping);
                 ++self->mDiagnosticAllocations.failures;
                 ++self->mDiagnosticAllocations.policyBlocked;
             }
@@ -157,6 +160,11 @@ namespace LuaUtil
         {
             const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
                 Debug::HitchTrace::Clock::now() - serviceStart).count();
+            // Count the existing pair of timer boundaries without recursively
+            // timing clocks or charging free/realloc service to the observer.
+            Debug::DiagnosticObserver::count(Debug::DiagnosticObserver::Category::LuaAllocatorTimerBoundary);
+            Debug::DiagnosticObserver::count(Debug::DiagnosticObserver::Category::LuaAllocatorTimerBoundary);
+            Debug::DiagnosticObserver::Scope observer(Debug::DiagnosticObserver::Category::LuaAllocatorBookkeeping);
             ++self->mDiagnosticAllocations.serviceCalls;
             self->mDiagnosticAllocations.serviceNs += static_cast<std::uint64_t>((std::max)(elapsed, std::int64_t{ 0 }));
         }
@@ -164,6 +172,7 @@ namespace LuaUtil
         {
             if (diagnostic)
             {
+                Debug::DiagnosticObserver::Scope observer(Debug::DiagnosticObserver::Category::LuaAllocatorBookkeeping);
                 ++self->mDiagnosticAllocations.failures;
                 ++self->mDiagnosticAllocations.serviceFailures;
             }
@@ -173,6 +182,7 @@ namespace LuaUtil
         self->mTotalMemoryUsage += smallAllocDelta + bigAllocDelta;
         if (diagnostic)
         {
+            Debug::DiagnosticObserver::Scope observer(Debug::DiagnosticObserver::Category::LuaAllocatorBookkeeping);
             if (nsize >= osize) self->mDiagnosticAllocations.growthBytes += nsize - osize;
             else self->mDiagnosticAllocations.shrinkBytes += osize - nsize;
         }

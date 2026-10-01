@@ -3,6 +3,7 @@ param(
     [ValidateSet('CONTROL','I1','I2','I1I2','D1')][string]$Candidate='CONTROL',
     [ValidateRange(-1,15)][int]$HitchMask=-1,
     [ValidateSet('','Normal','Deep')][string]$TraceLevel='',
+    [ValidateSet('stream','deferred')][string]$HitchTransport='stream',
     [switch]$SystemTrace,
     [ValidateRange(30,1800)][int]$SystemTraceDurationSeconds=600,
     [ValidateRange(0,33554432)][long]$BufferBudgetBytes=33554432,
@@ -374,8 +375,13 @@ try{
         "phase9_trace_schema=6",
         "phase9_temporal_contract=consumer_frame_v2_ownership",
         "phase9_capture_transport=bounded_mpsc_v1",
+        "phase9_hitch_transport_schema=$(if($mode.Trace -eq '1'){'1'}else{'0'})",
+        "phase9_hitch_transport=$(if($mode.Trace -eq '1'){if($HitchTransport -eq 'stream'){'stream_mpsc_v1'}else{'deferred_arena_v1'}}else{'off'})",
+        "hitch_diagnostics_revision=2",
+        "hitch_observer_revision=1",
+        "hitch_lifecycle_status=$($mode.Trace)",
         "phase9_resource_capacity=131072",
-        "phase9_detail_revision=3",
+        "phase9_detail_revision=4",
         "phase9_hitch_capacity=524288",
         "phase9_hitch_schema=2",
         "phase9_dlss_ready_requires_dense_dynamic_motion=true",
@@ -489,6 +495,7 @@ try{
     }
     if($mode.Trace -eq '1'){
         $env:OPENMW_P9_COMPILE_ATTRIBUTION_FILE=Join-Path $ProfileDir 'compile-attribution.csv'
+        Set-Phase9HitchRecorderEnvironment -Mode $mode -Transport $HitchTransport
         $env:OPENMW_P9_HITCH_CAPACITY='524288'
         $env:OPENMW_P9_HITCH_SPANS_FILE=Join-Path $ProfileDir 'p9-hitch-spans.csv'
         $env:OPENMW_V3_INSERT_FILE=Join-Path $ProfileDir 'v3-insertion.csv'

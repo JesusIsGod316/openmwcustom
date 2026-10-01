@@ -18,6 +18,7 @@ def main():
             environment.pop(name)
     spans_path = output / "lua-container-spans.csv"
     environment["OPENMW_P9_HITCH_SPANS_FILE"] = str(spans_path)
+    environment["OPENMW_P9_HITCH_TRANSPORT"] = "stream"
     selected = "LuaScriptsContainerTest.CallEvent:LuaScriptsContainerTest.Timers:LuaScriptsContainerTest.LoadSave:LuaScriptsContainerTest.CallHandler:LuaScriptsContainerTrace.DeepEventTimerAttributionPreservesDelivery"
     result = subprocess.run([str(executable), f"--gtest_filter={selected}"], cwd=output,
                             env=environment, capture_output=True, text=True, timeout=45)
@@ -44,6 +45,18 @@ def main():
     assert callback["phase"] == "lua.callback" and callback["identity"] == "TraceEvent" and callback["asset"] == ""
     dispatch = by_id[callback["parent"]]
     assert dispatch["phase"] == "lua.event.dispatch" and dispatch["identity"] == "TraceFixture" and dispatch["asset"] == "TraceEvent"
+    assert handlers[0]["link"] == dispatch["span"], "Event handler lost its delivery receipt"
+    dispatch_metrics = {dispatch[f"metric{i}_name"]: int(dispatch[f"metric{i}_value"]) for i in range(1, 5)}
+    assert dispatch_metrics["payload_bytes"] > 0 and dispatch_metrics["handler_count"] == 1
+    assert dispatch_metrics["decode_outcome"] == 1 and dispatch_metrics["invoked_handlers"] == 1
+    for decode in (row for row in rows if row["phase"] == "lua.event.deserialize"
+                   and row["identity"] == "TraceFixture" and row["asset"] == "TraceEvent"):
+        assert decode["link"] == dispatch["span"]
+        values = {decode[f"metric{i}_name"]: int(decode[f"metric{i}_value"]) for i in range(1, 5)}
+        assert values == {"payload_bytes": dispatch_metrics["payload_bytes"], "value_count": 3,
+                          "table_count": 1, "max_depth": 2}, values
+    for shape in (row for row in rows if row["phase"] == "lua.event.payload_shape"):
+        assert shape["link"] in by_id and by_id[shape["link"]]["phase"] == "lua.event.deserialize"
     deliveries = [row for row in rows if row["phase"] == "lua.timer.deliver" and row["asset"] == "trace-delivery.lua"]
     assert len(deliveries) == 2, "Production timers were not individually attributed"
     observed = {}
@@ -57,6 +70,8 @@ def main():
     assert observed == {"simulation": 3_000_000, "game": 10_000_000}, observed
     assert any(row["phase"] == "lua.script.sandbox" for row in rows), "Script startup was not attributed"
     report = {"status": "passed", "production_tests": 5, "capture_complete": True,
+              "event_delivery_links_and_outcomes": True,
+              "fast_decode_supplement": "unavailable_when_not_retained",
               "timer_lateness_us_by_domain": observed,
               "scope": "Production Lua container delivery/load semantics and Deep attribution; no game performance claim"}
     (output / "LUA-CONTAINER-ATTRIBUTION-VALIDATION.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
