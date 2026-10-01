@@ -714,7 +714,8 @@ return { eventHandlers = { TraceEvent = function(event) probe.hit(event.value) e
         });
         const int scriptId = *configuration.findId(path);
         ASSERT_TRUE(scripts.addCustomScript(scriptId));
-        scripts.receiveEvent("TraceEvent", LuaUtil::serialize(lua.unsafeState().create_table_with("value", 1)));
+        scripts.receiveEvent("TraceEvent",
+            LuaUtil::serialize(sol::state_view(lua.unsafeState()).create_table_with("value", 1)));
         ASSERT_EQ(delivered, 1);
         sol::function callback = sol::make_object(lua.unsafeState(), hit);
         scripts.registerTimerCallback(scriptId, "TraceTimer", callback);

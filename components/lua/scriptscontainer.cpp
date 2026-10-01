@@ -857,7 +857,9 @@ namespace LuaUtil
         {
             const Timer& timer = timerQueue.front();
             Debug::HitchTrace::Scope delivery("lua.timer.deliver", Debug::HitchTrace::CpuTiming::WallEnvelope,
-                timer.mSerializable ? std::string_view(std::get<std::string>(timer.mCallback)) : "<unsavable>",
+                Debug::HitchTrace::requested()
+                    ? (timer.mSerializable ? std::string_view(std::get<std::string>(timer.mCallback)) : "<unsavable>")
+                    : std::string_view{},
                 Debug::HitchTrace::requested() ? scriptPath(timer.mScriptId).value() : std::string_view{});
             delivery.setMetric(0, "queue_length", timerQueue.size());
             delivery.setMetric(1, "script_id", timer.mScriptId);
