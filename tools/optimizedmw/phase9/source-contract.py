@@ -169,8 +169,12 @@ def main() -> None:
                   'Test-Phase9TemporalCapture -ProfileDir',
                   'OPENMW_P9_TEMPORAL_OWNERSHIP=$mode.Ownership',
                   'OPENMW_P9_COMPOSITE_PREPARE=$mode.Composite',
-                  'OPENMW_P9_DYNAMIC_MOTION=$mode.DynamicMotion'):
+                  'OPENMW_P9_DYNAMIC_MOTION=$mode.DynamicMotion',
+                  'phase9_detail_revision=3', 'OPENMW_P9_HITCH_CAPACITY',
+                  'New-Phase9SystemTraceLink -GameDir', 'Complete-Phase9SystemTraceLink -Link'):
         need(token in launcher, 'missing actual launcher control/provenance: ' + token)
+    need(launcher.index('Complete-Phase9Profile -ProfileDir') < launcher.index('Complete-Phase9SystemTraceLink -Link'),
+         'bind only final engine ZIP')
     need('$mode.Prewarm' not in launcher and 'OPENMW_P9_STATIC_PREWARM=$mode.Prewarm' not in launcher,
          'rejected prewarm must not be selectable from the shipped launcher')
     need(launcher.index('settings_restore_verified=$restoreVerified') < launcher.index('Complete-Phase9Profile -ProfileDir'),

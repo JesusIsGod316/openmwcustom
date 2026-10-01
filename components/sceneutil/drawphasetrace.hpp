@@ -30,10 +30,12 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
-#include <map>
 #include <algorithm>
 #include <charconv>
 #include <new>
+#include <span>
+#include <string_view>
+#include <initializer_list>
 
 namespace SceneUtil::DrawPhaseTrace
 {
@@ -114,6 +116,14 @@ namespace SceneUtil::DrawPhaseTrace
             }
         }
         void noteResourceUncovered() { mResourceDropped.fetch_add(1,std::memory_order_relaxed); }
+        void noteCatalogCost(std::uint64_t nanoseconds, std::size_t textures, std::size_t uniforms)
+        {
+            mCatalogCalls.fetch_add(1, std::memory_order_relaxed);
+            mCatalogWallNs.fetch_add(nanoseconds, std::memory_order_relaxed);
+            mCatalogTextures.fetch_add(textures, std::memory_order_relaxed);
+            mCatalogUniforms.fetch_add(uniforms, std::memory_order_relaxed);
+        }
+        std::uint64_t catalogCalls() const { return mCatalogCalls.load(std::memory_order_relaxed); }
         std::uint64_t resourceDropped() const { return mResourceDropped.load(std::memory_order_relaxed); }
         std::size_t resourceCapacity() const { return mResourceCapacity; }
         std::size_t resourceCount() const
@@ -273,6 +283,10 @@ namespace SceneUtil::DrawPhaseTrace
                     << "\nresource_catalog_descriptor_bytes=" << mResourceCapacity*sizeof(ResourceRow)
                     << "\nresource_catalog_index_entry_limit=" << mResourceCapacity
                     << "\nresource_catalog_allocation_failures=" << mResourceAllocationFailures.load()
+                    << "\nresource_catalog_calls=" << mCatalogCalls.load()
+                    << "\nresource_catalog_wall_ns=" << mCatalogWallNs.load()
+                    << "\nresource_catalog_effective_texture_observations=" << mCatalogTextures.load()
+                    << "\nresource_catalog_effective_uniform_observations=" << mCatalogUniforms.load()
                     << "\nresource_catalog_dropped_attempts=" << mResourceDropped.load()
                     << "\nresource_catalog_scope=effective_cull_materials_and_terrain_composite_producer_layers"
                     << "\nresource_source_image_scope=first_source_image_per_effective_texture_attribute"
@@ -400,110 +414,209 @@ namespace SceneUtil::DrawPhaseTrace
         std::unordered_map<ResourceKey,std::size_t,ResourceKeyHash> mResourceIndex;
         std::atomic<std::uint64_t> mResourceDropped{0};
         std::atomic<std::uint64_t> mResourceAllocationFailures{0};
+        std::atomic<std::uint64_t> mCatalogCalls{0}, mCatalogWallNs{0}, mCatalogTextures{0}, mCatalogUniforms{0};
     };
 
-    // Called during cull or terrain CPU production, never from render/GL
-    // hooks. Build the effective root-to-leaf attributes and sampler bindings,
-    // including OSG OVERRIDE/PROTECTED semantics, instead of cataloguing every
-    // ancestor texture as though it were the texture used by this submission.
-    inline void catalogStateSets(const std::vector<const osg::StateSet*>& stateSets,
-        unsigned frame,unsigned context,std::uint64_t camera,unsigned scope,Capture::Row* descriptor=nullptr)
+    // Reused storage only, never a revision/pointer cache. Counts are reset for
+    // every submission and all effective values are reread from live StateSets.
+    // Raw references are used only during this serialized call; no ref_ptr copy,
+    // name allocation or retained ownership crosses into another cull.
+    struct CatalogScratch
     {
-        auto& capture=Capture::instance();
-        if(!capture.enabled()) return;
-        struct Binding { const osg::Texture* texture=nullptr;const osg::StateSet* stateSet=nullptr;unsigned flags=0; };
-        std::map<unsigned,Binding> textures;
-        std::map<std::string,osg::StateSet::RefUniformPair> uniforms;
-        constexpr std::size_t MaxBindings=512;
-        for(const auto* stateSet:stateSets)
+        static constexpr std::size_t MaxBindings = 512;
+        struct TextureBinding
         {
-            if(!stateSet) continue;
-            const auto& attributes=stateSet->getTextureAttributeList();
-            for(unsigned unit=0;unit<attributes.size();++unit)
+            unsigned unit;
+            const osg::Texture* texture;
+            const osg::StateSet* stateSet;
+            unsigned flags;
+        };
+        struct UniformBinding
+        {
+            const std::string* name;
+            const osg::Uniform* uniform;
+            unsigned flags;
+        };
+        // Only [0,count) is initialized or read. Insertion initializes every
+        // field before increasing the next lookup range; unused slots need no
+        // per-call zero-fill, including the stack-local convenience path.
+        std::array<TextureBinding, MaxBindings> textures;
+        std::array<UniformBinding, MaxBindings> uniforms;
+        std::size_t textureCount = 0, uniformCount = 0;
+        void reset() { textureCount = uniformCount = 0; }
+    };
+
+    // Wall-only detail scopes remain thresholded. The complete aggregate also
+    // counts short calls, including material-path collection in the cull path.
+    class CatalogDiagnostic
+    {
+    public:
+        explicit CatalogDiagnostic(CatalogScratch& scratch)
+            : mScratch(scratch), mSpan("diagnostic.resource_catalog", Debug::HitchTrace::CpuTiming::None)
+            , mStart(Debug::HitchTrace::Clock::now()) { scratch.reset(); }
+        ~CatalogDiagnostic()
+        {
+            Capture::instance().noteCatalogCost(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                Debug::HitchTrace::Clock::now() - mStart).count(), mScratch.textureCount, mScratch.uniformCount);
+            // Inactive slots may contain old addresses, but cannot be consulted
+            // by the next submission: reset runs before any effective lookup.
+            mScratch.reset();
+        }
+    private:
+        CatalogScratch& mScratch;
+        Debug::HitchTrace::Scope mSpan;
+        Debug::HitchTrace::Clock::time_point mStart;
+    };
+
+    inline void catalogStateSetsImpl(std::span<const osg::StateSet* const> stateSets,
+        unsigned frame, unsigned context, std::uint64_t camera, unsigned scope,
+        Capture::Row* descriptor, CatalogScratch& scratch)
+    {
+        auto& capture = Capture::instance();
+        for (const auto* stateSet : stateSets)
+        {
+            if (!stateSet) continue;
+            const auto& attributes = stateSet->getTextureAttributeList();
+            for (unsigned unit = 0; unit < attributes.size(); ++unit)
             {
-                const auto* pair=stateSet->getTextureAttributePair(unit,osg::StateAttribute::TEXTURE);
-                const auto* texture=pair && pair->first ? pair->first->asTexture() : nullptr;
-                if(!texture) continue;
-                auto existing=textures.find(unit);
-                if(existing!=textures.end() && (existing->second.flags & osg::StateAttribute::OVERRIDE)
+                const auto* pair = stateSet->getTextureAttributePair(unit, osg::StateAttribute::TEXTURE);
+                const auto* texture = pair && pair->first ? pair->first->asTexture() : nullptr;
+                if (!texture) continue;
+                auto end = scratch.textures.begin() + scratch.textureCount;
+                auto at = std::lower_bound(scratch.textures.begin(), end, unit,
+                    [](const auto& binding, unsigned value) { return binding.unit < value; });
+                const bool found = at != end && at->unit == unit;
+                if (found && (at->flags & osg::StateAttribute::OVERRIDE)
                     && !(pair->second & osg::StateAttribute::PROTECTED)) continue;
-                if(existing==textures.end() && textures.size()>=MaxBindings) { capture.noteResourceUncovered();continue; }
-                textures[unit]={texture,stateSet,pair->second};
+                if (!found)
+                {
+                    if (scratch.textureCount == CatalogScratch::MaxBindings)
+                    { capture.noteResourceUncovered(); continue; }
+                    std::move_backward(at, end, end + 1);
+                }
+                *at = {unit, texture, stateSet, pair->second};
+                if (!found) ++scratch.textureCount;
             }
-            for(const auto& [name,pair]:stateSet->getUniformList())
+            for (const auto& [name, pair] : stateSet->getUniformList())
             {
-                auto existing=uniforms.find(name);
-                if(existing!=uniforms.end() && (existing->second.second & osg::StateAttribute::OVERRIDE)
+                auto end = scratch.uniforms.begin() + scratch.uniformCount;
+                auto at = std::lower_bound(scratch.uniforms.begin(), end, std::string_view(name),
+                    [](const auto& binding, std::string_view value) { return std::string_view(*binding.name) < value; });
+                const bool found = at != end && *at->name == name;
+                if (found && (at->flags & osg::StateAttribute::OVERRIDE)
                     && !(pair.second & osg::StateAttribute::PROTECTED)) continue;
-                if(existing==uniforms.end() && uniforms.size()>=MaxBindings) { capture.noteResourceUncovered();continue; }
-                uniforms[name]=pair;
+                if (!found)
+                {
+                    if (scratch.uniformCount == CatalogScratch::MaxBindings)
+                    { capture.noteResourceUncovered(); continue; }
+                    std::move_backward(at, end, end + 1);
+                }
+                *at = {&name, pair.first.get(), pair.second};
+                if (!found) ++scratch.uniformCount;
             }
         }
-        for(const auto& [unit,binding]:textures)
+        for (std::size_t index = 0; index < scratch.textureCount; ++index)
         {
-            const auto* image=binding.texture->getNumImages()>0 ? binding.texture->getImage(0) : nullptr;
+            const auto& binding = scratch.textures[index];
+            const unsigned unit = binding.unit;
+            const auto* image = binding.texture->getNumImages() > 0 ? binding.texture->getImage(0) : nullptr;
             Capture::ResourceRow row;
-            row.firstFrame=row.lastFrame=frame;row.context=context;row.unit=unit;row.scope=scope;
-            row.texture=reinterpret_cast<std::uintptr_t>(binding.texture);
-            row.image=reinterpret_cast<std::uintptr_t>(image);
-            row.imageRevision=image ? image->getModifiedCount() : 0;
-            row.bytes=image ? image->getTotalSizeInBytesIncludingMipmaps() : 0;
-            row.stateSet=reinterpret_cast<std::uintptr_t>(binding.stateSet);row.submitCamera=camera;
-            const std::string& filename=image && !image->getFileName().empty() ? image->getFileName() : binding.texture->getName();
-            std::string role;
-            for(const auto& [name,pair]:uniforms)
+            row.firstFrame = row.lastFrame = frame; row.context = context; row.unit = unit; row.scope = scope;
+            row.texture = reinterpret_cast<std::uintptr_t>(binding.texture);
+            row.image = reinterpret_cast<std::uintptr_t>(image);
+            row.imageRevision = image ? image->getModifiedCount() : 0;
+            row.bytes = image ? image->getTotalSizeInBytesIncludingMipmaps() : 0;
+            row.stateSet = reinterpret_cast<std::uintptr_t>(binding.stateSet); row.submitCamera = camera;
+            const std::string& filename = image && !image->getFileName().empty()
+                ? image->getFileName() : binding.texture->getName();
+            std::size_t roleSize = 0;
+            for (std::size_t i = 0; i < scratch.uniformCount; ++i)
             {
-                if(!pair.first || pair.first->getType()!=osg::Uniform::SAMPLER_2D) continue;
-                if(pair.first->getNumElements()>512) capture.noteResourceUncovered();
-                for(unsigned element=0;element<std::min(512u,pair.first->getNumElements());++element)
+                const auto& uniform = scratch.uniforms[i];
+                const std::string_view name(*uniform.name);
+                if (!uniform.uniform || uniform.uniform->getType() != osg::Uniform::SAMPLER_2D) continue;
+                const auto elements = uniform.uniform->getNumElements();
+                if (elements > 512) capture.noteResourceUncovered();
+                for (unsigned element = 0; element < std::min(512u, elements); ++element)
                 {
-                    int boundUnit=-1;
-                    if(pair.first->getElement(element,boundUnit) && boundUnit>=0 && static_cast<unsigned>(boundUnit)==unit)
+                    int boundUnit = -1;
+                    if (!uniform.uniform->getElement(element, boundUnit) || boundUnit < 0
+                        || static_cast<unsigned>(boundUnit) != unit) continue;
+                    std::array<char, 12> suffix{};
+                    std::size_t suffixSize = 0;
+                    if (elements > 1)
                     {
-                        std::string bindingName=name;
-                        if(pair.first->getNumElements()>1) bindingName+='['+std::to_string(element)+']';
-                        if(role.size()+bindingName.size()+1>=row.semanticRole.size())
-                        { capture.noteResourceUncovered();continue; }
-                        if(!role.empty()) role+='|';
-                        role+=bindingName;
+                        suffix[0] = '[';
+                        const auto number = std::to_chars(suffix.data() + 1, suffix.data() + suffix.size() - 1, element);
+                        *number.ptr = ']'; suffixSize = number.ptr - suffix.data() + 1;
                     }
+                    const auto nameSize = name.size() + suffixSize;
+                    // Preserve the previous truncation/drop rule exactly.
+                    if (roleSize + nameSize + 1 >= row.semanticRole.size())
+                    { capture.noteResourceUncovered(); continue; }
+                    if (roleSize) row.semanticRole[roleSize++] = '|';
+                    std::memcpy(row.semanticRole.data() + roleSize, name.data(), name.size());
+                    roleSize += name.size();
+                    if (suffixSize) std::memcpy(row.semanticRole.data() + roleSize, suffix.data(), suffixSize);
+                    roleSize += suffixSize;
                 }
             }
-            if(role.empty() && scope==2 && unit<=1)
-                role=unit==0 ? "terrain_composite_diffuse" : "terrain_composite_blendmap";
-            if(role.empty()) role="unknown";
-            auto copyText=[](auto& output,const char* value) {
-                std::memcpy(output.data(),value,std::min(std::strlen(value),output.size()-1));
+            auto copyText = [](auto& output, std::string_view value) {
+                std::memcpy(output.data(), value.data(), std::min(value.size(), output.size() - 1));
             };
-            copyText(row.textureClass,binding.texture->className());
-            copyText(row.filename,filename.c_str());copyText(row.semanticRole,role.c_str());
-            if(filename.size()>=row.filename.size()) capture.noteResourceUncovered();
-            if(std::strlen(binding.texture->className())>=row.textureClass.size()) capture.noteResourceUncovered();
-            if(binding.texture->getNumImages()>1) capture.noteResourceUncovered();
-            row.labelHash=1469598103934665603ull;
-            for(const auto* value:std::array<const std::string*,2>{&filename,&role})
+            if (!roleSize)
             {
-                row.labelHash^=value->size();row.labelHash*=1099511628211ull;
-                for(unsigned char character:*value) { row.labelHash^=character;row.labelHash*=1099511628211ull; }
+                const std::string_view fallback = scope == 2 && unit <= 1
+                    ? (unit == 0 ? "terrain_composite_diffuse" : "terrain_composite_blendmap") : "unknown";
+                copyText(row.semanticRole, fallback); roleSize = fallback.size();
             }
-            for(const char* character=binding.texture->className();*character;++character)
-            { row.labelHash^=static_cast<unsigned char>(*character);row.labelHash*=1099511628211ull; }
-            capture.catalogResource(row);
-            if(descriptor)
+            const std::string_view role(row.semanticRole.data(), roleSize);
+            const std::string_view textureClass(binding.texture->className());
+            copyText(row.textureClass, textureClass); copyText(row.filename, filename);
+            if (filename.size() >= row.filename.size()) capture.noteResourceUncovered();
+            if (textureClass.size() >= row.textureClass.size()) capture.noteResourceUncovered();
+            if (binding.texture->getNumImages() > 1) capture.noteResourceUncovered();
+            row.labelHash = 1469598103934665603ull;
+            for (const auto value : {std::string_view(filename), role})
             {
-                if(row.bytes>=descriptor->texture0Bytes)
+                row.labelHash ^= value.size(); row.labelHash *= 1099511628211ull;
+                for (unsigned char character : value) { row.labelHash ^= character; row.labelHash *= 1099511628211ull; }
+            }
+            for (unsigned char character : textureClass) { row.labelHash ^= character; row.labelHash *= 1099511628211ull; }
+            capture.catalogResource(row);
+            if (descriptor)
+            {
+                if (row.bytes >= descriptor->texture0Bytes)
                 {
-                    descriptor->texture1Bytes=descriptor->texture0Bytes;descriptor->texture1=descriptor->texture0;
-                    descriptor->texture0Bytes=row.bytes;descriptor->texture0={};
-                    copyText(descriptor->texture0,filename.c_str());
+                    descriptor->texture1Bytes = descriptor->texture0Bytes; descriptor->texture1 = descriptor->texture0;
+                    descriptor->texture0Bytes = row.bytes; descriptor->texture0 = {};
+                    copyText(descriptor->texture0, filename);
                 }
-                else if(row.bytes>=descriptor->texture1Bytes)
+                else if (row.bytes >= descriptor->texture1Bytes)
                 {
-                    descriptor->texture1Bytes=row.bytes;descriptor->texture1={};
-                    copyText(descriptor->texture1,filename.c_str());
+                    descriptor->texture1Bytes = row.bytes; descriptor->texture1 = {};
+                    copyText(descriptor->texture1, filename);
                 }
             }
         }
+    }
+
+    // Caller-owned scratch makes concurrent cull visitors and nested calls
+    // independent. The convenience path is stack-local; it cannot reuse stale
+    // references across calls or share TLS storage with a recursive producer.
+    inline void catalogStateSets(std::span<const osg::StateSet* const> stateSets,
+        unsigned frame, unsigned context, std::uint64_t camera, unsigned scope, Capture::Row* descriptor = nullptr)
+    {
+        if (!Capture::instance().enabled()) return;
+        CatalogScratch scratch;
+        CatalogDiagnostic diagnostic(scratch);
+        catalogStateSetsImpl(stateSets, frame, context, camera, scope, descriptor, scratch);
+    }
+    inline void catalogStateSets(std::initializer_list<const osg::StateSet*> stateSets,
+        unsigned frame, unsigned context, std::uint64_t camera, unsigned scope, Capture::Row* descriptor = nullptr)
+    {
+        catalogStateSets(std::span<const osg::StateSet* const>(stateSets.begin(), stateSets.size()),
+            frame, context, camera, scope, descriptor);
     }
 
     class Leaf final : public osgUtil::RenderLeaf
@@ -644,16 +757,19 @@ namespace SceneUtil::DrawPhaseTrace
                         (std::min)(name.size(), leaf->submitCameraName.size()-1));
                 }
 
-                std::vector<const osg::StateSet*> materialPath;
-                for(auto* graph=leaf->_parent;graph;graph=graph->_parent)
-                    if(graph->getStateSet()) materialPath.push_back(graph->getStateSet());
-                std::reverse(materialPath.begin(),materialPath.end());
-                const auto* camera=getCurrentCamera();
-                const auto* context=camera ? camera->getGraphicsContext() : nullptr;
-                const auto* stamp=getFrameStamp();
-                catalogStateSets(materialPath,stamp ? stamp->getFrameNumber() : 0,
-                    context && context->getState() ? context->getState()->getContextID() : ~0u,
-                    leaf->submitCamera,1,&leaf->descriptor);
+                {
+                    CatalogDiagnostic catalogDiagnostic(mCatalogScratch);
+                    mMaterialPath.clear();
+                    for(auto* graph=leaf->_parent;graph;graph=graph->_parent)
+                        if(graph->getStateSet()) mMaterialPath.push_back(graph->getStateSet());
+                    std::reverse(mMaterialPath.begin(),mMaterialPath.end());
+                    const auto* camera=getCurrentCamera();
+                    const auto* context=camera ? camera->getGraphicsContext() : nullptr;
+                    const auto* stamp=getFrameStamp();
+                    catalogStateSetsImpl(mMaterialPath,stamp ? stamp->getFrameNumber() : 0,
+                        context && context->getState() ? context->getState()->getContextID() : ~0u,
+                        leaf->submitCamera,1,&leaf->descriptor,mCatalogScratch);
+                }
 
                 const auto& path = getNodePath();
                 for (osg::Node* node : path)
@@ -693,6 +809,8 @@ namespace SceneUtil::DrawPhaseTrace
     private:
         static constexpr unsigned PoolSize = 8192;
         bool mInstrumented = false;
+        CatalogScratch mCatalogScratch;
+        std::vector<const osg::StateSet*> mMaterialPath;
     };
 
     class SubmissionScope

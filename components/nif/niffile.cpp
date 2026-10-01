@@ -1,6 +1,7 @@
 #include "niffile.hpp"
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/hitchtrace.hpp>
 #include <components/files/hash.hpp>
 
 #include <algorithm>
@@ -538,6 +539,7 @@ namespace Nif
 
     void Reader::parse(Files::IStreamPtr&& stream)
     {
+        Debug::HitchTrace::Scope hitchParse("asset.nif_parse", Debug::HitchTrace::CpuTiming::Scoped, {}, mFilename);
         const bool writeDebug = sWriteNifDebugLog;
         if (writeDebug)
             Log(Debug::Verbose) << "NIF Debug: Reading file: '" << mFilename << "'";

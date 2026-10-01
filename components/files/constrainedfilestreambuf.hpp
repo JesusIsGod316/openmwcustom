@@ -2,6 +2,7 @@
 #define OPENMW_CONSTRAINEDFILESTREAMBUF_H
 
 #include <filesystem>
+#include <memory>
 #include <streambuf>
 
 #include <components/platform/file.hpp>
@@ -13,6 +14,7 @@ namespace Files
     {
     public:
         ConstrainedFileStreamBuf(const std::filesystem::path& fname, std::size_t start, std::size_t length);
+        ~ConstrainedFileStreamBuf() override;
 
         int_type underflow() final;
 
@@ -25,6 +27,9 @@ namespace Files
         std::size_t mSize;
         Platform::File::ScopedHandle mFile;
         char mBuffer[8192]{ 0 };
+        struct TraceState;
+        // Identity/counters exist only in a requested diagnostic capture.
+        std::unique_ptr<TraceState> mTrace;
     };
 }
 

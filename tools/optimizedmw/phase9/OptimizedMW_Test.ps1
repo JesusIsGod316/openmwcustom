@@ -7,6 +7,7 @@ $SettingsPath = Join-Path $UserOpenMW 'settings.cfg'
 $OpenmwCfgPath = Join-Path $UserOpenMW 'openmw.cfg'
 . (Join-Path $GameDir 'OptimizedMW_ProfileArchive.ps1')
 . (Join-Path $GameDir 'OptimizedMW_HitchReport.ps1')
+. (Join-Path $GameDir 'OptimizedMW_SystemTraceLink.ps1')
 $ProfilesRoot = Join-Path $UserOpenMW 'OptimizedMW-Phase9-Profiles'
 
 if (-not (Test-Path -LiteralPath $Exe)) { Write-Host 'ERROR: Put this launcher beside openmw.exe.' -ForegroundColor Red; Read-Host 'Press Enter to close'; exit 1 }
@@ -277,7 +278,9 @@ try{
         "phase9_temporal_contract=consumer_frame_v2_ownership",
         "phase9_capture_transport=bounded_mpsc_v1",
         "phase9_resource_capacity=131072",
-        "phase9_detail_revision=2",
+        "phase9_detail_revision=3",
+        "phase9_hitch_capacity=524288",
+        "phase9_hitch_schema=2",
         "phase9_dlss_ready_requires_dense_dynamic_motion=true",
         "phase9_gl_vulkan_interop_probe=$($mode.Temporal)",
         "phase9_culling=retained_existing_cell_paged_and_groundcover_hierarchy_no_new_visibility_policy",
@@ -388,6 +391,7 @@ try{
         $env:OPENMW_P9_DLSS_CAPS_FILE=Join-Path $ProfileDir 'p9-dlss-capabilities.csv'
     }
     if($mode.Trace -eq '1'){
+        $env:OPENMW_P9_HITCH_CAPACITY='524288'
         $env:OPENMW_P9_HITCH_SPANS_FILE=Join-Path $ProfileDir 'p9-hitch-spans.csv'
         $env:OPENMW_V3_INSERT_FILE=Join-Path $ProfileDir 'v3-insertion.csv'
         $env:OPENMW_V32_RENDER_INSERT_FILE=Join-Path $ProfileDir 'v32-render-insertion.csv'
@@ -418,7 +422,11 @@ try{
     [void]$memoryLines.Add('epoch_ms,elapsed_s,working_set_mb,private_mb,virtual_mb,cpu_total_s')
     $memoryDropped=0
     $start=[DateTimeOffset]::UtcNow
+    $systemTraceLink=New-Phase9SystemTraceLink -GameDir $GameDir -ProfileDir $ProfileDir -Executable $Exe -ExecutableSha256 $exeHash
     $process=Start-Process -FilePath $Exe -WorkingDirectory $GameDir -PassThru
+    $gameProcessId=$process.Id
+    $gameCreationUtc=$process.StartTime.ToUniversalTime().ToString('o')
+    @("game_process_id=$gameProcessId","game_creation_utc=$gameCreationUtc") | Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
     while(-not $process.HasExited){
         try{
             $process.Refresh()
@@ -480,6 +488,7 @@ try{
     $writerStatus=Test-Phase9WriterCapture -ProfileDir $ProfileDir
     $hitchStatus=Test-Phase9HitchCapture -ProfileDir $ProfileDir
     $zip=Complete-Phase9Profile -ProfileDir $ProfileDir -GameDir $GameDir
+    if($systemTraceLink){$null=Complete-Phase9SystemTraceLink -Link $systemTraceLink -ProfileZip $zip.Path -GameProcessId $gameProcessId -GameCreationUtc $gameCreationUtc}
     Write-Host ''
     if($restoreVerified){Write-Host 'Your normal settings have been restored.' -ForegroundColor Green}
     Write-Host "Upload this verified ZIP: $($zip.Path)" -ForegroundColor Cyan

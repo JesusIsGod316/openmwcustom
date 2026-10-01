@@ -3,7 +3,8 @@ param(
     [string]$DependencyDirectory = "$env:TEMP\openmw-fullbody-combat-deps\vcpkg",
     [ValidateSet('Configure', 'Build', 'Test', 'Install')][string]$Stage = 'Configure',
     [string]$InstallDirectory = "$env:TEMP\OptimizedMW-Phase9-Audited",
-    [int]$Jobs = 6
+    [int]$Jobs = 6,
+    [switch]$IncludeSymbols
 )
 $ErrorActionPreference = 'Stop'
 $sourceDirectory = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
@@ -68,7 +69,11 @@ if ($Stage -eq 'Configure') {
         -not (Get-Content -Raw -LiteralPath $versionSource).Contains($revision)) {
         throw 'Reconfigure and build the game at the final commit before installation'
     }
-    & $cmake --install $BuildDirectory --prefix $InstallDirectory --config RelWithDebInfo
+    # Single-config binaries remain RelWithDebInfo. Release selects the same
+    # runtime files while omitting multi-GB optional PDB copies. Matching
+    # symbols stay in BuildDirectory unless explicitly requested.
+    $installConfiguration = if ($IncludeSymbols) {'RelWithDebInfo'} else {'Release'}
+    & $cmake --install $BuildDirectory --prefix $InstallDirectory --config $installConfiguration
     if ($LASTEXITCODE -ne 0) { throw "Runtime installation failed with exit code $LASTEXITCODE" }
     # Prefix-only discovery deliberately avoids vcpkg's app-local deployment.
     # Copy the matching pinned release DLLs and OSG image plugins explicitly.

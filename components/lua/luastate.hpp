@@ -8,6 +8,7 @@
 #include <sol/sol.hpp>
 
 #include <components/vfs/pathutil.hpp>
+#include <components/debug/hitchtrace.hpp>
 
 #include "configuration.hpp"
 #include "luastateptr.hpp"
@@ -202,6 +203,14 @@ namespace LuaUtil
         void setInstructionProfilerEnabled(bool enabled);
         bool isInstructionProfilerEnabled() const { return mInstructionProfilerEnabled; }
 
+        struct DiagnosticAllocations
+        {
+            std::uint64_t calls = 0, growthBytes = 0, shrinkBytes = 0, failures = 0;
+        };
+        // Read only by the current Lua owner. These are logical allocator
+        // requests, not OS allocation sizes or per-script retained memory.
+        DiagnosticAllocations diagnosticAllocations() const { return mDiagnosticAllocations; }
+
         static sol::protected_function_result throwIfError(sol::protected_function_result&&);
 
     private:
@@ -224,6 +233,7 @@ namespace LuaUtil
         };
 
         const LuaStateSettings mSettings;
+        DiagnosticAllocations mDiagnosticAllocations;
 
         // Needed to track resource usage per script, must be initialized before mLuaHolder.
         std::vector<ScriptId> mActiveScriptIdStack;
@@ -276,29 +286,46 @@ namespace LuaUtil
     template <typename... Args>
     sol::protected_function_result call(ScriptId scriptId, const sol::protected_function& fn, Args&&... args)
     {
+        Debug::HitchTrace::Scope diagnosticCall("lua.call", Debug::HitchTrace::CpuTiming::None);
         LuaState* luaState = nullptr;
-        if (LuaState::sProfilerEnabled && scriptId.mContainer)
+        if (LuaState::sProfilerEnabled && (scriptId.mContainer || Debug::HitchTrace::requested()))
         {
             (void)lua_getallocf(fn.lua_state(), reinterpret_cast<void**>(&luaState));
-            luaState->mActiveScriptIdStack.push_back(scriptId);
-            luaState->mWatchdogInstructionCounter = 0;
+            if (scriptId.mContainer)
+            {
+                luaState->mActiveScriptIdStack.push_back(scriptId);
+                luaState->mWatchdogInstructionCounter = 0;
+            }
         }
+        const bool diagnostic = Debug::HitchTrace::requested() && luaState;
+        const auto before = diagnostic ? luaState->diagnosticAllocations() : LuaState::DiagnosticAllocations{};
+        auto finishDiagnostic = [&] {
+            if (!diagnostic) return;
+            const auto after = luaState->diagnosticAllocations();
+            diagnosticCall.setMetric(0, "alloc_calls", after.calls - before.calls);
+            diagnosticCall.setMetric(1, "alloc_growth_bytes", after.growthBytes - before.growthBytes);
+            diagnosticCall.setMetric(2, "alloc_shrink_bytes", after.shrinkBytes - before.shrinkBytes);
+            diagnosticCall.setMetric(3, "alloc_failures", after.failures - before.failures);
+        };
         try
         {
             auto res = LuaState::throwIfError(fn(std::forward<Args>(args)...));
-            if (luaState)
+            finishDiagnostic();
+            if (luaState && scriptId.mContainer)
                 luaState->mActiveScriptIdStack.pop_back();
             return res;
         }
         catch (std::exception&)
         {
-            if (luaState)
+            finishDiagnostic();
+            if (luaState && scriptId.mContainer)
                 luaState->mActiveScriptIdStack.pop_back();
             throw;
         }
         catch (...)
         {
-            if (luaState)
+            finishDiagnostic();
+            if (luaState && scriptId.mContainer)
                 luaState->mActiveScriptIdStack.pop_back();
             throw std::runtime_error("Unknown error");
         }

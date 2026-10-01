@@ -105,6 +105,8 @@ namespace LuaUtil
     void* LuaState::trackingAllocator(void* ud, void* ptr, size_t osize, size_t nsize)
     {
         LuaState* self = static_cast<LuaState*>(ud);
+        const bool diagnostic = Debug::HitchTrace::requested();
+        if (diagnostic) ++self->mDiagnosticAllocations.calls;
         const uint64_t smallAllocSize = self->mSettings.mSmallAllocMaxSize;
         const uint64_t memoryLimit = self->mSettings.mMemoryLimit;
 
@@ -122,6 +124,7 @@ namespace LuaUtil
 
         if (bigAllocDelta > 0 && memoryLimit > 0 && self->mTotalMemoryUsage + nsize - osize > memoryLimit)
         {
+            if (diagnostic) ++self->mDiagnosticAllocations.failures;
             Log(Debug::Error) << "Lua realloc " << osize << "->" << nsize
                               << " is blocked because Lua memory limit (configurable in settings.cfg) is exceeded";
             return nullptr;
@@ -135,11 +138,17 @@ namespace LuaUtil
             newPtr = realloc(ptr, nsize);
             if (!newPtr)
             {
+                if (diagnostic) ++self->mDiagnosticAllocations.failures;
                 Log(Debug::Error) << "Lua realloc " << osize << "->" << nsize << " failed";
                 return nullptr;
             }
         }
         self->mTotalMemoryUsage += smallAllocDelta + bigAllocDelta;
+        if (diagnostic)
+        {
+            if (nsize >= osize) self->mDiagnosticAllocations.growthBytes += nsize - osize;
+            else self->mDiagnosticAllocations.shrinkBytes += osize - nsize;
+        }
         self->mSmallAllocMemoryUsage += smallAllocDelta;
 
         if (bigAllocDelta != 0)
@@ -600,7 +609,9 @@ namespace LuaUtil
 
     sol::function LuaState::loadScriptAndCache(const VFS::Path::Normalized& path)
     {
+        Debug::HitchTrace::Scope cached("lua.chunk_cache", {}, path.value());
         auto iter = mCompiledScripts.find(path);
+        cached.setMetric(0, "cache_hit", iter != mCompiledScripts.end());
         if (iter != mCompiledScripts.end())
         {
             sol::load_result res = mSol.load(iter->second.as_string_view(), path.value(), sol::load_mode::binary);
@@ -617,7 +628,9 @@ namespace LuaUtil
 
     sol::function LuaState::loadFromVFS(const VFS::Path::Normalized& path)
     {
+        Debug::HitchTrace::Scope load("lua.source_read_compile", {}, path.value());
         std::string fileContent(std::istreambuf_iterator<char>(*mVFS->get(path)), {});
+        load.setMetric(0, "source_bytes", fileContent.size());
         sol::load_result res = mSol.load(fileContent, path.value(), sol::load_mode::text);
         if (!res.valid())
             throw std::runtime_error(std::string("Lua error: ") += res.get<sol::error>().what());

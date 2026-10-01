@@ -39,6 +39,21 @@ add_test(NAME p9-hitch-trace COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/verify-hitch-trace.py $<TARGET_FILE:p9-hitch-trace>
   ${CMAKE_CURRENT_BINARY_DIR}/hitch-trace-fixture)
 set_tests_properties(p9-hitch-trace PROPERTIES TIMEOUT 45)
+add_executable(p9-loading-attribution loading-attribution-tests.cpp
+  ${ROOT}/components/files/hash.cpp ${ROOT}/components/files/constrainedfilestreambuf.cpp
+  ${ROOT}/components/files/conversion.cpp ${ROOT}/extern/smhasher/MurmurHash3.cpp)
+if(WIN32)
+  target_sources(p9-loading-attribution PRIVATE ${ROOT}/components/platform/filewin32.cpp)
+else()
+  target_sources(p9-loading-attribution PRIVATE ${ROOT}/components/platform/fileposix.cpp)
+endif()
+target_include_directories(p9-loading-attribution PRIVATE
+  ${ROOT}/extern/smhasher/include ${ROOT}/extern/smhasher/include/smhasher)
+target_link_libraries(p9-loading-attribution PRIVATE Threads::Threads)
+add_test(NAME p9-loading-attribution COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/verify-loading-attribution.py $<TARGET_FILE:p9-loading-attribution>
+  ${CMAKE_CURRENT_BINARY_DIR}/loading-attribution-fixture)
+set_tests_properties(p9-loading-attribution PROPERTIES TIMEOUT 45)
 add_executable(p9-capture-transport capture-transport-tests.cpp)
 target_link_libraries(p9-capture-transport PRIVATE Threads::Threads)
 add_test(NAME p9-capture-transport COMMAND p9-capture-transport

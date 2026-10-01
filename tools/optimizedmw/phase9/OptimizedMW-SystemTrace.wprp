@@ -30,5 +30,11 @@
         <EventCollectorId Value="EventCollector"><EventProviders><EventProviderId Value="DxgKrnl" /></EventProviders></EventCollectorId>
       </Collectors>
     </Profile>
+    <Profile Id="OptimizedMW.Verbose.File" Name="OptimizedMW" Description="Full-run scheduling, IO and GPU events; sequential file recording" LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="SystemCollector"><SystemProviderId Value="SystemProvider" /></SystemCollectorId>
+        <EventCollectorId Value="EventCollector"><EventProviders><EventProviderId Value="DxgKrnl" /></EventProviders></EventCollectorId>
+      </Collectors>
+    </Profile>
   </Profiles>
 </WindowsPerformanceRecorder>

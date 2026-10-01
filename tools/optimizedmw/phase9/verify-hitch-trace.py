@@ -1,5 +1,6 @@
 import csv
 import io
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -36,8 +37,18 @@ for mode in ('normal', 'overflow'):
     assert any(r['phase'] == 'exception' and r['parent'] == '0' for r in rows)
     assert any(r['identity'] == 'identity,with"quote' for r in rows)
     assert any(r['phase'] == 'truncated' and r['identity_truncated'] == '1' for r in rows)
-    assert all(float(r['thread_cpu_ms']) >= 0 for r in rows if r['parent'] == '0')
+    assert all(float(r['thread_cpu_ms']) >= 0 for r in rows
+               if r['parent'] == '0' and r['phase'] not in ('request', 'dependency'))
     assert all(float(r['thread_cpu_ms']) >= 0 for r in rows if r['phase'] == 'child')
+    legacy = next(r for r in rows if r['phase'] == 'asset_argument')
+    assert legacy['asset'] == 'legacy-asset.nif' and legacy['identity'] == ''
+    request = next(r for r in rows if r['phase'] == 'request')
+    dependency = next(r for r in rows if r['phase'] == 'dependency')
+    assert dependency['link'] == request['span'] and dependency['parent'] == '0'
+    assert dependency['thread'] != request['thread']
+    assert request['metric1_name'] == 'requested_bytes' and request['metric1_value'] == '8192'
+    assert dependency['metric1_name'] == 'returned_bytes' and dependency['metric1_value'] == '4096'
+    assert request['thread_cpu_ms'] == dependency['thread_cpu_ms'] == '-1.000000'
     clock = dict(line.split('=', 1) for line in Path(str(path) + '.clock-map.txt').read_text().splitlines())
     assert clock['normal_finish'] == '1'
     if sys.platform == 'win32':
@@ -46,4 +57,10 @@ for mode in ('normal', 'overflow'):
         for prefix in ('start_', 'end_'):
             assert int(clock[prefix+'qpc_before']) <= int(clock[prefix+'qpc_after'])
         assert int(clock['start_steady_ns']) <= int(rows[0]['start_ns']) <= int(clock['end_steady_ns'])
+for configured, expected in [('131072', '131072'), ('524288', '524288'), ('999999999', '262144'), ('524288junk', '262144')]:
+    path = Path(output + '-capacity-' + configured + '.csv')
+    env = os.environ.copy(); env['OPENMW_P9_HITCH_CAPACITY'] = configured
+    subprocess.run([exe, str(path), 'normal'], check=True, env=env)
+    status = dict(line.split('=', 1) for line in Path(str(path) + '.capture-status.txt').read_text().splitlines())
+    assert status['capacity'] == expected and status['dropped'] == '0'
 print('PASS nested spans, same-thread parents, exceptions, concurrent producers, CPU roots, CSV identity, truncation and overflow')

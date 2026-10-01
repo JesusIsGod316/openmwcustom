@@ -13,6 +13,7 @@
 #include <osg/Stats>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/hitchtrace.hpp>
 #include <components/debug/gameplaydiagnostics.hpp>
 #include <components/esm3/loadcell.hpp>
 #include <components/loadinglistener/reporter.hpp>
@@ -264,7 +265,7 @@ namespace MWWorld
     public:
         explicit TerrainPreloadItem(const std::vector<osg::ref_ptr<Terrain::View>>& views, Terrain::World* world,
             Resource::ResourceSystem* resourceSystem, std::span<const PositionCellGrid> preloadPositions,
-            bool cancellableOptimization = false, bool readinessSplit = false)
+            bool cancellableOptimization = false, bool readinessSplit = false, std::uint64_t hitchJob = 0)
             : mAbort(false)
             , mCancellableOptimization(cancellableOptimization)
             , mReadinessSplit(cancellableOptimization && readinessSplit)
@@ -272,6 +273,7 @@ namespace MWWorld
             , mWorld(world)
             , mResourceSystem(resourceSystem)
             , mPreloadPositions(preloadPositions.begin(), preloadPositions.end())
+            , mHitchJob(hitchJob)
         {
             if (Debug::GameplayDiagnostics::enabled() || Debug::RuntimeDiagnostics::enabled())
                 mQueued = Debug::GameplayDiagnostics::Clock::now();
@@ -279,6 +281,11 @@ namespace MWWorld
 
         void doWork() override
         {
+            Debug::HitchTrace::Scope hitchWork("terrain.job_work", Debug::HitchTrace::CpuTiming::Scoped);
+            hitchWork.retain();
+            hitchWork.setLink(mHitchJob);
+            hitchWork.setMetric(0, "targets", mPreloadPositions.size());
+            hitchWork.setMetric(1, "readiness_split", mReadinessSplit);
             const bool measure = Debug::GameplayDiagnostics::enabled() || Debug::RuntimeDiagnostics::enabled();
             const auto start = measure ? Debug::GameplayDiagnostics::Clock::now()
                                        : Debug::GameplayDiagnostics::Clock::time_point{};
@@ -287,6 +294,10 @@ namespace MWWorld
             const auto prepare = [&](Loading::Reporter& reporter) {
                 for (unsigned int i = 0; i < mTerrainViews.size() && i < mPreloadPositions.size() && !mAbort; ++i)
                 {
+                    Debug::HitchTrace::Scope hitchView("terrain.view_prepare", Debug::HitchTrace::CpuTiming::Scoped);
+                    hitchView.setLink(mHitchJob);
+                    hitchView.setMetric(0, "target_index", i);
+                    hitchView.setMetric(1, "required_phase", mReadinessSplit);
                     SceneUtil::PagingWorkScope::checkpoint();
                     mTerrainViews[i]->reset();
                     mWorld->preload(mTerrainViews[i], mPreloadPositions[i].mPosition, mPreloadPositions[i].mCellBounds,
@@ -299,6 +310,8 @@ namespace MWWorld
                 const auto readyStart = Debug::GameplayDiagnostics::Clock::now();
                 try
                 {
+                    Debug::HitchTrace::Scope hitchRequired("terrain.required_prepare", Debug::HitchTrace::CpuTiming::Scoped);
+                    hitchRequired.setLink(mHitchJob);
                     SceneUtil::PagingWorkScope scope(
                         &mAbort, SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
                     prepare(mRequiredReporter);
@@ -319,10 +332,20 @@ namespace MWWorld
                 // Publish only the required phase to syncTerrainLoad. The work
                 // item deliberately remains alive while the stronger V3.13
                 // cache upgrade continues on the worker.
-                mRequiredReporter.complete();
+                {
+                    Debug::HitchTrace::Scope publication("terrain.required_reporter_complete");
+                    publication.retain();
+                    publication.setLink(mHitchJob);
+                    publication.setMetric(0, "succeeded", mSucceeded.load(std::memory_order_acquire));
+                    publication.setMetric(1, "aborted", mAbort.load());
+                    publication.setMetric(2, "failed", bool(mRequiredFailure));
+                    mRequiredReporter.complete();
+                }
 
                 if (mSucceeded.load(std::memory_order_acquire) && !mAbort.load(std::memory_order_relaxed))
                 {
+                    Debug::HitchTrace::Scope hitchOptional("terrain.optional_prepare", Debug::HitchTrace::CpuTiming::Scoped);
+                    hitchOptional.setLink(mHitchJob);
                     Loading::Reporter optimizationReporter;
                     const auto optionalStart = Debug::GameplayDiagnostics::Clock::now();
                     Resource::SpeculativeBudget* budget = mResourceSystem->speculativeBudget();
@@ -404,6 +427,8 @@ namespace MWWorld
             }
             else if (mCancellableOptimization)
             {
+                Debug::HitchTrace::Scope hitchRequired("terrain.required_prepare", Debug::HitchTrace::CpuTiming::Scoped);
+                hitchRequired.setLink(mHitchJob);
                 SceneUtil::PagingWorkScope scope(&mAbort);
                 try
                 {
@@ -420,12 +445,14 @@ namespace MWWorld
                     // the waiting main thread instead of terminating a worker.
                     mRequiredFailure = std::current_exception();
                 }
-                mLoadingReporter.complete();
+                completeLoadingReporter();
             }
             else
             {
+                Debug::HitchTrace::Scope hitchRequired("terrain.required_prepare", Debug::HitchTrace::CpuTiming::Scoped);
+                hitchRequired.setLink(mHitchJob);
                 prepare(mLoadingReporter);
-                mLoadingReporter.complete();
+                completeLoadingReporter();
             }
 
             if (measure)
@@ -444,7 +471,28 @@ namespace MWWorld
                     {"readiness_split", mReadinessSplit} });
         }
 
-        void abort() override { mAbort = true; }
+        void abort() override
+        {
+            Debug::HitchTrace::Scope cancellation("terrain.cancel_request");
+            cancellation.retain();
+            cancellation.setLink(mHitchJob);
+            cancellation.setMetric(0, "already_aborted", mAbort.load());
+            cancellation.setMetric(1, "required_ready", readinessComplete());
+            mAbort = true;
+        }
+        std::uint64_t hitchJob() const noexcept { return mHitchJob; }
+        void traceLoadedPublication(std::size_t targets) noexcept
+        {
+            // The legacy update path refreshes its cache timestamp repeatedly.
+            // Record the first visibility publication once per stable job ID.
+            if (!mHitchJob || mHitchLoadedPublication) return;
+            mHitchLoadedPublication = true;
+            Debug::HitchTrace::Scope publication("terrain.loaded_positions_publish");
+            publication.retain();
+            publication.setLink(mHitchJob);
+            publication.setMetric(0, "targets", targets);
+            publication.setMetric(1, "readiness_split", mReadinessSplit);
+        }
         bool succeeded() const noexcept
         { return !mCancellableOptimization || mSucceeded.load(std::memory_order_acquire); }
         bool readinessSplit() const noexcept { return mReadinessSplit; }
@@ -457,6 +505,11 @@ namespace MWWorld
 
         void wait(Loading::Listener& listener)
         {
+            Debug::HitchTrace::Scope hitchWait("terrain.required_wait", Debug::HitchTrace::CpuTiming::Scoped);
+            hitchWait.retain();
+            hitchWait.setLink(mHitchJob);
+            hitchWait.setMetric(0, "readiness_split", mReadinessSplit);
+            hitchWait.setMetric(1, "done_at_entry", isDone());
             Debug::RuntimeDiagnostics::Operation runtimeOperation("required_terrain_wait");
             if (Debug::RuntimeDiagnostics::enabled())
                 Debug::RuntimeDiagnostics::recordEvent("wait_dependency", "required_terrain_wait", {},
@@ -466,7 +519,11 @@ namespace MWWorld
 
             if (mReadinessSplit)
             {
-                mRequiredReporter.wait(listener);
+                {
+                    Debug::HitchTrace::Scope reporterWait("terrain.required_reporter_wait", Debug::HitchTrace::CpuTiming::Scoped);
+                    reporterWait.setLink(mHitchJob);
+                    mRequiredReporter.wait(listener);
+                }
                 // Required-phase state is immutable after reporter completion.
                 // Do not join the optional strong-upgrade tail.
                 if (mRequiredFailure) std::rethrow_exception(mRequiredFailure);
@@ -475,11 +532,19 @@ namespace MWWorld
             }
             else
             {
-                mLoadingReporter.wait(listener);
+                {
+                    Debug::HitchTrace::Scope reporterWait("terrain.loading_reporter_wait", Debug::HitchTrace::CpuTiming::Scoped);
+                    reporterWait.setLink(mHitchJob);
+                    mLoadingReporter.wait(listener);
+                }
                 if (mCancellableOptimization)
                 {
                     // Reporter completion precedes WorkQueue::signalDone.
-                    waitTillDone();
+                    {
+                        Debug::HitchTrace::Scope jobJoin("terrain.worker_completion_wait", Debug::HitchTrace::CpuTiming::Scoped);
+                        jobJoin.setLink(mHitchJob);
+                        waitTillDone();
+                    }
                     if (mRequiredFailure) std::rethrow_exception(mRequiredFailure);
                     if (!succeeded())
                         throw std::runtime_error("Required terrain preparation was cancelled; no partial view published");
@@ -500,6 +565,17 @@ namespace MWWorld
         }
 
     private:
+        void completeLoadingReporter()
+        {
+            Debug::HitchTrace::Scope publication("terrain.loading_reporter_complete");
+            publication.retain();
+            publication.setLink(mHitchJob);
+            publication.setMetric(0, "publish_eligible", succeeded());
+            publication.setMetric(1, "aborted", mAbort.load());
+            publication.setMetric(2, "failed", bool(mRequiredFailure));
+            mLoadingReporter.complete();
+        }
+
         std::atomic<bool> mAbort;
         const bool mCancellableOptimization;
         const bool mReadinessSplit;
@@ -510,6 +586,8 @@ namespace MWWorld
         Terrain::World* mWorld;
         Resource::ResourceSystem* mResourceSystem;
         std::vector<PositionCellGrid> mPreloadPositions;
+        const std::uint64_t mHitchJob;
+        bool mHitchLoadedPublication = false;
         Loading::Reporter mLoadingReporter;
         Loading::Reporter mRequiredReporter;
         Debug::GameplayDiagnostics::Clock::time_point mQueued{};
@@ -839,6 +917,7 @@ namespace MWWorld
 
         if (mTerrainPreloadItem && mTerrainPreloadItem->takeReadinessPublication())
         {
+            mTerrainPreloadItem->traceLoadedPublication(mTerrainPreloadPositions.size());
             mLoadedTerrainPositions = mTerrainPreloadPositions;
             mLoadedTerrainTimestamp = timestamp;
         }
@@ -847,6 +926,7 @@ namespace MWWorld
         {
             if (!mTerrainPreloadItem->readinessSplit())
             {
+                mTerrainPreloadItem->traceLoadedPublication(mTerrainPreloadPositions.size());
                 mLoadedTerrainPositions = mTerrainPreloadPositions;
                 mLoadedTerrainTimestamp = timestamp;
             }
@@ -901,6 +981,8 @@ namespace MWWorld
 
     void CellPreloader::syncTerrainLoad(Loading::Listener& listener)
     {
+        Debug::HitchTrace::Scope hitchSync("terrain.sync_load", Debug::HitchTrace::CpuTiming::Scoped);
+        hitchSync.setLink(mTerrainPreloadItem ? mTerrainPreloadItem->hitchJob() : 0);
         if (mTerrainPreloadItem != nullptr
             && (mPagingReadinessSplit || mCancellablePagingOptimization || !mTerrainPreloadItem->isDone()))
             mTerrainPreloadItem->wait(listener);
@@ -908,11 +990,15 @@ namespace MWWorld
 
     void CellPreloader::abortTerrainPreloadExcept(const PositionCellGrid* exceptPos)
     {
+        Debug::HitchTrace::Scope hitchAbort("terrain.abort_except", Debug::HitchTrace::CpuTiming::Scoped);
+        hitchAbort.setLink(mTerrainPreloadItem ? mTerrainPreloadItem->hitchJob() : 0);
         if (exceptPos != nullptr && contains(mTerrainPreloadPositions, *exceptPos, Constants::CellSizeInUnits))
             return;
         if (mTerrainPreloadItem && !mTerrainPreloadItem->isDone())
         {
             mTerrainPreloadItem->abort();
+            Debug::HitchTrace::Scope jobJoin("terrain.cancel_join", Debug::HitchTrace::CpuTiming::Scoped);
+            jobJoin.setLink(mTerrainPreloadItem->hitchJob());
             mTerrainPreloadItem->waitTillDone();
         }
         setTerrainPreloadPositions({});
@@ -920,6 +1006,10 @@ namespace MWWorld
 
     void CellPreloader::setTerrainPreloadPositions(std::span<const PositionCellGrid> positions)
     {
+        Debug::HitchTrace::Scope request("terrain.request");
+        request.setLink(mTerrainPreloadItem ? mTerrainPreloadItem->hitchJob() : 0);
+        request.setMetric(0, "targets", positions.size());
+        request.setMetric(1, "legacy_terrain", mUseLegacyTerrain);
         if (!mUseLegacyTerrain) return;
         const bool v311RollingExactActive
             = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode) > 0;
@@ -957,6 +1047,8 @@ namespace MWWorld
                 ++mV311TerrainTargetReplaced;
 
             mV311PendingTerrainPreloadPositions.assign(positions.begin(), positions.end());
+            request.retain();
+            request.setMetric(2, "pending_replacement", 1);
             if (mPagingReadinessSplit && mTerrainPreloadItem->readinessComplete())
                 mTerrainPreloadItem->abort();
             return;
@@ -974,9 +1066,33 @@ namespace MWWorld
             mTerrainPreloadPositions.assign(positions.begin(), positions.end());
             if (!positions.empty())
             {
+                request.retain();
+                Debug::HitchTrace::Scope create("terrain.job_create");
+                create.retain();
+                create.setLink(request.id());
+                create.setMetric(0, "targets", positions.size());
+                if (create.id())
+                    for (std::size_t i = 0; i < positions.size(); ++i)
+                    {
+                        const auto& p = positions[i];
+                        const std::string target = "grid=" + std::to_string(p.mCellBounds.x()) + ","
+                            + std::to_string(p.mCellBounds.y()) + "," + std::to_string(p.mCellBounds.z()) + ","
+                            + std::to_string(p.mCellBounds.w()) + ";position=" + std::to_string(p.mPosition.x())
+                            + "," + std::to_string(p.mPosition.y()) + "," + std::to_string(p.mPosition.z());
+                        Debug::HitchTrace::Scope targetRow("terrain.target", target,
+                            mTerrain->getWorldspace().toString());
+                        targetRow.retain();
+                        targetRow.setLink(create.id());
+                        targetRow.setMetric(0, "target_index", i);
+                    }
                 mTerrainPreloadItem = new TerrainPreloadItem(mTerrainViews, mTerrain, mResourceSystem,
-                    positions, mCancellablePagingOptimization, mPagingReadinessSplit);
-                mWorkQueue->addWorkItem(mTerrainPreloadItem);
+                    positions, mCancellablePagingOptimization, mPagingReadinessSplit, create.id());
+                {
+                    Debug::HitchTrace::Scope queue("terrain.job_enqueue");
+                    queue.retain();
+                    queue.setLink(create.id());
+                    mWorkQueue->addWorkItem(mTerrainPreloadItem);
+                }
             }
         }
     }
@@ -1001,7 +1117,11 @@ namespace MWWorld
         if (mTerrainPreloadItem)
         {
             mTerrainPreloadItem->abort();
-            mTerrainPreloadItem->waitTillDone();
+            {
+                Debug::HitchTrace::Scope jobJoin("terrain.clear_join", Debug::HitchTrace::CpuTiming::Scoped);
+                jobJoin.setLink(mTerrainPreloadItem->hitchJob());
+                mTerrainPreloadItem->waitTillDone();
+            }
             mTerrainPreloadItem = nullptr;
         }
         mV311PendingTerrainPreloadPositions.clear();

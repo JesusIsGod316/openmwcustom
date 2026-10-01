@@ -15,7 +15,17 @@ namespace
 x = 42
 return {
     get = function() return x end,
-    inc = function(v) x = x + v end
+    inc = function(v) x = x + v end,
+    diagnosticAllocate = function()
+        local t = {}
+        for i = 1, 20000 do t[i] = string.rep(tostring(i), 64) end
+        return #t
+    end,
+    diagnosticThrow = function()
+        local t = {}
+        for i = 1, 20000 do t[i] = string.rep(tostring(i), 64) end
+        error("diagnostic_fixture_failure")
+    end
 }
 )X");
 
@@ -131,6 +141,34 @@ return {
         LuaUtil::ScriptsConfiguration mCfg;
         LuaUtil::LuaState mLua{ mVFS.get(), &mCfg };
     };
+
+    TEST_F(LuaStateTest, HitchAllocationCounters)
+    {
+        const auto before = mLua.diagnosticAllocations();
+        const VFS::Path::Normalized path(counterPath);
+        sol::table script = mLua.runInNewSandbox(path);
+        LuaUtil::call(LuaUtil::ScriptId{}, script["inc"].get<sol::protected_function>(), 3);
+        EXPECT_EQ(LuaUtil::call(script["get"]).get<int>(), 45);
+        EXPECT_ERROR(mLua.runInNewSandbox(VFS::Path::Normalized(invalidPath)), "Lua error:");
+        EXPECT_EQ(LuaUtil::call(LuaUtil::ScriptId{}, script["diagnosticAllocate"].get<sol::protected_function>()).get<int>(), 20000);
+        EXPECT_ERROR(LuaUtil::call(LuaUtil::ScriptId{}, script["diagnosticThrow"].get<sol::protected_function>()),
+            "diagnostic_fixture_failure");
+        const auto after = mLua.diagnosticAllocations();
+        if (Debug::HitchTrace::requested() && LuaUtil::LuaState::isProfilerEnabled())
+        {
+            EXPECT_GT(after.calls, before.calls);
+            EXPECT_GT(after.growthBytes, before.growthBytes);
+            EXPECT_GE(after.shrinkBytes, before.shrinkBytes);
+            EXPECT_EQ(after.failures, before.failures);
+        }
+        else
+        {
+            EXPECT_EQ(after.calls, 0);
+            EXPECT_EQ(after.growthBytes, 0);
+            EXPECT_EQ(after.shrinkBytes, 0);
+            EXPECT_EQ(after.failures, 0);
+        }
+    }
 
     TEST_F(LuaStateTest, Sandbox)
     {

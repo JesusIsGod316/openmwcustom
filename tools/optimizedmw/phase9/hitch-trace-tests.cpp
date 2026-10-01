@@ -35,6 +35,15 @@ int main(int argc, char** argv)
     }
     else
     {
+        { Scope assetArgument("asset_argument", {}, "legacy-asset.nif"); assetArgument.retain(); }
+        std::uint64_t request = 0;
+        { Scope source("request", CpuTiming::None); source.retain(); request = source.id();
+          source.setMetric(0, "requested_bytes", 8192); }
+        std::thread dependency([request] {
+            Scope worker("dependency", CpuTiming::None); worker.retain(); worker.setLink(request);
+            worker.setMetric(0, "returned_bytes", 4096);
+        });
+        dependency.join();
         { Scope parent("parent", "identity,with\"quote", "asset.nif", 123);
           { Scope child("child", {}, {}, 123, CpuTiming::Scoped); spin(); }
           { Scope filtered("fast_child", {}, {}, 123); } }

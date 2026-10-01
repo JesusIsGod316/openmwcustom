@@ -10,7 +10,7 @@ root=Path(sys.argv[1]); source=Path(__file__).resolve().parents[3]
 public=source/'tools/optimizedmw/phase9'
 files=['openmw.exe','CI-ID.txt','START-OptimizedMW-Test.bat','OptimizedMW_Test.ps1',
        'OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW-Phase9-README.txt',
-       'OptimizedMW_SystemTrace.ps1','OptimizedMW-SystemTrace.wprp','START-OptimizedMW-SystemTrace.bat','HITCH-DIAGNOSTICS.md']
+       'OptimizedMW_SystemTrace.ps1','OptimizedMW_QualifySystemTrace.ps1','OptimizedMW_SystemTraceLink.ps1','OptimizedMW-SystemTrace.wprp','START-OptimizedMW-SystemTrace.bat','HITCH-DIAGNOSTICS.md']
 for name in files:
     assert (root/name).is_file() and (root/name).stat().st_size>0,name
 assert (root/'openmw.exe').read_bytes()[:2]==b'MZ', 'not a Windows PE executable'

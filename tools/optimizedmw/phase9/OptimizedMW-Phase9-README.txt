@@ -127,17 +127,26 @@ Frame-time consistency analysis (all modes):
   even when no individual frame is flagged. Engine wall times do not measure
   display presentation intervals. Compare the same route/cap/warmup conditions.
 
-Diagnostic detail revision 2:
-  Mode 3 now splits Lua worker/script initialization, cache lock waits,
-  VFS/physical file access, archive decompression, controller setup and
-  SceneView acquisition versus traversal. It records native Windows thread IDs
-  and QPC calibration for correlation with a Windows system trace.
-  HITCH-PHASE-TOTALS.csv and HITCH-REMAINING-SCOPES.csv expose retained phase
-  exposure and residual intervals. Nested/cross-thread timings overlap.
-  Optional: right-click START-OptimizedMW-SystemTrace.bat, Run as administrator.
-  Start the game from the NORMAL test launcher in a separate window, mode 3.
-  Quit after a short hitch reproduction, then press Enter in the recorder.
-  Share the mode 3 ZIP and the matching ETL/metadata under SystemTrace.
-  The recorder uses bounded 320 MiB circular buffers. Stop promptly so early
-  events are not overwritten. ETL completeness must be checked during analysis.
-  See HITCH-DIAGNOSTICS.md for exact coverage, limitations and correlation.
+Diagnostic detail revision 3:
+  Mode 3 adds causal terrain job/wait links, exterior transition scopes,
+  all-read stream totals, hash bytes/blocks/rewind, and Lua allocation/cache
+  activity. The resource catalog uses reusable scratch while reading live
+  mutable state on every call; its diagnostic wall cost remains visible.
+  Lua counters describe inclusive logical allocations, not retained memory.
+  See HITCH-DIAGNOSTICS.md for coverage and interpretation limits.
+
+  First test: right-click START-OptimizedMW-SystemTrace.bat and Run as
+  administrator. Wait for recording started, then start the NORMAL test
+  launcher in another window and choose mode 3. Use the same outdoor save,
+  fixed view for about 45 seconds, and 2-3 minute route. Quit normally.
+  WPR now records sequential File mode for up to 360 seconds and saves
+  automatically after the exact game process exits. Launch promptly.
+  Let both windows finish. Share the new mode 3 ZIP and matching SystemTrace
+  ZIP, plus the engine ZIP companion .system-qualification.json when present.
+  Retain the SystemTrace capture folder for any late qualification.
+  For a longer recorder limit use -DurationSeconds 600. Enter stops early.
+  A minimum-free-space guard may stop recording early to allow saving.
+  Coverage/loss/GPU availability are qualified from retained events; success
+  creating a ZIP does not establish completeness or a hitch diagnosis.
+  Mode 1 remains the reference performance path. Diagnostic captures do not
+  establish gameplay FPS gains or promote modes 8/9/10.

@@ -190,7 +190,7 @@ namespace
         }
         auto phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         {
-            Debug::HitchTrace::Scope hitchPhase("scene.object_rendering", {}, model.value());
+            Debug::HitchTrace::Scope hitchPhase("scene.object_rendering", Debug::HitchTrace::CpuTiming::Root, {}, model.value());
             const auto v32ObjectStart = Debug::V32RendererProfiling::beginObject();
             if (!restoredRendering)
             {
@@ -216,7 +216,7 @@ namespace
         }
         phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         {
-            Debug::HitchTrace::Scope hitchPhase("scene.object_mechanics", {}, model.value());
+            Debug::HitchTrace::Scope hitchPhase("scene.object_mechanics", Debug::HitchTrace::CpuTiming::Root, {}, model.value());
             if (ptr.getClass().useAnim())
                 MWBase::Environment::get().getMechanicsManager()->add(ptr);
             if (stats)
@@ -225,7 +225,7 @@ namespace
         }
         phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         {
-            Debug::HitchTrace::Scope hitchPhase("scene.object_particles", {}, model.value());
+            Debug::HitchTrace::Scope hitchPhase("scene.object_particles", Debug::HitchTrace::CpuTiming::Root, {}, model.value());
             if (ptr.getClass().isActor())
                 rendering.addWaterRippleEmitter(ptr);
             // A retained ObjectAnimation already owns its particle/render
@@ -238,7 +238,7 @@ namespace
         }
         phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         {
-            Debug::HitchTrace::Scope hitchPhase("scene.object_physics", {}, model.value());
+            Debug::HitchTrace::Scope hitchPhase("scene.object_physics", Debug::HitchTrace::CpuTiming::Root, {}, model.value());
             if (!model.empty())
             {
                 ptr.getClass().insertObject(ptr, model, rotation, physics);
@@ -251,7 +251,7 @@ namespace
         }
         phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         {
-            Debug::HitchTrace::Scope hitchPhase("scene.object_lua_added", {}, model.value());
+            Debug::HitchTrace::Scope hitchPhase("scene.object_lua_added", Debug::HitchTrace::CpuTiming::Root, {}, model.value());
             MWBase::Environment::get().getLuaManager()->objectAddedToScene(ptr);
             if (stats)
                 stats->mLuaAddedMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
@@ -708,6 +708,8 @@ namespace MWWorld
     void Scene::loadCell(CellStore& cell, Loading::Listener* loadingListener, bool respawn, const osg::Vec3f& position,
         const DetourNavigator::UpdateGuard* navigatorUpdateGuard)
     {
+        Debug::HitchTrace::Scope hitchLoad("scene.load_cell", Debug::HitchTrace::CpuTiming::Scoped,
+            Debug::HitchTrace::requested() ? cell.getCell()->getDescription() : std::string{});
         Debug::GameplayDiagnostics::Operation diagnosticOperation("load_cell", cell.getCell()->getDescription());
         Debug::V3Diagnostics::ScopedCsvTimer v3LoadTimer(
             Debug::V3Diagnostics::transitionWriter(), "load_cell", cell.getCell()->getDescription());
@@ -738,6 +740,7 @@ namespace MWWorld
 
         if (cellVariant.isExterior())
         {
+            Debug::HitchTrace::Scope hitchLand("scene.cell_heightfield", Debug::HitchTrace::CpuTiming::Scoped);
             osg::ref_ptr<const ESMTerrain::LandObject> land = mRendering.getLandManager()->getLand(cellIndex);
             const ESM::LandData* data = land ? land->getData(ESM::Land::DATA_VHGT) : nullptr;
             const int verts = ESM::getLandSize(worldspace);
@@ -787,14 +790,23 @@ namespace MWWorld
 
         // register local scripts
         // do this before insertCell, to make sure we don't add scripts from levelled creature spawning twice
-        mWorld.getLocalScripts().addCell(&cell);
+        {
+            Debug::HitchTrace::Scope hitchScripts("scene.cell_local_scripts");
+            mWorld.getLocalScripts().addCell(&cell);
+        }
 
         if (respawn)
+        {
+            Debug::HitchTrace::Scope hitchRespawn("scene.cell_respawn");
             cell.respawn();
+        }
 
         std::size_t v32RestoredObjects = 0;
         if (cellVariant.isExterior())
+        {
+            Debug::HitchTrace::Scope hitchRestore("scene.cell_restore_hibernated");
             v32RestoredObjects = mRendering.restoreHibernatedExteriorCell(&cell);
+        }
         if (v32RestoredObjects != 0)
             Log(Debug::Info) << "V3.2 restored " << v32RestoredObjects << " static render objects into "
                              << cell.getCell()->getDescription();
@@ -805,6 +817,7 @@ namespace MWWorld
         }
 
         {
+            Debug::HitchTrace::Scope hitchRender("scene.cell_render_add");
             Debug::GameplayDiagnostics::Operation operation("cell_render_add", cell.getCell()->getDescription());
             mRendering.addCell(&cell);
         }
@@ -927,6 +940,8 @@ namespace MWWorld
 
     void Scene::changeCellGrid(const osg::Vec3f& pos, ESM::ExteriorCellLocation playerCellIndex, bool changeEvent)
     {
+        Debug::HitchTrace::Scope hitchGrid("scene.change_cell_grid", Debug::HitchTrace::CpuTiming::Scoped,
+            Debug::HitchTrace::requested() ? playerCellIndex.mWorldspace.toString() : std::string{});
         Debug::GameplayDiagnostics::Operation diagnosticOperation("change_cell_grid");
         Debug::V3Diagnostics::writeEvent("change_cell_grid", "exterior_grid");
         Debug::V3Diagnostics::TraceScope v3Trace("transition", "change_cell_grid", "exterior_grid", 0.1);
@@ -934,22 +949,28 @@ namespace MWWorld
             Debug::V3Diagnostics::transitionWriter(), "change_cell_grid", "exterior_grid");
         const int halfGridSize
             = isEsm4Ext(playerCellIndex.mWorldspace) ? Constants::ESM4CellGridRadius : Constants::CellGridRadius;
-        auto navigatorUpdateGuard = mNavigator.makeUpdateGuard();
+        auto navigatorUpdateGuard = [&] {
+            Debug::HitchTrace::Scope hitchPhase("scene.navigator_guard");
+            return mNavigator.makeUpdateGuard();
+        }();
         const int playerCellX = playerCellIndex.mX;
         const int playerCellY = playerCellIndex.mY;
 
-        for (auto iter = mActiveCells.begin(); iter != mActiveCells.end();)
         {
-            auto* cell = *iter++;
-            if (cell->getCell()->isExterior() && cell->getCell()->getWorldSpace() == playerCellIndex.mWorldspace)
+            Debug::HitchTrace::Scope hitchPhase("scene.unload_old_grid");
+            for (auto iter = mActiveCells.begin(); iter != mActiveCells.end();)
             {
-                const auto dx = std::abs(playerCellX - cell->getCell()->getGridX());
-                const auto dy = std::abs(playerCellY - cell->getCell()->getGridY());
-                if (dx > halfGridSize || dy > halfGridSize)
+                auto* cell = *iter++;
+                if (cell->getCell()->isExterior() && cell->getCell()->getWorldSpace() == playerCellIndex.mWorldspace)
+                {
+                    const auto dx = std::abs(playerCellX - cell->getCell()->getGridX());
+                    const auto dy = std::abs(playerCellY - cell->getCell()->getGridY());
+                    if (dx > halfGridSize || dy > halfGridSize)
+                        unloadCell(cell, navigatorUpdateGuard.get());
+                }
+                else
                     unloadCell(cell, navigatorUpdateGuard.get());
             }
-            else
-                unloadCell(cell, navigatorUpdateGuard.get());
         }
 
         const DetourNavigator::CellGridBounds cellGridBounds{
@@ -957,15 +978,21 @@ namespace MWWorld
             .mHalfSize = halfGridSize,
         };
 
-        mNavigator.updateBounds(playerCellIndex.mWorldspace, cellGridBounds, pos, navigatorUpdateGuard.get());
+        {
+            Debug::HitchTrace::Scope hitchPhase("scene.navigator_update_bounds");
+            mNavigator.updateBounds(playerCellIndex.mWorldspace, cellGridBounds, pos, navigatorUpdateGuard.get());
+        }
 
         mHalfGridSize = halfGridSize;
         mCurrentGridCenter = osg::Vec2i(playerCellX, playerCellY);
         osg::Vec4i newGrid = gridCenterToBounds(mCurrentGridCenter);
 
         // NOTE: setActiveGrid must be after enableTerrain, otherwise we set the grid in the old exterior worldspace
-        mRendering.enableTerrain(true, playerCellIndex.mWorldspace);
-        mRendering.setActiveGrid(newGrid);
+        {
+            Debug::HitchTrace::Scope hitchPhase("scene.enable_terrain_grid");
+            mRendering.enableTerrain(true, playerCellIndex.mWorldspace);
+            mRendering.setActiveGrid(newGrid);
+        }
 
         mPreloader->setTerrain(mRendering.getTerrain());
         if (mPreloader->usesLegacyTerrain() && mRendering.pagingUnlockCache())
@@ -982,17 +1009,23 @@ namespace MWWorld
         // Native terrain/static population is published by the V4 bridge.
         // Never omit canonical objects based on an unused OSG paging batch.
 
-        addPostponedPhysicsObjects();
+        {
+            Debug::HitchTrace::Scope hitchPhase("scene.postponed_physics");
+            addPostponedPhysicsObjects();
+        }
 
         std::size_t refsToLoad = 0;
         std::vector<std::pair<int, int>> cellsPositionsToLoad;
-        iterateOverCellsAround(playerCellX, playerCellY, mHalfGridSize, [&](int x, int y) {
-            const ESM::ExteriorCellLocation location(x, y, playerCellIndex.mWorldspace);
-            if (isCellInCollection(location, mActiveCells))
-                return;
-            refsToLoad += mWorld.getWorldModel().getExterior(location).count();
-            cellsPositionsToLoad.emplace_back(x, y);
-        });
+        {
+            Debug::HitchTrace::Scope hitchPhase("scene.count_exterior_refs");
+            iterateOverCellsAround(playerCellX, playerCellY, mHalfGridSize, [&](int x, int y) {
+                const ESM::ExteriorCellLocation location(x, y, playerCellIndex.mWorldspace);
+                if (isCellInCollection(location, mActiveCells))
+                    return;
+                refsToLoad += mWorld.getWorldModel().getExterior(location).count();
+                cellsPositionsToLoad.emplace_back(x, y);
+            });
+        }
 
         Loading::Listener* loadingListener = MWBase::Environment::get().getWindowManager()->getLoadingScreen();
         Loading::ScopedLoad load(loadingListener);
@@ -1011,10 +1044,18 @@ namespace MWWorld
             }
         }
 
-        mRendering.finishExteriorRestore();
-        mNavigator.update(pos, navigatorUpdateGuard.get());
-
-        navigatorUpdateGuard.reset();
+        {
+            Debug::HitchTrace::Scope hitchPhase("scene.finish_exterior_restore");
+            mRendering.finishExteriorRestore();
+        }
+        {
+            Debug::HitchTrace::Scope hitchPhase("scene.navigator_update");
+            mNavigator.update(pos, navigatorUpdateGuard.get());
+        }
+        {
+            Debug::HitchTrace::Scope hitchPhase("scene.navigator_commit");
+            navigatorUpdateGuard.reset();
+        }
 
         CellStore& current = mWorld.getWorldModel().getExterior(playerCellIndex);
         MWBase::Environment::get().getWindowManager()->changeCell(&current);
@@ -1174,6 +1215,8 @@ namespace MWWorld
 
     void Scene::changePlayerCell(CellStore& cell, const ESM::Position& pos, bool adjustPlayerPos)
     {
+        Debug::HitchTrace::Scope hitchPlayer("scene.change_player_cell", Debug::HitchTrace::CpuTiming::Scoped,
+            Debug::HitchTrace::requested() ? cell.getCell()->getDescription() : std::string{});
         mHalfGridSize = cell.getCell()->isEsm4() ? Constants::ESM4CellGridRadius : Constants::CellGridRadius;
         mCurrentCell = &cell;
 
@@ -1337,6 +1380,8 @@ namespace MWWorld
     void Scene::changeToExteriorCell(
         const ESM::RefId& extCellId, const ESM::Position& position, bool adjustPlayerPos, bool changeEvent)
     {
+        Debug::HitchTrace::Scope hitchExterior("scene.change_to_exterior", Debug::HitchTrace::CpuTiming::Scoped,
+            Debug::HitchTrace::requested() ? extCellId.toString() : std::string{});
         Debug::GameplayDiagnostics::Operation diagnosticOperation("change_to_exterior");
         Debug::V3Diagnostics::writeEvent("change_to_exterior");
         Debug::V3Diagnostics::TraceScope v3Trace("transition", "change_to_exterior", "exterior", 0.1);
@@ -1344,8 +1389,14 @@ namespace MWWorld
             Debug::V3Diagnostics::transitionWriter(), "change_to_exterior", "exterior");
 
         if (changeEvent)
+        {
+            Debug::HitchTrace::Scope hitchFade("scene.fade_out");
             MWBase::Environment::get().getWindowManager()->fadeScreenOut(0.5);
-        CellStore& current = mWorld.getWorldModel().getCell(extCellId);
+        }
+        CellStore& current = [&]() -> CellStore& {
+            Debug::HitchTrace::Scope hitchResolve("scene.resolve_exterior_cell");
+            return mWorld.getWorldModel().getCell(extCellId);
+        }();
 
         const osg::Vec2i cellIndex(current.getCell()->getGridX(), current.getCell()->getGridY());
 
@@ -1355,7 +1406,10 @@ namespace MWWorld
         changePlayerCell(current, position, adjustPlayerPos);
 
         if (changeEvent)
+        {
+            Debug::HitchTrace::Scope hitchFade("scene.fade_in");
             MWBase::Environment::get().getWindowManager()->fadeScreenIn(0.5);
+        }
 
         MWBase::Environment::get().getWorld()->getPostProcessor()->setExteriorFlag(true);
     }
@@ -1856,6 +1910,8 @@ namespace MWWorld
 
     void Scene::preloadTerrain(const osg::Vec3f& pos, ESM::RefId worldspace, bool sync)
     {
+        Debug::HitchTrace::Scope hitchTerrain("scene.preload_terrain", Debug::HitchTrace::CpuTiming::Scoped,
+            sync ? "sync" : "async", Debug::HitchTrace::requested() ? worldspace.toString() : std::string{});
         if (!mPreloader->usesLegacyTerrain()) return;
         Debug::GameplayDiagnostics::Operation diagnosticOperation("terrain_preload", sync ? "sync" : "async");
         if (mRendering.getTerrain()->getWorldspace() != worldspace)
@@ -1976,7 +2032,10 @@ namespace MWWorld
         Loading::ScopedLoad load(loadingListener);
 
         loadingListener->setLabel("#{OMWEngine:InitializingData}");
-        mPreloader->syncTerrainLoad(*loadingListener);
+        {
+            Debug::HitchTrace::Scope hitchPhase("scene.sync_terrain_load", Debug::HitchTrace::CpuTiming::Scoped);
+            mPreloader->syncTerrainLoad(*loadingListener);
+        }
 
         if (v39DoFrontload)
             mV39InitialFrontloadDone = true;
