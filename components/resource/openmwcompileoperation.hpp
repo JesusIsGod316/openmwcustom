@@ -83,7 +83,7 @@ namespace Resource
         double compositeTargetFrameMs() const { return 1000.0 / std::max(1.0, mConfig.mTargetFrameRate); }
 
     protected:
-        ~OpenMWIncrementalCompileOperation() override = default;
+        ~OpenMWIncrementalCompileOperation() override;
 
     private:
         enum class CompileKind : unsigned char
@@ -144,6 +144,8 @@ namespace Resource
         std::size_t mLastQueueDepth = 0;
         unsigned int mSmoothFrames = 0;
         std::shared_ptr<P9DiscretionaryAdmission> mCompositeAdmission;
+        struct TraceState;
+        std::unique_ptr<TraceState> mCompileTrace;
 
         inline static std::atomic<double> sLastRenderingTraversalMs{ 0.0 };
     };

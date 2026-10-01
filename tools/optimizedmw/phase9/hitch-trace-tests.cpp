@@ -44,6 +44,26 @@ int main(int argc, char** argv)
             worker.setMetric(0, "returned_bytes", 4096);
         });
         dependency.join();
+        {
+            Scope envelope("wall_envelope", {}, {}, 122, CpuTiming::WallEnvelope);
+            {
+                Scope innerEnvelope("inner_wall_envelope", {}, {}, 122, CpuTiming::WallEnvelope);
+                Scope root("root_through_envelope", {}, {}, 122);
+                spin();
+            }
+        }
+        {
+            Scope root("cpu_root_above_envelope", {}, {}, 122);
+            Scope envelope("nested_wall_envelope", {}, {}, 122, CpuTiming::WallEnvelope);
+            Scope nested("root_below_cpu_root", {}, {}, 122);
+            spin();
+        }
+        {
+            Scope none("legacy_none_parent", {}, {}, 122, CpuTiming::None);
+            Scope envelope("wall_below_legacy_none", {}, {}, 122, CpuTiming::WallEnvelope);
+            Scope nested("root_below_legacy_none", {}, {}, 122);
+            spin();
+        }
         { Scope parent("parent", "identity,with\"quote", "asset.nif", 123);
           { Scope child("child", {}, {}, 123, CpuTiming::Scoped); spin(); }
           { Scope filtered("fast_child", {}, {}, 123); } }

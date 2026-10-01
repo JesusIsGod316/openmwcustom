@@ -54,6 +54,58 @@ add_test(NAME p9-loading-attribution COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/verify-loading-attribution.py $<TARGET_FILE:p9-loading-attribution>
   ${CMAKE_CURRENT_BINARY_DIR}/loading-attribution-fixture)
 set_tests_properties(p9-loading-attribution PROPERTIES TIMEOUT 45)
+add_executable(p9-constrained-stream constrained-stream-tests.cpp
+  ${ROOT}/components/bsa/bsafile.cpp
+  ${ROOT}/components/files/hash.cpp ${ROOT}/components/files/constrainedfilestreambuf.cpp
+  ${ROOT}/components/files/conversion.cpp ${ROOT}/extern/smhasher/MurmurHash3.cpp)
+if(WIN32)
+  target_sources(p9-constrained-stream PRIVATE ${ROOT}/components/platform/filewin32.cpp)
+else()
+  target_sources(p9-constrained-stream PRIVATE ${ROOT}/components/platform/fileposix.cpp)
+endif()
+target_compile_definitions(p9-constrained-stream PRIVATE P9_FILE_STREAM_TEST_HOOKS)
+target_include_directories(p9-constrained-stream PRIVATE
+  ${ROOT}/extern/smhasher/include ${ROOT}/extern/smhasher/include/smhasher)
+target_link_libraries(p9-constrained-stream PRIVATE Threads::Threads)
+add_test(NAME p9-constrained-stream COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/verify-constrained-stream.py $<TARGET_FILE:p9-constrained-stream>
+  ${CMAKE_CURRENT_BINARY_DIR}/constrained-stream-fixture)
+set_tests_properties(p9-constrained-stream PROPERTIES TIMEOUT 180)
+option(P9_REAL_READER_FIXTURE "Validate constrained I/O against actual DDS/TGA/NIF/BSA parsers" OFF)
+set(P9_READER_BSA_FIXTURE "" CACHE FILEPATH "Read-only installed Morrowind BSA used by real-reader fixture")
+if(P9_REAL_READER_FIXTURE)
+  if(NOT EXISTS "${P9_READER_BSA_FIXTURE}")
+    message(FATAL_ERROR "P9_REAL_READER_FIXTURE requires an existing P9_READER_BSA_FIXTURE")
+  endif()
+  find_package(Bullet REQUIRED)
+  find_library(P9_READER_OSGDB_LIBRARY NAMES osgDB REQUIRED)
+  add_executable(p9-constrained-readers constrained-reader-tests.cpp
+    ${ROOT}/components/files/hash.cpp ${ROOT}/components/files/constrainedfilestreambuf.cpp
+    ${ROOT}/components/files/conversion.cpp ${ROOT}/extern/smhasher/MurmurHash3.cpp
+    ${ROOT}/components/bsa/bsafile.cpp ${ROOT}/components/debug/debuglog.cpp
+    ${ROOT}/components/toutf8/toutf8.cpp ${ROOT}/components/resource/bulletshape.cpp)
+  foreach(nif_source base controller data effect extra niffile nifstream node particle physics property texture)
+    target_sources(p9-constrained-readers PRIVATE ${ROOT}/components/nif/${nif_source}.cpp)
+  endforeach()
+  if(WIN32)
+    target_sources(p9-constrained-readers PRIVATE ${ROOT}/components/platform/filewin32.cpp)
+  else()
+    target_sources(p9-constrained-readers PRIVATE ${ROOT}/components/platform/fileposix.cpp)
+  endif()
+  target_include_directories(p9-constrained-readers PRIVATE
+    ${BULLET_INCLUDE_DIRS} ${ROOT}/extern/smhasher/include ${ROOT}/extern/smhasher/include/smhasher)
+  # Match the authoritative components target and its pinned Bullet ABI.
+  target_compile_definitions(p9-constrained-readers PRIVATE BT_USE_DOUBLE_PRECISION)
+  target_link_libraries(p9-constrained-readers PRIVATE
+    ${OPENSCENEGRAPH_LIBRARIES} ${P9_READER_OSGDB_LIBRARY} ${BULLET_LIBRARIES} Threads::Threads)
+  if(NOT MSVC)
+    target_compile_options(p9-constrained-readers PRIVATE -Wno-error=unused-parameter)
+  endif()
+  add_test(NAME p9-constrained-readers COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/verify-constrained-readers.py $<TARGET_FILE:p9-constrained-readers>
+    ${CMAKE_CURRENT_BINARY_DIR}/constrained-reader-fixture ${ROOT} ${P9_READER_BSA_FIXTURE})
+  set_tests_properties(p9-constrained-readers PROPERTIES TIMEOUT 90)
+endif()
 add_executable(p9-capture-transport capture-transport-tests.cpp)
 target_link_libraries(p9-capture-transport PRIVATE Threads::Threads)
 add_test(NAME p9-capture-transport COMMAND p9-capture-transport
@@ -100,8 +152,13 @@ endif()
 add_executable(p9-composite-preparation composite-preparation-tests.cpp
   ${ROOT}/components/terrain/compositemaprenderer.cpp ${ROOT}/components/resource/openmwcompileoperation.cpp)
 target_link_libraries(p9-composite-preparation PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
+target_compile_definitions(p9-composite-preparation PRIVATE P9_COMPILE_TRACE_TEST_HOOKS)
 add_test(NAME p9-composite-preparation COMMAND p9-composite-preparation)
 set_tests_properties(p9-composite-preparation PROPERTIES TIMEOUT 45)
+add_test(NAME p9-compile-attribution COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/verify-compile-attribution.py $<TARGET_FILE:p9-composite-preparation>
+  ${CMAKE_CURRENT_BINARY_DIR}/compile-attribution-fixture)
+set_tests_properties(p9-compile-attribution PROPERTIES TIMEOUT 45)
 add_executable(p9-draw-phases draw-phase-tests.cpp ${ROOT}/components/terrain/terraindrawable.cpp
   ${ROOT}/components/terrain/compositemaprenderer.cpp ${ROOT}/components/resource/openmwcompileoperation.cpp)
 if(NOT MSVC)
@@ -117,9 +174,18 @@ set_tests_properties(p9-draw-phases-threaded PROPERTIES TIMEOUT 30
   ENVIRONMENT "OPENMW_P9_LEAF_TRACE_FILE=${CMAKE_CURRENT_BINARY_DIR}/draw-phase-threaded-test.csv")
 add_executable(p9-resource-catalog resource-catalog-tests.cpp)
 target_link_libraries(p9-resource-catalog PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
-add_test(NAME p9-resource-catalog COMMAND p9-resource-catalog)
+add_test(NAME p9-resource-catalog COMMAND p9-resource-catalog --expect-legacy)
 set_tests_properties(p9-resource-catalog PROPERTIES TIMEOUT 30
-  ENVIRONMENT "OPENMW_P9_LEAF_TRACE_FILE=${CMAKE_CURRENT_BINARY_DIR}/resource-catalog-test.csv")
+  ENVIRONMENT "OPENMW_P9_LEAF_TRACE_FILE=${CMAKE_CURRENT_BINARY_DIR}/resource-catalog-test.csv;OPENMW_P9_CATALOG_OPTIMIZED=0")
+add_test(NAME p9-resource-catalog-optimized COMMAND p9-resource-catalog --expect-optimized)
+set_tests_properties(p9-resource-catalog-optimized PROPERTIES TIMEOUT 30
+  ENVIRONMENT "OPENMW_P9_LEAF_TRACE_FILE=${CMAKE_CURRENT_BINARY_DIR}/resource-catalog-optimized-test.csv;OPENMW_P9_CATALOG_OPTIMIZED=1")
+add_test(NAME p9-resource-catalog-family-off COMMAND p9-resource-catalog --capture-off)
+set_tests_properties(p9-resource-catalog-family-off PROPERTIES TIMEOUT 30
+  ENVIRONMENT "OPENMW_P9_LEAF_TRACE_FILE=;OPENMW_P9_CATALOG_OPTIMIZED=1")
+add_test(NAME p9-resource-catalog-invalid-switch COMMAND p9-resource-catalog --expect-legacy)
+set_tests_properties(p9-resource-catalog-invalid-switch PROPERTIES TIMEOUT 30
+  ENVIRONMENT "OPENMW_P9_LEAF_TRACE_FILE=${CMAKE_CURRENT_BINARY_DIR}/resource-catalog-invalid-switch-test.csv;OPENMW_P9_CATALOG_OPTIMIZED=true")
 
 option(P9_REQUIRE_GAME_SDK "Compile the real camera/PostProcessor/rig/morph integration translation units" OFF)
 if(P9_REQUIRE_GAME_SDK)

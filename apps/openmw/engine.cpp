@@ -1,4 +1,7 @@
 #include <components/debug/hitchtrace.hpp>
+#include <components/debug/compileattribution.hpp>
+#include <components/files/constrainedreadpolicy.hpp>
+#include <optional>
 #include "engine.hpp"
 
 #include <components/resource/benchmarkcapture.hpp>
@@ -549,9 +552,19 @@ namespace
     public:
         void swapBuffersImplementation(osg::GraphicsContext* gc) override
         {
+            std::optional<Debug::HitchTrace::Scope> swapScope;
+            if (Debug::CompileAttribution::requested())
+            {
+                const auto* stamp = gc && gc->getState() ? gc->getState()->getFrameStamp() : nullptr;
+                swapScope.emplace("viewer.swap_buffers", "", "", stamp ? stamp->getFrameNumber() : 0,
+                    Debug::HitchTrace::CpuTiming::WallEnvelope);
+                if (gc && gc->getState()) swapScope->setMetric(0, "context", gc->getState()->getContextID());
+                swapScope->setMetric(1, "frame_known", stamp ? 1 : 0);
+            }
             const auto start = Debug::V3Diagnostics::Clock::now();
             gc->swapBuffersImplementation();
             const double durationMs = Debug::V3Diagnostics::elapsedMs(start);
+            swapScope.reset();
             if (durationMs < 0.25)
                 return;
 
@@ -2003,8 +2016,20 @@ void OMW::Engine::prepareEngine()
 
     Loading::Listener* listener = MWBase::Environment::get().getWindowManager()->getLoadingScreen();
     Loading::AsyncListener asyncListener(*listener);
+    std::optional<Debug::HitchTrace::Scope> loadingEnvelope;
+    if (Debug::CompileAttribution::requested())
+        loadingEnvelope.emplace("startup.load_data_async", Debug::HitchTrace::CpuTiming::WallEnvelope);
+    const auto loadingLink = loadingEnvelope ? loadingEnvelope->id() : 0;
     auto dataLoading = std::async(std::launch::async,
-        [&] { mWorld->loadData(mFileCollections, mContentFiles, mGroundcoverFiles, mEncoder.get(), &asyncListener); });
+        [&, loadingLink] {
+            std::optional<Debug::HitchTrace::Scope> workerEnvelope;
+            if (Debug::CompileAttribution::requested())
+            {
+                workerEnvelope.emplace("startup.load_data_worker", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                workerEnvelope->setLink(loadingLink);
+            }
+            mWorld->loadData(mFileCollections, mContentFiles, mGroundcoverFiles, mEncoder.get(), &asyncListener);
+        });
 
     if (!mSkipMenu)
     {
@@ -2016,10 +2041,17 @@ void OMW::Engine::prepareEngine()
     listener->loadingOn();
     {
         using namespace std::chrono_literals;
+        std::optional<Debug::HitchTrace::Scope> joinEnvelope;
+        if (Debug::CompileAttribution::requested())
+        {
+            joinEnvelope.emplace("startup.load_data_join", Debug::HitchTrace::CpuTiming::WallEnvelope);
+            joinEnvelope->setLink(loadingLink);
+        }
         while (dataLoading.wait_for(50ms) != std::future_status::ready)
             asyncListener.update();
         dataLoading.get();
     }
+    loadingEnvelope.reset();
     mSoundManager->warmStoreSounds();
     if (static_cast<bool>(Settings::cells().mV316SfxMetadataFrontload))
     {
@@ -2067,6 +2099,12 @@ void OMW::Engine::prepareEngine()
 
 void OMW::Engine::prepareVirtualFileSystem()
 {
+    if (const char* ack = std::getenv("OPENMW_P9_FILE_POLICY_ACK"); ack && std::string_view(ack) == "1")
+    {
+        const auto& policy = Files::ConstrainedReadPolicy::Options::startup();
+        Log(Debug::Info) << "P9 file policy: refill_bytes=" << policy.refillBytes
+            << " resident_seek=" << (policy.residentSeek ? 1 : 0) << " budget_bytes=" << policy.budgetBytes;
+    }
     if (mVFS)
         throw std::logic_error("Virtual file system was already prepared");
     if (!mEncoder)

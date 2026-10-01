@@ -20,13 +20,14 @@ function New-VerifiedProfileZip {
     if(-not [IO.File]::Exists((Join-Path $source 'TEST_MODE.txt'))){throw 'Profile has no TEST_MODE.txt identity'}
 
     $expected=@('TEST_MODE.txt','v3-frame.csv','p6-render-traversal.csv','openmw.log')
+    if([IO.File]::ReadAllText((Join-Path $source 'TEST_MODE.txt')) -match '(?m)^hitch_trial_revision=1\r?$'){$expected+='RUN-MANIFEST.json'}
     $missing=@($expected | Where-Object {-not [IO.File]::Exists((Join-Path $source $_))})
     # Missing deferred capture after a crash is evidence, not a reason to lose the ZIP.
     [ordered]@{schema=1;expected_files=$expected;missing_expected_files=$missing;
         complete_required_file_set=($missing.Count -eq 0);
         note='File presence does not prove normal finish or complete telemetry. Inspect exit and capture status.'} |
         ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $source 'PROFILE-CAPTURE.json') -Encoding UTF8
-    $files=@(Get-ChildItem -LiteralPath $source -Recurse -File -Force)
+    $files=@(Get-ChildItem -LiteralPath $source -Recurse -File -Force | Where-Object {$_.FullName -ne (Join-Path $source 'RAW-FILE-MANIFEST.json')})
     if(@($files | Where-Object {($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0}).Count){
         throw 'Refusing to archive reparse-point files outside the owned profile'
     }
@@ -34,6 +35,15 @@ function New-VerifiedProfileZip {
         [pscustomobject]@{name=$_.FullName.Substring($source.Length+1).Replace('\','/');
             bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}
     })
+    # Persist the verified raw-file identities. Exclude this file from its own list;
+    # it is hashed and verified as an ordinary ZIP member below.
+    $inventoryPath=Join-Path $source 'RAW-FILE-MANIFEST.json'
+    if([IO.File]::Exists($inventoryPath) -and ((Get-Item -LiteralPath $inventoryPath).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Refusing reparse-point inventory file'}
+    [ordered]@{schema=1;files=$inventory;self_excluded='RAW-FILE-MANIFEST.json';
+        note='File hashes establish archived byte identity, not runtime activation or diagnostic completeness.'} |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $inventoryPath -Encoding UTF8
+    $inventory+=,[pscustomobject]@{name='RAW-FILE-MANIFEST.json';bytes=(Get-Item -LiteralPath $inventoryPath).Length;
+        sha256=(Get-FileHash -LiteralPath $inventoryPath -Algorithm SHA256).Hash}
     $temp=$destination+'.'+[Guid]::NewGuid().ToString('N')+'.tmp'
     $lastError=$null
     for($attempt=1;$attempt -le 3;$attempt++){
@@ -321,12 +331,13 @@ function Test-Phase9WriterCapture {
             'p6-render-phase.csv','p6-render-traversal.csv','p9-temporal-inputs.csv','p9-dlss-capabilities.csv',
             'p9-gpu-passes.csv','p9-terrain-composite.csv','v3-insertion.csv','v32-render-insertion.csv',
             'v3-lua-sync.csv','v3-lua-actions.csv','v33-lua-callbacks.csv','v35-lua-load.csv',
-            'v3-lua-update.csv','v36-controller.csv','v36-lua-addscript.csv')
+            'v3-lua-update.csv','v36-controller.csv','v36-lua-addscript.csv','compile-attribution.csv')
         $required=@('v3-render.csv','p6-render-traversal.csv')
         if($mode -match '(?m)^phase9_temporal_inputs=1\r?$'){$required+=@('p9-temporal-inputs.csv','p9-dlss-capabilities.csv')}
         if($mode -match '(?m)^phase9_(temporal_inputs|draw_trace)=1\r?$'){$required+='p9-gpu-passes.csv'}
         if($mode -match '(?m)^phase9_hitch_spans=1\r?$'){$required+=@('v3-insertion.csv','v32-render-insertion.csv','v3-lua-sync.csv','v3-lua-actions.csv','v33-lua-callbacks.csv')}
         if($mode -match '(?m)^phase9_detail_revision=[23]\r?$' -and $mode -match '(?m)^phase9_hitch_spans=1\r?$'){$required+=@('v3-lua-update.csv','v36-controller.csv','v36-lua-addscript.csv')}
+        if($mode -match '(?m)^hitch_compile_attribution=1\r?$'){$required+='compile-attribution.csv'}
         foreach($name in $names){
             $csv=Join-Path $ProfileDir $name
             if(-not (Test-Path -LiteralPath $csv)){

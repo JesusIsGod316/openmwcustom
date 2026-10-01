@@ -4,6 +4,8 @@
 #include "preparedterraintexture.hpp"
 
 #include <components/debug/v3diagnostics.hpp>
+#include <components/debug/compileattribution.hpp>
+#include <components/debug/hitchtrace.hpp>
 
 #include <osg/Array>
 #include <osg/Geometry>
@@ -20,6 +22,7 @@
 #include <iomanip>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <string_view>
 #include <unordered_set>
@@ -60,12 +63,23 @@ namespace
 
 namespace Resource
 {
+    struct OpenMWIncrementalCompileOperation::TraceState
+    {
+        Debug::CompileAttribution::ObservedSets mObserved;
+        std::uint64_t mMetadataFailures = 0;
+        std::uint64_t mFormatFailures = 0;
+    };
+
     OpenMWIncrementalCompileOperation::OpenMWIncrementalCompileOperation(OpenMWCompileSchedulerConfig config)
         : mConfig(std::move(config))
     {
         if (mConfig.mCompositePreparation)
             mCompositeAdmission = std::make_shared<P9DiscretionaryAdmission>();
+        if (Debug::CompileAttribution::requested())
+            mCompileTrace.reset(new (std::nothrow) TraceState);
     }
+
+    OpenMWIncrementalCompileOperation::~OpenMWIncrementalCompileOperation() = default;
 
     void OpenMWIncrementalCompileOperation::publishRenderingTraversalMs(double value) noexcept
     {
@@ -359,10 +373,34 @@ namespace Resource
 
     void OpenMWIncrementalCompileOperation::operator()(osg::GraphicsContext* context)
     {
+        // Separate diagnostic family: OFF creates no envelopes, observation
+        // registry or CSV records. CPU ownership of existing scopes is retained.
+        std::optional<Debug::HitchTrace::Scope> schedulerScope;
+        const bool traceFrameKnown = mCompileTrace && context && context->getState()
+            && context->getState()->getFrameStamp();
+        // Zero is only a join coordinate when no FrameStamp exists; the
+        // separate known flag prevents it being asserted as viewer frame 0.
+        const unsigned int traceFrame = traceFrameKnown ? frameNumberFor(context) : 0;
+        if (mCompileTrace)
+            schedulerScope.emplace("compile.scheduler", "", "", traceFrame, Debug::HitchTrace::CpuTiming::WallEnvelope);
         const int mode = mConfig.mMode;
         if (mode <= 0 || !context || !context->getState() || _contexts.size() != 1)
         {
             osgUtil::IncrementalCompileOperation::operator()(context);
+            if (mCompileTrace)
+            {
+                Debug::CompileAttribution::Row row;
+                row.frame = traceFrame;
+                row.frameKnown = traceFrameKnown;
+                row.scheduler = reinterpret_cast<std::uintptr_t>(this);
+                row.context = context && context->getState() ? context->getState()->getContextID()
+                    : Debug::CompileAttribution::UnknownFrame;
+                row.event = "fallback";
+                row.branch = "osg_fallback";
+                row.span = schedulerScope->id();
+                schedulerScope->retain();
+                Debug::CompileAttribution::write(row);
+            }
             return;
         }
 
@@ -370,6 +408,19 @@ namespace Resource
         if (_compileAllTillFrameNumber > _currentFrameNumber)
         {
             osgUtil::IncrementalCompileOperation::operator()(context);
+            if (mCompileTrace)
+            {
+                Debug::CompileAttribution::Row row;
+                row.frame = traceFrame;
+                row.frameKnown = traceFrameKnown;
+                row.scheduler = reinterpret_cast<std::uintptr_t>(this);
+                row.context = context->getState()->getContextID();
+                row.event = "fallback";
+                row.branch = "osg_compile_all";
+                row.span = schedulerScope->id();
+                schedulerScope->retain();
+                Debug::CompileAttribution::write(row);
+            }
             return;
         }
 
@@ -398,6 +449,9 @@ namespace Resource
             mSmoothFrames = 0;
 
         const auto schedulerStart = Debug::V3Diagnostics::Clock::now();
+        std::optional<Debug::HitchTrace::Scope> queueScope;
+        if (mCompileTrace)
+            queueScope.emplace("compile.queue_prepare", "", "", frame, Debug::HitchTrace::CpuTiming::WallEnvelope);
 
         CompileSets queued;
         {
@@ -406,6 +460,10 @@ namespace Resource
         }
 
         pruneSeen(queued);
+        if (mCompileTrace)
+            mCompileTrace->mObserved.prune([this](const void* set) {
+                return mSeen.contains(static_cast<const CompileSet*>(set));
+            });
 
         unsigned int oldestAge = 0;
         std::array<unsigned int, sCompileClassCount> queueByClass{};
@@ -416,6 +474,7 @@ namespace Resource
                 oldestAge = std::max(oldestAge, frame - it->second.mFirstFrame);
             ++queueByClass[compileClassIndex(set.get())];
         }
+        queueScope.reset();
 
         const unsigned int maxQueueAge = std::max(1u, mConfig.mMaxQueueAgeFrames);
         const unsigned int hardQueueAge = maxQueueAge > std::numeric_limits<unsigned int>::max() / 4u
@@ -524,11 +583,21 @@ namespace Resource
             candidate.mPredictionMs
                 = predictedMs(candidate.mOsgEstimateMs, candidate.mCostBucket, candidate.mStaticPriorMs);
             candidate.mRank = compileClassRank(candidate.mSet);
+            if (mCompileTrace)
+            {
+                const auto* composite = dynamic_cast<const OpenMWCompositeCompileOp*>(op);
+                mCompileTrace->mObserved.observe(candidate.mSet, op, frame,
+                    getV321CompileUrgency(candidate.mSet) == V321CompileUrgency::Required
+                        || (composite && composite->required()));
+            }
             ++candidateBuilds;
             return true;
         };
 
         const auto candidateBuildStart = Debug::V3Diagnostics::Clock::now();
+        std::optional<Debug::HitchTrace::Scope> candidateScope;
+        if (mCompileTrace)
+            candidateScope.emplace("compile.candidate_build", "", "", frame, Debug::HitchTrace::CpuTiming::WallEnvelope);
         for (const osg::ref_ptr<CompileSet>& setRef : queued)
         {
             CompileSet* set = setRef.get();
@@ -549,6 +618,7 @@ namespace Resource
                     finishCompileSet(set);
                     mSeen.erase(set);
                     mPredictionCache.erase(set);
+                    if (mCompileTrace) mCompileTrace->mObserved.forget(set);
                     if (localQueueDepth > 0)
                         --localQueueDepth;
                     continue;
@@ -567,6 +637,7 @@ namespace Resource
             }
         }
         candidateBuildActualMs = Debug::V3Diagnostics::elapsedMs(candidateBuildStart);
+        candidateScope.reset();
 
         while (compiledObjects < maxObjects && activeCandidates > 0 && !stopAfterThisOperation)
         {
@@ -578,6 +649,9 @@ namespace Resource
             std::size_t heavyReadyIndex = std::numeric_limits<std::size_t>::max();
 
             const auto selectionStart = Debug::V3Diagnostics::Clock::now();
+            std::optional<Debug::HitchTrace::Scope> admissionScope;
+            if (mCompileTrace)
+                admissionScope.emplace("compile.admission", "", "", frame, Debug::HitchTrace::CpuTiming::WallEnvelope);
             ++selectionPasses;
             for (std::size_t i = 0; i < candidates.size(); ++i)
             {
@@ -643,6 +717,7 @@ namespace Resource
                 }
             }
             selectionActualMs += Debug::V3Diagnostics::elapsedMs(selectionStart);
+            admissionScope.reset();
 
             Candidate selected;
             std::size_t selectedIndex = std::numeric_limits<std::size_t>::max();
@@ -689,9 +764,116 @@ namespace Resource
             const auto* composite = dynamic_cast<const OpenMWCompositeCompileOp*>(selected.mOp);
             const bool reusedPreparation = (prepared && prepared->reusable(compileInfo))
                 || (composite && composite->reusable(compileInfo));
+            std::optional<Debug::CompileAttribution::Row> attribution;
+            std::optional<Debug::HitchTrace::Scope> operationScope;
+            osg::ref_ptr<osg::Texture> traceTexture;
+            if (mCompileTrace)
+            {
+                {
+                    Debug::HitchTrace::Scope metadataScope(
+                        "diagnostic.compile_metadata", "", "", frame, Debug::HitchTrace::CpuTiming::WallEnvelope);
+                    try
+                    {
+                        attribution.emplace();
+                        auto& row = *attribution;
+                        row.frame = frame;
+                        row.frameKnown = traceFrameKnown;
+                        row.context = context->getState()->getContextID();
+                        row.scheduler = reinterpret_cast<std::uintptr_t>(this);
+                        row.set = reinterpret_cast<std::uintptr_t>(selected.mSet);
+                        row.op = reinterpret_cast<std::uintptr_t>(selected.mOp);
+                        row.setAge = selected.mAge;
+                        if (const auto seen = mSeen.find(selected.mSet); seen != mSeen.end())
+                            row.setFirst = seen->second.mFirstFrame;
+                        row.observed = mCompileTrace->mObserved.observe(selected.mSet, selected.mOp, frame,
+                            getV321CompileUrgency(selected.mSet) == V321CompileUrgency::Required
+                                || (composite && composite->required()));
+                        row.urgency = urgencyName(selected.mSet);
+                        row.required = composite && composite->required();
+                        row.cancelled = composite && composite->cancelled();
+                        const auto urgency = getV321CompileUrgency(selected.mSet);
+                        const bool heavyQuarantine = mConfig.mResidencySchedulerMode > 0
+                            && selected.mPredictionMs >= mConfig.mHeavyThresholdMs
+                            && (urgency == V321CompileUrgency::Background
+                                || (mConfig.mResidencySchedulerMode >= 2 && urgency == V321CompileUrgency::NearFuture));
+                        row.quarantine = !heavyQuarantine ? "not_quarantined"
+                            : row.required                ? "required_override"
+                            : row.cancelled               ? "cancelled_override"
+                                                          : "composite_age_override";
+                        row.forcing = reason;
+                        row.ageThreshold = maxQueueAge;
+                        row.hardAgeThreshold = hardQueueAge;
+                        row.budgetMs = remainingBudgetMs;
+                        row.predictedMs = selected.mPredictionMs;
+                        row.targetFrameMs = targetFrameMs;
+                        row.maxBudgetMs = mConfig.mMaxBudgetMs;
+                        row.baseTargetFps = getTargetFrameRate();
+                        row.elapsedBeforeMs = currentElapsedMs;
+                        row.lastHandoffMs = lastHandoffMs;
+                        row.headroomMs = policy.mHeadroomMs;
+                        row.resourceBytes = selected.mResourceBytes;
+                        row.preparedReused = reusedPreparation;
+                        row.kind = compileKindName(selected.mKind);
+                        row.compileClass = compileClassName(selected.mSet);
+                        row.queueDepth = localQueueDepth;
+                        row.globalOldestAge = oldestAge;
+                        row.activeCandidates = activeCandidates;
+                        row.quarantinedCandidates = quarantinedCandidates;
+                        // Capture metadata before compile(): it can destroy its front
+                        // operation. This diagnostic-only ref protects the texture
+                        // during before/after inspection; neither lookup calls GL.
+                        if (const auto* textureOp = dynamic_cast<const CompileTextureOp*>(selected.mOp))
+                            traceTexture = textureOp->_texture;
+                        if (traceTexture)
+                        {
+                            row.texture = reinterpret_cast<std::uintptr_t>(traceTexture.get());
+                            if (const auto* image = traceTexture->getImage(0))
+                            {
+                                row.image0 = reinterpret_cast<std::uintptr_t>(image);
+                                row.image0Revision = image->getModifiedCount();
+#ifdef P9_COMPILE_TRACE_TEST_HOOKS
+                                if (Debug::CompileAttribution::metadataAllocationFaults.exchange(0))
+                                    throw std::bad_alloc();
+#endif
+                                row.image0Filename = image->getFileName();
+                                row.image0Known = true;
+                            }
+                            if (const auto* object = traceTexture->getTextureObject(row.context))
+                                row.textureObjectBefore = object->id();
+                        }
+                    }
+                    catch (const std::bad_alloc&)
+                    {
+                        // Optional metadata cannot stop the ordinary compile.
+                        // The next summary declares the missing observation.
+                        ++mCompileTrace->mMetadataFailures;
+                        attribution.reset();
+                        traceTexture = nullptr;
+                    }
+                }
+                if (attribution)
+                {
+                    operationScope.emplace(
+                        "compile.operation", "", "", frame, Debug::HitchTrace::CpuTiming::WallEnvelope);
+                    operationScope->retain();
+                    attribution->span = operationScope->id();
+                }
+            }
             const auto start = Debug::V3Diagnostics::Clock::now();
             const bool completedSet = selected.mSet->compile(compileInfo);
             const double actualMs = Debug::V3Diagnostics::elapsedMs(start);
+            operationScope.reset();
+            if (attribution)
+            {
+                attribution->actualMs = actualMs;
+                if (traceTexture)
+                    if (const auto* object = traceTexture->getTextureObject(attribution->context))
+                        attribution->textureObjectAfter = object->id();
+                Debug::HitchTrace::Scope outputScope(
+                    "diagnostic.compile_attribution_csv", "", "", frame, Debug::HitchTrace::CpuTiming::WallEnvelope);
+                if (!Debug::CompileAttribution::write(*attribution)) ++mCompileTrace->mFormatFailures;
+                mCompileTrace->mObserved.progressed(selected.mSet, frame);
+            }
             // A no-op must not teach the cost model that a fresh allocation is cheap.
             if (reusedPreparation) ++texturePreparationReuses;
             else observe(selected.mCostBucket, actualMs);
@@ -728,6 +910,7 @@ namespace Resource
                 finishCompileSet(completed);
                 mSeen.erase(completed);
                 mPredictionCache.erase(completed);
+                if (mCompileTrace) mCompileTrace->mObserved.forget(completed);
                 if (selectedIndex < candidates.size() && candidates[selectedIndex])
                 {
                     candidates[selectedIndex] = Candidate{};
@@ -765,12 +948,16 @@ namespace Resource
         double deleteActualMs = 0.0;
         if (deleteBudgetMs > 0.0)
         {
+            std::optional<Debug::HitchTrace::Scope> deleteScope;
+            if (mCompileTrace)
+                deleteScope.emplace("compile.delete_flush", "", "", frame, Debug::HitchTrace::CpuTiming::WallEnvelope);
             double seconds = deleteBudgetMs / 1000.0;
             const auto start = Debug::V3Diagnostics::Clock::now();
             const osg::FrameStamp* fs = context->getState()->getFrameStamp();
             osg::flushDeletedGLObjects(
                 context->getState()->getContextID(), fs ? fs->getReferenceTime() : 0.0, seconds);
             deleteActualMs = Debug::V3Diagnostics::elapsedMs(start);
+            deleteScope.reset();
             if (deleteActualMs >= diagnosticThresholdMs)
             {
                 writeP4CompileRow(frame, "delete_flush", "delete", "n/a", localQueueDepth, oldestAge,
@@ -786,6 +973,37 @@ namespace Resource
         }
 
         const double schedulerTotalMs = Debug::V3Diagnostics::elapsedMs(schedulerStart);
+        if (mCompileTrace)
+        {
+            Debug::CompileAttribution::Row row;
+            row.frame = frame;
+            row.frameKnown = traceFrameKnown;
+            row.context = context->getState()->getContextID();
+            row.scheduler = reinterpret_cast<std::uintptr_t>(this);
+            row.event = "summary";
+            row.span = schedulerScope->id();
+            schedulerScope->retain();
+            row.budgetMs = policy.mBudgetMs;
+            row.actualMs = schedulerTotalMs;
+            row.targetFrameMs = targetFrameMs;
+            row.maxBudgetMs = mConfig.mMaxBudgetMs;
+            row.baseTargetFps = getTargetFrameRate();
+            row.elapsedBeforeMs = currentElapsedMs;
+            row.lastHandoffMs = lastHandoffMs;
+            row.headroomMs = policy.mHeadroomMs;
+            row.queueDepth = queueDepthAfter;
+            row.globalOldestAge = oldestAge;
+            row.activeCandidates = activeCandidates;
+            row.quarantinedCandidates = quarantinedCandidates;
+            row.metadataFailures = mCompileTrace->mMetadataFailures;
+            row.formatFailures = mCompileTrace->mFormatFailures;
+            row.registryCapacityFailures = mCompileTrace->mObserved.capacityFailures();
+            row.registryAllocationFailures = mCompileTrace->mObserved.allocationFailures();
+            row.forcing = policy.mSuppressedByHandoff ? "handoff_suppressed" : "normal";
+            Debug::HitchTrace::Scope outputScope("diagnostic.compile_attribution_csv", "", "", frame,
+                Debug::HitchTrace::CpuTiming::WallEnvelope);
+            if (!Debug::CompileAttribution::write(row)) ++mCompileTrace->mFormatFailures;
+        }
 
         if (queueDepthAfter > 0 || mLastQueueDepth > 0 || compiledObjects > 0 || deleteActualMs >= diagnosticThresholdMs)
         {

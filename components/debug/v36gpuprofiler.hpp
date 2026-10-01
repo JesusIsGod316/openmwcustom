@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -21,6 +22,7 @@
 
 #include "v3diagnostics.hpp"
 #include "v3hitchtelemetry.hpp"
+#include "compileattribution.hpp"
 
 namespace Debug::V36GpuProfiler
 {
@@ -61,7 +63,7 @@ namespace Debug::V36GpuProfiler
             const auto* stamp = state->getFrameStamp();
             if (!stamp) return;
             const auto frame = stamp->getFrameNumber();
-            collect(*gl, context, data, frame);
+            collect(*gl, context, data, frame, true);
             if (data.mActive >= 0)
                 return;
 
@@ -107,7 +109,8 @@ namespace Debug::V36GpuProfiler
             gl->glQueryCounter(slot.mEndQuery, QueryTimestamp);
             slot.mPending = true;
             data.mActive = -1;
-            collect(*gl, context, data, state->getFrameStamp() ? state->getFrameStamp()->getFrameNumber() : slot.mFrame);
+            const auto* stamp = state->getFrameStamp();
+            collect(*gl, context, data, stamp ? stamp->getFrameNumber() : slot.mFrame, stamp != nullptr);
         }
 
     private:
@@ -134,8 +137,17 @@ namespace Debug::V36GpuProfiler
                 && gl->glGetQueryObjectui64v;
         }
 
-        void collect(osg::GLExtensions& gl, unsigned int contextId, Context& data, std::uint64_t reportFrame)
+        void collect(osg::GLExtensions& gl, unsigned int contextId, Context& data, std::uint64_t reportFrame,
+            bool reportFrameKnown)
         {
+            std::optional<HitchTrace::Scope> collectScope;
+            if (CompileAttribution::requested())
+            {
+                collectScope.emplace("diagnostic.gpu_query_collect", mName, "", static_cast<unsigned>(reportFrame),
+                    HitchTrace::CpuTiming::WallEnvelope);
+                collectScope->setMetric(0, "context", contextId);
+                collectScope->setMetric(1, "frame_known", reportFrameKnown ? 1 : 0);
+            }
             for (Slot& slot : data.mSlots)
             {
                 if (!slot.mPending)
@@ -156,13 +168,31 @@ namespace Debug::V36GpuProfiler
                 if (endTimestamp < beginTimestamp)
                     continue;
 
+                std::optional<HitchTrace::Scope> formatScope;
+                if (CompileAttribution::requested())
+                {
+                    formatScope.emplace("diagnostic.gpu_csv_format", mName, "", static_cast<unsigned>(reportFrame),
+                        HitchTrace::CpuTiming::WallEnvelope);
+                    formatScope->setMetric(0, "context", contextId);
+                    formatScope->setMetric(1, "frame_known", reportFrameKnown ? 1 : 0);
+                }
                 std::ostringstream row;
                 row << slot.mFrame << ',' << reportFrame << ',' << V3Diagnostics::epochMs() << ','
                     << V3Diagnostics::csvQuote(mName) << ',' << std::fixed << std::setprecision(4)
                     << (static_cast<double>(endTimestamp - beginTimestamp) / 1000000.0) << ','
                     << (reportFrame >= slot.mFrame ? reportFrame - slot.mFrame : 0) << ',' << contextId << ','
                     << data.mDropped << ',' << slot.mCamera << ',' << writer().droppedLines();
-                writer().writeLine(row.str());
+                const std::string line = row.str();
+                formatScope.reset();
+                std::optional<HitchTrace::Scope> enqueueScope;
+                if (CompileAttribution::requested())
+                {
+                    enqueueScope.emplace("diagnostic.gpu_csv_enqueue", mName, "", static_cast<unsigned>(reportFrame),
+                        HitchTrace::CpuTiming::WallEnvelope);
+                    enqueueScope->setMetric(0, "context", contextId);
+                    enqueueScope->setMetric(1, "frame_known", reportFrameKnown ? 1 : 0);
+                }
+                writer().writeLine(line);
             }
         }
 

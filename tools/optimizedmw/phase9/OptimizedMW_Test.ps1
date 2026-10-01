@@ -1,3 +1,11 @@
+param(
+    [Alias('Mode')][ValidateSet('','1','2','3','4','5','6','7','8','9','10','11','12','13')][string]$ModeChoice='',
+    [ValidateSet('CONTROL','I1','I2','I1I2','D1')][string]$Candidate='CONTROL',
+    [ValidateRange(0,33554432)][long]$BufferBudgetBytes=33554432,
+    [string]$SavePath,[string]$RouteLabel='UNSPECIFIED',
+    [ValidateSet('unclassified','fresh-process-first-visit','same-process-revisit','later-fresh-launch')][string]$Cohort='unclassified',
+    [switch]$NoPrompt
+)
 $ErrorActionPreference = 'Stop'
 
 $GameDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -8,10 +16,11 @@ $OpenmwCfgPath = Join-Path $UserOpenMW 'openmw.cfg'
 . (Join-Path $GameDir 'OptimizedMW_ProfileArchive.ps1')
 . (Join-Path $GameDir 'OptimizedMW_HitchReport.ps1')
 . (Join-Path $GameDir 'OptimizedMW_SystemTraceLink.ps1')
+. (Join-Path $GameDir 'OptimizedMW_RunManifest.ps1')
 $ProfilesRoot = Join-Path $UserOpenMW 'OptimizedMW-Phase9-Profiles'
 
-if (-not (Test-Path -LiteralPath $Exe)) { Write-Host 'ERROR: Put this launcher beside openmw.exe.' -ForegroundColor Red; Read-Host 'Press Enter to close'; exit 1 }
-if (-not (Test-Path -LiteralPath $SettingsPath)) { Write-Host "ERROR: settings.cfg not found at $SettingsPath" -ForegroundColor Red; Read-Host 'Press Enter to close'; exit 1 }
+if (-not (Test-Path -LiteralPath $Exe)) { Write-Host 'ERROR: Put this launcher beside openmw.exe.' -ForegroundColor Red; if(-not $NoPrompt){Read-Host 'Press Enter to close'}; exit 1 }
+if (-not (Test-Path -LiteralPath $SettingsPath)) { Write-Host "ERROR: settings.cfg not found at $SettingsPath" -ForegroundColor Red; if(-not $NoPrompt){Read-Host 'Press Enter to close'}; exit 1 }
 
 function Set-IniValue {
     param([string]$Path,[string]$Section,[string]$Key,[string]$Value)
@@ -59,6 +68,8 @@ function Get-P9Mode {
     return $result
 }
 
+if($NoPrompt -and -not $ModeChoice){throw '-NoPrompt requires an explicit -Mode'}
+if(-not $ModeChoice){
 Write-Host ''
 Write-Host 'OptimizedMW Phase 9 - audited temporal and terrain candidates' -ForegroundColor Cyan
 Write-Host '  1 = REFERENCE          unchanged P8U1 foundation'
@@ -73,14 +84,28 @@ Write-Host ' 11 = DYNAMIC-MOTION     experimental moving geometry inputs'
 Write-Host ' 12 = AUDITED-TRACE      combined candidate with deep diagnostics'
 Write-Host ' 13 = OWNERSHIP-TRACE    mode 8 with hitch diagnostics; compare with mode 4'
 Write-Host '  A = show old unpromoted HITCH1 diagnostic controls'
+Write-Host '  H = independently select new hitch trial: CONTROL / I1 / I2 / I1I2 / D1'
 Write-Host 'Unsafe static prewarm is disabled. DLSS evaluation/jitter remain off until dense dynamic motion is valid.'
 do{
-    $choice=Read-Host 'Choose mode (1-5, 8-13, or A for old HITCH1 diagnostics)'
+    $choice=Read-Host 'Choose mode (1-5, 8-13, A for old diagnostics, H for new hitch trial)'
     if($choice -eq 'A'){
         Write-Host '  6 HITCH (old unpromoted refresh) | 7 HITCH-TRACE'
     }
+    if($choice -eq 'H'){
+        Write-Host '  CONTROL = mode 1, every I/O/catalog candidate OFF'
+        Write-Host '  I1 = mode 1, 64 KiB refill only (first trial; compare with CONTROL)'
+        Write-Host '  I2 = mode 1, resident seek/tell only (later qualified trial)'
+        Write-Host '  I1I2 = mode 1, both I/O candidates (later qualified trial)'
+        Write-Host '  D1 = mode 3, ordered catalog collector only (diagnostic equivalence/cost)'
+        do{$Candidate=Read-Host 'Choose hitch candidate'}until($Candidate -in @('CONTROL','I1','I2','I1I2','D1'))
+        $Candidate=$Candidate.ToUpperInvariant()
+        $choice=if($Candidate -eq 'D1'){'3'}else{'1'}
+    }
 }until($choice -in @('1','2','3','4','5','6','7','8','9','10','11','12','13'))
+}else{$choice=$ModeChoice}
 $mode=Get-P9Mode $choice
+$candidateProfile=Get-Phase9Candidate -Name $Candidate -BufferBudgetBytes $BufferBudgetBytes
+if($candidateProfile.d1 -and $mode.Trace -ne '1'){throw 'D1 requires a deep trace mode; use -Mode 3 -Candidate D1'}
 
 $SchedulerMode='2'
 $P3C='true'
@@ -108,7 +133,7 @@ $ShadowBatch='false'
 $CleanCapture='1'
 $FrontToBack='false'
 $FastWind='0'
-$Experiment=$mode.Name
+$Experiment=$mode.Name+'-HITCHV1-'+$candidateProfile.name
 $GpuDiagnostics=if($mode.Trace -eq '1' -or $mode.Temporal -eq '1'){'true'}else{'false'}
 $ResourceRepair='true'
 $LuaCache='true'
@@ -122,8 +147,7 @@ $mutex=[Threading.Mutex]::new($false,'Local\OptimizedMW-Test-Profile')
 $ownsMutex=$false
 try{$ownsMutex=$mutex.WaitOne(0)}catch [Threading.AbandonedMutexException]{$ownsMutex=$true}
 if(-not $ownsMutex){$mutex.Dispose();throw 'Another Phase 9 launcher is already running.'}
-$originalEnv=@{}
-Get-ChildItem Env: | Where-Object {$_.Name -like 'OPENMW_*'} | ForEach-Object {$originalEnv[$_.Name]=$_.Value}
+$originalEnv=Get-Phase9EnvironmentSnapshot
 
 New-Item -ItemType Directory -Path $ProfilesRoot -Force | Out-Null
 $stamp=Get-Date -Format 'yyyyMMdd_HHmmss_fff'
@@ -134,6 +158,8 @@ Copy-Item -LiteralPath $SettingsPath -Destination $BackupSettings -Force
 $changedSettings=$false
 $launchFailure=$null
 $restoreVerified=$true
+$environmentRestoreVerified=$false
+$runManifest=$null
 $process=$null
 $exitCode=$null
 $start=[DateTimeOffset]::UtcNow
@@ -146,6 +172,7 @@ try{
 
     # Clear inherited experimental/telemetry flags; restore the original environment afterward.
     Get-ChildItem Env: | Where-Object {$_.Name -like 'OPENMW_*'} | ForEach-Object {Remove-Item ('Env:'+$_.Name)}
+    Set-Phase9CandidateEnvironment -Candidate $candidateProfile -Mode $mode
 
     # Same head-cache budget across every mode, not a hidden per-mode tuning change.
     Set-IniValue $SettingsPath 'Sound' 'head cache size' '96'
@@ -262,6 +289,18 @@ try{
 
     @(
         "experiment=$Experiment",
+        "hitch_trial_revision=1",
+        "hitch_manifest_schema=1",
+        "hitch_stream_policy_metrics_schema=1",
+        "hitch_compile_attribution_schema=1",
+        "hitch_file_policy_acknowledgement=1",
+        "hitch_candidate=$($candidateProfile.name)",
+        "hitch_i1_refill_bytes=$($candidateProfile.refill_bytes)",
+        "hitch_i1_buffer_budget_bytes=$($candidateProfile.buffer_budget_bytes)",
+        "hitch_i2_resident_seek=$([int]$candidateProfile.i2)",
+        "hitch_d1_catalog_optimized=$([int]$candidateProfile.d1)",
+        "hitch_compile_attribution=$($mode.Trace)",
+        "hitch_activation_proof=runtime_policy_or_catalog_status_required_not_requested_flags",
         "expected_lineage=codex/optimizedmw-phase9-audited",
         "phase9_reference=P8U1_COMBINED_SAME_BINARY",
         "phase9_dynamic_stream=$($mode.Stream)",
@@ -391,6 +430,7 @@ try{
         $env:OPENMW_P9_DLSS_CAPS_FILE=Join-Path $ProfileDir 'p9-dlss-capabilities.csv'
     }
     if($mode.Trace -eq '1'){
+        $env:OPENMW_P9_COMPILE_ATTRIBUTION_FILE=Join-Path $ProfileDir 'compile-attribution.csv'
         $env:OPENMW_P9_HITCH_CAPACITY='524288'
         $env:OPENMW_P9_HITCH_SPANS_FILE=Join-Path $ProfileDir 'p9-hitch-spans.csv'
         $env:OPENMW_V3_INSERT_FILE=Join-Path $ProfileDir 'v3-insertion.csv'
@@ -409,6 +449,9 @@ try{
     if($mode.Trace -eq '1' -or $mode.Temporal -eq '1'){
         $env:OPENMW_V36_GPU_PASS_FILE=Join-Path $ProfileDir 'p9-gpu-passes.csv'
     }
+    $runManifest=New-Phase9RunManifest -GameDir $GameDir -ProfileDir $ProfileDir -Mode $mode -Candidate $candidateProfile `
+        -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -Cohort $Cohort
+    Save-Phase9RunManifest $runManifest $ProfileDir
 
     Write-Host ''
     Write-Host "Starting OptimizedMW Phase 9 test: $Experiment" -ForegroundColor Green
@@ -426,6 +469,12 @@ try{
     $process=Start-Process -FilePath $Exe -WorkingDirectory $GameDir -PassThru
     $gameProcessId=$process.Id
     $gameCreationUtc=$process.StartTime.ToUniversalTime().ToString('o')
+    $runManifest.process.pid=$gameProcessId
+    $runManifest.process.creation_utc=$gameCreationUtc
+    $runManifest.process.creation_ticks=$process.StartTime.ToUniversalTime().Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $runManifest.process.launch_utc=$start.ToString('o')
+    $runManifest.completion.state='running'
+    Save-Phase9RunManifest $runManifest $ProfileDir
     @("game_process_id=$gameProcessId","game_creation_utc=$gameCreationUtc") | Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
     while(-not $process.HasExited){
         try{
@@ -454,6 +503,13 @@ catch{
     $launchFailure=$_
     "Launcher failure: $_" | Set-Content -LiteralPath (Join-Path $ProfileDir 'LAUNCH-ERROR.txt') -Encoding UTF8
     Write-Host "Launcher failed: $_" -ForegroundColor Red
+    # A failure before Start-Process still needs a package/configuration identity.
+    if(-not $runManifest){
+        try{
+            $runManifest=New-Phase9RunManifest -GameDir $GameDir -ProfileDir $ProfileDir -Mode $mode -Candidate $candidateProfile `
+                -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -Cohort $Cohort
+        }catch{"Run manifest preparation failed: $_" | Set-Content -LiteralPath (Join-Path $ProfileDir 'MANIFEST-ERROR.txt') -Encoding UTF8}
+    }
 }
 finally{
     # Never change the shared settings back while the launched game still uses them.
@@ -461,8 +517,8 @@ finally{
         try{if(-not $process.HasExited){$process.WaitForExit()};$exitCode=$process.ExitCode}catch{}
     }
     try{
-        Get-ChildItem Env: | Where-Object {$_.Name -like 'OPENMW_*'} | ForEach-Object {Remove-Item ('Env:'+$_.Name)}
-        foreach($entry in $originalEnv.GetEnumerator()){Set-Item ('Env:'+$entry.Key) $entry.Value}
+        $environmentRestoreVerified=Restore-Phase9Environment $originalEnv
+        if(-not $environmentRestoreVerified){throw 'Environment read-back differs from original'}
     }catch{Write-Host "Environment restore failed: $_" -ForegroundColor Red}
     try{
         if($changedSettings){
@@ -476,8 +532,17 @@ finally{
         if((Test-Path -LiteralPath $log) -and (Get-Item -LiteralPath $log).LastWriteTimeUtc -ge $start.UtcDateTime.AddSeconds(-5)){
             Copy-Item -LiteralPath $log -Destination (Join-Path $ProfileDir 'openmw.log') -Force
         }
-        @("settings_restore_verified=$restoreVerified","phase9_capture_state=finished", "final_exit_code=$exitCode") |
+        @("settings_restore_verified=$restoreVerified","environment_restore_verified=$environmentRestoreVerified","phase9_capture_state=finished", "final_exit_code=$exitCode") |
             Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
+        if($runManifest){
+            $runManifest.completion.state=if($launchFailure){'launcher_failed'}else{'game_exited'}
+            $runManifest.completion.exit_code=$exitCode
+            $runManifest.completion.launcher_error=if($launchFailure){[string]$launchFailure}else{$null}
+            $runManifest.completion.settings_restore_verified=$restoreVerified
+            $runManifest.completion.environment_restore_verified=$environmentRestoreVerified
+            $runManifest.completion.restored_settings_sha256=(Get-Phase9FileIdentity $SettingsPath).sha256
+            Save-Phase9RunManifest $runManifest $ProfileDir
+        }
     }catch{Write-Host "Some final evidence could not be copied: $_" -ForegroundColor Yellow}
     try{if($ownsMutex){$mutex.ReleaseMutex()}}finally{$mutex.Dispose()}
 }
@@ -487,18 +552,20 @@ try{
     $temporalStatus=Test-Phase9TemporalCapture -ProfileDir $ProfileDir -TemporalRequested ($mode.Temporal -eq '1')
     $writerStatus=Test-Phase9WriterCapture -ProfileDir $ProfileDir
     $hitchStatus=Test-Phase9HitchCapture -ProfileDir $ProfileDir
+    $compileAttributionStatus=Test-Phase9CompileAttributionCapture -ProfileDir $ProfileDir
+    if($runManifest){Complete-Phase9RunManifest $runManifest $ProfileDir}
     $zip=Complete-Phase9Profile -ProfileDir $ProfileDir -GameDir $GameDir
     if($systemTraceLink){$null=Complete-Phase9SystemTraceLink -Link $systemTraceLink -ProfileZip $zip.Path -GameProcessId $gameProcessId -GameCreationUtc $gameCreationUtc}
     Write-Host ''
     if($restoreVerified){Write-Host 'Your normal settings have been restored.' -ForegroundColor Green}
     Write-Host "Upload this verified ZIP: $($zip.Path)" -ForegroundColor Cyan
     if($zip.Missing.Count){Write-Host ('Partial capture; missing: '+($zip.Missing -join ', ')) -ForegroundColor Yellow}
-    try{Start-Process explorer.exe -ArgumentList "/select,`"$($zip.Path)`""}catch{}
+    if(-not $NoPrompt){try{Start-Process explorer.exe -ArgumentList "/select,`"$($zip.Path)`""}catch{}}
 }catch{
     Write-Host "$_" -ForegroundColor Red
     Write-Host "Raw evidence remains at: $ProfileDir" -ForegroundColor Yellow
-    Read-Host 'Press Enter to close'
+    if(-not $NoPrompt){Read-Host 'Press Enter to close'}
     exit 2
 }
-Read-Host 'Press Enter to close'
-if(-not $restoreVerified -or $null -ne $launchFailure){exit 1}
+if(-not $NoPrompt){Read-Host 'Press Enter to close'}
+if(-not $restoreVerified -or -not $environmentRestoreVerified -or $null -ne $launchFailure){exit 1}

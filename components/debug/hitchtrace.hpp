@@ -32,7 +32,7 @@ namespace Debug::HitchTrace
     std::int64_t threadCpuNs() noexcept;
     std::uint64_t threadId() noexcept;
     void writeClockMap(const std::string& path, bool final) noexcept;
-    enum class CpuTiming { Root, Scoped, None };
+    enum class CpuTiming { Root, Scoped, None, WallEnvelope };
 
     struct Metric
     {
@@ -165,13 +165,21 @@ namespace Debug::HitchTrace
             mCapture = &Capture::instance();
             mCapture->enter();
             mPrevious = current;
+            mCpuTiming = cpu;
             mRow.id = mCapture->nextId();
             mRow.parent = mPrevious ? mPrevious->mRow.id : 0;
             mRow.frame = frame == std::numeric_limits<unsigned>::max()
                 ? (mPrevious ? mPrevious->mRow.frame : V3HitchTelemetry::currentFrame()) : frame;
             mRow.thread = threadId();
             copy(mRow.phase, phase); copy(mRow.identity, identity); copy(mRow.asset, asset);
-            if (cpu != CpuTiming::None && (!mPrevious || cpu == CpuTiming::Scoped)) mCpuStart = threadCpuNs();
+            // New wall-only attribution envelopes must not suppress a CPU
+            // measurement that an existing Root scope took before the envelope
+            // was introduced. Existing Root/Scoped/None nesting is unchanged.
+            const Scope* cpuParent = mPrevious;
+            while (cpuParent && cpuParent->mCpuTiming == CpuTiming::WallEnvelope)
+                cpuParent = cpuParent->mPrevious;
+            if (cpu == CpuTiming::Scoped || (cpu == CpuTiming::Root && !cpuParent))
+                mCpuStart = threadCpuNs();
             mRow.epoch = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             mRow.start = now();
@@ -229,6 +237,7 @@ namespace Debug::HitchTrace
         Capture* mCapture = nullptr;
         Scope* mPrevious = nullptr;
         std::int64_t mCpuStart = -1;
+        CpuTiming mCpuTiming = CpuTiming::None;
         bool mChildRetained = false;
         bool mForced = false;
     };

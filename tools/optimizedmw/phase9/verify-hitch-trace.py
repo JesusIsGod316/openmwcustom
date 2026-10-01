@@ -38,7 +38,8 @@ for mode in ('normal', 'overflow'):
     assert any(r['identity'] == 'identity,with"quote' for r in rows)
     assert any(r['phase'] == 'truncated' and r['identity_truncated'] == '1' for r in rows)
     assert all(float(r['thread_cpu_ms']) >= 0 for r in rows
-               if r['parent'] == '0' and r['phase'] not in ('request', 'dependency'))
+               if r['parent'] == '0' and r['phase'] not in
+               ('request', 'dependency', 'wall_envelope', 'legacy_none_parent'))
     assert all(float(r['thread_cpu_ms']) >= 0 for r in rows if r['phase'] == 'child')
     legacy = next(r for r in rows if r['phase'] == 'asset_argument')
     assert legacy['asset'] == 'legacy-asset.nif' and legacy['identity'] == ''
@@ -49,6 +50,11 @@ for mode in ('normal', 'overflow'):
     assert request['metric1_name'] == 'requested_bytes' and request['metric1_value'] == '8192'
     assert dependency['metric1_name'] == 'returned_bytes' and dependency['metric1_value'] == '4096'
     assert request['thread_cpu_ms'] == dependency['thread_cpu_ms'] == '-1.000000'
+    root_through = next(r for r in rows if r['phase'] == 'root_through_envelope')
+    assert float(root_through['thread_cpu_ms']) >= 0
+    for phase in ('wall_envelope', 'inner_wall_envelope', 'nested_wall_envelope',
+                  'wall_below_legacy_none', 'root_below_cpu_root', 'root_below_legacy_none'):
+        assert next(r for r in rows if r['phase'] == phase)['thread_cpu_ms'] == '-1.000000'
     clock = dict(line.split('=', 1) for line in Path(str(path) + '.clock-map.txt').read_text().splitlines())
     assert clock['normal_finish'] == '1'
     if sys.platform == 'win32':

@@ -1,4 +1,6 @@
 #include <components/resource/openmwcompileoperation.hpp>
+#include <components/debug/compileattribution.hpp>
+#include <components/resource/v321classifiedcompileset.hpp>
 #include <components/resource/preparedterraintexture.hpp>
 #include <components/terrain/compositemaprenderer.hpp>
 #include <osg/BlendFunc>
@@ -295,6 +297,56 @@ int main() try
     ico->removeContexts(extraContext);
     secondContext->close(true);
     require(context->makeCurrent(), "primary context restore failed");
+    // Two ordinary OSG texture operations: the front op is destroyed by
+    // CompileSet::compile(). Metadata must survive without dereferencing it.
+    osg::ref_ptr<Resource::V321ClassifiedCompileSet> stock = new Resource::V321ClassifiedCompileSet(
+        nullptr, Resource::V321CompileClass::GenericModel, Resource::V321CompileUrgency::NearFuture);
+    std::array<osg::ref_ptr<osg::Texture2D>, 2> stockTextures;
+    for (unsigned i = 0; i < stockTextures.size(); ++i)
+    {
+        osg::ref_ptr<osg::Image> image = new osg::Image;
+        image->allocateImage(4, 4, 1, GL_RGBA, GL_UNSIGNED_BYTE);
+        std::fill_n(image->data(), image->getTotalDataSize(), static_cast<unsigned char>(i * 70));
+        image->setFileName("attribution,image\"" + std::to_string(i) + ".dds");
+        stockTextures[i] = new osg::Texture2D(image);
+        stockTextures[i]->setFilter(osg::Texture::MIN_FILTER, osg::Texture::LINEAR);
+        stock->_compileMap[context].add(new osgUtil::IncrementalCompileOperation::CompileTextureOp(stockTextures[i]));
+    }
+    ++stock->_numberCompileListsToCompile;
+    ico->add(stock, false);
+#ifdef P9_COMPILE_TRACE_TEST_HOOKS
+    if (const auto* value = std::getenv("P9_COMPILE_METADATA_FAILURE"); value && std::string_view(value) == "1")
+        Debug::CompileAttribution::metadataAllocationFaults = 1;
+#endif
+    next(); next();
+    require(ico->getToCompile().empty(), "ordinary stock texture operations did not complete");
+    for (auto& texture : stockTextures)
+    {
+        require(texture->getTextureObject(state.getContextID()) != nullptr, "stock texture did not upload");
+        texture->releaseGLObjects(&state);
+    }
+
+    // Observation generation and op age remain distinct from CompileSet age;
+    // a retired set address must never inherit the former occupant's history.
+    Debug::CompileAttribution::ObservedSets observed;
+    const auto first = observed.observe(stock.get(), stockTextures[0].get(), 5, false);
+    require(first.opFirst == 5 && first.demandFirst == Debug::CompileAttribution::UnknownFrame,
+        "near-future work was mislabeled as observed demand");
+    observed.progressed(stock.get(), 6);
+    const auto advanced = observed.observe(stock.get(), stockTextures[1].get(), 7, true);
+    require(advanced.generation == first.generation && advanced.opFirst == 7
+        && advanced.demandFirst == 7 && advanced.lastProgress == 6, "front op/demand/progress history conflated");
+    observed.forget(stock.get());
+    require(observed.observe(stock.get(), stockTextures[0].get(), 8, false).generation != first.generation,
+        "recycled set address inherited its old generation");
+    observed.prune([](const void*) { return false; });
+    for (std::size_t i = 1; i <= Debug::CompileAttribution::ObservedSets::MaximumSets; ++i)
+        observed.observe(reinterpret_cast<const void*>(i), nullptr, 9, false);
+    require(observed.observe(reinterpret_cast<const void*>(Debug::CompileAttribution::ObservedSets::MaximumSets + 1),
+        nullptr, 10, true).status == "unknown_capacity", "bounded observation overflow invented history");
+    observed.prune([](const void*) { return false; });
+    require(observed.observe(stock.get(), stockTextures[0].get(), 11, true).status == "observed"
+        && observed.capacityFailures() == 1, "later observed history hid prior registry saturation");
     config.mMaxBudgetMs = 0;
     config.mMaxQueueAgeFrames = 2;
     osg::ref_ptr<Resource::OpenMWIncrementalCompileOperation> starvedIco = new Resource::OpenMWIncrementalCompileOperation(config);
@@ -320,6 +372,11 @@ int main() try
     renderer->releaseGLObjects(&state);
     control->releaseGLObjects(&state);
     ico->removeContexts(contexts);
+    if (const auto* value = std::getenv("P9_COMPILE_NOFRAME"); value && std::string_view(value) == "1")
+    {
+        state.setFrameStamp(nullptr);
+        (*ico)(context);
+    }
     context->releaseContext(); context->close(true);
     std::cout << "PASS: shared admission, real preparation, image/program/release/resize/replacement invalidation, layer pixels/control, required and in-flight promotion, cancellation, bounded speculation/program-only dependencies, unsupported-context fallback and zero-headroom progress\n";
 }
