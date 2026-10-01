@@ -27,6 +27,14 @@ struct SlowAttribute : osg::StateAttribute
     int compare(const osg::StateAttribute& other) const override {return this==&other ? 0 : (this<&other?-1:1);}
     void apply(osg::State&) const override {std::this_thread::sleep_for(std::chrono::milliseconds(2));}
 };
+struct SlowCull : osg::NodeCallback
+{
+    void operator()(osg::Node* node, osg::NodeVisitor* visitor) override
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        traverse(node, visitor);
+    }
+};
 struct SlowDraw : osg::Drawable::DrawCallback
 {
     void drawImplementation(osg::RenderInfo& info,const osg::Drawable* d)const override
@@ -73,6 +81,7 @@ int main(int argc, char** argv) try
     viewer.setLightingMode(osgViewer::View::NO_LIGHT);
     osg::ref_ptr<Pixels> pixels=new Pixels;camera->setFinalDrawCallback(pixels);
     osg::ref_ptr<osg::Group> root=new osg::Group;
+    if(startup && Debug::HitchTrace::requested()) root->setCullCallback(new SlowCull);
     std::array<osg::ref_ptr<osg::Geode>,4> geodes;
     std::array<osg::ref_ptr<osg::Geometry>,4> ordinary;
     std::array<osg::ref_ptr<Terrain::TerrainDrawable>,4> terrain;
@@ -120,6 +129,9 @@ int main(int argc, char** argv) try
         target->setTextureSize(32,32);target->setInternalFormat(GL_RGBA);
         aux->attach(osg::Camera::COLOR_BUFFER0,target);
         aux->addChild(root->getChild(0));root->addChild(aux);
+        if (!camera->getStats()) camera->setStats(new osg::Stats("Phase9-Cull-Fixture"));
+        camera->getStats()->collectStats("scene", true);
+        camera->getStats()->collectStats("rendering", true);
     }
     if(startup) require(installBeforeRealize(viewer)==2,"production pre-realize installation failed");
     else viewer.setSceneData(root);
@@ -175,6 +187,8 @@ int main(int argc, char** argv) try
     require(context->getState()->getDynamicObjectCount()==referenceDynamic,"dynamic draw completion semantics changed");
     if(startup) require(SceneUtil::GLCallTrace::Capture::instance().total(context->getState()->getContextID(),
         SceneUtil::GLCallTrace::BufferData).calls>0,"actual OSG buffer dispatch was not traced");
+    if(startup && threaded && Debug::HitchTrace::requested())
+        require(camera->getStats()->collectStats("scene"), "scene statistics control lost");
     viewer.setDone(true);viewer.stopThreading();viewer.setSceneData(nullptr);context->close(true);
     std::cout<<"PASS "<<(threaded ? "DrawThreadPerContext" : "SingleThreaded")<<": exact control/traced pixels, real double-buffer cull pools, nested visitor cloning, state-vs-draw delay attribution, and dynamic completion count\n";
 }

@@ -462,7 +462,11 @@ namespace MWLua
         double trackerMs = 0.0;
 
         auto phaseStart = startPhase();
-        processV320LuaProfilerBoundary();
+        {
+            Debug::HitchTrace::Scope detail("lua.profiler_boundary", Debug::HitchTrace::CpuTiming::Scoped);
+            processV320LuaProfilerBoundary();
+        }
+
         statsMs = finishPhase(phaseStart);
 
         if (mPlayer.isEmpty())
@@ -470,38 +474,58 @@ namespace MWLua
 
         Debug::V33LuaTrace::FrameScope v33LuaTraceFrame;
 
-        MWWorld::Ptr newPlayerPtr = MWBase::Environment::get().getWorld()->getPlayerPtr();
-        if (!(getId(mPlayer) == getId(newPlayerPtr)))
-            throw std::logic_error("Player RefNum was changed unexpectedly");
-        if (!mPlayer.isInCell() || !newPlayerPtr.isInCell() || mPlayer.getCell() != newPlayerPtr.getCell())
         {
-            mPlayer = newPlayerPtr; // player was moved to another cell, update ptr in registry
-            MWBase::Environment::get().getWorldModel()->registerPtr(mPlayer);
+            Debug::HitchTrace::Scope detail("lua.player_registry");
+            MWWorld::Ptr newPlayerPtr = MWBase::Environment::get().getWorld()->getPlayerPtr();
+            if (!(getId(mPlayer) == getId(newPlayerPtr)))
+                throw std::logic_error("Player RefNum was changed unexpectedly");
+            if (!mPlayer.isInCell() || !newPlayerPtr.isInCell() || mPlayer.getCell() != newPlayerPtr.getCell())
+            {
+                mPlayer = newPlayerPtr; // player was moved to another cell, update ptr in registry
+                MWBase::Environment::get().getWorldModel()->registerPtr(mPlayer);
+            }
         }
 
+
         phaseStart = startPhase();
-        mObjectLists.update();
+        {
+            Debug::HitchTrace::Scope detail("lua.object_lists", Debug::HitchTrace::CpuTiming::Scoped);
+            mObjectLists.update();
+        }
+
         objectListsMs = finishPhase(phaseStart);
 
         const std::size_t autostartCount = mQueuedAutoStartedScripts.size();
         phaseStart = startPhase();
-        for (const LuaUtil::ScriptsContainerWeakPtr& ptr : mQueuedAutoStartedScripts)
         {
-            if (LocalScripts* scripts = asLocal(ptr))
-                scripts->addAutoStartedScripts();
+            Debug::HitchTrace::Scope detail("lua.autostart", Debug::HitchTrace::CpuTiming::Scoped);
+            for (const LuaUtil::ScriptsContainerWeakPtr& ptr : mQueuedAutoStartedScripts)
+            {
+                if (LocalScripts* scripts = asLocal(ptr))
+                    scripts->addAutoStartedScripts();
+            }
+            mQueuedAutoStartedScripts.clear();
         }
-        mQueuedAutoStartedScripts.clear();
+
         autostartMs = finishPhase(phaseStart);
 
         phaseStart = startPhase();
-        std::erase_if(mActiveLocalScripts, [](const LuaUtil::ScriptsContainerWeakPtr& ptr) {
-            LocalScripts* l = asLocal(ptr);
-            return l == nullptr || l->getPtrOrEmpty().isEmpty() || l->getPtrOrEmpty().mRef->isDeleted();
-        });
+        {
+            Debug::HitchTrace::Scope detail("lua.prune_locals");
+            std::erase_if(mActiveLocalScripts, [](const LuaUtil::ScriptsContainerWeakPtr& ptr) {
+                LocalScripts* l = asLocal(ptr);
+                return l == nullptr || l->getPtrOrEmpty().isEmpty() || l->getPtrOrEmpty().mRef->isDeleted();
+            });
+        }
+
         pruneMs = finishPhase(phaseStart);
 
         phaseStart = startPhase();
-        mLuaEvents.finalizeEventBatch();
+        {
+            Debug::HitchTrace::Scope detail("lua.finalize_events");
+            mLuaEvents.finalizeEventBatch();
+        }
+
         eventFinalizeMs = finishPhase(phaseStart);
 
         MWWorld::DateTimeManager& timeManager = *MWBase::Environment::get().getWorld()->getTimeManager();
@@ -510,14 +534,18 @@ namespace MWLua
         const bool v33IdleTimerFastPath = Settings::V36Profile::luaFastPathEnabled();
         phaseStart = startPhase();
         {
-            Debug::V33LuaTrace::PhaseScope v33Phase(Debug::V33LuaTrace::Phase::Timers);
-            if (!timeManager.isPaused())
             {
-                mMenuScripts.processTimers(simulationTime, gameTime, v33IdleTimerFastPath);
-                mGlobalScripts.processTimers(simulationTime, gameTime, v33IdleTimerFastPath);
-                for (const LuaUtil::ScriptsContainerWeakPtr& ptr : mActiveLocalScripts)
-                    asLocal(ptr)->processTimers(simulationTime, gameTime, v33IdleTimerFastPath);
+                Debug::HitchTrace::Scope detail("lua.timers", Debug::HitchTrace::CpuTiming::Scoped);
+                Debug::V33LuaTrace::PhaseScope v33Phase(Debug::V33LuaTrace::Phase::Timers);
+                if (!timeManager.isPaused())
+                {
+                    mMenuScripts.processTimers(simulationTime, gameTime, v33IdleTimerFastPath);
+                    mGlobalScripts.processTimers(simulationTime, gameTime, v33IdleTimerFastPath);
+                    for (const LuaUtil::ScriptsContainerWeakPtr& ptr : mActiveLocalScripts)
+                        asLocal(ptr)->processTimers(simulationTime, gameTime, v33IdleTimerFastPath);
+                }
             }
+
         }
         timersMs = finishPhase(phaseStart);
 
@@ -525,7 +553,11 @@ namespace MWLua
         {
             Debug::V33LuaTrace::PhaseScope v33Phase(Debug::V33LuaTrace::Phase::LuaEvents);
             // Run event handlers for events that were sent before `finalizeEventBatch`.
-            mLuaEvents.callEventHandlers();
+            {
+                Debug::HitchTrace::Scope detail("lua.event_handlers", Debug::HitchTrace::CpuTiming::Scoped);
+                mLuaEvents.callEventHandlers();
+            }
+
         }
         eventHandlersMs = finishPhase(phaseStart);
 
@@ -535,9 +567,13 @@ namespace MWLua
             {
                 Debug::V33LuaTrace::PhaseScope v33Phase(Debug::V33LuaTrace::Phase::QueuedCallbacks);
                 // Run queued callbacks
-                for (CallbackWithData& c : mQueuedCallbacks)
-                    c.mCallback.tryCall(c.mArg);
-                mQueuedCallbacks.clear();
+                {
+                    Debug::HitchTrace::Scope detail("lua.queued_callbacks", Debug::HitchTrace::CpuTiming::Scoped);
+                    for (CallbackWithData& c : mQueuedCallbacks)
+                        c.mCallback.tryCall(c.mArg);
+                    mQueuedCallbacks.clear();
+                }
+
             }
             callbacksMs = finishPhase(phaseStart);
 
@@ -545,7 +581,11 @@ namespace MWLua
             {
                 Debug::V33LuaTrace::PhaseScope v33Phase(Debug::V33LuaTrace::Phase::EngineEvents);
                 // Run engine handlers
-                mEngineEvents.callEngineHandlers();
+                {
+                    Debug::HitchTrace::Scope detail("lua.engine_events", Debug::HitchTrace::CpuTiming::Scoped);
+                    mEngineEvents.callEngineHandlers();
+                }
+
             }
             engineEventsMs = finishPhase(phaseStart);
             bool isPaused = timeManager.isPaused();
@@ -554,20 +594,32 @@ namespace MWLua
             phaseStart = startPhase();
             {
                 Debug::V33LuaTrace::PhaseScope v33Phase(Debug::V33LuaTrace::Phase::LocalUpdate);
-                for (const LuaUtil::ScriptsContainerWeakPtr& ptr : mActiveLocalScripts)
-                    asLocal(ptr)->update(isPaused ? 0 : frameDuration);
+                {
+                    Debug::HitchTrace::Scope detail("lua.local_update", Debug::HitchTrace::CpuTiming::Scoped);
+                    for (const LuaUtil::ScriptsContainerWeakPtr& ptr : mActiveLocalScripts)
+                        asLocal(ptr)->update(isPaused ? 0 : frameDuration);
+                }
+
             }
             localUpdateMs = finishPhase(phaseStart);
 
             phaseStart = startPhase();
             {
                 Debug::V33LuaTrace::PhaseScope v33Phase(Debug::V33LuaTrace::Phase::GlobalUpdate);
-                mGlobalScripts.update(isPaused ? 0 : frameDuration);
+                {
+                    Debug::HitchTrace::Scope detail("lua.global_update", Debug::HitchTrace::CpuTiming::Scoped);
+                    mGlobalScripts.update(isPaused ? 0 : frameDuration);
+                }
+
             }
             globalUpdateMs = finishPhase(phaseStart);
 
             phaseStart = startPhase();
-            mScriptTracker.unloadInactiveScripts(lua);
+            {
+                Debug::HitchTrace::Scope detail("lua.tracker_unload", Debug::HitchTrace::CpuTiming::Scoped);
+                mScriptTracker.unloadInactiveScripts(lua);
+            }
+
             trackerMs = finishPhase(phaseStart);
         });
 
@@ -586,7 +638,11 @@ namespace MWLua
 
     bool LuaManager::gcStep(int steps)
     {
-        return lua_gc(mLua.unsafeState(), LUA_GCSTEP, steps) == 1;
+        {
+            Debug::HitchTrace::Scope detail("lua.gc_step", Debug::HitchTrace::CpuTiming::Scoped);
+            return lua_gc(mLua.unsafeState(), LUA_GCSTEP, steps) == 1;
+        }
+
     }
 
     void LuaManager::objectTeleported(const MWWorld::Ptr& ptr)
@@ -643,14 +699,18 @@ namespace MWLua
         double uiModeMs = 0.0;
 
         auto phaseStart = startPhase();
-        if (mNewGameStarted)
         {
-            mNewGameStarted = false;
-            // Run onNewGame handler in synchronizedUpdate (at the beginning of the frame), so it
-            // can teleport the player to the starting location before the first frame is rendered.
-            mGlobalScripts.newGameStarted();
+            Debug::HitchTrace::Scope detail("lua.new_game");
+            if (mNewGameStarted)
+            {
+                mNewGameStarted = false;
+                // Run onNewGame handler in synchronizedUpdate (at the beginning of the frame), so it
+                // can teleport the player to the starting location before the first frame is rendered.
+                mGlobalScripts.newGameStarted();
+            }
+            newGameMs = finishPhase(phaseStart);
         }
-        newGameMs = finishPhase(phaseStart);
+
         BoolScopeGuard updateGuard(mRunningSynchronizedUpdates);
 
         MWBase::WindowManager* windowManager = MWBase::Environment::get().getWindowManager();
@@ -659,60 +719,80 @@ namespace MWLua
         phaseStart = startPhase();
         // We apply input events in `synchronizedUpdate` rather than in `update` in order to reduce input latency.
         {
-            BoolScopeGuard processingGuard(mProcessingInputEvents);
-
-            for (const auto& event : mMenuInputEvents)
-                mMenuScripts.processInputEvent(event);
-            mMenuInputEvents.clear();
-            if (playerScripts && !windowManager->containsMode(MWGui::GM_MainMenu))
             {
-                for (const auto& event : mInputEvents)
-                    playerScripts->processInputEvent(event);
+                Debug::HitchTrace::Scope detail("lua.input_player", Debug::HitchTrace::CpuTiming::Scoped);
+                BoolScopeGuard processingGuard(mProcessingInputEvents);
+
+                for (const auto& event : mMenuInputEvents)
+                    mMenuScripts.processInputEvent(event);
+                mMenuInputEvents.clear();
+                if (playerScripts && !windowManager->containsMode(MWGui::GM_MainMenu))
+                {
+                    for (const auto& event : mInputEvents)
+                        playerScripts->processInputEvent(event);
+                }
+                mInputEvents.clear();
+                mLuaEvents.callMenuEventHandlers();
+                float frameDuration = MWBase::Environment::get().getWorld()->getTimeManager()->isPaused()
+                    ? 0.f
+                    : MWBase::Environment::get().getFrameDuration();
+                mInputActions.update(frameDuration);
+                mMenuScripts.onFrame(frameDuration);
+                if (playerScripts)
+                    playerScripts->onFrame(frameDuration);
             }
-            mInputEvents.clear();
-            mLuaEvents.callMenuEventHandlers();
-            float frameDuration = MWBase::Environment::get().getWorld()->getTimeManager()->isPaused()
-                ? 0.f
-                : MWBase::Environment::get().getFrameDuration();
-            mInputActions.update(frameDuration);
-            mMenuScripts.onFrame(frameDuration);
-            if (playerScripts)
-                playerScripts->onFrame(frameDuration);
+
         }
         inputMs = finishPhase(phaseStart);
 
         phaseStart = startPhase();
-        for (const auto& [message, mode] : mUIMessages)
-            windowManager->messageBox(message, mode);
-        mUIMessages.clear();
-        for (auto& [msg, color] : mInGameConsoleMessages)
-            windowManager->printToConsole(msg, "#" + color.toHex());
-        mInGameConsoleMessages.clear();
+        {
+            Debug::HitchTrace::Scope detail("lua.ui_messages");
+            for (const auto& [message, mode] : mUIMessages)
+                windowManager->messageBox(message, mode);
+            mUIMessages.clear();
+            for (auto& [msg, color] : mInGameConsoleMessages)
+                windowManager->printToConsole(msg, "#" + color.toHex());
+            mInGameConsoleMessages.clear();
+        }
+
         uiMessagesMs = finishPhase(phaseStart);
 
         const std::size_t actionCount = mActionQueue.size();
         const bool hadTeleport = mTeleportPlayerAction.has_value();
         phaseStart = startPhase();
-        applyDelayedActions();
+        {
+            Debug::HitchTrace::Scope detail("lua.delayed_actions", Debug::HitchTrace::CpuTiming::Scoped);
+            applyDelayedActions();
+        }
+
         delayedActionsMs = finishPhase(phaseStart);
 
         phaseStart = startPhase();
-        if (mReloadAllScriptsRequested)
         {
-            // Reloading right after `applyDelayedActions` to guarantee that no delayed actions are currently queued.
-            reloadAllScriptsImpl();
-            mReloadAllScriptsRequested = false;
+            Debug::HitchTrace::Scope detail("lua.reload");
+            if (mReloadAllScriptsRequested)
+            {
+                // Reloading right after `applyDelayedActions` to guarantee that no delayed actions are currently queued.
+                reloadAllScriptsImpl();
+                mReloadAllScriptsRequested = false;
+            }
+            reloadMs = finishPhase(phaseStart);
         }
-        reloadMs = finishPhase(phaseStart);
+
 
         phaseStart = startPhase();
-        if (mDelayedUiModeChangedArg)
         {
-            if (playerScripts)
-                playerScripts->uiModeChanged(*mDelayedUiModeChangedArg, true);
-            mDelayedUiModeChangedArg = std::nullopt;
+            Debug::HitchTrace::Scope detail("lua.ui_mode");
+            if (mDelayedUiModeChangedArg)
+            {
+                if (playerScripts)
+                    playerScripts->uiModeChanged(*mDelayedUiModeChangedArg, true);
+                mDelayedUiModeChangedArg = std::nullopt;
+            }
+            uiModeMs = finishPhase(phaseStart);
         }
-        uiModeMs = finishPhase(phaseStart);
+
 
         if (profile)
         {
@@ -746,6 +826,7 @@ namespace MWLua
         auto queueStart = profile ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         for (DelayedAction& action : mActionQueue)
         {
+            Debug::HitchTrace::Scope hitchAction("lua.delayed_action", action.name());
             if (profile)
             {
                 const auto actionStart = Debug::V3Diagnostics::Clock::now();
@@ -768,6 +849,7 @@ namespace MWLua
         {
             const auto teleportStart
                 = profile ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
+            Debug::HitchTrace::Scope hitchTeleport("lua.teleport_action", mTeleportPlayerAction->name());
             mTeleportPlayerAction->apply();
             if (profile)
                 teleportMs = Debug::V3Diagnostics::elapsedMs(teleportStart);

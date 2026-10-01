@@ -19,6 +19,12 @@ namespace Phase9 {
   public int rows,roots,truncated_identities;
   public List<string> reasons=new List<string>();
   public List<HitchSpan> largest_scopes,largest_unattributed_scopes;
+  public List<HitchPhase> phase_totals;
+ }
+ public class HitchPhase {
+  public string phase;
+  public int retained_calls,cpu_samples;
+  public double inclusive_ms,self_ms,max_ms,observed_thread_cpu_ms;
  }
  public static class HitchReport {
   static CultureInfo CI=CultureInfo.InvariantCulture;
@@ -36,7 +42,7 @@ namespace Phase9 {
   }
   public static HitchResult Read(string path) {
    var result=new HitchResult(); var spans=new Dictionary<ulong,HitchSpan>();
-   if(new FileInfo(path).Length>134217728) throw new InvalidDataException("Timeline exceeds 128 MiB bound");
+   if(new FileInfo(path).Length>268435456) throw new InvalidDataException("Timeline exceeds 256 MiB bound");
    using(var reader=new StreamReader(path)) {
     string header=reader.ReadLine();
     if(header!="span,parent,frame,thread,start_ns,end_ns,epoch_ms,phase,identity,asset,wall_ms,children_ms,unattributed_ms,thread_cpu_ms,identity_truncated")
@@ -44,7 +50,7 @@ namespace Phase9 {
     string line;
     while((line=reader.ReadLine())!=null) {
      if(line.Length==0 || line.StartsWith("#"))continue;
-     if(line.Length>4096 || spans.Count>=131072)throw new InvalidDataException("Timeline row bound exceeded");
+     if(line.Length>4096 || spans.Count>=262144)throw new InvalidDataException("Timeline row bound exceeded");
      var f=Csv(line); if(f.Length!=15)throw new InvalidDataException("Malformed timeline row");
      var s=new HitchSpan{span=ulong.Parse(f[0],CI),parent=ulong.Parse(f[1],CI),frame=long.Parse(f[2],CI),
       thread=ulong.Parse(f[3],CI),start_ns=long.Parse(f[4],CI),end_ns=long.Parse(f[5],CI),epoch_ms=long.Parse(f[6],CI),
@@ -73,6 +79,11 @@ namespace Phase9 {
    result.rows=spans.Count;
    result.largest_scopes=spans.Values.OrderByDescending(s=>s.wall_ms).Take(25).ToList();
    result.largest_unattributed_scopes=spans.Values.OrderByDescending(s=>s.unattributed_ms).Take(25).ToList();
+   result.phase_totals=spans.Values.GroupBy(s=>s.phase).Select(g=>new HitchPhase {
+    phase=g.Key,retained_calls=g.Count(),inclusive_ms=g.Sum(s=>s.wall_ms),self_ms=g.Sum(s=>s.unattributed_ms),
+    max_ms=g.Max(s=>s.wall_ms),cpu_samples=g.Count(s=>s.thread_cpu_ms>=0),
+    observed_thread_cpu_ms=g.Where(s=>s.thread_cpu_ms>=0).Sum(s=>s.thread_cpu_ms)
+   }).OrderByDescending(p=>p.self_ms).ToList();
    return result;
   }
  }
@@ -84,7 +95,7 @@ function Test-Phase9HitchCapture {
     param([Parameter(Mandatory=$true)][string]$ProfileDir)
     $mode=Get-Content -Raw -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt')
     $requested=$mode -match '(?m)^phase9_hitch_spans=1\r?$'
-    $reasons=[Collections.Generic.List[string]]::new();$analysis=$null;$status=@{}
+    $reasons=[Collections.Generic.List[string]]::new();$analysis=$null;$status=@{};$clock=@{}
     if($requested){
         try{
             $path=Join-Path $ProfileDir 'p9-hitch-spans.csv'
@@ -94,10 +105,24 @@ function Test-Phase9HitchCapture {
             foreach($key in @('rows','capacity','dropped','allocation_failed','active_at_finish','normal_finish','output_ok')){
                 if(-not $status.ContainsKey($key)){throw "Missing timeline status: $key"}
             }
-            if($status.capacity -ne 131072 -or $status.rows -gt $status.capacity -or $status.dropped -ne 0 -or
+            if($status.capacity -notin @(131072,262144) -or $status.rows -gt $status.capacity -or $status.dropped -ne 0 -or
                 $status.allocation_failed -ne 0 -or $status.active_at_finish -ne 0 -or
                 $status.normal_finish -ne 1 -or $status.output_ok -ne 1){throw 'Timeline loss or incomplete output'}
             $analysis=[Phase9.HitchReport]::Read($path)
+            if($mode -match '(?m)^phase9_detail_revision=2\r?$'){
+                foreach($line in [IO.File]::ReadAllLines($path+'.clock-map.txt')){
+                    if($line -match '^([^=]+)=(.*)$'){$clock[$matches[1]]=[string]$matches[2]}
+                }
+                foreach($key in @('process_id','thread_id_kind','qpc_frequency','start_qpc_before','start_qpc_after','start_steady_ns','end_qpc_before','end_qpc_after','end_steady_ns','normal_finish')){
+                    if(-not $clock.ContainsKey($key)){throw "Missing ETW clock mapping: $key"}
+                }
+                if($clock.thread_id_kind -ne 'windows_native_tid' -or [long]$clock.qpc_frequency -le 0 -or
+                    [long]$clock.start_qpc_before -gt [long]$clock.start_qpc_after -or
+                    [long]$clock.end_qpc_before -gt [long]$clock.end_qpc_after -or
+                    [long]$clock.start_steady_ns -gt [long]$clock.end_steady_ns -or $clock.normal_finish -ne '1'){
+                    throw 'Invalid ETW clock calibration or incomplete shutdown'
+                }
+            }
             if($analysis.rows -ne $status.rows -or $analysis.rows -eq 0){throw 'Empty or inconsistent timeline row count'}
             $stream=[IO.File]::OpenRead($path);$reader=$null
             try{
@@ -111,11 +136,16 @@ function Test-Phase9HitchCapture {
         }catch{[void]$reasons.Add([string]$_)}
     }
     $result=[pscustomobject]@{schema=1;requested=$requested;valid_span_capture=$(if($requested){$reasons.Count -eq 0}else{$null});
-        status=$status;analysis=$analysis;reasons=$reasons.ToArray();
+        status=$status;analysis=$analysis;clock_mapping=$clock;reasons=$reasons.ToArray();
         scope='Nested CPU wall-time spans; selected GL calls are in the separate draw trace. GPU/driver internals remain partially unobserved.';
         identity_note='Truncated identities are explicitly marked; do not claim exact asset identity for those rows.';
-        accounting_note='children_ms includes fast filtered child scopes. unattributed_ms is the remaining envelope, not proof of a specific cause. Nested scopes must not be added together.'}
+        accounting_note='children_ms includes fast filtered child scopes. unattributed_ms is the remaining envelope, not proof of a specific cause. Nested scopes must not be added together.';
+        phase_totals_note='Totals describe retained spans only. Inclusive totals overlap nested phases; self totals from different threads overlap in wall time. Windows thread CPU time is coarse and can exceed a short wall interval. Use ETW for precise running, ready and blocked intervals.'}
     $result | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath (Join-Path $ProfileDir 'HITCH-CAPTURE.json') -Encoding UTF8
+    if($analysis){
+        $analysis.phase_totals | Export-Csv -NoTypeInformation -Encoding UTF8 -LiteralPath (Join-Path $ProfileDir 'HITCH-PHASE-TOTALS.csv')
+        $analysis.largest_unattributed_scopes | Export-Csv -NoTypeInformation -Encoding UTF8 -LiteralPath (Join-Path $ProfileDir 'HITCH-REMAINING-SCOPES.csv')
+    }
     if($requested -and $reasons.Count){Write-Warning ('INVALID HITCH CAPTURE: '+($reasons -join '; '))}
     return $result
 }

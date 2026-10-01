@@ -273,10 +273,11 @@ try{
         "phase9_hitch_spans=$($mode.Trace)",
         "phase9_hitch_scope=engine_operations_plus_selected_GL_not_all_driver_calls",
         "phase9_static_prewarm=disabled_after_optimized_trace_driver_crash",
-        "phase9_trace_schema=5",
+        "phase9_trace_schema=6",
         "phase9_temporal_contract=consumer_frame_v2_ownership",
         "phase9_capture_transport=bounded_mpsc_v1",
         "phase9_resource_capacity=131072",
+        "phase9_detail_revision=2",
         "phase9_dlss_ready_requires_dense_dynamic_motion=true",
         "phase9_gl_vulkan_interop_probe=$($mode.Temporal)",
         "phase9_culling=retained_existing_cell_paged_and_groundcover_hierarchy_no_new_visibility_policy",
@@ -394,6 +395,9 @@ try{
         $env:OPENMW_V3_LUA_ACTION_FILE=Join-Path $ProfileDir 'v3-lua-actions.csv'
         $env:OPENMW_V33_LUA_CALLBACK_FILE=Join-Path $ProfileDir 'v33-lua-callbacks.csv'
         $env:OPENMW_V35_LUA_LOAD_FILE=Join-Path $ProfileDir 'v35-lua-load.csv'
+        $env:OPENMW_V3_LUA_UPDATE_FILE=Join-Path $ProfileDir 'v3-lua-update.csv'
+        $env:OPENMW_V36_CONTROLLER_FILE=Join-Path $ProfileDir 'v36-controller.csv'
+        $env:OPENMW_V36_LUA_ADDSCRIPT_FILE=Join-Path $ProfileDir 'v36-lua-addscript.csv'
         $env:OPENMW_P9_LEAF_TRACE_FILE=Join-Path $ProfileDir 'p9-draw-phases.csv'
         $env:OPENMW_P9_DYNAMIC_TRACE_FILE=Join-Path $ProfileDir 'p9-dynamic-stream.csv'
         $env:OPENMW_P9_COMPOSITE_FILE=Join-Path $ProfileDir 'p9-terrain-composite.csv'

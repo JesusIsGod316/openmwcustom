@@ -14,11 +14,17 @@ int main(int argc, char** argv)
 {
     if (argc != 3) return 2;
 #ifdef _WIN32
-    _putenv_s("OPENMW_P9_HITCH_SPANS_FILE", argv[1]);
+    _putenv_s("OPENMW_P9_HITCH_SPANS_FILE", std::string_view(argv[2]) == "unarmed" ? "0" : argv[1]);
 #else
-    setenv("OPENMW_P9_HITCH_SPANS_FILE", argv[1], 1);
+    setenv("OPENMW_P9_HITCH_SPANS_FILE", std::string_view(argv[2]) == "unarmed" ? "0" : argv[1], 1);
 #endif
     auto& capture = Capture::instance();
+    if (std::string_view(argv[2]) == "unarmed")
+    {
+        { Scope unarmed("unarmed", CpuTiming::Scoped); spin(); }
+        if (capture.enabled()) return 4;
+        capture.finish(); return 0;
+    }
     if (!capture.enabled()) return 3;
     if (std::string_view(argv[2]) == "overflow")
     {
@@ -30,7 +36,7 @@ int main(int argc, char** argv)
     else
     {
         { Scope parent("parent", "identity,with\"quote", "asset.nif", 123);
-          { Scope child("child", {}, {}, 123); spin(); }
+          { Scope child("child", {}, {}, 123, CpuTiming::Scoped); spin(); }
           { Scope filtered("fast_child", {}, {}, 123); } }
         try { Scope unwind("exception"); spin(); throw 1; } catch (...) {}
         std::vector<std::thread> workers;

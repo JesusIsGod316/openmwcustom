@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 #include "worldimp.hpp"
 
 #include <charconv>
@@ -1582,29 +1583,30 @@ namespace MWWorld
         if (mPlayerInJail && !mGoToJail && !MWBase::Environment::get().getWindowManager()->containsMode(MWGui::GM_Jail))
             mPlayerInJail = false;
 
-        updateWeather(duration, paused);
+        { Debug::HitchTrace::Scope detail("world.weather"); updateWeather(duration, paused); }
 
-        updateNavigator();
+        { Debug::HitchTrace::Scope detail("world.navigator_update"); updateNavigator(); }
 
-        mPlayer->update();
+        { Debug::HitchTrace::Scope detail("world.player"); mPlayer->update(); }
 
-        mPhysics->debugDraw();
+        { Debug::HitchTrace::Scope detail("world.physics_debug"); mPhysics->debugDraw(); }
 
-        mWorldScene->update(duration);
+        { Debug::HitchTrace::Scope detail("world.scene"); mWorldScene->update(duration); }
 
-        mRendering->update(duration, paused);
+        { Debug::HitchTrace::Scope detail("world.rendering_update"); mRendering->update(duration, paused); }
 
-        updateSoundListener();
+        { Debug::HitchTrace::Scope detail("world.sound_listener"); updateSoundListener(); }
 
         mSpellPreloadTimer -= duration;
         if (mSpellPreloadTimer <= 0.f)
         {
             mSpellPreloadTimer = 0.1f;
-            preloadSpells();
+            { Debug::HitchTrace::Scope detail("world.spell_preload"); preloadSpells(); }
         }
 
         if (mWorldScene->hasCellLoaded())
         {
+            Debug::HitchTrace::Scope required("world.navigator_required_wait", Debug::HitchTrace::CpuTiming::Scoped);
             mNavigator->wait(DetourNavigator::WaitConditionType::requiredTilesPresent,
                 MWBase::Environment::get().getWindowManager()->getLoadingScreen());
             mWorldScene->resetCellLoaded();

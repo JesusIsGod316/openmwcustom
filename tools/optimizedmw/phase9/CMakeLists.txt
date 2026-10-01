@@ -191,3 +191,8 @@ if(NOT MSVC)
     target_compile_options(${target} PRIVATE -Wno-error=deprecated-declarations)
   endforeach()
 endif()
+
+add_test(NAME p9-production-cull-threaded COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/verify-cull-timeline.py $<TARGET_FILE:p9-draw-phases>)
+set_tests_properties(p9-production-cull-threaded PROPERTIES TIMEOUT 45
+  ENVIRONMENT "OPENMW_P9_LEAF_TRACE_FILE=${CMAKE_CURRENT_BINARY_DIR}/draw-production-cull.csv;OPENMW_P9_HITCH_SPANS_FILE=${CMAKE_CURRENT_BINARY_DIR}/draw-production-cull-spans.csv")

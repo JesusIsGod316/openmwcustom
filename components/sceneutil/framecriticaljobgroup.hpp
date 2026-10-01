@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 #ifndef OPENMW_COMPONENTS_SCENEUTIL_FRAMECRITICALJOBGROUP_H
 #define OPENMW_COMPONENTS_SCENEUTIL_FRAMECRITICALJOBGROUP_H
 
@@ -100,13 +101,17 @@ namespace SceneUtil
 
             bool success = true;
             {
-                std::unique_lock stateLock(mStateMutex);
-                mDone.wait(stateLock, [this, generation, requestedWorkers] {
-                    return mStop || (mGeneration == generation && mCompletedWorkers >= requestedWorkers);
-                });
-                success = !mStop && !mFailed.load(std::memory_order_acquire);
-                mTask = {};
-                mRequestedWorkers = 0;
+                {
+                    Debug::HitchTrace::Scope detail("jobs.clone_join", Debug::HitchTrace::CpuTiming::Scoped);
+                    std::unique_lock stateLock(mStateMutex);
+                    mDone.wait(stateLock, [this, generation, requestedWorkers] {
+                        return mStop || (mGeneration == generation && mCompletedWorkers >= requestedWorkers);
+                    });
+                    success = !mStop && !mFailed.load(std::memory_order_acquire);
+                    mTask = {};
+                    mRequestedWorkers = 0;
+                }
+
             }
 
             if (!success)

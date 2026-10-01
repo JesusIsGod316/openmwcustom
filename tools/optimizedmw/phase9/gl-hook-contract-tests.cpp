@@ -60,6 +60,18 @@ void GL_APIENTRY compressed(GLenum target,GLint level,GLenum internalFormat,GLsi
     }
 }
 
+int mipmapCalls=0;
+void GL_APIENTRY mipmap(GLenum target)
+{
+    if(target!=GL_TEXTURE_2D)throw std::runtime_error("mipmap target changed");
+    ++mipmapCalls;
+    const auto row=Capture::instance().breadcrumb(15).row;
+    if(row.nativeThread!=Debug::HitchTrace::threadId())throw std::runtime_error("native thread correlation missing");
+    if(expectTextureIdentity && (row.texture!=expectedTexture || row.glName!=73))
+        throw std::runtime_error("explicit mipmap texture owner missing");
+    if(!expectTextureIdentity && row.texture!=0)throw std::runtime_error("mipmap owner leaked outside its scope");
+}
+
 int main(int argc,char** argv) try
 {
     if(argc!=2)throw std::runtime_error("output prefix required");
@@ -106,6 +118,14 @@ int main(int argc,char** argv) try
     { Scope scope({15,45,State,11,state.get(),88});ScopedTextureApply apply(*state,*texture);
       compressedFn(1,2,3,2048,1024,0,8388608,&payload); }
     expectTextureIdentity=false;
+    auto mipmapFn=&mipmap;
+    Hook<15,GenerateMipmap,decltype(mipmapFn)>::install(mipmapFn);
+    expectTextureIdentity=true;
+    { Scope scope({15,45,State,11,state.get(),88});ScopedTextureApply owner(*state,*texture);
+      mipmapFn(GL_TEXTURE_2D); }
+    expectTextureIdentity=false;
+    { Scope scope({15,46,State,11,state.get(),88});mipmapFn(GL_TEXTURE_2D); }
+    if(mipmapCalls!=2)throw std::runtime_error("mipmap dispatch count changed");
     { Scope scope({15,46,State,11,state.get(),88});compressedFn(1,2,3,2048,1024,0,8388608,&payload); }
     if(Capture::instance().breadcrumb(15).row.texture!=0)
         throw std::runtime_error("unscoped direct apply inherited previous texture identity");

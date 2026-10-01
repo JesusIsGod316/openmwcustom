@@ -26,8 +26,11 @@ namespace Debug::HitchTrace
         return value;
     }
 
-    // OS thread CPU time is a root-envelope observation, not a driver/GPU timer.
+    // OS thread CPU time is coarse on Windows; it is not a driver/GPU timer.
     std::int64_t threadCpuNs() noexcept;
+    std::uint64_t threadId() noexcept;
+    void writeClockMap(const std::string& path, bool final) noexcept;
+    enum class CpuTiming { Root, Scoped };
 
     struct Row
     {
@@ -45,7 +48,7 @@ namespace Debug::HitchTrace
     class Capture
     {
     public:
-        static constexpr std::size_t Capacity = 131072;
+        static constexpr std::size_t Capacity = 262144;
         static Capture& instance() { static Capture capture; return capture; }
         bool enabled() const { return mRows && !mStopped.load(std::memory_order_acquire); }
         std::uint64_t nextId() { return mIds.fetch_add(1, std::memory_order_relaxed) + 1; }
@@ -62,6 +65,7 @@ namespace Debug::HitchTrace
             if (!requested() || mStopped.exchange(true)) return;
             try
             {
+                writeClockMap(mPath, true);
                 const auto active = mActive.load(std::memory_order_acquire);
                 const auto count = (std::min)(mCount.load(), Capacity);
                 std::ofstream out(mPath);
@@ -100,6 +104,7 @@ namespace Debug::HitchTrace
             try
             {
                 mPath = std::getenv("OPENMW_P9_HITCH_SPANS_FILE");
+                writeClockMap(mPath, false);
                 mRows = std::make_unique<Row[]>(Capacity);
                 volatile unsigned char* pages = reinterpret_cast<unsigned char*>(mRows.get());
                 for (std::size_t i = 0; i < Capacity * sizeof(Row); i += 4096) pages[i] = 0;
@@ -126,7 +131,7 @@ namespace Debug::HitchTrace
     {
     public:
         explicit Scope(std::string_view phase, std::string_view identity = {}, std::string_view asset = {},
-            unsigned frame = std::numeric_limits<unsigned>::max()) noexcept
+            unsigned frame = std::numeric_limits<unsigned>::max(), CpuTiming cpu = CpuTiming::Root) noexcept
         {
             if (!requested() || !Capture::instance().enabled()) return;
             mRow = {};
@@ -138,20 +143,22 @@ namespace Debug::HitchTrace
             mRow.parent = mPrevious ? mPrevious->mRow.id : 0;
             mRow.frame = frame == std::numeric_limits<unsigned>::max()
                 ? (mPrevious ? mPrevious->mRow.frame : V3HitchTelemetry::currentFrame()) : frame;
-            mRow.thread = std::hash<std::thread::id>{}(std::this_thread::get_id());
+            mRow.thread = threadId();
             copy(mRow.phase, phase); copy(mRow.identity, identity); copy(mRow.asset, asset);
-            if (!mPrevious) mCpuStart = threadCpuNs();
+            if (!mPrevious || cpu == CpuTiming::Scoped) mCpuStart = threadCpuNs();
             mRow.epoch = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             mRow.start = now();
             current = this;
         }
+        Scope(std::string_view phase, CpuTiming cpu, std::string_view identity = {}, std::string_view asset = {}) noexcept
+            : Scope(phase, identity, asset, std::numeric_limits<unsigned>::max(), cpu) {}
         ~Scope()
         {
             if (!mCapture) return;
             mRow.end = now();
             const auto duration = mRow.end - mRow.start;
-            if (!mPrevious && mCpuStart >= 0)
+            if (mCpuStart >= 0)
             {
                 const auto end = threadCpuNs();
                 if (end >= mCpuStart) mRow.cpu = end - mCpuStart;

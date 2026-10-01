@@ -16,6 +16,14 @@ try{
     }
     Copy-Item -LiteralPath ($FixturePrefix+'-normal.csv') -Destination $target
     Copy-Item -LiteralPath ($FixturePrefix+'-normal.csv.capture-status.txt') -Destination ($target+'.capture-status.txt')
+    Copy-Item -LiteralPath ($FixturePrefix+'-normal.csv.clock-map.txt') -Destination ($target+'.clock-map.txt')
+    @('phase9_hitch_spans=1','phase9_detail_revision=2','final_exit_code=0') | Set-Content -LiteralPath (Join-Path $profile 'TEST_MODE.txt')
+    if(-not (Test-Phase9HitchCapture $profile).valid_span_capture){throw 'Clock-calibrated detail capture rejected'}
+    $clockOriginal=[IO.File]::ReadAllText($target+'.clock-map.txt')
+    [IO.File]::WriteAllText($target+'.clock-map.txt',$clockOriginal.Replace('normal_finish=1','normal_finish=0'))
+    if((Test-Phase9HitchCapture $profile).valid_span_capture){throw 'Incomplete clock calibration accepted'}
+    [IO.File]::WriteAllText($target+'.clock-map.txt',$clockOriginal)
+    @('phase9_hitch_spans=1','final_exit_code=0') | Set-Content -LiteralPath (Join-Path $profile 'TEST_MODE.txt')
     $original=[IO.File]::ReadAllText($target)
     [IO.File]::WriteAllText($target,$original.Replace('# normal_finish=1','# normal_finish=0'))
     if((Test-Phase9HitchCapture $profile).valid_span_capture){throw 'Missing completion accepted'}

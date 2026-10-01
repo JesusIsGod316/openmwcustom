@@ -5,6 +5,11 @@ import subprocess
 import sys
 
 exe, output = sys.argv[1:]
+unarmed = Path(output + '-unarmed.csv')
+for p in (unarmed, Path(str(unarmed)+'.clock-map.txt'), Path(str(unarmed)+'.capture-status.txt')):
+    if p.exists(): p.unlink()
+subprocess.run([exe, str(unarmed), 'unarmed'], check=True)
+assert not unarmed.exists() and not Path(str(unarmed)+'.clock-map.txt').exists()
 for mode in ('normal', 'overflow'):
     path = Path(output + '-' + mode + '.csv')
     subprocess.run([exe, str(path), mode], check=True)
@@ -15,7 +20,7 @@ for mode in ('normal', 'overflow'):
         line for line in path.read_text().splitlines() if not line.startswith('#')))))
     assert len(rows) == int(status['rows'])
     if mode == 'overflow':
-        assert len(rows) == 131072 and status['dropped'] == '7'
+        assert len(rows) == 262144 and status['dropped'] == '7'
         continue
     assert status['dropped'] == '0'
     spans = {r['span']: r for r in rows}
@@ -32,4 +37,13 @@ for mode in ('normal', 'overflow'):
     assert any(r['identity'] == 'identity,with"quote' for r in rows)
     assert any(r['phase'] == 'truncated' and r['identity_truncated'] == '1' for r in rows)
     assert all(float(r['thread_cpu_ms']) >= 0 for r in rows if r['parent'] == '0')
+    assert all(float(r['thread_cpu_ms']) >= 0 for r in rows if r['phase'] == 'child')
+    clock = dict(line.split('=', 1) for line in Path(str(path) + '.clock-map.txt').read_text().splitlines())
+    assert clock['normal_finish'] == '1'
+    if sys.platform == 'win32':
+        assert clock['thread_id_kind'] == 'windows_native_tid'
+        assert int(clock['qpc_frequency']) > 0
+        for prefix in ('start_', 'end_'):
+            assert int(clock[prefix+'qpc_before']) <= int(clock[prefix+'qpc_after'])
+        assert int(clock['start_steady_ns']) <= int(rows[0]['start_ns']) <= int(clock['end_steady_ns'])
 print('PASS nested spans, same-thread parents, exceptions, concurrent producers, CPU roots, CSV identity, truncation and overflow')

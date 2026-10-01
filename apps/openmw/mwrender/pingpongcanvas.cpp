@@ -1,5 +1,6 @@
 #include <components/debug/hitchtrace.hpp>
 #include "pingpongcanvas.hpp"
+#include <components/sceneutil/glcalltrace.hpp>
 
 #include <cassert>
 #include <atomic>
@@ -658,7 +659,8 @@ namespace MWRender
             {
                 state.setActiveTextureUnit(0);
                 state.applyTextureAttribute(0, attachment.mTarget);
-                ext->glGenerateMipmap(GL_TEXTURE_2D);
+                { SceneUtil::GLCallTrace::ScopedTextureApply mipmapOwner(state, *attachment.mTarget);
+                  ext->glGenerateMipmap(GL_TEXTURE_2D); }
             }
         }
         if (initializeTargets) mTargetGeneration->initializedContext = state.getContextID();
@@ -788,7 +790,9 @@ namespace MWRender
                     state.applyTextureAttribute(0,
                         pass.mRenderTarget->getAttachment(osg::FrameBufferObject::BufferComponent::COLOR_BUFFER0)
                             .getTexture());
-                    ext->glGenerateMipmap(GL_TEXTURE_2D);
+                    { SceneUtil::GLCallTrace::ScopedTextureApply mipmapOwner(state,
+                          *pass.mRenderTarget->getAttachment(osg::FrameBufferObject::BufferComponent::COLOR_BUFFER0).getTexture());
+                      ext->glGenerateMipmap(GL_TEXTURE_2D); }
                 }
 
                 state.popStateSet();

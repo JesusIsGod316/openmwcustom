@@ -126,3 +126,18 @@ Frame-time consistency analysis (all modes):
   A flag means investigate; steady oscillation is also visible in the changes
   even when no individual frame is flagged. Engine wall times do not measure
   display presentation intervals. Compare the same route/cap/warmup conditions.
+
+Diagnostic detail revision 2:
+  Mode 3 now splits Lua worker/script initialization, cache lock waits,
+  VFS/physical file access, archive decompression, controller setup and
+  SceneView acquisition versus traversal. It records native Windows thread IDs
+  and QPC calibration for correlation with a Windows system trace.
+  HITCH-PHASE-TOTALS.csv and HITCH-REMAINING-SCOPES.csv expose retained phase
+  exposure and residual intervals. Nested/cross-thread timings overlap.
+  Optional: right-click START-OptimizedMW-SystemTrace.bat, Run as administrator.
+  Start the game from the NORMAL test launcher in a separate window, mode 3.
+  Quit after a short hitch reproduction, then press Enter in the recorder.
+  Share the mode 3 ZIP and the matching ETL/metadata under SystemTrace.
+  The recorder uses bounded 320 MiB circular buffers. Stop promptly so early
+  events are not overwritten. ETL completeness must be checked during analysis.
+  See HITCH-DIAGNOSTICS.md for exact coverage, limitations and correlation.

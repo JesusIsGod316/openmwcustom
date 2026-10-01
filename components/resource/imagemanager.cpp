@@ -121,7 +121,9 @@ namespace Resource
             if (ext == "targa")
                 ext = "tga";
 
-            osgDB::ReaderWriter* reader = osgDB::Registry::instance()->getReaderWriterForExtension(ext);
+            osgDB::ReaderWriter* reader;
+            { Debug::HitchTrace::Scope discovery("resource.image_reader_discovery", {}, ext);
+              reader = osgDB::Registry::instance()->getReaderWriterForExtension(ext); }
             if (!reader)
             {
                 Log(Debug::Error) << "Error loading " << path << ": no readerwriter for '" << ext << "' found";
@@ -166,69 +168,73 @@ namespace Resource
             }
 
             osg::ref_ptr<osg::Image> image = result.getImage();
-
-            image->setFileName(std::string(path.value()));
-            if (!checkSupported(image))
             {
-                static bool uncompress = (getenv("OPENMW_DECOMPRESS_TEXTURES") != nullptr);
-                if (!uncompress)
+                Debug::HitchTrace::Scope detail("resource.image_postprocess", Debug::HitchTrace::CpuTiming::Scoped);
+
+                image->setFileName(std::string(path.value()));
+                if (!checkSupported(image))
                 {
-                    Log(Debug::Error) << "Error loading " << path << ": no S3TC texture compression support installed";
-                    mCache->addEntryToObjectCache(path.value(), mWarningImage);
-                    return mWarningImage;
+                    static bool uncompress = (getenv("OPENMW_DECOMPRESS_TEXTURES") != nullptr);
+                    if (!uncompress)
+                    {
+                        Log(Debug::Error) << "Error loading " << path << ": no S3TC texture compression support installed";
+                        mCache->addEntryToObjectCache(path.value(), mWarningImage);
+                        return mWarningImage;
+                    }
+                    else
+                    {
+                        // decompress texture in software if not supported by GPU
+                        // requires update to getColor() to be released with OSG 3.6
+                        osg::ref_ptr<osg::Image> newImage = new osg::Image;
+                        newImage->setFileName(image->getFileName());
+                        newImage->setOrigin(image->getOrigin());
+                        newImage->allocateImage(image->s(), image->t(), image->r(),
+                            image->isImageTranslucent() ? GL_RGBA : GL_RGB, GL_UNSIGNED_BYTE);
+                        for (int s = 0; s < image->s(); ++s)
+                            for (int t = 0; t < image->t(); ++t)
+                                for (int r = 0; r < image->r(); ++r)
+                                    newImage->setColor(image->getColor(s, t, r), s, t, r);
+                        image = newImage;
+                    }
                 }
-                else
+                else if (killAlpha)
                 {
-                    // decompress texture in software if not supported by GPU
-                    // requires update to getColor() to be released with OSG 3.6
                     osg::ref_ptr<osg::Image> newImage = new osg::Image;
                     newImage->setFileName(image->getFileName());
                     newImage->setOrigin(image->getOrigin());
-                    newImage->allocateImage(image->s(), image->t(), image->r(),
-                        image->isImageTranslucent() ? GL_RGBA : GL_RGB, GL_UNSIGNED_BYTE);
+                    newImage->allocateImage(image->s(), image->t(), image->r(), GL_RGB, GL_UNSIGNED_BYTE);
+                    // OSG just won't write the alpha as there's nowhere to put it.
                     for (int s = 0; s < image->s(); ++s)
                         for (int t = 0; t < image->t(); ++t)
                             for (int r = 0; r < image->r(); ++r)
                                 newImage->setColor(image->getColor(s, t, r), s, t, r);
                     image = newImage;
                 }
-            }
-            else if (killAlpha)
-            {
-                osg::ref_ptr<osg::Image> newImage = new osg::Image;
-                newImage->setFileName(image->getFileName());
-                newImage->setOrigin(image->getOrigin());
-                newImage->allocateImage(image->s(), image->t(), image->r(), GL_RGB, GL_UNSIGNED_BYTE);
-                // OSG just won't write the alpha as there's nowhere to put it.
-                for (int s = 0; s < image->s(); ++s)
-                    for (int t = 0; t < image->t(); ++t)
-                        for (int r = 0; r < image->r(); ++r)
-                            newImage->setColor(image->getColor(s, t, r), s, t, r);
-                image = newImage;
-            }
 
-            // OSG might not set the right origin for DDS
-            if (ext == "dds")
-                image->setOrigin(osg::Image::TOP_LEFT);
+                // OSG might not set the right origin for DDS
+                if (ext == "dds")
+                    image->setOrigin(osg::Image::TOP_LEFT);
 
-            // Convert the image to the convention we expect
-            if (image->getOrigin() == osg::Image::BOTTOM_LEFT && !disableFlip)
-            {
-                if (image->isCompressed() && !isS3TC(image))
+                // Convert the image to the convention we expect
+                if (image->getOrigin() == osg::Image::BOTTOM_LEFT && !disableFlip)
                 {
-                    // This is most likely a KTX texture that OSG can't flip
-                    // We don't want it to be corrupted or displayed incorrectly, so bail
-                    // OSGoS *can* flip RGTC, but we can't verify that (yet?)
-                    Log(Debug::Error) << "Error loading " << path << ": cannot flip non-S3TC compressed texture";
-                    mCache->addEntryToObjectCache(path.value(), mWarningImage);
-                    return mWarningImage;
+                    if (image->isCompressed() && !isS3TC(image))
+                    {
+                        // This is most likely a KTX texture that OSG can't flip
+                        // We don't want it to be corrupted or displayed incorrectly, so bail
+                        // OSGoS *can* flip RGTC, but we can't verify that (yet?)
+                        Log(Debug::Error) << "Error loading " << path << ": cannot flip non-S3TC compressed texture";
+                        mCache->addEntryToObjectCache(path.value(), mWarningImage);
+                        return mWarningImage;
+                    }
+
+                    image->flipVertical();
+                    image->setOrigin(osg::Image::TOP_LEFT);
                 }
 
-                image->flipVertical();
-                image->setOrigin(osg::Image::TOP_LEFT);
+                mCache->addEntryToObjectCache(path.value(), image);
             }
 
-            mCache->addEntryToObjectCache(path.value(), image);
             return image;
         }
     }

@@ -1,4 +1,5 @@
 #include "scriptscontainer.hpp"
+#include <components/debug/hitchtrace.hpp>
 
 #include "scripttracker.hpp"
 
@@ -80,6 +81,7 @@ namespace LuaUtil
 
     void ScriptsContainer::addAutoStartedScripts()
     {
+        Debug::HitchTrace::Scope hitchAutostart("lua.container_autostart", mNamePrefix);
         mLua.protectedCall([&](LuaView& view) {
             for (const auto& [scriptId, data] : mAutoStartScripts)
             {
@@ -95,6 +97,8 @@ namespace LuaUtil
         LuaView& view, int scriptId, std::optional<sol::function>& onInit, std::optional<sol::function>& onLoad)
     {
         assert(scriptId >= 0 && scriptId < static_cast<int>(mLua.getConfiguration().size()));
+        Debug::HitchTrace::Scope hitchAdd("lua.add_script", Debug::HitchTrace::CpuTiming::Scoped, mNamePrefix,
+            Debug::HitchTrace::requested() ? scriptPath(scriptId).value() : std::string_view{});
         if (hasScript(scriptId))
             return false; // already present
 
@@ -421,6 +425,8 @@ namespace LuaUtil
 
     void ScriptsContainer::callOnInit(LuaView& view, int scriptId, const sol::function& onInit, std::string_view data)
     {
+        Debug::HitchTrace::Scope hitchInit("lua.on_init", mNamePrefix,
+            Debug::HitchTrace::requested() ? scriptPath(scriptId).value() : std::string_view{});
         try
         {
             LuaUtil::call({ this, scriptId }, onInit, deserialize(view.sol(), data, mSerializer));
@@ -559,6 +565,7 @@ namespace LuaUtil
 
     ScriptsContainer::LoadedData& ScriptsContainer::ensureLoaded()
     {
+        Debug::HitchTrace::Scope loaded("lua.ensure_loaded", mNamePrefix);
         mRequiredLoading = true;
         if (LoadedData* data = std::get_if<LoadedData>(&mData))
             return *data;
@@ -615,6 +622,8 @@ namespace LuaUtil
                 }
                 if (onLoad)
                 {
+                    Debug::HitchTrace::Scope restore("lua.on_load", mNamePrefix,
+                        Debug::HitchTrace::requested() ? scriptPath(scriptId).value() : std::string_view{});
                     Debug::V35LuaLoadTrace::PhaseScope v35Load(Debug::V35LuaLoadTrace::Phase::InitLoad);
                     try
                     {

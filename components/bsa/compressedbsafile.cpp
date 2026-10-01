@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 /*
   OpenMW - The completely unofficial reimplementation of Morrowind
   Copyright (C) 2008-2010  Nicolay Korslund
@@ -290,21 +291,26 @@ namespace Bsa
 
             if (mHeader.mVersion != Version_SSE)
             {
-                uLongf destSize = static_cast<uLongf>(resultSize);
-                int ec = ::uncompress(reinterpret_cast<Bytef*>(memoryStreamPtr->getRawData()), &destSize,
-                    reinterpret_cast<Bytef*>(buffer.data()), static_cast<uLong>(buffer.size()));
-
-                if (ec != Z_OK)
                 {
-                    std::string message = "zlib uncompress failed for file ";
-                    message.append(fileRecord.mName.begin(), fileRecord.mName.end());
-                    message += ": ";
-                    message += ::zError(ec);
-                    fail(message);
+                    Debug::HitchTrace::Scope detail("archive.zlib_decompress", Debug::HitchTrace::CpuTiming::Scoped);
+                    uLongf destSize = static_cast<uLongf>(resultSize);
+                    int ec = ::uncompress(reinterpret_cast<Bytef*>(memoryStreamPtr->getRawData()), &destSize,
+                        reinterpret_cast<Bytef*>(buffer.data()), static_cast<uLong>(buffer.size()));
+
+                    if (ec != Z_OK)
+                    {
+                        std::string message = "zlib uncompress failed for file ";
+                        message.append(fileRecord.mName.begin(), fileRecord.mName.end());
+                        message += ": ";
+                        message += ::zError(ec);
+                        fail(message);
+                    }
                 }
+
             }
             else
             {
+                Debug::HitchTrace::Scope detail("archive.lz4_decompress", Debug::HitchTrace::CpuTiming::Scoped);
                 LZ4F_decompressionContext_t context = nullptr;
                 LZ4F_createDecompressionContext(&context, LZ4F_VERSION);
                 LZ4F_decompressOptions_t options = {};

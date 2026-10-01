@@ -20,6 +20,8 @@
 #ifndef OPENMW_COMPONENTS_RESOURCE_OBJECTCACHE
 #define OPENMW_COMPONENTS_RESOURCE_OBJECTCACHE
 
+#include <components/debug/hitchtrace.hpp>
+
 #include "cachestats.hpp"
 #include "cachediagnostics.hpp"
 #include "speculativebudget.hpp"
@@ -181,7 +183,9 @@ namespace Resource
             // insertion throws. Never invoke a reentrant destructor under it.
             Item displaced;
             {
-                std::lock_guard<std::mutex> lock(mMutex);
+                std::unique_lock<std::mutex> lock(mMutex, std::defer_lock);
+                { Debug::HitchTrace::Scope wait("cache.insert_lock_wait", Debug::HitchTrace::CpuTiming::Scoped); lock.lock(); }
+                Debug::HitchTrace::Scope insert("cache.insert_locked");
                 const auto it = mItems.find(key);
                 if (it == mItems.end())
                     mItems.emplace_hint(it, std::forward<K>(key), std::move(incoming));
@@ -239,7 +243,9 @@ namespace Resource
         /** Get an ref_ptr<Object> from the object cache*/
         osg::ref_ptr<osg::Object> getRefFromObjectCache(const auto& key)
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            std::unique_lock<std::mutex> lock(mMutex, std::defer_lock);
+            { Debug::HitchTrace::Scope wait("cache.lookup_lock_wait", Debug::HitchTrace::CpuTiming::Scoped); lock.lock(); }
+            Debug::HitchTrace::Scope lookup("cache.lookup_locked");
             if (Item* const item = find(key))
                 return item->mValue;
             return nullptr;
@@ -247,7 +253,9 @@ namespace Resource
 
         std::optional<osg::ref_ptr<osg::Object>> getRefFromObjectCacheOrNone(const auto& key)
         {
-            const std::lock_guard<std::mutex> lock(mMutex);
+            std::unique_lock<std::mutex> lock(mMutex, std::defer_lock);
+            { Debug::HitchTrace::Scope wait("cache.lookup_lock_wait", Debug::HitchTrace::CpuTiming::Scoped); lock.lock(); }
+            Debug::HitchTrace::Scope lookup("cache.lookup_locked");
             if (Item* const item = find(key))
                 return item->mValue;
             return std::nullopt;

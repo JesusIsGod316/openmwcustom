@@ -1,7 +1,7 @@
 param([string]$StagedDir)
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
-foreach($name in @('OptimizedMW_Test.ps1','OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','launcher-tests.ps1','hitch-launcher-tests.ps1','frame-pacing-tests.ps1')){
+foreach($name in @('OptimizedMW_Test.ps1','OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW_SystemTrace.ps1','launcher-tests.ps1','hitch-launcher-tests.ps1','frame-pacing-tests.ps1')){
     $tokens=$null;$errors=$null
     $null=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $name),[ref]$tokens,[ref]$errors)
     if($errors.Count){throw ($errors | Out-String)}
@@ -61,7 +61,7 @@ foreach($shader in @('temporal_camera_motion.vert','temporal_camera_motion.frag'
     if(-not $command.Contains($shader)){throw "Unverified temporal shader: $shader"}
 }
 if($StagedDir){
-    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW-Phase9-README.txt')){
+    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW-Phase9-README.txt','OptimizedMW_SystemTrace.ps1','OptimizedMW-SystemTrace.wprp','START-OptimizedMW-SystemTrace.bat','HITCH-DIAGNOSTICS.md')){
         if((Get-FileHash -LiteralPath (Join-Path $root $file)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $StagedDir $file)).Hash){
             throw ('Installed Phase 9 file mismatch: '+$file)
         }
@@ -277,6 +277,16 @@ try{
     }
     $writers=Test-Phase9WriterCapture -ProfileDir $temp
     if(-not $writers.valid_writer_capture){throw 'Complete bounded channels were incorrectly rejected'}
+    Add-Content -LiteralPath (Join-Path $temp 'TEST_MODE.txt') 'phase9_detail_revision=2'
+    if(-not (Test-Phase9WriterCapture $temp).valid_writer_capture){throw 'Unarmed reference required diagnostic writers'}
+    $originalMode=[IO.File]::ReadAllText((Join-Path $temp 'TEST_MODE.txt'))
+    Add-Content -LiteralPath (Join-Path $temp 'TEST_MODE.txt') 'phase9_hitch_spans=1'
+    if((Test-Phase9WriterCapture $temp).valid_writer_capture){throw 'Missing requested detail writers accepted'}
+    foreach($name in @('v3-insertion.csv','v32-render-insertion.csv','v3-lua-sync.csv','v3-lua-actions.csv','v33-lua-callbacks.csv','v3-lua-update.csv','v36-controller.csv','v36-lua-addscript.csv')){
+        Set-FixtureWriterCsv $name @('frame,phase','1,fixture')
+    }
+    if(-not (Test-Phase9WriterCapture $temp).valid_writer_capture){throw 'Complete requested detail writers rejected'}
+    [IO.File]::WriteAllText((Join-Path $temp 'TEST_MODE.txt'),$originalMode)
     Set-FixtureWriterCsv 'p9-temporal-inputs.csv' @($ownedHeader,($temporalRow+',1,0,unsupported_fx_state'))
     $fallback=Test-Phase9TemporalCapture -ProfileDir $temp -TemporalRequested $true
     if(-not $fallback.valid_temporal_capture -or $fallback.valid_ownership_capture -ne $false -or

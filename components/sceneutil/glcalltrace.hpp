@@ -1,6 +1,7 @@
 #ifndef OPENMW_SCENEUTIL_GLCALLTRACE_H
 #define OPENMW_SCENEUTIL_GLCALLTRACE_H
 
+#include <components/debug/hitchtrace.hpp>
 #include <osg/GLExtensions>
 #include <osg/State>
 #include <osg/FrameStamp>
@@ -51,6 +52,7 @@ namespace SceneUtil::GLCallTrace
     {
         Location where;
         unsigned api = 0;
+        std::uint64_t nativeThread = 0;
         std::array<std::uint64_t, 8> args{};
         double ms = 0;
         std::int64_t startNs = 0;
@@ -116,7 +118,7 @@ namespace SceneUtil::GLCallTrace
             try
             {
                 std::ofstream out(mPath+".gl.csv");
-                out << "frame,context,phase,drawable,api,arg0,arg1,arg2,arg3,arg4,arg5,arg6,arg7,cpu_ms,start_ns,camera,texture,texture_object,gl_name,image,image_revision,texture_unit,allocated,dirty,first_use\n";
+                out << "frame,context,phase,drawable,api,arg0,arg1,arg2,arg3,arg4,arg5,arg6,arg7,cpu_ms,start_ns,camera,texture,texture_object,gl_name,image,image_revision,texture_unit,allocated,dirty,first_use,thread\n";
                 for(std::size_t i=0;i<(std::min)(mNext.load(),mRows->size());++i)
                 {
                     const auto& a=(*mRows)[i];
@@ -125,7 +127,7 @@ namespace SceneUtil::GLCallTrace
                     for (std::uint64_t arg : a.args) out << ',' << arg;
                     out<<','<<a.ms<<','<<a.startNs<<','<<a.where.camera<<','<<a.texture<<','<<a.textureObject
                         <<','<<a.glName<<','<<a.image<<','<<a.imageRevision<<','<<a.textureUnit<<','<<a.allocated
-                        <<','<<a.dirty<<','<<a.firstUse<<'\n';
+                        <<','<<a.dirty<<','<<a.firstUse<<','<<a.nativeThread<<'\n';
                 }
                 std::ofstream totals(mPath+".gl-totals.csv");
                 totals<<"context,api,calls,cpu_ms,max_ms\n";
@@ -141,7 +143,7 @@ namespace SceneUtil::GLCallTrace
                 { const auto& f=(*mFrameRows)[i];for(unsigned a=0;a<Count;++a) {
                     const auto& t=f.totals[a];if(t.calls)frames<<f.frame<<','<<f.context<<','<<names[a]<<','<<t.calls<<','<<t.ms<<','<<t.maximum<<'\n'; } }
                 std::ofstream last(mPath+".gl-last.csv");
-                last << "context,sequence,active,frame,phase,drawable,api,arg0,arg1,arg2,arg3,arg4,arg5,arg6,arg7,start_ns,camera,texture,texture_object,gl_name,image,image_revision,texture_unit,allocated,dirty,first_use\n";
+                last << "context,sequence,active,frame,phase,drawable,api,arg0,arg1,arg2,arg3,arg4,arg5,arg6,arg7,start_ns,camera,texture,texture_object,gl_name,image,image_revision,texture_unit,allocated,dirty,first_use,thread\n";
                 for (unsigned context = 0; context < mBreadcrumbs.size(); ++context)
                 {
                     const auto& breadcrumb = mBreadcrumbs[context];
@@ -153,14 +155,14 @@ namespace SceneUtil::GLCallTrace
                     for (std::uint64_t arg : row.args) last << ',' << arg;
                     last << ',' << row.startNs << ',' << row.where.camera << ',' << row.texture << ',' << row.textureObject
                         << ',' << row.glName << ',' << row.image << ',' << row.imageRevision << ',' << row.textureUnit
-                        << ',' << row.allocated << ',' << row.dirty << ',' << row.firstUse << '\n';
+                        << ',' << row.allocated << ',' << row.dirty << ',' << row.firstUse << ',' << row.nativeThread << '\n';
                 }
                 std::ofstream status(mPath+".gl-status.txt");
                 status<<"rows_dropped="<<(mNext>mRows->size()?mNext-mRows->size():0)
                     <<"\nframe_rows_dropped="<<(mFrameNext>mFrameRows->size()?mFrameNext-mFrameRows->size():0)
                     <<"\nscope=selected_OSG_extension_dispatch_only_not_direct_core_GL_or_driver_internals\n"
                     <<"phase=0_outside_1_renderer_draw_2_matrices_3_state_4_drawable_5_retire_6_cull_draw_7_compile_8_direct_texture_apply\n"
-                    <<"texture_identity=explicit_scoped_Texture_apply_only;unknown_for_uninstrumented_direct_or_callback_applies\n"
+                    <<"texture_identity=explicit_scoped_Texture_apply_or_mipmap_owner_only;unknown_for_uninstrumented_direct_or_callback_applies\n"
                     <<"frame0_in_outer_scopes=unassigned_use_time_and_leaf_frame_not_assumed_alignment\n";
             } catch (...) {}
         }
@@ -223,13 +225,14 @@ namespace SceneUtil::GLCallTrace
             Row row;
             row.where = location;
             row.api = A;
+            row.nativeThread = Debug::HitchTrace::threadId();
             row.args = { argument<0>(tuple), argument<1>(tuple), argument<2>(tuple), argument<3>(tuple),
                 argument<4>(tuple), argument<5>(tuple), argument<6>(tuple), argument<7>(tuple) };
             row.startNs = std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count();
             // Only an explicit apply owner proves resource identity. State's
             // last_applied_attribute can name an earlier texture during direct
             // compile/FBO applies, so never infer identity from that cache.
-            if constexpr (A == CompressedTexImage2D || A == CompressedTexSubImage2D)
+            if constexpr (A == CompressedTexImage2D || A == CompressedTexSubImage2D || A == GenerateMipmap)
             {
                 if (auto* state = location.state)
                 {

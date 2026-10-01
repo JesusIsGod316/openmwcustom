@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 #include "keyframemanager.hpp"
 
 #include <array>
@@ -209,6 +210,7 @@ namespace Resource
 
     osg::ref_ptr<const SceneUtil::KeyframeHolder> KeyframeManager::get(VFS::Path::NormalizedView name)
     {
+        Debug::HitchTrace::Scope hitchKeyframes("resource.keyframe_lookup", {}, name.value());
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(name);
 
         if (obj != nullptr)
@@ -220,8 +222,16 @@ namespace Resource
         {
             auto file = std::make_shared<Nif::NIFFile>(name);
             Nif::Reader reader(*file, mEncoder);
-            reader.parse(mVFS->get(name));
-            NifOsg::Loader::loadKf(*file, *loaded.get());
+            {
+                Debug::HitchTrace::Scope detail("resource.keyframe_parse");
+                reader.parse(mVFS->get(name));
+            }
+
+            {
+                Debug::HitchTrace::Scope detail("resource.keyframe_build", Debug::HitchTrace::CpuTiming::Scoped);
+                NifOsg::Loader::loadKf(*file, *loaded.get());
+            }
+
         }
         else
         {

@@ -1,6 +1,7 @@
 #ifndef VFS_BSAARCHIVE_HPP_
 #define VFS_BSAARCHIVE_HPP_
 
+#include <components/debug/hitchtrace.hpp>
 #include "archive.hpp"
 #include "file.hpp"
 #include "pathutil.hpp"
@@ -31,7 +32,11 @@ namespace VFS
         {
         }
 
-        Files::IStreamPtr open() override { return mFile->getFile()->getFile(mInfo); }
+        Files::IStreamPtr open() override
+        {
+            Debug::HitchTrace::Scope archive("vfs.archive_extract", {}, mFile->getFile()->getFilename());
+            return mFile->getFile()->getFile(mInfo);
+        }
 
         std::filesystem::file_time_type getLastModified() const override
         {

@@ -1,4 +1,5 @@
 #include "luminancecalculator.hpp"
+#include <components/sceneutil/glcalltrace.hpp>
 
 #include <components/misc/mathutil.hpp>
 #include <components/settings/values.hpp>
@@ -112,7 +113,8 @@ namespace MWRender
         canvas.drawGeometry(renderInfo);
 
         state.applyTextureAttribute(0, buffer.mipmappedSceneLuminanceTex);
-        ext->glGenerateMipmap(GL_TEXTURE_2D);
+        { SceneUtil::GLCallTrace::ScopedTextureApply mipmapOwner(state, *buffer.mipmappedSceneLuminanceTex);
+          ext->glGenerateMipmap(GL_TEXTURE_2D); }
 
         buffer.resolveSceneLumFbo->apply(state, osg::FrameBufferObject::READ_FRAMEBUFFER);
         buffer.luminanceProxyFbo->apply(state, osg::FrameBufferObject::DRAW_FRAMEBUFFER);

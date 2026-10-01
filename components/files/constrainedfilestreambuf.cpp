@@ -1,4 +1,6 @@
 #include "constrainedfilestreambuf.hpp"
+#include <components/debug/hitchtrace.hpp>
+#include "conversion.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -12,6 +14,8 @@ namespace Files
         const std::filesystem::path& fname, std::size_t start, std::size_t length)
         : mOrigin(start)
     {
+        const auto physicalPath = Debug::HitchTrace::requested() ? Files::pathToUnicodeString(fname) : std::string{};
+        Debug::HitchTrace::Scope open("file.open_size", Debug::HitchTrace::CpuTiming::Scoped, {}, physicalPath);
         mFile = File::open(fname);
         mSize = length != std::numeric_limits<std::size_t>::max() ? length : File::size(mFile) - start;
 
@@ -25,6 +29,7 @@ namespace Files
     {
         if (gptr() == egptr())
         {
+            Debug::HitchTrace::Scope read("file.read", Debug::HitchTrace::CpuTiming::Scoped);
             const std::size_t toRead = std::min((mOrigin + mSize) - (File::tell(mFile)), sizeof(mBuffer));
             // Read in the next chunk of data, and set the read pointers on success
             // Failure will throw exception.

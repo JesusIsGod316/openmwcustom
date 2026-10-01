@@ -320,11 +320,13 @@ function Test-Phase9WriterCapture {
             'v3-streaming.csv','v3-shadow.csv','v36-batching.csv','v3-gpu-memory.csv','p4-compile.csv',
             'p6-render-phase.csv','p6-render-traversal.csv','p9-temporal-inputs.csv','p9-dlss-capabilities.csv',
             'p9-gpu-passes.csv','p9-terrain-composite.csv','v3-insertion.csv','v32-render-insertion.csv',
-            'v3-lua-sync.csv','v3-lua-actions.csv','v33-lua-callbacks.csv','v35-lua-load.csv')
+            'v3-lua-sync.csv','v3-lua-actions.csv','v33-lua-callbacks.csv','v35-lua-load.csv',
+            'v3-lua-update.csv','v36-controller.csv','v36-lua-addscript.csv')
         $required=@('v3-render.csv','p6-render-traversal.csv')
         if($mode -match '(?m)^phase9_temporal_inputs=1\r?$'){$required+=@('p9-temporal-inputs.csv','p9-dlss-capabilities.csv')}
         if($mode -match '(?m)^phase9_(temporal_inputs|draw_trace)=1\r?$'){$required+='p9-gpu-passes.csv'}
         if($mode -match '(?m)^phase9_hitch_spans=1\r?$'){$required+=@('v3-insertion.csv','v32-render-insertion.csv','v3-lua-sync.csv','v3-lua-actions.csv','v33-lua-callbacks.csv')}
+        if($mode -match '(?m)^phase9_detail_revision=2\r?$' -and $mode -match '(?m)^phase9_hitch_spans=1\r?$'){$required+=@('v3-lua-update.csv','v36-controller.csv','v36-lua-addscript.csv')}
         foreach($name in $names){
             $csv=Join-Path $ProfileDir $name
             if(-not (Test-Path -LiteralPath $csv)){

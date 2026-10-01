@@ -2,6 +2,8 @@
 #define OPENMW_SCENEUTIL_DRAWPHASETRACE_H
 
 #include "glcalltrace.hpp"
+#include <components/debug/hitchtrace.hpp>
+#include <osgUtil/Statistics>
 #include <osg/FrameStamp>
 #include <osg/GraphicsContext>
 #include <stdexcept>
@@ -727,12 +729,15 @@ namespace SceneUtil::DrawPhaseTrace
     {
     public:
         explicit Renderer(osg::Camera* camera) : osgViewer::Renderer(camera) {}
+        #include "rendererculltrace.inl"
         void draw() override { run(GLCallTrace::RendererDraw,[this]{osgViewer::Renderer::draw();}); }
         void cull_draw() override { run(GLCallTrace::CullDraw,[this]{osgViewer::Renderer::cull_draw();}); }
         void compile() override { run(GLCallTrace::Compile,[this]{osgViewer::Renderer::compile();}); }
     private:
         template<typename F> void run(unsigned phase,F fn)
         {
+            Debug::HitchTrace::Scope envelope(phase == GLCallTrace::RendererDraw ? "renderer.draw"
+                : phase == GLCallTrace::CullDraw ? "renderer.cull_draw" : "renderer.compile", Debug::HitchTrace::CpuTiming::Scoped);
             osg::Camera* camera=_camera.get();
             auto* gc=camera?camera->getGraphicsContext():nullptr;
             auto* state=gc?gc->getState():nullptr;
