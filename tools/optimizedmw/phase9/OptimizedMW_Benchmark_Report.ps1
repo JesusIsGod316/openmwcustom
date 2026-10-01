@@ -166,7 +166,9 @@ $result=[Phase9.Report]::Read($framePath,(Join-Path $ProfileDir 'Phase9-FRAME-PA
 $statuses=[ordered]@{}
 foreach($name in @('v3-frame.csv.capture-status.txt','p8g4-render.capture-status.txt')){
     $file=Join-Path $ProfileDir $name
-    $statuses[$name]=if(Test-Path -LiteralPath $file){Get-Content -LiteralPath $file}else{@('MISSING: deferred capture not confirmed complete; legacy mode has no deferred status')}
+    # Windows PowerShell 5.1 serializes Get-Content's attached provider/drive
+    # properties at this depth. Plain .NET strings avoid that enormous graph.
+    $statuses[$name]=if(Test-Path -LiteralPath $file){[IO.File]::ReadAllLines($file)}else{@('MISSING: deferred capture not confirmed complete; legacy mode has no deferred status')}
 }
 $qualifications=[ordered]@{}
 foreach($name in @('WRITER-CAPTURE.json','TEMPORAL-CAPTURE.json','ROOT-CAUSE-CAPTURE.json','HITCH-CAPTURE.json')){

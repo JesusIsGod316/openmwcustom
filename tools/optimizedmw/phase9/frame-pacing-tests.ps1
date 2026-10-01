@@ -15,7 +15,14 @@ function Measure-Fixture {
     return (Get-Content -Raw -LiteralPath (Join-Path $profile 'Phase9-BENCHMARK-REPORT.json') | ConvertFrom-Json)
 }
 try{
+    # Exercise real status files: Windows PowerShell 5.1 Get-Content strings
+    # carry provider metadata which must never enter the JSON object graph.
+    [IO.File]::WriteAllLines((Join-Path $profile 'v3-frame.csv.capture-status.txt'),@('normal_finish=1','dropped=0'))
+    [IO.File]::WriteAllLines((Join-Path $profile 'p8g4-render.capture-status.txt'),@('normal_finish=1','output_ok=1'))
     $smooth=Measure-Fixture (@(10)*240)
+    $reportFile=Join-Path $profile 'Phase9-BENCHMARK-REPORT.json'
+    if((Get-Item -LiteralPath $reportFile).Length -gt 100000 -or
+       (Get-Content -Raw -LiteralPath $reportFile) -match 'PSProvider|PSDrive|PSPath'){throw 'Provider metadata contaminated frame report'}
     $alternating=Measure-Fixture (@(8,12)*120)
     if($smooth.unfiltered.mean_ms -ne $alternating.unfiltered.mean_ms -or $smooth.frame_pacing.rms_change_ms -ne 0){throw 'Constant pacing baseline changed'}
     if($alternating.unfiltered.population_stddev_ms -ne 2 -or $alternating.frame_pacing.rms_change_ms -ne 4 -or
