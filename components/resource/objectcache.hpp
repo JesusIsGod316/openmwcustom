@@ -21,6 +21,7 @@
 #define OPENMW_COMPONENTS_RESOURCE_OBJECTCACHE
 
 #include <components/debug/hitchtrace.hpp>
+#include <components/debug/resourcelifecycle.hpp>
 
 #include "cachestats.hpp"
 #include "cachediagnostics.hpp"
@@ -61,12 +62,19 @@ namespace Resource
         // Pressure trimming protects requests since the last bounded sweep.
         // This never changes normal expiry behavior or depends on diagnostics.
         bool mTrimRecentlyUsed = true;
+        Debug::ResourceLifecycle::Token mLifecycle = 0;
     };
 
     template <typename KeyType>
     class GenericObjectCache : public osg::Referenced
     {
     public:
+        ~GenericObjectCache() override
+        {
+            if (Debug::ResourceLifecycle::enabled())
+                for (auto& value : mItems)
+                    retire(value.second, Debug::ResourceLifecycle::Retirement::CacheDestroyed);
+        }
         /*
          * @brief Updates usage timestamps and removes expired items
          *
@@ -86,12 +94,14 @@ namespace Resource
 
         void update(double referenceTime, double expiryDelay)
         {
+            Debug::HitchTrace::Scope scan("resource.cache_expiry_scan", Debug::HitchTrace::CpuTiming::WallEnvelope);
             if (auto* budget = CacheMaintenanceScope::current())
             { maintain(referenceTime, expiryDelay, false, *budget); return; }
             std::vector<Item> objectsToRemove;
             {
                 const double expiryTime = referenceTime - expiryDelay;
                 std::lock_guard<std::mutex> lock(mMutex);
+                scan.setMetric(0, "entries", mItems.size());
 
                 std::erase_if(mItems, [&](auto& v) {
                     Item& item = v.second;
@@ -109,6 +119,8 @@ namespace Resource
                     if (Debug::RuntimeDiagnostics::enabled() && item.mDiagnosticHits == 0)
                         ++mDiagnosticExpiredWithoutHit;
 
+                    retire(item, Debug::ResourceLifecycle::Retirement::Expired);
+
                     // just mark for removal here so objects can be removed in bulk outside the lock
                     if (item.mValue != nullptr)
                         objectsToRemove.push_back(std::move(item));
@@ -117,7 +129,8 @@ namespace Resource
                 });
             }
             // remove expired items from cache
-            objectsToRemove.clear();
+            { Debug::HitchTrace::Scope release("resource.cache_final_release");
+              release.setMetric(0, "owners", objectsToRemove.size()); objectsToRemove.clear(); }
         }
 
         // Release only cache-owned objects; never strip an active object's
@@ -126,6 +139,7 @@ namespace Resource
         // of the lock and called on the existing resource-maintenance worker.
         std::size_t trimUnused(std::size_t maxRemove, std::size_t maxScan = 4096)
         {
+            Debug::HitchTrace::Scope scan("resource.cache_pressure_scan", Debug::HitchTrace::CpuTiming::WallEnvelope);
             if (maxRemove == 0 || maxScan == 0) return 0;
             if (auto* budget = CacheMaintenanceScope::current())
                 return maintain(0, 0, true, *budget, maxScan, maxRemove);
@@ -143,6 +157,7 @@ namespace Resource
                     if (!recent && item.mValue && item.mValue->referenceCount() == 1)
                     {
                         const bool neverHit = item.mDiagnosticHits == 0;
+                        retire(item, Debug::ResourceLifecycle::Retirement::Pressure);
                         release.push_back(std::move(item));
                         it = mItems.erase(it);
                         ++mPressureTrimmed;
@@ -153,7 +168,11 @@ namespace Resource
                 }
                 if (it == mItems.end()) mTrimCursor.reset();
             }
-            return release.size();
+            const auto removed = release.size();
+            { Debug::HitchTrace::Scope finalRelease("resource.cache_final_release");
+              finalRelease.setMetric(0, "owners", removed); release.clear(); }
+            scan.setMetric(0, "removed", removed);
+            return removed;
         }
 
         /** Remove all objects in the cache regardless of having external references or expiry times.*/
@@ -162,9 +181,14 @@ namespace Resource
             decltype(mItems) release;
             {
                 std::lock_guard<std::mutex> lock(mMutex);
+                if (Debug::ResourceLifecycle::enabled())
+                    for (auto& value : mItems)
+                        retire(value.second, Debug::ResourceLifecycle::Retirement::Cleared);
                 release.swap(mItems);
                 mTrimCursor.reset(); mExpiryCursor.reset();
             } // final releases happen outside the cache mutex
+            { Debug::HitchTrace::Scope finalRelease("resource.cache_final_release");
+              finalRelease.setMetric(0, "owners", release.size()); release.clear(); }
         }
 
         /** Add a key,object,timestamp triple to the Registry::ObjectCache.*/
@@ -188,11 +212,16 @@ namespace Resource
                 Debug::HitchTrace::Scope insert("cache.insert_locked");
                 const auto it = mItems.find(key);
                 if (it == mItems.end())
-                    mItems.emplace_hint(it, std::forward<K>(key), std::move(incoming));
+                {
+                    auto inserted = mItems.emplace_hint(it, std::forward<K>(key), std::move(incoming));
+                    publish(inserted->second);
+                }
                 else
                 {
                     displaced = std::move(it->second);
+                    retire(displaced, Debug::ResourceLifecycle::Retirement::Replaced);
                     it->second = std::move(incoming);
+                    publish(it->second);
                 }
             }
         }
@@ -222,6 +251,7 @@ namespace Resource
                 else
                 {
                     auto it = mItems.emplace(std::forward<K>(key), std::move(incoming)).first;
+                    publish(it->second);
                     result = it->second.mValue;
                     inserted = true;
                 }
@@ -236,7 +266,11 @@ namespace Resource
             {
                 std::lock_guard<std::mutex> lock(mMutex);
                 const auto it = mItems.find(key);
-                if (it != mItems.end()) release = mItems.extract(it);
+                if (it != mItems.end())
+                {
+                    retire(it->second, Debug::ResourceLifecycle::Retirement::Removed);
+                    release = mItems.extract(it);
+                }
             }
         }
 
@@ -382,9 +416,19 @@ namespace Resource
         }
 
     private:
+        void publish(GenericObjectCacheItem& item) noexcept
+        { item.mLifecycle = Debug::ResourceLifecycle::publish(this, item.mValue.get()); }
+        static void retire(GenericObjectCacheItem& item, Debug::ResourceLifecycle::Retirement reason) noexcept
+        {
+            if (item.mLifecycle && item.mValue)
+                Debug::ResourceLifecycle::retire(item.mLifecycle, item.mValue.get(), reason,
+                    item.mValue->referenceCount(), item.mCharge ? item.mCharge->bytes() : 0);
+        }
+
         std::size_t maintain(double referenceTime, double expiryDelay, bool pressure,
             CacheMaintenanceBudget& budget, std::size_t scanLimit = 128, std::size_t removeLimit = 8)
         {
+            Debug::HitchTrace::Scope scan("resource.cache_bounded_scan", Debug::HitchTrace::CpuTiming::WallEnvelope);
             scanLimit = (std::min)(scanLimit, std::size_t(128));
             removeLimit = (std::min)(removeLimit, std::size_t(8));
             std::size_t scanned = 0, removed = 0;
@@ -418,14 +462,24 @@ namespace Resource
                     if (eligible && budget.release(item.mCharge ? item.mCharge->bytes() : 0))
                     {
                         if (pressure) ++mPressureTrimmed; else ++mExpired;
+                        retire(item, pressure ? Debug::ResourceLifecycle::Retirement::Pressure
+                                              : Debug::ResourceLifecycle::Retirement::Expired);
                         release = mItems.extract(it); ++removed;
                     }
                     if (reachedEnd) cursor.reset();
                 }
                 if (release && release.mapped().mCharge && release.mapped().mCharge.use_count() == 1)
                     release.mapped().mCharge->pending();
+                if (release)
+                {
+                    Debug::HitchTrace::Scope finalRelease("resource.cache_final_release");
+                    finalRelease.setMetric(0, "owners", 1);
+                    release = {};
+                }
                 if (reachedEnd) break;
             }
+            scan.setMetric(0, "scanned", scanned); scan.setMetric(1, "removed", removed);
+            scan.setMetric(2, "pressure", pressure);
             return removed;
         }
 
@@ -452,6 +506,7 @@ namespace Resource
             if (mBudget) mBudget->hit(SpeculativeScope::active());
             it->second.mTrimRecentlyUsed = true;
             if (Debug::RuntimeDiagnostics::enabled()) ++it->second.mDiagnosticHits;
+            Debug::ResourceLifecycle::observe(it->second.mLifecycle, this, it->second.mValue.get());
             return &it->second;
         }
     };

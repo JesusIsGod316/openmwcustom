@@ -572,6 +572,11 @@ namespace Resource
     SceneManager::~SceneManager()
     {
         // this has to be defined in the .cpp file as we can't delete incomplete types
+        if (Debug::ResourceLifecycle::enabled())
+            for (const auto& [path, instances] : mPreparedInstances)
+                for (const auto& instance : instances)
+                    Debug::ResourceLifecycle::retire(instance.mLifecycle, instance.mNode.get(),
+                        Debug::ResourceLifecycle::Retirement::CacheDestroyed, instance.mNode->referenceCount());
     }
 
     Shader::ShaderManager& SceneManager::getShaderManager()
@@ -989,6 +994,8 @@ namespace Resource
         VFS::Path::NormalizedView path, bool compile, V321CompileClass compileClass)
     {
         Debug::HitchTrace::Scope hitchTemplate("resource.scene_template", {}, path.value());
+        Debug::ResourceLifecycle::RequestScope lifecycle(Debug::ResourceLifecycle::Kind::Template,
+            path.value(), mVFS, SpeculativeScope::active(), mCache.get());
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(path);
         if (obj)
             return osg::ref_ptr<const osg::Node>(static_cast<osg::Node*>(obj.get()));
@@ -1016,11 +1023,14 @@ namespace Resource
             }
 
             // set filtering settings
-            SetFilterSettingsVisitor setFilterSettingsVisitor(mMinFilter, mMagFilter, mMaxAnisotropy);
-            loaded->accept(setFilterSettingsVisitor);
-            SetFilterSettingsControllerVisitor setFilterSettingsControllerVisitor(
-                mMinFilter, mMagFilter, mMaxAnisotropy);
-            loaded->accept(setFilterSettingsControllerVisitor);
+            {
+                Debug::HitchTrace::Scope filters("resource.template_filters", {}, path.value());
+                SetFilterSettingsVisitor setFilterSettingsVisitor(mMinFilter, mMagFilter, mMaxAnisotropy);
+                loaded->accept(setFilterSettingsVisitor);
+                SetFilterSettingsControllerVisitor setFilterSettingsControllerVisitor(
+                    mMinFilter, mMagFilter, mMaxAnisotropy);
+                loaded->accept(setFilterSettingsControllerVisitor);
+            }
 
             osg::ref_ptr<Shader::ShaderVisitor> shaderVisitor(createShaderVisitor());
             { Debug::HitchTrace::Scope hitchShaders("resource.shader_setup", {}, path.value());
@@ -1039,7 +1049,10 @@ namespace Resource
                 optimizer.optimize(loaded, options);
             }
             else
+            {
+                Debug::HitchTrace::Scope sharedState("resource.template_shared_state", {}, path.value());
                 shareState(loaded);
+            }
 
             if (compile && mIncrementalCompileOperation)
             {
@@ -1052,7 +1065,10 @@ namespace Resource
                     mIncrementalCompileOperation->add(loaded);
             }
             else
+            {
+                Debug::HitchTrace::Scope bounds("resource.template_bounds", {}, path.value());
                 loaded->getBound();
+            }
 
             mCache->addEntryToObjectCache(path.value(), loaded);
             return loaded;
@@ -1062,6 +1078,8 @@ namespace Resource
     osg::ref_ptr<osg::Node> SceneManager::getInstance(VFS::Path::NormalizedView path)
     {
         Debug::HitchTrace::Scope hitchInstance("resource.scene_instance", {}, path.value());
+        Debug::ResourceLifecycle::RequestScope lifecycle(Debug::ResourceLifecycle::Kind::PreparedInstance,
+            path.value(), mVFS, SpeculativeScope::active(), this);
         Debug::V3Diagnostics::TraceScope trace("render", "scene_instance", path.value(), 0.1);
         Debug::V3Diagnostics::ScopedCsvTimer timer(
             Debug::V3Diagnostics::renderWriter(), "scene_instance", path.value(), 0.25);
@@ -1073,7 +1091,14 @@ namespace Resource
                 const auto found = mPreparedInstances.find(path);
                 if (found != mPreparedInstances.end() && !found->second.empty())
                 {
-                    osg::ref_ptr<osg::Node> prepared = std::move(found->second.front());
+                    auto& entry = found->second.front();
+                    if (Debug::ResourceLifecycle::enabled())
+                    {
+                        Debug::ResourceLifecycle::observe(entry.mLifecycle, this, entry.mNode.get());
+                        Debug::ResourceLifecycle::retire(entry.mLifecycle, entry.mNode.get(),
+                            Debug::ResourceLifecycle::Retirement::PoolConsumed, entry.mNode->referenceCount());
+                    }
+                    osg::ref_ptr<osg::Node> prepared = std::move(entry.mNode);
                     found->second.pop_front();
                     --mPreparedInstanceCount;
                     ++mPreparedInstanceHits;
@@ -1102,7 +1127,11 @@ namespace Resource
             {
                 while (!it->second.empty() && mPreparedInstanceCount > mPreparedInstanceLimit)
                 {
-                    released.push_back(std::move(it->second.front()));
+                    auto& entry = it->second.front();
+                    if (Debug::ResourceLifecycle::enabled())
+                        Debug::ResourceLifecycle::retire(entry.mLifecycle, entry.mNode.get(),
+                            Debug::ResourceLifecycle::Retirement::Pressure, entry.mNode->referenceCount());
+                    released.push_back(std::move(entry.mNode));
                     it->second.pop_front();
                     --mPreparedInstanceCount;
                 }
@@ -1116,6 +1145,8 @@ namespace Resource
 
     bool SceneManager::prepareInstance(VFS::Path::NormalizedView path)
     {
+        Debug::ResourceLifecycle::RequestScope lifecycle(Debug::ResourceLifecycle::Kind::PreparedInstance,
+            path.value(), mVFS, true, this);
         if (mHostMemoryBudget && mHostMemoryBudget->pressure() != HostMemoryPressure::Normal)
             return false;
         if (!mPreparedInstanceEnabled.load(std::memory_order_acquire))
@@ -1155,7 +1186,9 @@ namespace Resource
         if (generation != mPreparedInstanceGeneration || mPreparedInstanceLimit == 0
             || mPreparedInstanceCount >= mPreparedInstanceLimit)
             return false;
-        mPreparedInstances[VFS::Path::Normalized(path)].push_back(std::move(prepared));
+        auto& instances = mPreparedInstances[VFS::Path::Normalized(path)];
+        instances.push_back({std::move(prepared), 0});
+        instances.back().mLifecycle = Debug::ResourceLifecycle::publish(this, instances.back().mNode.get());
         ++mPreparedInstanceCount;
         ++mPreparedInstanceAdded;
         return true;
@@ -1165,7 +1198,24 @@ namespace Resource
     {
         Debug::V3Diagnostics::ScopedCsvTimer timer(
             Debug::V3Diagnostics::renderWriter(), "scene_clone", base ? base->getName() : std::string(), 0.25);
-        SceneUtil::CopyOp copyop;
+        // Forward every operation to the production CopyOp. Counters describe
+        // actual copy requests, including shallow drawables, not allocation bytes.
+        struct MeasuredCopyOp final : SceneUtil::CopyOp
+        {
+            const bool measured = Debug::HitchTrace::requested();
+            mutable std::uint64_t nodes = 0, drawables = 0, callbacks = 0;
+            using SceneUtil::CopyOp::operator();
+            osg::Node* operator()(const osg::Node* node) const override
+            { if (measured && node) ++nodes; return SceneUtil::CopyOp::operator()(node); }
+            osg::Drawable* operator()(const osg::Drawable* drawable) const override
+            { if (measured && drawable) ++drawables; return SceneUtil::CopyOp::operator()(drawable); }
+            osg::Callback* operator()(const osg::Callback* callback) const override
+            { if (measured && callback) ++callbacks; return SceneUtil::CopyOp::operator()(callback); }
+        };
+        SceneUtil::CopyOp controlCopyOp;
+        std::optional<MeasuredCopyOp> measuredCopyOp;
+        if (Debug::HitchTrace::requested()) measuredCopyOp.emplace();
+        SceneUtil::CopyOp& copyop = measuredCopyOp ? static_cast<SceneUtil::CopyOp&>(*measuredCopyOp) : controlCopyOp;
         if (const osg::Drawable* drawable = base->asDrawable())
         {
             if (drawable->asGeometry())
@@ -1176,14 +1226,28 @@ namespace Resource
                     copyop.getCopyFlags() | osg::CopyOp::DEEP_COPY_ARRAYS | osg::CopyOp::DEEP_COPY_PRIMITIVES);
             }
         }
-        osg::ref_ptr<osg::Node> cloned = static_cast<osg::Node*>(base->clone(copyop));
+        osg::ref_ptr<osg::Node> cloned;
+        {
+            Debug::HitchTrace::Scope copy("resource.clone_copy", {}, base->getName());
+            cloned = static_cast<osg::Node*>(base->clone(copyop));
+            copy.setMetric(0, "node_requests", measuredCopyOp ? measuredCopyOp->nodes : 0);
+            copy.setMetric(1, "drawable_requests", measuredCopyOp ? measuredCopyOp->drawables : 0);
+            copy.setMetric(2, "callback_requests", measuredCopyOp ? measuredCopyOp->callbacks : 0);
+            copy.setMetric(3, "update_children", base->getNumChildrenRequiringUpdateTraversal());
+        }
 
-        copyop.remapControllerTargets();
+        {
+            Debug::HitchTrace::Scope targets("resource.clone_target_remap");
+            copyop.remapControllerTargets();
+        }
 
         // add a ref to the original template to help verify the safety of shallow cloning operations
         // in addition, if this node is managed by a cache, we hint to the cache that it's still being used and should
         // be kept in cache
-        cloned->getOrCreateUserDataContainer()->addUserObject(new TemplateRef(base));
+        {
+            Debug::HitchTrace::Scope pin("resource.clone_template_pin");
+            cloned->getOrCreateUserDataContainer()->addUserObject(new TemplateRef(base));
+        }
         return cloned;
     }
 
@@ -1195,6 +1259,7 @@ namespace Resource
         // update callback set
         if (cloned->getNumChildrenRequiringUpdateTraversal() > 0)
         {
+            Debug::HitchTrace::Scope particles("resource.clone_particle_init");
             InitParticlesVisitor visitor(mParticleSystemMask);
             cloned->accept(visitor);
         }
@@ -1372,7 +1437,11 @@ namespace Resource
                 while (!it->second.empty() && release.size() < maximum)
                 {
                     if (auto* budget = CacheMaintenanceScope::current(); budget && !budget->release()) break;
-                    release.push_back(std::move(it->second.front()));
+                    auto& entry = it->second.front();
+                    if (Debug::ResourceLifecycle::enabled())
+                        Debug::ResourceLifecycle::retire(entry.mLifecycle, entry.mNode.get(),
+                            Debug::ResourceLifecycle::Retirement::Pressure, entry.mNode->referenceCount());
+                    release.push_back(std::move(entry.mNode));
                     it->second.pop_front();
                     --mPreparedInstanceCount;
                 }
@@ -1381,10 +1450,13 @@ namespace Resource
             }
         }
         const auto prepared = release.size();
-        release.clear(); // outside the pool lock; drops TemplateRef owners first
+        { Debug::HitchTrace::Scope finalRelease("resource.prepared_owner_release");
+          finalRelease.setMetric(0, "owners", prepared);
+          release.clear(); } // outside the pool lock; drops TemplateRef owners first
         const auto templates = ResourceManager::trimCache(maximum);
         std::vector<osg::ref_ptr<osg::Object>> releasedState;
         {
+            Debug::HitchTrace::Scope prune("resource.shared_state_prune");
             std::lock_guard lock(mSharedStateMutex);
             if (auto* budget = CacheMaintenanceScope::current()) mSharedStateManager->pruneBudgeted(releasedState, *budget);
             else mSharedStateManager->prune();
@@ -1398,10 +1470,16 @@ namespace Resource
         {
             std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);
             ++mPreparedInstanceGeneration;
+            if (Debug::ResourceLifecycle::enabled())
+                for (const auto& [path, instances] : mPreparedInstances)
+                    for (const auto& instance : instances)
+                        Debug::ResourceLifecycle::retire(instance.mLifecycle, instance.mNode.get(),
+                            Debug::ResourceLifecycle::Retirement::Cleared, instance.mNode->referenceCount());
             released.swap(mPreparedInstances);
             mPreparedInstanceCount = 0;
         }
-        released.clear();
+        { Debug::HitchTrace::Scope finalRelease("resource.prepared_owner_release");
+          finalRelease.setMetric(0, "asset_keys", released.size()); released.clear(); }
         ResourceManager::clearCache();
 
         auto releasedShared = [&] {

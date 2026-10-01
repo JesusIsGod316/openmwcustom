@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <charconv>
 #include <regex>
 #include <set>
 
@@ -106,7 +107,19 @@ namespace LuaUtil
     {
         LuaState* self = static_cast<LuaState*>(ud);
         const bool diagnostic = Debug::HitchTrace::requested();
-        if (diagnostic) ++self->mDiagnosticAllocations.calls;
+        if (diagnostic)
+        {
+            auto& stats = self->mDiagnosticAllocations;
+            ++stats.calls;
+            if (!nsize)
+                ++stats.frees;
+            else
+            {
+                constexpr std::array<std::size_t, 5> limits{ 64, 256, 1024, 16384, 1048576 };
+                const auto bucket = std::lower_bound(limits.begin(), limits.end(), nsize) - limits.begin();
+                ++stats.requestedSizes[bucket];
+            }
+        }
         const uint64_t smallAllocSize = self->mSettings.mSmallAllocMaxSize;
         const uint64_t memoryLimit = self->mSettings.mMemoryLimit;
 
@@ -124,24 +137,38 @@ namespace LuaUtil
 
         if (bigAllocDelta > 0 && memoryLimit > 0 && self->mTotalMemoryUsage + nsize - osize > memoryLimit)
         {
-            if (diagnostic) ++self->mDiagnosticAllocations.failures;
+            if (diagnostic)
+            {
+                ++self->mDiagnosticAllocations.failures;
+                ++self->mDiagnosticAllocations.policyBlocked;
+            }
             Log(Debug::Error) << "Lua realloc " << osize << "->" << nsize
                               << " is blocked because Lua memory limit (configurable in settings.cfg) is exceeded";
             return nullptr;
         }
 
         void* newPtr = nullptr;
+        const auto serviceStart = diagnostic ? Debug::HitchTrace::Clock::now() : Debug::HitchTrace::Clock::time_point{};
         if (nsize == 0)
             free(ptr);
         else
-        {
             newPtr = realloc(ptr, nsize);
-            if (!newPtr)
+        if (diagnostic)
+        {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                Debug::HitchTrace::Clock::now() - serviceStart).count();
+            ++self->mDiagnosticAllocations.serviceCalls;
+            self->mDiagnosticAllocations.serviceNs += static_cast<std::uint64_t>((std::max)(elapsed, std::int64_t{ 0 }));
+        }
+        if (nsize != 0 && !newPtr)
+        {
+            if (diagnostic)
             {
-                if (diagnostic) ++self->mDiagnosticAllocations.failures;
-                Log(Debug::Error) << "Lua realloc " << osize << "->" << nsize << " failed";
-                return nullptr;
+                ++self->mDiagnosticAllocations.failures;
+                ++self->mDiagnosticAllocations.serviceFailures;
             }
+            Log(Debug::Error) << "Lua realloc " << osize << "->" << nsize << " failed";
+            return nullptr;
         }
         self->mTotalMemoryUsage += smallAllocDelta + bigAllocDelta;
         if (diagnostic)
@@ -185,6 +212,74 @@ namespace LuaUtil
         return newPtr;
     }
 
+    bool LuaState::diagnosticTrackingAllocator() const
+    {
+        return lua_getallocf(mLuaState.get(), nullptr) == &trackingAllocator;
+    }
+
+    std::pair<std::string_view, std::string_view> LuaState::diagnosticAllocationContext(ScriptId scriptId) const
+    {
+        std::string_view path;
+        if (mConf && scriptId.mIndex >= 0 && static_cast<std::size_t>(scriptId.mIndex) < mConf->size())
+            path = (*mConf)[scriptId.mIndex].mScriptPath.value();
+        return { scriptId.mContainer ? std::string_view(scriptId.mContainer->mNamePrefix) : "unassigned", path };
+    }
+
+    LuaState::DiagnosticAllocationScope::DiagnosticAllocationScope(LuaState* state, ScriptId scriptId)
+        : mState(Debug::HitchTrace::requested() ? state : nullptr)
+    {
+        if (!mState)
+            return;
+        mBefore = mState->diagnosticAllocations();
+        const auto [container, path] = mState->diagnosticAllocationContext(scriptId);
+        mService.emplace("lua.alloc.service", Debug::HitchTrace::CpuTiming::WallEnvelope, container, path);
+        mSmall.emplace("lua.alloc.request_small", Debug::HitchTrace::CpuTiming::WallEnvelope, container, path);
+        mLarge.emplace("lua.alloc.request_large", Debug::HitchTrace::CpuTiming::WallEnvelope, container, path);
+    }
+
+    LuaState::DiagnosticAllocationScope::~DiagnosticAllocationScope()
+    {
+        if (!mState)
+            return;
+        const auto after = mState->diagnosticAllocations();
+        mService->setMetric(0, "service_ns", after.serviceNs - mBefore.serviceNs);
+        mService->setMetric(1, "service_calls", after.serviceCalls - mBefore.serviceCalls);
+        mService->setMetric(2, "service_failures", after.serviceFailures - mBefore.serviceFailures);
+        mService->setMetric(3, "policy_blocked", after.policyBlocked - mBefore.policyBlocked);
+        constexpr std::array<std::string_view, 4> names{ "req_le64", "req_65_256", "req_257_1024", "req_1025_16384" };
+        for (std::size_t i = 0; i < names.size(); ++i)
+            mSmall->setMetric(i, names[i], after.requestedSizes[i] - mBefore.requestedSizes[i]);
+        mLarge->setMetric(0, "req_16385_1048576", after.requestedSizes[4] - mBefore.requestedSizes[4]);
+        mLarge->setMetric(1, "req_gt1048576", after.requestedSizes[5] - mBefore.requestedSizes[5]);
+        mLarge->setMetric(2, "free_requests", after.frees - mBefore.frees);
+        mLarge->setMetric(3, "tracking_available", mState->diagnosticTrackingAllocator());
+    }
+
+    bool LuaState::gcStep(int steps)
+    {
+        const bool diagnostic = Debug::HitchTrace::requested();
+        const auto heapBefore = diagnostic ? getTotalMemoryUsage() : 0;
+        std::array<char, 16> argument{};
+        std::string_view requestedSteps;
+        if (diagnostic)
+        {
+            const auto end = std::to_chars(argument.data(), argument.data() + argument.size(), steps);
+            requestedSteps = std::string_view(argument.data(), end.ptr - argument.data());
+        }
+        DiagnosticAllocationScope allocationDiagnostic(diagnostic ? this : nullptr);
+        Debug::HitchTrace::Scope detail("lua.gc.step_metrics", Debug::HitchTrace::CpuTiming::WallEnvelope,
+            "explicit_step", requestedSteps);
+        const bool completed = lua_gc(mSol.lua_state(), LUA_GCSTEP, steps) == 1;
+        if (diagnostic)
+        {
+            detail.setMetric(0, "requested_steps", static_cast<std::uint64_t>((std::max)(steps, 0)));
+            detail.setMetric(1, "cycle_completed", completed);
+            detail.setMetric(2, "heap_before_bytes", heapBefore);
+            detail.setMetric(3, "heap_after_bytes", getTotalMemoryUsage());
+        }
+        return completed;
+    }
+
     LuaStatePtr LuaState::createLuaRuntime(LuaState* luaState)
     {
         if (isExplicitVulkanBackend() && !luaState->mSettings.mInstructionProfilerEnabled && sProfilerEnabled)
@@ -226,6 +321,25 @@ namespace LuaUtil
     {
         if (sProfilerEnabled && mSettings.mInstructionProfilerEnabled)
             setInstructionProfilerEnabled(true);
+
+        if (Debug::HitchTrace::requested())
+        {
+            // The pinned LuaJIT sampling API has no public profiler ownership
+            // query and stopping it flushes JIT traces. Preserve the existing
+            // VM/profiler policy and make the automatic-GC coverage gap explicit.
+#ifndef NO_LUAJIT
+            constexpr std::string_view runtime = LUAJIT_VERSION;
+#else
+            constexpr std::string_view runtime = LUA_VERSION;
+#endif
+            Debug::HitchTrace::Scope observation("lua.gc.observation", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                "unavailable_without_vm_sampler", runtime);
+            observation.setMetric(0, "automatic_gc_observed", 0);
+            observation.setMetric(1, "tracking_available", diagnosticTrackingAllocator());
+            observation.setMetric(2, "instruction_profiler", mInstructionProfilerEnabled);
+            observation.setMetric(3, "vm_sampler_enabled", 0);
+            observation.retain(); // One coverage record per VM, never per allocation/callback.
+        }
 
         protectedCall([&](LuaView& view) {
             auto& sol = view.sol();

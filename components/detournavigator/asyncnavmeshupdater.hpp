@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <iosfwd>
 #include <list>
@@ -27,6 +28,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <string>
 #include <thread>
 #include <tuple>
 
@@ -59,6 +61,14 @@ namespace DetourNavigator
         std::shared_ptr<RecastMesh> mRecastMesh;
         std::optional<TileData> mCachedTileData;
         std::unique_ptr<PreparedNavMeshData> mGeneratedNavMeshData;
+        // Diagnostic ownership follows this existing job through navigator/DB
+        // queues. The origin never changes; each requeue has its own receipt.
+        std::uint64_t mHitchOrigin = 0;
+        unsigned mHitchFrame = 0;
+        std::string mHitchIdentity;
+        std::string mHitchWorld;
+        std::uint64_t mHitchEnqueue = 0;
+        std::chrono::steady_clock::time_point mHitchQueued{};
 
         Job(const AgentBounds& agentBounds, std::weak_ptr<GuardedNavMeshCacheItem> navMeshCacheItem,
             ESM::RefId worldspace, const TilePosition& changedTile, ChangeType changeType,
@@ -210,7 +220,7 @@ namespace DetourNavigator
 
         void enqueueJob(JobIt job);
 
-        void removeJob(JobIt job);
+        void removeJob(JobIt job, unsigned outcome = 0);
 
     private:
         std::reference_wrapper<const Settings> mSettings;

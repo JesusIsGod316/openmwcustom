@@ -316,3 +316,19 @@ Diagnostic detail revision 3:
   creating a ZIP does not establish completeness or a hitch diagnosis.
   Mode 1 remains the reference performance path. Diagnostic captures do not
   establish gameplay FPS gains or promote modes 8/9/10.
+
+Six-group Deep diagnostic expansion:
+  H keeps the four independently selectable mechanisms and all 16 combinations.
+  Normal and Deep choose the same gameplay switches. Deep now adds per-spike
+  work trees, preparation-to-first-API-retrieval lifetimes, model construction,
+  physics/navigation work and waits, queue/cache retirement, and Lua allocator
+  service plus explicit GC progress. See HITCH-DIAGNOSTICS6.md in the source.
+  Mode 3 also arms these groups on the reference foundation.
+  HITCH-DIAGNOSTICS6-CAPTURE.json reports metadata loss and unknown provenance;
+  HITCH-SPIKE-REPORT.json qualifies the automatic frame trees separately.
+  HITCH-SPIKE-WORK-TREES.jsonl references original HITCH-SPIKE-NODES.csv IDs.
+  First retrieval is not first visible draw/GPU use. Owner release does not
+  prove destruction. Automatic GC inside arbitrary Lua calls remains explicitly
+  unavailable; the workload-altering LuaJIT sampler is disabled.
+  Additional receipts still share the bounded recorder: check loss/status before
+  making an exact attribution claim. No diagnostic timing cost is subtracted.

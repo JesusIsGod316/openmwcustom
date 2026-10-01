@@ -17,6 +17,12 @@
 #include "v33framestats.hpp"
 #include "deferredcapture.hpp"
 
+namespace Debug::HitchTrace
+{
+    bool frameIntervalsRequested() noexcept;
+    void recordFrameInterval(unsigned frame, std::int64_t start, std::int64_t end, std::int64_t epoch) noexcept;
+}
+
 namespace Debug::V3HitchTelemetry
 {
     constexpr std::size_t StageCount = 10;
@@ -79,7 +85,7 @@ namespace Debug::V3HitchTelemetry
             try
             {
                 if (includeLastFrame && mStarted)
-                    emitPreviousFrame(std::chrono::duration<double, std::milli>(Clock::now() - mFrameStart).count());
+                    emitPreviousFrame(Clock::now());
                 mStarted = false;
                 ensureAllFrameStream();
                 ensureStream();
@@ -124,7 +130,7 @@ namespace Debug::V3HitchTelemetry
             {
                 const double wallMs = std::chrono::duration<double, std::milli>(now - mFrameStart).count();
                 sLastFrameWallMs.store(wallMs, std::memory_order_relaxed);
-                emitPreviousFrame(wallMs);
+                emitPreviousFrame(now);
             }
 
             mStarted = true;
@@ -221,8 +227,9 @@ namespace Debug::V3HitchTelemetry
                        "rendering_traversal_ms,lua_wait_ms,frame_limiter_ms,viewer_advance_ms,accounted_ms,other_ms,reason\n";
         }
 
-        void emitPreviousFrame(double wallMs)
+        void emitPreviousFrame(Clock::time_point end)
         {
+            const double wallMs = std::chrono::duration<double, std::milli>(end - mFrameStart).count();
             const double accountedMs
                 = std::accumulate(mStageMs.begin(), mStageMs.end(), 0.0);
             const double tailAccountedMs
@@ -232,6 +239,17 @@ namespace Debug::V3HitchTelemetry
             const double largestStage = *std::max_element(mStageMs.begin(), mStageMs.end());
             const auto epochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 mFrameStartSystem.time_since_epoch()).count();
+
+            // An exact steady-clock anchor for the same interval written to
+            // v3-frame.csv. This receipt has no nesting parent and is not work
+            // to charge a second time. Normal captures take no new clock sample.
+            if (HitchTrace::frameIntervalsRequested())
+            {
+                const auto startNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    mFrameStart.time_since_epoch()).count();
+                const auto endNs = std::chrono::duration_cast<std::chrono::nanoseconds>(end.time_since_epoch()).count();
+                HitchTrace::recordFrameInterval(mFrame, startNs, endNs, epochMs);
+            }
 
             if (DeferredCapture::enabled())
             {

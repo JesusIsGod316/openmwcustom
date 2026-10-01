@@ -39,6 +39,7 @@
 #include "../mwrender/landmanager.hpp"
 #include "../mwclass/npc.hpp"
 #include <components/esm3/loadnpc.hpp>
+#include <components/debug/resourcelifecycle.hpp>
 
 #include "cellstore.hpp"
 #include "class.hpp"
@@ -118,6 +119,10 @@ namespace MWWorld
             , mPriority(priority)
             , mAbort(false)
         {
+            Debug::HitchTrace::Scope resources("resource.preload_snapshot",
+                Debug::HitchTrace::CpuTiming::Scoped);
+            resources.retain();
+            mResourceOriginSpan = resources.id();
             if (mUseLegacyTerrain)
                 mTerrainView = mTerrain->createView();
 
@@ -139,6 +144,9 @@ namespace MWWorld
             }
             else
                 cell->forEachConst(visitor);
+            resources.setMetric(0, "models", mMeshes.size());
+            resources.setMetric(1, "animation_sources", mAnimationSources.size());
+            resources.setMetric(2, "vfs_generation", mSceneManager->getVFS()->getIndexGeneration());
             if (mByteJob)
             {
                 Resource::SpeculativeScope scope(mResourceSystem->speculativeBudget(),
@@ -159,6 +167,9 @@ namespace MWWorld
         /// Preload work to be called from the worker thread.
         void doWork() override
         {
+            // The immutable main-thread snapshot and this declared optional
+            // worker boundary establish origin. A filename match alone cannot.
+            Debug::ResourceLifecycle::PreparationScope preparation("cell_model_preload", mResourceOriginSpan);
             // Release on every exit, including abort and exception. Until work
             // starts the member also covers the queue and canceled-item lifetime.
             const auto reservation = std::move(mReservation);
@@ -374,6 +385,7 @@ namespace MWWorld
         std::vector<VFS::Path::Normalized> mAnimationSources;
         std::uint64_t mAnimationVfsGeneration = 0;
         std::uint64_t mAnimationSnapshotSpan = 0;
+        std::uint64_t mResourceOriginSpan = 0;
         bool mAnimationAdditionalSources = false;
         Resource::SceneManager* mSceneManager;
         Resource::BulletShapeManager* mBulletShapeManager;
@@ -913,7 +925,11 @@ namespace MWWorld
                 Misc::setCurrentThreadIdlePriority();
             // Release cell pinning references here, not on the main thread.
             // Only completed work items are transferred; no new wait/barrier.
-            mReleasedPreloads.clear();
+            {
+                Debug::HitchTrace::Scope holders("resource.preload_holder_release");
+                holders.setMetric(0, "work_items", mReleasedPreloads.size());
+                mReleasedPreloads.clear();
+            }
             mResourceSystem->updateCache(mReferenceTime);
         }
 

@@ -108,6 +108,9 @@ function New-Phase9RunManifest {
             coverage='Independent startup switches; resource denial, invalidation and demand fallback remain possible. Selection alone is not execution proof.'};
         hitch_v2_attribution=[ordered]@{requested=($Mode.Trace -eq '1');channel='p9-hitch-spans.csv';
             coverage='Additional nested UI, animation preparation, terrain publication and composite pass/restore spans. Existing threshold and loss qualification apply; child wall times are not additive.'};
+        hitch_diagnostics6=[ordered]@{requested=($Mode.Trace -eq '1');revision=1;channel='p9-hitch-spans.csv';
+            offline_report='HITCH-SPIKE-REPORT.json';
+            coverage='Exact engine-wall spike joins; preparation/cache retrieval lifecycle; model construction; physics/navigation; work queues/cache retirement; allocator service and explicit Lua GC. Automatic VM GC phases remain unavailable without a VM sampler; completeness and unknown provenance are reported separately.'};
         io_policy_acknowledgement=[ordered]@{requested=$true;coverage='one new startup policy log line, including basic CONTROL; not per-stream effective allocation proof'};
         compile_attribution=[ordered]@{requested=($Mode.Trace -eq '1');channel='compile-attribution.csv';schema=1;
             coverage='additional P0 ownership/selected-operation metadata; differs from old deep reference; original p4-compile.csv unchanged'};
@@ -137,7 +140,7 @@ function New-Phase9RunManifest {
 function Complete-Phase9RunManifest {
     param([Parameter(Mandatory=$true)][object]$Manifest,[Parameter(Mandatory=$true)][string]$ProfileDir)
     $qualification=[ordered]@{}
-    foreach($name in @('PROFILE-CAPTURE.json','ROOT-CAUSE-CAPTURE.json','HITCH-CAPTURE.json','TEMPORAL-CAPTURE.json','WRITER-CAPTURE.json','COMPILE-ATTRIBUTION-CAPTURE.json')){
+    foreach($name in @('PROFILE-CAPTURE.json','ROOT-CAUSE-CAPTURE.json','HITCH-CAPTURE.json','HITCH-DIAGNOSTICS6-CAPTURE.json','TEMPORAL-CAPTURE.json','WRITER-CAPTURE.json','COMPILE-ATTRIBUTION-CAPTURE.json')){
         $path=Join-Path $ProfileDir $name
         if([IO.File]::Exists($path)){$qualification[$name]=Get-Phase9FileIdentity $path $name}
     }

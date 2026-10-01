@@ -248,7 +248,13 @@ namespace Resource
 
         std::atomic_bool mPreparedInstanceEnabled{ false };
         mutable std::mutex mPreparedInstanceMutex;
-        std::map<VFS::Path::Normalized, std::deque<osg::ref_ptr<osg::Node>>, std::less<>> mPreparedInstances;
+        struct PreparedInstance
+        {
+            osg::ref_ptr<osg::Node> mNode;
+            // Diagnostic identity only: never a lookup key or additional owner.
+            std::uint64_t mLifecycle = 0;
+        };
+        std::map<VFS::Path::Normalized, std::deque<PreparedInstance>, std::less<>> mPreparedInstances;
         std::size_t mPreparedInstanceLimit = 0;
         std::size_t mPreparedInstanceCount = 0;
         std::size_t mPreparedInstanceGeneration = 0;

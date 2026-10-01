@@ -1,5 +1,6 @@
 #include "settings.hpp"
 
+#include <components/debug/hitchtrace.hpp>
 #include <components/detournavigator/asyncnavmeshupdater.hpp>
 #include <components/detournavigator/dbrefgeometryobject.hpp>
 #include <components/detournavigator/makenavmesh.hpp>
@@ -59,6 +60,56 @@ namespace
         const btBoxShape mBox{ btVector3(100, 100, 20) };
         Loading::Listener mListener;
     };
+
+    TEST_F(DetourNavigatorAsyncNavMeshUpdaterTest, diagnostic_origin_survives_real_db_queue_handoffs_and_cancellation)
+    {
+        std::list<Job> jobs;
+        {
+            Debug::HitchTrace::Scope origin("fixture.navigation.origin", {}, {}, 71);
+            jobs.emplace_back(mAgentBounds, std::weak_ptr<GuardedNavMeshCacheItem>{}, mWorldspace,
+                TilePosition{ 2, 3 }, ChangeType::add, std::chrono::steady_clock::time_point{});
+        }
+        const auto job = jobs.begin();
+        const auto id = job->mId;
+        const auto origin = job->mHitchOrigin;
+        const auto initialEnqueue = job->mHitchEnqueue;
+        DbJobQueue queue;
+        {
+            Debug::HitchTrace::Scope unrelatedFrame("fixture.navigation.handoff", {}, {}, 99);
+            queue.push(job);
+        }
+        const auto firstEnqueue = job->mHitchEnqueue;
+        const auto popped = queue.pop();
+        ASSERT_TRUE(popped.has_value());
+        EXPECT_EQ(*popped, job);
+        job->mState = JobState::WithDbResult;
+        {
+            Debug::HitchTrace::Scope unrelatedFrame("fixture.navigation.handoff", {}, {}, 100);
+            queue.push(job);
+        }
+        queue.stop();
+        EXPECT_EQ(job->mId, id);
+        EXPECT_EQ(job->mHitchOrigin, origin);
+        EXPECT_EQ(job->mState, JobState::WithDbResult);
+        EXPECT_EQ(jobs.size(), 1); // cancellation preserves existing ownership
+        if (Debug::HitchTrace::requested())
+        {
+            EXPECT_NE(origin, 0);
+            EXPECT_NE(firstEnqueue, initialEnqueue);
+            EXPECT_NE(job->mHitchEnqueue, firstEnqueue);
+            EXPECT_EQ(job->mHitchFrame, 71);
+            EXPECT_NE(job->mHitchQueued, std::chrono::steady_clock::time_point{});
+        }
+        else
+        {
+            EXPECT_EQ(origin, 0);
+            EXPECT_EQ(initialEnqueue, 0);
+            EXPECT_EQ(firstEnqueue, 0);
+            EXPECT_EQ(job->mHitchQueued, std::chrono::steady_clock::time_point{});
+            EXPECT_TRUE(job->mHitchIdentity.empty());
+            EXPECT_TRUE(job->mHitchWorld.empty());
+        }
+    }
 
     TEST_F(DetourNavigatorAsyncNavMeshUpdaterTest, for_all_jobs_done_when_empty_wait_should_terminate)
     {

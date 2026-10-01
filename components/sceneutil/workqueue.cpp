@@ -1,11 +1,13 @@
 #include "workqueue.hpp"
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/hitchtrace.hpp>
 #include <components/debug/v3diagnostics.hpp>
 
 #include <cstdint>
 #include <iomanip>
 #include <numeric>
+#include <optional>
 #include <sstream>
 #include <typeinfo>
 
@@ -14,20 +16,38 @@ namespace SceneUtil
 
     void WorkItem::waitTillDone()
     {
+        std::optional<Debug::HitchTrace::Scope> trace;
+        if (Debug::HitchTrace::requested())
+        {
+            trace.emplace("workqueue.wait", Debug::HitchTrace::CpuTiming::Scoped);
+            trace->setMetric(0, "already_done", mDone.load());
+            if (!mDone.load()) trace->retain();
+        }
         if (mDone)
+        {
+            if (trace)
+            {
+                const std::lock_guard lock(mMutex);
+                trace->setLink(mHitchCompletedEnqueue);
+            }
             return;
+        }
 
         std::unique_lock<std::mutex> lock(mMutex);
         while (!mDone)
         {
             mCondition.wait(lock);
         }
+        if (trace) trace->setLink(mHitchCompletedEnqueue);
     }
 
-    void WorkItem::signalDone()
+    void WorkItem::signalDone(std::uint64_t hitchEnqueue)
     {
         {
             std::unique_lock<std::mutex> lock(mMutex);
+            // isDone is never reset. Repeated admissions execute normally,
+            // but only the first false->true transition satisfies its waiters.
+            if (Debug::HitchTrace::requested() && !mDone) mHitchCompletedEnqueue = hitchEnqueue;
             mDone = true;
         }
         mCondition.notify_all();
@@ -36,6 +56,13 @@ namespace SceneUtil
     bool WorkItem::isDone() const
     {
         return mDone;
+    }
+
+    std::uint64_t WorkItem::diagnosticCompletionEnqueue()
+    {
+        if (!Debug::HitchTrace::requested()) return 0;
+        const std::lock_guard lock(mMutex);
+        return mHitchCompletedEnqueue;
     }
 
     WorkQueue::WorkQueue(std::size_t workerThreads)
@@ -64,7 +91,19 @@ namespace SceneUtil
         {
             std::unique_lock<std::mutex> lock(mMutex);
             while (!mQueue.empty())
+            {
+                const auto& entry = mQueue.back();
+                if (entry.mTrace.mEnqueue)
+                {
+                    Debug::HitchTrace::Scope cancellation("workqueue.cancel_before_start", {}, {}, entry.mTrace.mFrame,
+                        Debug::HitchTrace::CpuTiming::WallEnvelope);
+                    cancellation.retain();
+                    cancellation.setLink(entry.mTrace.mEnqueue);
+                    cancellation.setMetric(0, "queue_depth", mQueue.size());
+                    cancellation.setMetric(1, "outcome", 2); // cancelled; original drop does not signalDone
+                }
                 mQueue.pop_back();
+            }
             mIsReleased = true;
             mCondition.notify_all();
         }
@@ -85,13 +124,31 @@ namespace SceneUtil
         const std::uintptr_t itemId = reinterpret_cast<std::uintptr_t>(item.get());
         const std::string typeName = profile ? typeid(*item).name() : std::string();
         std::size_t queueDepth = 0;
+        WorkTraceMetadata metadata;
+        std::optional<Debug::HitchTrace::Scope> enqueue;
+        if (Debug::HitchTrace::requested())
+        {
+            metadata.mFrame = Debug::HitchTrace::current ? Debug::HitchTrace::current->frame()
+                : Debug::V3HitchTelemetry::currentFrame();
+            enqueue.emplace("workqueue.enqueue", typeid(*item).name(), std::string_view{}, metadata.mFrame,
+                Debug::HitchTrace::CpuTiming::WallEnvelope);
+            enqueue->retain();
+            metadata.mEnqueue = enqueue->id();
+        }
         {
             std::unique_lock<std::mutex> lock(mMutex);
+            if (enqueue) metadata.mQueued = Debug::HitchTrace::Clock::now();
             if (front)
-                mQueue.push_front(std::move(item));
+                mQueue.push_front({ std::move(item), metadata });
             else
-                mQueue.push_back(std::move(item));
+                mQueue.push_back({ std::move(item), metadata });
             queueDepth = mQueue.size();
+            if (enqueue)
+            {
+                enqueue->setMetric(0, "queue_depth", queueDepth);
+                enqueue->setMetric(1, "front", front);
+                enqueue->setMetric(2, "item_address", itemId);
+            }
             mCondition.notify_one();
         }
         if (profile)
@@ -105,7 +162,7 @@ namespace SceneUtil
         }
     }
 
-    osg::ref_ptr<WorkItem> WorkQueue::removeWorkItem()
+    osg::ref_ptr<WorkItem> WorkQueue::removeWorkItem(WorkTraceMetadata* trace)
     {
         std::unique_lock<std::mutex> lock(mMutex);
         while (mQueue.empty() && !mIsReleased)
@@ -114,9 +171,15 @@ namespace SceneUtil
         }
         if (!mQueue.empty())
         {
-            osg::ref_ptr<WorkItem> item = std::move(mQueue.front());
+            QueueEntry entry = std::move(mQueue.front());
             mQueue.pop_front();
-            return item;
+            if (trace)
+            {
+                *trace = entry.mTrace;
+                if (trace->mEnqueue)
+                    trace->mDepth = mQueue.size();
+            }
+            return std::move(entry.mItem);
         }
         return nullptr;
     }
@@ -149,7 +212,8 @@ namespace SceneUtil
     {
         while (true)
         {
-            osg::ref_ptr<WorkItem> item = mWorkQueue->removeWorkItem();
+            WorkTraceMetadata metadata;
+            osg::ref_ptr<WorkItem> item = mWorkQueue->removeWorkItem(&metadata);
             if (!item)
                 return;
             mActive = true;
@@ -160,7 +224,7 @@ namespace SceneUtil
             if (profile)
                 mWorkQueue->mV3ActiveThreads.fetch_add(1, std::memory_order_relaxed);
             const std::uintptr_t itemId = reinterpret_cast<std::uintptr_t>(item.get());
-            const std::string typeName = (profile || traceProfile) ? typeid(*item).name() : std::string();
+            const std::string typeName = (profile || traceProfile || metadata.mEnqueue) ? typeid(*item).name() : std::string();
             const auto start = profile ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
             Debug::V3Diagnostics::TraceScope trace("workqueue", typeName, std::to_string(itemId), 0.05);
 
@@ -174,8 +238,43 @@ namespace SceneUtil
                 writer.writeLine(row.str());
             }
 
-            item->doWork();
-            item->signalDone();
+            std::optional<Debug::HitchTrace::Scope> work;
+            if (metadata.mEnqueue)
+            {
+                work.emplace("workqueue.execute", typeName, std::string_view{}, metadata.mFrame,
+                    Debug::HitchTrace::CpuTiming::Scoped);
+                work->setLink(metadata.mEnqueue);
+                Debug::HitchTrace::Scope started("workqueue.start", {}, {}, metadata.mFrame,
+                    Debug::HitchTrace::CpuTiming::WallEnvelope);
+                started.retain(); started.setLink(metadata.mEnqueue);
+                started.setMetric(0, "queue_delay_ns", std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    Debug::HitchTrace::Clock::now() - metadata.mQueued).count());
+                started.setMetric(1, "queue_depth", metadata.mDepth);
+                started.setMetric(2, "item_address", itemId);
+            }
+            try
+            {
+                item->doWork();
+                item->signalDone(metadata.mEnqueue);
+            }
+            catch (...)
+            {
+                if (work)
+                {
+                    Debug::HitchTrace::Scope outcome("workqueue.complete", {}, {}, metadata.mFrame,
+                        Debug::HitchTrace::CpuTiming::WallEnvelope);
+                    outcome.retain(); outcome.setLink(metadata.mEnqueue);
+                    outcome.setMetric(0, "outcome", 1); // exception; preserve original propagation
+                }
+                throw;
+            }
+            if (work)
+            {
+                Debug::HitchTrace::Scope outcome("workqueue.complete", {}, {}, metadata.mFrame,
+                    Debug::HitchTrace::CpuTiming::WallEnvelope);
+                outcome.retain(); outcome.setLink(metadata.mEnqueue);
+                outcome.setMetric(0, "outcome", 0);
+            }
 
             if (profile)
             {

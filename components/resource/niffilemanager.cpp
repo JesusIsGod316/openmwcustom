@@ -77,6 +77,8 @@ namespace Resource
     Nif::NIFFilePtr NifFileManager::get(VFS::Path::NormalizedView name)
     {
         Debug::HitchTrace::Scope hitchNif("resource.nif_lookup", {}, name.value());
+        Debug::ResourceLifecycle::RequestScope lifecycle(Debug::ResourceLifecycle::Kind::Nif,
+            name.value(), mVFS, SpeculativeScope::active(), mCache.get());
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(name);
         if (obj != nullptr)
             return static_cast<NifFileHolder*>(obj.get())->mNifFile;

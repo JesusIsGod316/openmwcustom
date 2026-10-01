@@ -301,6 +301,7 @@ try{
     @(
         "experiment=$Experiment",
         "hitch_trial_revision=$(if($hitchSelection){2}else{1})",
+        "hitch_diagnostics_revision=$(if($mode.Trace -eq '1'){1}else{0})",
         "hitch_combination_mask=$($hitchCombination.mask)",
         "hitch_combination=$($hitchCombination.name)",
         "hitch_trace_level=$(if($mode.Trace -eq '1'){'DEEP'}else{'NORMAL'})",
@@ -570,6 +571,7 @@ try{
     $temporalStatus=Test-Phase9TemporalCapture -ProfileDir $ProfileDir -TemporalRequested ($mode.Temporal -eq '1')
     $writerStatus=Test-Phase9WriterCapture -ProfileDir $ProfileDir
     $hitchStatus=Test-Phase9HitchCapture -ProfileDir $ProfileDir
+    $diagnostics6Status=Test-Phase9Diagnostics6Capture -ProfileDir $ProfileDir
     $compileAttributionStatus=Test-Phase9CompileAttributionCapture -ProfileDir $ProfileDir
     if($runManifest){Complete-Phase9RunManifest $runManifest $ProfileDir}
     $zip=Complete-Phase9Profile -ProfileDir $ProfileDir -GameDir $GameDir

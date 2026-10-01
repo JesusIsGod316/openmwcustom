@@ -215,6 +215,8 @@ namespace Resource
         VFS::Path::NormalizedView name, std::uint64_t maximumPreloadEstimate)
     {
         Debug::HitchTrace::Scope hitchKeyframes("resource.keyframe_lookup", {}, name.value());
+        Debug::ResourceLifecycle::RequestScope lifecycle(Debug::ResourceLifecycle::Kind::Keyframe,
+            name.value(), mVFS, SpeculativeScope::active(), mCache.get());
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(name);
 
         if (obj != nullptr)

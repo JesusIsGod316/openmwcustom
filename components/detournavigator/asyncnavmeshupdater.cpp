@@ -8,6 +8,7 @@
 #include "version.hpp"
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/hitchtrace.hpp>
 #include <components/loadinglistener/loadinglistener.hpp>
 #include <components/misc/strings/conversion.hpp>
 #include <components/misc/thread.hpp>
@@ -76,6 +77,40 @@ namespace DetourNavigator
             return job.mGeneratedNavMeshData != nullptr;
         }
 
+        class NavTraceStage : public Debug::HitchTrace::Scope
+        {
+        public:
+            NavTraceStage(const Job& job, std::string_view phase,
+                Debug::HitchTrace::CpuTiming timing = Debug::HitchTrace::CpuTiming::WallEnvelope)
+                : Scope(phase, job.mHitchIdentity, job.mHitchWorld, job.mHitchFrame, timing)
+            {
+                if (!job.mHitchOrigin) return;
+                setLink(job.mHitchEnqueue);
+                setMetric(0, "job_id", job.mId);
+                setMetric(1, "job_origin", job.mHitchOrigin);
+            }
+        };
+
+        void traceNavEnqueue(Job& job, std::string_view phase)
+        {
+            if (!job.mHitchOrigin) return;
+            NavTraceStage enqueue(job, phase);
+            enqueue.retain();
+            enqueue.setMetric(2, "job_state", static_cast<unsigned>(job.mState));
+            enqueue.setMetric(3, "change_type", static_cast<unsigned>(job.mChangeType));
+            job.mHitchEnqueue = enqueue.id();
+            job.mHitchQueued = Debug::HitchTrace::Clock::now();
+        }
+
+        void traceNavCancellation(const Job& job)
+        {
+            if (!job.mHitchOrigin) return;
+            NavTraceStage cancelled(job, "navigation.cancel_before_start");
+            cancelled.retain();
+            cancelled.setMetric(2, "outcome", 3);
+            cancelled.setMetric(3, "job_state", static_cast<unsigned>(job.mState));
+        }
+
         std::string makeRevision(const Version& version)
         {
             return std::format(".{}.{}", version.mGeneration, version.mRevision);
@@ -131,10 +166,27 @@ namespace DetourNavigator
         , mProcessTime(processTime)
         , mChangeType(changeType)
     {
+        if (Debug::HitchTrace::requested())
+        {
+            mHitchFrame = Debug::HitchTrace::current ? Debug::HitchTrace::current->frame()
+                : Debug::V3HitchTelemetry::currentFrame();
+            mHitchIdentity = std::format("job={} tile=({}, {})", mId, changedTile.x(), changedTile.y());
+            mHitchWorld = worldspace.toDebugString();
+            Debug::HitchTrace::Scope enqueue("navigation.job.enqueue", mHitchIdentity, mHitchWorld, mHitchFrame,
+                Debug::HitchTrace::CpuTiming::WallEnvelope);
+            enqueue.retain();
+            enqueue.setMetric(0, "job_id", mId);
+            enqueue.setMetric(1, "change_type", static_cast<unsigned>(changeType));
+            mHitchOrigin = mHitchEnqueue = enqueue.id();
+            mHitchQueued = Debug::HitchTrace::Clock::now();
+        }
     }
 
     void SpatialJobQueue::clear()
     {
+        if (Debug::HitchTrace::requested())
+            for (const auto& [tile, jobs] : mValues)
+                for (const auto job : jobs) traceNavCancellation(*job);
         mValues.clear();
         mIndex.clear();
         mSize = 0;
@@ -209,6 +261,11 @@ namespace DetourNavigator
 
     void JobQueue::clear()
     {
+        if (Debug::HitchTrace::requested())
+        {
+            for (const auto job : mRemoving) traceNavCancellation(*job);
+            for (const auto job : mDelayed) traceNavCancellation(*job);
+        }
         mRemoving.clear();
         mDelayed.clear();
         mUpdating.clear();
@@ -293,6 +350,8 @@ namespace DetourNavigator
     void AsyncNavMeshUpdater::post(const AgentBounds& agentBounds, const SharedNavMeshCacheItem& navMeshCacheItem,
         const TilePosition& playerTile, ESM::RefId worldspace, const std::map<TilePosition, ChangeType>& changedTiles)
     {
+        Debug::HitchTrace::Scope post("navigation.post", Debug::HitchTrace::CpuTiming::WallEnvelope);
+        if (Debug::HitchTrace::requested()) post.setMetric(0, "changed_tiles", changedTiles.size());
         bool playerTileChanged = false;
         {
             auto locked = mPlayerTile.lock();
@@ -303,7 +362,10 @@ namespace DetourNavigator
         if (!playerTileChanged && changedTiles.empty())
             return;
 
+        std::optional<Debug::HitchTrace::Scope> postLock;
+        if (Debug::HitchTrace::requested()) postLock.emplace("navigation.post_lock_wait", Debug::HitchTrace::CpuTiming::WallEnvelope);
         std::unique_lock lock(mMutex);
+        postLock.reset();
 
         if (playerTileChanged)
         {
@@ -349,6 +411,8 @@ namespace DetourNavigator
 
     void AsyncNavMeshUpdater::wait(WaitConditionType waitConditionType, Loading::Listener* listener)
     {
+        Debug::HitchTrace::Scope wait("navigation.main_wait", Debug::HitchTrace::CpuTiming::Scoped);
+        if (Debug::HitchTrace::requested()) wait.setMetric(0, "wait_condition", static_cast<unsigned>(waitConditionType));
         switch (waitConditionType)
         {
             case WaitConditionType::requiredTilesPresent:
@@ -380,6 +444,8 @@ namespace DetourNavigator
         if (maxDistanceToPlayer <= 0)
             return;
         const std::size_t initialJobsLeft = getTotalJobs();
+        Debug::HitchTrace::Scope wait("navigation.required_tiles_wait", Debug::HitchTrace::CpuTiming::WallEnvelope);
+        if (Debug::HitchTrace::requested()) wait.setMetric(0, "initial_jobs", initialJobsLeft);
         std::size_t maxProgress = initialJobsLeft;
         std::size_t prevJobsLeft = initialJobsLeft;
         std::size_t jobsDone = 0;
@@ -424,10 +490,15 @@ namespace DetourNavigator
     void AsyncNavMeshUpdater::waitUntilAllJobsDone()
     {
         {
+            Debug::HitchTrace::Scope wait("navigation.all_jobs_wait", Debug::HitchTrace::CpuTiming::WallEnvelope);
             std::unique_lock<std::mutex> lock(mMutex);
+            if (Debug::HitchTrace::requested()) wait.setMetric(0, "initial_jobs", mJobs.size());
             mDone.wait(lock, [this] { return mJobs.empty(); });
         }
-        mProcessingTiles.wait(mProcessed, [](const auto& v) { return v.empty(); });
+        {
+            Debug::HitchTrace::Scope wait("navigation.processing_tiles_wait", Debug::HitchTrace::CpuTiming::WallEnvelope);
+            mProcessingTiles.wait(mProcessed, [](const auto& v) { return v.empty(); });
+        }
     }
 
     AsyncNavMeshUpdaterStats AsyncNavMeshUpdater::getStats() const
@@ -456,6 +527,13 @@ namespace DetourNavigator
         {
             if (JobIt job = getNextJob(); job != mJobs.end())
             {
+                NavTraceStage work(*job, "navigation.job.execute", Debug::HitchTrace::CpuTiming::Scoped);
+                if (job->mHitchOrigin)
+                {
+                    work.setMetric(2, "queue_delay_ns", std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        Debug::HitchTrace::Clock::now() - job->mHitchQueued).count());
+                    work.setMetric(3, "job_state", static_cast<unsigned>(job->mState));
+                }
                 try
                 {
                     const JobStatus status = processJob(*job);
@@ -472,7 +550,7 @@ namespace DetourNavigator
                             break;
                         case JobStatus::Fail:
                             unlockTile(job->mId, job->mAgentBounds, job->mChangedTile);
-                            removeJob(job);
+                            removeJob(job, 2);
                             break;
                         case JobStatus::MemoryCacheMiss:
                         {
@@ -489,7 +567,7 @@ namespace DetourNavigator
                                         << " changeType=" << job->mChangeType
                                         << " by thread=" << std::this_thread::get_id() << ": " << e.what();
                     unlockTile(job->mId, job->mAgentBounds, job->mChangedTile);
-                    removeJob(job);
+                    removeJob(job, 1);
                 }
             }
             else
@@ -502,6 +580,7 @@ namespace DetourNavigator
 
     JobStatus AsyncNavMeshUpdater::processJob(Job& job)
     {
+        NavTraceStage processing(job, "navigation.job.process");
         Log(Debug::Debug) << "Processing job " << job.mId << "  for worldspace=" << job.mWorldspace
                           << " agent=" << job.mAgentBounds << ""
                           << " changedTile=(" << job.mChangedTile << ")"
@@ -518,6 +597,7 @@ namespace DetourNavigator
         {
             Log(Debug::Debug) << "Ignore add tile by job " << job.mId << ": too far from player";
             job.mChangeType = ChangeType::remove;
+            NavTraceStage stage(job, "navigation.tile_remove_publish");
             navMeshCacheItem->lock()->removeTile(job.mChangedTile);
             return JobStatus::Done;
         }
@@ -537,11 +617,15 @@ namespace DetourNavigator
     {
         Log(Debug::Debug) << "Processing initial job " << job.mId;
 
-        std::shared_ptr<RecastMesh> recastMesh = mRecastMeshManager.get().getMesh(job.mWorldspace, job.mChangedTile);
+        std::shared_ptr<RecastMesh> recastMesh = [&] {
+            NavTraceStage stage(job, "navigation.recast_mesh_get");
+            return mRecastMeshManager.get().getMesh(job.mWorldspace, job.mChangedTile);
+        }();
 
         if (recastMesh == nullptr)
         {
             Log(Debug::Debug) << "Null recast mesh for job " << job.mId;
+            NavTraceStage stage(job, "navigation.tile_empty_publish");
             navMeshCacheItem.lock()->markAsEmpty(job.mChangedTile);
             return JobStatus::Done;
         }
@@ -549,6 +633,7 @@ namespace DetourNavigator
         if (isEmpty(*recastMesh))
         {
             Log(Debug::Debug) << "Empty bounds for job " << job.mId;
+            NavTraceStage stage(job, "navigation.tile_empty_publish");
             navMeshCacheItem.lock()->markAsEmpty(job.mChangedTile);
             return JobStatus::Done;
         }
@@ -562,8 +647,12 @@ namespace DetourNavigator
             Log(Debug::Warning) << "Failed to write debug recast mesh: " << e.what();
         }
 
-        NavMeshTilesCache::Value cachedNavMeshData
-            = mNavMeshTilesCache.get(job.mAgentBounds, job.mChangedTile, *recastMesh);
+        NavMeshTilesCache::Value cachedNavMeshData = [&] {
+            NavTraceStage stage(job, "navigation.memory_cache_get");
+            auto result = mNavMeshTilesCache.get(job.mAgentBounds, job.mChangedTile, *recastMesh);
+            if (job.mHitchOrigin) stage.setMetric(2, "hit", bool(result));
+            return result;
+        }();
         std::unique_ptr<PreparedNavMeshData> preparedNavMeshData;
         const PreparedNavMeshData* preparedNavMeshDataPtr = nullptr;
 
@@ -579,12 +668,17 @@ namespace DetourNavigator
                 return JobStatus::MemoryCacheMiss;
             }
 
-            preparedNavMeshData = prepareNavMeshTileData(
-                *recastMesh, job.mWorldspace, job.mChangedTile, job.mAgentBounds, mSettings.get().mRecast);
+            {
+                NavTraceStage stage(job, "navigation.recast_prepare");
+                if (job.mHitchOrigin) stage.setMetric(2, "triangles", recastMesh->getMesh().getTrianglesCount());
+                preparedNavMeshData = prepareNavMeshTileData(
+                    *recastMesh, job.mWorldspace, job.mChangedTile, job.mAgentBounds, mSettings.get().mRecast);
+            }
 
             if (preparedNavMeshData == nullptr)
             {
                 Log(Debug::Debug) << "Null navmesh data for job " << job.mId;
+                NavTraceStage stage(job, "navigation.tile_empty_publish");
                 navMeshCacheItem.lock()->markAsEmpty(job.mChangedTile);
                 return JobStatus::Done;
             }
@@ -595,6 +689,7 @@ namespace DetourNavigator
             }
             else
             {
+                NavTraceStage stage(job, "navigation.memory_cache_set");
                 cachedNavMeshData = mNavMeshTilesCache.set(
                     job.mAgentBounds, job.mChangedTile, *recastMesh, std::move(preparedNavMeshData));
                 preparedNavMeshDataPtr = cachedNavMeshData ? &cachedNavMeshData.get() : preparedNavMeshData.get();
@@ -605,10 +700,19 @@ namespace DetourNavigator
 
         assert(preparedNavMeshDataPtr != nullptr);
 
-        const UpdateNavMeshStatus status
-            = navMeshCacheItem.lock()->updateTile(job.mChangedTile, std::move(cachedNavMeshData),
-                makeNavMeshTileData(*preparedNavMeshDataPtr, offMeshConnections, job.mAgentBounds, job.mChangedTile,
-                    mSettings.get().mRecast));
+        const UpdateNavMeshStatus status = [&] {
+            std::optional<NavTraceStage> lockWait;
+            if (job.mHitchOrigin) lockWait.emplace(job, "navigation.tile_lock_wait");
+            auto locked = navMeshCacheItem.lock();
+            lockWait.reset();
+            auto data = [&] {
+                NavTraceStage stage(job, "navigation.tile_prepare");
+                return makeNavMeshTileData(*preparedNavMeshDataPtr, offMeshConnections, job.mAgentBounds,
+                    job.mChangedTile, mSettings.get().mRecast);
+            }();
+            NavTraceStage stage(job, "navigation.tile_publish");
+            return locked->updateTile(job.mChangedTile, std::move(cachedNavMeshData), std::move(data));
+        }();
 
         return handleUpdateNavMeshStatus(status, job, navMeshCacheItem, *recastMesh);
     }
@@ -623,6 +727,8 @@ namespace DetourNavigator
         if (job.mCachedTileData.has_value() && job.mCachedTileData->mVersion == navMeshFormatVersion)
         {
             preparedNavMeshData = std::make_unique<PreparedNavMeshData>();
+            NavTraceStage stage(job, "navigation.deserialize");
+            if (job.mHitchOrigin) stage.setMetric(2, "input_bytes", job.mCachedTileData->mData.size());
             if (deserialize(job.mCachedTileData->mData, *preparedNavMeshData))
                 ++mDbGetTileHits;
             else
@@ -631,6 +737,8 @@ namespace DetourNavigator
 
         if (preparedNavMeshData == nullptr)
         {
+            NavTraceStage stage(job, "navigation.recast_prepare");
+            if (job.mHitchOrigin) stage.setMetric(2, "triangles", job.mRecastMesh->getMesh().getTrianglesCount());
             preparedNavMeshData = prepareNavMeshTileData(
                 *job.mRecastMesh, job.mWorldspace, job.mChangedTile, job.mAgentBounds, mSettings.get().mRecast);
             generatedNavMeshData = true;
@@ -639,12 +747,16 @@ namespace DetourNavigator
         if (preparedNavMeshData == nullptr)
         {
             Log(Debug::Debug) << "Null navmesh data for job " << job.mId;
+            NavTraceStage stage(job, "navigation.tile_empty_publish");
             navMeshCacheItem.lock()->markAsEmpty(job.mChangedTile);
             return JobStatus::Done;
         }
 
-        auto cachedNavMeshData = mNavMeshTilesCache.set(
-            job.mAgentBounds, job.mChangedTile, *job.mRecastMesh, std::move(preparedNavMeshData));
+        auto cachedNavMeshData = [&] {
+            NavTraceStage stage(job, "navigation.memory_cache_set");
+            return mNavMeshTilesCache.set(
+                job.mAgentBounds, job.mChangedTile, *job.mRecastMesh, std::move(preparedNavMeshData));
+        }();
 
         const auto offMeshConnections = mOffMeshConnectionsManager.get().get(job.mChangedTile);
 
@@ -652,10 +764,19 @@ namespace DetourNavigator
             = cachedNavMeshData ? &cachedNavMeshData.get() : preparedNavMeshData.get();
         assert(preparedNavMeshDataPtr != nullptr);
 
-        const UpdateNavMeshStatus status
-            = navMeshCacheItem.lock()->updateTile(job.mChangedTile, std::move(cachedNavMeshData),
-                makeNavMeshTileData(*preparedNavMeshDataPtr, offMeshConnections, job.mAgentBounds, job.mChangedTile,
-                    mSettings.get().mRecast));
+        const UpdateNavMeshStatus status = [&] {
+            std::optional<NavTraceStage> lockWait;
+            if (job.mHitchOrigin) lockWait.emplace(job, "navigation.tile_lock_wait");
+            auto locked = navMeshCacheItem.lock();
+            lockWait.reset();
+            auto data = [&] {
+                NavTraceStage stage(job, "navigation.tile_prepare");
+                return makeNavMeshTileData(*preparedNavMeshDataPtr, offMeshConnections, job.mAgentBounds,
+                    job.mChangedTile, mSettings.get().mRecast);
+            }();
+            NavTraceStage stage(job, "navigation.tile_publish");
+            return locked->updateTile(job.mChangedTile, std::move(cachedNavMeshData), std::move(data));
+        }();
 
         const JobStatus result = handleUpdateNavMeshStatus(status, job, navMeshCacheItem, *job.mRecastMesh);
 
@@ -669,6 +790,8 @@ namespace DetourNavigator
     JobStatus AsyncNavMeshUpdater::handleUpdateNavMeshStatus(UpdateNavMeshStatus status, const Job& job,
         const GuardedNavMeshCacheItem& navMeshCacheItem, const RecastMesh& recastMesh)
     {
+        NavTraceStage commit(job, "navigation.publication_status");
+        if (job.mHitchOrigin) commit.setMetric(2, "status", static_cast<unsigned>(status));
         const Version navMeshVersion = navMeshCacheItem.lockConst()->getVersion();
         mRecastMeshManager.get().reportNavMeshChange(job.mChangedTile, recastMesh.getVersion(), navMeshVersion);
 
@@ -730,10 +853,12 @@ namespace DetourNavigator
         if (job->mRecastMesh != nullptr)
             return job;
 
+        NavTraceStage claim(*job, "navigation.tile_claim");
         if (!lockTile(job->mId, job->mAgentBounds, job->mChangedTile))
         {
             Log(Debug::Debug) << "Failed to lock tile by job " << job->mId;
             job->mProcessTime = std::chrono::steady_clock::now() + mSettings.get().mMinUpdateInterval;
+            traceNavEnqueue(*job, "navigation.tile_busy_requeue");
             mWaiting.push(job);
             return mJobs.end();
         }
@@ -789,12 +914,20 @@ namespace DetourNavigator
     {
         Log(Debug::Debug) << "Enqueueing job " << job->mId << " by thread=" << std::this_thread::get_id();
         const std::lock_guard lock(mMutex);
+        traceNavEnqueue(*job, "navigation.db_result_requeue");
         mWaiting.push(job);
         mHasJob.notify_all();
     }
 
-    void AsyncNavMeshUpdater::removeJob(JobIt job)
+    void AsyncNavMeshUpdater::removeJob(JobIt job, unsigned outcome)
     {
+        NavTraceStage completion(*job, "navigation.job.complete");
+        if (job->mHitchOrigin)
+        {
+            completion.retain();
+            completion.setMetric(2, "outcome", outcome);
+            completion.setMetric(3, "job_state", static_cast<unsigned>(job->mState));
+        }
         Log(Debug::Debug) << "Removing job " << job->mId << " by thread=" << std::this_thread::get_id();
         const std::lock_guard lock(mMutex);
         mJobs.erase(job);
@@ -803,6 +936,7 @@ namespace DetourNavigator
     void DbJobQueue::push(JobIt job)
     {
         const std::lock_guard lock(mMutex);
+        traceNavEnqueue(*job, isWritingDbJob(*job) ? "navigation.db_write_enqueue" : "navigation.db_read_enqueue");
         if (isWritingDbJob(*job))
             mWriting.push_back(job);
         else
@@ -843,6 +977,8 @@ namespace DetourNavigator
     {
         const std::lock_guard lock(mMutex);
         mReading.clear();
+        if (Debug::HitchTrace::requested())
+            for (const auto job : mWriting) traceNavCancellation(*job);
         mWriting.clear();
         mShouldStop = true;
         mHasJob.notify_all();
@@ -915,6 +1051,13 @@ namespace DetourNavigator
 
     void DbWorker::processJob(JobIt job)
     {
+        NavTraceStage work(*job, "navigation.db_execute", Debug::HitchTrace::CpuTiming::Scoped);
+        if (job->mHitchOrigin)
+        {
+            work.setMetric(2, "queue_delay_ns", std::chrono::duration_cast<std::chrono::nanoseconds>(
+                Debug::HitchTrace::Clock::now() - job->mHitchQueued).count());
+            work.setMetric(3, "writing", isWritingDbJob(*job));
+        }
         const auto process = [&](auto f) {
             try
             {
@@ -922,6 +1065,8 @@ namespace DetourNavigator
             }
             catch (const std::exception& e)
             {
+                NavTraceStage failure(*job, "navigation.db_exception");
+                if (job->mHitchOrigin) { failure.retain(); failure.setMetric(2, "outcome", 1); }
                 Log(Debug::Error) << "DbWorker exception while processing job " << job->mId << ": " << e.what();
                 if (mWriteToDb)
                 {
@@ -973,6 +1118,7 @@ namespace DetourNavigator
 
     void DbWorker::processReadingJob(JobIt job)
     {
+        NavTraceStage reading(*job, "navigation.db_read_work");
         ++mGetTileCount;
 
         Log(Debug::Debug) << "Processing db read job " << job->mId;
@@ -982,9 +1128,15 @@ namespace DetourNavigator
             Log(Debug::Debug) << "Serializing input for job " << job->mId;
             if (mWriteToDb)
             {
-                const auto objects = makeDbRefGeometryObjects(job->mRecastMesh->getMeshSources(),
-                    [&](const MeshSource& v) { return resolveMeshSource(*mDb, v, mNextShapeId); });
+                const auto objects = [&] {
+                    NavTraceStage resolve(*job, "navigation.db_geometry_resolve");
+                    if (job->mHitchOrigin) resolve.setMetric(2, "mesh_sources", job->mRecastMesh->getMeshSources().size());
+                    return makeDbRefGeometryObjects(job->mRecastMesh->getMeshSources(),
+                        [&](const MeshSource& v) { return resolveMeshSource(*mDb, v, mNextShapeId); });
+                }();
+                NavTraceStage serialization(*job, "navigation.serialize_input");
                 job->mInput = serialize(mRecastSettings, job->mAgentBounds, *job->mRecastMesh, objects);
+                if (job->mHitchOrigin) serialization.setMetric(2, "output_bytes", job->mInput.size());
             }
             else
             {
@@ -995,7 +1147,9 @@ namespace DetourNavigator
 
                     bool operator()(const std::vector<DbRefGeometryObject>& objects) const
                     {
+                        NavTraceStage serialization(mJob, "navigation.serialize_input");
                         mJob.mInput = serialize(mRecastSettings, mJob.mAgentBounds, *mJob.mRecastMesh, objects);
+                        if (mJob.mHitchOrigin) serialization.setMetric(2, "output_bytes", mJob.mInput.size());
                         return true;
                     }
 
@@ -1009,18 +1163,30 @@ namespace DetourNavigator
                     }
                 };
 
-                const auto result = makeDbRefGeometryObjects(job->mRecastMesh->getMeshSources(),
-                    [&](const MeshSource& v) { return resolveMeshSource(*mDb, v); });
+                const auto result = [&] {
+                    NavTraceStage resolve(*job, "navigation.db_geometry_resolve");
+                    if (job->mHitchOrigin) resolve.setMetric(2, "mesh_sources", job->mRecastMesh->getMeshSources().size());
+                    return makeDbRefGeometryObjects(job->mRecastMesh->getMeshSources(),
+                        [&](const MeshSource& v) { return resolveMeshSource(*mDb, v); });
+                }();
                 if (!std::visit(HandleResult{ mRecastSettings, *job }, result))
                     return;
             }
         }
 
+        NavTraceStage read(*job, "navigation.db_read");
         job->mCachedTileData = mDb->getTileData(job->mWorldspace, job->mChangedTile, job->mInput);
+        if (job->mHitchOrigin)
+        {
+            read.setMetric(2, "input_bytes", job->mInput.size());
+            read.setMetric(3, "hit", job->mCachedTileData.has_value());
+        }
     }
 
     void DbWorker::processWritingJob(JobIt job)
     {
+        NavTraceStage writing(*job, "navigation.db_write_work");
+        if (job->mHitchOrigin) writing.setMetric(2, "write_enabled", mWriteToDb);
         if (!mWriteToDb)
         {
             Log(Debug::Debug) << "Ignored db write job " << job->mId;
@@ -1032,21 +1198,37 @@ namespace DetourNavigator
         if (job->mInput.empty())
         {
             Log(Debug::Debug) << "Serializing input for job " << job->mId;
-            const std::vector<DbRefGeometryObject> objects
-                = makeDbRefGeometryObjects(job->mRecastMesh->getMeshSources(),
+            const std::vector<DbRefGeometryObject> objects = [&] {
+                NavTraceStage resolve(*job, "navigation.db_geometry_resolve");
+                if (job->mHitchOrigin) resolve.setMetric(2, "mesh_sources", job->mRecastMesh->getMeshSources().size());
+                return makeDbRefGeometryObjects(job->mRecastMesh->getMeshSources(),
                     [&](const MeshSource& v) { return resolveMeshSource(*mDb, v, mNextShapeId); });
+            }();
+            NavTraceStage serialization(*job, "navigation.serialize_input");
             job->mInput = serialize(mRecastSettings, job->mAgentBounds, *job->mRecastMesh, objects);
+            if (job->mHitchOrigin) serialization.setMetric(2, "output_bytes", job->mInput.size());
         }
 
         if (const auto& cachedTileData = job->mCachedTileData)
         {
             Log(Debug::Debug) << "Update db tile by job " << job->mId;
             job->mGeneratedNavMeshData->mUserId = static_cast<unsigned>(cachedTileData->mTileId);
-            mDb->updateTile(cachedTileData->mTileId, mVersion, serialize(*job->mGeneratedNavMeshData));
+            const auto output = [&] {
+                NavTraceStage serialization(*job, "navigation.serialize_output");
+                auto data = serialize(*job->mGeneratedNavMeshData);
+                if (job->mHitchOrigin) serialization.setMetric(2, "output_bytes", data.size());
+                return data;
+            }();
+            NavTraceStage write(*job, "navigation.db_update");
+            if (job->mHitchOrigin) write.setMetric(2, "output_bytes", output.size());
+            mDb->updateTile(cachedTileData->mTileId, mVersion, output);
             return;
         }
 
-        const auto cached = mDb->findTile(job->mWorldspace, job->mChangedTile, job->mInput);
+        const auto cached = [&] {
+            NavTraceStage find(*job, "navigation.db_find");
+            return mDb->findTile(job->mWorldspace, job->mChangedTile, job->mInput);
+        }();
         if (cached.has_value() && cached->mVersion == mVersion)
         {
             Log(Debug::Debug) << "Ignore existing db tile by job " << job->mId;
@@ -1055,8 +1237,15 @@ namespace DetourNavigator
 
         job->mGeneratedNavMeshData->mUserId = static_cast<unsigned>(mNextTileId);
         Log(Debug::Debug) << "Insert db tile by job " << job->mId;
-        mDb->insertTile(mNextTileId, job->mWorldspace, job->mChangedTile, mVersion, job->mInput,
-            serialize(*job->mGeneratedNavMeshData));
+        const auto output = [&] {
+            NavTraceStage serialization(*job, "navigation.serialize_output");
+            auto data = serialize(*job->mGeneratedNavMeshData);
+            if (job->mHitchOrigin) serialization.setMetric(2, "output_bytes", data.size());
+            return data;
+        }();
+        NavTraceStage write(*job, "navigation.db_insert");
+        if (job->mHitchOrigin) write.setMetric(2, "output_bytes", output.size());
+        mDb->insertTile(mNextTileId, job->mWorldspace, job->mChangedTile, mVersion, job->mInput, output);
         ++mNextTileId;
     }
 }

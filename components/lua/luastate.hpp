@@ -1,8 +1,10 @@
 #ifndef COMPONENTS_LUA_LUASTATE_H
 #define COMPONENTS_LUA_LUASTATE_H
 
+#include <array>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <typeinfo>
 
 #include <sol/sol.hpp>
@@ -188,6 +190,9 @@ namespace LuaUtil
         sol::environment newInternalLibEnvironment();
 
         uint64_t getTotalMemoryUsage() const { return mSol.memory_used(); }
+        // Performs the same single explicit VM step as the engine GC worker.
+        // Diagnostics observe its return value; they do not change GC policy.
+        bool gcStep(int steps);
         uint64_t getSmallAllocMemoryUsage() const { return mSmallAllocMemoryUsage; }
         uint64_t getMemoryUsageByScriptIndex(unsigned id) const
         {
@@ -206,10 +211,15 @@ namespace LuaUtil
         struct DiagnosticAllocations
         {
             std::uint64_t calls = 0, growthBytes = 0, shrinkBytes = 0, failures = 0;
+            std::uint64_t serviceCalls = 0, serviceNs = 0, serviceFailures = 0, policyBlocked = 0, frees = 0;
+            // Attempted nonzero nsize: <=64, <=256, <=1KiB, <=16KiB,
+            // <=1MiB, >1MiB. Failed requests are included; frees are separate.
+            std::array<std::uint64_t, 6> requestedSizes{};
         };
         // Read only by the current Lua owner. These are logical allocator
         // requests, not OS allocation sizes or per-script retained memory.
         DiagnosticAllocations diagnosticAllocations() const { return mDiagnosticAllocations; }
+        bool diagnosticTrackingAllocator() const;
 
         static sol::protected_function_result throwIfError(sol::protected_function_result&&);
 
@@ -225,6 +235,22 @@ namespace LuaUtil
         static void* trackingAllocator(void* ud, void* ptr, size_t osize, size_t nsize);
 
         static LuaStatePtr createLuaRuntime(LuaState* luaState);
+
+        // Bounded summaries of an enclosing operation. Their wall envelopes
+        // are not allocator service time; only service_ns times free/realloc.
+        // No allocation emits a trace row or queries an OS thread CPU timer.
+        class DiagnosticAllocationScope
+        {
+        public:
+            explicit DiagnosticAllocationScope(LuaState* state, ScriptId scriptId = {});
+            ~DiagnosticAllocationScope();
+
+        private:
+            LuaState* mState;
+            DiagnosticAllocations mBefore;
+            std::optional<Debug::HitchTrace::Scope> mService, mSmall, mLarge;
+        };
+        std::pair<std::string_view, std::string_view> diagnosticAllocationContext(ScriptId scriptId) const;
 
         struct AllocOwner
         {
@@ -298,6 +324,7 @@ namespace LuaUtil
             }
         }
         const bool diagnostic = Debug::HitchTrace::requested() && luaState;
+        LuaState::DiagnosticAllocationScope allocationDiagnostic(diagnostic ? luaState : nullptr, scriptId);
         const auto before = diagnostic ? luaState->diagnosticAllocations() : LuaState::DiagnosticAllocations{};
         auto finishDiagnostic = [&] {
             if (!diagnostic) return;

@@ -213,6 +213,7 @@ namespace Debug::HitchTrace
         Scope(const Scope&) = delete;
         Scope& operator=(const Scope&) = delete;
         std::uint64_t id() const noexcept { return mCapture ? mRow.id : 0; }
+        unsigned frame() const noexcept { return mCapture ? mRow.frame : V3HitchTelemetry::currentFrame(); }
         void retain() noexcept { mForced = true; }
         void setLink(std::uint64_t link) noexcept { mRow.link = link; }
         void setMetric(unsigned index, std::string_view name, std::uint64_t value) noexcept

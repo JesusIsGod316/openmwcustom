@@ -1,6 +1,10 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstring>
+#include <thread>
+
 #include <components/lua/luastate.hpp>
 #include <components/testing/expecterror.hpp>
 #include <components/testing/util.hpp>
@@ -142,6 +146,28 @@ return {
         LuaUtil::LuaState mLua{ mVFS.get(), &mCfg };
     };
 
+    void addSlowUnreachableFinalizer(LuaUtil::LuaState& lua, int& finalized)
+    {
+        lua_gc(lua.unsafeState(), LUA_GCSTOP, 0);
+        lua.protectedCall([&](LuaUtil::LuaView& view) {
+            lua_State* state = view.sol().lua_state();
+            auto* counter = static_cast<int**>(lua_newuserdata(state, sizeof(int*)));
+            *counter = &finalized;
+            lua_newtable(state);
+            lua_pushcfunction(state, [](lua_State* callback) {
+                ++**static_cast<int**>(lua_touserdata(callback, 1));
+                // A real VM finalizer qualifies its explicit production GC
+                // envelope without forced retention or synthetic GC metrics.
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                return 0;
+            });
+            lua_setfield(state, -2, "__gc");
+            lua_setmetatable(state, -2);
+            lua_pop(state, 1);
+        });
+        lua_gc(lua.unsafeState(), LUA_GCRESTART, 0);
+    }
+
     TEST_F(LuaStateTest, HitchAllocationCounters)
     {
         const auto before = mLua.diagnosticAllocations();
@@ -160,6 +186,10 @@ return {
             EXPECT_GT(after.growthBytes, before.growthBytes);
             EXPECT_GE(after.shrinkBytes, before.shrinkBytes);
             EXPECT_EQ(after.failures, before.failures);
+            EXPECT_GT(after.serviceCalls, before.serviceCalls);
+            EXPECT_GT(after.serviceNs, before.serviceNs);
+            EXPECT_EQ(after.serviceFailures, before.serviceFailures);
+            EXPECT_EQ(after.policyBlocked, before.policyBlocked);
         }
         else
         {
@@ -167,7 +197,148 @@ return {
             EXPECT_EQ(after.growthBytes, 0);
             EXPECT_EQ(after.shrinkBytes, 0);
             EXPECT_EQ(after.failures, 0);
+            EXPECT_EQ(after.serviceCalls, 0);
+            EXPECT_EQ(after.serviceNs, 0);
+            EXPECT_EQ(after.serviceFailures, 0);
+            EXPECT_EQ(after.policyBlocked, 0);
+            EXPECT_EQ(after.frees, 0);
+            EXPECT_EQ(after.requestedSizes, (std::array<std::uint64_t, 6>{}));
         }
+    }
+
+    TEST_F(LuaStateTest, HitchAllocatorRequestSizesPreserveRealloc)
+    {
+        if (!mLua.diagnosticTrackingAllocator())
+            GTEST_SKIP() << "Tracking allocator is not installed in this VM";
+        void* context = nullptr;
+        const lua_Alloc allocate = lua_getallocf(mLua.unsafeState(), &context);
+        const auto before = mLua.diagnosticAllocations();
+        const auto smallBefore = mLua.getSmallAllocMemoryUsage();
+        constexpr std::array<std::size_t, 10> sizes{ 64, 65, 256, 257, 1024, 1025, 16384, 16385, 1048576, 1048577 };
+        for (const auto size : sizes)
+        {
+            // Lua uses osize as a type tag when ptr is null. The real
+            // allocator must not subtract that tag from logical bytes.
+            void* pointer = allocate(context, nullptr, LUA_TSTRING, size);
+            ASSERT_NE(pointer, nullptr);
+            std::memset(pointer, 0x5a, size);
+            EXPECT_EQ(static_cast<unsigned char*>(pointer)[size - 1], 0x5a);
+            EXPECT_EQ(allocate(context, pointer, size, 0), nullptr);
+        }
+        void* pointer = allocate(context, nullptr, LUA_TUSERDATA, 48);
+        ASSERT_NE(pointer, nullptr);
+        std::memset(pointer, 0x37, 48);
+        pointer = allocate(context, pointer, 48, 128);
+        ASSERT_NE(pointer, nullptr);
+        EXPECT_EQ(static_cast<unsigned char*>(pointer)[47], 0x37);
+        pointer = allocate(context, pointer, 128, 32);
+        ASSERT_NE(pointer, nullptr);
+        EXPECT_EQ(static_cast<unsigned char*>(pointer)[31], 0x37);
+        EXPECT_EQ(allocate(context, pointer, 32, 0), nullptr);
+        EXPECT_EQ(mLua.getSmallAllocMemoryUsage(), smallBefore);
+        const auto after = mLua.diagnosticAllocations();
+        if (Debug::HitchTrace::requested())
+        {
+            EXPECT_EQ(after.calls - before.calls, 24);
+            EXPECT_EQ(after.serviceCalls - before.serviceCalls, 24);
+            EXPECT_EQ(after.frees - before.frees, 11);
+            EXPECT_EQ(after.failures, before.failures);
+            EXPECT_EQ(after.serviceFailures, before.serviceFailures);
+            EXPECT_EQ(after.policyBlocked, before.policyBlocked);
+            EXPECT_GT(after.serviceNs, before.serviceNs);
+            EXPECT_EQ(after.growthBytes - before.growthBytes, after.shrinkBytes - before.shrinkBytes);
+            constexpr std::array<std::uint64_t, 6> expected{ 3, 3, 2, 2, 2, 1 };
+            for (std::size_t i = 0; i < expected.size(); ++i)
+                EXPECT_EQ(after.requestedSizes[i] - before.requestedSizes[i], expected[i]);
+        }
+        else
+        {
+            EXPECT_EQ(after.calls, 0);
+            EXPECT_EQ(after.serviceCalls, 0);
+            EXPECT_EQ(after.serviceNs, 0);
+            EXPECT_EQ(after.requestedSizes, (std::array<std::uint64_t, 6>{}));
+        }
+    }
+
+    TEST_F(LuaStateTest, HitchMemoryLimitDenialPreservesPointer)
+    {
+        if (!LuaUtil::LuaState::isProfilerEnabled())
+            GTEST_SKIP() << "Tracking allocator is not installed";
+        LuaUtil::LuaStateSettings settings;
+        settings.mSmallAllocMaxSize = 0;
+        settings.mMemoryLimit = 16 * 1024 * 1024;
+        LuaUtil::LuaState lua(mVFS.get(), &mCfg, settings);
+        ASSERT_TRUE(lua.diagnosticTrackingAllocator());
+        void* context = nullptr;
+        const lua_Alloc allocate = lua_getallocf(lua.unsafeState(), &context);
+        void* pointer = allocate(context, nullptr, LUA_TSTRING, 64);
+        ASSERT_NE(pointer, nullptr);
+        std::memset(pointer, 0x29, 64);
+        const auto before = lua.diagnosticAllocations();
+        EXPECT_EQ(allocate(context, pointer, 64, 64 * 1024 * 1024), nullptr);
+        // Realloc refusal leaves the caller's old allocation and accounting
+        // intact; it is not a failed CRT service invocation.
+        EXPECT_EQ(static_cast<unsigned char*>(pointer)[0], 0x29);
+        EXPECT_EQ(static_cast<unsigned char*>(pointer)[63], 0x29);
+        const auto after = lua.diagnosticAllocations();
+        if (Debug::HitchTrace::requested())
+        {
+            EXPECT_EQ(after.calls - before.calls, 1);
+            EXPECT_EQ(after.failures - before.failures, 1);
+            EXPECT_EQ(after.policyBlocked - before.policyBlocked, 1);
+            EXPECT_EQ(after.requestedSizes[5] - before.requestedSizes[5], 1);
+        }
+        EXPECT_EQ(after.serviceCalls, before.serviceCalls);
+        EXPECT_EQ(after.serviceNs, before.serviceNs);
+        EXPECT_EQ(after.serviceFailures, before.serviceFailures);
+        EXPECT_EQ(after.growthBytes, before.growthBytes);
+        EXPECT_EQ(after.shrinkBytes, before.shrinkBytes);
+        EXPECT_EQ(allocate(context, pointer, 64, 0), nullptr);
+    }
+
+    TEST_F(LuaStateTest, HitchGcStepCompletesCycleAndFinalizers)
+    {
+        int finalized = 0;
+        const int stackBefore = lua_gettop(mLua.unsafeState());
+        addSlowUnreachableFinalizer(mLua, finalized);
+        bool completed = false;
+        for (unsigned i = 0; i < 1000 && !completed; ++i)
+            completed = mLua.gcStep(1024);
+        EXPECT_TRUE(completed); // VM step completion, never inferred from heap size.
+        EXPECT_EQ(finalized, 1);
+        EXPECT_EQ(lua_gettop(mLua.unsafeState()), stackBefore);
+        sol::table script = mLua.runInNewSandbox(VFS::Path::Normalized(counterPath));
+        LuaUtil::call(LuaUtil::ScriptId{}, script["inc"].get<sol::protected_function>(), 1);
+        EXPECT_EQ(LuaUtil::call(script["get"]).get<int>(), 43);
+    }
+
+    TEST(LuaDiagnosticsFallback, NativeAllocatorPreservesGcAndSemantics)
+    {
+        const char* enabled = std::getenv("OPENMW_P9_LUA_NATIVE_ALLOCATOR_FIXTURE");
+        if (!enabled || std::string_view(enabled) != "1")
+            GTEST_SKIP() << "Global profiler fallback is qualified in an isolated subprocess";
+        LuaUtil::LuaState::disableProfiler();
+        auto vfs = TestingOpenMW::createTestVFS({ { counterPath, &counterFile } });
+        LuaUtil::ScriptsConfiguration configuration;
+        LuaUtil::LuaState lua(vfs.get(), &configuration);
+        ASSERT_FALSE(lua.diagnosticTrackingAllocator());
+        sol::table script = lua.runInNewSandbox(VFS::Path::Normalized(counterPath));
+        EXPECT_EQ(LuaUtil::call(LuaUtil::ScriptId{}, script["diagnosticAllocate"].get<sol::protected_function>()).get<int>(), 20000);
+        EXPECT_EQ(LuaUtil::call(script["get"]).get<int>(), 42);
+        EXPECT_ERROR(LuaUtil::call(LuaUtil::ScriptId{}, script["diagnosticThrow"].get<sol::protected_function>()),
+            "diagnostic_fixture_failure");
+        int finalized = 0;
+        addSlowUnreachableFinalizer(lua, finalized);
+        bool completed = false;
+        for (unsigned i = 0; i < 1000 && !completed; ++i)
+            completed = lua.gcStep(1024);
+        EXPECT_TRUE(completed);
+        EXPECT_EQ(finalized, 1);
+        const auto stats = lua.diagnosticAllocations();
+        EXPECT_EQ(stats.calls, 0);
+        EXPECT_EQ(stats.serviceCalls, 0);
+        EXPECT_EQ(stats.serviceNs, 0);
+        EXPECT_EQ(stats.requestedSizes, (std::array<std::uint64_t, 6>{}));
     }
 
     TEST_F(LuaStateTest, Sandbox)

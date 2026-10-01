@@ -518,10 +518,15 @@ namespace MWPhysics
     void PhysicsTaskScheduler::prepareWork(float& timeAccum, std::vector<Simulation>& simulations,
         osg::Timer_t frameStart, unsigned int frameNumber, osg::Stats& stats)
     {
+        Debug::HitchTrace::Scope preparation("physics.prepare_batch", Debug::HitchTrace::CpuTiming::WallEnvelope);
         // This function run in the main thread.
         // While the mSimulationMutex is held, background physics threads can't run.
 
+        std::optional<Debug::HitchTrace::Scope> lockWait;
+        if (Debug::HitchTrace::requested())
+            lockWait.emplace("physics.prepare_lock_wait", Debug::HitchTrace::CpuTiming::Scoped);
         MaybeExclusiveLock lock(mSimulationMutex, mLockingPolicy);
+        lockWait.reset();
 
         auto timeStart = mTimer->tick();
 
@@ -540,9 +545,11 @@ namespace MWPhysics
 
         // init
         const Visitors::InitPosition vis{ mCollisionWorld };
-        for (auto& sim : simulations)
         {
-            std::visit(vis, sim);
+            Debug::HitchTrace::Scope init("physics.initialize_positions", Debug::HitchTrace::CpuTiming::WallEnvelope);
+            if (Debug::HitchTrace::requested()) init.setMetric(0, "simulations", simulations.size());
+            for (auto& sim : simulations)
+                std::visit(vis, sim);
         }
         mPrevStepCount = numSteps;
         mRemainingSteps = numSteps;
@@ -559,6 +566,8 @@ namespace MWPhysics
 
         if (mAdvanceSimulation)
             mBudgetCursor += 1;
+
+        mHitchCycle.begin(frameNumber, simulations.size(), numSteps, mNumThreads);
 
         if (mNumThreads == 0)
         {
@@ -697,12 +706,12 @@ namespace MWPhysics
 
     void PhysicsTaskScheduler::refreshLOSCache()
     {
+        PhysicsTraceStage refresh(mHitchCycle, "physics.los_batch");
         MaybeSharedLock lock(mLOSCacheMutex, mLockingPolicy);
         int job = 0;
         int numLOS = static_cast<int>(mLOSCache.size());
-        while ((job = mNextLOS.fetch_add(1, std::memory_order_relaxed)) < numLOS)
-        {
-            auto& req = mLOSCache[job];
+        const auto refreshRequest = [&](int index) {
+            auto& req = mLOSCache[index];
             auto actorPtr1 = req.mActors[0].lock();
             auto actorPtr2 = req.mActors[1].lock();
 
@@ -710,12 +719,27 @@ namespace MWPhysics
                 req.mStale = true;
             else
                 req.mResult = hasLineOfSight(actorPtr1.get(), actorPtr2.get());
+        };
+        if (Debug::HitchTrace::requested())
+        {
+            unsigned processed = 0;
+            while ((job = mNextLOS.fetch_add(1, std::memory_order_relaxed)) < numLOS)
+            {
+                refreshRequest(job);
+                ++processed;
+            }
+            refresh.setMetric(0, "cache_entries", numLOS);
+            refresh.setMetric(1, "processed", processed);
         }
+        else
+            while ((job = mNextLOS.fetch_add(1, std::memory_order_relaxed)) < numLOS) refreshRequest(job);
     }
 
     void PhysicsTaskScheduler::updateAabbs()
     {
+        PhysicsTraceStage update(mHitchCycle, "physics.aabb_batch");
         MaybeExclusiveLock lock(mUpdateAabbMutex, mLockingPolicy);
+        if (Debug::HitchTrace::requested()) update.setMetric(0, "queued_aabbs", mUpdateAabb.size());
         std::for_each(mUpdateAabb.begin(), mUpdateAabb.end(), [this](const std::weak_ptr<PtrHolder>& ptr) {
             auto p = ptr.lock();
             if (p != nullptr)
@@ -747,13 +771,22 @@ namespace MWPhysics
     void PhysicsTaskScheduler::worker()
     {
         mWorkersSync->runWorker([this] {
+            // The existing worker wake mutex publishes cycle metadata before
+            // this callback. Capture the immutable cycle before taking the
+            // shared simulation lock; main cannot replace it until workers finish.
+            std::optional<PhysicsTraceStage> lockWait;
+            if (Debug::HitchTrace::requested())
+                lockWait.emplace(mHitchCycle, "physics.worker_lock_wait", Debug::HitchTrace::CpuTiming::Scoped);
             std::shared_lock lock(mSimulationMutex);
+            lockWait.reset();
             doSimulation();
         });
     }
 
     void PhysicsTaskScheduler::updateActorsPositions()
     {
+        PhysicsTraceStage positions(mHitchCycle, "physics.positions_commit");
+        if (Debug::HitchTrace::requested()) positions.setMetric(0, "simulations", mSimulations->size());
         const Visitors::UpdatePosition impl{ mCollisionWorld };
         const Visitors::WithLockedPtr<Visitors::UpdatePosition, MaybeExclusiveLock> vis{ impl, mCollisionWorldMutex,
             mLockingPolicy };
@@ -780,20 +813,51 @@ namespace MWPhysics
 
     void PhysicsTaskScheduler::doSimulation()
     {
-        while (mRemainingSteps)
+        PhysicsTraceStage simulation(mHitchCycle, "physics.cycle.worker", Debug::HitchTrace::CpuTiming::Scoped);
+        if (Debug::HitchTrace::requested())
         {
-            mPreStepBarrier->wait([this] { afterPreStep(); });
-            int job = 0;
-            const Visitors::Move impl{ mPhysicsDt, mCollisionWorld, *mWorldFrameData };
-            const Visitors::WithLockedPtr<Visitors::Move, MaybeLock> vis{ impl, mCollisionWorldMutex, mLockingPolicy };
-            while ((job = mNextJob.fetch_add(1, std::memory_order_relaxed)) < mNumJobs)
-                std::visit(vis, (*mSimulations)[job]);
-
-            mPostStepBarrier->wait([this] { afterPostStep(); });
+            simulation.setMetric(0, "queue_delay_ns", std::chrono::duration_cast<std::chrono::nanoseconds>(
+                Debug::HitchTrace::Clock::now() - mHitchCycle.mQueued).count());
+            simulation.setMetric(1, "simulations", mNumJobs);
+            simulation.setMetric(2, "workers", mNumThreads);
         }
+        try
+        {
+            while (mRemainingSteps)
+            {
+                tracedPhysicsBarrier(mHitchCycle, "physics.pre_step_barrier", *mPreStepBarrier, [this] { afterPreStep(); });
+                int job = 0;
+                const Visitors::Move impl{ mPhysicsDt, mCollisionWorld, *mWorldFrameData };
+                const Visitors::WithLockedPtr<Visitors::Move, MaybeLock> vis{ impl, mCollisionWorldMutex, mLockingPolicy };
+                {
+                    PhysicsTraceStage movement(mHitchCycle, "physics.movement_batch");
+                    if (Debug::HitchTrace::requested())
+                    {
+                        unsigned processed = 0;
+                        while ((job = mNextJob.fetch_add(1, std::memory_order_relaxed)) < mNumJobs)
+                        {
+                            std::visit(vis, (*mSimulations)[job]);
+                            ++processed;
+                        }
+                        movement.setMetric(0, "processed", processed);
+                    }
+                    else
+                        while ((job = mNextJob.fetch_add(1, std::memory_order_relaxed)) < mNumJobs)
+                            std::visit(vis, (*mSimulations)[job]);
+                }
 
-        refreshLOSCache();
-        mPostSimBarrier->wait([this] { afterPostSim(); });
+                tracedPhysicsBarrier(mHitchCycle, "physics.post_step_barrier", *mPostStepBarrier, [this] { afterPostStep(); });
+            }
+
+            refreshLOSCache();
+            tracedPhysicsBarrier(mHitchCycle, "physics.post_sim_barrier", *mPostSimBarrier, [this] { afterPostSim(); });
+        }
+        catch (...)
+        {
+            PhysicsTraceStage failure(mHitchCycle, "physics.cycle.exception");
+            if (Debug::HitchTrace::requested()) { failure.retain(); failure.setMetric(0, "outcome", 1); }
+            throw; // preserve serial propagation / existing async noexcept termination
+        }
     }
 
     void PhysicsTaskScheduler::updateStats(osg::Timer_t frameStart, unsigned int frameNumber, osg::Stats& stats)
@@ -839,6 +903,8 @@ namespace MWPhysics
 
     void PhysicsTaskScheduler::afterPreStep()
     {
+        PhysicsTraceStage preStep(mHitchCycle, "physics.pre_step_batch");
+        if (Debug::HitchTrace::requested()) preStep.setMetric(0, "simulations", mNumJobs);
         updateAabbs();
         if (!mRemainingSteps)
             return;
@@ -861,21 +927,33 @@ namespace MWPhysics
 
     void PhysicsTaskScheduler::afterPostSim()
     {
+        PhysicsTraceStage postSim(mHitchCycle, "physics.post_sim_batch");
         {
             MaybeExclusiveLock lock(mLOSCacheMutex, mLockingPolicy);
+            if (Debug::HitchTrace::requested()) postSim.setMetric(0, "los_entries_before", mLOSCache.size());
             mLOSCache.erase(
                 std::remove_if(mLOSCache.begin(), mLOSCache.end(), [](const LOSRequest& req) { return req.mStale; }),
                 mLOSCache.end());
+            if (Debug::HitchTrace::requested()) postSim.setMetric(1, "los_entries_after", mLOSCache.size());
         }
         mTimeEnd = mTimer->tick();
+        if (Debug::HitchTrace::requested() && mHitchCycle.mEnqueue && !mHitchCycle.mCompleted)
+        {
+            PhysicsTraceStage completed(mHitchCycle, "physics.cycle.complete");
+            completed.retain();
+            completed.setMetric(0, "outcome", 0);
+            mHitchCycle.mCompleted = true;
+        }
         if (mWorkersSync != nullptr)
             mWorkersSync->workIsDone();
     }
 
     void PhysicsTaskScheduler::syncWithMainThread()
     {
+        PhysicsTraceStage commit(mHitchCycle, "physics.main_commit");
         if (mSimulations == nullptr)
             return;
+        if (Debug::HitchTrace::requested()) commit.setMetric(0, "simulations", mSimulations->size());
         const Visitors::Sync vis{ mAdvanceSimulation, mTimeAccum, mPhysicsDt, this };
         for (auto& sim : *mSimulations)
             std::visit(vis, sim);
@@ -892,6 +970,9 @@ namespace MWPhysics
     void PhysicsTaskScheduler::waitForWorkers()
     {
         if (mWorkersSync != nullptr)
+        {
+            PhysicsTraceStage wait(mHitchCycle, "physics.main_worker_wait", Debug::HitchTrace::CpuTiming::Scoped);
             mWorkersSync->waitForWorkers();
+        }
     }
 }

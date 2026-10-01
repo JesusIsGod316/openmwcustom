@@ -81,9 +81,13 @@ execution order, GC policy and runtime ownership remain intact. Retained frame,
 parent and causal-link identities allow these spans to join the existing pacing
 records; inclusive nested times must not be added together.
 
-The pacing report already records every valid engine-wall frame, adjacent change,
+The pacing report records every valid engine-wall frame, adjacent change,
 rolling-median residual/ratio/MAD score and relative spikes below the fixed hitch
-threshold. Automatic per-relative-spike child-tree reports, preparation-to-first-
-use identities, finer physics/navigation/model-construction stages and allocator/
-automatic-GC internals remain future coverage work, not features of this package.
-Engine-wall timing does not establish display presentation timing.
+threshold. The six-group expansion adds automatic per-spike work trees, exact
+preparation-to-first-API-retrieval lifetimes, model/physics/navigation stages,
+queue/cache retirement and allocator service/explicit GC evidence. See
+HITCH-DIAGNOSTICS6.md for separate coverage/loss qualification and honest unknowns.
+Automatic GC inside arbitrary Lua calls remains unavailable without the sampler
+that would alter the diagnosed workload. Engine-wall timing does not establish
+display presentation timing. Gameplay comparisons were deferred until this
+expanded source, fixtures, Windows build and package were validated.

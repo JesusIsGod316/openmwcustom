@@ -6,6 +6,27 @@
 #include <time.h>
 #endif
 
+bool Debug::HitchTrace::frameIntervalsRequested() noexcept
+{
+    return requested();
+}
+
+void Debug::HitchTrace::recordFrameInterval(
+    unsigned frame, std::int64_t start, std::int64_t end, std::int64_t epoch) noexcept
+{
+    if (!requested() || !Capture::instance().enabled()) return;
+    Row row{};
+    row.id = Capture::instance().nextId();
+    row.frame = frame;
+    row.thread = threadId();
+    row.start = start;
+    row.end = end;
+    row.epoch = epoch;
+    row.cpu = -1;
+    std::memcpy(row.phase.data(), "frame.wall_interval", sizeof("frame.wall_interval"));
+    Capture::instance().append(row);
+}
+
 std::uint64_t Debug::HitchTrace::threadId() noexcept
 {
 #ifdef _WIN32

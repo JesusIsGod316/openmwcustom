@@ -82,7 +82,15 @@ namespace Phase9 {
   }
   public static HitchResult Read(string path) { return Read(path,null); }
   public static HitchResult Read(string path,string attributionPath) {
-   var result=new HitchResult(); var spans=new Dictionary<ulong,HitchSpan>();
+   Dictionary<ulong,HitchSpan> spans;
+   return ReadCore(path,attributionPath,out spans);
+  }
+  public static Dictionary<ulong,HitchSpan> ReadWorkNodes(string path) {
+   Dictionary<ulong,HitchSpan> spans;
+   ReadCore(path,null,out spans); return spans;
+  }
+  static HitchResult ReadCore(string path,string attributionPath,out Dictionary<ulong,HitchSpan> spans) {
+   var result=new HitchResult(); spans=new Dictionary<ulong,HitchSpan>();
    if(new FileInfo(path).Length>1073741824) throw new InvalidDataException("Timeline exceeds 1 GiB bound");
    using(var reader=new StreamReader(path)) {
     string header=reader.ReadLine();
@@ -135,9 +143,12 @@ namespace Phase9 {
     }
    }
    result.rows=spans.Count;
-   result.largest_scopes=spans.Values.OrderByDescending(s=>s.wall_ms).Take(25).ToList();
-   result.largest_unattributed_scopes=spans.Values.OrderByDescending(s=>s.unattributed_ms).Take(25).ToList();
-   result.phase_totals=spans.Values.GroupBy(s=>s.phase).Select(g=>new HitchPhase {
+   // Frame intervals are synchronization anchors, not another measured work
+   // envelope. Including them would charge the whole frame twice.
+   var work=spans.Values.Where(s=>s.phase!="frame.wall_interval");
+   result.largest_scopes=work.OrderByDescending(s=>s.wall_ms).Take(25).ToList();
+   result.largest_unattributed_scopes=work.OrderByDescending(s=>s.unattributed_ms).Take(25).ToList();
+   result.phase_totals=work.GroupBy(s=>s.phase).Select(g=>new HitchPhase {
     phase=g.Key,retained_calls=g.Count(),inclusive_ms=g.Sum(s=>s.wall_ms),self_ms=g.Sum(s=>s.unattributed_ms),
     max_ms=g.Max(s=>s.wall_ms),cpu_samples=g.Count(s=>s.thread_cpu_ms>=0),
     observed_thread_cpu_ms=g.Where(s=>s.thread_cpu_ms>=0).Sum(s=>s.thread_cpu_ms)
@@ -341,8 +352,282 @@ namespace Phase9 {
    return result;
   }
  }
+ public class Diagnostics6Result {
+  public int publications,first_retrievals,preparation_hits,retirements,invalidations,lua_vms;
+  public ulong active,unknown_origins,unknown_generations,unknown_uses;
+  public ulong capacity_failures,allocation_failures,metadata_truncations;
+  public bool lifecycle_metadata_complete,origin_generation_provenance_complete;
+  public string automatic_gc_observation="unavailable_without_vm_sampler";
+  public Dictionary<string,int> retained_group_rows=new Dictionary<string,int>();
+ }
+ public static class Diagnostics6Report {
+  static ulong M(HitchSpan s,string name) {
+   ulong value;if(!s.metrics.TryGetValue(name,out value))throw new InvalidDataException("Missing diagnostics metric "+name);
+   return value;
+  }
+  public static Diagnostics6Result Read(string path) {
+   var nodes=HitchReport.ReadWorkNodes(path);var r=new Diagnostics6Result();
+   var status=nodes.Values.Where(x=>x.phase=="resource.lifecycle_status").ToList();
+   var coverage=nodes.Values.Where(x=>x.phase=="resource.lifecycle_coverage").ToList();
+   if(status.Count!=1||coverage.Count!=1)throw new InvalidDataException("Requested lifecycle diagnostics require exactly one status and coverage receipt, including zero-resource runs");
+   r.capacity_failures=M(status[0],"capacity_failures");r.allocation_failures=M(status[0],"allocation_failures");
+   r.metadata_truncations=M(status[0],"metadata_truncations");r.active=M(coverage[0],"active");
+   r.unknown_origins=M(coverage[0],"unknown_origins");r.unknown_generations=M(coverage[0],"unknown_generations");
+   r.unknown_uses=M(coverage[0],"unknown_uses");
+   var published=new Dictionary<ulong,HitchSpan>();var first=new HashSet<ulong>();var prepared=new HashSet<ulong>();var retired=new HashSet<ulong>();
+   ulong visiblyUnknownOrigins=0;var visiblyUnknownGenerations=new HashSet<ulong>();
+   foreach(var s in nodes.Values.Where(x=>x.phase=="resource.lifecycle_publish")) {
+    ulong token=M(s,"lifecycle_id"),flags=M(s,"source_flags");
+    if(token==0||token>65536||M(s,"resource_ptr")==0||(flags&~23UL)!=0||(flags&3)>2)
+     throw new InvalidDataException("Invalid lifecycle publication identity/flags");
+    if((flags&3)==2 && (s.link==0||nodes[s.link].phase!="resource.preparation_origin"))
+     throw new InvalidDataException("Declared preparation publication has no exact preparation source");
+    published.Add(token,s);
+    if((flags&3)==0)visiblyUnknownOrigins++;
+    if((flags&4)!=0)visiblyUnknownGenerations.Add(token);
+   }
+   var invalidated=new Dictionary<ulong,HitchSpan>();
+   foreach(var s in nodes.Values.Where(x=>x.phase=="resource.lifecycle_invalidation")) {
+    ulong token=M(s,"lifecycle_id"),flags=M(s,"source_flags"),reason=M(s,"reason_flags");HitchSpan p;
+    if(!published.TryGetValue(token,out p)||s.identity!=p.identity||s.asset!=p.asset||s.link!=p.span||
+       reason==0||reason>15||(flags&4)==0||(flags&~23UL)!=0||(flags&3)!=(M(p,"source_flags")&3)||
+       (flags&M(p,"source_flags"))!=M(p,"source_flags")||(M(p,"source_flags")&4)!=0)
+     throw new InvalidDataException("Incoherent exact resource lifetime invalidation");
+    M(s,"observed_generation");invalidated.Add(token,s);visiblyUnknownGenerations.Add(token);
+   }
+   r.invalidations=invalidated.Count;
+   foreach(var s in nodes.Values.Where(x=>x.phase=="resource.lifecycle_first_demand"||x.phase=="resource.lifecycle_prepare_hit"||x.phase=="resource.lifecycle_retire")) {
+    ulong token=M(s,"lifecycle_id");HitchSpan p;
+    if(!published.TryGetValue(token,out p)||s.identity!=p.identity||s.asset!=p.asset)
+     throw new InvalidDataException("Missing/mismatched exact lifecycle publication");
+    HitchSpan invalid;
+    if(s.phase!="resource.lifecycle_retire"&&invalidated.TryGetValue(token,out invalid)&&s.span>invalid.span)
+     throw new InvalidDataException("Invalidated resource residency acquired a later qualified retrieval/preparation hit");
+    if(s.phase=="resource.lifecycle_prepare_hit") {
+     if(!prepared.Add(token)||s.link==0||nodes[s.link].phase!="resource.preparation_origin"||
+        M(s,"publication_span")!=p.span||M(s,"resource_ptr")!=M(p,"resource_ptr")||M(s,"vfs_generation")!=M(p,"vfs_generation"))
+      throw new InvalidDataException("Incoherent lifecycle preparation hit");
+    } else {
+     if(s.link!=p.span)throw new InvalidDataException("Lifecycle receipt is linked to a different lifetime");
+     if(s.phase=="resource.lifecycle_first_demand") {
+      ulong flags=M(s,"source_flags");
+      if(!first.Add(token)||M(s,"resource_ptr")!=M(p,"resource_ptr")||M(s,"cache_hit")>1||(flags&~23UL)!=0||(flags&3)>2)
+       throw new InvalidDataException("Incoherent first resource API retrieval");
+      ulong initialFlags=M(p,"source_flags");
+      if((flags&3)!=(initialFlags&3)||(flags&initialFlags)!=initialFlags)
+       throw new InvalidDataException("Lifecycle retrieval changed the immutable publication origin or removed flags");
+      if((flags&4)!=0)visiblyUnknownGenerations.Add(token);
+     } else if(!retired.Add(token)||M(s,"reason")<1||M(s,"reason")>7)
+      throw new InvalidDataException("Incoherent lifecycle retirement");
+    }
+   }
+   r.publications=published.Count;r.first_retrievals=first.Count;r.preparation_hits=prepared.Count;r.retirements=retired.Count;
+   if(M(status[0],"publications")!=(ulong)r.publications||r.active!=(ulong)(r.publications-r.retirements)||
+      r.unknown_origins!=visiblyUnknownOrigins||r.unknown_generations>(ulong)r.publications||
+      r.unknown_generations<(ulong)visiblyUnknownGenerations.Count)
+    throw new InvalidDataException("Lifecycle status disagrees with retained lifetime receipts");
+   r.lifecycle_metadata_complete=r.capacity_failures==0&&r.allocation_failures==0&&r.metadata_truncations==0;
+   r.origin_generation_provenance_complete=r.lifecycle_metadata_complete&&r.unknown_origins==0&&r.unknown_generations==0&&r.unknown_uses==0;
+   foreach(var s in nodes.Values.Where(x=>x.phase=="lua.gc.observation")) {
+    if(s.identity!="unavailable_without_vm_sampler"||M(s,"automatic_gc_observed")!=0||M(s,"vm_sampler_enabled")!=0||M(s,"tracking_available")>1)
+     throw new InvalidDataException("Unsupported automatic Lua GC coverage claim");
+    r.lua_vms++;
+   }
+   r.retained_group_rows.Add("preparation_to_first_api_retrieval",r.publications+r.first_retrievals+r.preparation_hits+r.invalidations);
+   r.retained_group_rows.Add("model_construction",nodes.Values.Count(x=>x.phase.StartsWith("resource.model_",StringComparison.Ordinal)||x.phase.StartsWith("resource.template_",StringComparison.Ordinal)||x.phase.StartsWith("resource.clone_",StringComparison.Ordinal)));
+   r.retained_group_rows.Add("physics_navigation",nodes.Values.Count(x=>x.phase.StartsWith("physics.",StringComparison.Ordinal)||x.phase.StartsWith("navigation.",StringComparison.Ordinal)||x.phase.StartsWith("nav.",StringComparison.Ordinal)));
+   r.retained_group_rows.Add("queues_and_resource_retirement",nodes.Values.Count(x=>x.phase.StartsWith("workqueue.",StringComparison.Ordinal)||x.phase=="resource.lifecycle_retire"||x.phase.StartsWith("resource.cache_",StringComparison.Ordinal)||x.phase=="resource.prepared_owner_release"||x.phase=="resource.deferred_owner_release"));
+   r.retained_group_rows.Add("lua_allocator_and_explicit_gc",nodes.Values.Count(x=>x.phase.StartsWith("lua.alloc.",StringComparison.Ordinal)||x.phase.StartsWith("lua.gc.",StringComparison.Ordinal)));
+   return r;
+  }
+ }
+ public class SpikeWorkResult {
+  public int selected_frames,exact_anchors,missing_anchors,iteration_fallbacks;
+  public int node_rows; public long references;
+  public bool complete=true;
+  public List<string> reasons=new List<string>();
+ }
+ public static class SpikeWorkReport {
+  static CultureInfo CI=CultureInfo.InvariantCulture;
+  class Event {
+   public long frame; public double wall;
+   public string[] pacing; public bool relative;
+   public HitchSpan anchor;
+   public string anchor_kind="missing";
+   public bool references_truncated;
+   public List<HitchSpan> same=new List<HitchSpan>(),workers=new List<HitchSpan>();
+  }
+  static string J(string text) {
+   var b=new StringBuilder("\"");
+   foreach(char c in text??"") {
+    if(c=='"' || c=='\\')b.Append('\\').Append(c);
+    else if(c<32)b.Append("\\u").Append(((int)c).ToString("x4",CI));
+    else b.Append(c);
+   }
+   return b.Append('"').ToString();
+  }
+  static string Number(string value) {
+   if(value.Length==0)return "null";
+   double number=double.Parse(value,CI);
+   if(double.IsNaN(number)||double.IsInfinity(number))throw new InvalidDataException("Nonfinite pacing value");
+   return number.ToString("R",CI);
+  }
+  static string Ids(IEnumerable<HitchSpan> rows) {return "["+string.Join(",",rows.Select(x=>x.span.ToString(CI)).ToArray())+"]";}
+  static double UnionMs(List<HitchSpan> rows,HitchSpan anchor) {
+   long start=0,end=0,total=0; bool active=false;
+   foreach(var span in rows.OrderBy(x=>x.start_ns)) {
+    long a=Math.Max(span.start_ns,anchor.start_ns),b=Math.Min(span.end_ns,anchor.end_ns);
+    if(b<=a)continue;
+    if(!active){start=a;end=b;active=true;}
+    else if(a<=end)end=Math.Max(end,b);
+    else{total+=end-start;start=a;end=b;}
+   }
+   if(active)total+=end-start;
+   return total/1e6;
+  }
+  public static SpikeWorkResult Write(string timeline,string pacing,string output,long[] extraFrames) {
+   var result=new SpikeWorkResult();
+   var nodes=HitchReport.ReadWorkNodes(timeline);
+   var extras=new HashSet<long>(extraFrames??new long[0]);
+   var events=new List<Event>();var seen=new HashSet<long>();
+   if(extras.Count>524288 || new FileInfo(pacing).Length>67108864)
+    throw new InvalidDataException("Pacing input bound exceeded");
+   using(var reader=new StreamReader(pacing)) {
+    if(reader.ReadLine()!="frame,epoch_ms,wall_ms,change_ms,baseline_ms,residual_ms,ratio,robust_score,relative_spike")
+     throw new InvalidDataException("Unsupported pacing schema");
+    string line;
+    while((line=reader.ReadLine())!=null) {
+     if(line.Length>1024 || seen.Count>=524288)throw new InvalidDataException("Pacing row bound exceeded");
+     var f=HitchReport.Csv(line);
+     if(f.Length!=9)throw new InvalidDataException("Malformed pacing row");
+     long frame=long.Parse(f[0],CI);double wall=double.Parse(f[2],CI);
+     if(!seen.Add(frame)||wall<0||double.IsNaN(wall)||double.IsInfinity(wall)||
+        (f[8]!="0"&&f[8]!="1"))throw new InvalidDataException("Incoherent pacing row");
+     if(f[8]=="1"||wall>=25||extras.Contains(frame))events.Add(new Event{frame=frame,wall=wall,pacing=f,relative=f[8]=="1"});
+     // Validate fields used by the output before opening derived files.
+     Number(f[1]);Number(f[4]);Number(f[5]);
+     if(events.Count>131072)throw new InvalidDataException("Selected pacing frame bound exceeded");
+    }
+   }
+   result.selected_frames=events.Count;
+   var anchorGroups=nodes.Values.Where(x=>x.phase=="frame.wall_interval").GroupBy(x=>x.frame).ToDictionary(x=>x.Key,x=>x.ToList());
+   var iterations=nodes.Values.Where(x=>x.phase=="engine.iteration").GroupBy(x=>x.frame).ToDictionary(x=>x.Key,x=>x.ToList());
+   foreach(var item in events) {
+    List<HitchSpan> anchors;
+    if(anchorGroups.TryGetValue(item.frame,out anchors)) {
+     if(anchors.Count!=1)throw new InvalidDataException("Duplicate exact frame anchor");
+     item.anchor=anchors[0];item.anchor_kind="exact_engine_wall_interval";result.exact_anchors++;
+     if(Math.Abs(item.anchor.wall_ms-item.wall)>.002)throw new InvalidDataException("Frame anchor and pacing duration disagree");
+     if(item.anchor.epoch_ms!=long.Parse(item.pacing[1],CI))
+      throw new InvalidDataException("Frame anchor and pacing epoch disagree; sources may belong to different runs");
+    } else if(iterations.TryGetValue(item.frame,out anchors)&&anchors.Count==1) {
+     item.anchor=anchors[0];item.anchor_kind="iteration_only_partial_frame";result.iteration_fallbacks++;
+    } else result.missing_anchors++;
+   }
+   if(result.missing_anchors+result.iteration_fallbacks>0) {
+    result.complete=false;result.reasons.Add("Some selected frames have no exact engine-wall anchor; iteration fallback is partial coverage");
+   }
+   var anchored=events.Where(x=>x.anchor!=null).OrderBy(x=>x.anchor.start_ns).ToList();
+   for(int i=1;i<anchored.Count;i++) {
+    if(anchored[i-1].anchor.end_ns>anchored[i].anchor.start_ns)
+     throw new InvalidDataException("Selected frame anchors overlap");
+   }
+   const long referenceLimit=4000000;
+   bool bounded=false;
+   foreach(var span in nodes.Values) {
+    if(span.phase=="frame.wall_interval"||span.end_ns<=span.start_ns)continue;
+    int low=0,high=anchored.Count;
+    while(low<high){int mid=low+(high-low)/2;if(anchored[mid].anchor.end_ns<=span.start_ns)low=mid+1;else high=mid;}
+    for(int i=low;i<anchored.Count&&anchored[i].anchor.start_ns<span.end_ns;i++) {
+     if(result.references>=referenceLimit){bounded=true;break;}
+     var item=anchored[i];
+     if(span.thread==item.anchor.thread)item.same.Add(span);else item.workers.Add(span);
+     result.references++;
+    }
+    if(bounded)break;
+   }
+   var used=new HashSet<ulong>();
+   string eventPath=Path.Combine(output,"HITCH-SPIKE-WORK-TREES.jsonl");
+   // If overlap scanning itself stopped, omitted spans could affect any
+   // selected frame. Qualify each tree conservatively rather than guessing.
+   if(bounded)foreach(var item in events)item.references_truncated=true;
+   using(var writer=new StreamWriter(eventPath,false,new UTF8Encoding(false))) {
+    foreach(var item in events.OrderBy(x=>x.frame)) {
+     var direct=new HashSet<ulong>(item.same.Concat(item.workers).Select(x=>x.span));
+     var context=new HashSet<ulong>();var todo=new Queue<ulong>(direct);
+     if(item.anchor!=null)used.Add(item.anchor.span);
+     while(todo.Count>0) {
+      var node=nodes[todo.Dequeue()];
+      foreach(ulong source in new[]{node.parent,node.link}) {
+       if(source!=0&&!direct.Contains(source)&&!context.Contains(source)) {
+        if(result.references>=referenceLimit){bounded=true;item.references_truncated=true;todo.Clear();break;}
+        context.Add(source);todo.Enqueue(source);result.references++;
+       }
+      }
+      if(item.references_truncated && result.references>=referenceLimit)break;
+     }
+     foreach(ulong id in direct.Concat(context))used.Add(id);
+     var a=item.anchor;
+     string roots=Ids(item.same.Where(x=>x.parent==0||!direct.Contains(x.parent)).OrderBy(x=>x.start_ns));
+     var remaining=a==null?new List<HitchSpan>():item.same.Where(x=>x.start_ns>=a.start_ns&&x.end_ns<=a.end_ns)
+       .OrderByDescending(x=>x.unattributed_ms).Take(10).ToList();
+     double covered=a==null?0:UnionMs(item.same,a);
+     writer.WriteLine("{\"frame\":"+item.frame+",\"wall_ms\":"+Number(item.pacing[2])+
+      ",\"relative_spike\":"+(item.relative?"true":"false")+",\"absolute_slow\":"+(item.wall>=25?"true":"false")+
+      ",\"selected_local_deviation\":"+(extras.Contains(item.frame)?"true":"false")+
+      ",\"baseline_ms\":"+Number(item.pacing[4])+",\"residual_ms\":"+Number(item.pacing[5])+
+      ",\"anchor_kind\":"+J(item.anchor_kind)+",\"anchor_span\":"+(a==null?"null":a.span.ToString(CI))+
+      ",\"node_reference_limit_reached\":"+(item.references_truncated?"true":"false")+
+      ",\"main_thread_roots\":"+roots+",\"same_thread_span_ids\":"+Ids(item.same.OrderBy(x=>x.start_ns))+
+      ",\"overlapping_worker_span_ids\":"+Ids(item.workers.OrderBy(x=>x.start_ns))+
+      ",\"causal_context_span_ids\":["+string.Join(",",context.OrderBy(x=>x).Select(x=>x.ToString(CI)).ToArray())+"]"+
+      ",\"largest_contained_unattributed_span_ids\":"+Ids(remaining)+
+      ",\"main_thread_envelope_covered_ms\":"+covered.ToString("R",CI)+
+      ",\"outside_retained_main_envelopes_ms\":"+(a==null?"null":Math.Max(0,a.wall_ms-covered).ToString("R",CI))+"}");
+    }
+   }
+   // Preserve the original CSV rows rather than reformatting or rounding times.
+   using(var source=new StreamReader(timeline))using(var target=new StreamWriter(Path.Combine(output,"HITCH-SPIKE-NODES.csv"),false,new UTF8Encoding(false))) {
+    target.WriteLine(source.ReadLine());string line;
+    while((line=source.ReadLine())!=null) {
+     if(line.Length==0||line.StartsWith("#"))continue;
+     int comma=line.IndexOf(',');ulong id=ulong.Parse(line[0]=='"'?HitchReport.Csv(line)[0]:line.Substring(0,comma),CI);
+     if(used.Contains(id)){target.WriteLine(line);result.node_rows++;}
+    }
+   }
+   if(bounded){result.complete=false;result.reasons.Add("Selected-frame overlap/context reference bound reached; raw timeline remains authoritative");}
+   return result;
+  }
+ }
 }
 '@
+}
+
+function Test-Phase9Diagnostics6Capture {
+    param([Parameter(Mandatory=$true)][string]$ProfileDir)
+    $mode=Get-Content -Raw -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt')
+    $requested=$mode -match '(?m)^hitch_diagnostics_revision=1\r?$'
+    $reasons=[Collections.Generic.List[string]]::new();$analysis=$null
+    if($requested){
+        try{
+            $hitch=Test-Phase9HitchCapture -ProfileDir $ProfileDir
+            if($hitch.valid_span_capture -ne $true){throw 'Expanded diagnostic joins require an independently valid CPU timeline'}
+            $analysis=[Phase9.Diagnostics6Report]::Read((Join-Path $ProfileDir 'p9-hitch-spans.csv'))
+            if(-not $analysis.lifecycle_metadata_complete){throw 'Lifecycle metadata capacity, allocation or truncation loss; preparation/retrieval provenance is incomplete'}
+        }catch{$reasons.Add([string]$_)}
+    }
+    $report=[pscustomobject]@{schema=1;revision=1;requested=$requested;
+        valid_diagnostics_capture=$(if($requested){$reasons.Count -eq 0}else{$null});analysis=$analysis;reasons=$reasons.ToArray();
+        groups=@('Per-spike work trees (HITCH-SPIKE-REPORT.json)','Preparation to first resource API retrieval','Model construction','Physics/navigation work and waits','Queues and cache/owner retirement','Lua allocator service and explicit GC');
+        automatic_gc_observation='unavailable_without_vm_sampler';all_causes_observed=$false;
+        provenance_scope='Exact lifetime tokens cover scene templates, NIF files, keyframes and prepared scene instances. First demand means first required resource API retrieval, not first visible draw or GPU use. Unknown origins/generations/uses remain explicit; absence is not expiry.';
+        retirement_scope='Cache entry/owner release, with observed remaining reference count and retained-size estimate. This does not prove object destruction or returned OS memory.';
+        activation_scope='Retained row counts indicate observed paths, not all calls. Zero rows can mean a path did not run or was below retention thresholds; it does not prove zero cost. Lifecycle status is mandatory even for zero-resource runs.';
+        lua_scope='Allocator service measures actual free/realloc call wall time and attempted request sizes. Explicit GC steps retain the actual completion result and heap endpoints. Inclusive Lua deltas overlap nested calls. Automatic GC during arbitrary Lua execution remains unresolved.';
+        integrity_rule='This family is qualified separately from the CPU timeline and per-spike joins. Metadata loss prevents exact provenance claims but does not invalidate otherwise complete CPU wall-time evidence. Consult HITCH-SPIKE-REPORT.json separately for frame-tree completeness.'}
+    $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $ProfileDir 'HITCH-DIAGNOSTICS6-CAPTURE.json') -Encoding UTF8
+    if($requested -and $reasons.Count){Write-Warning ('INCOMPLETE EXPANDED DIAGNOSTICS: '+($reasons -join '; '))}
+    return $report
 }
 
 function Test-Phase9CompileAttributionCapture {

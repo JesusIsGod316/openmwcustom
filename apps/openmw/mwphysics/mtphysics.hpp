@@ -17,6 +17,7 @@
 #include "components/misc/budgetmeasurement.hpp"
 #include "physicssystem.hpp"
 #include "ptrholder.hpp"
+#include "physicstrace.hpp"
 
 namespace Misc
 {
@@ -136,6 +137,7 @@ namespace MWPhysics
         osg::Timer_t mFrameStart;
 
         std::unique_ptr<WorkersSync> mWorkersSync;
+        PhysicsTraceCycle mHitchCycle;
     };
 
 }

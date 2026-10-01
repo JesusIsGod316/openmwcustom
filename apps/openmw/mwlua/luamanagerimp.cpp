@@ -640,7 +640,7 @@ namespace MWLua
     {
         {
             Debug::HitchTrace::Scope detail("lua.gc_step", Debug::HitchTrace::CpuTiming::Scoped);
-            return lua_gc(mLua.unsafeState(), LUA_GCSTEP, steps) == 1;
+            return mLua.gcStep(steps);
         }
 
     }

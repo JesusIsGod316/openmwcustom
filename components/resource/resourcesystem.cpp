@@ -1,6 +1,7 @@
 #include "resourcesystem.hpp"
 
 #include <algorithm>
+#include <typeinfo>
 #include "cachemaintenance.hpp"
 
 #include <components/debug/v3diagnostics.hpp>
@@ -93,13 +94,19 @@ namespace Resource
     void ResourceSystem::updateCache(double referenceTime)
     {
         if (mSpeculativeBudget) { updateBudgetedCache(referenceTime); return; }
+        Debug::HitchTrace::Scope maintenance("resource.cache_maintenance", Debug::HitchTrace::CpuTiming::WallEnvelope);
         Debug::V3Diagnostics::TraceScope trace("resource", "resource_cache_update", "all_managers", 0.5);
         Debug::V3Diagnostics::ScopedCsvTimer timer(
             Debug::V3Diagnostics::resourceWriter(), "resource_cache_update", "all_managers", 0.5);
         for (std::vector<BaseResourceManager*>::iterator it = mResourceManagers.begin(); it != mResourceManagers.end();
              ++it)
         {
-            (*it)->updateCache(referenceTime);
+            {
+                Debug::HitchTrace::Scope managerUpdate("resource.cache_manager_update",
+                    Debug::HitchTrace::CpuTiming::WallEnvelope,
+                    Debug::HitchTrace::requested() ? typeid(**it).name() : "");
+                (*it)->updateCache(referenceTime);
+            }
             (*it)->reportRuntimeDiagnostics(referenceTime);
         }
         const auto pressure = mHostMemoryBudget.pressure();
@@ -107,13 +114,21 @@ namespace Resource
         {
             const std::size_t maximum = pressure == HostMemoryPressure::Critical ? 512 : 128;
             std::size_t removed = 0;
+            const auto trim = [&](BaseResourceManager* manager) {
+                Debug::HitchTrace::Scope pressureTrim("resource.cache_manager_pressure_trim",
+                    Debug::HitchTrace::CpuTiming::WallEnvelope,
+                    Debug::HitchTrace::requested() ? typeid(*manager).name() : "");
+                const auto count = manager->trimCache(maximum);
+                pressureTrim.setMetric(0, "removed", count);
+                return count;
+            };
             // Retaining owners (paging, collision, etc.) first, then templates
             // and shared state, and finally images. Never clear a live graph.
             for (BaseResourceManager* manager : mResourceManagers)
                 if (manager != mSceneManager.get() && manager != mImageManager.get())
-                    removed += manager->trimCache(maximum);
-            removed += mSceneManager->trimCache(maximum);
-            removed += mImageManager->trimCache(maximum);
+                    removed += trim(manager);
+            removed += trim(mSceneManager.get());
+            removed += trim(mImageManager.get());
             if (Debug::RuntimeDiagnostics::enabled())
             {
                 const auto memory = mHostMemoryBudget.snapshot();
@@ -181,11 +196,18 @@ namespace Resource
 
     void ResourceSystem::updateBudgetedCache(double referenceTime)
     {
+        Debug::HitchTrace::Scope maintenance("resource.cache_maintenance", Debug::HitchTrace::CpuTiming::WallEnvelope);
         CacheMaintenanceBudget budget;
         CacheMaintenanceScope scope(budget);
         // This executes on the existing dedicated resource worker. Never wait
         // for a running preload and never perform GL finish/wait here.
-        mDeferredRelease.drain(budget);
+        {
+            Debug::HitchTrace::Scope deferred("resource.deferred_owner_release");
+            mDeferredRelease.drain(budget);
+            deferred.setMetric(0, "scanned", budget.scanned);
+            deferred.setMetric(1, "released", budget.released);
+            deferred.setMetric(2, "estimated_bytes", budget.releasedBytes);
+        }
         const auto pressure = mHostMemoryBudget.pressure();
         // Rotating start avoids starvation when a manager or a destructor uses
         // the remaining time. Within a cycle owners precede templates/images.
@@ -193,9 +215,23 @@ namespace Resource
         {
             auto* manager = mMaintenanceOrder[mMaintenanceCursor];
             mMaintenanceCursor = (mMaintenanceCursor + 1) % mMaintenanceOrder.size();
-            manager->updateCache(referenceTime);
-            if (pressure != HostMemoryPressure::Normal && budget.available()) manager->trimCache(8);
+            {
+                Debug::HitchTrace::Scope managerUpdate("resource.cache_manager_update",
+                    Debug::HitchTrace::CpuTiming::WallEnvelope,
+                    Debug::HitchTrace::requested() ? typeid(*manager).name() : "");
+                manager->updateCache(referenceTime);
+            }
+            if (pressure != HostMemoryPressure::Normal && budget.available())
+            {
+                Debug::HitchTrace::Scope pressureTrim("resource.cache_manager_pressure_trim",
+                    Debug::HitchTrace::CpuTiming::WallEnvelope,
+                    Debug::HitchTrace::requested() ? typeid(*manager).name() : "");
+                pressureTrim.setMetric(0, "removed", manager->trimCache(8));
+            }
         }
+        maintenance.setMetric(0, "scanned", budget.scanned);
+        maintenance.setMetric(1, "released", budget.released);
+        maintenance.setMetric(2, "estimated_bytes", budget.releasedBytes);
         if (Debug::RuntimeDiagnostics::enabled())
         {
             const auto stats = mSpeculativeBudget->stats();

@@ -171,7 +171,7 @@ foreach($name in @('v3-frame.csv.capture-status.txt','p8g4-render.capture-status
     $statuses[$name]=if(Test-Path -LiteralPath $file){[IO.File]::ReadAllLines($file)}else{@('MISSING: deferred capture not confirmed complete; legacy mode has no deferred status')}
 }
 $qualifications=[ordered]@{}
-foreach($name in @('WRITER-CAPTURE.json','TEMPORAL-CAPTURE.json','ROOT-CAUSE-CAPTURE.json','HITCH-CAPTURE.json')){
+foreach($name in @('WRITER-CAPTURE.json','TEMPORAL-CAPTURE.json','ROOT-CAUSE-CAPTURE.json','HITCH-CAPTURE.json','HITCH-DIAGNOSTICS6-CAPTURE.json')){
     $file=Join-Path $ProfileDir $name
     $qualifications[$name]=if(Test-Path -LiteralPath $file){Get-Content -Raw -LiteralPath $file | ConvertFrom-Json}else{$null}
 }
@@ -180,6 +180,9 @@ foreach($name in @('v3-shadow.csv','p6-render-traversal.csv','p6-render-phase.cs
     $file=Join-Path $ProfileDir $name
     if(Test-Path -LiteralPath $file){$context[$name]=[Phase9.Report]::Context($file,(Join-Path $ProfileDir ('cluster-context-'+$name)),$result.context_frames)}
 }
+. (Join-Path $PSScriptRoot 'OptimizedMW_SpikeReport.ps1')
+$positiveDeviationFrames=@($result.largest_local_deviations | Where-Object {$_.residual_ms -gt 0} | ForEach-Object {[long]$_.frame})
+$spikeWork=Write-Phase9SpikeWorkReport -ProfileDir $ProfileDir -ExtraFrames $positiveDeviationFrames
 $summary=[ordered]@{
     format='phase9-offline-v3';scope='whole capture; historical matched route NOT automatically selected'
     cluster_rule='wall >=25ms; bridge at most two intervening non-slow frames; context includes frame +/-1'
@@ -193,6 +196,7 @@ $summary=[ordered]@{
     other_ms_ge15_intervals_frames=$result.other_spike_intervals
     malformed_frame_rows=$result.malformed_rows;capture_status=$statuses;auxiliary_context=$context
     channel_qualifications=$qualifications
+    spike_work_trees=$spikeWork
     integrity_rule='Assess channels independently. A complete CPU series survives auxiliary loss; a claim requiring a lost channel remains unqualified. Reject promotion when its required records/output/normal finish are incomplete.'
     caveat='Periodic other_ms spikes are an unresolved instrumentation hypothesis, not removed or subtracted'
 }
@@ -207,5 +211,6 @@ $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Profil
     'Inspect capture-status files before comparing. A missing GPU value is not zero.',
     'Inspect WRITER-CAPTURE, TEMPORAL-CAPTURE and ROOT-CAUSE-CAPTURE separately; requested ownership does not prove activation.',
     'cluster-context CSVs retain original frame identities, including adjacent frames.',
+    'HITCH-SPIKE-WORK-TREES.jsonl references HITCH-SPIKE-NODES.csv by exact IDs. Worker overlap is concurrency; dependencies are separate from nesting. Check HITCH-SPIKE-REPORT.json for coverage.',
     'No telemetry cost has been subtracted. Largest scope is attribution, not proof.'
 ) | Set-Content -LiteralPath (Join-Path $ProfileDir 'Phase9-BENCHMARK-REPORT.txt') -Encoding UTF8

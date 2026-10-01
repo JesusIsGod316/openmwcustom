@@ -3,6 +3,7 @@
 #include <components/files/constrainedreadpolicy.hpp>
 #include <optional>
 #include "engine.hpp"
+#include <components/debug/resourcelifecycle.hpp>
 
 #include <components/resource/benchmarkcapture.hpp>
 #include <components/sceneutil/drawphasetrace.hpp>
@@ -1421,6 +1422,7 @@ OMW::Engine::~Engine()
 
     mResourceSystem.reset();
     // All resource, Lua and viewer workers are now joined.
+    Debug::ResourceLifecycle::emitStatus();
     Debug::HitchTrace::Capture::instance().finish();
 
     mEncoder = nullptr;
@@ -1711,6 +1713,7 @@ void OMW::Engine::createWindow()
 
     // Allocate and touch the opt-in timeline arena before gameplay/draw threads.
     (void)Debug::HitchTrace::Capture::instance();
+    Debug::ResourceLifecycle::initialize();
     if (SceneUtil::DrawPhaseTrace::Capture::instance().enabled())
     {
         if (Settings::stereo().mStereoEnabled || osg::DisplaySettings::instance()->getStereo())

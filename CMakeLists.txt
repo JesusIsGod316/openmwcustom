@@ -1285,12 +1285,16 @@ if(WIN32)
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_RunManifest.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_HitchMatrix.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_HitchReport.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_SpikeReport.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_SystemTrace.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_QualifySystemTrace.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_SystemTraceLink.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW-SystemTrace.wprp"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/START-OptimizedMW-SystemTrace.bat"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/HITCH-DIAGNOSTICS.md"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/HITCH-DIAGNOSTICS6.md"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/LUA-ALLOCATOR-GC-DIAGNOSTICS.md"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/RESOURCE-LIFECYCLE-DIAGNOSTICS.md"
         DESTINATION "."
     )
 endif()
