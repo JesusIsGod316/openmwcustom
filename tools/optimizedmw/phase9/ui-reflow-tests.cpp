@@ -10,6 +10,8 @@
 #include <components/lua_ui/textedit.hpp>
 #include <components/lua_ui/util.hpp>
 #include <components/lua_ui/widget.hpp>
+#include <components/settings/parser.hpp>
+#include <components/settings/values.hpp>
 
 #include <MyGUI_DataManager.h>
 #include <MyGUI_FontManager.h>
@@ -24,6 +26,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -35,8 +38,80 @@
 #include <string_view>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <dbghelp.h>
+#endif
+
 namespace
 {
+#ifdef _WIN32
+    LONG WINAPI fixtureExceptionStack(EXCEPTION_POINTERS* exception)
+    {
+        std::fprintf(stderr, "UI fixture native exception 0x%08lx at %p\n",
+            exception->ExceptionRecord->ExceptionCode, exception->ExceptionRecord->ExceptionAddress);
+        HMODULE faultModule = nullptr;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                static_cast<LPCSTR>(exception->ExceptionRecord->ExceptionAddress), &faultModule))
+        {
+            char path[MAX_PATH]{};
+            GetModuleFileNameA(faultModule, path, MAX_PATH);
+            std::fprintf(stderr, "Fault module %s RVA 0x%llx\n", path,
+                static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(exception->ExceptionRecord->ExceptionAddress)
+                    - reinterpret_cast<std::uintptr_t>(faultModule)));
+        }
+        std::fflush(stderr);
+        const HANDLE process = GetCurrentProcess();
+        SymSetOptions(SymGetOptions() | SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+        if (!SymInitialize(process, nullptr, TRUE))
+        {
+            std::fprintf(stderr, "SymInitialize failed: %lu\n", GetLastError());
+            std::fflush(stderr);
+            return EXCEPTION_EXECUTE_HANDLER;
+        }
+        CONTEXT context = *exception->ContextRecord;
+        STACKFRAME64 frame{};
+#if defined(_M_X64)
+        constexpr DWORD machine = IMAGE_FILE_MACHINE_AMD64;
+        frame.AddrPC.Offset = context.Rip;
+        frame.AddrFrame.Offset = context.Rbp;
+        frame.AddrStack.Offset = context.Rsp;
+#else
+        constexpr DWORD machine = IMAGE_FILE_MACHINE_I386;
+        frame.AddrPC.Offset = context.Eip;
+        frame.AddrFrame.Offset = context.Ebp;
+        frame.AddrStack.Offset = context.Esp;
+#endif
+        frame.AddrPC.Mode = frame.AddrFrame.Mode = frame.AddrStack.Mode = AddrModeFlat;
+        for (unsigned depth = 0; depth < 64 && frame.AddrPC.Offset != 0; ++depth)
+        {
+            alignas(SYMBOL_INFO) unsigned char storage[sizeof(SYMBOL_INFO) + MAX_SYM_NAME]{};
+            auto* symbol = reinterpret_cast<SYMBOL_INFO*>(storage);
+            symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+            symbol->MaxNameLen = MAX_SYM_NAME;
+            DWORD64 offset = 0;
+            IMAGEHLP_LINE64 line{};
+            line.SizeOfStruct = sizeof(line);
+            DWORD lineOffset = 0;
+            std::fprintf(stderr, "#%u 0x%llx", depth, static_cast<unsigned long long>(frame.AddrPC.Offset));
+            if (SymFromAddr(process, frame.AddrPC.Offset, &offset, symbol))
+                std::fprintf(stderr, " %s+0x%llx", symbol->Name, static_cast<unsigned long long>(offset));
+            if (SymGetLineFromAddr64(process, frame.AddrPC.Offset, &lineOffset, &line))
+                std::fprintf(stderr, " %s:%lu", line.FileName, line.LineNumber);
+            std::fputc('\n', stderr);
+            if (!StackWalk64(machine, process, GetCurrentThread(), &frame, &context, nullptr,
+                    SymFunctionTableAccess64, SymGetModuleBase64, nullptr))
+                break;
+        }
+        SymCleanup(process);
+        std::fflush(stderr);
+        return EXCEPTION_EXECUTE_HANDLER;
+    }
+#endif
+
     void require(bool condition, std::string_view message)
     {
         if (!condition)
@@ -207,7 +282,7 @@ namespace
     {
         MYGUI_RTTI_DERIVED(CountingFont)
     public:
-        explicit CountingFont(MyGUI::ITexture* texture, std::string_view name = "Default", int defaultHeight = 10)
+        explicit CountingFont(MyGUI::ITexture* texture, std::string_view name = "FixtureDefault", int defaultHeight = 10)
             : mTexture(texture)
             , mDefaultHeight(defaultHeight)
         {
@@ -399,6 +474,12 @@ namespace
             auto* editExtension = element->mRoot->children().at(0)->children().at(0);
             auto* edit = findEditBox(editExtension->widget());
             require(edit != nullptr, "Production LuaTextEdit was not created");
+            if (edit->getTextSize().height <= edit->getFontHeight())
+            {
+                std::cerr << "Wrapping setup tree: ";
+                writeWidget(std::cerr, element->mRoot->widget());
+                std::cerr << '\n';
+            }
             require(edit->getTextSize().height > edit->getFontHeight(), "Fixture did not exercise real word wrapping");
             auto snapshot = [&](std::string_view name) {
                 if (snapshotCount++ != 0)
@@ -501,15 +582,33 @@ namespace
         require(static_cast<bool>(output), "Fixture result write failed");
         LuaUi::clearGameInterface();
         LuaUi::clearMenuInterface();
+        // MyGUI logically destroys widgets immediately but releases them at
+        // the next frame. Their WidgetExtension Lua references must unref
+        // before this function's LuaState is destroyed, as in real shutdown.
+        MyGUI::Gui::getInstance().frameEvent(0.0f);
     }
 }
 
 int main(int argc, char** argv)
 {
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(fixtureExceptionStack);
+    ULONG stackGuarantee = 64 * 1024;
+    SetThreadStackGuarantee(&stackGuarantee);
+#endif
     try
     {
         require(argc == 3, "Usage: p9-ui-reflow RESULT.json expected-policy-0-or-1");
         const bool expected = std::string_view(argv[2]) == "1";
+        // LuaState's production runtime selection reads Settings::video().
+        // Match components-tests' private defaults initialization before Lua
+        // construction; never load or modify the user's settings profile.
+        Settings::SettingsFileParser settingsParser;
+        settingsParser.loadSettingsFile(std::filesystem::path(P9_SOURCE) / "files/settings-default.cfg",
+            Settings::Manager::mDefaultSettings);
+        Settings::StaticValues::initDefaults();
+        Settings::Manager::mUserSettings = Settings::Manager::mDefaultSettings;
+        Settings::StaticValues::init();
         MyGUI::LogManager log;
         log.setSTDOutputEnabled(false);
         FixtureData data(std::filesystem::path(P9_SOURCE) / "files/data/mygui");
@@ -522,7 +621,10 @@ int main(int argc, char** argv)
         auto* font = new CountingFont(texture);
         MyGUI::ResourceManager::getInstance().addResource(font);
         MyGUI::ResourceManager::getInstance().addResource(new CountingFont(texture, "FixtureAlternate", 17));
-        MyGUI::FontManager::getInstance().setDefaultFont("Default");
+        // ResourceManager names span resource types: the default empty skin
+        // already owns "Default". Production FontName="Default" resolves this
+        // distinct default font through FontManager's normal alias behavior.
+        MyGUI::FontManager::getInstance().setDefaultFont("FixtureDefault");
         require(MyGUI::ResourceManager::getInstance().load("fixture-skin.xml"), "Fixture base skin load failed");
         require(MyGUI::ResourceManager::getInstance().load("openmw_lua.xml"), "Production Lua skin load failed");
         require(MyGUI::ResourceManager::getInstance().load("fixture-layer.xml"), "Fixture layer load failed");

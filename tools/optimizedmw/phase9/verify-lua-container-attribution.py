@@ -37,8 +37,12 @@ def main():
         if row["phase"].startswith(("lua.event.", "lua.timer.", "lua.load.", "lua.script.")):
             assert float(row["thread_cpu_ms"]) == -1, "New Lua scope queried an OS CPU timer"
     handlers = [row for row in rows if row["phase"] == "lua.event.handler" and row["asset"] == "trace-delivery.lua"]
-    assert handlers and handlers[0]["identity"] == "TraceEvent"
-    dispatch = by_id[handlers[0]["parent"]]
+    assert len(handlers) == 1 and handlers[0]["identity"] == "TraceEvent"
+    # receiveEvent retains its existing V33 dispatch callback envelope between
+    # the new container dispatch and each handler. Qualify that exact chain.
+    callback = by_id[handlers[0]["parent"]]
+    assert callback["phase"] == "lua.callback" and callback["identity"] == "TraceEvent" and callback["asset"] == ""
+    dispatch = by_id[callback["parent"]]
     assert dispatch["phase"] == "lua.event.dispatch" and dispatch["identity"] == "TraceFixture" and dispatch["asset"] == "TraceEvent"
     deliveries = [row for row in rows if row["phase"] == "lua.timer.deliver" and row["asset"] == "trace-delivery.lua"]
     assert len(deliveries) == 2, "Production timers were not individually attributed"

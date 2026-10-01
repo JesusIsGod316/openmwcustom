@@ -245,6 +245,9 @@ if (OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS)
     add_executable(p9-ui-reflow ../../tools/optimizedmw/phase9/ui-reflow-tests.cpp)
     target_include_directories(p9-ui-reflow PRIVATE ${PROJECT_SOURCE_DIR})
     target_link_libraries(p9-ui-reflow PRIVATE openmw-lib)
+    if(WIN32)
+        target_link_libraries(p9-ui-reflow PRIVATE dbghelp)
+    endif()
     target_compile_definitions(p9-ui-reflow PRIVATE P9_SOURCE="${PROJECT_SOURCE_DIR}")
     add_test(NAME p9-ui-reflow COMMAND ${Python3_EXECUTABLE}
         ${PROJECT_SOURCE_DIR}/tools/optimizedmw/phase9/verify-ui-reflow.py

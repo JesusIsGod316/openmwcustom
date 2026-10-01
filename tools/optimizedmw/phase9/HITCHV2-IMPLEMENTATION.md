@@ -73,3 +73,17 @@ and exclusive-time calculation. Avoid forced per-widget/per-pass rows and new
 high-frequency thread CPU queries. Child wall times are nested observations, not
 independent numbers to sum; a readiness/preload receipt reports work rather than
 proof of a measured gameplay benefit. Normal/Deep retain the same feature vector.
+
+Lua attribution also separates event deserialization from handler dispatch,
+timer queue/delivery with clock-domain lateness, script packages/sandbox/handler
+setup, and saved-data/interface/timer restoration. Existing callback envelopes,
+execution order, GC policy and runtime ownership remain intact. Retained frame,
+parent and causal-link identities allow these spans to join the existing pacing
+records; inclusive nested times must not be added together.
+
+The pacing report already records every valid engine-wall frame, adjacent change,
+rolling-median residual/ratio/MAD score and relative spikes below the fixed hitch
+threshold. Automatic per-relative-spike child-tree reports, preparation-to-first-
+use identities, finer physics/navigation/model-construction stages and allocator/
+automatic-GC internals remain future coverage work, not features of this package.
+Engine-wall timing does not establish display presentation timing.
