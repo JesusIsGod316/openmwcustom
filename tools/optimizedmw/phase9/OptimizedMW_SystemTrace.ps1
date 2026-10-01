@@ -119,10 +119,16 @@ function Get-SystemTraceGameProcesses {
     foreach($process in @(Get-CimInstance Win32_Process -Filter "Name='openmw.exe'")){
         if($process.ExecutablePath -and [string]::Equals([IO.Path]::GetFullPath($process.ExecutablePath),
             $Executable,[StringComparison]::OrdinalIgnoreCase)){
-            $nativeProcess=Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
-            if(-not $nativeProcess -or -not [string]::Equals($nativeProcess.Path,$Executable,[StringComparison]::OrdinalIgnoreCase)){continue}
+            try{
+                # The process can disappear after either lookup. Treat failed
+                # native property reads as an exited process, so the recorder
+                # loop can save an already observed game instead of cancelling.
+                $nativeProcess=Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
+                if(-not $nativeProcess -or -not [string]::Equals($nativeProcess.Path,$Executable,[StringComparison]::OrdinalIgnoreCase)){continue}
+                $creationUtc=$nativeProcess.StartTime.ToUniversalTime().ToString('o')
+            }catch{continue}
             [pscustomobject]@{process_id=[int]$process.ProcessId;
-                creation_utc=$nativeProcess.StartTime.ToUniversalTime().ToString('o');
+                creation_utc=$creationUtc;
                 executable_path=[IO.Path]::GetFullPath($process.ExecutablePath)}
         }
     }

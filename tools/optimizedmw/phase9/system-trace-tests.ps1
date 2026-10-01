@@ -29,13 +29,42 @@ function Get-CimInstance {
     [pscustomobject]@{ProcessId=88;CreationDate=[DateTime]::Parse('2026-10-01T10:00:01Z');ExecutablePath='C:\other game\openmw.exe'}
     [pscustomobject]@{ProcessId=99;CreationDate=[DateTime]::Parse('2026-10-01T10:00:02Z');ExecutablePath=$null}
 }
+$script:processRace='none';$script:racePropertyReads=0
 function Get-Process {
     param([int]$Id,[string]$ErrorAction)
     Assert-Trace ($Id -eq 77) 'Attempted to identify a different executable'
+    if($script:processRace -eq 'absent'){return $null}
+    if($script:processRace -eq 'lookup'){throw 'Process exited during native lookup'}
+    if($script:processRace -eq 'path'){
+        $result=[pscustomobject]@{StartTime=[DateTime]::Parse('2026-10-01T10:00:00Z')}
+        Add-Member -InputObject $result -MemberType ScriptProperty -Name Path -Value {
+            $script:racePropertyReads++;throw 'Process exited before Path was read'
+        }
+        return $result
+    }
+    if($script:processRace -eq 'birth'){
+        $result=[pscustomobject]@{Path='C:\test game\openmw.exe'}
+        Add-Member -InputObject $result -MemberType ScriptProperty -Name StartTime -Value {
+            $script:racePropertyReads++;throw 'Process exited before StartTime was read'
+        }
+        return $result
+    }
     [pscustomobject]@{StartTime=[DateTime]::Parse('2026-10-01T10:00:00Z').AddTicks(7);Path='C:\test game\openmw.exe'}
 }
 $games=@(Get-SystemTraceGameProcesses 'C:\test game\openmw.exe')
 Assert-Trace ($games.Count -eq 1 -and $games[0].process_id -eq 77 -and $games[0].creation_utc -eq '2026-10-01T10:00:00.0000007Z') 'Path/birth identity or native timestamp precision was lost'
+foreach($race in @('path','birth','lookup','absent')){
+    $script:processRace=$race;$script:racePropertyReads=0
+    $games=@(Get-SystemTraceGameProcesses 'C:\test game\openmw.exe')
+    Assert-Trace ($games.Count -eq 0) ('Exited process produced a partial identity: '+$race)
+    if($race -eq 'path' -or $race -eq 'birth'){
+        Assert-Trace ($script:racePropertyReads -eq 1) ('Property disappearance was not exercised: '+$race)
+    }
+    Assert-Trace ((Get-SystemTraceStopReason 30 360 11GB 10GB $false $true $games.Count) -eq 'game_exit') ('Process disappearance did not preserve automatic save: '+$race)
+}
+$script:processRace='none'
+$games=@(Get-SystemTraceGameProcesses 'C:\test game\openmw.exe')
+Assert-Trace ($games.Count -eq 1) 'Process disappearance poisoned subsequent enumeration'
 
 $script:calls=[Collections.Generic.List[object]]::new();$script:nativeExitCode=0
 function Invoke-SystemRecorder {
