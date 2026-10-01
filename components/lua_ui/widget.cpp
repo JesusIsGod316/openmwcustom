@@ -6,10 +6,20 @@
 #include <SDL3/SDL.h>
 #include <components/sdlutil/events.hpp>
 #include <components/sdlutil/sdlmappings.hpp>
+#include <components/debug/hitchtrace.hpp>
+#include <cstdlib>
+#include <cstring>
 #include <ranges>
 
 namespace
 {
+    // Read before main, never on a widget/property/measurement hot path. Missing
+    // or malformed values retain the exact control behavior.
+    const bool sReflowReuseEnabled = [] {
+        const char* value = std::getenv("OPENMW_HITCH_UI_REFLOW");
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    }();
+
     // Arbitrary large number caps to prevent performance issues
     constexpr int sExtCalcSizeWidthCap = 10000000;
     constexpr int sExtCalcSizeHeightCap = 10000000;
@@ -34,6 +44,7 @@ namespace LuaUi
         , mParent(nullptr)
         , mTemplateChild(false)
         , mElementRoot(false)
+        , mReflowReuseEnabled(sReflowReuseEnabled)
         , mContentWidget(nullptr)
     {
     }
@@ -294,12 +305,22 @@ namespace LuaUi
 
     void WidgetExtension::updateCoord()
     {
+        Debug::HitchTrace::Scope layout("lua.ui.layout.coord", Debug::HitchTrace::CpuTiming::WallEnvelope);
         updateVisible();
 
         MyGUI::IntCoord oldCoord = mWidget->getCoord();
-        MyGUI::IntCoord newCoord = calculateCoord();
+        MyGUI::IntCoord newCoord;
+        {
+            Debug::HitchTrace::Scope calculate("lua.ui.layout.calculate_coord", Debug::HitchTrace::CpuTiming::WallEnvelope);
+            newCoord = calculateCoord();
+        }
 
-        if (oldCoord != newCoord)
+        const bool applyCoord = oldCoord != newCoord;
+        layout.setMetric(0, "coord_applied", applyCoord);
+        layout.setMetric(1, "coord_skipped", !applyCoord);
+        layout.setMetric(2, "content_children", mChildren.size());
+        layout.setMetric(3, "template_children", mTemplateChildren.size());
+        if (applyCoord)
             mWidget->setCoord(newCoord);
 
         if (mContentWidget)
@@ -316,6 +337,7 @@ namespace LuaUi
 
     void WidgetExtension::updateProperties()
     {
+        Debug::HitchTrace::Scope properties("lua.ui.widget.properties", Debug::HitchTrace::CpuTiming::WallEnvelope);
         mPropagateEvents = propertyValue("propagateEvents", true);
         mAbsoluteCoord = propertyValue("position", MyGUI::IntPoint());
         mAbsoluteCoord = propertyValue("size", MyGUI::IntSize());
@@ -340,6 +362,7 @@ namespace LuaUi
 
     void WidgetExtension::updateChildrenCoord()
     {
+        Debug::HitchTrace::Scope children("lua.ui.layout.children", Debug::HitchTrace::CpuTiming::WallEnvelope);
         for (WidgetExtension* w : mTemplateChildren)
             w->updateCoord();
         for (WidgetExtension* w : mChildren)

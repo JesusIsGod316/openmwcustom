@@ -13,13 +13,54 @@
 #include <osgViewer/Viewer>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+#include <osg/observer_ptr>
 
 namespace
 {
     void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+    struct BatchEnvironment
+    {
+        std::string previous;
+        bool existed;
+        explicit BatchEnvironment(const char* value)
+            : previous(std::getenv("OPENMW_HITCH_COMPOSITE_BATCH") ? std::getenv("OPENMW_HITCH_COMPOSITE_BATCH") : "")
+            , existed(std::getenv("OPENMW_HITCH_COMPOSITE_BATCH") != nullptr)
+        { set(value); }
+        static void set(const char* value)
+        {
+#ifdef _WIN32
+            _putenv_s("OPENMW_HITCH_COMPOSITE_BATCH", value ? value : "");
+#else
+            if (value) setenv("OPENMW_HITCH_COMPOSITE_BATCH", value, 1);
+            else unsetenv("OPENMW_HITCH_COMPOSITE_BATCH");
+#endif
+        }
+        ~BatchEnvironment() { set(existed ? previous.c_str() : nullptr); }
+    };
+    class CountingProgram final : public osg::Program
+    {
+    public:
+        mutable unsigned applications = 0;
+        void apply(osg::State& state) const override { ++applications; osg::Program::apply(state); }
+    };
+    class ControlledGeometry final : public osg::Geometry
+    {
+    public:
+        mutable bool fail = false;
+        bool delay = false, changeViewport = false;
+        ControlledGeometry(const osg::Geometry& original) : osg::Geometry(original) {}
+        void drawImplementation(osg::RenderInfo& info) const override
+        {
+            if (fail) throw std::runtime_error("fixture draw failure");
+            osg::Geometry::drawImplementation(info);
+            if (changeViewport) glViewport(1, 1, 1, 1);
+            if (delay) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    };
     osg::ref_ptr<Resource::PreparedTerrainTexture> texture(std::array<unsigned char, 4> pixel)
     {
         osg::ref_ptr<osg::Image> image = new osg::Image;
@@ -50,6 +91,7 @@ namespace
         osg::ref_ptr<Resource::PreparedTerrainTexture> green = texture({0, 255, 0, 255});
         MapFixture()
         {
+            map->mBatchingEligible = true;
             map->mTexture = target();
             consumer = map->mTexture;
             program->addShader(new osg::Shader(osg::Shader::VERTEX,
@@ -102,6 +144,7 @@ namespace
 
 int main() try
 {
+    BatchEnvironment originalEnvironment("0");
     Resource::P9DiscretionaryAdmission admission;
     const int contextIdentity = 0, replacementIdentity = 1;
     admission.begin(&contextIdentity, 10, 2);
@@ -196,6 +239,115 @@ int main() try
     osg::ref_ptr<Terrain::CompositeMapRenderer> control = new Terrain::CompositeMapRenderer;
     control->compile(*legacy.map, info);
     require(pixel(*legacy.map->mTexture, state) == preparedPixel, "prepared output differs from same quality control");
+
+    // Exercise the production batch and its caller/array lifetime boundary,
+    // not a copied policy. The two-mode constructors freeze startup settings.
+    {
+        BatchEnvironment enabled("1");
+        osg::ref_ptr<Terrain::CompositeMapRenderer> batch = new Terrain::CompositeMapRenderer;
+        require(batch->compositeBatchEnabled() && !control->compositeBatchEnabled(), "batch gate not frozen at construction");
+        BatchEnvironment::set("true");
+        osg::ref_ptr<Terrain::CompositeMapRenderer> invalid = new Terrain::CompositeMapRenderer;
+        require(!invalid->compositeBatchEnabled() && batch->compositeBatchEnabled(), "batch gate accepted a nonexact value or changed hot");
+        osg::ref_ptr<CountingProgram> callerProgram = new CountingProgram;
+        osg::ref_ptr<osg::StateSet> caller = new osg::StateSet;
+        caller->setAttributeAndModes(callerProgram, osg::StateAttribute::ON);
+        state.pushStateSet(caller);
+        state.apply();
+        const auto assertRestored = [&] {
+            GLint program = -1, fbo = -1;
+            glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+            glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &fbo);
+            require(state.getLastAppliedAttribute(osg::StateAttribute::PROGRAM) == callerProgram.get()
+                && state.getLastAppliedProgramObject() == nullptr && program == 0 && state.getStateSetStackSize() == 1,
+                "batch released a producer before restoring caller Program/PCP");
+            require(static_cast<GLuint>(fbo) == context->getDefaultFboId(), "batch left its FBO bound");
+            require(glIsEnabled(GL_VERTEX_ARRAY) == GL_FALSE, "batch left temporary client arrays enabled");
+            const auto* arrays = state.getCurrentVertexArrayState();
+            const auto retiredArray = [](const osg::VertexArrayState::ArrayDispatch* dispatch) {
+                return !dispatch || (!dispatch->array && !dispatch->active && dispatch->modifiedCount == 0xffffffff);
+            };
+            require(arrays && retiredArray(arrays->_vertexArray) && retiredArray(arrays->_normalArray)
+                && retiredArray(arrays->_colorArray)
+                && std::all_of(arrays->_texCoordArrays.begin(), arrays->_texCoordArrays.end(),
+                    [&](const auto& dispatch) { return retiredArray(dispatch.get()); }),
+                "batch retained raw client-array pointers after geometry retirement");
+        };
+        MapFixture controlPixels;
+        callerProgram->applications = 0;
+        control->compile(*controlPixels.map, info);
+        require(callerProgram->applications == 2, "control caller restoration count changed");
+        assertRestored();
+        const auto expected = pixel(*controlPixels.map->mTexture, state);
+        state.apply();
+        MapFixture batchPixels;
+        osg::observer_ptr<osg::Program> retired = batchPixels.program;
+        batchPixels.program = nullptr; // StateSets are now the only program owners.
+        callerProgram->applications = 0;
+        batch->compile(*batchPixels.map, info);
+        require(callerProgram->applications == 1, "batch did not coalesce caller restoration");
+        assertRestored();
+        require(!retired.valid(), "completed batch retained its source program");
+        require(pixel(*batchPixels.map->mTexture, state) == expected, "batch changed multipass blend/depth/order pixels");
+        state.apply();
+
+        MapFixture unowned;
+        unowned.map->mBatchingEligible = false;
+        callerProgram->applications = 0;
+        batch->compile(*unowned.map, info);
+        require(callerProgram->applications == 2, "unowned composite producer entered batch");
+        assertRestored();
+        require(pixel(*unowned.map->mTexture, state) == expected, "unowned fallback changed pixels");
+        state.apply();
+
+        MapFixture viewportChange;
+        auto* viewportGeometry = new ControlledGeometry(*viewportChange.map->mDrawables[0]->asGeometry());
+        viewportGeometry->changeViewport = true;
+        viewportChange.map->mDrawables[0] = viewportGeometry;
+        batch->compile(*viewportChange.map, info);
+        assertRestored();
+        require(pixel(*viewportChange.map->mTexture, state) == expected, "batch failed to override changed viewport before each layer");
+        state.apply();
+
+        // A cooperative yield preserves unfinished passes and retires the
+        // completed ones only after caller restoration. Re-entry is identical.
+        batch->setCooperativeBackgroundCompile(true);
+        batch->setTargetFrameRate(1e9f);
+        batch->setMinimumTimeAvailableForCompile(.005);
+        MapFixture yielding;
+        auto* delayed = new ControlledGeometry(*yielding.map->mDrawables[0]->asGeometry());
+        delayed->delay = true;
+        yielding.map->mDrawables[0] = delayed;
+        batch->addCompositeMap(yielding.map);
+        callerProgram->applications = 0;
+        batch->drawImplementation(info);
+        require(yielding.map->mCompiled == 1 && yielding.map->mDrawables[0] == nullptr
+            && yielding.map->mDrawables[1] && batch->backgroundYields() > 0, "batch ignored deadline or retired unfinished pass");
+        assertRestored();
+        batch->setImmediate(yielding.map);
+        batch->drawImplementation(info);
+        require(yielding.map->mDrawables.empty() && yielding.map->mCompiled == 2, "required batch did not finish after yield");
+        assertRestored();
+        require(pixel(*yielding.map->mTexture, state) == expected, "yielded batch changed final pixels");
+        state.apply();
+
+        MapFixture failed;
+        auto* throwing = new ControlledGeometry(*failed.map->mDrawables[1]->asGeometry());
+        throwing->fail = true;
+        failed.map->mDrawables[1] = throwing;
+        bool threw = false;
+        try { batch->compile(*failed.map, info); }
+        catch (const std::runtime_error&) { threw = true; }
+        require(threw && failed.map->mCompiled == 1, "batch draw exception falsely committed its pass");
+        assertRestored();
+        throwing->fail = false;
+        batch->compile(*failed.map, info);
+        require(failed.map->mDrawables.empty() && pixel(*failed.map->mTexture, state) == expected,
+            "batch exception recovery lost or replayed a completed pass");
+        assertRestored();
+        state.popStateSet(); state.apply(); state.disableAllVertexArrays();
+        batch->releaseGLObjects(&state);
+    }
 
     MapFixture required;
     renderer->addCompositeMap(required.map);

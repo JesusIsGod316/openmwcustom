@@ -41,6 +41,7 @@ file(GLOB UNITTEST_SRC_FILES
     misc/testendianness.cpp
     misc/testmathutil.cpp
     misc/testresourcehelpers.cpp
+    misc/testanimationdependencies.cpp
     misc/teststringops.cpp
 
     nifloader/testbulletnifloader.cpp

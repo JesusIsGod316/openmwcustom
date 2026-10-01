@@ -84,7 +84,8 @@ namespace MWWorld
         bool usesLegacyTerrain() const noexcept { return mUseLegacyTerrain; }
         void setTerrainPreloadPositions(std::span<const PositionCellGrid> positions);
 
-        void syncTerrainLoad(Loading::Listener& listener);
+        void syncTerrainLoad(Loading::Listener& listener, const PositionCellGrid* demanded = nullptr);
+        bool terrainCurrentFirstEnabled() const { return mTerrainCurrentFirst; }
         void abortTerrainPreloadExcept(const PositionCellGrid* exceptPos);
         bool isTerrainLoaded(const PositionCellGrid& position, double referenceTime) const;
         void setTerrain(Terrain::World* terrain);
@@ -109,6 +110,7 @@ namespace MWWorld
         const bool mUseLegacyTerrain;
         const bool mCancellablePagingOptimization;
         const bool mPagingReadinessSplit;
+        const bool mTerrainCurrentFirst;
 
         double mLastResourceCacheUpdate;
 

@@ -1,6 +1,8 @@
 param(
     [Alias('Mode')][ValidateSet('','1','2','3','4','5','6','7','8','9','10','11','12','13')][string]$ModeChoice='',
     [ValidateSet('CONTROL','I1','I2','I1I2','D1')][string]$Candidate='CONTROL',
+    [ValidateRange(-1,15)][int]$HitchMask=-1,
+    [ValidateSet('','Normal','Deep')][string]$TraceLevel='',
     [ValidateRange(0,33554432)][long]$BufferBudgetBytes=33554432,
     [string]$SavePath,[string]$RouteLabel='UNSPECIFIED',
     [ValidateSet('unclassified','fresh-process-first-visit','same-process-revisit','later-fresh-launch')][string]$Cohort='unclassified',
@@ -17,6 +19,7 @@ $OpenmwCfgPath = Join-Path $UserOpenMW 'openmw.cfg'
 . (Join-Path $GameDir 'OptimizedMW_HitchReport.ps1')
 . (Join-Path $GameDir 'OptimizedMW_SystemTraceLink.ps1')
 . (Join-Path $GameDir 'OptimizedMW_RunManifest.ps1')
+. (Join-Path $GameDir 'OptimizedMW_HitchMatrix.ps1')
 $ProfilesRoot = Join-Path $UserOpenMW 'OptimizedMW-Phase9-Profiles'
 
 if (-not (Test-Path -LiteralPath $Exe)) { Write-Host 'ERROR: Put this launcher beside openmw.exe.' -ForegroundColor Red; if(-not $NoPrompt){Read-Host 'Press Enter to close'}; exit 1 }
@@ -68,10 +71,20 @@ function Get-P9Mode {
     return $result
 }
 
-if($NoPrompt -and -not $ModeChoice){throw '-NoPrompt requires an explicit -Mode'}
+$hitchSelection=$null
+if($HitchMask -ge 0 -or $TraceLevel){
+    if($HitchMask -lt 0){$HitchMask=0}
+    if(-not $TraceLevel){$TraceLevel='Normal'}
+    $hitchSelection=Get-OptimizedMWHitchSelection -Mask $HitchMask -TraceLevel $TraceLevel -Candidate $Candidate
+    if($ModeChoice -and $ModeChoice -ne $hitchSelection.phase9_mode){throw 'Hitch combinations use the reference foundation. Omit -Mode when selecting -HitchMask/-TraceLevel.'}
+    $ModeChoice=$hitchSelection.phase9_mode
+}
+if($NoPrompt -and -not $ModeChoice){throw '-NoPrompt requires -Mode or -HitchMask/-TraceLevel'}
 if(-not $ModeChoice){
 Write-Host ''
-Write-Host 'OptimizedMW Phase 9 - audited temporal and terrain candidates' -ForegroundColor Cyan
+Write-Host 'OptimizedMW - switchable hitch tests' -ForegroundColor Cyan
+Write-Host '  H = CURRENT HITCH TESTS: all 16 combinations, Normal or Deep Trace' -ForegroundColor Green
+Write-Host 'Previous Phase 9 tests:'
 Write-Host '  1 = REFERENCE          unchanged P8U1 foundation'
 Write-Host '  2 = TEMPORAL-INPUTS    camera/static motion + DLSS input-contract telemetry'
 Write-Host '  3 = ROOT-CAUSE-TRACE   reference hitch diagnosis: objects/Lua/resources/state/GL'
@@ -84,27 +97,23 @@ Write-Host ' 11 = DYNAMIC-MOTION     experimental moving geometry inputs'
 Write-Host ' 12 = AUDITED-TRACE      combined candidate with deep diagnostics'
 Write-Host ' 13 = OWNERSHIP-TRACE    mode 8 with hitch diagnostics; compare with mode 4'
 Write-Host '  A = show old unpromoted HITCH1 diagnostic controls'
-Write-Host '  H = independently select new hitch trial: CONTROL / I1 / I2 / I1I2 / D1'
 Write-Host 'Unsafe static prewarm is disabled. DLSS evaluation/jitter remain off until dense dynamic motion is valid.'
 do{
-    $choice=Read-Host 'Choose mode (1-5, 8-13, A for old diagnostics, H for new hitch trial)'
+    $choice=Read-Host 'Choose H for current tests, or a previous Phase 9 mode'
     if($choice -eq 'A'){
         Write-Host '  6 HITCH (old unpromoted refresh) | 7 HITCH-TRACE'
     }
     if($choice -eq 'H'){
-        Write-Host '  CONTROL = mode 1, every I/O/catalog candidate OFF'
-        Write-Host '  I1 = mode 1, 64 KiB refill only (first trial; compare with CONTROL)'
-        Write-Host '  I2 = mode 1, resident seek/tell only (later qualified trial)'
-        Write-Host '  I1I2 = mode 1, both I/O candidates (later qualified trial)'
-        Write-Host '  D1 = mode 3, ordered catalog collector only (diagnostic equivalence/cost)'
-        do{$Candidate=Read-Host 'Choose hitch candidate'}until($Candidate -in @('CONTROL','I1','I2','I1I2','D1'))
-        $Candidate=$Candidate.ToUpperInvariant()
-        $choice=if($Candidate -eq 'D1'){'3'}else{'1'}
+        $hitchSelection=Read-OptimizedMWHitchSelection
+        $Candidate=$hitchSelection.candidate
+        $choice=$hitchSelection.phase9_mode
     }
 }until($choice -in @('1','2','3','4','5','6','7','8','9','10','11','12','13'))
 }else{$choice=$ModeChoice}
 $mode=Get-P9Mode $choice
+if($hitchSelection){$mode.HitchTrialRevision=2}
 $candidateProfile=Get-Phase9Candidate -Name $Candidate -BufferBudgetBytes $BufferBudgetBytes
+$hitchCombination=if($hitchSelection){$hitchSelection.features}else{Get-OptimizedMWHitchCombination 0}
 if($candidateProfile.d1 -and $mode.Trace -ne '1'){throw 'D1 requires a deep trace mode; use -Mode 3 -Candidate D1'}
 
 $SchedulerMode='2'
@@ -134,6 +143,7 @@ $CleanCapture='1'
 $FrontToBack='false'
 $FastWind='0'
 $Experiment=$mode.Name+'-HITCHV1-'+$candidateProfile.name
+if($hitchSelection){$Experiment=$hitchSelection.experiment}
 $GpuDiagnostics=if($mode.Trace -eq '1' -or $mode.Temporal -eq '1'){'true'}else{'false'}
 $ResourceRepair='true'
 $LuaCache='true'
@@ -173,6 +183,7 @@ try{
     # Clear inherited experimental/telemetry flags; restore the original environment afterward.
     Get-ChildItem Env: | Where-Object {$_.Name -like 'OPENMW_*'} | ForEach-Object {Remove-Item ('Env:'+$_.Name)}
     Set-Phase9CandidateEnvironment -Candidate $candidateProfile -Mode $mode
+    Set-OptimizedMWHitchCombinationEnvironment $hitchCombination
 
     # Same head-cache budget across every mode, not a hidden per-mode tuning change.
     Set-IniValue $SettingsPath 'Sound' 'head cache size' '96'
@@ -289,7 +300,14 @@ try{
 
     @(
         "experiment=$Experiment",
-        "hitch_trial_revision=1",
+        "hitch_trial_revision=$(if($hitchSelection){2}else{1})",
+        "hitch_combination_mask=$($hitchCombination.mask)",
+        "hitch_combination=$($hitchCombination.name)",
+        "hitch_trace_level=$(if($mode.Trace -eq '1'){'DEEP'}else{'NORMAL'})",
+        "hitch_ui_reflow=$([int]$hitchCombination.ui_reflow)",
+        "hitch_composite_batch=$([int]$hitchCombination.composite_batch)",
+        "hitch_animation_preload=$([int]$hitchCombination.animation_preload)",
+        "hitch_terrain_current_first=$([int]$hitchCombination.terrain_current_first)",
         "hitch_manifest_schema=1",
         "hitch_stream_policy_metrics_schema=1",
         "hitch_compile_attribution_schema=1",
@@ -450,7 +468,7 @@ try{
         $env:OPENMW_V36_GPU_PASS_FILE=Join-Path $ProfileDir 'p9-gpu-passes.csv'
     }
     $runManifest=New-Phase9RunManifest -GameDir $GameDir -ProfileDir $ProfileDir -Mode $mode -Candidate $candidateProfile `
-        -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -Cohort $Cohort
+        -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -Cohort $Cohort -HitchCombination $hitchCombination
     Save-Phase9RunManifest $runManifest $ProfileDir
 
     Write-Host ''
@@ -507,7 +525,7 @@ catch{
     if(-not $runManifest){
         try{
             $runManifest=New-Phase9RunManifest -GameDir $GameDir -ProfileDir $ProfileDir -Mode $mode -Candidate $candidateProfile `
-                -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -Cohort $Cohort
+                -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -Cohort $Cohort -HitchCombination $hitchCombination
         }catch{"Run manifest preparation failed: $_" | Set-Content -LiteralPath (Join-Path $ProfileDir 'MANIFEST-ERROR.txt') -Encoding UTF8}
     }
 }

@@ -8,13 +8,16 @@
 #include <osg/observer_ptr>
 
 #include <components/debug/v3diagnostics.hpp>
+#include <components/debug/hitchtrace.hpp>
 #include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/preparedterraintexture.hpp>
 #include <components/resource/v321classifiedcompileset.hpp>
 
 #include <algorithm>
+#include <cstdlib>
 #include <iomanip>
 #include <sstream>
+#include <string_view>
 #include <unordered_set>
 
 namespace Terrain
@@ -396,7 +399,11 @@ namespace Terrain
     }
 
     CompositeMapRenderer::CompositeMapRenderer()
-        : mTargetFrameRate(120)
+        : mCompositeBatchEnabled([] {
+            const char* value = std::getenv("OPENMW_HITCH_COMPOSITE_BATCH");
+            return value && std::string_view(value) == "1";
+        }())
+        , mTargetFrameRate(120)
         , mMinimumTimeAvailable(0.0025)
     {
         setSupportsDisplayList(false);
@@ -584,6 +591,7 @@ namespace Terrain
         CompositeMap& compositeMap, osg::RenderInfo& renderInfo, Deadline deadline, CompileTelemetry* telemetry) const
     {
         const bool preparationActive = preparationSupported(*renderInfo.getState());
+        const bool batchActive = mCompositeBatchEnabled && compositeMap.mBatchingEligible;
         const auto admissionStart = std::chrono::steady_clock::now();
         struct SubmissionCharge
         {
@@ -645,7 +653,9 @@ namespace Terrain
             const double predicted = std::max({ .05, mBakeEmaMs * 1.25,
                 std::min(mBakeRiskMs, std::max(.25, mBakeEmaMs * 4.0)) })
                 + (includeFbo ? std::max(mFboEmaMs * 1.25,
-                    std::min(mFboRiskMs, std::max(.25, mFboEmaMs * 4.0))) : 0);
+                    std::min(mFboRiskMs, std::max(.25, mFboEmaMs * 4.0))) : 0)
+                + (batchActive ? std::max(mBatchCleanupEmaMs * 1.25,
+                    std::min(mBatchCleanupRiskMs, std::max(.25, mBatchCleanupEmaMs * 4.0))) : 0);
             if (predicted <= std::max(0.0, mAdmission->remainingMs() - elapsed))
                 return true;
             const auto* stamp = renderInfo.getState()->getFrameStamp();
@@ -701,6 +711,146 @@ namespace Terrain
         // inform State that Texture attribute has changed due to compiling of FBO texture
         // should OSG be doing this on its own?
         state.haveAppliedTextureAttribute(state.getActiveTextureUnit(), osg::StateAttribute::TEXTURE);
+
+        if (batchActive)
+        {
+            Debug::HitchTrace::Scope batchSpan("composite.batch", Debug::HitchTrace::CpuTiming::WallEnvelope);
+            batchSpan.retain();
+            batchSpan.setMetric(0, "start_layer", compositeMap.mCompiled);
+            batchSpan.setMetric(1, "layers", compositeMap.mDrawables.size());
+            batchSpan.setMetric(2, "required", compositeMap.mRequired.load(std::memory_order_acquire));
+            // Only this map/FBO is batched. Every layer still resolves its own
+            // inherited StateSet and draws in the original order. The map keeps
+            // every producer alive until caller state and arrays are restored.
+            struct BatchCleanup
+            {
+                osg::State& state;
+                osg::GLExtensions& ext;
+                CompileTelemetry* telemetry;
+                bool measure;
+                double& ema;
+                double& risk;
+                unsigned& samples;
+                bool pushed = false, applied = false, finished = false;
+
+                void finish()
+                {
+                    if (finished) return;
+                    finished = true;
+                    Debug::HitchTrace::Scope cleanupSpan("composite.batch_cleanup", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                    cleanupSpan.retain();
+                    const auto start = measure ? Debug::V3Diagnostics::Clock::now()
+                                               : Debug::V3Diagnostics::Clock::time_point{};
+                    if (pushed) { state.popStateSet(); pushed = false; }
+                    // Array/FBO retirement also executes if a user attribute's
+                    // caller restore throws. Producers remain retained on unwind.
+                    try
+                    {
+                        if (applied)
+                        {
+                            Debug::HitchTrace::Scope restoreSpan("composite.caller_restore", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                            state.apply();
+                        }
+                    }
+                    catch (...)
+                    {
+                        {
+                            Debug::HitchTrace::Scope arraysSpan("composite.array_retire", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                            state.disableAllVertexArrays();
+                        }
+                        state.haveAppliedAttribute(osg::StateAttribute::VIEWPORT);
+                        ext.glBindFramebuffer(GL_FRAMEBUFFER_EXT,
+                            state.getGraphicsContext() ? state.getGraphicsContext()->getDefaultFboId() : 0);
+                        throw;
+                    }
+                    if (applied)
+                    {
+                        Debug::HitchTrace::Scope arraysSpan("composite.array_retire", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                        state.disableAllVertexArrays();
+                    }
+                    state.haveAppliedAttribute(osg::StateAttribute::VIEWPORT);
+                    ext.glBindFramebuffer(GL_FRAMEBUFFER_EXT,
+                        state.getGraphicsContext() ? state.getGraphicsContext()->getDefaultFboId() : 0);
+                    if (measure)
+                    {
+                        const double actual = Debug::V3Diagnostics::elapsedMs(start);
+                        if (telemetry) telemetry->stateMs += actual;
+                        ema = samples++ == 0 ? actual : ema * .85 + actual * .15;
+                        risk = std::max(actual, risk * .9);
+                    }
+                }
+                ~BatchCleanup() noexcept
+                {
+                    // During a draw exception preserve the original exception;
+                    // ordinary completion invokes finish explicitly below.
+                    try { finish(); } catch (...) {}
+                }
+            } cleanup{ state, *ext, telemetry, telemetry || preparationActive,
+                mBatchCleanupEmaMs, mBatchCleanupRiskMs, mBatchCleanupSamples };
+            const std::size_t batchBegin = compositeMap.mCompiled;
+            bool firstBake = true;
+            for (std::size_t i = batchBegin; i < compositeMap.mDrawables.size(); ++i)
+            {
+                if (!firstBake && !admitted(false)) break;
+                firstBake = false;
+                if (deadline != Deadline::max() && !compositeMap.mRequired.load(std::memory_order_acquire)
+                    && std::chrono::steady_clock::now() >= deadline)
+                {
+                    mBackgroundYields.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                }
+                osg::Drawable* drawable = compositeMap.mDrawables[i];
+                osg::StateSet* pass = drawable->getStateSet();
+                const auto bakeStart = std::chrono::steady_clock::now();
+                if (pass) { state.pushStateSet(pass); cleanup.pushed = true; }
+                cleanup.applied = true;
+                const auto stateStart = telemetry ? Debug::V3Diagnostics::Clock::now()
+                                                 : Debug::V3Diagnostics::Clock::time_point{};
+                {
+                    Debug::HitchTrace::Scope stateSpan("composite.pass_state_viewport", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                    stateSpan.setMetric(0, "layer", i);
+                    state.apply();
+                    if (telemetry) telemetry->stateMs += Debug::V3Diagnostics::elapsedMs(stateStart);
+                    // Keep the old per-pass viewport override: a pass attribute or
+                    // texture callback may have changed it during State::apply().
+                    glViewport(0, 0, compositeMap.mTexture->getTextureWidth(), compositeMap.mTexture->getTextureHeight());
+                }
+                const auto drawStart = telemetry ? Debug::V3Diagnostics::Clock::now()
+                                                : Debug::V3Diagnostics::Clock::time_point{};
+                {
+                    Debug::HitchTrace::Scope drawSpan("composite.pass_draw", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                    drawSpan.setMetric(0, "layer", i);
+                    drawable->drawImplementation(renderInfo);
+                }
+                if (telemetry)
+                {
+                    telemetry->drawMs += Debug::V3Diagnostics::elapsedMs(drawStart);
+                    ++telemetry->drawables;
+                }
+                if (pass) { state.popStateSet(); cleanup.pushed = false; }
+                if (preparationActive)
+                {
+                    const double actual = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - bakeStart).count();
+                    mBakeEmaMs = mBakeSamples++ == 0 ? actual : mBakeEmaMs * .85 + actual * .15;
+                    mBakeRiskMs = std::max(actual, mBakeRiskMs * .9);
+                }
+                ++compositeMap.mCompiled;
+            }
+            // Includes cleanup in SubmissionCharge and the measured state span.
+            // The separate cleanup prior is reserved at every admission check.
+            cleanup.finish();
+            {
+                Debug::HitchTrace::Scope retireSpan("composite.producer_retire", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                retireSpan.setMetric(0, "layers", compositeMap.mCompiled - batchBegin);
+                if (!preparationActive)
+                    for (std::size_t i = batchBegin; i < compositeMap.mCompiled; ++i)
+                        compositeMap.mDrawables[i] = nullptr;
+                if (compositeMap.mCompiled == compositeMap.mDrawables.size())
+                    compositeMap.mDrawables.clear();
+            }
+            return;
+        }
 
         bool firstBake = true;
         for (size_t i = compositeMap.mCompiled; i < compositeMap.mDrawables.size(); ++i)

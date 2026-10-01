@@ -241,6 +241,21 @@ endif()
 # Sound stuff - here so CMake doesn't stupidly recompile EVERYTHING
 # when we change the backend.
 if (OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_executable(p9-ui-reflow ../../tools/optimizedmw/phase9/ui-reflow-tests.cpp)
+    target_include_directories(p9-ui-reflow PRIVATE ${PROJECT_SOURCE_DIR})
+    target_link_libraries(p9-ui-reflow PRIVATE openmw-lib)
+    target_compile_definitions(p9-ui-reflow PRIVATE P9_SOURCE="${PROJECT_SOURCE_DIR}")
+    add_test(NAME p9-ui-reflow COMMAND ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tools/optimizedmw/phase9/verify-ui-reflow.py
+        $<TARGET_FILE:p9-ui-reflow> ${CMAKE_CURRENT_BINARY_DIR}/ui-reflow-fixture)
+    set_tests_properties(p9-ui-reflow PROPERTIES TIMEOUT 180)
+    if(BUILD_COMPONENTS_TESTS)
+        add_test(NAME p9-lua-container-attribution COMMAND ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tools/optimizedmw/phase9/verify-lua-container-attribution.py
+            $<TARGET_FILE:components-tests> ${CMAKE_CURRENT_BINARY_DIR}/lua-container-attribution-fixture)
+        set_tests_properties(p9-lua-container-attribution PROPERTIES TIMEOUT 60)
+    endif()
     add_executable(p9-owned-postpasses ../../tools/optimizedmw/phase9/owned-postpasses-tests.cpp)
     target_include_directories(p9-owned-postpasses PRIVATE ${PROJECT_SOURCE_DIR})
     target_link_libraries(p9-owned-postpasses PRIVATE openmw-lib)

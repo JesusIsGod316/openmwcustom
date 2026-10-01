@@ -58,7 +58,7 @@ if ($Stage -eq 'Configure') {
         & (Join-Path $BuildDirectory "$suite.exe") "--gtest_output=xml:$BuildDirectory/$suite-results.xml"
         if ($LASTEXITCODE -ne 0) { throw "$suite failed with exit code $LASTEXITCODE" }
     }
-    & (Join-Path $cmakeDirectory 'ctest.exe') --test-dir $BuildDirectory -R '^p9-(owned-postpasses|compile-cache|postfx-ownership)' --output-on-failure --timeout 60
+    & (Join-Path $cmakeDirectory 'ctest.exe') --test-dir $BuildDirectory -R '^p9-' --output-on-failure --timeout 180
 } else {
     $revision = (& git -C $sourceDirectory rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the game source revision' }
@@ -75,6 +75,11 @@ if ($Stage -eq 'Configure') {
     $installConfiguration = if ($IncludeSymbols) {'RelWithDebInfo'} else {'Release'}
     & $cmake --install $BuildDirectory --prefix $InstallDirectory --config $installConfiguration
     if ($LASTEXITCODE -ne 0) { throw "Runtime installation failed with exit code $LASTEXITCODE" }
+    $resourceVersion = Join-Path $InstallDirectory 'resources\version'
+    if (-not (Test-Path -LiteralPath $resourceVersion) -or
+        [IO.File]::ReadAllLines($resourceVersion)[1] -ne $revision) {
+        throw 'Installed resource version does not match the final game source'
+    }
     # Prefix-only discovery deliberately avoids vcpkg's app-local deployment.
     # Copy the matching pinned release DLLs and OSG image plugins explicitly.
     Get-ChildItem -LiteralPath (Join-Path $installed 'bin') -Filter '*.dll' |

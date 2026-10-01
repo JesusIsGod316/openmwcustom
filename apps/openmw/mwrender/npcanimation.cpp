@@ -21,6 +21,7 @@
 #include <components/esm3/loadmgef.hpp>
 #include <components/esm3/loadrace.hpp>
 #include <components/resource/resourcesystem.hpp>
+#include <components/resource/animationdependencies.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/sceneutil/depth.hpp>
 #include <components/sceneutil/keyframe.hpp>
@@ -528,19 +529,28 @@ namespace MWRender
 
         try
         {
-            if (!base.empty())
-                addAnimSource(base, smodel);
-
-            if (defaultSkeleton != base)
-                addAnimSource(defaultSkeleton, smodel);
-
-            if (isCustomModel)
-                addAnimSource(smodel, smodel);
-
             const bool customArgonianSwim
                 = !is1stPerson && !isWerewolf && isBeast && mNpc->mRace.contains("argonian");
-            if (customArgonianSwim)
-                addAnimSource(Settings::models().mXargonianswimkna.get().value(), smodel);
+            if (Resource::animationDependencyPreloadEnabled())
+                Resource::visitNpcAnimationSources(base, defaultSkeleton, smodel, isCustomModel, customArgonianSwim,
+                    Settings::models().mXargonianswimkna.get().value(), [&](std::string_view source) {
+                        addAnimSource(source, smodel);
+                        return true;
+                    });
+            else
+            {
+                if (!base.empty())
+                    addAnimSource(base, smodel);
+
+                if (defaultSkeleton != base)
+                    addAnimSource(defaultSkeleton, smodel);
+
+                if (isCustomModel)
+                    addAnimSource(smodel, smodel);
+
+                if (customArgonianSwim)
+                    addAnimSource(Settings::models().mXargonianswimkna.get().value(), smodel);
+            }
         }
         catch (...)
         {

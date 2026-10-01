@@ -1,6 +1,55 @@
-HITCH REDUCTION TRIAL v1 (2026-10-01)
+HITCH REDUCTION TRIAL v2 (2026-10-01)
+Open START-OptimizedMW-Test.bat, select H, choose a feature combination, then N
+for Normal or D for Deep Trace. Both depths use the SAME selected gameplay
+features and reference foundation. Normal retains lightweight frame/pacing
+measurements. Deep adds detailed engine attribution. Windows tracing is optional
+and still uses START-OptimizedMW-SystemTrace.bat before starting the game.
+
+Independent mechanisms (OFF unless selected):
+  UI: preserve text measurements by avoiding redundant size/font/wrap changes.
+  BAKE: batch graphics-state restoration within one terrain composite map.
+  ANIM: prepare the NPC animation sources missing from normal cell preloading.
+  TERRAIN: wait for the actual demanded terrain target, publish only ready targets.
+All 16 combinations are available. 0 = CONTROL, 1 = UI, 2 = BAKE, 4 = ANIM,
+8 = TERRAIN, 15 = ALL. Pair/triple combinations have descriptive names in H.
+I/O selection is separate: CONTROL, I1, I2, I1I2. Enter keeps original I/O.
+D1 is available only with Deep and selects the existing diagnostic collector.
+
+Reproducible invocations through the same shader-checked BAT:
+  START-OptimizedMW-Test.bat -HitchMask 0 -TraceLevel Normal
+  START-OptimizedMW-Test.bat -HitchMask 15 -TraceLevel Normal
+  START-OptimizedMW-Test.bat -HitchMask 15 -TraceLevel Deep
+  START-OptimizedMW-Test.bat -HitchMask 3 -TraceLevel Deep -Candidate I1
+Use -NoPrompt only with an explicit selection. The capture name contains the
+combination, depth and I/O choice. RUN-MANIFEST.json records a gameplay feature
+hash independent of trace depth, plus effective settings, source/runtime hashes,
+restoration and capture qualification. Requested switches alone do not prove
+resource preparation happened; invalidation/pressure/cancellation can fall back.
+
+Normal captures determine gameplay performance. Deep captures explain work and
+include diagnostic overhead. Begin with Normal CONTROL versus Normal ALL on the
+same save/route; use single/pair combinations to isolate a promising or regressing
+change. All combinations are available without requiring 32 runs immediately.
+Whole-frame distribution, adjacent changes, hitch clusters, transition duration,
+visual correctness and memory are relevant; a lower average alone is insufficient.
+
+Deep Trace also breaks UI property/layout/measurement, optional animation source
+preparation, terrain readiness publication, and composite pass/restore work into
+nested spans in the existing p9-hitch-spans.csv. Use parent/child exclusive time
+and causal links; do not add inclusive child times to their enclosing duration.
+Fast details retain the existing threshold, and recorder loss still invalidates
+completeness. Preparation receipts show work performed, not measured FPS gains.
+Lua splits additionally cover event decoding/handler dispatch, timer queue/delivery
+and lateness, script sandbox/package/handler preparation, saved-data/interface and
+timer restoration. Script/container/callback identities use the existing bounded
+fields. Lua allocation counters remain observations of churn, not direct GC timing.
+
+The previous Phase 9 numbered modes remain available with the four new mechanisms
+OFF. The following section documents the earlier I/O and attribution mechanisms.
+
+HITCH REDUCTION TRIAL v1 - retained I/O/diagnostic mechanisms
 The launcher preserves modes 1-13 and the accepted Phase 9 foundation. Every new
-I/O/catalog mechanism defaults OFF. Type H to select a separate hitch profile:
+I/O/catalog mechanism defaults OFF. Select it independently in the H menu:
   CONTROL: mode 1, exact 8 KiB refill, resident seek/tell OFF, original catalog.
   I1: mode 1, first 64 KiB refill trial, resident seek/tell OFF.
   I2: mode 1, resident-window seek/tell only, exact 8 KiB refill.

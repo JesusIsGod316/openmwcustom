@@ -2034,7 +2034,14 @@ namespace MWWorld
         loadingListener->setLabel("#{OMWEngine:InitializingData}");
         {
             Debug::HitchTrace::Scope hitchPhase("scene.sync_terrain_load", Debug::HitchTrace::CpuTiming::Scoped);
-            mPreloader->syncTerrainLoad(*loadingListener);
+            if (mPreloader->terrainCurrentFirstEnabled())
+            {
+                const auto cell = ESM::positionToExteriorCellLocation(pos.x(), pos.y(), worldspace);
+                const PositionCellGrid demanded{ pos, gridCenterToBounds({ cell.mX, cell.mY }) };
+                mPreloader->syncTerrainLoad(*loadingListener, &demanded);
+            }
+            else
+                mPreloader->syncTerrainLoad(*loadingListener);
         }
 
         if (v39DoFrontload)

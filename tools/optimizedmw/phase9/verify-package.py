@@ -9,6 +9,7 @@ import sys
 root=Path(sys.argv[1]); source=Path(__file__).resolve().parents[3]
 public=source/'tools/optimizedmw/phase9'
 files=['openmw.exe','CI-ID.txt','START-OptimizedMW-Test.bat','OptimizedMW_Test.ps1',
+       'OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1',
        'OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW-Phase9-README.txt',
        'OptimizedMW_SystemTrace.ps1','OptimizedMW_QualifySystemTrace.ps1','OptimizedMW_SystemTraceLink.ps1','OptimizedMW-SystemTrace.wprp','START-OptimizedMW-SystemTrace.bat','HITCH-DIAGNOSTICS.md']
 for name in files:
@@ -16,6 +17,7 @@ for name in files:
 assert (root/'openmw.exe').read_bytes()[:2]==b'MZ', 'not a Windows PE executable'
 assert sorted(p.name.lower() for p in root.glob('*.bat'))==['start-optimizedmw-systemtrace.bat','start-optimizedmw-test.bat']
 assert os.environ['EXPECTED_COMMIT'] in (root/'CI-ID.txt').read_text()
+assert (root/'resources/version').read_text().splitlines()[1] == os.environ['EXPECTED_COMMIT'], 'resource version does not match engine source'
 manifest=json.loads((root/'resources/shaders/shader-package.json').read_text())
 expected=json.loads((source/'files/shaders/v3overlay/p8g3/manifest.json').read_text())
 assert expected['id']=='optimizedmw-p8g4-pbr-groundcover'

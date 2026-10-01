@@ -1,5 +1,6 @@
 #include <components/debug/hitchtrace.hpp>
 #include "animation.hpp"
+#include <components/resource/animationdependencies.hpp>
 #include "hybridanimationtimemap.hpp"
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
 #include "v4persistentobject.hpp"
@@ -693,6 +694,25 @@ namespace MWRender
         VFS::Path::NormalizedView model, const std::string& baseModel, bool hybridVisual)
     {
         Debug::HitchTrace::Scope discover("animation.additional_sources", {}, model.value());
+        if (Resource::animationDependencyPreloadEnabled())
+        {
+            std::uint64_t sources = 0;
+            std::uint64_t scanned = 0;
+            discover.retain();
+            discover.setMetric(0, "sources", 0);
+            discover.setMetric(1, "scanned", 0);
+            discover.setMetric(2, "candidate_discovery", 1);
+            Resource::visitAdditionalAnimationSources(*mResourceSystem->getVFS(), model,
+                [&](VFS::Path::NormalizedView name) {
+                    discover.setMetric(0, "sources", ++sources);
+                    addSingleAnimSource(name, baseModel, hybridVisual);
+                    return true;
+                }, [&] {
+                    discover.setMetric(1, "scanned", ++scanned);
+                    return true;
+                });
+            return;
+        }
         constexpr VFS::Path::NormalizedView meshes("meshes/");
         if (!model.value().starts_with(meshes.value()))
             return;
@@ -820,7 +840,9 @@ namespace MWRender
 
         VFS::Path::Normalized kfname(model);
 
-        if (kfname.extension() == nif)
+        if (Resource::animationDependencyPreloadEnabled())
+            kfname = Resource::animationKeyframePath(kfname);
+        else if (kfname.extension() == nif)
             kfname.changeExtension(kf);
 
         addSingleAnimSource(kfname, baseModel);

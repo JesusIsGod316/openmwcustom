@@ -36,6 +36,9 @@ namespace Terrain
         std::vector<osg::ref_ptr<osg::Drawable>> mDrawables;
         osg::ref_ptr<osg::Texture2D> mTexture;
         size_t mCompiled;
+        // Private terrain producer contract, set before queue publication.
+        // Arbitrary external maps retain per-layer caller restoration.
+        bool mBatchingEligible = false;
         // Requiredness survives removal from the queue while the GL thread works.
         // The cull thread must not lose its promotion when a map is in flight.
         std::atomic_bool mRequired{false};
@@ -65,6 +68,7 @@ namespace Terrain
         void compile(CompositeMap& compositeMap, osg::RenderInfo& renderInfo) const;
         void configurePreparation(Resource::OpenMWIncrementalCompileOperation* ico);
         bool preparationEnabled() const { return mPreparationEnabled; }
+        bool compositeBatchEnabled() const { return mCompositeBatchEnabled; }
         void releaseGLObjects(osg::State* state = nullptr) const override;
         struct PreparationStats
         {
@@ -112,6 +116,7 @@ namespace Terrain
         bool preparationSupported(const osg::State& state) const;
         void retirePreparations() const;
         bool mCooperativeBackgroundCompile = false;
+        const bool mCompositeBatchEnabled;
         mutable std::atomic_uint64_t mBackgroundYields{0};
         float mTargetFrameRate;
         double mMinimumTimeAvailable;
@@ -134,6 +139,8 @@ namespace Terrain
         mutable unsigned mBakeSamples = 0;
         mutable double mFboEmaMs = 0.25, mFboRiskMs = 0.25;
         mutable unsigned mFboSamples = 0;
+        mutable double mBatchCleanupEmaMs = 0.25, mBatchCleanupRiskMs = 0.25;
+        mutable unsigned mBatchCleanupSamples = 0;
         static constexpr std::size_t sMaxPreparationBytes = 32u * 1024u * 1024u;
         static constexpr std::size_t sMaxPreparationMaps = 8;
     };

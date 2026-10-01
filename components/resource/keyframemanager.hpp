@@ -2,6 +2,8 @@
 #define OPENMW_COMPONENTS_KEYFRAMEMANAGER_H
 
 #include <string>
+#include <cstdint>
+#include <limits>
 
 #include <osg/ref_ptr>
 #include <osgAnimation/BasicAnimationManager>
@@ -56,7 +58,8 @@ namespace Resource
 
         /// Retrieve a read-only keyframe resource by name (case-insensitive).
         /// @note Throws an exception if the resource is not found.
-        osg::ref_ptr<const SceneUtil::KeyframeHolder> get(VFS::Path::NormalizedView name);
+        osg::ref_ptr<const SceneUtil::KeyframeHolder> get(VFS::Path::NormalizedView name,
+            std::uint64_t maximumPreloadEstimate = std::numeric_limits<std::uint64_t>::max());
 
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
 

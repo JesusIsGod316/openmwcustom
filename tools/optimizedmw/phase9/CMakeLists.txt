@@ -33,6 +33,11 @@ link_libraries(p9-hitch-platform)
 enable_testing()
 find_package(Threads REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_executable(p9-terrain-target-readiness terrain-target-readiness-tests.cpp
+  ${ROOT}/components/loadinglistener/reporter.cpp)
+target_link_libraries(p9-terrain-target-readiness PRIVATE Threads::Threads)
+add_test(NAME p9-terrain-target-readiness COMMAND p9-terrain-target-readiness)
+set_tests_properties(p9-terrain-target-readiness PROPERTIES TIMEOUT 30)
 add_executable(p9-hitch-trace hitch-trace-tests.cpp)
 target_link_libraries(p9-hitch-trace PRIVATE Threads::Threads)
 add_test(NAME p9-hitch-trace COMMAND ${Python3_EXECUTABLE}

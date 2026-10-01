@@ -7,8 +7,10 @@
 #include <span>
 #include <exception>
 #include <stdexcept>
+#include <string_view>
 
 #include <components/sceneutil/pagingwork.hpp>
+#include <components/sceneutil/terraintargetreadiness.hpp>
 
 #include <osg/Stats>
 
@@ -24,6 +26,7 @@
 #include <components/misc/strings/algorithm.hpp>
 #include <components/misc/strings/lower.hpp>
 #include <components/resource/bulletshapemanager.hpp>
+#include <components/resource/animationdependencies.hpp>
 #include <components/resource/keyframemanager.hpp>
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/scenemanager.hpp>
@@ -34,6 +37,8 @@
 #include <components/vfs/manager.hpp>
 
 #include "../mwrender/landmanager.hpp"
+#include "../mwclass/npc.hpp"
+#include <components/esm3/loadnpc.hpp>
 
 #include "cellstore.hpp"
 #include "class.hpp"
@@ -65,11 +70,25 @@ namespace MWWorld
         bool operator()(const MWWorld::ConstPtr& ptr)
         {
             ptr.getClass().getModelsToPreload(ptr, mOut);
+            if (mAnimationSources && ptr.getType() == ESM::NPC::sRecordId)
+            {
+                try
+                {
+                    MWClass::Npc::getAnimationSourcesToPreload(
+                        ptr, *mVFS, *mAnimationSources, Resource::MaximumAnimationPreloadSources);
+                }
+                catch (const std::exception& e)
+                {
+                    Log(Debug::Warning) << "Optional NPC animation snapshot failed: " << e.what();
+                }
+            }
 
             return true;
         }
 
         std::vector<VFS::Path::NormalizedView>& mOut;
+        const VFS::Manager* mVFS = nullptr;
+        std::vector<VFS::Path::Normalized>* mAnimationSources = nullptr;
     };
 
     /// Worker thread item: preload models in a cell.
@@ -103,12 +122,30 @@ namespace MWWorld
                 mTerrainView = mTerrain->createView();
 
             ListModelsVisitor visitor{ mMeshes };
-            cell->forEachConst(visitor);
+            if (Resource::animationDependencyPreloadEnabled())
+            {
+                Debug::HitchTrace::Scope snapshot("animation.dependency_snapshot",
+                    Debug::HitchTrace::CpuTiming::Scoped);
+                snapshot.retain();
+                mAnimationSnapshotSpan = snapshot.id();
+                visitor.mVFS = mSceneManager->getVFS();
+                visitor.mAnimationSources = &mAnimationSources;
+                mAnimationVfsGeneration = visitor.mVFS->getIndexGeneration();
+                mAnimationAdditionalSources = Settings::game().mUseAdditionalAnimSources;
+                cell->forEachConst(visitor);
+                snapshot.setMetric(0, "sources", mAnimationSources.size());
+                snapshot.setMetric(1, "vfs_generation", mAnimationVfsGeneration);
+                snapshot.setMetric(2, "additional_sources", mAnimationAdditionalSources);
+            }
+            else
+                cell->forEachConst(visitor);
             if (mByteJob)
             {
                 Resource::SpeculativeScope scope(mResourceSystem->speculativeBudget(),
                     &Resource::ResourceSystem::speculativeSample, mResourceSystem, mPriority);
-                const auto shell = std::uint64_t(mMeshes.capacity()) * sizeof(mMeshes.front()) + sizeof(*this);
+                auto shell = std::uint64_t(mMeshes.capacity()) * sizeof(mMeshes.front()) + sizeof(*this)
+                    + std::uint64_t(mAnimationSources.capacity()) * sizeof(VFS::Path::Normalized);
+                for (const auto& source : mAnimationSources) shell += source.value().size();
                 Resource::SpeculativeScope::Stage stage(shell, shell);
                 mOwnerCharge = Resource::SpeculativeScope::track(mResourceSystem->speculativeBudget(), {this, 3}, shell, true);
             }
@@ -159,6 +196,103 @@ namespace MWWorld
                     Log(Debug::Warning) << "Failed to cache terrain for exterior cell " << mCellLocation << ": "
                                         << e.what();
                 }
+            }
+
+            // Optional animation parsing needs the P1B byte/job admission lane.
+            // Other profiles retain historical demand loading when unavailable.
+            if (Resource::animationDependencyPreloadEnabled())
+            {
+                Debug::HitchTrace::Scope animationWork("animation.dependency_preload",
+                    Debug::HitchTrace::CpuTiming::Scoped);
+                animationWork.retain();
+                animationWork.setLink(mAnimationSnapshotSpan);
+                animationWork.setMetric(0, "sources", mAnimationSources.size());
+                std::uint64_t preparedCount = 0;
+                std::uint64_t failedCount = 0;
+                std::uint64_t skippedCount = 0;
+                std::uint64_t denialReasons = byteJob || mAnimationSources.empty() ? 0 : 256;
+                std::size_t scanned = 0;
+                if (byteJob && !mAnimationSources.empty())
+                {
+                    const VFS::Manager& vfs = *mSceneManager->getVFS();
+                    std::set<VFS::Path::Normalized> prepared;
+                    const auto beforeAnimations = scope.retainedEstimate();
+                    const auto allowed = [&] {
+                        const auto pressure = mResourceSystem->hostMemoryPressure();
+                        const bool pressureAllows = mPriority == Resource::SpeculativePriority::Background
+                            ? pressure == Resource::HostMemoryPressure::Normal
+                            : pressure != Resource::HostMemoryPressure::Critical;
+                        // These bits describe why optional coverage stopped;
+                        // they do not claim a later demand access missed cache.
+                        const auto cancelled = mAbort.load();
+                        const auto generation = vfs.getIndexGeneration();
+                        const auto retained = scope.retainedEstimate() - beforeAnimations;
+                        if (cancelled) denialReasons |= 1;
+                        if (!pressureAllows) denialReasons |= 2;
+                        if (mAnimationVfsGeneration != generation) denialReasons |= 4;
+                        if (prepared.size() >= Resource::MaximumAnimationPreloadDependencies) denialReasons |= 8;
+                        if (retained >= Resource::MaximumAnimationPreloadEstimate) denialReasons |= 16;
+                        return Resource::animationDependencyPreparationAllowed(cancelled, pressureAllows,
+                            mAnimationVfsGeneration, generation, prepared.size(), retained);
+                    };
+                    const auto keepGoing = [&] {
+                        if (++scanned > Resource::MaximumAnimationPreloadScannedPaths)
+                        {
+                            denialReasons |= 32;
+                            return false;
+                        }
+                        return allowed();
+                    };
+                    const auto prepare = [&](VFS::Path::NormalizedView keyframe) {
+                        if (!allowed()) return false;
+                        if (keyframe.value().size() > 4096 || keyframe.extension() != VFS::Path::ExtensionView("kf")
+                            || !vfs.exists(keyframe) || !prepared.insert(VFS::Path::Normalized(keyframe)).second)
+                        {
+                            ++skippedCount;
+                            return true;
+                        }
+                        try
+                        {
+                            // KeyframeManager reserves its parse/build estimate
+                            // before miss reads. Hits keep existing cache holders.
+                            const auto remaining = Resource::MaximumAnimationPreloadEstimate
+                                - (scope.retainedEstimate() - beforeAnimations);
+                            mPreloadedObjects.insert(mKeyframeManager->get(keyframe, remaining));
+                            ++preparedCount;
+                        }
+                        catch (const Resource::SpeculativeDeferred&)
+                        {
+                            denialReasons |= 64;
+                            return false;
+                        }
+                        catch (const std::exception& e)
+                        {
+                            ++failedCount;
+                            Log(Debug::Warning) << "Optional animation dependency \"" << keyframe
+                                << "\" failed to preload: " << e.what();
+                        }
+                        return true;
+                    };
+                    for (const auto& source : mAnimationSources)
+                    {
+                        Debug::HitchTrace::Scope discovery("animation.dependency_discovery",
+                            Debug::HitchTrace::CpuTiming::WallEnvelope, {}, source.value());
+                        if (!Resource::visitAnimationDependencies(
+                            vfs, source, mAnimationAdditionalSources, prepare, keepGoing))
+                            break; // denied preparation never delays required activation
+                    }
+                }
+                animationWork.setMetric(1, "scanned", scanned);
+                animationWork.setMetric(2, "prepared", preparedCount);
+                animationWork.setMetric(3, "denied", denialReasons != 0);
+                Debug::HitchTrace::Scope outcome("animation.dependency_outcome",
+                    Debug::HitchTrace::CpuTiming::WallEnvelope);
+                outcome.retain();
+                outcome.setLink(mAnimationSnapshotSpan);
+                outcome.setMetric(0, "fallback_required", denialReasons != 0 || failedCount != 0);
+                outcome.setMetric(1, "denial_reasons", denialReasons);
+                outcome.setMetric(2, "failed", failedCount);
+                outcome.setMetric(3, "skipped", skippedCount);
             }
 
             VFS::Path::Normalized mesh;
@@ -237,6 +371,10 @@ namespace MWWorld
         ESM::ExteriorCellLocation mCellLocation;
         ESM::RefId mCellId;
         std::vector<VFS::Path::NormalizedView> mMeshes;
+        std::vector<VFS::Path::Normalized> mAnimationSources;
+        std::uint64_t mAnimationVfsGeneration = 0;
+        std::uint64_t mAnimationSnapshotSpan = 0;
+        bool mAnimationAdditionalSources = false;
         Resource::SceneManager* mSceneManager;
         Resource::BulletShapeManager* mBulletShapeManager;
         Resource::KeyframeManager* mKeyframeManager;
@@ -265,14 +403,18 @@ namespace MWWorld
     public:
         explicit TerrainPreloadItem(const std::vector<osg::ref_ptr<Terrain::View>>& views, Terrain::World* world,
             Resource::ResourceSystem* resourceSystem, std::span<const PositionCellGrid> preloadPositions,
-            bool cancellableOptimization = false, bool readinessSplit = false, std::uint64_t hitchJob = 0)
+            bool cancellableOptimization = false, bool readinessSplit = false, std::uint64_t hitchJob = 0,
+            bool currentFirst = false)
             : mAbort(false)
             , mCancellableOptimization(cancellableOptimization)
             , mReadinessSplit(cancellableOptimization && readinessSplit)
+            , mCurrentFirst(mReadinessSplit && currentFirst)
             , mTerrainViews(views)
             , mWorld(world)
+            , mWorldspace(mCurrentFirst ? world->getWorldspace() : ESM::RefId{})
             , mResourceSystem(resourceSystem)
             , mPreloadPositions(preloadPositions.begin(), preloadPositions.end())
+            , mTargetReadiness(mCurrentFirst ? std::make_unique<SceneUtil::TerrainTargetReadiness>(preloadPositions.size()) : nullptr)
             , mHitchJob(hitchJob)
         {
             if (Debug::GameplayDiagnostics::enabled() || Debug::RuntimeDiagnostics::enabled())
@@ -305,7 +447,9 @@ namespace MWWorld
                 }
             };
 
-            if (mCancellableOptimization && mReadinessSplit)
+            if (mCurrentFirst)
+                prepareCurrentFirst(measure);
+            else if (mCancellableOptimization && mReadinessSplit)
             {
                 const auto readyStart = Debug::GameplayDiagnostics::Clock::now();
                 try
@@ -496,6 +640,36 @@ namespace MWWorld
         bool succeeded() const noexcept
         { return !mCancellableOptimization || mSucceeded.load(std::memory_order_acquire); }
         bool readinessSplit() const noexcept { return mReadinessSplit; }
+        bool currentFirst() const noexcept { return mCurrentFirst; }
+        bool matchesWorld(Terrain::World* world) const
+        { return world == mWorld && world && world->getWorldspace() == mWorldspace; }
+        std::optional<std::size_t> targetIndex(const PositionCellGrid& position) const
+        {
+            for (std::size_t i = 0; i < mPreloadPositions.size(); ++i)
+                if (contains(std::span(&mPreloadPositions[i], 1), position, Constants::CellSizeInUnits)) return i;
+            return std::nullopt;
+        }
+        bool canServe(std::span<const PositionCellGrid> positions) const
+        {
+            for (const auto& position : positions)
+            {
+                const auto index = targetIndex(position);
+                if (!index || !mTargetReadiness->canServe(*index)) return false;
+            }
+            return true;
+        }
+        std::vector<PositionCellGrid> completedTargets() const
+        {
+            std::vector<PositionCellGrid> result;
+            for (std::size_t index : mTargetReadiness->completed()) result.push_back(mPreloadPositions[index]);
+            return result;
+        }
+        void waitTarget(std::size_t index, Loading::Listener& listener)
+        {
+            Debug::HitchTrace::Scope wait("terrain.target_wait", Debug::HitchTrace::CpuTiming::Scoped);
+            wait.retain(); wait.setLink(mHitchJob); wait.setMetric(0, "target_index", index);
+            mTargetReadiness->wait(index, listener);
+        }
         bool readinessComplete() const noexcept
         { return mReadinessSplit && mSucceeded.load(std::memory_order_acquire); }
         bool takeReadinessPublication() noexcept
@@ -505,6 +679,13 @@ namespace MWWorld
 
         void wait(Loading::Listener& listener)
         {
+            if (mCurrentFirst)
+            {
+                // Without an explicit demanded position no target can stand in
+                // for the rest. Await all requested complete views or fail closed.
+                for (std::size_t index = 0; index < mPreloadPositions.size(); ++index) waitTarget(index, listener);
+                return;
+            }
             Debug::HitchTrace::Scope hitchWait("terrain.required_wait", Debug::HitchTrace::CpuTiming::Scoped);
             hitchWait.retain();
             hitchWait.setLink(mHitchJob);
@@ -565,6 +746,120 @@ namespace MWWorld
         }
 
     private:
+        void prepareCurrentFirst(bool measure)
+        {
+            // Serial private views, per-target publication. Future weak views
+            // still use RequiredReadiness geometry, but are no longer a
+            // dependency of the first demanded view's reporter.
+            while (!mAbort.load(std::memory_order_relaxed))
+            {
+                const auto next = mTargetReadiness->nextPending();
+                if (!next) break;
+                const std::size_t index = *next;
+                const auto start = measure ? Debug::GameplayDiagnostics::Clock::now()
+                                           : Debug::GameplayDiagnostics::Clock::time_point{};
+                const bool ready = mTargetReadiness->run(index, [&](Loading::Reporter& reporter) {
+                    const auto prepareView = [&] {
+                        Debug::HitchTrace::Scope view("terrain.view_prepare", Debug::HitchTrace::CpuTiming::Scoped);
+                        view.setLink(mHitchJob); view.setMetric(0, "target_index", index);
+                        view.setMetric(1, "required_phase", 1);
+                        view.setMetric(2, "demanded_target", index == 0 || mTargetReadiness->demanded(index));
+                        SceneUtil::PagingWorkScope scope(&mAbort, SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
+                        SceneUtil::PagingWorkScope::checkpoint();
+                        mTerrainViews.at(index)->reset();
+                        mWorld->preload(mTerrainViews[index], mPreloadPositions[index].mPosition,
+                            mPreloadPositions[index].mCellBounds, mAbort, reporter);
+                        return !mAbort.load(std::memory_order_acquire);
+                    };
+                    try
+                    {
+                        // Demand never consumes a speculative reservation.
+                        if (index == 0 || mTargetReadiness->demanded(index)) return prepareView();
+                        Resource::SpeculativeBudget* budget = mResourceSystem->speculativeBudget();
+                        if (!budget && mResourceSystem->openGlHostMemoryBudgetEnabled())
+                        {
+                            const auto sample = Resource::ResourceSystem::speculativeSample(mResourceSystem);
+                            if (!sample.generation || sample.decision.state == Resource::OpenGlPressure::Critical
+                                || sample.decision.state == Resource::OpenGlPressure::Degraded)
+                            { mOptionalDeferred.store(true, std::memory_order_release); return false; }
+                        }
+                        else if (mResourceSystem->hostMemoryPressure() == Resource::HostMemoryPressure::Critical)
+                        { mOptionalDeferred.store(true, std::memory_order_release); return false; }
+                        Resource::SpeculativeScope speculativeScope(budget,
+                            &Resource::ResourceSystem::speculativeSample, mResourceSystem,
+                            Resource::SpeculativePriority::NearFuture);
+                        Resource::SpeculativeScope::Stage stage(128 * Resource::SpeculativeBudget::MiB, 0);
+                        return prepareView();
+                    }
+                    catch (const Resource::SpeculativeDeferred&)
+                    { mOptionalDeferred.store(true, std::memory_order_release); return false; }
+                    catch (const SceneUtil::PagingWorkCancelled&) { return false; }
+                }, [&](bool completed) noexcept {
+                    // This receipt precedes immutable status visibility and the
+                    // reporter wake. It is not the reporter's completion wall.
+                    Debug::HitchTrace::Scope publication("terrain.target_readiness_publication",
+                        Debug::HitchTrace::CpuTiming::WallEnvelope);
+                    publication.retain(); publication.setLink(mHitchJob);
+                    publication.setMetric(0, "target_index", index);
+                    publication.setMetric(1, "ready", completed);
+                    publication.setMetric(2, "demanded", index == 0 || mTargetReadiness->demanded(index));
+                    if (index == 0)
+                    {
+                        if (measure) mReadinessMs = std::chrono::duration<double, std::milli>(
+                            Debug::GameplayDiagnostics::Clock::now() - start).count();
+                        mSucceeded.store(completed, std::memory_order_release);
+                    }
+                });
+                if (!ready) break;
+            }
+            mTargetReadiness->cancelPending();
+            if (mAbort.load(std::memory_order_acquire) || !mSucceeded.load(std::memory_order_acquire)) return;
+
+            // Keep the existing optional strong-upgrade owner/budget. Only
+            // views whose complete weak preparation succeeded are upgraded.
+            Debug::HitchTrace::Scope optional("terrain.optional_prepare", Debug::HitchTrace::CpuTiming::Scoped);
+            optional.setLink(mHitchJob);
+            const auto start = measure ? Debug::GameplayDiagnostics::Clock::now()
+                                       : Debug::GameplayDiagnostics::Clock::time_point{};
+            Loading::Reporter reporter;
+            Resource::SpeculativeBudget* budget = mResourceSystem->speculativeBudget();
+            bool admitted = true;
+            if (!budget && mResourceSystem->openGlHostMemoryBudgetEnabled())
+            {
+                const auto sample = Resource::ResourceSystem::speculativeSample(mResourceSystem);
+                admitted = sample.generation && sample.decision.state != Resource::OpenGlPressure::Critical
+                    && sample.decision.state != Resource::OpenGlPressure::Degraded;
+            }
+            else if (mResourceSystem->hostMemoryPressure() == Resource::HostMemoryPressure::Critical) admitted = false;
+            if (admitted)
+            {
+                Resource::SpeculativeScope speculativeScope(budget,
+                    &Resource::ResourceSystem::speculativeSample, mResourceSystem,
+                    Resource::SpeculativePriority::NearFuture);
+                try
+                {
+                    Resource::SpeculativeScope::Stage stage(128 * Resource::SpeculativeBudget::MiB, 0);
+                    SceneUtil::PagingWorkScope scope(&mAbort, SceneUtil::PagingWorkScope::Phase::OptionalOptimization);
+                    for (std::size_t index : mTargetReadiness->completed())
+                    {
+                        if (mAbort.load(std::memory_order_relaxed)) break;
+                        mOptionalUpgradeRequests.fetch_add(mWorld->preloadStrongUpgrade(mTerrainViews[index],
+                            mPreloadPositions[index].mPosition, mPreloadPositions[index].mCellBounds, mAbort, reporter),
+                            std::memory_order_relaxed);
+                    }
+                    mOptionalCompleted.store(!mAbort.load(), std::memory_order_release);
+                }
+                catch (const Resource::SpeculativeDeferred&) { mOptionalDeferred.store(true, std::memory_order_release); }
+                catch (const SceneUtil::PagingWorkCancelled&) {}
+                catch (const std::exception& e) { Log(Debug::Warning) << "Optional paging optimization failed after target readiness: " << e.what(); }
+                catch (...) { Log(Debug::Warning) << "Optional paging optimization failed after target readiness"; }
+            }
+            else mOptionalDeferred.store(true, std::memory_order_release);
+            reporter.complete();
+            if (measure) mOptionalMs = std::chrono::duration<double, std::milli>(
+                Debug::GameplayDiagnostics::Clock::now() - start).count();
+        }
+
         void completeLoadingReporter()
         {
             Debug::HitchTrace::Scope publication("terrain.loading_reporter_complete");
@@ -579,13 +874,16 @@ namespace MWWorld
         std::atomic<bool> mAbort;
         const bool mCancellableOptimization;
         const bool mReadinessSplit;
+        const bool mCurrentFirst;
         std::atomic<bool> mSucceeded{false};
         std::atomic<bool> mReadinessPublished{false};
         std::exception_ptr mRequiredFailure;
         std::vector<osg::ref_ptr<Terrain::View>> mTerrainViews;
         Terrain::World* mWorld;
+        const ESM::RefId mWorldspace;
         Resource::ResourceSystem* mResourceSystem;
         std::vector<PositionCellGrid> mPreloadPositions;
+        std::unique_ptr<SceneUtil::TerrainTargetReadiness> mTargetReadiness;
         const std::uint64_t mHitchJob;
         bool mHitchLoadedPublication = false;
         Loading::Reporter mLoadingReporter;
@@ -641,6 +939,10 @@ namespace MWWorld
             && static_cast<bool>(Settings::cells().mOpimizedMWPagingReadinessSplit)
             && static_cast<int>(Settings::cells().mV313ChunkQualityMode) > 0
             && static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode) > 0)
+        , mTerrainCurrentFirst(mPagingReadinessSplit && [] {
+            const char* value = std::getenv("OPENMW_HITCH_TERRAIN_CURRENT_FIRST");
+            return value && std::string_view(value) == "1";
+        }())
         , mLastResourceCacheUpdate(0.0)
         , mLoadedTerrainTimestamp(0.0)
     {
@@ -915,7 +1217,17 @@ namespace MWWorld
             mLastResourceCacheUpdate = timestamp;
         }
 
-        if (mTerrainPreloadItem && mTerrainPreloadItem->takeReadinessPublication())
+        if (mTerrainPreloadItem && mTerrainPreloadItem->currentFirst())
+        {
+            auto completed = mTerrainPreloadItem->completedTargets();
+            if (!completed.empty())
+            {
+                mTerrainPreloadItem->traceLoadedPublication(completed.size());
+                mLoadedTerrainPositions = std::move(completed);
+                mLoadedTerrainTimestamp = timestamp;
+            }
+        }
+        else if (mTerrainPreloadItem && mTerrainPreloadItem->takeReadinessPublication())
         {
             mTerrainPreloadItem->traceLoadedPublication(mTerrainPreloadPositions.size());
             mLoadedTerrainPositions = mTerrainPreloadPositions;
@@ -979,10 +1291,30 @@ namespace MWWorld
         mWorkQueue = workQueue;
     }
 
-    void CellPreloader::syncTerrainLoad(Loading::Listener& listener)
+    void CellPreloader::syncTerrainLoad(Loading::Listener& listener, const PositionCellGrid* demanded)
     {
         Debug::HitchTrace::Scope hitchSync("terrain.sync_load", Debug::HitchTrace::CpuTiming::Scoped);
         hitchSync.setLink(mTerrainPreloadItem ? mTerrainPreloadItem->hitchJob() : 0);
+        if (mTerrainPreloadItem && mTerrainPreloadItem->currentFirst() && demanded)
+        {
+            const auto index = mTerrainPreloadItem->matchesWorld(mTerrain)
+                ? mTerrainPreloadItem->targetIndex(*demanded) : std::nullopt;
+            if (index)
+            {
+                try { mTerrainPreloadItem->waitTarget(*index, listener); return; }
+                catch (const SceneUtil::TerrainTargetUnavailable&) {}
+            }
+            // A deferred/cancelled future view is never promoted by assertion.
+            // Retire its sole mutable owner before preparing the demanded view.
+            mTerrainPreloadItem->abort();
+            mTerrainPreloadItem->waitTillDone();
+            mTerrainPreloadItem = nullptr;
+            mTerrainPreloadPositions.clear();
+            mV311PendingTerrainPreloadPositions.clear();
+            setTerrainPreloadPositions(std::span(demanded, 1));
+            mTerrainPreloadItem->waitTarget(0, listener);
+            return;
+        }
         if (mTerrainPreloadItem != nullptr
             && (mPagingReadinessSplit || mCancellablePagingOptimization || !mTerrainPreloadItem->isDone()))
             mTerrainPreloadItem->wait(listener);
@@ -1022,7 +1354,8 @@ namespace MWWorld
         }
         else if (contains(mTerrainPreloadPositions, positions, 128.f)
             && (!mCancellablePagingOptimization || !mTerrainPreloadItem || !mTerrainPreloadItem->isDone()
-                || mTerrainPreloadItem->succeeded()))
+                || mTerrainPreloadItem->succeeded())
+            && (!mTerrainPreloadItem || !mTerrainPreloadItem->currentFirst() || mTerrainPreloadItem->canServe(positions)))
             return;
 
         if (mTerrainPreloadItem && !mTerrainPreloadItem->isDone())
@@ -1086,7 +1419,7 @@ namespace MWWorld
                         targetRow.setMetric(0, "target_index", i);
                     }
                 mTerrainPreloadItem = new TerrainPreloadItem(mTerrainViews, mTerrain, mResourceSystem,
-                    positions, mCancellablePagingOptimization, mPagingReadinessSplit, create.id());
+                    positions, mCancellablePagingOptimization, mPagingReadinessSplit, create.id(), mTerrainCurrentFirst);
                 {
                     Debug::HitchTrace::Scope queue("terrain.job_enqueue");
                     queue.retain();

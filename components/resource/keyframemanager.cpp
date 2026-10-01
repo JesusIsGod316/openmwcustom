@@ -20,6 +20,9 @@
 
 #include "animation.hpp"
 #include "objectcache.hpp"
+#include "animationdependencies.hpp"
+#include "preloadestimate.hpp"
+#include <optional>
 #include "scenemanager.hpp"
 
 namespace Resource
@@ -208,7 +211,8 @@ namespace Resource
     {
     }
 
-    osg::ref_ptr<const SceneUtil::KeyframeHolder> KeyframeManager::get(VFS::Path::NormalizedView name)
+    osg::ref_ptr<const SceneUtil::KeyframeHolder> KeyframeManager::get(
+        VFS::Path::NormalizedView name, std::uint64_t maximumPreloadEstimate)
     {
         Debug::HitchTrace::Scope hitchKeyframes("resource.keyframe_lookup", {}, name.value());
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(name);
@@ -216,12 +220,30 @@ namespace Resource
         if (obj != nullptr)
             return osg::ref_ptr<const SceneUtil::KeyframeHolder>(static_cast<SceneUtil::KeyframeHolder*>(obj.get()));
 
+        // Only the candidate's bounded optional worker participates. Demand
+        // loading retains the original synchronous path and never joins it.
+        const bool boundedPreload = animationDependencyPreloadEnabled() && SpeculativeScope::active()
+            && name.extension() == VFS::Path::ExtensionView("kf");
+        auto claim = boundedPreload
+            ? SpeculativeScope::claim(std::to_string(mVFS->getIndexGeneration()) + "|keyframe|" + std::string(name.value()))
+            : SpeculativeBudget::Claim{};
+        std::optional<SpeculativeScope::Stage> memoryStage;
         osg::ref_ptr<SceneUtil::KeyframeHolder> loaded(new SceneUtil::KeyframeHolder);
         constexpr VFS::Path::ExtensionView kf("kf");
         if (name.extension() == kf)
         {
             auto file = std::make_shared<Nif::NIFFile>(name);
             Nif::Reader reader(*file, mEncoder);
+            if (boundedPreload)
+            {
+                auto stream = mVFS->get(name);
+                const auto estimate = estimateStream(*stream, false);
+                if (estimate.retained > maximumPreloadEstimate) throw SpeculativeDeferred{};
+                memoryStage.emplace(estimate.peak, estimate.retained);
+                Debug::HitchTrace::Scope detail("resource.keyframe_parse");
+                reader.parse(std::move(stream));
+            }
+            else
             {
                 Debug::HitchTrace::Scope detail("resource.keyframe_parse");
                 reader.parse(mVFS->get(name));

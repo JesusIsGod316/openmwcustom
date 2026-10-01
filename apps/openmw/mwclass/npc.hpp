@@ -5,6 +5,15 @@
 
 #include "actor.hpp"
 
+#include <cstddef>
+#include <vector>
+#include <components/vfs/pathutil.hpp>
+
+namespace VFS
+{
+    class Manager;
+}
+
 namespace ESM
 {
     struct GameSetting;
@@ -49,6 +58,11 @@ namespace MWClass
         static const GMST& getGmst();
 
     public:
+        // Main-thread immutable snapshot for optional dependency preparation.
+        // Never initializes an NPC's custom data or executes actor scripts.
+        static void getAnimationSourcesToPreload(const MWWorld::ConstPtr& ptr, const VFS::Manager& vfs,
+            std::vector<VFS::Path::Normalized>& sources, std::size_t maximum);
+
         void insertObjectRendering(const MWWorld::Ptr& ptr, const std::string& model,
             MWRender::RenderingInterface& renderingInterface) const override;
         ///< Add reference into a cell for rendering

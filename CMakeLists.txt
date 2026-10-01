@@ -1283,6 +1283,7 @@ if(WIN32)
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW-Phase9-README.txt"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_ProfileArchive.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_RunManifest.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_HitchMatrix.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_HitchReport.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_SystemTrace.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_QualifySystemTrace.ps1"

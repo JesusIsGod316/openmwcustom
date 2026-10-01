@@ -7,6 +7,8 @@
 #include "util.hpp"
 #include "widget.hpp"
 
+#include <components/debug/hitchtrace.hpp>
+
 namespace LuaUi
 {
     namespace
@@ -85,6 +87,7 @@ namespace LuaUi
 
         void updateRootCoord(WidgetExtension* ext)
         {
+            Debug::HitchTrace::Scope rootLayout("lua.ui.element.root_coord", Debug::HitchTrace::CpuTiming::WallEnvelope);
             WidgetExtension* root = ext;
             while (root->getParent())
                 root = root->getParent();
@@ -110,6 +113,9 @@ namespace LuaUi
         std::vector<WidgetExtension*> updateContent(
             const std::vector<WidgetExtension*>& children, const sol::object& contentObj, uint64_t depth)
         {
+            Debug::HitchTrace::Scope contentSpan("lua.ui.content.update", Debug::HitchTrace::CpuTiming::WallEnvelope);
+            contentSpan.setMetric(0, "old_count", children.size());
+            contentSpan.setMetric(1, "layout_depth", depth);
             ++depth;
             std::vector<WidgetExtension*> result;
             if (contentObj == sol::nil)
@@ -119,6 +125,7 @@ namespace LuaUi
                 return result;
             }
             ContentView content(LuaUtil::cast<sol::table>(contentObj));
+            contentSpan.setMetric(2, "new_count", content.size());
             result.resize(content.size());
             size_t minSize = std::min(children.size(), content.size());
             std::vector<WidgetExtension*> toDestroy;
@@ -166,6 +173,8 @@ namespace LuaUi
 
         void setTemplate(WidgetExtension* ext, const sol::object& templateLayout, uint64_t depth)
         {
+            Debug::HitchTrace::Scope apply("lua.ui.template.apply", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                ext->widget()->getTypeName(), ext->widget()->getName());
             ++depth;
             sol::object props = LuaUtil::getFieldOrNil(templateLayout, LayoutKeys::props);
             ext->setTemplateProperties(props);
@@ -175,6 +184,7 @@ namespace LuaUi
 
         void setEventCallbacks(WidgetExtension* ext, const sol::object& eventsObj)
         {
+            Debug::HitchTrace::Scope eventsSpan("lua.ui.events.apply", Debug::HitchTrace::CpuTiming::WallEnvelope);
             ext->clearCallbacks();
             if (eventsObj == sol::nil)
                 return;
@@ -214,6 +224,9 @@ namespace LuaUi
 
         void updateWidget(WidgetExtension* ext, const sol::table& layout, uint64_t depth)
         {
+            Debug::HitchTrace::Scope update("lua.ui.widget.update", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                ext->widget()->getTypeName(), ext->widget()->getName());
+            update.setMetric(0, "layout_depth", depth);
             if (depth >= maxDepth)
                 throw std::runtime_error("Maximum layout depth exceeded, probably caused by a circular reference");
             ext->reset();
@@ -280,6 +293,7 @@ namespace LuaUi
 
     void Element::create(uint64_t depth)
     {
+        Debug::HitchTrace::Scope create("lua.ui.element.create", Debug::HitchTrace::CpuTiming::WallEnvelope);
         if (mState == New)
         {
             assert(!mRoot);
@@ -293,6 +307,7 @@ namespace LuaUi
 
     void Element::update()
     {
+        Debug::HitchTrace::Scope update("lua.ui.element.update", Debug::HitchTrace::CpuTiming::WallEnvelope);
         if (mState == Update)
         {
             assert(mRoot);
@@ -353,6 +368,7 @@ namespace LuaUi
 
     void Element::destroy()
     {
+        Debug::HitchTrace::Scope destroy("lua.ui.element.destroy", Debug::HitchTrace::CpuTiming::WallEnvelope);
         if (mState != Destroyed)
         {
             if (mRoot != nullptr)
@@ -371,6 +387,7 @@ namespace LuaUi
 
     void Element::checkWarnings()
     {
+        Debug::HitchTrace::Scope warningsSpan("lua.ui.element.warnings", Debug::HitchTrace::CpuTiming::WallEnvelope);
         if (mNoWarnUnused)
             // Currently unused warnings are our only warnings so we can just early out here.
             return;

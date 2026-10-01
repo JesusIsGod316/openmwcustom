@@ -7,7 +7,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0OptimizedMW_Test.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0OptimizedMW_Test.ps1" %*
 if errorlevel 1 (
     echo Phase 9 launcher reported an error. Raw profiles are retained in Documents\My Games\OpenMW.
     pause

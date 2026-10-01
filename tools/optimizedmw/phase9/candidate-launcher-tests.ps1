@@ -146,7 +146,7 @@ try{
     $fixtureLock=[Threading.Mutex]::new($false,'Local\OptimizedMW-Candidate-Fixture-Serial')
     try{$ownsFixtureLock=$fixtureLock.WaitOne(30000)}catch [Threading.AbandonedMutexException]{$ownsFixtureLock=$true}
     if(-not $ownsFixtureLock){throw 'Timed out waiting for independent launcher fixture host'}
-    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_RunManifest.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW_SystemTraceLink.ps1')){
+    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW_SystemTraceLink.ps1')){
         Copy-Item -LiteralPath (Join-Path $root $file) -Destination (Join-Path $game $file) -Force
     }
     [IO.File]::WriteAllText((Join-Path $game 'OptimizedMW_Benchmark_Report.ps1'),'# Empty hermetic report fixture; no game, WPR, or UI.')
@@ -157,14 +157,20 @@ try{
     $userHash=(Get-FileHash -LiteralPath $userSettings).Hash
     $driverPath=Join-Path $fixture 'driver.ps1'
     $shell=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-    foreach($trial in @(@('1','I1'),@('3','CONTROL'),@('3','D1'))){
+    $trials=@(@('1','I1'),@('3','CONTROL'),@('3','D1'))
+    foreach($mask in 0..15){
+        $trials+=,@('1','CONTROL',[string]$mask,'Normal')
+        $trials+=,@('3','CONTROL',[string]$mask,'Deep')
+    }
+    foreach($trial in $trials){
+        $matrixArguments=if($trial.Count -eq 4){' -HitchMask '+$trial[2]+' -TraceLevel '+$trial[3]}else{''}
         $driver=@(
             '$ErrorActionPreference=''Stop''',
             ('$env:USERPROFILE='''+$fakeUser.Replace("'","''")+''''),
             '$env:OPENMW_FIXTURE_KEEP=''original child value''',
             'function Get-Process { param($Name,$ErrorAction) return $null }',
             'function Start-Process { param($FilePath,$WorkingDirectory,[switch]$PassThru) throw ''Fixture intercepted game launch'' }',
-            ('& '''+(Join-Path $game 'OptimizedMW_Test.ps1').Replace("'","''")+''' -Mode '+$trial[0]+' -Candidate '+$trial[1]+' -NoPrompt'),
+            ('& '''+(Join-Path $game 'OptimizedMW_Test.ps1').Replace("'","''")+''' -Mode '+$trial[0]+' -Candidate '+$trial[1]+$matrixArguments+' -NoPrompt'),
             'exit $LASTEXITCODE'
         )
         [IO.File]::WriteAllLines($driverPath,$driver)
@@ -175,8 +181,9 @@ try{
         if(-not (Test-Path -LiteralPath $profiles)){throw ('Mocked launcher profile missing: '+($output | Out-String))}
         $run=Get-ChildItem -LiteralPath $profiles -Directory | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
         $record=Get-Content -Raw -LiteralPath (Join-Path $run.FullName 'RUN-MANIFEST.json') | ConvertFrom-Json
+        $namePattern=if($trial.Count -eq 4){'HITCHV2-.+-'+$trial[3].ToUpperInvariant()+'-IO-CONTROL_'}else{'-HITCHV1-'+$trial[1]+'_'}
         if($record.candidate.name -ne $trial[1] -or $record.phase9_mode.Trace -ne $(if($trial[0] -eq '3'){'1'}else{'0'}) -or
-            $record.profile_name -notmatch ('-HITCHV1-'+$trial[1]+'_') -or $record.completion.state -ne 'launcher_failed' -or
+            $record.profile_name -notmatch $namePattern -or $record.completion.state -ne 'launcher_failed' -or
             $record.completion.launcher_error -notmatch 'Fixture intercepted' -or -not $record.completion.settings_restore_verified -or
             -not $record.completion.environment_restore_verified -or $null -ne $record.process.pid){throw ('Complete launcher failed parameter/identity/restoration proof: '+($record | Select-Object candidate,phase9_mode,profile_name,completion,process | ConvertTo-Json -Depth 5 -Compress))}
         $expectedRefill=if($trial[1] -eq 'I1'){'65536'}else{'8192'}
@@ -186,9 +193,16 @@ try{
             $record.launcher_applied_openmw_environment.OPENMW_P9_COMPILE_ATTRIBUTION -ne $(if($trial[0] -eq '3'){'1'}else{'0'}) -or
             $record.launcher_applied_openmw_environment.OPENMW_P9_FILE_POLICY_ACK -ne '1'){throw 'Full launcher effective switches differ from profile'}
         if($trial[0] -eq '3' -and $record.launcher_applied_openmw_environment.OPENMW_P9_COMPILE_ATTRIBUTION_FILE -ne (Join-Path $run.FullName 'compile-attribution.csv')){throw 'Attribution sidecar path missing'}
+        $expectedMask=if($trial.Count -eq 4){[int]$trial[2]}else{0}
+        if($record.gameplay_features.hitch_mechanisms.mask -ne $expectedMask){throw 'Full launcher lost combination identity'}
+        $keys=@('UI_REFLOW','COMPOSITE_BATCH','ANIMATION_PRELOAD','TERRAIN_CURRENT_FIRST')
+        foreach($bit in 0..3){
+            $actual=$record.launcher_applied_openmw_environment.PSObject.Properties['OPENMW_HITCH_'+$keys[$bit]].Value
+            if($actual -cne [string][int][bool]($expectedMask -band (1 -shl $bit))){throw 'Full launcher applied an incorrect feature combination'}
+        }
         if(-not (Test-Path -LiteralPath (Join-Path $game ($run.Name+'.zip')))){throw 'Failed launcher discarded its raw ZIP'}
     }
-    Write-Host 'PASS candidate launcher: independent exact switches, explicit controls, capped budgets, deep-only D1, config/environment restoration, DLL/build/family hashes, failed-run birth precision, activation fallback proof, immutable archived identity; no game/WPR/UI.'
+    Write-Host 'PASS candidate launcher: 32 full Normal/Deep combination launch paths plus retained I/O/D1 modes; exact switches, control, caps, restoration, hashes, failure/raw archive and activation fallback proof; no game/WPR/UI.'
 }finally{
     if($fixtureLock){try{if($ownsFixtureLock){$fixtureLock.ReleaseMutex()}}finally{$fixtureLock.Dispose()}}
     $restored=Restore-Phase9Environment $before

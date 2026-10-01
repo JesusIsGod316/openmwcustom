@@ -63,7 +63,8 @@ function New-Phase9RunManifest {
     param([Parameter(Mandatory=$true)][string]$GameDir,[Parameter(Mandatory=$true)][string]$ProfileDir,
         [Parameter(Mandatory=$true)][object]$Mode,[Parameter(Mandatory=$true)][object]$Candidate,
         [Parameter(Mandatory=$true)][string]$SettingsPath,[string]$OpenmwCfgPath,[string]$SavePath,
-        [string]$RouteLabel='UNSPECIFIED',[ValidateSet('unclassified','fresh-process-first-visit','same-process-revisit','later-fresh-launch')][string]$Cohort='unclassified')
+        [string]$RouteLabel='UNSPECIFIED',[ValidateSet('unclassified','fresh-process-first-visit','same-process-revisit','later-fresh-launch')][string]$Cohort='unclassified',
+        [object]$HitchCombination=$null)
     $runtime=[Collections.Generic.List[object]]::new()
     foreach($file in (Get-ChildItem -LiteralPath $GameDir -Filter '*.dll' -File | Sort-Object Name)){
         $runtime.Add((Get-Phase9FileIdentity $file.FullName $file.Name))
@@ -89,6 +90,12 @@ function New-Phase9RunManifest {
         save_identity_status='UNSPECIFIED';cache_state='OS/driver caches uncontrolled; fresh launch does not prove cold caches'}
     if($OpenmwCfgPath){$configuration.openmw_cfg=Get-Phase9FileIdentity $OpenmwCfgPath}
     if($SavePath){$configuration.save=Get-Phase9FileIdentity $SavePath;$configuration.save_identity_status=if($configuration.save.present){'caller_declared_file_hashed_not_actual_load_acknowledged'}else{'declared_file_missing'}}
+    $gameplayFeatures=[ordered]@{io_i1=[bool]$Candidate.i1;io_i2=[bool]$Candidate.i2;
+        refill_bytes=$Candidate.refill_bytes;buffer_budget_bytes=$Candidate.buffer_budget_bytes;
+        dynamic_stream=($Mode.Stream -eq '1');temporal_inputs=($Mode.Temporal -eq '1');
+        temporal_ownership=($Mode.Ownership -eq '1');composite_preparation=($Mode.Composite -eq '1');
+        dynamic_motion=($Mode.DynamicMotion -eq '1');motion_view=($Mode.View -eq '1');
+        hitch_mechanisms=$HitchCombination}
     $families=[ordered]@{
         basic=[ordered]@{requested=$true;coverage='existing basic frame/render/streaming measurements; not telemetry-free'};
         deep=[ordered]@{requested=($Mode.Trace -eq '1');coverage='retained CPU spans/catalog/selected GL; driver/GPU coverage separately qualified'};
@@ -97,6 +104,10 @@ function New-Phase9RunManifest {
         io_candidates=[ordered]@{i1_requested=$Candidate.i1;i2_requested=$Candidate.i2;
             requested_refill_bytes=$Candidate.refill_bytes;budget_limit_bytes=$Candidate.buffer_budget_bytes};
         catalog_candidate=[ordered]@{d1_requested=$Candidate.d1};
+        hitch_mechanisms=[ordered]@{requested=$HitchCombination;
+            coverage='Independent startup switches; resource denial, invalidation and demand fallback remain possible. Selection alone is not execution proof.'};
+        hitch_v2_attribution=[ordered]@{requested=($Mode.Trace -eq '1');channel='p9-hitch-spans.csv';
+            coverage='Additional nested UI, animation preparation, terrain publication and composite pass/restore spans. Existing threshold and loss qualification apply; child wall times are not additive.'};
         io_policy_acknowledgement=[ordered]@{requested=$true;coverage='one new startup policy log line, including basic CONTROL; not per-stream effective allocation proof'};
         compile_attribution=[ordered]@{requested=($Mode.Trace -eq '1');channel='compile-attribution.csv';schema=1;
             coverage='additional P0 ownership/selected-operation metadata; differs from old deep reference; original p4-compile.csv unchanged'};
@@ -104,9 +115,11 @@ function New-Phase9RunManifest {
     }
     $familyHashes=[ordered]@{}
     foreach($name in $families.Keys){$familyHashes[$name]=Get-Phase9IdentityHash $families[$name]}
-    return [pscustomobject][ordered]@{schema=1;trial_revision='hitch-reduction-v1';
+    return [pscustomobject][ordered]@{schema=1;trial_revision=$(if($Mode.HitchTrialRevision -eq 2){'hitch-reduction-v2'}else{'hitch-reduction-v1'});
         profile_name=(Split-Path -Leaf $ProfileDir);created_utc=[DateTime]::UtcNow.ToString('o');
         phase9_mode=$Mode;candidate=$Candidate;candidate_sha256=(Get-Phase9IdentityHash $Candidate);
+        trace_level=$(if($Mode.Trace -eq '1'){'DEEP'}else{'NORMAL'});
+        gameplay_features=$gameplayFeatures;gameplay_features_sha256=(Get-Phase9IdentityHash $gameplayFeatures);
         executable=(Get-Phase9FileIdentity (Join-Path $GameDir 'openmw.exe'));
         build_identity=$build;build_identity_text=$buildText;engine_source_commit_from_build_identity=$commit;
         runtime_dlls=$runtime.ToArray();runtime_dll_inventory_sha256=(Get-Phase9IdentityHash -Value @($runtime.ToArray()));

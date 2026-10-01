@@ -10,6 +10,9 @@
 
 #include <components/testing/util.hpp>
 
+#include <chrono>
+#include <thread>
+
 namespace
 {
     using namespace testing;
@@ -678,5 +681,51 @@ CUSTOM: test1.lua
         EXPECT_NE(scriptId, newScriptId);
         EXPECT_EQ(newScriptId, 2);
         EXPECT_TRUE(scripts2.hasScript(newScriptId));
+    }
+
+    TEST(LuaScriptsContainerTrace, DeepEventTimerAttributionPreservesDelivery)
+    {
+        if (!Debug::HitchTrace::requested())
+            GTEST_SKIP() << "Run in an isolated Deep subprocess to qualify production attribution";
+        constexpr VFS::Path::NormalizedView path("trace-delivery.lua");
+        VFSTestFile source(R"(
+local probe = require('fixture.trace')
+probe.hit(0)
+return { eventHandlers = { TraceEvent = function(event) probe.hit(event.value) end } }
+)");
+        auto vfs = createTestVFS({ { path, &source } });
+        LuaUtil::ScriptsConfiguration configuration;
+        ESM::LuaScriptsCfg cfg;
+        LuaUtil::parseOMWScripts(cfg, "CUSTOM: trace-delivery.lua");
+        configuration.init(std::move(cfg), false);
+        LuaUtil::LuaState lua(vfs.get(), &configuration);
+        LuaUtil::ScriptsContainer scripts(&lua, "TraceFixture");
+        int delivered = 0;
+        auto hit = [&](int value) {
+            delivered += value;
+            // A deliberately slow native subscriber qualifies the production
+            // threshold without forced retention or modifying dispatch code.
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        };
+        lua.protectedCall([&](LuaUtil::LuaView& view) {
+            sol::table probe = view.newTable();
+            probe["hit"] = hit;
+            scripts.addPackage("fixture.trace", LuaUtil::makeReadOnly(probe));
+        });
+        const int scriptId = *configuration.findId(path);
+        ASSERT_TRUE(scripts.addCustomScript(scriptId));
+        scripts.receiveEvent("TraceEvent", LuaUtil::serialize(lua.unsafeState().create_table_with("value", 1)));
+        ASSERT_EQ(delivered, 1);
+        sol::function callback = sol::make_object(lua.unsafeState(), hit);
+        scripts.registerTimerCallback(scriptId, "TraceTimer", callback);
+        using TimerType = LuaUtil::ScriptsContainer::TimerType;
+        scripts.setupSerializableTimer(TimerType::SIMULATION_TIME, 5, scriptId, "TraceTimer",
+            sol::make_object(lua.unsafeState(), 2));
+        scripts.setupSerializableTimer(TimerType::GAME_TIME, 10, scriptId, "TraceTimer",
+            sol::make_object(lua.unsafeState(), 4));
+        scripts.processTimers(8, 20);
+        EXPECT_EQ(delivered, 7);
+        scripts.processTimers(8, 20, true);
+        EXPECT_EQ(delivered, 7); // Timer dequeue/idle path still delivers once.
     }
 }

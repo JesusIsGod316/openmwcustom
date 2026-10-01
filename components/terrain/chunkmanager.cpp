@@ -604,6 +604,7 @@ namespace Terrain
             if (useCompositeMap)
             {
                 osg::ref_ptr<CompositeMap> compositeMap = new CompositeMap;
+                compositeMap->mBatchingEligible = true;
                 compositeMap->mTexture = createCompositeMapRTT();
 
                 createCompositeMapGeometry(chunkSize, chunkCenter, osg::Vec4f(0, 0, 1, 1), *compositeMap);

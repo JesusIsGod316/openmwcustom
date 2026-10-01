@@ -1,7 +1,7 @@
 param([string]$StagedDir)
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
-foreach($name in @('OptimizedMW_Test.ps1','OptimizedMW_RunManifest.ps1','candidate-launcher-tests.ps1','candidate-io-capture-tests.ps1','compile-attribution-capture-tests.ps1','OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW_SystemTrace.ps1','OptimizedMW_QualifySystemTrace.ps1','OptimizedMW_SystemTraceLink.ps1','launcher-tests.ps1','hitch-launcher-tests.ps1','frame-pacing-tests.ps1','system-trace-tests.ps1','system-trace-link-tests.ps1')){
+foreach($name in @('OptimizedMW_Test.ps1','OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1','hitch-matrix-tests.ps1','candidate-launcher-tests.ps1','candidate-io-capture-tests.ps1','compile-attribution-capture-tests.ps1','OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW_SystemTrace.ps1','OptimizedMW_QualifySystemTrace.ps1','OptimizedMW_SystemTraceLink.ps1','launcher-tests.ps1','hitch-launcher-tests.ps1','frame-pacing-tests.ps1','system-trace-tests.ps1','system-trace-link-tests.ps1')){
     $tokens=$null;$errors=$null
     $null=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $name),[ref]$tokens,[ref]$errors)
     if($errors.Count){throw ($errors | Out-String)}
@@ -62,7 +62,7 @@ foreach($shader in @('temporal_camera_motion.vert','temporal_camera_motion.frag'
     if(-not $command.Contains($shader)){throw "Unverified temporal shader: $shader"}
 }
 if($StagedDir){
-    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_RunManifest.ps1','OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW-Phase9-README.txt','OptimizedMW_SystemTrace.ps1','OptimizedMW_QualifySystemTrace.ps1','OptimizedMW_SystemTraceLink.ps1','OptimizedMW-SystemTrace.wprp','START-OptimizedMW-SystemTrace.bat','HITCH-DIAGNOSTICS.md')){
+    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1','OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW-Phase9-README.txt','OptimizedMW_SystemTrace.ps1','OptimizedMW_QualifySystemTrace.ps1','OptimizedMW_SystemTraceLink.ps1','OptimizedMW-SystemTrace.wprp','START-OptimizedMW-SystemTrace.bat','HITCH-DIAGNOSTICS.md')){
         if((Get-FileHash -LiteralPath (Join-Path $root $file)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $StagedDir $file)).Hash){
             throw ('Installed Phase 9 file mismatch: '+$file)
         }

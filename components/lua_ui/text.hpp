@@ -23,8 +23,10 @@ namespace LuaUi
 
     private:
         bool mAutoSized;
+        bool mReflowPropertiesApplied{ false };
 
     protected:
+        void initialiseOverride() override;
         MyGUI::IntSize calculateSize() const override;
         MyGUI::IntCoord getTextRegion() const override;
         MyGUI::IntSize getViewSize() const override;
