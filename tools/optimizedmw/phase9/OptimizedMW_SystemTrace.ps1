@@ -113,9 +113,26 @@ function Write-SystemTraceJson {
         }else{[IO.File]::Move($temp,$Path)}
     }finally{if([IO.File]::Exists($temp)){[IO.File]::Delete($temp)}}
 }
-function Get-SystemTraceGameProcesses {
+function Get-SystemTraceProcessRole {
+    param([string]$CommandLine,[string]$Executable)
+    # WindowsCrashCatcher starts the same executable with the raw command line
+    # `--crash-monitor <hex SHM handle>` (without argv[0]'s executable token).
+    # Accept that exact grammar, or the same grammar with the exact executable
+    # prefix. A missing/zero/malformed handle or a substring is never a helper.
+    if([string]::IsNullOrWhiteSpace($CommandLine)){return 'unknown'}
+    $path=[regex]::Escape($Executable)
+    $prefix='(?:(?i:"'+$path+'"|'+$path+')[ \t]+)?'
+    $match=[regex]::Match($CommandLine.Trim([char[]]" `t"),'^'+$prefix+'--crash-monitor[ \t]+(?:0x)?([0-9a-fA-F]{1,16})$')
+    if($match.Success -and $match.Groups[1].Value.TrimStart('0').Length -gt 0){return 'crash_monitor'}
+    if($CommandLine.IndexOf('--crash-monitor',[StringComparison]::OrdinalIgnoreCase) -ge 0){return 'unknown'}
+    return 'engine_candidate'
+}
+
+function Get-SystemTraceExecutableProcesses {
     param([string]$Executable)
-    # PID alone can be reused. Identity includes exact path and process birth.
+    # PID alone can be reused. Identity includes exact path and native birth,
+    # while the CIM birth check prevents using an old process's command line
+    # or parent PID after its PID has been recycled during enumeration.
     foreach($process in @(Get-CimInstance Win32_Process -Filter "Name='openmw.exe'")){
         if($process.ExecutablePath -and [string]::Equals([IO.Path]::GetFullPath($process.ExecutablePath),
             $Executable,[StringComparison]::OrdinalIgnoreCase)){
@@ -125,13 +142,63 @@ function Get-SystemTraceGameProcesses {
                 # loop can save an already observed game instead of cancelling.
                 $nativeProcess=Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
                 if(-not $nativeProcess -or -not [string]::Equals($nativeProcess.Path,$Executable,[StringComparison]::OrdinalIgnoreCase)){continue}
-                $creationUtc=$nativeProcess.StartTime.ToUniversalTime().ToString('o')
+                $nativeBirth=$nativeProcess.StartTime.ToUniversalTime()
+                $cimBirth=[DateTime]$process.CreationDate
+                # Win32_Process CreationDate represents microseconds; native
+                # StartTime retains 100 ns. Ignore only that precision tail.
+                if([Math]::Abs(($nativeBirth.Ticks-$cimBirth.ToUniversalTime().Ticks)) -gt 9){continue}
+                $creationUtc=$nativeBirth.ToString('o')
             }catch{continue}
             [pscustomobject]@{process_id=[int]$process.ProcessId;
                 creation_utc=$creationUtc;
+                parent_process_id=[int]$process.ParentProcessId;
+                command_line=$process.CommandLine;
+                role=(Get-SystemTraceProcessRole $process.CommandLine $Executable);
                 executable_path=[IO.Path]::GetFullPath($process.ExecutablePath)}
         }
     }
+}
+
+function Get-SystemTraceGameProcesses {
+    param([string]$Executable)
+    Get-SystemTraceExecutableProcesses $Executable | Where-Object {$_.role -ne 'crash_monitor'}
+}
+
+function Update-SystemTraceProcessInventory {
+    param([System.Collections.IDictionary]$State,[object]$Tracker,[object[]]$Inventory)
+    $ordered=@($Inventory | Sort-Object process_id,creation_utc)
+    $signature=ConvertTo-Json -InputObject $ordered -Depth 5 -Compress
+    $changed=$signature -ne $Tracker.signature
+    $newGames=@();$live=@();$helpers=@()
+    $observedUtc=[DateTime]::UtcNow.ToString('o')
+    foreach($process in $ordered){
+        $key=[string]$process.process_id+'|'+$process.creation_utc
+        if($process.role -eq 'crash_monitor'){
+            $helpers+=$process
+            if(-not $Tracker.helpers.ContainsKey($key)){
+                $Tracker.helpers[$key]=[pscustomobject]@{process_id=$process.process_id;creation_utc=$process.creation_utc;
+                    parent_process_id=$process.parent_process_id;command_line=$process.command_line;role=$process.role;
+                    executable_path=$process.executable_path;observed_utc=$observedUtc}
+            }
+        }else{
+            $live+=$process
+            if(-not $Tracker.games.ContainsKey($key)){
+                $newGames+=$process
+                $Tracker.games[$key]=[pscustomobject]@{process_id=$process.process_id;creation_utc=$process.creation_utc;
+                    parent_process_id=$process.parent_process_id;command_line=$process.command_line;role=$process.role;
+                    executable_path=$process.executable_path;observed_utc=$observedUtc}
+            }
+        }
+    }
+    if($changed){
+        $State.process_inventory=$ordered
+        $State.process_inventory_history+=@([pscustomobject]@{observed_utc=$observedUtc;processes=$ordered})
+        $State.game_processes=@($Tracker.games.Values | Sort-Object process_id,creation_utc)
+        $State.helper_processes=@($Tracker.helpers.Values | Sort-Object process_id,creation_utc)
+        $Tracker.signature=$signature
+    }
+    return [pscustomobject]@{changed=$changed;games=$live;helpers=$helpers;new_games=$newGames;
+        game_observed=($Tracker.games.Count -gt 0);multiple_games=($live.Count -gt 1)}
 }
 
 function Get-SystemTraceStartArguments {
@@ -143,7 +210,8 @@ function Get-SystemTraceStartArguments {
 
 function Get-SystemTraceStopReason {
     param([double]$ElapsedSeconds,[int]$DurationSeconds,[long]$FreeBytes,[long]$MinimumFreeBytes,
-          [bool]$EnterPressed,[bool]$GameObserved,[int]$LiveGameCount)
+          [bool]$EnterPressed,[bool]$GameObserved,[int]$LiveGameCount,[bool]$MultipleGames=$false)
+    if($MultipleGames){return 'multiple_games'}
     if($FreeBytes -lt $MinimumFreeBytes){return 'minimum_free_space'}
     if($ElapsedSeconds -ge $DurationSeconds){return 'duration_limit'}
     if($EnterPressed){return 'user_enter'}
@@ -221,12 +289,18 @@ $state=[ordered]@{schema=2;capture_id=$captureId;instance=$instance;
     recorder_process_id=$PID;recorder_creation_utc=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o');
     directory=$directory;executable_path=$exe;executable_sha256=$hash;game_directory=$PSScriptRoot;
     start_utc=[DateTime]::UtcNow.ToString('o');profile_sha256=(Get-FileHash -LiteralPath $profile).Hash;
+    recorder_script_sha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLowerInvariant();
+    qualifier_script_sha256=$(if(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'OptimizedMW_QualifySystemTrace.ps1')){
+        (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'OptimizedMW_QualifySystemTrace.ps1')).Hash.ToLowerInvariant()
+    }else{$null});
     buffer_mode=$Mode;requested_buffer_mib=320;maximum_duration_seconds=$DurationSeconds;
     minimum_free_bytes=$minimumFreeBytes;free_bytes_at_start=$freeBytes;status='starting';
     save_space_guard='Keep minimum free space plus twice current temporary trace bytes for merge/save; checked every second';
     started=$false;normal_stop=$false;events_lost='NOT_YET_ANALYZED';
     completeness='UNQUALIFIED until retained scheduling coverage, loss counts and engine identity are checked';
-    gpu_event_availability='NOT_YET_ANALYZED';game_processes=@();
+    gpu_event_availability='NOT_YET_ANALYZED';game_processes=@();helper_processes=@();
+    process_inventory=@();process_inventory_history=@();ambiguous_game_processes=$false;
+    process_role_rules='Crash helpers require the exact --crash-monitor nonzero hex SHM handle command grammar; missing or malformed command lines remain engine candidates. Exact path and native PID birth are checked. Parent PID is retained as evidence, not required to remain alive.';
     correlation='Exact executable hash/path, PID plus creation time, capture_id handshake and engine clock-map QPC/UTC anchors';
     limits='Provider configuration does not prove GPU events exist. Private driver internals and absent symbols remain unresolved. File recording introduces disk activity.'}
 Copy-Item -LiteralPath $profile -Destination $directory
@@ -251,20 +325,24 @@ try{
     Write-Host 'The recorder saves automatically when that exact game exits. Press Enter here to stop earlier.'
     Write-Host "Recording also stops at the time limit or if free space drops below $MinimumFreeGiB GiB."
     $watch=[Diagnostics.Stopwatch]::StartNew()
-    $observed=@{};$gameObserved=$false;$stopReason=$null
+    $tracker=[pscustomobject]@{games=@{};helpers=@{};signature=$null};$stopReason=$null
     while(-not $stopReason){
-        $live=@(Get-SystemTraceGameProcesses $exe)
-        if($live.Count -gt 1){throw 'Multiple exact-path games detected; refusing to claim an unambiguous run'}
-        foreach($game in $live){
-            $key=[string]$game.process_id+'|'+$game.creation_utc
-            if(-not $observed.ContainsKey($key)){
-                $game | Add-Member observed_utc ([DateTime]::UtcNow.ToString('o'))
-                $observed[$key]=$game;$gameObserved=$true
-                $state.game_processes=@($observed.Values)
-                Write-SystemTraceJson $statePath $state
-                Write-SystemTraceJson $activePath $state
-                Write-Host ('Associated game PID '+$game.process_id+'; exact executable path verified.') -ForegroundColor Green
-            }
+        $inventory=@(Get-SystemTraceExecutableProcesses $exe)
+        $snapshot=Update-SystemTraceProcessInventory $state $tracker $inventory
+        $live=@($snapshot.games)
+        if($snapshot.multiple_games){
+            # Preserve the ETL instead of throwing into cancellation cleanup.
+            # Qualification must reject this ambiguous engine identity.
+            $state.ambiguous_game_processes=$true;$state.ambiguity_process_inventory=$inventory
+            $state.completeness='AMBIGUOUS: multiple exact-path engine candidates; ETL retained without a completeness claim'
+            Write-Warning 'Multiple exact-path engine candidates detected. Saving the owned trace and process inventory without claiming an unambiguous run.'
+        }
+        if($snapshot.changed){
+            Write-SystemTraceJson $statePath $state
+            Write-SystemTraceJson $activePath $state
+        }
+        foreach($game in $snapshot.new_games){
+            Write-Host ('Associated game PID '+$game.process_id+'; exact executable path verified.') -ForegroundColor Green
         }
         $freeBytes=Get-SystemTraceFreeBytes $directory
         $temporaryBytes=Get-SystemTraceTemporaryBytes $tempDirectory
@@ -273,7 +351,7 @@ try{
         try{while([Console]::KeyAvailable){if([Console]::ReadKey($true).Key -eq [ConsoleKey]::Enter){$enterPressed=$true}}}catch{
             # Redirected hosts cannot read keys. Exit/time/space guards still work.
         }
-        $stopReason=Get-SystemTraceStopReason $watch.Elapsed.TotalSeconds $DurationSeconds $freeBytes $saveReserveBytes $enterPressed $gameObserved $live.Count
+        $stopReason=Get-SystemTraceStopReason $watch.Elapsed.TotalSeconds $DurationSeconds $freeBytes $saveReserveBytes $enterPressed $snapshot.game_observed $live.Count $snapshot.multiple_games
         if(-not $stopReason){Start-Sleep -Milliseconds 1000}
     }
     $state.stop_reason=$stopReason;$state.free_bytes_at_stop=$freeBytes

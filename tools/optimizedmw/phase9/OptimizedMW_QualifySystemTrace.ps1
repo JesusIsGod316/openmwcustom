@@ -31,6 +31,7 @@ function Write-SystemTraceQualificationJson {
 function Get-SystemTraceQualification {
     param([object]$Native,[object]$State,[object]$Binding)
     $reasons=[Collections.Generic.List[string]]::new()
+    if($State.ambiguous_game_processes -or $State.stop_reason -eq 'multiple_games'){[void]$reasons.Add('Multiple engine processes observed; recorder stopped early and capture pairing is ambiguous')}
     if($Native.LostEvents -ne 0 -or $Native.LostBuffers -ne 0){[void]$reasons.Add('ETL reports lost events or buffers')}
     if($Native.SchedulingEvents -eq 0 -or $Native.FirstSchedulingFileTime -eq 0){[void]$reasons.Add('No retained scheduling events')}
     $first=$null;$last=$null
@@ -59,6 +60,8 @@ function Get-SystemTraceQualification {
         retained_scheduling_first_utc=$(if($first){$first.ToString('o')}else{$null});
         retained_scheduling_last_utc=$(if($last){$last.ToString('o')}else{$null});
         retained_scheduling_seconds=$(if($first -and $last){($last-$first).TotalSeconds}else{0});
+        stop_reason=$State.stop_reason;ambiguous_game_processes=[bool]$State.ambiguous_game_processes;
+        ignored_helper_processes=$State.helper_processes;process_inventory=$State.process_inventory;
         processed_events=$Native.Events;lost_events=$Native.LostEvents;lost_buffers=$Native.LostBuffers;
         scheduling_events=$Native.SchedulingEvents;sample_events=$Native.SampleEvents;
         dxgkrnl_events=$Native.GpuEvents;dxgkrnl_task_opcode_event_version_counts=$Native.GpuKinds;

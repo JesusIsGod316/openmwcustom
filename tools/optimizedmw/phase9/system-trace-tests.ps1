@@ -20,19 +20,45 @@ Assert-Trace ((Get-SystemTraceStopReason 360 360 11GB 10GB $false $true 1) -eq '
 Assert-Trace ((Get-SystemTraceStopReason 20 360 9GB 10GB $false $true 1) -eq 'minimum_free_space') 'Low-space recording continued'
 Assert-Trace ((Get-SystemTraceStopReason 20 360 11GB 10GB $true $false 0) -eq 'user_enter') 'Manual early stop was not honored'
 
-# Exact path filtering must reject another installation even with the same name,
-# while birth time disambiguates a recycled PID.
+# A normal Windows engine spawns the same executable with the raw command line
+# `--crash-monitor <hex SHM handle>`; only that grammar identifies the helper.
+$testExecutable='C:\test game\openmw.exe'
+foreach($command in @('--crash-monitor 00000000000000DC','--crash-monitor 0xdc',
+    ' --crash-monitor ABC123 ',('"'+$testExecutable+'" --crash-monitor DC'),
+    ($testExecutable+' --crash-monitor DC'))){
+    Assert-Trace ((Get-SystemTraceProcessRole $command $testExecutable) -eq 'crash_monitor') ('Real crash helper was counted as a game: '+$command)
+}
+foreach($command in @($null,'','--crash-monitor','--crash-monitor 0','--crash-monitor 0x0000',
+    '--crash-monitor xyz','--crash-monitor 12345678901234567','--crash-monitor DC extra',
+    '--other=--crash-monitor DC','--CRASH-MONITOR DC','--crash-monitor 0XDC',
+    ('--crash-monitor'+[char]0x00a0+'DC'),
+    '"C:\other game\openmw.exe" --crash-monitor DC')){
+    Assert-Trace ((Get-SystemTraceProcessRole $command $testExecutable) -eq 'unknown') ('Unconfirmed process was hidden as a helper: '+$command)
+}
+Assert-Trace ((Get-SystemTraceProcessRole ('"'+$testExecutable+'" --config="C:\test profile"') $testExecutable) -eq 'engine_candidate') 'Normal engine command line was not a candidate'
+
+# Exact path filtering rejects another installation even with the same name.
+# Native birth retains 100 ns precision; CIM's microsecond identity corroborates
+# command line and parent metadata, rejecting a recycled PID between lookups.
+$birth=[DateTime]::Parse('2026-10-01T10:00:00Z')
+$script:mockProcesses=@(
+    [pscustomobject]@{ProcessId=77;ParentProcessId=10;CreationDate=$birth;ExecutablePath=$testExecutable;CommandLine=('"'+$testExecutable+'" --config="C:\profile"')},
+    [pscustomobject]@{ProcessId=78;ParentProcessId=77;CreationDate=$birth.AddSeconds(1);ExecutablePath=$testExecutable;CommandLine='--crash-monitor 00000000000000DC'},
+    [pscustomobject]@{ProcessId=88;ParentProcessId=10;CreationDate=$birth.AddSeconds(2);ExecutablePath='C:\other game\openmw.exe';CommandLine='openmw.exe'},
+    [pscustomobject]@{ProcessId=99;ParentProcessId=10;CreationDate=$birth.AddSeconds(3);ExecutablePath=$null;CommandLine=$null})
+$script:mockNativeProcesses=@{
+    77=[pscustomobject]@{StartTime=$birth.AddTicks(7);Path=$testExecutable};
+    78=[pscustomobject]@{StartTime=$birth.AddSeconds(1).AddTicks(7);Path=$testExecutable}}
 function Get-CimInstance {
     param([string]$ClassName,[string]$Filter)
     Assert-Trace ($ClassName -eq 'Win32_Process' -and $Filter -eq "Name='openmw.exe'") 'Unexpected process query'
-    [pscustomobject]@{ProcessId=77;CreationDate=[DateTime]::Parse('2026-10-01T10:00:00Z');ExecutablePath='C:\test game\openmw.exe'}
-    [pscustomobject]@{ProcessId=88;CreationDate=[DateTime]::Parse('2026-10-01T10:00:01Z');ExecutablePath='C:\other game\openmw.exe'}
-    [pscustomobject]@{ProcessId=99;CreationDate=[DateTime]::Parse('2026-10-01T10:00:02Z');ExecutablePath=$null}
+    $script:mockProcesses
 }
 $script:processRace='none';$script:racePropertyReads=0
 function Get-Process {
     param([int]$Id,[string]$ErrorAction)
-    Assert-Trace ($Id -eq 77) 'Attempted to identify a different executable'
+    Assert-Trace ($script:mockNativeProcesses.ContainsKey($Id)) 'Attempted to identify a different executable'
+    if($Id -ne 77){return $script:mockNativeProcesses[$Id]}
     if($script:processRace -eq 'absent'){return $null}
     if($script:processRace -eq 'lookup'){throw 'Process exited during native lookup'}
     if($script:processRace -eq 'path'){
@@ -49,10 +75,56 @@ function Get-Process {
         }
         return $result
     }
-    [pscustomobject]@{StartTime=[DateTime]::Parse('2026-10-01T10:00:00Z').AddTicks(7);Path='C:\test game\openmw.exe'}
+    $script:mockNativeProcesses[$Id]
 }
-$games=@(Get-SystemTraceGameProcesses 'C:\test game\openmw.exe')
+$inventory=@(Get-SystemTraceExecutableProcesses $testExecutable)
+$games=@(Get-SystemTraceGameProcesses $testExecutable)
 Assert-Trace ($games.Count -eq 1 -and $games[0].process_id -eq 77 -and $games[0].creation_utc -eq '2026-10-01T10:00:00.0000007Z') 'Path/birth identity or native timestamp precision was lost'
+Assert-Trace ($inventory.Count -eq 2 -and $inventory[1].process_id -eq 78 -and $inventory[1].parent_process_id -eq 77 -and
+    $inventory[1].role -eq 'crash_monitor' -and $inventory[1].command_line -eq '--crash-monitor 00000000000000DC') 'Crash monitor inventory/parent/command line was not retained'
+$trackedState=@{game_processes=@();helper_processes=@();process_inventory=@();process_inventory_history=@()}
+$tracker=[pscustomobject]@{games=@{};helpers=@{};signature=$null}
+$snapshot=Update-SystemTraceProcessInventory $trackedState $tracker $inventory
+Assert-Trace ($snapshot.games.Count -eq 1 -and $snapshot.helpers.Count -eq 1 -and $snapshot.new_games.Count -eq 1 -and
+    -not $snapshot.multiple_games -and $snapshot.game_observed -and $trackedState.helper_processes.Count -eq 1) 'Normal engine/helper pair was misclassified'
+$snapshot=Update-SystemTraceProcessInventory $trackedState $tracker $inventory
+Assert-Trace (-not $snapshot.changed -and $snapshot.new_games.Count -eq 0 -and $trackedState.process_inventory_history.Count -eq 1) 'Unchanged inventory duplicated history/engine identities'
+$helperOnly=@($inventory | Where-Object {$_.role -eq 'crash_monitor'})
+$snapshot=Update-SystemTraceProcessInventory $trackedState $tracker $helperOnly
+Assert-Trace ($snapshot.games.Count -eq 0 -and $snapshot.helpers.Count -eq 1 -and $snapshot.game_observed -and
+    (Get-SystemTraceStopReason 30 360 11GB 10GB $false $snapshot.game_observed $snapshot.games.Count $snapshot.multiple_games) -eq 'game_exit') 'Helper surviving parent exit delayed automatic save'
+$snapshot=Update-SystemTraceProcessInventory $trackedState $tracker @()
+Assert-Trace ($snapshot.games.Count -eq 0 -and $trackedState.process_inventory_history.Count -eq 3 -and
+    $trackedState.game_processes.Count -eq 1 -and $trackedState.helper_processes.Count -eq 1) 'Exited process history was lost'
+$emptyState=@{game_processes=@();helper_processes=@();process_inventory=@();process_inventory_history=@()}
+$emptyTracker=[pscustomobject]@{games=@{};helpers=@{};signature=$null}
+$snapshot=Update-SystemTraceProcessInventory $emptyState $emptyTracker $helperOnly
+Assert-Trace (-not $snapshot.game_observed -and
+    $null -eq (Get-SystemTraceStopReason 30 360 11GB 10GB $false $snapshot.game_observed $snapshot.games.Count $snapshot.multiple_games)) 'Orphan helper before launch was treated as a game session'
+
+$originalMocks=$script:mockProcesses
+$secondGame=[pscustomobject]@{ProcessId=79;ParentProcessId=10;CreationDate=$birth.AddSeconds(2);ExecutablePath=$testExecutable;CommandLine=('"'+$testExecutable+'"')}
+$secondHelper=[pscustomobject]@{ProcessId=80;ParentProcessId=79;CreationDate=$birth.AddSeconds(3);ExecutablePath=$testExecutable;CommandLine='--crash-monitor 0xDC'}
+$script:mockNativeProcesses[79]=[pscustomobject]@{StartTime=$birth.AddSeconds(2).AddTicks(7);Path=$testExecutable}
+$script:mockNativeProcesses[80]=[pscustomobject]@{StartTime=$birth.AddSeconds(3).AddTicks(7);Path=$testExecutable}
+$script:mockProcesses=$originalMocks+@($secondGame,$secondHelper)
+$inventory=@(Get-SystemTraceExecutableProcesses $testExecutable)
+$snapshot=Update-SystemTraceProcessInventory $trackedState $tracker $inventory
+Assert-Trace ($snapshot.games.Count -eq 2 -and $snapshot.helpers.Count -eq 2 -and $snapshot.multiple_games -and
+    (Get-SystemTraceStopReason 30 360 11GB 10GB $false $snapshot.game_observed $snapshot.games.Count $snapshot.multiple_games) -eq 'multiple_games') 'Two genuine engines were not saved as an ambiguous run'
+$script:mockProcesses=$originalMocks
+
+$savedCommand=$script:mockProcesses[0].CommandLine
+foreach($command in @($null,'--crash-monitor 0','--crash-monitor DC extra','--other=--crash-monitor DC')){
+    $script:mockProcesses[0].CommandLine=$command
+    $games=@(Get-SystemTraceGameProcesses $testExecutable)
+    Assert-Trace ($games.Count -eq 1 -and $games[0].role -eq 'unknown') 'Unknown command line disappeared from engine candidates'
+}
+$script:mockProcesses[0].CommandLine=$savedCommand
+$savedBirth=$script:mockNativeProcesses[77].StartTime
+$script:mockNativeProcesses[77].StartTime=$birth.AddSeconds(10)
+Assert-Trace (@(Get-SystemTraceGameProcesses $testExecutable).Count -eq 0) 'Recycled PID inherited prior command line and parent metadata'
+$script:mockNativeProcesses[77].StartTime=$savedBirth
 foreach($race in @('path','birth','lookup','absent')){
     $script:processRace=$race;$script:racePropertyReads=0
     $games=@(Get-SystemTraceGameProcesses 'C:\test game\openmw.exe')
@@ -63,7 +135,7 @@ foreach($race in @('path','birth','lookup','absent')){
     Assert-Trace ((Get-SystemTraceStopReason 30 360 11GB 10GB $false $true $games.Count) -eq 'game_exit') ('Process disappearance did not preserve automatic save: '+$race)
 }
 $script:processRace='none'
-$games=@(Get-SystemTraceGameProcesses 'C:\test game\openmw.exe')
+$games=@(Get-SystemTraceGameProcesses $testExecutable)
 Assert-Trace ($games.Count -eq 1) 'Process disappearance poisoned subsequent enumeration'
 
 $script:calls=[Collections.Generic.List[object]]::new();$script:nativeExitCode=0
@@ -102,6 +174,10 @@ $binding=[pscustomobject]@{identity_valid=$true;start_utc=$epoch.AddSeconds(1);e
 $report=Get-SystemTraceQualification $native $state $binding
 Assert-Trace $report.scheduling_complete 'Complete matching engine range rejected'
 Assert-Trace ($report.gpu_event_availability.StartsWith('UNAVAILABLE') -and $report.gpu_queue_attribution.StartsWith('UNQUALIFIED')) 'Absent GPU data was claimed as available'
+$ambiguousState=[pscustomobject]@{capture_id='id';game_processes=@();ambiguous_game_processes=$true;stop_reason='multiple_games';
+    helper_processes=$trackedState.helper_processes;process_inventory=$inventory}
+$report=Get-SystemTraceQualification $native $ambiguousState $binding
+Assert-Trace (-not $report.scheduling_complete -and $report.ambiguous_game_processes -and $report.stop_reason -eq 'multiple_games') 'Ambiguous engines accepted despite full coverage, zero loss and valid binding'
 $native.FirstSchedulingFileTime=$epoch.AddSeconds(150).ToFileTimeUtc()
 $report=Get-SystemTraceQualification $native $state $binding
 Assert-Trace (-not $report.scheduling_complete -and $report.coverage -eq 'PARTIAL' -and $report.lost_events -eq 0) 'Circular overwrite hidden by zero event loss'
@@ -150,7 +226,8 @@ try{
     Assert-Trace $rejected 'Replaced ZIP with same byte count accepted'
     $source=Join-Path $temp 'system-capture';New-Item -ItemType Directory -Path $source | Out-Null
     $raw=Join-Path $source 'OptimizedMW-SystemTrace.etl';[IO.File]::WriteAllBytes($raw,[byte[]]@(0,1,127,255))
-    $archiveState=@{schema=2;normal_stop=$true;status='saved';etl_sha256=(Get-FileHash -LiteralPath $raw).Hash}
+    $archiveState=@{schema=2;normal_stop=$true;status='saved';etl_sha256=(Get-FileHash -LiteralPath $raw).Hash;
+        stop_reason='multiple_games';ambiguous_game_processes=$true;process_inventory=$inventory;helper_processes=$trackedState.helper_processes}
     Write-SystemTraceJson (Join-Path $source 'SYSTEM-TRACE-STATE.json') $archiveState
     'profile' | Set-Content -LiteralPath (Join-Path $source 'profile.wprp')
     'incomplete' | Set-Content -LiteralPath (Join-Path $source 'atomic.tmp')
@@ -181,4 +258,4 @@ if($ExistingCaptureDirectory){
     # Read-only ETL replay writes only a new qualification report beside the ETL.
     & (Join-Path $PSScriptRoot 'OptimizedMW_QualifySystemTrace.ps1') -CaptureDirectory $ExistingCaptureDirectory
 }
-Write-Host 'PASS system trace: File/Memory controls, duration/space/exit guards, path/PID lifetime, owned-instance failure cleanup, retention/loss/identity/GPU qualification, atomic sidecars and streaming-verified archive with raw preservation'
+Write-Host 'PASS system trace: File/Memory controls, duration/space/exit guards, exact-path engine/crash-helper roles and native PID lifetime, ambiguity preservation, owned-instance failure cleanup, retention/loss/identity/GPU qualification, atomic sidecars and streaming-verified archive with raw preservation'
