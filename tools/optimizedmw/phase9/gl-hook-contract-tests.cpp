@@ -1,4 +1,5 @@
 #include <components/sceneutil/glcalltrace.hpp>
+#include <osg/FrameBufferObject>
 #include <iostream>
 #include <thread>
 #include <stdexcept>
@@ -21,6 +22,13 @@ void GL_APIENTRY query(GLuint id,GLenum pname,GLuint* result)
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
 }
 GLboolean GL_APIENTRY unmap(GLenum target){return target==5?GL_TRUE:GL_FALSE;}
+unsigned framebufferCalls=0;
+GLenum GL_APIENTRY framebufferStatus(GLenum target)
+{
+    if(target!=GL_FRAMEBUFFER_EXT)throw std::runtime_error("framebuffer target changed");
+    ++framebufferCalls;
+    return GL_FRAMEBUFFER_COMPLETE_EXT;
+}
 
 bool expectCompressedBreadcrumb=false;
 bool expectTextureIdentity=false;
@@ -105,6 +113,14 @@ int main(int argc,char** argv) try
     Hook<15,GetQueryObjectuiv,decltype(fn)>::install(fn);
     { Scope scope({15,43,State,9});fn(7,9,&result); }
     if(calls!=3)throw std::runtime_error("idempotent installation chained itself");
+
+    auto framebufferFn=&framebufferStatus;
+    Hook<15,CheckFramebufferStatus,decltype(framebufferFn)>::install(framebufferFn);
+    { Scope scope({15,47,Drawable,11});
+      if(framebufferFn(GL_FRAMEBUFFER_EXT)!=GL_FRAMEBUFFER_COMPLETE_EXT)
+          throw std::runtime_error("framebuffer result changed"); }
+    if(framebufferCalls!=1 || Capture::instance().total(15,CheckFramebufferStatus).calls!=1)
+        throw std::runtime_error("framebuffer dispatch not counted exactly once");
 
     std::cout<<"PASS: synthetic dispatch ABI, active crash breadcrumb, eight-argument texture upload metadata, "
                 "returns, exactly one original call, idempotent hook and outside-scope passthrough\n";

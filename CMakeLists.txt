@@ -1282,6 +1282,7 @@ if(WIN32)
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_Benchmark_Report.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW-Phase9-README.txt"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_ProfileArchive.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_HitchReport.ps1"
         DESTINATION "."
     )
 endif()

@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 #include "niffilemanager.hpp"
 
 #include <iostream>
@@ -75,6 +76,7 @@ namespace Resource
 
     Nif::NIFFilePtr NifFileManager::get(VFS::Path::NormalizedView name)
     {
+        Debug::HitchTrace::Scope hitchNif("resource.nif_lookup", {}, name.value());
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(name);
         if (obj != nullptr)
             return static_cast<NifFileHolder*>(obj.get())->mNifFile;
@@ -87,7 +89,8 @@ namespace Resource
         SpeculativeScope::Stage memoryStage(estimate.peak, estimate.retained);
         auto file = std::make_shared<Nif::NIFFile>(name);
         Nif::Reader reader(*file, mEncoder);
-        reader.parse(std::move(stream));
+        { Debug::HitchTrace::Scope hitchParse("resource.nif_parse", {}, name.value());
+          reader.parse(std::move(stream)); }
         obj = new NifFileHolder(file);
         mCache->addEntryToObjectCache(name.value(), obj);
         return file;

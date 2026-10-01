@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 #include "scene.hpp"
 
 #include <algorithm>
@@ -153,6 +154,8 @@ namespace
     void addObject(const MWWorld::Ptr& ptr, const MWWorld::World& world, const std::vector<ESM::RefNum>& pagedRefs,
         MWPhysics::PhysicsSystem& physics, MWRender::RenderingManager& rendering)
     {
+        Debug::HitchTrace::Scope hitchObject("scene.add_object",
+            Debug::HitchTrace::requested() ? ptr.toString() : std::string{});
         bool restoredRendering = false;
         if (ptr.getRefData().getBaseNode())
             restoredRendering = rendering.consumeRestoredExteriorObject(ptr);
@@ -186,58 +189,73 @@ namespace
             restoredRendering = false;
         }
         auto phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
-        const auto v32ObjectStart = Debug::V32RendererProfiling::beginObject();
-        if (!restoredRendering)
         {
-            if (!paged)
+            Debug::HitchTrace::Scope hitchPhase("scene.object_rendering", {}, model.value());
+            const auto v32ObjectStart = Debug::V32RendererProfiling::beginObject();
+            if (!restoredRendering)
             {
-                ptr.getClass().insertObjectRendering(ptr, model, rendering);
-                if (stats)
-                    ++stats->mRenderedRefs;
+                if (!paged)
+                {
+                    ptr.getClass().insertObjectRendering(ptr, model, rendering);
+                    if (stats)
+                        ++stats->mRenderedRefs;
+                }
+                else
+                    ptr.getRefData().setBaseNode(pagedNode);
             }
-            else
-                ptr.getRefData().setBaseNode(pagedNode);
-        }
-        else if (stats)
-            ++stats->mRenderedRefs;
-        setNodeRotation(ptr, rendering, rotation);
-        Debug::V32RendererProfiling::finishObject(v32ObjectStart, !restoredRendering && !paged, restoredRendering,
-            paged, ptr.getClass().isActor(), ptr.getClass().useAnim(),
-            ptr.getType() == ESM::Light::sRecordId || ptr.getType() == ESM4::Light::sRecordId,
-            ptr.getCellRef().getRefId().toDebugString(), model.value());
-        if (stats)
-            stats->mRenderMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
-
-        phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
-        if (ptr.getClass().useAnim())
-            MWBase::Environment::get().getMechanicsManager()->add(ptr);
-        if (stats)
-            stats->mMechanicsMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
-
-        phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
-        if (ptr.getClass().isActor())
-            rendering.addWaterRippleEmitter(ptr);
-        // A retained ObjectAnimation already owns its particle/render
-        // state. Re-applying looping particles would duplicate it.
-        if (!restoredRendering)
-            world.applyLoopingParticles(ptr);
-        if (stats)
-            stats->mParticlesMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
-
-        phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
-        if (!model.empty())
-        {
-            ptr.getClass().insertObject(ptr, model, rotation, physics);
+            else if (stats)
+                ++stats->mRenderedRefs;
+            setNodeRotation(ptr, rendering, rotation);
+            Debug::V32RendererProfiling::finishObject(v32ObjectStart, !restoredRendering && !paged, restoredRendering,
+                paged, ptr.getClass().isActor(), ptr.getClass().useAnim(),
+                ptr.getType() == ESM::Light::sRecordId || ptr.getType() == ESM4::Light::sRecordId,
+                ptr.getCellRef().getRefId().toDebugString(), model.value());
             if (stats)
-                ++stats->mPhysicsRefs;
-        }
-        if (stats)
-            stats->mPhysicsMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
+                stats->mRenderMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
 
+        }
         phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
-        MWBase::Environment::get().getLuaManager()->objectAddedToScene(ptr);
-        if (stats)
-            stats->mLuaAddedMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
+        {
+            Debug::HitchTrace::Scope hitchPhase("scene.object_mechanics", {}, model.value());
+            if (ptr.getClass().useAnim())
+                MWBase::Environment::get().getMechanicsManager()->add(ptr);
+            if (stats)
+                stats->mMechanicsMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
+
+        }
+        phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
+        {
+            Debug::HitchTrace::Scope hitchPhase("scene.object_particles", {}, model.value());
+            if (ptr.getClass().isActor())
+                rendering.addWaterRippleEmitter(ptr);
+            // A retained ObjectAnimation already owns its particle/render
+            // state. Re-applying looping particles would duplicate it.
+            if (!restoredRendering)
+                world.applyLoopingParticles(ptr);
+            if (stats)
+                stats->mParticlesMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
+
+        }
+        phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
+        {
+            Debug::HitchTrace::Scope hitchPhase("scene.object_physics", {}, model.value());
+            if (!model.empty())
+            {
+                ptr.getClass().insertObject(ptr, model, rotation, physics);
+                if (stats)
+                    ++stats->mPhysicsRefs;
+            }
+            if (stats)
+                stats->mPhysicsMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
+
+        }
+        phaseStart = stats ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
+        {
+            Debug::HitchTrace::Scope hitchPhase("scene.object_lua_added", {}, model.value());
+            MWBase::Environment::get().getLuaManager()->objectAddedToScene(ptr);
+            if (stats)
+                stats->mLuaAddedMs += Debug::V3Diagnostics::elapsedMs(phaseStart);
+        }
     }
 
     void addObject(const MWWorld::Ptr& ptr, const MWWorld::World& world, const MWPhysics::PhysicsSystem& physics,
@@ -1355,6 +1373,7 @@ namespace MWWorld
     void Scene::insertCell(
         CellStore& cell, Loading::Listener* loadingListener, const DetourNavigator::UpdateGuard* navigatorUpdateGuard)
     {
+        Debug::HitchTrace::Scope hitchCell("scene.insert_cell", cell.getCell()->getDescription());
         Debug::V3Diagnostics::TraceScope trace("transition", "insert_cell", cell.getCell()->getDescription(), 0.1);
         Debug::V3Diagnostics::ScopedCsvTimer v3InsertTimer(
             Debug::V3Diagnostics::transitionWriter(), "insert_cell_total", cell.getCell()->getDescription());

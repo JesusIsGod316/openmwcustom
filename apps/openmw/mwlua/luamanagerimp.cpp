@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 #include "luamanagerimp.hpp"
 
 #include <cstdlib>
@@ -433,6 +434,7 @@ namespace MWLua
 
     void LuaManager::update()
     {
+        Debug::HitchTrace::Scope hitchUpdate("lua.worker_update");
         static Debug::V3Diagnostics::CsvWriter writer("OPENMW_V3_LUA_UPDATE_FILE",
             "frame,epoch_ms,total_ms,object_lists_ms,autostart_ms,prune_ms,stats_ms,event_finalize_ms,timers_ms,"
             "event_handlers_ms,callbacks_ms,engine_events_ms,local_update_ms,global_update_ms,tracker_ms,"
@@ -614,11 +616,13 @@ namespace MWLua
 
     void LuaManager::synchronizedUpdate()
     {
+        Debug::HitchTrace::Scope hitchSync("lua.synchronized_update");
         mLua.protectedCall([&](LuaUtil::LuaView&) { synchronizedUpdateUnsafe(); });
     }
 
     void LuaManager::synchronizedUpdateUnsafe()
     {
+        Debug::V33LuaTrace::FrameScope hitchCallbacks;
         static Debug::V3Diagnostics::CsvWriter writer("OPENMW_V3_LUASYNC_FILE",
             "frame,epoch_ms,total_ms,new_game_ms,input_player_ms,ui_messages_ms,delayed_actions_ms,reload_ms,"
             "ui_mode_ms,action_count,had_teleport,other_ms");

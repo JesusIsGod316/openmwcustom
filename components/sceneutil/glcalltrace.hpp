@@ -36,13 +36,16 @@ namespace SceneUtil::GLCallTrace
         BufferData, BufferSubData, MapBufferRange, UnmapBuffer, UseProgram, LinkProgram,
         CompileShader, GetProgramiv, GetShaderiv, CompressedTexImage2D, CompressedTexSubImage2D,
         DrawElementsInstanced, DrawArraysInstanced, DrawRangeElements,
-        GetQueryObjectiv, GetQueryObjectuiv, GetQueryObjectui64v, Count
+        GetQueryObjectiv, GetQueryObjectuiv, GetQueryObjectui64v, BindFramebuffer, FramebufferTexture2D,
+        CheckFramebufferStatus, GenerateMipmap, BindBuffer, BindBufferBase, Count
     };
     inline constexpr std::array<const char*,Count> names={
         "glBufferData","glBufferSubData","glMapBufferRange","glUnmapBuffer","glUseProgram","glLinkProgram",
         "glCompileShader","glGetProgramiv","glGetShaderiv","glCompressedTexImage2D","glCompressedTexSubImage2D",
         "glDrawElementsInstanced","glDrawArraysInstanced","glDrawRangeElements",
-        "glGetQueryObjectiv","glGetQueryObjectuiv","glGetQueryObjectui64v"};
+        "glGetQueryObjectiv","glGetQueryObjectuiv","glGetQueryObjectui64v",
+        "glBindFramebuffer","glFramebufferTexture2D","glCheckFramebufferStatus","glGenerateMipmap",
+        "glBindBuffer","glBindBufferBase"};
     using Clock=std::chrono::steady_clock;
     struct Row
     {
@@ -284,6 +287,9 @@ namespace SceneUtil::GLCallTrace
         P9_HOOK(glDrawElementsInstanced,DrawElementsInstanced); P9_HOOK(glDrawArraysInstanced,DrawArraysInstanced);
         P9_HOOK(glDrawRangeElements,DrawRangeElements); P9_HOOK(glGetQueryObjectiv,GetQueryObjectiv);
         P9_HOOK(glGetQueryObjectuiv,GetQueryObjectuiv); P9_HOOK(glGetQueryObjectui64v,GetQueryObjectui64v);
+        P9_HOOK(glBindFramebuffer,BindFramebuffer); P9_HOOK(glFramebufferTexture2D,FramebufferTexture2D);
+        P9_HOOK(glCheckFramebufferStatus,CheckFramebufferStatus); P9_HOOK(glGenerateMipmap,GenerateMipmap);
+        P9_HOOK(glBindBuffer,BindBuffer); P9_HOOK(glBindBufferBase,BindBufferBase);
 #undef P9_HOOK
     }
     inline bool install(unsigned context,osg::GLExtensions& e)

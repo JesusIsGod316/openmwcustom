@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 #include "pingpongcanvas.hpp"
 
 #include <cassert>
@@ -134,6 +135,7 @@ namespace MWRender
             // unsupported binding during the same cull is a contract failure,
             // never permission to publish a partially captured submission.
             if (!fxState) throw std::runtime_error("Phase 9 PostFX state changed during its acquired cull");
+            Debug::HitchTrace::Scope hitchFinalize("postfx.install_owned_uniforms");
             Fx::StateUpdater::installOwnedFrame(*canvas->mDrawFxState, *fxState, *canvas->mOwnedFxBindings);
             for (const auto& [name, uniform] : canvas->mDrawFxState->getUniformList())
                 canvas->mOwnedFxState->addUniform(uniform.first, uniform.second);
@@ -160,6 +162,7 @@ namespace MWRender
 
     void PingPongCanvas::copyFrameInputs(const PingPongCanvas& source)
     {
+        Debug::HitchTrace::Scope hitchSnapshot("postfx.copy_frame_inputs");
         // Only the acquired SceneView's cull owner can reach this method.
         // Its previous draw has completed before Renderer returns that
         // SceneView to availableQueue. Never key this ownership by frame%2.
@@ -400,6 +403,8 @@ namespace MWRender
     void PingPongCanvas::drawImplementation(osg::RenderInfo& renderInfo) const
     {
         osg::State& state = *renderInfo.getState();
+        Debug::HitchTrace::Scope hitchCanvas("postfx.canvas", mOwnedSubmission ? "owned" : "control", {},
+            state.getFrameStamp()->getFrameNumber());
         auto& uniformMap = const_cast<osg::State::UniformMap&>(state.getUniformMap());
         auto& emptyUniformStacks = mEmptyUniformStacks[state.getContextID()];
         uniformMap.merge(emptyUniformStacks);
@@ -680,9 +685,14 @@ namespace MWRender
 
             for (size_t passIndex = 0; passIndex < node.mPasses.size(); ++passIndex)
             {
+                const std::string_view hitchNodeName = !Debug::HitchTrace::requested() ? std::string_view{}
+                    : (mOwnedSubmission ? std::string_view(mOwnedTechniqueNames[index])
+                        : (node.mHandle ? std::string_view(node.mHandle->getName()) : "unknown"));
+                Debug::HitchTrace::Scope hitchPass("postfx.pass", hitchNodeName);
+                const auto& pass = node.mPasses[passIndex];
+                { Debug::HitchTrace::Scope hitchSetup("postfx.pass_bind_targets", hitchNodeName);
                 if (mRenderViewport)
                     mRenderViewport->apply(state);
-                const auto& pass = node.mPasses[passIndex];
 
                 bool lastPass = passIndex == node.mPasses.size() - 1;
 
@@ -735,8 +745,10 @@ namespace MWRender
                     lastApplied = mFbos[buffer[0] - GL_COLOR_ATTACHMENT0_EXT]->getHandle(cid);
                 }
 
+                }
                 state.pushStateSet(pass.mStateSet);
-                state.apply();
+                { Debug::HitchTrace::Scope hitchApply("postfx.pass_state_apply", hitchNodeName);
+                  state.apply(); }
 
                 if (!state.getLastAppliedProgramObject())
                     mFallbackProgram->apply(state);
@@ -747,6 +759,7 @@ namespace MWRender
                     + techniqueName + "/"
                     + std::to_string(passIndex);
                 Debug::V36GpuProfiler::ScopedPass v36GpuPass(renderInfo, v36GpuPassName);
+                { Debug::HitchTrace::Scope hitchDraw("postfx.pass_draw", hitchNodeName);
                 auto& v3PostFxWriter = Debug::V3Diagnostics::postFxWriter();
                 if (v3PostFxWriter.enabled())
                 {
@@ -767,6 +780,8 @@ namespace MWRender
                 else
                     drawGeometry(renderInfo);
 
+                }
+                Debug::HitchTrace::Scope hitchRetire("postfx.pass_mipmap_restore", hitchNodeName);
                 if (pass.mRenderTarget && pass.mRenderTexture->getNumMipmapLevels() > 0)
                 {
                     state.setActiveTextureUnit(0);

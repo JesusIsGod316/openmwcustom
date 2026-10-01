@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 #include "engine.hpp"
 
 #include <components/resource/benchmarkcapture.hpp>
@@ -491,6 +492,8 @@ namespace
 
             {
                 const auto start = Clock::now();
+                Debug::HitchTrace::Scope hitchWait("viewer.draw_completion_wait", {}, {},
+                    getFrameStamp() ? getFrameStamp()->getFrameNumber() : 0);
                 if (_endDynamicDrawBlock.valid())
                     _endDynamicDrawBlock->block();
                 breakdown.dynamicDrawWait = Debug::V3Diagnostics::elapsedMs(start);
@@ -623,6 +626,7 @@ void OMW::Engine::executeLocalScripts()
 
 bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 {
+    Debug::HitchTrace::Scope hitchFrame("engine.frame", {}, {}, frameNumber);
     if (Debug::RuntimeDiagnostics::enabled())
         Debug::RuntimeDiagnostics::currentFrame.store(frameNumber, std::memory_order_relaxed);
     Debug::GameplayDiagnostics::Frame gameplayDiagnostic(frameNumber, mUseVulkanRenderer, mViewer->done());
@@ -637,11 +641,13 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // Stop the background GC started at the previous frame's end.
         // Input handling can run Lua (the menu key does), so the state
         // must not be collected from this point on.
-        { Debug::GameplayDiagnostics::Stage diagnostic("lua_finish_gc"); mLuaWorker->finishGc(); }
+        { Debug::GameplayDiagnostics::Stage diagnostic("lua_finish_gc");
+          Debug::HitchTrace::Scope hitchGc("lua.finish_gc_wait"); mLuaWorker->finishGc(); }
 
         // update input
         {
             ScopedProfile<UserStatsType::Input> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.Input");
             mInputManager->update(frametime, false);
         }
 
@@ -651,6 +657,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // https://github.com/MyGUI/mygui/issues/21)
         {
             ScopedProfile<UserStatsType::Sound> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.Sound");
 
             if (!mWindowManager->isWindowVisible())
             {
@@ -667,6 +674,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 
         {
             ScopedProfile<UserStatsType::LuaSyncUpdate> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.LuaSyncUpdate");
             // Should be called after input manager update and before any change to the game world.
             // It applies to the game world queued changes from the previous frame.
             mLuaManager->synchronizedUpdate();
@@ -675,6 +683,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update game state
         {
             ScopedProfile<UserStatsType::State> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.State");
             mStateManager->update(frametime);
         }
 
@@ -682,6 +691,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 
         {
             ScopedProfile<UserStatsType::Script> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.Script");
 
             if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
             {
@@ -711,6 +721,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update mechanics
         {
             ScopedProfile<UserStatsType::Mechanics> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.Mechanics");
             Debug::GameplayDiagnostics::Stage diagnostic("mechanics");
 
             if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
@@ -729,6 +740,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update physics
         {
             ScopedProfile<UserStatsType::Physics> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.Physics");
             Debug::GameplayDiagnostics::Stage diagnostic("physics");
 
             if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
@@ -740,6 +752,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update world
         {
             ScopedProfile<UserStatsType::World> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.World");
             Debug::GameplayDiagnostics::Stage diagnostic("world_update");
 
             if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
@@ -751,6 +764,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update GUI
         {
             ScopedProfile<UserStatsType::Gui> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.Gui");
             mWindowManager->update(frametime);
         }
     }
@@ -1152,6 +1166,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
     // update focus object for GUI
     {
         ScopedProfile<UserStatsType::Focus> profile(frameStart, frameNumber, *timer, *stats);
+        Debug::HitchTrace::Scope hitchStage("engine.Focus");
         Debug::GameplayDiagnostics::Stage diagnostic("focus");
         // V3.20 preserves the exact V3.19 fixed-cadence path by default. Optional
         // adaptive mode only adds an immediate refresh when the main camera's view or
@@ -1274,6 +1289,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
             const bool measureRenderHandoff = p3HandoffAttribution || p4HandoffFeedback;
             const auto p3RenderStart = measureRenderHandoff ? Debug::V3Diagnostics::Clock::now()
                                                            : Debug::V3Diagnostics::Clock::time_point{};
+            Debug::HitchTrace::Scope hitchRender("viewer.rendering_traversal");
             mViewer->renderingTraversals();
 
             if (measureRenderHandoff)
@@ -1298,6 +1314,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
     {
         Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(Debug::V3HitchTelemetry::FrameTailStage::LuaWait);
         Debug::GameplayDiagnostics::Stage diagnostic("lua_wait");
+        Debug::HitchTrace::Scope hitchLuaWait("lua.worker_update_wait");
         mLuaWorker->finishUpdate(frameStart, frameNumber, *stats);
     }
 
@@ -1390,6 +1407,8 @@ OMW::Engine::~Engine()
 #endif
 
     mResourceSystem.reset();
+    // All resource, Lua and viewer workers are now joined.
+    Debug::HitchTrace::Capture::instance().finish();
 
     mEncoder = nullptr;
 
@@ -1677,6 +1696,8 @@ void OMW::Engine::createWindow()
         realizeOperations->add(new Stereo::InitializeStereoOperation(settings));
     }
 
+    // Allocate and touch the opt-in timeline arena before gameplay/draw threads.
+    (void)Debug::HitchTrace::Capture::instance();
     if (SceneUtil::DrawPhaseTrace::Capture::instance().enabled())
     {
         if (Settings::stereo().mStereoEnabled || osg::DisplaySettings::instance()->getStereo())
@@ -2321,6 +2342,7 @@ void OMW::Engine::go()
         }
 
         const unsigned frameNumber = mViewer->getFrameStamp()->getFrameNumber();
+        Debug::HitchTrace::Scope hitchIteration("engine.iteration", {}, {}, frameNumber);
 
         if (!frame(frameNumber, static_cast<float>(dt)))
         {

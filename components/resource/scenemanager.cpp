@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 #include "scenemanager.hpp"
 #include "sharedstatecache.hpp"
 #include "hostmemorybudget.hpp"
@@ -987,6 +988,7 @@ namespace Resource
     osg::ref_ptr<const osg::Node> SceneManager::getTemplate(
         VFS::Path::NormalizedView path, bool compile, V321CompileClass compileClass)
     {
+        Debug::HitchTrace::Scope hitchTemplate("resource.scene_template", {}, path.value());
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(path);
         if (obj)
             return osg::ref_ptr<const osg::Node>(static_cast<osg::Node*>(obj.get()));
@@ -1003,6 +1005,7 @@ namespace Resource
             osg::ref_ptr<osg::Node> loaded;
             try
             {
+                Debug::HitchTrace::Scope hitchLoad("resource.scene_load", {}, path.value());
                 loaded = load(path, mVFS, mImageManager, mNifFileManager, mBgsmFileManager);
             }
             catch (const SpeculativeDeferred&) { throw; }
@@ -1020,7 +1023,8 @@ namespace Resource
             loaded->accept(setFilterSettingsControllerVisitor);
 
             osg::ref_ptr<Shader::ShaderVisitor> shaderVisitor(createShaderVisitor());
-            loaded->accept(*shaderVisitor);
+            { Debug::HitchTrace::Scope hitchShaders("resource.shader_setup", {}, path.value());
+              loaded->accept(*shaderVisitor); }
 
             if (canOptimize(path.value()))
             {
@@ -1031,6 +1035,7 @@ namespace Resource
                 static const unsigned int options
                     = getOptimizationOptions() | SceneUtil::Optimizer::SHARE_DUPLICATE_STATE;
 
+                Debug::HitchTrace::Scope hitchOptimize("resource.scene_optimize", {}, path.value());
                 optimizer.optimize(loaded, options);
             }
             else
@@ -1056,6 +1061,7 @@ namespace Resource
 
     osg::ref_ptr<osg::Node> SceneManager::getInstance(VFS::Path::NormalizedView path)
     {
+        Debug::HitchTrace::Scope hitchInstance("resource.scene_instance", {}, path.value());
         Debug::V3Diagnostics::TraceScope trace("render", "scene_instance", path.value(), 0.1);
         Debug::V3Diagnostics::ScopedCsvTimer timer(
             Debug::V3Diagnostics::renderWriter(), "scene_instance", path.value(), 0.25);
@@ -1183,6 +1189,7 @@ namespace Resource
 
     osg::ref_ptr<osg::Node> SceneManager::getInstance(const osg::Node* base)
     {
+        Debug::HitchTrace::Scope hitchClone("resource.scene_clone");
         osg::ref_ptr<osg::Node> cloned = cloneNode(base);
         // we can skip any scene graphs without update callbacks since we know that particle emitters will have an
         // update callback set

@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 #include "animation.hpp"
 #include "hybridanimationtimemap.hpp"
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
@@ -799,6 +800,7 @@ namespace MWRender
     {
         Debug::V324DeepTelemetry::Scope v324DeepScope("animation", "add_anim_source");
 
+        Debug::HitchTrace::Scope hitchControllers("animation.controller_setup", {}, model);
         Debug::V32RendererProfiling::ScopedPhase v32ControllerTimer(
             Debug::V32RendererProfiling::Phase::ControllerSetup);
         constexpr VFS::Path::ExtensionView kf("kf");

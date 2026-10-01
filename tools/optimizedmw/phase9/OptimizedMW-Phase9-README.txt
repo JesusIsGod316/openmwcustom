@@ -1,11 +1,35 @@
+HITCH TELEMETRY UPDATE (2026-09-30)
+Start with mode 3 for reference hitches. It now adds per-object/cell insertion,
+controller setup, scene/NIF/image/collision loading, named Lua callbacks, thread
+CPU time at root scopes, and nested PostFX binding/state/draw timings.
+Mode 4 is the traced temporal control; new mode 13 is ownership-only tracing.
+Mode 12 remains both candidates with tracing. Hold combined testing while the
+ownership performance regression is unresolved.
+
+The p9-hitch-spans.csv timeline is opt-in, preallocated, bounded to 131072 rows,
+and formatted only after workers stop. HITCH-CAPTURE.json validates parent/thread
+identity, time containment, record count, finish status and explicit loss.
+Short details under 0.25 ms are filtered; retained children keep their ancestors.
+children_ms includes filtered children. unattributed_ms is the remaining scope,
+not a named cause. Root thread CPU time uses the OS clock (coarse on Windows);
+wall minus CPU is not automatically a GPU wait. Asset truncation is flagged.
+Selected GL tracing additionally includes FBO binding/attachment/status, mipmap
+generation and buffer binding. It still does not intercept every core GL call
+or expose driver internals. A missing/invalid trace never proves no hitch.
+These are diagnostic runs with overhead, not performance-promotion runs.
+Modes 1/2/8/9 retain the unarmed control paths.
+
 OptimizedMW Phase 9 - audited temporal ownership and terrain preparation
 
 This candidate resumes the Event 161 audit from e017315a, whose engine parent
 was the user-tested 651edc7b. Runtime promotion requires matched user testing.
 Use START-OptimizedMW-Test.bat in the delivered OptimizedMW_Test directory.
 This repair addresses the September 29 mode 9 crash, lost capture rows, saturated
-resource catalogs and the custom-PostFX ownership fallback. Start with 1 and 9
-to check stability, then compare 2 and 8; test 10 after the isolated modes.
+resource catalogs and the custom-PostFX ownership fallback. Those repaired
+captures have now been tested; composite preparation has no established gain,
+and active temporal ownership regressed in the measured pair. Start with mode 3
+for deeper diagnosis, then compare traced modes 4 and 13 to isolate ownership.
+Hold mode 10/12 combined testing until that regression is understood.
 
 The launcher uses the existing configuration and saves, temporarily applies the
 common OptimizedMW foundation, restores settings on exit, and records hashes.
@@ -25,6 +49,7 @@ TEST MATRIX
 10 AUDITED-COMBINED: ownership and composite preparation together.
 11 DYNAMIC-MOTION: ownership plus supported opaque rigid/CPU rig/morph motion.
 12 AUDITED-TRACE: combined candidate with detailed diagnostics.
+13 OWNERSHIP-TRACE: ownership candidate with diagnostics; compare with mode 4.
 Type A to display retained unpromoted HITCH controls: 6 HITCH, 7 HITCH-TRACE.
 
 Ownership preserves the global dynamic completion barrier and normal actor
@@ -89,3 +114,15 @@ Do not carry old benchmark claims onto this binary. No FPS gain is claimed here.
 
 Detailed ownership and native test contracts are in the source tree under
 tools/optimizedmw/phase9/TEMPORAL-OWNERSHIP.md and interop/README.md.
+Frame-time consistency analysis (all modes):
+  Phase9-BENCHMARK-REPORT.json now includes population standard deviation,
+  variance, coefficient of variation, IQR, MAD, p01-p99.9 percentiles, tail
+  concentration and consecutive-frame absolute/RMS changes. No absolute
+  slow-frame cutoff is used for these metrics. It also includes contiguous
+  120-frame local windows, so changing pacing is visible within a long run.
+  Phase9-FRAME-PACING.csv preserves each valid frame, signed adjacent change,
+  previous-61-frame median baseline, residual and robust deviation score.
+  Relative spike flags begin after 15 prior samples and reset at frame gaps.
+  A flag means investigate; steady oscillation is also visible in the changes
+  even when no individual frame is flagged. Engine wall times do not measure
+  display presentation intervals. Compare the same route/cap/warmup conditions.

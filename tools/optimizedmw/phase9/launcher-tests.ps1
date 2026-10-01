@@ -1,7 +1,7 @@
 param([string]$StagedDir)
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
-foreach($name in @('OptimizedMW_Test.ps1','OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','launcher-tests.ps1')){
+foreach($name in @('OptimizedMW_Test.ps1','OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','launcher-tests.ps1','hitch-launcher-tests.ps1','frame-pacing-tests.ps1')){
     $tokens=$null;$errors=$null
     $null=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $name),[ref]$tokens,[ref]$errors)
     if($errors.Count){throw ($errors | Out-String)}
@@ -32,6 +32,8 @@ foreach($choice in @('8','9','10','11','12')){
     if($mode.Composite -ne $(if($choice -in @('9','10','12')){'1'}else{'0'})){throw 'Composite control isolation changed'}
     if($mode.DynamicMotion -ne $(if($choice -eq '11'){'1'}else{'0'})){throw 'Dynamic motion control isolation changed'}
 }
+$ownershipTrace=Get-P9Mode '13'
+if($ownershipTrace.Trace -ne '1' -or $ownershipTrace.Temporal -ne '1' -or $ownershipTrace.Ownership -ne '1' -or $ownershipTrace.Composite -ne '0'){throw 'Ownership diagnostic mode is not isolated'}
 $launcher=Get-Content -Raw -LiteralPath (Join-Path $root 'OptimizedMW_Test.ps1')
 foreach($line in @("`$ResourceRepair='true'","`$LuaCache='true'","`$SoundWarm='true'","`$ShadowConsistency='true'")){
     if(-not $launcher.Contains($line)){throw 'P8U1 foundation differs between Phase 9 modes'}
@@ -59,7 +61,7 @@ foreach($shader in @('temporal_camera_motion.vert','temporal_camera_motion.frag'
     if(-not $command.Contains($shader)){throw "Unverified temporal shader: $shader"}
 }
 if($StagedDir){
-    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW-Phase9-README.txt')){
+    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW-Phase9-README.txt')){
         if((Get-FileHash -LiteralPath (Join-Path $root $file)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $StagedDir $file)).Hash){
             throw ('Installed Phase 9 file mismatch: '+$file)
         }

@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 #include "imagemanager.hpp"
 
 #include <algorithm>
@@ -92,6 +93,7 @@ namespace Resource
 
     osg::ref_ptr<osg::Image> ImageManager::getImage(VFS::Path::NormalizedView path, bool disableFlip)
     {
+        Debug::HitchTrace::Scope hitchImage("resource.image_lookup", {}, path.value());
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(path);
         if (obj)
             return osg::ref_ptr<osg::Image>(static_cast<osg::Image*>(obj.get()));
@@ -152,7 +154,9 @@ namespace Resource
                 stream->seekg(0);
             }
 
-            osgDB::ReaderWriter::ReadResult result = reader->readImage(*stream, mOptions);
+            osgDB::ReaderWriter::ReadResult result;
+            { Debug::HitchTrace::Scope hitchDecode("resource.image_decode", {}, path.value());
+              result = reader->readImage(*stream, mOptions); }
             if (!result.success())
             {
                 Log(Debug::Error) << "Error loading " << path << ": " << result.message() << " code "

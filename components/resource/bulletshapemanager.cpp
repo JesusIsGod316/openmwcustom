@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 #include "bulletshapemanager.hpp"
 
 #include <cstring>
@@ -110,6 +111,7 @@ namespace Resource
 
     osg::ref_ptr<const BulletShape> BulletShapeManager::getShape(VFS::Path::NormalizedView name)
     {
+        Debug::HitchTrace::Scope hitchShape("physics.shape_lookup", {}, name.value());
         if (osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(name))
             return osg::ref_ptr<BulletShape>(static_cast<BulletShape*>(obj.get()));
 
@@ -118,6 +120,7 @@ namespace Resource
         if (Misc::getFileExtension(name.value()) == "nif")
         {
             NifBullet::BulletNifLoader loader;
+            Debug::HitchTrace::Scope hitchBuild("physics.nif_collision_build", {}, name.value());
             shape = loader.load(*mNifFileManager->get(name));
         }
         else

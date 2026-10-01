@@ -28,9 +28,17 @@ if(P9_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 include_directories(${ROOT})
 include_directories(SYSTEM ${OPENSCENEGRAPH_INCLUDE_DIRS})
+add_library(p9-hitch-platform STATIC "${ROOT}/components/debug/hitchtrace.cpp")
+link_libraries(p9-hitch-platform)
 enable_testing()
 find_package(Threads REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_executable(p9-hitch-trace hitch-trace-tests.cpp)
+target_link_libraries(p9-hitch-trace PRIVATE Threads::Threads)
+add_test(NAME p9-hitch-trace COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/verify-hitch-trace.py $<TARGET_FILE:p9-hitch-trace>
+  ${CMAKE_CURRENT_BINARY_DIR}/hitch-trace-fixture)
+set_tests_properties(p9-hitch-trace PROPERTIES TIMEOUT 45)
 add_executable(p9-capture-transport capture-transport-tests.cpp)
 target_link_libraries(p9-capture-transport PRIVATE Threads::Threads)
 add_test(NAME p9-capture-transport COMMAND p9-capture-transport

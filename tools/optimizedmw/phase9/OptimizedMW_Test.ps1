@@ -6,6 +6,7 @@ $UserOpenMW = Join-Path $env:USERPROFILE 'Documents\My Games\OpenMW'
 $SettingsPath = Join-Path $UserOpenMW 'settings.cfg'
 $OpenmwCfgPath = Join-Path $UserOpenMW 'openmw.cfg'
 . (Join-Path $GameDir 'OptimizedMW_ProfileArchive.ps1')
+. (Join-Path $GameDir 'OptimizedMW_HitchReport.ps1')
 $ProfilesRoot = Join-Path $UserOpenMW 'OptimizedMW-Phase9-Profiles'
 
 if (-not (Test-Path -LiteralPath $Exe)) { Write-Host 'ERROR: Put this launcher beside openmw.exe.' -ForegroundColor Red; Read-Host 'Press Enter to close'; exit 1 }
@@ -50,6 +51,7 @@ function Get-P9Mode {
         '9'{$result.Name='COMPOSITE-PREPARE';$result.Composite='1'}
         '10'{$result.Name='AUDITED-COMBINED';$result.Temporal='1';$result.Ownership='1';$result.Composite='1'}
         '11'{$result.Name='DYNAMIC-MOTION';$result.Temporal='1';$result.Ownership='1';$result.DynamicMotion='1'}
+        '13'{$result.Name='OWNERSHIP-TRACE';$result.Temporal='1';$result.Ownership='1';$result.Trace='1'}
         '12'{$result.Name='AUDITED-TRACE';$result.Temporal='1';$result.Ownership='1';$result.Composite='1';$result.Trace='1'}
         default{throw 'Invalid Phase 9 mode'}
     }
@@ -60,7 +62,7 @@ Write-Host ''
 Write-Host 'OptimizedMW Phase 9 - audited temporal and terrain candidates' -ForegroundColor Cyan
 Write-Host '  1 = REFERENCE          unchanged P8U1 foundation'
 Write-Host '  2 = TEMPORAL-INPUTS    camera/static motion + DLSS input-contract telemetry'
-Write-Host '  3 = ROOT-CAUSE-TRACE   state/draw/GL + composite/camera attribution'
+Write-Host '  3 = ROOT-CAUSE-TRACE   reference hitch diagnosis: objects/Lua/resources/state/GL'
 Write-Host '  4 = TEMPORAL-TRACE     modes 2 and 3 together for one diagnostic run'
 Write-Host '  5 = MOTION-VIEW        visualize generated motion vectors'
 Write-Host '  8 = TEMPORAL-OWNERSHIP retained cull inputs (compare with mode 2)'
@@ -68,14 +70,15 @@ Write-Host '  9 = COMPOSITE-PREPARE terrain dependency preparation (compare with
 Write-Host ' 10 = AUDITED-COMBINED   both candidates'
 Write-Host ' 11 = DYNAMIC-MOTION     experimental moving geometry inputs'
 Write-Host ' 12 = AUDITED-TRACE      combined candidate with deep diagnostics'
+Write-Host ' 13 = OWNERSHIP-TRACE    mode 8 with hitch diagnostics; compare with mode 4'
 Write-Host '  A = show old unpromoted HITCH1 diagnostic controls'
 Write-Host 'Unsafe static prewarm is disabled. DLSS evaluation/jitter remain off until dense dynamic motion is valid.'
 do{
-    $choice=Read-Host 'Choose mode (1-5, 8-12, or A for old HITCH1 diagnostics)'
+    $choice=Read-Host 'Choose mode (1-5, 8-13, or A for old HITCH1 diagnostics)'
     if($choice -eq 'A'){
         Write-Host '  6 HITCH (old unpromoted refresh) | 7 HITCH-TRACE'
     }
-}until($choice -in @('1','2','3','4','5','6','7','8','9','10','11','12'))
+}until($choice -in @('1','2','3','4','5','6','7','8','9','10','11','12','13'))
 $mode=Get-P9Mode $choice
 
 $SchedulerMode='2'
@@ -247,6 +250,7 @@ try{
     Set-IniValue $SettingsPath 'V3' 'v3.8 far shadow mode' '3'
     Set-IniValue $SettingsPath 'V3' 'v3.6 far caster minimum pixels' '5.0'
 
+    if($mode.Trace -eq '1'){Set-IniValue $SettingsPath 'Cells' 'v3.2 renderer insertion profiling' 'true'}
     Copy-Item -LiteralPath $SettingsPath -Destination (Join-Path $ProfileDir 'settings-effective-test.cfg') -Force
     if(Test-Path -LiteralPath $OpenmwCfgPath){Copy-Item -LiteralPath $OpenmwCfgPath -Destination (Join-Path $ProfileDir 'openmw.cfg') -Force}
     if(Test-Path -LiteralPath (Join-Path $GameDir 'CI-ID.txt')){Copy-Item -LiteralPath (Join-Path $GameDir 'CI-ID.txt') -Destination (Join-Path $ProfileDir 'CI-ID.txt') -Force}
@@ -266,6 +270,8 @@ try{
         "phase9_dynamic_motion=$($mode.DynamicMotion)",
         "phase9_motion_view=$($mode.View)",
         "phase9_draw_trace=$($mode.Trace)",
+        "phase9_hitch_spans=$($mode.Trace)",
+        "phase9_hitch_scope=engine_operations_plus_selected_GL_not_all_driver_calls",
         "phase9_static_prewarm=disabled_after_optimized_trace_driver_crash",
         "phase9_trace_schema=5",
         "phase9_temporal_contract=consumer_frame_v2_ownership",
@@ -381,6 +387,13 @@ try{
         $env:OPENMW_P9_DLSS_CAPS_FILE=Join-Path $ProfileDir 'p9-dlss-capabilities.csv'
     }
     if($mode.Trace -eq '1'){
+        $env:OPENMW_P9_HITCH_SPANS_FILE=Join-Path $ProfileDir 'p9-hitch-spans.csv'
+        $env:OPENMW_V3_INSERT_FILE=Join-Path $ProfileDir 'v3-insertion.csv'
+        $env:OPENMW_V32_RENDER_INSERT_FILE=Join-Path $ProfileDir 'v32-render-insertion.csv'
+        $env:OPENMW_V3_LUASYNC_FILE=Join-Path $ProfileDir 'v3-lua-sync.csv'
+        $env:OPENMW_V3_LUA_ACTION_FILE=Join-Path $ProfileDir 'v3-lua-actions.csv'
+        $env:OPENMW_V33_LUA_CALLBACK_FILE=Join-Path $ProfileDir 'v33-lua-callbacks.csv'
+        $env:OPENMW_V35_LUA_LOAD_FILE=Join-Path $ProfileDir 'v35-lua-load.csv'
         $env:OPENMW_P9_LEAF_TRACE_FILE=Join-Path $ProfileDir 'p9-draw-phases.csv'
         $env:OPENMW_P9_DYNAMIC_TRACE_FILE=Join-Path $ProfileDir 'p9-dynamic-stream.csv'
         $env:OPENMW_P9_COMPOSITE_FILE=Join-Path $ProfileDir 'p9-terrain-composite.csv'
@@ -461,6 +474,7 @@ try{
     $traceStatus=Test-Phase9TraceCapture -ProfileDir $ProfileDir -TraceRequested ($mode.Trace -eq '1')
     $temporalStatus=Test-Phase9TemporalCapture -ProfileDir $ProfileDir -TemporalRequested ($mode.Temporal -eq '1')
     $writerStatus=Test-Phase9WriterCapture -ProfileDir $ProfileDir
+    $hitchStatus=Test-Phase9HitchCapture -ProfileDir $ProfileDir
     $zip=Complete-Phase9Profile -ProfileDir $ProfileDir -GameDir $GameDir
     Write-Host ''
     if($restoreVerified){Write-Host 'Your normal settings have been restored.' -ForegroundColor Green}
