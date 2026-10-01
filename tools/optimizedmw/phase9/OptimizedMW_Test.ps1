@@ -3,6 +3,8 @@ param(
     [ValidateSet('CONTROL','I1','I2','I1I2','D1')][string]$Candidate='CONTROL',
     [ValidateRange(-1,15)][int]$HitchMask=-1,
     [ValidateSet('','Normal','Deep')][string]$TraceLevel='',
+    [switch]$SystemTrace,
+    [ValidateRange(30,1800)][int]$SystemTraceDurationSeconds=600,
     [ValidateRange(0,33554432)][long]$BufferBudgetBytes=33554432,
     [string]$SavePath,[string]$RouteLabel='UNSPECIFIED',
     [ValidateSet('unclassified','fresh-process-first-visit','same-process-revisit','later-fresh-launch')][string]$Cohort='unclassified',
@@ -20,6 +22,7 @@ $OpenmwCfgPath = Join-Path $UserOpenMW 'openmw.cfg'
 . (Join-Path $GameDir 'OptimizedMW_SystemTraceLink.ps1')
 . (Join-Path $GameDir 'OptimizedMW_RunManifest.ps1')
 . (Join-Path $GameDir 'OptimizedMW_HitchMatrix.ps1')
+. (Join-Path $GameDir 'OptimizedMW_QuickTest.ps1')
 $ProfilesRoot = Join-Path $UserOpenMW 'OptimizedMW-Phase9-Profiles'
 
 if (-not (Test-Path -LiteralPath $Exe)) { Write-Host 'ERROR: Put this launcher beside openmw.exe.' -ForegroundColor Red; if(-not $NoPrompt){Read-Host 'Press Enter to close'}; exit 1 }
@@ -71,7 +74,36 @@ function Get-P9Mode {
     return $result
 }
 
+$quickSelection=$null
+$quickSession=$null
 $hitchSelection=$null
+if(-not $ModeChoice -and $HitchMask -lt 0 -and -not $TraceLevel -and -not $NoPrompt){
+    Write-Host ''
+    Write-Host 'OptimizedMW - choose one test' -ForegroundColor Cyan
+    Write-Host '  1 = Diagnose CONTROL   Deep engine diagnostics + automatic Windows trace' -ForegroundColor Green
+    Write-Host '  2 = Normal CONTROL     performance comparison, original feature switches'
+    Write-Host '  3 = Normal ALL         performance comparison, all four hitch candidates'
+    Write-Host '  4 = Diagnose ALL       Deep engine diagnostics + automatic Windows trace'
+    Write-Host '  C = Custom combination / I/O / trace depth'
+    Write-Host '  A = Earlier Phase 9 modes'
+    Write-Host '  X = Exit'
+    do{$quickChoice=Read-Host 'Test (1-4, C, A, or X)'}until($quickChoice -in @('1','2','3','4','C','A','X'))
+    if($quickChoice -eq 'X'){exit 0}
+    if($quickChoice -in @('1','2','3','4')){
+        $quickSelection=Get-OptimizedMWQuickPreset -Choice $quickChoice
+        $HitchMask=$quickSelection.mask;$TraceLevel=$quickSelection.trace_level
+        $Candidate=$quickSelection.candidate;$SystemTrace=[bool]$quickSelection.system_trace
+    }elseif($quickChoice -eq 'C'){
+        $hitchSelection=Read-OptimizedMWHitchSelection
+        $HitchMask=$hitchSelection.features.mask;$TraceLevel=if($hitchSelection.trace_level -eq 'DEEP'){'Deep'}else{'Normal'}
+        $Candidate=$hitchSelection.candidate
+        if($TraceLevel -eq 'Deep'){
+            do{$systemChoice=Read-Host 'Windows system trace: Enter = automatic, N = engine only'}until($systemChoice -in @('','N'))
+            $SystemTrace=$systemChoice -eq ''
+        }
+        $quickSelection=[pscustomobject]@{mask=$HitchMask;trace_level=$TraceLevel;candidate=$Candidate;system_trace=[bool]$SystemTrace;name=$hitchSelection.experiment}
+    }
+}
 if($HitchMask -ge 0 -or $TraceLevel){
     if($HitchMask -lt 0){$HitchMask=0}
     if(-not $TraceLevel){$TraceLevel='Normal'}
@@ -111,6 +143,10 @@ do{
 }until($choice -in @('1','2','3','4','5','6','7','8','9','10','11','12','13'))
 }else{$choice=$ModeChoice}
 $mode=Get-P9Mode $choice
+if($SystemTrace -and $mode.Trace -ne '1'){throw 'Windows trace requires Deep diagnostics. Choose Diagnose CONTROL/ALL, or select Deep in Custom.'}
+if($SystemTrace -and -not $quickSelection){
+    $quickSelection=[pscustomobject]@{mask=$(if($HitchMask -ge 0){$HitchMask}else{0});trace_level='Deep';candidate=$Candidate;system_trace=$true;name=$mode.Name}
+}
 if($hitchSelection){$mode.HitchTrialRevision=2}
 $candidateProfile=Get-Phase9Candidate -Name $Candidate -BufferBudgetBytes $BufferBudgetBytes
 $hitchCombination=if($hitchSelection){$hitchSelection.features}else{Get-OptimizedMWHitchCombination 0}
@@ -178,6 +214,9 @@ $start=[DateTimeOffset]::UtcNow
 $beforeHash=(Get-FileHash -LiteralPath $BackupSettings -Algorithm SHA256).Hash
 
 try{
+    if($quickSelection){
+        $quickSession=Start-OptimizedMWQuickSession -GameDirectory $GameDir -Selection $quickSelection -DurationSeconds $SystemTraceDurationSeconds
+    }
     $changedSettings=$true
 
     # Clear inherited experimental/telemetry flags; restore the original environment afterward.
@@ -485,6 +524,9 @@ try{
     $memoryDropped=0
     $start=[DateTimeOffset]::UtcNow
     $systemTraceLink=New-Phase9SystemTraceLink -GameDir $GameDir -ProfileDir $ProfileDir -Executable $Exe -ExecutableSha256 $exeHash
+    if($SystemTrace -and (-not $systemTraceLink -or $systemTraceLink.capture_id -ne $quickSession.trace_state.capture_id)){
+        throw 'The automatic Windows recorder did not link to this exact test. The game was not started.'
+    }
     $process=Start-Process -FilePath $Exe -WorkingDirectory $GameDir -PassThru
     $gameProcessId=$process.Id
     $gameCreationUtc=$process.StartTime.ToUniversalTime().ToString('o')
@@ -535,6 +577,9 @@ finally{
     if($null -ne $process){
         try{if(-not $process.HasExited){$process.WaitForExit()};$exitCode=$process.ExitCode}catch{}
     }
+    if($quickSession){
+        try{Stop-OptimizedMWQuickSession -Context $quickSession}catch{Write-Warning ('Recorder stop request failed: '+$_)}
+    }
     try{
         $environmentRestoreVerified=Restore-Phase9Environment $originalEnv
         if(-not $environmentRestoreVerified){throw 'Environment read-back differs from original'}
@@ -575,12 +620,19 @@ try{
     $compileAttributionStatus=Test-Phase9CompileAttributionCapture -ProfileDir $ProfileDir
     if($runManifest){Complete-Phase9RunManifest $runManifest $ProfileDir}
     $zip=Complete-Phase9Profile -ProfileDir $ProfileDir -GameDir $GameDir
-    if($systemTraceLink){$null=Complete-Phase9SystemTraceLink -Link $systemTraceLink -ProfileZip $zip.Path -GameProcessId $gameProcessId -GameCreationUtc $gameCreationUtc}
+    if($systemTraceLink){$null=Complete-Phase9SystemTraceLink -Link $systemTraceLink -ProfileZip $zip.Path -GameProcessId $gameProcessId -GameCreationUtc $gameCreationUtc -DeferQualification:([bool]$quickSession)}
+    $uploadPath=$zip.Path
+    if($quickSession){
+        $quickResult=Complete-OptimizedMWQuickSession -Context $quickSession -ProfileZip $zip.Path -Link $systemTraceLink `
+            -GameProcessId $gameProcessId -GameCreationUtc $gameCreationUtc -RestoreVerified $restoreVerified `
+            -EnvironmentRestoreVerified $environmentRestoreVerified -LauncherError $(if($launchFailure){[string]$launchFailure}elseif($exitCode -ne 0){"Game exited with code $exitCode"}else{''})
+        if($quickResult.upload_path){$uploadPath=$quickResult.upload_path}
+    }
     Write-Host ''
     if($restoreVerified){Write-Host 'Your normal settings have been restored.' -ForegroundColor Green}
-    Write-Host "Upload this verified ZIP: $($zip.Path)" -ForegroundColor Cyan
+    Write-Host "Upload this ZIP: $uploadPath" -ForegroundColor Cyan
     if($zip.Missing.Count){Write-Host ('Partial capture; missing: '+($zip.Missing -join ', ')) -ForegroundColor Yellow}
-    if(-not $NoPrompt){try{Start-Process explorer.exe -ArgumentList "/select,`"$($zip.Path)`""}catch{}}
+    if(-not $NoPrompt){try{Start-Process explorer.exe -ArgumentList "/select,`"$uploadPath`""}catch{}}
 }catch{
     Write-Host "$_" -ForegroundColor Red
     Write-Host "Raw evidence remains at: $ProfileDir" -ForegroundColor Yellow

@@ -2,6 +2,9 @@ param(
     [ValidateSet('File','Memory')][string]$Mode='File',
     [ValidateRange(30,1800)][int]$DurationSeconds=360,
     [ValidateRange(2,100)][int]$MinimumFreeGiB=10,
+    [ValidatePattern('^(?:|[0-9a-fA-F]{32})$')][string]$CoordinatorSessionId='',
+    [int]$CoordinatorProcessId=0,
+    [string]$CoordinatorCreationUtc='',
     [switch]$ValidateOnly,
     [switch]$FunctionsOnly
 )
@@ -112,6 +115,37 @@ function Write-SystemTraceJson {
             [IO.File]::Replace($temp,$Path,[System.Management.Automation.Language.NullString]::Value)
         }else{[IO.File]::Move($temp,$Path)}
     }finally{if([IO.File]::Exists($temp)){[IO.File]::Delete($temp)}}
+}
+
+function Write-SystemTraceSessionState {
+    param([string]$Path,[object]$State)
+    Write-SystemTraceJson $Path $State
+    if($State.coordinator_session_id){
+        $session=Join-Path $PSScriptRoot ('TestSessions\'+$State.coordinator_session_id)
+        Write-SystemTraceJson (Join-Path $session 'RECORDER-STATE.json') $State
+    }
+}
+
+function Get-SystemTraceCoordinatorStopReason {
+    param([string]$SessionId,[string]$SessionDirectory,[int]$OwnerProcessId,[string]$OwnerCreationUtc)
+    if(-not $SessionId){return $null}
+    $request=Join-Path $SessionDirectory 'STOP-REQUEST.json'
+    if([IO.File]::Exists($request)){
+        try{
+            $value=Get-Content -Raw -LiteralPath $request | ConvertFrom-Json
+            if($value.schema -eq 1 -and $value.session_id -eq $SessionId -and $value.reason -eq 'coordinator_stop'){
+                return 'coordinator_stop'
+            }
+        }catch{Write-Warning 'Ignoring an incomplete coordinator stop request.'}
+    }
+    $owner=Get-Process -Id $OwnerProcessId -ErrorAction SilentlyContinue
+    if(-not $owner){return 'coordinator_exit'}
+    try{
+        if($owner.StartTime.ToUniversalTime().ToString('o') -ne (ConvertTo-SystemTraceUtcText $OwnerCreationUtc)){
+            return 'coordinator_exit'
+        }
+    }catch{return 'coordinator_exit'}
+    return $null
 }
 function Get-SystemTraceProcessRole {
     param([string]$CommandLine,[string]$Executable)
@@ -244,6 +278,14 @@ function Cancel-SystemTraceOwnedInstance {
 }
 
 if($FunctionsOnly){return}
+if($CoordinatorSessionId){
+    if($CoordinatorProcessId -le 0 -or -not $CoordinatorCreationUtc){throw 'Automatic recorder owner identity is missing'}
+    $coordinatorDirectory=Join-Path $PSScriptRoot ('TestSessions\'+$CoordinatorSessionId)
+    if(-not [IO.Directory]::Exists($coordinatorDirectory) -or
+        ((Get-Item -LiteralPath $coordinatorDirectory).Attributes -band [IO.FileAttributes]::ReparsePoint)){
+        throw 'Automatic recorder requires the existing session directory without redirection'
+    }
+}
 $script:wpr=Join-Path $env:WINDIR 'System32\wpr.exe'
 $profile=Join-Path $PSScriptRoot 'OptimizedMW-SystemTrace.wprp'
 if(-not (Test-Path -LiteralPath $script:wpr)){throw 'Windows Performance Recorder is unavailable'}
@@ -286,6 +328,8 @@ New-Item -ItemType Directory -Path $tempDirectory | Out-Null
 $instance='OptimizedMW-'+$captureId
 $hash=(Get-FileHash -LiteralPath $exe).Hash.ToLowerInvariant()
 $state=[ordered]@{schema=2;capture_id=$captureId;instance=$instance;
+    coordinator_session_id=$CoordinatorSessionId;coordinator_process_id=$CoordinatorProcessId;
+    coordinator_creation_utc=$CoordinatorCreationUtc;
     recorder_process_id=$PID;recorder_creation_utc=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o');
     directory=$directory;executable_path=$exe;executable_sha256=$hash;game_directory=$PSScriptRoot;
     start_utc=[DateTime]::UtcNow.ToString('o');profile_sha256=(Get-FileHash -LiteralPath $profile).Hash;
@@ -316,12 +360,13 @@ try{
     $result.Lines | Set-Content -LiteralPath (Join-Path $directory 'WPR-START.txt')
     if($result.Code -ne 0){throw "WPR start failed ($($result.Code)); the game was not launched by this recorder"}
     $state.recording_started_utc=[DateTime]::UtcNow.ToString('o');$state.status='recording'
-    Write-SystemTraceJson $statePath $state
     Write-SystemTraceJson $activePath $state
+    Write-SystemTraceSessionState $statePath $state
     $ownsActive=$true
     Write-Host "System trace is recording in $Mode mode; maximum $DurationSeconds seconds." -ForegroundColor Green
     if($Mode -eq 'Memory'){Write-Host 'CIRCULAR CONTROL: early events may be overwritten even with zero reported event loss.' -ForegroundColor Yellow}
-    Write-Host 'Use the NORMAL START-OptimizedMW-Test.bat in another window and choose MODE 3.' -ForegroundColor Yellow
+    if($CoordinatorSessionId){Write-Host 'The test launcher starts the selected game after this recording-ready signal.'}
+    else{Write-Host 'Use START-OptimizedMW-Test.bat normally in another window; choose A, then earlier mode 3.' -ForegroundColor Yellow}
     Write-Host 'The recorder saves automatically when that exact game exits. Press Enter here to stop earlier.'
     Write-Host "Recording also stops at the time limit or if free space drops below $MinimumFreeGiB GiB."
     $watch=[Diagnostics.Stopwatch]::StartNew()
@@ -338,8 +383,8 @@ try{
             Write-Warning 'Multiple exact-path engine candidates detected. Saving the owned trace and process inventory without claiming an unambiguous run.'
         }
         if($snapshot.changed){
-            Write-SystemTraceJson $statePath $state
             Write-SystemTraceJson $activePath $state
+            Write-SystemTraceSessionState $statePath $state
         }
         foreach($game in $snapshot.new_games){
             Write-Host ('Associated game PID '+$game.process_id+'; exact executable path verified.') -ForegroundColor Green
@@ -352,12 +397,15 @@ try{
             # Redirected hosts cannot read keys. Exit/time/space guards still work.
         }
         $stopReason=Get-SystemTraceStopReason $watch.Elapsed.TotalSeconds $DurationSeconds $freeBytes $saveReserveBytes $enterPressed $snapshot.game_observed $live.Count $snapshot.multiple_games
+        if(-not $stopReason -and $CoordinatorSessionId){
+            $stopReason=Get-SystemTraceCoordinatorStopReason $CoordinatorSessionId $coordinatorDirectory $CoordinatorProcessId $CoordinatorCreationUtc
+        }
         if(-not $stopReason){Start-Sleep -Milliseconds 1000}
     }
     $state.stop_reason=$stopReason;$state.free_bytes_at_stop=$freeBytes
     $state.temporary_trace_bytes_at_stop=$temporaryBytes;$state.save_reserve_bytes_at_stop=$saveReserveBytes
     $state.game_exit_observed_utc=$(if($stopReason -eq 'game_exit'){[DateTime]::UtcNow.ToString('o')}else{$null})
-    $state.status='saving';Write-SystemTraceJson $statePath $state;Write-SystemTraceJson $activePath $state
+    $state.status='saving';Write-SystemTraceJson $activePath $state;Write-SystemTraceSessionState $statePath $state
     $result=Invoke-SystemRecorder @('-status','collectors','-details','-instancename',$instance)
     $result.Lines | Set-Content -LiteralPath (Join-Path $directory 'WPR-COLLECTORS-BEFORE-STOP.txt')
     $result=Save-SystemTraceOwnedInstance $lease $etl
@@ -367,7 +415,7 @@ try{
     $state.normal_stop=$true;$state.end_utc=[DateTime]::UtcNow.ToString('o');$state.status='saved'
     $state.etl_sha256=(Get-FileHash -LiteralPath $etl).Hash.ToLowerInvariant();$state.etl_bytes=(Get-Item -LiteralPath $etl).Length
     $state.executable_unchanged=((Get-FileHash -LiteralPath $exe).Hash.ToLowerInvariant() -eq $hash)
-    Write-SystemTraceJson $statePath $state
+    Write-SystemTraceSessionState $statePath $state
     $qualification=Join-Path $PSScriptRoot 'OptimizedMW_QualifySystemTrace.ps1'
     if(Test-Path -LiteralPath $qualification){
         try{& $qualification -CaptureDirectory $directory}catch{
@@ -384,7 +432,7 @@ try{
         $cleanup.Lines | Set-Content -LiteralPath (Join-Path $directory 'WPR-CLEANUP.txt')
     }
     if(-not $state.normal_stop){$state.status=$(if($lease.started){'cleanup_failed'}else{'failed_or_cancelled'})}
-    Write-SystemTraceJson $statePath $state
+    Write-SystemTraceSessionState $statePath $state
     if($ownsActive -and (Test-Path -LiteralPath $activePath)){
         $active=Get-Content -Raw -LiteralPath $activePath | ConvertFrom-Json
         if($active.capture_id -eq $captureId){

@@ -86,6 +86,8 @@ try{
     }
     $state.status='saved';$state.normal_stop=$true
     Write-Phase9SystemTraceLinkJson (Join-Path $capture 'SYSTEM-TRACE-STATE.json') $state
+    $null=Complete-Phase9SystemTraceLink $link $zipPath 77 $birth -DeferQualification
+    Assert-Link ($script:qualifierCalls -eq 0 -and (Get-FileHash -LiteralPath $bindingPath).Hash -eq $bindingHash) 'Automatic binding raced qualification with system ZIP saving'
     $null=Complete-Phase9SystemTraceLink $link $zipPath 77 $birth
     Assert-Link ($script:qualifierCalls -eq 1 -and (Get-FileHash -LiteralPath $bindingPath).Hash -eq $bindingHash) 'Idempotent final binding was rewritten or qualifier was not invoked'
     $null=Complete-Phase9SystemTraceLink $link $zipPath 78 $birth

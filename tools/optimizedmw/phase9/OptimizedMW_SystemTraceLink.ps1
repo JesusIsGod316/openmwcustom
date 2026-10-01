@@ -86,7 +86,8 @@ function Complete-Phase9SystemTraceLink {
     param([object]$Link,
           [Parameter(Mandatory=$true)][string]$ProfileZip,
           [Parameter(Mandatory=$true)][int]$GameProcessId,
-          [Parameter(Mandatory=$true)][string]$GameCreationUtc)
+          [Parameter(Mandatory=$true)][string]$GameCreationUtc,
+          [switch]$DeferQualification)
     if($null -eq $Link){return $null}
     $binding=$null;$published=$false
     try{
@@ -138,7 +139,9 @@ function Complete-Phase9SystemTraceLink {
         $published=$true
         # Qualifier returns promptly with PENDING_OR_UNAVAILABLE while WPR is
         # merging. Its saved-state invocation consumes this binding automatically.
-        Invoke-Phase9SystemTraceQualification $Link.game_directory $Link.directory $zipPath
+        # Automatic coordination qualifies only after the recorder has finished
+        # its immutable system ZIP, avoiding concurrent qualifier rewrites.
+        if(-not $DeferQualification){Invoke-Phase9SystemTraceQualification $Link.game_directory $Link.directory $zipPath}
         if($published){return $binding}
         return $null
     }catch{

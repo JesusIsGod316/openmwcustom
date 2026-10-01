@@ -138,6 +138,32 @@ $script:processRace='none'
 $games=@(Get-SystemTraceGameProcesses $testExecutable)
 Assert-Trace ($games.Count -eq 1) 'Process disappearance poisoned subsequent enumeration'
 
+$coordinatorRoot=Join-Path ([IO.Path]::GetTempPath()) ('system coordinator [fixture] '+[Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $coordinatorRoot | Out-Null
+try{
+    $sessionId=[Guid]::NewGuid().ToString('N')
+    $ownerBirth=$script:mockNativeProcesses[77].StartTime.ToUniversalTime().ToString('o')
+    Assert-Trace ($null -eq (Get-SystemTraceCoordinatorStopReason '' $coordinatorRoot 77 $ownerBirth)) 'Manual recorder acquired coordinator stop semantics'
+    Assert-Trace ($null -eq (Get-SystemTraceCoordinatorStopReason $sessionId $coordinatorRoot 77 $ownerBirth)) 'Live exact coordinator was stopped'
+    $request=Join-Path $coordinatorRoot 'STOP-REQUEST.json'
+    Write-SystemTraceJson $request @{schema=1;session_id=[Guid]::NewGuid().ToString('N');reason='coordinator_stop'}
+    Assert-Trace ($null -eq (Get-SystemTraceCoordinatorStopReason $sessionId $coordinatorRoot 77 $ownerBirth)) 'Another session could stop this recorder'
+    Write-SystemTraceJson $request @{schema=1;session_id=$sessionId;reason='coordinator_stop'}
+    Assert-Trace ((Get-SystemTraceCoordinatorStopReason $sessionId $coordinatorRoot 77 $ownerBirth) -eq 'coordinator_stop') 'Owned cooperative stop was ignored'
+    [IO.File]::Delete($request)
+    $script:processRace='absent'
+    Assert-Trace ((Get-SystemTraceCoordinatorStopReason $sessionId $coordinatorRoot 77 $ownerBirth) -eq 'coordinator_exit') 'Exited coordinator leaked recording'
+    $script:processRace='none'
+    Assert-Trace ((Get-SystemTraceCoordinatorStopReason $sessionId $coordinatorRoot 77 '2000-01-01T00:00:00Z') -eq 'coordinator_exit') 'Recycled owner PID leaked recording'
+    Write-Host 'PASS automatic recorder: exact cooperative request and owner lifetime, manual path unchanged'
+}finally{
+    $script:processRace='none'
+    $resolved=[IO.Path]::GetFullPath($coordinatorRoot)
+    $root=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
+    if(-not $resolved.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){throw 'Unexpected coordinator fixture cleanup path'}
+    Remove-Item -LiteralPath $resolved -Recurse -Force
+}
+
 $script:calls=[Collections.Generic.List[object]]::new();$script:nativeExitCode=0
 function Invoke-SystemRecorder {
     param([string[]]$Arguments)

@@ -1,9 +1,26 @@
 HITCH REDUCTION TRIAL v2 (2026-10-01)
-Open START-OptimizedMW-Test.bat, select H, choose a feature combination, then N
-for Normal or D for Deep Trace. Both depths use the SAME selected gameplay
-features and reference foundation. Normal retains lightweight frame/pacing
-measurements. Deep adds detailed engine attribution. Windows tracing is optional
-and still uses START-OptimizedMW-SystemTrace.bat before starting the game.
+Double-click START-OptimizedMW-Test.bat normally and choose ONE test:
+  1 = Diagnose CONTROL: Deep engine diagnostics + automatic Windows trace.
+  2 = Normal CONTROL: performance comparison with candidates off.
+  3 = Normal ALL: performance comparison with all four hitch candidates.
+  4 = Diagnose ALL: Deep engine diagnostics + automatic Windows trace.
+  C = Custom combination / I/O / trace depth; A = earlier Phase 9 modes.
+For 1 or 4, accept the Windows administrator prompt for the recorder only.
+The game starts automatically with the launcher's ordinary permissions after
+recording is ready. Use the same save, hold the fixed view about 45 seconds,
+walk the same 2-3 minute route, quit normally, and let this window finish.
+Explorer selects the single upload ZIP. It contains unchanged engine/system
+archives, the final qualification when available, and a hash/status manifest.
+Raw captures remain preserved if a channel or packaging step fails. A partial
+result never claims complete Windows coverage. No second recorder window needs
+to be started manually. Do not Run as administrator the main test launcher.
+Automatic recording defaults to 600 seconds, stops on game exit, and preserves
+the recorder's existing disk-space guard. Normal choices start no recorder.
+Custom retains all 16 combinations and separate I/O choices. Earlier modes keep
+their old meanings INSIDE A; first-screen 3 now means Normal ALL, not old mode 3.
+Both depths use the SAME selected gameplay features and reference foundation.
+Normal retains frame/pacing measurements; Deep adds detailed attribution.
+START-OptimizedMW-SystemTrace.bat remains available for manual advanced tracing.
 
 Independent mechanisms (OFF unless selected):
   UI: preserve text measurements by avoiding redundant size/font/wrap changes.
@@ -11,7 +28,7 @@ Independent mechanisms (OFF unless selected):
   ANIM: prepare the NPC animation sources missing from normal cell preloading.
   TERRAIN: wait for the actual demanded terrain target, publish only ready targets.
 All 16 combinations are available. 0 = CONTROL, 1 = UI, 2 = BAKE, 4 = ANIM,
-8 = TERRAIN, 15 = ALL. Pair/triple combinations have descriptive names in H.
+8 = TERRAIN, 15 = ALL. Pair/triple combinations have descriptive names in Custom.
 I/O selection is separate: CONTROL, I1, I2, I1I2. Enter keeps original I/O.
 D1 is available only with Deep and selects the existing diagnostic collector.
 
@@ -19,6 +36,7 @@ Reproducible invocations through the same shader-checked BAT:
   START-OptimizedMW-Test.bat -HitchMask 0 -TraceLevel Normal
   START-OptimizedMW-Test.bat -HitchMask 15 -TraceLevel Normal
   START-OptimizedMW-Test.bat -HitchMask 15 -TraceLevel Deep
+  START-OptimizedMW-Test.bat -HitchMask 0 -TraceLevel Deep -SystemTrace
   START-OptimizedMW-Test.bat -HitchMask 3 -TraceLevel Deep -Candidate I1
 Use -NoPrompt only with an explicit selection. The capture name contains the
 combination, depth and I/O choice. RUN-MANIFEST.json records a gameplay feature
@@ -27,7 +45,8 @@ restoration and capture qualification. Requested switches alone do not prove
 resource preparation happened; invalidation/pressure/cancellation can fall back.
 
 Normal captures determine gameplay performance. Deep captures explain work and
-include diagnostic overhead. Begin with Normal CONTROL versus Normal ALL on the
+include diagnostic overhead. The first diagnostic run is choice 1. Compare
+Normal CONTROL (2) versus Normal ALL (3) on the
 same save/route; use single/pair combinations to isolate a promising or regressing
 change. All combinations are available without requiring 32 runs immediately.
 Whole-frame distribution, adjacent changes, hitch clusters, transition duration,
@@ -49,7 +68,7 @@ OFF. The following section documents the earlier I/O and attribution mechanisms.
 
 HITCH REDUCTION TRIAL v1 - retained I/O/diagnostic mechanisms
 The launcher preserves modes 1-13 and the accepted Phase 9 foundation. Every new
-I/O/catalog mechanism defaults OFF. Select it independently in the H menu:
+I/O/catalog mechanism defaults OFF. Select it independently in Custom:
   CONTROL: mode 1, exact 8 KiB refill, resident seek/tell OFF, original catalog.
   I1: mode 1, first 64 KiB refill trial, resident seek/tell OFF.
   I2: mode 1, resident-window seek/tell only, exact 8 KiB refill.
@@ -301,9 +320,11 @@ Diagnostic detail revision 3:
   Lua counters describe inclusive logical allocations, not retained memory.
   See HITCH-DIAGNOSTICS.md for coverage and interpretation limits.
 
-  For additional Windows diagnostics: right-click START-OptimizedMW-SystemTrace.bat and Run as
+  Automatic Windows diagnostics: first-screen choice 1 (CONTROL) or 4 (ALL)
+  starts the recorder, then the game, then saves one verified upload ZIP.
+  For manual advanced diagnostics: right-click START-OptimizedMW-SystemTrace.bat and Run as
   administrator. Wait for recording started, then start the NORMAL test
-  launcher in another window and choose mode 3. Use the same outdoor save,
+  launcher in another window and choose A, then earlier mode 3. Use the same outdoor save,
   fixed view for about 45 seconds, and 2-3 minute route. Quit normally.
   WPR now records sequential File mode for up to 360 seconds and saves
   automatically after the exact game process exits. Launch promptly.
@@ -318,7 +339,7 @@ Diagnostic detail revision 3:
   establish gameplay FPS gains or promote modes 8/9/10.
 
 Six-group Deep diagnostic expansion:
-  H keeps the four independently selectable mechanisms and all 16 combinations.
+  Custom keeps the four independently selectable mechanisms and all 16 combinations.
   Normal and Deep choose the same gameplay switches. Deep now adds per-spike
   work trees, preparation-to-first-API-retrieval lifetimes, model construction,
   physics/navigation work and waits, queue/cache retirement, and Lua allocator
