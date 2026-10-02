@@ -210,8 +210,13 @@ namespace LuaUi
                 throw std::logic_error(std::string("Invalid widget type ") += type);
 
             std::string name = layout.get_or(LayoutKeys::name, std::string());
-            MyGUI::Widget* widget
-                = MyGUI::Gui::getInstancePtr()->createWidgetT(type, {}, {}, MyGUI::Align::Default, {}, name);
+            MyGUI::Widget* widget;
+            {
+                Debug::HitchTrace::Scope create("lua.ui.widget.native_create",
+                    Debug::HitchTrace::CpuTiming::WallEnvelope, type, name);
+                create.setMetric(0, "layout_depth", depth);
+                widget = MyGUI::Gui::getInstancePtr()->createWidgetT(type, {}, {}, MyGUI::Align::Default, {}, name);
+            }
 
             WidgetExtension* ext = dynamic_cast<WidgetExtension*>(widget);
             if (!ext)

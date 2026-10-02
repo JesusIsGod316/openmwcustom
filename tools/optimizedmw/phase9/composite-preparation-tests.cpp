@@ -3,6 +3,7 @@
 #include <components/resource/v321classifiedcompileset.hpp>
 #include <components/resource/preparedterraintexture.hpp>
 #include <components/resource/statictextureprogram.hpp>
+#include <components/sceneutil/glcalltrace.hpp>
 #include <components/terrain/compositemaprenderer.hpp>
 #include <osg/BlendFunc>
 #include <osg/Depth>
@@ -59,6 +60,22 @@ namespace
 #endif
         }
         ~EarlyEnvironment() { set(existed ? previous.c_str() : nullptr); }
+    };
+    struct StepEnvironment
+    {
+        std::string previous = std::getenv("OPENMW_HITCH_COMPOSITE_STEP") ? std::getenv("OPENMW_HITCH_COMPOSITE_STEP") : "";
+        bool existed = std::getenv("OPENMW_HITCH_COMPOSITE_STEP") != nullptr;
+        explicit StepEnvironment(const char* value) { set(value); }
+        static void set(const char* value)
+        {
+#ifdef _WIN32
+            _putenv_s("OPENMW_HITCH_COMPOSITE_STEP", value ? value : "");
+#else
+            if (value) setenv("OPENMW_HITCH_COMPOSITE_STEP", value, 1);
+            else unsetenv("OPENMW_HITCH_COMPOSITE_STEP");
+#endif
+        }
+        ~StepEnvironment() { set(existed ? previous.c_str() : nullptr); }
     };
     class CountingProgram final : public osg::Program
     {
@@ -159,12 +176,295 @@ namespace
             osg::Geometry::drawImplementation(info);
         }
     };
+
+    struct CachedPressure
+    {
+        Resource::OpenGlPressureSample value;
+        CachedPressure()
+        {
+            value.generation = 1;
+            value.memory.physicalValid = value.memory.commitValid = true;
+            value.memory.physicalTotal = 32ull * 1024 * 1024 * 1024;
+            value.memory.physicalAvailable = value.memory.commitAvailable = 20ull * 1024 * 1024 * 1024;
+            value.decision.state = Resource::OpenGlPressure::Normal;
+            value.decision.admissionsPerSample = 4;
+        }
+        static Resource::OpenGlPressureSample sample(void* owner) { return static_cast<CachedPressure*>(owner)->value; }
+        Resource::SpeculativeScope::Context context() { return {nullptr, &sample, this}; }
+    };
+    class OrderedGeometry final : public osg::Geometry
+    {
+    public:
+        std::vector<unsigned>* order;
+        unsigned layer;
+        OrderedGeometry(const osg::Geometry& original, std::vector<unsigned>& observed, unsigned value)
+            : osg::Geometry(original), order(&observed), layer(value) {}
+        void drawImplementation(osg::RenderInfo& info) const override
+        { osg::Geometry::drawImplementation(info); order->push_back(layer); }
+    };
+    osg::ref_ptr<Resource::PreparedTerrainTexture> largeCompressedTexture(unsigned index)
+    {
+        // A real 4096-square, complete DXT5 mip chain: 21.333 MiB each.
+        constexpr GLenum dxt5 = 0x83F3;
+        osg::Image::MipmapDataType offsets;
+        std::size_t bytes = 0;
+        for (unsigned size = 4096; size; size /= 2)
+        {
+            if (bytes) offsets.push_back(static_cast<unsigned>(bytes));
+            bytes += std::size_t(std::max(1u, (size + 3) / 4)) * std::max(1u, (size + 3) / 4) * 16;
+        }
+        auto* data = new unsigned char[bytes];
+        std::fill_n(data, bytes, 0);
+        for (std::size_t block = 0; block < bytes; block += 16)
+        { data[block] = data[block + 1] = 255; data[block + 8] = data[block + 10] = 0xe0;
+            data[block + 9] = data[block + 11] = 0x07; }
+        osg::ref_ptr<osg::Image> image = new osg::Image;
+        image->setImage(4096, 4096, 1, dxt5, dxt5, GL_UNSIGNED_BYTE, data, osg::Image::USE_NEW_DELETE, 1);
+        image->setMipmapLevels(offsets);
+        image->setFileName("fixture/step-green-" + std::to_string(index) + ".dds");
+        require(image->getTotalDataSize() == bytes && bytes == 22369648, "compressed mip-chain estimate differs");
+        osg::ref_ptr<Resource::PreparedTerrainTexture> result = new Resource::PreparedTerrainTexture(image);
+        result->setFilter(osg::Texture::MIN_FILTER, osg::Texture::LINEAR_MIPMAP_LINEAR);
+        result->setFilter(osg::Texture::MAG_FILTER, osg::Texture::LINEAR);
+        result->setResizeNonPowerOfTwoHint(false);
+        return result;
+    }
+    void opaqueLayer(MapFixture& fixture, Resource::PreparedTerrainTexture* source,
+        std::vector<unsigned>& order, unsigned layer)
+    {
+        osg::ref_ptr<osg::Geometry> original = osg::createTexturedQuadGeometry(
+            osg::Vec3(-1, -1, 0), osg::Vec3(2, 0, 0), osg::Vec3(0, 2, 0));
+        original->setUseDisplayList(false); original->setUseVertexBufferObjects(false);
+        auto* pass = original->getOrCreateStateSet();
+        pass->setAttributeAndModes(fixture.program, osg::StateAttribute::ON);
+        pass->setTextureAttribute(0, source); pass->setTextureAttribute(1, texture({0, 0, 0, 255}));
+        pass->addUniform(new osg::Uniform("diffuseMap", 0)); pass->addUniform(new osg::Uniform("blendMap", 1));
+        pass->setMode(GL_BLEND, osg::StateAttribute::OFF); pass->setMode(GL_DEPTH_TEST, osg::StateAttribute::OFF);
+        fixture.map->mDrawables.push_back(new OrderedGeometry(*original, order, layer));
+    }
+    void stepFixtures(osg::GraphicsContext& context, osg::State& state, osg::RenderInfo& info,
+        osg::FrameStamp& stamp, Resource::OpenMWIncrementalCompileOperation& ico, const char* tracePath)
+    {
+        StepEnvironment stepEnvironment("1");
+        CachedPressure pressure;
+        unsigned frame = 1000;
+        auto makeRenderer = [&] {
+            osg::ref_ptr<Terrain::CompositeMapRenderer> result = new Terrain::CompositeMapRenderer;
+            result->configurePreparation(&ico, pressure.context());
+            result->setMinimumTimeAvailableForCompile(.1); result->setCooperativeBackgroundCompile(true);
+            return result;
+        };
+        auto next = [&](Terrain::CompositeMapRenderer& renderer, bool runIco = true) {
+            stamp.setFrameNumber(frame++); context.clear(); renderer.drawImplementation(info);
+            if (runIco) ico(&context);
+            require(renderer.preparationStats().pendingBytes <= 32u * 1024u * 1024u, "STEP debit exceeded 32 MiB");
+        };
+        {
+            auto renderer = makeRenderer();
+            MapFixture large;
+            large.map->mDrawables.clear();
+            std::vector<unsigned> order;
+            for (unsigned i = 0; i < 20; ++i) opaqueLayer(large, largeCompressedTexture(i), order, i);
+            require(20ull * 22369648 > 426ull * 1024 * 1024, "large map does not exercise former whole-map cap");
+            renderer->addCompositeMap(large.map);
+            std::size_t previous = 0;
+            for (unsigned attempts = 0; attempts < 240 && !large.map->mDrawables.empty(); ++attempts)
+            {
+                next(*renderer);
+                require(large.map->mCompiled <= previous + 1, "STEP drew more than one prepared layer per window");
+                previous = large.map->mCompiled;
+            }
+            require(large.map->mDrawables.empty() && large.map->mCompiled == 20, "large map did not finish incremental bake");
+            require(order.size() == 20, "STEP lost or repeated layers");
+            for (unsigned i = 0; i < order.size(); ++i) require(order[i] == i, "STEP changed original layer order");
+            require(renderer->preparationStats().dependencyWaves >= 21, "large map did not use bounded layer windows");
+            const auto value = pixel(*large.map->mTexture, state);
+            require(value[0] < 2 && value[1] > 253 && value[2] < 2 && value[3] == 255, "large DXT5 layer pixels differ");
+            require(renderer->preparationStats().pendingBytes == 0, "complete large map retained preparation credit");
+            renderer->releaseGLObjects(&state);
+        }
+        {
+            auto renderer = makeRenderer();
+            MapFixture partial;
+            std::vector<unsigned> order;
+            for (unsigned i = 0; i < partial.map->mDrawables.size(); ++i)
+                partial.map->mDrawables[i] = new OrderedGeometry(*partial.map->mDrawables[i]->asGeometry(), order, i);
+            renderer->addCompositeMap(partial.map);
+            for (unsigned i = 0; i < 30 && partial.map->mCompiled == 0; ++i) next(*renderer);
+            require(partial.map->mCompiled == 1 && order == std::vector<unsigned>{0}, "partial first layer not observed");
+            const auto before = renderer->preparationStats().invalidated;
+            partial.red->getImage()->data()[0] = 128; partial.red->getImage()->dirty();
+            renderer->setImmediate(partial.map);
+            next(*renderer);
+            require(partial.map->mDrawables.empty() && order == std::vector<unsigned>({0, 0, 1}),
+                "required stale consumed layer did not restart at layer zero");
+            require(renderer->preparationStats().invalidated > before, "stale consumed revision was not invalidated");
+            MapFixture control;
+            control.red->getImage()->data()[0] = 128; control.red->getImage()->dirty();
+            StepEnvironment controlEnvironment("0");
+            osg::ref_ptr<Terrain::CompositeMapRenderer> old = new Terrain::CompositeMapRenderer;
+            old->compile(*control.map, info);
+            require(pixel(*control.map->mTexture, state) == pixel(*partial.map->mTexture, state),
+                "required stale restart final pixel differs from fresh original bake");
+            old->releaseGLObjects(&state); renderer->releaseGLObjects(&state);
+        }
+        {
+            auto renderer = makeRenderer();
+            MapFixture pending;
+            renderer->addCompositeMap(pending.map);
+            next(*renderer, false);
+            require(pending.map->mPreparation && renderer->preparationStats().pendingBytes > 0, "STEP queue not admitted");
+            pending.consumer = nullptr;
+            next(*renderer, false);
+            if (!pending.map->mDrawables.empty() || !renderer->preparationStats().pendingBytes)
+                std::cerr << "orphan evidence: layers=" << pending.map->mDrawables.size()
+                    << " compiled=" << pending.map->mCompiled << " debit=" << renderer->preparationStats().pendingBytes
+                    << " target_refs=" << pending.map->mTexture->referenceCount()
+                    << " descriptors=" << renderer->preparationStats().scheduled << '\n';
+            require(pending.map->mDrawables.empty() && renderer->preparationStats().pendingBytes > 0,
+                "cancellation refunded ownership before queued operation destruction");
+            ico(&context);
+            require(ico.getToCompile().empty() && renderer->preparationStats().pendingBytes == 0,
+                "unsubmitted canceled STEP wave failed to release debit after queue retirement");
+            renderer->releaseGLObjects(&state);
+        }
+        {
+            auto renderer = makeRenderer();
+            MapFixture denied;
+            pressure.value.decision.state = Resource::OpenGlPressure::Critical;
+            renderer->addCompositeMap(denied.map); next(*renderer);
+            require(denied.map->mCompiled == 0 && !denied.map->mPreparation && renderer->preparationStats().pressureYields,
+                "critical cached pressure admitted new optional STEP work");
+            renderer->setImmediate(denied.map); next(*renderer);
+            require(denied.map->mDrawables.empty(), "critical pressure delayed required original bake");
+            pressure.value.decision.state = Resource::OpenGlPressure::Normal;
+            MapFixture canceled;
+            renderer->addCompositeMap(canceled.map); next(*renderer);
+            pressure.value.generation = 0; next(*renderer);
+            require(!canceled.map->mPreparation && canceled.map->mCompiled == 0,
+                "missing pressure did not cancel existing optional wave");
+            renderer->setImmediate(canceled.map); next(*renderer);
+            require(canceled.map->mDrawables.empty(), "missing pressure delayed required fallback");
+            pressure.value.generation = 1;
+            renderer->releaseGLObjects(&state);
+        }
+        {
+            auto renderer = makeRenderer();
+            MapFixture submitted;
+            renderer->addCompositeMap(submitted.map);
+            for (unsigned i = 0; i < 30 && !submitted.red->getTextureObject(state.getContextID()); ++i) next(*renderer);
+            require(submitted.map->mCompiled == 0 && submitted.red->getTextureObject(state.getContextID()),
+                "source submission did not precede actual layer use");
+            pressure.value.decision.state = Resource::OpenGlPressure::Critical;
+            next(*renderer);
+            require(!submitted.map->mPreparation && ico.getToCompile().empty()
+                && renderer->preparationStats().pendingBytes > 0,
+                "canceled already-submitted GL source/target falsely refunded unused debt");
+            pressure.value.decision.state = Resource::OpenGlPressure::Normal;
+            renderer->setImmediate(submitted.map); next(*renderer);
+            require(submitted.map->mDrawables.empty() && renderer->preparationStats().pendingBytes == 0,
+                "exact required layer use failed to retire canceled submitted-identity debt");
+            renderer->releaseGLObjects(&state);
+        }
+        for (unsigned mutation = 0; mutation < 3; ++mutation)
+        {
+            auto renderer = makeRenderer();
+            MapFixture partial;
+            std::vector<unsigned> order;
+            for (unsigned i = 0; i < partial.map->mDrawables.size(); ++i)
+                partial.map->mDrawables[i] = new OrderedGeometry(*partial.map->mDrawables[i]->asGeometry(), order, i);
+            renderer->addCompositeMap(partial.map);
+            for (unsigned i = 0; i < 30 && partial.map->mCompiled == 0; ++i) next(*renderer);
+            require(partial.map->mCompiled == 1, "program/target/release fixture failed to consume first layer");
+            MapFixture replacement;
+            if (mutation == 0)
+                partial.map->mDrawables[0]->getStateSet()->setAttributeAndModes(replacement.program, osg::StateAttribute::ON);
+            else if (mutation == 1)
+            { partial.map->mTexture = target(); partial.consumer = partial.map->mTexture; }
+            else renderer->releaseGLObjects(&state);
+            renderer->setImmediate(partial.map); next(*renderer);
+            if (!partial.map->mDrawables.empty() || order != std::vector<unsigned>({0, 0, 1}))
+            {
+                std::cerr << "mutation evidence: kind=" << mutation << " layers=" << partial.map->mDrawables.size()
+                    << " compiled=" << partial.map->mCompiled << " target_refs=" << partial.map->mTexture->referenceCount()
+                    << " order=";
+                for (const auto value : order) std::cerr << value << ',';
+                std::cerr << '\n';
+            }
+            require(partial.map->mDrawables.empty() && order == std::vector<unsigned>({0, 0, 1}),
+                "program/target/context-release mutation failed to restart consumed layers");
+            const auto value = pixel(*partial.map->mTexture, state);
+            require(value[0] >= 63 && value[0] <= 65 && value[1] >= 190 && value[1] <= 192,
+                "program/target/context-release required restart changed final original pixels");
+            renderer->releaseGLObjects(&state);
+        }
+        {
+            auto renderer = makeRenderer();
+            std::array<std::unique_ptr<MapFixture>, 9> bounded;
+            for (auto& fixture : bounded)
+            { fixture = std::make_unique<MapFixture>(); renderer->addCompositeMap(fixture->map); }
+            next(*renderer, false);
+            unsigned admitted = 0;
+            for (const auto& fixture : bounded) if (fixture->map->mPreparation) ++admitted;
+            require(admitted == 8, "STEP descriptor admission exceeded eight map limit");
+            for (auto& fixture : bounded) fixture->consumer = nullptr;
+            next(*renderer, false); ico(&context);
+            require(renderer->preparationStats().pendingBytes == 0, "bounded canceled STEP descriptors retained ownership");
+            renderer->releaseGLObjects(&state);
+        }
+        {
+            auto renderer = makeRenderer();
+            MapFixture oversize;
+            oversize.map->mDrawables.clear();
+            std::vector<unsigned> order;
+            osg::ref_ptr<osg::Image> image = new osg::Image;
+            image->allocateImage(3072, 3072, 1, GL_RGBA, GL_UNSIGNED_BYTE);
+            std::fill_n(image->data(), image->getTotalDataSize(), 255);
+            osg::ref_ptr<Resource::PreparedTerrainTexture> source = new Resource::PreparedTerrainTexture(image);
+            source->setFilter(osg::Texture::MIN_FILTER, osg::Texture::LINEAR);
+            source->setFilter(osg::Texture::MAG_FILTER, osg::Texture::LINEAR);
+            opaqueLayer(oversize, source, order, 0);
+            renderer->addCompositeMap(oversize.map); next(*renderer);
+            require(oversize.map->mDrawables.empty() && !oversize.map->mPreparation
+                && renderer->preparationStats().scheduled == 0 && order == std::vector<unsigned>{0},
+                "single 36 MiB layer did not decline optional STEP and retain complete original bake");
+            const auto value = pixel(*oversize.map->mTexture, state);
+            require(value == std::array<unsigned char, 4>{255, 255, 255, 255}, "oversize fallback pixel changed");
+            renderer->releaseGLObjects(&state);
+        }
+        // Real selected-extension mipmap call with the actual producer apply
+        // owner; a neighboring cached attribute must never supply its identity.
+        auto& capture = SceneUtil::GLCallTrace::Capture::instance();
+        capture.enable(tracePath);
+        require(SceneUtil::GLCallTrace::install(state.getContextID(), *state.get<osg::GLExtensions>()), "GL hooks unavailable");
+        osg::ref_ptr<osg::Image> mipImage = new osg::Image;
+        mipImage->allocateImage(4, 4, 1, GL_RGBA, GL_UNSIGNED_BYTE);
+        std::fill_n(mipImage->data(), mipImage->getTotalDataSize(), 255);
+        osg::ref_ptr<Resource::PreparedTerrainTexture> mip = new Resource::PreparedTerrainTexture(mipImage);
+        mip->setPreparationMemoEnabled(false);
+        mip->setFilter(osg::Texture::MIN_FILTER, osg::Texture::LINEAR_MIPMAP_LINEAR);
+        state.setActiveTextureUnit(1);
+        auto neighbor = texture({255, 0, 0, 255});
+        state.applyTextureAttribute(1, neighbor);
+        mip->apply(state); mip->allocateMipmapLevels(); mip->apply(state);
+        const auto call = capture.breadcrumb(state.getContextID()).row;
+        require(call.api == SceneUtil::GLCallTrace::GenerateMipmap && call.texture == reinterpret_cast<std::uintptr_t>(mip.get())
+            && call.image == reinterpret_cast<std::uintptr_t>(mipImage.get()) && call.textureUnit == 1,
+            "actual mipmap owner was unknown or inferred from neighboring cached texture");
+        mip->rememberPreparation(state);
+        require(!mip->preparationUnchanged(state), "diagnostic-only wrapper accidentally enabled precompile reuse");
+        state.haveAppliedTextureAttribute(1, osg::StateAttribute::TEXTURE);
+        mip->releaseGLObjects(&state); neighbor->releaseGLObjects(&state);
+        require(glGetError() == GL_NO_ERROR, "GL error in STEP/owner fixtures");
+        std::cout << "PASS: STEP 20 large mipmapped layers, 32MiB/eight-map debt, exact order/pixels, stale consumed-source/program/target/context-release required restart, submitted/unsubmitted cancellation lifetime, pressure fallback, oversized complete layer, and actual mipmap owner\n";
+    }
 }
 
-int main() try
+int main(int argc, char** argv) try
 {
     BatchEnvironment originalEnvironment("0");
     EarlyEnvironment originalEarly("0");
+    StepEnvironment originalStep("0");
     Resource::P9DiscretionaryAdmission admission;
     const int contextIdentity = 0, replacementIdentity = 1;
     admission.begin(&contextIdentity, 10, 2);
@@ -198,6 +498,14 @@ int main() try
     osg::ref_ptr<Resource::OpenMWIncrementalCompileOperation> ico = new Resource::OpenMWIncrementalCompileOperation(config);
     osgUtil::IncrementalCompileOperation::Contexts contexts{context.get()};
     ico->assignContexts(contexts);
+    if (argc > 1 && (std::string_view(argv[1]) == "--step" || std::string_view(argv[1]) == "--step-batch"))
+    {
+        BatchEnvironment stepBatch(std::string_view(argv[1]) == "--step-batch" ? "1" : "0");
+        stepFixtures(*context, state, info, *stamp, *ico, argc > 2 ? argv[2] : "composite-step-fixture");
+        ico->removeContexts(contexts);
+        context->releaseContext(); context->close(true);
+        return 0;
+    }
     osg::ref_ptr<Terrain::CompositeMapRenderer> renderer = new Terrain::CompositeMapRenderer;
     renderer->configurePreparation(ico);
     renderer->setMinimumTimeAvailableForCompile(.1);

@@ -51,6 +51,13 @@ namespace Resource
     }
     inline bool animationSourcePlanEnabled() noexcept { return AnimationSourcePlanEnabled; }
 
+    inline const bool AnimationWarmLeaseEnabled = [] {
+        const char* value = std::getenv("OPENMW_HITCH_ANIMATION_WARM_LEASE");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    inline bool animationWarmLeaseEnabled() noexcept
+    { return animationDependencyLifetimeEnabled() && AnimationWarmLeaseEnabled; }
+
     inline std::string additionalAnimationDirectory(VFS::Path::NormalizedView model)
     {
         constexpr VFS::Path::NormalizedView meshes("meshes/");

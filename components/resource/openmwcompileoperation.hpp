@@ -3,6 +3,8 @@
 
 #include "p4compilepolicy.hpp"
 #include "p9discretionaryadmission.hpp"
+#include "p9deleteadmission.hpp"
+#include "speculativebudget.hpp"
 
 #include <array>
 #include <atomic>
@@ -64,6 +66,8 @@ namespace Resource
         double mTerrainDrawablePriorMs = 8.0;
         int mResidencySchedulerMode = 0;
         bool mCompositePreparation = false;
+        bool mDeleteAdmission = false;
+        SpeculativeScope::Context mPressureContext;
     };
 
     class OpenMWIncrementalCompileOperation final : public osgUtil::IncrementalCompileOperation
@@ -144,6 +148,8 @@ namespace Resource
         std::size_t mLastQueueDepth = 0;
         unsigned int mSmoothFrames = 0;
         std::shared_ptr<P9DiscretionaryAdmission> mCompositeAdmission;
+        P9DeleteAdmission mDeleteAdmission;
+        double mDeletePredictionMs = 0.15;
         struct TraceState;
         std::unique_ptr<TraceState> mCompileTrace;
 

@@ -242,6 +242,19 @@ endif()
 # when we change the backend.
 if (OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_executable(p9-keyframe-ready-lease ../../tools/optimizedmw/phase9/keyframe-ready-lease-tests.cpp)
+    target_include_directories(p9-keyframe-ready-lease PRIVATE ${PROJECT_SOURCE_DIR})
+    target_link_libraries(p9-keyframe-ready-lease PRIVATE components)
+    foreach(mode control lifetime warm)
+        add_test(NAME p9-keyframe-ready-lease-${mode} COMMAND p9-keyframe-ready-lease ${mode})
+        set_tests_properties(p9-keyframe-ready-lease-${mode} PROPERTIES TIMEOUT 45)
+    endforeach()
+    set_tests_properties(p9-keyframe-ready-lease-control PROPERTIES ENVIRONMENT
+        "OPENMW_HITCH_ANIMATION_PRELOAD=0;OPENMW_HITCH_ANIMATION_LIFETIME=0;OPENMW_HITCH_ANIMATION_WARM_LEASE=1")
+    set_tests_properties(p9-keyframe-ready-lease-lifetime PROPERTIES ENVIRONMENT
+        "OPENMW_HITCH_ANIMATION_PRELOAD=1;OPENMW_HITCH_ANIMATION_LIFETIME=1;OPENMW_HITCH_ANIMATION_WARM_LEASE=0")
+    set_tests_properties(p9-keyframe-ready-lease-warm PROPERTIES ENVIRONMENT
+        "OPENMW_HITCH_ANIMATION_PRELOAD=1;OPENMW_HITCH_ANIMATION_LIFETIME=1;OPENMW_HITCH_ANIMATION_WARM_LEASE=1")
     add_executable(p9-worker-attribution ../../tools/optimizedmw/phase9/worker-attribution-tests.cpp)
     target_include_directories(p9-worker-attribution PRIVATE ${PROJECT_SOURCE_DIR})
     target_link_libraries(p9-worker-attribution PRIVATE components)
@@ -262,6 +275,10 @@ if (OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS)
         $<TARGET_FILE:p9-ui-reflow> ${CMAKE_CURRENT_BINARY_DIR}/ui-reflow-fixture)
     set_tests_properties(p9-ui-reflow PROPERTIES TIMEOUT 180)
     if(BUILD_COMPONENTS_TESTS)
+        add_test(NAME p9-lua-api-attribution COMMAND ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tools/optimizedmw/phase9/verify-lua-api-attribution.py
+            $<TARGET_FILE:components-tests> ${CMAKE_CURRENT_BINARY_DIR}/lua-api-fixture)
+        set_tests_properties(p9-lua-api-attribution PROPERTIES TIMEOUT 120)
         add_test(NAME p9-resource-lifecycle COMMAND ${Python3_EXECUTABLE}
             ${PROJECT_SOURCE_DIR}/tools/optimizedmw/phase9/verify-resource-lifecycle.py
             $<TARGET_FILE:components-tests> ${CMAKE_CURRENT_BINARY_DIR}/resource-lifecycle-fixture)

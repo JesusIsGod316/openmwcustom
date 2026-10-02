@@ -39,6 +39,7 @@
 #include <components/debug/debuglog.hpp>
 #include <components/debug/gldebug.hpp>
 #include <components/debug/v3diagnostics.hpp>
+#include <components/debug/v36gpuprofiler.hpp>
 
 #include <components/misc/rng.hpp>
 #include <components/misc/strings/format.hpp>
@@ -1443,6 +1444,7 @@ OMW::Engine::~Engine()
     // All resource, Lua and viewer workers are now joined.
     Debug::ResourceLifecycle::emitStatus();
     Debug::DiagnosticObserver::declareProducerThreadsJoined();
+    Debug::V36GpuProfiler::finish(true);
     Debug::HitchTrace::Capture::instance().finish();
 
     mEncoder = nullptr;

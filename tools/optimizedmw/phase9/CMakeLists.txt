@@ -32,6 +32,11 @@ add_library(p9-hitch-platform STATIC "${ROOT}/components/debug/hitchtrace.cpp"
   "${ROOT}/components/debug/diagnosticobserver.cpp")
 link_libraries(p9-hitch-platform)
 enable_testing()
+add_executable(p9-delete-admission delete-admission-tests.cpp
+  ${ROOT}/components/resource/openmwcompileoperation.cpp)
+target_link_libraries(p9-delete-admission PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
+add_test(NAME p9-delete-admission COMMAND p9-delete-admission)
+set_tests_properties(p9-delete-admission PROPERTIES TIMEOUT 45)
 add_executable(p9-benchmark-context benchmark-context-tests.cpp)
 add_test(NAME p9-benchmark-context COMMAND p9-benchmark-context benchmark-context-fixture)
 set_tests_properties(p9-benchmark-context PROPERTIES TIMEOUT 45)
@@ -167,6 +172,12 @@ target_link_libraries(p9-gpu-owner PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::G
 add_test(NAME p9-gpu-owner COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/verify-gpu-owner.py
   $<TARGET_FILE:p9-gpu-owner> ${CMAKE_CURRENT_BINARY_DIR}/gpu-owner.csv)
 set_tests_properties(p9-gpu-owner PROPERTIES TIMEOUT 45)
+add_executable(p9-gpu-query-contract gpu-query-tests.cpp)
+target_link_libraries(p9-gpu-query-contract PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
+add_test(NAME p9-gpu-query-contract COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/verify-gpu-query.py $<TARGET_FILE:p9-gpu-query-contract>
+  ${CMAKE_CURRENT_BINARY_DIR}/gpu-query-fixture)
+set_tests_properties(p9-gpu-query-contract PROPERTIES TIMEOUT 60)
 option(OPENMW_PHASE9_INTEROP_FIXTURE "Build the separate GL/Vulkan shared-image fixture" OFF)
 if(OPENMW_PHASE9_INTEROP_FIXTURE)
   add_subdirectory(interop)
@@ -206,6 +217,12 @@ target_link_libraries(p9-composite-preparation PRIVATE ${OPENSCENEGRAPH_LIBRARIE
 target_compile_definitions(p9-composite-preparation PRIVATE P9_COMPILE_TRACE_TEST_HOOKS)
 add_test(NAME p9-composite-preparation COMMAND p9-composite-preparation)
 set_tests_properties(p9-composite-preparation PROPERTIES TIMEOUT 45)
+add_test(NAME p9-composite-step COMMAND p9-composite-preparation --step
+  ${CMAKE_CURRENT_BINARY_DIR}/composite-step-fixture)
+set_tests_properties(p9-composite-step PROPERTIES TIMEOUT 180)
+add_test(NAME p9-composite-step-batch COMMAND p9-composite-preparation --step-batch
+  ${CMAKE_CURRENT_BINARY_DIR}/composite-step-batch-fixture)
+set_tests_properties(p9-composite-step-batch PROPERTIES TIMEOUT 180)
 add_test(NAME p9-compile-attribution COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/verify-compile-attribution.py $<TARGET_FILE:p9-composite-preparation>
   ${CMAKE_CURRENT_BINARY_DIR}/compile-attribution-fixture)

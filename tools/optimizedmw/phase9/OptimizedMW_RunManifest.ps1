@@ -114,6 +114,11 @@ function New-Phase9RunManifest {
         io_candidates=[ordered]@{i1_requested=$Candidate.i1;i2_requested=$Candidate.i2;
             requested_refill_bytes=$Candidate.refill_bytes;budget_limit_bytes=$Candidate.buffer_budget_bytes};
         catalog_candidate=[ordered]@{d1_requested=$Candidate.d1};
+        gpu_query_accounting=[ordered]@{requested=($Mode.Trace -eq '1' -or $Mode.Temporal -eq '1');revision=1;
+            deferred_collection_requested=($env:OPENMW_P9_GPU_QUERY_DEFER -eq '1');
+            policy=$(if($env:OPENMW_P9_GPU_QUERY_DEFER -eq '1'){'deferred_begin_min2_backoff8'}else{'legacy_begin_end'});
+            channels=@('p9-gpu-passes.csv','p9-gpu-passes.csv.queries.csv','p9-gpu-passes.csv.pending.csv','p9-gpu-passes.csv.query-status.txt');
+            coverage='Final query accounting after producer join; pending/active are missing results, not zero GPU time. Timestamp intervals include submission gaps/idle; no GPU-active proof.'};
         hitch_mechanisms=[ordered]@{requested=$HitchCombination;
             coverage='Independent startup switches; resource denial, invalidation and demand fallback remain possible. Selection alone is not execution proof.'};
         hitch_v2_attribution=[ordered]@{requested=($Mode.Trace -eq '1');channel='p9-hitch-spans.csv';

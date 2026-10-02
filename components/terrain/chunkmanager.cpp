@@ -361,10 +361,11 @@ namespace Terrain
     osg::ref_ptr<osg::Texture2D> ChunkManager::createCompositeMapRTT()
     {
         osg::ref_ptr<osg::Texture2D> texture;
-        if (mCompositeMapRenderer->preparationEnabled())
+        if (mCompositeMapRenderer->preparationEnabled() || SceneUtil::GLCallTrace::Capture::instance().enabled())
         {
             auto* prepared = new Resource::PreparedTerrainTexture;
             prepared->setPreparationRenderTarget(true);
+            prepared->setPreparationMemoEnabled(mCompositeMapRenderer->preparationEnabled());
             texture = prepared;
         }
         else
@@ -455,8 +456,13 @@ namespace Terrain
         for (osg::ref_ptr<osg::Image>& image : prepared.mBlendmaps)
         {
             osg::ref_ptr<osg::Texture2D> texture;
-            if (forCompositeMap && mCompositeMapRenderer->preparationEnabled())
-                texture = new Resource::PreparedTerrainTexture;
+            if ((forCompositeMap && mCompositeMapRenderer->preparationEnabled())
+                || SceneUtil::GLCallTrace::Capture::instance().enabled())
+            {
+                auto* preparedTexture = new Resource::PreparedTerrainTexture;
+                preparedTexture->setPreparationMemoEnabled(forCompositeMap && mCompositeMapRenderer->preparationEnabled());
+                texture = preparedTexture;
+            }
             else
                 texture = new osg::Texture2D;
             texture->setImage(image);

@@ -309,6 +309,46 @@ int main(int argc, char** argv)
             require(okay && budget.stats().estimatedOwnerBytes == 0 && budget.stats().futureBytes == 0,
                 "concurrent owned-plan publication preserves order and settles charges");
         }
+        {
+            // The cache API's real uncharged owner (not chargedLease) is the
+            // same starting condition as a required-loaded KF publication.
+            SpeculativeBudget budget;
+            GenericObjectCache<std::string> cache; cache.setSpeculativeBudget(&budget);
+            osg::ref_ptr<osg::Group> value = new osg::Group;
+            cache.addEntryToObjectCache("primary", value, 0, 7, 4 * MiB);
+            cache.addEntryToObjectCache("alias", value, 0, 7, 4 * MiB);
+            auto primary = cache.getLeaseFromObjectCache("primary", value.get(), 7);
+            auto alias = cache.getLeaseFromObjectCache("alias", value.get(), 7);
+            require(primary.mCharge == alias.mCharge && !primary.bytes() && budget.stats().unknownOwners == 1,
+                "uncharged canonical aliases");
+            auto first = budget.reserve(healthy(), 4 * MiB);
+            auto second = budget.reserve(healthy(), 4 * MiB);
+            require(cache.promoteReadyLease("primary", primary, 4 * MiB, first)
+                && cache.promoteReadyLease("alias", alias, 4 * MiB, second), "concurrent winner aliases promote once");
+            require(primary.bytes() == 4 * MiB && alias.bytes() == 4 * MiB && first.future() == 0
+                && second.future() == 4 * MiB && budget.stats().estimatedOwnerBytes == 4 * MiB
+                && budget.stats().observedGrowth == 4 * MiB && budget.stats().unknownOwners == 0,
+                "one transfer and immutable positive canonical bytes");
+            require(!budget.promoteUnknown(primary.mCharge, 8 * MiB, second)
+                && primary.bytes() == 4 * MiB && budget.stats().observedGrowth == 4 * MiB,
+                "positive charge never grows and incompatible larger metadata is declined");
+            cache.addEntryToObjectCache("primary", new osg::Group, 0, 7, 4 * MiB);
+            require(!cache.promoteReadyLease("primary", primary, 4 * MiB, second), "stale value/revision rejected");
+            auto wrongSource = alias; wrongSource.mSourceRevision = 8;
+            require(!cache.promoteReadyLease("alias", wrongSource, 4 * MiB, second), "stale generation rejected");
+            auto wrongEstimate = alias; wrongEstimate.mOwnerEstimate = 8 * MiB;
+            require(!cache.promoteReadyLease("alias", wrongEstimate, 8 * MiB, second), "estimate must match publication");
+        }
+        {
+            SpeculativeBudget budget;
+            auto unknown = budget.track({&budget, 2}, 0, false);
+            auto insufficient = budget.reserve(healthy(), 1);
+            require(!budget.promoteUnknown(unknown, 4 * MiB, insufficient) && !unknown->bytes()
+                && budget.stats().unknownOwners == 1, "no unreserved promotion");
+            unknown->pending();
+            auto reservation = budget.reserve(healthy(), 4 * MiB);
+            require(!budget.promoteUnknown(unknown, 4 * MiB, reservation), "pending retired owner cannot be resurrected");
+        }
         std::cout << "PASS animation preparation " << checks << " checks\n";
         return 0;
     }

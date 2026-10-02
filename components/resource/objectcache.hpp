@@ -58,7 +58,7 @@ namespace Resource
         ObjectCacheLease(const ObjectCacheLease&) = default;
         ObjectCacheLease(ObjectCacheLease&& other) noexcept
             : mCharge(std::move(other.mCharge)), mValue(other.mValue), mLifecycle(other.mLifecycle)
-            , mRevision(other.mRevision), mSourceRevision(other.mSourceRevision)
+            , mRevision(other.mRevision), mSourceRevision(other.mSourceRevision), mOwnerEstimate(other.mOwnerEstimate)
         { other.mValue = nullptr; }
         ObjectCacheLease& operator=(ObjectCacheLease other) noexcept
         {
@@ -67,6 +67,7 @@ namespace Resource
             std::swap(mLifecycle, other.mLifecycle);
             std::swap(mRevision, other.mRevision);
             std::swap(mSourceRevision, other.mSourceRevision);
+            std::swap(mOwnerEstimate, other.mOwnerEstimate);
             return *this; // old payload then old charge retire with other
         }
         SpeculativeBudget::ChargePtr mCharge;
@@ -74,6 +75,7 @@ namespace Resource
         Debug::ResourceLifecycle::Token mLifecycle = 0;
         std::uint64_t mRevision = 0;
         std::uint64_t mSourceRevision = 0;
+        std::uint64_t mOwnerEstimate = 0;
 
         explicit operator bool() const noexcept { return mValue.valid() && mRevision != 0; }
         std::uint64_t bytes() const noexcept { return mCharge ? mCharge->bytes() : 0; }
@@ -94,6 +96,9 @@ namespace Resource
         Debug::ResourceLifecycle::Token mLifecycle = 0;
         std::uint64_t mRevision = 0;
         std::uint64_t mSourceRevision = 0;
+        // Immutable type-specific estimate from the source actually parsed.
+        // Zero is unknown; it cannot authorize an optional uncharged pin.
+        std::uint64_t mOwnerEstimate = 0;
     };
 
     template <typename KeyType>
@@ -122,6 +127,7 @@ namespace Resource
          */
         void setSpeculativeBudget(SpeculativeBudget* budget) { mBudget = budget; } // startup only
         bool memoryAccountingEnabled() const noexcept { return mBudget != nullptr; }
+        SpeculativeBudget* speculativeBudget() const noexcept { return mBudget; }
 
         void update(double referenceTime, double expiryDelay)
         {
@@ -225,10 +231,11 @@ namespace Resource
         /** Add a key,object,timestamp triple to the Registry::ObjectCache.*/
         template <class K>
         void addEntryToObjectCache(K&& key, osg::Object* object, double timestamp = 0.0,
-            std::uint64_t sourceRevision = 0)
+            std::uint64_t sourceRevision = 0, std::uint64_t ownerEstimate = 0)
         {
             Item incoming(object, timestamp);
             incoming.mSourceRevision = sourceRevision;
+            incoming.mOwnerEstimate = ownerEstimate;
             if (mBudget && object)
             {
                 const auto* image = dynamic_cast<const osg::Image*>(object);
@@ -335,9 +342,28 @@ namespace Resource
                     result.mLifecycle = item->mLifecycle;
                     result.mRevision = item->mRevision;
                     result.mSourceRevision = item->mSourceRevision;
+                    result.mOwnerEstimate = item->mOwnerEstimate;
                 }
             }
             return result;
+        }
+
+        // Reservation and immutable size discovery happen BEFORE this lock.
+        // Publish the charge on the exact payload/revision/source snapshot,
+        // never by path alone. The canonical pointer is promoted in place, so
+        // existing aliases continue owning the same accounted payload.
+        bool promoteReadyLease(const auto& key, const ObjectCacheLease& expected,
+            std::uint64_t estimate, SpeculativeBudget::Stage& reservation)
+        {
+            if (!mBudget || !expected || !expected.mCharge || !expected.mSourceRevision)
+                return false;
+            std::lock_guard lock(mMutex);
+            const Item* item = find(key);
+            return item && item->mValue == expected.mValue && item->mCharge == expected.mCharge
+                && item->mRevision == expected.mRevision && item->mSourceRevision == expected.mSourceRevision
+                && item->mLifecycle == expected.mLifecycle
+                && item->mOwnerEstimate == expected.mOwnerEstimate && item->mOwnerEstimate == estimate
+                && mBudget->promoteUnknown(item->mCharge, estimate, reservation);
         }
 
         std::optional<osg::ref_ptr<osg::Object>> getRefFromObjectCacheOrNone(const auto& key)

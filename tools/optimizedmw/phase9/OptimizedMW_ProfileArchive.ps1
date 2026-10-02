@@ -372,6 +372,109 @@ function Test-Phase9WriterCapture {
     return $result
 }
 
+function Test-Phase9GpuQueryCapture {
+    param([Parameter(Mandatory=$true)][string]$ProfileDir)
+    $modePath=Join-Path $ProfileDir 'TEST_MODE.txt'
+    $mode=if(Test-Path -LiteralPath $modePath){[IO.File]::ReadAllText($modePath)}else{''}
+    $requested=$mode -match '(?m)^phase9_gpu_query_accounting=1\r?$'
+    $reasons=[Collections.Generic.List[string]]::new();$fields=@{};$valid=$null;$results=$null
+    if($requested){
+        try{
+            $csv=Join-Path $ProfileDir 'p9-gpu-passes.csv'
+            foreach($line in [IO.File]::ReadAllLines($csv+'.query-status.txt')){
+                if($line -notmatch '^([a-z_]+)=(.*)$' -or $fields.ContainsKey($matches[1])){throw 'Malformed/duplicate GPU query status'}
+                $fields[$matches[1]]=$matches[2]
+            }
+            foreach($key in @('schema','normal_finish','output_ok','producer_threads_joined','accounting_complete',
+                'query_result_coverage_complete','registered_trackers','registration_failures','begin_calls','issued','collected',
+                'invalid','pending','active','admission_dropped','unavailable_polls','deferred_skips','frame_regressions',
+                'unsupported','missing_state','missing_stamp','query_allocation_failures','nested_begin','writer_dropped','status_complete')){
+                $value=0L
+                if(-not $fields.ContainsKey($key) -or -not [long]::TryParse([string]$fields[$key],[ref]$value) -or $value -lt 0){throw "Missing/invalid GPU query field: $key"}
+                $fields[$key]=$value
+            }
+            foreach($key in @('normal_finish','output_ok','producer_threads_joined','accounting_complete','query_result_coverage_complete','status_complete')){
+                if($fields[$key] -notin @(0,1)){throw 'GPU query status contains an invalid Boolean'}
+            }
+            $policy=if($mode -match '(?m)^phase9_gpu_query_defer=1\r?$'){'deferred_begin_min2_backoff8'}else{'legacy_begin_end'}
+            if($fields.schema -ne 1 -or $fields.status_complete -ne 1 -or $fields.policy -cne $policy){throw 'GPU query schema/policy/final marker mismatch'}
+            if($fields.writer_finalization -cne 'pending_external_status'){throw 'GPU metadata writer-finalization boundary missing'}
+            if($fields.issued -ne ($fields.collected+$fields.invalid+$fields.pending+$fields.active)){throw 'GPU query issued/results/pending arithmetic mismatch'}
+            $snapshot=$csv+'.queries.csv'
+            if((Get-Item -LiteralPath $snapshot).Length -gt 16MB){throw 'GPU query metadata exceeds the offline bound'}
+            $sums=@{};$keys=@{}
+            $columns=@('issued','collected','invalid','pending','active','admission_dropped','unavailable_polls',
+                'deferred_skips','frame_regressions','unsupported','missing_stamp','query_allocation_failures','nested_begin')
+            foreach($key in $columns){$sums[$key]=0L}
+            foreach($row in (Import-Csv -LiteralPath $snapshot)){
+                $id=[string]$row.tracker+':'+[string]$row.context
+                $tracker=0L;$context=0L
+                if($row.schema -cne '1' -or $keys.ContainsKey($id) -or
+                    -not [long]::TryParse([string]$row.tracker,[ref]$tracker) -or $tracker -le 0 -or
+                    -not [long]::TryParse([string]$row.context,[ref]$context) -or $context -lt 0 -or
+                    [string]::IsNullOrEmpty([string]$row.pass)){throw 'GPU query metadata schema/identity/duplicate owner'}
+                $keys[$id]=[string]$row.pass
+                foreach($key in $columns){
+                    $value=0L
+                    if(-not [long]::TryParse([string]$row.$key,[ref]$value) -or $value -lt 0){throw 'GPU query metadata counter invalid'}
+                    $sums[$key]+=$value
+                }
+                if([long]$row.active -gt 1 -or ([long]$row.pending+[long]$row.active) -gt 16 -or
+                    [long]$row.issued -ne ([long]$row.collected+[long]$row.invalid+[long]$row.pending+[long]$row.active)){throw 'GPU owner accounting mismatch'}
+            }
+            foreach($key in $columns){if($sums[$key] -ne $fields[$key]){throw "GPU query metadata/status mismatch: $key"}}
+            $unresolved=$csv+'.pending.csv'
+            if((Get-Item -LiteralPath $unresolved).Length -gt 16MB){throw 'GPU pending metadata exceeds the offline bound'}
+            $pending=0L;$active=0L;$pendingKeys=@{}
+            foreach($row in (Import-Csv -LiteralPath $unresolved)){
+                $owner=[string]$row.tracker+':'+[string]$row.context
+                $id=$owner+':'+[string]$row.begin_query+':'+[string]$row.end_query
+                if($row.schema -cne '1' -or -not $keys.ContainsKey($owner) -or $pendingKeys.ContainsKey($id) -or
+                    $row.status -notin @('pending','active') -or $row.pass -cne $keys[$owner]){throw 'GPU pending owner/status/identity mismatch'}
+                $pendingKeys[$id]=$true
+                foreach($key in @('source_frame','camera','begin_query','end_query','next_poll_frame','unavailable_polls')){
+                    $value=0L
+                    if(-not [long]::TryParse([string]$row.$key,[ref]$value) -or $value -lt 0){throw 'GPU pending metadata numeric field invalid'}
+                }
+                if([long]$row.begin_query -eq 0 -or [long]$row.end_query -eq 0){throw 'GPU pending query objects absent'}
+                if($row.status -eq 'pending'){$pending++}else{$active++}
+            }
+            if($pending -ne $fields.pending -or $active -ne $fields.active){throw 'GPU pending identity list/count mismatch'}
+            if($fields.normal_finish -ne 1 -or $fields.output_ok -ne 1 -or $fields.producer_threads_joined -ne 1 -or
+                $fields.accounting_complete -ne 1 -or $fields.registration_failures -ne 0){throw 'GPU query accounting did not finish after producer join'}
+            $writer=Read-Phase9WriterStatus ($csv+'.writer-status.txt')
+            if(-not $writer.OutputOk -or $writer.Loss -ne 0 -or $fields.writer_dropped -ne 0){throw 'GPU result CSV writer failed/lost rows'}
+            $capture=Read-Phase9CaptureCsv $csv @('source_frame','report_frame','gpu_ms','context','pass','report_frame_known','collection_policy') `
+                -RequireWriterStatus -StrictShape
+            if($capture.Malformed -ne 0 -or $capture.Loss -ne 0 -or [long]$capture.Rows.Count -ne $fields.collected){throw 'GPU collected count/result CSV row shape or count mismatch'}
+            foreach($row in $capture.Rows){
+                $source=0L;$report=0L;$gpu=0.0
+                if(-not [long]::TryParse([string]$row.source_frame,[ref]$source) -or $source -lt 0 -or
+                    -not [long]::TryParse([string]$row.report_frame,[ref]$report) -or $report -lt 0 -or
+                    -not [double]::TryParse([string]$row.gpu_ms,[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::InvariantCulture,[ref]$gpu) -or
+                    $gpu -lt 0 -or [double]::IsNaN($gpu) -or [double]::IsInfinity($gpu) -or
+                    $row.report_frame_known -notin @('0','1') -or $row.collection_policy -cne $policy){throw 'GPU collected row data/frame/policy invalid'}
+                if(($policy -eq 'deferred_begin_min2_backoff8' -and ($row.report_frame_known -cne '1' -or ($report-$source) -lt 2)) -or
+                    ($row.report_frame_known -eq '0' -and $fields.missing_stamp -eq 0) -or
+                    ($row.report_frame_known -eq '1' -and $report -lt $source -and $fields.frame_regressions -eq 0)){
+                    throw 'GPU result frame identity disagrees with policy/final counters'
+                }
+            }
+            $results=$fields.issued -gt 0 -and $fields.pending -eq 0 -and $fields.active -eq 0 -and $fields.invalid -eq 0 -and
+                $fields.admission_dropped -eq 0 -and $fields.frame_regressions -eq 0 -and $fields.unsupported -eq 0 -and
+                $fields.missing_state -eq 0 -and $fields.missing_stamp -eq 0 -and $fields.query_allocation_failures -eq 0 -and $fields.nested_begin -eq 0
+            if([bool]$fields.query_result_coverage_complete -ne [bool]$results){throw 'GPU result completeness claim is incoherent'}
+            $valid=$true
+        }catch{$valid=$false;$results=$false;$reasons.Add([string]$_)}
+    }
+    $result=[pscustomobject]@{schema=1;requested=$requested;valid_gpu_accounting=$valid;complete_gpu_results=$results;
+        fields=$fields;reasons=$reasons.ToArray();
+        scope='Query accounting is independent of CPU/temporal validity. Pending/active are missing results, not zero GPU time. No shutdown GL drain or GPU-active utilization proof.'}
+    $result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $ProfileDir 'GPU-QUERY-CAPTURE.json') -Encoding UTF8
+    if($requested -and -not $valid){Write-Warning ('INVALID GPU QUERY ACCOUNTING: '+($reasons -join '; ')+'. Raw evidence remains preserved.')}
+    return $result
+}
+
 function Read-Phase9CaptureCsv {
     param([string]$Path,[string[]]$Required,[switch]$StrictShape,[switch]$RequireWriterStatus)
     $lines=[Collections.Generic.List[string]]::new()

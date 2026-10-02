@@ -1,4 +1,4 @@
-HITCH REDUCTION TRIAL v3 (2026-10-02) - independently selectable candidates
+HITCH REDUCTION TRIAL v3 REPAIRS (2026-10-02) - independently selectable candidates
 
 Use C:\OptimizedMW_Test\START-OptimizedMW-Test.bat.
 The first four choices retain their previous meanings. Enter is Normal CONTROL.
@@ -7,16 +7,28 @@ New choices isolate the animation lifetime change:
   6 = Normal ANIM retained: the same preparation, new retention ON.
   7 = Diagnose ANIM retained: choice 6 plus Deep/automatic Windows tracing.
 Choices 5 and 6 do not start Windows recording or need elevation.
+The repaired mechanisms have separate choices; choices 1-7 retain their meanings:
+  8 = Normal ANIM repaired: choice 6 plus charged completed warm-keyframe reuse.
+  9 = Diagnose ANIM repaired: choice 8 plus Deep/automatic Windows tracing.
+ 10 = Normal repair combination: repaired ANIM + incremental composite preparation
+                                + bounded delete admission.
+ 11 = Diagnose repair combination: choice 10 plus Deep/automatic Windows tracing.
+Choices 8 and 10 do not start Windows recording or need elevation.
 
 First check Normal CONTROL (2) for correct loading, camera, visuals and quitting.
-Then run 5, 6, 6, 5 on the SAME save, fixed heavy view, route and cap state.
+Check Normal repaired ANIM (8) briefly for correct loading and visuals, then use
+Diagnose repaired ANIM (9) to verify activation/ownership and capture coverage.
+To isolate the warm-keyframe repair, run 6, 8, 8, 6 on the SAME save, fixed heavy
+view, route and cap state. Choice 6 is the earlier unrepaired retention control.
 Hold the fixed view about 45 seconds, walk the same 2-3 minute route and quit.
 Upload the resulting ZIPs. A fresh process is not proof of cold OS/driver caches.
 Keep first visits and revisits distinguishable; record any workload deviations.
-Use 7 later if a missed dependency, hitch or memory change needs explanation.
+Use 9 later if a missed dependency, hitch or memory change needs explanation.
+Test the renderer repair pair separately through Custom attack mask 320 before
+using combination 10; use 11 when a combined Deep diagnosis is needed.
 Do not begin by enabling every new feature together.
 
-Custom retains the old 0..15 feature mask and adds a separate 0..63 attack mask:
+Custom retains the old 0..15 feature mask and adds a separate 0..511 attack mask:
   1  ANIM-RETAIN: one nearest predicted target, charged completed dependencies,
                  fresh-job progress reuse, coherent pressure/cancellation policy.
   2  ANIM-PLAN: reuse bounded exact ordered animation source descriptors.
@@ -24,12 +36,22 @@ Custom retains the old 0..15 feature mask and adds a separate 0..63 attack mask:
   8  WATER: prepare the actual static water program/normal-map resources only.
  16  WEATHER: decode the already-selected upcoming cloud image on a worker.
  32  LUA-PACKAGES: reuse per-container package registration descriptors.
+ 64  DELETE-ADMIT: admit GL deletion using measured headroom, pressure and age bounds.
+128  WARM-KF: repaired charged completed keyframe lease; requires ANIM-RETAIN.
+256  STEP: prepare terrain composite dependencies incrementally under a byte bound.
 Add bits for combinations. The launcher enables required prerequisites explicitly:
 ANIM-RETAIN requires the old ANIM switch; EARLY-BAKE requires P9 composite
-preparation, which is distinct from the old BAKE switch. All new switches default
+preparation, which is distinct from the old BAKE switch. STEP also requires P9
+composite preparation, without enabling EARLY-BAKE or the old BAKE switch. WARM-KF
+without ANIM-RETAIN is rejected. All new switches default
 OFF outside selection. Original required paths remain fallbacks. Optional work
 may decline because of pressure, identity changes or lack of actual lead time.
 No shader-quality, mod, save, Lua thread-count or DLL substitution is performed.
+STEP's shared 32 MiB estimate charges descriptor metadata, the private target and
+the queued/unconsumed complete layer; target debt lasts through every layer. This
+bounds additional queued preparation, not total map memory or physical GPU/VRAM
+residency. A complete layer above the cap declines preparation and retains the
+original complete bake; pressure/cancellation retain required rendering fallbacks.
 
 Examples through the same launcher:
   START-OptimizedMW-Test.bat -HitchMask 4 -AttackMask 0 -TraceLevel Normal
@@ -37,7 +59,23 @@ Examples through the same launcher:
   START-OptimizedMW-Test.bat -HitchMask 4 -AttackMask 3 -TraceLevel Normal
   START-OptimizedMW-Test.bat -HitchMask 0 -AttackMask 4 -TraceLevel Deep -SystemTrace
   START-OptimizedMW-Test.bat -HitchMask 0 -AttackMask 32 -TraceLevel Normal
+  START-OptimizedMW-Test.bat -HitchMask 4 -AttackMask 129 -TraceLevel Normal
+  START-OptimizedMW-Test.bat -HitchMask 0 -AttackMask 320 -TraceLevel Normal
+  START-OptimizedMW-Test.bat -HitchMask 4 -AttackMask 449 -TraceLevel Deep -SystemTrace -GpuQueryDefer
 Optional -ObserverLocal is a separate Deep-only diagnostic aggregation trial.
+Existing D1 optimized catalog and ObserverLocal remain explicit diagnostic trials;
+they are not enabled by the new presets.
+
+Diagnosis choices 9 and 11 defer GPU timestamp collection by at least two draw
+frames, poll once per frame/context, and back off unavailable results. The old
+query collection path remains available without -GpuQueryDefer. Both use the
+same bounded query ring and read only available results. No shutdown GL drain
+is performed. Final queries may remain pending; that is missing data, not zero
+GPU time. p9-gpu-passes.csv.queries.csv and .pending.csv preserve accounting and
+exact unresolved ownership. GPU-QUERY-CAPTURE.json checks final independent CSV
+writer completion and collected-row counts. Partial GPU results do not invalidate
+an independently complete CPU timeline. Timestamp intervals may include command
+submission gaps and idle time; they are not proof of GPU-active utilization.
 
 New captures contain bounded per-frame observed pause/GUI/menu/hidden/loading/
 exception flags and sampled camera/player/cell/weather/time receipts. Reports
@@ -117,6 +155,9 @@ Lua splits additionally cover event decoding/handler dispatch, timer queue/deliv
 and lateness, script sandbox/package/handler preparation, saved-data/interface and
 timer restoration. Script/container/callback identities use the existing bounded
 fields. Lua allocation counters remain observations of churn, not direct GC timing.
+Deep native API splits also separate inventory/equipment, ray/path queries,
+storage, serialization and UI creation. The existing 250 microsecond detail filter
+is preserved: an absent API row does not prove that the API was not called.
 
 The previous Phase 9 numbered modes remain available with the four new mechanisms
 OFF. The following section documents the earlier I/O and attribution mechanisms.

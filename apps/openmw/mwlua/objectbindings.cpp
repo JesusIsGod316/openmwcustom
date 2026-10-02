@@ -332,6 +332,7 @@ namespace MWLua
                 return { toQuat(o.ptr().getCellRef().getPosition(), o.ptr().getClass().isActor()) };
             });
             objectT["getBoundingBox"] = [](const ObjectT& o) {
+                Debug::HitchTrace::Scope query("lua.api.object.bounding_box", Debug::HitchTrace::CpuTiming::WallEnvelope);
                 MWRender::RenderingManager* renderingManager
                     = MWBase::Environment::get().getWorld()->getRenderingManager();
                 osg::BoundingBox bb = renderingManager->getCullSafeBoundingBox(o.ptr());
@@ -346,6 +347,8 @@ namespace MWLua
             objectT[sol::meta_function::equal_to] = [](const ObjectT& a, const ObjectT& b) { return a.id() == b.id(); };
             objectT[sol::meta_function::to_string] = &ObjectT::toString;
             objectT["sendEvent"] = [context](const ObjectT& dest, std::string eventName, const sol::object& eventData) {
+                Debug::HitchTrace::Scope send("lua.api.object.send_event", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                    eventName);
                 context.mLuaEvents->addLocalEvent(
                     { dest.id(), std::move(eventName), LuaUtil::serialize(eventData, context.mSerializer) });
             };
@@ -576,6 +579,7 @@ namespace MWLua
 
             inventoryT["getAll"] = [ids = getPackageToTypeTable(context.mLua->unsafeState())](
                                        const InventoryT& inventory, sol::optional<sol::table> type) {
+                Debug::HitchTrace::Scope apiScope("lua.api.inventory.get_all", Debug::HitchTrace::CpuTiming::WallEnvelope);
                 int mask = -1;
                 sol::optional<uint32_t> typeId = sol::nullopt;
                 if (type.has_value())
@@ -641,10 +645,14 @@ namespace MWLua
                     MWBase::Environment::get().getWorldModel()->registerPtr(item);
                     list->push_back(getId(item));
                 }
+                apiScope.setMetric(0, "result_count", list->size());
+                apiScope.setMetric(1, "type_mask", static_cast<unsigned>(mask));
                 return ObjectList<ObjectT>{ std::move(list) };
             };
 
             inventoryT["countOf"] = [](const InventoryT& inventory, std::string_view recordId) {
+                Debug::HitchTrace::Scope apiScope("lua.api.inventory.count", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                    recordId);
                 const MWWorld::Ptr& ptr = inventory.mObj.ptr();
                 MWWorld::ContainerStore& store = ptr.getClass().getContainerStore(ptr);
                 return store.count(ESM::RefId::deserializeText(recordId));
@@ -652,6 +660,7 @@ namespace MWLua
             if constexpr (std::is_same_v<ObjectT, GObject>)
             {
                 inventoryT["resolve"] = [](const InventoryT& inventory) {
+                    Debug::HitchTrace::Scope apiScope("lua.api.inventory.resolve", Debug::HitchTrace::CpuTiming::WallEnvelope);
                     const MWWorld::Ptr& ptr = inventory.mObj.ptr();
                     MWWorld::ContainerStore& store = ptr.getClass().getContainerStore(ptr);
                     store.resolve();
@@ -666,6 +675,8 @@ namespace MWLua
                 return store.isResolved();
             };
             inventoryT["find"] = [](const InventoryT& inventory, std::string_view recordId) -> sol::optional<ObjectT> {
+                Debug::HitchTrace::Scope apiScope("lua.api.inventory.find", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                    recordId);
                 const MWWorld::Ptr& ptr = inventory.mObj.ptr();
                 MWWorld::ContainerStore& store = ptr.getClass().getContainerStore(ptr);
                 auto itemId = ESM::RefId::deserializeText(recordId);
@@ -680,6 +691,8 @@ namespace MWLua
                 return sol::nullopt;
             };
             inventoryT["findAll"] = [](const InventoryT& inventory, std::string_view recordId) {
+                Debug::HitchTrace::Scope apiScope("lua.api.inventory.find_all", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                    recordId);
                 const MWWorld::Ptr& ptr = inventory.mObj.ptr();
                 MWWorld::ContainerStore& store = ptr.getClass().getContainerStore(ptr);
                 auto itemId = ESM::RefId::deserializeText(recordId);
@@ -692,6 +705,7 @@ namespace MWLua
                         list->push_back(getId(item));
                     }
                 }
+                apiScope.setMetric(0, "result_count", list->size());
                 return ObjectList<ObjectT>{ std::move(list) };
             };
         }

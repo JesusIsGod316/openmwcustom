@@ -665,9 +665,21 @@ namespace MWRender
         }
         if (initializeTargets) mTargetGeneration->initializedContext = state.getContextID();
 
+        const bool hitchLabels = Debug::HitchTrace::requested();
+        const bool gpuPasses = Debug::V36GpuProfiler::writer().enabled();
+        auto& v3PostFxWriter = Debug::V3Diagnostics::postFxWriter();
+        const bool postFxLabels = v3PostFxWriter.enabled();
         for (const size_t& index : filtered)
         {
             const auto& node = mPasses[index];
+            // Technique::getName() returns a string by value. Keep its owner
+            // through every pass scope instead of borrowing a temporary. The
+            // ordinary path does not construct labels for disabled telemetry.
+            const std::string techniqueName = hitchLabels || gpuPasses || postFxLabels
+                ? (mOwnedSubmission ? mOwnedTechniqueNames[index]
+                    : (node.mHandle ? node.mHandle->getName() : std::string("unknown")))
+                : std::string{};
+            const std::string_view hitchNodeName = hitchLabels ? std::string_view(techniqueName) : std::string_view{};
 
             node.mRootStateSet->setTextureAttribute(PostProcessor::Unit_Depth, mTextureDepth);
 
@@ -687,9 +699,6 @@ namespace MWRender
 
             for (size_t passIndex = 0; passIndex < node.mPasses.size(); ++passIndex)
             {
-                const std::string_view hitchNodeName = !Debug::HitchTrace::requested() ? std::string_view{}
-                    : (mOwnedSubmission ? std::string_view(mOwnedTechniqueNames[index])
-                        : (node.mHandle ? std::string_view(node.mHandle->getName()) : "unknown"));
                 Debug::HitchTrace::Scope hitchPass("postfx.pass", hitchNodeName);
                 const auto& pass = node.mPasses[passIndex];
                 { Debug::HitchTrace::Scope hitchSetup("postfx.pass_bind_targets", hitchNodeName);
@@ -755,15 +764,11 @@ namespace MWRender
                 if (!state.getLastAppliedProgramObject())
                     mFallbackProgram->apply(state);
 
-                const std::string techniqueName = mOwnedSubmission ? mOwnedTechniqueNames[index]
-                    : (node.mHandle ? node.mHandle->getName() : std::string("unknown"));
-                const std::string v36GpuPassName = std::string("postfx/")
-                    + techniqueName + "/"
-                    + std::to_string(passIndex);
-                Debug::V36GpuProfiler::ScopedPass v36GpuPass(renderInfo, v36GpuPassName);
+                std::optional<Debug::V36GpuProfiler::ScopedPass> v36GpuPass;
+                if (gpuPasses)
+                    v36GpuPass.emplace(renderInfo, std::string("postfx/") + techniqueName + "/" + std::to_string(passIndex));
                 { Debug::HitchTrace::Scope hitchDraw("postfx.pass_draw", hitchNodeName);
-                auto& v3PostFxWriter = Debug::V3Diagnostics::postFxWriter();
-                if (v3PostFxWriter.enabled())
+                if (postFxLabels)
                 {
                     const auto v3Start = Debug::V3Diagnostics::Clock::now();
                     drawGeometry(renderInfo);

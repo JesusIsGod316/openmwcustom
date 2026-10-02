@@ -171,7 +171,7 @@ foreach($name in @('v3-frame.csv.capture-status.txt','p8g4-render.capture-status
     $statuses[$name]=if(Test-Path -LiteralPath $file){[IO.File]::ReadAllLines($file)}else{@('MISSING: deferred capture not confirmed complete; legacy mode has no deferred status')}
 }
 $qualifications=[ordered]@{}
-foreach($name in @('WRITER-CAPTURE.json','TEMPORAL-CAPTURE.json','ROOT-CAUSE-CAPTURE.json','HITCH-CAPTURE.json','HITCH-DIAGNOSTICS6-CAPTURE.json','HITCH-OBSERVER-WORK.json')){
+foreach($name in @('WRITER-CAPTURE.json','TEMPORAL-CAPTURE.json','ROOT-CAUSE-CAPTURE.json','HITCH-CAPTURE.json','HITCH-DIAGNOSTICS6-CAPTURE.json','HITCH-OBSERVER-WORK.json','GPU-QUERY-CAPTURE.json')){
     $file=Join-Path $ProfileDir $name
     $qualifications[$name]=if(Test-Path -LiteralPath $file){Get-Content -Raw -LiteralPath $file | ConvertFrom-Json}else{$null}
 }

@@ -28,9 +28,14 @@ namespace Resource
         explicit PreparedTerrainTexture(osg::Image* image) : osg::Texture2D(image) {}
         PreparedTerrainTexture(const PreparedTerrainTexture& other,
             const osg::CopyOp& copy = osg::CopyOp::SHALLOW_COPY)
-            : osg::Texture2D(other, copy), mRenderTarget(other.mRenderTarget) {} // clones never inherit preparation proofs
+            : osg::Texture2D(other, copy), mRenderTarget(other.mRenderTarget),
+              mPreparationMemoEnabled(other.mPreparationMemoEnabled) {} // clones never inherit preparation proofs
         META_StateAttribute(Resource, PreparedTerrainTexture, TEXTURE);
         void setPreparationRenderTarget(bool enabled) { mRenderTarget = enabled; mPrepared.setAllElementsTo(std::nullopt); }
+        // Diagnostic-only producer wrappers prove the actual apply owner without
+        // changing ordinary ICO reuse behavior in an instrumented CONTROL run.
+        void setPreparationMemoEnabled(bool enabled)
+        { mPreparationMemoEnabled = enabled; mPrepared.setAllElementsTo(std::nullopt); }
         void apply(osg::State& state) const override
         {
             if (getSubloadCallback())
@@ -47,6 +52,7 @@ namespace Resource
 
         bool preparationUnchanged(const osg::State& state) const
         {
+            if (!mPreparationMemoEnabled) return false;
             const unsigned context = state.getContextID();
             if (context >= mPrepared.size() || !state.getGraphicsContext()) return false;
             const auto current = signature(context);
@@ -60,6 +66,7 @@ namespace Resource
 
         void rememberPreparation(const osg::State& state) const
         {
+            if (!mPreparationMemoEnabled) return;
             const unsigned context = state.getContextID();
             if (context >= mPrepared.size() || !state.getGraphicsContext()) return;
             if (const auto current = signature(context))
@@ -125,6 +132,7 @@ namespace Resource
         }
         mutable osg::buffered_object<std::optional<Record>> mPrepared;
         bool mRenderTarget = false;
+        bool mPreparationMemoEnabled = true;
     };
 
     class PreparedTerrainTextureCompileOp final

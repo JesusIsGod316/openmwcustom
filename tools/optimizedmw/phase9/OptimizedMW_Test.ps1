@@ -2,8 +2,9 @@ param(
     [Alias('Mode')][ValidateSet('','1','2','3','4','5','6','7','8','9','10','11','12','13')][string]$ModeChoice='',
     [ValidateSet('CONTROL','I1','I2','I1I2','D1')][string]$Candidate='CONTROL',
     [ValidateRange(-1,15)][int]$HitchMask=-1,
-    [ValidateRange(-1,63)][int]$AttackMask=-1,
+    [ValidateRange(-1,511)][int]$AttackMask=-1,
     [switch]$ObserverLocal,
+    [switch]$GpuQueryDefer,
     [ValidateSet('','Normal','Deep')][string]$TraceLevel='',
     [ValidateSet('stream','deferred')][string]$HitchTransport='stream',
     [switch]$SystemTrace,
@@ -91,16 +92,21 @@ if(-not $ModeChoice -and $HitchMask -lt 0 -and $AttackMask -lt 0 -and -not $Trac
     Write-Host '  5 = Normal ANIM control    original animation preparation'
     Write-Host '  6 = Normal ANIM retained   bounded animation ownership candidate' -ForegroundColor Green
     Write-Host '  7 = Diagnose ANIM retained Deep + automatic Windows trace'
+    Write-Host '  8 = Normal ANIM repaired   retained warm keyframe ownership'
+    Write-Host '  9 = Diagnose ANIM repaired Deep + automatic Windows trace'
+    Write-Host ' 10 = Normal repair combo    warm ownership + STEP + DELETE-ADMIT'
+    Write-Host ' 11 = Diagnose repair combo  Deep + automatic Windows trace'
     Write-Host '  C = Custom combination / I/O / trace depth'
     Write-Host '  A = Earlier Phase 9 modes'
     Write-Host '  X = Exit'
-    do{$quickChoice=Read-Host 'Test (1-7, C, A, X; Enter = Normal CONTROL)';if($quickChoice -eq ''){$quickChoice='2'}}until($quickChoice -in @('1','2','3','4','5','6','7','C','A','X'))
+    do{$quickChoice=Read-Host 'Test (1-11, C, A, X; Enter = Normal CONTROL)';if($quickChoice -eq ''){$quickChoice='2'}}until($quickChoice -in @('1','2','3','4','5','6','7','8','9','10','11','C','A','X'))
     if($quickChoice -eq 'X'){exit 0}
-    if($quickChoice -in @('1','2','3','4','5','6','7')){
+    if($quickChoice -in @('1','2','3','4','5','6','7','8','9','10','11')){
         $quickSelection=Get-OptimizedMWQuickPreset -Choice $quickChoice
         $HitchMask=$quickSelection.mask;$TraceLevel=$quickSelection.trace_level
         $Candidate=$quickSelection.candidate;$SystemTrace=[bool]$quickSelection.system_trace
         if($quickSelection.PSObject.Properties['attack_mask']){$AttackMask=$quickSelection.attack_mask}
+        if($quickSelection.PSObject.Properties['gpu_query_defer']){$GpuQueryDefer=[bool]$quickSelection.gpu_query_defer}
     }elseif($quickChoice -eq 'C'){
         $hitchSelection=Read-OptimizedMWHitchSelection
         $HitchMask=$hitchSelection.features.mask;$TraceLevel=if($hitchSelection.trace_level -eq 'DEEP'){'Deep'}else{'Normal'}
@@ -153,6 +159,7 @@ do{
 }else{$choice=$ModeChoice}
 $mode=Get-P9Mode $choice
 if($ObserverLocal -and $mode.Trace -ne '1'){throw 'Local observer accounting requires Deep diagnostics'}
+if($GpuQueryDefer -and $mode.Trace -ne '1'){throw 'Deferred GPU query collection requires Deep diagnostics'}
 $attackCombination=Get-OptimizedMWAttackCombination $(if($AttackMask -ge 0){$AttackMask}else{0})
 if($AttackMask -ge 0){
     $attackCombination=ConvertTo-OptimizedMWAttackSelection -Selection $hitchSelection -Mode $mode -Mask $AttackMask
@@ -242,6 +249,7 @@ try{
     Set-Phase9CandidateEnvironment -Candidate $candidateProfile -Mode $mode
     Set-OptimizedMWHitchCombinationEnvironment $hitchCombination
     Set-OptimizedMWAttackEnvironment $attackCombination -ObserverLocal:$ObserverLocal
+    $env:OPENMW_P9_GPU_QUERY_DEFER=[string][int][bool]$GpuQueryDefer
 
     # Same head-cache budget across every mode, not a hidden per-mode tuning change.
     Set-IniValue $SettingsPath 'Sound' 'head cache size' '96'
@@ -368,6 +376,11 @@ try{
         "hitch_weather_prepare=$([int]$attackCombination.weather_prepare)",
         "hitch_lua_package_descriptors=$([int]$attackCombination.lua_package_descriptors)",
         "hitch_observer_local=$([int][bool]$ObserverLocal)",
+        "hitch_delete_admission=$([int]$attackCombination.delete_admission)",
+        "hitch_animation_warm_lease=$([int]$attackCombination.animation_warm_lease)",
+        "hitch_composite_step=$([int]$attackCombination.composite_step)",
+        "phase9_gpu_query_accounting=$(if($GpuDiagnostics -eq 'true'){'1'}else{'0'})",
+        "phase9_gpu_query_defer=$([int][bool]$GpuQueryDefer)",
         "benchmark_context_schema=1",
         "hitch_diagnostics_revision=$(if($mode.Trace -eq '1'){1}else{0})",
         "hitch_combination_mask=$($hitchCombination.mask)",
@@ -654,6 +667,7 @@ try{
     $hitchStatus=Test-Phase9HitchCapture -ProfileDir $ProfileDir
     $diagnostics6Status=Test-Phase9Diagnostics6Capture -ProfileDir $ProfileDir
     $compileAttributionStatus=Test-Phase9CompileAttributionCapture -ProfileDir $ProfileDir
+    $gpuQueryStatus=Test-Phase9GpuQueryCapture -ProfileDir $ProfileDir
     if($runManifest){Complete-Phase9RunManifest $runManifest $ProfileDir}
     $zip=Complete-Phase9Profile -ProfileDir $ProfileDir -GameDir $GameDir
     if($systemTraceLink){$null=Complete-Phase9SystemTraceLink -Link $systemTraceLink -ProfileZip $zip.Path -GameProcessId $gameProcessId -GameCreationUtc $gameCreationUtc -DeferQualification:([bool]$quickSession)}

@@ -53,7 +53,8 @@ namespace Terrain
         const char* preparationOption = std::getenv("OPENMW_P9_COMPOSITE_PREPARE");
         if (preparationOption && std::string_view(preparationOption) == "1")
             mCompositeMapRenderer->configurePreparation(dynamic_cast<Resource::OpenMWIncrementalCompileOperation*>(
-                mResourceSystem->getSceneManager()->getIncrementalCompileOperation()));
+                mResourceSystem->getSceneManager()->getIncrementalCompileOperation()),
+                {mResourceSystem->speculativeBudget(), &Resource::ResourceSystem::speculativeSample, mResourceSystem});
         compositeCam->addChild(mCompositeMapRenderer);
 
         mParent->addChild(mTerrainRoot);

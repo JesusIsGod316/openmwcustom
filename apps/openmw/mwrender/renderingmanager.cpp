@@ -326,12 +326,20 @@ namespace MWRender
                 return value && std::string_view(value) == "1";
             }();
             const int configuredCompileScheduler = static_cast<int>(Settings::cells().mOptimizedMWCompileSchedulerMode);
-            const int p4CompileSchedulerMode = p9CompositePreparation && configuredCompileScheduler == 0
+            const bool p9DeleteAdmission = [] {
+                const char* value = std::getenv("OPENMW_P9_DELETE_ADMISSION");
+                return value && std::string_view(value) == "1";
+            }();
+            const int p4CompileSchedulerMode = (p9CompositePreparation || p9DeleteAdmission) && configuredCompileScheduler == 0
                 ? 2 : configuredCompileScheduler;
             if (p4CompileSchedulerMode > 0)
             {
                 Resource::OpenMWCompileSchedulerConfig config;
                 config.mCompositePreparation = p9CompositePreparation;
+                config.mDeleteAdmission = p9DeleteAdmission;
+                if (p9DeleteAdmission)
+                    config.mPressureContext = { mResourceSystem->speculativeBudget(),
+                        &Resource::ResourceSystem::speculativeSample, mResourceSystem };
                 config.mMode = p4CompileSchedulerMode;
                 config.mTargetFrameRate = static_cast<double>(Settings::cells().mTargetFramerate);
                 config.mMaxBudgetMs

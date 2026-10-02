@@ -946,7 +946,35 @@ namespace Resource
             deleteBudgetMs *= 0.25;
 
         double deleteActualMs = 0.0;
-        if (deleteBudgetMs > 0.0)
+        P9DeleteAdmission::Decision deletion{ true, P9DeleteAdmission::Reason::Disabled, 0 };
+        if (mConfig.mDeleteAdmission && deleteBudgetMs > 0.0)
+        {
+            const auto pressure = mConfig.mPressureContext.sample && mConfig.mPressureContext.owner
+                ? mConfig.mPressureContext.sample(mConfig.mPressureContext.owner).decision.state
+                : OpenGlPressure::Degraded;
+            // Read the existing sampler only: no OS queries on the GL thread.
+            // Unknown is not permission to retain a deletion backlog.
+            const bool pressureOrUnknown = pressure != OpenGlPressure::Normal;
+            const double remainingHeadroom = targetFrameMs
+                - std::max(0.0, context->getTimeSinceLastClear() * 1000.0);
+            if (!context->getState()->getFrameStamp())
+                deletion = { true, P9DeleteAdmission::Reason::UnknownFrame, 0 };
+            else
+                deletion = mDeleteAdmission.select(context, frame, remainingHeadroom, mDeletePredictionMs,
+                    policy.mSuppressedByHandoff || compileActualMs >= policy.mBudgetMs,
+                    pressureOrUnknown, std::min(30u, maxQueueAge));
+            if (mCompileTrace)
+            {
+                Debug::HitchTrace::Scope admission("compile.delete_admission",
+                    Debug::HitchTrace::CpuTiming::None, P9DeleteAdmission::name(deletion.reason));
+                admission.retain();
+                admission.setMetric(0, "admitted", deletion.admitted);
+                admission.setMetric(1, "deferred_frames", deletion.deferredFrames);
+                admission.setMetric(2, "predicted_us", static_cast<std::uint64_t>(mDeletePredictionMs * 1000.0));
+                admission.setMetric(3, "pressure", static_cast<unsigned>(pressure));
+            }
+        }
+        if (deleteBudgetMs > 0.0 && deletion.admitted)
         {
             std::optional<Debug::HitchTrace::Scope> deleteScope;
             if (mCompileTrace)
@@ -958,11 +986,14 @@ namespace Resource
                 context->getState()->getContextID(), fs ? fs->getReferenceTime() : 0.0, seconds);
             deleteActualMs = Debug::V3Diagnostics::elapsedMs(start);
             deleteScope.reset();
+            if (mConfig.mDeleteAdmission)
+                mDeletePredictionMs = std::max(0.15, std::max(deleteActualMs, mDeletePredictionMs * 0.875));
             if (deleteActualMs >= diagnosticThresholdMs)
             {
                 writeP4CompileRow(frame, "delete_flush", "delete", "n/a", localQueueDepth, oldestAge,
                     deleteBudgetMs, mPolicyState.mCreditMs, 0.0, deleteActualMs,
-                    policy.mHeadroomMs, lastHandoffMs, 0, "separate_delete_budget");
+                    policy.mHeadroomMs, lastHandoffMs, 0,
+                    std::string("separate_delete_budget admission=") + P9DeleteAdmission::name(deletion.reason));
             }
         }
 
@@ -1019,6 +1050,9 @@ namespace Resource
                    << " quarantined_candidates=" << quarantinedCandidates
                    << " prediction_miss=" << predictionMisses
                    << " texture_preparation_reuses=" << texturePreparationReuses
+                   << " delete_admitted=" << deletion.admitted
+                   << " delete_reason=" << P9DeleteAdmission::name(deletion.reason)
+                   << " delete_deferred_frames=" << deletion.deferredFrames
                    << " candidate_build_ms=" << std::fixed << std::setprecision(3) << candidateBuildActualMs
                    << " selection_ms=" << selectionActualMs
                    << " scheduler_total_ms=" << schedulerTotalMs

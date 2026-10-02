@@ -24,6 +24,146 @@
 
 namespace Terrain
 {
+    struct CompositeMetadataLease;
+    // This bounds additional queued preparation ownership, not measured GPU
+    // residency or new OS allocation. Cancelled queued owners keep their debit
+    // until ICO actually releases the last operation; cancellation is no refund.
+    struct CompositeStepBudget
+    {
+        struct Debt
+        {
+            std::shared_ptr<CompositeMetadataLease> metadata;
+            std::vector<osg::observer_ptr<osg::Texture::TextureObject>> textures;
+            std::vector<osg::observer_ptr<osg::Program::PerContextProgram>> programs;
+            std::size_t bytes = 0;
+        };
+        static constexpr std::size_t MaximumBytes = 32u * 1024u * 1024u;
+        std::atomic_size_t bytes{0}, maps{0};
+        std::mutex debtMutex;
+        std::vector<Debt> debts;
+        std::atomic_bool debtFailed{false};
+        bool reserve(std::size_t amount)
+        {
+            auto current = bytes.load(std::memory_order_relaxed);
+            while (amount <= MaximumBytes && current <= MaximumBytes - amount)
+                if (bytes.compare_exchange_weak(current, current + amount, std::memory_order_acq_rel)) return true;
+            return false;
+        }
+        void pruneDebt()
+        {
+            std::lock_guard lock(debtMutex);
+            for (auto it = debts.begin(); it != debts.end();)
+            {
+                std::erase_if(it->textures, [](const auto& object) { return !object.valid(); });
+                std::erase_if(it->programs, [](const auto& object) { return !object.valid(); });
+                if (it->textures.empty() && it->programs.empty())
+                { bytes.fetch_sub(it->bytes, std::memory_order_acq_rel); it = debts.erase(it); }
+                else ++it;
+            }
+        }
+        bool retainDebt(Debt debt) noexcept
+        {
+            if (debt.textures.empty() && debt.programs.empty()) return false;
+            std::lock_guard lock(debtMutex);
+            try
+            {
+                if (debts.size() >= 16) { debtFailed.store(true, std::memory_order_release); return true; }
+                debts.push_back(std::move(debt));
+            }
+            catch (...) { debtFailed.store(true, std::memory_order_release); }
+            // Any bookkeeping failure strands conservative credit and disables
+            // new speculation. Required rendering never depends on this ledger.
+            return true;
+        }
+        bool accepting() const { return !debtFailed.load(std::memory_order_acquire); }
+        void consumed(const std::vector<osg::ref_ptr<osg::Texture::TextureObject>>& textures,
+            const std::vector<osg::ref_ptr<osg::Program::PerContextProgram>>& programs)
+        {
+            std::lock_guard lock(debtMutex);
+            for (auto it = debts.begin(); it != debts.end();)
+            {
+                std::erase_if(it->textures, [&](const auto& object) {
+                    osg::ref_ptr<osg::Texture::TextureObject> owner;
+                    return !object.lock(owner) || std::any_of(textures.begin(), textures.end(),
+                        [&](const auto& used) { return used == owner; }); });
+                std::erase_if(it->programs, [&](const auto& object) {
+                    osg::ref_ptr<osg::Program::PerContextProgram> owner;
+                    return !object.lock(owner) || std::any_of(programs.begin(), programs.end(),
+                        [&](const auto& used) { return used == owner; }); });
+                if (it->textures.empty() && it->programs.empty())
+                { bytes.fetch_sub(it->bytes, std::memory_order_acq_rel); it = debts.erase(it); }
+                else ++it;
+            }
+        }
+    };
+
+    struct CompositeMetadataLease
+    {
+        std::weak_ptr<CompositeStepBudget> budget;
+        std::size_t bytes = 0;
+        ~CompositeMetadataLease()
+        {
+            if (auto owner = budget.lock())
+            { owner->bytes.fetch_sub(bytes, std::memory_order_acq_rel); owner->maps.fetch_sub(1, std::memory_order_acq_rel); }
+        }
+    };
+
+    struct CompositeDependencyWave
+    {
+        std::shared_ptr<CompositeStepBudget> budget;
+        std::shared_ptr<CompositeMetadataLease> metadata;
+        std::vector<osg::observer_ptr<osg::Texture::TextureObject>> newTextureObjects;
+        std::vector<osg::observer_ptr<osg::Program::PerContextProgram>> newPrograms;
+        // No StateSet/map ownership: a pass would secretly retain all its other
+        // textures. Only this admitted wave pins exact immutable payloads.
+        std::vector<osg::ref_ptr<Resource::PreparedTerrainTexture>> textures;
+        std::vector<osg::ref_ptr<osg::Image>> images;
+        std::vector<osg::ref_ptr<osg::Program>> programs;
+        std::shared_ptr<Resource::V321ResourceCompileLifetime> lifetime
+            = std::make_shared<Resource::V321ResourceCompileLifetime>();
+        std::size_t bytes = 0, begin = 0, end = 0, layerBegin = 0, layerEnd = 0;
+        std::uint64_t receipt = 0;
+        bool terminal = false, completed = false, consumed = false;
+        ~CompositeDependencyWave()
+        {
+            // Payloads release before their conservative admission debit.
+            textures.clear(); programs.clear(); images.clear();
+            if (budget && (consumed || !budget->retainDebt(
+                {metadata, std::move(newTextureObjects), std::move(newPrograms), bytes})))
+                budget->bytes.fetch_sub(bytes, std::memory_order_acq_rel);
+        }
+    };
+
+    struct CompositeStepPreparation
+    {
+        struct Dependency
+        {
+            osg::observer_ptr<Resource::PreparedTerrainTexture> texture;
+            osg::observer_ptr<osg::Image> image;
+            osg::observer_ptr<osg::Program> program;
+            osg::observer_ptr<osg::StateSet> pass;
+            osg::observer_ptr<osg::Drawable> drawable;
+            osg::observer_ptr<osg::Program::PerContextProgram> submittedProgram;
+            unsigned unit = 0, imageRevision = 0;
+            GLuint programName = 0;
+            std::size_t sourceBytes = 0;
+            std::size_t layer = 0;
+        };
+        std::shared_ptr<CompositeStepBudget> budget;
+        std::shared_ptr<CompositeMetadataLease> metadata;
+        std::vector<Dependency> dependencies;
+        std::shared_ptr<CompositeDependencyWave> wave;
+        std::shared_ptr<CompositeDependencyWave> targetDebt;
+        Resource::SpeculativeScope::Context pressure;
+        std::size_t cursor = 0, metadataBytes = 0;
+        std::array<int, 3> targetShape{};
+        ~CompositeStepPreparation()
+        {
+            wave.reset(); targetDebt.reset(); dependencies.clear();
+            metadata.reset();
+        }
+    };
+
     struct CompositePreparation
     {
         struct Dependency
@@ -37,6 +177,7 @@ namespace Terrain
             GLuint programName = 0;
         };
         std::vector<Dependency> dependencies;
+        std::shared_ptr<CompositeStepPreparation> step;
         osg::ref_ptr<osg::FrameBufferObject> fbo = new osg::FrameBufferObject;
         osg::observer_ptr<osg::Texture2D> target;
         osg::observer_ptr<osg::GraphicsContext> context;
@@ -69,6 +210,200 @@ namespace Terrain
                 return dep.pass->getTextureAttribute(dep.unit, osg::StateAttribute::TEXTURE) == dep.texture.get();
             return dep.pass->getAttribute(osg::StateAttribute::PROGRAM) == dep.program.get();
         }
+
+        struct LockedStepDependency
+        {
+            osg::ref_ptr<osg::Drawable> drawable;
+            osg::ref_ptr<osg::StateSet> pass;
+            osg::ref_ptr<Resource::PreparedTerrainTexture> texture;
+            osg::ref_ptr<osg::Image> image;
+            osg::ref_ptr<osg::Program> program;
+        };
+        bool lockStepDependency(const CompositeStepPreparation::Dependency& dep, LockedStepDependency& owner)
+        {
+            if (!dep.drawable.lock(owner.drawable) || !dep.pass.lock(owner.pass)
+                || owner.drawable->getStateSet() != owner.pass.get()) return false;
+            if (dep.sourceBytes)
+                return dep.texture.lock(owner.texture) && dep.image.lock(owner.image)
+                    && owner.pass->getTextureAttribute(dep.unit, osg::StateAttribute::TEXTURE) == owner.texture.get()
+                    && owner.texture->getImage() == owner.image.get()
+                    && owner.image->getModifiedCount() == dep.imageRevision
+                    && owner.image->getTotalDataSize() == dep.sourceBytes;
+            return dep.program.lock(owner.program)
+                && owner.pass->getAttribute(osg::StateAttribute::PROGRAM) == owner.program.get();
+        }
+
+        bool stepPressureUsable(const Resource::SpeculativeScope::Context& pressure)
+        {
+            // The ResourceSystem callback reads its published cached sample;
+            // there is no OS probe or wait for a fresh sample on this path.
+            return pressure.sample && Resource::SpeculativeBudget::newOwnerWorkUsable(
+                pressure.sample(pressure.owner), Resource::SpeculativePriority::Background);
+        }
+
+        bool stepTargetUnchanged(const CompositePreparation& preparation, const CompositeMap& map)
+        {
+            const auto& shape = preparation.step->targetShape;
+            return preparation.target.get() == map.mTexture.get()
+                && map.mTexture->getTextureWidth() == shape[0] && map.mTexture->getTextureHeight() == shape[1]
+                && map.mTexture->getInternalFormat() == shape[2];
+        }
+
+        bool consumedStepUnchanged(const CompositePreparation& preparation, const CompositeMap& map, osg::State& state)
+        {
+            if (preparation.context.get() != state.getGraphicsContext() || !stepTargetUnchanged(preparation, map))
+                return false;
+            auto* target = dynamic_cast<Resource::PreparedTerrainTexture*>(map.mTexture.get());
+            if (map.mCompiled && (!target || !target->preparationUnchanged(state))) return false;
+            for (const auto& dep : preparation.step->dependencies)
+            {
+                if (dep.layer >= map.mCompiled) break;
+                LockedStepDependency owner;
+                if (!lockStepDependency(dep, owner)) return false;
+                if (owner.texture && !owner.texture->preparationUnchanged(state)) return false;
+                if (owner.program)
+                {
+                    state.pushStateSet(owner.pass);
+                    auto* pcp = owner.program->getPCP(state);
+                    const bool valid = pcp && pcp == dep.submittedProgram.get() && pcp->getHandle() == dep.programName
+                        && pcp->isLinked() && !pcp->needsLink();
+                    state.popStateSet();
+                    if (!valid) return false;
+                }
+            }
+            return true;
+        }
+
+        class CompositeStepCompileOp final : public Resource::OpenMWCompositeCompileOp
+        {
+        public:
+            CompositeStepCompileOp(CompositeMap* map, std::shared_ptr<CompositePreparation> preparation,
+                std::shared_ptr<CompositeDependencyWave> wave, std::size_t dependency, Kind kind, std::size_t bytes)
+                : mMap(map), mPreparation(std::move(preparation)), mWave(std::move(wave)),
+                  mDependency(dependency), mKind(kind), mBytes(bytes) {}
+            Kind kind() const override { return mKind; }
+            std::size_t resourceBytes() const override { return mBytes; }
+            bool required() const override
+            {
+                osg::ref_ptr<CompositeMap> map;
+                return mMap.lock(map) && map->mRequired.load(std::memory_order_acquire);
+            }
+            bool cancelled() const override
+            {
+                osg::ref_ptr<CompositeMap> map;
+                return !mMap.lock(map) || mPreparation->lifetime->cancelled() || mWave->lifetime->cancelled()
+                    || map->mPreparationGeneration.load(std::memory_order_acquire) != mPreparation->generation
+                    || map->mTexture.get() != mPreparation->target.get();
+            }
+            double estimatedTimeForCompile(osgUtil::IncrementalCompileOperation::CompileInfo&) const override
+            { return mKind == Kind::Program ? .001 : .00025; }
+            bool compile(osgUtil::IncrementalCompileOperation::CompileInfo& info) override
+            {
+                osg::ref_ptr<CompositeMap> map;
+                if (!mMap.lock(map) || cancelled()) return true;
+                auto& state = *info.getState();
+                const auto& step = *mPreparation->step;
+                if (info.incrementalCompileOperation->getContextSet().size() != 1
+                    || mPreparation->context.get() != state.getGraphicsContext()
+                    || !stepTargetUnchanged(*mPreparation, *map)
+                    || !stepPressureUsable(step.pressure))
+                {
+                    mPreparation->lifetime->cancel(); mWave->lifetime->cancel();
+                    return true;
+                }
+                // Recheck every owned identity immediately before its call.
+                // Admission and previous submission never bypass demand apply.
+                const auto* dep = mDependency < step.dependencies.size() ? &step.dependencies[mDependency] : nullptr;
+                LockedStepDependency owner;
+                if (dep && !lockStepDependency(*dep, owner))
+                {
+                    mPreparation->lifetime->cancel(); mWave->lifetime->cancel();
+                    return true;
+                }
+                Debug::HitchTrace::Scope submission("composite.dependency_step", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                    {}, owner.image ? std::string_view(owner.image->getFileName()) : std::string_view{});
+                submission.setLink(mPreparation->receipt);
+                submission.setMetric(0, "dependency_index", mDependency);
+                submission.setMetric(1, "kind", static_cast<unsigned>(mKind));
+                submission.setMetric(2, "source_bytes", mBytes);
+                submission.setMetric(3, "generation", mPreparation->generation);
+                if (owner.texture)
+                {
+                    osg::ref_ptr<osg::Texture::TextureObject> before = owner.texture->getTextureObject(state.getContextID());
+                    const bool allocated = before && before->isAllocated();
+                    osg::ref_ptr<Resource::PreparedTerrainTextureCompileOp> op
+                        = new Resource::PreparedTerrainTextureCompileOp(owner.texture);
+                    const bool result = op->compile(info);
+                    if (auto* object = owner.texture->getTextureObject(state.getContextID()); object && object->isAllocated())
+                        if (!allocated || object != before.get())
+                            mWave->newTextureObjects.emplace_back(object);
+                    if (result) mPreparation->markSubmitted(mDependency);
+                    return result;
+                }
+                if (dep)
+                {
+                    state.pushStateSet(owner.pass);
+                    struct Pop { osg::State& state; ~Pop() { state.popStateSet(); } } pop{state};
+                    osg::ref_ptr<osg::Program::PerContextProgram> before = owner.program->getPCP(state);
+                    const bool linked = before && before->isLinked() && !before->needsLink();
+                    owner.program->compileGLObjects(state);
+                    auto* pcp = owner.program->getPCP(state);
+                    auto& result = mPreparation->step->dependencies[mDependency];
+                    if (pcp && pcp->isLinked() && !pcp->needsLink())
+                    { result.submittedProgram = pcp; result.programName = pcp->getHandle();
+                        if (!linked || pcp != before.get()) mWave->newPrograms.emplace_back(pcp); }
+                    else mPreparation->failed = true;
+                    mPreparation->markSubmitted(mDependency);
+                    return true;
+                }
+                auto* target = dynamic_cast<Resource::PreparedTerrainTexture*>(map->mTexture.get());
+                if (mKind == Kind::Texture)
+                {
+                    if (!target) { mPreparation->failed = true; return true; }
+                    osg::ref_ptr<osg::Texture::TextureObject> before = target->getTextureObject(state.getContextID());
+                    const bool allocated = before && before->isAllocated();
+                    osg::ref_ptr<Resource::PreparedTerrainTextureCompileOp> op
+                        = new Resource::PreparedTerrainTextureCompileOp(target);
+                    const bool result = op->compile(info);
+                    if (auto* object = target->getTextureObject(state.getContextID()); object && object->isAllocated())
+                        if (!allocated || object != before.get())
+                            mWave->newTextureObjects.emplace_back(object);
+                    if (result) mPreparation->markSubmitted(mDependency);
+                    return result;
+                }
+                auto* ext = state.get<osg::GLExtensions>();
+                if (!ext->isFrameBufferObjectSupported || !target || !target->preparationUnchanged(state))
+                    mPreparation->failed = true;
+                else
+                {
+                    mPreparation->fbo->setAttachment(osg::Camera::COLOR_BUFFER, osg::FrameBufferAttachment(target));
+                    mPreparation->fbo->apply(state, osg::FrameBufferObject::DRAW_FRAMEBUFFER);
+                    mPreparation->failed = ext->glCheckFramebufferStatus(GL_FRAMEBUFFER_EXT) != GL_FRAMEBUFFER_COMPLETE_EXT;
+                    mPreparation->fboName = mPreparation->fbo->getHandle(state.getContextID());
+                    ext->glBindFramebuffer(GL_FRAMEBUFFER_EXT,
+                        state.getGraphicsContext() ? state.getGraphicsContext()->getDefaultFboId() : 0);
+                    state.haveAppliedTextureAttribute(state.getActiveTextureUnit(), osg::StateAttribute::TEXTURE);
+                }
+                mPreparation->completed = true;
+                mPreparation->markSubmitted(mDependency);
+                return true;
+            }
+        private:
+            osg::observer_ptr<CompositeMap> mMap;
+            std::shared_ptr<CompositePreparation> mPreparation;
+            std::shared_ptr<CompositeDependencyWave> mWave;
+            std::size_t mDependency;
+            Kind mKind;
+            std::size_t mBytes;
+        };
+
+        struct CompositeWaveCompleted final : osgUtil::IncrementalCompileOperation::CompileCompletedCallback
+        {
+            explicit CompositeWaveCompleted(std::shared_ptr<CompositeDependencyWave> wave) : mWave(std::move(wave)) {}
+            bool compileCompleted(osgUtil::IncrementalCompileOperation::CompileSet*) override
+            { mWave->completed = true; mWave->lifetime->complete(); return true; }
+            std::shared_ptr<CompositeDependencyWave> mWave;
+        };
 
         class CompositeDependencyCompileOp final : public Resource::OpenMWCompositeCompileOp
         {
@@ -238,11 +573,13 @@ namespace Terrain
         };
     }
 
-    void CompositeMapRenderer::configurePreparation(Resource::OpenMWIncrementalCompileOperation* ico)
+    void CompositeMapRenderer::configurePreparation(Resource::OpenMWIncrementalCompileOperation* ico,
+        Resource::SpeculativeScope::Context pressure)
     {
         mICO = ico;
         mAdmission = ico ? ico->compositeAdmission() : nullptr;
         mPreparationEnabled = bool(mAdmission);
+        mPressureContext = pressure;
     }
 
     bool CompositeMapRenderer::preparationSupported(const osg::State& state) const
@@ -255,8 +592,11 @@ namespace Terrain
     {
         auto result = mPreparationStats;
         result.scheduled = mPreparationScheduled.load(std::memory_order_relaxed);
-        result.pendingBytes = mPreparationBytes.load(std::memory_order_relaxed);
+        result.pendingBytes = mPreparationBytes.load(std::memory_order_relaxed)
+            + mStepBudget->bytes.load(std::memory_order_relaxed);
         result.chargedMs = mAdmission ? mAdmission->chargedMs() : 0;
+        result.dependencyWaves = mDependencyWaves.load(std::memory_order_relaxed);
+        result.pressureYields = mPressureYields.load(std::memory_order_relaxed);
         return result;
     }
 
@@ -264,6 +604,8 @@ namespace Terrain
     {
         std::vector<osg::ref_ptr<CompositeMap>> retiredMaps;
         std::vector<std::shared_ptr<CompositePreparation>> retiredPreparations;
+        std::vector<std::vector<osg::ref_ptr<osg::Drawable>>> retiredProducerGraphs;
+        retiredProducerGraphs.reserve(sMaxPreparationMaps);
         {
         std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
         for (auto it = mPendingPreparations.begin(); it != mPendingPreparations.end();)
@@ -298,6 +640,47 @@ namespace Terrain
                 ++it;
         }
         } // Final payload/charge releases occur after the admission lock.
+        {
+            std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
+            for (auto it = mPendingStepPreparations.begin(); it != mPendingStepPreparations.end();)
+            {
+                osg::ref_ptr<CompositeMap> map;
+                if (!it->lock(map)) { it = mPendingStepPreparations.erase(it); continue; }
+                auto preparation = map->mPreparation;
+                if (!preparation || !preparation->step) { it = mPendingStepPreparations.erase(it); continue; }
+                int targetOwners = 1;
+                if (preparation->fbo->hasAttachment(osg::Camera::COLOR_BUFFER)
+                    && preparation->fbo->getAttachment(osg::Camera::COLOR_BUFFER).getTexture() == map->mTexture.get())
+                    ++targetOwners;
+                if (mFBO->hasAttachment(osg::Camera::COLOR_BUFFER)
+                    && mFBO->getAttachment(osg::Camera::COLOR_BUFFER).getTexture() == map->mTexture.get())
+                    ++targetOwners;
+                // A terminal wave also owns the target until its actual release.
+                const bool waveOwnsTarget = preparation->target.get() == map->mTexture.get()
+                    && (bool(preparation->step->targetDebt)
+                        || (preparation->step->wave && preparation->step->wave->terminal));
+                if (map->mTexture.get() == preparation->target.get()
+                    && map->mTexture->referenceCount() <= targetOwners + int(waveOwnsTarget))
+                {
+                    preparation->lifetime->cancel(); ++mPreparationStats.cancelled;
+                    // This seam still knows every internal target owner. Once
+                    // detached, a queued canceled wave's reference must not be
+                    // mistaken for a new external consumer by compileUntil.
+                    map->mCompiled = map->mDrawables.size();
+                    retiredProducerGraphs.emplace_back();
+                    retiredProducerGraphs.back().swap(map->mDrawables);
+                }
+                if (preparation->lifetime->cancelled() || map->mDrawables.empty())
+                {
+                    preparation->lifetime->cancel();
+                    if (preparation->step->wave) preparation->step->wave->lifetime->cancel();
+                    map->mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel);
+                    retiredPreparations.push_back(std::move(map->mPreparation));
+                    it = mPendingStepPreparations.erase(it);
+                }
+                else ++it;
+            }
+        }
     }
 
     bool CompositeMapRenderer::dependenciesReady(const CompositeMap& map, osg::State& state) const
@@ -313,6 +696,33 @@ namespace Terrain
         auto* target = dynamic_cast<Resource::PreparedTerrainTexture*>(map.mTexture.get());
         if (!target || !target->preparationUnchanged(state))
             return false;
+        if (preparation->step)
+        {
+            if (!stepTargetUnchanged(*preparation, map)) return false;
+            const auto& wave = preparation->step->wave;
+            if (!wave || wave->terminal || !wave->completed || wave->consumed
+                || map.mCompiled != wave->layerBegin) return false;
+            for (std::size_t index = wave->begin; index < wave->end; ++index)
+            {
+                const auto& dep = preparation->step->dependencies[index];
+                LockedStepDependency owner;
+                if (!lockStepDependency(dep, owner)) return false;
+                if (owner.texture)
+                {
+                    if (!owner.texture->preparationUnchanged(state)) return false;
+                }
+                else
+                {
+                    state.pushStateSet(owner.pass);
+                    auto* pcp = owner.program->getPCP(state);
+                    const bool ready = pcp && pcp == dep.submittedProgram.get()
+                        && pcp->getHandle() == dep.programName && pcp->isLinked() && !pcp->needsLink();
+                    state.popStateSet();
+                    if (!ready) return false;
+                }
+            }
+            return true;
+        }
         for (const auto& dep : preparation->dependencies)
         {
             if (!retainedDependency(dep))
@@ -339,10 +749,58 @@ namespace Terrain
     bool CompositeMapRenderer::prepare(CompositeMap& map, osg::RenderInfo& info) const
     {
         auto& state = *info.getState();
+        if (map.mPreparation && map.mPreparation->step && !stepPressureUsable(map.mPreparation->step->pressure))
+        {
+            mPressureYields.fetch_add(1, std::memory_order_relaxed);
+            map.mPreparation->lifetime->cancel();
+            if (map.mPreparation->step->wave) map.mPreparation->step->wave->lifetime->cancel();
+            map.mCompiled = 0;
+            retirePreparations();
+            return false;
+        }
         if (dependenciesReady(map, state))
             return true;
         if (map.mPreparation)
         {
+            if (map.mPreparation->step
+                && !map.mPreparation->lifetime->cancelled()
+                && map.mPreparation->target.get() == map.mTexture.get()
+                && map.mPreparation->context.get() == state.getGraphicsContext())
+            {
+                auto& step = *map.mPreparation->step;
+                if (!stepPressureUsable(step.pressure))
+                {
+                    mPressureYields.fetch_add(1, std::memory_order_relaxed);
+                    map.mPreparation->lifetime->cancel();
+                    if (step.wave) step.wave->lifetime->cancel();
+                }
+                else
+                {
+                    if (map.mPreparation->failed) return true;
+                    if (step.wave && !step.wave->completed) return false;
+                    if (step.wave)
+                    {
+                        if (step.wave->terminal)
+                            step.targetDebt = std::move(step.wave);
+                        else if (!step.wave->consumed)
+                        {
+                            // The submission is ready, but its source debt is
+                            // still outstanding until the actual private layer
+                            // draw and caller restoration complete.
+                            if (dependenciesReady(map, state)) return true;
+                            map.mPreparation->lifetime->cancel();
+                            step.wave->lifetime->cancel();
+                            return false;
+                        }
+                        else
+                        {
+                            step.cursor = step.wave->end;
+                            step.wave.reset();
+                        }
+                    }
+                    return scheduleDependencyWave(map, state.getGraphicsContext());
+                }
+            }
             if (map.mPreparation->completed && map.mPreparation->failed
                 && map.mPreparation->context.get() == state.getGraphicsContext()
                 && map.mPreparation->target.get() == map.mTexture.get())
@@ -373,13 +831,18 @@ namespace Terrain
         map.mPreparationReceipt = receipt.id();
         schedulePreparation(map, *mICO->getContextSet().begin(), true);
         receipt.setMetric(0, "accepted", bool(map.mPreparation));
-        receipt.setMetric(1, "dependencies", map.mPreparation ? map.mPreparation->dependencies.size() : 0);
-        receipt.setMetric(2, "retained_bytes", map.mPreparation ? map.mPreparation->bytes : 0);
+        receipt.setMetric(1, "dependencies", map.mPreparation
+            ? (map.mPreparation->step ? map.mPreparation->step->dependencies.size() : map.mPreparation->dependencies.size()) : 0);
+        receipt.setMetric(2, "retained_bytes", map.mPreparation
+            ? (map.mPreparation->step ? map.mPreparation->step->metadataBytes
+                + (map.mPreparation->step->wave ? map.mPreparation->step->wave->bytes : 0) : map.mPreparation->bytes) : 0);
         receipt.setMetric(3, "generation", map.mPreparationGeneration.load(std::memory_order_relaxed));
     }
 
     bool CompositeMapRenderer::schedulePreparation(CompositeMap& map, osg::GraphicsContext* context, bool atCreation) const
     {
+        if (mIncrementalPreparationEnabled)
+            return scheduleStepPreparation(map, context, atCreation);
         // Reserve and publish the bounded descriptor together. Producers only
         // append new unpublished maps; retirement/progress remains draw-owned.
         std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
@@ -478,6 +941,222 @@ namespace Terrain
         return false;
     }
 
+    bool CompositeMapRenderer::scheduleStepPreparation(CompositeMap& map, osg::GraphicsContext* context, bool atCreation) const
+    {
+        if (!map.mBatchingEligible || !mICO || mICO->getContextSet().size() != 1 || !mICO->getContextSet().contains(context)
+            || !dynamic_cast<Resource::PreparedTerrainTexture*>(map.mTexture.get())
+            || mICO->getForceTextureDownloadGeometry()) return true;
+        if (!stepPressureUsable(mPressureContext))
+        { mPressureYields.fetch_add(1, std::memory_order_relaxed); return false; }
+
+        auto preparation = std::make_shared<CompositePreparation>();
+        auto step = std::make_shared<CompositeStepPreparation>();
+        step->pressure = mPressureContext;
+        step->dependencies.reserve(512);
+        for (std::size_t index = map.mCompiled; index < map.mDrawables.size(); ++index)
+        {
+            auto* drawable = map.mDrawables[index].get();
+            auto* pass = drawable ? drawable->getStateSet() : nullptr;
+            if (!pass) return true;
+            const auto& attributes = pass->getTextureAttributeList();
+            for (unsigned unit = 0; unit < attributes.size(); ++unit)
+            {
+                auto* attribute = pass->getTextureAttribute(unit, osg::StateAttribute::TEXTURE);
+                if (!attribute) continue;
+                auto* texture = dynamic_cast<Resource::PreparedTerrainTexture*>(attribute);
+                auto* image = texture ? texture->getImage() : nullptr;
+                if (!texture || !image || !image->data() || texture->getSubloadCallback()
+                    || texture->getUpdateCallback() || texture->getEventCallback() || texture->getReadPBuffer()
+                    || texture->getDataVariance() == osg::Object::DYNAMIC
+                    || image->getDataVariance() == osg::Object::DYNAMIC || image->requiresUpdateCall()) return true;
+                if (step->dependencies.size() == 512) return true;
+                CompositeStepPreparation::Dependency dep;
+                dep.texture = texture; dep.image = image; dep.imageRevision = image->getModifiedCount();
+                dep.sourceBytes = image->getTotalDataSize(); dep.pass = pass; dep.drawable = drawable;
+                dep.unit = unit; dep.layer = index;
+                if (!dep.sourceBytes || dep.sourceBytes > sMaxPreparationBytes) return true;
+                step->dependencies.push_back(std::move(dep));
+            }
+            if (auto* program = dynamic_cast<osg::Program*>(pass->getAttribute(osg::StateAttribute::PROGRAM)))
+            {
+                if (step->dependencies.size() == 512) return true;
+                CompositeStepPreparation::Dependency dep;
+                dep.program = program; dep.pass = pass; dep.drawable = drawable; dep.layer = index;
+                step->dependencies.push_back(std::move(dep));
+            }
+        }
+        // All future payloads remain weak. This estimate includes the bounded
+        // descriptor/queued operation bookkeeping, separately from source bytes.
+        const std::size_t metadata = 256u * 1024u + 512u * sizeof(CompositeStepPreparation::Dependency);
+        const auto width = map.mTexture->getTextureWidth(), height = map.mTexture->getTextureHeight();
+        const auto targetBytes = width > 0 && height > 0 ? std::size_t(width) * std::size_t(height) * 4 : 0;
+        if (!targetBytes || targetBytes > sMaxPreparationBytes - metadata) return true;
+        step->targetShape = {width, height, map.mTexture->getInternalFormat()};
+        // A window is one COMPLETE layer, including every bound source. Never
+        // publish a half-layer window or prepare it over several refunded waves.
+        std::size_t layer = 0, layerBytes = 0;
+        std::unordered_set<const osg::Texture*> layerTextures;
+        std::unordered_set<const osg::Program*> layerPrograms;
+        for (const auto& dep : step->dependencies)
+        {
+            if (dep.layer != layer)
+            { layer = dep.layer; layerBytes = 0; layerTextures.clear(); layerPrograms.clear(); }
+            LockedStepDependency owner;
+            if (!lockStepDependency(dep, owner)) return true;
+            if (owner.texture && layerTextures.insert(owner.texture.get()).second) layerBytes += dep.sourceBytes;
+            if (owner.program && layerPrograms.insert(owner.program.get()).second)
+            {
+                layerBytes += 64u * 1024u;
+                for (unsigned shader = 0; shader < owner.program->getNumShaders(); ++shader)
+                    if (const auto* source = owner.program->getShader(shader)) layerBytes += source->getShaderSource().size();
+                    else return true;
+            }
+            if (layerBytes > sMaxPreparationBytes - metadata - targetBytes) return true;
+        }
+        auto metadataLease = std::make_shared<CompositeMetadataLease>();
+        {
+            std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
+            mStepBudget->pruneDebt();
+            if (mStepBudget->maps.load(std::memory_order_relaxed) >= sMaxPreparationMaps
+                || !mStepBudget->accepting() || !mStepBudget->reserve(metadata)) return false;
+            step->budget = mStepBudget; step->metadataBytes = metadata;
+            mStepBudget->maps.fetch_add(1, std::memory_order_acq_rel);
+            step->metadata = std::move(metadataLease);
+            step->metadata->budget = mStepBudget; step->metadata->bytes = metadata;
+            preparation->step = step;
+            preparation->target = map.mTexture; preparation->context = context;
+            preparation->generation = map.mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+            Debug::HitchTrace::Scope receipt("composite.step_admit", Debug::HitchTrace::CpuTiming::WallEnvelope);
+            receipt.retain(); receipt.setLink(map.mPreparationReceipt);
+            preparation->receipt = receipt.id();
+            receipt.setMetric(0, "generation", preparation->generation);
+            receipt.setMetric(1, "dependencies", step->dependencies.size());
+            receipt.setMetric(2, "descriptor_bytes", metadata);
+            receipt.setMetric(3, "early_producer", atCreation);
+            map.mPreparation = preparation;
+            mPendingStepPreparations.push_back(&map);
+            mPreparationScheduled.fetch_add(1, std::memory_order_relaxed);
+        }
+        return scheduleDependencyWave(map, context);
+    }
+
+    bool CompositeMapRenderer::scheduleDependencyWave(CompositeMap& map, osg::GraphicsContext* context) const
+    {
+        std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
+        const auto preparation = map.mPreparation;
+        if (!preparation || !preparation->step || preparation->lifetime->cancelled()) return false;
+        auto& step = *preparation->step;
+        if (step.wave) return false;
+        mStepBudget->pruneDebt();
+        if (!mStepBudget->accepting()) return false;
+        if (!stepPressureUsable(step.pressure))
+        { mPressureYields.fetch_add(1, std::memory_order_relaxed); return false; }
+        auto* state = context ? context->getState() : nullptr;
+        if (!state || preparation->context.get() != context
+            || !stepTargetUnchanged(*preparation, map))
+        { preparation->lifetime->cancel(); return false; }
+        // Previous submissions remain revision/context qualified. A changed
+        // source/pass/program invalidates the entire descriptor, not merely the
+        // current cursor. The next admitted descriptor restarts the exact bake.
+        for (std::size_t index = 0; index < step.cursor; ++index)
+        {
+            const auto& dep = step.dependencies[index];
+            LockedStepDependency owner;
+            if (!lockStepDependency(dep, owner)) { preparation->lifetime->cancel(); return false; }
+            if (owner.texture && !owner.texture->preparationUnchanged(*state))
+            { preparation->lifetime->cancel(); return false; }
+            if (owner.program)
+            {
+                state->pushStateSet(owner.pass);
+                auto* pcp = owner.program->getPCP(*state);
+                const bool valid = pcp && pcp == dep.submittedProgram.get() && pcp->getHandle() == dep.programName
+                    && pcp->isLinked() && !pcp->needsLink();
+                state->popStateSet();
+                if (!valid) { preparation->lifetime->cancel(); return false; }
+            }
+        }
+        auto wave = std::make_shared<CompositeDependencyWave>();
+        wave->begin = step.cursor; wave->end = step.cursor;
+        const auto available = sMaxPreparationBytes - std::min(sMaxPreparationBytes,
+            mStepBudget->bytes.load(std::memory_order_acquire));
+        std::unordered_set<const osg::Image*> images;
+        std::unordered_set<const osg::Program*> programs;
+        std::unordered_set<const osg::Texture*> textures;
+        wave->terminal = !preparation->completed;
+        wave->layerBegin = map.mCompiled;
+        wave->layerEnd = map.mCompiled + 1;
+        for (std::size_t index = step.cursor; !wave->terminal && index < step.dependencies.size(); ++index)
+        {
+            const auto& dep = step.dependencies[index];
+            if (dep.layer != wave->layerBegin) break;
+            LockedStepDependency owner;
+            if (!lockStepDependency(dep, owner)) { preparation->lifetime->cancel(); return false; }
+            if (owner.texture)
+            {
+                const auto bytes = textures.contains(owner.texture.get()) ? 0 : dep.sourceBytes;
+                if (bytes > available - std::min(available, wave->bytes)) return false;
+                if (textures.insert(owner.texture.get()).second) { wave->textures.push_back(owner.texture); wave->bytes += bytes; }
+                if (images.insert(owner.image.get()).second) wave->images.push_back(owner.image);
+            }
+            else
+            {
+                const auto& program = owner.program;
+                if (!programs.contains(program.get()))
+                {
+                    std::size_t bytes = 64u * 1024u;
+                    for (unsigned shader = 0; shader < program->getNumShaders(); ++shader)
+                        bytes += program->getShader(shader)->getShaderSource().size();
+                    if (bytes > available - std::min(available, wave->bytes)) return false;
+                    programs.insert(program.get()); wave->programs.push_back(program); wave->bytes += bytes;
+                }
+            }
+            wave->end = index + 1;
+        }
+        if (wave->terminal)
+        {
+            auto* target = dynamic_cast<Resource::PreparedTerrainTexture*>(map.mTexture.get());
+            const auto width = target ? target->getTextureWidth() : 0;
+            const auto height = target ? target->getTextureHeight() : 0;
+            const auto bytes = width > 0 && height > 0 ? std::size_t(width) * std::size_t(height) * 4 : 0;
+            if (!bytes || bytes > available) return false;
+            wave->textures.push_back(target); wave->bytes = bytes;
+        }
+        else if (wave->end == wave->begin) return false;
+        wave->newTextureObjects.reserve(wave->textures.size());
+        wave->newPrograms.reserve(wave->programs.size());
+        if (!mStepBudget->reserve(wave->bytes)) return false;
+        wave->budget = mStepBudget;
+        wave->metadata = step.metadata;
+        osg::ref_ptr<Resource::V321ClassifiedCompileSet> set = new Resource::V321ClassifiedCompileSet(
+            wave->lifetime, Resource::V321CompileClass::Terrain, Resource::V321CompileUrgency::Background);
+        auto& list = set->_compileMap[context];
+        for (std::size_t index = wave->begin; !wave->terminal && index < wave->end; ++index)
+        {
+            const auto& dep = step.dependencies[index];
+            list.add(new CompositeStepCompileOp(&map, preparation, wave, index,
+                dep.texture.valid() ? Resource::OpenMWCompositeCompileOp::Kind::Texture
+                                    : Resource::OpenMWCompositeCompileOp::Kind::Program, dep.sourceBytes));
+        }
+        if (wave->terminal)
+        {
+            list.add(new CompositeStepCompileOp(&map, preparation, wave, step.dependencies.size(),
+                Resource::OpenMWCompositeCompileOp::Kind::Texture, wave->bytes));
+            list.add(new CompositeStepCompileOp(&map, preparation, wave, step.dependencies.size() + 1,
+                Resource::OpenMWCompositeCompileOp::Kind::Target, 0));
+        }
+        ++set->_numberCompileListsToCompile;
+        set->_compileCompletedCallback = new CompositeWaveCompleted(wave);
+        Debug::HitchTrace::Scope receipt("composite.wave_admit", Debug::HitchTrace::CpuTiming::WallEnvelope);
+        receipt.retain(); receipt.setLink(preparation->receipt);
+        wave->receipt = receipt.id();
+        receipt.setMetric(0, "begin", wave->begin); receipt.setMetric(1, "end", wave->end);
+        receipt.setMetric(2, "source_bytes", wave->bytes); receipt.setMetric(3, "terminal", wave->terminal);
+        step.wave = wave;
+        mDependencyWaves.fetch_add(1, std::memory_order_relaxed);
+        mICO->add(set, false);
+        return false;
+    }
+
     CompositeMapRenderer::CompositeMapRenderer()
         : mCompositeBatchEnabled([] {
             const char* value = std::getenv("OPENMW_HITCH_COMPOSITE_BATCH");
@@ -487,8 +1166,13 @@ namespace Terrain
             const char* value = std::getenv("OPENMW_HITCH_COMPOSITE_EARLY");
             return value && std::string_view(value) == "1";
         }())
+        , mIncrementalPreparationEnabled([] {
+            const char* value = std::getenv("OPENMW_HITCH_COMPOSITE_STEP");
+            return value && std::string_view(value) == "1";
+        }())
         , mTargetFrameRate(120)
         , mMinimumTimeAvailable(0.0025)
+        , mStepBudget(std::make_shared<CompositeStepBudget>())
     {
         setSupportsDisplayList(false);
         setCullingActive(false);
@@ -506,6 +1190,13 @@ namespace Terrain
                 map->mPreparation->lifetime->cancel();
                 map->mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel);
             }
+        for (const auto& reference : mPendingStepPreparations)
+            if (osg::ref_ptr<CompositeMap> map; reference.lock(map) && map->mPreparation && map->mPreparation->step)
+            {
+                map->mPreparation->lifetime->cancel();
+                if (map->mPreparation->step->wave) map->mPreparation->step->wave->lifetime->cancel();
+                map->mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel);
+            }
     }
 
     void CompositeMapRenderer::releaseGLObjects(osg::State* state) const
@@ -516,6 +1207,15 @@ namespace Terrain
             if (map->mPreparation)
             {
                 map->mPreparation->lifetime->cancel();
+                map->mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel);
+                map->mPreparation->fbo->releaseGLObjects(state);
+                map->mCompiled = 0;
+            }
+        for (const auto& reference : mPendingStepPreparations)
+            if (osg::ref_ptr<CompositeMap> map; reference.lock(map) && map->mPreparation && map->mPreparation->step)
+            {
+                map->mPreparation->lifetime->cancel();
+                if (map->mPreparation->step->wave) map->mPreparation->step->wave->lifetime->cancel();
                 map->mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel);
                 map->mPreparation->fbo->releaseGLObjects(state);
                 map->mCompiled = 0;
@@ -661,7 +1361,7 @@ namespace Terrain
                     << immediateEnd << ',' << queuedEnd << ',' << mPreparationScheduled.load(std::memory_order_relaxed) << ','
                     << mPreparationStats.invalidated << ',' << mPreparationStats.cancelled << ','
                     << mPreparationStats.requiredFallbacks << ',' << mPreparationStats.ageProgress << ','
-                    << mPreparationStats.budgetYields << ',' << mPreparationBytes.load(std::memory_order_relaxed) << ','
+                    << mPreparationStats.budgetYields << ',' << preparationStats().pendingBytes << ','
                     << (preparationActive ? mAdmission->chargedMs() : 0) << ',' << oldestAge;
                 telemetryWriter.writeLine(row.str());
             }
@@ -676,6 +1376,7 @@ namespace Terrain
     void CompositeMapRenderer::compileUntil(
         CompositeMap& compositeMap, osg::RenderInfo& renderInfo, Deadline deadline, CompileTelemetry* telemetry) const
     {
+        if (compositeMap.mDrawables.empty()) return;
         const bool preparationActive = preparationSupported(*renderInfo.getState());
         const bool batchActive = mCompositeBatchEnabled && compositeMap.mBatchingEligible;
         const auto admissionStart = std::chrono::steady_clock::now();
@@ -706,6 +1407,11 @@ namespace Terrain
             if (mFBO->hasAttachment(osg::Camera::COLOR_BUFFER)
                 && mFBO->getAttachment(osg::Camera::COLOR_BUFFER).getTexture() == compositeMap.mTexture.get())
                 ++retainedTargetReferences;
+            if (compositeMap.mPreparation && compositeMap.mPreparation->step
+                && compositeMap.mPreparation->target.get() == compositeMap.mTexture.get()
+                && (compositeMap.mPreparation->step->targetDebt
+                    || (compositeMap.mPreparation->step->wave && compositeMap.mPreparation->step->wave->terminal)))
+                ++retainedTargetReferences;
         }
         if (compositeMap.mTexture->referenceCount() <= retainedTargetReferences)
         {
@@ -720,13 +1426,26 @@ namespace Terrain
         }
 
         const bool required = compositeMap.mRequired.load(std::memory_order_acquire);
+        // Partial RTT pixels are reusable only while every consumed source,
+        // selected program variant and target/context remains exactly current.
+        // Required promotion cannot inherit stale pixels from an earlier layer.
+        if (compositeMap.mPreparation && compositeMap.mPreparation->step
+            && !consumedStepUnchanged(*compositeMap.mPreparation, compositeMap, *renderInfo.getState()))
+        {
+            compositeMap.mCompiled = 0;
+            compositeMap.mPreparation->lifetime->cancel();
+            if (compositeMap.mPreparation->step->wave) compositeMap.mPreparation->step->wave->lifetime->cancel();
+            ++mPreparationStats.invalidated;
+        }
         Debug::HitchTrace::Scope slice("composite.map_slice", Debug::HitchTrace::CpuTiming::WallEnvelope);
         slice.setLink(compositeMap.mPreparation ? compositeMap.mPreparation->receipt : compositeMap.mPreparationReceipt);
         slice.setMetric(0, "required", required);
         slice.setMetric(1, "remaining_passes", compositeMap.mDrawables.size() - compositeMap.mCompiled);
         const auto* ownedPreparation = compositeMap.mPreparation.get();
+        const auto dependencyCount = ownedPreparation
+            ? (ownedPreparation->step ? ownedPreparation->step->dependencies.size() : ownedPreparation->dependencies.size()) : 0;
         slice.setMetric(2, "pending_submissions", ownedPreparation
-            ? ownedPreparation->dependencies.size() + 2 - ownedPreparation->submittedCount() : 0);
+            ? dependencyCount + 2 - std::min(dependencyCount + 2, ownedPreparation->submittedCount()) : 0);
         slice.setMetric(3, "preparation_ready", preparationActive && dependenciesReady(compositeMap, *renderInfo.getState()));
         if (required) slice.retain();
         if (preparationActive && !required && !prepare(compositeMap, renderInfo))
@@ -739,6 +1458,11 @@ namespace Terrain
             if (compositeMap.mPreparation)
                 compositeMap.mPreparation->lifetime->cancel();
         }
+        const auto layerPreparation = compositeMap.mPreparation;
+        const auto layerWave = layerPreparation && layerPreparation->step ? layerPreparation->step->wave : nullptr;
+        const std::size_t bakeEnd = preparationActive && !required && layerWave && !layerWave->terminal
+            && !layerPreparation->failed && !layerPreparation->lifetime->cancelled()
+            ? layerWave->layerEnd : compositeMap.mDrawables.size();
 
         auto admitted = [&](bool includeFbo) {
             if (!preparationActive || compositeMap.mRequired.load(std::memory_order_acquire))
@@ -771,6 +1495,55 @@ namespace Terrain
         osg::Timer timer;
         osg::State& state = *renderInfo.getState();
         osg::GLExtensions* ext = state.get<osg::GLExtensions>();
+        std::vector<osg::ref_ptr<osg::Texture::TextureObject>> usedTextures;
+        std::vector<osg::ref_ptr<osg::Program::PerContextProgram>> usedPrograms;
+        auto recordLayerUse = [&](osg::StateSet* pass) {
+            if (!mIncrementalPreparationEnabled || !pass) return;
+            for (unsigned unit = 0; unit < pass->getTextureAttributeList().size(); ++unit)
+                if (auto* texture = dynamic_cast<osg::Texture*>(pass->getTextureAttribute(unit, osg::StateAttribute::TEXTURE)))
+                    if (auto* object = texture->getTextureObject(state.getContextID()); object
+                        && std::none_of(usedTextures.begin(), usedTextures.end(), [&](const auto& old) { return old.get() == object; }))
+                        usedTextures.emplace_back(object);
+            if (auto* program = dynamic_cast<osg::Program*>(pass->getAttribute(osg::StateAttribute::PROGRAM)))
+                if (auto* pcp = program->getPCP(state); pcp
+                    && std::none_of(usedPrograms.begin(), usedPrograms.end(), [&](const auto& old) { return old.get() == pcp; }))
+                    usedPrograms.emplace_back(pcp);
+        };
+        auto consumedAfterCleanup = [&] {
+            if (!mIncrementalPreparationEnabled) return;
+            const bool complete = compositeMap.mCompiled == compositeMap.mDrawables.size();
+            if (complete)
+                if (auto* object = compositeMap.mTexture->getTextureObject(state.getContextID())) usedTextures.emplace_back(object);
+            // This receipt follows draw calls AND caller/array/default-FBO
+            // restoration. It establishes actual layer use, never GPU completion.
+            mStepBudget->consumed(usedTextures, usedPrograms);
+            const auto waveUsed = [&](const CompositeDependencyWave& wave) {
+                return std::all_of(wave.newTextureObjects.begin(), wave.newTextureObjects.end(), [&](const auto& weak) {
+                    osg::ref_ptr<osg::Texture::TextureObject> owner;
+                    return !weak.lock(owner) || std::any_of(usedTextures.begin(), usedTextures.end(),
+                        [&](const auto& used) { return used == owner; }); })
+                    && std::all_of(wave.newPrograms.begin(), wave.newPrograms.end(), [&](const auto& weak) {
+                        osg::ref_ptr<osg::Program::PerContextProgram> owner;
+                        return !weak.lock(owner) || std::any_of(usedPrograms.begin(), usedPrograms.end(),
+                            [&](const auto& used) { return used == owner; }); });
+            };
+            if (layerWave && !layerWave->terminal && compositeMap.mCompiled >= layerWave->layerEnd && waveUsed(*layerWave))
+            {
+                layerWave->consumed = true;
+                Debug::HitchTrace::Scope use("composite.layer_consumed", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                use.retain(); use.setLink(layerWave->receipt);
+                use.setMetric(0, "layer", layerWave->layerBegin);
+                use.setMetric(1, "source_bytes", layerWave->bytes);
+                use.setMetric(2, "generation", layerPreparation->generation);
+                use.setMetric(3, "map_complete", complete);
+            }
+            if (complete && layerPreparation && layerPreparation->step)
+            {
+                const auto& target = layerPreparation->step->targetDebt;
+                if (target && waveUsed(*target)) target->consumed = true;
+                if (layerWave && layerWave->terminal && waveUsed(*layerWave)) layerWave->consumed = true;
+            }
+        };
 
         if (!mFBO)
             return;
@@ -884,7 +1657,7 @@ namespace Terrain
                 mBatchCleanupEmaMs, mBatchCleanupRiskMs, mBatchCleanupSamples };
             const std::size_t batchBegin = compositeMap.mCompiled;
             bool firstBake = true;
-            for (std::size_t i = batchBegin; i < compositeMap.mDrawables.size(); ++i)
+            for (std::size_t i = batchBegin; i < bakeEnd; ++i)
             {
                 if (!firstBake && !admitted(false)) break;
                 firstBake = false;
@@ -917,6 +1690,7 @@ namespace Terrain
                     drawSpan.setMetric(0, "layer", i);
                     drawable->drawImplementation(renderInfo);
                 }
+                recordLayerUse(pass);
                 if (telemetry)
                 {
                     telemetry->drawMs += Debug::V3Diagnostics::elapsedMs(drawStart);
@@ -935,6 +1709,7 @@ namespace Terrain
             // Includes cleanup in SubmissionCharge and the measured state span.
             // The separate cleanup prior is reserved at every admission check.
             cleanup.finish();
+            consumedAfterCleanup();
             {
                 Debug::HitchTrace::Scope retireSpan("composite.producer_retire", Debug::HitchTrace::CpuTiming::WallEnvelope);
                 retireSpan.setMetric(0, "layers", compositeMap.mCompiled - batchBegin);
@@ -948,7 +1723,7 @@ namespace Terrain
         }
 
         bool firstBake = true;
-        for (size_t i = compositeMap.mCompiled; i < compositeMap.mDrawables.size(); ++i)
+        for (size_t i = compositeMap.mCompiled; i < bakeEnd; ++i)
         {
             if (!firstBake && !admitted(false))
                 break;
@@ -974,6 +1749,7 @@ namespace Terrain
             glViewport(0, 0, compositeMap.mTexture->getTextureWidth(), compositeMap.mTexture->getTextureHeight());
             const auto drawStart = telemetry ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
             drw->drawImplementation(renderInfo);
+            recordLayerUse(stateset);
             if (telemetry)
             {
                 telemetry->drawMs += Debug::V3Diagnostics::elapsedMs(drawStart);
@@ -1009,13 +1785,13 @@ namespace Terrain
             if (!preparationActive)
                 compositeMap.mDrawables[i] = nullptr;
         }
-        if (compositeMap.mCompiled == compositeMap.mDrawables.size())
-            compositeMap.mDrawables = std::vector<osg::ref_ptr<osg::Drawable>>();
-
         state.haveAppliedAttribute(osg::StateAttribute::VIEWPORT);
 
         GLuint fboId = state.getGraphicsContext() ? state.getGraphicsContext()->getDefaultFboId() : 0;
         ext->glBindFramebuffer(GL_FRAMEBUFFER_EXT, fboId);
+        consumedAfterCleanup();
+        if (compositeMap.mCompiled == compositeMap.mDrawables.size())
+            compositeMap.mDrawables = std::vector<osg::ref_ptr<osg::Drawable>>();
     }
 
     void CompositeMapRenderer::setMinimumTimeAvailableForCompile(double time)
@@ -1066,6 +1842,13 @@ namespace Terrain
     {
     }
 
-    CompositeMap::~CompositeMap() {}
+    CompositeMap::~CompositeMap()
+    {
+        if (mPreparation && mPreparation->step)
+        {
+            mPreparation->lifetime->cancel();
+            if (mPreparation->step->wave) mPreparation->step->wave->lifetime->cancel();
+        }
+    }
 
 }

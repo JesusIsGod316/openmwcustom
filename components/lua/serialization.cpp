@@ -390,11 +390,13 @@ namespace LuaUtil
 
     BinaryData serialize(const sol::object& obj, const UserdataSerializer* customSerializer)
     {
+        Debug::HitchTrace::Scope encode("lua.api.serialize", Debug::HitchTrace::CpuTiming::WallEnvelope);
         if (obj == sol::nil)
             return "";
         BinaryData res;
         res.push_back(FORMAT_VERSION);
         serialize(res, obj, customSerializer, 0);
+        encode.setMetric(0, "encoded_bytes", res.size());
         return res;
     }
 
@@ -402,6 +404,8 @@ namespace LuaUtil
     static sol::object deserializeTop(lua_State* lua, std::string_view binaryData,
         const UserdataSerializer* customSerializer, bool readOnly, MetricArgs... metricArgs)
     {
+        Debug::HitchTrace::Scope decode("lua.api.deserialize", Debug::HitchTrace::CpuTiming::WallEnvelope);
+        decode.setMetric(0, "encoded_bytes", binaryData.size());
         if (binaryData.empty())
             return sol::nil;
         if (binaryData[0] != FORMAT_VERSION)

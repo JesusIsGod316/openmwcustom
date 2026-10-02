@@ -1,7 +1,7 @@
 # The ordinary launcher coordinates elevation and immutable capture packaging.
 # Only the recorder helper is elevated; this library never starts the game.
 function Get-OptimizedMWQuickPreset {
-    param([ValidateSet('1','2','3','4','5','6','7')][string]$Choice)
+    param([ValidateSet('1','2','3','4','5','6','7','8','9','10','11')][string]$Choice)
     switch($Choice){
         '1'{return [pscustomobject]@{mask=0;trace_level='Deep';candidate='CONTROL';system_trace=$true;name='Diagnose CONTROL'}}
         '2'{return [pscustomobject]@{mask=0;trace_level='Normal';candidate='CONTROL';system_trace=$false;name='Normal CONTROL'}}
@@ -10,6 +10,10 @@ function Get-OptimizedMWQuickPreset {
         '5'{return [pscustomobject]@{mask=4;attack_mask=0;trace_level='Normal';candidate='CONTROL';system_trace=$false;name='Normal ANIM control'}}
         '6'{return [pscustomobject]@{mask=4;attack_mask=1;trace_level='Normal';candidate='CONTROL';system_trace=$false;name='Normal ANIM retained'}}
         '7'{return [pscustomobject]@{mask=4;attack_mask=1;trace_level='Deep';candidate='CONTROL';system_trace=$true;name='Diagnose ANIM retained'}}
+        '8'{return [pscustomobject]@{mask=4;attack_mask=129;trace_level='Normal';candidate='CONTROL';system_trace=$false;name='Normal ANIM repaired'}}
+        '9'{return [pscustomobject]@{mask=4;attack_mask=129;trace_level='Deep';candidate='CONTROL';system_trace=$true;gpu_query_defer=$true;name='Diagnose ANIM repaired'}}
+        '10'{return [pscustomobject]@{mask=4;attack_mask=449;trace_level='Normal';candidate='CONTROL';system_trace=$false;name='Normal repair combination'}}
+        '11'{return [pscustomobject]@{mask=4;attack_mask=449;trace_level='Deep';candidate='CONTROL';system_trace=$true;gpu_query_defer=$true;name='Diagnose repair combination'}}
     }
 }
 

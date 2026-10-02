@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_TERRAIN_COMPOSITEMAPRENDERER_H
 
 #include <osg/Drawable>
+#include <osg/observer_ptr>
 
 #include <atomic>
 #include <chrono>
@@ -9,6 +10,7 @@
 #include <set>
 #include <memory>
 #include <vector>
+#include <components/resource/speculativebudget.hpp>
 
 namespace Resource
 {
@@ -28,6 +30,7 @@ namespace osg
 namespace Terrain
 {
     struct CompositePreparation;
+    struct CompositeStepBudget;
 
     class CompositeMap : public osg::Referenced
     {
@@ -69,7 +72,8 @@ namespace Terrain
         void drawImplementation(osg::RenderInfo& renderInfo) const override;
 
         void compile(CompositeMap& compositeMap, osg::RenderInfo& renderInfo) const;
-        void configurePreparation(Resource::OpenMWIncrementalCompileOperation* ico);
+        void configurePreparation(Resource::OpenMWIncrementalCompileOperation* ico,
+            Resource::SpeculativeScope::Context pressure = {});
         bool preparationEnabled() const { return mPreparationEnabled; }
         bool producerPreparationEnabled() const { return mPreparationEnabled && mProducerPreparationEnabled; }
         // Call only at the terrain producer seam, before queue publication and
@@ -82,6 +86,7 @@ namespace Terrain
         {
             std::uint64_t scheduled = 0, invalidated = 0, cancelled = 0, requiredFallbacks = 0;
             std::uint64_t ageProgress = 0, budgetYields = 0;
+            std::uint64_t dependencyWaves = 0, pressureYields = 0;
             std::size_t pendingBytes = 0;
             double chargedMs = 0;
         };
@@ -121,12 +126,15 @@ namespace Terrain
             CompileTelemetry* telemetry = nullptr) const;
         bool prepare(CompositeMap& map, osg::RenderInfo& info) const;
         bool schedulePreparation(CompositeMap& map, osg::GraphicsContext* context, bool atCreation = false) const;
+        bool scheduleStepPreparation(CompositeMap& map, osg::GraphicsContext* context, bool atCreation) const;
+        bool scheduleDependencyWave(CompositeMap& map, osg::GraphicsContext* context) const;
         bool dependenciesReady(const CompositeMap& map, osg::State& state) const;
         bool preparationSupported(const osg::State& state) const;
         void retirePreparations() const;
         bool mCooperativeBackgroundCompile = false;
         const bool mCompositeBatchEnabled;
         const bool mProducerPreparationEnabled;
+        const bool mIncrementalPreparationEnabled;
         mutable std::atomic_uint64_t mBackgroundYields{0};
         float mTargetFrameRate;
         double mMinimumTimeAvailable;
@@ -143,10 +151,14 @@ namespace Terrain
         bool mPreparationEnabled = false;
         osg::ref_ptr<Resource::OpenMWIncrementalCompileOperation> mICO;
         std::shared_ptr<Resource::P9DiscretionaryAdmission> mAdmission;
+        Resource::SpeculativeScope::Context mPressureContext;
+        std::shared_ptr<CompositeStepBudget> mStepBudget;
+        mutable std::vector<osg::observer_ptr<CompositeMap>> mPendingStepPreparations;
         mutable std::vector<osg::ref_ptr<CompositeMap>> mPendingPreparations;
         mutable std::mutex mPreparationMutex;
         mutable std::atomic_size_t mPreparationBytes{0};
         mutable std::atomic_uint64_t mPreparationScheduled{0};
+        mutable std::atomic_uint64_t mDependencyWaves{0}, mPressureYields{0};
         mutable PreparationStats mPreparationStats;
         mutable double mBakeEmaMs = 0.25, mBakeRiskMs = 0.25;
         mutable unsigned mBakeSamples = 0;

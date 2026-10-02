@@ -30,6 +30,7 @@ int main() try
         glReadPixels(0,0,16,16,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
     }
     if(glGetError()!=GL_NO_ERROR) throw std::runtime_error("GPU owner fixture GL error");
+    Debug::V36GpuProfiler::finish(true);
     context->releaseContext(); context->close(true);
     std::cout << "PASS actual draw-owner GPU query submission with deliberately different update frame\n";
 }

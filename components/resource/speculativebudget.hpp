@@ -68,7 +68,7 @@ namespace Resource
             Charge(const Charge&) = delete;
             Charge& operator=(const Charge&) = delete;
             ~Charge();
-            std::uint64_t bytes() const noexcept { return mBytes; }
+            std::uint64_t bytes() const noexcept { return mBytes.load(std::memory_order_acquire); }
             // Caller detaches the last TRACKED owner first. Other osg owners
             // may remain: these counters never claim process/VRAM bytes freed.
             void pending();
@@ -78,7 +78,9 @@ namespace Resource
                 : mState(std::move(state)), mKey(key), mBytes(bytes), mKnown(known) {}
             std::shared_ptr<State> mState;
             Key mKey;
-            std::uint64_t mBytes;
+            // Only an explicitly admitted zero-to-estimate promotion may change
+            // this value. Positive immutable-owner estimates never grow later.
+            std::atomic<std::uint64_t> mBytes;
             bool mKnown, mPending = false, mRegistered = false;
         };
         using ChargePtr = std::shared_ptr<Charge>;
@@ -154,6 +156,11 @@ namespace Resource
             SpeculativePriority priority = SpeculativePriority::Background);
         Claim claim(std::string key);
         ChargePtr track(Key key, std::uint64_t bytes, bool known, Stage* stage = nullptr);
+        bool promoteUnknown(const ChargePtr& charge, std::uint64_t bytes, Stage& reservation);
+        // Shared read-only policy for optional producer seams. This is not an
+        // admission/reservation: callers still keep their own bounded debts.
+        static bool newOwnerWorkUsable(const OpenGlPressureSample& sample, SpeculativePriority priority) noexcept
+        { return usable(sample, priority); }
         void hit(bool speculative);
         Stats stats() const;
     private:
@@ -343,9 +350,10 @@ namespace Resource
     {
         if (!mRegistered) return;
         std::lock_guard lock(mState->mutex);
-        (mKnown ? mState->stats.knownOwnerBytes : mState->stats.estimatedOwnerBytes) -= mBytes;
-        if (!mBytes) --mState->stats.unknownOwners;
-        if (mPending) mState->stats.pendingOwnerBytes -= mBytes;
+        const auto bytes = mBytes.load(std::memory_order_relaxed);
+        (mKnown ? mState->stats.knownOwnerBytes : mState->stats.estimatedOwnerBytes) -= bytes;
+        if (!bytes) --mState->stats.unknownOwners;
+        if (mPending) mState->stats.pendingOwnerBytes -= bytes;
         // An older charge can finish concurrently with a new same-key owner.
         auto it = mState->payloads.find(mKey);
         if (it != mState->payloads.end() && it->second.expired()) mState->payloads.erase(it);
@@ -354,7 +362,34 @@ namespace Resource
     inline void SpeculativeBudget::Charge::pending()
     {
         std::lock_guard lock(mState->mutex);
-        if (!mPending) { mPending = true; mState->stats.pendingOwnerBytes = add(mState->stats.pendingOwnerBytes, mBytes); }
+        if (!mPending) { mPending = true; mState->stats.pendingOwnerBytes = add(mState->stats.pendingOwnerBytes, bytes()); }
+    }
+    inline bool SpeculativeBudget::promoteUnknown(
+        const ChargePtr& charge, std::uint64_t bytes, Stage& reservation)
+    {
+        if (!charge || !bytes || bytes == UINT64_MAX)
+            return false;
+        std::lock_guard lock(mState->mutex);
+        if (charge->mState != mState || !charge->mRegistered || charge->mKnown || charge->mPending
+            || reservation.mState != mState)
+            return false;
+        const auto it = mState->payloads.find(charge->mKey);
+        if (it == mState->payloads.end() || it->second.lock() != charge)
+            return false;
+        // Another admitted owner may have won the promotion. It is the SAME
+        // canonical ChargePtr; release our unused reservation without growth.
+        if (const auto current = charge->bytes())
+            return current >= bytes; // incompatible larger metadata must fail closed
+        if (reservation.mFuture < bytes || bytes > UINT64_MAX - mState->stats.estimatedOwnerBytes
+            || bytes >= UINT64_MAX - mState->growth.load(std::memory_order_relaxed))
+            return false;
+        mState->stats.estimatedOwnerBytes += bytes;
+        --mState->stats.unknownOwners;
+        reservation.mFuture -= bytes;
+        mState->stats.futureBytes -= bytes;
+        mState->growth.fetch_add(bytes, std::memory_order_release);
+        charge->mBytes.store(bytes, std::memory_order_release);
+        return true;
     }
     inline void SpeculativeBudget::hit(bool speculative)
     {
@@ -437,6 +472,14 @@ namespace Resource
         };
         static SpeculativeBudget::Claim claim(std::string key)
         { return sCurrent ? sCurrent->mBudget->claim(std::move(key)) : SpeculativeBudget::Claim{}; }
+        static SpeculativeBudget::Stage reserveOwnerEstimate(SpeculativeBudget* budget, std::uint64_t bytes)
+        {
+            // A cache owner already exists, but optional pinning must still
+            // pass the current pressure sample and the original P1 limits.
+            if (!budget || !sCurrent || sCurrent->mBudget != budget || !sCurrent->mSample)
+                throw SpeculativeDeferred{};
+            return budget->reserve(sCurrent->mSample(sCurrent->mOwner), bytes, sCurrent->mPriority);
+        }
         static SpeculativeBudget::ChargePtr track(SpeculativeBudget* budget, SpeculativeBudget::Key key,
             std::uint64_t bytes, bool known)
         {
