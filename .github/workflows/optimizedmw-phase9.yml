@@ -117,6 +117,9 @@ jobs:
         run: |
           ./tools/optimizedmw/phase9/launcher-tests.ps1
           ./tools/optimizedmw/phase9/quick-test-tests.ps1
+          ./tools/optimizedmw/phase9/attack-presets-tests.ps1
+          ./tools/optimizedmw/phase9/context-report-tests.ps1
+          ./tools/optimizedmw/phase9/candidate-launcher-tests.ps1
   Windows:
     needs: [Source, WindowsLauncher]
     uses: ./.github/workflows/windows.yml

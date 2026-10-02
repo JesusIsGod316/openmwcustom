@@ -189,6 +189,20 @@ return {
 }
 )X");
 
+    constexpr VFS::Path::NormalizedView descriptor1Path("descriptorcontainer1.lua");
+    constexpr VFS::Path::NormalizedView descriptor2Path("descriptorcontainer2.lua");
+    constexpr VFS::Path::NormalizedView descriptor3Path("descriptorcontainer3.lua");
+    VFSTestFile descriptorContainerScript(R"X(
+local api = require('fixture.static')
+local common = require('fixture.common')
+local actor = require('fixture.actor')
+local count = 0
+return { eventHandlers = { Probe = function()
+    count = count + 1
+    print(api.name, common.name, actor.serial, count)
+end } }
+)X");
+
     struct LuaScriptsContainerTest : Test
     {
         std::unique_ptr<VFS::Manager> mVFS = createTestVFS({
@@ -205,6 +219,9 @@ return {
             { useInterfacePath, &useInterfaceScript },
             { unloadPath, &unloadScript },
             { customDataPath, &customDataScript },
+            { descriptor1Path, &descriptorContainerScript },
+            { descriptor2Path, &descriptorContainerScript },
+            { descriptor3Path, &descriptorContainerScript },
         });
 
         LuaUtil::ScriptsConfiguration mCfg;
@@ -227,6 +244,9 @@ CUSTOM, PLAYER: overrideInterface.lua
 CUSTOM, PLAYER: useInterface.lua
 CUSTOM: unload.lua
 CUSTOM: customdata.lua
+CUSTOM: descriptorcontainer1.lua
+CUSTOM: descriptorcontainer2.lua
+CUSTOM: descriptorcontainer3.lua
 )X");
             mCfg.init(std::move(cfg), false);
         }
@@ -264,6 +284,41 @@ CUSTOM: customdata.lua
         LuaUtil::ScriptsContainer scripts(&mLua, "Test");
         EXPECT_TRUE(scripts.addCustomScript(getId(emptyPath)));
         EXPECT_FALSE(scripts.addCustomScript(getId(emptyPath)));
+    }
+
+    TEST_F(LuaScriptsContainerTest, PackageDescriptorsRespectReentrantApiAndCommonGeneration)
+    {
+        mLua.setPackageDescriptorReuse(true);
+        mLua.setPackagePrototypeReuse(true);
+        LuaUtil::ScriptsContainer scripts(&mLua, "Descriptor");
+        mLua.protectedCall([&](LuaUtil::LuaView& view) {
+            unsigned factoryCalls = 0;
+            scripts.addPackage("fixture.static", LuaUtil::makeReadOnly(view.sol().create_table_with("name", "api1")));
+            mLua.addCommonPackage("fixture.common", view.sol().create_table_with("name", "common1"));
+            view.sol().set_function("fixtureContainerFactory", [&](sol::object) {
+                if (++factoryCalls == 1)
+                    scripts.addPackage("fixture.static",
+                        LuaUtil::makeReadOnly(view.sol().create_table_with("name", "api2")));
+                return view.sol().create_table_with("serial", factoryCalls);
+            });
+            mLua.addCommonPackage("fixture.actor", view.sol()["fixtureContainerFactory"]);
+            EXPECT_TRUE(scripts.addCustomScript(getId(descriptor1Path)));
+            EXPECT_TRUE(scripts.addCustomScript(getId(descriptor2Path)));
+            // No container addPackage invalidation here: only the generation of
+            // the registered common package changes for the third sandbox.
+            mLua.addCommonPackage("fixture.common", view.sol().create_table_with("name", "common2"));
+            EXPECT_TRUE(scripts.addCustomScript(getId(descriptor3Path)));
+            EXPECT_EQ(factoryCalls, 3);
+            testing::internal::CaptureStdout();
+            scripts.receiveEvent("Probe", {});
+            EXPECT_EQ(internal::GetCapturedStdout(),
+                "Descriptor[descriptorcontainer3.lua]:\tapi2\tcommon2\t3\t1\n"
+                "Descriptor[descriptorcontainer2.lua]:\tapi2\tcommon1\t2\t1\n"
+                "Descriptor[descriptorcontainer1.lua]:\tapi1\tcommon1\t1\t1\n");
+            testing::internal::CaptureStdout();
+            scripts.receiveEvent("Probe", {});
+            EXPECT_THAT(internal::GetCapturedStdout(), HasSubstr("\tapi1\tcommon1\t1\t2\n"));
+        });
     }
 
     TEST_F(LuaScriptsContainerTest, CallHandler)

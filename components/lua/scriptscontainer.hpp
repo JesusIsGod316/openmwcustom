@@ -348,6 +348,7 @@ namespace LuaUtil
 
         std::map<std::string, sol::main_object> mAPI;
         std::optional<sol::main_table> mV314PackagePrototype;
+        std::uint64_t mPackagePrototypeCommonGeneration = 0;
         struct LoadedData
         {
             std::map<int, Script> mScripts;

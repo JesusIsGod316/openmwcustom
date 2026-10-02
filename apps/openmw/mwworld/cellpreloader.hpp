@@ -20,6 +20,7 @@ namespace Resource
 {
     class ResourceSystem;
     class BulletShapeManager;
+    class AnimationPreparation;
 }
 
 namespace Terrain
@@ -53,6 +54,8 @@ namespace MWWorld
         /// Ask a background thread to preload rendering meshes and collision shapes for objects in this cell.
         /// @note The cell itself must be in State_Loaded or State_Preloaded.
         void preload(MWWorld::CellStore& cell, double timestamp, bool nearFuture = false);
+        // Main-thread nearest-target prediction; no dependency scan or worker wait.
+        void setAnimationTarget(MWWorld::CellStore* cell, double timestamp);
 
         void notifyLoaded(MWWorld::CellStore* cell);
 
@@ -95,6 +98,7 @@ namespace MWWorld
     private:
         void clearAllTasks();
         void retireCompletedPreloads();
+        void retainAnimationProgress(CellStore* cell, osg::ref_ptr<Resource::AnimationPreparation> progress);
         Debug::RuntimeDiagnostics::Sampler mDiagnosticSampler;
 
         Resource::ResourceSystem* mResourceSystem;
@@ -135,6 +139,12 @@ namespace MWWorld
 
         // Cells that are currently being preloaded, or have already finished preloading
         PreloadMap mPreloadCells;
+        MWWorld::CellStore* mAnimationTarget = nullptr;
+        MWWorld::CellStore* mAnimationTicketCell = nullptr;
+        osg::ref_ptr<Resource::AnimationPreparation> mAnimationTicket;
+        double mAnimationTargetStamp = 0.0;
+        double mAnimationRetryAt = 0.0;
+        std::uint64_t mAnimationTargetGeneration = 0;
 
         std::vector<osg::ref_ptr<Terrain::View>> mTerrainViews;
         std::vector<PositionCellGrid> mTerrainPreloadPositions;

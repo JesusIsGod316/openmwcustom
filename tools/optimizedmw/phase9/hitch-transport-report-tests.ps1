@@ -29,14 +29,15 @@ function Assert-Rejected {
     if($result.valid_span_capture -or $result.transport_receipt_valid -or -not $result.reasons.Count){throw "Incomplete/contradictory transport accepted: $Name"}
 }
 function Set-ObserverFixture {
-    param([string[]]$Rows,[UInt64]$ThreadSlots=1,[UInt64]$Overflow=0)
+    param([string[]]$Rows,[UInt64]$ThreadSlots=1,[UInt64]$Overflow=0,[string[]]$Publication=@(),[string]$LocalMode='')
     [IO.File]::WriteAllLines($path+'.observer.csv',@('schema,thread_slot,thread,category,calls,wall_ns')+$Rows)
     [IO.File]::WriteAllLines($path+'.observer-status.txt',@('schema=1','thread_capacity=256',"thread_slots=$ThreadSlots","rows=$($Rows.Count)","ledger_overflow=$Overflow",
         'normal_finish=1','output_ok=1','coverage_complete=1','ledger_update_timing=UNMEASURED_count_only_no_recursive_timers',
         'lua_allocator_timer_boundary_timing=UNMEASURED_count_only_existing_clock_calls_excludes_allocator_service',
         'lua_decode_timer_boundary_timing=UNMEASURED_count_only_extra_end_clock_reuses_scope_start',
-        'count_only_categories=trace_retained,trace_filtered,ledger_update,lua_allocator_timer_boundary,lua_decode_timer_boundary'))
+        'count_only_categories=trace_retained,trace_filtered,ledger_update,lua_allocator_timer_boundary,lua_decode_timer_boundary')+$Publication)
     [IO.File]::AppendAllText((Join-Path $profile 'TEST_MODE.txt'),"hitch_observer_revision=1`r`n")
+    if($LocalMode -ne ''){[IO.File]::AppendAllText((Join-Path $profile 'TEST_MODE.txt'),"hitch_observer_local=$LocalMode`r`n")}
 }
 function New-EventFixtureRow {
     param([UInt64]$Id,[string]$Phase,[UInt64]$Parent=0,[UInt64]$Link=0,[int]$Start=0,[int]$End=3000000,
@@ -104,6 +105,26 @@ try{
     $observerGood=Test-Phase9HitchCapture $profile
     if(-not $observerGood.valid_span_capture -or -not $observerGood.observer_work.ledger_valid -or
         ($observerGood.observer_work.ledger.counters | Where-Object category -eq lua_decode_timer_boundary).wall_timing_available){throw 'Complete filtered producer ledger or count-only timing rejected'}
+    $localPublication=@('aggregation=owner_local_retired_snapshot','producer_threads_joined=1','unretired_producers=0',
+        'active_observer_scopes=0','retired_updates_rejected=0')
+    Set-StreamFixture (New-StreamStatus);Set-ObserverFixture $observerRows -Publication $localPublication -LocalMode '1'
+    if(-not (Test-Phase9HitchCapture $profile).observer_work.ledger_valid){throw 'Joined, immutable owner-local publication rejected'}
+    foreach($field in @('producer_threads_joined','unretired_producers','active_observer_scopes','retired_updates_rejected')){
+        $missing=@($localPublication | Where-Object {-not $_.StartsWith($field+'=')})
+        Set-StreamFixture (New-StreamStatus);Set-ObserverFixture $observerRows -Publication $missing -LocalMode '1'
+        if((Test-Phase9HitchCapture $profile).observer_work.ledger_valid){throw "Local observer missing $field qualified"}
+        $bad=@($localPublication | ForEach-Object {if($_.StartsWith($field+'=')){$field+'='+$(if($field -eq 'producer_threads_joined'){'0'}else{'1'})}else{$_}})
+        Set-StreamFixture (New-StreamStatus);Set-ObserverFixture $observerRows -Publication $bad -LocalMode '1'
+        if((Test-Phase9HitchCapture $profile).observer_work.ledger_valid){throw "Local observer contradictory $field qualified"}
+    }
+    Set-StreamFixture (New-StreamStatus);Set-ObserverFixture $observerRows -LocalMode '1'
+    if((Test-Phase9HitchCapture $profile).observer_work.ledger_valid){throw 'Requested local observer silently accepted legacy receipt'}
+    Set-StreamFixture (New-StreamStatus);Set-ObserverFixture $observerRows -Publication $localPublication -LocalMode '0'
+    if((Test-Phase9HitchCapture $profile).observer_work.ledger_valid){throw 'Requested/effective observer aggregation mismatch accepted'}
+    $legacyPublication=@('aggregation=legacy_atomic','producer_threads_joined=0','unretired_producers=0',
+        'active_observer_scopes=0','retired_updates_rejected=0')
+    Set-StreamFixture (New-StreamStatus);Set-ObserverFixture $observerRows -Publication $legacyPublication -LocalMode '0'
+    if(-not (Test-Phase9HitchCapture $profile).observer_work.ledger_valid){throw 'New legacy receipt changed existing atomic qualification'}
     $badObserver=$observerRows.Clone();$badObserver[3]='1,0,19,lua_decode_timer_boundary,1,7'
     Set-StreamFixture (New-StreamStatus);Set-ObserverFixture $badObserver
     $observerBad=Test-Phase9HitchCapture $profile

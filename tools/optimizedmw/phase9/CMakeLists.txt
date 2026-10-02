@@ -32,8 +32,30 @@ add_library(p9-hitch-platform STATIC "${ROOT}/components/debug/hitchtrace.cpp"
   "${ROOT}/components/debug/diagnosticobserver.cpp")
 link_libraries(p9-hitch-platform)
 enable_testing()
+add_executable(p9-benchmark-context benchmark-context-tests.cpp)
+add_test(NAME p9-benchmark-context COMMAND p9-benchmark-context benchmark-context-fixture)
+set_tests_properties(p9-benchmark-context PROPERTIES TIMEOUT 45)
 find_package(Threads REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_executable(p9-animation-preparation animation-preparation-tests.cpp
+  ${ROOT}/components/vfs/manager.cpp ${ROOT}/components/files/conversion.cpp
+  ${ROOT}/components/misc/hostmemory.cpp)
+target_link_libraries(p9-animation-preparation PRIVATE ${OPENSCENEGRAPH_LIBRARIES} Threads::Threads)
+if(WIN32)
+  target_link_libraries(p9-animation-preparation PRIVATE psapi)
+endif()
+foreach(mode control lifetime plan both)
+  add_test(NAME p9-animation-preparation-${mode} COMMAND p9-animation-preparation ${mode})
+  set_tests_properties(p9-animation-preparation-${mode} PROPERTIES TIMEOUT 45)
+endforeach()
+set_tests_properties(p9-animation-preparation-control PROPERTIES ENVIRONMENT
+  "OPENMW_HITCH_ANIMATION_PRELOAD=0;OPENMW_HITCH_ANIMATION_LIFETIME=0;OPENMW_HITCH_ANIMATION_PLAN=0")
+set_tests_properties(p9-animation-preparation-lifetime PROPERTIES ENVIRONMENT
+  "OPENMW_HITCH_ANIMATION_PRELOAD=1;OPENMW_HITCH_ANIMATION_LIFETIME=1;OPENMW_HITCH_ANIMATION_PLAN=0")
+set_tests_properties(p9-animation-preparation-plan PROPERTIES ENVIRONMENT
+  "OPENMW_HITCH_ANIMATION_PRELOAD=0;OPENMW_HITCH_ANIMATION_LIFETIME=0;OPENMW_HITCH_ANIMATION_PLAN=1")
+set_tests_properties(p9-animation-preparation-both PROPERTIES ENVIRONMENT
+  "OPENMW_HITCH_ANIMATION_PRELOAD=1;OPENMW_HITCH_ANIMATION_LIFETIME=1;OPENMW_HITCH_ANIMATION_PLAN=1")
 add_executable(p9-terrain-target-readiness terrain-target-readiness-tests.cpp
   ${ROOT}/components/loadinglistener/reporter.cpp)
 target_link_libraries(p9-terrain-target-readiness PRIVATE Threads::Threads)
@@ -47,11 +69,27 @@ add_test(NAME p9-hitch-trace COMMAND ${Python3_EXECUTABLE}
 set_tests_properties(p9-hitch-trace PROPERTIES TIMEOUT 180)
 add_executable(p9-diagnostic-observer diagnostic-observer-tests.cpp)
 target_link_libraries(p9-diagnostic-observer PRIVATE Threads::Threads)
-foreach(mode normal deep overflow)
+foreach(mode normal deep overflow normal-local deep-local overflow-local active-local independent-local late-tls-local undeclared-local)
   add_test(NAME p9-diagnostic-observer-${mode} COMMAND p9-diagnostic-observer ${mode}
     ${CMAKE_CURRENT_BINARY_DIR}/diagnostic-observer-${mode})
   set_tests_properties(p9-diagnostic-observer-${mode} PROPERTIES TIMEOUT 45)
 endforeach()
+find_library(P9_CLOUD_OSGDB_LIBRARY NAMES osgDB REQUIRED)
+add_executable(p9-cloud-image-preparation cloud-image-preparation-tests.cpp
+  ${ROOT}/components/resource/imagemanager.cpp ${ROOT}/components/resource/cachestats.cpp
+  ${ROOT}/components/vfs/manager.cpp ${ROOT}/components/files/conversion.cpp
+  ${ROOT}/components/sceneutil/workqueue.cpp ${ROOT}/components/sceneutil/glextensions.cpp
+  ${ROOT}/components/debug/debuglog.cpp ${ROOT}/components/misc/hostmemory.cpp)
+target_link_libraries(p9-cloud-image-preparation PRIVATE
+  ${OPENSCENEGRAPH_LIBRARIES} ${P9_CLOUD_OSGDB_LIBRARY} OpenGL::GL Threads::Threads)
+if(WIN32)
+  target_link_libraries(p9-cloud-image-preparation PRIVATE psapi)
+endif()
+if(NOT MSVC)
+  target_compile_options(p9-cloud-image-preparation PRIVATE -Wno-error=unused-parameter)
+endif()
+add_test(NAME p9-cloud-image-preparation COMMAND p9-cloud-image-preparation)
+set_tests_properties(p9-cloud-image-preparation PROPERTIES TIMEOUT 45)
 add_executable(p9-loading-attribution loading-attribution-tests.cpp
   ${ROOT}/components/files/hash.cpp ${ROOT}/components/files/constrainedfilestreambuf.cpp
   ${ROOT}/components/files/conversion.cpp ${ROOT}/extern/smhasher/MurmurHash3.cpp)
@@ -281,7 +319,8 @@ if(NOT MSVC)
   # These production diagnostic/deformation headers retain u8path for their
   # cross-platform UTF-8 contract. GCC 13 deprecates that C++17 helper in C++20;
   # preserve the warning without changing legacy Windows path behavior here.
-  foreach(target p9-capture-transport p9-gpu-owner p9-composite-preparation p9-draw-phases p9-temporal-dynamic)
+  foreach(target p9-capture-transport p9-gpu-owner p9-composite-preparation p9-draw-phases p9-temporal-dynamic
+    p9-benchmark-context p9-animation-preparation p9-cloud-image-preparation)
     target_compile_options(${target} PRIVATE -Wno-error=deprecated-declarations)
   endforeach()
 endif()

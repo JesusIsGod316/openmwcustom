@@ -87,6 +87,11 @@ namespace Debug::V36LuaAddScriptTrace
 
     inline thread_local Recorder* sRecorder = nullptr;
 
+    inline V3Diagnostics::Clock::time_point startPhase() noexcept
+    {
+        return sRecorder ? V3Diagnostics::Clock::now() : V3Diagnostics::Clock::time_point{};
+    }
+
     class ScriptScope
     {
     public:

@@ -609,7 +609,8 @@ namespace Terrain
 
                 createCompositeMapGeometry(chunkSize, chunkCenter, osg::Vec4f(0, 0, 1, 1), *compositeMap);
 
-                mCompositeMapRenderer->addCompositeMap(compositeMap.get(), false);
+                if (!mCompositeMapRenderer->producerPreparationEnabled())
+                    mCompositeMapRenderer->addCompositeMap(compositeMap.get(), false);
 
                 geometry->setCompositeMap(compositeMap);
                 geometry->setCompositeMapRenderer(mCompositeMapRenderer);
@@ -620,6 +621,14 @@ namespace Terrain
                 layer.mSpecular = false;
                 geometry->setPasses(::Terrain::createPasses(mSceneManager, std::vector<TextureLayer>(1, layer),
                     std::vector<osg::ref_ptr<osg::Texture2D>>(), 1, 1.f, false));
+                if (mCompositeMapRenderer->producerPreparationEnabled())
+                {
+                    // The exact producer passes and output consumer now exist.
+                    // ICO can prepare their dependencies before renderer draw;
+                    // no GL operation runs on this terrain preparation thread.
+                    mCompositeMapRenderer->prepareAtCreation(*compositeMap);
+                    mCompositeMapRenderer->addCompositeMap(compositeMap.get(), false);
+                }
             }
             else
             {

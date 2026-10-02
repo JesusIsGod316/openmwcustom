@@ -2,6 +2,7 @@
 #include <components/debug/compileattribution.hpp>
 #include <components/resource/v321classifiedcompileset.hpp>
 #include <components/resource/preparedterraintexture.hpp>
+#include <components/resource/statictextureprogram.hpp>
 #include <components/terrain/compositemaprenderer.hpp>
 #include <osg/BlendFunc>
 #include <osg/Depth>
@@ -40,6 +41,24 @@ namespace
 #endif
         }
         ~BatchEnvironment() { set(existed ? previous.c_str() : nullptr); }
+    };
+    struct EarlyEnvironment
+    {
+        std::string previous;
+        bool existed;
+        explicit EarlyEnvironment(const char* value)
+            : previous(std::getenv("OPENMW_HITCH_COMPOSITE_EARLY") ? std::getenv("OPENMW_HITCH_COMPOSITE_EARLY") : "")
+            , existed(std::getenv("OPENMW_HITCH_COMPOSITE_EARLY") != nullptr) { set(value); }
+        static void set(const char* value)
+        {
+#ifdef _WIN32
+            _putenv_s("OPENMW_HITCH_COMPOSITE_EARLY", value ? value : "");
+#else
+            if (value) setenv("OPENMW_HITCH_COMPOSITE_EARLY", value, 1);
+            else unsetenv("OPENMW_HITCH_COMPOSITE_EARLY");
+#endif
+        }
+        ~EarlyEnvironment() { set(existed ? previous.c_str() : nullptr); }
     };
     class CountingProgram final : public osg::Program
     {
@@ -145,6 +164,7 @@ namespace
 int main() try
 {
     BatchEnvironment originalEnvironment("0");
+    EarlyEnvironment originalEarly("0");
     Resource::P9DiscretionaryAdmission admission;
     const int contextIdentity = 0, replacementIdentity = 1;
     admission.begin(&contextIdentity, 10, 2);
@@ -239,6 +259,116 @@ int main() try
     osg::ref_ptr<Terrain::CompositeMapRenderer> control = new Terrain::CompositeMapRenderer;
     control->compile(*legacy.map, info);
     require(pixel(*legacy.map->mTexture, state) == preparedPixel, "prepared output differs from same quality control");
+
+    {
+        osg::ref_ptr<Resource::OpenMWIncrementalCompileOperation> staticICO = new Resource::OpenMWIncrementalCompileOperation(config);
+        staticICO->assignContexts(contexts);
+        auto slot = std::make_shared<Resource::StaticTextureProgramAdmission>();
+        Resource::SpeculativeBudget budget;
+        const auto imageLease = [&](osg::Image* image) {
+            osg::ref_ptr<Resource::GenericObjectCache<std::string>> cache = new Resource::GenericObjectCache<std::string>;
+            cache->setSpeculativeBudget(&budget);
+            cache->addEntryToObjectCache(std::string("normal"), image, 0.0, 1);
+            return cache->getLeaseFromObjectCache(std::string("normal"), image, 1);
+        }; // Local cache disappears; only the real copied publication lease remains.
+        MapFixture material;
+        require(!Resource::prepareStaticTextureProgram(staticICO, material.red, material.program, slot, {}),
+            "uncharged static image admitted optional retention");
+        auto preparation = Resource::prepareStaticTextureProgram(staticICO, material.red, material.program, slot,
+            imageLease(material.red->getImage()));
+        require(preparation && slot->active.load() && staticICO->getToCompile().size() == 1,
+            "owned static material not admitted to existing ICO");
+        require(!Resource::prepareStaticTextureProgram(staticICO, material.green, material.program, slot,
+            imageLease(material.green->getImage())),
+            "static material admitted a second retained descriptor");
+        for (unsigned i = 0; i < 4; ++i) { stamp->setFrameNumber(frame++); (*staticICO)(context); }
+        require(!preparation->lifetime->pending() && !preparation->lifetime->cancelled()
+            && material.red->getTextureObject(state.getContextID()) && material.program->getPCP(state)->isLinked(),
+            "owned static texture/program did not compile on original context");
+        require(preparation->pass->getTextureAttributeList().size() == 1
+            && preparation->pass->getTextureAttribute(0, osg::StateAttribute::TEXTURE) == material.red.get(),
+            "static material retained dynamic/unrelated texture state");
+        preparation.reset();
+        require(!slot->active.load() && budget.stats().knownOwnerBytes == 0,
+            "static material descriptor/charge retirement did not complete together");
+        MapFixture changed;
+        preparation = Resource::prepareStaticTextureProgram(staticICO, changed.red, changed.program, slot,
+            imageLease(changed.red->getImage()));
+        changed.red->getImage()->dirty();
+        for (unsigned i = 0; i < 3; ++i) { stamp->setFrameNumber(frame++); (*staticICO)(context); }
+        require(preparation->lifetime->cancelled() && !changed.red->getTextureObject(state.getContextID()),
+            "stale static image generation was submitted");
+        preparation.reset();
+        MapFixture cancelledStatic;
+        preparation = Resource::prepareStaticTextureProgram(staticICO, cancelledStatic.red, cancelledStatic.program, slot,
+            imageLease(cancelledStatic.red->getImage()));
+        preparation->cancel();
+        preparation.reset();
+        require(slot->active.load() && budget.stats().knownOwnerBytes == cancelledStatic.red->getImage()->getTotalDataSize(),
+            "queued operations lost descriptor/image charge before cancellation drain");
+        for (unsigned i = 0; i < 3; ++i) { stamp->setFrameNumber(frame++); (*staticICO)(context); }
+        require(!slot->active.load() && budget.stats().knownOwnerBytes == 0
+            && !cancelledStatic.red->getTextureObject(state.getContextID()),
+            "cancelled static material submitted or retained its queue owner");
+        osg::ref_ptr<osg::Image> mipImage = new osg::Image;
+        constexpr unsigned baseBytes = 32u * 1024u * 1024u;
+        mipImage->setImage(4096, 2048, 1, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE,
+            new unsigned char[baseBytes + baseBytes / 4], osg::Image::USE_NEW_DELETE);
+        mipImage->setMipmapLevels(osg::Image::MipmapDataType{baseBytes});
+        osg::ref_ptr<osg::Texture2D> mipTexture = new osg::Texture2D(mipImage);
+        require(mipImage->getImageSizeInBytes() == baseBytes && mipImage->getTotalSizeInBytesIncludingMipmaps() > baseBytes
+            && !Resource::prepareStaticTextureProgram(staticICO, mipTexture, material.program, slot, imageLease(mipImage)),
+            "full mipchain exceeded source cap while base image fit");
+    }
+
+    {
+        EarlyEnvironment enabled("1");
+        osg::ref_ptr<Resource::OpenMWIncrementalCompileOperation> earlyICO = new Resource::OpenMWIncrementalCompileOperation(config);
+        earlyICO->assignContexts(contexts);
+        osg::ref_ptr<Terrain::CompositeMapRenderer> early = new Terrain::CompositeMapRenderer;
+        early->configurePreparation(earlyICO);
+        early->setMinimumTimeAvailableForCompile(.1);
+        require(early->producerPreparationEnabled() && !renderer->producerPreparationEnabled(), "early gate not frozen");
+        EarlyEnvironment::set("true");
+        osg::ref_ptr<Terrain::CompositeMapRenderer> invalidEarly = new Terrain::CompositeMapRenderer;
+        invalidEarly->configurePreparation(earlyICO);
+        require(!invalidEarly->producerPreparationEnabled(), "nonexact early gate accepted");
+        MapFixture producer;
+        std::thread worker([&] { early->prepareAtCreation(*producer.map); });
+        worker.join();
+        require(producer.map->mPreparation && producer.map->mCompiled == 0
+            && earlyICO->getToCompile().size() == 1, "producer did not stage before renderer's first draw");
+        for (unsigned i = 0; i < 12; ++i)
+        {
+            stamp->setFrameNumber(frame++);
+            (*earlyICO)(context);
+        }
+        early->addCompositeMap(producer.map);
+        early->setImmediate(producer.map);
+        early->drawImplementation(info);
+        require(producer.map->mDrawables.empty() && producer.map->mCompiled == 2
+            && early->preparationStats().requiredFallbacks == 0, "early submitted dependencies did not satisfy required demand");
+        require(pixel(*producer.map->mTexture, state)[0] >= 63, "early preparation changed completed pixels");
+
+        std::array<std::unique_ptr<MapFixture>, 9> producers;
+        std::array<std::thread, 9> workers;
+        for (unsigned i = 0; i < producers.size(); ++i)
+        {
+            producers[i] = std::make_unique<MapFixture>();
+            workers[i] = std::thread([&, i] { early->prepareAtCreation(*producers[i]->map); });
+        }
+        for (auto& thread : workers) thread.join();
+        unsigned accepted = 0;
+        for (auto& item : producers) if (item->map->mPreparation) ++accepted;
+        require(accepted == 8 && early->preparationStats().pendingBytes <= 32u * 1024u * 1024u,
+            "concurrent producer admission exceeded eight-map/byte bound");
+        for (auto& item : producers) { early->addCompositeMap(item->map); item->consumer = nullptr; }
+        stamp->setFrameNumber(frame++);
+        early->drawImplementation(info);
+        (*earlyICO)(context);
+        require(early->preparationStats().pendingBytes == 0, "producer cancellation retained byte admission");
+        early->releaseGLObjects(&state);
+    }
 
     // Exercise the production batch and its caller/array lifetime boundary,
     // not a copied policy. The two-mode constructors freeze startup settings.

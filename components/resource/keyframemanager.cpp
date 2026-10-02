@@ -268,8 +268,21 @@ namespace Resource
                 scene->accept(rav);
             }
         }
-        mCache->addEntryToObjectCache(name.value(), loaded);
+        mCache->addEntryToObjectCache(name.value(), loaded, 0.0,
+            animationDependencyLifetimeEnabled() ? mVFS->getIndexGeneration() : 0);
         return loaded;
+    }
+
+    ObjectCacheLease KeyframeManager::getReadyLease(
+        VFS::Path::NormalizedView name, std::uint64_t maximumPreloadEstimate)
+    {
+        const auto generation = mVFS->getIndexGeneration();
+        const auto value = get(name, maximumPreloadEstimate);
+        auto lease = mCache->getLeaseFromObjectCache(name, value.get(), generation);
+        if (!lease || !lease.mCharge || !lease.bytes() || lease.bytes() > maximumPreloadEstimate
+            || generation != mVFS->getIndexGeneration())
+            return {}; // unknown/stale owners are not optional free pins
+        return lease;
     }
 
     void KeyframeManager::reportStats(unsigned int frameNumber, osg::Stats* stats) const

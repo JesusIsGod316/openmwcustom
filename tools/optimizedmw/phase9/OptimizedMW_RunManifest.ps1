@@ -105,6 +105,9 @@ function New-Phase9RunManifest {
         hitch_mechanisms=$HitchCombination}
     $families=[ordered]@{
         basic=[ordered]@{requested=$true;coverage='existing basic frame/render/streaming measurements; not telemetry-free'};
+        benchmark_context=[ordered]@{requested=[bool]$env:OPENMW_P9_BENCHMARK_CONTEXT_FILE;revision=1;
+            channels=@('benchmark-context.csv','benchmark-context.csv.snapshots.csv','benchmark-context.csv.capture-status.txt');
+            coverage='Observed main-entry/after-state/main-exit pause/menu/visibility/game-state flags and loading viewer advance. Low-rate camera/player/weather/time/cell snapshots; no automatic exact user-route attestation.'};
         deep=[ordered]@{requested=($Mode.Trace -eq '1');coverage='retained CPU spans/catalog/selected GL; driver/GPU coverage separately qualified'};
         temporal=[ordered]@{requested=($Mode.Temporal -eq '1');ownership_requested=($Mode.Ownership -eq '1');dynamic_motion_requested=($Mode.DynamicMotion -eq '1')};
         composite=[ordered]@{requested=($Mode.Composite -eq '1')};
@@ -123,6 +126,7 @@ function New-Phase9RunManifest {
             requested_storage_slots=$env:OPENMW_P9_HITCH_CAPACITY;
             coverage='Owned numeric row transport; written row count can exceed queue capacity. Actual drain, loss, output and join qualification are independent of the requested transport.'};
         diagnostic_observer=[ordered]@{requested=($Mode.Trace -eq '1');revision=1;
+            local_aggregation_requested=($env:OPENMW_P9_OBSERVER_LOCAL -eq '1');
             channels=@('p9-hitch-spans.csv.observer.csv','p9-hitch-spans.csv.observer-status.txt');
             coverage='Fixed thread-local observer counters and measured observer regions plus writer batches. Inclusive diagnostic exposures can overlap; measuring them has its own cost and no estimated cost is subtracted from frame times.'};
         lifecycle_final_status=[ordered]@{requested=($Mode.Trace -eq '1');revision=1;
@@ -137,7 +141,12 @@ function New-Phase9RunManifest {
     }
     $familyHashes=[ordered]@{}
     foreach($name in $families.Keys){$familyHashes[$name]=Get-Phase9IdentityHash $families[$name]}
-    return [pscustomobject][ordered]@{schema=1;trial_revision=$(if($Mode.HitchTrialRevision -eq 2){'hitch-reduction-v2'}else{'hitch-reduction-v1'});
+    $builtinScripts=[Collections.Generic.List[object]]::new()
+    foreach($relative in @('resources/vfs/builtin.omwscripts','resources/vfs/scripts/omw/camera/camera.lua',
+        'resources/vfs/scripts/omw/camera/settings.lua','resources/vfs/scripts/omw/settings/common.lua')){
+        $builtinScripts.Add((Get-Phase9FileIdentity (Join-Path $GameDir $relative) $relative))
+    }
+    return [pscustomobject][ordered]@{schema=1;trial_revision=$(if($Mode.HitchTrialRevision -eq 3){'hitch-reduction-v3'}elseif($Mode.HitchTrialRevision -eq 2){'hitch-reduction-v2'}else{'hitch-reduction-v1'});
         profile_name=(Split-Path -Leaf $ProfileDir);created_utc=[DateTime]::UtcNow.ToString('o');
         phase9_mode=$Mode;candidate=$Candidate;candidate_sha256=(Get-Phase9IdentityHash $Candidate);
         trace_level=$(if($Mode.Trace -eq '1'){'DEEP'}else{'NORMAL'});
@@ -147,6 +156,7 @@ function New-Phase9RunManifest {
         runtime_dlls=$runtime.ToArray();runtime_dll_inventory_sha256=(Get-Phase9IdentityHash -Value @($runtime.ToArray()));
         scripts=$scripts.ToArray();script_inventory_sha256=(Get-Phase9IdentityHash -Value @($scripts.ToArray()));
         content_lua=(Get-Phase9FileIdentity (Join-Path $GameDir 'resources/lua_libs/content.lua'));
+        builtin_script_files=$builtinScripts.ToArray();builtin_script_inventory_sha256=(Get-Phase9IdentityHash -Value @($builtinScripts.ToArray()));
         configuration=$configuration;launcher_applied_openmw_environment=(Get-Phase9EnvironmentSnapshot);
         families=$families;family_sha256=$familyHashes;
         activation_evidence=[ordered]@{state='pending';note='Requested/applied switches do not establish runtime activation; inspect engine evidence and fallbacks'};

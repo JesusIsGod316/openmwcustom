@@ -162,7 +162,7 @@ namespace LuaUtil
         sol::protected_function_result runInNewSandbox(const VFS::Path::Normalized& path,
             const std::string& envName = "unnamed", const std::map<std::string, sol::main_object>& packages = {},
             const sol::main_object& hiddenData = sol::nil, const sol::main_table* packagePrototype = nullptr,
-            ScriptId scriptId = {});
+            ScriptId scriptId = {}, bool additionalPackagesReadOnly = false);
 
         void dropScriptCache() { mCompiledScripts.clear(); }
 
@@ -179,6 +179,10 @@ namespace LuaUtil
         sol::main_table makePackagePrototype(const std::map<std::string, sol::main_object>& packages);
         void setPackagePrototypeReuse(bool enabled) { mPackagePrototypeReuse = enabled; }
         bool getPackagePrototypeReuse() const { return mPackagePrototypeReuse; }
+        // Registered metadata only; every factory still runs for every sandbox.
+        void setPackageDescriptorReuse(bool enabled);
+        bool getPackageDescriptorReuse() const { return mPackageDescriptorReuse; }
+        std::uint64_t commonPackageGeneration() const { return mCommonPackageGeneration; }
 
         const ScriptsConfiguration& getConfiguration() const { return *mConf; }
 
@@ -278,6 +282,13 @@ namespace LuaUtil
         sol::table mSandboxEnv;
         std::map<VFS::Path::Normalized, sol::bytecode> mCompiledScripts;
         std::map<std::string, sol::object> mCommonPackages;
+        // Keys and values refer to stable nodes owned by mCommonPackages. Keys
+        // are never erased during a LuaState lifetime; registration invalidates
+        // classification and advances generation. No actor factory output lives
+        // here and no descriptor outlives this LuaState.
+        std::map<std::string_view, const sol::object*, std::less<>> mCommonFactoryDescriptors;
+        std::uint64_t mCommonPackageGeneration = 0;
+        bool mPackageDescriptorReuse = false;
         const VFS::Manager* mVFS;
         bool mPackagePrototypeReuse = false;
         std::vector<std::filesystem::path> mLibSearchPaths;

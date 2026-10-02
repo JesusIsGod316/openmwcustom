@@ -189,7 +189,10 @@ foreach($name in @('HITCH-CAPTURE.json','HITCH-OBSERVER-WORK.json')){
     $file=Join-Path $ProfileDir $name
     $qualifications[$name]=if(Test-Path -LiteralPath $file){Get-Content -Raw -LiteralPath $file | ConvertFrom-Json}else{$null}
 }
+. (Join-Path $PSScriptRoot 'OptimizedMW_ContextReport.ps1')
+$gameplayContext=Get-OptimizedMWContextReport -ProfileDir $ProfileDir
 $summary=[ordered]@{
+    gameplay_context=$gameplayContext
     format='phase9-offline-v3';scope='whole capture; historical matched route NOT automatically selected'
     cluster_rule='wall >=25ms; bridge at most two intervening non-slow frames; context includes frame +/-1'
     attribution='largest recorded component on the peak frame, NOT causal proof; nested/parallel scopes must not be summed'

@@ -2,7 +2,9 @@
 #define OPENMW_MWRENDER_SKY_H
 
 #include <memory>
+#include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <osg/Vec4f>
@@ -19,6 +21,7 @@ namespace osg
     class Node;
     class PositionAttitudeTransform;
     class Camera;
+    class Image;
 }
 
 namespace osgParticle
@@ -30,12 +33,15 @@ namespace osgParticle
 namespace Resource
 {
     class SceneManager;
+    class ResourceSystem;
+    class CloudImagePreparation;
 }
 
 namespace SceneUtil
 {
     class RTTNode;
     class Material;
+    class WorkQueue;
 }
 
 namespace MWRender
@@ -66,6 +72,10 @@ namespace MWRender
         ///< change Secunda colour to red
 
         void setWeather(const WeatherResult& weather);
+        void configureCloudPreparation(Resource::ResourceSystem* resources, SceneUtil::WorkQueue* queue);
+        // Main-thread offer of an already selected future/interior weather.
+        // An empty offer cancels retention; it never selects weather itself.
+        void prepareCloudImage(std::string_view selectedCloudTexture, bool allowNewWork = true);
 
         void sunEnable();
 
@@ -127,6 +137,16 @@ namespace MWRender
         void updateRainParameters();
 
         Resource::SceneManager* mSceneManager;
+        const bool mCloudPreparationEnabled;
+        Resource::ResourceSystem* mCloudPreparationResources = nullptr;
+        SceneUtil::WorkQueue* mCloudPreparationQueue = nullptr;
+        osg::ref_ptr<Resource::CloudImagePreparation> mCloudPreparation;
+        std::string mCloudPreparationDesired;
+        std::string mCloudPreparationSelection;
+        bool mCloudPreparationAttempted = false;
+        std::uint64_t mCloudPreparationGeneration = 0;
+        osg::ref_ptr<osg::Image> cloudImage(VFS::Path::NormalizedView path);
+        bool retireCloudPreparation();
 
         osg::Camera* mCamera;
 

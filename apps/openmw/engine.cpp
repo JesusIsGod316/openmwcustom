@@ -9,6 +9,7 @@
 #include <components/sceneutil/drawphasetrace.hpp>
 #include <components/debug/runtimeprocessmemory.hpp>
 #include <components/debug/gameplaydiagnostics.hpp>
+#include <components/debug/benchmarkcontext.hpp>
 
 #include <cerrno>
 #include <chrono>
@@ -101,8 +102,12 @@
 #include "mwworld/class.hpp"
 #include "mwworld/datetimemanager.hpp"
 #include "mwworld/worldimp.hpp"
+#include "mwworld/cellstore.hpp"
+#include "mwworld/scene.hpp"
+#include "mwworld/timestamp.hpp"
 
 #include "mwrender/vismask.hpp"
+#include "mwrender/camera.hpp"
 
 #include "mwclass/classes.hpp"
 
@@ -124,6 +129,16 @@
 
 namespace
 {
+    unsigned benchmarkStateFlags(MWBase::World& world, MWBase::StateManager& state, MWBase::WindowManager& windows)
+    {
+        using namespace Debug::BenchmarkContext;
+        return (world.getTimeManager()->isPaused() ? Paused : 0u)
+            | (windows.isGuiMode() ? Debug::BenchmarkContext::Gui : 0u)
+            | (windows.containsMode(MWGui::GM_MainMenu) ? MainMenu : 0u)
+            | (!windows.isWindowVisible() ? Hidden : 0u)
+            | (state.getState() != MWBase::StateManager::State_Running ? NotRunning : 0u);
+    }
+
     std::string missingVsgCompatibilityFacetNames(std::uint64_t mask)
     {
         std::string result;
@@ -702,6 +717,8 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         }
 
         bool paused = mWorld->getTimeManager()->isPaused();
+        if (Debug::BenchmarkContext::capture().enabled())
+            Debug::BenchmarkContext::capture().observe(benchmarkStateFlags(*mWorld, *mStateManager, *mWindowManager));
 
         {
             ScopedProfile<UserStatsType::Script> profile(frameStart, frameNumber, *timer, *stats);
@@ -784,6 +801,8 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
     }
     catch (const std::exception& e)
     {
+        if (Debug::BenchmarkContext::capture().enabled())
+            Debug::BenchmarkContext::capture().observe(Debug::BenchmarkContext::FrameException);
         Log(Debug::Error) << "Error in frame: " << e.what();
     }
 
@@ -1423,6 +1442,7 @@ OMW::Engine::~Engine()
     mResourceSystem.reset();
     // All resource, Lua and viewer workers are now joined.
     Debug::ResourceLifecycle::emitStatus();
+    Debug::DiagnosticObserver::declareProducerThreadsJoined();
     Debug::HitchTrace::Capture::instance().finish();
 
     mEncoder = nullptr;
@@ -2310,6 +2330,7 @@ void OMW::Engine::go()
 
     const bool cleanCapture = Debug::DeferredCapture::enabled();
     Debug::V3HitchTelemetry::state().prepare();
+    Debug::BenchmarkContext::capture().prepare();
     Resource::BenchmarkCapture numericCapture;
     std::ofstream stats;
     if (!cleanCapture && !path.empty())
@@ -2384,9 +2405,15 @@ void OMW::Engine::go()
 
         const unsigned frameNumber = mViewer->getFrameStamp()->getFrameNumber();
         Debug::HitchTrace::Scope hitchIteration("engine.iteration", {}, {}, frameNumber);
+        auto& benchmarkContext = Debug::BenchmarkContext::capture();
+        if (benchmarkContext.enabled())
+            benchmarkContext.begin(frameNumber, benchmarkStateFlags(*mWorld, *mStateManager, *mWindowManager));
 
         if (!frame(frameNumber, static_cast<float>(dt)))
         {
+            if (benchmarkContext.enabled())
+                benchmarkContext.end(mViewer->getFrameStamp()->getFrameNumber(),
+                    benchmarkStateFlags(*mWorld, *mStateManager, *mWindowManager));
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
@@ -2395,6 +2422,48 @@ void OMW::Engine::go()
         {
             timeManager.setSimulationTime(timeManager.getSimulationTime() + dt);
             timeManager.setRenderingSimulationTime(timeManager.getRenderingSimulationTime() + dt);
+        }
+
+        if (benchmarkContext.enabled())
+        {
+            benchmarkContext.observe(benchmarkStateFlags(*mWorld, *mStateManager, *mWindowManager));
+            if (benchmarkContext.snapshotDue())
+            {
+                Debug::BenchmarkContext::Snapshot sample;
+                sample.frame = frameNumber;
+                try
+                {
+                    if (mStateManager->getState() == MWBase::StateManager::State_Running)
+                    {
+                        const auto player = mWorld->getPlayerPtr();
+                        const auto& position = player.getRefData().getPosition();
+                        const auto* camera = mWorld->getCamera();
+                        for (unsigned i = 0; i < 3; ++i)
+                        {
+                            sample.player[i] = position.pos[i];
+                            sample.camera[i] = camera->getPosition()[i];
+                        }
+                        sample.rotation = { camera->getYaw(), camera->getPitch(), camera->getRoll() };
+                        sample.cameraMode = static_cast<int>(camera->getMode());
+                        sample.weather = mWorld->getCurrentWeatherScriptId();
+                        sample.weatherTransition = mWorld->getWeatherTransition();
+                        const auto time = mWorld->getTimeStamp();
+                        sample.day = time.getDay();
+                        sample.hour = time.getHour();
+                        const auto* cell = mWorld->getWorldScene().getCurrentCell();
+                        if (cell && cell->getCell())
+                        {
+                            sample.setCell(cell->getCell()->getDescription());
+                            sample.exterior = cell->getCell()->isExterior();
+                            sample.valid = true;
+                        }
+                    }
+                }
+                catch (...) { /* Invalid sample is retained; it cannot alter gameplay. */ }
+                benchmarkContext.snapshot(sample);
+            }
+            benchmarkContext.end(mViewer->getFrameStamp()->getFrameNumber(),
+                benchmarkStateFlags(*mWorld, *mStateManager, *mWindowManager));
         }
 
         if (cleanCapture)
@@ -2423,6 +2492,7 @@ void OMW::Engine::go()
 
     // The gameplay interval ends BEFORE deferred CSV formatting and disk output.
     Debug::V3HitchTelemetry::state().finish();
+    Debug::BenchmarkContext::capture().finish(true);
     numericCapture.finish();
     const auto preparedTextureStats = Resource::PreparedTerrainTextureCompileOp::stats();
     Log(Debug::Info) << "P8U1 terrain preparation snapshot: requested="

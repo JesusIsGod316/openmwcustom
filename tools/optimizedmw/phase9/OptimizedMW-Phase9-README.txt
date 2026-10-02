@@ -1,4 +1,59 @@
-HITCH REDUCTION TRIAL v2 (2026-10-01)
+HITCH REDUCTION TRIAL v3 (2026-10-02) - independently selectable candidates
+
+Use C:\OptimizedMW_Test\START-OptimizedMW-Test.bat.
+The first four choices retain their previous meanings. Enter is Normal CONTROL.
+New choices isolate the animation lifetime change:
+  5 = Normal ANIM control: existing source preparation, new retention OFF.
+  6 = Normal ANIM retained: the same preparation, new retention ON.
+  7 = Diagnose ANIM retained: choice 6 plus Deep/automatic Windows tracing.
+Choices 5 and 6 do not start Windows recording or need elevation.
+
+First check Normal CONTROL (2) for correct loading, camera, visuals and quitting.
+Then run 5, 6, 6, 5 on the SAME save, fixed heavy view, route and cap state.
+Hold the fixed view about 45 seconds, walk the same 2-3 minute route and quit.
+Upload the resulting ZIPs. A fresh process is not proof of cold OS/driver caches.
+Keep first visits and revisits distinguishable; record any workload deviations.
+Use 7 later if a missed dependency, hitch or memory change needs explanation.
+Do not begin by enabling every new feature together.
+
+Custom retains the old 0..15 feature mask and adds a separate 0..63 attack mask:
+  1  ANIM-RETAIN: one nearest predicted target, charged completed dependencies,
+                 fresh-job progress reuse, coherent pressure/cancellation policy.
+  2  ANIM-PLAN: reuse bounded exact ordered animation source descriptors.
+  4  EARLY-BAKE: prepare real terrain composite dependencies before draw demand.
+  8  WATER: prepare the actual static water program/normal-map resources only.
+ 16  WEATHER: decode the already-selected upcoming cloud image on a worker.
+ 32  LUA-PACKAGES: reuse per-container package registration descriptors.
+Add bits for combinations. The launcher enables required prerequisites explicitly:
+ANIM-RETAIN requires the old ANIM switch; EARLY-BAKE requires P9 composite
+preparation, which is distinct from the old BAKE switch. All new switches default
+OFF outside selection. Original required paths remain fallbacks. Optional work
+may decline because of pressure, identity changes or lack of actual lead time.
+No shader-quality, mod, save, Lua thread-count or DLL substitution is performed.
+
+Examples through the same launcher:
+  START-OptimizedMW-Test.bat -HitchMask 4 -AttackMask 0 -TraceLevel Normal
+  START-OptimizedMW-Test.bat -HitchMask 4 -AttackMask 1 -TraceLevel Normal
+  START-OptimizedMW-Test.bat -HitchMask 4 -AttackMask 3 -TraceLevel Normal
+  START-OptimizedMW-Test.bat -HitchMask 0 -AttackMask 4 -TraceLevel Deep -SystemTrace
+  START-OptimizedMW-Test.bat -HitchMask 0 -AttackMask 32 -TraceLevel Normal
+Optional -ObserverLocal is a separate Deep-only diagnostic aggregation trial.
+
+New captures contain bounded per-frame observed pause/GUI/menu/hidden/loading/
+exception flags and sampled camera/player/cell/weather/time receipts. Reports
+retain every slow frame and show separate observed-state cohorts and adjacent
+variation. Missing state evidence is unknown; sampled poses do not prove an
+identical route or viewpoint, and engine wall time is not presentation time.
+The camera zoom guard retries the actual stored value if it is unavailable or
+malformed; it preserves user storage and records one warning per unresolved episode.
+
+Native/source tests establish implementation behavior only. Runtime performance,
+memory, content and visual acceptance remain unproven until user comparisons.
+Known-owner water/cloud work and optional lifetime changes are included. Ordinary
+texture mipmap relocation, new shadow traversal, generic Lua binding rewrites,
+further UI reflow changes and a Mercy mod overlay remain gated on missing proof.
+
+RETAINED HITCH REDUCTION TRIAL v2 (2026-10-01)
 Double-click START-OptimizedMW-Test.bat normally and choose ONE test:
   1 = Diagnose CONTROL: Deep engine diagnostics + automatic Windows trace.
   2 = Normal CONTROL: performance comparison with candidates off.

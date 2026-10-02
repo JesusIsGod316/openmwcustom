@@ -542,6 +542,7 @@ namespace MWRender
 
         mSky = std::make_unique<SkyManager>(
             sceneRoot, mRootNode, mViewer->getCamera(), resourceSystem->getSceneManager(), mSkyBlending);
+        mSky->configureCloudPreparation(resourceSystem, mWorkQueue);
         if (mSkyBlending)
         {
             int skyTextureUnit = mResourceSystem->getSceneManager()->getShaderManager().reserveGlobalTextureUnits(

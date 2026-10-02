@@ -18,6 +18,8 @@ namespace osg
     class Geometry;
     class Node;
     class Callback;
+    class Texture2D;
+    class Program;
 }
 
 namespace osgUtil
@@ -28,6 +30,8 @@ namespace osgUtil
 namespace Resource
 {
     class ResourceSystem;
+    struct StaticTextureProgramPreparation;
+    struct StaticTextureProgramAdmission;
 }
 
 namespace MWWorld
@@ -61,6 +65,12 @@ namespace MWRender
         osg::ref_ptr<osg::Geometry> mWaterGeom;
         Resource::ResourceSystem* mResourceSystem;
         osg::ref_ptr<osgUtil::IncrementalCompileOperation> mIncrementalCompileOperation;
+        const bool mStaticPreparationEnabled;
+        std::shared_ptr<Resource::StaticTextureProgramPreparation> mStaticPreparation;
+        std::shared_ptr<Resource::StaticTextureProgramAdmission> mStaticPreparationAdmission;
+        osg::ref_ptr<osg::Texture2D> mStaticPreparationTexture;
+        osg::ref_ptr<osg::Program> mStaticPreparationProgram;
+        bool mStaticPreparationAttempted = false;
 
         std::unique_ptr<RippleSimulation> mSimulation;
 
@@ -85,6 +95,7 @@ namespace MWRender
         void createShaderWaterStateSet(osg::Node* node);
 
         void updateWaterMaterial();
+        void prepareStaticMaterial();
 
     public:
         Water(osg::Group* parent, osg::Group* sceneRoot, Resource::ResourceSystem* resourceSystem,

@@ -863,6 +863,23 @@ function Get-Phase9ObserverWorkSummary {
                 if(-not $ledgerStatus.ContainsKey($key) -or $ledgerStatus[$key] -notmatch '^\d+$'){throw "Missing/invalid observer ledger status: $key"}
                 $ledgerStatus[$key]=[UInt64]::Parse($ledgerStatus[$key],[Globalization.CultureInfo]::InvariantCulture)
             }
+            $localMode=[regex]::Match($Mode,'(?m)^hitch_observer_local=([01])\r?$')
+            $localFields=[regex]::Matches($Mode,'(?m)^hitch_observer_local=([^\r\n]*)\r?$')
+            if($localFields.Count -gt 1 -or ($localFields.Count -eq 1 -and -not $localMode.Success)){throw 'Duplicate/invalid requested observer aggregation'}
+            $publicationNumbers=@('producer_threads_joined','unretired_producers','active_observer_scopes','retired_updates_rejected')
+            $hasPublication=@($publicationNumbers | Where-Object {$ledgerStatus.ContainsKey($_)}).Count -gt 0
+            if($ledgerStatus.ContainsKey('aggregation') -or $hasPublication -or ($localMode.Success -and $localMode.Groups[1].Value -eq '1')){
+                if($ledgerStatus.aggregation -notin @('legacy_atomic','owner_local_retired_snapshot')){throw 'Missing/unsupported observer aggregation'}
+                foreach($key in $publicationNumbers){
+                    if(-not $ledgerStatus.ContainsKey($key) -or $ledgerStatus[$key] -notmatch '^\d+$'){throw "Missing/invalid observer publication status: $key"}
+                    $ledgerStatus[$key]=[UInt64]::Parse($ledgerStatus[$key],[Globalization.CultureInfo]::InvariantCulture)
+                }
+                $effectiveLocal=$ledgerStatus.aggregation -eq 'owner_local_retired_snapshot'
+                if(($localMode.Success -and $effectiveLocal -ne ($localMode.Groups[1].Value -eq '1')) -or
+                    $ledgerStatus.producer_threads_joined -ne [UInt64][int]$effectiveLocal -or
+                    $ledgerStatus.unretired_producers -ne 0 -or $ledgerStatus.active_observer_scopes -ne 0 -or
+                    $ledgerStatus.retired_updates_rejected -ne 0){throw 'Observer join/publication coverage or requested aggregation is incomplete'}
+            }
             if($ledgerStatus.schema -ne 1 -or $ledgerStatus.thread_capacity -ne 256 -or $ledgerStatus.thread_slots -gt 256 -or
                 $ledgerStatus.rows -gt 3328 -or $ledgerStatus.ledger_overflow -ne 0 -or $ledgerStatus.normal_finish -ne 1 -or
                 $ledgerStatus.output_ok -ne 1 -or $ledgerStatus.coverage_complete -ne 1 -or
@@ -870,7 +887,7 @@ function Get-Phase9ObserverWorkSummary {
                 $ledgerStatus.lua_allocator_timer_boundary_timing -ne 'UNMEASURED_count_only_existing_clock_calls_excludes_allocator_service' -or
                 $ledgerStatus.lua_decode_timer_boundary_timing -ne 'UNMEASURED_count_only_extra_end_clock_reuses_scope_start' -or
                 $ledgerStatus.count_only_categories -ne 'trace_retained,trace_filtered,ledger_update,lua_allocator_timer_boundary,lua_decode_timer_boundary'){throw 'Observer ledger loss, incomplete output or unsupported timing coverage'}
-            $observerKnown=$observerNumbers+@('ledger_update_timing','lua_allocator_timer_boundary_timing','lua_decode_timer_boundary_timing','count_only_categories','timing_note','scope')
+            $observerKnown=$observerNumbers+$publicationNumbers+@('aggregation','ledger_update_timing','lua_allocator_timer_boundary_timing','lua_decode_timer_boundary_timing','count_only_categories','timing_note','scope')
             foreach($key in $ledgerStatus.Keys){if($key -notin $observerKnown){throw "Unsupported observer ledger field: $key"}}
             $ledger=[Phase9.ObserverLedgerReport]::Read($ledgerPath)
             if($ledger.rows -ne $ledgerStatus.rows -or $ledger.thread_slots -ne $ledgerStatus.thread_slots){throw 'Observer ledger row/thread counts disagree with independent status'}

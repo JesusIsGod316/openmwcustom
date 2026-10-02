@@ -115,7 +115,7 @@ namespace LuaUtil
         debugName.push_back(']');
 
         Debug::V36LuaAddScriptTrace::ScriptScope v36ScriptTrace(mNamePrefix, path.value());
-        const auto v36HiddenStart = Debug::V3Diagnostics::Clock::now();
+        const auto v36HiddenStart = Debug::V36LuaAddScriptTrace::startPhase();
         Script& script = data.mScripts[scriptId];
         script.mHiddenData = view.newTable();
         script.mHiddenData[sScriptIdKey] = ScriptId{ this, scriptId };
@@ -141,8 +141,14 @@ namespace LuaUtil
                     mNamePrefix, path.value());
                 if (mLua.getPackagePrototypeReuse())
                 {
+                    if (mLua.getPackageDescriptorReuse()
+                        && mPackagePrototypeCommonGeneration != mLua.commonPackageGeneration())
+                        mV314PackagePrototype.reset();
                     if (!mV314PackagePrototype)
+                    {
                         mV314PackagePrototype.emplace(mLua.makePackagePrototype(mAPI));
+                        mPackagePrototypeCommonGeneration = mLua.commonPackageGeneration();
+                    }
                     packagePrototype = &*mV314PackagePrototype;
                 }
             }
@@ -151,11 +157,11 @@ namespace LuaUtil
                 Debug::HitchTrace::Scope sandbox("lua.script.sandbox", Debug::HitchTrace::CpuTiming::WallEnvelope,
                     mNamePrefix, path.value());
                 scriptOutput = mLua.runInNewSandbox(
-                    path, debugName, mAPI, script.mHiddenData, packagePrototype, ScriptId{ this, scriptId });
+                    path, debugName, mAPI, script.mHiddenData, packagePrototype, ScriptId{ this, scriptId }, true);
             }
             if (scriptOutput == sol::nil)
                 return true;
-            const auto v36HandlersStart = Debug::V3Diagnostics::Clock::now();
+            const auto v36HandlersStart = Debug::V36LuaAddScriptTrace::startPhase();
             std::optional<Debug::HitchTrace::Scope> handlersAttribution;
             handlersAttribution.emplace("lua.script.extract_handlers", Debug::HitchTrace::CpuTiming::WallEnvelope,
                 mNamePrefix, path.value());
@@ -213,7 +219,7 @@ namespace LuaUtil
             handlersAttribution.reset();
             Debug::V36LuaAddScriptTrace::add(
                 Debug::V36LuaAddScriptTrace::Phase::HandlerExtraction, v36HandlersStart);
-            const auto v36InterfaceStart = Debug::V3Diagnostics::Clock::now();
+            const auto v36InterfaceStart = Debug::V36LuaAddScriptTrace::startPhase();
             if (script.mInterfaceName.empty() == script.mInterface.has_value())
             {
                 Log(Debug::Error) << debugName << ": 'interfaceName' should always be used together with 'interface'";

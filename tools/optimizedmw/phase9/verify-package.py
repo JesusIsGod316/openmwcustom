@@ -10,6 +10,8 @@ root=Path(sys.argv[1]); source=Path(__file__).resolve().parents[3]
 public=source/'tools/optimizedmw/phase9'
 files=['openmw.exe','CI-ID.txt','START-OptimizedMW-Test.bat','OptimizedMW_Test.ps1',
        'OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1','OptimizedMW_QuickTest.ps1','OptimizedMW_QuickRecorder.ps1',
+       'OptimizedMW_AttackPresets.ps1',
+       'OptimizedMW_ContextReport.ps1',
        'OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW_SpikeReport.ps1','OptimizedMW-Phase9-README.txt',
        'OptimizedMW_SystemTrace.ps1','OptimizedMW_QualifySystemTrace.ps1','OptimizedMW_SystemTraceLink.ps1','OptimizedMW-SystemTrace.wprp','START-OptimizedMW-SystemTrace.bat','HITCH-DIAGNOSTICS.md','HITCH-DIAGNOSTICS6.md','LUA-ALLOCATOR-GC-DIAGNOSTICS.md','RESOURCE-LIFECYCLE-DIAGNOSTICS.md']
 for name in files:
@@ -37,5 +39,10 @@ for name in ('groundcover.vert','groundcover.frag','groundcover_lod.glsl','tempo
         assert deployed.read_bytes()==(source/'files/shaders'/relative).read_bytes(),relative
     files.append('resources/shaders/'+relative)
 lines=[hashlib.sha256((root/n).read_bytes()).hexdigest()+'  '+n for n in files]
+for relative in ('builtin.omwscripts', 'scripts/omw/camera/camera.lua',
+                 'scripts/omw/camera/settings.lua', 'scripts/omw/settings/common.lua'):
+    deployed=root/'resources/vfs'/relative
+    assert deployed.read_bytes()==(source/'files/data'/relative).read_bytes(),relative
+    lines.append(hashlib.sha256(deployed.read_bytes()).hexdigest()+'  resources/vfs/'+relative)
 Path('Phase9-INSTALLED-SHA256.txt').write_text('\n'.join(lines)+'\n')
 print('\n'.join(lines))

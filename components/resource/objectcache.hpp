@@ -50,6 +50,35 @@ namespace osg
 
 namespace Resource
 {
+    // A ready owner copied under the cache lock. Payload is released before its
+    // matching charge; neither an Item address nor a diagnostic token owns it.
+    struct ObjectCacheLease
+    {
+        ObjectCacheLease() = default;
+        ObjectCacheLease(const ObjectCacheLease&) = default;
+        ObjectCacheLease(ObjectCacheLease&& other) noexcept
+            : mCharge(std::move(other.mCharge)), mValue(other.mValue), mLifecycle(other.mLifecycle)
+            , mRevision(other.mRevision), mSourceRevision(other.mSourceRevision)
+        { other.mValue = nullptr; }
+        ObjectCacheLease& operator=(ObjectCacheLease other) noexcept
+        {
+            mCharge.swap(other.mCharge);
+            mValue.swap(other.mValue);
+            std::swap(mLifecycle, other.mLifecycle);
+            std::swap(mRevision, other.mRevision);
+            std::swap(mSourceRevision, other.mSourceRevision);
+            return *this; // old payload then old charge retire with other
+        }
+        SpeculativeBudget::ChargePtr mCharge;
+        osg::ref_ptr<osg::Object> mValue;
+        Debug::ResourceLifecycle::Token mLifecycle = 0;
+        std::uint64_t mRevision = 0;
+        std::uint64_t mSourceRevision = 0;
+
+        explicit operator bool() const noexcept { return mValue.valid() && mRevision != 0; }
+        std::uint64_t bytes() const noexcept { return mCharge ? mCharge->bytes() : 0; }
+    };
+
     struct GenericObjectCacheItem
     {
         GenericObjectCacheItem() = default;
@@ -63,6 +92,8 @@ namespace Resource
         // This never changes normal expiry behavior or depends on diagnostics.
         bool mTrimRecentlyUsed = true;
         Debug::ResourceLifecycle::Token mLifecycle = 0;
+        std::uint64_t mRevision = 0;
+        std::uint64_t mSourceRevision = 0;
     };
 
     template <typename KeyType>
@@ -193,9 +224,11 @@ namespace Resource
 
         /** Add a key,object,timestamp triple to the Registry::ObjectCache.*/
         template <class K>
-        void addEntryToObjectCache(K&& key, osg::Object* object, double timestamp = 0.0)
+        void addEntryToObjectCache(K&& key, osg::Object* object, double timestamp = 0.0,
+            std::uint64_t sourceRevision = 0)
         {
             Item incoming(object, timestamp);
+            incoming.mSourceRevision = sourceRevision;
             if (mBudget && object)
             {
                 const auto* image = dynamic_cast<const osg::Image*>(object);
@@ -283,6 +316,28 @@ namespace Resource
             if (Item* const item = find(key))
                 return item->mValue;
             return nullptr;
+        }
+
+        // expectedValue/revision are optional checks for a load followed by
+        // adoption. A replacement racing that load must not pair its old value
+        // with the new entry's charge/revision. Final releases outlive the lock.
+        ObjectCacheLease getLeaseFromObjectCache(const auto& key,
+            const osg::Object* expectedValue = nullptr, std::uint64_t sourceRevision = 0)
+        {
+            ObjectCacheLease result;
+            {
+                std::lock_guard lock(mMutex);
+                if (Item* item = find(key); item && (!expectedValue || item->mValue == expectedValue)
+                    && (!sourceRevision || item->mSourceRevision == sourceRevision))
+                {
+                    result.mCharge = item->mCharge;
+                    result.mValue = item->mValue;
+                    result.mLifecycle = item->mLifecycle;
+                    result.mRevision = item->mRevision;
+                    result.mSourceRevision = item->mSourceRevision;
+                }
+            }
+            return result;
         }
 
         std::optional<osg::ref_ptr<osg::Object>> getRefFromObjectCacheOrNone(const auto& key)
@@ -417,7 +472,11 @@ namespace Resource
 
     private:
         void publish(GenericObjectCacheItem& item) noexcept
-        { item.mLifecycle = Debug::ResourceLifecycle::publish(this, item.mValue.get()); }
+        {
+            // Saturation disables new leases without breaking required loading.
+            item.mRevision = mLeaseRevision != UINT64_MAX ? ++mLeaseRevision : 0;
+            item.mLifecycle = Debug::ResourceLifecycle::publish(this, item.mValue.get());
+        }
         static void retire(GenericObjectCacheItem& item, Debug::ResourceLifecycle::Retirement reason) noexcept
         {
             if (item.mLifecycle && item.mValue)
@@ -495,6 +554,7 @@ namespace Resource
         std::size_t mExpired = 0;
         std::uint64_t mPressureTrimmed = 0, mDiagnosticPressureWithoutHit = 0;
         std::uint64_t mDiagnosticExpiredWithoutHit = 0;
+        std::uint64_t mLeaseRevision = 0; // guarded by mMutex
 
         Item* find(const auto& key)
         {

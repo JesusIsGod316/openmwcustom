@@ -29,11 +29,20 @@ namespace Resource
         /// Returns the dummy image if the given image is not found.
         osg::ref_ptr<osg::Image> getImage(VFS::Path::NormalizedView path, bool disableFlip = false);
 
+        // Optional owners must match publication, decode options and VFS
+        // generation. Copying the matching charge does not double-charge bytes.
+        ObjectCacheLease getImageLease(VFS::Path::NormalizedView path, const osg::Image* expected = nullptr,
+            bool disableFlip = false);
+        bool imageLeaseCurrent(VFS::Path::NormalizedView path, const ObjectCacheLease& lease,
+            bool disableFlip = false);
+        ObjectCacheLease prepareImage(VFS::Path::NormalizedView path, std::uint64_t maximumEstimate);
+
         osg::Image* getWarningImage();
 
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
 
     private:
+        std::uint64_t sourceRevision(bool disableFlip) const noexcept;
         osg::ref_ptr<osg::Image> mWarningImage;
         osg::ref_ptr<osgDB::Options> mOptions;
 

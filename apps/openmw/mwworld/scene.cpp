@@ -1828,6 +1828,8 @@ namespace MWWorld
             && (effectiveBudget == 0 || effectiveBudget > 1))
             effectiveBudget = 1;
 
+        mPreloader->setAnimationTarget(!blockNewPreloads && !candidates.empty() ? candidates.front().mCell : nullptr,
+            mRendering.getReferenceTime());
         for (const Candidate& candidate : candidates)
         {
             if (mPreloader->isPreloaded(*candidate.mCell))

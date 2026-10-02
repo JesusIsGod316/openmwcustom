@@ -152,7 +152,7 @@ try{
     $fixtureLock=[Threading.Mutex]::new($false,'Local\OptimizedMW-Candidate-Fixture-Serial')
     try{$ownsFixtureLock=$fixtureLock.WaitOne(30000)}catch [Threading.AbandonedMutexException]{$ownsFixtureLock=$true}
     if(-not $ownsFixtureLock){throw 'Timed out waiting for independent launcher fixture host'}
-    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_QuickTest.ps1','OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW_SystemTraceLink.ps1')){
+    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_QuickTest.ps1','OptimizedMW_AttackPresets.ps1','OptimizedMW_ContextReport.ps1','OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW_SystemTraceLink.ps1')){
         Copy-Item -LiteralPath (Join-Path $root $file) -Destination (Join-Path $game $file) -Force
     }
     [IO.File]::WriteAllText((Join-Path $game 'OptimizedMW_Benchmark_Report.ps1'),'# Empty hermetic report fixture; no game, WPR, or UI.')
@@ -171,17 +171,22 @@ try{
     # Exercise the actual simplified first screen, not just its preset helper.
     $trials+=,@('1','CONTROL','0','Normal','2')
     $trials+=,@('1','CONTROL','15','Normal','3')
+    $trials+=,@('1','CONTROL','4','Normal','5','0')
+    $trials+=,@('1','CONTROL','4','Normal','6','1')
+    $trials+=,@('1','CONTROL','0','Normal','', '4')
+    $trials+=,@('3','CONTROL','0','Deep','', '16')
     foreach($trial in $trials){
         $matrixArguments=if($trial.Count -ge 4){' -HitchMask '+$trial[2]+' -TraceLevel '+$trial[3]}else{''}
         $launchArguments=' -Mode '+$trial[0]+' -Candidate '+$trial[1]+$matrixArguments+' -NoPrompt'
-        if($trial.Count -eq 5){$launchArguments=''}
+        if($trial.Count -eq 6 -and -not $trial[4]){$launchArguments+=' -AttackMask '+$trial[5]}
+        if($trial.Count -ge 5 -and $trial[4]){$launchArguments=''}
         $driver=@(
             '$ErrorActionPreference=''Stop''',
             ('$env:USERPROFILE='''+$fakeUser.Replace("'","''")+''''),
             '$env:OPENMW_FIXTURE_KEEP=''original child value''',
             'function Get-Process { param($Name,$Id,$ErrorAction); if($Id){return Microsoft.PowerShell.Management\Get-Process -Id $Id -ErrorAction Stop}; return $null }',
             'function Start-Process { param($FilePath,$WorkingDirectory,[switch]$PassThru) throw ''Fixture intercepted game launch'' }',
-            ('function Read-Host { param($Prompt); if($Prompt -like ''Test*''){return '''+$(if($trial.Count -eq 5){$trial[4]}else{''})+'''}; return '''' }'),
+            ('function Read-Host { param($Prompt); if($Prompt -like ''Test*''){return '''+$(if($trial.Count -ge 5){$trial[4]}else{''})+'''}; return '''' }'),
             ('& '''+(Join-Path $game 'OptimizedMW_Test.ps1').Replace("'","''")+''''+$launchArguments),
             'exit $LASTEXITCODE'
         )
@@ -194,6 +199,7 @@ try{
         $run=Get-ChildItem -LiteralPath $profiles -Directory | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
         $record=Get-Content -Raw -LiteralPath (Join-Path $run.FullName 'RUN-MANIFEST.json') | ConvertFrom-Json
         $namePattern=if($trial.Count -ge 4){'HITCHV2-.+-'+$trial[3].ToUpperInvariant()+'-IO-CONTROL_'}else{'-HITCHV1-'+$trial[1]+'_'}
+        if($trial.Count -eq 6){$namePattern='HITCHV3-.+-A'+$trial[5]+'-'+$trial[3].ToUpperInvariant()+'-IO-CONTROL_'}
         if($record.candidate.name -ne $trial[1] -or $record.phase9_mode.Trace -ne $(if($trial[0] -eq '3'){'1'}else{'0'}) -or
             $record.profile_name -notmatch $namePattern -or $record.completion.state -ne 'launcher_failed' -or
             $record.completion.launcher_error -notmatch 'Fixture intercepted' -or -not $record.completion.settings_restore_verified -or
@@ -207,6 +213,13 @@ try{
         if($trial[0] -eq '3' -and $record.launcher_applied_openmw_environment.OPENMW_P9_COMPILE_ATTRIBUTION_FILE -ne (Join-Path $run.FullName 'compile-attribution.csv')){throw 'Attribution sidecar path missing'}
         $expectedMask=if($trial.Count -ge 4){[int]$trial[2]}else{0}
         if($record.gameplay_features.hitch_mechanisms.mask -ne $expectedMask){throw 'Full launcher lost combination identity'}
+        if($trial.Count -eq 6){
+            if($record.trial_revision -ne 'hitch-reduction-v3' -or $record.gameplay_features.hitch_mechanisms.attack.mask -ne [int]$trial[5] -or
+                $record.gameplay_features.composite_preparation -ne [bool]([int]$trial[5] -band 4) -or
+                $record.launcher_applied_openmw_environment.OPENMW_HITCH_ANIMATION_LIFETIME -ne [string][int][bool]([int]$trial[5] -band 1)){
+                throw 'Actual new launcher prerequisites/vector/version lost'
+            }
+        }
         $keys=@('UI_REFLOW','COMPOSITE_BATCH','ANIMATION_PRELOAD','TERRAIN_CURRENT_FIRST')
         foreach($bit in 0..3){
             $actual=$record.launcher_applied_openmw_environment.PSObject.Properties['OPENMW_HITCH_'+$keys[$bit]].Value

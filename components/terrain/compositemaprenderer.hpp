@@ -22,6 +22,7 @@ namespace osg
     class RenderInfo;
     class Texture2D;
     class State;
+    class GraphicsContext;
 }
 
 namespace Terrain
@@ -46,6 +47,8 @@ namespace Terrain
         // mutation. The generation rejects queued producers after cancellation.
         std::shared_ptr<CompositePreparation> mPreparation;
         std::atomic_uint64_t mPreparationGeneration{0};
+        // Immutable producer receipt. Zero outside Deep diagnostics.
+        std::uint64_t mPreparationReceipt = 0;
         unsigned mQueuedFrame = 0;
         bool mQueueFrameKnown = false;
     };
@@ -68,6 +71,11 @@ namespace Terrain
         void compile(CompositeMap& compositeMap, osg::RenderInfo& renderInfo) const;
         void configurePreparation(Resource::OpenMWIncrementalCompileOperation* ico);
         bool preparationEnabled() const { return mPreparationEnabled; }
+        bool producerPreparationEnabled() const { return mPreparationEnabled && mProducerPreparationEnabled; }
+        // Call only at the terrain producer seam, before queue publication and
+        // after its consumer StateSets own the output. This builds descriptors,
+        // not GL objects; the existing ICO executes them on its own context.
+        void prepareAtCreation(CompositeMap& map) const;
         bool compositeBatchEnabled() const { return mCompositeBatchEnabled; }
         void releaseGLObjects(osg::State* state = nullptr) const override;
         struct PreparationStats
@@ -112,11 +120,13 @@ namespace Terrain
         void compileUntil(CompositeMap& compositeMap, osg::RenderInfo& renderInfo, Deadline deadline,
             CompileTelemetry* telemetry = nullptr) const;
         bool prepare(CompositeMap& map, osg::RenderInfo& info) const;
+        bool schedulePreparation(CompositeMap& map, osg::GraphicsContext* context, bool atCreation = false) const;
         bool dependenciesReady(const CompositeMap& map, osg::State& state) const;
         bool preparationSupported(const osg::State& state) const;
         void retirePreparations() const;
         bool mCooperativeBackgroundCompile = false;
         const bool mCompositeBatchEnabled;
+        const bool mProducerPreparationEnabled;
         mutable std::atomic_uint64_t mBackgroundYields{0};
         float mTargetFrameRate;
         double mMinimumTimeAvailable;
@@ -134,6 +144,9 @@ namespace Terrain
         osg::ref_ptr<Resource::OpenMWIncrementalCompileOperation> mICO;
         std::shared_ptr<Resource::P9DiscretionaryAdmission> mAdmission;
         mutable std::vector<osg::ref_ptr<CompositeMap>> mPendingPreparations;
+        mutable std::mutex mPreparationMutex;
+        mutable std::atomic_size_t mPreparationBytes{0};
+        mutable std::atomic_uint64_t mPreparationScheduled{0};
         mutable PreparationStats mPreparationStats;
         mutable double mBakeEmaMs = 0.25, mBakeRiskMs = 0.25;
         mutable unsigned mBakeSamples = 0;

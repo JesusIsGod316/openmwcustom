@@ -30,7 +30,9 @@ need('settings_restore_verified' in l and '$originalEnv' in l,'settings/environm
 need('Add-Content -LiteralPath $memoryCsv' not in l,'memory sampler avoids gameplay I/O')
 cm=read('CMakeLists.txt')
 installed=re.findall(r'"\$\{CMAKE_SOURCE_DIR\}/([^"\n]+\.bat)"',cm)
-need(installed==['tools/optimizedmw/gl-p8g4/START-OptimizedMW-Test.bat'],'one public BAT whitelist')
+need(installed==['tools/optimizedmw/gl-p8g4/START-OptimizedMW-Test.bat',
+ 'tools/optimizedmw/phase9/START-OptimizedMW-SystemTrace.bat'],
+ 'one benchmark BAT plus the retained advanced system recorder whitelist')
 manifest=json.loads(read('files/shaders/v3overlay/p8g3/manifest.json'))
 need(manifest['id']=='optimizedmw-p8g4-pbr-groundcover','deployed P8G4 identity')
 for name,entry in manifest['files'].items():

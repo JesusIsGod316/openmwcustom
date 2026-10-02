@@ -27,6 +27,7 @@
 #include <components/misc/strings/lower.hpp>
 #include <components/resource/bulletshapemanager.hpp>
 #include <components/resource/animationdependencies.hpp>
+#include <components/resource/animationpreparation.hpp>
 #include <components/resource/keyframemanager.hpp>
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/scenemanager.hpp>
@@ -102,7 +103,8 @@ namespace MWWorld
             Terrain::World* terrain, MWRender::LandManager* landManager, bool preloadInstances,
             Resource::ResourceSystem* resourceSystem, bool useLegacyTerrain,
             Resource::PreloadAdmission::Reservation reservation, Resource::SpeculativeBudget::Job byteJob = {},
-            Resource::SpeculativePriority priority = Resource::SpeculativePriority::Background)
+            Resource::SpeculativePriority priority = Resource::SpeculativePriority::Background,
+            osg::ref_ptr<const Resource::AnimationPreparation> resume = {})
             : mIsExterior(cell->getCell()->isExterior())
             , mCellLocation(cell->getCell()->getExteriorCellLocation())
             , mCellId(cell->getCell()->getId())
@@ -118,6 +120,7 @@ namespace MWWorld
             , mByteJob(std::move(byteJob))
             , mPriority(priority)
             , mAbort(false)
+            , mAnimationResume(std::move(resume))
         {
             Debug::HitchTrace::Scope resources("resource.preload_snapshot",
                 Debug::HitchTrace::CpuTiming::Scoped);
@@ -141,6 +144,16 @@ namespace MWWorld
                 snapshot.setMetric(0, "sources", mAnimationSources.size());
                 snapshot.setMetric(1, "vfs_generation", mAnimationVfsGeneration);
                 snapshot.setMetric(2, "additional_sources", mAnimationAdditionalSources);
+                if (Resource::animationDependencyLifetimeEnabled() && mByteJob)
+                {
+                    if (mAnimationResume && !mAnimationResume->matches(
+                            mAnimationVfsGeneration, mAnimationAdditionalSources, mAnimationSources))
+                        mAnimationResume = nullptr;
+                    mAnimationProgress = new Resource::AnimationPreparation(*mResourceSystem->speculativeBudget(),
+                        Resource::ResourceSystem::speculativeSample(mResourceSystem), mPriority,
+                        mAnimationVfsGeneration, mAnimationAdditionalSources, mAnimationSources,
+                        mAnimationResume ? mAnimationResume->metadataBytes() : 0);
+                }
             }
             else
                 cell->forEachConst(visitor);
@@ -159,10 +172,18 @@ namespace MWWorld
             }
         }
 
-        std::uint64_t retainedEstimate() const noexcept { return mRetainedEstimate.load(std::memory_order_acquire); }
+        std::uint64_t retainedEstimate() const noexcept
+        {
+            const auto estimate = mRetainedEstimate.load(std::memory_order_acquire);
+            // Conservative pending-release upper bound includes adopted hits.
+            // The shared payload ledger still charges each object exactly once.
+            const auto owned = mAnimationProgress ? mAnimationProgress->retainedBytes() : 0;
+            return owned > UINT64_MAX - estimate ? UINT64_MAX : estimate + owned;
+        }
         void pendingRelease() { if (mOwnerCharge) mOwnerCharge->pending(); }
         void abort() override { mAbort = true; }
         bool fullyPrepared() const noexcept { return mFullyPrepared.load(std::memory_order_acquire); }
+        osg::ref_ptr<Resource::AnimationPreparation> animationProgress() const { return mAnimationProgress; }
 
         /// Preload work to be called from the worker thread.
         void doWork() override
@@ -183,12 +204,37 @@ namespace MWWorld
                 ~Receipt() { estimate.store((std::max)(64 * Resource::SpeculativeBudget::MiB,
                     scope.retainedEstimate()), std::memory_order_release); }
             } receipt{scope, mRetainedEstimate};
+            bool animationRetryable = true;
+            struct PublishProgress
+            {
+                Resource::AnimationPreparation* progress;
+                bool& retryable;
+                ~PublishProgress() { if (progress) progress->complete(retryable); }
+            } publish{mAnimationProgress.get(), animationRetryable};
+            std::size_t resumed = 0;
+            if (mAnimationProgress && mAnimationResume)
+            {
+                // Preserve completed ready work even if a later terrain/model
+                // reservation yields this fresh job before animation discovery.
+                resumed = mAnimationProgress->importReady(*mAnimationResume);
+                mAnimationResume = nullptr;
+            }
             if (mAbort)
                 return;
-            if (mPriority == Resource::SpeculativePriority::Background
+            if (mAnimationProgress)
+            {
+                const auto sample = Resource::ResourceSystem::speculativeSample(mResourceSystem);
+                if (!Resource::animationNewWorkAllowed(sample, mPriority))
+                {
+                    if (!Resource::animationOwnedWorkMayRemain(sample, mPriority == Resource::SpeculativePriority::NearFuture))
+                        mAnimationProgress->cancel();
+                    return;
+                }
+            }
+            else if (mPriority == Resource::SpeculativePriority::Background
                 && mResourceSystem->hostMemoryPressure() != Resource::HostMemoryPressure::Normal)
                 return;
-            if (mPriority == Resource::SpeculativePriority::NearFuture
+            if (!mAnimationProgress && mPriority == Resource::SpeculativePriority::NearFuture
                 && mResourceSystem->hostMemoryPressure() == Resource::HostMemoryPressure::Critical)
                 return;
             if (mIsExterior)
@@ -229,15 +275,21 @@ namespace MWWorld
                     std::set<VFS::Path::Normalized> prepared;
                     const auto beforeAnimations = scope.retainedEstimate();
                     const auto allowed = [&] {
-                        const auto pressure = mResourceSystem->hostMemoryPressure();
-                        const bool pressureAllows = mPriority == Resource::SpeculativePriority::Background
+                        const auto pressure = mAnimationProgress ? Resource::HostMemoryPressure::Normal
+                            : mResourceSystem->hostMemoryPressure();
+                        const auto sample = mAnimationProgress
+                            ? Resource::ResourceSystem::speculativeSample(mResourceSystem) : Resource::OpenGlPressureSample{};
+                        const bool pressureAllows = mAnimationProgress ? Resource::animationNewWorkAllowed(sample, mPriority)
+                            : mPriority == Resource::SpeculativePriority::Background
                             ? pressure == Resource::HostMemoryPressure::Normal
                             : pressure != Resource::HostMemoryPressure::Critical;
                         // These bits describe why optional coverage stopped;
                         // they do not claim a later demand access missed cache.
-                        const auto cancelled = mAbort.load();
+                        const auto cancelled = mAbort.load() || (mAnimationProgress && mAnimationProgress->cancelled());
                         const auto generation = vfs.getIndexGeneration();
-                        const auto retained = scope.retainedEstimate() - beforeAnimations;
+                        const auto retained = mAnimationProgress
+                            ? Resource::MaximumAnimationPreloadEstimate - mAnimationProgress->remainingBytes()
+                            : scope.retainedEstimate() - beforeAnimations;
                         if (cancelled) denialReasons |= 1;
                         if (!pressureAllows) denialReasons |= 2;
                         if (mAnimationVfsGeneration != generation) denialReasons |= 4;
@@ -266,9 +318,22 @@ namespace MWWorld
                         {
                             // KeyframeManager reserves its parse/build estimate
                             // before miss reads. Hits keep existing cache holders.
-                            const auto remaining = Resource::MaximumAnimationPreloadEstimate
-                                - (scope.retainedEstimate() - beforeAnimations);
-                            mPreloadedObjects.insert(mKeyframeManager->get(keyframe, remaining));
+                            const auto remaining = mAnimationProgress ? mAnimationProgress->remainingBytes()
+                                : Resource::MaximumAnimationPreloadEstimate - (scope.retainedEstimate() - beforeAnimations);
+                            if (mAnimationProgress)
+                            {
+                                if (const auto* ready = mAnimationProgress->find(keyframe);
+                                    ready && !mKeyframeManager->isReadyLeaseCurrent(keyframe, ready->mLease))
+                                    mAnimationProgress->forget(keyframe);
+                                if (!mAnimationProgress->find(keyframe))
+                                {
+                                    auto lease = mKeyframeManager->getReadyLease(keyframe, remaining);
+                                    if (!mAnimationProgress->adopt(keyframe, std::move(lease)))
+                                    { denialReasons |= 512; return false; }
+                                }
+                            }
+                            else
+                                mPreloadedObjects.insert(mKeyframeManager->get(keyframe, remaining));
                             ++preparedCount;
                         }
                         catch (const Resource::SpeculativeDeferred&)
@@ -288,8 +353,10 @@ namespace MWWorld
                     {
                         Debug::HitchTrace::Scope discovery("animation.dependency_discovery",
                             Debug::HitchTrace::CpuTiming::WallEnvelope, {}, source.value());
-                        if (!Resource::visitAnimationDependencies(
-                            vfs, source, mAnimationAdditionalSources, prepare, keepGoing))
+                        const auto primary = Resource::animationKeyframePath(source);
+                        if (!keepGoing() || !prepare(primary) || (mAnimationAdditionalSources
+                            && !mKeyframeManager->visitAdditionalSources(primary, prepare, keepGoing,
+                                [&] { return Resource::ResourceSystem::speculativeSample(mResourceSystem); })))
                             break; // denied preparation never delays required activation
                     }
                 }
@@ -304,6 +371,19 @@ namespace MWWorld
                 outcome.setMetric(1, "denial_reasons", denialReasons);
                 outcome.setMetric(2, "failed", failedCount);
                 outcome.setMetric(3, "skipped", skippedCount);
+                animationRetryable = (denialReasons & (1 | 2 | 64 | 256)) != 0
+                    && !(denialReasons & (4 | 8 | 16 | 32 | 512));
+                if (mAnimationProgress)
+                {
+                    Debug::HitchTrace::Scope ownership("animation.ready_ownership");
+                    ownership.retain();
+                    ownership.setLink(mAnimationSnapshotSpan);
+                    ownership.setMetric(0, "resumed", resumed);
+                    ownership.setMetric(1, "ready", mAnimationProgress->size());
+                    ownership.setMetric(2, "owned_estimate", Resource::MaximumAnimationPreloadEstimate
+                        - mAnimationProgress->remainingBytes());
+                    ownership.setMetric(3, "retryable", animationRetryable);
+                }
             }
 
             VFS::Path::Normalized mesh;
@@ -403,6 +483,8 @@ namespace MWWorld
 
         std::atomic<bool> mAbort;
         std::atomic<bool> mFullyPrepared{false};
+        osg::ref_ptr<const Resource::AnimationPreparation> mAnimationResume;
+        osg::ref_ptr<Resource::AnimationPreparation> mAnimationProgress;
 
         osg::ref_ptr<Terrain::View> mTerrainView;
 
@@ -974,6 +1056,9 @@ namespace MWWorld
     void CellPreloader::preload(CellStore& cell, double timestamp, bool nearFuture)
     {
         const bool p1b = mResourceSystem->speculativeBudget() != nullptr;
+        const bool lifetime = p1b && Resource::animationDependencyLifetimeEnabled();
+        if (lifetime && mAnimationTarget == &cell)
+            nearFuture = true;
         const auto priority = nearFuture
             ? Resource::SpeculativePriority::NearFuture : Resource::SpeculativePriority::Background;
         if (p1b && mResourceSystem->pendingReleases() && !nearFuture)
@@ -998,12 +1083,39 @@ namespace MWWorld
         PreloadMap::iterator found = mPreloadCells.find(&cell);
         if (found != mPreloadCells.end())
         {
+            if (lifetime && mAnimationTarget == &cell && found->second.mWorkItem)
+            {
+                const auto& previous = static_cast<const PreloadItem&>(*found->second.mWorkItem);
+                const auto progress = previous.animationProgress();
+                if ((!mAnimationTicket || mAnimationTicketCell == &cell) && progress && !progress->cancelled())
+                    retainAnimationProgress(&cell, progress);
+                if (!found->second.mRetired && previous.isDone() && progress && progress->retryable()
+                    && timestamp >= mAnimationRetryAt)
+                    found->second.mRetired = true;
+            }
             // A retired or incomplete owner is not a warm ready cell.
-            if (found->second.mRetired) return;
+            if (found->second.mRetired)
+            {
+                if (!lifetime) return;
+                retireCompletedPreloads();
+                found = mPreloadCells.find(&cell);
+                if (found != mPreloadCells.end()) return;
+            }
+            else
+            {
             // already preloaded, nothing to do other than updating the timestamp
             found->second.mTimeStamp = timestamp;
             return;
+            }
         }
+
+        const auto sample = p1b ? Resource::ResourceSystem::speculativeSample(mResourceSystem)
+                                : Resource::OpenGlPressureSample{};
+        if (lifetime && !Resource::animationNewWorkAllowed(sample, priority)) return;
+        if (lifetime && nearFuture && mAnimationTicketCell == &cell && mAnimationTicket
+            && mAnimationTicket->published() && !mAnimationTicket->retryable()
+            && sample.decision.state == Resource::OpenGlPressure::Caution)
+            return; // keep useful KF ownership; do not repeatedly rebuild broad model owners
 
         static const bool legacyAdmission = std::getenv("OPENMW_V4_LEGACY_PRELOAD_ADMISSION_CONTROL") != nullptr;
         auto reservation = (p1b || (legacyAdmission && !mResourceSystem->openGlHostMemoryBudgetEnabled()))
@@ -1016,7 +1128,7 @@ namespace MWWorld
         if (p1b)
         {
             byteJob = mResourceSystem->speculativeBudget()->tryJob(
-                Resource::ResourceSystem::speculativeSample(mResourceSystem), priority);
+                lifetime ? sample : Resource::ResourceSystem::speculativeSample(mResourceSystem), priority);
             if (!byteJob) return;
         }
         while (mPreloadCells.size() >= mMaxCacheSize)
@@ -1051,17 +1163,71 @@ namespace MWWorld
         {
             item = new PreloadItem(&cell, mResourceSystem->getSceneManager(), mBulletShapeManager,
                 mResourceSystem->getKeyframeManager(), mTerrain, mLandManager, mPreloadInstances,
-                mResourceSystem, mUseLegacyTerrain, std::move(*reservation), std::move(byteJob), priority);
+                mResourceSystem, mUseLegacyTerrain, std::move(*reservation), std::move(byteJob), priority,
+                lifetime && mAnimationTicketCell == &cell && mAnimationTicket && mAnimationTicket->published()
+                    && !mAnimationTicket->cancelled() ? mAnimationTicket.get() : nullptr);
         }
         catch (const Resource::SpeculativeDeferred&) { return; }
         mWorkQueue->addWorkItem(item);
 
         mPreloadCells.emplace(&cell, PreloadEntry(timestamp, item));
+        if (lifetime && mAnimationTarget == &cell && (!mAnimationTicket || mAnimationTicketCell == &cell))
+        {
+            retainAnimationProgress(&cell, item->animationProgress());
+            mAnimationRetryAt = timestamp + 0.5;
+        }
         ++mAdded;
+    }
+
+    void CellPreloader::setAnimationTarget(CellStore* cell, double timestamp)
+    {
+        if (!Resource::animationDependencyLifetimeEnabled() || !mResourceSystem->speculativeBudget()) return;
+        if (mAnimationTarget != cell)
+        {
+            mAnimationTarget = cell;
+            if (mAnimationTargetGeneration != UINT64_MAX) ++mAnimationTargetGeneration;
+            mAnimationRetryAt = timestamp;
+        }
+        mAnimationTargetStamp = timestamp;
+        if (mAnimationTicket && (mAnimationTicketCell != cell
+            || mAnimationTicket->generation() != mResourceSystem->getVFS()->getIndexGeneration()
+            || mAnimationTicket->additionalSources() != static_cast<bool>(Settings::game().mUseAdditionalAnimSources)))
+            mAnimationTicket->cancel();
+        if (mAnimationTicket && mAnimationTicket->cancelled() && mAnimationTicket->published())
+        {
+            if (!mResourceSystem->deferRelease(mAnimationTicket, mAnimationTicket->retainedBytes())) return;
+            mAnimationTicketCell = nullptr;
+        }
+        if (!mAnimationTicket && cell)
+        {
+            const auto found = mPreloadCells.find(cell);
+            if (found != mPreloadCells.end() && found->second.mWorkItem)
+            {
+                auto progress = static_cast<const PreloadItem&>(*found->second.mWorkItem).animationProgress();
+                if (progress && !progress->cancelled())
+                    retainAnimationProgress(cell, progress);
+            }
+        }
+    }
+
+    void CellPreloader::retainAnimationProgress(CellStore* cell,
+        osg::ref_ptr<Resource::AnimationPreparation> progress)
+    {
+        if (mAnimationTicket == progress) return;
+        if (mAnimationTicket)
+        {
+            // Replacing a target reference must not become its final heavy
+            // release on main, even if an old WorkItem was already drained.
+            if (!mAnimationTicket->published()
+                || !mResourceSystem->deferRelease(mAnimationTicket, mAnimationTicket->retainedBytes())) return;
+        }
+        mAnimationTicket = std::move(progress);
+        mAnimationTicketCell = cell;
     }
 
     void CellPreloader::notifyLoaded(CellStore* cell)
     {
+        if (mAnimationTarget == cell) setAnimationTarget(nullptr, mAnimationTargetStamp);
         PreloadMap::iterator found = mPreloadCells.find(cell);
         if (found != mPreloadCells.end())
         {
@@ -1086,6 +1252,7 @@ namespace MWWorld
 
     void CellPreloader::clear()
     {
+        setAnimationTarget(nullptr, mAnimationTargetStamp);
         if (mResourceSystem->speculativeBudget())
         {
             for (auto& [cell, entry] : mPreloadCells)
@@ -1107,7 +1274,26 @@ namespace MWWorld
 
     void CellPreloader::updateCache(double timestamp)
     {
-        const auto hostPressure = mResourceSystem->hostMemoryPressure();
+        const bool lifetime = Resource::animationDependencyLifetimeEnabled() && mResourceSystem->speculativeBudget();
+        const auto sample = lifetime ? Resource::ResourceSystem::speculativeSample(mResourceSystem)
+                                     : Resource::OpenGlPressureSample{};
+        const auto hostPressure = lifetime
+            ? sample.decision.state == Resource::OpenGlPressure::Critical ? Resource::HostMemoryPressure::Critical
+                : sample.decision.state == Resource::OpenGlPressure::Caution ? Resource::HostMemoryPressure::Trim
+                : Resource::HostMemoryPressure::Normal
+            : mResourceSystem->hostMemoryPressure();
+        if (lifetime && mAnimationTicket)
+        {
+            if (mAnimationTargetStamp < timestamp - mExpiryDelay
+                || !Resource::animationOwnedWorkMayRemain(sample, mAnimationTicketCell == mAnimationTarget)
+                || mAnimationTicket->generation() != mResourceSystem->getVFS()->getIndexGeneration())
+                mAnimationTicket->cancel();
+            if (mAnimationTicket->cancelled() && mAnimationTicket->published())
+            {
+                if (mResourceSystem->deferRelease(mAnimationTicket, mAnimationTicket->retainedBytes()))
+                    mAnimationTicketCell = nullptr;
+            }
+        }
         if (mDiagnosticSampler.due())
         {
             const auto admission = mResourceSystem->preloadAdmissionStats();
@@ -1165,11 +1351,30 @@ namespace MWWorld
             for (auto& [cell, entry] : mPreloadCells)
             {
                 if (hostPressure != Resource::HostMemoryPressure::Normal)
-                { entry.mRetired = true; if (entry.mWorkItem) entry.mWorkItem->abort(); }
+                {
+                    // The actual nearest admitted worker can finish its bounded
+                    // progress in Caution. Broad model owners retire when done;
+                    // only its ready, charged animation ticket survives demand.
+                    const bool finishUrgent = lifetime && cell == mAnimationTarget
+                        && hostPressure == Resource::HostMemoryPressure::Trim && entry.mWorkItem
+                        && !entry.mWorkItem->isDone() && mAnimationTicketCell == cell
+                        && mAnimationTicket && !mAnimationTicket->cancelled();
+                    if (!finishUrgent)
+                    { entry.mRetired = true; if (entry.mWorkItem) entry.mWorkItem->abort(); }
+                }
                 if (entry.mWorkItem && entry.mWorkItem->isDone()
                     && !static_cast<const PreloadItem&>(*entry.mWorkItem).fullyPrepared()) entry.mRetired = true;
             }
             retireCompletedPreloads();
+            if (lifetime)
+            {
+                Debug::HitchTrace::Scope policy("animation.retention_policy");
+                policy.retain();
+                policy.setMetric(0, "sample_generation", sample.generation);
+                policy.setMetric(1, "pressure_state", static_cast<std::uint64_t>(sample.decision.state));
+                policy.setMetric(2, "target_generation", mAnimationTargetGeneration);
+                policy.setMetric(3, "ticket_ready", mAnimationTicket && mAnimationTicket->published());
+            }
         }
         const bool v37AdapterPressure = static_cast<bool>(Settings::cells().mV32GpuMemoryManagement)
             && Debug::V3GpuMemory::softPressure();

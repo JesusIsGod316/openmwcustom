@@ -694,7 +694,7 @@ namespace MWRender
         VFS::Path::NormalizedView model, const std::string& baseModel, bool hybridVisual)
     {
         Debug::HitchTrace::Scope discover("animation.additional_sources", {}, model.value());
-        if (Resource::animationDependencyPreloadEnabled())
+        if (Resource::animationDependencyPreloadEnabled() || Resource::animationSourcePlanEnabled())
         {
             std::uint64_t sources = 0;
             std::uint64_t scanned = 0;
@@ -702,7 +702,7 @@ namespace MWRender
             discover.setMetric(0, "sources", 0);
             discover.setMetric(1, "scanned", 0);
             discover.setMetric(2, "candidate_discovery", 1);
-            Resource::visitAdditionalAnimationSources(*mResourceSystem->getVFS(), model,
+            mResourceSystem->getKeyframeManager()->visitAdditionalSources(model,
                 [&](VFS::Path::NormalizedView name) {
                     discover.setMetric(0, "sources", ++sources);
                     addSingleAnimSource(name, baseModel, hybridVisual);
@@ -710,7 +710,7 @@ namespace MWRender
                 }, [&] {
                     discover.setMetric(1, "scanned", ++scanned);
                     return true;
-                });
+                }, [&] { return Resource::ResourceSystem::speculativeSample(mResourceSystem); });
             return;
         }
         constexpr VFS::Path::NormalizedView meshes("meshes/");

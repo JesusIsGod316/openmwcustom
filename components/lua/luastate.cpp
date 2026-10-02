@@ -9,6 +9,7 @@
 #include <charconv>
 #include <regex>
 #include <set>
+#include <cstdlib>
 
 #include <components/debug/debuglog.hpp>
 #include <components/debug/diagnosticobserver.hpp>
@@ -485,6 +486,9 @@ namespace LuaUtil
                     { { "date", sol["os"]["date"] }, { "difftime", sol["os"]["difftime"] },
                         { "time", sol["os"]["time"] } }));
         });
+        const char* descriptors = std::getenv("OPENMW_HITCH_LUA_PACKAGE_DESCRIPTORS");
+        if (descriptors && std::string_view(descriptors) == "1")
+            setPackageDescriptorReuse(true);
     }
 
     sol::table makeReadOnly(const sol::table& table, bool strictIndex)
@@ -520,14 +524,50 @@ namespace LuaUtil
 
     void LuaState::addCommonPackage(std::string packageName, sol::object package)
     {
-        if (!package.is<sol::function>())
+        const bool factory = package.is<sol::function>();
+        if (!factory)
             package = makeReadOnly(std::move(package));
-        mCommonPackages.insert_or_assign(std::move(packageName), std::move(package));
+        const auto it = mCommonPackages.insert_or_assign(std::move(packageName), std::move(package)).first;
+        ++mCommonPackageGeneration;
+        if (mPackageDescriptorReuse)
+        {
+            try
+            {
+                if (factory) mCommonFactoryDescriptors.insert_or_assign(it->first, &it->second);
+                else mCommonFactoryDescriptors.erase(it->first);
+            }
+            catch (const std::bad_alloc&)
+            {
+                // Registration succeeded; metadata allocation must not make a
+                // registered package unavailable or bypass the original path.
+                mCommonFactoryDescriptors.clear();
+                mPackageDescriptorReuse = false;
+            }
+        }
+    }
+
+    void LuaState::setPackageDescriptorReuse(bool enabled)
+    {
+        mPackageDescriptorReuse = false;
+        mCommonFactoryDescriptors.clear();
+        if (!enabled) return;
+        try
+        {
+            for (const auto& [name, package] : mCommonPackages)
+                if (package.is<sol::function>())
+                    mCommonFactoryDescriptors.emplace(name, &package);
+            mPackageDescriptorReuse = true;
+        }
+        catch (const std::bad_alloc&)
+        {
+            mCommonFactoryDescriptors.clear();
+        }
     }
 
     sol::protected_function_result LuaState::runInNewSandbox(const VFS::Path::Normalized& path,
         const std::string& envName, const std::map<std::string, sol::main_object>& packages,
-        const sol::main_object& hiddenData, const sol::main_table* packagePrototype, ScriptId scriptId)
+        const sol::main_object& hiddenData, const sol::main_table* packagePrototype, ScriptId scriptId,
+        bool additionalPackagesReadOnly)
     {
         sol::protected_function script;
         {
@@ -536,7 +576,7 @@ namespace LuaUtil
             script = loadScriptAndCache(path);
         }
 
-        const auto v36EnvironmentStart = Debug::V3Diagnostics::Clock::now();
+        const auto v36EnvironmentStart = Debug::V36LuaAddScriptTrace::startPhase();
         sol::environment env(mSol, sol::create, mSandboxEnv);
         env["print"] = mSol["printGen"](envName + ":");
         env["_G"] = env;
@@ -564,16 +604,45 @@ namespace LuaUtil
             {
                 Debug::V36LuaAddScriptTrace::PhaseScope v36CommonPackages(
                     Debug::V36LuaAddScriptTrace::Phase::CommonPackages);
-                for (const auto& [key, value] : mCommonPackages)
-                    if (value.is<sol::function>())
-                        loaded[key] = maybeRunLoader(value);
+                if (mPackageDescriptorReuse)
+                {
+                    auto it = mCommonFactoryDescriptors.begin();
+                    while (it != mCommonFactoryDescriptors.end())
+                    {
+                        // Names remain owned by mCommonPackages. A native loader
+                        // may register/replace a package reentrantly; do not hold
+                        // a classification iterator across that call. The next
+                        // key follows the same ordered-map semantics as control.
+                        const std::string_view key = it->first;
+                        const sol::function loader = it->second->as<sol::function>();
+                        loaded[key] = call(scriptId, loader, hiddenData);
+                        if (!mPackageDescriptorReuse)
+                        {
+                            // Reentrant disable/allocation failure falls back
+                            // for the remainder without dropping factory calls.
+                            for (auto legacy = mCommonPackages.upper_bound(std::string(key));
+                                legacy != mCommonPackages.end(); ++legacy)
+                                if (legacy->second.is<sol::function>())
+                                    loaded[legacy->first] = maybeRunLoader(legacy->second);
+                            break;
+                        }
+                        it = mCommonFactoryDescriptors.upper_bound(key);
+                    }
+                }
+                else
+                {
+                    for (const auto& [key, value] : mCommonPackages)
+                        if (value.is<sol::function>())
+                            loaded[key] = maybeRunLoader(value);
+                }
             }
             {
                 Debug::V36LuaAddScriptTrace::PhaseScope v36ContainerPackages(
                     Debug::V36LuaAddScriptTrace::Phase::ContainerPackages);
-                for (const auto& [key, value] : packages)
-                    if (value.is<sol::function>())
-                        loaded[key] = maybeRunLoader(value);
+                if (!mPackageDescriptorReuse || !additionalPackagesReadOnly)
+                    for (const auto& [key, value] : packages)
+                        if (value.is<sol::function>())
+                            loaded[key] = maybeRunLoader(value);
             }
         }
         else
@@ -588,7 +657,8 @@ namespace LuaUtil
                 Debug::V36LuaAddScriptTrace::PhaseScope v36ContainerPackages(
                     Debug::V36LuaAddScriptTrace::Phase::ContainerPackages);
                 for (const auto& [key, value] : packages)
-                    loaded[key] = maybeRunLoader(value);
+                    loaded[key] = mPackageDescriptorReuse && additionalPackagesReadOnly ? sol::object(value)
+                        : maybeRunLoader(value);
             }
         }
         {

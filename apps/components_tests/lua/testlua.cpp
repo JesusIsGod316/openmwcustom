@@ -2,7 +2,9 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <algorithm>
 #include <cstring>
+#include <iostream>
 #include <thread>
 
 #include <components/lua/luastate.hpp>
@@ -131,6 +133,29 @@ return {
 
     TestingOpenMW::VFSTestFile requireBigScriptFile("local x = require('big') ; return {x}");
 
+    constexpr VFS::Path::NormalizedView descriptorPath("descriptors.lua");
+    TestingOpenMW::VFSTestFile descriptorFile(R"X(
+local actor = require('fixture.actor')
+local common = require('fixture.shared')
+local api = require('test.api')
+local counter = require('aaa.counter')
+local closure = 0
+return {
+    id = function() return actor.id end,
+    actorInc = function() actor.n = actor.n + 1; return actor.n end,
+    closureInc = function() closure = closure + 1; return closure end,
+    moduleInc = function() counter.inc(1); return counter.get() end,
+    commonName = function() return common.name end,
+    apiName = function() return api.name end,
+    mutateCommon = function() common.name = 'modified' end,
+    mutateApi = function() api.name = 'modified' end,
+}
+)X");
+    constexpr VFS::Path::NormalizedView descriptorFactoryPath("descriptorfactory.lua");
+    TestingOpenMW::VFSTestFile descriptorFactoryFile("return {id = require('fixture.actor').id}");
+    constexpr VFS::Path::NormalizedView descriptorEmptyPath("descriptorempty.lua");
+    TestingOpenMW::VFSTestFile descriptorEmptyFile("return true");
+
     struct LuaStateTest : Test
     {
         std::unique_ptr<VFS::Manager> mVFS = TestingOpenMW::createTestVFS({
@@ -140,6 +165,9 @@ return {
             { bigPath, &bigScriptFile },
             { requireBigPath, &requireBigScriptFile },
             { metaIndexErrorPath, &metaIndexErrorFile },
+            { descriptorPath, &descriptorFile },
+            { descriptorFactoryPath, &descriptorFactoryFile },
+            { descriptorEmptyPath, &descriptorEmptyFile },
         });
 
         LuaUtil::ScriptsConfiguration mCfg;
@@ -503,6 +531,181 @@ return {
     TEST_F(LuaStateTest, GetLuaVersion)
     {
         EXPECT_THAT(LuaUtil::getLuaVersion(), HasSubstr("Lua"));
+    }
+
+    TEST_F(LuaStateTest, PackageDescriptorsPreserveFreshSandboxAndFactoryState)
+    {
+        for (const bool candidate : { false, true })
+            for (const bool prototype : { false, true })
+            {
+                SCOPED_TRACE(std::string("candidate=") + std::to_string(candidate)
+                    + " prototype=" + std::to_string(prototype));
+                LuaUtil::LuaState lua(mVFS.get(), &mCfg);
+                lua.setPackageDescriptorReuse(candidate);
+                lua.protectedCall([&](LuaUtil::LuaView& view) {
+                    int factoryCalls = 0;
+                    view.sol().set_function("fixtureActorFactory", [&](sol::table hidden) {
+                        ++factoryCalls;
+                        return view.sol().create_table_with("id", hidden["id"].get<int>(), "n", 0);
+                    });
+                    lua.addCommonPackage("fixture.actor", view.sol()["fixtureActorFactory"]);
+                    lua.addCommonPackage("fixture.shared", view.sol().create_table_with("name", "shared"));
+                    std::map<std::string, sol::main_object> api1{
+                        { "test.api", LuaUtil::makeReadOnly(view.sol().create_table_with("name", "first")) } };
+                    std::map<std::string, sol::main_object> api2{
+                        { "test.api", LuaUtil::makeReadOnly(view.sol().create_table_with("name", "second")) } };
+                    std::optional<sol::main_table> p1, p2;
+                    if (prototype)
+                    {
+                        p1 = lua.makePackagePrototype(api1);
+                        p2 = lua.makePackagePrototype(api2);
+                    }
+                    sol::table first = lua.runInNewSandbox(VFS::Path::Normalized(descriptorPath), "first", api1,
+                        view.sol().create_table_with("id", 101), p1 ? &*p1 : nullptr, {}, true);
+                    sol::table second = lua.runInNewSandbox(VFS::Path::Normalized(descriptorPath), "second", api2,
+                        view.sol().create_table_with("id", 202), p2 ? &*p2 : nullptr, {}, true);
+                    EXPECT_EQ(factoryCalls, 2);
+                    EXPECT_EQ(LuaUtil::call(first["id"]).get<int>(), 101);
+                    EXPECT_EQ(LuaUtil::call(second["id"]).get<int>(), 202);
+                    EXPECT_EQ(LuaUtil::call(first["actorInc"]).get<int>(), 1);
+                    EXPECT_EQ(LuaUtil::call(first["actorInc"]).get<int>(), 2);
+                    EXPECT_EQ(LuaUtil::call(second["actorInc"]).get<int>(), 1);
+                    EXPECT_EQ(LuaUtil::call(first["closureInc"]).get<int>(), 1);
+                    EXPECT_EQ(LuaUtil::call(second["closureInc"]).get<int>(), 1);
+                    EXPECT_EQ(LuaUtil::call(first["moduleInc"]).get<int>(), 43);
+                    EXPECT_EQ(LuaUtil::call(first["moduleInc"]).get<int>(), 44);
+                    EXPECT_EQ(LuaUtil::call(second["moduleInc"]).get<int>(), 43);
+                    EXPECT_EQ(LuaUtil::call(first["commonName"]).get<std::string>(), "shared");
+                    EXPECT_EQ(LuaUtil::call(first["apiName"]).get<std::string>(), "first");
+                    EXPECT_EQ(LuaUtil::call(second["apiName"]).get<std::string>(), "second");
+                    EXPECT_ERROR(LuaUtil::call(first["mutateCommon"]), "a userdata value");
+                    EXPECT_ERROR(LuaUtil::call(first["mutateApi"]), "a userdata value");
+                });
+            }
+    }
+
+    TEST_F(LuaStateTest, PackageDescriptorsPreserveGenericAdditionalFactories)
+    {
+        for (const bool candidate : { false, true })
+        {
+            LuaUtil::LuaState lua(mVFS.get(), &mCfg);
+            lua.setPackageDescriptorReuse(candidate);
+            lua.protectedCall([&](LuaUtil::LuaView& view) {
+                int calls = 0;
+                view.sol().set_function("fixtureAdditionalFactory", [&](sol::table hidden) {
+                    ++calls;
+                    return view.sol().create_table_with("id", hidden["id"].get<int>());
+                });
+                std::map<std::string, sol::main_object> packages{
+                    { "fixture.actor", view.sol()["fixtureAdditionalFactory"] } };
+                const sol::main_table prototype = lua.makePackagePrototype(packages);
+                for (const int id : { 17, 28 })
+                {
+                    // Generic maps deliberately retain the default false contract.
+                    sol::table output = lua.runInNewSandbox(VFS::Path::Normalized(descriptorFactoryPath), "",
+                        packages, view.sol().create_table_with("id", id), &prototype);
+                    EXPECT_EQ(output["id"].get<int>(), id);
+                }
+                EXPECT_EQ(calls, 2);
+            });
+        }
+    }
+
+    TEST_F(LuaStateTest, PackageDescriptorsPreserveReentrantRegistrationAndDisable)
+    {
+        for (const bool candidate : { false, true })
+            for (const bool disable : { false, true })
+            {
+                SCOPED_TRACE(std::string("candidate=") + std::to_string(candidate)
+                    + " disable=" + std::to_string(disable));
+                LuaUtil::LuaState lua(mVFS.get(), &mCfg);
+                lua.setPackageDescriptorReuse(candidate);
+                lua.protectedCall([&](LuaUtil::LuaView& view) {
+                    std::vector<std::string> called;
+                    view.sol().set_function("fixtureB", [&](sol::object) {
+                        called.push_back("b"); return view.sol().create_table();
+                    });
+                    view.sol().set_function("fixtureZ", [&](sol::object) {
+                        called.push_back("z"); return view.sol().create_table();
+                    });
+                    view.sol().set_function("fixtureA", [&](sol::object) {
+                        called.push_back("a");
+                        lua.addCommonPackage("a.factory", view.sol().create_table_with("now", "static"));
+                        lua.addCommonPackage("b.factory", view.sol()["fixtureB"]);
+                        if (disable) lua.setPackageDescriptorReuse(false);
+                        return view.sol().create_table();
+                    });
+                    lua.addCommonPackage("a.factory", view.sol()["fixtureA"]);
+                    lua.addCommonPackage("z.factory", view.sol()["fixtureZ"]);
+                    const sol::main_table prototype = lua.makePackagePrototype({});
+                    EXPECT_TRUE(lua.runInNewSandbox(VFS::Path::Normalized(descriptorEmptyPath), "", {}, {},
+                        &prototype).get<bool>());
+                    EXPECT_THAT(called, ElementsAre("a", "b", "z"));
+                    called.clear();
+                    EXPECT_TRUE(lua.runInNewSandbox(VFS::Path::Normalized(descriptorEmptyPath), "", {}, {},
+                        &prototype).get<bool>());
+                    EXPECT_THAT(called, ElementsAre("b", "z"));
+                });
+            }
+    }
+
+    TEST_F(LuaStateTest, PackageDescriptorProductionBenchmark)
+    {
+        if (Debug::HitchTrace::requested())
+            GTEST_SKIP() << "Production sandbox benchmark requires inactive diagnostics";
+        // This measures the actual sandbox path, not a synthetic map loop. It
+        // checks factory calls but deliberately has no timing pass threshold.
+        mLua.protectedCall([&](LuaUtil::LuaView& view) {
+            mLua.setPackageDescriptorReuse(false);
+            std::uint64_t factoryCalls = 0;
+            view.sol().set_function("fixtureBenchmarkFactory", [&](sol::object) {
+                ++factoryCalls;
+                return view.sol().create_table();
+            });
+            mLua.addCommonPackage("fixture.factory", view.sol()["fixtureBenchmarkFactory"]);
+            std::map<std::string, sol::main_object> packages;
+            for (int i = 0; i < 24; ++i)
+            {
+                mLua.addCommonPackage("fixture.common." + std::to_string(i),
+                    view.sol().create_table_with("value", i));
+                packages.emplace("fixture.api." + std::to_string(i),
+                    LuaUtil::makeReadOnly(view.sol().create_table_with("value", i)));
+            }
+            const sol::main_table prototype = mLua.makePackagePrototype(packages);
+            const VFS::Path::Normalized path(descriptorEmptyPath);
+            EXPECT_TRUE(mLua.runInNewSandbox(path, "", packages, {}, &prototype, {}, true).get<bool>());
+            constexpr unsigned blocks = 8, iterations = 300;
+            std::array<std::vector<double>, 2> nsPerSandbox;
+            for (unsigned block = 0; block < blocks; ++block)
+                for (unsigned step = 0; step < 2; ++step)
+                {
+                    const unsigned candidate = (block + step) % 2;
+                    mLua.setPackageDescriptorReuse(candidate != 0);
+                    // VM cleanup is outside the timed interval and is fixture
+                    // setup, not a change to the production GC policy.
+                    lua_gc(mLua.unsafeState(), LUA_GCCOLLECT, 0);
+                    const auto start = std::chrono::steady_clock::now();
+                    for (unsigned n = 0; n < iterations; ++n)
+                    {
+                        const auto result = mLua.runInNewSandbox(path, "", packages, {}, &prototype, {}, true);
+                        if (!result.valid()) throw std::runtime_error("Benchmark sandbox failed");
+                    }
+                    const auto ns = std::chrono::duration<double, std::nano>(
+                        std::chrono::steady_clock::now() - start).count();
+                    nsPerSandbox[candidate].push_back(ns / iterations);
+                }
+            EXPECT_EQ(factoryCalls, 1 + 2 * blocks * iterations);
+            for (unsigned candidate = 0; candidate < 2; ++candidate)
+            {
+                auto& values = nsPerSandbox[candidate];
+                std::sort(values.begin(), values.end());
+                const auto median = (values[3] + values[4]) * 0.5;
+                std::cout << "NATIVE_LUA_PACKAGE_DESCRIPTOR_BENCHMARK candidate=" << candidate
+                    << " ns_per_sandbox_median=" << median << " blocks=" << blocks
+                    << " iterations=" << iterations << " common_static=24 api_static=24 factory=1\n";
+            }
+            mLua.setPackageDescriptorReuse(false);
+        });
     }
 
     TEST_F(LuaStateTest, RemovedScriptsGarbageCollecting)

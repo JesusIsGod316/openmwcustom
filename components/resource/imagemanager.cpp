@@ -91,6 +91,54 @@ namespace Resource
 
     ImageManager::~ImageManager() {}
 
+    std::uint64_t ImageManager::sourceRevision(bool disableFlip) const noexcept
+    {
+        // Options are immutable for this manager's lifetime. Reserve zero for
+        // unknown/legacy publications. Do not alias a wrapped VFS generation.
+        const auto generation = mVFS->getIndexGeneration();
+        return generation <= (UINT64_MAX - 2) / 2 ? generation * 2 + (disableFlip ? 2 : 1) : 0;
+    }
+
+    ObjectCacheLease ImageManager::getImageLease(VFS::Path::NormalizedView path, const osg::Image* expected,
+        bool disableFlip)
+    {
+        const auto revision = sourceRevision(disableFlip);
+        if (!revision) return {};
+        auto result = mCache->getLeaseFromObjectCache(path, expected, revision);
+        if (result.mValue == mWarningImage || !result.bytes()) return {};
+        const auto* image = static_cast<const osg::Image*>(result.mValue.get());
+        if (image->getDataVariance() == osg::Object::DYNAMIC || image->requiresUpdateCall()) return {};
+        return result;
+    }
+
+    bool ImageManager::imageLeaseCurrent(VFS::Path::NormalizedView path, const ObjectCacheLease& lease, bool disableFlip)
+    {
+        if (!lease || lease.mSourceRevision != sourceRevision(disableFlip)) return false;
+        const auto current = getImageLease(path, static_cast<const osg::Image*>(lease.mValue.get()), disableFlip);
+        return current && current.mRevision == lease.mRevision && current.mCharge == lease.mCharge;
+    }
+
+    ObjectCacheLease ImageManager::prepareImage(VFS::Path::NormalizedView path, std::uint64_t maximumEstimate)
+    {
+        if (!SpeculativeScope::active() || !maximumEstimate) throw SpeculativeDeferred{};
+        if (auto ready = getImageLease(path))
+        {
+            if (ready.bytes() > maximumEstimate) throw SpeculativeDeferred{};
+            return ready;
+        }
+        // This is an admission estimate, not a bound on arbitrary plugin
+        // internals. Unknown headers decline optional work before decoding.
+        auto stream = mVFS->get(path);
+        const auto estimate = estimateStream(*stream, true);
+        if (!estimate.knownDimensions || estimate.peak > maximumEstimate || estimate.retained > maximumEstimate)
+            throw SpeculativeDeferred{};
+        stream.reset();
+        const auto image = getImage(path);
+        auto lease = getImageLease(path, image);
+        if (!lease || lease.bytes() > maximumEstimate) throw SpeculativeDeferred{};
+        return lease;
+    }
+
     osg::ref_ptr<osg::Image> ImageManager::getImage(VFS::Path::NormalizedView path, bool disableFlip)
     {
         Debug::HitchTrace::Scope hitchImage("resource.image_lookup", {}, path.value());
@@ -99,6 +147,7 @@ namespace Resource
             return osg::ref_ptr<osg::Image>(static_cast<osg::Image*>(obj.get()));
         else
         {
+            const auto publicationRevision = sourceRevision(disableFlip);
             auto claim = SpeculativeScope::claim(SpeculativeScope::active()
                 ? std::to_string(mVFS->getIndexGeneration()) + "|image|" + std::string(path.value())
                     + (disableFlip ? "|no-flip" : "|flip") : std::string{});
@@ -232,7 +281,8 @@ namespace Resource
                     image->setOrigin(osg::Image::TOP_LEFT);
                 }
 
-                mCache->addEntryToObjectCache(path.value(), image);
+                mCache->addEntryToObjectCache(path.value(), image, 0.0,
+                    publicationRevision == sourceRevision(disableFlip) ? publicationRevision : 0);
             }
 
             return image;

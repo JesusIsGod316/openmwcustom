@@ -19,6 +19,8 @@
 #include <thread>
 #include <condition_variable>
 #include <mutex>
+#include <new>
+#include <type_traits>
 namespace Debug::HitchTrace
 {
     using Clock = std::chrono::steady_clock;
@@ -55,6 +57,7 @@ namespace Debug::HitchTrace
         std::uint64_t link = 0;
         std::array<Metric, 4> metrics{};
     };
+    static_assert(std::is_trivially_destructible_v<Row>);
 
     // Producers copy owned fixed-size records into pre-touched storage. Only
     // the consumer formats/writes streaming records. Neither transport waits,
@@ -133,7 +136,9 @@ namespace Debug::HitchTrace
         {
             if (!requested() || !Capture::instance().enabled()) return;
             const auto observerStart = DiagnosticObserver::begin();
-            mRow = {};
+            // Row's Metric defaults otherwise initialize trace payload before
+            // the disabled gate. Construct owned storage only for a real span.
+            ::new (static_cast<void*>(&mRow)) Row{};
             mRow.cpu = -1;
             mCapture = &Capture::instance();
             mCapture->enter();
@@ -193,7 +198,7 @@ namespace Debug::HitchTrace
         std::int64_t startNs() const noexcept { return mCapture ? mRow.start : 0; }
         unsigned frame() const noexcept { return mCapture ? mRow.frame : V3HitchTelemetry::currentFrame(); }
         void retain() noexcept { mForced = true; }
-        void setLink(std::uint64_t link) noexcept { mRow.link = link; }
+        void setLink(std::uint64_t link) noexcept { if (mCapture) mRow.link = link; }
         void setMetric(unsigned index, std::string_view name, std::uint64_t value) noexcept
         {
             if (!mCapture) return;
@@ -212,7 +217,9 @@ namespace Debug::HitchTrace
             if (n) std::memcpy(out.data(), text.data(), n);
             mRow.truncated |= text.size() >= N;
         }
-        Row mRow;
+        // Row is trivially destructible; inactive scopes never begin its
+        // lifetime and must not touch it. Active records remain fully owned.
+        union { Row mRow; };
         Capture* mCapture = nullptr;
         Scope* mPrevious = nullptr;
         std::int64_t mCpuStart = -1;

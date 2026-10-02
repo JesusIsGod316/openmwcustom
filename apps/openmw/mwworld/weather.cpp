@@ -835,6 +835,16 @@ namespace MWWorld
         else
             mNightDayMode = Default;
 
+        // Offer only decisions already made by the normal weather state
+        // machine. Queued transitions and interior time provide actual lead;
+        // selecting a new weather/texture or delaying a transition is forbidden.
+        const int preparedWeather = mQueuedWeather != invalidWeatherID ? mQueuedWeather
+            : mNextWeather != invalidWeatherID ? mNextWeather : !isExterior ? mCurrentWeather : invalidWeatherID;
+        mRendering.getSkyManager()->prepareCloudImage(preparedWeather != invalidWeatherID
+            && preparedWeather >= 0 && static_cast<std::size_t>(preparedWeather) < mWeatherSettings.size()
+            ? std::string_view(mWeatherSettings[preparedWeather].mCloudTexture) : std::string_view{},
+            !isExterior || mQueuedWeather != invalidWeatherID);
+
         if (!isExterior)
         {
             mRendering.setSkyEnabled(false);

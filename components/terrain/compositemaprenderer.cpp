@@ -14,6 +14,8 @@
 #include <components/resource/v321classifiedcompileset.hpp>
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cstdlib>
 #include <iomanip>
 #include <sstream>
@@ -40,10 +42,21 @@ namespace Terrain
         osg::observer_ptr<osg::GraphicsContext> context;
         std::size_t bytes = 0;
         std::uint64_t generation = 0;
+        std::uint64_t receipt = 0;
         std::shared_ptr<Resource::V321ResourceCompileLifetime> lifetime
             = std::make_shared<Resource::V321ResourceCompileLifetime>();
         bool completed = false, failed = false;
         GLuint fboName = 0;
+        // Draw-context progress, including target allocation and FBO. This is
+        // submission debt, not a promise that later GL calls cannot stall.
+        std::array<std::uint64_t, 9> submitted{};
+        void markSubmitted(std::size_t index) { submitted[index / 64] |= std::uint64_t(1) << (index % 64); }
+        std::size_t submittedCount() const
+        {
+            std::size_t result = 0;
+            for (auto word : submitted) result += std::popcount(word);
+            return result;
+        }
     };
 
     namespace
@@ -89,18 +102,31 @@ namespace Terrain
                     if (!retainedDependency(dep))
                         return false;
                     if (dep.texture)
-                        return !info.incrementalCompileOperation->getForceTextureDownloadGeometry()
+                    {
+                        const bool ready = !info.incrementalCompileOperation->getForceTextureDownloadGeometry()
                             && dep.texture->preparationUnchanged(state);
+                        if (ready) mPreparation->markSubmitted(mDependency);
+                        return ready;
+                    }
                     state.pushStateSet(dep.pass);
                     auto* program = dep.program->getPCP(state);
                     const bool ready = program && program->isLinked() && !program->needsLink();
+                    if (ready)
+                    {
+                        auto& retained = mPreparation->dependencies[mDependency];
+                        retained.submittedProgram = program;
+                        retained.programName = program->getHandle();
+                        mPreparation->markSubmitted(mDependency);
+                    }
                     state.popStateSet();
                     return ready;
                 }
                 const auto* target = dynamic_cast<Resource::PreparedTerrainTexture*>(mMap->mTexture.get());
-                return mKind == Kind::Texture && target
+                const bool ready = mKind == Kind::Texture && target
                     && !info.incrementalCompileOperation->getForceTextureDownloadGeometry()
                     && target->preparationUnchanged(state);
+                if (ready) mPreparation->markSubmitted(mDependency);
+                return ready;
             }
             double estimatedTimeForCompile(osgUtil::IncrementalCompileOperation::CompileInfo&) const override
             {
@@ -118,6 +144,12 @@ namespace Terrain
                 if (cancelled() || mPreparation->context.get() != info.getState()->getGraphicsContext())
                     return true;
                 auto& state = *info.getState();
+                Debug::HitchTrace::Scope submission("composite.dependency_prepare", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                submission.setLink(mPreparation->receipt);
+                submission.setMetric(0, "dependency_index", mDependency);
+                submission.setMetric(1, "kind", static_cast<unsigned>(mKind));
+                submission.setMetric(2, "required", required());
+                submission.setMetric(3, "generation", mPreparation->generation);
                 if (mDependency < mPreparation->dependencies.size())
                 {
                     auto& dep = mPreparation->dependencies[mDependency];
@@ -130,7 +162,9 @@ namespace Terrain
                     {
                         osg::ref_ptr<Resource::PreparedTerrainTextureCompileOp> op
                             = new Resource::PreparedTerrainTextureCompileOp(dep.texture);
-                        return op->compile(info);
+                        const bool complete = op->compile(info);
+                        if (complete) mPreparation->markSubmitted(mDependency);
+                        return complete;
                     }
                     // Push the producer's actual pass for the same OSG define
                     // variant. Applying the whole State here would also upload
@@ -146,6 +180,7 @@ namespace Terrain
                     else
                         mPreparation->failed = true;
                     state.popStateSet();
+                    mPreparation->markSubmitted(mDependency);
                     return true;
                 }
                 auto* target = dynamic_cast<Resource::PreparedTerrainTexture*>(mMap->mTexture.get());
@@ -155,7 +190,9 @@ namespace Terrain
                     {
                         osg::ref_ptr<Resource::PreparedTerrainTextureCompileOp> op
                             = new Resource::PreparedTerrainTextureCompileOp(target);
-                        return op->compile(info);
+                        const bool complete = op->compile(info);
+                        if (complete) mPreparation->markSubmitted(mDependency);
+                        return complete;
                     }
                     mPreparation->failed = true;
                     return true;
@@ -174,6 +211,7 @@ namespace Terrain
                     state.haveAppliedTextureAttribute(state.getActiveTextureUnit(), osg::StateAttribute::TEXTURE);
                 }
                 mPreparation->completed = true;
+                mPreparation->markSubmitted(mDependency + 1);
                 return true;
             }
 
@@ -216,12 +254,18 @@ namespace Terrain
     CompositeMapRenderer::PreparationStats CompositeMapRenderer::preparationStats() const
     {
         auto result = mPreparationStats;
+        result.scheduled = mPreparationScheduled.load(std::memory_order_relaxed);
+        result.pendingBytes = mPreparationBytes.load(std::memory_order_relaxed);
         result.chargedMs = mAdmission ? mAdmission->chargedMs() : 0;
         return result;
     }
 
     void CompositeMapRenderer::retirePreparations() const
     {
+        std::vector<osg::ref_ptr<CompositeMap>> retiredMaps;
+        std::vector<std::shared_ptr<CompositePreparation>> retiredPreparations;
+        {
+        std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
         for (auto it = mPendingPreparations.begin(); it != mPendingPreparations.end();)
         {
             auto& map = **it;
@@ -238,20 +282,22 @@ namespace Terrain
                 || map.mDrawables.empty())
             {
                 if (preparation)
-                    mPreparationStats.pendingBytes -= preparation->bytes;
+                    mPreparationBytes.fetch_sub(preparation->bytes, std::memory_order_relaxed);
                 if (map.mDrawables.empty() && preparation)
                 {
                     // A completed map keeps its output, not a hidden residency
                     // cache of every source layer/program/preparation FBO.
                     preparation->lifetime->cancel();
                     map.mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel);
-                    map.mPreparation.reset();
+                    retiredPreparations.push_back(std::move(map.mPreparation));
                 }
+                retiredMaps.push_back(std::move(*it));
                 it = mPendingPreparations.erase(it);
             }
             else
                 ++it;
         }
+        } // Final payload/charge releases occur after the admission lock.
     }
 
     bool CompositeMapRenderer::dependenciesReady(const CompositeMap& map, osg::State& state) const
@@ -311,10 +357,36 @@ namespace Terrain
             map.mPreparation.reset();
             map.mCompiled = 0; // retained candidate layers rebuild the complete new revision
         }
+        return schedulePreparation(map, state.getGraphicsContext());
+    }
+
+    void CompositeMapRenderer::prepareAtCreation(CompositeMap& map) const
+    {
+        if (!producerPreparationEnabled() || !mICO || mICO->getContextSet().size() != 1)
+            return;
+        // ChunkManager calls this before publication. No live queued map's
+        // draw-owned fields are read or changed by a producer.
+        if (!map.mBatchingEligible || map.mPreparation || map.mCompiled != 0 || map.mRequired.load(std::memory_order_acquire))
+            return;
+        Debug::HitchTrace::Scope receipt("composite.producer_prepare", Debug::HitchTrace::CpuTiming::WallEnvelope);
+        receipt.retain();
+        map.mPreparationReceipt = receipt.id();
+        schedulePreparation(map, *mICO->getContextSet().begin(), true);
+        receipt.setMetric(0, "accepted", bool(map.mPreparation));
+        receipt.setMetric(1, "dependencies", map.mPreparation ? map.mPreparation->dependencies.size() : 0);
+        receipt.setMetric(2, "retained_bytes", map.mPreparation ? map.mPreparation->bytes : 0);
+        receipt.setMetric(3, "generation", map.mPreparationGeneration.load(std::memory_order_relaxed));
+    }
+
+    bool CompositeMapRenderer::schedulePreparation(CompositeMap& map, osg::GraphicsContext* context, bool atCreation) const
+    {
+        // Reserve and publish the bounded descriptor together. Producers only
+        // append new unpublished maps; retirement/progress remains draw-owned.
+        std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
         // The readiness design is deliberately limited to one actual graphics
         // context. Unsupported contexts/resources use the exact original bake.
         if (!mICO || mICO->getContextSet().size() != 1
-            || !mICO->getContextSet().contains(state.getGraphicsContext())
+            || !mICO->getContextSet().contains(context)
             || !dynamic_cast<Resource::PreparedTerrainTexture*>(map.mTexture.get()))
             return true;
         if (mPendingPreparations.size() >= sMaxPreparationMaps)
@@ -322,7 +394,7 @@ namespace Terrain
 
         auto preparation = std::make_shared<CompositePreparation>();
         preparation->target = map.mTexture;
-        preparation->context = state.getGraphicsContext();
+        preparation->context = context;
         preparation->generation = map.mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
         preparation->bytes = static_cast<std::size_t>(map.mTexture->getTextureWidth())
             * static_cast<std::size_t>(map.mTexture->getTextureHeight()) * 4;
@@ -369,11 +441,19 @@ namespace Terrain
         }
         if (preparation->bytes > sMaxPreparationBytes)
             return true; // no speculative oversized allocation; demand keeps exact fallback
-        if (preparation->bytes > sMaxPreparationBytes - mPreparationStats.pendingBytes)
+        if (preparation->bytes > sMaxPreparationBytes - mPreparationBytes.load(std::memory_order_relaxed))
             return false;
+        Debug::HitchTrace::Scope receipt("composite.prepare_admit", Debug::HitchTrace::CpuTiming::WallEnvelope);
+        receipt.retain();
+        receipt.setLink(map.mPreparationReceipt);
+        preparation->receipt = receipt.id();
+        receipt.setMetric(0, "generation", preparation->generation);
+        receipt.setMetric(1, "dependencies", preparation->dependencies.size());
+        receipt.setMetric(2, "retained_bytes", preparation->bytes);
+        receipt.setMetric(3, "early_producer", atCreation);
         osg::ref_ptr<Resource::V321ClassifiedCompileSet> set = new Resource::V321ClassifiedCompileSet(
             preparation->lifetime, Resource::V321CompileClass::Terrain, Resource::V321CompileUrgency::Background);
-        auto& list = set->_compileMap[state.getGraphicsContext()];
+        auto& list = set->_compileMap[context];
         for (std::size_t i = 0; i < preparation->dependencies.size(); ++i)
         {
             const auto& dep = preparation->dependencies[i];
@@ -392,8 +472,8 @@ namespace Terrain
         set->_compileCompletedCallback = new CompositeCompileCompleted(preparation->lifetime);
         map.mPreparation = preparation;
         mPendingPreparations.push_back(&map);
-        mPreparationStats.pendingBytes += preparation->bytes;
-        ++mPreparationStats.scheduled;
+        mPreparationBytes.fetch_add(preparation->bytes, std::memory_order_relaxed);
+        mPreparationScheduled.fetch_add(1, std::memory_order_relaxed);
         mICO->add(set, false);
         return false;
     }
@@ -401,6 +481,10 @@ namespace Terrain
     CompositeMapRenderer::CompositeMapRenderer()
         : mCompositeBatchEnabled([] {
             const char* value = std::getenv("OPENMW_HITCH_COMPOSITE_BATCH");
+            return value && std::string_view(value) == "1";
+        }())
+        , mProducerPreparationEnabled([] {
+            const char* value = std::getenv("OPENMW_HITCH_COMPOSITE_EARLY");
             return value && std::string_view(value) == "1";
         }())
         , mTargetFrameRate(120)
@@ -415,6 +499,7 @@ namespace Terrain
 
     CompositeMapRenderer::~CompositeMapRenderer()
     {
+        std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
         for (const auto& map : mPendingPreparations)
             if (map->mPreparation)
             {
@@ -426,6 +511,7 @@ namespace Terrain
     void CompositeMapRenderer::releaseGLObjects(osg::State* state) const
     {
         std::lock_guard<std::mutex> lock(mMutex);
+        std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
         for (const auto& map : mPendingPreparations)
             if (map->mPreparation)
             {
@@ -572,10 +658,10 @@ namespace Terrain
                     << telemetry.requiredMaps << ',' << telemetry.drawables << ',' << telemetry.fboMs << ','
                     << telemetry.stateMs << ',' << telemetry.drawMs << ','
                     << (yieldsEnd >= yieldsStart ? yieldsEnd - yieldsStart : 0) << ','
-                    << immediateEnd << ',' << queuedEnd << ',' << mPreparationStats.scheduled << ','
+                    << immediateEnd << ',' << queuedEnd << ',' << mPreparationScheduled.load(std::memory_order_relaxed) << ','
                     << mPreparationStats.invalidated << ',' << mPreparationStats.cancelled << ','
                     << mPreparationStats.requiredFallbacks << ',' << mPreparationStats.ageProgress << ','
-                    << mPreparationStats.budgetYields << ',' << mPreparationStats.pendingBytes << ','
+                    << mPreparationStats.budgetYields << ',' << mPreparationBytes.load(std::memory_order_relaxed) << ','
                     << (preparationActive ? mAdmission->chargedMs() : 0) << ',' << oldestAge;
                 telemetryWriter.writeLine(row.str());
             }
@@ -634,6 +720,15 @@ namespace Terrain
         }
 
         const bool required = compositeMap.mRequired.load(std::memory_order_acquire);
+        Debug::HitchTrace::Scope slice("composite.map_slice", Debug::HitchTrace::CpuTiming::WallEnvelope);
+        slice.setLink(compositeMap.mPreparation ? compositeMap.mPreparation->receipt : compositeMap.mPreparationReceipt);
+        slice.setMetric(0, "required", required);
+        slice.setMetric(1, "remaining_passes", compositeMap.mDrawables.size() - compositeMap.mCompiled);
+        const auto* ownedPreparation = compositeMap.mPreparation.get();
+        slice.setMetric(2, "pending_submissions", ownedPreparation
+            ? ownedPreparation->dependencies.size() + 2 - ownedPreparation->submittedCount() : 0);
+        slice.setMetric(3, "preparation_ready", preparationActive && dependenciesReady(compositeMap, *renderInfo.getState()));
+        if (required) slice.retain();
         if (preparationActive && !required && !prepare(compositeMap, renderInfo))
             return;
         if (preparationActive && required && !dependenciesReady(compositeMap, *renderInfo.getState()))

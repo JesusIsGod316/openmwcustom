@@ -2,6 +2,8 @@ param(
     [Alias('Mode')][ValidateSet('','1','2','3','4','5','6','7','8','9','10','11','12','13')][string]$ModeChoice='',
     [ValidateSet('CONTROL','I1','I2','I1I2','D1')][string]$Candidate='CONTROL',
     [ValidateRange(-1,15)][int]$HitchMask=-1,
+    [ValidateRange(-1,63)][int]$AttackMask=-1,
+    [switch]$ObserverLocal,
     [ValidateSet('','Normal','Deep')][string]$TraceLevel='',
     [ValidateSet('stream','deferred')][string]$HitchTransport='stream',
     [switch]$SystemTrace,
@@ -24,6 +26,7 @@ $OpenmwCfgPath = Join-Path $UserOpenMW 'openmw.cfg'
 . (Join-Path $GameDir 'OptimizedMW_RunManifest.ps1')
 . (Join-Path $GameDir 'OptimizedMW_HitchMatrix.ps1')
 . (Join-Path $GameDir 'OptimizedMW_QuickTest.ps1')
+. (Join-Path $GameDir 'OptimizedMW_AttackPresets.ps1')
 $ProfilesRoot = Join-Path $UserOpenMW 'OptimizedMW-Phase9-Profiles'
 
 if (-not (Test-Path -LiteralPath $Exe)) { Write-Host 'ERROR: Put this launcher beside openmw.exe.' -ForegroundColor Red; if(-not $NoPrompt){Read-Host 'Press Enter to close'}; exit 1 }
@@ -78,34 +81,39 @@ function Get-P9Mode {
 $quickSelection=$null
 $quickSession=$null
 $hitchSelection=$null
-if(-not $ModeChoice -and $HitchMask -lt 0 -and -not $TraceLevel -and -not $NoPrompt){
+if(-not $ModeChoice -and $HitchMask -lt 0 -and $AttackMask -lt 0 -and -not $TraceLevel -and -not $NoPrompt){
     Write-Host ''
     Write-Host 'OptimizedMW - choose one test' -ForegroundColor Cyan
     Write-Host '  1 = Diagnose CONTROL   Deep engine diagnostics + automatic Windows trace' -ForegroundColor Green
     Write-Host '  2 = Normal CONTROL     performance comparison, original feature switches'
     Write-Host '  3 = Normal ALL         performance comparison, all four hitch candidates'
     Write-Host '  4 = Diagnose ALL       Deep engine diagnostics + automatic Windows trace'
+    Write-Host '  5 = Normal ANIM control    original animation preparation'
+    Write-Host '  6 = Normal ANIM retained   bounded animation ownership candidate' -ForegroundColor Green
+    Write-Host '  7 = Diagnose ANIM retained Deep + automatic Windows trace'
     Write-Host '  C = Custom combination / I/O / trace depth'
     Write-Host '  A = Earlier Phase 9 modes'
     Write-Host '  X = Exit'
-    do{$quickChoice=Read-Host 'Test (1-4, C, A, or X)'}until($quickChoice -in @('1','2','3','4','C','A','X'))
+    do{$quickChoice=Read-Host 'Test (1-7, C, A, X; Enter = Normal CONTROL)';if($quickChoice -eq ''){$quickChoice='2'}}until($quickChoice -in @('1','2','3','4','5','6','7','C','A','X'))
     if($quickChoice -eq 'X'){exit 0}
-    if($quickChoice -in @('1','2','3','4')){
+    if($quickChoice -in @('1','2','3','4','5','6','7')){
         $quickSelection=Get-OptimizedMWQuickPreset -Choice $quickChoice
         $HitchMask=$quickSelection.mask;$TraceLevel=$quickSelection.trace_level
         $Candidate=$quickSelection.candidate;$SystemTrace=[bool]$quickSelection.system_trace
+        if($quickSelection.PSObject.Properties['attack_mask']){$AttackMask=$quickSelection.attack_mask}
     }elseif($quickChoice -eq 'C'){
         $hitchSelection=Read-OptimizedMWHitchSelection
         $HitchMask=$hitchSelection.features.mask;$TraceLevel=if($hitchSelection.trace_level -eq 'DEEP'){'Deep'}else{'Normal'}
         $Candidate=$hitchSelection.candidate
+        $AttackMask=Read-OptimizedMWAttackMask
         if($TraceLevel -eq 'Deep'){
             do{$systemChoice=Read-Host 'Windows system trace: Enter = automatic, N = engine only'}until($systemChoice -in @('','N'))
             $SystemTrace=$systemChoice -eq ''
         }
-        $quickSelection=[pscustomobject]@{mask=$HitchMask;trace_level=$TraceLevel;candidate=$Candidate;system_trace=[bool]$SystemTrace;name=$hitchSelection.experiment}
+        $quickSelection=[pscustomobject]@{mask=$HitchMask;attack_mask=$AttackMask;trace_level=$TraceLevel;candidate=$Candidate;system_trace=[bool]$SystemTrace;name=$hitchSelection.experiment}
     }
 }
-if($HitchMask -ge 0 -or $TraceLevel){
+if($HitchMask -ge 0 -or $AttackMask -ge 0 -or $TraceLevel){
     if($HitchMask -lt 0){$HitchMask=0}
     if(-not $TraceLevel){$TraceLevel='Normal'}
     $hitchSelection=Get-OptimizedMWHitchSelection -Mask $HitchMask -TraceLevel $TraceLevel -Candidate $Candidate
@@ -144,11 +152,20 @@ do{
 }until($choice -in @('1','2','3','4','5','6','7','8','9','10','11','12','13'))
 }else{$choice=$ModeChoice}
 $mode=Get-P9Mode $choice
+if($ObserverLocal -and $mode.Trace -ne '1'){throw 'Local observer accounting requires Deep diagnostics'}
+$attackCombination=Get-OptimizedMWAttackCombination $(if($AttackMask -ge 0){$AttackMask}else{0})
+if($AttackMask -ge 0){
+    $attackCombination=ConvertTo-OptimizedMWAttackSelection -Selection $hitchSelection -Mode $mode -Mask $AttackMask
+}
 if($SystemTrace -and $mode.Trace -ne '1'){throw 'Windows trace requires Deep diagnostics. Choose Diagnose CONTROL/ALL, or select Deep in Custom.'}
 if($SystemTrace -and -not $quickSelection){
     $quickSelection=[pscustomobject]@{mask=$(if($HitchMask -ge 0){$HitchMask}else{0});trace_level='Deep';candidate=$Candidate;system_trace=$true;name=$mode.Name}
 }
-if($hitchSelection){$mode.HitchTrialRevision=2}
+if($quickSelection -and $AttackMask -ge 0){
+    $quickSelection.mask=$hitchSelection.features.mask
+    $quickSelection.name=$hitchSelection.experiment
+}
+if($hitchSelection -and $AttackMask -lt 0){$mode.HitchTrialRevision=2}
 $candidateProfile=Get-Phase9Candidate -Name $Candidate -BufferBudgetBytes $BufferBudgetBytes
 $hitchCombination=if($hitchSelection){$hitchSelection.features}else{Get-OptimizedMWHitchCombination 0}
 if($candidateProfile.d1 -and $mode.Trace -ne '1'){throw 'D1 requires a deep trace mode; use -Mode 3 -Candidate D1'}
@@ -224,6 +241,7 @@ try{
     Get-ChildItem Env: | Where-Object {$_.Name -like 'OPENMW_*'} | ForEach-Object {Remove-Item ('Env:'+$_.Name)}
     Set-Phase9CandidateEnvironment -Candidate $candidateProfile -Mode $mode
     Set-OptimizedMWHitchCombinationEnvironment $hitchCombination
+    Set-OptimizedMWAttackEnvironment $attackCombination -ObserverLocal:$ObserverLocal
 
     # Same head-cache budget across every mode, not a hidden per-mode tuning change.
     Set-IniValue $SettingsPath 'Sound' 'head cache size' '96'
@@ -340,7 +358,17 @@ try{
 
     @(
         "experiment=$Experiment",
-        "hitch_trial_revision=$(if($hitchSelection){2}else{1})",
+        "hitch_trial_revision=$(if($AttackMask -ge 0){3}elseif($hitchSelection){2}else{1})",
+        "hitch_attack_mask=$($attackCombination.mask)",
+        "hitch_attack=$($attackCombination.name)",
+        "hitch_animation_lifetime=$([int]$attackCombination.animation_lifetime)",
+        "hitch_animation_plan=$([int]$attackCombination.animation_plan)",
+        "hitch_composite_early=$([int]$attackCombination.composite_early)",
+        "hitch_water_prepare=$([int]$attackCombination.water_prepare)",
+        "hitch_weather_prepare=$([int]$attackCombination.weather_prepare)",
+        "hitch_lua_package_descriptors=$([int]$attackCombination.lua_package_descriptors)",
+        "hitch_observer_local=$([int][bool]$ObserverLocal)",
+        "benchmark_context_schema=1",
         "hitch_diagnostics_revision=$(if($mode.Trace -eq '1'){1}else{0})",
         "hitch_combination_mask=$($hitchCombination.mask)",
         "hitch_combination=$($hitchCombination.name)",
@@ -470,6 +498,7 @@ try{
     $env:OPENMW_V32_GPU_MEMORY_FILE=Join-Path $ProfileDir 'v3-gpu-memory.csv'
     $env:OPENMW_P4_COMPILE_FILE=Join-Path $ProfileDir 'p4-compile.csv'
     $env:OPENMW_V3_FRAME_FILE=Join-Path $ProfileDir 'v3-frame.csv'
+    $env:OPENMW_P9_BENCHMARK_CONTEXT_FILE=Join-Path $ProfileDir 'benchmark-context.csv'
     $env:OPENMW_V3_HITCH_FILE=Join-Path $ProfileDir 'v3-hitch.csv'
     $env:OPENMW_P6_RENDER_PHASE_FILE=Join-Path $ProfileDir 'p6-render-phase.csv'
     $env:OPENMW_P6_TRAVERSAL_FILE=Join-Path $ProfileDir 'p6-render-traversal.csv'

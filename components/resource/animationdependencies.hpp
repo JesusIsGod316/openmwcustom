@@ -37,6 +37,34 @@ namespace Resource
         return AnimationDependencyPreloadEnabled;
     }
 
+    inline const bool AnimationDependencyLifetimeEnabled = [] {
+        const char* value = std::getenv("OPENMW_HITCH_ANIMATION_LIFETIME");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    inline const bool AnimationSourcePlanEnabled = [] {
+        const char* value = std::getenv("OPENMW_HITCH_ANIMATION_PLAN");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    inline bool animationDependencyLifetimeEnabled() noexcept
+    {
+        return AnimationDependencyPreloadEnabled && AnimationDependencyLifetimeEnabled;
+    }
+    inline bool animationSourcePlanEnabled() noexcept { return AnimationSourcePlanEnabled; }
+
+    inline std::string additionalAnimationDirectory(VFS::Path::NormalizedView model)
+    {
+        constexpr VFS::Path::NormalizedView meshes("meshes/");
+        if (!model.value().starts_with(meshes.value()))
+            return {};
+        std::string path(model.value());
+        path.replace(0, meshes.value().size(), "animations/");
+        const auto extension = path.find_last_of(VFS::Path::extensionSeparator);
+        if (extension == std::string::npos)
+            return {};
+        path.replace(extension, path.size() - extension, "/");
+        return path;
+    }
+
     inline bool npcAnimationUsesCustomModel(bool firstPerson, bool werewolf, bool hasModel) noexcept
     {
         return !firstPerson && !werewolf && hasModel;
@@ -79,15 +107,9 @@ namespace Resource
     bool visitAdditionalAnimationSources(
         const VFS::Manager& vfs, VFS::Path::NormalizedView model, Visitor&& visit, Continue&& keepGoing)
     {
-        constexpr VFS::Path::NormalizedView meshes("meshes/");
-        if (!model.value().starts_with(meshes.value()))
+        const auto path = additionalAnimationDirectory(model);
+        if (path.empty())
             return true;
-        std::string path(model.value());
-        path.replace(0, meshes.value().size(), "animations/");
-        const auto extension = path.find_last_of(VFS::Path::extensionSeparator);
-        if (extension == std::string::npos)
-            return true;
-        path.replace(extension, path.size() - extension, "/");
         for (const VFS::Path::Normalized& name : vfs.getRecursiveDirectoryIterator(path))
         {
             if (!keepGoing())
