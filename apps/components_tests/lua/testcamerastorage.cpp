@@ -80,7 +80,7 @@ require = function(name) assert(packages[name], name); return packages[name] end
         void check(std::string_view script)
         {
             auto result = mLua.safe_script(script, sol::script_pass_on_error);
-            ASSERT_TRUE(result.valid()) << (result.valid() ? "" : sol::error(result).what());
+            ASSERT_TRUE(result.valid()) << (result.valid() ? "" : result.get<sol::error>().what());
         }
     };
 
