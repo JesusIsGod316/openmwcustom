@@ -6,6 +6,7 @@
 #include <components/sceneutil/glcalltrace.hpp>
 #include <components/terrain/compositemaprenderer.hpp>
 #include <osg/BlendFunc>
+#include <osg/ContextData>
 #include <osg/Depth>
 #include <osg/Geometry>
 #include <osg/GraphicsContext>
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <thread>
 #include <osg/observer_ptr>
@@ -77,11 +79,41 @@ namespace
         }
         ~StepEnvironment() { set(existed ? previous.c_str() : nullptr); }
     };
+    struct NamedEnvironment
+    {
+        std::string name, previous;
+        bool existed;
+        NamedEnvironment(const char* key, const char* value) : name(key),
+            previous(std::getenv(key) ? std::getenv(key) : ""), existed(std::getenv(key) != nullptr)
+        { set(value); }
+        void set(const char* value) const
+        {
+#ifdef _WIN32
+            _putenv_s(name.c_str(), value ? value : "");
+#else
+            if (value) setenv(name.c_str(), value, 1); else unsetenv(name.c_str());
+#endif
+        }
+        ~NamedEnvironment() { set(existed ? previous.c_str() : nullptr); }
+    };
     class CountingProgram final : public osg::Program
     {
     public:
         mutable unsigned applications = 0;
         void apply(osg::State& state) const override { ++applications; osg::Program::apply(state); }
+    };
+    class AdmissionRetiringTexture final : public Resource::PreparedTerrainTexture
+    {
+    public:
+        explicit AdmissionRetiringTexture(osg::Image* image) : PreparedTerrainTexture(image) {}
+        bool preparationAdmissionEligible(const osg::State&) const noexcept override { return admitted; }
+        void apply(osg::State& state) const override
+        {
+            ++applications;
+            PreparedTerrainTexture::apply(state);
+        }
+        bool admitted = true;
+        mutable unsigned applications = 0;
     };
     class ControlledGeometry final : public osg::Geometry
     {
@@ -158,7 +190,9 @@ namespace
     std::array<unsigned char, 4> pixel(osg::Texture2D& image, osg::State& state)
     {
         image.apply(state);
-        std::array<unsigned char, 32 * 32 * 4> pixels{};
+        const auto width = image.getTextureWidth(), height = image.getTextureHeight();
+        require(width > 0 && height > 0 && width <= 4096 && height <= 4096, "fixture readback dimensions invalid");
+        std::vector<unsigned char> pixels(std::size_t(width) * height * 4);
         glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
         return {pixels[0], pixels[1], pixels[2], pixels[3]};
     }
@@ -191,6 +225,8 @@ namespace
         }
         static Resource::OpenGlPressureSample sample(void* owner) { return static_cast<CachedPressure*>(owner)->value; }
         Resource::SpeculativeScope::Context context() { return {nullptr, &sample, this}; }
+        void transition(Resource::OpenGlPressure valueState)
+        { ++value.generation; value.decision.state = valueState; }
     };
     class OrderedGeometry final : public osg::Geometry
     {
@@ -331,13 +367,13 @@ namespace
         {
             auto renderer = makeRenderer();
             MapFixture denied;
-            pressure.value.decision.state = Resource::OpenGlPressure::Critical;
+            pressure.transition(Resource::OpenGlPressure::Critical);
             renderer->addCompositeMap(denied.map); next(*renderer);
             require(denied.map->mCompiled == 0 && !denied.map->mPreparation && renderer->preparationStats().pressureYields,
                 "critical cached pressure admitted new optional STEP work");
             renderer->setImmediate(denied.map); next(*renderer);
             require(denied.map->mDrawables.empty(), "critical pressure delayed required original bake");
-            pressure.value.decision.state = Resource::OpenGlPressure::Normal;
+            pressure.transition(Resource::OpenGlPressure::Normal);
             MapFixture canceled;
             renderer->addCompositeMap(canceled.map); next(*renderer);
             pressure.value.generation = 0; next(*renderer);
@@ -355,12 +391,12 @@ namespace
             for (unsigned i = 0; i < 30 && !submitted.red->getTextureObject(state.getContextID()); ++i) next(*renderer);
             require(submitted.map->mCompiled == 0 && submitted.red->getTextureObject(state.getContextID()),
                 "source submission did not precede actual layer use");
-            pressure.value.decision.state = Resource::OpenGlPressure::Critical;
+            pressure.transition(Resource::OpenGlPressure::Critical);
             next(*renderer);
             require(!submitted.map->mPreparation && ico.getToCompile().empty()
                 && renderer->preparationStats().pendingBytes > 0,
                 "canceled already-submitted GL source/target falsely refunded unused debt");
-            pressure.value.decision.state = Resource::OpenGlPressure::Normal;
+            pressure.transition(Resource::OpenGlPressure::Normal);
             renderer->setImmediate(submitted.map); next(*renderer);
             require(submitted.map->mDrawables.empty() && renderer->preparationStats().pendingBytes == 0,
                 "exact required layer use failed to retire canceled submitted-identity debt");
@@ -376,6 +412,10 @@ namespace
             renderer->addCompositeMap(partial.map);
             for (unsigned i = 0; i < 30 && partial.map->mCompiled == 0; ++i) next(*renderer);
             require(partial.map->mCompiled == 1, "program/target/release fixture failed to consume first layer");
+            osg::observer_ptr<osg::Texture::TextureObject> oldTargetObject
+                = partial.map->mTexture->getTextureObject(state.getContextID());
+            const auto oldTargetIdentity = reinterpret_cast<std::uintptr_t>(oldTargetObject.get());
+            require(oldTargetIdentity, "mutation fixture has no submitted target identity");
             MapFixture replacement;
             if (mutation == 0)
                 partial.map->mDrawables[0]->getStateSet()->setAttributeAndModes(replacement.program, osg::StateAttribute::ON);
@@ -396,7 +436,87 @@ namespace
             const auto value = pixel(*partial.map->mTexture, state);
             require(value[0] >= 63 && value[0] <= 65 && value[1] >= 190 && value[1] <= 192,
                 "program/target/context-release required restart changed final original pixels");
+            if (mutation == 0)
+                require(renderer->preparationStats().pendingBytes == 0,
+                    "required program restart retained debit after exact source/target use");
+            else
+            {
+                // FBO release recursively releases its attached texture too,
+                // but OSG may reuse that exact pooled object for the new bake.
+                const auto* currentTargetObject = partial.map->mTexture->getTextureObject(state.getContextID());
+                require(currentTargetObject, "required restart has no current target object");
+                osg::ref_ptr<osg::Texture::TextureObject> oldOwner;
+                const bool oldLive = oldTargetObject.lock(oldOwner);
+                const bool reused = oldLive && oldOwner.get() == currentTargetObject;
+                std::cout << "mutation debt: kind=" << mutation << " branch="
+                    << (reused ? "exact_live_reuse" : oldLive ? "distinct_old_live" : "old_expired")
+                    << " old_address=" << oldTargetIdentity << " current_address="
+                    << reinterpret_cast<std::uintptr_t>(currentTargetObject)
+                    << " pending=" << renderer->preparationStats().pendingBytes << '\n';
+                if (reused)
+                    require(renderer->preparationStats().pendingBytes == 0,
+                        "exact required use of reused live target did not consume its debt");
+                else
+                {
+                    if (oldLive)
+                        require(renderer->preparationStats().pendingBytes > 0,
+                            "unused pooled target falsely refunded its conservative debit");
+                    oldOwner = nullptr;
+                    // Fixture-only cleanup drains already-orphaned objects.
+                    // An expired weak owner is different even if the allocator
+                    // has recycled its raw address for the current live one.
+                    osg::flushAllDeletedGLObjects(state.getContextID());
+                    require(!oldTargetObject.valid(), "OSG orphan cleanup retained the retired target owner");
+                    if (ico.progressRepairEnabled())
+                    {
+                        next(*renderer, false); // no new map and no ICO admission
+                        require(renderer->preparationStats().pendingBytes == 0,
+                            "empty-queue maintenance failed to prune genuinely expired target debt");
+                    }
+                }
+            }
             renderer->releaseGLObjects(&state);
+        }
+        {
+            auto renderer = makeRenderer();
+            MapFixture retired;
+            osg::ref_ptr<AdmissionRetiringTexture> source = new AdmissionRetiringTexture(retired.red->getImage());
+            source->setFilter(osg::Texture::MIN_FILTER, osg::Texture::NEAREST);
+            source->setFilter(osg::Texture::MAG_FILTER, osg::Texture::NEAREST);
+            source->setResizeNonPowerOfTwoHint(false);
+            retired.red = source;
+            retired.map->mDrawables[0]->getStateSet()->setTextureAttribute(0, source);
+            const auto* imageIdentity = source->getImage();
+            const unsigned imageRevision = imageIdentity->getModifiedCount();
+            renderer->addCompositeMap(retired.map);
+            for (unsigned i = 0; i < 12 && renderer->preparationStats().dependencyWaves < 2; ++i)
+            {
+                next(*renderer, false);
+                if (renderer->preparationStats().dependencyWaves < 2) ico(&context);
+            }
+            require(retired.map->mPreparation && renderer->preparationStats().dependencyWaves >= 2
+                && !ico.getToCompile().empty() && source->applications == 0,
+                "retired-admission fixture did not queue a source wave before apply");
+            source->admitted = false;
+            require(source->getImage() == imageIdentity && imageIdentity->getModifiedCount() == imageRevision,
+                "pure eligibility retirement changed outer image identity/revision");
+            ico(&context); ico(&context);
+            require(source->applications == 0 && ico.getToCompile().empty() && retired.map->mCompiled == 0,
+                "retired optional source applied a fallback or failed to cancel its queued wave");
+            renderer->setImmediate(retired.map);
+            next(*renderer);
+            require(retired.map->mDrawables.empty() && !retired.map->mPreparation && source->applications > 0,
+                "eligibility retirement delayed required fallback or retained cancelled preparation");
+            MapFixture control;
+            StepEnvironment controlEnvironment("0");
+            osg::ref_ptr<Terrain::CompositeMapRenderer> original = new Terrain::CompositeMapRenderer;
+            original->compile(*control.map, info);
+            require(pixel(*retired.map->mTexture, state) == pixel(*control.map->mTexture, state),
+                "required fallback after pure admission retirement changed original pixels");
+            require(source->getImage() == imageIdentity && imageIdentity->getModifiedCount() == imageRevision,
+                "eligibility-only cancellation modified source image metadata");
+            std::cout << "PASS: eligibility-only retirement cancels queued source without apply; required original pixels preserved\n";
+            original->releaseGLObjects(&state); renderer->releaseGLObjects(&state);
         }
         {
             auto renderer = makeRenderer();
@@ -432,6 +552,43 @@ namespace
             require(value == std::array<unsigned char, 4>{255, 255, 255, 255}, "oversize fallback pixel changed");
             renderer->releaseGLObjects(&state);
         }
+#ifdef P9_COMPILE_TRACE_TEST_HOOKS
+        if (ico.progressRepairEnabled())
+        {
+            auto renderer = makeRenderer();
+            MapFixture submitted;
+            renderer->addCompositeMap(submitted.map);
+            for (unsigned i = 0; i < 30 && !submitted.red->getTextureObject(state.getContextID()); ++i) next(*renderer);
+            require(submitted.map->mCompiled == 0 && submitted.red->getTextureObject(state.getContextID()),
+                "debt failure fixture did not submit an unused source");
+            {
+                NamedEnvironment failure("P9_COMPOSITE_DEBT_FAILURE", "1");
+                pressure.transition(Resource::OpenGlPressure::Critical);
+                next(*renderer);
+            }
+            require(!submitted.map->mPreparation && ico.getToCompile().empty()
+                && renderer->preparationStats().pendingBytes > 0,
+                "debt ledger allocation failure falsely refunded submitted ownership");
+            pressure.transition(Resource::OpenGlPressure::Normal);
+            const auto scheduled = renderer->preparationStats().scheduled;
+            MapFixture rejected;
+            renderer->addCompositeMap(rejected.map);
+            next(*renderer);
+            require(!rejected.map->mPreparation && renderer->preparationStats().scheduled == scheduled,
+                "debt ledger failure did not disable subsequent speculation");
+            renderer->setImmediate(submitted.map); renderer->setImmediate(rejected.map);
+            next(*renderer);
+            require(submitted.map->mDrawables.empty() && rejected.map->mDrawables.empty(),
+                "failed debt ledger blocked required complete rendering");
+            require(pixel(*submitted.map->mTexture, state) == pixel(*rejected.map->mTexture, state),
+                "required rendering after debt ledger failure changed pixels");
+            // The failed entry cannot be proven consumed; conservative credit
+            // remains stranded for this renderer instead of being guessed free.
+            require(renderer->preparationStats().pendingBytes > 0,
+                "failed ledger advertised unprovable unused ownership as free");
+            renderer->releaseGLObjects(&state);
+        }
+#endif
         // Real selected-extension mipmap call with the actual producer apply
         // owner; a neighboring cached attribute must never supply its identity.
         auto& capture = SceneUtil::GLCallTrace::Capture::instance();
@@ -458,6 +615,163 @@ namespace
         require(glGetError() == GL_NO_ERROR, "GL error in STEP/owner fixtures");
         std::cout << "PASS: STEP 20 large mipmapped layers, 32MiB/eight-map debt, exact order/pixels, stale consumed-source/program/target/context-release required restart, submitted/unsubmitted cancellation lifetime, pressure fallback, oversized complete layer, and actual mipmap owner\n";
     }
+
+    void progressFixtures(osg::GraphicsContext& context, osg::State& state, osg::RenderInfo& info,
+        osg::FrameStamp& stamp, Resource::OpenMWIncrementalCompileOperation& ico)
+    {
+        StepEnvironment stepEnvironment("1");
+        EarlyEnvironment earlyEnvironment("1");
+        CachedPressure pressure;
+        osg::ref_ptr<Terrain::CompositeMapRenderer> renderer = new Terrain::CompositeMapRenderer;
+        renderer->configurePreparation(&ico, pressure.context());
+        renderer->setMinimumTimeAvailableForCompile(.002);
+        renderer->setCooperativeBackgroundCompile(true);
+        require(renderer->producerPreparationEnabled() && ico.progressRepairEnabled(), "progress producer gate is not active");
+        require(ico.compositeMaxQueueAge() == 120 && ico.compositeBudgetMs() == 2,
+            "progress fixture does not use the representative 2ms/120-frame configuration");
+
+        // The actual private producer builds 171 retained maps without GL. Only
+        // eight descriptors may own optional resource preparation at once.
+        constexpr unsigned MapCount = 171;
+        std::array<std::unique_ptr<MapFixture>, MapCount> maps;
+        std::array<std::vector<unsigned>, MapCount> orders;
+        for (unsigned i = 0; i < MapCount; ++i)
+        {
+            maps[i] = std::make_unique<MapFixture>();
+            maps[i]->map->mTexture->setTextureSize(512, 512); // Real cold 1 MiB target.
+            for (unsigned layer = 0; layer < 2; ++layer)
+                maps[i]->map->mDrawables[layer] = new OrderedGeometry(
+                    *maps[i]->map->mDrawables[layer]->asGeometry(), orders[i], layer);
+        }
+        std::thread producer([&] {
+            for (const auto& fixture : maps) renderer->prepareAtCreation(*fixture->map);
+        });
+        producer.join();
+        auto stats = renderer->preparationStats();
+        unsigned admitted = 0;
+        for (const auto& fixture : maps)
+        {
+            if (fixture->map->mPreparation) ++admitted;
+            require(!fixture->map->mTexture->getTextureObject(state.getContextID()),
+                "producer descriptor creation executed GL");
+        }
+        require(admitted == 8 && stats.scheduled == 8 && stats.descriptorBuilds == 8
+            && stats.capacityDeclines == MapCount - 8, "producer did not bound descriptor admission to eight maps");
+        const auto declines = stats.capacityDeclines;
+        std::thread deniedProducer([&] {
+            for (unsigned repeat = 0; repeat < 3; ++repeat)
+                for (unsigned i = 8; i < MapCount; ++i) renderer->prepareAtCreation(*maps[i]->map);
+        });
+        deniedProducer.join();
+        stats = renderer->preparationStats();
+        require(stats.descriptorBuilds == 8 && stats.capacityDeclines == declines + 3 * (MapCount - 8),
+            "full descriptor pool rescanned denied producer graphs");
+        require(stats.pendingBytes > 0 && stats.pendingBytes <= 32u * 1024u * 1024u,
+            "producer preparation debit is absent or exceeds 32MiB");
+        for (const auto& fixture : maps) renderer->addCompositeMap(fixture->map);
+        require(renderer->getCompileSetSize() == MapCount, "retained maps were lost at queue publication");
+
+        unsigned frame = 5000;
+        auto ownerDraw = [&] {
+            const auto before = renderer->preparationStats().polls;
+            renderer->drawImplementation(info);
+            require(renderer->preparationStats().polls - before <= 16
+                && ico.compositeAdmission()->compositeMaintenanceVisits() <= 16,
+                "owner frame exceeded sixteen map visits");
+            require(renderer->preparationStats().pendingBytes <= 32u * 1024u * 1024u,
+                "progress queue exceeded 32MiB ownership cap");
+        };
+        auto next = [&](bool runIco = true) {
+            stamp.setFrameNumber(frame++); context.clear(); ownerDraw();
+            if (runIco) ico(&context);
+        };
+        const auto wakeBefore = maps[0]->map->mProgressWake.load(std::memory_order_acquire);
+        bool coldTargetBootstrapped = false;
+        for (unsigned attempts = 0; attempts < 32 && !coldTargetBootstrapped; ++attempts)
+        {
+            next();
+            bool submitted = false;
+            for (unsigned i = 0; i < 8; ++i)
+                submitted = submitted || maps[i]->map->mTexture->getTextureObject(state.getContextID());
+            coldTargetBootstrapped = submitted && ico.compositeAdmission()->bootstrapUsed();
+        }
+        require(coldTargetBootstrapped, "cold 1MiB target waited for 120-frame age instead of bounded bootstrap");
+        require(ico.compositeAdmission()->chargedMs() > 0, "cold target/bootstrap work was not actually charged");
+        const auto pollsBeforeRepeats = renderer->preparationStats().polls;
+        const auto visitsBeforeRepeats = ico.compositeAdmission()->compositeMaintenanceVisits();
+        for (unsigned repeat = 0; repeat < 3; ++repeat) ownerDraw();
+        require(renderer->preparationStats().polls - pollsBeforeRepeats <= 16 - visitsBeforeRepeats,
+            "repeated traversal replenished the owner-frame maintenance allowance");
+
+        unsigned promoted = MapCount;
+        for (unsigned attempts = 0; attempts < 48 && promoted == MapCount; ++attempts)
+        {
+            for (unsigned i = 8; i < MapCount; ++i)
+                if (maps[i]->map->mProgressWait.reason() == Terrain::CompositeProgressWait::Reason::Capacity)
+                { promoted = i; break; }
+            if (promoted == MapCount) next(false);
+        }
+        require(promoted != MapCount && !maps[promoted]->map->mPreparation,
+            "no denied map retained canonical capacity-parked queue membership");
+        renderer->setImmediate(maps[promoted]->map);
+        next(false);
+        require(maps[promoted]->map->mDrawables.empty() && orders[promoted] == std::vector<unsigned>({0, 1})
+            && renderer->preparationStats().requiredFallbacks > 0,
+            "required promotion of a parked map lost original complete layer order");
+
+        auto complete = [&] {
+            return std::all_of(maps.begin(), maps.end(), [](const auto& fixture) { return fixture->map->mDrawables.empty(); });
+        };
+        unsigned attempts = 0;
+        for (; attempts < 900 && !complete(); ++attempts) next();
+        if (!complete())
+        {
+            stats = renderer->preparationStats();
+            std::cerr << "progress evidence: scheduled=" << stats.scheduled << " completed=" << stats.completedMaps
+                << " layers=" << stats.consumedLayers << " visits=" << stats.polls << " pending=" << stats.pendingBytes << '\n';
+        }
+        require(complete(), "bounded progress/fair cursor left retained maps unfinished after 900 owner frames");
+        for (unsigned i = 0; i < MapCount; ++i)
+            require(maps[i]->map->mCompiled == 2 && orders[i] == std::vector<unsigned>({0, 1}),
+                "progress preparation lost, repeated, or reordered a terrain layer");
+        next();
+        stats = renderer->preparationStats();
+        require(stats.scheduled >= MapCount - 1 && stats.descriptorBuilds == stats.scheduled
+            && stats.completedMaps >= MapCount - 1 && stats.consumedLayers >= 2 * (MapCount - 1),
+            "weak completion/capacity wake did not admit and complete the waiting maps");
+        require(maps[0]->map->mProgressWake.load(std::memory_order_acquire) > wakeBefore,
+            "actual ICO completion did not publish a weak map wake");
+        require(stats.pendingBytes == 0 && ico.getToCompile().empty(),
+            "completed progress queue retained optional preparation debit");
+        {
+            MapFixture control;
+            StepEnvironment oldStep("0");
+            NamedEnvironment oldProgress("OPENMW_HITCH_COMPOSITE_PROGRESS", "0");
+            osg::ref_ptr<Terrain::CompositeMapRenderer> original = new Terrain::CompositeMapRenderer;
+            original->compile(*control.map, info);
+            const auto expected = pixel(*control.map->mTexture, state);
+            for (const unsigned index : {0u, promoted, MapCount - 1})
+                require(pixel(*maps[index]->map->mTexture, state) == expected,
+                    "progress/required terrain pixels differ from original control");
+            original->releaseGLObjects(&state);
+        }
+        // Cancellation releases an unsubmitted wave only after the queued ICO
+        // owner is destroyed. There is no GL object whose use can be guessed.
+        MapFixture cancelled;
+        renderer->prepareAtCreation(*cancelled.map);
+        renderer->addCompositeMap(cancelled.map);
+        require(renderer->preparationStats().pendingBytes > 0, "cancellation fixture was not admitted");
+        cancelled.consumer = nullptr;
+        next(false);
+        require(cancelled.map->mDrawables.empty() && renderer->preparationStats().pendingBytes > 0,
+            "cancelled progress wave refunded before queued ownership retired");
+        ico(&context);
+        require(renderer->preparationStats().pendingBytes == 0 && ico.getToCompile().empty(),
+            "cancelled unsubmitted progress wave failed to release all debit");
+        renderer->releaseGLObjects(&state);
+        require(glGetError() == GL_NO_ERROR, "GL error in actual progress queue fixtures");
+        std::cout << "PASS: 171 retained maps/eight descriptors, cheap producer refusal, <=16 shared owner-frame visits, cold 1MiB target bootstrap at 2ms/120 age, weak completion and capacity wakes, fairness, parked required promotion, original two-layer order/pixels, and cancellation debit\n";
+    }
 }
 
 int main(int argc, char** argv) try
@@ -465,6 +779,9 @@ int main(int argc, char** argv) try
     BatchEnvironment originalEnvironment("0");
     EarlyEnvironment originalEarly("0");
     StepEnvironment originalStep("0");
+    const std::string_view mode = argc > 1 ? argv[1] : "";
+    const bool progress = mode == "--progress" || mode == "--step-progress";
+    NamedEnvironment originalProgress("OPENMW_HITCH_COMPOSITE_PROGRESS", progress ? "1" : "0");
     Resource::P9DiscretionaryAdmission admission;
     const int contextIdentity = 0, replacementIdentity = 1;
     admission.begin(&contextIdentity, 10, 2);
@@ -475,6 +792,19 @@ int main(int argc, char** argv) try
     require(admission.takeProgress(120, 120) && !admission.takeProgress(200, 120), "progress not bounded to one per frame");
     admission.begin(&replacementIdentity, 10, 1);
     require(admission.remainingMs() == 1, "context replacement inherited prior charges");
+    Terrain::CompositeProgressWait wait;
+    osg::ref_ptr<Terrain::CompositeMap> wakeFixture = new Terrain::CompositeMap;
+    const auto precheckWake = wakeFixture->mProgressWake.load(std::memory_order_acquire);
+    wakeFixture->mProgressWake.fetch_add(1, std::memory_order_release);
+    wait.park(Terrain::CompositeProgressWait::Reason::Dependency, 100, precheckWake, 1, 1);
+    require(wait.eligible(100, wakeFixture->mProgressWake.load(std::memory_order_acquire), 1, 1),
+        "completion between readiness check and park was swallowed");
+    wait.park(Terrain::CompositeProgressWait::Reason::Capacity, 100, 2, 1, 1);
+    require(!wait.eligible(101, 2, 1, 1) && wait.eligible(101, 2, 2, 1)
+        && wait.eligible(101, 2, 1, 2), "capacity/pressure generation wakes were lost");
+    wait.park(Terrain::CompositeProgressWait::Reason::FrameBudget, 100, 2, 1, 1);
+    require(!wait.eligible(100, 2, 1, 1) && wait.eligible(101, 2, 1, 1),
+        "CPU budget parking did not wake on the next owner frame");
 
     osgViewer::Viewer anchor;
     osg::ref_ptr<osg::GraphicsContext::Traits> traits = new osg::GraphicsContext::Traits;
@@ -495,10 +825,24 @@ int main(int argc, char** argv) try
     config.mMaxObjectsPerFrame = 1;
     config.mDeleteBudgetMs = 0;
     config.mMaxQueueAgeFrames = 3;
+    if (mode == "--progress")
+    {
+        config.mTargetFrameRate = 60;
+        config.mMaxBudgetMs = 2;
+        config.mMaxObjectsPerFrame = 12;
+        config.mMaxQueueAgeFrames = 120;
+    }
     osg::ref_ptr<Resource::OpenMWIncrementalCompileOperation> ico = new Resource::OpenMWIncrementalCompileOperation(config);
     osgUtil::IncrementalCompileOperation::Contexts contexts{context.get()};
     ico->assignContexts(contexts);
-    if (argc > 1 && (std::string_view(argv[1]) == "--step" || std::string_view(argv[1]) == "--step-batch"))
+    if (mode == "--progress")
+    {
+        progressFixtures(*context, state, info, *stamp, *ico);
+        ico->removeContexts(contexts);
+        context->releaseContext(); context->close(true);
+        return 0;
+    }
+    if (mode == "--step" || mode == "--step-batch" || mode == "--step-progress")
     {
         BatchEnvironment stepBatch(std::string_view(argv[1]) == "--step-batch" ? "1" : "0");
         stepFixtures(*context, state, info, *stamp, *ico, argc > 2 ? argv[2] : "composite-step-fixture");

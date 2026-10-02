@@ -53,6 +53,7 @@
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/preparedterraintexture.hpp>
+#include <components/resource/compositecpumips.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/stats.hpp>
 
@@ -618,6 +619,8 @@ namespace
             Log(Debug::Info) << "OpenGL Renderer: " << glGetString(GL_RENDERER);
             Log(Debug::Info) << "OpenGL Version: " << glGetString(GL_VERSION);
             glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &mMaxTextureImageUnits);
+            if (Resource::CompositeCpuMips::requested())
+                Resource::CompositeCpuMips::publishCapabilities(*graphicsContext);
         }
 
         int getMaxTextureImageUnits() const

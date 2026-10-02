@@ -15,6 +15,7 @@
 #include <components/resource/objectcache.hpp>
 #include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/preparedterraintexture.hpp>
+#include <components/resource/compositecpumips.hpp>
 #include <components/debug/v3diagnostics.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/v321classifiedcompileset.hpp>
@@ -267,6 +268,7 @@ namespace Terrain
     {
         std::vector<LayerInfo> mLayers;
         std::vector<osg::ref_ptr<osg::Image>> mBlendmaps;
+        std::vector<Resource::CompositeCpuMips::PreparedImage> mCpuMipmaps;
         int mTileCount = 0;
     };
 
@@ -299,6 +301,7 @@ namespace Terrain
         , mCompositeMapSize(512)
         , mCompositeMapLevel(1.f)
         , mMaxCompGeometrySize(1.f)
+        , mCpuCompositeMips(Resource::CompositeCpuMips::requested())
     {
         mMultiPassRoot = new osg::StateSet;
         mMultiPassRoot->setRenderingHint(osg::StateSet::OPAQUE_BIN);
@@ -343,6 +346,17 @@ namespace Terrain
     void ChunkManager::reportStats(unsigned int frameNumber, osg::Stats* stats) const
     {
         Resource::reportStats("Terrain Chunk", frameNumber, mCache->getStats(), *stats);
+        if (mCpuCompositeMips)
+        {
+            const auto values = Resource::CompositeCpuMips::stats();
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Attempts", static_cast<double>(values.attempted));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Prepared", static_cast<double>(values.prepared));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Declined", static_cast<double>(values.declined));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Allocation Failures", static_cast<double>(values.allocationFailures));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Source Bytes", static_cast<double>(values.sourceBytes));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Supplied Bytes", static_cast<double>(values.mipBytes));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Control Applies", static_cast<double>(values.controlApplies));
+        }
     }
 
     void ChunkManager::clearCache()
@@ -427,11 +441,28 @@ namespace Terrain
     }
 
     ChunkManager::PreparedPassData ChunkManager::preparePassData(
-        float chunkSize, const osg::Vec2f& chunkCenter)
+        float chunkSize, const osg::Vec2f& chunkCenter, bool forCompositeMap)
     {
         PreparedPassData result;
         mStorage->getBlendmaps(chunkSize, chunkCenter, result.mBlendmaps, result.mLayers, mWorldspace);
         result.mTileCount = mStorage->getTextureTileCount(chunkSize, mWorldspace);
+        if (mCpuCompositeMips && forCompositeMap && !ESM::isEsm4Ext(mWorldspace))
+        {
+            Debug::HitchTrace::Scope scope("terrain.composite_cpu_mips", Debug::HitchTrace::CpuTiming::WallEnvelope);
+            const auto capabilities = Resource::CompositeCpuMips::startupCapabilities();
+            try { result.mCpuMipmaps.reserve(result.mBlendmaps.size()); }
+            catch (const std::bad_alloc&)
+            {
+                Resource::CompositeCpuMips::sAllocationFailures.fetch_add(1, std::memory_order_relaxed);
+                return result; // original images have not been changed.
+            }
+            for (auto& image : result.mBlendmaps)
+            {
+                auto prepared = Resource::CompositeCpuMips::prepare(image, capabilities, true, true);
+                if (prepared.mipmapped) image = prepared.mipmapped;
+                result.mCpuMipmaps.push_back(std::move(prepared));
+            }
+        }
         return result;
     }
 
@@ -453,23 +484,40 @@ namespace Terrain
 
         std::vector<osg::ref_ptr<osg::Texture2D>> blendmapTextures;
         blendmapTextures.reserve(prepared.mBlendmaps.size());
+        std::size_t blendmapIndex = 0;
         for (osg::ref_ptr<osg::Image>& image : prepared.mBlendmaps)
         {
             osg::ref_ptr<osg::Texture2D> texture;
-            if ((forCompositeMap && mCompositeMapRenderer->preparationEnabled())
-                || SceneUtil::GLCallTrace::Capture::instance().enabled())
+            if (blendmapIndex < prepared.mCpuMipmaps.size() && prepared.mCpuMipmaps[blendmapIndex].mipmapped
+                && prepared.mCpuMipmaps[blendmapIndex].mipmapped == image)
+            {
+                try
+                {
+                    auto* supplied = new Resource::CompositeCpuMips::Texture(prepared.mCpuMipmaps[blendmapIndex]);
+                    supplied->setPreparationMemoEnabled(forCompositeMap && mCompositeMapRenderer->preparationEnabled());
+                    texture = supplied;
+                }
+                catch (const std::bad_alloc&)
+                {
+                    Resource::CompositeCpuMips::sAllocationFailures.fetch_add(1, std::memory_order_relaxed);
+                    image = prepared.mCpuMipmaps[blendmapIndex].source;
+                }
+            }
+            if (!texture && ((forCompositeMap && mCompositeMapRenderer->preparationEnabled())
+                               || SceneUtil::GLCallTrace::Capture::instance().enabled()))
             {
                 auto* preparedTexture = new Resource::PreparedTerrainTexture;
                 preparedTexture->setPreparationMemoEnabled(forCompositeMap && mCompositeMapRenderer->preparationEnabled());
                 texture = preparedTexture;
             }
-            else
+            else if (!texture)
                 texture = new osg::Texture2D;
             texture->setImage(image);
             texture->setWrap(osg::Texture::WRAP_S, osg::Texture::CLAMP_TO_EDGE);
             texture->setWrap(osg::Texture::WRAP_T, osg::Texture::CLAMP_TO_EDGE);
             texture->setResizeNonPowerOfTwoHint(false);
             blendmapTextures.push_back(std::move(texture));
+            ++blendmapIndex;
         }
 
         return ::Terrain::createPasses(mSceneManager, layers, blendmapTextures, prepared.mTileCount,
@@ -479,7 +527,7 @@ namespace Terrain
     std::vector<osg::ref_ptr<osg::StateSet>> ChunkManager::createPasses(
         float chunkSize, const osg::Vec2f& chunkCenter, bool forCompositeMap)
     {
-        return realizePasses(preparePassData(chunkSize, chunkCenter), forCompositeMap);
+        return realizePasses(preparePassData(chunkSize, chunkCenter, forCompositeMap), forCompositeMap);
     }
 
     osg::ref_ptr<osg::Node> ChunkManager::createChunk(float chunkSize, const osg::Vec2f& chunkCenter, unsigned char lod,

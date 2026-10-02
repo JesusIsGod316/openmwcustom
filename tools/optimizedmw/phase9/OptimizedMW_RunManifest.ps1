@@ -70,7 +70,8 @@ function New-Phase9RunManifest {
     param([Parameter(Mandatory=$true)][string]$GameDir,[Parameter(Mandatory=$true)][string]$ProfileDir,
         [Parameter(Mandatory=$true)][object]$Mode,[Parameter(Mandatory=$true)][object]$Candidate,
         [Parameter(Mandatory=$true)][string]$SettingsPath,[string]$OpenmwCfgPath,[string]$SavePath,
-        [string]$RouteLabel='UNSPECIFIED',[ValidateSet('unclassified','fresh-process-first-visit','same-process-revisit','later-fresh-launch')][string]$Cohort='unclassified',
+        [string]$RouteLabel='UNSPECIFIED',[string]$FrameCapLabel='UNSPECIFIED',
+        [ValidateSet('unclassified','fresh-process-first-visit','same-process-revisit','later-fresh-launch')][string]$Cohort='unclassified',
         [object]$HitchCombination=$null)
     $runtime=[Collections.Generic.List[object]]::new()
     foreach($file in (Get-ChildItem -LiteralPath $GameDir -Filter '*.dll' -File | Sort-Object Name)){
@@ -92,7 +93,8 @@ function New-Phase9RunManifest {
     if($buildText -match '(?m)^Commit ([a-fA-F0-9]{40})\r?$'){$commit=$matches[1].ToLowerInvariant()}
     $configuration=[ordered]@{settings_before=Get-Phase9FileIdentity (Join-Path $ProfileDir 'settings-before.cfg');
         settings_applied=Get-Phase9FileIdentity $SettingsPath;openmw_cfg=$null;save=$null;
-        route_label=$RouteLabel;cohort=$Cohort;
+        route_label=$RouteLabel;cohort=$Cohort;frame_cap_label=$FrameCapLabel;
+        frame_cap_identity_status='caller_declared_not_automatically_verified';
         asset_identity='UNVERIFIED: configuration identifies paths, not complete asset contents';
         save_identity_status='UNSPECIFIED';cache_state='OS/driver caches uncontrolled; fresh launch does not prove cold caches'}
     if($OpenmwCfgPath){$configuration.openmw_cfg=Get-Phase9FileIdentity $OpenmwCfgPath}
@@ -102,6 +104,8 @@ function New-Phase9RunManifest {
         dynamic_stream=($Mode.Stream -eq '1');temporal_inputs=($Mode.Temporal -eq '1');
         temporal_ownership=($Mode.Ownership -eq '1');composite_preparation=($Mode.Composite -eq '1');
         dynamic_motion=($Mode.DynamicMotion -eq '1');motion_view=($Mode.View -eq '1');
+        composite_progress=($env:OPENMW_HITCH_COMPOSITE_PROGRESS -eq '1');
+        composite_cpu_mips=($env:OPENMW_HITCH_COMPOSITE_CPU_MIPS -eq '1');
         hitch_mechanisms=$HitchCombination}
     $families=[ordered]@{
         basic=[ordered]@{requested=$true;coverage='existing basic frame/render/streaming measurements; not telemetry-free'};
@@ -110,7 +114,10 @@ function New-Phase9RunManifest {
             coverage='Observed main-entry/after-state/main-exit pause/menu/visibility/game-state flags and loading viewer advance. Low-rate camera/player/weather/time/cell snapshots; no automatic exact user-route attestation.'};
         deep=[ordered]@{requested=($Mode.Trace -eq '1');coverage='retained CPU spans/catalog/selected GL; driver/GPU coverage separately qualified'};
         temporal=[ordered]@{requested=($Mode.Temporal -eq '1');ownership_requested=($Mode.Ownership -eq '1');dynamic_motion_requested=($Mode.DynamicMotion -eq '1')};
-        composite=[ordered]@{requested=($Mode.Composite -eq '1')};
+        composite=[ordered]@{requested=($Mode.Composite -eq '1');
+            progress_requested=($env:OPENMW_HITCH_COMPOSITE_PROGRESS -eq '1');
+            cpu_mips_requested=($env:OPENMW_HITCH_COMPOSITE_CPU_MIPS -eq '1');
+            coverage='Requested startup switches; exact readiness, consumption and mip capability/fallback require engine evidence'};
         io_candidates=[ordered]@{i1_requested=$Candidate.i1;i2_requested=$Candidate.i2;
             requested_refill_bytes=$Candidate.refill_bytes;budget_limit_bytes=$Candidate.buffer_budget_bytes};
         catalog_candidate=[ordered]@{d1_requested=$Candidate.d1};
@@ -151,7 +158,7 @@ function New-Phase9RunManifest {
         'resources/vfs/scripts/omw/camera/settings.lua','resources/vfs/scripts/omw/settings/common.lua')){
         $builtinScripts.Add((Get-Phase9FileIdentity (Join-Path $GameDir $relative) $relative))
     }
-    return [pscustomobject][ordered]@{schema=1;trial_revision=$(if($Mode.HitchTrialRevision -eq 3){'hitch-reduction-v3'}elseif($Mode.HitchTrialRevision -eq 2){'hitch-reduction-v2'}else{'hitch-reduction-v1'});
+    return [pscustomobject][ordered]@{schema=1;trial_revision=$(if($Mode.FocusedRendererTrialRevision -eq 1){'terrain-first-use-v1'}elseif($Mode.HitchTrialRevision -eq 3){'hitch-reduction-v3'}elseif($Mode.HitchTrialRevision -eq 2){'hitch-reduction-v2'}else{'hitch-reduction-v1'});
         profile_name=(Split-Path -Leaf $ProfileDir);created_utc=[DateTime]::UtcNow.ToString('o');
         phase9_mode=$Mode;candidate=$Candidate;candidate_sha256=(Get-Phase9IdentityHash $Candidate);
         trace_level=$(if($Mode.Trace -eq '1'){'DEEP'}else{'NORMAL'});
@@ -162,7 +169,12 @@ function New-Phase9RunManifest {
         scripts=$scripts.ToArray();script_inventory_sha256=(Get-Phase9IdentityHash -Value @($scripts.ToArray()));
         content_lua=(Get-Phase9FileIdentity (Join-Path $GameDir 'resources/lua_libs/content.lua'));
         builtin_script_files=$builtinScripts.ToArray();builtin_script_inventory_sha256=(Get-Phase9IdentityHash -Value @($builtinScripts.ToArray()));
-        configuration=$configuration;launcher_applied_openmw_environment=(Get-Phase9EnvironmentSnapshot);
+        configuration=$configuration;
+        comparison_protocol=[ordered]@{requested=($Mode.FocusedRendererTrialRevision -eq 1);
+            first_block=@('CONTROL','TERRAIN-MIPS','TERRAIN-MIPS','CONTROL');first_block_trace_level='NORMAL';
+            fixed_view_seconds=45;first_person_requested=$true;same_save_route_cap_requested=$true;
+            observation_status='instructions_only_not_route_view_or_actual_save_load_attestation'};
+        launcher_applied_openmw_environment=(Get-Phase9EnvironmentSnapshot);
         families=$families;family_sha256=$familyHashes;
         activation_evidence=[ordered]@{state='pending';note='Requested/applied switches do not establish runtime activation; inspect engine evidence and fallbacks'};
         process=[ordered]@{pid=$null;creation_utc=$null;creation_ticks=$null;creation_source='System.Diagnostics.Process.StartTime native';launch_utc=$null};

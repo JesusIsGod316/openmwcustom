@@ -41,6 +41,17 @@ add_executable(p9-benchmark-context benchmark-context-tests.cpp)
 add_test(NAME p9-benchmark-context COMMAND p9-benchmark-context benchmark-context-fixture)
 set_tests_properties(p9-benchmark-context PROPERTIES TIMEOUT 45)
 find_package(Threads REQUIRED)
+add_executable(p9-composite-progress-policy composite-progress-policy-tests.cpp
+  ${ROOT}/components/resource/openmwcompileoperation.cpp)
+target_link_libraries(p9-composite-progress-policy PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
+add_test(NAME p9-composite-progress-policy COMMAND p9-composite-progress-policy)
+set_tests_properties(p9-composite-progress-policy PROPERTIES TIMEOUT 45)
+add_executable(p9-composite-cpu-mips composite-cpu-mips-tests.cpp)
+target_compile_definitions(p9-composite-cpu-mips PRIVATE OPENMW_COMPOSITE_MIPS_TEST_HOOKS)
+target_link_libraries(p9-composite-cpu-mips PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
+add_test(NAME p9-composite-cpu-mips COMMAND p9-composite-cpu-mips)
+add_test(NAME p9-composite-cpu-mips-gl COMMAND p9-composite-cpu-mips --gl ${ROOT}/files/shaders/compatibility)
+set_tests_properties(p9-composite-cpu-mips p9-composite-cpu-mips-gl PROPERTIES TIMEOUT 90)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_executable(p9-animation-preparation animation-preparation-tests.cpp
   ${ROOT}/components/vfs/manager.cpp ${ROOT}/components/files/conversion.cpp
@@ -214,6 +225,8 @@ endif()
 add_executable(p9-composite-preparation composite-preparation-tests.cpp
   ${ROOT}/components/terrain/compositemaprenderer.cpp ${ROOT}/components/resource/openmwcompileoperation.cpp)
 target_link_libraries(p9-composite-preparation PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
+target_sources(p9-composite-preparation PRIVATE ${ROOT}/components/debug/debuglog.cpp
+  ${ROOT}/components/files/conversion.cpp)
 target_compile_definitions(p9-composite-preparation PRIVATE P9_COMPILE_TRACE_TEST_HOOKS)
 add_test(NAME p9-composite-preparation COMMAND p9-composite-preparation)
 set_tests_properties(p9-composite-preparation PROPERTIES TIMEOUT 45)
@@ -223,6 +236,11 @@ set_tests_properties(p9-composite-step PROPERTIES TIMEOUT 180)
 add_test(NAME p9-composite-step-batch COMMAND p9-composite-preparation --step-batch
   ${CMAKE_CURRENT_BINARY_DIR}/composite-step-batch-fixture)
 set_tests_properties(p9-composite-step-batch PROPERTIES TIMEOUT 180)
+add_test(NAME p9-composite-progress COMMAND p9-composite-preparation --progress
+  ${CMAKE_CURRENT_BINARY_DIR}/composite-progress-fixture)
+add_test(NAME p9-composite-step-progress COMMAND p9-composite-preparation --step-progress
+  ${CMAKE_CURRENT_BINARY_DIR}/composite-step-progress-fixture)
+set_tests_properties(p9-composite-progress p9-composite-step-progress PROPERTIES TIMEOUT 180)
 add_test(NAME p9-compile-attribution COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/verify-compile-attribution.py $<TARGET_FILE:p9-composite-preparation>
   ${CMAKE_CURRENT_BINARY_DIR}/compile-attribution-fixture)
@@ -233,6 +251,8 @@ if(NOT MSVC)
   target_compile_options(p9-draw-phases PRIVATE -Wno-error=unused-parameter)
 endif()
 target_link_libraries(p9-draw-phases PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
+target_sources(p9-draw-phases PRIVATE ${ROOT}/components/debug/debuglog.cpp
+  ${ROOT}/components/files/conversion.cpp)
 add_test(NAME p9-draw-phases COMMAND p9-draw-phases)
 set_tests_properties(p9-draw-phases PROPERTIES TIMEOUT 30
   ENVIRONMENT "OPENMW_P9_LEAF_TRACE_FILE=${CMAKE_CURRENT_BINARY_DIR}/draw-phase-test.csv")

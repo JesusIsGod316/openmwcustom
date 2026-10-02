@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <iomanip>
 #include <iterator>
 #include <limits>
@@ -73,6 +74,8 @@ namespace Resource
     OpenMWIncrementalCompileOperation::OpenMWIncrementalCompileOperation(OpenMWCompileSchedulerConfig config)
         : mConfig(std::move(config))
     {
+        const auto* progress = std::getenv("OPENMW_HITCH_COMPOSITE_PROGRESS");
+        mProgressRepairEnabled = progress && std::string_view(progress) == "1";
         if (mConfig.mCompositePreparation)
             mCompositeAdmission = std::make_shared<P9DiscretionaryAdmission>();
         if (Debug::CompileAttribution::requested())
@@ -425,6 +428,8 @@ namespace Resource
         }
 
         const unsigned int frame = frameNumberFor(context);
+        const bool progressRepairActive = mProgressRepairEnabled && mCompositeAdmission
+            && context->getState()->getFrameStamp();
         const double targetFrameRate = std::max(1.0, mConfig.mTargetFrameRate);
         const double targetFrameMs = 1000.0 / targetFrameRate;
         const double currentElapsedMs = std::max(0.0, context->getTimeSinceLastClear() * 1000.0);
@@ -497,6 +502,8 @@ namespace Resource
         unsigned int quarantinedCandidates = 0;
         unsigned int predictionMisses = 0;
         unsigned int texturePreparationReuses = 0;
+        unsigned int noGlCompletedObjects = 0, noGlAttempts = 0, bootstrapObjects = 0;
+        double noGlActualMs = 0.0, bootstrapOverrunMs = 0.0, bootstrapPredictionOverrunMs = 0.0;
         std::uint64_t candidateScans = 0;
         std::uint64_t candidateBuilds = 0;
         std::uint64_t estimateCalls = 0;
@@ -520,6 +527,8 @@ namespace Resource
             unsigned int mAge = 0;
             int mUrgencyRank = 1;
             int mRank = std::numeric_limits<int>::max();
+            bool mNoGlDeclined = false;
+            bool mBootstrapDeclined = false;
 
             explicit operator bool() const { return mSet != nullptr && mOp != nullptr; }
         };
@@ -569,6 +578,11 @@ namespace Resource
             }
 
             CompileOp* op = mapIt->second._compileOps.front().get();
+            if (candidate.mOp != op)
+            {
+                candidate.mNoGlDeclined = false;
+                candidate.mBootstrapDeclined = false;
+            }
             CompileInfo estimateInfo(context, this);
             const CompileKind kind = classify(op);
             candidate.mOp = op;
@@ -644,9 +658,13 @@ namespace Resource
             Candidate fitting;
             Candidate agedOverflow;
             Candidate heavyReady;
+            Candidate noGlReady;
+            Candidate bootstrap;
             std::size_t fittingIndex = std::numeric_limits<std::size_t>::max();
             std::size_t agedOverflowIndex = std::numeric_limits<std::size_t>::max();
             std::size_t heavyReadyIndex = std::numeric_limits<std::size_t>::max();
+            std::size_t noGlReadyIndex = std::numeric_limits<std::size_t>::max();
+            std::size_t bootstrapIndex = std::numeric_limits<std::size_t>::max();
 
             const auto selectionStart = Debug::V3Diagnostics::Clock::now();
             std::optional<Debug::HitchTrace::Scope> admissionScope;
@@ -670,6 +688,16 @@ namespace Resource
                     || (composite && composite->reusable(readyInfo));
                 const bool compositeRequired = composite && composite->required();
                 const bool compositeCancelled = composite && composite->cancelled();
+                if (progressRepairActive && mCompositeAdmission->bootstrapUsed()
+                    && !compositeRequired && !compositeCancelled)
+                    continue;
+                if (progressRepairActive && composite && alreadyPrepared
+                    && !candidate.mNoGlDeclined && mCompositeAdmission->canAttemptNoGl(maxObjects, 0.25)
+                    && betterFitting(candidate, noGlReady))
+                {
+                    noGlReady = candidate;
+                    noGlReadyIndex = i;
+                }
                 candidate.mPredictionMs = alreadyPrepared ? 0.001
                     : predictedMs(candidate.mOsgEstimateMs, candidate.mCostBucket, candidate.mStaticPriorMs);
                 const bool fits = compositeRequired || compositeCancelled
@@ -680,6 +708,15 @@ namespace Resource
                     && (urgency == V321CompileUrgency::Background
                         || (mConfig.mResidencySchedulerMode >= 2
                             && urgency == V321CompileUrgency::NearFuture));
+
+                if (progressRepairActive && composite && !compositeRequired
+                    && !compositeCancelled && !candidate.mBootstrapDeclined && !fits
+                    && !policy.mSuppressedByHandoff && composite->bootstrapReady(readyInfo)
+                    && betterOverflow(candidate, bootstrap))
+                {
+                    bootstrap = candidate;
+                    bootstrapIndex = i;
+                }
 
                 if (quarantineHeavy && !compositeRequired && !compositeCancelled
                     && !(composite && candidate.mAge >= maxQueueAge))
@@ -724,15 +761,23 @@ namespace Resource
             std::string_view reason = "budgeted";
             bool forced = false;
             bool heavyPrewarm = false;
+            bool noGlService = false, bootstrapService = false;
 
-            if (fitting)
+            if (noGlReady)
+            {
+                selected = noGlReady;
+                selectedIndex = noGlReadyIndex;
+                reason = "composite_no_gl_completion";
+                noGlService = true;
+            }
+            else if (fitting)
             {
                 selected = fitting;
                 selectedIndex = fittingIndex;
             }
             else if (heavyReady)
             {
-                if (mCompositeAdmission && !mCompositeAdmission->takeProgress(maxQueueAge, maxQueueAge))
+                if (mCompositeAdmission && !mCompositeAdmission->takeExceptionalService())
                     break;
                 selected = heavyReady;
                 selectedIndex = heavyReadyIndex;
@@ -752,6 +797,14 @@ namespace Resource
                 reason = hardAgedOut ? "forced_by_hard_queue_age" : "forced_by_queue_age";
                 forced = true;
             }
+            else if (bootstrap)
+            {
+                selected = bootstrap;
+                selectedIndex = bootstrapIndex;
+                reason = "composite_target_bootstrap";
+                forced = true;
+                bootstrapService = true;
+            }
             else
                 break;
 
@@ -761,7 +814,7 @@ namespace Resource
             compileInfo.compileAll = false;
 
             const auto* prepared = dynamic_cast<const PreparedTerrainTextureCompileOp*>(selected.mOp);
-            const auto* composite = dynamic_cast<const OpenMWCompositeCompileOp*>(selected.mOp);
+            auto* composite = dynamic_cast<OpenMWCompositeCompileOp*>(selected.mOp);
             const bool reusedPreparation = (prepared && prepared->reusable(compileInfo))
                 || (composite && composite->reusable(compileInfo));
             std::optional<Debug::CompileAttribution::Row> attribution;
@@ -859,8 +912,72 @@ namespace Resource
                     attribution->span = operationScope->id();
                 }
             }
+            // Recheck bootstrap proof after all selection/diagnostic work.
+            // The current clear clock already includes that work; adding the
+            // shared charge again is deliberately conservative, not credit.
+            double dispatchHeadroomMs = 0.0;
+            if (bootstrapService)
+            {
+                const bool ownerReady = composite && composite->bootstrapReady(compileInfo);
+                const double handoffNow = lastRenderingTraversalMs();
+                dispatchHeadroomMs = std::max(0.0, targetFrameMs
+                    - std::max(0.0, context->getTimeSinceLastClear() * 1000.0));
+                if (!ownerReady
+                    || !mCompositeAdmission->takeBootstrap(selected.mPredictionMs, dispatchHeadroomMs,
+                        policy.mSuppressedByHandoff || !std::isfinite(handoffNow)
+                            || handoffNow >= mConfig.mHandoffThresholdMs))
+                {
+                    candidates[selectedIndex].mBootstrapDeclined = true;
+                    continue;
+                }
+                if (attribution)
+                {
+                    attribution->headroomMs = dispatchHeadroomMs;
+                    attribution->elapsedBeforeMs = targetFrameMs - dispatchHeadroomMs;
+                }
+            }
+            if (noGlService && !mCompositeAdmission->takeNoGlAttempt(maxObjects, 0.25))
+                break;
             const auto start = Debug::V3Diagnostics::Clock::now();
-            const bool completedSet = selected.mSet->compile(compileInfo);
+            bool completedSet = false;
+            if (noGlService)
+            {
+                ++noGlAttempts;
+                const bool completed = composite && composite->tryCompleteWithoutGL(compileInfo);
+                if (!completed)
+                {
+                    const double attemptMs = Debug::V3Diagnostics::elapsedMs(start);
+                    mCompositeAdmission->chargeNoGlAttempt(attemptMs);
+                    consumeP4CompileCredit(mPolicyState, mode, attemptMs);
+                    noGlActualMs += attemptMs;
+                    compileActualMs += attemptMs;
+                    remainingBudgetMs = std::min(std::max(0.0, remainingBudgetMs - attemptMs),
+                        mCompositeAdmission->remainingMs());
+                    candidates[selectedIndex].mNoGlDeclined = true;
+                    operationScope.reset();
+                    if (attribution)
+                    {
+                        attribution->actualMs = attemptMs;
+                        attribution->forcing = "composite_no_gl_not_ready";
+                        if (!Debug::CompileAttribution::write(*attribution)) ++mCompileTrace->mFormatFailures;
+                    }
+                    const double bookkeepingMs = std::max(0.0, Debug::V3Diagnostics::elapsedMs(start) - attemptMs);
+                    mCompositeAdmission->chargeNoGlAttempt(bookkeepingMs);
+                    consumeP4CompileCredit(mPolicyState, mode, bookkeepingMs);
+                    noGlActualMs += bookkeepingMs;
+                    compileActualMs += bookkeepingMs;
+                    remainingBudgetMs = std::min(std::max(0.0, remainingBudgetMs - bookkeepingMs),
+                        mCompositeAdmission->remainingMs());
+                    continue; // a failed CPU proof NEVER dispatches allocating GL
+                }
+                auto& list = selected.mSet->_compileMap.at(context);
+                list._compileOps.pop_front();
+                if (list._compileOps.empty())
+                    --selected.mSet->_numberCompileListsToCompile;
+                completedSet = selected.mSet->_numberCompileListsToCompile == 0;
+            }
+            else
+                completedSet = selected.mSet->compile(compileInfo);
             const double actualMs = Debug::V3Diagnostics::elapsedMs(start);
             operationScope.reset();
             if (attribution)
@@ -875,12 +992,26 @@ namespace Resource
                 mCompileTrace->mObserved.progressed(selected.mSet, frame);
             }
             // A no-op must not teach the cost model that a fresh allocation is cheap.
-            if (reusedPreparation) ++texturePreparationReuses;
+            if (noGlService)
+            {
+                ++noGlCompletedObjects;
+                noGlActualMs += actualMs;
+            }
+            if (bootstrapService)
+            {
+                ++bootstrapObjects;
+                bootstrapOverrunMs += std::max(0.0, actualMs - dispatchHeadroomMs);
+                bootstrapPredictionOverrunMs += std::max(0.0, actualMs - selected.mPredictionMs);
+            }
+            if (reusedPreparation || noGlService) ++texturePreparationReuses;
             else observe(selected.mCostBucket, actualMs);
             consumeP4CompileCredit(mPolicyState, mode, actualMs);
             compileActualMs += actualMs;
             if (mCompositeAdmission)
-                mCompositeAdmission->charge(actualMs);
+            {
+                if (noGlService) mCompositeAdmission->chargeNoGlAttempt(actualMs);
+                else mCompositeAdmission->charge(actualMs);
+            }
             ++compiledObjects;
             if (heavyPrewarm)
                 ++heavyObjects;
@@ -893,7 +1024,7 @@ namespace Resource
 
             remainingBudgetMs = std::max(0.0, remainingBudgetMs - actualMs);
 
-            if (actualMs >= diagnosticThresholdMs || forced)
+            if (actualMs >= diagnosticThresholdMs || forced || noGlService)
             {
                 writeP4CompileRow(frame, "op", compileKindName(selected.mKind),
                     compileClassName(selected.mSet), localQueueDepth, oldestAge,
@@ -934,9 +1065,34 @@ namespace Resource
             if (heavyPrewarm)
                 mSmoothFrames = 0;
 
+            if (noGlService || bootstrapService)
+            {
+                // Include completion callbacks, diagnostics and selected-list
+                // refresh in each repaired lane's actual bookkeeping account.
+                // The operation row remains the individual dispatch interval.
+                const double bookkeepingMs = std::max(0.0, Debug::V3Diagnostics::elapsedMs(start) - actualMs);
+                if (noGlService)
+                {
+                    mCompositeAdmission->chargeNoGlAttempt(bookkeepingMs);
+                    noGlActualMs += bookkeepingMs;
+                }
+                else
+                {
+                    mCompositeAdmission->charge(bookkeepingMs);
+                    bootstrapOverrunMs += std::max(0.0, actualMs + bookkeepingMs - dispatchHeadroomMs)
+                        - std::max(0.0, actualMs - dispatchHeadroomMs);
+                    bootstrapPredictionOverrunMs += std::max(0.0, actualMs + bookkeepingMs - selected.mPredictionMs)
+                        - std::max(0.0, actualMs - selected.mPredictionMs);
+                }
+                consumeP4CompileCredit(mPolicyState, mode, bookkeepingMs);
+                compileActualMs += bookkeepingMs;
+                remainingBudgetMs = std::min(std::max(0.0, remainingBudgetMs - bookkeepingMs),
+                    mCompositeAdmission->remainingMs());
+            }
+
             // Only a genuinely over-budget forced operation consumes the
             // one-operation escape hatch. Fitting aged work is normal work.
-            if (forced || remainingBudgetMs <= 0.0)
+            if (forced || (!noGlService && remainingBudgetMs <= 0.0))
                 stopAfterThisOperation = true;
         }
 
@@ -947,21 +1103,26 @@ namespace Resource
 
         double deleteActualMs = 0.0;
         P9DeleteAdmission::Decision deletion{ true, P9DeleteAdmission::Reason::Disabled, 0 };
-        if (mConfig.mDeleteAdmission && deleteBudgetMs > 0.0)
+        const bool inspectDeletePressure = deleteBudgetMs > 0.0 && (mConfig.mDeleteAdmission
+            || (progressRepairActive && mCompositeAdmission->bootstrapUsed()));
+        const auto deletionPressure = inspectDeletePressure && mConfig.mPressureContext.sample
+            && mConfig.mPressureContext.owner
+            ? mConfig.mPressureContext.sample(mConfig.mPressureContext.owner).decision.state
+            : OpenGlPressure::Degraded;
+        const bool bootstrapDefersDeletion = progressRepairActive && mCompositeAdmission->bootstrapUsed()
+            && deletionPressure == OpenGlPressure::Normal;
+        if ((mConfig.mDeleteAdmission || bootstrapDefersDeletion) && deleteBudgetMs > 0.0)
         {
-            const auto pressure = mConfig.mPressureContext.sample && mConfig.mPressureContext.owner
-                ? mConfig.mPressureContext.sample(mConfig.mPressureContext.owner).decision.state
-                : OpenGlPressure::Degraded;
             // Read the existing sampler only: no OS queries on the GL thread.
             // Unknown is not permission to retain a deletion backlog.
-            const bool pressureOrUnknown = pressure != OpenGlPressure::Normal;
+            const bool pressureOrUnknown = deletionPressure != OpenGlPressure::Normal;
             const double remainingHeadroom = targetFrameMs
                 - std::max(0.0, context->getTimeSinceLastClear() * 1000.0);
             if (!context->getState()->getFrameStamp())
                 deletion = { true, P9DeleteAdmission::Reason::UnknownFrame, 0 };
             else
                 deletion = mDeleteAdmission.select(context, frame, remainingHeadroom, mDeletePredictionMs,
-                    policy.mSuppressedByHandoff || compileActualMs >= policy.mBudgetMs,
+                    bootstrapDefersDeletion || policy.mSuppressedByHandoff || compileActualMs >= policy.mBudgetMs,
                     pressureOrUnknown, std::min(30u, maxQueueAge));
             if (mCompileTrace)
             {
@@ -971,7 +1132,7 @@ namespace Resource
                 admission.setMetric(0, "admitted", deletion.admitted);
                 admission.setMetric(1, "deferred_frames", deletion.deferredFrames);
                 admission.setMetric(2, "predicted_us", static_cast<std::uint64_t>(mDeletePredictionMs * 1000.0));
-                admission.setMetric(3, "pressure", static_cast<unsigned>(pressure));
+                admission.setMetric(3, "pressure", static_cast<unsigned>(deletionPressure));
             }
         }
         if (deleteBudgetMs > 0.0 && deletion.admitted)
@@ -986,6 +1147,11 @@ namespace Resource
                 context->getState()->getContextID(), fs ? fs->getReferenceTime() : 0.0, seconds);
             deleteActualMs = Debug::V3Diagnostics::elapsedMs(start);
             deleteScope.reset();
+            // An ordinary/control or pressure-safety flush has discharged the
+            // implicit bootstrap deferral too. Persistent bootstrap-only load
+            // still receives the existing finite bounded-progress service.
+            if (progressRepairActive && !mConfig.mDeleteAdmission)
+                mDeleteAdmission = P9DeleteAdmission{};
             if (mConfig.mDeleteAdmission)
                 mDeletePredictionMs = std::max(0.15, std::max(deleteActualMs, mDeletePredictionMs * 0.875));
             if (deleteActualMs >= diagnosticThresholdMs)
@@ -1050,6 +1216,12 @@ namespace Resource
                    << " quarantined_candidates=" << quarantinedCandidates
                    << " prediction_miss=" << predictionMisses
                    << " texture_preparation_reuses=" << texturePreparationReuses
+                   << " composite_no_gl_completed=" << noGlCompletedObjects
+                   << " composite_no_gl_attempts=" << noGlAttempts
+                   << " composite_no_gl_ms=" << noGlActualMs
+                   << " composite_bootstrap=" << bootstrapObjects
+                   << " composite_bootstrap_overrun_ms=" << bootstrapOverrunMs
+                   << " composite_bootstrap_prediction_overrun_ms=" << bootstrapPredictionOverrunMs
                    << " delete_admitted=" << deletion.admitted
                    << " delete_reason=" << P9DeleteAdmission::name(deletion.reason)
                    << " delete_deferred_frames=" << deletion.deferredFrames

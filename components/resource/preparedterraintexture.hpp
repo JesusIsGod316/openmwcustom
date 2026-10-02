@@ -21,7 +21,7 @@ namespace Resource
     // It does NOT claim GPU completion, residency or a nonblocking future apply.
     // A producer may explicitly opt a render target into the same proof. Its
     // dimensions/format/allocation replace the source image revision in the key.
-    class PreparedTerrainTexture final : public osg::Texture2D
+    class PreparedTerrainTexture : public osg::Texture2D
     {
     public:
         PreparedTerrainTexture() = default;
@@ -52,7 +52,7 @@ namespace Resource
 
         bool preparationUnchanged(const osg::State& state) const
         {
-            if (!mPreparationMemoEnabled) return false;
+            if (!mPreparationMemoEnabled || !preparationContextEligible(state)) return false;
             const unsigned context = state.getContextID();
             if (context >= mPrepared.size() || !state.getGraphicsContext()) return false;
             const auto current = signature(context);
@@ -66,7 +66,7 @@ namespace Resource
 
         void rememberPreparation(const osg::State& state) const
         {
-            if (!mPreparationMemoEnabled) return;
+            if (!mPreparationMemoEnabled || !preparationContextEligible(state)) return;
             const unsigned context = state.getContextID();
             if (context >= mPrepared.size() || !state.getGraphicsContext()) return;
             if (const auto current = signature(context))
@@ -87,6 +87,26 @@ namespace Resource
             else mPrepared.setAllElementsTo(std::nullopt);
             osg::Texture2D::releaseGLObjects(state);
         }
+
+        virtual std::uint64_t retainedSourceBytes() const noexcept
+        { return _image ? _image->getTotalDataSize() : 0; }
+
+        // Pure producer/context admission, separate from draw-owned GL object
+        // and memo state. A context-specific wrapper can decline optional work
+        // before a descriptor occupies preparation credit indefinitely.
+        virtual bool preparationAdmissionEligible(const osg::State&) const noexcept { return true; }
+
+        // Draw-context dispatch recheck. Unlike producer admission, a narrow
+        // wrapper may inspect its draw-owned context arrays here to decline
+        // late generation requests before speculative fallback GL is invoked.
+        virtual bool preparationDispatchEligible(const osg::State& state) const
+        { return preparationAdmissionEligible(state); }
+
+    protected:
+        // A generated image wrapper may use an explicit original-image control
+        // in an incompatible context. That path must never inherit the outer
+        // texture's preparation proof or pretend the supplied image was applied.
+        virtual bool preparationContextEligible(const osg::State&) const { return true; }
 
     private:
         struct Signature
@@ -134,6 +154,9 @@ namespace Resource
         bool mRenderTarget = false;
         bool mPreparationMemoEnabled = true;
     };
+
+    inline std::uint64_t retainedTerrainTextureBytes(const PreparedTerrainTexture& texture) noexcept
+    { return texture.retainedSourceBytes(); }
 
     class PreparedTerrainTextureCompileOp final
         : public osgUtil::IncrementalCompileOperation::CompileTextureOp

@@ -29,6 +29,13 @@ namespace Resource
         virtual bool required() const = 0;
         virtual bool cancelled() const = 0;
         virtual bool reusable(const osgUtil::IncrementalCompileOperation::CompileInfo&) const { return false; }
+        // A successful completion may update only CPU bookkeeping. It must
+        // revalidate the exact owner and never fall back to a GL call.
+        virtual bool tryCompleteWithoutGL(osgUtil::IncrementalCompileOperation::CompileInfo&) { return false; }
+        // Narrow producer-owned target/FBO bootstrap, rechecked at dispatch.
+        // The implementation owns identity/pressure proof; ICO owns headroom
+        // and the shared once-per-owner-frame exceptional service token.
+        virtual bool bootstrapReady(const osgUtil::IncrementalCompileOperation::CompileInfo&) const { return false; }
     };
     // Marker base for custom ICO operations that retain Drawable/VBO cost
     // characteristics after a producer has split a monolithic drawable compile.
@@ -85,6 +92,7 @@ namespace Resource
         double compositeBudgetMs() const { return mConfig.mMaxBudgetMs; }
         double compositeHeadroomRatio() const { return mConfig.mHeadroomRatio; }
         double compositeTargetFrameMs() const { return 1000.0 / std::max(1.0, mConfig.mTargetFrameRate); }
+        bool progressRepairEnabled() const { return mProgressRepairEnabled; }
 
     protected:
         ~OpenMWIncrementalCompileOperation() override;
@@ -141,6 +149,7 @@ namespace Resource
         static const char* compileKindName(CompileKind kind);
 
         OpenMWCompileSchedulerConfig mConfig;
+        bool mProgressRepairEnabled = false;
         P4CompilePolicyState mPolicyState;
         std::array<CostState, sCompileClassCount * sCompileKindCount * sCompileSizeTierCount> mCosts{};
         std::unordered_map<const CompileSet*, SeenState> mSeen;

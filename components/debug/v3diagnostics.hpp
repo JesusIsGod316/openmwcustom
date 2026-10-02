@@ -330,7 +330,9 @@ namespace Debug::V3Diagnostics
             "frame,epoch_ms,context,total_ms,available_ms,immediate_start,queued_start,maps,"
             "required_maps,drawables,fbo_ms,state_ms,draw_ms,yields_delta,immediate_end,queued_end,"
             "prepare_scheduled_total,prepare_invalidated_total,prepare_cancelled_total,required_fallbacks_total,"
-            "age_progress_total,budget_yields_total,pending_prepare_bytes,shared_charged_ms,oldest_age_frames");
+            "age_progress_total,budget_yields_total,pending_prepare_bytes,shared_charged_ms,oldest_age_frames,"
+            "descriptor_builds_total,capacity_declines_total,progress_polls_total,parked_skips_total,"
+            "consumed_layers_total,completed_maps_total,pressure_yields_total");
         return writer;
     }
 

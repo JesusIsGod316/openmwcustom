@@ -11,6 +11,7 @@
 #include <memory>
 #include <vector>
 #include <components/resource/speculativebudget.hpp>
+#include "compositeprogress.hpp"
 
 namespace Resource
 {
@@ -54,6 +55,15 @@ namespace Terrain
         std::uint64_t mPreparationReceipt = 0;
         unsigned mQueuedFrame = 0;
         bool mQueueFrameKnown = false;
+        // Only the draw owner reads/writes wait state. ICO completion publishes
+        // a generation through a weak map reference, without renderer locks.
+        std::atomic_uint64_t mProgressWake{1};
+        // Immutable publication or draw-owner timestamps, readable by cull for
+        // the one first-demand receipt. Zero means that stage is unobserved.
+        std::atomic_uint64_t mProgressAdmittedTick{0}, mProgressFirstLayerTick{0}, mProgressCompletedTick{0};
+        std::atomic_uint64_t mProgressReceiptGeneration{0};
+        CompositeProgressWait mProgressWait;
+        CompositeProgressWait::Reason mProgressRefusal = CompositeProgressWait::Reason::None;
     };
 
     /**
@@ -87,6 +97,8 @@ namespace Terrain
             std::uint64_t scheduled = 0, invalidated = 0, cancelled = 0, requiredFallbacks = 0;
             std::uint64_t ageProgress = 0, budgetYields = 0;
             std::uint64_t dependencyWaves = 0, pressureYields = 0;
+            std::uint64_t descriptorBuilds = 0, capacityDeclines = 0, polls = 0, parkedSkips = 0;
+            std::uint64_t consumedLayers = 0, completedMaps = 0;
             std::size_t pendingBytes = 0;
             double chargedMs = 0;
         };
@@ -130,6 +142,9 @@ namespace Terrain
         bool scheduleDependencyWave(CompositeMap& map, osg::GraphicsContext* context) const;
         bool dependenciesReady(const CompositeMap& map, osg::State& state) const;
         bool preparationSupported(const osg::State& state) const;
+        bool progressEnabled() const;
+        void advanceBackground(osg::RenderInfo& info, Deadline deadline, unsigned frame,
+            CompileTelemetry* telemetry, std::unique_lock<std::mutex>& lock) const;
         void retirePreparations() const;
         bool mCooperativeBackgroundCompile = false;
         const bool mCompositeBatchEnabled;
@@ -144,6 +159,7 @@ namespace Terrain
 
         mutable CompileSet mCompileSet;
         mutable CompileSet mImmediateCompileSet;
+        mutable osg::observer_ptr<CompositeMap> mProgressCursor;
 
         mutable std::mutex mMutex;
 
@@ -159,6 +175,7 @@ namespace Terrain
         mutable std::atomic_size_t mPreparationBytes{0};
         mutable std::atomic_uint64_t mPreparationScheduled{0};
         mutable std::atomic_uint64_t mDependencyWaves{0}, mPressureYields{0};
+        mutable std::atomic_uint64_t mDescriptorBuilds{0}, mCapacityDeclines{0};
         mutable PreparationStats mPreparationStats;
         mutable double mBakeEmaMs = 0.25, mBakeRiskMs = 0.25;
         mutable unsigned mBakeSamples = 0;

@@ -1,4 +1,45 @@
-HITCH REDUCTION TRIAL v3 REPAIRS (2026-10-02) - independently selectable candidates
+FOCUSED RENDERER TRIAL (2026-10-02) - preparation progress and supplied blendmap mips
+
+Use C:\OptimizedMW_Test\START-OptimizedMW-Test.bat and choose F.
+The focused menu uses readable presets; old choices 1-11 retain their meanings:
+  F/1 = Retained CONTROL, no warm keyframes/cleanup/new terrain mechanisms.
+  F/2 = Cleanup only, on the same retained control.
+  F/3 = Original STEP, without early preparation or the progress repair.
+  F/4 = Early STEP with bounded preparation progress.
+  F/5 = Terrain + supplied blendmap mips: F/4 plus the independent CPU mip chain.
+  F/6 = Combined renderer: F/4 plus cleanup; choose mips off/on separately.
+Choose N for Normal performance or D for Deep engine diagnostics. Normal does
+not start Windows recording or require elevation. Focused Deep defaults to engine
+diagnostics only; choose W when a Windows trace is specifically useful.
+
+First comparison: F/1, F/5, F/5, F/1, all Normal. Use the SAME outdoor save,
+first-person view, frame cap and timed walking route. Hold the identical heavy
+view for 45 seconds before walking; quit normally. Supply the same save-file path,
+route and cap labels at each launch. The manifest hashes the declared save file;
+it does not prove that you actually loaded it. Cap/view labels are declarations,
+not automatically verified measurements. Keep first visits, revisits and loading
+separate; a fresh process does not prove cold OS/driver caches. Upload the four
+verified engine ZIPs. No system trace is needed for this initial comparison.
+
+If this package merits further testing, compare F/4 against F/5 to isolate mips,
+and F/1 against F/2 to isolate cleanup. The launcher does not automate repeated
+gameplay, change saves, clear caches or enable warm keyframes in these presets.
+Progress and supplied-mip switches are explicit and OFF on all old presets.
+Preparation can decline safely; a selected flag is not proof of completed work
+or a faster frame. CPU mips may retain the original upload on unsupported inputs.
+
+Command-line equivalents (the same launcher and manifest):
+  START-OptimizedMW-Test.bat -FocusedPreset CONTROL -TraceLevel Normal
+  START-OptimizedMW-Test.bat -FocusedPreset TERRAIN-MIPS -TraceLevel Normal
+  START-OptimizedMW-Test.bat -FocusedPreset EARLY-STEP -TraceLevel Deep
+  START-OptimizedMW-Test.bat -FocusedPreset COMBINED-MIPS -TraceLevel Deep -SystemTrace
+Add -SavePath "C:\path\same-save.omwsave" -RouteLabel "same route" -FrameCapLabel
+"uncapped" to record the comparison declarations. For advanced isolation only,
+Custom/CLI keeps -CompositeProgress and -CompositeCpuMips independent of masks.
+Do not combine explicit mechanism switches with -FocusedPreset; the preset is
+the complete named selection. Normal/Deep never changes the gameplay vector.
+
+HITCH REDUCTION TRIAL v3 REPAIRS - retained prior choices and reference instructions
 
 Use C:\OptimizedMW_Test\START-OptimizedMW-Test.bat.
 The first four choices retain their previous meanings. Enter is Normal CONTROL.

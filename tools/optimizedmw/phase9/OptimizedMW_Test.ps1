@@ -3,6 +3,9 @@ param(
     [ValidateSet('CONTROL','I1','I2','I1I2','D1')][string]$Candidate='CONTROL',
     [ValidateRange(-1,15)][int]$HitchMask=-1,
     [ValidateRange(-1,511)][int]$AttackMask=-1,
+    [ValidateSet('','CONTROL','CLEANUP','STEP','EARLY-STEP','TERRAIN-MIPS','COMBINED','COMBINED-MIPS')][string]$FocusedPreset='',
+    [switch]$CompositeProgress,
+    [switch]$CompositeCpuMips,
     [switch]$ObserverLocal,
     [switch]$GpuQueryDefer,
     [ValidateSet('','Normal','Deep')][string]$TraceLevel='',
@@ -10,7 +13,7 @@ param(
     [switch]$SystemTrace,
     [ValidateRange(30,1800)][int]$SystemTraceDurationSeconds=600,
     [ValidateRange(0,33554432)][long]$BufferBudgetBytes=33554432,
-    [string]$SavePath,[string]$RouteLabel='UNSPECIFIED',
+    [string]$SavePath,[string]$RouteLabel='UNSPECIFIED',[ValidatePattern('^[^\r\n]{1,256}$')][string]$FrameCapLabel='UNSPECIFIED',
     [ValidateSet('unclassified','fresh-process-first-visit','same-process-revisit','later-fresh-launch')][string]$Cohort='unclassified',
     [switch]$NoPrompt
 )
@@ -82,7 +85,7 @@ function Get-P9Mode {
 $quickSelection=$null
 $quickSession=$null
 $hitchSelection=$null
-if(-not $ModeChoice -and $HitchMask -lt 0 -and $AttackMask -lt 0 -and -not $TraceLevel -and -not $NoPrompt){
+if(-not $FocusedPreset -and -not $ModeChoice -and $HitchMask -lt 0 -and $AttackMask -lt 0 -and -not $TraceLevel -and -not $NoPrompt){
     Write-Host ''
     Write-Host 'OptimizedMW - choose one test' -ForegroundColor Cyan
     Write-Host '  1 = Diagnose CONTROL   Deep engine diagnostics + automatic Windows trace' -ForegroundColor Green
@@ -96,10 +99,11 @@ if(-not $ModeChoice -and $HitchMask -lt 0 -and $AttackMask -lt 0 -and -not $Trac
     Write-Host '  9 = Diagnose ANIM repaired Deep + automatic Windows trace'
     Write-Host ' 10 = Normal repair combo    warm ownership + STEP + DELETE-ADMIT'
     Write-Host ' 11 = Diagnose repair combo  Deep + automatic Windows trace'
+    Write-Host '  F = Focused renderer tests: retained control / terrain / cleanup' -ForegroundColor Green
     Write-Host '  C = Custom combination / I/O / trace depth'
     Write-Host '  A = Earlier Phase 9 modes'
     Write-Host '  X = Exit'
-    do{$quickChoice=Read-Host 'Test (1-11, C, A, X; Enter = Normal CONTROL)';if($quickChoice -eq ''){$quickChoice='2'}}until($quickChoice -in @('1','2','3','4','5','6','7','8','9','10','11','C','A','X'))
+    do{$quickChoice=Read-Host 'Test (1-11, F, C, A, X; Enter = Normal CONTROL)';if($quickChoice -eq ''){$quickChoice='2'}}until($quickChoice -in @('1','2','3','4','5','6','7','8','9','10','11','F','C','A','X'))
     if($quickChoice -eq 'X'){exit 0}
     if($quickChoice -in @('1','2','3','4','5','6','7','8','9','10','11')){
         $quickSelection=Get-OptimizedMWQuickPreset -Choice $quickChoice
@@ -107,6 +111,10 @@ if(-not $ModeChoice -and $HitchMask -lt 0 -and $AttackMask -lt 0 -and -not $Trac
         $Candidate=$quickSelection.candidate;$SystemTrace=[bool]$quickSelection.system_trace
         if($quickSelection.PSObject.Properties['attack_mask']){$AttackMask=$quickSelection.attack_mask}
         if($quickSelection.PSObject.Properties['gpu_query_defer']){$GpuQueryDefer=[bool]$quickSelection.gpu_query_defer}
+    }elseif($quickChoice -eq 'F'){
+        $quickSelection=Read-OptimizedMWRendererPreset
+        $FocusedPreset=$quickSelection.focused_preset
+        $TraceLevel=$quickSelection.trace_level;$SystemTrace=[bool]$quickSelection.system_trace
     }elseif($quickChoice -eq 'C'){
         $hitchSelection=Read-OptimizedMWHitchSelection
         $HitchMask=$hitchSelection.features.mask;$TraceLevel=if($hitchSelection.trace_level -eq 'DEEP'){'Deep'}else{'Normal'}
@@ -119,6 +127,28 @@ if(-not $ModeChoice -and $HitchMask -lt 0 -and $AttackMask -lt 0 -and -not $Trac
         $quickSelection=[pscustomobject]@{mask=$HitchMask;attack_mask=$AttackMask;trace_level=$TraceLevel;candidate=$Candidate;system_trace=[bool]$SystemTrace;name=$hitchSelection.experiment}
     }
 }
+if($FocusedPreset){
+    if($ModeChoice -or $HitchMask -ge 0 -or $AttackMask -ge 0 -or $Candidate -ne 'CONTROL' -or $CompositeProgress -or $CompositeCpuMips){
+        throw 'Focused presets specify their own mechanisms. Use -FocusedPreset with -TraceLevel/-SystemTrace, or use the independent Custom switches.'
+    }
+    if(-not $TraceLevel){$TraceLevel='Normal'}
+    $quickSelection=Get-OptimizedMWRendererPreset $FocusedPreset $TraceLevel -SystemTrace:$SystemTrace
+    $HitchMask=$quickSelection.mask;$AttackMask=$quickSelection.attack_mask
+    $CompositeProgress=[bool]$quickSelection.composite_progress;$CompositeCpuMips=[bool]$quickSelection.composite_cpu_mips
+    $GpuQueryDefer=[bool]$quickSelection.gpu_query_defer
+    if(-not $NoPrompt){
+        if($TraceLevel -eq 'Normal'){
+            Write-Host 'First Normal block: F/1, F/5, F/5, F/1. Load the SAME outdoor save; use first person.' -ForegroundColor Yellow
+        }else{
+            Write-Host 'Focused Deep verifies preparation and remaining stalls. Load the matching save/route; use first person.' -ForegroundColor Yellow
+        }
+        Write-Host 'Hold the identical heavy view for 45 seconds, then repeat the same timed route. Quit normally.'
+        if(-not $SavePath){$SavePath=(Read-Host 'Outdoor save file full path (Enter = unspecified)').Trim('"')}
+        if($RouteLabel -eq 'UNSPECIFIED'){$RouteLabel=Read-Host 'Route label (Enter = unspecified)';if(-not $RouteLabel){$RouteLabel='UNSPECIFIED'}}
+        if($FrameCapLabel -eq 'UNSPECIFIED'){$declaredCap=Read-Host 'Frame-cap label, for example uncapped or 60 FPS (Enter = unspecified)';$FrameCapLabel=$(if($declaredCap){$declaredCap}else{'UNSPECIFIED'})}
+    }
+}
+if($SavePath -and -not [IO.File]::Exists([IO.Path]::GetFullPath($SavePath))){throw 'Declared save file is missing; correct -SavePath before running'}
 if($HitchMask -ge 0 -or $AttackMask -ge 0 -or $TraceLevel){
     if($HitchMask -lt 0){$HitchMask=0}
     if(-not $TraceLevel){$TraceLevel='Normal'}
@@ -163,6 +193,11 @@ if($GpuQueryDefer -and $mode.Trace -ne '1'){throw 'Deferred GPU query collection
 $attackCombination=Get-OptimizedMWAttackCombination $(if($AttackMask -ge 0){$AttackMask}else{0})
 if($AttackMask -ge 0){
     $attackCombination=ConvertTo-OptimizedMWAttackSelection -Selection $hitchSelection -Mode $mode -Mask $AttackMask
+}
+if($FocusedPreset -or $CompositeProgress -or $CompositeCpuMips){
+    if(-not $hitchSelection){throw 'Independent renderer switches require -HitchMask/-AttackMask or a focused preset'}
+    $rendererIdentity=Set-OptimizedMWRendererIdentity $hitchSelection $mode $(if($FocusedPreset){$FocusedPreset}else{'CUSTOM'}) `
+        -CompositeProgress:$CompositeProgress -CompositeCpuMips:$CompositeCpuMips
 }
 if($SystemTrace -and $mode.Trace -ne '1'){throw 'Windows trace requires Deep diagnostics. Choose Diagnose CONTROL/ALL, or select Deep in Custom.'}
 if($SystemTrace -and -not $quickSelection){
@@ -248,7 +283,7 @@ try{
     Get-ChildItem Env: | Where-Object {$_.Name -like 'OPENMW_*'} | ForEach-Object {Remove-Item ('Env:'+$_.Name)}
     Set-Phase9CandidateEnvironment -Candidate $candidateProfile -Mode $mode
     Set-OptimizedMWHitchCombinationEnvironment $hitchCombination
-    Set-OptimizedMWAttackEnvironment $attackCombination -ObserverLocal:$ObserverLocal
+    Set-OptimizedMWAttackEnvironment $attackCombination -ObserverLocal:$ObserverLocal -CompositeProgress:$CompositeProgress -CompositeCpuMips:$CompositeCpuMips
     $env:OPENMW_P9_GPU_QUERY_DEFER=[string][int][bool]$GpuQueryDefer
 
     # Same head-cache budget across every mode, not a hidden per-mode tuning change.
@@ -379,6 +414,10 @@ try{
         "hitch_delete_admission=$([int]$attackCombination.delete_admission)",
         "hitch_animation_warm_lease=$([int]$attackCombination.animation_warm_lease)",
         "hitch_composite_step=$([int]$attackCombination.composite_step)",
+        "focused_renderer_preset=$FocusedPreset",
+        "hitch_composite_progress=$([int][bool]$CompositeProgress)",
+        "hitch_composite_cpu_mips=$([int][bool]$CompositeCpuMips)",
+        "declared_frame_cap=$FrameCapLabel",
         "phase9_gpu_query_accounting=$(if($GpuDiagnostics -eq 'true'){'1'}else{'0'})",
         "phase9_gpu_query_defer=$([int][bool]$GpuQueryDefer)",
         "benchmark_context_schema=1",
@@ -557,7 +596,7 @@ try{
         $env:OPENMW_V36_GPU_PASS_FILE=Join-Path $ProfileDir 'p9-gpu-passes.csv'
     }
     $runManifest=New-Phase9RunManifest -GameDir $GameDir -ProfileDir $ProfileDir -Mode $mode -Candidate $candidateProfile `
-        -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -Cohort $Cohort -HitchCombination $hitchCombination
+        -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -FrameCapLabel $FrameCapLabel -Cohort $Cohort -HitchCombination $hitchCombination
     Save-Phase9RunManifest $runManifest $ProfileDir
 
     Write-Host ''
@@ -617,7 +656,7 @@ catch{
     if(-not $runManifest){
         try{
             $runManifest=New-Phase9RunManifest -GameDir $GameDir -ProfileDir $ProfileDir -Mode $mode -Candidate $candidateProfile `
-                -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -Cohort $Cohort -HitchCombination $hitchCombination
+                -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -FrameCapLabel $FrameCapLabel -Cohort $Cohort -HitchCombination $hitchCombination
         }catch{"Run manifest preparation failed: $_" | Set-Content -LiteralPath (Join-Path $ProfileDir 'MANIFEST-ERROR.txt') -Encoding UTF8}
     }
 }

@@ -9,6 +9,7 @@
 
 #include <components/debug/v3diagnostics.hpp>
 #include <components/debug/hitchtrace.hpp>
+#include <components/debug/debuglog.hpp>
 #include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/preparedterraintexture.hpp>
 #include <components/resource/v321classifiedcompileset.hpp>
@@ -18,6 +19,7 @@
 #include <bit>
 #include <cstdlib>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string_view>
 #include <unordered_set>
@@ -39,6 +41,7 @@ namespace Terrain
         };
         static constexpr std::size_t MaximumBytes = 32u * 1024u * 1024u;
         std::atomic_size_t bytes{0}, maps{0};
+        std::atomic_uint64_t creditGeneration{1};
         std::mutex debtMutex;
         std::vector<Debt> debts;
         std::atomic_bool debtFailed{false};
@@ -49,6 +52,16 @@ namespace Terrain
                 if (bytes.compare_exchange_weak(current, current + amount, std::memory_order_acq_rel)) return true;
             return false;
         }
+        bool canReserve(std::size_t amount) const
+        {
+            const auto current = bytes.load(std::memory_order_acquire);
+            return amount <= MaximumBytes && current <= MaximumBytes - amount;
+        }
+        void release(std::size_t amount)
+        {
+            bytes.fetch_sub(amount, std::memory_order_acq_rel);
+            creditGeneration.fetch_add(1, std::memory_order_release);
+        }
         void pruneDebt()
         {
             std::lock_guard lock(debtMutex);
@@ -57,7 +70,7 @@ namespace Terrain
                 std::erase_if(it->textures, [](const auto& object) { return !object.valid(); });
                 std::erase_if(it->programs, [](const auto& object) { return !object.valid(); });
                 if (it->textures.empty() && it->programs.empty())
-                { bytes.fetch_sub(it->bytes, std::memory_order_acq_rel); it = debts.erase(it); }
+                { release(it->bytes); it = debts.erase(it); }
                 else ++it;
             }
         }
@@ -67,6 +80,10 @@ namespace Terrain
             std::lock_guard lock(debtMutex);
             try
             {
+#ifdef P9_COMPILE_TRACE_TEST_HOOKS
+                if (const auto* value = std::getenv("P9_COMPOSITE_DEBT_FAILURE");
+                    value && std::string_view(value) == "1") throw std::bad_alloc();
+#endif
                 if (debts.size() >= 16) { debtFailed.store(true, std::memory_order_release); return true; }
                 debts.push_back(std::move(debt));
             }
@@ -91,7 +108,7 @@ namespace Terrain
                     return !object.lock(owner) || std::any_of(programs.begin(), programs.end(),
                         [&](const auto& used) { return used == owner; }); });
                 if (it->textures.empty() && it->programs.empty())
-                { bytes.fetch_sub(it->bytes, std::memory_order_acq_rel); it = debts.erase(it); }
+                { release(it->bytes); it = debts.erase(it); }
                 else ++it;
             }
         }
@@ -104,7 +121,7 @@ namespace Terrain
         ~CompositeMetadataLease()
         {
             if (auto owner = budget.lock())
-            { owner->bytes.fetch_sub(bytes, std::memory_order_acq_rel); owner->maps.fetch_sub(1, std::memory_order_acq_rel); }
+            { owner->maps.fetch_sub(1, std::memory_order_acq_rel); owner->release(bytes); }
         }
     };
 
@@ -130,7 +147,7 @@ namespace Terrain
             textures.clear(); programs.clear(); images.clear();
             if (budget && (consumed || !budget->retainDebt(
                 {metadata, std::move(newTextureObjects), std::move(newPrograms), bytes})))
-                budget->bytes.fetch_sub(bytes, std::memory_order_acq_rel);
+                budget->release(bytes);
         }
     };
 
@@ -146,7 +163,7 @@ namespace Terrain
             osg::observer_ptr<osg::Program::PerContextProgram> submittedProgram;
             unsigned unit = 0, imageRevision = 0;
             GLuint programName = 0;
-            std::size_t sourceBytes = 0;
+            std::size_t sourceBytes = 0, retainedBytes = 0;
             std::size_t layer = 0;
         };
         std::shared_ptr<CompositeStepBudget> budget;
@@ -187,6 +204,8 @@ namespace Terrain
         std::shared_ptr<Resource::V321ResourceCompileLifetime> lifetime
             = std::make_shared<Resource::V321ResourceCompileLifetime>();
         bool completed = false, failed = false;
+        bool terminalReported = false;
+        std::string_view terminalReason = "pending";
         GLuint fboName = 0;
         // Draw-context progress, including target allocation and FBO. This is
         // submission debt, not a promise that later GL calls cannot stall.
@@ -202,6 +221,42 @@ namespace Terrain
 
     namespace
     {
+        std::uint64_t progressTick()
+        {
+            return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        }
+        void reportFirstDemand(CompositeMap& map)
+        {
+            const auto now = progressTick();
+            const auto generation = map.mProgressReceiptGeneration.load(std::memory_order_acquire);
+            const auto admitted = map.mProgressAdmittedTick.load(std::memory_order_acquire);
+            const auto first = map.mProgressFirstLayerTick.load(std::memory_order_acquire);
+            const auto complete = map.mProgressCompletedTick.load(std::memory_order_acquire);
+            const bool coherent = generation != 0
+                && generation == map.mProgressReceiptGeneration.load(std::memory_order_acquire);
+            Debug::HitchTrace::Scope receipt("composite.first_demand", Debug::HitchTrace::CpuTiming::WallEnvelope);
+            receipt.retain(); receipt.setLink(map.mPreparationReceipt);
+            constexpr auto unknown = std::numeric_limits<std::uint64_t>::max();
+            receipt.setMetric(0, "admit_to_demand_us", coherent && admitted && now >= admitted ? (now - admitted) / 1000 : unknown);
+            receipt.setMetric(1, "first_layer_lead_us", coherent && first && now >= first ? (now - first) / 1000 : unknown);
+            receipt.setMetric(2, "complete_lead_us", coherent && complete && now >= complete ? (now - complete) / 1000 : unknown);
+            receipt.setMetric(3, "generation", coherent ? generation : 0);
+        }
+        void reportProgressTerminal(CompositeMap& map, std::string_view reason)
+        {
+            const auto& preparation = map.mPreparation;
+            if (!preparation || preparation->terminalReported) return;
+            preparation->terminalReported = true;
+            Debug::HitchTrace::Scope receipt("composite.progress_terminal",
+                Debug::HitchTrace::CpuTiming::WallEnvelope, reason);
+            receipt.retain();
+            receipt.setLink(preparation->receipt);
+            receipt.setMetric(0, "generation", preparation->generation);
+            receipt.setMetric(1, "compiled_layers", map.mCompiled);
+            receipt.setMetric(2, "submitted", preparation->submittedCount());
+            receipt.setMetric(3, "required", map.mRequired.load(std::memory_order_acquire));
+        }
         bool retainedDependency(const CompositePreparation::Dependency& dep)
         {
             if (!dep.pass || !dep.drawable.valid() || dep.drawable->getStateSet() != dep.pass.get())
@@ -295,6 +350,57 @@ namespace Terrain
                     || map->mPreparationGeneration.load(std::memory_order_acquire) != mPreparation->generation
                     || map->mTexture.get() != mPreparation->target.get();
             }
+            bool reusable(const osgUtil::IncrementalCompileOperation::CompileInfo& info) const override
+            {
+                const auto* ico = dynamic_cast<const Resource::OpenMWIncrementalCompileOperation*>(
+                    info.incrementalCompileOperation);
+                if (!ico || !ico->progressRepairEnabled()) return false;
+                if (cancelled() || sourceDispatchInvalid(info)) return true;
+                osg::ref_ptr<CompositeMap> map;
+                if (!mMap.lock(map) || !info.getState() || !mPreparation->step
+                    || mPreparation->context.get() != info.getState()->getGraphicsContext()
+                    || !stepTargetUnchanged(*mPreparation, *map)
+                    || !stepPressureUsable(mPreparation->step->pressure)
+                    || info.incrementalCompileOperation->getForceTextureDownloadGeometry()) return false;
+                const auto& step = *mPreparation->step;
+                if (mDependency < step.dependencies.size())
+                {
+                    LockedStepDependency owner;
+                    return lockStepDependency(step.dependencies[mDependency], owner) && owner.texture
+                        && owner.texture->preparationUnchanged(*info.getState());
+                }
+                auto* target = dynamic_cast<Resource::PreparedTerrainTexture*>(map->mTexture.get());
+                // Program variants and FBO state need ordinary budgeted compile.
+                return mWave->terminal && mKind == Kind::Texture && target
+                    && target->preparationUnchanged(*info.getState());
+            }
+            bool tryCompleteWithoutGL(osgUtil::IncrementalCompileOperation::CompileInfo& info) override
+            {
+                if (cancelled()) return true;
+                if (sourceDispatchInvalid(info))
+                {
+                    mPreparation->lifetime->cancel(); mWave->lifetime->cancel();
+                    return true;
+                }
+                if (!reusable(info)) return false;
+                mPreparation->markSubmitted(mDependency);
+                return true;
+            }
+            bool bootstrapReady(const osgUtil::IncrementalCompileOperation::CompileInfo& info) const override
+            {
+                osg::ref_ptr<CompositeMap> map;
+                if (!mPreparation->step || !info.incrementalCompileOperation
+                    || !mWave->terminal || (mKind != Kind::Texture && mKind != Kind::Target)
+                    || mDependency < mPreparation->step->dependencies.size() || !mMap.lock(map)
+                    || cancelled() || required() || !info.getState()
+                    || info.incrementalCompileOperation->getForceTextureDownloadGeometry()
+                    || info.incrementalCompileOperation->getContextSet().size() != 1
+                    || mPreparation->context.get() != info.getState()->getGraphicsContext()
+                    || !stepTargetUnchanged(*mPreparation, *map)
+                    || !stepPressureUsable(mPreparation->step->pressure)) return false;
+                const auto* target = dynamic_cast<Resource::PreparedTerrainTexture*>(map->mTexture.get());
+                return target && (mKind == Kind::Texture || target->preparationUnchanged(*info.getState()));
+            }
             double estimatedTimeForCompile(osgUtil::IncrementalCompileOperation::CompileInfo&) const override
             { return mKind == Kind::Program ? .001 : .00025; }
             bool compile(osgUtil::IncrementalCompileOperation::CompileInfo& info) override
@@ -316,6 +422,15 @@ namespace Terrain
                 const auto* dep = mDependency < step.dependencies.size() ? &step.dependencies[mDependency] : nullptr;
                 LockedStepDependency owner;
                 if (dep && !lockStepDependency(*dep, owner))
+                {
+                    mPreparation->lifetime->cancel(); mWave->lifetime->cancel();
+                    return true;
+                }
+                // The supplied chain can be unchanged while its separately
+                // retained original source has changed. Cancel optional work
+                // before apply could upload the original fallback here.
+                if (owner.texture && (!owner.texture->preparationDispatchEligible(state)
+                    || (dep && Resource::retainedTerrainTextureBytes(*owner.texture) != dep->retainedBytes)))
                 {
                     mPreparation->lifetime->cancel(); mWave->lifetime->cancel();
                     return true;
@@ -389,6 +504,17 @@ namespace Terrain
                 return true;
             }
         private:
+            bool sourceDispatchInvalid(const osgUtil::IncrementalCompileOperation::CompileInfo& info) const
+            {
+                if (!info.getState() || !mPreparation->step
+                    || mPreparation->context.get() != info.getState()->getGraphicsContext()
+                    || mDependency >= mPreparation->step->dependencies.size()) return false;
+                const auto& dependency = mPreparation->step->dependencies[mDependency];
+                LockedStepDependency owner;
+                if (!lockStepDependency(dependency, owner)) return true;
+                return owner.texture && (!owner.texture->preparationDispatchEligible(*info.getState())
+                    || Resource::retainedTerrainTextureBytes(*owner.texture) != dependency.retainedBytes);
+            }
             osg::observer_ptr<CompositeMap> mMap;
             std::shared_ptr<CompositePreparation> mPreparation;
             std::shared_ptr<CompositeDependencyWave> mWave;
@@ -399,9 +525,20 @@ namespace Terrain
 
         struct CompositeWaveCompleted final : osgUtil::IncrementalCompileOperation::CompileCompletedCallback
         {
-            explicit CompositeWaveCompleted(std::shared_ptr<CompositeDependencyWave> wave) : mWave(std::move(wave)) {}
+            CompositeWaveCompleted(CompositeMap* map, std::uint64_t generation,
+                std::shared_ptr<CompositeDependencyWave> wave)
+                : mMap(map), mGeneration(generation), mWave(std::move(wave)) {}
             bool compileCompleted(osgUtil::IncrementalCompileOperation::CompileSet*) override
-            { mWave->completed = true; mWave->lifetime->complete(); return true; }
+            {
+                mWave->completed = true;
+                mWave->lifetime->complete();
+                osg::ref_ptr<CompositeMap> map;
+                if (mMap.lock(map) && map->mPreparationGeneration.load(std::memory_order_acquire) == mGeneration)
+                    map->mProgressWake.fetch_add(1, std::memory_order_release);
+                return true;
+            }
+            osg::observer_ptr<CompositeMap> mMap;
+            std::uint64_t mGeneration;
             std::shared_ptr<CompositeDependencyWave> mWave;
         };
 
@@ -495,6 +632,11 @@ namespace Terrain
                     }
                     if (dep.texture)
                     {
+                        if (!dep.texture->preparationDispatchEligible(state))
+                        {
+                            mPreparation->lifetime->cancel();
+                            return true;
+                        }
                         osg::ref_ptr<Resource::PreparedTerrainTextureCompileOp> op
                             = new Resource::PreparedTerrainTextureCompileOp(dep.texture);
                         const bool complete = op->compile(info);
@@ -587,6 +729,10 @@ namespace Terrain
         return mPreparationEnabled && mICO && mICO->getContextSet().size() == 1
             && state.getGraphicsContext() && *mICO->getContextSet().begin() == state.getGraphicsContext();
     }
+    bool CompositeMapRenderer::progressEnabled() const
+    {
+        return mIncrementalPreparationEnabled && mICO && mICO->progressRepairEnabled();
+    }
 
     CompositeMapRenderer::PreparationStats CompositeMapRenderer::preparationStats() const
     {
@@ -597,11 +743,16 @@ namespace Terrain
         result.chargedMs = mAdmission ? mAdmission->chargedMs() : 0;
         result.dependencyWaves = mDependencyWaves.load(std::memory_order_relaxed);
         result.pressureYields = mPressureYields.load(std::memory_order_relaxed);
+        result.descriptorBuilds = mDescriptorBuilds.load(std::memory_order_relaxed);
+        result.capacityDeclines = mCapacityDeclines.load(std::memory_order_relaxed);
         return result;
     }
 
     void CompositeMapRenderer::retirePreparations() const
     {
+        // At most sixteen weak-debt entries; expiry must progress even if every
+        // queued map is parked and there are no fresh producer admissions.
+        if (progressEnabled()) mStepBudget->pruneDebt();
         std::vector<osg::ref_ptr<CompositeMap>> retiredMaps;
         std::vector<std::shared_ptr<CompositePreparation>> retiredPreparations;
         std::vector<std::vector<osg::ref_ptr<osg::Drawable>>> retiredProducerGraphs;
@@ -663,6 +814,7 @@ namespace Terrain
                     && map->mTexture->referenceCount() <= targetOwners + int(waveOwnsTarget))
                 {
                     preparation->lifetime->cancel(); ++mPreparationStats.cancelled;
+                    preparation->terminalReason = "consumer_retired";
                     // This seam still knows every internal target owner. Once
                     // detached, a queued canceled wave's reference must not be
                     // mistaken for a new external consumer by compileUntil.
@@ -672,6 +824,8 @@ namespace Terrain
                 }
                 if (preparation->lifetime->cancelled() || map->mDrawables.empty())
                 {
+                    if (progressEnabled()) reportProgressTerminal(*map, preparation->terminalReason == "pending"
+                        ? (map->mDrawables.empty() ? "completed" : "cancelled") : preparation->terminalReason);
                     preparation->lifetime->cancel();
                     if (preparation->step->wave) preparation->step->wave->lifetime->cancel();
                     map->mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel);
@@ -751,6 +905,7 @@ namespace Terrain
         auto& state = *info.getState();
         if (map.mPreparation && map.mPreparation->step && !stepPressureUsable(map.mPreparation->step->pressure))
         {
+            map.mPreparation->terminalReason = "pressure";
             mPressureYields.fetch_add(1, std::memory_order_relaxed);
             map.mPreparation->lifetime->cancel();
             if (map.mPreparation->step->wave) map.mPreparation->step->wave->lifetime->cancel();
@@ -810,6 +965,8 @@ namespace Terrain
                 && map.mPreparation->context.get() == state.getGraphicsContext())
                 return false;
             map.mPreparation->lifetime->cancel();
+            map.mPreparation->terminalReason = "invalidated";
+            if (progressEnabled()) reportProgressTerminal(map, "invalidated");
             ++mPreparationStats.invalidated;
             retirePreparations();
             map.mPreparation.reset();
@@ -874,7 +1031,7 @@ namespace Terrain
                 if (!texture)
                     continue;
                 auto* prepared = dynamic_cast<Resource::PreparedTerrainTexture*>(texture);
-                if (!prepared)
+                if (!prepared || !context->getState() || !prepared->preparationAdmissionEligible(*context->getState()))
                     return true;
                 if (prepared->getDataVariance() == osg::Object::DYNAMIC
                     || (prepared->getImage() && (prepared->getImage()->getDataVariance() == osg::Object::DYNAMIC
@@ -889,7 +1046,7 @@ namespace Terrain
                 if (preparation->dependencies.size() > 512)
                     return true;
                 if (seen.insert(texture).second && prepared->getImage())
-                    preparation->bytes += prepared->getImage()->getTotalDataSize();
+                    preparation->bytes += Resource::retainedTerrainTextureBytes(*prepared);
             }
             if (auto* program = dynamic_cast<osg::Program*>(pass->getAttribute(osg::StateAttribute::PROGRAM)))
             {
@@ -946,8 +1103,28 @@ namespace Terrain
         if (!map.mBatchingEligible || !mICO || mICO->getContextSet().size() != 1 || !mICO->getContextSet().contains(context)
             || !dynamic_cast<Resource::PreparedTerrainTexture*>(map.mTexture.get())
             || mICO->getForceTextureDownloadGeometry()) return true;
+        map.mProgressRefusal = CompositeProgressWait::Reason::None;
         if (!stepPressureUsable(mPressureContext))
-        { mPressureYields.fetch_add(1, std::memory_order_relaxed); return false; }
+        {
+            mPressureYields.fetch_add(1, std::memory_order_relaxed);
+            map.mProgressRefusal = CompositeProgressWait::Reason::Pressure;
+            return false;
+        }
+        const std::size_t metadata = 256u * 1024u + 512u * sizeof(CompositeStepPreparation::Dependency);
+        if (progressEnabled())
+        {
+            std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
+            // Early refusal only: the final locked reserve below remains the
+            // publication proof. No dependency vector is built for a full pool.
+            if (mStepBudget->maps.load(std::memory_order_acquire) >= sMaxPreparationMaps
+                || !mStepBudget->accepting() || !mStepBudget->canReserve(metadata))
+            {
+                if (progressEnabled()) mCapacityDeclines.fetch_add(1, std::memory_order_relaxed);
+                map.mProgressRefusal = CompositeProgressWait::Reason::Capacity;
+                return false;
+            }
+        }
+        if (progressEnabled()) mDescriptorBuilds.fetch_add(1, std::memory_order_relaxed);
 
         auto preparation = std::make_shared<CompositePreparation>();
         auto step = std::make_shared<CompositeStepPreparation>();
@@ -965,16 +1142,19 @@ namespace Terrain
                 if (!attribute) continue;
                 auto* texture = dynamic_cast<Resource::PreparedTerrainTexture*>(attribute);
                 auto* image = texture ? texture->getImage() : nullptr;
-                if (!texture || !image || !image->data() || texture->getSubloadCallback()
+                if (!texture || !context->getState() || !texture->preparationAdmissionEligible(*context->getState())
+                    || !image || !image->data() || texture->getSubloadCallback()
                     || texture->getUpdateCallback() || texture->getEventCallback() || texture->getReadPBuffer()
                     || texture->getDataVariance() == osg::Object::DYNAMIC
                     || image->getDataVariance() == osg::Object::DYNAMIC || image->requiresUpdateCall()) return true;
                 if (step->dependencies.size() == 512) return true;
                 CompositeStepPreparation::Dependency dep;
                 dep.texture = texture; dep.image = image; dep.imageRevision = image->getModifiedCount();
-                dep.sourceBytes = image->getTotalDataSize(); dep.pass = pass; dep.drawable = drawable;
+                dep.sourceBytes = image->getTotalDataSize();
+                dep.retainedBytes = Resource::retainedTerrainTextureBytes(*texture);
+                dep.pass = pass; dep.drawable = drawable;
                 dep.unit = unit; dep.layer = index;
-                if (!dep.sourceBytes || dep.sourceBytes > sMaxPreparationBytes) return true;
+                if (!dep.sourceBytes || dep.retainedBytes > sMaxPreparationBytes) return true;
                 step->dependencies.push_back(std::move(dep));
             }
             if (auto* program = dynamic_cast<osg::Program*>(pass->getAttribute(osg::StateAttribute::PROGRAM)))
@@ -987,7 +1167,6 @@ namespace Terrain
         }
         // All future payloads remain weak. This estimate includes the bounded
         // descriptor/queued operation bookkeeping, separately from source bytes.
-        const std::size_t metadata = 256u * 1024u + 512u * sizeof(CompositeStepPreparation::Dependency);
         const auto width = map.mTexture->getTextureWidth(), height = map.mTexture->getTextureHeight();
         const auto targetBytes = width > 0 && height > 0 ? std::size_t(width) * std::size_t(height) * 4 : 0;
         if (!targetBytes || targetBytes > sMaxPreparationBytes - metadata) return true;
@@ -1003,7 +1182,7 @@ namespace Terrain
             { layer = dep.layer; layerBytes = 0; layerTextures.clear(); layerPrograms.clear(); }
             LockedStepDependency owner;
             if (!lockStepDependency(dep, owner)) return true;
-            if (owner.texture && layerTextures.insert(owner.texture.get()).second) layerBytes += dep.sourceBytes;
+            if (owner.texture && layerTextures.insert(owner.texture.get()).second) layerBytes += dep.retainedBytes;
             if (owner.program && layerPrograms.insert(owner.program.get()).second)
             {
                 layerBytes += 64u * 1024u;
@@ -1018,7 +1197,12 @@ namespace Terrain
             std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
             mStepBudget->pruneDebt();
             if (mStepBudget->maps.load(std::memory_order_relaxed) >= sMaxPreparationMaps
-                || !mStepBudget->accepting() || !mStepBudget->reserve(metadata)) return false;
+                || !mStepBudget->accepting() || !mStepBudget->reserve(metadata))
+            {
+                if (progressEnabled()) mCapacityDeclines.fetch_add(1, std::memory_order_relaxed);
+                map.mProgressRefusal = CompositeProgressWait::Reason::Capacity;
+                return false;
+            }
             step->budget = mStepBudget; step->metadataBytes = metadata;
             mStepBudget->maps.fetch_add(1, std::memory_order_acq_rel);
             step->metadata = std::move(metadataLease);
@@ -1034,6 +1218,17 @@ namespace Terrain
             receipt.setMetric(2, "descriptor_bytes", metadata);
             receipt.setMetric(3, "early_producer", atCreation);
             map.mPreparation = preparation;
+            if (progressEnabled())
+            {
+                // Cull observes either one whole generation or an explicit
+                // unknown snapshot; it never mixes former layer times with a
+                // new admission. Zero brackets the independent atomic fields.
+                map.mProgressReceiptGeneration.store(0, std::memory_order_release);
+                map.mProgressAdmittedTick.store(progressTick(), std::memory_order_release);
+                map.mProgressFirstLayerTick.store(0, std::memory_order_release);
+                map.mProgressCompletedTick.store(0, std::memory_order_release);
+                map.mProgressReceiptGeneration.store(preparation->generation, std::memory_order_release);
+            }
             mPendingStepPreparations.push_back(&map);
             mPreparationScheduled.fetch_add(1, std::memory_order_relaxed);
         }
@@ -1042,6 +1237,7 @@ namespace Terrain
 
     bool CompositeMapRenderer::scheduleDependencyWave(CompositeMap& map, osg::GraphicsContext* context) const
     {
+        map.mProgressRefusal = CompositeProgressWait::Reason::Capacity;
         std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
         const auto preparation = map.mPreparation;
         if (!preparation || !preparation->step || preparation->lifetime->cancelled()) return false;
@@ -1050,7 +1246,11 @@ namespace Terrain
         mStepBudget->pruneDebt();
         if (!mStepBudget->accepting()) return false;
         if (!stepPressureUsable(step.pressure))
-        { mPressureYields.fetch_add(1, std::memory_order_relaxed); return false; }
+        {
+            mPressureYields.fetch_add(1, std::memory_order_relaxed);
+            map.mProgressRefusal = CompositeProgressWait::Reason::Pressure;
+            return false;
+        }
         auto* state = context ? context->getState() : nullptr;
         if (!state || preparation->context.get() != context
             || !stepTargetUnchanged(*preparation, map))
@@ -1091,9 +1291,11 @@ namespace Terrain
             if (dep.layer != wave->layerBegin) break;
             LockedStepDependency owner;
             if (!lockStepDependency(dep, owner)) { preparation->lifetime->cancel(); return false; }
+            if (owner.texture && !owner.texture->preparationDispatchEligible(*state))
+            { preparation->lifetime->cancel(); return false; }
             if (owner.texture)
             {
-                const auto bytes = textures.contains(owner.texture.get()) ? 0 : dep.sourceBytes;
+                const auto bytes = textures.contains(owner.texture.get()) ? 0 : dep.retainedBytes;
                 if (bytes > available - std::min(available, wave->bytes)) return false;
                 if (textures.insert(owner.texture.get()).second) { wave->textures.push_back(owner.texture); wave->bytes += bytes; }
                 if (images.insert(owner.image.get()).second) wave->images.push_back(owner.image);
@@ -1145,13 +1347,14 @@ namespace Terrain
                 Resource::OpenMWCompositeCompileOp::Kind::Target, 0));
         }
         ++set->_numberCompileListsToCompile;
-        set->_compileCompletedCallback = new CompositeWaveCompleted(wave);
+        set->_compileCompletedCallback = new CompositeWaveCompleted(&map, preparation->generation, wave);
         Debug::HitchTrace::Scope receipt("composite.wave_admit", Debug::HitchTrace::CpuTiming::WallEnvelope);
         receipt.retain(); receipt.setLink(preparation->receipt);
         wave->receipt = receipt.id();
         receipt.setMetric(0, "begin", wave->begin); receipt.setMetric(1, "end", wave->end);
         receipt.setMetric(2, "source_bytes", wave->bytes); receipt.setMetric(3, "terminal", wave->terminal);
         step.wave = wave;
+        map.mProgressRefusal = CompositeProgressWait::Reason::Dependency;
         mDependencyWaves.fetch_add(1, std::memory_order_relaxed);
         mICO->add(set, false);
         return false;
@@ -1183,6 +1386,17 @@ namespace Terrain
 
     CompositeMapRenderer::~CompositeMapRenderer()
     {
+        if (progressEnabled())
+        {
+            const auto stats = preparationStats();
+            Log(Debug::Info) << "OptimizedMW composite progress: scheduled=" << stats.scheduled
+                << " descriptor_builds=" << stats.descriptorBuilds << " capacity_declines=" << stats.capacityDeclines
+                << " polls=" << stats.polls << " parked_skips=" << stats.parkedSkips
+                << " consumed_layers=" << stats.consumedLayers << " completed_maps=" << stats.completedMaps
+                << " required_fallbacks=" << stats.requiredFallbacks << " invalidated=" << stats.invalidated
+                << " cancelled=" << stats.cancelled << " pressure_yields=" << stats.pressureYields
+                << " pending_bytes=" << stats.pendingBytes;
+        }
         std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
         for (const auto& map : mPendingPreparations)
             if (map->mPreparation)
@@ -1193,6 +1407,7 @@ namespace Terrain
         for (const auto& reference : mPendingStepPreparations)
             if (osg::ref_ptr<CompositeMap> map; reference.lock(map) && map->mPreparation && map->mPreparation->step)
             {
+                if (progressEnabled()) reportProgressTerminal(*map, "shutdown");
                 map->mPreparation->lifetime->cancel();
                 if (map->mPreparation->step->wave) map->mPreparation->step->wave->lifetime->cancel();
                 map->mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel);
@@ -1214,6 +1429,7 @@ namespace Terrain
         for (const auto& reference : mPendingStepPreparations)
             if (osg::ref_ptr<CompositeMap> map; reference.lock(map) && map->mPreparation && map->mPreparation->step)
             {
+                if (progressEnabled()) reportProgressTerminal(*map, "context_release");
                 map->mPreparation->lifetime->cancel();
                 if (map->mPreparation->step->wave) map->mPreparation->step->wave->lifetime->cancel();
                 map->mPreparationGeneration.fetch_add(1, std::memory_order_acq_rel);
@@ -1234,6 +1450,7 @@ namespace Terrain
         CompileTelemetry telemetry;
         const bool preparationActive = preparationSupported(*renderInfo.getState());
         const osg::FrameStamp* ownerStamp = renderInfo.getState()->getFrameStamp();
+        const bool progressActive = preparationActive && progressEnabled() && ownerStamp;
         const unsigned ownerFrame = ownerStamp ? ownerStamp->getFrameNumber() : 0;
         if (preparationActive)
         {
@@ -1241,7 +1458,9 @@ namespace Terrain
                 - renderInfo.getState()->getGraphicsContext()->getTimeSinceLastClear() * 1000.0);
             mAdmission->begin(renderInfo.getState()->getGraphicsContext(), ownerFrame,
                 std::min(mICO->compositeBudgetMs(), headroom * mICO->compositeHeadroomRatio()));
+            const auto maintenanceStart = Clock::now();
             retirePreparations();
+            if (progressActive) mAdmission->charge(Debug::V3Diagnostics::elapsedMs(maintenanceStart));
         }
 
         double dt = mTimer.time_s();
@@ -1260,7 +1479,7 @@ namespace Terrain
 
         const std::size_t immediateStart = mImmediateCompileSet.size();
         const std::size_t queuedStart = mCompileSet.size();
-        if (preparationActive)
+        if (preparationActive && !progressActive)
             for (const auto& map : mCompileSet)
                 if (!map->mQueueFrameKnown)
                 {
@@ -1282,7 +1501,9 @@ namespace Terrain
             : std::chrono::steady_clock::now()
                 + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(availableTime));
         std::unordered_set<CompositeMap*> attempted;
-        while (!mCompileSet.empty() && std::chrono::steady_clock::now() < deadline)
+        if (progressActive)
+            advanceBackground(renderInfo, deadline, ownerFrame, &telemetry, lock);
+        else while (!mCompileSet.empty() && std::chrono::steady_clock::now() < deadline)
         {
             auto selected = mCompileSet.begin();
             if (preparationActive)
@@ -1332,13 +1553,17 @@ namespace Terrain
         const std::size_t immediateEnd = mImmediateCompileSet.size();
         const std::size_t queuedEnd = mCompileSet.size();
         unsigned oldestAge = 0;
-        if (preparationActive)
+        if (preparationActive && (!progressActive || telemetryEnabled))
             for (const auto& map : mCompileSet)
                 if (map->mQueueFrameKnown && ownerFrame >= map->mQueuedFrame)
                     oldestAge = std::max(oldestAge, ownerFrame - map->mQueuedFrame);
         lock.unlock();
         if (preparationActive)
+        {
+            const auto maintenanceStart = Clock::now();
             retirePreparations();
+            if (progressActive) mAdmission->charge(Debug::V3Diagnostics::elapsedMs(maintenanceStart));
+        }
         mTimer.setStartTick();
 
         if (telemetryEnabled)
@@ -1362,9 +1587,154 @@ namespace Terrain
                     << mPreparationStats.invalidated << ',' << mPreparationStats.cancelled << ','
                     << mPreparationStats.requiredFallbacks << ',' << mPreparationStats.ageProgress << ','
                     << mPreparationStats.budgetYields << ',' << preparationStats().pendingBytes << ','
-                    << (preparationActive ? mAdmission->chargedMs() : 0) << ',' << oldestAge;
+                    << (preparationActive ? mAdmission->chargedMs() : 0) << ',' << oldestAge << ','
+                    << mDescriptorBuilds.load(std::memory_order_relaxed) << ','
+                    << mCapacityDeclines.load(std::memory_order_relaxed) << ','
+                    << mPreparationStats.polls << ',' << mPreparationStats.parkedSkips << ','
+                    << mPreparationStats.consumedLayers << ',' << mPreparationStats.completedMaps << ','
+                    << mPressureYields.load(std::memory_order_relaxed);
                 telemetryWriter.writeLine(row.str());
             }
+        }
+    }
+
+    void CompositeMapRenderer::advanceBackground(osg::RenderInfo& info, Deadline deadline, unsigned frame,
+        CompileTelemetry* telemetry, std::unique_lock<std::mutex>& lock) const
+    {
+        // Canonical mCompileSet membership is retained while parked. Cull-side
+        // setImmediate therefore finds parked maps, and the existing in-flight
+        // requiredness check covers promotion while this owner is unlocked.
+        constexpr std::size_t MaximumVisits = 16;
+        constexpr double MaximumMaintenanceMs = .25;
+        if (mAdmission->compositeMaintenanceVisits() >= MaximumVisits || mAdmission->bootstrapUsed()
+            || mAdmission->remainingMs() <= 0) return;
+        const double maintenanceLimit = std::min(MaximumMaintenanceMs, mAdmission->remainingMs() * .125);
+        double maintenanceMs = mAdmission->compositeMaintenanceMs();
+        if (maintenanceMs >= maintenanceLimit) return;
+        const auto pressureGeneration = mPressureContext.sample
+            ? mPressureContext.sample(mPressureContext.owner).generation : 0;
+        std::array<osg::ref_ptr<CompositeMap>, sMaxPreparationMaps> ready;
+        std::size_t readyCount = 0, readyIndex = 0;
+        const auto readyStart = std::chrono::steady_clock::now();
+        {
+            std::lock_guard pendingLock(mPreparationMutex);
+            // Only the admitted eight-map pool is inspected, rather than the
+            // entire waiting set. Completion publishes a weak qualified wake.
+            for (const auto& reference : mPendingStepPreparations)
+            {
+                osg::ref_ptr<CompositeMap> map;
+                if (!reference.lock(map) || !mCompileSet.contains(map) || !map->mPreparation
+                    || !map->mPreparation->step) continue;
+                const auto& wave = map->mPreparation->step->wave;
+                if ((wave && wave->completed) || map->mProgressWait.eligible(frame,
+                    map->mProgressWake.load(std::memory_order_acquire),
+                    mStepBudget->creditGeneration.load(std::memory_order_acquire), pressureGeneration))
+                {
+                    if (readyCount == ready.size()) break;
+                    ready[readyCount++] = std::move(map);
+                }
+            }
+        }
+        const double readyMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - readyStart).count();
+        maintenanceMs += readyMs;
+        mAdmission->chargeCompositeMaintenance(readyMs);
+        std::array<CompositeMap*, MaximumVisits> visited{};
+        std::size_t visitedCount = 0;
+        for (std::size_t visits = 0; visits < MaximumVisits && !mCompileSet.empty()
+            && std::chrono::steady_clock::now() < deadline && !mAdmission->bootstrapUsed()
+            && mAdmission->remainingMs() > 0 && maintenanceMs < maintenanceLimit
+            && mAdmission->takeCompositeMaintenanceVisit(MaximumVisits); ++visits)
+        {
+            const auto selectionStart = std::chrono::steady_clock::now();
+            CompileSet::iterator selected = mCompileSet.end();
+            while (readyIndex < readyCount && selected == mCompileSet.end())
+                selected = mCompileSet.find(ready[readyIndex++]);
+            if (selected == mCompileSet.end())
+            {
+                osg::ref_ptr<CompositeMap> cursor;
+                if (mProgressCursor.lock(cursor)) selected = mCompileSet.upper_bound(cursor);
+                if (selected == mCompileSet.end()) selected = mCompileSet.begin();
+            }
+            osg::ref_ptr<CompositeMap> node = *selected;
+            mProgressCursor = node;
+            if (!node->mQueueFrameKnown)
+            {
+                node->mQueuedFrame = frame;
+                node->mQueueFrameKnown = true;
+            }
+            const auto wakeBeforeCheck = node->mProgressWake.load(std::memory_order_acquire);
+            const auto creditBeforeCheck = mStepBudget->creditGeneration.load(std::memory_order_acquire);
+            const bool duplicate = std::find(visited.begin(), visited.begin() + visitedCount, node.get())
+                != visited.begin() + visitedCount;
+            const bool eligible = !duplicate && (node->mRequired.load(std::memory_order_acquire)
+                || node->mProgressWait.eligible(frame, wakeBeforeCheck, creditBeforeCheck, pressureGeneration));
+            const double selectedMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - selectionStart).count();
+            maintenanceMs += selectedMs;
+            mAdmission->chargeCompositeMaintenance(selectedMs);
+            if (!eligible)
+            {
+                ++mPreparationStats.parkedSkips;
+                continue;
+            }
+            visited[visitedCount++] = node.get();
+            ++mPreparationStats.polls;
+            node->mProgressRefusal = CompositeProgressWait::Reason::None;
+            const auto drawablesBefore = telemetry ? telemetry->drawables : 0;
+            mCompileSet.erase(selected);
+            lock.unlock();
+            const auto attemptStart = std::chrono::steady_clock::now();
+            compileUntil(*node, info, deadline, telemetry);
+            const double attemptMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - attemptStart).count();
+            lock.lock();
+            const auto bookkeepingStart = std::chrono::steady_clock::now();
+            if (!telemetry || telemetry->drawables == drawablesBefore)
+            {
+                maintenanceMs += attemptMs;
+                // compileUntil already charged actual submission time. Record
+                // only the maintenance sub-account without charging it twice.
+                mAdmission->chargeCompositeMaintenance(attemptMs, false);
+            }
+            if (node->mCompiled < node->mDrawables.size())
+            {
+                if (node->mRequired.load(std::memory_order_acquire))
+                    mImmediateCompileSet.insert(node);
+                else
+                {
+                    auto reason = node->mProgressRefusal;
+                    if (reason == CompositeProgressWait::Reason::None)
+                    {
+                        const auto& preparation = node->mPreparation;
+                        reason = preparation && preparation->step && preparation->step->wave
+                            && !preparation->step->wave->completed
+                            ? CompositeProgressWait::Reason::Dependency : CompositeProgressWait::Reason::FrameBudget;
+                    }
+                    if (node->mProgressWait.reason() != reason)
+                    {
+                        Debug::HitchTrace::Scope refusal("composite.progress_park", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                        refusal.retain(); refusal.setLink(node->mPreparation ? node->mPreparation->receipt : node->mPreparationReceipt);
+                        refusal.setMetric(0, "generation", node->mPreparation ? node->mPreparation->generation : 0);
+                        refusal.setMetric(1, "reason", static_cast<unsigned>(reason));
+                        refusal.setMetric(2, "credit_generation", creditBeforeCheck);
+                        refusal.setMetric(3, "pressure_generation", pressureGeneration);
+                    }
+                    node->mProgressWait.park(reason, frame, wakeBeforeCheck, creditBeforeCheck, pressureGeneration);
+                    mCompileSet.insert(node);
+                }
+            }
+            else
+            {
+                node->mProgressWait.ready();
+                if (node->mProgressCompletedTick.load(std::memory_order_acquire)
+                    && !node->mRequired.load(std::memory_order_acquire))
+                    ++mPreparationStats.completedMaps;
+            }
+            const double bookkeepingMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - bookkeepingStart).count();
+            maintenanceMs += bookkeepingMs;
+            mAdmission->chargeCompositeMaintenance(bookkeepingMs);
         }
     }
 
@@ -1456,7 +1826,10 @@ namespace Terrain
             // speculative preparation must never delay or partially publish it.
             ++mPreparationStats.requiredFallbacks;
             if (compositeMap.mPreparation)
+            {
+                compositeMap.mPreparation->terminalReason = "required_fallback";
                 compositeMap.mPreparation->lifetime->cancel();
+            }
         }
         const auto layerPreparation = compositeMap.mPreparation;
         const auto layerWave = layerPreparation && layerPreparation->step ? layerPreparation->step->wave : nullptr;
@@ -1529,6 +1902,14 @@ namespace Terrain
             };
             if (layerWave && !layerWave->terminal && compositeMap.mCompiled >= layerWave->layerEnd && waveUsed(*layerWave))
             {
+                const bool demanded = compositeMap.mRequired.load(std::memory_order_acquire);
+                const bool cancelled = layerPreparation->lifetime->cancelled() || layerWave->lifetime->cancelled();
+                const bool qualified = layerWave->completed && !cancelled && !demanded && !layerPreparation->failed
+                    && layerPreparation->generation == compositeMap.mPreparationGeneration.load(std::memory_order_acquire)
+                    && layerPreparation->context.get() == state.getGraphicsContext();
+                if (qualified) ++mPreparationStats.consumedLayers;
+                if (progressEnabled() && qualified && !compositeMap.mProgressFirstLayerTick.load(std::memory_order_relaxed))
+                    compositeMap.mProgressFirstLayerTick.store(progressTick(), std::memory_order_release);
                 layerWave->consumed = true;
                 Debug::HitchTrace::Scope use("composite.layer_consumed", Debug::HitchTrace::CpuTiming::WallEnvelope);
                 use.retain(); use.setLink(layerWave->receipt);
@@ -1536,6 +1917,17 @@ namespace Terrain
                 use.setMetric(1, "source_bytes", layerWave->bytes);
                 use.setMetric(2, "generation", layerPreparation->generation);
                 use.setMetric(3, "map_complete", complete);
+                if (progressEnabled())
+                {
+                    Debug::HitchTrace::Scope outcome("composite.layer_outcome", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                    outcome.retain(); outcome.setLink(use.id());
+                    outcome.setMetric(0, "wave_completed", layerWave->completed);
+                    outcome.setMetric(1, "required", demanded);
+                    outcome.setMetric(2, "cancelled", cancelled);
+                    outcome.setMetric(3, "qualified_optional", qualified);
+                    if (complete && qualified)
+                        compositeMap.mProgressCompletedTick.store(progressTick(), std::memory_order_release);
+                }
             }
             if (complete && layerPreparation && layerPreparation->step)
             {
@@ -1809,7 +2201,12 @@ namespace Terrain
         std::lock_guard<std::mutex> lock(mMutex);
         if (immediate)
         {
-            compositeMap->mRequired.store(true, std::memory_order_release);
+            if (progressEnabled())
+            {
+                const bool previouslyRequired = compositeMap->mRequired.exchange(true, std::memory_order_acq_rel);
+                if (!previouslyRequired) reportFirstDemand(*compositeMap);
+            }
+            else compositeMap->mRequired.store(true, std::memory_order_release);
             mCompileSet.erase(compositeMap);
             mImmediateCompileSet.insert(compositeMap);
         }
@@ -1819,7 +2216,12 @@ namespace Terrain
 
     void CompositeMapRenderer::setImmediate(CompositeMap* compositeMap)
     {
-        compositeMap->mRequired.store(true, std::memory_order_release);
+        if (progressEnabled())
+        {
+            const bool previouslyRequired = compositeMap->mRequired.exchange(true, std::memory_order_acq_rel);
+            if (!previouslyRequired) reportFirstDemand(*compositeMap);
+        }
+        else compositeMap->mRequired.store(true, std::memory_order_release);
         std::lock_guard<std::mutex> lock(mMutex);
         CompileSet::iterator found = mCompileSet.find(compositeMap);
         if (found == mCompileSet.end())
@@ -1846,6 +2248,8 @@ namespace Terrain
     {
         if (mPreparation && mPreparation->step)
         {
+            if (mProgressReceiptGeneration.load(std::memory_order_acquire))
+                reportProgressTerminal(*this, "expired");
             mPreparation->lifetime->cancel();
             if (mPreparation->step->wave) mPreparation->step->wave->lifetime->cancel();
         }
