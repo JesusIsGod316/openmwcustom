@@ -904,13 +904,6 @@ namespace Resource
                         traceTexture = nullptr;
                     }
                 }
-                if (attribution)
-                {
-                    operationScope.emplace(
-                        "compile.operation", "", "", frame, Debug::HitchTrace::CpuTiming::WallEnvelope);
-                    operationScope->retain();
-                    attribution->span = operationScope->id();
-                }
             }
             // Recheck bootstrap proof after all selection/diagnostic work.
             // The current clear clock already includes that work; adding the
@@ -938,6 +931,18 @@ namespace Resource
             }
             if (noGlService && !mCompositeAdmission->takeNoGlAttempt(maxObjects, 0.25))
                 break;
+            // A selected candidate can fail the final ownership/headroom or
+            // shared no-GL admission check above. It has not performed a
+            // compile operation, so do not mint a retained operation span
+            // without the corresponding actual-operation attribution row.
+            // Metadata and admission time remain in the scheduler envelope.
+            if (attribution)
+            {
+                operationScope.emplace(
+                    "compile.operation", "", "", frame, Debug::HitchTrace::CpuTiming::WallEnvelope);
+                operationScope->retain();
+                attribution->span = operationScope->id();
+            }
             const auto start = Debug::V3Diagnostics::Clock::now();
             bool completedSet = false;
             if (noGlService)

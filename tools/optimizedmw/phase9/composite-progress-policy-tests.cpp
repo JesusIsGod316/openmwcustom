@@ -58,7 +58,16 @@ namespace
         std::size_t resourceBytes() const override { return bytes; }
         bool required() const override { return demand; }
         bool cancelled() const override { return cancel; }
-        bool reusable(const osgUtil::IncrementalCompileOperation::CompileInfo&) const override { return ready; }
+        bool reusable(const osgUtil::IncrementalCompileOperation::CompileInfo&) const override
+        {
+            ++reuseChecks;
+            // Deterministically model another owner of the shared CPU-only
+            // budget spending its last allowance after selection, before the
+            // dispatch recheck. This is fixture behavior, not engine policy.
+            if (exhaustNoGlAfterSelection && reuseChecks == 2)
+                exhaustNoGlAfterSelection->chargeNoGlAttempt(.25);
+            return ready;
+        }
         bool tryCompleteWithoutGL(osgUtil::IncrementalCompileOperation::CompileInfo&) override
         {
             ++proofs;
@@ -83,8 +92,9 @@ namespace
         double estimateSeconds = .00025;
         bool ready = false, decline = false, bootstrap = false, demand = false, cancel = false;
         bool delayDispatchProof = false, withdrawDispatchProof = false;
+        Resource::P9DiscretionaryAdmission* exhaustNoGlAfterSelection = nullptr;
         unsigned proofs = 0, dispatches = 0;
-        mutable unsigned bootstrapChecks = 0;
+        mutable unsigned bootstrapChecks = 0, reuseChecks = 0;
     };
     void add(Resource::OpenMWIncrementalCompileOperation& ico, osg::GraphicsContext* context, Probe* probe)
     {
@@ -200,6 +210,20 @@ int main() try
         begin(*ico, 0); (*ico)(context);
         require(stale->proofs == 1 && stale->dispatches == 0 && !ico->getToCompile().empty(),
             "failed CPU proof fell back to allocating compile at zero budget");
+        detach(*ico);
+    }
+    {
+        auto ico = scheduler(true, 0);
+        osg::ref_ptr<Probe> exhausted = new Probe; exhausted->ready = true;
+        exhausted->exhaustNoGlAfterSelection = ico->compositeAdmission().get();
+        add(*ico, context, exhausted);
+        begin(*ico, 0); (*ico)(context);
+        require(exhausted->reuseChecks == 2 && exhausted->proofs == 0 && exhausted->dispatches == 0
+                && !ico->getToCompile().empty() && ico->compositeAdmission()->chargedMs() == .25,
+            "final no-GL admission did not refuse budget exhausted after selection");
+        begin(*ico, 0); (*ico)(context);
+        require(exhausted->proofs == 1 && exhausted->dispatches == 0 && ico->getToCompile().empty(),
+            "refused no-GL operation did not retain its owner/context for next-frame completion");
         detach(*ico);
     }
     {
@@ -322,7 +346,7 @@ int main() try
     }
     progressEnvironment("0");
     context->releaseContext();
-    std::cout << "PASS: shared bootstrap/aged/heavy token, zero-budget no-GL ICO completion and stale refusal, OFF control, equal-cap target service with positive maintenance, cold-source refusal, repeated traversal bounds, dispatch proof/headroom recheck, bootstrap deletion deferral with pressure bypass and finite progress\n";
+    std::cout << "PASS: shared bootstrap/aged/heavy token, zero-budget no-GL ICO completion, stale refusal and dispatch-budget exhaustion with next-frame completion, OFF control, equal-cap target service with positive maintenance, cold-source refusal, repeated traversal bounds, dispatch proof/headroom recheck, bootstrap deletion deferral with pressure bypass and finite progress\n";
     return 0;
 }
 catch (const std::exception& error)

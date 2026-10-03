@@ -368,7 +368,8 @@ namespace Resource::CompositeCpuMips
                 && object->isAllocated() && !owner.isDirty(context) && !owner.getSubloadCallback()
                 && object->_profile._target == GL_TEXTURE_2D && object->_profile._width == image->s()
                 && object->_profile._height == image->t()
-                && (!supplied || object->_profile._numMipmapLevels == image->getNumMipmapLevels());
+                && (!supplied || (object->_profile._numMipmapLevels > 0
+                    && static_cast<unsigned>(object->_profile._numMipmapLevels) == image->getNumMipmapLevels()));
         }
         static void rememberDrawProof(DrawProof& proof, osg::State& state,
             const PreparedTerrainTexture& owner, DrawOwner kind) noexcept

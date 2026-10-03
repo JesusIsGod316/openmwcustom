@@ -252,7 +252,7 @@ add_test(NAME p9-composite-step-progress COMMAND p9-composite-preparation --step
 set_tests_properties(p9-composite-progress p9-composite-step-progress PROPERTIES TIMEOUT 180)
 add_test(NAME p9-compile-attribution COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/verify-compile-attribution.py $<TARGET_FILE:p9-composite-preparation>
-  ${CMAKE_CURRENT_BINARY_DIR}/compile-attribution-fixture)
+  ${CMAKE_CURRENT_BINARY_DIR}/compile-attribution-fixture $<TARGET_FILE:p9-composite-progress-policy>)
 set_tests_properties(p9-compile-attribution PROPERTIES TIMEOUT 45)
 add_executable(p9-draw-phases draw-phase-tests.cpp ${ROOT}/components/terrain/terraindrawable.cpp
   ${ROOT}/components/terrain/compositemaprenderer.cpp ${ROOT}/components/resource/openmwcompileoperation.cpp)
