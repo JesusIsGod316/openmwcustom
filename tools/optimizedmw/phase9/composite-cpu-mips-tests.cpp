@@ -267,6 +267,8 @@ namespace
             // Restore the caller while every source owner is still alive.
             state.apply();
             state.disableAllVertexArrays();
+            if (const auto* owned = dynamic_cast<const Resource::PreparedTerrainTexture*>(masks[layer].get()))
+                owned->recordProducerDrawUse(state, layer != 1);
         }
         std::vector<unsigned char> pixels(std::size_t(size) * size * 4);
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -296,11 +298,16 @@ namespace
         auto prepared = Mips::prepare(source, caps, true, true);
         osg::ref_ptr<Mips::Texture> texture = new Mips::Texture(prepared);
         configure(*texture);
+        const auto beforeApply = Mips::stats();
         state.setActiveTextureUnit(1);
         state.applyTextureAttribute(1, texture);
         require(generationCalls == 0, "eligible supplied chain invoked generation");
         verifyLevels(*prepared.mipmapped);
         require(texture->preparationAdmissionEligible(state), "eligible supplied image declined optional admission");
+        require(Mips::stats().suppliedApplies == beforeApply.suppliedApplies + 1
+                && Mips::stats().uploadSubmissions == beforeApply.uploadSubmissions + 1
+                && Mips::stats().firstProducerUses == beforeApply.firstProducerUses,
+            "accepted upload missing, or apply/precompile falsely counted as first producer use");
         require(Resource::retainedTerrainTextureBytes(*texture) == 39390,
             "original+supplied source ownership was undercharged");
         texture->rememberPreparation(state);
@@ -329,6 +336,7 @@ namespace
             candidate[layer] = new Mips::Texture(Mips::prepare(mask, caps, true, true));
             configure(*candidate[layer]);
         }
+        const auto beforeProducer = Mips::stats();
         for (int size : { 128, 64, 32, 16 })
         {
             const auto a = render(state, shaders, control, size);
@@ -359,6 +367,12 @@ namespace
                     "real shader masks lost alpha coverage or bypassed layered blending at an edge/pixel");
             }
         }
+        const auto afterProducer = Mips::stats();
+        require(afterProducer.firstProducerUses == beforeProducer.firstProducerUses + 3
+                && afterProducer.requiredFirstUses == beforeProducer.requiredFirstUses + 2
+                && afterProducer.optionalFirstUses == beforeProducer.optionalFirstUses + 1
+                && afterProducer.producerDrawUses == beforeProducer.producerDrawUses + 12,
+            "real producer draws did not distinguish repeated use from wrapper/context first use");
         state.setActiveTextureUnit(1);
         const auto beforeRelease = generationCalls;
         texture->releaseGLObjects(&state);
@@ -373,6 +387,16 @@ namespace
         glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
         require(unsigned(bound) == texture->controlTexture()->getTextureObject(state.getContextID())->id(),
             "fallback binding disagrees with actual owner");
+        const auto beforeFallbackDraw = Mips::stats();
+        require(beforeFallbackDraw.controlFirstUses == beforeApply.controlFirstUses,
+            "fallback apply/precompile falsely counted as producer use");
+        const std::array<osg::ref_ptr<osg::Texture2D>, 3> fallback{ texture, control[1], control[2] };
+        render(state, shaders, fallback, 32);
+        render(state, shaders, fallback, 32);
+        require(Mips::stats().controlProducerUses == beforeFallbackDraw.controlProducerUses + 2
+                && Mips::stats().controlFirstUses == beforeFallbackDraw.controlFirstUses + 1
+                && Mips::stats().firstProducerUses == beforeFallbackDraw.firstProducerUses,
+            "fallback producer use claimed supplied chain or duplicated first use");
         osg::ref_ptr<Mips::Texture> retiredClone = new Mips::Texture(*texture);
         retiredClone->apply(state);
         require(!retiredClone->preparationUnchanged(state), "clone revived retired context proof");
@@ -392,6 +416,10 @@ namespace
         configure(*changed);
         prepared.mipmapped->data()[0] = 199;
         prepared.mipmapped->dirty();
+        const auto beforeDirtyUse = Mips::stats();
+        changed->recordProducerDrawUse(state, true);
+        require(Mips::stats().unprovenProducerUses == beforeDirtyUse.unprovenProducerUses + 1,
+            "dirty/unapplied owner created a producer-use proof");
         changed->apply(state);
         require(!changed->preparationAdmissionEligible(state), "dirty supplied image admitted optional retry");
         std::vector<unsigned char> changedBase(16900);

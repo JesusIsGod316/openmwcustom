@@ -1,191 +1,102 @@
-FOCUSED RENDERER TRIAL (2026-10-02) - preparation progress and supplied blendmap mips
+OPTIMIZEDMW NUMBERED TEST LAUNCHER (2026-10-02)
 
-Use C:\OptimizedMW_Test\START-OptimizedMW-Test.bat and choose F.
-The focused menu uses readable presets; old choices 1-11 retain their meanings:
-  F/1 = Retained CONTROL, no warm keyframes/cleanup/new terrain mechanisms.
-  F/2 = Cleanup only, on the same retained control.
-  F/3 = Original STEP, without early preparation or the progress repair.
-  F/4 = Early STEP with bounded preparation progress.
-  F/5 = Terrain + supplied blendmap mips: F/4 plus the independent CPU mip chain.
-  F/6 = Combined renderer: F/4 plus cleanup; choose mips off/on separately.
-Choose N for Normal performance or D for Deep engine diagnostics. Normal does
-not start Windows recording or require elevation. Focused Deep defaults to engine
-diagnostics only; choose W when a Windows trace is specifically useful.
+Use C:\OptimizedMW_Test\START-OptimizedMW-Test.bat. All menu selections use numbers:
+choose a category, choose an optimization, then choose the run type.
+0 goes back; 0 at the category screen exits without starting a run.
 
-First comparison: F/1, F/5, F/5, F/1, all Normal. Use the SAME outdoor save,
-first-person view, frame cap and timed walking route. Hold the identical heavy
-view for 45 seconds before walking; quit normally. Supply the same save-file path,
-route and cap labels at each launch. The manifest hashes the declared save file;
-it does not prove that you actually loaded it. Cap/view labels are declarations,
-not automatically verified measurements. Keep first visits, revisits and loading
-separate; a fresh process does not prove cold OS/driver caches. Upload the four
-verified engine ZIPs. No system trace is needed for this initial comparison.
+Categories (these are navigation numbers, not engine bit masks):
+  1 = Controls                 retained control / original feature control
+  2 = Terrain and rendering    terrain preparation, supplied mips, water, weather
+  3 = Animation                source preparation, retention, warm keyframes, plans
+  4 = Resource cleanup         retained control / bounded deletion admission
+  5 = User interface           retained control / text and layout reuse
+  6 = Lua                      retained control / package descriptor reuse
+  7 = File I/O                 original / refill / resident seek / both
+  8 = Combined tests           custom toggles and named combinations
+  9 = Advanced and earlier experiments   temporal/motion/earlier preparation
 
-If this package merits further testing, compare F/4 against F/5 to isolate mips,
-and F/1 against F/2 to isolate cleanup. The launcher does not automate repeated
-gameplay, change saves, clear caches or enable warm keyframes in these presets.
-Progress and supplied-mip switches are explicit and OFF on all old presets.
-Preparation can decline safely; a selected flag is not proof of completed work
-or a faster frame. CPU mips may retain the original upload on unsupported inputs.
+After selecting the optimization:
+  1 = Normal performance run
+  2 = Deep engine diagnostics
+  0 = Back
+For Deep only, a second numbered choice selects 1 = Engine only or
+2 = Engine + Windows system trace. Engine only is the default.
+Normal starts no Windows recorder. Changing depth preserves the gameplay vector.
+Earlier experiments retain their gameplay inputs; the selected depth controls
+engine diagnostics separately. Unsafe static prewarm remains unavailable.
 
-Command-line equivalents (the same launcher and manifest):
+CURRENT RENDERER COMPARISONS
+  1 / 1 = Retained CONTROL (same as terrain category 2 / 1)
+  2 / 2 = Original incremental STEP, without early/progress repair
+  2 / 3 = Early STEP + bounded preparation progress
+  2 / 4 = Early STEP + progress + supplied blendmap mipmaps
+  2 / 9 = Supplied blendmap mipmaps only
+  4 / 2 = Bounded deletion admission on the retained control
+  8 / 3 = Terrain progress + cleanup
+  8 / 4 = Terrain progress + supplied mips + cleanup
+Each slash means the next menu screen. Choose Normal (1) or Deep (2) afterwards.
+For the requested engine-only Deep terrain run: 2, 4, 2, 1.
+For a Normal mip isolation pair: 2, 3, 1 versus 2, 4, 1.
+
+COMBINED TESTS
+Choose 8 / 1 to build a combination. Each numbered mechanism is displayed ON/off.
+Select its number to toggle it; choose 16 to continue to file I/O and run depth.
+17 resets to retained control; 18 turns all candidates off; 0 goes back.
+Warm keyframes visibly enable required animation retention/source preparation.
+Removing retention or source preparation also removes dependent warm keyframes.
+Progress repair visibly enables STEP; removing STEP also removes progress repair.
+Supplied mips, cleanup, UI, Lua packages, water, weather and other valid mechanisms
+remain independently selectable. The summary lists the actual selected gameplay
+mechanisms before asking for diagnostics. Every run records the selection ID,
+exact effective vector, settings, file hashes, restoration and capture status.
+A selected switch does not prove that optional work activated or improved FPS.
+
+COMPARISON LABELS AND ROUTE
+A numbered choice keeps labels unspecified, enters/saves labels, or explicitly
+reuses the displayed labels from the preceding test. Save path/route/cap labels
+can contain text; menus require numbers. Reuse is opt-in at each launch.
+The declared save file is hashed but never loaded/modified by the launcher.
+Labels do not prove the actual save, frame cap, route or camera used in-game.
+Use the SAME outdoor save, first-person view, frame cap and timed route. Hold the
+identical heavy view for 45 seconds, walk the same 2-3 minute route, quit normally.
+Keep loading, first visits, revisits and route deviations distinguishable.
+A fresh process does not prove cold OS/driver caches. Send the verified run ZIPs.
+
+WINDOWS RECORDING
+Choosing Deep (2), then Windows (2), starts the recorder helper before the game.
+Only the helper requests elevation; launch the main test BAT normally.
+Recording defaults to 600 seconds, stops after this exact game exits, and obeys
+the existing disk-space guard. Let the launcher finish packaging the verified
+single upload ZIP. Engine-only Deep runs do not start a Windows recorder.
+Partial captures retain raw evidence without claiming complete Windows coverage.
+The separate START-OptimizedMW-SystemTrace.bat remains for manual advanced use.
+
+EXISTING COMMAND-LINE APIS ARE PRESERVED
   START-OptimizedMW-Test.bat -FocusedPreset CONTROL -TraceLevel Normal
   START-OptimizedMW-Test.bat -FocusedPreset TERRAIN-MIPS -TraceLevel Normal
   START-OptimizedMW-Test.bat -FocusedPreset EARLY-STEP -TraceLevel Deep
   START-OptimizedMW-Test.bat -FocusedPreset COMBINED-MIPS -TraceLevel Deep -SystemTrace
-Add -SavePath "C:\path\same-save.omwsave" -RouteLabel "same route" -FrameCapLabel
-"uncapped" to record the comparison declarations. For advanced isolation only,
-Custom/CLI keeps -CompositeProgress and -CompositeCpuMips independent of masks.
-Do not combine explicit mechanism switches with -FocusedPreset; the preset is
-the complete named selection. Normal/Deep never changes the gameplay vector.
-
-HITCH REDUCTION TRIAL v3 REPAIRS - retained prior choices and reference instructions
-
-Use C:\OptimizedMW_Test\START-OptimizedMW-Test.bat.
-The first four choices retain their previous meanings. Enter is Normal CONTROL.
-New choices isolate the animation lifetime change:
-  5 = Normal ANIM control: existing source preparation, new retention OFF.
-  6 = Normal ANIM retained: the same preparation, new retention ON.
-  7 = Diagnose ANIM retained: choice 6 plus Deep/automatic Windows tracing.
-Choices 5 and 6 do not start Windows recording or need elevation.
-The repaired mechanisms have separate choices; choices 1-7 retain their meanings:
-  8 = Normal ANIM repaired: choice 6 plus charged completed warm-keyframe reuse.
-  9 = Diagnose ANIM repaired: choice 8 plus Deep/automatic Windows tracing.
- 10 = Normal repair combination: repaired ANIM + incremental composite preparation
-                                + bounded delete admission.
- 11 = Diagnose repair combination: choice 10 plus Deep/automatic Windows tracing.
-Choices 8 and 10 do not start Windows recording or need elevation.
-
-First check Normal CONTROL (2) for correct loading, camera, visuals and quitting.
-Check Normal repaired ANIM (8) briefly for correct loading and visuals, then use
-Diagnose repaired ANIM (9) to verify activation/ownership and capture coverage.
-To isolate the warm-keyframe repair, run 6, 8, 8, 6 on the SAME save, fixed heavy
-view, route and cap state. Choice 6 is the earlier unrepaired retention control.
-Hold the fixed view about 45 seconds, walk the same 2-3 minute route and quit.
-Upload the resulting ZIPs. A fresh process is not proof of cold OS/driver caches.
-Keep first visits and revisits distinguishable; record any workload deviations.
-Use 9 later if a missed dependency, hitch or memory change needs explanation.
-Test the renderer repair pair separately through Custom attack mask 320 before
-using combination 10; use 11 when a combined Deep diagnosis is needed.
-Do not begin by enabling every new feature together.
-
-Custom retains the old 0..15 feature mask and adds a separate 0..511 attack mask:
-  1  ANIM-RETAIN: one nearest predicted target, charged completed dependencies,
-                 fresh-job progress reuse, coherent pressure/cancellation policy.
-  2  ANIM-PLAN: reuse bounded exact ordered animation source descriptors.
-  4  EARLY-BAKE: prepare real terrain composite dependencies before draw demand.
-  8  WATER: prepare the actual static water program/normal-map resources only.
- 16  WEATHER: decode the already-selected upcoming cloud image on a worker.
- 32  LUA-PACKAGES: reuse per-container package registration descriptors.
- 64  DELETE-ADMIT: admit GL deletion using measured headroom, pressure and age bounds.
-128  WARM-KF: repaired charged completed keyframe lease; requires ANIM-RETAIN.
-256  STEP: prepare terrain composite dependencies incrementally under a byte bound.
-Add bits for combinations. The launcher enables required prerequisites explicitly:
-ANIM-RETAIN requires the old ANIM switch; EARLY-BAKE requires P9 composite
-preparation, which is distinct from the old BAKE switch. STEP also requires P9
-composite preparation, without enabling EARLY-BAKE or the old BAKE switch. WARM-KF
-without ANIM-RETAIN is rejected. All new switches default
-OFF outside selection. Original required paths remain fallbacks. Optional work
-may decline because of pressure, identity changes or lack of actual lead time.
-No shader-quality, mod, save, Lua thread-count or DLL substitution is performed.
-STEP's shared 32 MiB estimate charges descriptor metadata, the private target and
-the queued/unconsumed complete layer; target debt lasts through every layer. This
-bounds additional queued preparation, not total map memory or physical GPU/VRAM
-residency. A complete layer above the cap declines preparation and retains the
-original complete bake; pressure/cancellation retain required rendering fallbacks.
-
-Examples through the same launcher:
-  START-OptimizedMW-Test.bat -HitchMask 4 -AttackMask 0 -TraceLevel Normal
-  START-OptimizedMW-Test.bat -HitchMask 4 -AttackMask 1 -TraceLevel Normal
-  START-OptimizedMW-Test.bat -HitchMask 4 -AttackMask 3 -TraceLevel Normal
-  START-OptimizedMW-Test.bat -HitchMask 0 -AttackMask 4 -TraceLevel Deep -SystemTrace
-  START-OptimizedMW-Test.bat -HitchMask 0 -AttackMask 32 -TraceLevel Normal
   START-OptimizedMW-Test.bat -HitchMask 4 -AttackMask 129 -TraceLevel Normal
-  START-OptimizedMW-Test.bat -HitchMask 0 -AttackMask 320 -TraceLevel Normal
-  START-OptimizedMW-Test.bat -HitchMask 4 -AttackMask 449 -TraceLevel Deep -SystemTrace -GpuQueryDefer
-Optional -ObserverLocal is a separate Deep-only diagnostic aggregation trial.
-Existing D1 optimized catalog and ObserverLocal remain explicit diagnostic trials;
-they are not enabled by the new presets.
-
-Diagnosis choices 9 and 11 defer GPU timestamp collection by at least two draw
-frames, poll once per frame/context, and back off unavailable results. The old
-query collection path remains available without -GpuQueryDefer. Both use the
-same bounded query ring and read only available results. No shutdown GL drain
-is performed. Final queries may remain pending; that is missing data, not zero
-GPU time. p9-gpu-passes.csv.queries.csv and .pending.csv preserve accounting and
-exact unresolved ownership. GPU-QUERY-CAPTURE.json checks final independent CSV
-writer completion and collected-row counts. Partial GPU results do not invalidate
-an independently complete CPU timeline. Timestamp intervals may include command
-submission gaps and idle time; they are not proof of GPU-active utilization.
-
-New captures contain bounded per-frame observed pause/GUI/menu/hidden/loading/
-exception flags and sampled camera/player/cell/weather/time receipts. Reports
-retain every slow frame and show separate observed-state cohorts and adjacent
-variation. Missing state evidence is unknown; sampled poses do not prove an
-identical route or viewpoint, and engine wall time is not presentation time.
-The camera zoom guard retries the actual stored value if it is unavailable or
-malformed; it preserves user storage and records one warning per unresolved episode.
-
-Native/source tests establish implementation behavior only. Runtime performance,
-memory, content and visual acceptance remain unproven until user comparisons.
-Known-owner water/cloud work and optional lifetime changes are included. Ordinary
-texture mipmap relocation, new shadow traversal, generic Lua binding rewrites,
-further UI reflow changes and a Mercy mod overlay remain gated on missing proof.
-
-RETAINED HITCH REDUCTION TRIAL v2 (2026-10-01)
-Double-click START-OptimizedMW-Test.bat normally and choose ONE test:
-  1 = Diagnose CONTROL: Deep engine diagnostics + automatic Windows trace.
-  2 = Normal CONTROL: performance comparison with candidates off.
-  3 = Normal ALL: performance comparison with all four hitch candidates.
-  4 = Diagnose ALL: Deep engine diagnostics + automatic Windows trace.
-  C = Custom combination / I/O / trace depth; A = earlier Phase 9 modes.
-For 1 or 4, accept the Windows administrator prompt for the recorder only.
-The game starts automatically with the launcher's ordinary permissions after
-recording is ready. Use the same save, hold the fixed view about 45 seconds,
-walk the same 2-3 minute route, quit normally, and let this window finish.
-Explorer selects the single upload ZIP. It contains unchanged engine/system
-archives, the final qualification when available, and a hash/status manifest.
-Raw captures remain preserved if a channel or packaging step fails. A partial
-result never claims complete Windows coverage. No second recorder window needs
-to be started manually. Do not Run as administrator the main test launcher.
-Automatic recording defaults to 600 seconds, stops on game exit, and preserves
-the recorder's existing disk-space guard. Normal choices start no recorder.
-Custom retains all 16 combinations and separate I/O choices. Earlier modes keep
-their old meanings INSIDE A; first-screen 3 now means Normal ALL, not old mode 3.
-Both depths use the SAME selected gameplay features and reference foundation.
-Normal retains frame/pacing measurements; Deep adds detailed attribution.
-START-OptimizedMW-SystemTrace.bat remains available for manual advanced tracing.
-
-Independent mechanisms (OFF unless selected):
-  UI: preserve text measurements by avoiding redundant size/font/wrap changes.
-  BAKE: batch graphics-state restoration within one terrain composite map.
-  ANIM: prepare the NPC animation sources missing from normal cell preloading.
-  TERRAIN: wait for the actual demanded terrain target, publish only ready targets.
-All 16 combinations are available. 0 = CONTROL, 1 = UI, 2 = BAKE, 4 = ANIM,
-8 = TERRAIN, 15 = ALL. Pair/triple combinations have descriptive names in Custom.
-I/O selection is separate: CONTROL, I1, I2, I1I2. Enter keeps original I/O.
-D1 is available only with Deep and selects the existing diagnostic collector.
-
-Reproducible invocations through the same shader-checked BAT:
-  START-OptimizedMW-Test.bat -HitchMask 0 -TraceLevel Normal
-  START-OptimizedMW-Test.bat -HitchMask 15 -TraceLevel Normal
-  START-OptimizedMW-Test.bat -HitchMask 15 -TraceLevel Deep
-  START-OptimizedMW-Test.bat -HitchMask 0 -TraceLevel Deep -SystemTrace
+  START-OptimizedMW-Test.bat -HitchMask 0 -AttackMask 32 -TraceLevel Normal
   START-OptimizedMW-Test.bat -HitchMask 3 -TraceLevel Deep -Candidate I1
-Use -NoPrompt only with an explicit selection. The capture name contains the
-combination, depth and I/O choice. RUN-MANIFEST.json records a gameplay feature
-hash independent of trace depth, plus effective settings, source/runtime hashes,
-restoration and capture qualification. Requested switches alone do not prove
-resource preparation happened; invalidation/pressure/cancellation can fall back.
+  START-OptimizedMW-Test.bat -Mode 8
+Use -NoPrompt with explicit CLI selections. Old CLI -Mode, -HitchMask,
+-AttackMask, -Candidate and -FocusedPreset meanings retain their original values;
+the numbered interactive navigation is separate. Add -SavePath "C:\path\same.omwsave"
+-RouteLabel "same route" -FrameCapLabel "uncapped" to record declarations.
+Do not combine explicit mechanism switches with a complete -FocusedPreset.
+Deep-only -ObserverLocal and D1 catalog trials remain explicit CLI diagnostics;
+they are not silently enabled by optimization presets. Deep uses deferred GPU
+query collection in the numbered menu; existing CLI query controls remain intact.
 
-Normal captures determine gameplay performance. Deep captures explain work and
-include diagnostic overhead. The first diagnostic run is choice 1. Compare
-Normal CONTROL (2) versus Normal ALL (3) on the
-same save/route; use single/pair combinations to isolate a promising or regressing
-change. All combinations are available without requiring 32 runs immediately.
-Whole-frame distribution, adjacent changes, hitch clusters, transition duration,
-visual correctness and memory are relevant; a lower average alone is insufficient.
+Normal captures determine performance; Deep captures explain work and include
+instrumentation overhead. Assess the whole distribution, adjacent changes, hitch
+clusters, transitions, visuals and memory. A lower average alone is insufficient.
+Native/source tests establish implementation behavior; runtime promotion requires
+user comparisons. No mod, shader quality, save, Lua DLL or thread-count change is
+performed by these launcher selections.
 
+RETAINED DIAGNOSTIC COVERAGE AND LIMITS
 Deep Trace also breaks UI property/layout/measurement, optional animation source
 preparation, terrain readiness publication, and composite pass/restore work into
 nested spans in the existing p9-hitch-spans.csv. Use parent/child exclusive time
@@ -469,11 +380,11 @@ Diagnostic detail revision 4:
   Payload contents, automatic GC and private driver internals remain unavailable.
   No diagnostic timing is subtracted to estimate Normal gameplay performance.
 
-  Automatic Windows diagnostics: first-screen choice 1 (CONTROL) or 4 (ALL)
-  starts the recorder, then the game, then saves one verified upload ZIP.
+  Automatic Windows diagnostics: select a numbered optimization, then run type
+  2 (Deep), then recording 2 (Windows). The helper starts before the game.
   For manual advanced diagnostics: right-click START-OptimizedMW-SystemTrace.bat and Run as
   administrator. Wait for recording started, then start the NORMAL test
-  launcher in another window and choose A, then earlier mode 3. Use the same outdoor save,
+  launcher in another window and choose 1, 2, 2, 1 (original control, Deep, engine only). Use the same outdoor save,
   fixed view for about 45 seconds, and 2-3 minute route. Quit normally.
   WPR now records sequential File mode for up to 360 seconds and saves
   automatically after the exact game process exits. Launch promptly.

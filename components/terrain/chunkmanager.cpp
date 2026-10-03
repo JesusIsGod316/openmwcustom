@@ -356,6 +356,15 @@ namespace Terrain
             stats->setAttribute(frameNumber, "P9 Composite CPU Mips Source Bytes", static_cast<double>(values.sourceBytes));
             stats->setAttribute(frameNumber, "P9 Composite CPU Mips Supplied Bytes", static_cast<double>(values.mipBytes));
             stats->setAttribute(frameNumber, "P9 Composite CPU Mips Control Applies", static_cast<double>(values.controlApplies));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Supplied Applies", static_cast<double>(values.suppliedApplies));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Upload Submissions", static_cast<double>(values.uploadSubmissions));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Producer Draw Uses", static_cast<double>(values.producerDrawUses));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips First Producer Uses", static_cast<double>(values.firstProducerUses));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Required First Uses", static_cast<double>(values.requiredFirstUses));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Optional First Uses", static_cast<double>(values.optionalFirstUses));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Control Producer Uses", static_cast<double>(values.controlProducerUses));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Control First Uses", static_cast<double>(values.controlFirstUses));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Unproven Producer Uses", static_cast<double>(values.unprovenProducerUses));
         }
     }
 

@@ -772,6 +772,181 @@ namespace
         require(glGetError() == GL_NO_ERROR, "GL error in actual progress queue fixtures");
         std::cout << "PASS: 171 retained maps/eight descriptors, cheap producer refusal, <=16 shared owner-frame visits, cold 1MiB target bootstrap at 2ms/120 age, weak completion and capacity wakes, fairness, parked required promotion, original two-layer order/pixels, and cancellation debit\n";
     }
+
+    void pressureCompetitionFixtures(osg::GraphicsContext& context, osg::State& state, osg::RenderInfo& info,
+        osg::FrameStamp& stamp, Resource::OpenMWIncrementalCompileOperation& ico)
+    {
+        StepEnvironment stepEnvironment("1");
+        EarlyEnvironment earlyEnvironment("1");
+        CachedPressure pressure;
+        const auto healthy = pressure.value;
+        for (const auto priority : {Resource::SpeculativePriority::Background, Resource::SpeculativePriority::NearFuture})
+            for (const auto reported : {Resource::OpenGlPressure::Normal, Resource::OpenGlPressure::Caution,
+                Resource::OpenGlPressure::Critical, Resource::OpenGlPressure::Recovering, Resource::OpenGlPressure::Degraded})
+                for (unsigned flags = 0; flags < 128; ++flags)
+                {
+                    auto sample = healthy;
+                    sample.generation = flags & 1 ? 1 : 0;
+                    sample.memory.physicalValid = flags & 2;
+                    sample.memory.physicalTotal = flags & 4 ? healthy.memory.physicalTotal : 0;
+                    sample.memory.physicalAvailable = flags & 4 ? healthy.memory.physicalAvailable : 0;
+                    sample.memory.commitValid = flags & 8;
+                    sample.memory.systemCommitValid = flags & 16;
+                    sample.memory.lowMemoryValid = flags & 32;
+                    sample.memory.lowMemory = true;
+                    sample.decision.state = reported;
+                    sample.decision.admissionsPerSample = flags & 64 ? 4 : 0;
+                    const bool valid = sample.generation && sample.memory.physicalValid && sample.memory.physicalTotal
+                        && sample.memory.physicalAvailable <= sample.memory.physicalTotal
+                        && (sample.memory.commitValid || sample.memory.systemCommitValid)
+                        && !(sample.memory.lowMemoryValid && sample.memory.lowMemory);
+                    const bool previous = valid && (priority == Resource::SpeculativePriority::Background
+                        ? reported == Resource::OpenGlPressure::Normal && sample.decision.admissionsPerSample != 0
+                        : reported == Resource::OpenGlPressure::Normal || reported == Resource::OpenGlPressure::Caution
+                            || reported == Resource::OpenGlPressure::Recovering);
+                    require(Resource::SpeculativeBudget::newOwnerWorkUsable(sample, priority) == previous
+                        && (Resource::SpeculativeBudget::newOwnerWorkRefusal(sample, priority) == 0) == previous,
+                        "cached refusal decoder changed existing Background/NearFuture pressure admission");
+                }
+        osg::ref_ptr<Terrain::CompositeMapRenderer> renderer = new Terrain::CompositeMapRenderer;
+        renderer->configurePreparation(&ico, pressure.context());
+        renderer->setMinimumTimeAvailableForCompile(.002);
+        renderer->setCooperativeBackgroundCompile(true);
+
+        // Every refusal keeps the exact cached sample and independently records
+        // all failed predicates; no invented RAM/VRAM exhaustion explanation.
+        std::array<std::uint64_t, 10> expected{};
+        std::array<std::uint64_t, 5> expectedStates{};
+        const auto denied = [&](std::uint32_t mask) {
+            MapFixture map;
+            renderer->prepareAtCreation(*map.map);
+            require(!map.map->mPreparation && !map.map->mTexture->getTextureObject(state.getContextID()),
+                "cached pressure refusal admitted a descriptor or called GL");
+            require(map.map->mProgressPressure.refusal == mask
+                && map.map->mProgressPressure.sample.generation == pressure.value.generation
+                && map.map->mProgressPressure.sample.decision.state == pressure.value.decision.state,
+                "pressure refusal did not preserve exact cached predicate/sample");
+            for (std::size_t bit = 0; bit < expected.size(); ++bit)
+                expected[bit] += bool(mask & (1u << bit));
+            if (pressure.value.generation) ++expectedStates[static_cast<unsigned>(pressure.value.decision.state)];
+        };
+        using Refusal = Resource::SpeculativeBudget;
+        for (const auto reported : {Resource::OpenGlPressure::Caution, Resource::OpenGlPressure::Critical,
+            Resource::OpenGlPressure::Recovering, Resource::OpenGlPressure::Degraded})
+        {
+            pressure.value = healthy; pressure.transition(reported);
+            pressure.value.decision.admissionsPerSample = 0;
+            denied(Refusal::BackgroundState | Refusal::BackgroundAdmissionsZero);
+        }
+        pressure.value = healthy; pressure.value.decision.admissionsPerSample = 0;
+        denied(Refusal::BackgroundAdmissionsZero);
+        pressure.value = healthy; pressure.value.generation = 0;
+        denied(Refusal::MissingGeneration);
+        pressure.value = healthy; pressure.value.memory.physicalValid = false;
+        denied(Refusal::PhysicalInvalid);
+        pressure.value = healthy; pressure.value.memory.physicalTotal = pressure.value.memory.physicalAvailable = 0;
+        denied(Refusal::PhysicalTotalZero);
+        pressure.value = healthy; pressure.value.memory.physicalAvailable = pressure.value.memory.physicalTotal + 1;
+        denied(Refusal::PhysicalAvailableInvalid);
+        pressure.value = healthy; pressure.value.memory.commitValid = pressure.value.memory.systemCommitValid = false;
+        denied(Refusal::CommitInvalid);
+        pressure.value = healthy; pressure.value.memory.lowMemoryValid = pressure.value.memory.lowMemory = true;
+        denied(Refusal::LowMemoryNotification);
+        auto stats = renderer->preparationStats();
+        require(stats.pressureRefusalChecks == 11 && stats.pressureRefusals == expected
+            && stats.pressureStates == expectedStates && stats.pressureUnreportedState == 1 && stats.descriptorBuilds == 0,
+            "Normal pressure predicate aggregates do not reconcile cached refusal checks");
+        {
+            osg::ref_ptr<Terrain::CompositeMapRenderer> missing = new Terrain::CompositeMapRenderer;
+            missing->configurePreparation(&ico);
+            MapFixture map; missing->prepareAtCreation(*map.map);
+            require((map.map->mProgressPressure.refusal & Terrain::CompositePressureEvidence::MissingSampler)
+                && missing->preparationStats().pressureRefusals[9] == 1
+                && missing->preparationStats().pressureUnreportedState == 1
+                && missing->preparationStats().pressureStates == std::array<std::uint64_t, 5>{},
+                "missing sampler was indistinguishable from a reported low-memory state");
+        }
+
+        // Shared real ICO competition, with ICO-before-PRE_RENDER ordering.
+        // This is a finite stream of genuine immutable texture uploads, not a
+        // synthetic delay, a private budget or an empty background queue.
+        pressure.value = healthy;
+        constexpr unsigned MapCount = 8, UploadCount = 64;
+        std::array<std::unique_ptr<MapFixture>, MapCount> maps;
+        std::array<std::vector<unsigned>, MapCount> order;
+        for (unsigned i = 0; i < MapCount; ++i)
+        {
+            maps[i] = std::make_unique<MapFixture>();
+            maps[i]->map->mTexture->setTextureSize(512, 512);
+            for (unsigned layer = 0; layer < 2; ++layer)
+                maps[i]->map->mDrawables[layer] = new OrderedGeometry(
+                    *maps[i]->map->mDrawables[layer]->asGeometry(), order[i], layer);
+            renderer->prepareAtCreation(*maps[i]->map);
+            renderer->addCompositeMap(maps[i]->map);
+        }
+        require(renderer->preparationStats().scheduled == MapCount, "pressure/competition fixture did not saturate eight maps");
+        auto lifetime = std::make_shared<Resource::V321ResourceCompileLifetime>();
+        osg::ref_ptr<Resource::V321ClassifiedCompileSet> competing = new Resource::V321ClassifiedCompileSet(
+            lifetime, Resource::V321CompileClass::ObjectPaging, Resource::V321CompileUrgency::NearFuture);
+        std::array<osg::ref_ptr<Resource::PreparedTerrainTexture>, UploadCount> uploads;
+        auto& list = competing->_compileMap[&context];
+        for (unsigned i = 0; i < UploadCount; ++i)
+        {
+            osg::ref_ptr<osg::Image> image = new osg::Image;
+            image->allocateImage(128, 128, 1, GL_RGBA, GL_UNSIGNED_BYTE);
+            std::fill_n(image->data(), image->getTotalDataSize(), static_cast<unsigned char>(i));
+            uploads[i] = new Resource::PreparedTerrainTexture(image);
+            uploads[i]->setFilter(osg::Texture::MIN_FILTER, osg::Texture::NEAREST);
+            uploads[i]->setFilter(osg::Texture::MAG_FILTER, osg::Texture::NEAREST);
+            list.add(new Resource::PreparedTerrainTextureCompileOp(uploads[i]));
+        }
+        ++competing->_numberCompileListsToCompile;
+        ico.add(competing, false);
+        unsigned frame = 20000;
+        const auto next = [&] {
+            stamp.setFrameNumber(frame++); context.clear();
+            Resource::OpenMWIncrementalCompileOperation::publishRenderingTraversalMs(0);
+            ico(&context);
+            const auto charged = ico.compositeAdmission()->chargedMs();
+            renderer->drawImplementation(info);
+            require(ico.compositeAdmission()->chargedMs() >= charged
+                && ico.compositeAdmission()->compositeMaintenanceVisits() <= 16,
+                "ICO/PRE_RENDER ordering replenished shared work or visit allowance");
+            const auto visits = ico.compositeAdmission()->compositeMaintenanceVisits();
+            renderer->drawImplementation(info);
+            require(ico.compositeAdmission()->compositeMaintenanceVisits() <= 16
+                && ico.compositeAdmission()->compositeMaintenanceVisits() >= visits,
+                "repeated mixed traversal exceeded the shared visit cap");
+        };
+        next();
+        pressure.transition(Resource::OpenGlPressure::Caution);
+        pressure.value.decision.admissionsPerSample = 0;
+        renderer->setImmediate(maps[0]->map);
+        next();
+        require(maps[0]->map->mDrawables.empty() && order[0] == std::vector<unsigned>({0, 1}),
+            "pressure refusal or competing uploads delayed required original terrain");
+        pressure.transition(Resource::OpenGlPressure::Normal);
+        pressure.value.decision.admissionsPerSample = 4;
+        const auto complete = [&] {
+            return std::all_of(maps.begin(), maps.end(), [](const auto& map) { return map->map->mDrawables.empty(); });
+        };
+        for (unsigned attempts = 0; attempts < 900 && (!complete() || !ico.getToCompile().empty()); ++attempts) next();
+        require(complete() && ico.getToCompile().empty(),
+            "finite shared ICO competition/pressure recovery left terrain or uploads starved");
+        for (unsigned i = 0; i < MapCount; ++i)
+            require(order[i] == std::vector<unsigned>({0, 1}), "mixed ICO scheduling changed terrain layer order");
+        for (const auto& texture : uploads)
+            require(texture->getTextureObject(state.getContextID()) && texture->preparationUnchanged(state),
+                "terrain progress starved a real competing texture upload");
+        require(renderer->preparationStats().completedMaps >= MapCount - 1
+            && renderer->preparationStats().consumedLayers >= 2 * (MapCount - 1),
+            "mixed shared ICO fixture lacks optional completed-map/layer witnesses");
+        next();
+        require(renderer->preparationStats().pendingBytes == 0, "mixed pressure/competition fixture leaked unconsumed debt");
+        renderer->releaseGLObjects(&state);
+        require(glGetError() == GL_NO_ERROR, "GL error in shared pressure/competition fixtures");
+        std::cout << "PASS: exact cached pressure refusal predicates/aggregates and missing sampler, eight early maps + 64 real NearFuture uploads with ICO-before-PRE_RENDER/repeated shared accounting, Caution required fallback, Normal recovery and actual optional layer/map completion\n";
+    }
 }
 
 int main(int argc, char** argv) try
@@ -838,6 +1013,7 @@ int main(int argc, char** argv) try
     if (mode == "--progress")
     {
         progressFixtures(*context, state, info, *stamp, *ico);
+        pressureCompetitionFixtures(*context, state, info, *stamp, *ico);
         ico->removeContexts(contexts);
         context->releaseContext(); context->close(true);
         return 0;

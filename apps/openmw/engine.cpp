@@ -2506,6 +2506,28 @@ void OMW::Engine::go()
         + " (precompile calls, not GPU-completion or uploaded-byte counters)";
     mLuaWorker->join();
 
+    if (Resource::CompositeCpuMips::requested())
+    {
+        const auto v = Resource::CompositeCpuMips::stats();
+        // Integer conversion deliberately ignores any inherited log-stream hex mode.
+        Log(Debug::Info) << "OptimizedMW CPU mip loop-end snapshot: attempted=" + std::to_string(v.attempted)
+            + " prepared=" + std::to_string(v.prepared) + " declined=" + std::to_string(v.declined)
+            + " allocation_failures=" + std::to_string(v.allocationFailures)
+            + " source_bytes=" + std::to_string(v.sourceBytes) + " supplied_bytes=" + std::to_string(v.mipBytes)
+            + " supplied_applies=" + std::to_string(v.suppliedApplies)
+            + " upload_submissions=" + std::to_string(v.uploadSubmissions)
+            + " producer_draw_uses=" + std::to_string(v.producerDrawUses)
+            + " first_producer_uses=" + std::to_string(v.firstProducerUses)
+            + " required_first_uses=" + std::to_string(v.requiredFirstUses)
+            + " optional_first_uses=" + std::to_string(v.optionalFirstUses)
+            + " control_applies=" + std::to_string(v.controlApplies)
+            + " control_producer_uses=" + std::to_string(v.controlProducerUses)
+            + " control_first_uses=" + std::to_string(v.controlFirstUses)
+            + " unproven_producer_uses=" + std::to_string(v.unprovenProducerUses)
+            + " (CPU-side accepted OSG submission and completed producer draw; no GPU-completion claim; "
+              "first uses count wrapper/context/path; snapshot excludes later shutdown work)";
+    }
+
     // Save user settings
     Settings::Manager::saveUser(mCfgMgr.getUserConfigPath() / "settings.cfg");
     Settings::ShaderManager::get().save();

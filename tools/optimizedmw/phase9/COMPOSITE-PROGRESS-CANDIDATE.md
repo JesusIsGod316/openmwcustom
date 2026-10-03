@@ -8,16 +8,20 @@ performance result or replace the Lua runtime.
 
 ## Selection
 
-Run `C:\OptimizedMW_Test\START-OptimizedMW-Test.bat`, choose **F**, then:
+Run `C:\OptimizedMW_Test\START-OptimizedMW-Test.bat`, choose **2** (terrain), then:
 
 | Choice | Mechanisms |
 | --- | --- |
 | 1 | Retained animation lifetime control (A1) |
-| 2 | Control plus cleanup admission |
-| 3 | Control plus the original STEP (A257) |
-| 4 | Control plus early STEP and progress repair |
-| 5 | Choice 4 plus supplied CPU mask mips |
-| 6 | Choice 4 plus cleanup; mips selectable independently |
+| 2 | Control plus the original STEP (A257) |
+| 3 | Control plus early STEP and progress repair |
+| 4 | Choice 3 plus supplied CPU mask mips |
+| 9 | Supplied CPU mask mips with retained control, preparation off |
+
+Next choose **1** for Normal or **2** for Deep. Deep then offers **1** for
+engine-only diagnostics or **2** to include Windows. All navigation uses numbers;
+**0** returns or exits. Cleanup has its own category **4**; category **8** offers
+named combinations and individual mechanism toggles, including mips and cleanup.
 
 Normal and Deep select identical gameplay mechanisms. Normal starts no Windows
 recorder. Deep defaults to engine diagnostics; Windows capture is optional.
@@ -116,18 +120,40 @@ optional completion. Unobserved stages use the unsigned metric sentinel
 UINT64_MAX, and a raced admission snapshot reports unknown generation zero.
 Layer outcomes separately identify required/cancelled/uncompleted fallback use;
 a selected flag or an actual fallback draw is not proof of useful preparation.
+The pressure summary records independent refusal predicates from the exact
+cached sample used at the check: missing generation/sampler, invalid physical
+or commit data, low-memory notification, non-Normal state, or zero background
+admissions. Several predicates may count the same check. Deep links that cached
+sample's validity flags, limits and generation to admission, cancellation and
+parking. No fresh OS query reconstructs a past decision. The pressure policy and
+caps remain unchanged. Bootstrap-only cleanup deferral now receives the same
+cached sampler even with the separate deletion candidate disabled; Critical
+pressure still permits safety cleanup.
+
+CPU mip counters now reach `p8g4-resource.csv` every 60 captured frames and a
+decimal loop-end log snapshot. They separate image construction, supplied apply,
+CPU-side OSG acceptance of an upload submission, and successful restored producer
+draws. First-use counters identify the first supplied-chain draw of each wrapper
+in each context, split by required/optional at observed draw completion. Original
+control draws and unproven owner/revision cases are separate. Applying a texture
+for precompile does not count as a draw. No counter proves GPU completion,
+residency or nonblocking later use; the snapshot excludes later shutdown work.
+
 Changed wait states emit a linked `composite.progress_park` receipt: reason 1 is
 dependency, 2 capacity, 3 pressure and 4 frame budget. Repeated unchanged waits
 are aggregated instead of emitting another event for every poll.
 
-Use F/1, F/5, F/5, F/1 in Normal with the same declared save hash, first-person
+Use category/option 2/1, 2/4, 2/4, 2/1 in Normal with the same declared save hash, first-person
 view, cap and route. Hold the same heavy view for 45 seconds, then walk the same
 route and quit normally. Keep loading, first visits and revisits separate. A
 process restart is not proof of cold driver or disk caches. Compare whole-frame
 distributions and tails, required bake exposure, layer consumption before
 demand and queue/debt age. If consumption remains zero, inspect refusal and
 terminal reasons before interpreting frame changes as a successful mechanism.
-F/4 versus F/5 isolates mips; F/1 versus F/2 isolates cleanup.
+2/3 versus 2/4 isolates mips; 4/1 versus 4/2 isolates cleanup.
+
+After a repair, one 2/4 Deep engine-only run establishes activation and the
+refusal stage before another Normal A/B series. Its frame times are diagnostic.
 
 Passing source/fixture/package checks establishes implementation and rendering
 contracts. User hardware runs establish performance and runtime acceptance.

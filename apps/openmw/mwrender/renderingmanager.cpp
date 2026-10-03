@@ -337,7 +337,10 @@ namespace MWRender
                 Resource::OpenMWCompileSchedulerConfig config;
                 config.mCompositePreparation = p9CompositePreparation;
                 config.mDeleteAdmission = p9DeleteAdmission;
-                if (p9DeleteAdmission)
+                // A qualified composite bootstrap also defers ordinary GL
+                // deletion, even when the separate cleanup candidate is off.
+                // Both owners must read the same cached pressure publication.
+                if (p9DeleteAdmission || p9CompositePreparation)
                     config.mPressureContext = { mResourceSystem->speculativeBudget(),
                         &Resource::ResourceSystem::speculativeSample, mResourceSystem };
                 config.mMode = p4CompileSchedulerMode;

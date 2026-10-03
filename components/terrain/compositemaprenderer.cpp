@@ -45,6 +45,10 @@ namespace Terrain
         std::mutex debtMutex;
         std::vector<Debt> debts;
         std::atomic_bool debtFailed{false};
+        std::array<std::atomic_uint64_t, 10> pressureRefusals{};
+        std::array<std::atomic_uint64_t, 5> pressureStates{};
+        std::atomic_uint64_t pressureRefusalChecks{0};
+        std::atomic_uint64_t pressureUnreportedState{0};
         bool reserve(std::size_t amount)
         {
             auto current = bytes.load(std::memory_order_relaxed);
@@ -296,6 +300,60 @@ namespace Terrain
                 pressure.sample(pressure.owner), Resource::SpeculativePriority::Background);
         }
 
+        void reportPressureEvidence(const CompositePressureEvidence& evidence, std::uint64_t link,
+            std::string_view stage)
+        {
+            if (!Debug::HitchTrace::requested()) return;
+            const auto& sample = evidence.sample;
+            Debug::HitchTrace::Scope receipt("composite.pressure_sample",
+                Debug::HitchTrace::CpuTiming::WallEnvelope, stage);
+            receipt.retain(); receipt.setLink(link);
+            receipt.setMetric(0, "sample_generation", sample.generation);
+            receipt.setMetric(1, "reported_state", evidence.samplerPresent && sample.generation
+                ? static_cast<std::uint64_t>(sample.decision.state) : std::numeric_limits<std::uint64_t>::max());
+            receipt.setMetric(2, "validity_flags", evidence.validityFlags());
+            receipt.setMetric(3, "admissions_per_sample", sample.decision.admissionsPerSample);
+            {
+                Debug::HitchTrace::Scope physical("composite.pressure_memory",
+                    Debug::HitchTrace::CpuTiming::WallEnvelope);
+                physical.retain(); physical.setLink(receipt.id());
+                physical.setMetric(0, "physical_total", sample.memory.physicalTotal);
+                physical.setMetric(1, "physical_available", sample.memory.physicalAvailable);
+                physical.setMetric(2, "commit_available", sample.memory.commitAvailable);
+                physical.setMetric(3, "system_commit_available", sample.memory.systemCommitAvailable);
+            }
+            {
+                Debug::HitchTrace::Scope predicate("composite.pressure_predicate",
+                    Debug::HitchTrace::CpuTiming::WallEnvelope);
+                predicate.retain(); predicate.setLink(receipt.id());
+                predicate.setMetric(0, "refusal_mask", evidence.refusal);
+                predicate.setMetric(1, "sampled_at_ms", sample.sampledAtMs);
+                predicate.setMetric(2, "physical_reserve", sample.decision.limits.physicalReserve);
+                predicate.setMetric(3, "physical_critical", sample.decision.limits.physicalCritical);
+            }
+            {
+                Debug::HitchTrace::Scope limits("composite.pressure_limits",
+                    Debug::HitchTrace::CpuTiming::WallEnvelope);
+                limits.retain(); limits.setLink(receipt.id());
+                limits.setMetric(0, "commit_reserve", sample.decision.limits.commitReserve);
+                limits.setMetric(1, "commit_critical", sample.decision.limits.commitCritical);
+                limits.setMetric(2, "physical_recovery", sample.decision.limits.physicalRecovery);
+                limits.setMetric(3, "commit_recovery", sample.decision.limits.commitRecovery);
+            }
+        }
+
+        void recordPressureRefusal(CompositeStepBudget& budget, const CompositePressureEvidence& evidence)
+        {
+            budget.pressureRefusalChecks.fetch_add(1, std::memory_order_relaxed);
+            for (std::size_t bit = 0; bit < budget.pressureRefusals.size(); ++bit)
+                if (evidence.refusal & (1u << bit))
+                    budget.pressureRefusals[bit].fetch_add(1, std::memory_order_relaxed);
+            const auto state = static_cast<std::size_t>(evidence.sample.decision.state);
+            if (evidence.samplerPresent && evidence.sample.generation && state < budget.pressureStates.size())
+                budget.pressureStates[state].fetch_add(1, std::memory_order_relaxed);
+            else budget.pressureUnreportedState.fetch_add(1, std::memory_order_relaxed);
+        }
+
         bool stepTargetUnchanged(const CompositePreparation& preparation, const CompositeMap& map)
         {
             const auto& shape = preparation.step->targetShape;
@@ -411,9 +469,22 @@ namespace Terrain
                 const auto& step = *mPreparation->step;
                 if (info.incrementalCompileOperation->getContextSet().size() != 1
                     || mPreparation->context.get() != state.getGraphicsContext()
-                    || !stepTargetUnchanged(*mPreparation, *map)
-                    || !stepPressureUsable(step.pressure))
+                    || !stepTargetUnchanged(*mPreparation, *map))
                 {
+                    mPreparation->lifetime->cancel(); mWave->lifetime->cancel();
+                    return true;
+                }
+                const auto pressure = CompositePressureEvidence::read(step.pressure);
+                if (!pressure.usable())
+                {
+                    map->mProgressPressure = pressure;
+                    mPreparation->terminalReason = "dispatch_pressure";
+                    if (const auto* ico = dynamic_cast<const Resource::OpenMWIncrementalCompileOperation*>(
+                        info.incrementalCompileOperation); ico && ico->progressRepairEnabled())
+                    {
+                        recordPressureRefusal(*step.budget, pressure);
+                        reportPressureEvidence(pressure, mPreparation->receipt, "dispatch_cancel");
+                    }
                     mPreparation->lifetime->cancel(); mWave->lifetime->cancel();
                     return true;
                 }
@@ -745,7 +816,40 @@ namespace Terrain
         result.pressureYields = mPressureYields.load(std::memory_order_relaxed);
         result.descriptorBuilds = mDescriptorBuilds.load(std::memory_order_relaxed);
         result.capacityDeclines = mCapacityDeclines.load(std::memory_order_relaxed);
+        result.pressureRefusalChecks = mStepBudget->pressureRefusalChecks.load(std::memory_order_relaxed);
+        result.pressureUnreportedState = mStepBudget->pressureUnreportedState.load(std::memory_order_relaxed);
+        for (std::size_t i = 0; i < result.pressureRefusals.size(); ++i)
+            result.pressureRefusals[i] = mStepBudget->pressureRefusals[i].load(std::memory_order_relaxed);
+        for (std::size_t i = 0; i < result.pressureStates.size(); ++i)
+            result.pressureStates[i] = mStepBudget->pressureStates[i].load(std::memory_order_relaxed);
         return result;
+    }
+
+    bool CompositeMapRenderer::checkStepPressure(CompositeMap& map,
+        const Resource::SpeculativeScope::Context& pressure, std::string_view stage) const
+    {
+        map.mProgressPressure = CompositePressureEvidence::read(pressure);
+        if (map.mProgressPressure.usable()) return true;
+        mPressureYields.fetch_add(1, std::memory_order_relaxed);
+        map.mProgressRefusal = CompositeProgressWait::Reason::Pressure;
+        if (progressEnabled())
+        {
+            recordPressureRefusal(*mStepBudget, map.mProgressPressure);
+            // A changed cached publication or predicate is a useful receipt;
+            // repeated checks of that same denial are only aggregate counts.
+            const auto signature = map.mProgressPressure.signature();
+            const auto generation = map.mProgressPressure.sample.generation;
+            if (!map.mPressureReceiptKnown || map.mPressureReceiptGeneration != generation
+                || map.mPressureReceiptSignature != signature)
+            {
+                map.mPressureReceiptKnown = true;
+                map.mPressureReceiptGeneration = generation;
+                map.mPressureReceiptSignature = signature;
+                reportPressureEvidence(map.mProgressPressure,
+                    map.mPreparation ? map.mPreparation->receipt : map.mPreparationReceipt, stage);
+            }
+        }
+        return false;
     }
 
     void CompositeMapRenderer::retirePreparations() const
@@ -903,10 +1007,10 @@ namespace Terrain
     bool CompositeMapRenderer::prepare(CompositeMap& map, osg::RenderInfo& info) const
     {
         auto& state = *info.getState();
-        if (map.mPreparation && map.mPreparation->step && !stepPressureUsable(map.mPreparation->step->pressure))
+        if (map.mPreparation && map.mPreparation->step
+            && !checkStepPressure(map, map.mPreparation->step->pressure, "existing_wave_cancel"))
         {
             map.mPreparation->terminalReason = "pressure";
-            mPressureYields.fetch_add(1, std::memory_order_relaxed);
             map.mPreparation->lifetime->cancel();
             if (map.mPreparation->step->wave) map.mPreparation->step->wave->lifetime->cancel();
             map.mCompiled = 0;
@@ -923,9 +1027,8 @@ namespace Terrain
                 && map.mPreparation->context.get() == state.getGraphicsContext())
             {
                 auto& step = *map.mPreparation->step;
-                if (!stepPressureUsable(step.pressure))
+                if (!checkStepPressure(map, step.pressure, "advance_existing_wave"))
                 {
-                    mPressureYields.fetch_add(1, std::memory_order_relaxed);
                     map.mPreparation->lifetime->cancel();
                     if (step.wave) step.wave->lifetime->cancel();
                 }
@@ -1104,10 +1207,8 @@ namespace Terrain
             || !dynamic_cast<Resource::PreparedTerrainTexture*>(map.mTexture.get())
             || mICO->getForceTextureDownloadGeometry()) return true;
         map.mProgressRefusal = CompositeProgressWait::Reason::None;
-        if (!stepPressureUsable(mPressureContext))
+        if (!checkStepPressure(map, mPressureContext, "descriptor_admission"))
         {
-            mPressureYields.fetch_add(1, std::memory_order_relaxed);
-            map.mProgressRefusal = CompositeProgressWait::Reason::Pressure;
             return false;
         }
         const std::size_t metadata = 256u * 1024u + 512u * sizeof(CompositeStepPreparation::Dependency);
@@ -1245,10 +1346,8 @@ namespace Terrain
         if (step.wave) return false;
         mStepBudget->pruneDebt();
         if (!mStepBudget->accepting()) return false;
-        if (!stepPressureUsable(step.pressure))
+        if (!checkStepPressure(map, step.pressure, "wave_admission"))
         {
-            mPressureYields.fetch_add(1, std::memory_order_relaxed);
-            map.mProgressRefusal = CompositeProgressWait::Reason::Pressure;
             return false;
         }
         auto* state = context ? context->getState() : nullptr;
@@ -1353,6 +1452,7 @@ namespace Terrain
         wave->receipt = receipt.id();
         receipt.setMetric(0, "begin", wave->begin); receipt.setMetric(1, "end", wave->end);
         receipt.setMetric(2, "source_bytes", wave->bytes); receipt.setMetric(3, "terminal", wave->terminal);
+        if (progressEnabled()) reportPressureEvidence(map.mProgressPressure, wave->receipt, "wave_admit");
         step.wave = wave;
         map.mProgressRefusal = CompositeProgressWait::Reason::Dependency;
         mDependencyWaves.fetch_add(1, std::memory_order_relaxed);
@@ -1373,6 +1473,10 @@ namespace Terrain
             const char* value = std::getenv("OPENMW_HITCH_COMPOSITE_STEP");
             return value && std::string_view(value) == "1";
         }())
+        , mCpuMipUseEvidenceEnabled([] {
+            const char* value = std::getenv("OPENMW_HITCH_COMPOSITE_CPU_MIPS");
+            return value && std::string_view(value) == "1";
+        }())
         , mTargetFrameRate(120)
         , mMinimumTimeAvailable(0.0025)
         , mStepBudget(std::make_shared<CompositeStepBudget>())
@@ -1389,13 +1493,30 @@ namespace Terrain
         if (progressEnabled())
         {
             const auto stats = preparationStats();
-            Log(Debug::Info) << "OptimizedMW composite progress: scheduled=" << stats.scheduled
+            Log(Debug::Info) << std::dec << "OptimizedMW composite progress: scheduled=" << stats.scheduled
                 << " descriptor_builds=" << stats.descriptorBuilds << " capacity_declines=" << stats.capacityDeclines
                 << " polls=" << stats.polls << " parked_skips=" << stats.parkedSkips
                 << " consumed_layers=" << stats.consumedLayers << " completed_maps=" << stats.completedMaps
                 << " required_fallbacks=" << stats.requiredFallbacks << " invalidated=" << stats.invalidated
                 << " cancelled=" << stats.cancelled << " pressure_yields=" << stats.pressureYields
                 << " pending_bytes=" << stats.pendingBytes;
+            Log(Debug::Info) << std::dec << "OptimizedMW composite pressure refusals: checks=" << stats.pressureRefusalChecks
+                << " missing_generation=" << stats.pressureRefusals[0]
+                << " physical_invalid=" << stats.pressureRefusals[1]
+                << " physical_total_zero=" << stats.pressureRefusals[2]
+                << " physical_available_invalid=" << stats.pressureRefusals[3]
+                << " commit_invalid=" << stats.pressureRefusals[4]
+                << " low_memory_notification=" << stats.pressureRefusals[5]
+                << " background_non_normal=" << stats.pressureRefusals[6]
+                << " background_admissions_zero=" << stats.pressureRefusals[7]
+                << " near_future_disallowed=" << stats.pressureRefusals[8]
+                << " missing_sampler=" << stats.pressureRefusals[9]
+                << " reported_normal=" << stats.pressureStates[0]
+                << " reported_caution=" << stats.pressureStates[1]
+                << " reported_critical=" << stats.pressureStates[2]
+                << " reported_recovering=" << stats.pressureStates[3]
+                << " reported_degraded=" << stats.pressureStates[4]
+                << " unreported_state=" << stats.pressureUnreportedState;
         }
         std::lock_guard<std::mutex> pendingLock(mPreparationMutex);
         for (const auto& map : mPendingPreparations)
@@ -1719,6 +1840,8 @@ namespace Terrain
                         refusal.setMetric(1, "reason", static_cast<unsigned>(reason));
                         refusal.setMetric(2, "credit_generation", creditBeforeCheck);
                         refusal.setMetric(3, "pressure_generation", pressureGeneration);
+                        if (reason == CompositeProgressWait::Reason::Pressure)
+                            reportPressureEvidence(node->mProgressPressure, refusal.id(), "park");
                     }
                     node->mProgressWait.park(reason, frame, wakeBeforeCheck, creditBeforeCheck, pressureGeneration);
                     mCompileSet.insert(node);
@@ -1870,6 +1993,20 @@ namespace Terrain
         osg::GLExtensions* ext = state.get<osg::GLExtensions>();
         std::vector<osg::ref_ptr<osg::Texture::TextureObject>> usedTextures;
         std::vector<osg::ref_ptr<osg::Program::PerContextProgram>> usedPrograms;
+        auto recordProducerUseAfterCleanup = [&](std::size_t begin, std::size_t end) {
+            if (!mCpuMipUseEvidenceEnabled) return;
+            const bool demanded = compositeMap.mRequired.load(std::memory_order_acquire);
+            for (std::size_t layer = begin; layer < end; ++layer)
+            {
+                const auto* drawable = compositeMap.mDrawables[layer].get();
+                const auto* pass = drawable ? drawable->getStateSet() : nullptr;
+                if (!pass) continue;
+                for (unsigned unit = 0; unit < pass->getTextureAttributeList().size(); ++unit)
+                    if (const auto* texture = dynamic_cast<const Resource::PreparedTerrainTexture*>(
+                        pass->getTextureAttribute(unit, osg::StateAttribute::TEXTURE)))
+                        texture->recordProducerDrawUse(state, demanded);
+            }
+        };
         auto recordLayerUse = [&](osg::StateSet* pass) {
             if (!mIncrementalPreparationEnabled || !pass) return;
             for (unsigned unit = 0; unit < pass->getTextureAttributeList().size(); ++unit)
@@ -2101,6 +2238,7 @@ namespace Terrain
             // Includes cleanup in SubmissionCharge and the measured state span.
             // The separate cleanup prior is reserved at every admission check.
             cleanup.finish();
+            recordProducerUseAfterCleanup(batchBegin, compositeMap.mCompiled);
             consumedAfterCleanup();
             {
                 Debug::HitchTrace::Scope retireSpan("composite.producer_retire", Debug::HitchTrace::CpuTiming::WallEnvelope);
@@ -2114,6 +2252,7 @@ namespace Terrain
             return;
         }
 
+        const std::size_t normalBegin = compositeMap.mCompiled;
         bool firstBake = true;
         for (size_t i = compositeMap.mCompiled; i < bakeEnd; ++i)
         {
@@ -2174,14 +2313,16 @@ namespace Terrain
 
             ++compositeMap.mCompiled;
 
-            if (!preparationActive)
-                compositeMap.mDrawables[i] = nullptr;
         }
         state.haveAppliedAttribute(osg::StateAttribute::VIEWPORT);
 
         GLuint fboId = state.getGraphicsContext() ? state.getGraphicsContext()->getDefaultFboId() : 0;
         ext->glBindFramebuffer(GL_FRAMEBUFFER_EXT, fboId);
+        recordProducerUseAfterCleanup(normalBegin, compositeMap.mCompiled);
         consumedAfterCleanup();
+        if (!preparationActive)
+            for (std::size_t i = normalBegin; i < compositeMap.mCompiled; ++i)
+                compositeMap.mDrawables[i] = nullptr;
         if (compositeMap.mCompiled == compositeMap.mDrawables.size())
             compositeMap.mDrawables = std::vector<osg::ref_ptr<osg::Drawable>>();
     }

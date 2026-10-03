@@ -1279,6 +1279,7 @@ if(WIN32)
     install(FILES
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g4/START-OptimizedMW-Test.bat"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_Test.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_NumericMenu.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_Benchmark_Report.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW-Phase9-README.txt"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_ProfileArchive.ps1"

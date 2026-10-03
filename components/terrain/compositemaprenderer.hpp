@@ -5,10 +5,12 @@
 #include <osg/observer_ptr>
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <mutex>
 #include <set>
 #include <memory>
+#include <string_view>
 #include <vector>
 #include <components/resource/speculativebudget.hpp>
 #include "compositeprogress.hpp"
@@ -64,6 +66,11 @@ namespace Terrain
         std::atomic_uint64_t mProgressReceiptGeneration{0};
         CompositeProgressWait mProgressWait;
         CompositeProgressWait::Reason mProgressRefusal = CompositeProgressWait::Reason::None;
+        // Last actual cached predicate check, never a later reconstructed OS
+        // sample. Producer writes occur before publication; then draw owns it.
+        CompositePressureEvidence mProgressPressure;
+        std::uint64_t mPressureReceiptGeneration = 0, mPressureReceiptSignature = 0;
+        bool mPressureReceiptKnown = false;
     };
 
     /**
@@ -99,6 +106,9 @@ namespace Terrain
             std::uint64_t dependencyWaves = 0, pressureYields = 0;
             std::uint64_t descriptorBuilds = 0, capacityDeclines = 0, polls = 0, parkedSkips = 0;
             std::uint64_t consumedLayers = 0, completedMaps = 0;
+            std::array<std::uint64_t, 10> pressureRefusals{};
+            std::array<std::uint64_t, 5> pressureStates{};
+            std::uint64_t pressureRefusalChecks = 0, pressureUnreportedState = 0;
             std::size_t pendingBytes = 0;
             double chargedMs = 0;
         };
@@ -143,6 +153,8 @@ namespace Terrain
         bool dependenciesReady(const CompositeMap& map, osg::State& state) const;
         bool preparationSupported(const osg::State& state) const;
         bool progressEnabled() const;
+        bool checkStepPressure(CompositeMap& map, const Resource::SpeculativeScope::Context& pressure,
+            std::string_view stage) const;
         void advanceBackground(osg::RenderInfo& info, Deadline deadline, unsigned frame,
             CompileTelemetry* telemetry, std::unique_lock<std::mutex>& lock) const;
         void retirePreparations() const;
@@ -150,6 +162,7 @@ namespace Terrain
         const bool mCompositeBatchEnabled;
         const bool mProducerPreparationEnabled;
         const bool mIncrementalPreparationEnabled;
+        const bool mCpuMipUseEvidenceEnabled;
         mutable std::atomic_uint64_t mBackgroundYields{0};
         float mTargetFrameRate;
         double mMinimumTimeAvailable;

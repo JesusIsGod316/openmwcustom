@@ -160,6 +160,8 @@ function New-Phase9RunManifest {
     }
     return [pscustomobject][ordered]@{schema=1;trial_revision=$(if($Mode.FocusedRendererTrialRevision -eq 1){'terrain-first-use-v1'}elseif($Mode.HitchTrialRevision -eq 3){'hitch-reduction-v3'}elseif($Mode.HitchTrialRevision -eq 2){'hitch-reduction-v2'}else{'hitch-reduction-v1'});
         profile_name=(Split-Path -Leaf $ProfileDir);created_utc=[DateTime]::UtcNow.ToString('o');
+        launcher_selection=[ordered]@{menu_revision=$(if($Mode.NumericMenuRevision){[int]$Mode.NumericMenuRevision}else{$null});selection_id=$(if($Mode.NumericSelectionId){[string]$Mode.NumericSelectionId}else{'explicit_cli'});
+            navigation='numbers_only_nested_categories';depth_is_independent=$true};
         phase9_mode=$Mode;candidate=$Candidate;candidate_sha256=(Get-Phase9IdentityHash $Candidate);
         trace_level=$(if($Mode.Trace -eq '1'){'DEEP'}else{'NORMAL'});
         gameplay_features=$gameplayFeatures;gameplay_features_sha256=(Get-Phase9IdentityHash $gameplayFeatures);

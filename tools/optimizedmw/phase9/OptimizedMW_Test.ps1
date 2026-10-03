@@ -31,6 +31,7 @@ $OpenmwCfgPath = Join-Path $UserOpenMW 'openmw.cfg'
 . (Join-Path $GameDir 'OptimizedMW_HitchMatrix.ps1')
 . (Join-Path $GameDir 'OptimizedMW_QuickTest.ps1')
 . (Join-Path $GameDir 'OptimizedMW_AttackPresets.ps1')
+. (Join-Path $GameDir 'OptimizedMW_NumericMenu.ps1')
 $ProfilesRoot = Join-Path $UserOpenMW 'OptimizedMW-Phase9-Profiles'
 
 if (-not (Test-Path -LiteralPath $Exe)) { Write-Host 'ERROR: Put this launcher beside openmw.exe.' -ForegroundColor Red; if(-not $NoPrompt){Read-Host 'Press Enter to close'}; exit 1 }
@@ -85,46 +86,20 @@ function Get-P9Mode {
 $quickSelection=$null
 $quickSession=$null
 $hitchSelection=$null
+$numericSelection=$null
 if(-not $FocusedPreset -and -not $ModeChoice -and $HitchMask -lt 0 -and $AttackMask -lt 0 -and -not $TraceLevel -and -not $NoPrompt){
-    Write-Host ''
-    Write-Host 'OptimizedMW - choose one test' -ForegroundColor Cyan
-    Write-Host '  1 = Diagnose CONTROL   Deep engine diagnostics + automatic Windows trace' -ForegroundColor Green
-    Write-Host '  2 = Normal CONTROL     performance comparison, original feature switches'
-    Write-Host '  3 = Normal ALL         performance comparison, all four hitch candidates'
-    Write-Host '  4 = Diagnose ALL       Deep engine diagnostics + automatic Windows trace'
-    Write-Host '  5 = Normal ANIM control    original animation preparation'
-    Write-Host '  6 = Normal ANIM retained   bounded animation ownership candidate' -ForegroundColor Green
-    Write-Host '  7 = Diagnose ANIM retained Deep + automatic Windows trace'
-    Write-Host '  8 = Normal ANIM repaired   retained warm keyframe ownership'
-    Write-Host '  9 = Diagnose ANIM repaired Deep + automatic Windows trace'
-    Write-Host ' 10 = Normal repair combo    warm ownership + STEP + DELETE-ADMIT'
-    Write-Host ' 11 = Diagnose repair combo  Deep + automatic Windows trace'
-    Write-Host '  F = Focused renderer tests: retained control / terrain / cleanup' -ForegroundColor Green
-    Write-Host '  C = Custom combination / I/O / trace depth'
-    Write-Host '  A = Earlier Phase 9 modes'
-    Write-Host '  X = Exit'
-    do{$quickChoice=Read-Host 'Test (1-11, F, C, A, X; Enter = Normal CONTROL)';if($quickChoice -eq ''){$quickChoice='2'}}until($quickChoice -in @('1','2','3','4','5','6','7','8','9','10','11','F','C','A','X'))
-    if($quickChoice -eq 'X'){exit 0}
-    if($quickChoice -in @('1','2','3','4','5','6','7','8','9','10','11')){
-        $quickSelection=Get-OptimizedMWQuickPreset -Choice $quickChoice
-        $HitchMask=$quickSelection.mask;$TraceLevel=$quickSelection.trace_level
-        $Candidate=$quickSelection.candidate;$SystemTrace=[bool]$quickSelection.system_trace
-        if($quickSelection.PSObject.Properties['attack_mask']){$AttackMask=$quickSelection.attack_mask}
-        if($quickSelection.PSObject.Properties['gpu_query_defer']){$GpuQueryDefer=[bool]$quickSelection.gpu_query_defer}
-    }elseif($quickChoice -eq 'F'){
-        $quickSelection=Read-OptimizedMWRendererPreset
-        $FocusedPreset=$quickSelection.focused_preset
-        $TraceLevel=$quickSelection.trace_level;$SystemTrace=[bool]$quickSelection.system_trace
-    }elseif($quickChoice -eq 'C'){
-        $hitchSelection=Read-OptimizedMWHitchSelection
-        $HitchMask=$hitchSelection.features.mask;$TraceLevel=if($hitchSelection.trace_level -eq 'DEEP'){'Deep'}else{'Normal'}
-        $Candidate=$hitchSelection.candidate
-        $AttackMask=Read-OptimizedMWAttackMask
-        if($TraceLevel -eq 'Deep'){
-            do{$systemChoice=Read-Host 'Windows system trace: Enter = automatic, N = engine only'}until($systemChoice -in @('','N'))
-            $SystemTrace=$systemChoice -eq ''
-        }
-        $quickSelection=[pscustomobject]@{mask=$HitchMask;attack_mask=$AttackMask;trace_level=$TraceLevel;candidate=$Candidate;system_trace=[bool]$SystemTrace;name=$hitchSelection.experiment}
+    $numericSelection=Read-OptimizedMWNumericTest
+    if($null -eq $numericSelection){exit 0}
+    $quickSelection=$numericSelection
+    $Candidate=$numericSelection.candidate;$SystemTrace=[bool]$numericSelection.system_trace
+    $GpuQueryDefer=[bool]$numericSelection.gpu_query_defer
+    if($numericSelection.legacy_mode){$ModeChoice=$numericSelection.legacy_mode}
+    elseif($numericSelection.focused_preset){
+        $FocusedPreset=$numericSelection.focused_preset;$TraceLevel=$numericSelection.trace_level
+    }else{
+        $HitchMask=$numericSelection.mask;$AttackMask=$numericSelection.attack_mask
+        $CompositeProgress=[bool]$numericSelection.composite_progress;$CompositeCpuMips=[bool]$numericSelection.composite_cpu_mips
+        $TraceLevel=$numericSelection.trace_level
     }
 }
 if($FocusedPreset){
@@ -136,17 +111,18 @@ if($FocusedPreset){
     $HitchMask=$quickSelection.mask;$AttackMask=$quickSelection.attack_mask
     $CompositeProgress=[bool]$quickSelection.composite_progress;$CompositeCpuMips=[bool]$quickSelection.composite_cpu_mips
     $GpuQueryDefer=[bool]$quickSelection.gpu_query_defer
-    if(-not $NoPrompt){
-        if($TraceLevel -eq 'Normal'){
-            Write-Host 'First Normal block: F/1, F/5, F/5, F/1. Load the SAME outdoor save; use first person.' -ForegroundColor Yellow
-        }else{
-            Write-Host 'Focused Deep verifies preparation and remaining stalls. Load the matching save/route; use first person.' -ForegroundColor Yellow
-        }
-        Write-Host 'Hold the identical heavy view for 45 seconds, then repeat the same timed route. Quit normally.'
-        if(-not $SavePath){$SavePath=(Read-Host 'Outdoor save file full path (Enter = unspecified)').Trim('"')}
-        if($RouteLabel -eq 'UNSPECIFIED'){$RouteLabel=Read-Host 'Route label (Enter = unspecified)';if(-not $RouteLabel){$RouteLabel='UNSPECIFIED'}}
-        if($FrameCapLabel -eq 'UNSPECIFIED'){$declaredCap=Read-Host 'Frame-cap label, for example uncapped or 60 FPS (Enter = unspecified)';$FrameCapLabel=$(if($declaredCap){$declaredCap}else{'UNSPECIFIED'})}
+    if($numericSelection){
+        # Keep the exact numeric path even when the underlying legacy preset is rebuilt.
+        $quickSelection | Add-Member -NotePropertyName menu_revision -NotePropertyValue 1
+        $quickSelection | Add-Member -NotePropertyName selection_id -NotePropertyValue $numericSelection.selection_id
     }
+}
+if(-not $NoPrompt -and ($numericSelection -or $FocusedPreset)){
+    Write-Host 'Load the SAME outdoor save; use the same first-person view, route and frame cap.' -ForegroundColor Yellow
+    Write-Host 'Hold the identical heavy view for 45 seconds, then repeat the timed route. Quit normally.'
+    $declaration=Read-OptimizedMWComparisonDeclaration -GameDirectory $GameDir -SavePath $SavePath -RouteLabel $RouteLabel -FrameCapLabel $FrameCapLabel
+    if($null -eq $declaration){exit 0}
+    $SavePath=$declaration.save_path;$RouteLabel=$declaration.route_label;$FrameCapLabel=$declaration.frame_cap_label
 }
 if($SavePath -and -not [IO.File]::Exists([IO.Path]::GetFullPath($SavePath))){throw 'Declared save file is missing; correct -SavePath before running'}
 if($HitchMask -ge 0 -or $AttackMask -ge 0 -or $TraceLevel){
@@ -157,37 +133,13 @@ if($HitchMask -ge 0 -or $AttackMask -ge 0 -or $TraceLevel){
     $ModeChoice=$hitchSelection.phase9_mode
 }
 if($NoPrompt -and -not $ModeChoice){throw '-NoPrompt requires -Mode or -HitchMask/-TraceLevel'}
-if(-not $ModeChoice){
-Write-Host ''
-Write-Host 'OptimizedMW - switchable hitch tests' -ForegroundColor Cyan
-Write-Host '  H = CURRENT HITCH TESTS: all 16 combinations, Normal or Deep Trace' -ForegroundColor Green
-Write-Host 'Previous Phase 9 tests:'
-Write-Host '  1 = REFERENCE          unchanged P8U1 foundation'
-Write-Host '  2 = TEMPORAL-INPUTS    camera/static motion + DLSS input-contract telemetry'
-Write-Host '  3 = ROOT-CAUSE-TRACE   reference hitch diagnosis: objects/Lua/resources/state/GL'
-Write-Host '  4 = TEMPORAL-TRACE     modes 2 and 3 together for one diagnostic run'
-Write-Host '  5 = MOTION-VIEW        visualize generated motion vectors'
-Write-Host '  8 = TEMPORAL-OWNERSHIP retained cull inputs (compare with mode 2)'
-Write-Host '  9 = COMPOSITE-PREPARE terrain dependency preparation (compare with mode 1)'
-Write-Host ' 10 = AUDITED-COMBINED   both candidates'
-Write-Host ' 11 = DYNAMIC-MOTION     experimental moving geometry inputs'
-Write-Host ' 12 = AUDITED-TRACE      combined candidate with deep diagnostics'
-Write-Host ' 13 = OWNERSHIP-TRACE    mode 8 with hitch diagnostics; compare with mode 4'
-Write-Host '  A = show old unpromoted HITCH1 diagnostic controls'
-Write-Host 'Unsafe static prewarm is disabled. DLSS evaluation/jitter remain off until dense dynamic motion is valid.'
-do{
-    $choice=Read-Host 'Choose H for current tests, or a previous Phase 9 mode'
-    if($choice -eq 'A'){
-        Write-Host '  6 HITCH (old unpromoted refresh) | 7 HITCH-TRACE'
-    }
-    if($choice -eq 'H'){
-        $hitchSelection=Read-OptimizedMWHitchSelection
-        $Candidate=$hitchSelection.candidate
-        $choice=$hitchSelection.phase9_mode
-    }
-}until($choice -in @('1','2','3','4','5','6','7','8','9','10','11','12','13'))
-}else{$choice=$ModeChoice}
+if(-not $ModeChoice){throw 'Choose a numbered test or supply an explicit CLI selection'}
+$choice=$ModeChoice
 $mode=Get-P9Mode $choice
+if($numericSelection -and $numericSelection.legacy_mode){$mode.Trace=[string][int]($numericSelection.trace_level -eq 'Deep')}
+if($numericSelection){
+    $mode.NumericMenuRevision=1;$mode.NumericSelectionId=$numericSelection.selection_id
+}
 if($ObserverLocal -and $mode.Trace -ne '1'){throw 'Local observer accounting requires Deep diagnostics'}
 if($GpuQueryDefer -and $mode.Trace -ne '1'){throw 'Deferred GPU query collection requires Deep diagnostics'}
 $attackCombination=Get-OptimizedMWAttackCombination $(if($AttackMask -ge 0){$AttackMask}else{0})
@@ -199,7 +151,7 @@ if($FocusedPreset -or $CompositeProgress -or $CompositeCpuMips){
     $rendererIdentity=Set-OptimizedMWRendererIdentity $hitchSelection $mode $(if($FocusedPreset){$FocusedPreset}else{'CUSTOM'}) `
         -CompositeProgress:$CompositeProgress -CompositeCpuMips:$CompositeCpuMips
 }
-if($SystemTrace -and $mode.Trace -ne '1'){throw 'Windows trace requires Deep diagnostics. Choose Diagnose CONTROL/ALL, or select Deep in Custom.'}
+if($SystemTrace -and $mode.Trace -ne '1'){throw 'Windows trace requires Deep diagnostics. Choose run type 2 (Deep), then recording 2 (Windows), or use -TraceLevel Deep -SystemTrace.'}
 if($SystemTrace -and -not $quickSelection){
     $quickSelection=[pscustomobject]@{mask=$(if($HitchMask -ge 0){$HitchMask}else{0});trace_level='Deep';candidate=$Candidate;system_trace=$true;name=$mode.Name}
 }

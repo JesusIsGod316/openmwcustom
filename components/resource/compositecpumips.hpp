@@ -53,15 +53,24 @@ namespace Resource::CompositeCpuMips
     struct Stats
     {
         std::uint64_t attempted, prepared, declined, allocationFailures, sourceBytes, mipBytes, controlApplies;
+        std::uint64_t suppliedApplies, uploadSubmissions, producerDrawUses, firstProducerUses,
+            requiredFirstUses, optionalFirstUses, controlProducerUses, controlFirstUses, unprovenProducerUses;
     };
     inline std::atomic<std::uint64_t> sAttempted{ 0 }, sPrepared{ 0 }, sDeclined{ 0 }, sAllocationFailures{ 0 },
         sSourceBytes{ 0 }, sMipBytes{ 0 }, sControlApplies{ 0 };
+    inline std::atomic<std::uint64_t> sSuppliedApplies{ 0 }, sUploadSubmissions{ 0 }, sProducerDrawUses{ 0 },
+        sFirstProducerUses{ 0 }, sRequiredFirstUses{ 0 }, sOptionalFirstUses{ 0 }, sControlProducerUses{ 0 },
+        sControlFirstUses{ 0 }, sUnprovenProducerUses{ 0 };
     inline Stats stats() noexcept
     {
         return { sAttempted.load(std::memory_order_relaxed), sPrepared.load(std::memory_order_relaxed),
             sDeclined.load(std::memory_order_relaxed), sAllocationFailures.load(std::memory_order_relaxed),
             sSourceBytes.load(std::memory_order_relaxed), sMipBytes.load(std::memory_order_relaxed),
-            sControlApplies.load(std::memory_order_relaxed) };
+            sControlApplies.load(std::memory_order_relaxed), sSuppliedApplies.load(std::memory_order_relaxed),
+            sUploadSubmissions.load(std::memory_order_relaxed), sProducerDrawUses.load(std::memory_order_relaxed),
+            sFirstProducerUses.load(std::memory_order_relaxed), sRequiredFirstUses.load(std::memory_order_relaxed),
+            sOptionalFirstUses.load(std::memory_order_relaxed), sControlProducerUses.load(std::memory_order_relaxed),
+            sControlFirstUses.load(std::memory_order_relaxed), sUnprovenProducerUses.load(std::memory_order_relaxed) };
     }
 #ifdef OPENMW_COMPOSITE_MIPS_TEST_HOOKS
     inline std::atomic<bool> failNextAllocation{ false };
@@ -210,6 +219,12 @@ namespace Resource::CompositeCpuMips
 
         void apply(osg::State& state) const override
         {
+            const unsigned context = state.getContextID();
+            // These records share OSG's draw-context ownership and sizing.
+            // They retain no GL object and perform no driver queries or waits.
+            DrawProof* proof = context < mDrawProofs.size() ? &mDrawProofs[context] : nullptr;
+            if (proof)
+                proof->owner = DrawOwner::Unknown;
             if (!mControl || getImage() != mMipmapped.get() || getSubloadCallback())
             {
                 PreparedTerrainTexture::apply(state);
@@ -217,7 +232,17 @@ namespace Resource::CompositeCpuMips
             }
             if (preparationContextEligible(state))
             {
+                const auto* before = getTextureObject(context);
+                const bool uploadNeeded = !before || !before->isAllocated() || isDirty(context);
                 PreparedTerrainTexture::apply(state);
+                sSuppliedApplies.fetch_add(1, std::memory_order_relaxed);
+                if (acceptedObject(*this, state, true))
+                {
+                    if (uploadNeeded)
+                        sUploadSubmissions.fetch_add(1, std::memory_order_relaxed);
+                    if (proof)
+                        rememberDrawProof(*proof, state, *this, DrawOwner::Supplied);
+                }
                 return;
             }
             mReleased.store(true, std::memory_order_release);
@@ -227,10 +252,13 @@ namespace Resource::CompositeCpuMips
             mControl->apply(state);
             state.haveAppliedTextureAttribute(state.getActiveTextureUnit(), mControl);
             sControlApplies.fetch_add(1, std::memory_order_relaxed);
+            if (proof && acceptedObject(*mControl, state, false))
+                rememberDrawProof(*proof, state, *mControl, DrawOwner::Control);
         }
         void resizeGLObjectBuffers(unsigned size) override
         {
             PreparedTerrainTexture::resizeGLObjectBuffers(size);
+            mDrawProofs.resize(size);
             if (mControl)
                 mControl->resizeGLObjectBuffers(size);
         }
@@ -254,6 +282,47 @@ namespace Resource::CompositeCpuMips
             return bytes;
         }
         const PreparedTerrainTexture* controlTexture() const { return mControl; }
+
+        void recordProducerDrawUse(osg::State& state, bool required) const noexcept override
+        {
+            const unsigned context = state.getContextID();
+            if (context >= mDrawProofs.size())
+            {
+                sUnprovenProducerUses.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            auto& proof = mDrawProofs[context];
+            const bool supplied = proof.owner == DrawOwner::Supplied;
+            const auto* owner = supplied ? this : mControl.get();
+            if (proof.owner == DrawOwner::Unknown || !owner || !proof.object.valid() || !proof.context.valid()
+                || proof.context.get() != state.getGraphicsContext()
+                || proof.object.get() != owner->getTextureObject(context) || !owner->getImage()
+                || proof.revision != owner->getImage()->getModifiedCount()
+                || (supplied && !preparationContextEligible(state)) || !acceptedObject(*owner, state, supplied))
+            {
+                sUnprovenProducerUses.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            if (supplied)
+            {
+                sProducerDrawUses.fetch_add(1, std::memory_order_relaxed);
+                if (!proof.suppliedUsed)
+                {
+                    proof.suppliedUsed = true;
+                    sFirstProducerUses.fetch_add(1, std::memory_order_relaxed);
+                    (required ? sRequiredFirstUses : sOptionalFirstUses).fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            else
+            {
+                sControlProducerUses.fetch_add(1, std::memory_order_relaxed);
+                if (!proof.controlUsed)
+                {
+                    proof.controlUsed = true;
+                    sControlFirstUses.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        }
 
         bool preparationAdmissionEligible(const osg::State& state) const noexcept override
         {
@@ -281,6 +350,34 @@ namespace Resource::CompositeCpuMips
         }
 
     private:
+        enum class DrawOwner { Unknown, Supplied, Control };
+        struct DrawProof
+        {
+            DrawOwner owner = DrawOwner::Unknown;
+            osg::observer_ptr<osg::Texture::TextureObject> object;
+            osg::observer_ptr<osg::GraphicsContext> context;
+            unsigned revision = 0;
+            bool suppliedUsed = false, controlUsed = false;
+        };
+        static bool acceptedObject(const PreparedTerrainTexture& owner, const osg::State& state, bool supplied) noexcept
+        {
+            const unsigned context = state.getContextID();
+            const auto* image = owner.getImage();
+            const auto* object = owner.getTextureObject(context);
+            return state.getGraphicsContext() && image && image->data() && object && object->id()
+                && object->isAllocated() && !owner.isDirty(context) && !owner.getSubloadCallback()
+                && object->_profile._target == GL_TEXTURE_2D && object->_profile._width == image->s()
+                && object->_profile._height == image->t()
+                && (!supplied || object->_profile._numMipmapLevels == image->getNumMipmapLevels());
+        }
+        static void rememberDrawProof(DrawProof& proof, osg::State& state,
+            const PreparedTerrainTexture& owner, DrawOwner kind) noexcept
+        {
+            proof.owner = kind;
+            proof.object = owner.getTextureObject(state.getContextID());
+            proof.context = state.getGraphicsContext();
+            proof.revision = owner.getImage()->getModifiedCount();
+        }
         void synchronizeControl() const
         {
             // A deliberately dirtied supplied image uses its current base on
@@ -339,6 +436,7 @@ namespace Resource::CompositeCpuMips
         osg::ref_ptr<PreparedTerrainTexture> mControl;
         mutable unsigned mControlMipRevision = 0;
         mutable std::atomic<bool> mReleased{ false };
+        mutable osg::buffered_object<DrawProof> mDrawProofs;
     };
 }
 #endif

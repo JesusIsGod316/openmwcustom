@@ -51,25 +51,15 @@ function Get-OptimizedMWRendererPreset {
 }
 
 function Read-OptimizedMWRendererPreset {
-    Write-Host 'Focused renderer tests (warm keyframes, weather and other candidates stay off):' -ForegroundColor Cyan
-    Write-Host '  1 = Retained CONTROL | 2 = Cleanup only | 3 = Original STEP'
-    Write-Host '  4 = Early STEP + progress repair | 5 = Terrain + supplied blendmap mips'
-    Write-Host '  6 = Combined renderer (early STEP + progress + cleanup, mips off)'
-    Write-Host 'First comparison: F/1, F/5, F/5, F/1, each in Normal mode.' -ForegroundColor Yellow
-    do{$choice=Read-Host 'Renderer preset (1-6; Enter = 1)';if($choice -eq ''){$choice='1'}}until($choice -in @('1','2','3','4','5','6'))
-    do{$depth=Read-Host 'N = Normal performance | D = Deep engine diagnostics (Enter = N)';if($depth -eq ''){$depth='N'}}until($depth -in @('N','D'))
+    # Retained helper API, using the same numbers-only interaction as the launcher.
+    if(-not (Get-Command Read-OptimizedMWNumber -ErrorAction SilentlyContinue)){. (Join-Path $PSScriptRoot 'OptimizedMW_NumericMenu.ps1')}
+    Write-Host 'Renderer: 1 = Control | 2 = Cleanup | 3 = Original STEP | 4 = Early STEP + progress | 5 = Terrain + mips | 6 = Combined | 7 = Combined + mips'
+    $choice=Read-OptimizedMWNumber 'Renderer preset (1-7; Enter = 1)' @('1','2','3','4','5','6','7') '1'
+    $depth=Read-OptimizedMWNumber 'Run type: 1 = Normal | 2 = Deep (Enter = 1)' @('1','2') '1'
     $system=$false
-    if($depth -eq 'D'){
-        do{$windows=Read-Host 'Windows recording: Enter = engine only, W = include Windows'}until($windows -in @('','W'))
-        $system=$windows -eq 'W'
-    }
-    $names=@('CONTROL','CLEANUP','STEP','EARLY-STEP','TERRAIN-MIPS','COMBINED')
-    $name=$names[[int]$choice-1]
-    if($choice -eq '6'){
-        do{$mips=Read-Host 'Combined supplied mips: Enter = off, M = on'}until($mips -in @('','M'))
-        if($mips -eq 'M'){$name='COMBINED-MIPS'}
-    }
-    return Get-OptimizedMWRendererPreset $name $(if($depth -eq 'D'){'Deep'}else{'Normal'}) -SystemTrace:$system
+    if($depth -eq '2'){$system=(Read-OptimizedMWNumber 'Deep recording: 1 = Engine only | 2 = Engine + Windows (Enter = 1)' @('1','2') '1') -eq '2'}
+    $names=@('CONTROL','CLEANUP','STEP','EARLY-STEP','TERRAIN-MIPS','COMBINED','COMBINED-MIPS')
+    return Get-OptimizedMWRendererPreset $names[[int]$choice-1] $(if($depth -eq '2'){'Deep'}else{'Normal'}) -SystemTrace:$system
 }
 
 function Set-OptimizedMWRendererIdentity {

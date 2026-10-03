@@ -24,7 +24,7 @@ namespace Resource
             double cull, draw, gpu;
             unsigned available;
         };
-        static constexpr std::array<const char*, 27> ResourceNames{
+        static constexpr std::array<const char*, 43> ResourceNames{
             "StateSet",
             "P8G3 Groups Tested",
             "P8G3 Groups Rejected",
@@ -51,7 +51,23 @@ namespace Resource
             "P8G4 Shadow Original Fallback 1",
             "P8G4 Shadow Proxy Visits 2",
             "P8G4 Shadow Proxy Indices 2",
-            "P8G4 Shadow Original Fallback 2"
+            "P8G4 Shadow Original Fallback 2",
+            "P9 Composite CPU Mips Attempts",
+            "P9 Composite CPU Mips Prepared",
+            "P9 Composite CPU Mips Declined",
+            "P9 Composite CPU Mips Allocation Failures",
+            "P9 Composite CPU Mips Source Bytes",
+            "P9 Composite CPU Mips Supplied Bytes",
+            "P9 Composite CPU Mips Control Applies",
+            "P9 Composite CPU Mips Supplied Applies",
+            "P9 Composite CPU Mips Upload Submissions",
+            "P9 Composite CPU Mips Producer Draw Uses",
+            "P9 Composite CPU Mips First Producer Uses",
+            "P9 Composite CPU Mips Required First Uses",
+            "P9 Composite CPU Mips Optional First Uses",
+            "P9 Composite CPU Mips Control Producer Uses",
+            "P9 Composite CPU Mips Control First Uses",
+            "P9 Composite CPU Mips Unproven Producer Uses"
         };
         struct ResourceRecord
         {

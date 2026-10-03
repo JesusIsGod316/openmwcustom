@@ -161,6 +161,22 @@ namespace Resource
         // admission/reservation: callers still keep their own bounded debts.
         static bool newOwnerWorkUsable(const OpenGlPressureSample& sample, SpeculativePriority priority) noexcept
         { return usable(sample, priority); }
+        // Exact, independent predicates of the existing policy. A bit can be
+        // present alongside another refusal; this is evidence, not admission.
+        enum NewOwnerRefusal : std::uint32_t
+        {
+            MissingGeneration = 1u << 0,
+            PhysicalInvalid = 1u << 1,
+            PhysicalTotalZero = 1u << 2,
+            PhysicalAvailableInvalid = 1u << 3,
+            CommitInvalid = 1u << 4,
+            LowMemoryNotification = 1u << 5,
+            BackgroundState = 1u << 6,
+            BackgroundAdmissionsZero = 1u << 7,
+            NearFutureState = 1u << 8,
+        };
+        static std::uint32_t newOwnerWorkRefusal(
+            const OpenGlPressureSample& sample, SpeculativePriority priority) noexcept;
         void hit(bool speculative);
         Stats stats() const;
     private:
@@ -187,17 +203,29 @@ namespace Resource
     inline bool SpeculativeBudget::usable(
         const OpenGlPressureSample& s, SpeculativePriority priority) noexcept
     {
-        const bool valid = s.generation && s.memory.physicalValid && s.memory.physicalTotal
-            && s.memory.physicalAvailable <= s.memory.physicalTotal
-            && (s.memory.commitValid || s.memory.systemCommitValid)
-            && !(s.memory.lowMemoryValid && s.memory.lowMemory);
-        if (!valid)
-            return false;
+        return newOwnerWorkRefusal(s, priority) == 0;
+    }
+
+    inline std::uint32_t SpeculativeBudget::newOwnerWorkRefusal(
+        const OpenGlPressureSample& s, SpeculativePriority priority) noexcept
+    {
+        std::uint32_t result = 0;
+        if (!s.generation) result |= MissingGeneration;
+        if (!s.memory.physicalValid) result |= PhysicalInvalid;
+        if (!s.memory.physicalTotal) result |= PhysicalTotalZero;
+        if (s.memory.physicalAvailable > s.memory.physicalTotal) result |= PhysicalAvailableInvalid;
+        if (!s.memory.commitValid && !s.memory.systemCommitValid) result |= CommitInvalid;
+        if (s.memory.lowMemoryValid && s.memory.lowMemory) result |= LowMemoryNotification;
         if (priority == SpeculativePriority::Background)
-            return s.decision.state == OpenGlPressure::Normal && s.decision.admissionsPerSample;
-        return s.decision.state == OpenGlPressure::Normal
-            || s.decision.state == OpenGlPressure::Caution
-            || s.decision.state == OpenGlPressure::Recovering;
+        {
+            if (s.decision.state != OpenGlPressure::Normal) result |= BackgroundState;
+            if (!s.decision.admissionsPerSample) result |= BackgroundAdmissionsZero;
+        }
+        else if (s.decision.state != OpenGlPressure::Normal
+            && s.decision.state != OpenGlPressure::Caution
+            && s.decision.state != OpenGlPressure::Recovering)
+            result |= NearFutureState;
+        return result;
     }
 
     inline SpeculativeBudget::Job SpeculativeBudget::tryJob(

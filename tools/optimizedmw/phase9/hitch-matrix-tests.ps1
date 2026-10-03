@@ -1,6 +1,7 @@
 # Hermetic production selection/manifest tests; does not launch OpenMW or WPR.
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'OptimizedMW_HitchMatrix.ps1')
+. (Join-Path $PSScriptRoot 'OptimizedMW_NumericMenu.ps1')
 . (Join-Path $PSScriptRoot 'OptimizedMW_RunManifest.ps1')
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'OptimizedMW_Test.ps1'),[ref]$tokens,[ref]$errors)
@@ -64,7 +65,7 @@ try{
     if((Get-FileHash -LiteralPath $settings).Hash -cne $settingsHash){throw 'Selection changes user settings'}
     # Exercise the actual interactive path, including invalid input and an explicit deep I1 trial.
     $script:matrixAnswers=[Collections.Generic.Queue[string]]::new()
-    foreach($answer in @('16','7','Q','D','I1')){$script:matrixAnswers.Enqueue($answer)}
+    foreach($answer in @('17','8','Q','2','2')){$script:matrixAnswers.Enqueue($answer)}
     function Read-Host {param([string]$Prompt) return $script:matrixAnswers.Dequeue()}
     $interactive=Read-OptimizedMWHitchSelection
     Remove-Item Function:Read-Host

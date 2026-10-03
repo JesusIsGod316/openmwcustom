@@ -33,20 +33,14 @@ function Get-OptimizedMWHitchSelection {
 }
 
 function Read-OptimizedMWHitchSelection {
-    Write-Host ''
-    Write-Host 'OptimizedMW hitch tests - choose features, then trace depth' -ForegroundColor Cyan
-    Write-Host 'UI = text/layout reuse | BAKE = terrain layer state batching'
-    Write-Host 'ANIM = NPC animation preparation | TERRAIN = demanded-grid readiness'
-    foreach($mask in 0..15){
-        $combination=Get-OptimizedMWHitchCombination $mask
-        Write-Host (' {0,2} = {1}' -f $mask,$combination.name)
-    }
-    do{$maskText=Read-Host 'Combination (0 = CONTROL, 15 = ALL)'}until($maskText -match '^(?:[0-9]|1[0-5])$')
-    do{$depthText=Read-Host 'N = Normal performance capture | D = Deep Trace'}until($depthText -in @('N','D'))
-    Write-Host 'I/O selection: CONTROL = original | I1 = 64 KiB refill | I2 = resident seek | I1I2 = both'
-    $ioChoices=@('CONTROL','I1','I2','I1I2')
-    if($depthText -eq 'D'){$ioChoices+='D1';Write-Host 'D1 = optimized diagnostic catalog with original I/O'}
-    do{$io=Read-Host 'I/O candidate (Enter = CONTROL)'}until($io -eq '' -or $io -in $ioChoices)
-    if(-not $io){$io='CONTROL'}
-    return Get-OptimizedMWHitchSelection -Mask ([int]$maskText) -TraceLevel $(if($depthText -eq 'D'){'Deep'}else{'Normal'}) -Candidate $io
+    # Retained function API; the production launcher uses category navigation.
+    if(-not (Get-Command Read-OptimizedMWNumber -ErrorAction SilentlyContinue)){. (Join-Path $PSScriptRoot 'OptimizedMW_NumericMenu.ps1')}
+    foreach($mask in 0..15){Write-Host (' {0,2} = {1}' -f ($mask+1),(Get-OptimizedMWHitchCombination $mask).name)}
+    $choice=Read-OptimizedMWNumber 'Combination (1 = CONTROL, 16 = ALL)' @(1..16 | ForEach-Object {[string]$_})
+    $depth=Read-OptimizedMWNumber 'Run type: 1 = Normal | 2 = Deep (Enter = 1)' @('1','2') '1'
+    Write-Host 'File I/O: 1 = Original | 2 = Refill | 3 = Resident seek | 4 = Both'
+    $choices=@('1','2','3','4');$names=@('CONTROL','I1','I2','I1I2')
+    if($depth -eq '2'){Write-Host ' 5 = Diagnostic catalog collector, original I/O';$choices+='5';$names+='D1'}
+    $io=Read-OptimizedMWNumber 'I/O candidate (Enter = 1)' $choices '1'
+    return Get-OptimizedMWHitchSelection -Mask ([int]$choice-1) -TraceLevel $(if($depth -eq '2'){'Deep'}else{'Normal'}) -Candidate $names[[int]$io-1]
 }

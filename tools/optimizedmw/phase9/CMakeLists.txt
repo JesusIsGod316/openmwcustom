@@ -32,6 +32,15 @@ add_library(p9-hitch-platform STATIC "${ROOT}/components/debug/hitchtrace.cpp"
   "${ROOT}/components/debug/diagnosticobserver.cpp")
 link_libraries(p9-hitch-platform)
 enable_testing()
+if(WIN32)
+  find_program(P9_MENU_POWERSHELL NAMES powershell.exe REQUIRED)
+  add_test(NAME p9-numeric-menu COMMAND ${P9_MENU_POWERSHELL}
+    -NoProfile -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/numeric-menu-tests.ps1)
+  # CTest can inherit a PS7-only module path from the build shell. The installed
+  # launcher uses PS5.1; isolate this hermetic fixture with its native modules.
+  set_tests_properties(p9-numeric-menu PROPERTIES TIMEOUT 30
+    ENVIRONMENT "PSModulePath=$ENV{WINDIR}/System32/WindowsPowerShell/v1.0/Modules")
+endif()
 add_executable(p9-delete-admission delete-admission-tests.cpp
   ${ROOT}/components/resource/openmwcompileoperation.cpp)
 target_link_libraries(p9-delete-admission PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)

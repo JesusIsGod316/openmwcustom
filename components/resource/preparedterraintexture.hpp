@@ -102,6 +102,10 @@ namespace Resource
         virtual bool preparationDispatchEligible(const osg::State& state) const
         { return preparationAdmissionEligible(state); }
 
+        // Called by the composite producer only after a successful layer draw
+        // and caller-state restoration. Precompile apply alone is not use.
+        virtual void recordProducerDrawUse(osg::State&, bool) const noexcept {}
+
     protected:
         // A generated image wrapper may use an explicit original-image control
         // in an incompatible context. That path must never inherit the outer
