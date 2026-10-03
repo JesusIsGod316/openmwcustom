@@ -54,6 +54,12 @@
 #include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/preparedterraintexture.hpp>
 #include <components/resource/compositecpumips.hpp>
+#include <components/resource/assetpolicy.hpp>
+#include <components/resource/derivedassetcache.hpp>
+#include <components/resource/texturestreaming.hpp>
+#include <components/sceneutil/textureownerboundary.hpp>
+#include <components/sceneutil/generatedstaticlod.hpp>
+#include <components/sceneutil/selectivehlod.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/stats.hpp>
 
@@ -132,6 +138,7 @@
 #include "mwstate/statemanagerimp.hpp"
 
 #include "profile.hpp"
+#include <components/resource/assetgpubudget.hpp>
 
 namespace
 {
@@ -1403,6 +1410,25 @@ OMW::Engine::Engine(Files::ConfigurationManager& configurationManager)
 
 OMW::Engine::~Engine()
 {
+    // Raw streamed allocations belong to the live owner context. Stop render
+    // threads before retiring them, then close the held contexts only after
+    // scene/worker teardown. Graph release alone does not repay pooled debt.
+    std::vector<osg::ref_ptr<osg::GraphicsContext>> assetContexts;
+    if(Resource::AssetPolicy::mask() && mViewer && !mUseVulkanRenderer)
+    {
+        mViewer->stopThreading();
+        osgViewer::ViewerBase::Contexts contexts;
+        mViewer->getContexts(contexts);
+        for(auto* context:contexts)
+        {
+            assetContexts.emplace_back(context);
+            if(context->makeCurrent())
+            {
+                Resource::TextureStreaming::releaseContext(*context->getState());
+                context->releaseContext();
+            }
+        }
+    }
     if (mScreenCaptureOperation != nullptr)
     {
         mScreenCaptureOperation->stop();
@@ -1454,6 +1480,8 @@ OMW::Engine::~Engine()
     SceneUtil::GpuIndirectPackets::sampleOwner=nullptr;
     SceneUtil::GpuIndirectPackets::ledger=nullptr;
     mResourceSystem.reset();
+    for(auto& context:assetContexts) context->close(true);
+    if(!assetContexts.empty()) Resource::AssetGpuBudget::discardAfterContextsClosed();
     // All resource, Lua and viewer workers are now joined.
     Debug::ResourceLifecycle::emitStatus();
     Debug::DiagnosticObserver::declareProducerThreadsJoined();
@@ -1757,6 +1785,11 @@ void OMW::Engine::createWindow()
         Log(Debug::Info) << "Phase 9 draw/state trace scene views installed=" + std::to_string(installed)
             + "; installed before realize; runtime leaf coverage must also be checked";
     }
+    if(Resource::AssetPolicy::enabled(Resource::AssetPolicy::TextureStreaming) && !Stereo::getStereo())
+    {
+        const unsigned installed=SceneUtil::TextureOwnerBoundary::installBeforeRealize(*mViewer);
+        Log(Debug::Info) << "Native texture owner root stages installed=" << installed;
+    }
     mViewer->realize();
     mGlMaxTextureImageUnits = identifyOp->getMaxTextureImageUnits();
 
@@ -1866,18 +1899,21 @@ void OMW::Engine::prepareEngine()
     if (!mUseVulkanRenderer && static_cast<bool>(Settings::cells().mOpimizedMWSpeculativeBudget)
         && !static_cast<bool>(Settings::cells().mOpimizedMWHostPressure))
         throw std::runtime_error("OpimizedMW speculative budget requires opimizedmw host pressure=true");
-    if (!mUseVulkanRenderer && static_cast<bool>(Settings::cells().mOpimizedMWHostPressure))
+    if (!mUseVulkanRenderer && (static_cast<bool>(Settings::cells().mOpimizedMWHostPressure)
+        || Resource::AssetPolicy::mask()))
     {
         Resource::OpenGlPressureConfig pressureConfig;
         pressureConfig.physicalReserve = static_cast<std::uint64_t>(
             static_cast<int>(Settings::cells().mOpimizedMWHostReserveMb)) * Resource::OpenGlPressureConfig::MiB;
         pressureConfig.commitReserve = static_cast<std::uint64_t>(
             static_cast<int>(Settings::cells().mOpimizedMWCommitReserveMb)) * Resource::OpenGlPressureConfig::MiB;
-        if (static_cast<bool>(Settings::cells().mOpimizedMWSpeculativeBudget))
+        if (static_cast<bool>(Settings::cells().mOpimizedMWSpeculativeBudget) || Resource::AssetPolicy::mask())
         {
             Resource::SpeculativeBudget::Config config;
             config.transientLimit = static_cast<std::uint64_t>(
                 static_cast<int>(Settings::cells().mOpimizedMWTransientBudgetMb)) * Resource::SpeculativeBudget::MiB;
+            if(Resource::AssetPolicy::mask())
+                config.transientLimit=std::min(config.transientLimit,Resource::AssetPolicy::CpuTransientLimit);
             // Preserve the original four-job ceiling while reserving one
             // slot for the closest exterior preload. P2's optional strong
             // upgrade is intrinsically single-instance and uses the same
@@ -1892,7 +1928,7 @@ void OMW::Engine::prepareEngine()
     }
     else
         Log(Debug::Info) << "OpimizedMW GL-P1A pressure protection: off (P0/Vulkan control)";
-    if (Resource::UploadPool::requested() && !mUseVulkanRenderer)
+    if ((Resource::UploadPool::requested() || Resource::AssetPolicy::mask()) && !mUseVulkanRenderer)
     {
         Resource::UploadPool::sample=&Resource::ResourceSystem::speculativeSample;
         Resource::UploadPool::sampleOwner=mResourceSystem.get();
@@ -2527,6 +2563,39 @@ void OMW::Engine::go()
         + " submitted=" + std::to_string(preparedTextureStats.completed)
         + " (precompile calls, not GPU-completion or uploaded-byte counters)";
     mLuaWorker->join();
+
+    if(Resource::AssetPolicy::mask())
+    {
+        const auto& textures=Resource::nativeTextureStats();
+        Log(Debug::Info) << "OptimizedMW asset pipeline: mask="+std::to_string(Resource::AssetPolicy::mask())
+            +" native_ready="+std::to_string(textures.ready.load())
+            +" native_dds="+std::to_string(textures.reusedDds.load())
+            +" native_converted="+std::to_string(textures.converted.load())
+            +" native_images="+std::to_string(textures.nativeImages.load())
+            +" native_full_applies="+std::to_string(textures.fullApplies.load())
+            +" native_fallback="+std::to_string(textures.fallback.load())
+            +" native_retained_bytes="+std::to_string(textures.retainedBytes.load())
+            +" derived_cache_hits="+std::to_string(Resource::DerivedAssets::Counters::hits.load())
+            +" derived_cache_writes="+std::to_string(Resource::DerivedAssets::Counters::writes.load())
+            +" derived_cache_corrupt="+std::to_string(Resource::DerivedAssets::Counters::corrupt.load())
+            +" gpu_live_debt="+std::to_string(Resource::AssetGpuBudget::liveBytes.load())
+            +" gpu_peak_debt="+std::to_string(Resource::AssetGpuBudget::peakBytes.load())
+            +" lod_built="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::built.load())
+            +" lod_coarse_views="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::coarseViews.load())
+            +" lod_derived_draws="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::derivedDraws.load());
+        Log(Debug::Info) << "OptimizedMW HLOD: requested="+std::to_string(SceneUtil::HlodCounters::requests.load())
+            +" built="+std::to_string(SceneUtil::HlodCounters::built.load())
+            +" refused="+std::to_string(SceneUtil::HlodCounters::refused.load())
+            +" control_submissions="+std::to_string(SceneUtil::HlodCounters::controlSubmissions.load())
+            +" proxy_submissions="+std::to_string(SceneUtil::HlodCounters::proxySubmissions.load())
+            +" consumed_draws="+std::to_string(SceneUtil::HlodCounters::consumedDraws.load())
+            +" consumed_indices="+std::to_string(SceneUtil::HlodCounters::consumedIndices.load());
+        const auto& stream=Resource::TextureStreaming::counters();
+        Log(Debug::Info) << "OptimizedMW texture streaming: coarse_draws="+std::to_string(stream.coarseDraws.load())
+            +" fine_draws="+std::to_string(stream.fineDraws.load())+" demotions="+std::to_string(stream.demotions.load())
+            +" deleted_bytes="+std::to_string(stream.deletedBytes.load())+" live_bytes="+std::to_string(stream.liveBytes.load());
+        Resource::TextureStreaming::reportDiagnostics();
+    }
 
     if (Resource::CompositeCpuMips::requested())
     {

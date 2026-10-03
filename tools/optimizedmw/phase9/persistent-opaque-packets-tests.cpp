@@ -218,11 +218,50 @@ int main(int argc, char** argv) try
         }
         require(owner, "direct packet submission lost exact geometry metadata");
     }
+
+    // Production paging keeps material-bearing Geodes under immutable ancestry.
+    // The old immediate-child-only attachment never reached those drawables.
+    osg::ref_ptr<osg::Group> nested = new osg::Group;
+    osg::ref_ptr<osg::MatrixTransform> nestedTransform = new osg::MatrixTransform(osg::Matrix::translate(.025,0,0));
+    nestedTransform->setDataVariance(osg::Object::STATIC);
+    osg::ref_ptr<osg::Group> materialAncestor = new osg::Group;
+    materialAncestor->setStateSet(material);
+    materialAncestor->getStateSet()->getOrCreateUniform("viewScale",osg::Uniform::FLOAT)->set(.9f);
+    osg::ref_ptr<osg::Geode> nestedGeode = new osg::Geode;
+    for (unsigned i = 0; i < 3; ++i) nestedGeode->addDrawable(geometry(-.8f + .5f*i,nullptr));
+    materialAncestor->addChild(nestedGeode); nestedTransform->addChild(materialAncestor); nested->addChild(nestedTransform);
+    osg::ref_ptr<osg::Node> nestedControl = osg::clone(nested.get(), osg::CopyOp::DEEP_COPY_NODES
+        | osg::CopyOp::DEEP_COPY_DRAWABLES | osg::CopyOp::DEEP_COPY_ARRAYS | osg::CopyOp::DEEP_COPY_PRIMITIVES);
+    const auto nestedSubmitted = Packet::Counters::submitted.load();
+    const auto nestedBuilt = Packet::Counters::built.load();
+    auto nestedCandidate = Packet::buildCertifiedSubtrees(*nested,256,true);
+    require(Packet::Counters::built > nestedBuilt, "certified material-bearing Geode did not build packets");
+    require(nested->getChild(0) == nestedTransform && nestedTransform->getMatrix() == osg::Matrix::translate(.025,0,0),
+        "recursive attachment changed transform ancestry");
+    camera->setProjectionMatrix(osg::Matrix::identity()); camera->setViewMatrix(osg::Matrix::identity());
+    camera->setComputeNearFarMode(osg::CullSettings::DO_NOT_COMPUTE_NEAR_FAR); camera->setCullMask(~0u);
+    viewer.setSceneData(nestedControl); viewer.frame(); const auto nestedPixels = pixels->data;
+    viewer.setSceneData(nestedCandidate); viewer.frame();
+    require(pixels->data == nestedPixels && Packet::Counters::submitted > nestedSubmitted,
+        "nested production material/transform pixel parity and actual submission");
+    osg::ref_ptr<osg::Group> badAncestry = new osg::Group;
+    badAncestry->setCullCallback(new osg::NodeCallback); badAncestry->addChild(nestedControl);
+    require(Packet::buildCertifiedSubtrees(*badAncestry,256,true) == badAncestry,
+        "ancestor callback was laundered into packet ancestry");
+    const auto boundedBuilt = Packet::Counters::built.load();
+    require(Packet::buildCertifiedSubtrees(*nestedControl,1,true) == nestedControl && Packet::Counters::built == boundedBuilt,
+        "recursive node bound must preserve untouched original");
+    // Later ancestry changes still take the retained original traversal.
+    materialAncestor->setCullCallback(new osg::NodeCallback);
+    const auto ancestryFallback = Packet::Counters::fallbacks.load(); viewer.frame();
+    require(Packet::Counters::fallbacks > ancestryFallback, "changed material ancestor must fall back");
+    materialAncestor->setCullCallback(nullptr);
     viewer.setSceneData(nullptr);
     auto* renderer = dynamic_cast<osgViewer::Renderer*>(camera->getRenderer());
     require(renderer != nullptr, "fixture renderer missing at retirement");
     for (unsigned i = 0; i < 2; ++i) renderer->getSceneView(i)->setSceneData(nullptr);
     candidate = nullptr;
+    nestedCandidate = nullptr; nested = nullptr; nestedTransform = nullptr; materialAncestor = nullptr; nestedGeode = nullptr;
     require(Packet::Counters::liveBytes.load() == initialBytes, "retired packet metadata quota leaked");
     std::cout << "Persistent opaque packets: pixel, inherited material, camera, masks, near/far, producer revision,"
         " custom callback, structural fallback, visitor, quota retirement and positive submission checks passed\n";

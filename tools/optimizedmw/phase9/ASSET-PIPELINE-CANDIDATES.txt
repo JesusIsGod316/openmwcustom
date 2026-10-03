@@ -1,0 +1,99 @@
+OPTIMIZEDMW ASSET PIPELINE CANDIDATES
+
+Use START-OptimizedMW-Test.bat in C:\OptimizedMW_Test. Category 12 contains
+the new mechanisms. Pick a numbered optimization, then 1 for Normal or 2
+for Deep. Windows recording is optional after choosing Deep.
+
+12 / 1: retained foundation, all new asset mechanisms off.
+12 / 2: L1 generated static visual LOD.
+12 / 3: H1 selective HLOD atlas and merged proxy.
+12 / 4: L1 plus H1.
+12 / 5: T1 native mip preparation and covered static color conversion.
+12 / 6: T2 coarse-to-fine terrain diffuse texture streaming.
+12 / 7: T2 plus idle texture demotion.
+12 / 8: T1 plus T2.
+12 / 9: all five asset switches.
+12 / 10: individual asset toggles. Demotion enables streaming; disabling
+streaming also disables demotion. Category 8 can mix these with existing
+RAM, renderer, animation and terrain mechanisms.
+
+Start with a Normal control and one candidate using the same save, view,
+route and frame cap. A -> B -> B -> A is the first comparison. A fresh
+process does not establish a cold OS or driver cache. Use the resulting
+ZIPs to verify execution counters and comparable gameplay intervals.
+Measure one mechanism before combined candidates. Deep runs diagnose
+ownership, preparation, first draw and retirement; they do not establish
+a Normal performance win. No mechanism is promoted by a passing fixture.
+Completed game captures and combined upload ZIPs are saved in the
+Benchmarks folder beside this launcher. Windows recorder archives stay in
+SystemTrace, and TestSessions retains the automatic session receipts.
+
+L1: index-only, attribute-aware meshoptimizer simplification of positively
+certified private static paging partitions. Existing authored LOD,
+controllers, transparent/cutout materials, unknown draw semantics,
+occluder owners, unsupported transforms and unsafe layouts retain control.
+Main-view projection and hysteresis select the tier only after a real
+incremental compile completion receipt. Secondary/shadow views retain
+original geometry. Original vertex/material streams are immutable and
+shared with the derived indices. Cache identity includes winning source
+contents, actual geometry streams and a pinned backend/recipe.
+
+H1: separate, narrowly eligible static material atlas/proxy preparation.
+Admission requires fewer real submissions than the optimized control.
+Existing strong merging is the comparison baseline. Material families,
+transforms, UV domains, source sampler and stock shader contract must be
+supported. Co-registered diffuse, linear normal and linear specular maps
+retain separate atlases and their original tangent/scalar semantics.
+Parallax, extra roles and controllers take their original path. A current
+view population check preserves each control member's ordinary rejection.
+Cross-partition material conflicts return to whole-chunk strong merging.
+Atlas preparation alone is not proof that a proxy was drawn. Eligibility
+and consumption depend on the user's actual winning asset loadout.
+
+T1: one bounded worker reuses complete legacy BC1/BC2/BC3 DDS chains with
+their original blocks and data-alpha semantics. Covered opaque 24-bit TGA
+diffuse inputs up to 2048 square can produce CPU mips and BC1 using pinned
+DirectXTex. Unsupported formats, transfer/role ambiguity, stale winners,
+pressure and failed preparation use the original image. DDS cache entries
+hold a compact checked descriptor instead of duplicating the source body.
+Composite preparation can reuse exact DDS blocks; TGA composite-source
+inputs retain their ordinary colors without the lossy conversion.
+
+T2: main terrain diffuse resources have separate complete coarse and fine
+raw GL backing allocations. Publication happens at a context-owned boundary
+before the complete renderer operation and remains frozen across that
+frame's sub-cameras. Composite-source textures remain full quality. Small
+compressed upload packets are ordered in the owning GL context. A visible
+first use that lacks a prepared/admitted backing safely allocates the
+ordinary texture and remains on that path. Optional ICO texture applies
+defer to the owner; explicit force-download ICO retains ordinary effects.
+
+Demotion is independent. Quality holds prevent oscillation; old allocations
+retain their GPU/host debt until a final-use fence permits targeted deletion.
+The pipeline tracks actual terrain draws, first draws, publications and
+deleted bytes separately. Estimated backing bytes are allocation accounting,
+not exact physical VRAM residency. A bounded byte packet cannot guarantee a
+maximum driver-call duration. Stereo and unqualified contexts fall back.
+
+Bounds: derived disk namespace <=2 GiB, 20 GiB free-space reserve; CPU
+transient admission <=256 MiB; native retained payloads <=64 MiB; streaming
+backings including construction/retirement <=128 MiB; one new backing at
+most 32 MiB per owner boundary; two upload packets each <=512 KiB. Aggregate
+new GPU debt <=256 MiB and admission requires a fresh comfortable adapter
+sample with 512 MiB reserve. OSG-pooled private geometry/atlas allocation
+debt remains conservatively held until its context closes.
+Early pressure/capacity denial leaves a paging chunk ordinary until its
+normal expiration or rebuild; this package introduces no repeated cook loop.
+
+Temporal progress: index-only LOD pairs carry an immutable vertex lineage.
+The motion overlay can use the prior transform across tier changes only
+while that lineage remains intact. Replacements or changed arrays reset
+local history. Current indices determine current coverage. This does not
+mark disocclusions valid, complete cutout/wind/actor coverage, enable camera
+jitter or provide a playable DLSS upscaler. The existing DLSS runtime gate
+remains unavailable until those separate production milestones qualify.
+
+The prior exact-shader-readiness experiment remains unavailable because its
+driver crash is unresolved. New combined presets do not re-enable it.
+No package, fixture or runtime counter is a claim of higher FPS, fewer
+hitches or accepted visual quality; those need controlled user captures.

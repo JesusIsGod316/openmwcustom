@@ -961,7 +961,7 @@ namespace MWRender
         const int v38ResidencyMode = static_cast<int>(Settings::cells().mV38GpuResidencyMode);
         const bool v38ResidencyEnabled = v38ResidencyMode > 0;
         if (Settings::cells().mV32GpuMemoryTelemetry || Settings::cells().mV32GpuMemoryManagement
-            || v38ResidencyEnabled)
+            || v38ResidencyEnabled || Resource::AssetPolicy::mask())
         {
             Debug::V3GpuMemory::sampleIfDue(static_cast<bool>(Settings::cells().mV32GpuMemoryTelemetry),
                 static_cast<bool>(Settings::cells().mV32GpuMemoryManagement) || v38ResidencyEnabled,
@@ -1799,6 +1799,7 @@ namespace MWRender
             {
                 newChunkMgr.mObjectPaging
                     = std::make_unique<ObjectPaging>(mResourceSystem->getSceneManager(), worldspace);
+                newChunkMgr.mObjectPaging->setAssetMainCamera(mViewer->getCamera());
                 if (mOcclusionCuller)
                 {
                     const unsigned int maxTriangles

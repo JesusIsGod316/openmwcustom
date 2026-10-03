@@ -499,6 +499,15 @@ namespace Terrain
         PreparedPassData result;
         mStorage->getBlendmaps(chunkSize, chunkCenter, result.mBlendmaps, result.mLayers, mWorldspace);
         result.mTileCount = mStorage->getTextureTileCount(chunkSize, mWorldspace);
+        const auto purpose=forCompositeMap ? Resource::TexturePurpose::CompositeSource : Resource::TexturePurpose::MainDraw;
+        for(const LayerInfo& info:result.mLayers)
+        {
+            mTextureManager->prepareTexture(info.mDiffuseMap,
+                info.mSpecular ? Resource::TextureRole::DiffuseSpecular : Resource::TextureRole::Diffuse,purpose);
+            if(!forCompositeMap && !info.mNormalMap.empty())
+                mTextureManager->prepareTexture(info.mNormalMap,
+                    info.mParallax ? Resource::TextureRole::NormalHeight : Resource::TextureRole::Normal,purpose);
+        }
         if (mCpuCompositeMips && forCompositeMap && !ESM::isEsm4Ext(mWorldspace))
         {
             Debug::HitchTrace::Scope scope("terrain.composite_cpu_mips", Debug::HitchTrace::CpuTiming::WallEnvelope);
@@ -529,9 +538,13 @@ namespace Terrain
             TextureLayer textureLayer;
             textureLayer.mParallax = info.mParallax;
             textureLayer.mSpecular = info.mSpecular;
-            textureLayer.mDiffuseMap = mTextureManager->getTexture(info.mDiffuseMap);
+            textureLayer.mDiffuseMap = mTextureManager->getTexture(info.mDiffuseMap,
+                info.mSpecular ? Resource::TextureRole::DiffuseSpecular : Resource::TextureRole::Diffuse,
+                forCompositeMap ? Resource::TexturePurpose::CompositeSource : Resource::TexturePurpose::MainDraw);
             if (!forCompositeMap && !info.mNormalMap.empty())
-                textureLayer.mNormalMap = mTextureManager->getTexture(info.mNormalMap);
+                textureLayer.mNormalMap = mTextureManager->getTexture(info.mNormalMap,
+                    info.mParallax ? Resource::TextureRole::NormalHeight : Resource::TextureRole::Normal,
+                    Resource::TexturePurpose::MainDraw);
             layers.push_back(std::move(textureLayer));
         }
 

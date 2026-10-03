@@ -6,7 +6,7 @@ The work began from `codex/optimizedmw-phase9-audited` at `716b5c4549cc49ca08326
 
 ## Numeric launcher
 
-Start `C:\OptimizedMW_Test\START-OptimizedMW-Test.bat` after the updated package has been installed. Every interactive choice uses numbers. In this document, **11 → 2 → 1** means category 11, candidate 2, then Normal performance. These numbers are navigation choices, not engine bit masks.
+Start `C:\OptimizedMW_Test\START-OptimizedMW-Test.bat` after the updated package has been installed. Every interactive choice uses numbers. In this document, **11 → 3 → 1** means category 11, candidate 3, then Normal performance. These numbers are navigation choices, not engine bit masks. Category 12 contains the new asset experiments described in `ASSET-PIPELINE-CANDIDATES.txt`.
 
 For each candidate, the final run-type choices are:
 
@@ -30,18 +30,18 @@ Comparison labels record the intended save, route and frame-cap state. They do n
 | Category 11: Renderer architecture experiments | Normal-run path | Mechanism |
 | --- | --- | --- |
 | Retained renderer control | 11 → 1 → 1 | Current retained foundation; all seven new renderer candidates off |
-| Exact shader variant readiness | 11 → 2 → 1 | G1 |
+| Exact shader variant readiness | Unavailable | G1; unresolved driver crash, excluded from combinations |
 | Exact paging optimizer work reduction | 11 → 3 → 1 | G2 |
 | Persistent opaque draw packets | 11 → 4 → 1 | G4 |
 | Bounded terrain mip upload staging | 11 → 5 → 1 | G8; supplied CPU mipmaps enabled |
 | Opaque multi-draw indirect + bounded command pipeline | 11 → 6 → 1 | G4 + G16 |
 | Conservative GPU visibility + indirect pipeline | 11 → 7 → 1 | G4 + G16 + G32 |
 | Frozen parallel actor deformation | 11 → 8 → 1 | G64 |
-| Renderer candidates combined | 11 → 9 → 1 | G1–G64; supplied CPU mipmaps enabled |
+| Renderer candidates combined | 11 → 9 → 1 | G2 + G4 + G8 + G16 + G32 + G64; supplied CPU mipmaps enabled |
 
 Both retained controls preserve the current animation preparation/retention foundation. They do not disable every historical optimization or all ordinary RAM caching. Category **1 → 2** provides the separate original-feature control; changing to it changes the baseline and must be reported as a separate comparison.
 
-For custom combinations, choose **8 → 1 → 19**, then **1: RAM** or **2: Renderer**. Toggle the displayed candidate numbers, return to the combination menu, and choose **16: Continue**. Choose **1: Original file I/O** for the first architecture comparisons, then choose Normal or Deep. The menu prints the selected combination before launch.
+For custom combinations, choose **8 → 1 → 19**, then **1: RAM**, **2: Renderer**, or **3: Assets**. Toggle the displayed candidate numbers, return to the combination menu, and choose **16: Continue**. Choose **1: Original file I/O** for the first architecture comparisons, then choose Normal or Deep. The menu prints the selected combination before launch.
 
 The menu resolves real dependencies: indirect drawing requires persistent packets; GPU visibility requires both; upload staging requires supplied CPU mipmaps. Disabling a prerequisite disables its dependants. This avoids a receipt claiming that an impossible combination was tested. Combined presets are available for later interaction tests; start with individual mechanisms so a gain or regression can be assigned to a cause.
 

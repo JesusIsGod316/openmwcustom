@@ -2,6 +2,9 @@
 #define OPENMW_MWRENDER_TEMPORALDYNAMIC_H
 
 #include <components/sceneutil/temporalmotionidentity.hpp>
+#include <components/sceneutil/temporalvertexlineage.hpp>
+#include <components/sceneutil/generatedstaticlod.hpp>
+#include <components/shader/indirectprojectioncontract.hpp>
 #include <osg/Geometry>
 #include <osg/AlphaFunc>
 #include <osg/MatrixTransform>
@@ -24,10 +27,24 @@ namespace MWRender
         {
             osg::ref_ptr<const osg::Drawable> owner;
             osg::ref_ptr<const SceneUtil::TemporalMotionIdentity> deformation;
+            osg::ref_ptr<const SceneUtil::TemporalVertexLineage> lineage;
             osg::ref_ptr<osg::Geometry> geometry;
             osg::ref_ptr<const osg::RefMatrix> projection;
             osg::Matrixd modelView;
             std::uint64_t instance = 0, topology = 0;
+            bool compatibleHistory(const Surface& previous) const
+            {
+                if(instance!=previous.instance) return false;
+                if(lineage || previous.lineage)
+                {
+                    const auto* currentGeometry=owner ? owner->asGeometry() : nullptr;
+                    const auto* previousGeometry=previous.owner ? previous.owner->asGeometry() : nullptr;
+                    return lineage && lineage==previous.lineage
+                        && currentGeometry && previousGeometry
+                        && lineage->matches(*currentGeometry) && lineage->matches(*previousGeometry);
+                }
+                return topology==previous.topology && (deformation ? deformation==previous.deformation : owner==previous.owner);
+            }
         };
         std::vector<Surface> surfaces;
         std::uint64_t bytes = 0;
@@ -50,7 +67,9 @@ namespace MWRender
                 if (!leaf || !seen.insert(leaf).second) return;
                 const auto* source = dynamic_cast<const osg::Geometry*>(leaf->getDrawable());
                 const auto* positions = source ? dynamic_cast<const osg::Vec3Array*>(source->getVertexArray()) : nullptr;
-                if (!source || !positions || !leaf->_modelview || !leaf->_projection || source->getDrawCallback()
+                const auto* lineage=source ? SceneUtil::temporalVertexLineage(*source) : nullptr;
+                if (!source || !positions || !leaf->_modelview || !leaf->_projection
+                    || (source->getDrawCallback() && !(lineage && SceneUtil::GeneratedStaticLod::isDelegatingDrawCallback(source->getDrawCallback())))
                     || typeid(*source) != typeid(osg::Geometry))
                 { ++unsupported; return; }
                 // Transparent/cutout geometry and custom effects need their
@@ -72,14 +91,17 @@ namespace MWRender
                             && alpha->getFunction() != osg::AlphaFunc::ALWAYS)
                         { ++unsupported; return; }
                         if (const auto* program = dynamic_cast<const osg::Program*>(state->getAttribute(osg::StateAttribute::PROGRAM)))
+                        {
+                            if(lineage && !Shader::IndirectProjection::matches(*program)) { ++unsupported; return; }
                             for (unsigned i = 0; i < program->getNumShaders(); ++i)
                                 if (const auto* shader = program->getShader(i); shader->getType() == osg::Shader::VERTEX
                                     && shader->getName().find("objects.vert") == std::string::npos)
                                 { ++unsupported; return; }
+                        }
                     }
                 }
                 const auto* deformation = SceneUtil::temporalMotionIdentity(*source);
-                std::uint64_t instance = deformation ? deformation->id : reinterpret_cast<std::uintptr_t>(source);
+                std::uint64_t instance = deformation ? deformation->id : lineage ? lineage->id : reinterpret_cast<std::uintptr_t>(source);
                 if (!deformation)
                 {
                     const osg::Node* parent = source;
@@ -88,7 +110,7 @@ namespace MWRender
                     {
                         if (parent->getNumParents() != 1 || ++pathDepth > 128) { ++unsupported; return; }
                         parent = parent->getParent(0);
-                        instance ^= reinterpret_cast<std::uintptr_t>(parent)
+                        if(!lineage) instance ^= reinterpret_cast<std::uintptr_t>(parent)
                             + 0x9e3779b97f4a7c15ull + (instance << 6) + (instance >> 2);
                     }
                 }
@@ -119,7 +141,7 @@ namespace MWRender
                 if (needed > MaxBytes / 4 || needed > MaxBytes - bytes || surfaces.size() >= MaxSurfaces)
                 { ++unsupported; return; }
                 Surface surface;
-                surface.owner = source; surface.deformation = deformation;
+                surface.owner = source; surface.deformation = deformation; surface.lineage=lineage;
                 surface.instance = instance; surface.topology = topology;
                 surface.projection = leaf->_projection; surface.modelView = *leaf->_modelview;
                 surface.geometry = new osg::Geometry;

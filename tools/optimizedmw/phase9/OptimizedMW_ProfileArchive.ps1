@@ -146,11 +146,14 @@ function Complete-Phase9Profile {
           [Parameter(Mandatory=$true)][string]$GameDir)
     $zipName=(Split-Path -Leaf $ProfileDir)+'.zip'
     $zip=$null;$failures=[Collections.Generic.List[string]]::new()
-    # Prefer beside the launcher; installations in protected folders use the profile parent.
-    foreach($directory in @($GameDir,(Split-Path -Parent $ProfileDir))){
-        try{$zip=New-VerifiedProfileZip -SourceDir $ProfileDir -DestinationPath (Join-Path $directory $zipName);break}
-        catch{[void]$failures.Add([string]$_)}
+    # Keep completed captures together. A packaging failure retains the raw
+    # profile rather than scattering a fallback ZIP beside the installed files.
+    $directory=Join-Path $GameDir 'Benchmarks'
+    try{
+        [void][IO.Directory]::CreateDirectory($directory)
+        $zip=New-VerifiedProfileZip -SourceDir $ProfileDir -DestinationPath (Join-Path $directory $zipName)
     }
+    catch{[void]$failures.Add([string]$_)}
     if($null -eq $zip){
         $failures | Set-Content -LiteralPath (Join-Path $ProfileDir 'ZIP-ERROR.txt') -Encoding UTF8
         throw "ZIP CREATION FAILED. Raw evidence is safe at: $ProfileDir. $($failures -join '; ')"

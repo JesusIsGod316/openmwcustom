@@ -6,6 +6,8 @@
 #include <components/terrain/quadtreeworld.hpp>
 
 #include <osg/ref_ptr>
+#include <osg/observer_ptr>
+#include <osg/Camera>
 
 #include <atomic>
 #include <map>
@@ -16,6 +18,7 @@ namespace Resource
 {
     class SceneManager;
 }
+namespace osg { class Camera; }
 
 namespace SceneUtil
 {
@@ -62,6 +65,7 @@ namespace MWRender
         bool unlockCache();
 
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
+        void setAssetMainCamera(osg::Camera* camera) { mAssetMainCamera = camera; }
 
         void getPagedRefnums(const osg::Vec4i& activeGrid, std::vector<ESM::RefNum>& out);
 
@@ -89,6 +93,8 @@ namespace MWRender
         float mMinSize;
         float mMinSizeMergeFactor;
         float mMinSizeCostMultiplier;
+        osg::observer_ptr<osg::Camera> mAssetMainCamera;
+        std::atomic_uint64_t mAssetGeneration{ 1 };
 
         std::atomic_bool mV310InitialFrontloadActive{ false };
 
@@ -103,6 +109,7 @@ namespace MWRender
             unsigned char mPrepareMode = 0;
             unsigned char mSpatialMode = 0;
             unsigned char mP3OptionalMask = 0;
+            std::uint64_t mAssetVfsGeneration = 0;
         };
         mutable std::mutex mV313ChunkQualityMutex;
         std::map<ChunkId, V313ChunkQuality> mV313ChunkQualities;

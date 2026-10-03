@@ -1302,6 +1302,7 @@ if(WIN32)
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/RESOURCE-LIFECYCLE-DIAGNOSTICS.md"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/COMPOSITE-PROGRESS-CANDIDATE.md"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/ARCHITECTURE-CANDIDATES.md"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/ASSET-PIPELINE-CANDIDATES.txt"
         DESTINATION "."
     )
 endif()

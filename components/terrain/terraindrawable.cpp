@@ -5,6 +5,7 @@
 
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/drawphasetrace.hpp>
+#include <components/resource/texturestreaming.hpp>
 
 #include "compositemaprenderer.hpp"
 
@@ -154,6 +155,13 @@ namespace Terrain
     void TerrainDrawable::compileGeometryGLObjects(osg::RenderInfo& renderInfo) const
     {
         osg::Geometry::compileGLObjects(renderInfo);
+    }
+
+    void TerrainDrawable::drawImplementation(osg::RenderInfo& renderInfo) const
+    {
+        osg::Geometry::drawImplementation(renderInfo);
+        if(getNumPrimitiveSets() && renderInfo.getState())
+            Resource::TextureStreaming::recordDrawUse(*renderInfo.getState());
     }
 
     void TerrainDrawable::compileGLObjects(osg::RenderInfo& renderInfo) const

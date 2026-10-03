@@ -290,9 +290,7 @@ namespace MWRender
             for (const auto& surface : camera.dynamic->surfaces)
             {
                 const auto previous = std::find_if(c.previousSurfaces.begin(), c.previousSurfaces.end(), [&](const auto& value) {
-                    return value.surface.instance == surface.instance && value.surface.topology == surface.topology
-                        && (surface.deformation ? value.surface.deformation == surface.deformation
-                            : value.surface.owner == surface.owner);
+                    return surface.compatibleHistory(value.surface);
                 });
                 const bool history = frame->hasHistory() && previous != c.previousSurfaces.end()
                     && previous->surface.geometry->getVertexArray()->getNumElements()

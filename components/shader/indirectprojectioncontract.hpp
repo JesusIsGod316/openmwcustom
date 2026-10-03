@@ -10,6 +10,7 @@
 #include <new>
 #include <string>
 #include <vector>
+#include <components/resource/assetpolicy.hpp>
 
 namespace Shader::IndirectProjection
 {
@@ -18,7 +19,9 @@ namespace Shader::IndirectProjection
         static const bool value = [] {
             const char* p = std::getenv("OPENMW_P9_GPU_VISIBILITY");
             const char* mdi = std::getenv("OPENMW_P9_MULTI_DRAW_INDIRECT");
-            return (p && std::strcmp(p, "1") == 0) || (mdi && std::strcmp(mdi, "1") == 0);
+            return (p && std::strcmp(p, "1") == 0) || (mdi && std::strcmp(mdi, "1") == 0)
+                || Resource::AssetPolicy::enabled(Resource::AssetPolicy::VisualLod)
+                || Resource::AssetPolicy::enabled(Resource::AssetPolicy::Hlod);
         }();
         return value;
     }

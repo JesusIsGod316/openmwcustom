@@ -59,6 +59,11 @@ namespace VFS
     {
         return getNormalized(name.value());
     }
+    std::optional<SourceOpenEstimate> Manager::getOpenEstimate(Path::NormalizedView name) const
+    {
+        const auto found=mIndex.find(name);
+        return found==mIndex.end() ? std::nullopt : found->second->getOpenEstimate();
+    }
 
     Files::IStreamPtr Manager::getNormalized(std::string_view normalizedName) const
     {

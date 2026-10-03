@@ -75,7 +75,7 @@ function New-QuickFixtureZip([string]$Path,[object[]]$Members){
         }
     }finally{if($writer){$writer.Dispose()};$stream.Dispose()}
 }
-function New-QuickFixturePair([object]$Context,[switch]$RecorderFirst){
+function New-QuickFixturePair([object]$Context,[switch]$RecorderFirst,[switch]$LegacyRoot){
     $state=$Context.trace_state | ConvertTo-Json -Depth 12 | ConvertFrom-Json
     $state.status='saved';$state.normal_stop=$true
     $etlBytes=[byte[]]@(3,1,4,1,5,9,2,6,5,3,5,8,9)
@@ -87,7 +87,10 @@ function New-QuickFixturePair([object]$Context,[switch]$RecorderFirst){
     $link=[pscustomobject]@{schema=1;capture_id=$state.capture_id;instance=$state.instance;recorder_process_id=88;
         recorder_creation_utc=$helperBirth.ToString('o');directory=$state.directory;game_directory=$Context.game_directory;
         executable_path=$state.executable_path;executable_sha256=$state.executable_sha256}
-    $engineZip=Join-Path $Context.directory 'fixture engine [one].zip'
+    $benchmarks=Join-Path $Context.game_directory 'Benchmarks'
+    [void][IO.Directory]::CreateDirectory($benchmarks)
+    $engineDirectory=$(if($LegacyRoot){$Context.game_directory}else{$benchmarks})
+    $engineZip=Join-Path $engineDirectory ('fixture engine [one] '+$Context.session_id+'.zip')
     $systemZip=$state.directory+'.zip'
     if($RecorderFirst){
         New-QuickFixtureZip $systemZip @([pscustomobject]@{name='SYSTEM-TRACE-STATE.json';json=$state},[pscustomobject]@{name='OptimizedMW-SystemTrace.etl';bytes=$etlBytes})
@@ -186,11 +189,13 @@ try{
 
     foreach($recorderFirst in @($true,$false)){
         $context=Start-OptimizedMWQuickSession $game $one
-        $pair=New-QuickFixturePair $context -RecorderFirst:$recorderFirst
+        $pair=New-QuickFixturePair $context -RecorderFirst:$recorderFirst -LegacyRoot:$recorderFirst
         $engineHash=(Get-FileHash -LiteralPath $pair.engine).Hash;$systemHash=(Get-FileHash -LiteralPath $pair.system).Hash
         $result=Complete-OptimizedMWQuickSession -Context $context -ProfileZip $pair.engine -Link $pair.link -GameProcessId 99 `
             -GameCreationUtc $pair.binding.game_creation_utc -RestoreVerified $true -EnvironmentRestoreVerified $true
         Assert-Quick ($result.status -eq 'complete' -and $result.upload_path -ne $pair.engine -and [IO.File]::Exists($result.upload_path)) 'One-file upload did not finish in either save order'
+        Assert-Quick ($result.upload_path -eq (Join-Path (Join-Path $game 'Benchmarks') ('OptimizedMW_UPLOAD_'+$context.session_id+'.zip'))) 'Combined upload escaped Benchmarks'
+        Assert-Quick ($pair.system -eq ($context.trace_state.directory+'.zip') -and $pair.system.StartsWith((Join-Path $game 'SystemTrace')+'\',[StringComparison]::OrdinalIgnoreCase)) 'Windows capture moved outside the linked SystemTrace directory'
         Assert-Quick ((Get-FileHash -LiteralPath $pair.engine).Hash -eq $engineHash -and (Get-FileHash -LiteralPath $pair.system).Hash -eq $systemHash) 'Combined packaging mutated original archives'
         $readback=[IO.Compression.ZipFile]::OpenRead($result.upload_path)
         try{

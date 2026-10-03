@@ -1,4 +1,4 @@
-OPTIMIZEDMW NUMBERED TEST LAUNCHER (2026-10-02)
+OPTIMIZEDMW NUMBERED TEST LAUNCHER (2026-10-03)
 
 Use C:\OptimizedMW_Test\START-OptimizedMW-Test.bat. All menu selections use numbers:
 choose a category, choose an optimization, then choose the run type.
@@ -16,6 +16,11 @@ Categories (these are navigation numbers, not engine bit masks):
   9 = Advanced and earlier experiments   temporal/motion/earlier preparation
  10 = RAM retention and compression      cold owners, NIF, collision, headroom, LZ4
  11 = Renderer architecture experiments  shaders, paging, packets, uploads, GPU
+ 12 = LOD, HLOD and texture pipeline      independent asset mechanisms and combinations
+
+See ASSET-PIPELINE-CANDIDATES.txt for the new candidates and recommended
+control/candidate sequence. Exact shader readiness remains unavailable
+until its prior driver crash is resolved. Other renderer switches stay independent.
 
 See ARCHITECTURE-CANDIDATES.md for exact scopes, bounds and recommended pairs.
 Every RAM and renderer candidate starts off in the retained control. Category
@@ -78,6 +83,11 @@ Only the helper requests elevation; launch the main test BAT normally.
 Recording defaults to 600 seconds, stops after this exact game exits, and obeys
 the existing disk-space guard. Let the launcher finish packaging the verified
 single upload ZIP. Engine-only Deep runs do not start a Windows recorder.
+Game capture ZIPs and combined upload ZIPs are saved in
+C:\OptimizedMW_Test\Benchmarks (the Benchmarks folder beside this launcher).
+The launcher creates that folder when needed. Windows trace ZIPs and their
+raw capture folders remain in SystemTrace; pairing keeps the exact full paths
+and hashes. Qualification companions stay beside their engine ZIP in Benchmarks.
 Partial captures retain raw evidence without claiming complete Windows coverage.
 The separate START-OptimizedMW-SystemTrace.bat remains for manual advanced use.
 
@@ -337,6 +347,8 @@ capacity/allocation limits. Saturation still invalidates resource attribution.
 On exit the launcher restores settings/environment and creates a SHA256-verified
 RAW ZIP before the bounded report. Partial/crashed captures are retained with
 validity and loss status. A report timeout cannot discard the raw evidence.
+If Benchmarks is unavailable, the raw profile is retained and the launcher
+reports its path instead of putting a capture ZIP among the installed files.
 
 DLSS / DLAA STATUS
 denseDynamicMotion and dlss_ready remain false. Scene jitter, NVIDIA evaluation

@@ -321,10 +321,29 @@ try{
         throw 'Offline report hid independent writer loss or erased CPU statistics'
     }
 
-    Write-Host 'PASS Phase 9: isolated modes, dynamic bounded catalog/allocation validation, legacy/new ownership semantics, writer completion/output/footer/loss, independent GPU/temporal integrity, fail-closed DLSS, shader preflight, report success/failure exit codes and timeout, verified raw ZIP/partial capture/replacement.'
+    # An unavailable capture directory must retain the original raw evidence,
+    # without quietly creating a ZIP among the installed game files.
+    $blockedProfile=Join-Path $temp 'blocked profile'
+    $blockedGame=Join-Path $temp 'blocked game'
+    [void][IO.Directory]::CreateDirectory($blockedProfile)
+    [void][IO.Directory]::CreateDirectory($blockedGame)
+    $blockedIdentity=Join-Path $blockedProfile 'TEST_MODE.txt'
+    [IO.File]::WriteAllText($blockedIdentity,'experiment=BLOCKED-BENCHMARKS')
+    $blockedHash=(Get-FileHash -LiteralPath $blockedIdentity).Hash
+    [IO.File]::WriteAllText((Join-Path $blockedGame 'Benchmarks'),'occupied fixture path')
+    $blocked=$false;try{$null=Complete-Phase9Profile -ProfileDir $blockedProfile -GameDir $blockedGame}catch{$blocked=$true}
+    if(-not $blocked -or (Get-FileHash -LiteralPath $blockedIdentity).Hash -ne $blockedHash -or
+        -not [IO.File]::Exists((Join-Path $blockedProfile 'ZIP-ERROR.txt')) -or
+        [IO.File]::Exists((Join-Path $blockedGame 'blocked profile.zip')) -or
+        [IO.File]::Exists((Join-Path $temp 'blocked profile.zip'))){throw 'Blocked Benchmarks lost raw evidence or scattered a fallback ZIP'}
+
+    Write-Host 'PASS Phase 9: isolated modes, dynamic bounded catalog/allocation validation, legacy/new ownership semantics, writer completion/output/footer/loss, independent GPU/temporal integrity, fail-closed DLSS, shader preflight, report success/failure exit codes and timeout, verified raw ZIP/partial capture/replacement, blocked Benchmarks raw preservation.'
 }finally{
+    $cleanupRoot=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')+[IO.Path]::DirectorySeparatorChar
+    $cleanupTarget=[IO.Path]::GetFullPath($temp)
+    if(-not $cleanupTarget.StartsWith($cleanupRoot,[StringComparison]::OrdinalIgnoreCase)){throw 'Unexpected archive fixture cleanup path'}
     if(Test-Path -LiteralPath $zipFile){Remove-Item -LiteralPath $zipFile -Force}
-    Remove-Item -LiteralPath $temp -Recurse -Force
+    Remove-Item -LiteralPath $cleanupTarget -Recurse -Force
 }
 # Expected report failures leave a nonzero native child exit code in the host.
 # Return success only after all assertions and cleanup have completed.

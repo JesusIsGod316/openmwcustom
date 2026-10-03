@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
+#include <mutex>
+#include <components/resource/assetpolicy.hpp>
 
 #include "v3diagnostics.hpp"
 
@@ -270,6 +272,20 @@ namespace Debug::V3GpuMemory
 
     inline std::atomic<int> sPressureState{ static_cast<int>(PressureState::Unavailable) };
 
+    struct AdmissionSample
+    {
+        std::uint64_t headroomBytes = 0, sampledAtMs = 0;
+        PressureState pressure = PressureState::Unavailable;
+        bool valid = false;
+    };
+    inline std::mutex sAdmissionMutex;
+    inline AdmissionSample sAdmissionSample;
+    inline AdmissionSample admissionSample()
+    {
+        std::lock_guard lock(sAdmissionMutex);
+        return sAdmissionSample;
+    }
+
     inline PressureState pressureState()
     {
         return static_cast<PressureState>(sPressureState.load(std::memory_order_relaxed));
@@ -305,7 +321,7 @@ namespace Debug::V3GpuMemory
     inline void sampleIfDue(bool telemetryEnabled, bool managementEnabled, int configuredSoftBudgetMb,
         int configuredHardBudgetMb)
     {
-        if (!telemetryEnabled && !managementEnabled)
+        if (!telemetryEnabled && !managementEnabled && !Resource::AssetPolicy::mask())
             return;
 
         using Clock = std::chrono::steady_clock;
@@ -371,6 +387,23 @@ namespace Debug::V3GpuMemory
         }
 
         sPressureState.store(static_cast<int>(state), std::memory_order_relaxed);
+
+        // Optional asset callers read this snapshot; they never query DXGI or
+        // NVML from a draw/worker operation. Preserve the stricter old guards.
+        {
+            AdmissionSample admission;
+            admission.sampledAtMs = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
+            admission.pressure = state;
+            admission.valid = dxgiAvailable;
+            if (dxgiAvailable)
+                admission.headroomBytes = sample.mBudgetBytes > sample.mUsageBytes
+                    ? sample.mBudgetBytes - sample.mUsageBytes : 0;
+            if (nvmlAvailable && adapterSample.mTotalBytes)
+                admission.headroomBytes = std::min(admission.headroomBytes, adapterSample.mFreeBytes);
+            std::lock_guard lock(sAdmissionMutex);
+            sAdmissionSample = admission;
+        }
 
         if (!telemetryEnabled)
             return;

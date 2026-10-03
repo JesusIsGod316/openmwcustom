@@ -4,17 +4,28 @@
 #include <filesystem>
 #include <string>
 #include <optional>
+#include <cstdint>
 
 #include <components/files/istreamptr.hpp>
 
 namespace VFS
 {
+    struct SourceOpenEstimate
+    {
+        std::uint64_t sourceBytes=0;
+        // Conservative peak owned by open()/the resulting stream, including
+        // optional refill backing. Admission evidence, never source identity.
+        std::uint64_t openPeakBytes=0;
+    };
     class File
     {
     public:
         virtual ~File() = default;
 
         virtual Files::IStreamPtr open() = 0;
+        // Unknown/custom or compressed providers keep optional derived work on
+        // the ordinary path. Implementations must not materialize source data.
+        virtual std::optional<SourceOpenEstimate> getOpenEstimate() const { return {}; }
 
         virtual std::filesystem::file_time_type getLastModified() const = 0;
 

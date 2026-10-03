@@ -16,7 +16,7 @@ function Read-Host {
 }
 function Assert-Selection {
     param([object]$Actual,[object]$Expected,[string]$Depth)
-    foreach($property in @('selection_id','mask','attack_mask','focused_preset','candidate','composite_progress','composite_cpu_mips','legacy_mode','ram_mask','architecture_mask')){
+    foreach($property in @('selection_id','mask','attack_mask','focused_preset','candidate','composite_progress','composite_cpu_mips','legacy_mode','ram_mask','architecture_mask','asset_mask')){
         if($Actual.$property -cne $Expected.$property){throw ('Menu changed '+$property+' for '+$Expected.selection_id)}
     }
     if($Actual.trace_level -ne $Depth -or $Actual.system_trace -or $Actual.gpu_query_defer -ne ($Depth -eq 'Deep')){throw 'Trace depth changed a mechanism or recorder default'}
@@ -28,10 +28,11 @@ $fixture=Join-Path $temporaryRoot ('p9-numeric-'+[Guid]::NewGuid().ToString('N')
 New-Item -ItemType Directory -Path $fixture | Out-Null
 try{
     $count=0
-    foreach($category in 1..11){
+    foreach($category in 1..12){
         $candidates=@(Get-OptimizedMWNumericCandidates $category)
         foreach($index in 0..($candidates.Count-1)){
             if($category -eq 8 -and $index -eq 0){continue}
+            if(($category -eq 11 -and $index -eq 1) -or ($category -eq 12 -and $index -eq 9)){continue}
             $hashes=@()
             foreach($depth in @('Normal','Deep')){
                 $replies=@([string]$category,[string]($index+1),$(if($depth -eq 'Normal'){'1'}else{'2'}))
@@ -39,7 +40,7 @@ try{
                 Set-FixtureAnswers $replies
                 $actual=Read-OptimizedMWNumericTest
                 Assert-Selection $actual $candidates[$index] $depth
-                $hashes+=Get-Phase9IdentityHash ($actual | Select-Object mask,attack_mask,candidate,composite_progress,composite_cpu_mips,legacy_mode,ram_mask,architecture_mask)
+                $hashes+=Get-Phase9IdentityHash ($actual | Select-Object mask,attack_mask,candidate,composite_progress,composite_cpu_mips,legacy_mode,ram_mask,architecture_mask,asset_mask)
                 $count++
             }
             if($hashes[0] -cne $hashes[1]){throw 'Normal/Deep gameplay vectors differ'}
@@ -83,9 +84,22 @@ try{
     if(-not $actual.composite_cpu_mips -or -not ($actual.architecture_mask -band 8)){throw 'Upload staging requires supplied mipmaps'}
     Set-OptimizedMWCombinedToggle $actual 11
     if($actual.composite_cpu_mips -or ($actual.architecture_mask -band 8)){throw 'Removing mipmaps left upload staging enabled'}
-    Set-OptimizedMWArchitectureEnvironment 31 127
-    if($env:OPENMW_RAM_C5_COLD_IMAGES -ne '1' -or $env:OPENMW_EXACT_PROGRAM_VARIANTS -ne '1'){throw 'Candidate environment activation lost'}
+    Set-OptimizedMWArchitectureEnvironment 31 126 31 $fixture
+    if($env:OPENMW_RAM_C5_COLD_IMAGES -ne '1' -or $env:OPENMW_EXACT_PROGRAM_VARIANTS -ne '0' -or $env:OPENMW_P9_ASSET_MASK -ne '31'){throw 'Candidate environment activation lost'}
+    $asset=New-OptimizedMWNumericSelection '12.10' 'fixture'
+    Set-OptimizedMWAssetToggle $asset 5
+    if($asset.asset_mask -ne 24){throw 'Demotion did not enable streaming'}
+    Set-OptimizedMWAssetToggle $asset 4
+    if($asset.asset_mask -ne 0){throw 'Removing streaming left demotion active'}
+    $rejected=$false;try{Set-OptimizedMWArchitectureEnvironment -AssetMask 16}catch{$rejected=$true}
+    if(-not $rejected){throw 'CLI allowed demotion without streaming'}
+    $rejected=$false;try{Set-OptimizedMWArchitectureEnvironment -ArchitectureMask 1}catch{$rejected=$true}
+    if(-not $rejected){throw 'CLI revived the unresolved shader crash experiment'}
+    Set-FixtureAnswers @('12','10','1','3','5','0','1')
+    $asset=Read-OptimizedMWNumericTest
+    if($asset.asset_mask -ne 29 -or $asset.trace_level -ne 'Normal'){throw 'Custom asset selection lost independent toggles'}
     Set-OptimizedMWArchitectureEnvironment 0 0
+    if($env:OPENMW_P9_ASSET_MASK -ne '0'){throw 'Asset control left inherited candidates enabled'}
     foreach($name in @('OPENMW_RAM_C1_SELECTIVE','OPENMW_RAM_C2_PARSED_NIF','OPENMW_RAM_C3_IDLE_COLLISION',
         'OPENMW_RAM_C4_EARLY_RECLAIM','OPENMW_RAM_C5_COLD_IMAGES','OPENMW_EXACT_PROGRAM_VARIANTS',
         'OPENMW_P9_EXACT_PAGING_WORK','OPENMW_P9_PERSISTENT_PACKETS','OPENMW_P9_UPLOAD_POOL',

@@ -16,8 +16,9 @@ files=['openmw.exe','CI-ID.txt','START-OptimizedMW-Test.bat','OptimizedMW_Test.p
        'OptimizedMW_SystemTrace.ps1','OptimizedMW_QualifySystemTrace.ps1','OptimizedMW_SystemTraceLink.ps1','OptimizedMW-SystemTrace.wprp','START-OptimizedMW-SystemTrace.bat','HITCH-DIAGNOSTICS.md','HITCH-DIAGNOSTICS6.md','LUA-ALLOCATOR-GC-DIAGNOSTICS.md','RESOURCE-LIFECYCLE-DIAGNOSTICS.md','COMPOSITE-PROGRESS-CANDIDATE.md']
 for name in files:
     assert (root/name).is_file() and (root/name).stat().st_size>0,name
-files.append('ARCHITECTURE-CANDIDATES.md')
-assert (root/files[-1]).is_file() and (root/files[-1]).stat().st_size>0
+for extra in ('ARCHITECTURE-CANDIDATES.md','ASSET-PIPELINE-CANDIDATES.txt'):
+    files.append(extra)
+    assert (root/extra).is_file() and (root/extra).stat().st_size>0
 assert (root/'openmw.exe').read_bytes()[:2]==b'MZ', 'not a Windows PE executable'
 assert sorted(p.name.lower() for p in root.glob('*.bat'))==['start-optimizedmw-systemtrace.bat','start-optimizedmw-test.bat']
 assert os.environ['EXPECTED_COMMIT'] in (root/'CI-ID.txt').read_text()
@@ -29,6 +30,9 @@ assert manifest['groundcover_patch']==expected, 'retained PBR overlay changed'
 for name in files[3:]:
     assert (root/name).read_bytes()==(public/name).read_bytes(),name
 assert (root/'START-OptimizedMW-Test.bat').read_bytes()==(source/'tools/optimizedmw/gl-p8g4/START-OptimizedMW-Test.bat').read_bytes()
+for relative in ('licenses/meshoptimizer-LICENSE.txt', 'licenses/DirectXTex-LICENSE.txt'):
+    assert (root/relative).is_file() and (root/relative).stat().st_size > 0, relative
+    files.append(relative)
 settings=base64.b64decode((root/'defaults.bin').read_bytes(),validate=True).decode('utf-8')
 for key in ('optimizedmw canonical terrain textures','optimizedmw composite slicing',
             'optimizedmw object userdata cache','warm sounds','optimizedmw setting consistency'):

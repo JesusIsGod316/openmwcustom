@@ -81,6 +81,16 @@ namespace VFS
     {
         return Files::openConstrainedFileStream(mPath);
     }
+    std::optional<SourceOpenEstimate> FileSystemArchiveFile::getOpenEstimate() const
+    {
+        if(typeid(*this)!=typeid(FileSystemArchiveFile)) return {};
+        std::error_code ec;
+        const auto size=std::filesystem::file_size(mPath,ec);
+        if(ec) return {};
+        // ConstrainedFileStream owns an 8 KiB inline buffer and at most 64 KiB
+        // optional refill backing. Include generous stream/path/trace overhead.
+        return SourceOpenEstimate{size,1024*1024};
+    }
 
     std::filesystem::file_time_type FileSystemArchiveFile::getLastModified() const
     {

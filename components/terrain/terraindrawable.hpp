@@ -55,6 +55,7 @@ namespace Terrain
         void createClusterCullingCallback();
 
         void compileGLObjects(osg::RenderInfo& renderInfo) const override;
+        void drawImplementation(osg::RenderInfo& renderInfo) const override;
         // Used by the optional phased ICO path after pass StateAttributes have
         // been compiled as independent operations.
         void compileGeometryGLObjects(osg::RenderInfo& renderInfo) const;

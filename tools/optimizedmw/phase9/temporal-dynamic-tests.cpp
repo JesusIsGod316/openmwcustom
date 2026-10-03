@@ -197,7 +197,30 @@ int main() try
     const auto rejected = capture(*excessive,osg::Matrix::identity());
     require(rejected->surfaces.empty() && rejected->bytes == 0 && rejected->unsupported == 1,
         "oversized speculative pose copied outside the fixed admission ceiling");
+    // A generated tier changes only indices. The current tier is still drawn,
+    // but its unchanged vertex order can use the prior rigid model transform.
+    std::fill(reinterpret_cast<float*>(image->data()),reinterpret_cast<float*>(image->data())+256,.5f); image->dirty();
+    auto originalTier=triangle();
+    osg::ref_ptr<osg::Geometry> derivedTier=new osg::Geometry(*originalTier,osg::CopyOp::SHALLOW_COPY);
+    osg::ref_ptr<SceneUtil::TemporalVertexLineage> lineage=new SceneUtil::TemporalVertexLineage(originalTier->getVertexArray());
+    SceneUtil::installTemporalVertexLineage(*originalTier,lineage);
+    SceneUtil::installTemporalVertexLineage(*derivedTier,lineage);
+    osg::ref_ptr<osg::DrawElementsUInt> changedTopology=new osg::DrawElementsUInt(GL_TRIANGLES);
+    for(unsigned index:{0,1,2,0,1,2}) changedTopology->push_back(index);
+    derivedTier->setPrimitiveSet(0,changedTopology);
+    camera.dynamic=capture(*originalTier,osg::Matrix::identity()); ++camera.worldEpoch; draw(20,0,1);
+    const auto prior=camera.dynamic;
+    camera.dynamic=capture(*derivedTier,osg::Matrix::translate(.125,0,0));
+    require(camera.dynamic->surfaces[0].topology!=prior->surfaces[0].topology
+        && camera.dynamic->surfaces[0].compatibleHistory(prior->surfaces[0]),"index-only tier lost valid lineage");
+    draw(21,-1,1);
+    derivedTier->getVertexArray()->dirty();
+    require(!camera.dynamic->surfaces[0].compatibleHistory(prior->surfaces[0]),"mutated source kept temporal lineage");
+    camera.dynamic=capture(*derivedTier,osg::Matrix::translate(.25,0,0)); draw(22,0,1);
+    auto replacement=triangle();
+    SceneUtil::installTemporalVertexLineage(*replacement,new SceneUtil::TemporalVertexLineage(replacement->getVertexArray()));
+    camera.dynamic=capture(*replacement,osg::Matrix::translate(.375,0,0)); draw(23,0,1);
     pass.releaseGLObjects(state); context->releaseContext(); context->close(true);
-    std::cout << "PASS: production rigid transforms, real CPU rig/morph previous/current poses, immutable capture, gap reset, transparent/shader-cutout fallback, depth visibility and bounded memory\n";
+    std::cout << "PASS: production rigid transforms, real CPU rig/morph previous/current poses, index-only LOD lineage motion pixels and stale lineage reset, immutable capture, gap reset, transparent/shader-cutout fallback, depth visibility and bounded memory\n";
 }
 catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

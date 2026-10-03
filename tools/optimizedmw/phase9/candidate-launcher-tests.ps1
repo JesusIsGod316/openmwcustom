@@ -177,6 +177,8 @@ try{
     $trials+=,@('1','CONTROL','4','Normal','3,2,1,1','1')
     $trials+=,@('1','CONTROL','4','Normal','3,3,1,1','129')
     $trials+=,@('1','CONTROL','4','Normal','8,5,1,1','449')
+    $trials+=,@('1','CONTROL','4','Normal','12,2,1,1','1')
+    $trials+=,@('3','CONTROL','4','Deep','12,9,2,1,1','1')
     $trials+=,@('1','CONTROL','0','Normal','', '4')
     $trials+=,@('3','CONTROL','0','Deep','', '16')
     $trials+=,@('1','CONTROL','0','Normal','', '320')
@@ -254,8 +256,12 @@ try{
                 $value=$record.launcher_applied_openmw_environment.PSObject.Properties[$entry[1]].Value
                 if($value -cne [string][int][bool]([int]$trial[5] -band $entry[0])){throw 'Actual repair flag identity lost'}
             }
-            if($record.launcher_applied_openmw_environment.OPENMW_P9_GPU_QUERY_DEFER -cne [string][int]($trial.Count -eq 7 -or ($trial.Count -ge 8 -and $trial[3] -eq 'Deep'))){
-                throw 'Actual deferred query selection inherited another mode'
+            # Numeric Deep choices explicitly enable deferred GPU collection;
+            # legacy command-line rows enable it only through their switch.
+            $interactiveDeep=$trial.Count -ge 5 -and $trial[4] -and $trial[3] -eq 'Deep'
+            $expectedDeferred=$trial.Count -eq 7 -or $interactiveDeep -or ($trial.Count -ge 8 -and $trial[3] -eq 'Deep')
+            if($record.launcher_applied_openmw_environment.OPENMW_P9_GPU_QUERY_DEFER -cne [string][int][bool]$expectedDeferred){
+                throw ('Actual deferred query selection inherited another mode: '+($trial -join '|'))
             }
         }
         $progress=$false;$mips=$false
@@ -282,8 +288,13 @@ try{
             $actual=$record.launcher_applied_openmw_environment.PSObject.Properties['OPENMW_HITCH_'+$keys[$bit]].Value
             if($actual -cne [string][int][bool]($expectedMask -band (1 -shl $bit))){throw 'Full launcher applied an incorrect feature combination'}
         }
-        if($trial.Count -ge 5 -and $trial[4] -and ($record.launcher_selection.menu_revision -ne 1 -or $record.launcher_selection.selection_id -notmatch '^[1-9]\.[1-9]$')){throw 'Numeric path identity missing from actual run manifest'}
-        if(-not (Test-Path -LiteralPath (Join-Path $game ($run.Name+'.zip')))){throw 'Failed launcher discarded its raw ZIP'}
+        if($trial.Count -ge 5 -and $trial[4] -and ($record.launcher_selection.menu_revision -ne 3 -or $record.launcher_selection.selection_id -notmatch '^(?:[1-9]|1[0-2])\.(?:[1-9]|10)$')){throw 'Numeric path identity missing from actual run manifest'}
+        $expectedAsset=if($trial.Count -ge 5 -and $trial[4] -eq '12,2,1,1'){1}elseif($trial.Count -ge 5 -and $trial[4] -eq '12,9,2,1,1'){31}else{0}
+        if($record.gameplay_features.asset_mask -ne $expectedAsset -or
+            $record.families.asset_pipeline.mask -ne $expectedAsset -or
+            $record.launcher_applied_openmw_environment.OPENMW_P9_ASSET_MASK -cne [string]$expectedAsset){throw 'Asset switches differ from actual run manifest'}
+        if(-not (Test-Path -LiteralPath (Join-Path (Join-Path $game 'Benchmarks') ($run.Name+'.zip')))){throw 'Failed launcher discarded its raw ZIP or placed it outside Benchmarks'}
+        if(Test-Path -LiteralPath (Join-Path $game ($run.Name+'.zip'))){throw 'Completed benchmark ZIP cluttered the installed game directory'}
     }
     Write-Host "PASS candidate launcher: $($trials.Count) isolated launch paths; exact switches, focused/legacy control identities, save/cap declarations, restoration, hashes and retained failure ZIPs; no game/WPR/UI."
 }finally{

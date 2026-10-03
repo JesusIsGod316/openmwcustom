@@ -14,10 +14,10 @@ function Read-OptimizedMWNumber {
 function New-OptimizedMWNumericSelection {
     param([string]$Id,[string]$Label,[int]$Mask=4,[int]$Attack=1,[string]$Preset='',
         [string]$Candidate='CONTROL',[bool]$Progress=$false,[bool]$Mips=$false,[string]$Mode='',
-        [int]$Ram=0,[int]$Architecture=0)
-    return [pscustomobject][ordered]@{menu_revision=2;selection_id=$Id;label=$Label;
+        [int]$Ram=0,[int]$Architecture=0,[int]$Assets=0)
+    return [pscustomobject][ordered]@{menu_revision=3;selection_id=$Id;label=$Label;
         mask=$Mask;attack_mask=$Attack;focused_preset=$Preset;candidate=$Candidate;
-        ram_mask=$Ram;architecture_mask=$Architecture;
+        ram_mask=$Ram;architecture_mask=$Architecture;asset_mask=$Assets;
         composite_progress=$Progress;composite_cpu_mips=$Mips;legacy_mode=$Mode;
         trace_level='Normal';system_trace=$false;gpu_query_defer=$false;name=$Label}
 }
@@ -25,11 +25,11 @@ function New-OptimizedMWNumericSelection {
 function Get-OptimizedMWNumericCategories {
     return @('Controls','Terrain and rendering','Animation','Resource cleanup',
         'User interface','Lua','File I/O','Combined tests','Advanced and earlier experiments',
-        'RAM retention and compression','Renderer architecture experiments')
+        'RAM retention and compression','Renderer architecture experiments','LOD, HLOD and texture pipeline')
 }
 
 function Get-OptimizedMWNumericCandidates {
-    param([ValidateRange(1,11)][int]$Category)
+    param([ValidateRange(1,12)][int]$Category)
     switch($Category){
         1 {return @((New-OptimizedMWNumericSelection '1.1' 'Retained control (current comparison)' -Preset CONTROL),
             (New-OptimizedMWNumericSelection '1.2' 'Original feature control (all candidates off)' -Mask 0 -Attack 0))}
@@ -78,14 +78,24 @@ function Get-OptimizedMWNumericCandidates {
             (New-OptimizedMWNumericSelection '10.7' 'All retention changes, compression off' -Ram 15),
             (New-OptimizedMWNumericSelection '10.8' 'All RAM candidates including compression' -Ram 31))}
         11 {return @((New-OptimizedMWNumericSelection '11.1' 'Retained renderer control'),
-            (New-OptimizedMWNumericSelection '11.2' 'Exact shader variant readiness' -Architecture 1),
+            (New-OptimizedMWNumericSelection '11.2' 'Exact shader variants (unavailable: prior driver crash)'),
             (New-OptimizedMWNumericSelection '11.3' 'Exact paging optimizer work reduction' -Architecture 2),
             (New-OptimizedMWNumericSelection '11.4' 'Persistent opaque draw packets' -Architecture 4),
             (New-OptimizedMWNumericSelection '11.5' 'Bounded terrain mip upload staging' -Architecture 8 -Mips $true),
             (New-OptimizedMWNumericSelection '11.6' 'Opaque multi-draw indirect + bounded command pipeline' -Architecture 20),
             (New-OptimizedMWNumericSelection '11.7' 'Conservative GPU visibility + indirect pipeline' -Architecture 52),
             (New-OptimizedMWNumericSelection '11.8' 'Frozen parallel actor deformation' -Architecture 64),
-            (New-OptimizedMWNumericSelection '11.9' 'Renderer candidates combined' -Architecture 127 -Mips $true))}
+            (New-OptimizedMWNumericSelection '11.9' 'Renderer candidates combined (shader experiment excluded)' -Architecture 126 -Mips $true))}
+        12 {return @((New-OptimizedMWNumericSelection '12.1' 'Asset pipeline control'),
+            (New-OptimizedMWNumericSelection '12.2' 'Generated static visual LOD' -Assets 1),
+            (New-OptimizedMWNumericSelection '12.3' 'Selective HLOD atlas and merged proxy' -Assets 2),
+            (New-OptimizedMWNumericSelection '12.4' 'LOD + HLOD' -Assets 3),
+            (New-OptimizedMWNumericSelection '12.5' 'Native mip preparation and static color conversion' -Assets 4),
+            (New-OptimizedMWNumericSelection '12.6' 'Coarse-to-fine terrain texture streaming' -Assets 8),
+            (New-OptimizedMWNumericSelection '12.7' 'Texture streaming + idle demotion' -Assets 24),
+            (New-OptimizedMWNumericSelection '12.8' 'Texture preparation + streaming' -Assets 12),
+            (New-OptimizedMWNumericSelection '12.9' 'All five asset mechanisms' -Assets 31),
+            (New-OptimizedMWNumericSelection '12.10' 'Build a custom asset combination'))}
     }
 }
 
@@ -163,10 +173,31 @@ function Get-OptimizedMWArchitectureLabels {
     return @('Exact shader variants','Exact paging optimizer','Persistent opaque packets','Bounded terrain mip uploads',
         'Multi-draw indirect and command pipeline','Conservative GPU visibility','Frozen parallel deformation')
 }
+function Set-OptimizedMWAssetToggle {
+    param([object]$Selection,[ValidateRange(1,5)][int]$Choice)
+    $bit=1 -shl ($Choice-1)
+    $Selection.asset_mask=$Selection.asset_mask -bxor $bit
+    if(($Selection.asset_mask -band 16) -and $Choice -eq 5){$Selection.asset_mask=$Selection.asset_mask -bor 8}
+    if($Choice -eq 4 -and -not ($Selection.asset_mask -band 8)){$Selection.asset_mask=$Selection.asset_mask -band (-bnot 16)}
+}
+function Read-OptimizedMWAssetCombination {
+    param([object]$Selection)
+    $labels=@('Generated static visual LOD','Selective HLOD','Native texture preparation','Texture streaming','Idle texture demotion')
+    while($true){
+        foreach($index in 0..4){Write-Host (' {0} = {1} [{2}]' -f ($index+1),$labels[$index],$(if($Selection.asset_mask -band (1 -shl $index)){'ON'}else{'off'}))}
+        Write-Host ' 6 = All asset mechanisms | 7 = Asset control | 0 = Done'
+        $choice=Read-OptimizedMWNumber 'Asset combination' @('0','1','2','3','4','5','6','7')
+        if($choice -eq '0'){return}
+        if($choice -eq '6'){$Selection.asset_mask=31;continue}
+        if($choice -eq '7'){$Selection.asset_mask=0;continue}
+        Set-OptimizedMWAssetToggle $Selection ([int]$choice)
+    }
+}
 function Set-OptimizedMWArchitectureToggle {
     param([object]$Selection,[bool]$Ram,[int]$Choice)
     $labels=Get-OptimizedMWArchitectureLabels $Ram
     if($Choice -lt 1 -or $Choice -gt $labels.Count){throw 'Invalid candidate toggle'}
+    if(-not $Ram -and $Choice -eq 1){throw 'Exact shader variants remain unavailable pending driver-crash repair'}
     $property=if($Ram){'ram_mask'}else{'architecture_mask'}
     $bit=1 -shl ($Choice-1)
     $enabled=-not [bool]($Selection.$property -band $bit)
@@ -186,9 +217,10 @@ function Set-OptimizedMWArchitectureToggle {
 function Read-OptimizedMWArchitectureCombination {
     param([object]$Selection)
     while($true){
-        Write-Host ' 1 = RAM candidates | 2 = Renderer candidates | 0 = Back'
-        $category=Read-OptimizedMWNumber 'Combined category' @('0','1','2')
+        Write-Host ' 1 = RAM candidates | 2 = Renderer candidates | 3 = Asset candidates | 0 = Back'
+        $category=Read-OptimizedMWNumber 'Combined category' @('0','1','2','3')
         if($category -eq '0'){return}
+        if($category -eq '3'){Read-OptimizedMWAssetCombination $Selection;continue}
         $ram=$category -eq '1';$labels=Get-OptimizedMWArchitectureLabels $ram
         while($true){
             $mask=if($ram){$Selection.ram_mask}else{$Selection.architecture_mask}
@@ -199,12 +231,18 @@ function Read-OptimizedMWArchitectureCombination {
             $choices=@('0')+@(1..$labels.Count | ForEach-Object {[string]$_})
             $choice=Read-OptimizedMWNumber 'Toggle candidate' $choices
             if($choice -eq '0'){break}
+            if(-not $ram -and $choice -eq '1'){Write-Host 'Exact shader variants remain unavailable until the prior driver crash is resolved.' -ForegroundColor Yellow;continue}
             Set-OptimizedMWArchitectureToggle $Selection $ram ([int]$choice)
         }
     }
 }
 function Set-OptimizedMWArchitectureEnvironment {
-    param([ValidateRange(0,31)][int]$RamMask=0,[ValidateRange(0,127)][int]$ArchitectureMask=0)
+    param([ValidateRange(0,31)][int]$RamMask=0,[ValidateRange(0,127)][int]$ArchitectureMask=0,
+        [ValidateRange(0,31)][int]$AssetMask=0,[string]$DerivedCacheDirectory='')
+    if($ArchitectureMask -band 1){throw 'Exact shader variant readiness is unavailable pending driver-crash repair'}
+    if(($AssetMask -band 16) -and -not ($AssetMask -band 8)){throw 'Texture demotion requires texture streaming'}
+    $env:OPENMW_P9_ASSET_MASK=[string]$AssetMask
+    $env:OPENMW_P9_DERIVED_CACHE_DIR=$DerivedCacheDirectory
     $names=@('OPENMW_RAM_C1_SELECTIVE','OPENMW_RAM_C2_PARSED_NIF','OPENMW_RAM_C3_IDLE_COLLISION',
         'OPENMW_RAM_C4_EARLY_RECLAIM','OPENMW_RAM_C5_COLD_IMAGES')
     foreach($index in 0..4){[Environment]::SetEnvironmentVariable($names[$index],[string][int][bool]($RamMask -band (1 -shl $index)),'Process')}
@@ -221,7 +259,7 @@ function Write-OptimizedMWNumericSummary {
     foreach($index in 0..($labels.Count-1)){if(Test-OptimizedMWCombinedToggle $Selection ($index+1)){$enabled.Add($labels[$index])}}
     Write-Host ('Gameplay mechanisms: '+$(if($enabled.Count){$enabled -join '; '}else{'original control, candidates off'}))
     Write-Host ('File I/O: '+$Selection.candidate)
-    Write-Host ('RAM vector: '+$Selection.ram_mask+' | Renderer vector: '+$Selection.architecture_mask)
+    Write-Host ('RAM vector: '+$Selection.ram_mask+' | Renderer vector: '+$Selection.architecture_mask+' | Asset vector: '+$Selection.asset_mask)
 }
 
 function Read-OptimizedMWNumericTest {
@@ -231,7 +269,7 @@ function Read-OptimizedMWNumericTest {
         Write-Host 'OptimizedMW - select an optimization category' -ForegroundColor Cyan
         foreach($index in 0..($categories.Count-1)){Write-Host (' {0} = {1}' -f ($index+1),$categories[$index])}
         Write-Host ' 0 = Exit'
-        $category=Read-OptimizedMWNumber 'Category (0-11; Enter = 1)' @('0','1','2','3','4','5','6','7','8','9','10','11') '1'
+        $category=Read-OptimizedMWNumber 'Category (0-12; Enter = 1)' @('0','1','2','3','4','5','6','7','8','9','10','11','12') '1'
         if($category -eq '0'){return $null}
         $candidates=@(Get-OptimizedMWNumericCandidates ([int]$category))
         while($true){
@@ -242,7 +280,9 @@ function Read-OptimizedMWNumericTest {
             $choice=Read-OptimizedMWNumber 'Optimization (0 = back; Enter = 1)' $choices '1'
             if($choice -eq '0'){break}
             $selection=$candidates[[int]$choice-1]
+            if($selection.selection_id -eq '11.2'){Write-Host 'Unavailable until the prior driver crash is resolved. Choose another candidate.' -ForegroundColor Yellow;continue}
             if($category -eq '8' -and $choice -eq '1'){$selection=Read-OptimizedMWCombinedSelection;if($null -eq $selection){continue}}
+            if($selection.selection_id -eq '12.10'){Read-OptimizedMWAssetCombination $selection}
             Write-OptimizedMWNumericSummary $selection
             while($true){
                 Write-Host ' 1 = Normal performance | 2 = Deep engine diagnostics | 0 = Back'

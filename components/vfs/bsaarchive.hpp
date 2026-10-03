@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 
 namespace VFS
 {
@@ -36,6 +37,17 @@ namespace VFS
         {
             Debug::HitchTrace::Scope archive("vfs.archive_extract", {}, mFile->getFile()->getFilename());
             return mFile->getFile()->getFile(mInfo);
+        }
+        std::optional<SourceOpenEstimate> getOpenEstimate() const override
+        {
+            // TES3 BSA getFile returns a bounded constrained stream. Later BSA
+            // and BA2 providers can allocate/decompress before the caller can
+            // inspect a stream length; they need a separate qualified contract.
+            if constexpr(std::is_same_v<FileType,Bsa::BSAFile>)
+            {
+                if(typeid(*this)==typeid(BsaArchiveFile)) return SourceOpenEstimate{mInfo->mFileSize,1024*1024};
+            }
+            return {};
         }
 
         std::filesystem::file_time_type getLastModified() const override

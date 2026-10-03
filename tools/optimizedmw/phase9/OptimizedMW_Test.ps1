@@ -10,6 +10,7 @@ param(
     [switch]$GpuQueryDefer,
     [ValidateRange(0,31)][int]$RamMask=0,
     [ValidateRange(0,127)][int]$ArchitectureMask=0,
+    [ValidateRange(0,31)][int]$AssetMask=0,
     [ValidateSet('','Normal','Deep')][string]$TraceLevel='',
     [ValidateSet('stream','deferred')][string]$HitchTransport='stream',
     [switch]$SystemTrace,
@@ -96,6 +97,7 @@ if(-not $FocusedPreset -and -not $ModeChoice -and $HitchMask -lt 0 -and $AttackM
     $Candidate=$numericSelection.candidate;$SystemTrace=[bool]$numericSelection.system_trace
     $GpuQueryDefer=[bool]$numericSelection.gpu_query_defer
     $RamMask=$numericSelection.ram_mask;$ArchitectureMask=$numericSelection.architecture_mask
+    $AssetMask=$numericSelection.asset_mask
     if($numericSelection.legacy_mode){$ModeChoice=$numericSelection.legacy_mode}
     elseif($numericSelection.focused_preset){
         $FocusedPreset=$numericSelection.focused_preset;$TraceLevel=$numericSelection.trace_level
@@ -116,7 +118,7 @@ if($FocusedPreset){
     $GpuQueryDefer=[bool]$quickSelection.gpu_query_defer
     if($numericSelection){
         # Keep the exact numeric path even when the underlying legacy preset is rebuilt.
-        $quickSelection | Add-Member -NotePropertyName menu_revision -NotePropertyValue 1
+        $quickSelection | Add-Member -NotePropertyName menu_revision -NotePropertyValue 3
         $quickSelection | Add-Member -NotePropertyName selection_id -NotePropertyValue $numericSelection.selection_id
     }
 }
@@ -141,7 +143,7 @@ $choice=$ModeChoice
 $mode=Get-P9Mode $choice
 if($numericSelection -and $numericSelection.legacy_mode){$mode.Trace=[string][int]($numericSelection.trace_level -eq 'Deep')}
 if($numericSelection){
-    $mode.NumericMenuRevision=2;$mode.NumericSelectionId=$numericSelection.selection_id
+    $mode.NumericMenuRevision=3;$mode.NumericSelectionId=$numericSelection.selection_id
 }
 if($ObserverLocal -and $mode.Trace -ne '1'){throw 'Local observer accounting requires Deep diagnostics'}
 if($GpuQueryDefer -and $mode.Trace -ne '1'){throw 'Deferred GPU query collection requires Deep diagnostics'}
@@ -157,12 +159,22 @@ if($FocusedPreset -or $CompositeProgress -or $CompositeCpuMips){
 if(($ArchitectureMask -band 32) -and ($ArchitectureMask -band 20) -ne 20){throw 'GPU visibility requires persistent packets and multi-draw indirect'}
 if(($ArchitectureMask -band 16) -and -not ($ArchitectureMask -band 4)){throw 'Multi-draw indirect requires persistent packets'}
 if(($ArchitectureMask -band 8) -and -not $CompositeCpuMips){throw 'Upload pools require supplied CPU mipmaps; add -CompositeCpuMips'}
+if($ArchitectureMask -band 1){throw 'Exact shader variant readiness is unavailable pending driver-crash repair'}
+if(($AssetMask -band 16) -and -not ($AssetMask -band 8)){throw 'Texture demotion requires streaming'}
+$baseExperiment=if($hitchSelection){$hitchSelection.experiment}else{$mode.Name}
 if($RamMask -or $ArchitectureMask){
-    $mode.Name='ARCH1-R'+$RamMask+'-G'+$ArchitectureMask+'-'+$mode.Name
+    $mode.Name='ARCH1-R'+$RamMask+'-G'+$ArchitectureMask+'-'+$baseExperiment
     if($hitchSelection){$hitchSelection.experiment=$mode.Name}
     if($quickSelection){$quickSelection.name=$mode.Name}
 }
 $mode.RamMask=$RamMask;$mode.ArchitectureMask=$ArchitectureMask
+$mode.AssetMask=$AssetMask
+if($AssetMask){
+    $assetBase=if($RamMask -or $ArchitectureMask){$mode.Name}else{$baseExperiment}
+    $mode.Name='ASSET1-M'+$AssetMask+'-'+$assetBase
+    if($hitchSelection){$hitchSelection.experiment=$mode.Name}
+    if($quickSelection){$quickSelection.name=$mode.Name}
+}
 if($SystemTrace -and $mode.Trace -ne '1'){throw 'Windows trace requires Deep diagnostics. Choose run type 2 (Deep), then recording 2 (Windows), or use -TraceLevel Deep -SystemTrace.'}
 if($SystemTrace -and -not $quickSelection){
     $quickSelection=[pscustomobject]@{mask=$(if($HitchMask -ge 0){$HitchMask}else{0});trace_level='Deep';candidate=$Candidate;system_trace=$true;name=$mode.Name}
@@ -248,7 +260,7 @@ try{
     Set-Phase9CandidateEnvironment -Candidate $candidateProfile -Mode $mode
     Set-OptimizedMWHitchCombinationEnvironment $hitchCombination
     Set-OptimizedMWAttackEnvironment $attackCombination -ObserverLocal:$ObserverLocal -CompositeProgress:$CompositeProgress -CompositeCpuMips:$CompositeCpuMips
-    Set-OptimizedMWArchitectureEnvironment -RamMask $RamMask -ArchitectureMask $ArchitectureMask
+    Set-OptimizedMWArchitectureEnvironment -RamMask $RamMask -ArchitectureMask $ArchitectureMask -AssetMask $AssetMask -DerivedCacheDirectory (Join-Path $GameDir 'DerivedAssets')
     $env:OPENMW_P9_GPU_QUERY_DEFER=[string][int][bool]$GpuQueryDefer
 
     # Same head-cache budget across every mode, not a hidden per-mode tuning change.

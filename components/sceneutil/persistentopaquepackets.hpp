@@ -6,6 +6,9 @@
 #include <osg/Geometry>
 #include <osg/AlphaFunc>
 #include <osg/Group>
+#include <osg/Geode>
+#include <osg/MatrixTransform>
+#include <osg/observer_ptr>
 #include <osg/Version>
 #include <osgUtil/CullVisitor>
 #include <osgUtil/StateGraph>
@@ -187,6 +190,7 @@ namespace SceneUtil::PersistentOpaquePackets
             if (!normal || mRows.empty() || !supportedVisitor || !cv->getModelViewMatrix()
                 || !cv->getProjectionMatrix() || !cv->getCurrentStateGraph()
                 || normal->getNumChildren() != mRows.size() || !safeRoot(*normal)
+                || !certifiedAncestryMatches(visitor)
                 || !cv->getCurrentCullingSet().getStateFrustumList().empty()
                 || !opaqueInherited(*cv))
             {
@@ -262,7 +266,7 @@ namespace SceneUtil::PersistentOpaquePackets
 
         static bool safeRoot(const osg::Group& original)
         {
-            return typeid(original) == typeid(osg::Group)
+            return (typeid(original) == typeid(osg::Group) || typeid(original) == typeid(osg::Geode))
                 && original.getDataVariance() != osg::Object::DYNAMIC
                 && !original.getUpdateCallback() && !original.getEventCallback() && !original.getCullCallback()
                 && !original.getComputeBoundingSphereCallback() && opaque(original.getStateSet());
@@ -280,6 +284,8 @@ namespace SceneUtil::PersistentOpaquePackets
         }
 
         std::size_t rowCount() const { return mRows.size(); }
+        void setCertifiedAncestors(const std::array<osg::observer_ptr<osg::Node>,16>& ancestors, unsigned count)
+        { mCertifiedAncestors = ancestors; mAncestorCount = count; }
         osg::BoundingSphere computeBound() const override
         {
             return getNumChildren() == 1 ? getChild(0)->getBound() : osg::Group::computeBound();
@@ -289,6 +295,24 @@ namespace SceneUtil::PersistentOpaquePackets
         ~Group() override { Counters::liveBytes.fetch_sub(mCharge, std::memory_order_relaxed); }
 
     private:
+        bool certifiedAncestryMatches(const osg::NodeVisitor& visitor) const
+        {
+            const auto& path = visitor.getNodePath();
+            std::size_t position = 0;
+            for (unsigned i = 0; i < mAncestorCount; ++i)
+            {
+                const auto* ancestor = mCertifiedAncestors[i].get();
+                if (!ancestor || ancestor->getDataVariance() == osg::Object::DYNAMIC
+                    || ancestor->getUpdateCallback() || ancestor->getEventCallback() || ancestor->getCullCallback()
+                    || ancestor->getComputeBoundingSphereCallback() || !opaque(ancestor->getStateSet())) return false;
+                while (position < path.size() && path[position] != ancestor) ++position;
+                if (position == path.size()) return false;
+                ++position;
+            }
+            return true;
+        }
+        std::array<osg::observer_ptr<osg::Node>,16> mCertifiedAncestors{};
+        unsigned mAncestorCount = 0;
         const std::vector<Row> mRows;
         const std::uint64_t mCharge = 0;
     };
@@ -334,6 +358,52 @@ namespace SceneUtil::PersistentOpaquePackets
         Counters::rows.fetch_add(original.getNumChildren(), std::memory_order_relaxed);
         Counters::eligible.fetch_add(usable, std::memory_order_relaxed);
         return result;
+    }
+    // Caller must provide a privately cloned asset partition whose ORIGINAL
+    // ancestry was certified before paging CopyOp. This deliberately does not
+    // turn arbitrary controller-stripped scene graphs into packet candidates.
+    // Preserve every material and transform ancestor, replacing only exact
+    // immutable Group/Geode containers with their ordinary-path-owning wrapper.
+    inline osg::ref_ptr<osg::Node> buildCertifiedSubtrees(osg::Node& original, unsigned maximumNodes = 256, bool mode = enabled())
+    {
+        if (!mode) return &original;
+        unsigned nodes = 0;
+        const auto certify = [&](const auto& self, const osg::Node& node, unsigned depth) -> bool {
+            if (++nodes > maximumNodes || depth > 16 || node.getDataVariance() == osg::Object::DYNAMIC
+                || node.getUpdateCallback() || node.getEventCallback() || node.getCullCallback()
+                || node.getComputeBoundingSphereCallback() || !opaque(node.getStateSet())) return false;
+            if (const auto* geometry = node.asGeometry()) return eligible(*geometry);
+            const auto* group = node.asGroup();
+            if (!group || (typeid(node) != typeid(osg::Group) && typeid(node) != typeid(osg::Geode)
+                && typeid(node) != typeid(osg::MatrixTransform))) return false;
+            if (const auto* transform = dynamic_cast<const osg::MatrixTransform*>(&node))
+                for (unsigned r = 0; r < 4; ++r) for (unsigned c = 0; c < 4; ++c)
+                    if (!std::isfinite(transform->getMatrix()(r,c))) return false;
+            for (unsigned i = 0; i < group->getNumChildren(); ++i)
+                if (!self(self, *group->getChild(i), depth + 1)) return false;
+            return true;
+        };
+        if (!certify(certify, original, 0)) return &original;
+        std::array<osg::observer_ptr<osg::Node>,16> ancestors;
+        const auto wrap = [&](const auto& self, osg::Node& node, unsigned depth) -> osg::ref_ptr<osg::Node> {
+            auto* group = node.asGroup();
+            if (!group) return &node;
+            for (unsigned i = 0; i < group->getNumChildren(); ++i)
+            {
+                osg::ref_ptr<osg::Node> child = group->getChild(i);
+                ancestors[depth] = &node;
+                osg::ref_ptr<osg::Node> wrapped = self(self, *child, depth + 1);
+                if (wrapped != child) group->setChild(i, wrapped);
+            }
+            if (typeid(node) == typeid(osg::Group) || typeid(node) == typeid(osg::Geode))
+            {
+                auto result = build(*group, mode);
+                if (auto* packet = dynamic_cast<Group*>(result.get())) packet->setCertifiedAncestors(ancestors, depth);
+                return result;
+            }
+            return &node; // exact transform and its state ancestry remain intact
+        };
+        return wrap(wrap, original, 0);
     }
 }
 #endif

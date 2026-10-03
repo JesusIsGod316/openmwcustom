@@ -2,6 +2,7 @@
 
 #include "v321classifiedcompileset.hpp"
 #include "preparedterraintexture.hpp"
+#include "texturestreaming.hpp"
 
 #include <components/debug/v3diagnostics.hpp>
 #include <components/debug/compileattribution.hpp>
@@ -376,6 +377,11 @@ namespace Resource
 
     void OpenMWIncrementalCompileOperation::operator()(osg::GraphicsContext* context)
     {
+        // Actual OSG CompileTextureOp dispatches Texture::apply(), not
+        // compileGLObjects(). The bounded native owner alone uploads opted-in
+        // MainDraw candidates. Force-download geometry keeps its exact apply
+        // and dummy-draw effects on the ordinary authoritative fallback path.
+        TextureStreaming::CompileScope textureCompile(!getForceTextureDownloadGeometry());
         // Separate diagnostic family: OFF creates no envelopes, observation
         // registry or CSV records. CPU ownership of existing scopes is retained.
         std::optional<Debug::HitchTrace::Scope> schedulerScope;

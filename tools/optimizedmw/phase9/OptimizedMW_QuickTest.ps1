@@ -308,6 +308,7 @@ function New-OptimizedMWQuickUploadZip {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $destination=[IO.Path]::GetFullPath($DestinationPath)
     if([IO.File]::Exists($destination)){throw 'Preserving an existing verified upload bundle'}
+    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
     $inventory=@($Files | ForEach-Object {
         $file=Get-Item -LiteralPath $_.path -ErrorAction Stop
         if(($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $_.name -match '[/\\]' -or $_.name -eq ''){throw 'Invalid upload member path'}
@@ -401,7 +402,7 @@ function Complete-OptimizedMWQuickSession {
             }
             Write-OptimizedMWQuickJson $manifestPath $manifest -CreateOnly
             $files+=,[pscustomobject]@{name='UPLOAD-MANIFEST.json';path=$manifestPath}
-            $destination=Join-Path $Context.game_directory ('OptimizedMW_UPLOAD_'+$Context.session_id+'.zip')
+            $destination=Join-Path (Join-Path $Context.game_directory 'Benchmarks') ('OptimizedMW_UPLOAD_'+$Context.session_id+'.zip')
             $bundle=New-OptimizedMWQuickUploadZip $destination $files
             $result.upload_path=$bundle.path
             $result.upload_sha256=$bundle.sha256
