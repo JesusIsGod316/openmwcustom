@@ -13,20 +13,23 @@ function Read-OptimizedMWNumber {
 
 function New-OptimizedMWNumericSelection {
     param([string]$Id,[string]$Label,[int]$Mask=4,[int]$Attack=1,[string]$Preset='',
-        [string]$Candidate='CONTROL',[bool]$Progress=$false,[bool]$Mips=$false,[string]$Mode='')
-    return [pscustomobject][ordered]@{menu_revision=1;selection_id=$Id;label=$Label;
+        [string]$Candidate='CONTROL',[bool]$Progress=$false,[bool]$Mips=$false,[string]$Mode='',
+        [int]$Ram=0,[int]$Architecture=0)
+    return [pscustomobject][ordered]@{menu_revision=2;selection_id=$Id;label=$Label;
         mask=$Mask;attack_mask=$Attack;focused_preset=$Preset;candidate=$Candidate;
+        ram_mask=$Ram;architecture_mask=$Architecture;
         composite_progress=$Progress;composite_cpu_mips=$Mips;legacy_mode=$Mode;
         trace_level='Normal';system_trace=$false;gpu_query_defer=$false;name=$Label}
 }
 
 function Get-OptimizedMWNumericCategories {
     return @('Controls','Terrain and rendering','Animation','Resource cleanup',
-        'User interface','Lua','File I/O','Combined tests','Advanced and earlier experiments')
+        'User interface','Lua','File I/O','Combined tests','Advanced and earlier experiments',
+        'RAM retention and compression','Renderer architecture experiments')
 }
 
 function Get-OptimizedMWNumericCandidates {
-    param([ValidateRange(1,9)][int]$Category)
+    param([ValidateRange(1,11)][int]$Category)
     switch($Category){
         1 {return @((New-OptimizedMWNumericSelection '1.1' 'Retained control (current comparison)' -Preset CONTROL),
             (New-OptimizedMWNumericSelection '1.2' 'Original feature control (all candidates off)' -Mask 0 -Attack 0))}
@@ -66,6 +69,23 @@ function Get-OptimizedMWNumericCandidates {
             (New-OptimizedMWNumericSelection '9.5' 'Temporal ownership + earlier terrain' -Mask 0 -Attack 0 -Mode 10),
             (New-OptimizedMWNumericSelection '9.6' 'Experimental dynamic motion' -Mask 0 -Attack 0 -Mode 11),
             (New-OptimizedMWNumericSelection '9.7' 'Earlier refresh experiment' -Mask 0 -Attack 0 -Mode 6))}
+        10 {return @((New-OptimizedMWNumericSelection '10.1' 'Retained RAM control'),
+            (New-OptimizedMWNumericSelection '10.2' 'Selective cold preload owner retirement' -Ram 1),
+            (New-OptimizedMWNumericSelection '10.3' 'Shorter cold parsed NIF retention' -Ram 2),
+            (New-OptimizedMWNumericSelection '10.4' 'Bounded idle collision shapes' -Ram 4),
+            (New-OptimizedMWNumericSelection '10.5' 'Earlier headroom reclamation' -Ram 8),
+            (New-OptimizedMWNumericSelection '10.6' 'Compressed cold image cache' -Ram 16),
+            (New-OptimizedMWNumericSelection '10.7' 'All retention changes, compression off' -Ram 15),
+            (New-OptimizedMWNumericSelection '10.8' 'All RAM candidates including compression' -Ram 31))}
+        11 {return @((New-OptimizedMWNumericSelection '11.1' 'Retained renderer control'),
+            (New-OptimizedMWNumericSelection '11.2' 'Exact shader variant readiness' -Architecture 1),
+            (New-OptimizedMWNumericSelection '11.3' 'Exact paging optimizer work reduction' -Architecture 2),
+            (New-OptimizedMWNumericSelection '11.4' 'Persistent opaque draw packets' -Architecture 4),
+            (New-OptimizedMWNumericSelection '11.5' 'Bounded terrain mip upload staging' -Architecture 8 -Mips $true),
+            (New-OptimizedMWNumericSelection '11.6' 'Opaque multi-draw indirect + bounded command pipeline' -Architecture 20),
+            (New-OptimizedMWNumericSelection '11.7' 'Conservative GPU visibility + indirect pipeline' -Architecture 52),
+            (New-OptimizedMWNumericSelection '11.8' 'Frozen parallel actor deformation' -Architecture 64),
+            (New-OptimizedMWNumericSelection '11.9' 'Renderer candidates combined' -Architecture 127 -Mips $true))}
     }
 }
 
@@ -108,6 +128,7 @@ function Set-OptimizedMWCombinedToggle {
         Write-Host 'Progress repair requires incremental STEP; STEP is enabled.' -ForegroundColor Yellow
     }
     if(-not $enabled -and $Choice -eq 9){$Selection.composite_progress=$false}
+    if(-not $enabled -and $Choice -eq 11){$Selection.architecture_mask=$Selection.architecture_mask -band (-bnot 8)}
 }
 
 function Read-OptimizedMWCombinedSelection {
@@ -118,8 +139,8 @@ function Read-OptimizedMWCombinedSelection {
         foreach($index in 0..($labels.Count-1)){
             Write-Host (' {0,2} = {1,-34} {2}' -f ($index+1),$labels[$index],$(if(Test-OptimizedMWCombinedToggle $selection ($index+1)){'ON'}else{'off'}))
         }
-        Write-Host ' 16 = Continue | 17 = Reset to retained control | 18 = All candidates off | 0 = Back'
-        $choice=Read-OptimizedMWNumber 'Combined option (0-18)' @('0','1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18')
+        Write-Host ' 16 = Continue | 17 = Reset to retained control | 18 = All candidates off | 19 = RAM and renderer switches | 0 = Back'
+        $choice=Read-OptimizedMWNumber 'Combined option (0-19)' @('0','1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19')
         if($choice -eq '0'){return $null}
         if($choice -eq '16'){
             Write-Host 'File I/O: 1 = Original | 2 = Refill | 3 = Resident seek | 4 = Both | 0 = Back'
@@ -130,10 +151,67 @@ function Read-OptimizedMWCombinedSelection {
         }
         if($choice -eq '17'){$selection=New-OptimizedMWNumericSelection '8.1' 'Custom combination';continue}
         if($choice -eq '18'){$selection=New-OptimizedMWNumericSelection '8.1' 'Custom combination' -Mask 0 -Attack 0;continue}
+        if($choice -eq '19'){Read-OptimizedMWArchitectureCombination $selection;continue}
         Set-OptimizedMWCombinedToggle $selection ([int]$choice)
     }
 }
 
+function Get-OptimizedMWArchitectureLabels {
+    param([bool]$Ram)
+    if($Ram){return @('Selective cold preload owners','Cold parsed NIF retention','Idle collision shape bound',
+        'Earlier headroom reclamation','Cold image compression')}
+    return @('Exact shader variants','Exact paging optimizer','Persistent opaque packets','Bounded terrain mip uploads',
+        'Multi-draw indirect and command pipeline','Conservative GPU visibility','Frozen parallel deformation')
+}
+function Set-OptimizedMWArchitectureToggle {
+    param([object]$Selection,[bool]$Ram,[int]$Choice)
+    $labels=Get-OptimizedMWArchitectureLabels $Ram
+    if($Choice -lt 1 -or $Choice -gt $labels.Count){throw 'Invalid candidate toggle'}
+    $property=if($Ram){'ram_mask'}else{'architecture_mask'}
+    $bit=1 -shl ($Choice-1)
+    $enabled=-not [bool]($Selection.$property -band $bit)
+    $Selection.$property=$Selection.$property -bxor $bit
+    if(-not $Ram){
+        if($Choice -eq 3 -and -not $enabled){
+            $Selection.architecture_mask=$Selection.architecture_mask -band (-bnot 48)
+        }
+        if($Choice -eq 5 -and -not $enabled){
+            $Selection.architecture_mask=$Selection.architecture_mask -band (-bnot 32)
+        }
+        if($Selection.architecture_mask -band 32){$Selection.architecture_mask=$Selection.architecture_mask -bor 20}
+        if($Selection.architecture_mask -band 16){$Selection.architecture_mask=$Selection.architecture_mask -bor 4}
+        if($Selection.architecture_mask -band 8){$Selection.composite_cpu_mips=$true}
+    }
+}
+function Read-OptimizedMWArchitectureCombination {
+    param([object]$Selection)
+    while($true){
+        Write-Host ' 1 = RAM candidates | 2 = Renderer candidates | 0 = Back'
+        $category=Read-OptimizedMWNumber 'Combined category' @('0','1','2')
+        if($category -eq '0'){return}
+        $ram=$category -eq '1';$labels=Get-OptimizedMWArchitectureLabels $ram
+        while($true){
+            $mask=if($ram){$Selection.ram_mask}else{$Selection.architecture_mask}
+            foreach($index in 0..($labels.Count-1)){
+                Write-Host (' {0} = {1} [{2}]' -f ($index+1),$labels[$index],$(if($mask -band (1 -shl $index)){'ON'}else{'off'}))
+            }
+            Write-Host ' 0 = Back'
+            $choices=@('0')+@(1..$labels.Count | ForEach-Object {[string]$_})
+            $choice=Read-OptimizedMWNumber 'Toggle candidate' $choices
+            if($choice -eq '0'){break}
+            Set-OptimizedMWArchitectureToggle $Selection $ram ([int]$choice)
+        }
+    }
+}
+function Set-OptimizedMWArchitectureEnvironment {
+    param([ValidateRange(0,31)][int]$RamMask=0,[ValidateRange(0,127)][int]$ArchitectureMask=0)
+    $names=@('OPENMW_RAM_C1_SELECTIVE','OPENMW_RAM_C2_PARSED_NIF','OPENMW_RAM_C3_IDLE_COLLISION',
+        'OPENMW_RAM_C4_EARLY_RECLAIM','OPENMW_RAM_C5_COLD_IMAGES')
+    foreach($index in 0..4){[Environment]::SetEnvironmentVariable($names[$index],[string][int][bool]($RamMask -band (1 -shl $index)),'Process')}
+    $names=@('OPENMW_EXACT_PROGRAM_VARIANTS','OPENMW_P9_EXACT_PAGING_WORK','OPENMW_P9_PERSISTENT_PACKETS',
+        'OPENMW_P9_UPLOAD_POOL','OPENMW_P9_MULTI_DRAW_INDIRECT','OPENMW_P9_GPU_VISIBILITY','OPENMW_P9_FROZEN_DEFORMATION')
+    foreach($index in 0..6){[Environment]::SetEnvironmentVariable($names[$index],[string][int][bool]($ArchitectureMask -band (1 -shl $index)),'Process')}
+}
 function Write-OptimizedMWNumericSummary {
     param([object]$Selection)
     Write-Host ('Selected: '+$Selection.label+' ['+$Selection.selection_id+']') -ForegroundColor Green
@@ -143,6 +221,7 @@ function Write-OptimizedMWNumericSummary {
     foreach($index in 0..($labels.Count-1)){if(Test-OptimizedMWCombinedToggle $Selection ($index+1)){$enabled.Add($labels[$index])}}
     Write-Host ('Gameplay mechanisms: '+$(if($enabled.Count){$enabled -join '; '}else{'original control, candidates off'}))
     Write-Host ('File I/O: '+$Selection.candidate)
+    Write-Host ('RAM vector: '+$Selection.ram_mask+' | Renderer vector: '+$Selection.architecture_mask)
 }
 
 function Read-OptimizedMWNumericTest {
@@ -152,7 +231,7 @@ function Read-OptimizedMWNumericTest {
         Write-Host 'OptimizedMW - select an optimization category' -ForegroundColor Cyan
         foreach($index in 0..($categories.Count-1)){Write-Host (' {0} = {1}' -f ($index+1),$categories[$index])}
         Write-Host ' 0 = Exit'
-        $category=Read-OptimizedMWNumber 'Category (0-9; Enter = 1)' @('0','1','2','3','4','5','6','7','8','9') '1'
+        $category=Read-OptimizedMWNumber 'Category (0-11; Enter = 1)' @('0','1','2','3','4','5','6','7','8','9','10','11') '1'
         if($category -eq '0'){return $null}
         $candidates=@(Get-OptimizedMWNumericCandidates ([int]$category))
         while($true){

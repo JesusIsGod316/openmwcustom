@@ -29,9 +29,14 @@ endif()
 include_directories(${ROOT})
 include_directories(SYSTEM ${OPENSCENEGRAPH_INCLUDE_DIRS})
 add_library(p9-hitch-platform STATIC "${ROOT}/components/debug/hitchtrace.cpp"
-  "${ROOT}/components/debug/diagnosticobserver.cpp")
+  "${ROOT}/components/debug/diagnosticobserver.cpp"
+  "${ROOT}/components/shader/programvariant.cpp")
+target_link_libraries(p9-hitch-platform PUBLIC ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
 link_libraries(p9-hitch-platform)
 enable_testing()
+add_executable(p9-exact-paging-work exact-paging-work-tests.cpp)
+add_test(NAME p9-exact-paging-work COMMAND p9-exact-paging-work)
+set_tests_properties(p9-exact-paging-work PROPERTIES TIMEOUT 90)
 if(WIN32)
   find_program(P9_MENU_POWERSHELL NAMES powershell.exe REQUIRED)
   add_test(NAME p9-numeric-menu COMMAND ${P9_MENU_POWERSHELL}
@@ -50,6 +55,22 @@ add_executable(p9-benchmark-context benchmark-context-tests.cpp)
 add_test(NAME p9-benchmark-context COMMAND p9-benchmark-context benchmark-context-fixture)
 set_tests_properties(p9-benchmark-context PROPERTIES TIMEOUT 45)
 find_package(Threads REQUIRED)
+add_executable(p9-shared-context-preparation shared-context-preparation-tests.cpp)
+target_link_libraries(p9-shared-context-preparation PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
+add_test(NAME p9-shared-context-preparation COMMAND p9-shared-context-preparation)
+set_tests_properties(p9-shared-context-preparation PROPERTIES TIMEOUT 45 ENVIRONMENT "OPENMW_EXACT_PROGRAM_VARIANTS=1")
+add_executable(p9-persistent-opaque-packets persistent-opaque-packets-tests.cpp)
+target_link_libraries(p9-persistent-opaque-packets PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
+add_test(NAME p9-persistent-opaque-packets COMMAND p9-persistent-opaque-packets)
+add_test(NAME p9-persistent-opaque-packets-deep COMMAND p9-persistent-opaque-packets --deep)
+add_executable(p9-gpu-indirect-packets gpu-indirect-packets-tests.cpp)
+target_compile_definitions(p9-gpu-indirect-packets PRIVATE OPENMW_INDIRECT_PACKET_TEST_HOOKS)
+target_link_libraries(p9-gpu-indirect-packets PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
+add_test(NAME p9-gpu-indirect-packets COMMAND p9-gpu-indirect-packets)
+set_tests_properties(p9-gpu-indirect-packets PROPERTIES TIMEOUT 90)
+set_tests_properties(p9-persistent-opaque-packets p9-persistent-opaque-packets-deep PROPERTIES TIMEOUT 60)
+set_tests_properties(p9-persistent-opaque-packets-deep PROPERTIES ENVIRONMENT
+  "OPENMW_P9_LEAF_TRACE_FILE=${CMAKE_CURRENT_BINARY_DIR}/persistent-packets-deep.csv")
 add_executable(p9-composite-progress-policy composite-progress-policy-tests.cpp
   ${ROOT}/components/resource/openmwcompileoperation.cpp)
 target_link_libraries(p9-composite-progress-policy PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
@@ -100,13 +121,34 @@ foreach(mode normal deep overflow normal-local deep-local overflow-local active-
   set_tests_properties(p9-diagnostic-observer-${mode} PROPERTIES TIMEOUT 45)
 endforeach()
 find_library(P9_CLOUD_OSGDB_LIBRARY NAMES osgDB REQUIRED)
+list(APPEND CMAKE_MODULE_PATH "${ROOT}/cmake")
+find_package(LZ4 MODULE REQUIRED)
+add_executable(p9-ram-retention ram-retention-tests.cpp ${ROOT}/components/resource/multiobjectcache.cpp)
+target_link_libraries(p9-ram-retention PRIVATE ${OPENSCENEGRAPH_LIBRARIES} Threads::Threads)
+add_test(NAME p9-ram-retention COMMAND p9-ram-retention)
+set_tests_properties(p9-ram-retention PROPERTIES TIMEOUT 45)
+add_executable(p9-cold-image-cache cold-image-cache-tests.cpp
+  ${ROOT}/components/resource/coldimage.cpp ${ROOT}/components/resource/imagemanager.cpp
+  ${ROOT}/components/resource/cachestats.cpp ${ROOT}/components/vfs/manager.cpp
+  ${ROOT}/components/files/conversion.cpp ${ROOT}/components/sceneutil/workqueue.cpp
+  ${ROOT}/components/sceneutil/glextensions.cpp ${ROOT}/components/debug/debuglog.cpp
+  ${ROOT}/components/misc/hostmemory.cpp)
+target_compile_definitions(p9-cold-image-cache PRIVATE OPENMW_COLD_IMAGE_TEST_HOOKS)
+target_link_libraries(p9-cold-image-cache PRIVATE
+  ${OPENSCENEGRAPH_LIBRARIES} ${P9_CLOUD_OSGDB_LIBRARY} OpenGL::GL Threads::Threads LZ4::LZ4)
+add_test(NAME p9-cold-image-cache COMMAND p9-cold-image-cache)
+set_tests_properties(p9-cold-image-cache PROPERTIES TIMEOUT 90)
+if(WIN32)
+  target_link_libraries(p9-cold-image-cache PRIVATE psapi)
+endif()
 add_executable(p9-cloud-image-preparation cloud-image-preparation-tests.cpp
+  ${ROOT}/components/resource/coldimage.cpp
   ${ROOT}/components/resource/imagemanager.cpp ${ROOT}/components/resource/cachestats.cpp
   ${ROOT}/components/vfs/manager.cpp ${ROOT}/components/files/conversion.cpp
   ${ROOT}/components/sceneutil/workqueue.cpp ${ROOT}/components/sceneutil/glextensions.cpp
   ${ROOT}/components/debug/debuglog.cpp ${ROOT}/components/misc/hostmemory.cpp)
 target_link_libraries(p9-cloud-image-preparation PRIVATE
-  ${OPENSCENEGRAPH_LIBRARIES} ${P9_CLOUD_OSGDB_LIBRARY} OpenGL::GL Threads::Threads)
+  ${OPENSCENEGRAPH_LIBRARIES} ${P9_CLOUD_OSGDB_LIBRARY} OpenGL::GL Threads::Threads LZ4::LZ4)
 if(WIN32)
   target_link_libraries(p9-cloud-image-preparation PRIVATE psapi)
 endif()
@@ -203,6 +245,10 @@ if(OPENMW_PHASE9_INTEROP_FIXTURE)
   add_subdirectory(interop)
 endif()
 add_executable(p9-dynamic-stream dynamic-stream-tests.cpp)
+add_executable(p9-upload-pool upload-pool-tests.cpp)
+target_link_libraries(p9-upload-pool PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
+add_test(NAME p9-upload-pool COMMAND p9-upload-pool)
+set_tests_properties(p9-upload-pool PROPERTIES TIMEOUT 45 ENVIRONMENT "OPENMW_P9_UPLOAD_POOL=1")
 target_link_libraries(p9-dynamic-stream PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
 add_test(NAME p9-dynamic-stream COMMAND p9-dynamic-stream)
 set_tests_properties(p9-dynamic-stream PROPERTIES TIMEOUT 30)
@@ -326,6 +372,13 @@ add_executable(p9-temporal-dynamic temporal-dynamic-tests.cpp
   ${ROOT}/components/sceneutil/riggeometry.cpp ${ROOT}/components/sceneutil/morphgeometry.cpp
   ${ROOT}/components/sceneutil/skeleton.cpp ${ROOT}/components/debug/debuglog.cpp
   ${ROOT}/components/files/conversion.cpp)
+add_executable(p9-frozen-rig-deformation frozen-rig-deformation-tests.cpp
+  ${ROOT}/components/sceneutil/riggeometry.cpp ${ROOT}/components/sceneutil/skeleton.cpp
+  ${ROOT}/components/debug/debuglog.cpp ${ROOT}/components/files/conversion.cpp)
+target_link_libraries(p9-frozen-rig-deformation PRIVATE glm::glm ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
+add_test(NAME p9-frozen-rig-deformation COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/verify-frozen-rig-deformation.py $<TARGET_FILE:p9-frozen-rig-deformation>)
+set_tests_properties(p9-frozen-rig-deformation PROPERTIES TIMEOUT 90)
 target_include_directories(p9-temporal-dynamic SYSTEM PRIVATE
   ${P9_SDL3_INCLUDE} ${P9_MYGUI_INCLUDE} ${P9_BULLET_INCLUDE} ${P9_YAML_INCLUDE} ${P9_DETOUR_INCLUDE} ${P9_RECAST_INCLUDE})
 target_link_libraries(p9-temporal-dynamic PRIVATE p9-temporal-production glm::glm ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)

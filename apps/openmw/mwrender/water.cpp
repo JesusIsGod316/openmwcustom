@@ -19,6 +19,7 @@
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/statictextureprogram.hpp>
+#include <components/resource/programvariantcompile.hpp>
 #include <cstdlib>
 #include <string_view>
 
@@ -507,6 +508,9 @@ namespace MWRender
 
     void Water::updateWaterMaterial()
     {
+        if (mProgramVariantPreparation) mProgramVariantPreparation->cancel();
+        mProgramVariantPreparation.reset();
+        mProgramVariantTarget = nullptr;
         if (mStaticPreparation) mStaticPreparation->cancel();
         mStaticPreparation.reset();
         mStaticPreparationTexture = nullptr;
@@ -707,6 +711,12 @@ namespace MWRender
         Shader::ShaderManager& shaderMgr = mResourceSystem->getSceneManager()->getShaderManager();
         osg::ref_ptr<osg::Program> program = shaderMgr.getProgram("water", defineMap);
 
+        if (Shader::exactProgramVariantsEnabled())
+        {
+            mProgramVariantTarget = program;
+            prepareStaticMaterial();
+        }
+
         constexpr VFS::Path::NormalizedView waterImage("textures/omw/water_nm.png");
         osg::ref_ptr<osg::Texture2D> normalMap(
             new osg::Texture2D(mResourceSystem->getImageManager()->getImage(waterImage)));
@@ -736,6 +746,16 @@ namespace MWRender
 
     void Water::prepareStaticMaterial()
     {
+        // Program-only readiness is independent of the image lease/static
+        // texture candidate. The updater copies the same canonical Program;
+        // no dynamic cull StateSet, RTT texture, or FBO enters this job.
+        if (mProgramVariantTarget && mIncrementalCompileOperation
+            && mIncrementalCompileOperation->getContextSet().size() == 1)
+        {
+            mProgramVariantPreparation = Resource::prepareExactProgram(
+                mIncrementalCompileOperation, mProgramVariantTarget, {});
+            mProgramVariantTarget = nullptr;
+        }
         // Viewer contexts may be assigned after material creation. Retry only
         // that lifecycle seam; no preparation or GL happens during cull.
         if (!mStaticPreparationEnabled || mStaticPreparationAttempted || !mIncrementalCompileOperation
@@ -753,6 +773,8 @@ namespace MWRender
 
     Water::~Water()
     {
+        if (mProgramVariantPreparation) mProgramVariantPreparation->cancel();
+        mProgramVariantPreparation.reset();
         if (mStaticPreparation) mStaticPreparation->cancel();
         mStaticPreparation.reset();
         mParent->removeChild(mWaterNode);

@@ -1044,12 +1044,18 @@ namespace MWWorld
         , mLastResourceCacheUpdate(0.0)
         , mLoadedTerrainTimestamp(0.0)
     {
+        setColdRetention(mResourceSystem->speculativeBudget() && Resource::ramRetentionEnabled(1),
+            mResourceSystem->speculativeBudget() && Resource::ramRetentionEnabled(4));
         if (static_cast<bool>(Settings::cells().mV316IdleResourceSweep) || mResourceSystem->speculativeBudget())
             mV316ResourceSweepQueue = new SceneUtil::WorkQueue(1);
     }
 
     CellPreloader::~CellPreloader()
     {
+        if (mColdRetention)
+            Log(Debug::Info) << "OptimizedMW cold preload owners: retired=" << mColdRetired
+                << " indexed=" << mColdRetention->size() << " index_available=" << mColdRetention->available()
+                << " base_retention=" << mColdBaseRetention << " early_headroom=" << mCoordinateColdHeadroom;
         clearAllTasks();
     }
 
@@ -1105,6 +1111,7 @@ namespace MWWorld
             {
             // already preloaded, nothing to do other than updating the timestamp
             found->second.mTimeStamp = timestamp;
+            if (mColdRetention) mColdRetention->request(&cell, timestamp, nearFuture);
             return;
             }
         }
@@ -1171,6 +1178,7 @@ namespace MWWorld
         mWorkQueue->addWorkItem(item);
 
         mPreloadCells.emplace(&cell, PreloadEntry(timestamp, item));
+        if (mColdRetention) mColdRetention->request(&cell, timestamp, nearFuture);
         if (lifetime && mAnimationTarget == &cell && (!mAnimationTicket || mAnimationTicketCell == &cell))
         {
             retainAnimationProgress(&cell, item->animationProgress());
@@ -1181,6 +1189,7 @@ namespace MWWorld
 
     void CellPreloader::setAnimationTarget(CellStore* cell, double timestamp)
     {
+        if (mColdRetention && cell) mColdRetention->near(cell, timestamp);
         if (!Resource::animationDependencyLifetimeEnabled() || !mResourceSystem->speculativeBudget()) return;
         if (mAnimationTarget != cell)
         {
@@ -1227,6 +1236,7 @@ namespace MWWorld
 
     void CellPreloader::notifyLoaded(CellStore* cell)
     {
+        if (mColdRetention) mColdRetention->demanded(cell);
         if (mAnimationTarget == cell) setAnimationTarget(nullptr, mAnimationTargetStamp);
         PreloadMap::iterator found = mPreloadCells.find(cell);
         if (found != mPreloadCells.end())
@@ -1252,6 +1262,7 @@ namespace MWWorld
 
     void CellPreloader::clear()
     {
+        if (mColdRetention) mColdRetention->clear();
         setAnimationTarget(nullptr, mAnimationTargetStamp);
         if (mResourceSystem->speculativeBudget())
         {
@@ -1282,6 +1293,28 @@ namespace MWWorld
                 : sample.decision.state == Resource::OpenGlPressure::Caution ? Resource::HostMemoryPressure::Trim
                 : Resource::HostMemoryPressure::Normal
             : mResourceSystem->hostMemoryPressure();
+        if (mColdRetention && mResourceSystem->speculativeBudget())
+        {
+            const auto retentionSample = lifetime ? sample : Resource::ResourceSystem::speculativeSample(mResourceSystem);
+            const auto headroom = mColdHeadroom.update(retentionSample);
+            // No pressure is invented from missing data. Caution/Critical keep
+            // the existing authoritative broad retirement and cancellation.
+            if (headroom.valid && retentionSample.decision.state == Resource::OpenGlPressure::Normal
+                && (mColdBaseRetention || (mCoordinateColdHeadroom && headroom.contract)))
+            {
+                const double ttl = mCoordinateColdHeadroom && headroom.contract ? 5.0 : 30.0;
+                mColdRetired += mColdRetention->retire(timestamp, ttl, [&](const CellStore* cell) {
+                    auto found = mPreloadCells.find(cell);
+                    if (found == mPreloadCells.end() || found->second.mRetired || !found->second.mWorkItem
+                        || !found->second.mWorkItem->isDone()) return false;
+                    // Completed only: no job wait, no new abort, no main-thread
+                    // final release. This policy yields the old 96-owner floor.
+                    found->second.mRetired = true;
+                    return true;
+                }, mAnimationTarget ? std::optional<const CellStore*>(mAnimationTarget) : std::nullopt,
+                    mAnimationTicketCell ? std::optional<const CellStore*>(mAnimationTicketCell) : std::nullopt);
+            }
+        }
         if (lifetime && mAnimationTicket)
         {
             if (mAnimationTargetStamp < timestamp - mExpiryDelay
@@ -1316,6 +1349,15 @@ namespace MWWorld
                 {"admission_pending", admission.pending}, {"reservation_estimate_bytes", admission.reservedEstimate},
                 {"admission_accepted", admission.admitted}, {"admission_denied", admission.denied},
                 {"admission_released", admission.released} });
+            if (mColdRetention)
+                Debug::RuntimeDiagnostics::recordEvent("cold_preload_retention", "cell_preloader",
+                    "Completed owners; payload estimates are not physical RAM", {
+                        {"indexed_owners", mColdRetention->size()}, {"retired", mColdRetired},
+                        {"base_ttl_seconds", mColdBaseRetention ? 30u : static_cast<unsigned>(mExpiryDelay)},
+                        {"shrinking_ttl_seconds", 5},
+                        {"headroom_coordination", mCoordinateColdHeadroom},
+                        {"short_return_limit", 8}, {"near_future_limit", 32},
+                        {"index_available", mColdRetention->available()}});
         }
         // Count live owners rather than map slots: P1B detaches asynchronously,
         // so marking entries must consume the same retention floor as erasing.
@@ -1491,6 +1533,7 @@ namespace MWWorld
                 auto& item = static_cast<PreloadItem&>(*entry.mWorkItem);
                 item.pendingRelease();
                 if (!mResourceSystem->deferRelease(entry.mWorkItem, item.retainedEstimate())) break;
+                if (mColdRetention) mColdRetention->erase(it->first);
                 it = mPreloadCells.erase(it); ++moved; ++mPressureReleased;
             }
             else ++it;
@@ -1505,6 +1548,14 @@ namespace MWWorld
     void CellPreloader::setPreloadInstances(bool preload)
     {
         mPreloadInstances = preload;
+    }
+
+    void CellPreloader::setColdRetention(bool enabled, bool coordinateHeadroom)
+    {
+        mCoordinateColdHeadroom = coordinateHeadroom;
+        mColdBaseRetention = enabled;
+        mColdRetention = enabled || coordinateHeadroom
+            ? std::make_unique<Resource::ColdOwnerRetention<const CellStore*>>() : nullptr;
     }
 
     void CellPreloader::setWorkQueue(osg::ref_ptr<SceneUtil::WorkQueue> workQueue)

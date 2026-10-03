@@ -27,8 +27,14 @@ namespace Resource
         /// @note For performance reasons the NifFileManager does not handle case folding, needs
         /// to be done in advance by other managers accessing the NifFileManager.
         Nif::NIFFilePtr get(VFS::Path::NormalizedView name);
+        // Startup-only independent C2. Zero preserves the exact current TTL.
+        void setColdRetentionSeconds(double seconds);
+        void updateCache(double referenceTime) override;
+        void reportRuntimeDiagnostics(double referenceTime) const noexcept override;
 
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
+    private:
+        double mColdRetentionSeconds = 0;
     };
 
 }

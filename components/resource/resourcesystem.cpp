@@ -1,6 +1,8 @@
 #include "resourcesystem.hpp"
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <typeinfo>
 #include "cachemaintenance.hpp"
 
@@ -22,6 +24,8 @@ namespace Resource
         , mRetainNifFiles(retainNifFiles)
     {
         mNifFileManager = std::make_unique<NifFileManager>(vfs, encoder);
+        if (const char* flag=std::getenv("OPENMW_RAM_C2_PARSED_NIF"); flag && std::strcmp(flag,"1")==0)
+            mNifFileManager->setColdRetentionSeconds(30.0);
         if (mRetainNifFiles)
             mNifFileManager->setExpiryDelay(expiryDelay);
         mBgsmFileManager = std::make_unique<BgsmFileManager>(vfs, expiryDelay);
@@ -178,6 +182,12 @@ namespace Resource
         mSpeculativeBudget = std::make_unique<SpeculativeBudget>(config);
         mHostMemoryBudget.enableOpenGl(pressure, mSpeculativeBudget->watermark());
         for (auto* manager : mResourceManagers) manager->setSpeculativeBudget(mSpeculativeBudget.get());
+        if (const char* flag=std::getenv("OPENMW_RAM_C5_COLD_IMAGES"); flag && std::strcmp(flag,"1")==0)
+        {
+            ColdImageCache::Config cold;
+            cold.enabled=true;
+            mImageManager->configureColdCache(cold,&ResourceSystem::speculativeSample,this);
+        }
         rebuildMaintenanceOrder();
     }
 

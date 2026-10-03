@@ -8,6 +8,11 @@
 #include <components/vfs/pathutil.hpp>
 
 #include "resourcemanager.hpp"
+#include "coldimage.hpp"
+
+#include <atomic>
+#include <memory>
+#include <mutex>
 
 namespace osgDB
 {
@@ -38,6 +43,11 @@ namespace Resource
         ObjectCacheLease prepareImage(VFS::Path::NormalizedView path, std::uint64_t maximumEstimate);
 
         osg::Image* getWarningImage();
+        // Startup-only. No codec, cold index, sampler, or allocation when off.
+        void configureColdCache(ColdImageCache::Config config, SpeculativeScope::Sample sample, void* owner);
+        void updateCache(double referenceTime) override;
+        void clearCache() override;
+        void reportRuntimeDiagnostics(double referenceTime) const noexcept override;
 
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
 
@@ -45,6 +55,12 @@ namespace Resource
         std::uint64_t sourceRevision(bool disableFlip) const noexcept;
         osg::ref_ptr<osg::Image> mWarningImage;
         osg::ref_ptr<osgDB::Options> mOptions;
+        std::unique_ptr<ColdImageCache> mColdCache;
+        SpeculativeScope::Sample mColdSample = nullptr;
+        void* mColdSampleOwner = nullptr;
+        std::atomic<std::uint64_t> mColdEpoch{0};
+        // Publication only; never held while reading, encoding or decoding.
+        mutable std::mutex mColdPublicationMutex;
 
         ImageManager(const ImageManager&);
         void operator=(const ImageManager&);

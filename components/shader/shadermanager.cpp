@@ -1,4 +1,7 @@
 #include "shadermanager.hpp"
+#include "programvariant.hpp"
+#include "indirectprojectioncontract.hpp"
+#include "indirectprojectionbaseline.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -19,6 +22,7 @@
 #include <osgViewer/Viewer>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/hitchtrace.hpp>
 #include <components/debug/v3diagnostics.hpp>
 #include <components/files/conversion.hpp>
 #include <components/misc/pathhelpers.hpp>
@@ -112,7 +116,7 @@ namespace
     // reference to allow automatic cleanup.
     bool parseIncludes(const std::filesystem::path& shaderPath, std::string& source, const std::string& fileName,
         int& fileNumber, std::set<std::filesystem::path> cycleIncludeChecker,
-        std::set<std::filesystem::path>& includedFiles)
+        std::set<std::filesystem::path>& includedFiles, bool* exactBaseline = nullptr)
     {
         includedFiles.insert(shaderPath / fileName);
         // An include is cyclic if it is being included by itself
@@ -167,9 +171,13 @@ namespace
             std::stringstream buffer;
             buffer << includeFstream.rdbuf();
             std::string stringRepresentation = buffer.str();
+            if (exactBaseline && *exactBaseline)
+                *exactBaseline = Shader::IndirectProjection::baselineRaw(
+                    std::filesystem::path(includeFilename).generic_string(), stringRepresentation);
             if (!addLineDirectivesAfterConditionalBlocks(stringRepresentation)
                 || !parseIncludes(
-                    shaderPath, stringRepresentation, includeFilename, fileNumber, cycleIncludeChecker, includedFiles))
+                    shaderPath, stringRepresentation, includeFilename, fileNumber, cycleIncludeChecker, includedFiles,
+                    exactBaseline))
             {
                 Log(Debug::Error) << "In file included from " << fileName << "." << lineNumber;
                 return false;
@@ -193,6 +201,10 @@ namespace Shader
 
         std::unordered_map<std::string, KeysHolder> mShaderFiles;
         std::unordered_map<std::string, std::set<std::filesystem::path>> templateIncludedFiles;
+        // Only GPU visibility needs these extra owned producer certificates.
+        // The expanded raw recipe is pinned before define substitution, and a
+        // hot reload cannot obtain a new certificate from an old validation.
+        std::unordered_map<std::string, std::string> baselineExpandedTemplates;
         std::filesystem::file_time_type mLastAutoRecompileTime;
         bool mHotReloadEnabled;
         bool mTriggerReload;
@@ -253,6 +265,7 @@ namespace Shader
                             templateName); // Can't be Null, if we're here it means the template was added
                         assert(templateIt != manager.mShaderTemplates.end());
                         std::string& shaderSource = templateIt->second;
+                        baselineExpandedTemplates.erase(templateName);
                         std::set<std::filesystem::path> insertedPaths;
                         std::filesystem::path path = (std::filesystem::path(manager.mPath) / templateName);
                         std::ifstream stream;
@@ -547,9 +560,12 @@ namespace Shader
             // parse includes
             int fileNumber = 1;
             std::string source = buffer.str();
+            bool exactBaseline = IndirectProjection::enabled()
+                && IndirectProjection::baselineRaw(templateName, source);
             if (!addLineDirectivesAfterConditionalBlocks(source)
-                || !parseIncludes(mPath, source, templateName, fileNumber, {}, insertedPaths))
+                || !parseIncludes(mPath, source, templateName, fileNumber, {}, insertedPaths, &exactBaseline))
                 return nullptr;
+            if (exactBaseline) mHotReloadManager->baselineExpandedTemplates.emplace(templateName, source);
             mHotReloadManager->templateIncludedFiles[templateName] = std::move(insertedPaths);
             templateIt = mShaderTemplates.insert(std::make_pair(templateName, source)).first;
         }
@@ -571,6 +587,15 @@ namespace Shader
 
             osg::ref_ptr<osg::Shader> shader(new osg::Shader(type ? *type : getShaderType(templateName)));
             shader->setShaderSource(shaderSource);
+            const auto pinned = mHotReloadManager->baselineExpandedTemplates.find(templateName);
+            if (pinned != mHotReloadManager->baselineExpandedTemplates.end() && pinned->second == templateIt->second)
+            {
+                try
+                {
+                shader->getOrCreateUserDataContainer()->addUserObject(new IndirectProjection::Source(*shader, templateName));
+                }
+                catch (const std::bad_alloc&) {} // Optional GPU contract; original shader remains valid.
+            }
             // Assign a unique prefix to allow the SharedStateManager to compare shaders efficiently.
             // Append shader source filename for debugging.
             static unsigned int counter = 0;
@@ -585,7 +610,7 @@ namespace Shader
         return shaderIt->second;
     }
 
-    class SamplerProgram : public osg::Program
+    class SamplerProgram : public VariantProgram
     {
     public:
         SamplerProgram() = default;
@@ -597,6 +622,7 @@ namespace Shader
         META_Object(Shader, SamplerProgram)
 
         bool hasSamplers(const ShaderManager::SamplerBindingMap& samplers) const;
+        bool hasProgramTemplate(const osg::Program* program) const;
 
         void apply(osg::State& state) const override;
 
@@ -605,6 +631,15 @@ namespace Shader
     private:
         std::vector<osg::ref_ptr<osg::Uniform>> mSamplers;
         mutable osg::buffered_value<const PerContextProgram*> mApplied;
+        struct AppliedVariant
+        {
+            GLuint handle = 0;
+            std::uint64_t generation = 0, linkEpoch = 0;
+        };
+        mutable std::unique_ptr<osg::buffered_object<AppliedVariant>> mAppliedVariants
+            = exactProgramVariantsEnabled() ? std::make_unique<osg::buffered_object<AppliedVariant>>() : nullptr;
+        std::optional<ProgramLinkIdentity> mTemplateIdentity;
+        bool mWithoutTemplate = true;
     };
 
     SamplerProgram::SamplerProgram(const ShaderManager::SamplerBindingMap& samplers)
@@ -615,8 +650,11 @@ namespace Shader
 
     SamplerProgram::SamplerProgram(
         const ShaderManager::SamplerBindingMap& samplers, const osg::Program& other, const osg::CopyOp& copyop)
-        : osg::Program(other, copyop)
+        : VariantProgram(other, copyop)
+        , mWithoutTemplate(false)
     {
+        if (exactProgramVariantsEnabled())
+            mTemplateIdentity = ProgramLinkIdentity::capture(other);
         for (const auto& [name, index] : other.getUniformBlockBindingList())
             addBindUniformBlock(name, index);
         for (const auto& [name, unit] : samplers)
@@ -644,10 +682,36 @@ namespace Shader
         return true;
     }
 
+    bool SamplerProgram::hasProgramTemplate(const osg::Program* program) const
+    {
+        return program ? mTemplateIdentity && mTemplateIdentity->matches(*program) : mWithoutTemplate;
+    }
+
     void SamplerProgram::apply(osg::State& state) const
     {
         const PerContextProgram* pcp = getPCP(state);
         const bool relink = pcp->needsLink();
+        const bool exact = exactProgramVariantsEnabled();
+        const auto linkEpoch = exact ? preparedLinkEpoch(state, *pcp) : 0;
+        const auto initialized = exact ? (*mAppliedVariants)[state.getContextID()] : AppliedVariant{};
+        const bool producerRelink = exact && (initialized.handle != pcp->getHandle()
+            || initialized.generation != variantGeneration() || initialized.linkEpoch != linkEpoch);
+        const bool exactFirst = exactProgramVariantsEnabled()
+            && (relink || mApplied[state.getContextID()] != pcp || producerRelink);
+        const PreparedVariantUse prepared = exactFirst ? takePreparedFirstUse(state, *pcp) : PreparedVariantUse{};
+        std::optional<Debug::HitchTrace::Scope> preparedUse;
+        if (exactFirst)
+        {
+            preparedUse.emplace(prepared.ready ? "shader.variant_first_use"
+                : prepared.reused ? "shader.variant_reuse" : "shader.variant_fallback",
+                Debug::HitchTrace::CpuTiming::WallEnvelope);
+            preparedUse->setLink(prepared.receipt);
+            preparedUse->setMetric(0, "context", state.getContextID());
+            preparedUse->setMetric(1, "relink_needed", relink ? 1 : 0);
+            if (!prepared.ready && !prepared.reused)
+                programVariantStats().fallbackUses.fetch_add(1, std::memory_order_relaxed);
+            preparedUse->retain();
+        }
 
         auto& v3Writer = Debug::V3Diagnostics::renderWriter();
         const bool v3Profile = relink && v3Writer.enabled();
@@ -684,18 +748,22 @@ namespace Shader
             return;
 
         const PerContextProgram*& applied = mApplied[state.getContextID()];
-        if (applied == pcp && !relink)
+        if (applied == pcp && !relink && !producerRelink)
             return;
 
         for (const osg::ref_ptr<osg::Uniform>& sampler : mSamplers)
             pcp->apply(*sampler);
         applied = pcp;
+        if (exact)
+            (*mAppliedVariants)[state.getContextID()] = { pcp->getHandle(), variantGeneration(), linkEpoch };
     }
 
     void SamplerProgram::resizeGLObjectBuffers(unsigned int maxSize)
     {
         osg::Program::resizeGLObjectBuffers(maxSize);
         mApplied.resize(maxSize);
+        if (exactProgramVariantsEnabled())
+            mAppliedVariants->resize(maxSize);
     }
 
     osg::ref_ptr<osg::Program> ShaderManager::getProgram(const std::string& templateName, const DefineMap& defines,
@@ -715,11 +783,24 @@ namespace Shader
         const SamplerBindingMap& samplers)
     {
         std::lock_guard<std::mutex> lock(mMutex);
-        ProgramMap::iterator found = mPrograms.find(std::make_pair(vertexShader, fragmentShader));
+        if (!programTemplate)
+            programTemplate = mProgramTemplate;
+        const auto key = std::make_pair(vertexShader, fragmentShader);
+        ProgramMap::iterator found = mPrograms.find(key);
+        const bool exactTemplate = exactProgramVariantsEnabled()
+            && (!programTemplate || ProgramLinkIdentity::capture(*programTemplate).has_value());
+        if (exactTemplate)
+        {
+            const auto [first, last] = mPrograms.equal_range(key);
+            found = std::find_if(first, last, [&](const auto& entry) {
+                const auto* program = static_cast<const SamplerProgram*>(entry.second.get());
+                return program->hasSamplers(samplers) && program->hasProgramTemplate(programTemplate);
+            });
+            if (found == last)
+                found = mPrograms.end();
+        }
         if (found == mPrograms.end())
         {
-            if (!programTemplate)
-                programTemplate = mProgramTemplate;
             osg::ref_ptr<SamplerProgram> program = programTemplate
                 ? new SamplerProgram(samplers, *programTemplate, osg::CopyOp::SHALLOW_COPY)
                 : new SamplerProgram(samplers);
@@ -727,7 +808,12 @@ namespace Shader
             program->addShader(fragmentShader);
             addLinkedShaders(vertexShader, program);
             addLinkedShaders(fragmentShader, program);
-            found = mPrograms.insert(std::make_pair(std::make_pair(vertexShader, fragmentShader), program)).first;
+            if (IndirectProjection::enabled())
+            {
+                try { IndirectProjection::certify(*program); }
+                catch (const std::bad_alloc&) {} // Keep exact normal rendering under contract pressure.
+            }
+            found = mPrograms.insert(std::make_pair(key, program));
         }
         else
             assert(static_cast<SamplerProgram*>(found->second.get())->hasSamplers(samplers));
@@ -751,6 +837,9 @@ namespace Shader
     {
         std::lock_guard<std::mutex> lock(mMutex);
         mGlobalDefines = globalDefines;
+        if (exactProgramVariantsEnabled())
+            for (const auto& [pair, program] : mPrograms)
+                static_cast<const VariantProgram*>(program.get())->invalidateVariantPreparations();
         // clear out linked dependencies - changing defines may make them obsolete
         for (const auto& [pair, program] : mPrograms)
         {

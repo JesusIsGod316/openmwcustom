@@ -5,11 +5,13 @@
 #include <components/debug/runtimediagnostics.hpp>
 
 #include <components/sceneutil/workqueue.hpp>
+#include <components/resource/ramretention.hpp>
 
 #include <osg/ref_ptr>
 
 #include <map>
 #include <span>
+#include <memory>
 
 namespace osg
 {
@@ -75,6 +77,8 @@ namespace MWWorld
 
         /// Enables the creation of instances in the preloading thread.
         void setPreloadInstances(bool preload);
+        // Startup-only independent C1/C4. Existing pressure retirement wins.
+        void setColdRetention(bool enabled, bool coordinateHeadroom = false);
 
         std::size_t getMaxCacheSize() const { return mMaxCacheSize; }
 
@@ -159,6 +163,11 @@ namespace MWWorld
         std::size_t mExpired = 0;
         std::size_t mLoaded = 0;
         std::size_t mPressureReleased = 0;
+        std::unique_ptr<Resource::ColdOwnerRetention<const CellStore*>> mColdRetention;
+        Resource::RamHeadroomPolicy mColdHeadroom;
+        bool mCoordinateColdHeadroom = false;
+        bool mColdBaseRetention = false;
+        std::size_t mColdRetired = 0;
 
         std::size_t mV311TerrainTargetCompleted = 0;
         std::size_t mV311TerrainTargetReplaced = 0;

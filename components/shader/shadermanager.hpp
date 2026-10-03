@@ -112,7 +112,7 @@ namespace Shader
         typedef std::map<MapKey, osg::ref_ptr<osg::Shader>> ShaderMap;
         ShaderMap mShaders;
 
-        typedef std::map<std::pair<osg::ref_ptr<osg::Shader>, osg::ref_ptr<osg::Shader>>, osg::ref_ptr<osg::Program>>
+        typedef std::multimap<std::pair<osg::ref_ptr<osg::Shader>, osg::ref_ptr<osg::Shader>>, osg::ref_ptr<osg::Program>>
             ProgramMap;
         ProgramMap mPrograms;
 

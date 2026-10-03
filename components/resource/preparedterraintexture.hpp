@@ -11,6 +11,7 @@
 #include <osg/observer_ptr>
 #include <osgUtil/IncrementalCompileOperation>
 #include <components/sceneutil/glcalltrace.hpp>
+#include "uploadpool.hpp"
 
 namespace Resource
 {
@@ -47,6 +48,45 @@ namespace Resource
             // This scope is exact producer ownership, not cached-attribute
             // inference. Callback-managed uploads deliberately remain unknown.
             SceneUtil::GLCallTrace::ScopedTextureApply ownership(state,*this);
+            if (UploadPool::requested() && _image && !getTextureObject(state.getContextID())
+                && !_image->getPixelBufferObject() && !getUnRefImageDataAfterApply() && !getReadPBuffer()
+                && getBorderWidth()==0 && !getResizeNonPowerOfTwoHint()
+                && !getUseHardwareMipMapGeneration() && UploadPool::eligible(*_image))
+            {
+                GLsizei width=0,height=0,levels=0;
+                computeInternalFormat();
+                computeRequiredTextureDimensions(state,*_image,width,height,levels);
+                if (width==_image->s() && height==_image->t()
+                    && levels==static_cast<GLsizei>(_image->getNumMipmapLevels())
+                    && (_internalFormat==GL_ALPHA || _internalFormat==GL_ALPHA8))
+                {
+                    auto* pool=UploadPool::find(state,true);
+                    auto* slot=pool ? pool->acquire(state,_image->getTotalSizeInBytesIncludingMipmaps()) : nullptr;
+                    if (slot)
+                    {
+                        _textureWidth=width; _textureHeight=height; _numMipmapLevels=levels;
+                        auto* object=generateAndAssignTextureObject(state.getContextID(),GL_TEXTURE_2D,
+                            levels,_internalFormat,width,height,1,0);
+                        // Recycled allocated objects may have immutable storage.
+                        // Ordinary OSG subload owns that case and its metadata.
+                        if(object->isAllocated())
+                        {
+                            _modifiedCount[state.getContextID()]=_image->getModifiedCount()-1;
+                            osg::Texture2D::apply(state); return;
+                        }
+                        object->bind(); applyTexParameters(GL_TEXTURE_2D,state);
+                        if (UploadPool::upload(state,*pool,*slot,*_image,_internalFormat))
+                        {
+                            object->setAllocated(levels,_internalFormat,width,height,1,0);
+                            _modifiedCount[state.getContextID()]=_image->getModifiedCount();
+                        }
+                        else
+                        {
+                            object->release(); _textureObjectBuffer[state.getContextID()]=nullptr;
+                        } // required ordinary upload remains authoritative
+                    }
+                }
+            }
             osg::Texture2D::apply(state);
         }
 
@@ -83,6 +123,7 @@ namespace Resource
 
         void releaseGLObjects(osg::State* state = nullptr) const override
         {
+            if (state && UploadPool::requested()) UploadPool::release(*state);
             if (state && state->getContextID() < mPrepared.size()) mPrepared[state->getContextID()].reset();
             else mPrepared.setAllElementsTo(std::nullopt);
             osg::Texture2D::releaseGLObjects(state);

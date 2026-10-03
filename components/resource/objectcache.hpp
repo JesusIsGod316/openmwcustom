@@ -129,6 +129,127 @@ namespace Resource
         bool memoryAccountingEnabled() const noexcept { return mBudget != nullptr; }
         SpeculativeBudget* speculativeBudget() const noexcept { return mBudget; }
 
+        // Startup-only typed manager policy. A wrapper may be cache-only while
+        // its shared payload has live consumers (notably parsed NIF files).
+        void setExternalOwnerTest(bool (*test)(const osg::Object*) noexcept) { mExternalOwnerTest = test; }
+
+        struct ColdCandidate
+        {
+            KeyType key;
+            ObjectCacheLease lease;
+        };
+        // A bounded cursor never scans an object graph. Detach a cache-only
+        // value atomically: its returned lease is now the sole owner. A demand
+        // during encoding takes the ordinary loader path, never reads a buffer
+        // that a concurrent consumer could mutate under the codec.
+        template<class Eligible>
+        std::optional<ColdCandidate> detachColdCandidate(double referenceTime, double age,
+            Eligible&& eligible, std::size_t scanLimit = 32)
+        {
+            std::lock_guard lock(mMutex);
+            for (std::size_t scanned = 0; scanned < scanLimit; ++scanned)
+            {
+                if (auto* budget = CacheMaintenanceScope::current(); budget && !budget->scan()) break;
+                auto it = mColdCursor ? mItems.upper_bound(*mColdCursor) : mItems.begin();
+                if (it == mItems.end()) { mColdCursor.reset(); break; }
+                mColdCursor = it->first;
+                auto& item = it->second;
+                if (!item.mValue || externallyOwned(item) || !item.mSourceRevision
+                    || item.mLastUsage == 0 || item.mLastUsage > referenceTime - age)
+                    continue;
+                if (!eligible(item.mValue.get())) continue;
+                if (std::exchange(item.mTrimRecentlyUsed, false)) continue;
+                if (auto* budget = CacheMaintenanceScope::current();
+                    budget && !budget->release(item.mCharge ? item.mCharge->bytes() : 0)) break;
+                ColdCandidate result{it->first, {}};
+                result.lease.mCharge = item.mCharge;
+                result.lease.mValue = item.mValue;
+                result.lease.mLifecycle = item.mLifecycle;
+                result.lease.mRevision = item.mRevision;
+                result.lease.mSourceRevision = item.mSourceRevision;
+                result.lease.mOwnerEstimate = item.mOwnerEstimate;
+                retire(item, Debug::ResourceLifecycle::Retirement::Removed);
+                // The lease protects the sole payload and charge; this is not
+                // a physical reclamation receipt.
+                mItems.erase(it);
+                return result;
+            }
+            return {};
+        }
+
+        // Publish a compressed replacement only if demand has not installed a
+        // canonical winner meanwhile. The detached original stays alive until
+        // this completes (or is republished on codec refusal/failure).
+        bool publishDetachedCold(const auto& key, const ObjectCacheLease& expected,
+            osg::Object* replacement, std::uint64_t backingBytes, SpeculativeBudget::Stage* reservation = nullptr)
+        {
+            if (!replacement || !expected || !backingBytes) return false;
+            Item incoming(replacement, 0);
+            incoming.mSourceRevision = expected.mSourceRevision;
+            incoming.mOwnerEstimate = backingBytes;
+            if (mBudget)
+                incoming.mCharge = mBudget->track({replacement, 3u}, backingBytes, true, reservation);
+            {
+                std::lock_guard lock(mMutex);
+                if (mItems.contains(key) || expected.mValue->referenceCount() != 1) return false;
+                auto it = mItems.emplace(key, std::move(incoming)).first;
+                publish(it->second);
+            }
+            return true;
+        }
+
+        // Restore/load races publish one canonical winner. The expected cold
+        // value is immutable and remains alive for concurrent readers; replacing
+        // its cache reference never frees those readers' backing.
+        std::pair<osg::ref_ptr<osg::Object>, bool> replaceIfSameOrInsert(const auto& key,
+            const osg::Object* expected, osg::Object* object, std::uint64_t sourceRevision)
+        {
+            Item incoming(object, 0);
+            incoming.mSourceRevision = sourceRevision;
+            if (mBudget && object)
+            {
+                const auto* image = dynamic_cast<const osg::Image*>(object);
+                const auto* identity = image && image->data() ? static_cast<const void*>(image->data()) : object;
+                incoming.mCharge = SpeculativeScope::track(mBudget, {identity, image ? 1u : 2u},
+                    image ? image->getTotalSizeInBytesIncludingMipmaps() : 0, image != nullptr);
+            }
+            Item displaced;
+            osg::ref_ptr<osg::Object> result;
+            bool inserted = false;
+            {
+                std::lock_guard lock(mMutex);
+                auto it = mItems.find(key);
+                if (it != mItems.end() && it->second.mValue.get() != expected)
+                    result = it->second.mValue;
+                else
+                {
+                    if (it == mItems.end()) it = mItems.emplace(key, std::move(incoming)).first;
+                    else
+                    {
+                        displaced = std::move(it->second);
+                        retire(displaced, Debug::ResourceLifecycle::Retirement::Replaced);
+                        it->second = std::move(incoming);
+                    }
+                    publish(it->second); result = it->second.mValue; inserted = true;
+                }
+            }
+            return {std::move(result), inserted};
+        }
+
+        bool removeIfSame(const auto& key, const ObjectCacheLease& expected)
+        {
+            typename decltype(mItems)::node_type release;
+            {
+                std::lock_guard lock(mMutex);
+                const auto it = mItems.find(key);
+                if (it == mItems.end() || it->second.mValue != expected.mValue
+                    || it->second.mRevision != expected.mRevision) return false;
+                retire(it->second, Debug::ResourceLifecycle::Retirement::Removed);
+                release = mItems.extract(it);
+            }
+            return true;
+        }
+
         void update(double referenceTime, double expiryDelay)
         {
             Debug::HitchTrace::Scope scan("resource.cache_expiry_scan", Debug::HitchTrace::CpuTiming::WallEnvelope);
@@ -145,7 +266,7 @@ namespace Resource
 
                     // update last usage timestamp if item is being referenced externally
                     // or initialize if not set
-                    if ((item.mValue != nullptr && item.mValue->referenceCount() > 1) || item.mLastUsage == 0)
+                    if (externallyOwned(item) || item.mLastUsage == 0)
                         item.mLastUsage = referenceTime;
 
                     // skip items that have been accessed since expiryTime
@@ -191,7 +312,7 @@ namespace Resource
                     mTrimCursor = it->first;
                     Item& item = it->second;
                     const bool recent = std::exchange(item.mTrimRecentlyUsed, false);
-                    if (!recent && item.mValue && item.mValue->referenceCount() == 1)
+                    if (!recent && item.mValue && !externallyOwned(item))
                     {
                         const bool neverHit = item.mDiagnosticHits == 0;
                         retire(item, Debug::ResourceLifecycle::Retirement::Pressure);
@@ -222,7 +343,7 @@ namespace Resource
                     for (auto& value : mItems)
                         retire(value.second, Debug::ResourceLifecycle::Retirement::Cleared);
                 release.swap(mItems);
-                mTrimCursor.reset(); mExpiryCursor.reset();
+                mTrimCursor.reset(); mExpiryCursor.reset(); mColdCursor.reset();
             } // final releases happen outside the cache mutex
             { Debug::HitchTrace::Scope finalRelease("resource.cache_final_release");
               finalRelease.setMetric(0, "owners", release.size()); release.clear(); }
@@ -535,18 +656,29 @@ namespace Resource
                     if (pressure)
                     {
                         const bool recent = std::exchange(item.mTrimRecentlyUsed, false);
-                        eligible = !recent && item.mValue && item.mValue->referenceCount() == 1;
+                        eligible = !recent && item.mValue && !externallyOwned(item);
                     }
                     else
                     {
-                        if ((item.mValue && item.mValue->referenceCount() > 1) || item.mLastUsage == 0)
+                        if (externallyOwned(item) || item.mLastUsage == 0)
                             item.mLastUsage = referenceTime;
                         eligible = item.mLastUsage <= referenceTime - expiryDelay;
                     }
                     reachedEnd = std::next(it) == mItems.end();
                     if (eligible && budget.release(item.mCharge ? item.mCharge->bytes() : 0))
                     {
-                        if (pressure) ++mPressureTrimmed; else ++mExpired;
+                        if (pressure)
+                        {
+                            ++mPressureTrimmed;
+                            if (Debug::RuntimeDiagnostics::enabled() && item.mDiagnosticHits == 0)
+                                ++mDiagnosticPressureWithoutHit;
+                        }
+                        else
+                        {
+                            ++mExpired;
+                            if (Debug::RuntimeDiagnostics::enabled() && item.mDiagnosticHits == 0)
+                                ++mDiagnosticExpiredWithoutHit;
+                        }
                         retire(item, pressure ? Debug::ResourceLifecycle::Retirement::Pressure
                                               : Debug::ResourceLifecycle::Retirement::Expired);
                         release = mItems.extract(it); ++removed;
@@ -573,7 +705,8 @@ namespace Resource
 
         std::map<KeyType, Item, std::less<>> mItems;
         mutable std::mutex mMutex;
-        std::optional<KeyType> mTrimCursor, mExpiryCursor;
+        std::optional<KeyType> mTrimCursor, mExpiryCursor, mColdCursor;
+        bool (*mExternalOwnerTest)(const osg::Object*) noexcept = nullptr;
         SpeculativeBudget* mBudget = nullptr; // ResourceSystem outlives this cache
         std::size_t mGet = 0;
         std::size_t mHit = 0;
@@ -581,6 +714,12 @@ namespace Resource
         std::uint64_t mPressureTrimmed = 0, mDiagnosticPressureWithoutHit = 0;
         std::uint64_t mDiagnosticExpiredWithoutHit = 0;
         std::uint64_t mLeaseRevision = 0; // guarded by mMutex
+
+        bool externallyOwned(const Item& item) const noexcept
+        {
+            return item.mValue && (item.mValue->referenceCount() > 1
+                || (mExternalOwnerTest && mExternalOwnerTest(item.mValue.get())));
+        }
 
         Item* find(const auto& key)
         {

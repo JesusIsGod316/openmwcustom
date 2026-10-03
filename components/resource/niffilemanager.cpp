@@ -2,10 +2,13 @@
 #include "niffilemanager.hpp"
 
 #include <iostream>
+#include <algorithm>
+#include <cmath>
 
 #include <osg/Object>
 
 #include <components/vfs/manager.hpp>
+#include <components/debug/debuglog.hpp>
 
 #include "objectcache.hpp"
 #include "preloadestimate.hpp"
@@ -72,7 +75,33 @@ namespace Resource
     {
     }
 
-    NifFileManager::~NifFileManager() = default;
+    NifFileManager::~NifFileManager()
+    {
+        if (mColdRetentionSeconds > 0)
+        {
+            const auto stats = mCache->getStats();
+            Log(Debug::Info) << "RAM C2 parsed NIF retention: configured_ttl_s=" << mColdRetentionSeconds
+                << " effective_ttl_s=" << (std::min)(mExpiryDelay, mColdRetentionSeconds)
+                << " get=" << stats.mGet << " hit=" << stats.mHit
+                << " expired_all_policies=" << stats.mExpired << " size=" << stats.mSize;
+        }
+    }
+
+    void NifFileManager::setColdRetentionSeconds(double seconds)
+    {
+        mColdRetentionSeconds = std::isfinite(seconds) && seconds > 0 ? seconds : 0;
+        mCache->setExternalOwnerTest(mColdRetentionSeconds > 0
+            ? +[](const osg::Object* object) noexcept {
+                const auto* holder = dynamic_cast<const NifFileHolder*>(object);
+                return holder && holder->mNifFile.use_count() > 1;
+            } : nullptr);
+    }
+
+    void NifFileManager::updateCache(double referenceTime)
+    {
+        mCache->update(referenceTime, mColdRetentionSeconds > 0
+            ? (std::min)(mExpiryDelay, mColdRetentionSeconds) : mExpiryDelay);
+    }
 
     Nif::NIFFilePtr NifFileManager::get(VFS::Path::NormalizedView name)
     {
@@ -80,6 +109,16 @@ namespace Resource
         Debug::ResourceLifecycle::RequestScope lifecycle(Debug::ResourceLifecycle::Kind::Nif,
             name.value(), mVFS, SpeculativeScope::active(), mCache.get());
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(name);
+        const auto generation = mVFS->getIndexGeneration();
+        if (mColdRetentionSeconds > 0 && obj)
+        {
+            const auto lease = mCache->getLeaseFromObjectCache(name, obj.get());
+            if (!lease || lease.mSourceRevision != generation)
+            {
+                if (lease) mCache->removeIfSame(name.value(), lease);
+                obj = nullptr;
+            }
+        }
         if (obj != nullptr)
             return static_cast<NifFileHolder*>(obj.get())->mNifFile;
 
@@ -94,8 +133,24 @@ namespace Resource
         { Debug::HitchTrace::Scope hitchParse("resource.nif_parse", {}, name.value());
           reader.parse(std::move(stream)); }
         obj = new NifFileHolder(file);
-        mCache->addEntryToObjectCache(name.value(), obj);
-        return file;
+        Nif::NIFFilePtr result = file;
+        if (mColdRetentionSeconds > 0)
+        {
+            if (generation == mVFS->getIndexGeneration())
+            {
+                auto [winner, inserted] = mCache->replaceIfSameOrInsert(name.value(), nullptr, obj, generation);
+                if (const auto* canonical = dynamic_cast<const NifFileHolder*>(winner.get())) result = canonical->mNifFile;
+            }
+        }
+        else mCache->addEntryToObjectCache(name.value(), obj);
+        return result;
+    }
+
+    void NifFileManager::reportRuntimeDiagnostics(double referenceTime) const noexcept
+    {
+        if (mDiagnosticSampler.due())
+            mCache->reportRuntimeDiagnostics("parsed_nif", referenceTime,
+                mColdRetentionSeconds > 0 ? (std::min)(mExpiryDelay, mColdRetentionSeconds) : mExpiryDelay);
     }
 
     void NifFileManager::reportStats(unsigned int frameNumber, osg::Stats* stats) const

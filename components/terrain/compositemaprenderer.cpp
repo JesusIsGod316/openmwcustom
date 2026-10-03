@@ -4,6 +4,7 @@
 #include <osg/RenderInfo>
 #include <osg/Texture2D>
 #include <osg/Program>
+#include <components/shader/programvariant.hpp>
 #include <osg/FrameStamp>
 #include <osg/observer_ptr>
 
@@ -532,7 +533,7 @@ namespace Terrain
                     struct Pop { osg::State& state; ~Pop() { state.popStateSet(); } } pop{state};
                     osg::ref_ptr<osg::Program::PerContextProgram> before = owner.program->getPCP(state);
                     const bool linked = before && before->isLinked() && !before->needsLink();
-                    owner.program->compileGLObjects(state);
+                    Shader::compileExactProgramVariant(*owner.program, state, submission.id());
                     auto* pcp = owner.program->getPCP(state);
                     auto& result = mPreparation->step->dependencies[mDependency];
                     if (pcp && pcp->isLinked() && !pcp->needsLink())
@@ -718,7 +719,7 @@ namespace Terrain
                     // variant. Applying the whole State here would also upload
                     // unrelated textures before their individual admission.
                     state.pushStateSet(dep.pass);
-                    dep.program->compileGLObjects(state);
+                    Shader::compileExactProgramVariant(*dep.program, state);
                     auto* program = dep.program->getPCP(state);
                     if (program && program->isLinked() && !program->needsLink())
                     {

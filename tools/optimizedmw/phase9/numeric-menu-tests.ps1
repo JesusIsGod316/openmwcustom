@@ -16,7 +16,7 @@ function Read-Host {
 }
 function Assert-Selection {
     param([object]$Actual,[object]$Expected,[string]$Depth)
-    foreach($property in @('selection_id','mask','attack_mask','focused_preset','candidate','composite_progress','composite_cpu_mips','legacy_mode')){
+    foreach($property in @('selection_id','mask','attack_mask','focused_preset','candidate','composite_progress','composite_cpu_mips','legacy_mode','ram_mask','architecture_mask')){
         if($Actual.$property -cne $Expected.$property){throw ('Menu changed '+$property+' for '+$Expected.selection_id)}
     }
     if($Actual.trace_level -ne $Depth -or $Actual.system_trace -or $Actual.gpu_query_defer -ne ($Depth -eq 'Deep')){throw 'Trace depth changed a mechanism or recorder default'}
@@ -28,7 +28,7 @@ $fixture=Join-Path $temporaryRoot ('p9-numeric-'+[Guid]::NewGuid().ToString('N')
 New-Item -ItemType Directory -Path $fixture | Out-Null
 try{
     $count=0
-    foreach($category in 1..9){
+    foreach($category in 1..11){
         $candidates=@(Get-OptimizedMWNumericCandidates $category)
         foreach($index in 0..($candidates.Count-1)){
             if($category -eq 8 -and $index -eq 0){continue}
@@ -39,7 +39,7 @@ try{
                 Set-FixtureAnswers $replies
                 $actual=Read-OptimizedMWNumericTest
                 Assert-Selection $actual $candidates[$index] $depth
-                $hashes+=Get-Phase9IdentityHash ($actual | Select-Object mask,attack_mask,candidate,composite_progress,composite_cpu_mips,legacy_mode)
+                $hashes+=Get-Phase9IdentityHash ($actual | Select-Object mask,attack_mask,candidate,composite_progress,composite_cpu_mips,legacy_mode,ram_mask,architecture_mask)
                 $count++
             }
             if($hashes[0] -cne $hashes[1]){throw 'Normal/Deep gameplay vectors differ'}
@@ -69,6 +69,28 @@ try{
         if(-not $selection.composite_progress -or -not ($selection.attack_mask -band 256)){throw 'STEP prerequisite was not enabled'}
         Set-OptimizedMWCombinedToggle $selection 9
         if($selection.composite_progress -or ($selection.attack_mask -band 256)){throw 'Removing STEP left progress on'}
+    }
+    Set-FixtureAnswers @('8','1','19','1','1','2','3','4','5','0','2','6','7','0','0','16','1','1')
+    $actual=Read-OptimizedMWNumericTest
+    if($actual.ram_mask -ne 31 -or $actual.architecture_mask -ne 116){throw 'Nested RAM/renderer combination vector lost'}
+    Set-OptimizedMWArchitectureToggle $actual $false 3
+    if($actual.architecture_mask -band 52){throw 'Removing packets left dependent indirect/GPU candidates'}
+    Set-OptimizedMWArchitectureToggle $actual $false 6
+    if(($actual.architecture_mask -band 52) -ne 52){throw 'GPU visibility did not enable explicit prerequisites'}
+    Set-OptimizedMWArchitectureToggle $actual $false 5
+    if($actual.architecture_mask -band 48){throw 'Removing indirect left GPU visibility enabled'}
+    Set-OptimizedMWArchitectureToggle $actual $false 4
+    if(-not $actual.composite_cpu_mips -or -not ($actual.architecture_mask -band 8)){throw 'Upload staging requires supplied mipmaps'}
+    Set-OptimizedMWCombinedToggle $actual 11
+    if($actual.composite_cpu_mips -or ($actual.architecture_mask -band 8)){throw 'Removing mipmaps left upload staging enabled'}
+    Set-OptimizedMWArchitectureEnvironment 31 127
+    if($env:OPENMW_RAM_C5_COLD_IMAGES -ne '1' -or $env:OPENMW_EXACT_PROGRAM_VARIANTS -ne '1'){throw 'Candidate environment activation lost'}
+    Set-OptimizedMWArchitectureEnvironment 0 0
+    foreach($name in @('OPENMW_RAM_C1_SELECTIVE','OPENMW_RAM_C2_PARSED_NIF','OPENMW_RAM_C3_IDLE_COLLISION',
+        'OPENMW_RAM_C4_EARLY_RECLAIM','OPENMW_RAM_C5_COLD_IMAGES','OPENMW_EXACT_PROGRAM_VARIANTS',
+        'OPENMW_P9_EXACT_PAGING_WORK','OPENMW_P9_PERSISTENT_PACKETS','OPENMW_P9_UPLOAD_POOL',
+        'OPENMW_P9_MULTI_DRAW_INDIRECT','OPENMW_P9_GPU_VISIBILITY','OPENMW_P9_FROZEN_DEFORMATION')){
+        if([Environment]::GetEnvironmentVariable($name,'Process') -cne '0'){throw ('Control left candidate flag '+$name)}
     }
     $save=Join-Path $fixture 'save.omwsave';[IO.File]::WriteAllBytes($save,[byte[]]@(1,2,3))
     Set-FixtureAnswers @('1')

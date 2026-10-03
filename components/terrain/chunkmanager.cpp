@@ -16,6 +16,7 @@
 #include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/preparedterraintexture.hpp>
 #include <components/resource/compositecpumips.hpp>
+#include <components/resource/programvariantcompile.hpp>
 #include <components/debug/v3diagnostics.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/v321classifiedcompileset.hpp>
@@ -261,6 +262,49 @@ namespace Terrain
                 }
                 compileList._compileOps.swap(rebuilt._compileOps);
             }
+        }
+
+        void prepareExactTerrainPrograms(Resource::V321ClassifiedCompileSet& compileSet,
+            TerrainDrawable& geometry, const osg::StateSet* root,
+            const osgUtil::IncrementalCompileOperation::ContextSet& contexts)
+        {
+            if (!Shader::exactProgramVariantsEnabled() || contexts.size() != 1)
+                return;
+            auto* context = *contexts.begin();
+            osgUtil::IncrementalCompileOperation::CompileList prepared;
+            std::unordered_set<const osg::Program*> replaced;
+            std::set<std::pair<const osg::Program*, std::string>> variants;
+            for (const auto& pass : geometry.getPasses())
+            {
+                if (variants.size() >= 64)
+                    break; // Remaining passes retain ordinary first-use fallback.
+                auto* program = pass ? dynamic_cast<osg::Program*>(pass->getAttribute(osg::StateAttribute::PROGRAM)) : nullptr;
+                if (!program)
+                    continue;
+                const std::vector<const osg::StateSet*> path{ root, pass.get() };
+                const auto defines = Shader::ProgramDefineSnapshot::fromStateSets(*program, path);
+                if (!defines.bounded || !variants.emplace(program, defines.string).second)
+                    continue;
+                if (auto op = Resource::exactProgramCompileOp(context, program, path))
+                {
+                    prepared.add(op.get());
+                    replaced.insert(program);
+                }
+            }
+            if (replaced.empty())
+                return;
+            if (compileSet._compileMap.find(context) == compileSet._compileMap.end())
+                ++compileSet._numberCompileListsToCompile;
+            auto& list = compileSet._compileMap[context];
+            for (const auto& op : list._compileOps)
+            {
+                const auto* program = dynamic_cast<const osgUtil::IncrementalCompileOperation::CompileProgramOp*>(op.get());
+                if (!program || replaced.find(program->_program.get()) == replaced.end())
+                    prepared.add(op.get());
+            }
+            // Exact pass Programs lead this same bounded ICO set. Texture and
+            // geometry realization keeps its original ordering after them.
+            list._compileOps.swap(prepared._compileOps);
         }
     }
 
@@ -717,12 +761,20 @@ namespace Terrain
                 compileSet->buildCompileMap(ico->getContextSet());
                 phaseTerrainCompileSetV2(*compileSet, *geometry,
                     static_cast<bool>(Settings::cells().mOptimizedMWTerrainSplitVertexBuffers));
+                prepareExactTerrainPrograms(*compileSet, *geometry, mMultiPassRoot, ico->getContextSet());
                 ico->add(compileSet, false);
             }
             else if (Settings::cells().mOptimizedMWTerrainPhasedCompile)
             {
                 compileSet->buildCompileMap(ico->getContextSet());
                 phaseTerrainCompileSet(*compileSet, *geometry);
+                prepareExactTerrainPrograms(*compileSet, *geometry, mMultiPassRoot, ico->getContextSet());
+                ico->add(compileSet, false);
+            }
+            else if (Shader::exactProgramVariantsEnabled())
+            {
+                compileSet->buildCompileMap(ico->getContextSet());
+                prepareExactTerrainPrograms(*compileSet, *geometry, mMultiPassRoot, ico->getContextSet());
                 ico->add(compileSet, false);
             }
             else

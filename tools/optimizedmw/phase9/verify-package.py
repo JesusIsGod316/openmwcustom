@@ -16,6 +16,8 @@ files=['openmw.exe','CI-ID.txt','START-OptimizedMW-Test.bat','OptimizedMW_Test.p
        'OptimizedMW_SystemTrace.ps1','OptimizedMW_QualifySystemTrace.ps1','OptimizedMW_SystemTraceLink.ps1','OptimizedMW-SystemTrace.wprp','START-OptimizedMW-SystemTrace.bat','HITCH-DIAGNOSTICS.md','HITCH-DIAGNOSTICS6.md','LUA-ALLOCATOR-GC-DIAGNOSTICS.md','RESOURCE-LIFECYCLE-DIAGNOSTICS.md','COMPOSITE-PROGRESS-CANDIDATE.md']
 for name in files:
     assert (root/name).is_file() and (root/name).stat().st_size>0,name
+files.append('ARCHITECTURE-CANDIDATES.md')
+assert (root/files[-1]).is_file() and (root/files[-1]).stat().st_size>0
 assert (root/'openmw.exe').read_bytes()[:2]==b'MZ', 'not a Windows PE executable'
 assert sorted(p.name.lower() for p in root.glob('*.bat'))==['start-optimizedmw-systemtrace.bat','start-optimizedmw-test.bat']
 assert os.environ['EXPECTED_COMMIT'] in (root/'CI-ID.txt').read_text()

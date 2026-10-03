@@ -32,6 +32,7 @@ namespace Resource
     class ResourceSystem;
     struct StaticTextureProgramPreparation;
     struct StaticTextureProgramAdmission;
+    class V321ResourceCompileLifetime;
 }
 
 namespace MWWorld
@@ -71,6 +72,8 @@ namespace MWRender
         osg::ref_ptr<osg::Texture2D> mStaticPreparationTexture;
         osg::ref_ptr<osg::Program> mStaticPreparationProgram;
         bool mStaticPreparationAttempted = false;
+        std::shared_ptr<Resource::V321ResourceCompileLifetime> mProgramVariantPreparation;
+        osg::ref_ptr<osg::Program> mProgramVariantTarget;
 
         std::unique_ptr<RippleSimulation> mSimulation;
 

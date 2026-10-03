@@ -106,6 +106,7 @@ function New-Phase9RunManifest {
         dynamic_motion=($Mode.DynamicMotion -eq '1');motion_view=($Mode.View -eq '1');
         composite_progress=($env:OPENMW_HITCH_COMPOSITE_PROGRESS -eq '1');
         composite_cpu_mips=($env:OPENMW_HITCH_COMPOSITE_CPU_MIPS -eq '1');
+        ram_mask=[int]$Mode.RamMask;renderer_mask=[int]$Mode.ArchitectureMask;
         hitch_mechanisms=$HitchCombination}
     $families=[ordered]@{
         basic=[ordered]@{requested=$true;coverage='existing basic frame/render/streaming measurements; not telemetry-free'};
@@ -128,6 +129,8 @@ function New-Phase9RunManifest {
             coverage='Final query accounting after producer join; pending/active are missing results, not zero GPU time. Timestamp intervals include submission gaps/idle; no GPU-active proof.'};
         hitch_mechanisms=[ordered]@{requested=$HitchCombination;
             coverage='Independent startup switches; resource denial, invalidation and demand fallback remain possible. Selection alone is not execution proof.'};
+        architecture_candidates=[ordered]@{revision=1;ram_mask=[int]$Mode.RamMask;renderer_mask=[int]$Mode.ArchitectureMask;
+            coverage='Independent requested startup mechanisms; normal engine shutdown counters report execution and fallback. Shared-context preparation remains a separate native fixture. Pipeline bounds command-buffer ownership only.'};
         hitch_v2_attribution=[ordered]@{requested=($Mode.Trace -eq '1');channel='p9-hitch-spans.csv';
             coverage='Additional nested UI, animation preparation, terrain publication and composite pass/restore spans. Existing threshold and loss qualification apply; child wall times are not additive.'};
         hitch_diagnostics6=[ordered]@{requested=($Mode.Trace -eq '1');revision=2;channel='p9-hitch-spans.csv';
@@ -163,6 +166,10 @@ function New-Phase9RunManifest {
         launcher_selection=[ordered]@{menu_revision=$(if($Mode.NumericMenuRevision){[int]$Mode.NumericMenuRevision}else{$null});selection_id=$(if($Mode.NumericSelectionId){[string]$Mode.NumericSelectionId}else{'explicit_cli'});
             navigation='numbers_only_nested_categories';depth_is_independent=$true};
         phase9_mode=$Mode;candidate=$Candidate;candidate_sha256=(Get-Phase9IdentityHash $Candidate);
+        architecture_candidates=[ordered]@{ram_mask=[int]$Mode.RamMask;renderer_mask=[int]$Mode.ArchitectureMask;
+            revision=1;activation='requested_flags_require_runtime_counters';
+            bounded_pipeline_scope='two_owned_GPU_command_slots_not_simulation_run_ahead';
+            shared_context_scope='independent_two_context_validation_fixture_only'};
         trace_level=$(if($Mode.Trace -eq '1'){'DEEP'}else{'NORMAL'});
         gameplay_features=$gameplayFeatures;gameplay_features_sha256=(Get-Phase9IdentityHash $gameplayFeatures);
         executable=(Get-Phase9FileIdentity (Join-Path $GameDir 'openmw.exe'));

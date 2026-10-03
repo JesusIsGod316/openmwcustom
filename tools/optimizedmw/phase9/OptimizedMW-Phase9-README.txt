@@ -14,6 +14,13 @@ Categories (these are navigation numbers, not engine bit masks):
   7 = File I/O                 original / refill / resident seek / both
   8 = Combined tests           custom toggles and named combinations
   9 = Advanced and earlier experiments   temporal/motion/earlier preparation
+ 10 = RAM retention and compression      cold owners, NIF, collision, headroom, LZ4
+ 11 = Renderer architecture experiments  shaders, paging, packets, uploads, GPU
+
+See ARCHITECTURE-CANDIDATES.md for exact scopes, bounds and recommended pairs.
+Every RAM and renderer candidate starts off in the retained control. Category
+10 and 11 select one candidate or a defined combination; run depth remains
+independent. Shared-context preparation is a separate native prototype.
 
 After selecting the optimization:
   1 = Normal performance run
@@ -42,6 +49,9 @@ COMBINED TESTS
 Choose 8 / 1 to build a combination. Each numbered mechanism is displayed ON/off.
 Select its number to toggle it; choose 16 to continue to file I/O and run depth.
 17 resets to retained control; 18 turns all candidates off; 0 goes back.
+19 opens nested RAM and renderer toggles. GPU visibility enables indirect draws
+and packets; removing either prerequisite removes dependent candidates. Upload
+staging enables supplied mips; removing mips also disables upload staging.
 Warm keyframes visibly enable required animation retention/source preparation.
 Removing retention or source preparation also removes dependent warm keyframes.
 Progress repair visibly enables STEP; removing STEP also removes progress repair.

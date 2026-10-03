@@ -64,6 +64,10 @@
 #include <components/stereo/stereomanager.hpp>
 
 #include <components/sceneutil/glextensions.hpp>
+#include <components/sceneutil/gpuindirectpackets.hpp>
+#include <components/sceneutil/frozenrigdeformation.hpp>
+#include <components/sceneutil/pagingwork.hpp>
+#include <components/shader/programvariant.hpp>
 #include <components/sceneutil/workqueue.hpp>
 
 #include <components/files/configurationmanager.hpp>
@@ -1443,6 +1447,12 @@ OMW::Engine::~Engine()
         mWindow = nullptr;
 #endif
 
+    Resource::UploadPool::sample=nullptr;
+    Resource::UploadPool::sampleOwner=nullptr;
+    Resource::UploadPool::ledger=nullptr;
+    SceneUtil::GpuIndirectPackets::sample=nullptr;
+    SceneUtil::GpuIndirectPackets::sampleOwner=nullptr;
+    SceneUtil::GpuIndirectPackets::ledger=nullptr;
     mResourceSystem.reset();
     // All resource, Lua and viewer workers are now joined.
     Debug::ResourceLifecycle::emitStatus();
@@ -1882,6 +1892,18 @@ void OMW::Engine::prepareEngine()
     }
     else
         Log(Debug::Info) << "OpimizedMW GL-P1A pressure protection: off (P0/Vulkan control)";
+    if (Resource::UploadPool::requested() && !mUseVulkanRenderer)
+    {
+        Resource::UploadPool::sample=&Resource::ResourceSystem::speculativeSample;
+        Resource::UploadPool::sampleOwner=mResourceSystem.get();
+        Resource::UploadPool::ledger=mResourceSystem->speculativeBudget();
+    }
+    if (SceneUtil::GpuIndirectPackets::indirectEnabled() && !mUseVulkanRenderer)
+    {
+        SceneUtil::GpuIndirectPackets::sample=&Resource::ResourceSystem::speculativeSample;
+        SceneUtil::GpuIndirectPackets::sampleOwner=mResourceSystem.get();
+        SceneUtil::GpuIndirectPackets::ledger=mResourceSystem->speculativeBudget();
+    }
     mResourceSystem->getSceneManager()->setPreparedInstanceCacheLimit(
         Settings::cells().mV3PreparedInstanceCache
             ? static_cast<std::size_t>(Settings::cells().mV3PreparedInstanceCacheMax)
@@ -2526,6 +2548,63 @@ void OMW::Engine::go()
             + " unproven_producer_uses=" + std::to_string(v.unprovenProducerUses)
             + " (CPU-side accepted OSG submission and completed producer draw; no GPU-completion claim; "
               "first uses count wrapper/context/path; snapshot excludes later shutdown work)";
+    }
+
+    if (Resource::UploadPool::requested())
+        Log(Debug::Info) << "OptimizedMW bounded upload snapshot: uploads="
+            +std::to_string(Resource::UploadPool::uploads.load())
+            +" bytes="+std::to_string(Resource::UploadPool::uploadedBytes.load())
+            +" allocations="+std::to_string(Resource::UploadPool::allocations.load())
+            +" live_staging_bytes="+std::to_string(Resource::UploadPool::liveBytes.load())
+            +" busy_fallbacks="+std::to_string(Resource::UploadPool::busyFallbacks.load())
+            +" admission_fallbacks="+std::to_string(Resource::UploadPool::admissionFallbacks.load())
+            +" upload_failures="+std::to_string(Resource::UploadPool::uploadFailures.load())
+            +" (exact supplied alpha mip uploads; nonblocking staging lease polls; no GPU-time claim)";
+
+    if (Shader::exactProgramVariantsEnabled())
+    {
+        const auto& v=Shader::programVariantStats();
+        Log(Debug::Info) << "OptimizedMW exact shader variants: requests=" << v.requests.load()
+            << " prepared=" << v.prepared.load() << " reused=" << v.reused.load()
+            << " failed=" << v.failed.load() << " stale=" << v.stale.load()
+            << " first_uses=" << v.firstUses.load() << " fallback_uses=" << v.fallbackUses.load()
+            << " reuse_uses=" << v.reuseUses.load()
+            << " unsupported=" << v.unsupported.load();
+    }
+    if (SceneUtil::PersistentOpaquePackets::enabled())
+    {
+        using C=SceneUtil::PersistentOpaquePackets::Counters;
+        Log(Debug::Info) << "OptimizedMW persistent opaque packets: built=" << C::built.load()
+            << " rows=" << C::rows.load() << " submitted=" << C::submitted.load()
+            << " culled=" << C::culled.load() << " fallbacks=" << C::fallbacks.load()
+            << " state_pushes_avoided=" << C::statePushesAvoided.load()
+            << " changed_producers=" << C::changedProducers.load()
+            << " capacity_declines=" << C::capacityDeclines.load();
+    }
+    if (SceneUtil::GpuIndirectPackets::indirectEnabled())
+    {
+        using C=SceneUtil::GpuIndirectPackets::Counters;
+        Log(Debug::Info) << "OptimizedMW opaque indirect pipeline: built=" << C::built.load()
+            << " draws=" << C::draws.load() << " commands=" << C::commands.load()
+            << " dispatches=" << C::dispatches.load() << " fallbacks=" << C::fallbacks.load()
+            << " busy_slots=" << C::busySlots.load() << " unknown_shaders=" << C::unknownShaders.load()
+            << " admission_declines=" << C::admissionDeclines.load()
+            << " live_owned_bytes=" << C::liveBytes.load();
+    }
+    if (SceneUtil::FrozenRigDeformation::enabled())
+    {
+        using C=SceneUtil::FrozenRigDeformation::Counters;
+        Log(Debug::Info) << "OptimizedMW frozen parallel deformation: publications=" << C::publications.load()
+            << " vertices=" << C::vertices.load() << " groups=" << C::groups.load()
+            << " fallbacks=" << C::fallbacks.load();
+    }
+    if (const char* requested=std::getenv("OPENMW_P9_EXACT_PAGING_WORK"); requested && std::strcmp(requested,"1")==0)
+    {
+        using C=SceneUtil::ExactPagingWorkCounters;
+        Log(Debug::Info) << "OptimizedMW exact paging work: runs=" << C::runs.load()
+            << " triangles=" << C::triangles.load() << " score_updates=" << C::scoreUpdates.load()
+            << " score_reuses=" << C::scoreReuses.load() << " heap_comparisons=" << C::heapComparisons.load()
+            << " unchanged_heap_updates=" << C::unchangedHeapUpdates.load();
     }
 
     // Save user settings

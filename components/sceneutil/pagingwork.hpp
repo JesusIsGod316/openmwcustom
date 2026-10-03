@@ -3,10 +3,16 @@
 
 #include <atomic>
 #include <exception>
+#include <cstdint>
 
 namespace osg { class Node; }
 namespace SceneUtil
 {
+    struct ExactPagingWorkCounters
+    {
+        inline static std::atomic_uint64_t runs{0}, triangles{0}, scoreUpdates{0}, scoreReuses{0};
+        inline static std::atomic_uint64_t heapComparisons{0}, unchangedHeapUpdates{0};
+    };
     class PagingWorkCancelled final : public std::exception
     {
     public:

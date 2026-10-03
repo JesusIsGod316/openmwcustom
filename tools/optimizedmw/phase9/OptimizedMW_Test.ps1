@@ -8,6 +8,8 @@ param(
     [switch]$CompositeCpuMips,
     [switch]$ObserverLocal,
     [switch]$GpuQueryDefer,
+    [ValidateRange(0,31)][int]$RamMask=0,
+    [ValidateRange(0,127)][int]$ArchitectureMask=0,
     [ValidateSet('','Normal','Deep')][string]$TraceLevel='',
     [ValidateSet('stream','deferred')][string]$HitchTransport='stream',
     [switch]$SystemTrace,
@@ -93,6 +95,7 @@ if(-not $FocusedPreset -and -not $ModeChoice -and $HitchMask -lt 0 -and $AttackM
     $quickSelection=$numericSelection
     $Candidate=$numericSelection.candidate;$SystemTrace=[bool]$numericSelection.system_trace
     $GpuQueryDefer=[bool]$numericSelection.gpu_query_defer
+    $RamMask=$numericSelection.ram_mask;$ArchitectureMask=$numericSelection.architecture_mask
     if($numericSelection.legacy_mode){$ModeChoice=$numericSelection.legacy_mode}
     elseif($numericSelection.focused_preset){
         $FocusedPreset=$numericSelection.focused_preset;$TraceLevel=$numericSelection.trace_level
@@ -138,7 +141,7 @@ $choice=$ModeChoice
 $mode=Get-P9Mode $choice
 if($numericSelection -and $numericSelection.legacy_mode){$mode.Trace=[string][int]($numericSelection.trace_level -eq 'Deep')}
 if($numericSelection){
-    $mode.NumericMenuRevision=1;$mode.NumericSelectionId=$numericSelection.selection_id
+    $mode.NumericMenuRevision=2;$mode.NumericSelectionId=$numericSelection.selection_id
 }
 if($ObserverLocal -and $mode.Trace -ne '1'){throw 'Local observer accounting requires Deep diagnostics'}
 if($GpuQueryDefer -and $mode.Trace -ne '1'){throw 'Deferred GPU query collection requires Deep diagnostics'}
@@ -151,6 +154,15 @@ if($FocusedPreset -or $CompositeProgress -or $CompositeCpuMips){
     $rendererIdentity=Set-OptimizedMWRendererIdentity $hitchSelection $mode $(if($FocusedPreset){$FocusedPreset}else{'CUSTOM'}) `
         -CompositeProgress:$CompositeProgress -CompositeCpuMips:$CompositeCpuMips
 }
+if(($ArchitectureMask -band 32) -and ($ArchitectureMask -band 20) -ne 20){throw 'GPU visibility requires persistent packets and multi-draw indirect'}
+if(($ArchitectureMask -band 16) -and -not ($ArchitectureMask -band 4)){throw 'Multi-draw indirect requires persistent packets'}
+if(($ArchitectureMask -band 8) -and -not $CompositeCpuMips){throw 'Upload pools require supplied CPU mipmaps; add -CompositeCpuMips'}
+if($RamMask -or $ArchitectureMask){
+    $mode.Name='ARCH1-R'+$RamMask+'-G'+$ArchitectureMask+'-'+$mode.Name
+    if($hitchSelection){$hitchSelection.experiment=$mode.Name}
+    if($quickSelection){$quickSelection.name=$mode.Name}
+}
+$mode.RamMask=$RamMask;$mode.ArchitectureMask=$ArchitectureMask
 if($SystemTrace -and $mode.Trace -ne '1'){throw 'Windows trace requires Deep diagnostics. Choose run type 2 (Deep), then recording 2 (Windows), or use -TraceLevel Deep -SystemTrace.'}
 if($SystemTrace -and -not $quickSelection){
     $quickSelection=[pscustomobject]@{mask=$(if($HitchMask -ge 0){$HitchMask}else{0});trace_level='Deep';candidate=$Candidate;system_trace=$true;name=$mode.Name}
@@ -236,6 +248,7 @@ try{
     Set-Phase9CandidateEnvironment -Candidate $candidateProfile -Mode $mode
     Set-OptimizedMWHitchCombinationEnvironment $hitchCombination
     Set-OptimizedMWAttackEnvironment $attackCombination -ObserverLocal:$ObserverLocal -CompositeProgress:$CompositeProgress -CompositeCpuMips:$CompositeCpuMips
+    Set-OptimizedMWArchitectureEnvironment -RamMask $RamMask -ArchitectureMask $ArchitectureMask
     $env:OPENMW_P9_GPU_QUERY_DEFER=[string][int][bool]$GpuQueryDefer
 
     # Same head-cache budget across every mode, not a hidden per-mode tuning change.

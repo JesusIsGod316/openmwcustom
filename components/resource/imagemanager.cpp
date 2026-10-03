@@ -89,7 +89,19 @@ namespace Resource
     {
     }
 
-    ImageManager::~ImageManager() {}
+    ImageManager::~ImageManager()
+    {
+        if (mColdCache)
+        {
+            const auto v=mColdCache->stats();
+            Log(Debug::Info) << "OptimizedMW cold image cache: compressed=" << v.compressed
+                << " restored=" << v.restored << " refused=" << v.refused
+                << " poor_ratio=" << v.poorRatio << " invalid=" << v.invalid
+                << " busy=" << v.busy << " source_bytes=" << v.sourceBytes
+                << " compressed_bytes=" << v.compressedBytes << " retained_bytes=" << v.retainedBytes
+                << " peak_transient_bytes=" << v.peakReservedBytes;
+        }
+    }
 
     std::uint64_t ImageManager::sourceRevision(bool disableFlip) const noexcept
     {
@@ -106,15 +118,17 @@ namespace Resource
         if (!revision) return {};
         auto result = mCache->getLeaseFromObjectCache(path, expected, revision);
         if (result.mValue == mWarningImage || !result.bytes()) return {};
-        const auto* image = static_cast<const osg::Image*>(result.mValue.get());
-        if (image->getDataVariance() == osg::Object::DYNAMIC || image->requiresUpdateCall()) return {};
+        const auto* image = dynamic_cast<const osg::Image*>(result.mValue.get());
+        if (!image || image->getDataVariance() == osg::Object::DYNAMIC || image->requiresUpdateCall()) return {};
         return result;
     }
 
     bool ImageManager::imageLeaseCurrent(VFS::Path::NormalizedView path, const ObjectCacheLease& lease, bool disableFlip)
     {
         if (!lease || lease.mSourceRevision != sourceRevision(disableFlip)) return false;
-        const auto current = getImageLease(path, static_cast<const osg::Image*>(lease.mValue.get()), disableFlip);
+        const auto* image = dynamic_cast<const osg::Image*>(lease.mValue.get());
+        if (!image) return false;
+        const auto current = getImageLease(path, image, disableFlip);
         return current && current.mRevision == lease.mRevision && current.mCharge == lease.mCharge;
     }
 
@@ -142,7 +156,51 @@ namespace Resource
     osg::ref_ptr<osg::Image> ImageManager::getImage(VFS::Path::NormalizedView path, bool disableFlip)
     {
         Debug::HitchTrace::Scope hitchImage("resource.image_lookup", {}, path.value());
+        const auto epoch = mColdCache ? mColdEpoch.load(std::memory_order_acquire) : 0;
+        const auto lookupRevision = mColdCache ? sourceRevision(disableFlip) : 0;
+        const auto cacheWarning = [&] {
+            if (mColdCache)
+            {
+                std::lock_guard lock(mColdPublicationMutex);
+                if (epoch == mColdEpoch.load(std::memory_order_acquire)
+                    && lookupRevision == sourceRevision(disableFlip))
+                    mCache->addEntryToObjectCache(path.value(), mWarningImage,0.0,lookupRevision);
+            }
+            else mCache->addEntryToObjectCache(path.value(), mWarningImage);
+        };
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(path);
+        if (mColdCache && obj)
+        {
+            const auto currentRevision = sourceRevision(disableFlip);
+            const auto lease = mCache->getLeaseFromObjectCache(path, obj.get());
+            if (!lease || lease.mSourceRevision != currentRevision)
+            {
+                if (lease) mCache->removeIfSame(path.value(), lease);
+                obj = nullptr;
+            }
+            else if (auto* cold = dynamic_cast<ColdImage*>(obj.get()))
+            {
+                auto restored = mColdCache->restore(*cold, path.value(), currentRevision,
+                    mColdSample(mColdSampleOwner), mCache->speculativeBudget());
+                if (restored.status == ColdImageCache::RestoreStatus::Invalid)
+                    mCache->removeIfSame(path.value(), lease);
+                if (restored.image)
+                {
+                    std::lock_guard lock(mColdPublicationMutex);
+                    if (currentRevision == sourceRevision(disableFlip)
+                        && epoch == mColdEpoch.load(std::memory_order_acquire))
+                    {
+                        auto [winner, inserted] = mCache->replaceIfSameOrInsert(
+                            path.value(), cold, restored.image, currentRevision);
+                        if (auto* image = dynamic_cast<osg::Image*>(winner.get())) return image;
+                        return restored.image;
+                    }
+                }
+                // Busy/denied/invalid restoration is optional. Required demand
+                // makes progress through the authoritative ordinary reader.
+                obj = nullptr;
+            }
+        }
         if (obj)
             return osg::ref_ptr<osg::Image>(static_cast<osg::Image*>(obj.get()));
         else
@@ -160,7 +218,7 @@ namespace Resource
             catch (std::exception& e)
             {
                 Log(Debug::Error) << "Failed to open image: " << e.what();
-                mCache->addEntryToObjectCache(path.value(), mWarningImage);
+                cacheWarning();
                 return mWarningImage;
             }
 
@@ -176,7 +234,7 @@ namespace Resource
             if (!reader)
             {
                 Log(Debug::Error) << "Error loading " << path << ": no readerwriter for '" << ext << "' found";
-                mCache->addEntryToObjectCache(path.value(), mWarningImage);
+                cacheWarning();
                 return mWarningImage;
             }
 
@@ -191,7 +249,7 @@ namespace Resource
                 if (stream->gcount() != 18)
                 {
                     Log(Debug::Error) << "Error loading " << path << ": couldn't read TGA header";
-                    mCache->addEntryToObjectCache(path.value(), mWarningImage);
+                    cacheWarning();
                     return mWarningImage;
                 }
                 int type = header[2];
@@ -212,7 +270,7 @@ namespace Resource
             {
                 Log(Debug::Error) << "Error loading " << path << ": " << result.message() << " code "
                                   << result.status();
-                mCache->addEntryToObjectCache(path.value(), mWarningImage);
+                cacheWarning();
                 return mWarningImage;
             }
 
@@ -227,7 +285,7 @@ namespace Resource
                     if (!uncompress)
                     {
                         Log(Debug::Error) << "Error loading " << path << ": no S3TC texture compression support installed";
-                        mCache->addEntryToObjectCache(path.value(), mWarningImage);
+                        cacheWarning();
                         return mWarningImage;
                     }
                     else
@@ -273,7 +331,7 @@ namespace Resource
                         // We don't want it to be corrupted or displayed incorrectly, so bail
                         // OSGoS *can* flip RGTC, but we can't verify that (yet?)
                         Log(Debug::Error) << "Error loading " << path << ": cannot flip non-S3TC compressed texture";
-                        mCache->addEntryToObjectCache(path.value(), mWarningImage);
+                        cacheWarning();
                         return mWarningImage;
                     }
 
@@ -281,8 +339,24 @@ namespace Resource
                     image->setOrigin(osg::Image::TOP_LEFT);
                 }
 
-                mCache->addEntryToObjectCache(path.value(), image, 0.0,
-                    publicationRevision == sourceRevision(disableFlip) ? publicationRevision : 0);
+                if (mColdCache)
+                {
+                    std::lock_guard lock(mColdPublicationMutex);
+                    if (publicationRevision == sourceRevision(disableFlip)
+                        && epoch == mColdEpoch.load(std::memory_order_acquire))
+                    {
+                        // The expected value may be an immutable cold entry.
+                        // Ordinary concurrent loaders/restores share one winner.
+                        const auto expected = mCache->getLeaseFromObjectCache(path);
+                        const auto* cold = expected ? dynamic_cast<const ColdImage*>(expected.mValue.get()) : nullptr;
+                        auto [winner, inserted] = mCache->replaceIfSameOrInsert(
+                            path.value(), cold, image, publicationRevision);
+                        if (auto* canonical = dynamic_cast<osg::Image*>(winner.get())) image = canonical;
+                    }
+                }
+                else
+                    mCache->addEntryToObjectCache(path.value(), image, 0.0,
+                        publicationRevision == sourceRevision(disableFlip) ? publicationRevision : 0);
             }
 
             return image;
@@ -292,6 +366,83 @@ namespace Resource
     osg::Image* ImageManager::getWarningImage()
     {
         return mWarningImage;
+    }
+
+    void ImageManager::configureColdCache(ColdImageCache::Config config,
+        SpeculativeScope::Sample sample, void* owner)
+    {
+        mColdSample = sample; mColdSampleOwner = owner;
+        mColdCache = config.enabled && sample && owner ? std::make_unique<ColdImageCache>(config) : nullptr;
+    }
+
+    void ImageManager::updateCache(double referenceTime)
+    {
+        if (mColdCache && mCache->speculativeBudget())
+        {
+            const auto sample = mColdSample(mColdSampleOwner);
+            if (SpeculativeBudget::newOwnerWorkUsable(sample, SpeculativePriority::Background))
+            {
+                std::optional<CacheType::ColdCandidate> candidate;
+                std::uint64_t epoch=0;
+                {
+                    std::lock_guard lock(mColdPublicationMutex);
+                    epoch=mColdEpoch.load(std::memory_order_acquire);
+                    candidate=mCache->detachColdCandidate(referenceTime, mColdCache->config().minimumAge,
+                    [&](const osg::Object* object) {
+                        const auto* image = dynamic_cast<const osg::Image*>(object);
+                        return image && image != mWarningImage.get() && ColdImageCache::eligible(*image, mColdCache->config());
+                    });
+                }
+                if (candidate)
+                {
+                    auto* source = static_cast<osg::Image*>(candidate->lease.mValue.get());
+                    // Detached payload has one exclusive owner during the codec;
+                    // concurrent demand cannot mutate or wait for it.
+                    auto encoded = mColdCache->encode(*source, candidate->lease.mSourceRevision,
+                        sample, mCache->speculativeBudget());
+                    std::lock_guard lock(mColdPublicationMutex);
+                    const bool current = candidate->lease.mSourceRevision == sourceRevision(false)
+                        || candidate->lease.mSourceRevision == sourceRevision(true);
+                    if (current && epoch == mColdEpoch.load(std::memory_order_acquire))
+                    {
+                        const bool published = encoded.image && mCache->publishDetachedCold(candidate->key,
+                            candidate->lease, encoded.image, encoded.image->allocatedBytes(),
+                            encoded.reservation ? &*encoded.reservation : nullptr);
+                        if (!published)
+                            mCache->replaceIfSameOrInsert(candidate->key, nullptr, source, candidate->lease.mSourceRevision);
+                    }
+                }
+            }
+        }
+        ResourceManager::updateCache(referenceTime);
+    }
+
+    void ImageManager::clearCache()
+    {
+        if (mColdCache)
+        {
+            std::lock_guard lock(mColdPublicationMutex);
+            mColdEpoch.fetch_add(1, std::memory_order_acq_rel);
+            ResourceManager::clearCache();
+        }
+        else ResourceManager::clearCache();
+    }
+
+    void ImageManager::reportRuntimeDiagnostics(double referenceTime) const noexcept
+    {
+        if (!mDiagnosticSampler.due()) return;
+        mCache->reportRuntimeDiagnostics("images", referenceTime, mExpiryDelay);
+        if (!mColdCache) return;
+        const auto s = mColdCache->stats();
+        Debug::RuntimeDiagnostics::recordEvent("cold_image_cache", "images", "Unique backing capacity; not process RAM", {
+            {"retained_bytes", s.retainedBytes}, {"reserved_bytes", s.reservedBytes},
+            {"reserved_cold_bytes", s.reservedColdBytes}, {"jobs", s.jobs},
+            {"compressed", s.compressed}, {"restored", s.restored}, {"refused", s.refused},
+            {"poor_ratio", s.poorRatio}, {"invalid", s.invalid}, {"busy", s.busy},
+            {"source_bytes_cumulative", s.sourceBytes}, {"compressed_bytes_cumulative", s.compressedBytes},
+            {"peak_reserved_bytes", s.peakReservedBytes},
+            {"retained_limit", mColdCache->config().retainedLimit},
+            {"maximum_image", mColdCache->config().maximumImage}});
     }
 
     void ImageManager::reportStats(unsigned int frameNumber, osg::Stats* stats) const

@@ -1,0 +1,289 @@
+#ifndef OPENMW_SCENEUTIL_GPUINDIRECTPACKETS_H
+#define OPENMW_SCENEUTIL_GPUINDIRECTPACKETS_H
+
+#include "persistentopaquepackets.hpp"
+#include <components/shader/indirectprojectioncontract.hpp>
+#include <components/resource/speculativebudget.hpp>
+#include <osg/ContextData>
+#include <osg/PrimitiveSetIndirect>
+#include <osg/Program>
+#include <osg/Shader>
+#include <osg/Uniform>
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <mutex>
+#include <vector>
+
+// The pinned OSG Windows headers omit these OpenGL 4.2 enum aliases.
+// Values are from Khronos OpenGL-Registry/api/GL/glcorearb.h.
+#ifndef GL_TRANSFORM_FEEDBACK_ACTIVE
+#define GL_TRANSFORM_FEEDBACK_ACTIVE 0x8E24
+#endif
+#ifndef GL_TRANSFORM_FEEDBACK_PAUSED
+#define GL_TRANSFORM_FEEDBACK_PAUSED 0x8E23
+#endif
+
+namespace SceneUtil::GpuIndirectPackets
+{
+    inline bool switchEnabled(const char* name)
+    {
+        const char* value = std::getenv(name);
+        return value && std::strcmp(value, "1") == 0;
+    }
+    inline bool indirectEnabled()
+    {
+        static const bool value = switchEnabled("OPENMW_P9_MULTI_DRAW_INDIRECT")
+            || switchEnabled("OPENMW_P9_GPU_VISIBILITY");
+        return value;
+    }
+    inline bool visibilityEnabled()
+    {
+        static const bool value = switchEnabled("OPENMW_P9_GPU_VISIBILITY");
+        return value;
+    }
+    struct Counters
+    {
+        inline static std::atomic_uint64_t built{ 0 }, draws{ 0 }, commands{ 0 }, dispatches{ 0 };
+        inline static std::atomic_uint64_t fallbacks{ 0 }, busySlots{ 0 }, unknownShaders{ 0 }, liveBytes{ 0 };
+        inline static std::atomic_uint64_t liveOwners{ 0 }, admissionDeclines{ 0 };
+    };
+    using Sample = Resource::OpenGlPressureSample (*)(void*);
+    // Startup/shutdown only, beside the existing upload-pool sampler; no new
+    // OS query is introduced on a draw or paging worker.
+    inline Sample sample = nullptr;
+    inline void* sampleOwner = nullptr;
+    inline Resource::SpeculativeBudget* ledger = nullptr;
+    constexpr std::uint64_t MaximumLiveBytes = 32ull * 1024 * 1024;
+    constexpr std::uint64_t MaximumLiveOwners = 1024;
+    struct Capacity
+    {
+        std::uint64_t bytes = 0;
+        Resource::SpeculativeBudget::ChargePtr charge;
+        std::array<std::atomic_bool, 4> pendingContexts{};
+        ~Capacity()
+        {
+            if (bytes)
+            {
+                Counters::liveBytes.fetch_sub(bytes, std::memory_order_relaxed);
+                Counters::liveOwners.fetch_sub(1, std::memory_order_relaxed);
+            }
+        }
+    };
+
+    inline const osg::Uniform* appliedProjection(const osg::State& state, const osg::StateSet* leaf)
+    {
+        const osg::Uniform* inherited = nullptr;
+        osg::StateAttribute::OverrideValue inheritedMode = 0;
+        const auto found = state.getUniformMap().find("projectionMatrix");
+        if (found != state.getUniformMap().end() && !found->second.uniformVec.empty())
+        {
+            inherited = found->second.uniformVec.back().first;
+            inheritedMode = found->second.uniformVec.back().second;
+        }
+        const auto* local = leaf ? leaf->getUniformPair("projectionMatrix") : nullptr;
+        if (local && (!(inheritedMode & osg::StateAttribute::OVERRIDE)
+            || (local->second & osg::StateAttribute::PROTECTED))) return local->first;
+        return inherited;
+    }
+
+    inline bool linearObjectProjection(const osg::Program* program)
+    {
+        if (!program) return true; // Exact legacy fixed-function matrix path.
+        return Shader::IndirectProjection::matches(*program);
+    }
+
+    inline bool commandProgramSafe(const osg::Program* program)
+    {
+        if (!program) return true;
+        // Custom shaders can observe changed draw boundaries or vertex-cache
+        // invocation counts through side effects. Token resemblance is not a
+        // purity certificate. Exact shipped object recipes (including their
+        // read-only clustered-light SSBOs) and legacy fixed function are the
+        // entire initial command-repacking scope.
+        return Shader::IndirectProjection::matches(*program);
+    }
+
+    inline const char* computeSource()
+    {
+        return R"GLSL(#version 430
+layout(local_size_x=32) in;
+layout(std430,binding=0) readonly buffer Inputs { vec4 data[]; };
+struct Command { uint count; uint instances; uint first; uint baseVertex; uint baseInstance; };
+layout(std430,binding=1) writeonly buffer Output { Command commands[]; };
+uniform mat4 mvp;
+uniform uint rows;
+void main() {
+    uint i=gl_GlobalInvocationID.x; if(i>=rows) return;
+    vec3 lo=data[i*3].xyz, hi=data[i*3+1].xyz;
+    uvec4 info=floatBitsToUint(data[i*3+2]);
+    bvec4 allOutside=bvec4(true);
+    for(uint corner=0;corner<8;corner++) {
+        vec3 p=vec3((corner&1u)!=0u?hi.x:lo.x,(corner&2u)!=0u?hi.y:lo.y,(corner&4u)!=0u?hi.z:lo.z);
+        vec4 c=mvp*vec4(p,1.0);
+        float e=0.0001*max(1.0,max(abs(c.w),max(abs(c.x),abs(c.y))));
+        if(any(isnan(c)) || any(isinf(c))) { allOutside=bvec4(false); break; }
+        allOutside=bvec4(allOutside.x && c.x < -c.w-e, allOutside.y && c.x > c.w+e,
+                        allOutside.z && c.y < -c.w-e, allOutside.w && c.y > c.w+e);
+    }
+    commands[i]=Command(info.x,any(allOutside)?0u:1u,info.y,0u,0u);
+})GLSL";
+    }
+
+#include "gpuindirectstorage.inl"
+
+    class Draw final : public PersistentOpaquePackets::RetainedOpaqueDrawCallback
+    {
+    public:
+        Draw(osg::Geometry* candidate, const osg::Geometry& source, std::shared_ptr<Capacity> capacity)
+            : mCandidate(candidate), mCapacity(std::move(capacity)), mVertex(source.getVertexArray())
+            , mVertexGeneration(mVertex->getModifiedCount()), mMaterial(source.getStateSet())
+        {
+            for (const auto& primitive : source.getPrimitiveSetList())
+            {
+                mPrimitiveOwners.push_back(primitive);
+                mProducer.emplace_back(primitive);
+            }
+        }
+        void drawImplementation(osg::RenderInfo& info, const osg::Drawable* drawable) const override
+        {
+            const auto* geometry = drawable ? drawable->asGeometry() : nullptr;
+            const auto* state = info.getState();
+            const auto* pcp = state ? state->getLastAppliedProgramObject() : nullptr;
+            const bool safeProgram = commandProgramSafe(pcp ? pcp->getProgram() : nullptr);
+            if (!safeProgram) ++Counters::unknownShaders;
+            bool current = geometry && geometry->getVertexArray() == mVertex.get()
+                && mVertex->getModifiedCount() == mVertexGeneration && geometry->getStateSet() == mMaterial.get()
+                && geometry->getNumPrimitiveSets() == mProducer.size()
+                && safeProgram && PersistentOpaquePackets::opaque(geometry->getStateSet())
+                // RenderLeaf has already resolved inherited OVERRIDE/PROTECTED
+                // state. Use OSG's const applied-mode cache; this introduces no
+                // driver queries or allocations. A material can become sorted
+                // in place after installation, or inherit one of these modes.
+                && state && !state->getLastAppliedMode(GL_BLEND)
+                && !state->getLastAppliedMode(GL_ALPHA_TEST)
+                && !state->getLastAppliedMode(GL_STENCIL_TEST);
+            if (current)
+            {
+                current = geometry->getNormalArray() == mCandidate->getNormalArray()
+                    && geometry->getColorArray() == mCandidate->getColorArray()
+                    && geometry->getSecondaryColorArray() == mCandidate->getSecondaryColorArray()
+                    && geometry->getFogCoordArray() == mCandidate->getFogCoordArray()
+                    && geometry->getTexCoordArrayList() == mCandidate->getTexCoordArrayList()
+                    && geometry->getVertexAttribArrayList() == mCandidate->getVertexAttribArrayList()
+                    && geometry->getDataVariance() != osg::Object::DYNAMIC;
+            }
+            if (current) for (unsigned i = 0; i < geometry->getNumPrimitiveSets(); ++i)
+                current = current && mProducer[i].matches(geometry->getPrimitiveSet(i));
+            if (current) mCandidate->drawImplementation(info);
+            else
+            {
+                Counters::fallbacks.fetch_add(1, std::memory_order_relaxed);
+                if (drawable) drawable->drawImplementation(info);
+            }
+        }
+#ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
+        const Primitive* testPrimitive() const { return static_cast<const Primitive*>(mCandidate->getPrimitiveSet(0)); }
+#endif
+    protected:
+        ~Draw() override { if (mCapacity && mCapacity->charge) mCapacity->charge->pending(); }
+    private:
+        osg::ref_ptr<osg::Geometry> mCandidate;
+        std::shared_ptr<Capacity> mCapacity;
+        osg::ref_ptr<const osg::Array> mVertex;
+        unsigned mVertexGeneration;
+        osg::ref_ptr<const osg::StateSet> mMaterial;
+        std::vector<PersistentOpaquePackets::PrimitiveRevision> mProducer;
+        std::vector<osg::ref_ptr<const osg::PrimitiveSet>> mPrimitiveOwners;
+    };
+
+    inline bool install(osg::Geometry& original, bool requested = indirectEnabled(), bool gpu = visibilityEnabled())
+    {
+        if (!requested || !PersistentOpaquePackets::eligible(original) || original.getDrawCallback()
+            || !original.getUseVertexBufferObjects() || original.getUseDisplayList()) return false;
+        const auto* vertices = dynamic_cast<const osg::Vec3Array*>(original.getVertexArray());
+        if (!vertices || vertices->empty()) return false;
+        // Per-primitive-set attributes depend on original draw boundaries.
+        osg::Geometry::ArrayList arrays; original.getArrayList(arrays);
+        for (const auto& array : arrays)
+            if (array && array->getBinding() == osg::Array::BIND_PER_PRIMITIVE_SET) return false;
+        constexpr std::size_t MaximumIndices = 196608, ClusterIndices = 3072, MaximumCommands = 128;
+        std::size_t totalIndices = 0, totalCommands = 0;
+        for (const auto& primitive : original.getPrimitiveSetList())
+        {
+            if (!primitive || !primitive->getDrawElements() || primitive->getMode() != GL_TRIANGLES
+                || primitive->getNumInstances() != 0 || primitive->getNumIndices() % 3
+                || primitive->getNumIndices() > MaximumIndices - totalIndices) return false;
+            totalIndices += primitive->getNumIndices();
+            totalCommands += (primitive->getNumIndices() + ClusterIndices - 1) / ClusterIndices;
+        }
+        if (totalCommands < 2 || totalCommands > MaximumCommands) return false;
+        const std::uint64_t charge = totalIndices * sizeof(unsigned) * 5 + totalCommands * 3 * sizeof(osg::Vec4) * 5
+            + totalCommands * sizeof(osg::DrawElementsIndirectCommand) * 9 + sizeof(Draw) + sizeof(Primitive)
+            + original.getNumPrimitiveSets() * (sizeof(PersistentOpaquePackets::PrimitiveRevision) + sizeof(void*) * 2)
+            + arrays.size() * sizeof(void*) * 2;
+        if (!sample || !ledger) { ++Counters::admissionDeclines; return false; }
+        std::optional<Resource::SpeculativeBudget::Stage> reservation;
+        try { reservation.emplace(ledger->reserve(sample(sampleOwner), charge)); }
+        catch (const Resource::SpeculativeDeferred&) { ++Counters::admissionDeclines; return false; }
+        std::shared_ptr<Capacity> capacity;
+        try { capacity = std::make_shared<Capacity>(); }
+        catch (const std::bad_alloc&) { return false; }
+        auto owners = Counters::liveOwners.load(std::memory_order_relaxed);
+        do { if (owners >= MaximumLiveOwners) return false; }
+        while (!Counters::liveOwners.compare_exchange_weak(owners, owners + 1, std::memory_order_relaxed));
+        auto current = Counters::liveBytes.load(std::memory_order_relaxed);
+        do
+        {
+            if (charge > MaximumLiveBytes || current > MaximumLiveBytes - charge)
+            { Counters::liveOwners.fetch_sub(1, std::memory_order_relaxed); return false; }
+        } while (!Counters::liveBytes.compare_exchange_weak(current, current + charge, std::memory_order_relaxed));
+        capacity->bytes = charge;
+        try
+        {
+            capacity->charge = ledger->track({ capacity.get(), 11u }, charge, false, &*reservation);
+            std::vector<unsigned> indices;
+            std::vector<osg::DrawElementsIndirectCommand> commands;
+            osg::ref_ptr<osg::Vec4Array> bounds = new osg::Vec4Array;
+            indices.reserve(totalIndices); commands.reserve(totalCommands); bounds->reserve(totalCommands * 3);
+            for (const auto& primitive : original.getPrimitiveSetList())
+            {
+                if (!primitive || !primitive->getDrawElements() || primitive->getMode() != GL_TRIANGLES
+                    || primitive->getNumInstances() != 0 || primitive->getNumIndices() % 3
+                    || primitive->getNumIndices() > MaximumIndices - indices.size()) return false;
+                for (std::size_t begin = 0; begin < primitive->getNumIndices(); begin += ClusterIndices)
+                {
+                    const auto end = (std::min)(begin + ClusterIndices, static_cast<std::size_t>(primitive->getNumIndices()));
+                    const unsigned first = static_cast<unsigned>(indices.size());
+                    osg::BoundingBox box;
+                    for (std::size_t i = begin; i < end; ++i)
+                    {
+                        const unsigned index = primitive->index(static_cast<unsigned>(i));
+                        if (index >= vertices->size()) return false;
+                        const auto& vertex = (*vertices)[index];
+                        if (!std::isfinite(vertex.x()) || !std::isfinite(vertex.y()) || !std::isfinite(vertex.z())) return false;
+                        indices.push_back(index); box.expandBy(vertex);
+                    }
+                    const auto count = static_cast<unsigned>(end - begin);
+                    commands.emplace_back(count, 1, first, 0, 0);
+                    bounds->push_back(osg::Vec4(box._min, 0)); bounds->push_back(osg::Vec4(box._max, 0));
+                    bounds->push_back(osg::Vec4(std::bit_cast<float>(count), std::bit_cast<float>(first), 0, 0));
+                    if (commands.size() > MaximumCommands) return false;
+                }
+            }
+            if (commands.size() < 2) return false;
+            osg::ref_ptr<osg::Geometry> candidate = new osg::Geometry(original, osg::CopyOp::SHALLOW_COPY);
+            candidate->setDrawCallback(nullptr);
+            candidate->removePrimitiveSet(0, candidate->getNumPrimitiveSets());
+            candidate->addPrimitiveSet(new Primitive(std::move(indices), std::move(commands), bounds, original.getStateSet(), gpu, capacity, original.getPrimitiveSetList()));
+            original.setDrawCallback(new Draw(candidate, original, capacity));
+            Counters::built.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
+        catch (const std::bad_alloc&)
+        {
+            return false;
+        }
+    }
+}
+#endif

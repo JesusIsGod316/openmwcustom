@@ -51,6 +51,8 @@
 #include <components/sceneutil/morphgeometry.hpp>
 #include <components/sceneutil/optimizer.hpp>
 #include <components/sceneutil/pagingwork.hpp>
+#include <components/sceneutil/persistentopaquepackets.hpp>
+#include <components/sceneutil/gpuindirectpackets.hpp>
 #include <components/sceneutil/positionattitudetransform.hpp>
 #include <components/sceneutil/shadowproxygroup.hpp>
 #include <components/sceneutil/opaqueshadowbatch.hpp>
@@ -1634,7 +1636,11 @@ namespace MWRender
             if ((v39BatchOptimizerMode == 0 && v38BatchingMode >= 2) || v39ShareState)
                 mSceneManager->shareState(mergeGroup);
 
-            osg::ref_ptr<osg::Node> wrappedMergeNode = mergeGroup;
+            if (SceneUtil::GpuIndirectPackets::indirectEnabled())
+                for (unsigned i = 0; i < mergeGroup->getNumChildren(); ++i)
+                    if (auto* geometry = dynamic_cast<osg::Geometry*>(mergeGroup->getChild(i)))
+                        SceneUtil::GpuIndirectPackets::install(*geometry);
+            osg::ref_ptr<osg::Node> wrappedMergeNode = SceneUtil::PersistentOpaquePackets::build(*mergeGroup);
             osg::ref_ptr<osg::Group> p3ShadowRoot;
             const bool p3ShadowStaticBatching
                 = static_cast<bool>(Settings::cells().mOptimizedMWShadowStaticBatching)
@@ -1652,7 +1658,7 @@ namespace MWRender
                 {
                     ++p3ShadowProxyBatches;
                     p3ShadowRoot = shadowBatch.mShadowRoot;
-                    wrappedMergeNode = new SceneUtil::ShadowProxyGroup(mergeGroup, p3ShadowRoot);
+                    wrappedMergeNode = new SceneUtil::ShadowProxyGroup(wrappedMergeNode, p3ShadowRoot);
                 }
             }
 

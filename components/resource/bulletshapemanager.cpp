@@ -1,7 +1,9 @@
 #include <components/debug/hitchtrace.hpp>
+#include <components/debug/debuglog.hpp>
 #include "bulletshapemanager.hpp"
 
 #include <cstring>
+#include <cstdlib>
 
 #include <osg/Drawable>
 #include <osg/NodeVisitor>
@@ -105,9 +107,19 @@ namespace Resource
         , mSceneManager(sceneMgr)
         , mNifFileManager(nifFileManager)
     {
+        if (const char* flag=std::getenv("OPENMW_RAM_C3_IDLE_COLLISION"); flag && std::strcmp(flag,"1")==0)
+            mInstanceCache->setIdleRetention(4096,30.0);
     }
 
-    BulletShapeManager::~BulletShapeManager() = default;
+    BulletShapeManager::~BulletShapeManager()
+    {
+        const auto v=mInstanceCache->idleStats();
+        if(v.coldLimit)
+            Log(Debug::Info) << "OptimizedMW idle collision retention: retired=" << v.retired
+                << " observed_idle=" << v.observedIdle << " cold_limit=" << v.coldLimit
+                << " protected_recent=" << v.protectedRecent << " external_owners=" << v.protectedExternal
+                << " index_available=" << v.available;
+    }
 
     osg::ref_ptr<const BulletShape> BulletShapeManager::getShape(VFS::Path::NormalizedView name)
     {
@@ -200,7 +212,7 @@ namespace Resource
     {
         ResourceManager::updateCache(referenceTime);
 
-        mInstanceCache->removeUnreferencedObjectsInCache(mInstanceCacheKeep);
+        mInstanceCache->updateIdleRetention(referenceTime,mInstanceCacheKeep);
     }
 
     void BulletShapeManager::clearCache()

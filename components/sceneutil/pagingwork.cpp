@@ -10,11 +10,22 @@
 
 #include <stdexcept>
 #include <vector>
+#include <cstdlib>
+
+#include <components/debug/hitchtrace.hpp>
 
 namespace SceneUtil
 {
     namespace
     {
+        bool exactPagingWorkReductionEnabled()
+        {
+            static const bool enabled = [] {
+                const char* value = std::getenv("OPENMW_P9_EXACT_PAGING_WORK");
+                return value && std::string_view(value) == "1";
+            }();
+            return enabled;
+        }
         struct CollectTriangles
         {
             std::vector<unsigned>* values = nullptr;
@@ -65,7 +76,24 @@ namespace SceneUtil
                 return PagingWorkScope::cancelled();
             };
             PagingVertexCache::Statistics stats;
-            const auto result = PagingVertexCache::optimize(input, vertices->getNumElements(), output, stop, stats);
+            Debug::HitchTrace::Scope exactWork("paging.vertex_cache_order", Debug::HitchTrace::CpuTiming::Scoped);
+            const bool reduced = exactPagingWorkReductionEnabled();
+            const auto result = PagingVertexCache::optimize(input, vertices->getNumElements(), output, stop, stats, reduced);
+            if (reduced)
+            {
+                ++ExactPagingWorkCounters::runs;
+                ExactPagingWorkCounters::triangles.fetch_add(input.size()/3, std::memory_order_relaxed);
+                ExactPagingWorkCounters::scoreUpdates.fetch_add(stats.scoreUpdates, std::memory_order_relaxed);
+                ExactPagingWorkCounters::scoreReuses.fetch_add(stats.scoreReuses, std::memory_order_relaxed);
+                ExactPagingWorkCounters::heapComparisons.fetch_add(stats.heapComparisons, std::memory_order_relaxed);
+                ExactPagingWorkCounters::unchangedHeapUpdates.fetch_add(stats.unchangedHeapUpdates, std::memory_order_relaxed);
+            }
+            exactWork.setMetric(0, "exact_reduction", reduced);
+            exactWork.setMetric(1, "triangles", input.size() / 3);
+            exactWork.setMetric(2, "score_updates", stats.scoreUpdates);
+            exactWork.setMetric(3, "score_reuses", stats.scoreReuses);
+            exactWork.setMetric(4, "heap_comparisons", stats.heapComparisons);
+            exactWork.setMetric(5, "unchanged_heap_updates", stats.unchangedHeapUpdates);
             if (result == PagingVertexCache::Result::Cancelled) throw PagingWorkCancelled{};
             if (result == PagingVertexCache::Result::Invalid)
                 throw std::runtime_error("Invalid index data in paging vertex optimization");

@@ -2,6 +2,7 @@
 #include "scenemanager.hpp"
 #include "sharedstatecache.hpp"
 #include "hostmemorybudget.hpp"
+#include "programvariantcompile.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -1056,7 +1057,18 @@ namespace Resource
 
             if (compile && mIncrementalCompileOperation)
             {
-                if (compileClass != V321CompileClass::Unknown)
+                if (Shader::exactProgramVariantsEnabled())
+                {
+                    osg::ref_ptr<osgUtil::IncrementalCompileOperation::CompileSet> compileSet
+                        = compileClass != V321CompileClass::Unknown
+                        ? new V321ClassifiedCompileSet(loaded, compileClass)
+                        : new osgUtil::IncrementalCompileOperation::CompileSet(loaded);
+                    compileSet->_markerObject = mIncrementalCompileOperation->getMarkerObject();
+                    compileSet->buildCompileMap(mIncrementalCompileOperation->getContextSet());
+                    installExactProgramVariants(*compileSet, *loaded, mIncrementalCompileOperation->getContextSet());
+                    mIncrementalCompileOperation->add(compileSet, false);
+                }
+                else if (compileClass != V321CompileClass::Unknown)
                 {
                     auto compileSet = new V321ClassifiedCompileSet(loaded, compileClass);
                     mIncrementalCompileOperation->add(compileSet);
