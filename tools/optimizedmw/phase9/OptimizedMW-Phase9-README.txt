@@ -358,6 +358,17 @@ validity and loss status. A report timeout cannot discard the raw evidence.
 If Benchmarks is unavailable, the raw profile is retained and the launcher
 reports its path instead of putting a capture ZIP among the installed files.
 
+L1/H1 PACKAGED SHADER COMPATIBILITY
+  Geometry candidates use a separate bounded stock/PBR asset contract. Its
+  source/include/link, stage, sampler, binding, imported define and manager
+  generation checks retain the original path when inputs change. The PBR
+  H1 family preserves diffuse/normal/specular role semantics; unsupported
+  effects retain control. This does not widen GPU indirect or DLSS inputs.
+  Before deployment the final package shader copy and captured production
+  settings must produce real L1/H1 draws and real fallback/mutation evidence.
+  After deployment, run a short Normal smoke and verify ASSET-ENGAGEMENT.txt
+  before committing time to a performance comparison matrix.
+
 DLSS / DLAA STATUS
 denseDynamicMotion and dlss_ready remain false. Scene jitter, NVIDIA evaluation
 and frame generation are off. The separate developer GL/Vulkan fixture qualifies

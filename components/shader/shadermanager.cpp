@@ -2,6 +2,8 @@
 #include "programvariant.hpp"
 #include "indirectprojectioncontract.hpp"
 #include "indirectprojectionbaseline.hpp"
+#include "assetgeometrycontract.hpp"
+#include <components/resource/derivedassetcache.hpp>
 
 #include <algorithm>
 #include <cassert>
@@ -116,7 +118,8 @@ namespace
     // reference to allow automatic cleanup.
     bool parseIncludes(const std::filesystem::path& shaderPath, std::string& source, const std::string& fileName,
         int& fileNumber, std::set<std::filesystem::path> cycleIncludeChecker,
-        std::set<std::filesystem::path>& includedFiles, bool* exactBaseline = nullptr)
+        std::set<std::filesystem::path>& includedFiles, bool* exactBaseline = nullptr,
+        Shader::AssetGeometry::RawProof* assetProof = nullptr)
     {
         includedFiles.insert(shaderPath / fileName);
         // An include is cyclic if it is being included by itself
@@ -171,13 +174,15 @@ namespace
             std::stringstream buffer;
             buffer << includeFstream.rdbuf();
             std::string stringRepresentation = buffer.str();
+            if (assetProof)
+                assetProof->observe(std::filesystem::path(includeFilename).generic_string(), stringRepresentation);
             if (exactBaseline && *exactBaseline)
                 *exactBaseline = Shader::IndirectProjection::baselineRaw(
                     std::filesystem::path(includeFilename).generic_string(), stringRepresentation);
             if (!addLineDirectivesAfterConditionalBlocks(stringRepresentation)
                 || !parseIncludes(
                     shaderPath, stringRepresentation, includeFilename, fileNumber, cycleIncludeChecker, includedFiles,
-                    exactBaseline))
+                    exactBaseline, assetProof))
             {
                 Log(Debug::Error) << "In file included from " << fileName << "." << lineNumber;
                 return false;
@@ -205,6 +210,7 @@ namespace Shader
         // The expanded raw recipe is pinned before define substitution, and a
         // hot reload cannot obtain a new certificate from an old validation.
         std::unordered_map<std::string, std::string> baselineExpandedTemplates;
+        std::unordered_map<std::string, AssetGeometry::TemplateProof> assetExpandedTemplates;
         std::filesystem::file_time_type mLastAutoRecompileTime;
         bool mHotReloadEnabled;
         bool mTriggerReload;
@@ -244,6 +250,8 @@ namespace Shader
                 const std::filesystem::file_time_type writeTime = std::filesystem::last_write_time(pathShaderToTest);
                 if (writeTime.time_since_epoch() > mLastAutoRecompileTime.time_since_epoch())
                 {
+                    manager.mAssetEpoch->value.fetch_add(1, std::memory_order_acq_rel);
+                    assetExpandedTemplates.clear();
                     if (!threadsRunningToStop)
                     {
                         threadsRunningToStop = viewer.areThreadsRunning();
@@ -309,12 +317,14 @@ namespace Shader
     ShaderManager::ShaderManager()
     {
         mHotReloadManager = std::make_unique<HotReloadManager>();
+        mAssetEpoch = std::make_shared<AssetGeometry::Epoch>();
     }
 
     ShaderManager::~ShaderManager() = default;
 
     void ShaderManager::setShaderPath(const std::filesystem::path& path)
     {
+        mAssetEpoch->value.fetch_add(1, std::memory_order_acq_rel);
         mPath = path;
     }
 
@@ -562,10 +572,18 @@ namespace Shader
             std::string source = buffer.str();
             bool exactBaseline = IndirectProjection::enabled()
                 && IndirectProjection::baselineRaw(templateName, source);
+            AssetGeometry::RawProof assetProof;
+            if (AssetGeometry::enabled()) assetProof.observe(templateName, source);
             if (!addLineDirectivesAfterConditionalBlocks(source)
-                || !parseIncludes(mPath, source, templateName, fileNumber, {}, insertedPaths, &exactBaseline))
+                || !parseIncludes(mPath, source, templateName, fileNumber, {}, insertedPaths, &exactBaseline,
+                    AssetGeometry::enabled() ? &assetProof : nullptr))
                 return nullptr;
             if (exactBaseline) mHotReloadManager->baselineExpandedTemplates.emplace(templateName, source);
+            if (AssetGeometry::enabled() && mHotReloadManager->assetExpandedTemplates.size() < 128)
+            {
+                auto proof = AssetGeometry::finish(assetProof, source);
+                if (proof.families) mHotReloadManager->assetExpandedTemplates.emplace(templateName, std::move(proof));
+            }
             mHotReloadManager->templateIncludedFiles[templateName] = std::move(insertedPaths);
             templateIt = mShaderTemplates.insert(std::make_pair(templateName, source)).first;
         }
@@ -596,6 +614,10 @@ namespace Shader
                 }
                 catch (const std::bad_alloc&) {} // Optional GPU contract; original shader remains valid.
             }
+            if (const auto asset = mHotReloadManager->assetExpandedTemplates.find(templateName);
+                asset != mHotReloadManager->assetExpandedTemplates.end()
+                && asset->second.expandedDigest == Resource::DerivedAssets::digest(templateIt->second))
+                AssetGeometry::attachSource(*shader, templateName, asset->second, defines, mGlobalDefines, mAssetEpoch);
             // Assign a unique prefix to allow the SharedStateManager to compare shaders efficiently.
             // Append shader source filename for debugging.
             static unsigned int counter = 0;
@@ -610,7 +632,7 @@ namespace Shader
         return shaderIt->second;
     }
 
-    class SamplerProgram : public VariantProgram
+    class SamplerProgram : public VariantProgram, public AssetGeometry::SamplerProducer
     {
     public:
         SamplerProgram() = default;
@@ -622,6 +644,7 @@ namespace Shader
         META_Object(Shader, SamplerProgram)
 
         bool hasSamplers(const ShaderManager::SamplerBindingMap& samplers) const;
+        bool assetSamplersMatch(const AssetGeometry::Samplers& samplers) const override { return hasSamplers(samplers); }
         bool hasProgramTemplate(const osg::Program* program) const;
 
         void apply(osg::State& state) const override;
@@ -813,6 +836,7 @@ namespace Shader
                 try { IndirectProjection::certify(*program); }
                 catch (const std::bad_alloc&) {} // Keep exact normal rendering under contract pressure.
             }
+            AssetGeometry::certify(*program, samplers);
             found = mPrograms.insert(std::make_pair(key, program));
         }
         else
@@ -836,6 +860,7 @@ namespace Shader
     void ShaderManager::setGlobalDefines(DefineMap& globalDefines)
     {
         std::lock_guard<std::mutex> lock(mMutex);
+        mAssetEpoch->value.fetch_add(1, std::memory_order_acq_rel);
         mGlobalDefines = globalDefines;
         if (exactProgramVariantsEnabled())
             for (const auto& [pair, program] : mPrograms)
@@ -976,6 +1001,7 @@ namespace Shader
 
     void ShaderManager::triggerShaderReload()
     {
+        mAssetEpoch->value.fetch_add(1, std::memory_order_acq_rel);
         mHotReloadManager->mTriggerReload = true;
     }
 

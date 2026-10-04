@@ -41,14 +41,16 @@ controllers, transparent/cutout materials, unknown draw semantics,
 occluder owners, unsupported transforms and unsafe layouts retain control.
 Main-view projection and hysteresis select the tier only after a real
 incremental compile completion receipt. Secondary/shadow views retain
-original geometry. Original vertex/material streams are immutable and
+original geometry. The selector recognizes the renderer's exact reversed-depth
+GPU/culling projection split; arbitrary projection or clip-control changes
+retain control. Original vertex/material streams are immutable and
 shared with the derived indices. Cache identity includes winning source
 contents, actual geometry streams and a pinned backend/recipe.
 
 H1: separate, narrowly eligible static material atlas/proxy preparation.
 Admission requires fewer real submissions than the optimized control.
 Existing strong merging is the comparison baseline. Material families,
-transforms, UV domains, source sampler and stock shader contract must be
+transforms, UV domains, source sampler and stock/PBR asset shader contract must be
 supported. Co-registered diffuse, linear normal and linear specular maps
 retain separate atlases and their original tangent/scalar semantics.
 Parallax, extra roles and controllers take their original path. A current
@@ -56,6 +58,24 @@ view population check preserves each control member's ordinary rejection.
 Cross-partition material conflicts return to whole-chunk strong merging.
 Atlas preparation alone is not proof that a proxy was drawn. Eligibility
 and consumption depend on the user's actual winning asset loadout.
+
+The geometry asset contract is separate from GPU indirect visibility and
+temporal input authorization. Its reviewed stock and composed Rafael PBR
+families pin consumed source/include/link dependencies and actual expanded
+stages, sampler bindings, imported defines and shader-manager generation.
+Changed source/linked stages/bindings/defines/material inputs reject a
+published candidate and return to the retained original population.
+PBR H1 support covers opaque co-registered diffuse/normal/specular maps;
+parallax and extra effects retain their ordinary path. Specular RGBA, linear
+normal/specular values and tangent handedness preserve their source meaning.
+Admission metadata is bounded to 4 MiB globally and 64 KiB per record.
+
+Release qualification must use an exact private copy of the assembled
+package's shaders and the captured effective settings, including real light
+and shadow defines. It requires actual candidate draws, shadow/secondary
+fallback and shader mutation rejection; stock-only default fixtures cannot
+qualify the PBR package. Package inputs and restored mutation files are
+hash-checked. This local fixture does not reproduce your full gameplay route.
 
 T1: one bounded worker reuses complete legacy BC1/BC2/BC3 DDS chains with
 their original blocks and data-alpha semantics. Covered opaque 24-bit TGA

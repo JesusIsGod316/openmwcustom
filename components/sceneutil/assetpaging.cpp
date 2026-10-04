@@ -2,7 +2,9 @@
 #include <components/resource/assetgpubudget.hpp>
 #include <components/resource/derivedassetcache.hpp>
 #include <components/vfs/manager.hpp>
+#include <components/debug/debuglog.hpp>
 #include <osg/Geometry>
+#include <osg/Program>
 #include <algorithm>
 #include <chrono>
 #include <stdexcept>
@@ -59,6 +61,22 @@ namespace SceneUtil::AssetPaging
     }
     void refuse(unsigned lanes, Gate gate)
     { each(lanes, [&](LaneCounters& value) { ++value.refusals[static_cast<unsigned>(gate)]; }); }
+    void refusalDetail(unsigned lanes,GeneratedStaticLod::Detail detail,std::string_view model,const GeneratedStaticLod::RefusalInfo* info)
+    {
+        if(detail==GeneratedStaticLod::Detail::None) detail=GeneratedStaticLod::Detail::Other;
+        const auto clean=[](std::string_view value,std::size_t maximum) {
+            std::string text(value.substr(0,maximum));for(char& c:text) if(static_cast<unsigned char>(c)<32 || c=='"') c='?';return text;
+        };
+        for(unsigned bit:{Lod,Hlod}) if(lanes&bit)
+        {
+            const auto previous=lane(bit).details[static_cast<unsigned>(detail)].fetch_add(1);
+            if(previous) continue; // At most one small example per lane/subtype.
+            Log(Debug::Info)<<"OptimizedMW asset first refusal: lane="<<(bit==Lod?"L1":"H1")
+                <<" detail="<<GeneratedStaticLod::detailName(detail)<<" model=\""<<clean(model,192)<<'"'
+                <<" node=\""<<clean(info && info->node?info->node->getName():std::string_view{},96)<<'"'
+                <<" program=\""<<clean(info && info->program?info->program->getName():std::string_view{},96)<<'"';
+        }
+    }
     namespace
     {
         std::pair<std::size_t,std::size_t> sourceBytes(const osg::Node& root)
@@ -131,15 +149,17 @@ namespace SceneUtil::AssetPaging
         unsigned eligible = 0;
         if (requested & Lod)
         {
-            const auto certificate = GeneratedStaticLod::certify(original);
+            GeneratedStaticLod::RefusalInfo info;
+            const auto certificate = GeneratedStaticLod::certify(original,&info);
             if (certificate == GeneratedStaticLod::Refusal::None) eligible |= Lod;
-            else refuse(Lod, lodGate(certificate));
+            else {refuse(Lod, lodGate(certificate));refusalDetail(Lod,info.detail,model.value(),&info);}
         }
         if (requested & Hlod)
         {
-            if (!certifySelectiveHlodTemplate(original)) refuse(Hlod, Gate::Graph);
-            else if (qualifySelectiveHlodTemplate(original)) eligible |= Hlod;
-            else refuse(Hlod, Gate::Material);
+            GeneratedStaticLod::RefusalInfo info;
+            if (!certifySelectiveHlodTemplate(original,&info)) {refuse(Hlod, Gate::Graph);refusalDetail(Hlod,info.detail,model.value(),&info);}
+            else if (qualifySelectiveHlodTemplate(original,true,&info)) eligible |= Hlod;
+            else {refuse(Hlod, Gate::Material);refusalDetail(Hlod,info.detail,model.value(),&info);}
         }
         each(eligible, [](LaneCounters& value) { ++value.sourceCertified; });
         each(requested & ~eligible, [](LaneCounters& value) { ++value.sourceRejected; });

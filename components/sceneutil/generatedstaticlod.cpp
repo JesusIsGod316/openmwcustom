@@ -1,11 +1,13 @@
 #include "generatedstaticlod.hpp"
 #include "assetpaging.hpp"
+#include "depth.hpp"
 
 #include <components/resource/derivedassetcache.hpp>
 #include <components/resource/speculativebudget.hpp>
 #include <components/resource/assetgpubudget.hpp>
 #include <components/nifosg/matrixtransform.hpp>
-#include <components/shader/indirectprojectioncontract.hpp>
+#include <components/shader/assetgeometrycontract.hpp>
+#include <components/shader/programvariant.hpp>
 #include <components/sceneutil/shadowbatchcounters.hpp>
 #include <components/sceneutil/shadowproxygroup.hpp>
 #include <components/sceneutil/pagingwork.hpp>
@@ -13,11 +15,24 @@
 #include <components/sceneutil/persistentopaquepackets.hpp>
 #include <osg/AlphaFunc>
 #include <osg/Camera>
+#include <osg/ClipControl>
 #include <osg/LOD>
 #include <osg/MatrixTransform>
 #include <osg/Geode>
 #include <osg/GraphicsContext>
 #include <osg/Program>
+#include <osg/Texture2D>
+#include <osg/State>
+#include <osg/Texture>
+#include <osg/Material>
+#include <osg/CullFace>
+#include <osg/FrontFace>
+#include <osg/Depth>
+#include <osg/PolygonOffset>
+#include <osg/BlendFunc>
+#include <osg/TexEnv>
+#include "material.hpp"
+#include "texturetype.hpp"
 #include <osg/Viewport>
 #include <osgUtil/CullVisitor>
 #include <osgUtil/StateGraph>
@@ -28,6 +43,8 @@
 #include <string>
 #include <stdexcept>
 #include <vector>
+#include <set>
+#include <limits>
 
 namespace SceneUtil::GeneratedStaticLod
 {
@@ -36,31 +53,116 @@ namespace SceneUtil::GeneratedStaticLod
         constexpr std::size_t MaximumVertices = 250000, MaximumIndices = 1500000;
         constexpr std::size_t MaximumCookBytes = 64 * 1024 * 1024;
         constexpr float RelativeError = .02f, MaximumPixels = 1.f;
+        const osg::Program* effectiveProgram(const std::vector<const osg::StateSet*>& path)
+        {
+            const osg::StateAttribute* value=nullptr;
+            unsigned flags=0;
+            // Exact State::pushAttributeList override/protected rule, without
+            // cloning unrelated per-frame light, shadow and camera uniforms.
+            for(const auto* state:path) if(state)
+                if(const auto* pair=state->getAttributePair(osg::StateAttribute::PROGRAM))
+                    if(!value || !(flags&osg::StateAttribute::OVERRIDE) || (pair->second&osg::StateAttribute::PROTECTED))
+                    {value=pair->first.get();flags=pair->second;}
+            return dynamic_cast<const osg::Program*>(value);
+        }
+        const osg::ClipControl* effectiveClipControl(const std::vector<const osg::StateSet*>& path)
+        {
+            const osg::StateAttribute* value=nullptr;
+            unsigned flags=0;
+            for(const auto* state:path) if(state)
+                if(const auto* pair=state->getAttributePair(osg::StateAttribute::CLIPCONTROL))
+                    if(!value || !(flags&osg::StateAttribute::OVERRIDE) || (pair->second&osg::StateAttribute::PROTECTED))
+                    {value=pair->first.get();flags=pair->second;}
+            return dynamic_cast<const osg::ClipControl*>(value);
+        }
+        bool projectionMatches(const osg::Matrixd& cull,const osg::Matrixf& shader,
+            const osg::ClipControl* clip)
+        {
+            const auto matches=[&](const osg::Matrixd& expected) {
+                for(unsigned r=0;r<4;++r) for(unsigned c=0;c<4;++c)
+                {
+                    const float value=static_cast<float>(expected(r,c));
+                    const float tolerance=4*std::numeric_limits<float>::epsilon()*std::max(1.f,std::abs(value));
+                    if(!std::isfinite(value) || !std::isfinite(shader(r,c)) || std::abs(shader(r,c)-value)>tolerance) return false;
+                }
+                return true;
+            };
+            if(matches(cull)) return true;
+            if(!AutoDepth::isReversed() || !clip || typeid(*clip)!=typeid(osg::ClipControl) || clip->getOrigin()!=osg::ClipControl::LOWER_LEFT
+                || clip->getDepthMode()!=osg::ClipControl::ZERO_TO_ONE) return false;
+            // RenderingManager retains ordinary finite perspective for OSG
+            // culling, while the GPU uses depth z'=(w-z)/2. Its optional XY
+            // post-translation changes neither this conversion nor the lateral
+            // frustum terms. Do not accept an arbitrary shader depth projection.
+            if(cull(0,0)<=0 || cull(1,1)<=0 || cull(2,2)>=-1 || cull(3,2)>=0
+                || cull(0,2)!=0 || cull(1,2)!=0 || cull(0,3)!=0 || cull(1,3)!=0
+                || cull(3,0)!=0 || cull(3,1)!=0 || cull(2,3)!=-1 || cull(3,3)!=0) return false;
+            osg::Matrixd reversed=cull;
+            for(unsigned r=0;r<4;++r) reversed(r,2)=(cull(r,3)-cull(r,2))*.5;
+            return matches(reversed);
+        }
+        bool boundedAttribute(const osg::StateAttribute& value)
+        {
+            const auto& type=typeid(value);
+            return type==typeid(osg::Material) || type==typeid(SceneUtil::Material) || type==typeid(osg::CullFace)
+                || type==typeid(osg::FrontFace) || type==typeid(osg::Depth) || type==typeid(osg::PolygonOffset)
+                || type==typeid(osg::AlphaFunc) || type==typeid(osg::BlendFunc) || type==typeid(osg::TexEnv)
+                || type==typeid(SceneUtil::TextureType);
+        }
+        struct OriginalReceipt final : PersistentOpaquePackets::RetainedOpaqueDrawCallback
+        {
+            osg::ref_ptr<osg::Drawable::DrawCallback> delegate;
+            explicit OriginalReceipt(osg::Drawable::DrawCallback* value):delegate(value) {}
+            void drawImplementation(osg::RenderInfo& info,const osg::Drawable* drawable) const override
+            {
+                const auto* geometry=drawable->asGeometry();
+                if(geometry)
+                {
+                    std::uint64_t indices=0;
+                    for(unsigned i=0;i<geometry->getNumPrimitiveSets();++i) indices+=geometry->getPrimitiveSet(i)->getNumIndices();
+                    if(indices>=3) {++Counters::controlDraws;Counters::controlSubmittedIndices+=indices;}
+                }
+                if(delegate) delegate->drawImplementation(info,drawable);else drawable->drawImplementation(info);
+            }
+        };
         struct DrawReceipt final : PersistentOpaquePackets::RetainedOpaqueDrawCallback
         {
             explicit DrawReceipt(std::size_t count) : indices(count) {}
             std::size_t indices;
+            std::shared_ptr<MaterialGuard> guard;
+            std::vector<OriginalDraw> originals;
+            osg::Matrixd derivedMatrix;
+            std::vector<osg::ref_ptr<const osg::StateSet>> candidateStates;
             void drawImplementation(osg::RenderInfo& info, const osg::Drawable* drawable) const override
             {
+                if (guard && !guard->current(info.getState()))
+                {
+                    ++Counters::materialDrawFallbacks;
+                    drawOriginals(info, originals, derivedMatrix, drawable->getStateSet(),candidateStates);
+                    return;
+                }
                 ++Counters::derivedDraws; Counters::submittedIndices.fetch_add(indices);
                 drawable->drawImplementation(info);
             }
         };
-        bool material(const osg::StateSet* state, bool perView = false)
+        bool material(const osg::StateSet* state, bool perView = false, RefusalInfo* info = nullptr,
+            std::set<const osg::Program*>* validated = nullptr)
         {
             if (!state) return true;
-            if (state->getDataVariance() == osg::Object::DYNAMIC || state->getUpdateCallback()
-                || (state->getMode(GL_BLEND) & osg::StateAttribute::ON)
-                || (state->getMode(GL_ALPHA_TEST) & osg::StateAttribute::ON)
-                || state->getRenderingHint() == osg::StateSet::TRANSPARENT_BIN
-                || state->getAttribute(osg::StateAttribute::STENCIL)
-                || (!perView && state->getUniform("projectionMatrix"))) return false;
+            const auto fail = [&](Detail detail) { if(info) info->detail=detail; return false; };
+            if (!perView && (state->getDataVariance() == osg::Object::DYNAMIC || state->getUpdateCallback() || state->getEventCallback())) return fail(Detail::Dynamic);
+            if (state->getMode(GL_BLEND) & osg::StateAttribute::ON) return fail(Detail::Blend);
+            if ((state->getMode(GL_ALPHA_TEST) & osg::StateAttribute::ON) || state->getRenderingHint() == osg::StateSet::TRANSPARENT_BIN)
+                return fail(Detail::Alpha);
+            if (state->getAttribute(osg::StateAttribute::STENCIL) || (!perView && state->getUniform("projectionMatrix"))) return fail(Detail::Other);
             if (const auto* a = dynamic_cast<const osg::AlphaFunc*>(state->getAttribute(osg::StateAttribute::ALPHAFUNC)))
-                if (a->getFunction() != GL_ALWAYS) return false;
+                if (a->getFunction() != GL_ALWAYS) return fail(Detail::Alpha);
             if (const auto* p = dynamic_cast<const osg::Program*>(state->getAttribute(osg::StateAttribute::PROGRAM)))
-                if (!Shader::IndirectProjection::matches(*p)) return false;
+                if ((!validated || validated->insert(p).second))
+                if (const auto reason = Shader::AssetGeometry::validate(*p); reason != Shader::AssetGeometry::Refusal::None)
+                { if(info) {info->program=p;info->detail=shaderDetail(static_cast<unsigned>(reason));} return false; }
             if (const auto* a = state->getUniform("alphaTest"))
-            { bool enabled = true; if (!a->get(enabled) || enabled) return false; }
+            { bool enabled = true; if (!a->get(enabled) || enabled) return fail(Detail::Alpha); }
             return !state->useRenderBinDetails() || state->getBinName().empty() || state->getBinName() == "RenderBin";
         }
         bool array(const osg::Array* a, std::size_t vertices)
@@ -98,6 +200,7 @@ namespace SceneUtil::GeneratedStaticLod
         {
             std::size_t nodes = 0, geometries = 0, vertices = 0, indices = 0, bytes = 0;
             std::uint64_t scratch = 0, serialized = 0, cacheOverlap = 0, graphBytes = 0;
+            std::set<const osg::Program*> programs;
         };
         bool emptyLoaderMarker(const osg::Node& node, Size& size, unsigned depth)
         {
@@ -123,12 +226,13 @@ namespace SceneUtil::GeneratedStaticLod
                 if (!emptyLoaderMarker(*group->getChild(i),size,depth + 1)) return false;
             return true;
         }
-        Refusal inspectNode(const osg::Node& node, Size& size, unsigned depth)
+        Refusal inspectNode(const osg::Node& node, Size& size, unsigned depth, RefusalInfo* info = nullptr)
         {
+            if(info) info->node=&node;
             // Loader-emitted hidden collision/marker hierarchies contain no
             // drawables. Certify this exact empty shape before CopyOp filters
             // it; a hidden mesh, controller or custom node is never admitted.
-            if (!node.getNodeMask()) return emptyLoaderMarker(node,size,depth) ? Refusal::None : Refusal::Graph;
+            if (!node.getNodeMask()) {if(info) info->detail=Detail::HiddenGraph;return emptyLoaderMarker(node,size,depth) ? Refusal::None : Refusal::Graph;}
             if (++size.nodes > 1024 || depth > 32) return Refusal::Capacity;
             size.graphBytes += 1024 + node.getName().size() * 2ull;
             for (const auto& description : node.getDescriptions()) size.graphBytes += 32 + description.size() * 2ull;
@@ -137,8 +241,9 @@ namespace SceneUtil::GeneratedStaticLod
             std::string custom;
             if (node.getDataVariance() == osg::Object::DYNAMIC || node.getUpdateCallback() || node.getEventCallback()
                 || node.getCullCallback() || node.getComputeBoundingSphereCallback()
-                || node.getUserValue("shaderPrefix", custom) || dynamic_cast<const osg::LOD*>(&node)) return Refusal::Graph;
-            if (!material(node.getStateSet())) return Refusal::Material;
+                || node.getUserValue("shaderPrefix", custom) || dynamic_cast<const osg::LOD*>(&node))
+            {if(info) info->detail=node.getDataVariance()==osg::Object::DYNAMIC?Detail::Dynamic:Detail::GraphCallback;return Refusal::Graph;}
+            if (!material(node.getStateSet(), false, info,&size.programs)) return Refusal::Material;
             if (const auto* geometry = dynamic_cast<const osg::Geometry*>(&node))
             {
                 if (typeid(*geometry) != typeid(osg::Geometry) || geometry->getDrawCallback()
@@ -187,10 +292,10 @@ namespace SceneUtil::GeneratedStaticLod
                 && typeid(node) != typeid(osg::MatrixTransform)
                 && typeid(node) != typeid(NifOsg::MatrixTransform))) return Refusal::Graph;
             for (unsigned i = 0; i < group->getNumChildren(); ++i)
-                if (auto refusal = inspectNode(*group->getChild(i), size, depth + 1); refusal != Refusal::None) return refusal;
+                if (auto refusal = inspectNode(*group->getChild(i), size, depth + 1, info); refusal != Refusal::None) return refusal;
             return Refusal::None;
         }
-        Refusal inspect(const osg::Node& node) { Size size; return inspectNode(node, size, 0); }
+        Refusal inspect(const osg::Node& node, RefusalInfo* info = nullptr) { Size size; return inspectNode(node, size, 0, info); }
         void append(Resource::DerivedAssets::Bytes& bytes, const void* data, std::size_t size)
         {
             if (bytes.size() + size > MaximumCookBytes) throw std::bad_alloc{};
@@ -338,11 +443,35 @@ namespace SceneUtil::GeneratedStaticLod
             && ((a ^ b) * c) > 0 && matrix(0,3) == 0 && matrix(1,3) == 0 && matrix(2,3) == 0 && matrix(3,3) == 1;
     }
     bool isDelegatingDrawCallback(const osg::Drawable::DrawCallback* callback)
-    { return callback && dynamic_cast<const DrawReceipt*>(callback); }
-    Refusal certify(const osg::Node& original)
+    { return callback && (dynamic_cast<const DrawReceipt*>(callback) || dynamic_cast<const OriginalReceipt*>(callback)); }
+    Detail shaderDetail(unsigned reason)
+    {
+        switch (static_cast<Shader::AssetGeometry::Refusal>(reason))
+        {
+            case Shader::AssetGeometry::Refusal::Epoch: return Detail::ShaderEpoch;
+            case Shader::AssetGeometry::Refusal::Source: return Detail::ShaderSource;
+            case Shader::AssetGeometry::Refusal::Stage: return Detail::ShaderStage;
+            case Shader::AssetGeometry::Refusal::Bindings: return Detail::ShaderBindings;
+            case Shader::AssetGeometry::Refusal::Defines: return Detail::ShaderDefines;
+            case Shader::AssetGeometry::Refusal::Features: return Detail::ShaderFeatures;
+            case Shader::AssetGeometry::Refusal::Capacity: return Detail::ShaderCapacity;
+            default: return Detail::ShaderFamily;
+        }
+    }
+    const char* detailName(Detail value)
+    {
+        constexpr const char* names[]{"none","shader_family","shader_epoch","shader_source","shader_stage",
+            "shader_bindings","shader_defines","shader_features","shader_capacity","alpha","blend","dynamic",
+            "graph_callback","graph_type","hidden_graph","layout","other"};
+        return static_cast<unsigned>(value) < static_cast<unsigned>(Detail::Count) ? names[static_cast<unsigned>(value)] : "unknown";
+    }
+    Refusal certify(const osg::Node& original, RefusalInfo* info)
     {
         ++Counters::requests;
-        const auto refusal = inspect(original);
+        if (info) *info = {};
+        const auto refusal = inspect(original, info);
+        if (info && refusal != Refusal::None && info->detail == Detail::None)
+            info->detail = refusal == Refusal::Layout ? Detail::Layout : refusal == Refusal::Graph ? Detail::GraphType : Detail::Other;
         if (refusal == Refusal::None) ++Counters::certified;
         else ++Counters::refused[static_cast<unsigned>(refusal)];
         return refusal;
@@ -378,6 +507,385 @@ namespace SceneUtil::GeneratedStaticLod
             if (owners & (owners - 1)) conflict |= owners & ~1u;
         }
         return conflict;
+    }
+    std::vector<OriginalDraw> originalDraws(const osg::Node& root)
+    {
+        std::vector<OriginalDraw> result;
+        std::vector<osg::ref_ptr<const osg::Node>> path;
+        unsigned nodes=0;
+        const auto visit = [&](const auto& self,const osg::Node& node,osg::Matrixd matrix,unsigned depth)->void {
+            if (++nodes>2048 || depth>32 || result.size()>128) throw std::runtime_error("material replay capacity");
+            if(!node.getNodeMask()) return;
+            path.emplace_back(&node);
+            if(const auto* selector=dynamic_cast<const Group*>(&node))
+            { if(selector->original()) self(self,*selector->original(),matrix,depth+1); }
+            else
+            {
+                if(const auto* transform=node.asTransform())
+                    if(!transform->computeLocalToWorldMatrix(matrix,nullptr)) throw std::runtime_error("material replay transform");
+                if(const auto* geometry=dynamic_cast<const osg::Geometry*>(&node))
+                    result.push_back({const_cast<osg::Geometry*>(geometry),path,matrix});
+                else if(const auto* group=node.asGroup())
+                    for(unsigned i=0;i<group->getNumChildren();++i) self(self,*group->getChild(i),matrix,depth+1);
+            }
+            path.pop_back();
+        };
+        visit(visit,root,osg::Matrixd::identity(),0);
+        return result;
+    }
+    bool installOriginalDrawReceipts(osg::Node& root)
+    {
+        const auto paths=originalDraws(root);
+        for(const auto& path:paths)
+        {
+            auto* callback=path.geometry->getDrawCallback();
+            if(callback && !dynamic_cast<PersistentOpaquePackets::RetainedOpaqueDrawCallback*>(callback)) return false;
+        }
+        for(const auto& path:paths)
+            if(!dynamic_cast<OriginalReceipt*>(path.geometry->getDrawCallback()))
+                path.geometry->setDrawCallback(new OriginalReceipt(path.geometry->getDrawCallback()));
+        return !paths.empty();
+    }
+    void drawOriginals(osg::RenderInfo& info,std::span<const OriginalDraw> draws,
+        const osg::Matrixd& derivedMatrix,const osg::StateSet* restoreLeaf,
+        std::span<const osg::ref_ptr<const osg::StateSet>> candidateStates)
+    {
+        auto* state=info.getState(); if(!state) return;
+        const auto savedStack=state->getStateSetStack();
+        std::size_t depth=savedStack.size();
+        for(std::size_t i=0;i<savedStack.size();++i)
+            if(std::any_of(candidateStates.begin(),candidateStates.end(),[&](const auto& ss){return ss.get()==savedStack[i];}))
+            {depth=i;break;}
+        const osg::Matrixd saved=state->getModelViewMatrix();
+        struct Restore
+        {
+            osg::State& state; const osg::State::StateSetStack& stack; std::size_t depth; osg::Matrixd matrix; const osg::StateSet* leaf;
+            ~Restore() {state.popStateSetStackToSize(static_cast<unsigned>(depth));for(std::size_t i=depth;i<stack.size();++i) state.pushStateSet(stack[i]);state.applyModelViewMatrix(matrix);state.apply(leaf);}
+        } restore{*state,savedStack,depth,saved,restoreLeaf};
+        state->popStateSetStackToSize(static_cast<unsigned>(depth));
+        for(const auto& draw:draws)
+        {
+            if(!draw.geometry) continue;
+            osg::Matrixd local;
+            bool visible=true;
+            for(const auto& node:draw.path)
+            {
+                if(!node || !node->getNodeMask()) {visible=false;break;}
+                if(const auto* transform=node->asTransform())
+                    if(!transform->computeLocalToWorldMatrix(local,nullptr)) {visible=false;break;}
+                if(node->getStateSet()) state->pushStateSet(node->getStateSet());
+            }
+            if(visible)
+            {
+                state->applyModelViewMatrix(local*osg::Matrixd::inverse(derivedMatrix)*saved);
+                // Remove the directly applied candidate leaf (including atlas
+                // textures). Re-resolve the retained original path, then invoke
+                // the original callback exactly once through Drawable::draw.
+                state->apply(); draw.geometry->draw(info);
+            }
+            state->popStateSetStackToSize(static_cast<unsigned>(depth));
+        }
+    }
+    struct MaterialGuard::Impl
+    {
+        Resource::SpeculativeBudget::ChargePtr hostCharge;
+        struct Texture
+        {
+            const osg::Texture2D* object=nullptr;
+            const osg::Image* image=nullptr;
+            osg::observer_ptr<const osg::Image> imageOwner;
+            const unsigned char* data=nullptr;
+            unsigned modified=0;
+            std::size_t span=0;
+            osg::Image::MipmapDataType mips;
+            std::array<double,28> recipe{};
+            int initialFormat=0,sourceFormat=0;
+            static std::array<double,28> values(const osg::Texture2D& t)
+            {
+                return {double(t.getDataVariance()),double(t.getWrap(osg::Texture::WRAP_S)),double(t.getWrap(osg::Texture::WRAP_T)),
+                    double(t.getWrap(osg::Texture::WRAP_R)),double(t.getFilter(osg::Texture::MIN_FILTER)),double(t.getFilter(osg::Texture::MAG_FILTER)),
+                    t.getMaxAnisotropy(),t.getMinLOD(),t.getMaxLOD(),t.getLODBias(),double(t.getInternalFormatMode()),
+                    double(t.getSourceFormat()),double(t.getSourceType()),double(t.getShadowComparison()),double(t.getShadowCompareFunc()),
+                    double(t.getShadowTextureMode()),t.getShadowAmbient(),double(t.getBorderWidth()),
+                    t.getBorderColor()[0],t.getBorderColor()[1],t.getBorderColor()[2],t.getBorderColor()[3],
+                    double(t.getSwizzle()[0]),double(t.getSwizzle()[1]),double(t.getSwizzle()[2]),double(t.getSwizzle()[3]),
+                    double(t.getResizeNonPowerOfTwoHint()),double(t.getUseHardwareMipMapGeneration())};
+            }
+            std::array<int,10> layout{};
+            static std::array<int,10> imageLayout(const osg::Image& i)
+            {return {i.s(),i.t(),i.r(),i.getInternalTextureFormat(),int(i.getPixelFormat()),int(i.getDataType()),
+                int(i.getPacking()),i.getRowLength(),int(i.getOrigin()),int(i.getDataVariance())};}
+            explicit Texture(const osg::Texture2D& t):object(&t),image(t.getImage()),imageOwner(t.getImage())
+            {
+                if(t.getSubloadCallback() || !image || image->requiresUpdateCall()) throw std::runtime_error("dynamic material texture");
+                data=image->data();modified=image->getModifiedCount();span=image->getTotalSizeInBytesIncludingMipmaps();
+                mips=image->getMipmapLevels();layout=imageLayout(*image);
+                initialFormat=t.getInternalFormat();sourceFormat=image->getInternalTextureFormat()?image->getInternalTextureFormat():int(image->getPixelFormat());
+                recipe=values(t); // Resolve the logical CPU format before freezing its recipe.
+            }
+            bool current() const
+            {
+                const auto* actual=object->getImage();
+                osg::ref_ptr<const osg::Image> locked;
+                if(!imageOwner.lock(locked) || locked.get()!=actual) return false;
+                const bool format=object->getInternalFormat()==initialFormat || (initialFormat==0
+                    && object->getInternalFormatMode()==osg::Texture::USE_IMAGE_DATA_FORMAT && object->getInternalFormat()==sourceFormat);
+                return format && !object->getSubloadCallback() && values(*object)==recipe && actual==image && actual && !actual->requiresUpdateCall()
+                    && actual->data()==data && actual->getModifiedCount()==modified && actual->getTotalSizeInBytesIncludingMipmaps()==span
+                    && actual->getMipmapLevels()==mips && imageLayout(*actual)==layout;
+            }
+        };
+        struct Node
+        {
+            osg::observer_ptr<const osg::Node> owner;
+            osg::ref_ptr<osg::StateSet> frozen;
+            const osg::StateSet* state=nullptr;
+            unsigned mask=0;
+            osg::Object::DataVariance variance{};
+            const osg::Callback *update=nullptr,*event=nullptr,*cull=nullptr;
+            const osg::Drawable::DrawCallback* draw=nullptr;
+            std::vector<const osg::Node*> children;
+            struct Stream
+            {
+                const osg::BufferData* identity=nullptr;
+                osg::observer_ptr<const osg::BufferData> owner;
+                unsigned modified=0;
+                std::array<std::uint64_t,6> layout{};
+                static std::array<std::uint64_t,6> values(const osg::BufferData* data)
+                {
+                    if(const auto* array=dynamic_cast<const osg::Array*>(data))
+                        return {array->getNumElements(),array->getTotalDataSize(),std::uint64_t(array->getType()),
+                            std::uint64_t(array->getBinding()),array->getNormalize(),std::uint64_t(array->getDataVariance())};
+                    if(const auto* primitive=dynamic_cast<const osg::PrimitiveSet*>(data))
+                        return {primitive->getNumIndices(),primitive->getTotalDataSize(),std::uint64_t(primitive->getType()),
+                            primitive->getMode(),std::uint64_t(primitive->getNumInstances()),std::uint64_t(primitive->getDataVariance())};
+                    return {};
+                }
+                explicit Stream(const osg::BufferData* data):identity(data),owner(data),modified(data?data->getModifiedCount():0),layout(values(data)) {}
+                bool current(const osg::BufferData* data) const
+                {
+                    if(!identity) return !data;
+                    osg::ref_ptr<const osg::BufferData> locked;
+                    return data==identity && owner.lock(locked) && locked.get()==data && data->getModifiedCount()==modified && values(data)==layout;
+                }
+            };
+            std::vector<Stream> streams;
+            std::vector<Texture> textures;
+            osg::Matrixd matrix;
+            bool transform=false;
+            explicit Node(const osg::Node& node):owner(&node),state(node.getStateSet()),mask(node.getNodeMask()),variance(node.getDataVariance()),
+                update(node.getUpdateCallback()),event(node.getEventCallback()),cull(node.getCullCallback())
+            {
+                if(const auto* t=node.asTransform()) {transform=true;if(!t->computeLocalToWorldMatrix(matrix,nullptr)) throw std::runtime_error("material transform");}
+                if(const auto* g=node.asGroup()) for(unsigned i=0;i<g->getNumChildren();++i) children.push_back(g->getChild(i));
+                if(const auto* g=dynamic_cast<const osg::Geometry*>(&node))
+                {
+                    draw=g->getDrawCallback();
+                    const auto add=[&](const osg::BufferData* data){streams.emplace_back(data);};
+                    add(g->getVertexArray());add(g->getNormalArray());add(g->getColorArray());
+                    add(g->getSecondaryColorArray());add(g->getFogCoordArray());
+                    for(unsigned i=0;i<g->getNumTexCoordArrays();++i) add(g->getTexCoordArray(i));
+                    for(unsigned i=0;i<g->getNumVertexAttribArrays();++i) add(g->getVertexAttribArray(i));
+                    for(unsigned i=0;i<g->getNumPrimitiveSets();++i) add(g->getPrimitiveSet(i));
+                }
+                if(!state) return;
+                frozen=new osg::StateSet(*state,osg::CopyOp::SHALLOW_COPY);
+                for(const auto& [key,pair]:state->getAttributeList())
+                    if(key.first!=osg::StateAttribute::PROGRAM)
+                        frozen->setAttribute(dynamic_cast<osg::StateAttribute*>(pair.first->clone(osg::CopyOp::SHALLOW_COPY)),pair.second);
+                for(const auto& [name,pair]:state->getUniformList())
+                    frozen->addUniform(new osg::Uniform(*pair.first,osg::CopyOp::DEEP_COPY_ALL),pair.second);
+                for(unsigned unit=0;unit<state->getTextureAttributeList().size();++unit)
+                    for(const auto& [key,pair]:state->getTextureAttributeList()[unit])
+                        if(key.first==osg::StateAttribute::TEXTURE)
+                        {
+                            const auto* t=dynamic_cast<const osg::Texture2D*>(pair.first.get());
+                            if(!t) throw std::runtime_error("material texture class");
+                            textures.emplace_back(*t);
+                        }
+                        else frozen->setTextureAttribute(unit,dynamic_cast<osg::StateAttribute*>(pair.first->clone(osg::CopyOp::SHALLOW_COPY)),pair.second);
+            }
+            bool current() const
+            {
+                osg::ref_ptr<const osg::Node> node; if(!owner.lock(node)) return false;
+                if(node->getStateSet()!=state || node->getNodeMask()!=mask || node->getDataVariance()!=variance
+                    || node->getUpdateCallback()!=update || node->getEventCallback()!=event || node->getCullCallback()!=cull) return false;
+                if(transform) {osg::Matrixd value;if(!node->asTransform()->computeLocalToWorldMatrix(value,nullptr) || value!=matrix) return false;}
+                if(const auto* g=node->asGroup())
+                {if(g->getNumChildren()!=children.size()) return false;for(unsigned i=0;i<children.size();++i) if(g->getChild(i)!=children[i]) return false;}
+                if(const auto* g=dynamic_cast<const osg::Geometry*>(node.get()))
+                {
+                    if(g->getDrawCallback()!=draw) return false;
+                    std::size_t i=0;
+                    const auto equal=[&](const osg::BufferData* data){return i<streams.size() && streams[i++].current(data);};
+                    if(!equal(g->getVertexArray()) || !equal(g->getNormalArray()) || !equal(g->getColorArray()) || !equal(g->getSecondaryColorArray()) || !equal(g->getFogCoordArray())) return false;
+                    for(unsigned u=0;u<g->getNumTexCoordArrays();++u) if(!equal(g->getTexCoordArray(u))) return false;
+                    for(unsigned u=0;u<g->getNumVertexAttribArrays();++u) if(!equal(g->getVertexAttribArray(u))) return false;
+                    for(unsigned u=0;u<g->getNumPrimitiveSets();++u) if(!equal(g->getPrimitiveSet(u))) return false;
+                    if(i!=streams.size()) return false;
+                }
+                if(!state) return true;
+                if(state->getDataVariance()!=frozen->getDataVariance() || state->getUpdateCallback()!=frozen->getUpdateCallback()
+                    || state->getEventCallback()!=frozen->getEventCallback() || state->getModeList()!=frozen->getModeList()
+                    || state->getTextureModeList()!=frozen->getTextureModeList() || state->getDefineList()!=frozen->getDefineList()
+                    || state->getRenderingHint()!=frozen->getRenderingHint() || state->getBinNumber()!=frozen->getBinNumber()
+                    || state->getBinName()!=frozen->getBinName() || state->getRenderBinMode()!=frozen->getRenderBinMode()) return false;
+                const auto attributes=[](const auto& a,const auto& b)->bool {
+                    if(a.size()!=b.size()) return false;
+                    auto j=b.begin();for(const auto& [key,pair]:a)
+                    {
+                        if(j->first!=key || j->second.second!=pair.second) return false;
+                        if(key.first==osg::StateAttribute::PROGRAM || key.first==osg::StateAttribute::TEXTURE)
+                        {if(pair.first!=j->second.first) return false;}
+                        else if(pair.first->compare(*j->second.first)!=0) return false;
+                        ++j;
+                    }
+                    return true;
+                };
+                if(!attributes(state->getAttributeList(),frozen->getAttributeList()) || state->getTextureAttributeList().size()!=frozen->getTextureAttributeList().size()) return false;
+                for(unsigned u=0;u<state->getTextureAttributeList().size();++u)
+                    if(!attributes(state->getTextureAttributeList()[u],frozen->getTextureAttributeList()[u])) return false;
+                if(state->getUniformList().size()!=frozen->getUniformList().size()) return false;
+                auto uniform=frozen->getUniformList().begin();for(const auto& [name,pair]:state->getUniformList())
+                {
+                    if(name!=uniform->first || pair.second!=uniform->second.second || pair.first->getUpdateCallback()!=uniform->second.first->getUpdateCallback()
+                        || pair.first->getEventCallback()!=uniform->second.first->getEventCallback() || pair.first->compare(*uniform->second.first)!=0) return false;
+                    ++uniform;
+                }
+                return std::all_of(textures.begin(),textures.end(),[](const auto& texture){return texture.current();});
+            }
+        };
+        struct Program
+        {
+            osg::ref_ptr<const osg::Program> owner;
+            Shader::AssetGeometry::Snapshot snapshot;
+            std::vector<osg::observer_ptr<const osg::Node>> path;
+            std::vector<std::string> sources;
+            std::string imports;
+        };
+        std::vector<Node> nodes;
+        std::vector<Program> programs;
+    };
+    std::shared_ptr<MaterialGuard> MaterialGuard::captureDraws(std::span<const OriginalDraw> original,const OriginalDraw& derived,bool requireShader)
+    {
+        if(original.size()>128 || derived.path.size()>32) return {};
+        for(const auto& draw:original) if(draw.path.size()>32) return {};
+        Resource::SpeculativeScope::Stage preflight(256*1024,0);
+        std::vector<OriginalDraw> paths(original.begin(),original.end());paths.push_back(derived);
+        std::set<const osg::Node*> unique;
+        std::uint64_t estimate=4096;
+        for(const auto& draw:paths)
+        {
+            if(draw.path.size()>32 || paths.size()>129) return {};
+            for(const auto& node:draw.path) if(unique.insert(node.get()).second)
+            {
+                if(!node) return {};
+                estimate+=4096;
+                if(const auto* group=node->asGroup())
+                {if(group->getNumChildren()>1024) return {};estimate+=group->getNumChildren()*32ull;}
+                if(const auto* geometry=dynamic_cast<const osg::Geometry*>(node.get()))
+                {
+                    const auto streams=5ull+geometry->getNumTexCoordArrays()+geometry->getNumVertexAttribArrays()+geometry->getNumPrimitiveSets();
+                    if(streams>64) return {};estimate+=streams*512;
+                }
+                if(const auto* ss=node->getStateSet())
+                {
+                    if(ss->getName().size()>4096 || ss->getUniformList().size()>128 || ss->getAttributeList().size()>64 || ss->getTextureAttributeList().size()>32 || ss->getDefineList().size()>128) return {};
+                    for(const auto& [name,pair]:ss->getUniformList())
+                    {if(typeid(*pair.first)!=typeid(osg::Uniform) || pair.first->getUpdateCallback() || pair.first->getEventCallback()
+                        || pair.first->getNumElements()>4096 || name.size()>1024) return {};estimate+=1024+pair.first->getNumElements()*256ull;}
+                    for(const auto& [name,pair]:ss->getDefineList())
+                    {if(name.size()>1024 || pair.first.size()>4096) return {};estimate+=name.size()+pair.first.size()+64;}
+                    for(const auto& [key,pair]:ss->getAttributeList())
+                    {
+                        if(pair.first->getName().size()>4096 || (key.first!=osg::StateAttribute::PROGRAM && !boundedAttribute(*pair.first))) return {};
+                        estimate+=1024+pair.first->getName().size()*2ull;
+                        if(!requireShader && key.first==osg::StateAttribute::PROGRAM)
+                        {
+                            const auto* program=dynamic_cast<const osg::Program*>(pair.first.get());if(!program || program->getNumShaders()>32) return {};
+                            for(unsigned i=0;i<program->getNumShaders();++i)
+                            {const auto size=program->getShader(i)->getShaderSource().size();if(size>64*1024) return {};estimate+=size*2ull;}
+                        }
+                    }
+                    unsigned textureAttributes=0;
+                    for(const auto& unit:ss->getTextureAttributeList())
+                    {
+                        if(unit.size()>16) return {};
+                        for(const auto& [key,pair]:unit)
+                        {
+                            if(++textureAttributes>128 || pair.first->getName().size()>4096) return {};estimate+=1024+pair.first->getName().size()*2ull;
+                            if(key.first==osg::StateAttribute::TEXTURE)
+                            {
+                                const auto* texture=dynamic_cast<const osg::Texture2D*>(pair.first.get());
+                                if(!texture || texture->getNumImages()!=1 || !texture->getImage()
+                                    || texture->getImage()->getMipmapLevels().size()>32
+                                    || (texture->getInternalFormatMode()!=osg::Texture::USE_IMAGE_DATA_FORMAT && texture->getInternalFormatMode()!=osg::Texture::USE_USER_DEFINED_FORMAT)) return {};
+                                estimate+=texture->getImage()->getMipmapLevels().size()*16ull;
+                            }
+                            else if(!boundedAttribute(*pair.first)) return {};
+                        }
+                    }
+                }
+                if(unique.size()>2048 || estimate>4*Resource::SpeculativeBudget::MiB) return {};
+            }
+        }
+        if(unique.size()>2048 || estimate>4*Resource::SpeculativeBudget::MiB) return {};
+        Resource::SpeculativeScope::Stage admission(estimate,0);
+        auto data=std::make_shared<Impl>();data->nodes.reserve(unique.size());
+        for(const auto* node:unique) data->nodes.emplace_back(*node);
+        for(const auto& draw:paths)
+        {
+            std::vector<const osg::StateSet*> states;
+            for(const auto& node:draw.path) if(node->getStateSet()) states.push_back(node->getStateSet());
+            // Resolve OVERRIDE/PROTECTED exactly as OSG does, rather than
+            // trusting a root Program while an authored child supplies another.
+            const auto* program=effectiveProgram(states);
+            if(!program) {if(requireShader) return {};continue;}
+            const auto imports=Shader::ProgramDefineSnapshot::fromStateSets(*program,states);
+            if(!imports.bounded) return {};
+            if(std::any_of(data->programs.begin(),data->programs.end(),[&](const auto& p){return p.owner==program && p.imports==imports.string;})) continue;
+            Impl::Program entry;entry.owner=program;entry.imports=imports.string;
+            for(const auto& node:draw.path) entry.path.emplace_back(node.get());
+            if(requireShader)
+            {auto snapshot=Shader::AssetGeometry::capture(*program,states);if(!snapshot) return {};entry.snapshot=*snapshot;}
+            else for(unsigned i=0;i<program->getNumShaders();++i) entry.sources.push_back(program->getShader(i)->getShaderSource());
+            data->programs.push_back(std::move(entry));
+        }
+        const auto context=Resource::SpeculativeScope::capture();
+        if(context.budget) data->hostCharge=Resource::SpeculativeScope::track(context.budget,{data.get(),3u},estimate,false);
+        return std::shared_ptr<MaterialGuard>(new MaterialGuard(std::move(data)));
+    }
+    std::shared_ptr<MaterialGuard> MaterialGuard::capture(const osg::Node& original,const osg::Node& derived,bool requireShader)
+    {
+        auto paths=originalDraws(original);auto tiers=originalDraws(derived);
+        if(paths.empty() || tiers.empty() || paths.size()+tiers.size()>128) return {};
+        const auto last=tiers.back();tiers.pop_back();paths.insert(paths.end(),tiers.begin(),tiers.end());
+        return captureDraws(paths,last,requireShader);
+    }
+    bool MaterialGuard::current(osg::State* state,const std::vector<const osg::StateSet*>& inherited) const
+    {
+        if(!mImpl) return false;
+        try
+        {
+            for(const auto& node:mImpl->nodes) if(!node.current()) return false;
+            for(const auto& entry:mImpl->programs)
+            {
+                std::vector<const osg::StateSet*> path=inherited;
+                if(state && path.empty()) for(const auto* ss:state->getStateSetStack()) if(ss) path.push_back(ss);
+                for(const auto& weak:entry.path)
+                {osg::ref_ptr<const osg::Node> node;if(!weak.lock(node)) return false;if(node->getStateSet()) path.push_back(node->getStateSet());}
+                if(effectiveProgram(path)!=entry.owner.get()) return false;
+                if(entry.snapshot)
+                {if(Shader::AssetGeometry::current(entry.snapshot,*entry.owner,path)!=Shader::AssetGeometry::Refusal::None) return false;}
+                else
+                {
+                    if(entry.owner->getNumShaders()!=entry.sources.size()) return false;
+                    for(unsigned i=0;i<entry.sources.size();++i) if(entry.owner->getShader(i)->getShaderSource()!=entry.sources[i]) return false;
+                }
+            }
+            return true;
+        }
+        catch(const std::bad_alloc&) {return false;}
     }
     bool CompileCompleted::compileCompleted(osgUtil::IncrementalCompileOperation::CompileSet* compiled)
     {
@@ -433,6 +941,7 @@ namespace SceneUtil::GeneratedStaticLod
         setNodeMask(originalNode.getNodeMask()); setDataVariance(osg::Object::DYNAMIC);
         addChild(&originalNode); addChild(&derivedNode);
         setName("OptimizedMW-generated-static-LOD");
+        mMaterialGuard=MaterialGuard::capture(originalNode,derivedNode);
     }
     osg::BoundingSphere Group::computeBound() const
     {
@@ -455,6 +964,11 @@ namespace SceneUtil::GeneratedStaticLod
         const auto& projection = *visitor.getProjectionMatrix();
         if (std::abs(projection(2,3) + 1) > 1e-5 || std::abs(projection(3,3)) > 1e-5
             || projection(0,1) != 0 || projection(1,0) != 0) return false;
+        std::vector<const osg::StateSet*> ancestry;
+        for(auto* graph=visitor.getCurrentStateGraph();graph;graph=graph->_parent)
+            if(graph->getStateSet()) ancestry.push_back(graph->getStateSet());
+        std::reverse(ancestry.begin(),ancestry.end());
+        const auto* clip=effectiveClipControl(ancestry);
         for (auto* graph = visitor.getCurrentStateGraph(); graph; graph = graph->_parent)
         {
             const auto* state = graph->getStateSet();
@@ -464,10 +978,11 @@ namespace SceneUtil::GeneratedStaticLod
                 {
                     osg::Matrixf value;
                     if (!uniform->get(value)) return false;
-                    for (unsigned r = 0; r < 4; ++r) for (unsigned c = 0; c < 4; ++c)
-                        if (std::abs(value(r,c) - projection(r,c)) > 1e-4) return false;
+                    if(!projectionMatches(projection,value,clip)) return false;
                 }
         }
+        if(!mMaterialGuard || !mMaterialGuard->current(nullptr,ancestry))
+        {++Counters::materialCullFallbacks;return false;}
         const auto& matrix = *visitor.getModelViewMatrix();
         if (!positiveUniformTransform(matrix)) return false;
         if (mPreserveControlPopulation)
@@ -572,6 +1087,19 @@ namespace SceneUtil::GeneratedStaticLod
                 if (source->getVertexArray() != tier->getVertexArray()) throw std::runtime_error("LOD vertex lineage changed");
                 osg::ref_ptr<TemporalVertexLineage> lineage = new TemporalVertexLineage(source->getVertexArray());
                 installTemporalVertexLineage(*source, lineage); installTemporalVertexLineage(*tier, lineage);
+            }
+            const auto sourcePaths=originalDraws(original),tierPaths=originalDraws(*derived);
+            if(sourcePaths.size()!=tierPaths.size()) throw std::runtime_error("LOD material replay lineage mismatch");
+            if(!installOriginalDrawReceipts(original)) throw std::runtime_error("LOD original callback replay unavailable");
+            for(std::size_t i=0;i<tierPaths.size();++i)
+            {
+                auto* tier=tierPaths[i].geometry.get();
+                osg::ref_ptr<DrawReceipt> callback=new DrawReceipt(tier->getPrimitiveSet(0)->getNumIndices());
+                tier->setDrawCallback(callback); // Freeze this exact callback identity before capture.
+                callback->originals.push_back(sourcePaths[i]);callback->derivedMatrix=tierPaths[i].matrix;
+                for(const auto& node:tierPaths[i].path) if(node->getStateSet()) callback->candidateStates.emplace_back(node->getStateSet());
+                callback->guard=MaterialGuard::captureDraws({&sourcePaths[i],1},tierPaths[i]);
+                if(!callback->guard) throw std::runtime_error("LOD material replay proof unavailable");
             }
             result.readiness = std::make_shared<Readiness>();
             result.node = new Group(original, *derived, cook.error, result.readiness, mainCamera);

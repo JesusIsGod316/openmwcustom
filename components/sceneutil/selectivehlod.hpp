@@ -11,20 +11,23 @@
 #include <atomic>
 
 namespace Resource::AssetGpuBudget { class Reservation; }
+namespace SceneUtil::GeneratedStaticLod { struct RefusalInfo; }
 
 namespace SceneUtil
 {
     // This certificate must be obtained from the original loader template, before
     // paging CopyOp erases controllers and replaces rig/morph drawables.
-    bool certifySelectiveHlodTemplate(const osg::Node& original);
+    bool certifySelectiveHlodTemplate(const osg::Node& original,GeneratedStaticLod::RefusalInfo* info = nullptr);
     // Cheap material/layout sieve, with no hash, image decode, disk or cook.
     // Apply alongside the ancestry certificate before source partitioning.
-    bool qualifySelectiveHlodTemplate(const osg::Node& original, bool requireShippedObjectShader = true);
+    bool qualifySelectiveHlodTemplate(const osg::Node& original, bool requireShippedObjectShader = true,
+        GeneratedStaticLod::RefusalInfo* info = nullptr);
     struct HlodCounters
     {
         inline static std::atomic_uint64_t requests{0}, certified{0}, built{0}, refused{0};
         inline static std::atomic_uint64_t controlSubmissions{0}, proxySubmissions{0}, atlasBytes{0};
         inline static std::atomic_uint64_t consumedDraws{0}, consumedIndices{0};
+        inline static std::atomic_uint64_t materialDrawFallbacks{0};
     };
 
     struct HlodBuildOptions

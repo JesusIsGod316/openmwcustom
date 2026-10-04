@@ -1,24 +1,35 @@
 #include <components/sceneutil/occlusionculling.hpp>
 #include <apps/openmw/mwrender/objectpaging.hpp>
+#include <apps/openmw/mwrender/vismask.hpp>
 #include <components/esm3/esmreader.hpp>
 #include <components/esm3/loadcell.hpp>
 #include <components/esm3/loadstat.hpp>
 #include <components/files/collections.hpp>
+#include <components/fx/technique.hpp>
 #include <components/resource/assetgpubudget.hpp>
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/sceneutil/assetpaging.hpp>
 #include <components/sceneutil/lightmanager.hpp>
+#include <components/sceneutil/material.hpp>
+#include <components/sceneutil/glextensions.hpp>
+#include <components/sceneutil/depth.hpp>
 #include <components/sceneutil/shadow.hpp>
+#include <components/sceneutil/stateupdater.hpp>
+#include <components/misc/constants.hpp>
 #include <components/settings/parser.hpp>
 #include <components/settings/values.hpp>
-#include <components/shader/indirectprojectioncontract.hpp>
+#include <components/shader/assetgeometrycontract.hpp>
 #include <components/shader/shadermanager.hpp>
 #include <components/vfs/manager.hpp>
 #include <components/vfs/registerarchives.hpp>
 #include <osg/NodeCallback>
 #include <osg/Program>
+#include <osg/ClipControl>
 #include <osgViewer/Viewer>
+#include <osgViewer/Renderer>
+#include <osgUtil/RenderStage>
+#include <osgUtil/SceneView>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -27,6 +38,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
+#include <iterator>
 #include <set>
 #include <stdexcept>
 #include <thread>
@@ -42,7 +55,69 @@ namespace
 {
     void require(bool value, const char* reason) { if (!value) throw std::runtime_error(reason); }
     void phase(const char* name,const char* event) { std::cout<<"CHAIN_PHASE name="<<name<<" event="<<event<<'\n'; }
+    struct Inputs
+    {
+        std::filesystem::path package,resources,shaders,settings;
+        std::vector<std::string> models;
+        bool retry=false,sourceProbe=false;
+        Inputs(int argc,char** argv) : package(std::filesystem::absolute(std::filesystem::u8path(argv[3])))
+        {
+            for (int i=5;i<argc;++i)
+            {
+                const std::string option=argv[i];
+                if (option=="--retry") {retry=true;continue;}
+                if (option=="--source-probe") {sourceProbe=true;continue;}
+                if (option=="--resources" || option=="--shaders" || option=="--settings")
+                {
+                    require(++i<argc,"missing explicit package qualification argument");
+                    auto path=std::filesystem::absolute(std::filesystem::u8path(argv[i]));
+                    if (option=="--resources") resources=std::move(path);
+                    else if (option=="--shaders") shaders=std::move(path);
+                    else settings=std::move(path);
+                }
+                else { require(!option.starts_with("--"),"unknown package qualification option"); models.push_back(option); }
+            }
+            require(!models.empty() && models.size()<=16,"bounded explicit real model population required");
+            require(!resources.empty() && !shaders.empty() && !settings.empty(),"package chain requires --resources --shaders --settings");
+            require(std::filesystem::equivalent(resources,package/"resources"),"resource tree must belong to the assembled package");
+            require(std::filesystem::is_regular_file(package/"defaults.bin") && std::filesystem::is_regular_file(resources/"version")
+                && std::filesystem::is_regular_file(settings),"actual packaged defaults/version and captured settings required");
+            require(std::filesystem::is_regular_file(shaders/"compatibility/objects.vert")
+                && std::filesystem::is_regular_file(shaders/"lib/core/vertex.glsl"),"complete package shader tree required");
+            require(!std::filesystem::equivalent(shaders,resources/"shaders"),"shader mutation requires a private exact package copy");
+            require(!std::filesystem::equivalent(shaders/"lib/core/vertex.glsl",resources/"shaders/lib/core/vertex.glsl"),
+                "private mutation dependency must not hardlink the packaged source");
+        }
+    };
+    Shader::ShaderManager::DefineMap rendererDefines(SceneUtil::LightManager& lighting,SceneUtil::ShadowManager& shadows)
+    {
+        auto defines=Shader::getDefaultDefines();
+        for (const auto& [name,value]:shadows.getShadowDefines(Settings::shadows())) defines[name]=value;
+        for (const auto& [name,value]:lighting.getLightDefines()) defines[name]=value;
+        defines["forcePPL"]=Settings::shaders().mForcePerPixelLighting ? "1" : "0";
+        defines["clamp"]=Settings::shaders().mClampLighting ? "1" : "0";
+        defines["preLightEnv"]=Settings::shaders().mApplyLightingToEnvironmentMaps ? "1" : "0";
+        defines["classicFalloff"]=Settings::shaders().mClassicFalloff ? "1" : "0";
+        const bool exponentialFog=Settings::fog().mExponentialFog;
+        defines["radialFog"]=(exponentialFog || Settings::fog().mRadialFog) ? "1" : "0";
+        defines["exponentialFog"]=exponentialFog ? "1" : "0";
+        defines["skyBlending"]=Settings::fog().mSkyBlending ? "1" : "0";
+        defines["particlePointLighting"]=Settings::shaders().mParticlePointLighting ? "1" : "0";
+        const float groundcoverDistance=Settings::groundcover().mRenderingDistance;
+        defines["groundcoverFadeStart"]=std::to_string(groundcoverDistance*.9f);
+        defines["groundcoverFadeEnd"]=std::to_string(groundcoverDistance);
+        defines["groundcoverStompMode"]=std::to_string(Settings::groundcover().mStompMode);
+        defines["groundcoverStompIntensity"]=std::to_string(Settings::groundcover().mStompIntensity);
+        defines["optimizedmwGroundcoverGpuPath"]=std::to_string(static_cast<int>(Settings::groundcover().mOptimizedMWGpuPath));
+        defines["optimizedmwGroundcoverShadowReceive"]=Settings::groundcover().mOptimizedMWShadowReceive ? "1" : "0";
+        const int fastWind=Settings::groundcover().mOptimizedMWFastWind;
+        defines["optimizedmwGroundcoverFastWind"]=(fastWind>=0 ? fastWind!=0 : static_cast<int>(Settings::groundcover().mOptimizedMWGpuPath)>=2) ? "1" : "0";
+        defines["optimizedmwGroundcoverLod"]=Settings::groundcover().mOptimizedMWDensityLod ? "1" : "0";
+        defines["reverseZ"]=SceneUtil::AutoDepth::isReversed() ? "1" : "0";
+        return defines;
+    }
     std::uint64_t consumed(unsigned mask);
+    std::uint64_t controlDraws() { return L::Counters::controlDraws.load(); }
     struct Callback final : osg::NodeCallback {};
     struct Registered
     {
@@ -79,22 +154,6 @@ namespace
         void apply(osg::Node& node) override
         { if (auto* selector = dynamic_cast<L::Group*>(&node)) values.push_back(selector); traverse(node); }
     };
-    struct Draws final : osg::Drawable::DrawCallback
-    {
-        std::shared_ptr<std::uint64_t> count;
-        osg::ref_ptr<osg::Drawable::DrawCallback> delegate;
-        void drawImplementation(osg::RenderInfo& info, const osg::Drawable* drawable) const override
-        { ++*count; if (delegate) delegate->drawImplementation(info,drawable); else drawable->drawImplementation(info); }
-    };
-    struct ControlDraws final : osg::NodeVisitor
-    {
-        ControlDraws() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
-        std::shared_ptr<std::uint64_t> count = std::make_shared<std::uint64_t>(0);
-        void apply(osg::Node& node) override
-        { if (auto* selector = dynamic_cast<L::Group*>(&node)) selector->original()->accept(*this); else traverse(node); }
-        void apply(osg::Geometry& geometry) override
-        { osg::ref_ptr<Draws> receipt = new Draws; receipt->count=count; receipt->delegate=geometry.getDrawCallback(); geometry.setDrawCallback(receipt); }
-    };
     struct Programs final : osg::NodeVisitor
     {
         Programs() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
@@ -102,13 +161,105 @@ namespace
         void apply(osg::Node& node) override
         { if (auto* state=node.getStateSet()) if (auto* program=dynamic_cast<osg::Program*>(state->getAttribute(osg::StateAttribute::PROGRAM))) values.insert(program); traverse(node); }
     };
+    struct Features final : osg::NodeVisitor
+    {
+        Features() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
+        unsigned geometries=0,normal=0,specular=0,tangent7=0,pbr=0;
+        void apply(osg::Geometry& geometry) override
+        {
+            ++geometries; tangent7+=geometry.getTexCoordArray(7)!=nullptr;
+            const osg::Program* program=nullptr;
+            std::vector<const osg::StateSet*> path;
+            for (const auto* node:getNodePath()) if (const auto* state=node->getStateSet())
+            { path.push_back(state); if (auto* value=dynamic_cast<const osg::Program*>(state->getAttribute(osg::StateAttribute::PROGRAM))) program=value; }
+            if (program)
+                if (auto proof=Shader::AssetGeometry::capture(*program,path))
+                { normal+=proof->define("normalMap")=="1"; specular+=proof->define("specularMap")=="1"; pbr+=proof->family()==Shader::AssetGeometry::Family::Pbr; }
+        }
+    };
+    struct Geometries final : osg::NodeVisitor
+    {
+        Geometries() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
+        std::vector<osg::Geometry*> values;
+        void apply(osg::Geometry& geometry) override {values.push_back(&geometry);}
+    };
+    unsigned indexOnlyStreams(const Selectors& selectors)
+    {
+        unsigned matched=0;
+        for (auto* selector:selectors.values)
+        {
+            Geometries original,derived; selector->original()->accept(original); selector->derived()->accept(derived);
+            for (auto* tier:derived.values)
+            {
+                auto base=std::find_if(original.values.begin(),original.values.end(),[&](const auto* value){return value->getVertexArray()==tier->getVertexArray();});
+                require(base!=original.values.end(),"index-only tier must retain its exact private original vertex array");
+                require((*base)->getNormalArray()==tier->getNormalArray() && (*base)->getColorArray()==tier->getColorArray()
+                    && (*base)->getNumTexCoordArrays()==tier->getNumTexCoordArrays(),"index-only tier must retain normal/color/UV layout");
+                for (unsigned unit=0;unit<tier->getNumTexCoordArrays();++unit)
+                    require((*base)->getTexCoordArray(unit)==tier->getTexCoordArray(unit),"index-only tier must retain every UV and tangent7 array identity");
+                require((*base)->getStateSet()==tier->getStateSet(),"index-only tier must retain immutable material/normal/specular state identity");
+                ++matched;
+            }
+        }
+        return matched;
+    }
+    struct ProgramState final : osg::NodeVisitor
+    {
+        ProgramState() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
+        osg::Node* owner=nullptr;
+        osg::ref_ptr<osg::StateSet> state;
+        osg::ref_ptr<osg::Program> program;
+        void apply(osg::Node& node) override
+        {
+            if (owner) return;
+            if (auto* value=node.getStateSet())
+                if (auto* shader=dynamic_cast<osg::Program*>(value->getAttribute(osg::StateAttribute::PROGRAM)))
+                { owner=&node; state=value; program=shader; return; }
+            traverse(node);
+        }
+    };
+    struct FileMutation
+    {
+        std::filesystem::path path;
+        std::string original;
+        bool active=false;
+        explicit FileMutation(std::filesystem::path value) : path(std::move(value))
+        {
+            require(std::filesystem::file_size(path)<=1024*1024,"bounded private shader dependency required");
+            std::ifstream source(path,std::ios::binary); require(bool(source),"private shader dependency unavailable");
+            original.assign(std::istreambuf_iterator<char>(source),std::istreambuf_iterator<char>());
+        }
+        void publish()
+        {
+            active=true;
+            std::ofstream output(path,std::ios::binary|std::ios::trunc);
+            output<<original<<"\n// PRIVATE PACKAGE QUALIFICATION DEPENDENCY MUTATION\n";
+            output.close(); require(bool(output),"private dependency mutation could not be written");
+            std::filesystem::last_write_time(path,std::filesystem::file_time_type::clock::now()+std::chrono::seconds(1));
+        }
+        void restore()
+        {
+            std::ofstream output(path,std::ios::binary|std::ios::trunc); output<<original;
+            output.close(); require(bool(output),"private dependency could not be restored");
+            active=false;
+        }
+        ~FileMutation()
+        { if (active) {std::ofstream output(path,std::ios::binary|std::ios::trunc); output<<original;} }
+    };
     struct Pixels final : osg::Camera::DrawCallback
     {
         mutable std::array<unsigned char,128*128*4> data{};
         mutable GLenum error=GL_NO_ERROR;
         mutable std::uint64_t reads=0;
+        mutable std::uint64_t beforeOriginal=0,original=0;
         void operator()(osg::RenderInfo&) const override
-        { glReadPixels(0,0,128,128,GL_RGBA,GL_UNSIGNED_BYTE,data.data()); error=glGetError(); ++reads; }
+        { original=controlDraws()-beforeOriginal; glReadPixels(0,0,128,128,GL_RGBA,GL_UNSIGNED_BYTE,data.data()); error=glGetError(); ++reads; }
+    };
+    struct MainBegin final : osg::Camera::DrawCallback
+    {
+        explicit MainBegin(Pixels* value) : pixels(value) {}
+        osg::ref_ptr<Pixels> pixels;
+        void operator()(osg::RenderInfo&) const override { pixels->beforeOriginal=controlDraws(); }
     };
     unsigned rgb(const std::array<unsigned char,128*128*4>& pixels)
     {
@@ -119,7 +270,6 @@ namespace
     struct SecondaryReceipt
     {
         unsigned mask=0;
-        std::shared_ptr<std::uint64_t> controls;
         std::uint64_t beforeDerived=0,beforeOriginal=0,derived=0,original=0;
         unsigned pixels=0,pixelReads=0;
         GLenum error=GL_NO_ERROR;
@@ -132,23 +282,102 @@ namespace
         bool before;
         void operator()(osg::RenderInfo&) const override
         {
-            if (before) { receipt->beforeDerived=consumed(receipt->mask); receipt->beforeOriginal=*receipt->controls; }
+            if (before) { receipt->beforeDerived=consumed(receipt->mask); receipt->beforeOriginal=controlDraws(); }
             else
             {
                 receipt->derived=consumed(receipt->mask)-receipt->beforeDerived;
-                receipt->original=*receipt->controls-receipt->beforeOriginal;
+                receipt->original=controlDraws()-receipt->beforeOriginal;
                 std::array<unsigned char,128*128*4> pixels{};
                 glReadPixels(0,0,128,128,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
                 receipt->pixels=rgb(pixels); ++receipt->pixelReads; receipt->error=glGetError(); receipt->drawn=true;
             }
         }
     };
+    struct ShadowReceipt
+    {
+        unsigned mask=0;
+        std::uint64_t beforeDerived=0,beforeOriginal=0,derived=0,original=0;
+        std::uint64_t depthPixels=0,reads=0,drawn=0;
+        GLenum error=GL_NO_ERROR;
+    };
+    struct ShadowDraw final : osg::Camera::DrawCallback
+    {
+        ShadowDraw(std::shared_ptr<ShadowReceipt> value,bool begin) : receipt(std::move(value)),before(begin) {}
+        std::shared_ptr<ShadowReceipt> receipt;
+        bool before;
+        void operator()(osg::RenderInfo&) const override
+        {
+            if (before) { receipt->beforeDerived=consumed(receipt->mask); receipt->beforeOriginal=controlDraws(); }
+            else
+            {
+                receipt->derived+=consumed(receipt->mask)-receipt->beforeDerived;
+                receipt->original+=controlDraws()-receipt->beforeOriginal;
+                GLint viewport[4]{}; glGetIntegerv(GL_VIEWPORT,viewport);
+                require(viewport[2]>0 && viewport[3]>0 && viewport[2]<=4096 && viewport[3]<=4096,"bounded real shadow target viewport required");
+                std::vector<float> depth(std::size_t(viewport[2])*std::size_t(viewport[3]));
+                GLfloat cleared=1; glGetFloatv(GL_DEPTH_CLEAR_VALUE,&cleared);
+                GLint alignment=4,rowLength=0; glGetIntegerv(GL_PACK_ALIGNMENT,&alignment); glGetIntegerv(GL_PACK_ROW_LENGTH,&rowLength);
+                glPixelStorei(GL_PACK_ALIGNMENT,1); glPixelStorei(GL_PACK_ROW_LENGTH,0);
+                glReadPixels(viewport[0],viewport[1],viewport[2],viewport[3],GL_DEPTH_COMPONENT,GL_FLOAT,depth.data());
+                glPixelStorei(GL_PACK_ALIGNMENT,alignment); glPixelStorei(GL_PACK_ROW_LENGTH,rowLength);
+                receipt->error=glGetError();
+                for (float value:depth) receipt->depthPixels+=std::isfinite(value) && std::abs(value-cleared)>1e-6f;
+                ++receipt->reads; ++receipt->drawn;
+            }
+        }
+    };
+    std::map<osg::Camera*,osg::observer_ptr<osg::Camera>> shadowCameras(osg::Camera& main)
+    {
+        std::map<osg::Camera*,osg::observer_ptr<osg::Camera>> result;
+        auto* renderer=dynamic_cast<osgViewer::Renderer*>(main.getRenderer());
+        require(renderer!=nullptr,"production main camera renderer required for actual shadow stages");
+        std::set<osgUtil::RenderStage*> seen;
+        auto visit=[&](auto&& self,osgUtil::RenderStage* stage)->void
+        {
+            if (!stage || !seen.insert(stage).second) return;
+            require(seen.size()<=64,"bounded actual nested render stages required");
+            unsigned cascade=0;
+            if (auto* camera=stage->getCamera(); camera && camera->getName()=="ShadowCamera"
+                && camera->getUserValue("p8g4CascadeIndex",cascade)) result.emplace(camera,camera);
+            for (const auto& [order,child]:stage->getPreRenderList()) self(self,child.get());
+            for (const auto& [order,child]:stage->getPostRenderList()) self(self,child.get());
+        };
+        for (unsigned i=0;i<2;++i) if (auto* view=renderer->getSceneView(i)) visit(visit,view->getRenderStage());
+        return result;
+    }
     std::uint64_t built(unsigned mask)
     { return (mask&A::Lod ? L::Counters::built.load() : 0) + (mask&A::Hlod ? SceneUtil::HlodCounters::built.load() : 0); }
     std::uint64_t consumed(unsigned mask)
     { return (mask&A::Lod ? L::Counters::derivedDraws.load() : 0) + (mask&A::Hlod ? SceneUtil::HlodCounters::consumedDraws.load() : 0); }
     std::uint64_t ready(unsigned mask)
     { return (mask&A::Lod ? A::Counters::lod.ready.load() : 0) + (mask&A::Hlod ? A::Counters::hlod.ready.load() : 0); }
+    void pagingDiagnostics(unsigned mask,const char* phaseName)
+    {
+        constexpr const char* gates[]={"graph","material","transform","layout","capacity","no_reduction","source","occluder","population"};
+        constexpr const char* refusals[]={"none","graph","material","transform","layout","capacity","no_reduction"};
+        for (unsigned bit:{A::Lod,A::Hlod}) if (mask&bit)
+        {
+            const auto& lane=A::lane(bit);
+            std::cout<<"CHAIN_PAGING mask="<<bit<<" phase="<<phaseName<<" source_requested="<<lane.sourceRequested.load()
+                <<" source_certified="<<lane.sourceCertified.load()<<" source_rejected="<<lane.sourceRejected.load()
+                <<" snapshot_denied="<<lane.snapshotDenied.load()<<" outer_cpu_denied="<<lane.outerCpuDenied.load()
+                <<" private_cpu_denied="<<lane.privateCpuDenied.load()<<" private_gpu_denied="<<lane.privateGpuDenied.load()
+                <<" candidate_admitted="<<lane.candidateAdmitted.load()<<" material_conflict_instances="<<lane.materialConflictInstances.load()
+                <<" build_attempts="<<lane.buildAttempts.load()<<" build_refused="<<lane.buildRefused.load()<<" ready="<<lane.ready.load()
+                <<" built="<<built(bit)<<" drawn="<<consumed(bit)<<" attempted_mask="<<A::Counters::attemptedMask.load()
+                <<" completed_mask="<<A::Counters::completedMask.load()<<" terminal_mask="<<A::Counters::terminalMask.load()
+                <<" transient_mask="<<A::Counters::transientMask.load()<<" retry_attempts="<<A::Counters::retryAttempts.load()
+                <<" retry_deferred="<<A::Counters::retryDeferred.load()<<" retry_exhausted="<<A::Counters::retryExhausted.load()<<'\n';
+            for (unsigned i=0;i<static_cast<unsigned>(A::Gate::Count);++i)
+                std::cout<<"CHAIN_PAGING_GATE mask="<<bit<<" name="<<gates[i]<<" count="<<lane.refusals[i].load()<<'\n';
+            for (unsigned i=1;i<static_cast<unsigned>(L::Detail::Count);++i)
+                if (const auto count=lane.details[i].load()) std::cout<<"CHAIN_PAGING_DETAIL mask="<<bit
+                    <<" name="<<L::detailName(static_cast<L::Detail>(i))<<" count="<<count<<'\n';
+        }
+        if (mask&A::Lod)
+            for (unsigned i=0;i<static_cast<unsigned>(L::Refusal::Count);++i)
+                std::cout<<"CHAIN_LOD_REFUSAL name="<<refusals[i]<<" count="<<L::Counters::refused[i].load()<<'\n';
+    }
     void sampleGpu()
     {
         Debug::V3GpuMemory::sampleIfDue(false,true,7000,7800);
@@ -197,7 +426,7 @@ namespace
 int main(int argc,char** argv) try
 {
     std::cout<<std::unitbuf;
-    require(argc>=6,"usage: p9-asset-paging-chain mask openmw.cfg sourceRoot activePlugin mesh1 [mesh2 ...] [--retry]");
+    require(argc>=6,"usage: p9-asset-paging-chain mask captured-openmw.cfg packageRoot activePlugin mesh1 [mesh2 ...] --resources package/resources --shaders private-package-shaders --settings captured-settings.cfg [--retry] [--source-probe]");
     const unsigned mask=static_cast<unsigned>(std::stoul(argv[1]));
     require(mask==A::Lod || mask==A::Hlod,"chain consumption fixture isolates L1 or H1; combined runtime acceptance requires user captures");
 #ifdef _WIN32
@@ -205,17 +434,17 @@ int main(int argc,char** argv) try
 #else
     setenv("OPENMW_P9_ASSET_MASK",std::to_string(mask).c_str(),1);
 #endif
-    bool retry=false;
-    const auto sourceRoot=std::filesystem::u8path(argv[3]);
+    const Inputs inputs(argc,argv);
+    const bool retry=inputs.retry;
     Settings::SettingsFileParser settings;
-    settings.loadSettingsFile(sourceRoot/"files/settings-default.cfg",Settings::Manager::mDefaultSettings);
-    Settings::StaticValues::initDefaults(); Settings::Manager::mUserSettings=Settings::Manager::mDefaultSettings; Settings::StaticValues::init();
-    // Frozen production strong optimizer. Disable unrelated experimental lanes
-    // so the receipt attributes actual work to the isolated asset lane.
-    Settings::cells().mV38WorldBatchingMode.set(3); Settings::cells().mV39BatchOptimizerMode.set(3);
-    Settings::cells().mOptimizedMWParallelTemplatePrefetch.set(false);
-    Settings::cells().mOptimizedMWShadowStaticBatching.set(false);
-    Settings::camera().mOcclusionCulling.set(false);
+    settings.loadSettingsFile(inputs.package/"defaults.bin",Settings::Manager::mDefaultSettings,true,false);
+    Settings::StaticValues::initDefaults();
+    settings.loadSettingsFile(inputs.settings,Settings::Manager::mUserSettings,false,false);
+    Settings::StaticValues::init();
+    // Preserve captured renderer/optimizer settings exactly. Only the bounded
+    // reference population, framing and deterministic race checkpoints differ.
+    require(Settings::shadows().mEnableShadows && Settings::shadows().mObjectShadows,
+        "package qualification must exercise the captured enabled object shadows");
     Files::PathContainer directories; std::vector<std::string> archives,content;
     std::ifstream config(std::filesystem::u8path(argv[2])); require(bool(config),"read-only loadout config unavailable");
     for (std::string line;std::getline(config,line);)
@@ -226,6 +455,10 @@ int main(int argc,char** argv) try
         if (line.starts_with("content=")) content.push_back(line.substr(8));
     }
     require(!directories.empty(),"loadout has no source directories");
+    // Engine::setDataDirs prepends packaged resource VFS at lowest priority;
+    // captured loose data retain their exact winning order above it.
+    require(std::filesystem::is_directory(inputs.resources/"vfs"),"actual packaged resource VFS required");
+    directories.insert(directories.begin(),inputs.resources/"vfs");
     phase("load","begin");
     VFS::Manager vfs; VFS::registerArchives(&vfs,Files::Collections(directories),archives,true,nullptr); vfs.buildIndex();
     const std::string plugin=argv[4]; require(std::find(content.begin(),content.end(),plugin)!=content.end(),"static source plugin must be active in the loadout");
@@ -254,54 +487,215 @@ int main(int argc,char** argv) try
     for (unsigned attempt=0;attempt<30 && !R::SpeculativeBudget::newOwnerWorkUsable(R::ResourceSystem::speculativeSample(&resources),R::SpeculativePriority::NearFuture);++attempt)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     require(R::SpeculativeBudget::newOwnerWorkUsable(R::ResourceSystem::speculativeSample(&resources),R::SpeculativePriority::NearFuture),"actual host memory sample must qualify production speculative budget");
-    auto* scenes=resources.getSceneManager(); scenes->setShaderPath(sourceRoot/"files/shaders");
-    scenes->setAutoUseNormalMaps(true); scenes->setNormalMapPattern("_n"); scenes->setNormalHeightMapPattern("_nh");
-    scenes->setAutoUseSpecularMaps(true); scenes->setSpecularMapPattern("_s"); scenes->setFilterSettings("linear","linear","linear",16.f);
-    osg::ref_ptr<SceneUtil::LightManager> lighting=new SceneUtil::LightManager;
-    auto defines=Shader::getDefaultDefines();
-    for (const auto& [name,value]:SceneUtil::ShadowManager::getShadowsDisabledDefines()) defines[name]=value;
-    for (const auto& [name,value]:lighting->getLightDefines()) defines[name]=value;
-    scenes->getShaderManager().setGlobalDefines(defines);
-    std::vector<MWRender::ObjectPaging::FixtureReference> population;
-    phase("certify","begin");
-    for (int i=5;i<argc && i<21;++i)
-    {
-        if (std::string_view(argv[i])=="--retry") {retry=true;continue;}
-        const auto model=VFS::Path::toNormalized(std::string_view(argv[i]));
-        require(statics.contains(model),"fixture model must have a real live STAT record in the active loadout");
-        auto original=scenes->getTemplate(model,false);
-        const auto l1=L::certify(*original); const bool h1=SceneUtil::certifySelectiveHlodTemplate(*original) && SceneUtil::qualifySelectiveHlodTemplate(*original);
-        std::cout<<"CHAIN_SOURCE model="<<model.value()<<" static_id="<<statics.at(model).toString()<<" plugin="<<plugin
-            <<" winning="<<vfs.getArchive(model)<<" l1_certificate_ok="<<(l1==L::Refusal::None)<<" l1_refusal="<<static_cast<unsigned>(l1)<<" h1_certificate_ok="<<h1<<" l1_peak_bytes="<<L::cookPeakBytes(*original)<<'\n';
-        require(mask==A::Lod ? l1==L::Refusal::None : h1,"real SceneManager source must pass the original certificate before CopyOp");
-        // The production getModel contract returns STAT's relative model. Its
-        // correctMeshPath stage supplies "meshes/"; preserve the actual record
-        // field here rather than passing the already resolved VFS key twice.
-        population.push_back({nullptr,recordModels.at(model),ESM::REC_STAT,osg::Vec3f(float(population.size())*original->getBound().radius()*3.f,0,0),1.f,false});
-    }
-    require(!population.empty() && (mask!=A::Hlod || population.size()>=2),"bounded real static source family required");
-    phase("certify","done");
-    qualityContracts();
+    auto* scenes=resources.getSceneManager(); scenes->setShaderPath(inputs.shaders);
+    scenes->setAutoUseNormalMaps(Settings::shaders().mAutoUseObjectNormalMaps);
+    scenes->setNormalMapPattern(Settings::shaders().mNormalMapPattern);
+    scenes->setNormalHeightMapPattern(Settings::shaders().mNormalHeightMapPattern);
+    scenes->setAutoUseSpecularMaps(Settings::shaders().mAutoUseObjectSpecularMaps);
+    scenes->setSpecularMapPattern(Settings::shaders().mSpecularMapPattern);
+    scenes->setFilterSettings(Settings::general().mTextureMagFilter,Settings::general().mTextureMinFilter,
+        Settings::general().mTextureMipmap,static_cast<float>(Settings::general().mAnisotropy));
+    scenes->setAdjustCoverageForAlphaTest(Settings::shaders().mAdjustCoverageForAlphaTest);
+    // The captured AA=0 path does not request an MSAA intermediate target.
+    // Fail instead of silently qualifying a different alpha coverage policy.
+    require(Settings::video().mAntialiasing==0,"this package fixture requires its captured non-MSAA renderer policy");
+    scenes->setConvertAlphaTestToAlphaToCoverage(false);
     osg::ref_ptr<osg::GraphicsContext::Traits> traits=new osg::GraphicsContext::Traits;
     traits->readDISPLAY(); traits->width=128; traits->height=128; traits->pbuffer=true; traits->doubleBuffer=false; traits->windowDecoration=false;
     osg::ref_ptr<osg::GraphicsContext> context=osg::GraphicsContext::createGraphicsContext(traits); require(context.valid(),"real GL context required");
     osgViewer::Viewer viewer; viewer.setThreadingModel(osgViewer::Viewer::SingleThreaded);
     osg::ref_ptr<osg::Camera> retainedCamera=viewer.getCamera(); auto* camera=retainedCamera.get(); camera->setGraphicsContext(context); camera->setViewport(0,0,128,128);
+    camera->setName(Constants::SceneCamera);
     camera->setComputeNearFarMode(osg::CullSettings::DO_NOT_COMPUTE_NEAR_FAR);
-    camera->setProjectionMatrixAsPerspective(60,1,1,1000000); camera->setClearColor({0,0,0,0});
-    auto* state=camera->getOrCreateStateSet();
-    state->addUniform(new osg::Uniform("projectionMatrix",osg::Matrixf(camera->getProjectionMatrix())));
-    state->addUniform(new osg::Uniform("screenRes",osg::Vec2(128,128))); state->addUniform(new osg::Uniform("near",1.f)); state->addUniform(new osg::Uniform("far",1000000.f));
-    state->addUniform(new osg::Uniform("fogColor",osg::Vec4(0,0,0,1))); state->addUniform(new osg::Uniform("fogEnd",1000000.f)); state->addUniform(new osg::Uniform("fogStart",999999.f));
-    osg::ref_ptr<SceneUtil::Light> sun=new SceneUtil::Light; sun->setPosition({-.3f,-.7f,.5f,0}); sun->setDiffuse({.7f,.7f,.7f,1}); sun->setAmbient({.5f,.5f,.5f,1}); sun->setSpecular({.15f,.15f,.15f,1}); lighting->setSunlight(sun);
-    osg::ref_ptr<Pixels> pixels=new Pixels; camera->setFinalDrawCallback(pixels);
+    auto cullingMode=osg::Camera::DEFAULT_CULLING | osg::Camera::FAR_PLANE_CULLING;
+    if (!Settings::camera().mSmallFeatureCulling) cullingMode&=~osg::CullStack::SMALL_FEATURE_CULLING;
+    else { camera->setSmallFeatureCullingPixelSize(Settings::camera().mSmallFeatureCullingPixelSize); cullingMode|=osg::CullStack::SMALL_FEATURE_CULLING; }
+    camera->setCullingMode(cullingMode);
+    osg::ref_ptr<osg::Group> sceneRoot=new osg::Group;
     osg::ref_ptr<osgUtil::IncrementalCompileOperation> ico=new osgUtil::IncrementalCompileOperation;
     viewer.setIncrementalCompileOperation(ico); scenes->setIncrementalCompileOperation(ico);
-    phase("context","begin");
-    osg::ref_ptr<osg::Group> sceneRoot=new osg::Group; sceneRoot->addChild(lighting);
-    viewer.setSceneData(sceneRoot); viewer.realize();
+    viewer.setSceneData(sceneRoot); phase("context","begin"); viewer.realize();
+    require(context->makeCurrent(),"real GL initialization must make its actual context current");
+    osg::ref_ptr<SceneUtil::GetGLExtensionsOperation> extensionOperation=new SceneUtil::GetGLExtensionsOperation;
+    (*extensionOperation)(context.get());
+    osg::ref_ptr<SceneUtil::SelectDepthFormatOperation> depthOperation=new SceneUtil::SelectDepthFormatOperation;
+    (*depthOperation)(context.get());
+    GLint textureUnits=0; glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS,&textureUnits);
+    require(textureUnits>3,"actual GL sampler capacity must support captured object/shadow roles");
+    scenes->getShaderManager().setMaxTextureUnits(textureUnits);
+    osg::ref_ptr<SceneUtil::LightManager> lighting=new SceneUtil::LightManager(SceneUtil::LightSettings{
+        .mClusteredLighting=Settings::shaders().mClusteredLighting,
+        .mMaxLights=Settings::shaders().mMaxLights,
+        .mMaximumLightDistance=Settings::shaders().mMaximumLightDistance,
+        .mLightFadeStart=Settings::shaders().mLightFadeStart,
+        .mLightRadiusMultiplier=Settings::shaders().mLightRadiusMultiplier,
+    },&resources);
+    scenes->setSupportsClusteredLighting(lighting->isClusteredSupported());
+    // Same capability normalization performed by RenderingManager.
+    Settings::shaders().mClusteredLighting.set(lighting->getClusteredLighting());
+    lighting->setLightingMask(MWRender::Mask_Lighting); lighting->setNodeMask(MWRender::Mask_Scene);
+    unsigned shadowMask=MWRender::Mask_Scene;
+    if (Settings::shadows().mActorShadows) shadowMask|=MWRender::Mask_Actor;
+    if (Settings::shadows().mPlayerShadows) shadowMask|=MWRender::Mask_Player;
+    const unsigned indoorMask=shadowMask;
+    if (Settings::shadows().mObjectShadows) shadowMask|=MWRender::Mask_Object|MWRender::Mask_Static;
+    if (Settings::shadows().mTerrainShadows) shadowMask|=MWRender::Mask_Terrain;
+    SceneUtil::ShadowManager shadows(lighting,sceneRoot,shadowMask,indoorMask,
+        MWRender::Mask_Terrain|MWRender::Mask_Object|MWRender::Mask_Static,Settings::shadows(),scenes->getShaderManager());
+    auto defines=rendererDefines(*lighting,shadows);
+    // PostProcessor's effective material globals follow the real captured
+    // winning effect files and actual context capabilities. This qualifies
+    // object rendering policy, not the full screen effect canvas itself.
+    auto* extensions=context->getState()->get<osg::GLExtensions>();
+    require(extensions!=nullptr,"actual GL extension table required for captured effect policy");
+    if (!extensions->glDisablei && extensions->glDisableIndexedEXT) extensions->glDisablei=extensions->glDisableIndexedEXT;
+    const bool normalSupport=extensions->glDisablei!=nullptr;
+    const int glslVersion=static_cast<int>(extensions->glslLanguageVersion*100);
+    const bool effectUbo=extensions->isUniformBufferObjectSupported && glslVersion>=330;
+    unsigned effectRequested=0,effectValid=0,effectMissing=0,effectInvalid=0,effectUnsupported=0;
+    bool effectNormals=false,effectLights=false;
+    if (Settings::postProcessing().mEnabled)
+        for (const auto& name:Settings::postProcessing().mChain.get())
+        {
+            if (name.empty()) continue;
+            require(++effectRequested<=64,"bounded captured effect chain required");
+            const auto path=Fx::Technique::makeFileName(name);
+            Fx::Technique technique(vfs,*resources.getImageManager(),path,name,128,128,effectUbo,normalSupport);
+            technique.compile();
+            const bool missing=technique.getStatus()==Fx::Technique::Status::File_Not_exists;
+            const bool supported=technique.getGLSLVersion()<=glslVersion;
+            const bool valid=technique.isValid() && supported;
+            effectMissing+=missing; effectInvalid+=!missing && !technique.isValid(); effectUnsupported+=technique.isValid() && !supported;
+            effectValid+=valid; if (valid) { effectNormals|=technique.getNormals(); effectLights|=technique.getLights(); }
+            std::cout<<"CHAIN_EFFECT name="<<std::quoted(name)<<" valid="<<valid<<" missing="<<missing
+                <<" unsupported="<<(!supported)<<" normals="<<(valid && technique.getNormals())
+                <<" winning="<<std::quoted(missing ? std::string() : vfs.getArchive(path))<<'\n';
+        }
+    scenes->setSupportsNormalsRT(normalSupport);
+    lighting->setCollectPPLights(effectLights);
+    scenes->getShaderManager().reserveGlobalTextureUnits(Shader::ShaderManager::Slot::OpaqueDepthTexture);
+    defines["distorionRTRatio"]=std::to_string(.25f);
+    if (normalSupport) defines["disableNormals"]=effectNormals ? "0" : "1";
+    scenes->getShaderManager().setGlobalDefines(defines);
+    shadows.setupShaders(scenes->getShaderManager());
+    shadows.enableOutdoorMode();
+    viewer.setLightingMode(osgViewer::View::NO_LIGHT);
+    auto* lightingState=lighting->getOrCreateStateSet();
+    lightingState->setMode(GL_CULL_FACE,osg::StateAttribute::ON);
+    lightingState->setMode(GL_NORMALIZE,osg::StateAttribute::ON);
+    osg::ref_ptr<SceneUtil::Material> defaultMaterial=new SceneUtil::Material;
+    defaultMaterial->updateStateSet(lightingState); lightingState->setAttribute(defaultMaterial);
+    lightingState->addUniform(new osg::Uniform("distortionStrength",0.f));
+    lightingState->addUniform(new osg::Uniform("alpha",1.f));
+    lightingState->addUniform(new osg::Uniform("actorFade",1.f));
+    scenes->setUpNormalsRTForStateSet(lightingState,true);
+    // Reserve the same captured sky sampler slot before any object program is
+    // requested. Framing/fog/sun are a bounded scene population substitution;
+    // the renderer's shader and sampler allocation policy is retained.
+    if (Settings::fog().mSkyBlending)
+        scenes->getShaderManager().reserveGlobalTextureUnits(Shader::ShaderManager::Slot::SkyTexture);
+    const double nearDistance=Settings::camera().mNearClip;
+    const double farDistance=Settings::camera().mViewingDistance;
+    const double fieldOfView=Settings::camera().mFieldOfView;
+    const osg::Matrixd cullProjection=osg::Matrixd::perspective(fieldOfView,1,nearDistance,farDistance);
+    const osg::Matrixd renderProjection=SceneUtil::AutoDepth::isReversed()
+        ? SceneUtil::getReversedZProjectionMatrixAsPerspective(fieldOfView,1,nearDistance,farDistance)
+        : cullProjection;
+    // RenderingManager preserves the ordinary OSG camera frustum for culling
+    // and shadow near/far calculations; only the actual GPU uniform is reversed.
+    camera->setProjectionMatrix(cullProjection);
+    osg::ref_ptr<SceneUtil::PerViewUniformStateUpdater> perView=new SceneUtil::PerViewUniformStateUpdater(scenes);
+    perView->setProjectionMatrix(osg::Matrixf(renderProjection)); sceneRoot->addCullCallback(perView);
+    if (SceneUtil::AutoDepth::isReversed())
+    {
+        auto* rootState=sceneRoot->getOrCreateStateSet();
+        rootState->setAttributeAndModes(new SceneUtil::AutoDepth,osg::StateAttribute::ON);
+        rootState->setAttributeAndModes(new osg::ClipControl(osg::ClipControl::LOWER_LEFT,osg::ClipControl::ZERO_TO_ONE),osg::StateAttribute::ON);
+    }
+    camera->setClearColor({0,0,0,0}); SceneUtil::setCameraClearDepth(camera);
+    camera->setClearMask(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT);
+    auto* state=camera->getOrCreateStateSet(); state->setAttributeAndModes(new SceneUtil::AutoDepth,osg::StateAttribute::ON);
+    state->addUniform(new osg::Uniform("projectionMatrix",osg::Matrixf(renderProjection)));
+    state->addUniform(new osg::Uniform("screenRes",osg::Vec2(128,128))); state->addUniform(new osg::Uniform("near",float(nearDistance))); state->addUniform(new osg::Uniform("far",float(farDistance)));
+    state->addUniform(new osg::Uniform("fogColor",osg::Vec4(0,0,0,1))); state->addUniform(new osg::Uniform("fogEnd",float(farDistance))); state->addUniform(new osg::Uniform("fogStart",float(farDistance-1)));
+    osg::ref_ptr<SceneUtil::Light> sun=new SceneUtil::Light; sun->setPosition({-.3f,-.7f,.5f,0}); sun->setDiffuse({.7f,.7f,.7f,1}); sun->setAmbient({.5f,.5f,.5f,1}); sun->setSpecular({.15f,.15f,.15f,1}); lighting->setSunlight(sun);
+    osg::ref_ptr<Pixels> pixels=new Pixels; camera->setPreDrawCallback(new MainBegin(pixels)); camera->setFinalDrawCallback(pixels);
     require(!ico->getContextSet().empty(),"actual ICO context registration required before optional chunk work");
     phase("context","done");
+    std::cout<<"CHAIN_PACKAGE mask="<<mask<<" packaged_shaders=1 captured_settings=1 define_substitutions=0 stock_certificate_injection=0"
+        <<" package_root="<<std::quoted(inputs.package.string())<<" resources="<<std::quoted(inputs.resources.string())
+        <<" shaders="<<std::quoted(inputs.shaders.string())<<" settings="<<std::quoted(inputs.settings.string())<<'\n';
+    std::cout<<"CHAIN_DEFINES forcePPL="<<defines.at("forcePPL")<<" clamp="<<defines.at("clamp")<<" preLightEnv="<<defines.at("preLightEnv")
+        <<" lightingMethodClustered="<<defines.at("lightingMethodClustered")<<" useGPUShader4="<<defines.at("useGPUShader4")
+        <<" shadows_enabled="<<defines.at("shadows_enabled")<<" shadow_maps="<<static_cast<int>(Settings::shadows().mNumberOfShadowMaps)
+        <<" shadow_resolution="<<static_cast<int>(Settings::shadows().mShadowMapResolution)
+        <<" world_batching="<<static_cast<int>(Settings::cells().mV38WorldBatchingMode)<<" batch_optimizer="<<static_cast<int>(Settings::cells().mV39BatchOptimizerMode)
+        <<" auto_normal="<<static_cast<bool>(Settings::shaders().mAutoUseObjectNormalMaps)<<" auto_specular="<<static_cast<bool>(Settings::shaders().mAutoUseObjectSpecularMaps)
+        <<" occlusion="<<static_cast<bool>(Settings::camera().mOcclusionCulling)<<" occlusion_statics="<<static_cast<bool>(Settings::camera().mOcclusionCullingStatics)
+        <<" occluder_min_radius="<<static_cast<float>(Settings::camera().mOcclusionOccluderMinRadius)
+        <<" camera_cull_projection_unreversed=1 gpu_projection_reversed="<<SceneUtil::AutoDepth::isReversed()
+        <<" source_defaults=0 captured_render_settings=1 viewport_population_substituted=1\n";
+    std::cout<<"CHAIN_POSTPROCESS enabled="<<static_cast<bool>(Settings::postProcessing().mEnabled)
+        <<" requested="<<effectRequested<<" valid="<<effectValid<<" missing="<<effectMissing<<" invalid="<<effectInvalid
+        <<" unsupported="<<effectUnsupported<<" normal_support="<<normalSupport<<" normals="<<effectNormals<<" lights="<<effectLights
+        <<" disableNormals="<<defines.at("disableNormals")<<" glsl="<<glslVersion<<" ubo="<<effectUbo
+        <<" shader_global_policy_mirrored=1 output_canvas_qualified=0\n";
+    std::vector<MWRender::ObjectPaging::FixtureReference> population;
+    unsigned sourceNormal=0,sourceSpecular=0,sourceTangent7=0,sourcePbr=0;
+    unsigned probeStatics=0,probeLodCertificates=0,probeHlodCertificates=0,probeLodPopulation=0,probeHlodPopulation=0;
+    phase("certify","begin");
+    for (const auto& requestedModel:inputs.models)
+    {
+        const auto model=VFS::Path::toNormalized(std::string_view(requestedModel));
+        if (inputs.sourceProbe && !statics.contains(model))
+        { std::cout<<"CHAIN_SOURCE model="<<model.value()<<" missing_static=1 source_only=1\n"; continue; }
+        require(statics.contains(model),"fixture model must have a real live STAT record in the active loadout");
+        ++probeStatics;
+        auto original=scenes->getTemplate(model,false);
+        // OSG has no const accept overload; this visitor only reads layout,
+        // material ancestry and the production shader certificate.
+        Features features; const_cast<osg::Node&>(*original).accept(features);
+        sourceNormal+=features.normal; sourceSpecular+=features.specular; sourceTangent7+=features.tangent7; sourcePbr+=features.pbr;
+        L::RefusalInfo l1Info,h1Info;
+        const auto l1=L::certify(*original,&l1Info);
+        const bool h1Ancestry=SceneUtil::certifySelectiveHlodTemplate(*original,&h1Info);
+        const bool h1=h1Ancestry && SceneUtil::qualifySelectiveHlodTemplate(*original,true,&h1Info);
+        const bool occluderOwner=Settings::camera().mOcclusionCulling && Settings::camera().mOcclusionCullingStatics
+            && original->getBound().radius()>=Settings::camera().mOcclusionOccluderMinRadius;
+        probeLodCertificates+=l1==L::Refusal::None; probeHlodCertificates+=h1;
+        probeLodPopulation+=l1==L::Refusal::None && !occluderOwner;
+        probeHlodPopulation+=h1 && !occluderOwner;
+        std::cout<<"CHAIN_SOURCE model="<<model.value()<<" static_id="<<statics.at(model).toString()<<" plugin="<<plugin
+            <<" winning="<<vfs.getArchive(model)<<" l1_certificate_ok="<<(l1==L::Refusal::None)<<" l1_refusal="<<static_cast<unsigned>(l1)<<" h1_certificate_ok="<<h1<<" l1_peak_bytes="<<L::cookPeakBytes(*original)
+            <<" normal_geometries="<<features.normal<<" specular_geometries="<<features.specular<<" tangent7_geometries="<<features.tangent7<<" pbr_geometries="<<features.pbr
+            <<" bound_radius="<<original->getBound().radius()<<" source_occluder_owner="<<occluderOwner
+            <<" source_only="<<inputs.sourceProbe<<'\n';
+        std::cout<<"CHAIN_SOURCE_DETAIL model="<<model.value()<<" l1_detail="<<L::detailName(l1==L::Refusal::None ? L::Detail::None : l1Info.detail)
+            <<" l1_node="<<std::quoted(l1Info.node ? l1Info.node->getName() : std::string())
+            <<" l1_program="<<std::quoted(l1Info.program ? l1Info.program->getName() : std::string())
+            <<" h1_ancestry="<<h1Ancestry<<" h1_detail="<<L::detailName(h1 ? L::Detail::None : h1Info.detail)
+            <<" h1_node="<<std::quoted(h1Info.node ? h1Info.node->getName() : std::string())
+            <<" h1_program="<<std::quoted(h1Info.program ? h1Info.program->getName() : std::string())<<'\n';
+        if (!inputs.sourceProbe)
+            require(mask==A::Lod ? l1==L::Refusal::None : h1,"real SceneManager source must pass the original certificate before CopyOp");
+        // The production getModel contract returns STAT's relative model. Its
+        // correctMeshPath stage supplies "meshes/"; preserve the actual record
+        // field here rather than passing the already resolved VFS key twice.
+        population.push_back({nullptr,recordModels.at(model),ESM::REC_STAT,osg::Vec3f(float(population.size())*original->getBound().radius()*3.f,0,0),1.f,false});
+    }
+    phase("certify","done");
+    if (inputs.sourceProbe)
+    {
+        std::cout<<"CHAIN_PROBE source_only=1 requested="<<inputs.models.size()<<" real_statics="<<probeStatics
+            <<" lod_certificates="<<probeLodCertificates<<" hlod_certificates="<<probeHlodCertificates
+            <<" lod_source_population="<<probeLodPopulation<<" hlod_source_population="<<probeHlodPopulation
+            <<" built=0 drawn=0 cook_substituted=0 runtime_qualification=0\n";
+        viewer.setSceneData(nullptr); viewer.setIncrementalCompileOperation(nullptr); scenes->setIncrementalCompileOperation(nullptr);
+        viewer.stopThreading(); resources.releaseGLObjects(context->getState()); context->close(); R::AssetGpuBudget::discardAfterContextsClosed();
+        return 0;
+    }
+    require(!population.empty() && (mask!=A::Hlod || population.size()>=2),"bounded real static source family required");
+    qualityContracts();
     MWRender::ObjectPaging paging(scenes,ESM::Cell::sDefaultWorldspaceId); paging.setAssetMainCamera(camera); paging.setFixturePopulation(population);
     Registered pagingRegistration(resources,&paging);
     std::atomic_bool abort{false};
@@ -328,12 +722,16 @@ int main(int argc,char** argv) try
     phase("cook","begin");
     auto candidate=upgrade(paging,resources,abort); Selectors selected; candidate->accept(selected);
     phase("cook","done");
+    pagingDiagnostics(mask,"cook");
     require(candidate!=ordinary && !selected.values.empty() && built(mask)>beforeBuilt,"actual getChunk must replace weak cached quality with built optional tiers");
     require(ready(mask)==beforeReady,"CPU candidate cannot claim GL completion");
     require(hostOwners(resources.speculativeBudget()->stats())>ownersBefore,"actual private candidate must retain a host ownership charge after preparation stages unwind");
-    ControlDraws controls; candidate->accept(controls); lighting->addChild(candidate);
+    // Receipts belong to the production private control and are installed by
+    // its builder before immutable MaterialGuard capture. The fixture never
+    // changes a geometry callback after cooking.
+    lighting->addChild(candidate);
     const auto bound=candidate->getBound(); double error=0; for (auto* selector:selected.values) error=std::max(error,double(selector->error()));
-    const double distance=std::max(double(bound.radius())*4.,double(bound.radius())+error*std::sqrt(3.)*64./.6);
+    const double distance=std::max(double(bound.radius())*4.,double(bound.radius())+error*std::abs(camera->getProjectionMatrix()(1,1))*64./.6);
     camera->setViewMatrixAsLookAt(osg::Vec3d(bound.center())+osg::Vec3d(0,-distance,0),osg::Vec3d(bound.center()),{0,0,1});
     // First cull cannot consume a tier whose actual queued GL work has not run.
     // Hold only the queued ICO operation for one actual main draw. This tests
@@ -343,7 +741,7 @@ int main(int argc,char** argv) try
     phase("pending_main_draw","begin");
     viewer.advance(); viewer.eventTraversal(); viewer.updateTraversal(); viewer.renderingTraversals();
     phase("pending_main_draw","done");
-    require(consumed(mask)==beforeDraw && *controls.count>0,"pending production ICO tier must render ordinary geometry on its first main view");
+    require(consumed(mask)==beforeDraw && pixels->original>0,"pending production ICO tier must render ordinary geometry on its first main view");
     const auto controlPixels=pixels->data;
     context->add(ico.get());
     phase("ico_completion","begin");
@@ -353,8 +751,23 @@ int main(int argc,char** argv) try
     const auto drawStart=consumed(mask); phase("derived_draw","begin"); viewer.frame(); viewer.frame(); phase("derived_draw","done");
     require(consumed(mask)>drawStart,"actual main camera must consume production-generated geometry");
     Programs programs; candidate->accept(programs); require(!programs.values.empty(),"actual shipped object program required");
+    unsigned pbrPrograms=0;
     for (auto* program:programs.values)
-    { require(Shader::IndirectProjection::matches(*program),"stock source shader certificate required"); const auto* linked=program->getPCP(*context->getState()); require(linked && linked->isLinked(),"actual production object shader must link"); }
+    {
+        require(Shader::AssetGeometry::matches(*program),"actual assembled asset shader certificate required");
+        auto proof=Shader::AssetGeometry::capture(*program); require(bool(proof),"actual compiled asset program recipe required");
+        pbrPrograms+=proof->family()==Shader::AssetGeometry::Family::Pbr;
+        const auto* linked=program->getPCP(*context->getState()); require(linked && linked->isLinked(),"actual production object shader must link");
+    }
+    require(pbrPrograms>0 && sourcePbr>0,"assembled promoted PBR object family must actually qualify and link");
+    const unsigned sharedStreams=mask==A::Lod ? indexOnlyStreams(selected) : 0;
+    require(mask!=A::Lod || sharedStreams>0,"actual L1 tiers must conserve immutable vertex/material streams");
+    require(!sourceNormal || sourceTangent7>0,"actual normal-map family must contain its tangent7 stream");
+    require(mask!=A::Hlod || (sourceNormal>0 && sourceTangent7>0),"H1 package qualification requires actual winning normal-map and tangent7 coverage");
+    std::cout<<"CHAIN_SHADER_FEATURES pbr_programs="<<pbrPrograms<<" pbr_geometries="<<sourcePbr
+        <<" normal_geometries="<<sourceNormal<<" specular_geometries="<<sourceSpecular<<" tangent7_geometries="<<sourceTangent7
+        <<" immutable_index_streams="<<sharedStreams<<" actual_program_linked=1 normal_map_coverage="<<(sourceNormal>0 && sourceTangent7>0)
+        <<" required_h1_normal_map="<<(mask==A::Hlod)<<'\n';
     unsigned controlRgb=0,tierRgb=0; for (unsigned i=0;i<controlPixels.size();i+=4)
     { controlRgb+=controlPixels[i]>4 || controlPixels[i+1]>4 || controlPixels[i+2]>4; tierRgb+=pixels->data[i]>4 || pixels->data[i+1]>4 || pixels->data[i+2]>4; }
     require(controlRgb>16 && tierRgb>16 && pixels->error==GL_NO_ERROR,"real stock shaded object pixels and clean GL required");
@@ -364,26 +777,54 @@ int main(int argc,char** argv) try
         <<" control_rgb="<<controlRgb<<" tier_rgb="<<tierRgb<<" original_indices="<<L::Counters::originalIndices
         <<" derived_indices="<<L::Counters::derivedIndices<<" control_submissions="<<SceneUtil::HlodCounters::controlSubmissions
         <<" proxy_submissions="<<SceneUtil::HlodCounters::proxySubmissions<<" gpu_peak_debt="<<R::AssetGpuBudget::peakBytes<<'\n';
+    // Discover only production-created shadow cameras in actual render stages.
+    // Their real PRE_RENDER envelopes then prove no optional tier draw
+    // occurs inside the shadow pass; no synthetic ShadowTraversalScope is used.
+    const auto actualShadows=shadowCameras(*camera);
+    require(!actualShadows.empty(),"enabled production shadow technique must create actual caster stages");
+    std::vector<std::shared_ptr<ShadowReceipt>> shadowReceipts;
+    for (const auto& [key,observed]:actualShadows)
+    {
+        osg::ref_ptr<osg::Camera> actual; if (!observed.lock(actual)) continue;
+        auto receipt=std::make_shared<ShadowReceipt>(); receipt->mask=mask;
+        actual->addPreDrawCallback(new ShadowDraw(receipt,true)); actual->addPostDrawCallback(new ShadowDraw(receipt,false));
+        shadowReceipts.push_back(receipt);
+    }
+    const auto beforeShadowMain=consumed(mask); viewer.frame(); viewer.frame();
+    std::uint64_t shadowDerived=0,shadowOriginal=0,shadowDepth=0,shadowReads=0,shadowDrawn=0;
+    for (const auto& receipt:shadowReceipts)
+    {
+        require(!receipt->derived && receipt->error==GL_NO_ERROR,"real shadow pass must preserve original representation and clean GL");
+        shadowDerived+=receipt->derived; shadowOriginal+=receipt->original; shadowDepth+=receipt->depthPixels; shadowReads+=receipt->reads; shadowDrawn+=receipt->drawn;
+    }
+    require(shadowOriginal>0 && shadowDepth>0 && shadowReads>0 && shadowDrawn>0 && consumed(mask)>beforeShadowMain,
+        "actual original shadow depth and concurrent reduced main-view geometry are both required");
+    std::cout<<"CHAIN_SHADOW real_shadow_cull=1 derived_draws="<<shadowDerived<<" original_draws="<<shadowOriginal
+        <<" depth_pixels="<<shadowDepth<<" pixel_reads="<<shadowReads<<" drawn="<<shadowDrawn<<" main_derived_draws="<<consumed(mask)-beforeShadowMain<<" gl_error=0\n";
     // A real nested secondary draw must preserve the main Viewer/camera and
     // service its registered ICO. Isolate consumption within the secondary's
     // pre/post callbacks while the main draw independently continues afterward.
-    auto secondaryReceipt=std::make_shared<SecondaryReceipt>(); secondaryReceipt->mask=mask; secondaryReceipt->controls=controls.count;
+    auto secondaryReceipt=std::make_shared<SecondaryReceipt>(); secondaryReceipt->mask=mask;
     osg::ref_ptr<osg::Camera> secondary=new osg::Camera;
     secondary->setReferenceFrame(osg::Transform::ABSOLUTE_RF); secondary->setRenderOrder(osg::Camera::PRE_RENDER);
     secondary->setProjectionMatrix(camera->getProjectionMatrix()); secondary->setViewMatrix(camera->getViewMatrix());
     secondary->setViewport(0,0,128,128); secondary->setComputeNearFarMode(osg::CullSettings::DO_NOT_COMPUTE_NEAR_FAR);
+    secondary->setCullingMode(camera->getCullingMode()); secondary->setSmallFeatureCullingPixelSize(camera->getSmallFeatureCullingPixelSize());
+    SceneUtil::setCameraClearDepth(secondary);
     secondary->setClearColor({0,0,0,0}); secondary->setClearMask(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
     secondary->setPreDrawCallback(new SecondaryDraw(secondaryReceipt,true)); secondary->setPostDrawCallback(new SecondaryDraw(secondaryReceipt,false));
-    secondary->addChild(lighting); sceneRoot->addChild(secondary); viewer.frame();
+    require(sceneRoot->getNumChildren()==1,"production shadow root must be the single bounded scene owner before secondary view");
+    osg::ref_ptr<osg::Node> shadowRoot=sceneRoot->getChild(0);
+    secondary->addChild(shadowRoot); sceneRoot->addChild(secondary); viewer.frame();
     std::cout<<"CHAIN_SECONDARY derived_draws="<<secondaryReceipt->derived<<" original_draws="<<secondaryReceipt->original
         <<" rgb="<<secondaryReceipt->pixels<<" pixel_reads="<<secondaryReceipt->pixelReads<<" gl_error="<<secondaryReceipt->error<<" drawn="<<secondaryReceipt->drawn<<'\n';
     require(secondaryReceipt->drawn && !secondaryReceipt->derived && secondaryReceipt->original>0
         && secondaryReceipt->pixels>16 && secondaryReceipt->error==GL_NO_ERROR,"actual secondary draw must consume visible original geometry without a derived draw");
-    sceneRoot->removeChild(secondary); secondary->removeChild(lighting);
-    candidate->releaseGLObjects(context->getState()); const auto beforeRelease=consumed(mask),beforeReleaseOriginal=*controls.count,beforeReleaseReads=pixels->reads; viewer.frame();
-    std::cout<<"CHAIN_RELEASE derived_draws="<<consumed(mask)-beforeRelease<<" original_draws="<<*controls.count-beforeReleaseOriginal
+    sceneRoot->removeChild(secondary); secondary->removeChild(shadowRoot);
+    candidate->releaseGLObjects(context->getState()); const auto beforeRelease=consumed(mask),beforeReleaseReads=pixels->reads; viewer.frame();
+    std::cout<<"CHAIN_RELEASE derived_draws="<<consumed(mask)-beforeRelease<<" original_draws="<<pixels->original
         <<" rgb="<<rgb(pixels->data)<<" pixel_reads="<<pixels->reads-beforeReleaseReads<<" gl_error="<<pixels->error<<'\n';
-    require(consumed(mask)==beforeRelease && *controls.count>beforeReleaseOriginal && pixels->reads>beforeReleaseReads && rgb(pixels->data)>16 && pixels->error==GL_NO_ERROR,
+    require(consumed(mask)==beforeRelease && pixels->original>0 && pixels->reads>beforeReleaseReads && rgb(pixels->data)>16 && pixels->error==GL_NO_ERROR,
         "context release must draw visible original geometry without optional consumption");
     // Immutable original-source controller rejection must survive paging CopyOp.
     auto negativePopulation=population;
@@ -506,6 +947,69 @@ int main(int argc,char** argv) try
     const auto drained=hostOwners(resources.speculativeBudget()->stats()); require(drained<held,"actual ICO graph release must retire the uncached host ownership charge");
     std::cout<<"CHAIN_QUEUED_LOSER host_before="<<heldBefore<<" host_held="<<held<<" host_after_ico="<<drained<<" worker_future=0\n";
     phase("queued_loser","done");
+    // Return to the exact ready owner that previously produced reduced main
+    // draws. Changes below are genuine adversarial material/source mutations,
+    // never certificate or readiness injection.
+    phase("shader_mutation","begin");
+    lighting->removeChild(candidate); lighting->addChild(rebuilt);
+    const auto beforeMutationReadyDraw=consumed(mask); viewer.frame(); viewer.frame();
+    require(consumed(mask)>beforeMutationReadyDraw && pixels->error==GL_NO_ERROR && rgb(pixels->data)>16,
+        "shader negatives require the same published owner to draw its reduced representation first");
+    Selectors mutationSelectors; rebuilt->accept(mutationSelectors);
+    require(!mutationSelectors.values.empty(),"real reduced owner required for child program mutation");
+    struct ChildMaterial
+    { osg::Node* owner; osg::ref_ptr<osg::StateSet> state; osg::ref_ptr<osg::Program> program; };
+    std::vector<ChildMaterial> changed;
+    for (auto* selector:mutationSelectors.values)
+    {
+        ProgramState child; selector->derived()->accept(child);
+        require(child.owner && child.state && child.program,"actual derived child material program required in every selector");
+        changed.push_back({child.owner,child.state,child.program});
+        auto substituted=osg::clone(child.state.get(),osg::CopyOp::SHALLOW_COPY);
+        osg::ref_ptr<osg::Program> childProgram=Shader::ShaderManager::cloneProgram(child.program);
+        require(childProgram && childProgram!=child.program,"child mutation requires a different actual program owner");
+        substituted->setAttributeAndModes(childProgram,osg::StateAttribute::ON);
+        child.owner->setStateSet(substituted);
+    }
+    const auto beforeChild=consumed(mask),beforeChildReads=pixels->reads;
+    viewer.frame();
+    const auto childOriginal=pixels->original;
+    const auto childRgb=rgb(pixels->data);
+    require(consumed(mask)==beforeChild && childOriginal>0 && childRgb>16 && pixels->reads>beforeChildReads && pixels->error==GL_NO_ERROR,
+        "first draw after child Program replacement must render the visible original and no derived geometry");
+    std::cout<<"CHAIN_CHILD_PROGRAM changed=1 mutated_children="<<changed.size()<<" before_derived_draws="<<beforeChild-beforeMutationReadyDraw
+        <<" derived_draws="<<consumed(mask)-beforeChild<<" original_draws="<<childOriginal<<" rgb="<<childRgb
+        <<" pixel_reads="<<pixels->reads-beforeChildReads<<" fallback_original=1 gl_error=0\n";
+    for (const auto& child:changed) child.owner->setStateSet(child.state);
+    const auto recoveryStart=consumed(mask); viewer.frame(); viewer.frame();
+    require(consumed(mask)>recoveryStart,"restored exact child material must recover its already-prepared derived representation");
+    Programs mutationPrograms; rebuilt->accept(mutationPrograms);
+    std::map<osg::Shader*,std::string> shaderSources;
+    for (auto* program:mutationPrograms.values)
+        for (unsigned i=0;i<program->getNumShaders();++i)
+            shaderSources.emplace(program->getShader(i),program->getShader(i)->getShaderSource());
+    require(!shaderSources.empty(),"real dependency mutation requires the actual compiled program sources");
+    FileMutation dependency(inputs.shaders/"lib/core/vertex.glsl");
+    dependency.publish();
+    auto& shaderManager=scenes->getShaderManager();
+    shaderManager.triggerShaderReload();
+    const bool invalidated=Shader::AssetGeometry::validate(*changed.front().program)!=Shader::AssetGeometry::Refusal::None;
+    shaderManager.update(viewer);
+    unsigned sourceChanges=0;
+    for (const auto& [shader,source]:shaderSources) sourceChanges+=shader->getShaderSource()!=source;
+    require(invalidated && sourceChanges>0,"real reload must invalidate the old recipe and consume the changed dependency source");
+    const auto beforeSource=consumed(mask),beforeSourceReads=pixels->reads;
+    viewer.frame();
+    const auto sourceOriginal=pixels->original;
+    const auto sourceRgb=rgb(pixels->data);
+    require(consumed(mask)==beforeSource && sourceOriginal>0 && sourceRgb>16 && pixels->reads>beforeSourceReads && pixels->error==GL_NO_ERROR,
+        "first draw after dependency hot reload must render the visible original without derived consumption");
+    std::cout<<"CHAIN_SHADER_MUTATION published=1 fallback_original=1 derived_draws="<<consumed(mask)-beforeSource
+        <<" original_draws="<<sourceOriginal<<" rgb="<<sourceRgb<<" pixel_reads="<<pixels->reads-beforeSourceReads
+        <<" before_derived_draws="<<beforeSource-recoveryStart<<" source_changed="<<sourceChanges
+        <<" trigger_invalidated="<<invalidated<<" actual_reload=1 gl_error=0\n";
+    dependency.restore();
+    phase("shader_mutation","done");
     viewer.setSceneData(nullptr); viewer.setIncrementalCompileOperation(nullptr); scenes->setIncrementalCompileOperation(nullptr);
     viewer.stopThreading(); resources.releaseGLObjects(context->getState()); context->close(); R::AssetGpuBudget::discardAfterContextsClosed();
     require(resources.speculativeBudget()->stats().futureBytes==0,"production preparation stages must release bounded CPU overlap");

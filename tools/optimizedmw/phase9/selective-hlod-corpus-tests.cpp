@@ -7,6 +7,7 @@
 #include <components/resource/imagemanager.hpp>
 #include <components/sceneutil/optimizer.hpp>
 #include <components/sceneutil/selectivehlod.hpp>
+#include <components/sceneutil/generatedstaticlod.hpp>
 #include <components/sceneutil/shadow.hpp>
 #include <components/sceneutil/material.hpp>
 #include <components/sceneutil/texmat.hpp>
@@ -23,6 +24,7 @@
 #include <osgDB/SharedStateManager>
 
 #include <array>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -51,26 +53,6 @@ namespace
             if(!drawable->getNodeMask()) return nullptr;
             auto* cloned=static_cast<osg::Drawable*>(drawable->clone(*this));
             cloned->setName("");cloned->setUserDataContainer(nullptr);cloned->setDataVariance(osg::Object::STATIC);return cloned;
-        }
-    };
-    struct Draws final:osg::Drawable::DrawCallback
-    {
-        std::shared_ptr<unsigned> count;
-        osg::ref_ptr<osg::Drawable::DrawCallback> delegate;
-        void drawImplementation(osg::RenderInfo& info,const osg::Drawable* drawable) const override
-        {++*count;if(delegate) delegate->drawImplementation(info,drawable);else drawable->drawImplementation(info);}
-    };
-    struct Instrument final:osg::NodeVisitor
-    {
-        std::shared_ptr<unsigned> count=std::make_shared<unsigned>(0);
-        Instrument():osg::NodeVisitor(TRAVERSE_ALL_CHILDREN){}
-        void apply(osg::Geometry& geometry) override
-        {
-            // Corpus control has no callbacks. Proxy receipt stays delegated
-            // through the production callback, so instrumentation cannot invent
-            // consumption by merely counting a replacement traversal.
-            osg::ref_ptr<Draws> draws=new Draws;draws->count=count;draws->delegate=geometry.getDrawCallback();
-            geometry.setDrawCallback(draws);
         }
     };
     struct Samplers final:osg::NodeVisitor
@@ -123,6 +105,11 @@ namespace
 
 int main(int argc,char** argv) try
 {
+#ifdef _WIN32
+    _putenv_s("OPENMW_P9_ASSET_MASK", "2");
+#else
+    setenv("OPENMW_P9_ASSET_MASK", "2", 1);
+#endif
     require(argc>=6,"usage: p9-selective-hlod-corpus --probe|--draw|--static-draw openmw.cfg sourceRoot [activePlugin] mesh1 mesh2 [...bounded candidate names]");
     const bool staticRecords=std::string(argv[1])=="--static-draw";
     const bool draw=std::string(argv[1])=="--draw" || staticRecords;
@@ -233,16 +220,21 @@ int main(int argc,char** argv) try
     state->addUniform(new osg::Uniform("PointLightCount",0));
     state->addUniform(new osg::Uniform("fog.color",osg::Vec4(0,0,0,1)));state->addUniform(new osg::Uniform("fog.end",8*radius));state->addUniform(new osg::Uniform("fog.start",7*radius));state->addUniform(new osg::Uniform("fog.depth",-1.f));
     osg::ref_ptr<Pixels> pixels=new Pixels;camera->setFinalDrawCallback(pixels);
-    Instrument controlDraws,proxyDraws;chosenControl->accept(controlDraws);chosenProxy->accept(proxyDraws);
+    // Observe the production receipts; changing a captured draw callback would
+    // correctly invalidate the representation under test.
+    const auto controlStart=SceneUtil::GeneratedStaticLod::Counters::controlDraws.load();
     viewer.setSceneData(chosenControl);viewer.realize();viewer.frame();viewer.frame();const auto controlPixels=pixels->data;
+    const auto controlDraws=(SceneUtil::GeneratedStaticLod::Counters::controlDraws.load()-controlStart)/2;
+    const auto proxyStart=SceneUtil::HlodCounters::consumedDraws.load();
     viewer.setSceneData(chosenProxy);viewer.frame();viewer.frame();
-    require(*controlDraws.count/2==chosen.controlSubmissions && *proxyDraws.count/2==chosen.proxySubmissions,"real NIF/OSG/shipped-PBR consumed draw reduction");
+    const auto proxyDraws=(SceneUtil::HlodCounters::consumedDraws.load()-proxyStart)/2;
+    require(controlDraws==chosen.controlSubmissions && proxyDraws==chosen.proxySubmissions,"real NIF/OSG/shipped shader consumed draw reduction");
     unsigned nonempty=0,outside=0;std::uint64_t error=0;
     for(unsigned i=0;i<controlPixels.size();++i)
     {if(i%4!=3 && controlPixels[i])++nonempty;const unsigned difference=std::abs(int(controlPixels[i])-int(pixels->data[i]));error+=difference;if(difference>24)++outside;}
     require(nonempty>128,"actual object pixels must be rendered");
     require(outside<controlPixels.size()/20,"real corpus atlas quality tolerance");
-    std::cout<<"H1_REAL_CONSUMPTION control_draws="<<*controlDraws.count/2<<" proxy_draws="<<*proxyDraws.count/2
+    std::cout<<"H1_REAL_CONSUMPTION control_draws="<<controlDraws<<" proxy_draws="<<proxyDraws
         <<" atlas_bytes="<<chosen.atlasBytes<<" nonempty_channels="<<nonempty<<" absolute_channel_error="<<error<<" outside_24="<<outside<<'\n';
     require(pixels->error==GL_NO_ERROR,"real corpus GL validation");
     return 0;

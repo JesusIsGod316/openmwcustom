@@ -26,6 +26,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -43,18 +44,6 @@ namespace
         Geometries() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
         std::vector<osg::Geometry*> values;
         void apply(osg::Geometry& value) override { values.push_back(&value); }
-    };
-    struct Draws final : osg::Drawable::DrawCallback
-    {
-        mutable std::uint64_t draws = 0, indices = 0;
-        void drawImplementation(osg::RenderInfo& info, const osg::Drawable* drawable) const override
-        {
-            ++draws;
-            if (const auto* geometry = dynamic_cast<const osg::Geometry*>(drawable))
-                for (unsigned i = 0; i < geometry->getNumPrimitiveSets(); ++i)
-                    indices += geometry->getPrimitiveSet(i)->getNumIndices();
-            drawable->drawImplementation(info);
-        }
     };
     struct Pixels final : osg::Camera::DrawCallback
     {
@@ -143,6 +132,11 @@ namespace
 
 int main(int argc, char** argv) try
 {
+#ifdef _WIN32
+    _putenv_s("OPENMW_P9_ASSET_MASK", "1");
+#else
+    setenv("OPENMW_P9_ASSET_MASK", "1", 1);
+#endif
     require(argc >= 5, "usage: p9-generated-static-lod --probe|--draw|--static-draw openmw.cfg sourceRoot [activePlugin] mesh1 [mesh2 ...]");
     const bool staticRecords = std::string(argv[1]) == "--static-draw";
     const bool draw = std::string(argv[1]) == "--draw" || staticRecords;
@@ -342,11 +336,15 @@ int main(int argc, char** argv) try
     Geometries staleGeometries; stale->accept(staleGeometries);
     require(!SceneUtil::temporalVertexLineage(*staleGeometries.values.front()), "deep-copied arrays cannot inherit lineage");
     // Modified generation invalidates both representations of a private pair.
-    auto* staleSource = originals.values.front(); auto* staleTier = tiers.values.front();
+    auto* staleSource = staleGeometries.values.front();
+    osg::ref_ptr<osg::Geometry> staleTier = new osg::Geometry(*staleSource,osg::CopyOp::SHALLOW_COPY);
+    osg::ref_ptr<SceneUtil::TemporalVertexLineage> staleLineage = new SceneUtil::TemporalVertexLineage(staleSource->getVertexArray());
+    SceneUtil::installTemporalVertexLineage(*staleSource,staleLineage);
+    SceneUtil::installTemporalVertexLineage(*staleTier,staleLineage);
     staleSource->getVertexArray()->dirty();
     require(!SceneUtil::temporalVertexLineage(*staleSource) && !SceneUtil::temporalVertexLineage(*staleTier), "stale immutable stream generation rejected");
-    osg::ref_ptr<SceneUtil::TemporalVertexLineage> renewed = new SceneUtil::TemporalVertexLineage(staleSource->getVertexArray());
-    SceneUtil::installTemporalVertexLineage(*staleSource, renewed); SceneUtil::installTemporalVertexLineage(*staleTier, renewed);
+    require(SceneUtil::temporalVertexLineage(*originals.values.front()) && SceneUtil::temporalVertexLineage(*tiers.values.front()),
+        "the independently mutated lineage pair must preserve the selected immutable candidate");
     if (!draw) return 0;
 
     osg::ref_ptr<osg::GraphicsContext::Traits> traits = new osg::GraphicsContext::Traits;
@@ -366,15 +364,14 @@ int main(int argc, char** argv) try
     state->addUniform(new osg::Uniform("near",1.f)); state->addUniform(new osg::Uniform("far",1000000.f));
     state->addUniform(new osg::Uniform("fogColor",osg::Vec4(0,0,0,1))); state->addUniform(new osg::Uniform("fogEnd",1000000.f)); state->addUniform(new osg::Uniform("fogStart",999999.f));
     osg::ref_ptr<Pixels> pixels = new Pixels; mainCamera->setFinalDrawCallback(pixels);
-    osg::ref_ptr<Draws> originalDraws = new Draws; for (auto* geometry : originals.values) geometry->setDrawCallback(originalDraws);
     osg::ref_ptr<osgUtil::IncrementalCompileOperation> ico = new osgUtil::IncrementalCompileOperation;
     osg::ref_ptr<SceneUtil::Light> sun = new SceneUtil::Light;
     sun->setPosition({-.3f,-.7f,.5f,0}); sun->setDiffuse({.7f,.7f,.7f,1});
     sun->setAmbient({.5f,.5f,.5f,1}); sun->setSpecular({.15f,.15f,.15f,1}); lighting->setSunlight(sun);
     lighting->addChild(selected.node);
     viewer.setIncrementalCompileOperation(ico); viewer.setSceneData(lighting); viewer.realize();
-    const auto beforeDraw = L1::Counters::derivedDraws.load(); viewer.frame();
-    require(L1::Counters::derivedDraws == beforeDraw && originalDraws->draws > 0, "pending compile renders original");
+    const auto beforeDraw = L1::Counters::derivedDraws.load(), beforeControl = L1::Counters::controlDraws.load(); viewer.frame();
+    require(L1::Counters::derivedDraws == beforeDraw && L1::Counters::controlDraws > beforeControl, "pending compile renders original");
     const auto controlPixels = pixels->data;
     Programs programs; selected.node->original()->accept(programs);
     require(!programs.values.empty(), "actual shipped object program required");

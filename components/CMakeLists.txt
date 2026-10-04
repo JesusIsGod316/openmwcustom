@@ -133,7 +133,7 @@ add_component_dir (resource
     )
 
 add_component_dir (shader
-    shadermanager shadervisitor removedalphafunc programvariant
+    shadermanager shadervisitor removedalphafunc programvariant assetgeometrycontract
     )
 
 add_component_dir (sceneutil

@@ -32,7 +32,8 @@ include_directories(${ROOT})
 include_directories(SYSTEM ${OPENSCENEGRAPH_INCLUDE_DIRS})
 add_library(p9-hitch-platform STATIC "${ROOT}/components/debug/hitchtrace.cpp"
   "${ROOT}/components/debug/diagnosticobserver.cpp"
-  "${ROOT}/components/shader/programvariant.cpp")
+  "${ROOT}/components/shader/programvariant.cpp"
+  "${ROOT}/components/shader/assetgeometrycontract.cpp")
 target_link_libraries(p9-hitch-platform PUBLIC ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
 link_libraries(p9-hitch-platform)
 enable_testing()
@@ -66,7 +67,8 @@ add_test(NAME p9-native-texture-control COMMAND p9-native-texture --control)
 set_tests_properties(p9-native-texture p9-native-texture-control PROPERTIES TIMEOUT 90
   ENVIRONMENT "OPENMW_P9_DERIVED_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/native-texture-cache")
 add_executable(p9-selective-hlod selective-hlod-tests.cpp
-  ${ROOT}/components/sceneutil/selectivehlod.cpp ${ROOT}/components/nifosg/matrixtransform.cpp)
+  ${ROOT}/components/sceneutil/selectivehlod.cpp ${ROOT}/components/sceneutil/generatedstaticlod.cpp
+  ${ROOT}/components/nifosg/matrixtransform.cpp)
 target_link_libraries(p9-selective-hlod PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL
   Threads::Threads openmw-asset-backends)
 add_test(NAME p9-selective-hlod COMMAND p9-selective-hlod)
@@ -122,6 +124,11 @@ add_test(NAME p9-composite-cpu-mips COMMAND p9-composite-cpu-mips)
 add_test(NAME p9-composite-cpu-mips-gl COMMAND p9-composite-cpu-mips --gl ${ROOT}/files/shaders/compatibility)
 set_tests_properties(p9-composite-cpu-mips p9-composite-cpu-mips-gl PROPERTIES TIMEOUT 90)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+foreach(asset_gate asset-paging-package asset-shader-release)
+  add_test(NAME p9-${asset_gate} COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/${asset_gate}-tests.py)
+  set_tests_properties(p9-${asset_gate} PROPERTIES TIMEOUT 45)
+endforeach()
 add_test(NAME p9-asset-engagement COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/asset-engagement-tests.py)
 set_tests_properties(p9-asset-engagement PROPERTIES TIMEOUT 45)

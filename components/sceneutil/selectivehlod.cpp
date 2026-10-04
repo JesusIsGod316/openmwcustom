@@ -13,10 +13,11 @@
 #include "texturetype.hpp"
 #include "persistentopaquepackets.hpp"
 #include "pagingwork.hpp"
+#include "generatedstaticlod.hpp"
 #include <components/resource/assetgpubudget.hpp>
 #include <components/resource/derivedassetcache.hpp>
 #include <components/resource/speculativebudget.hpp>
-#include <components/shader/indirectprojectioncontract.hpp>
+#include <components/shader/assetgeometrycontract.hpp>
 #include <components/nifosg/matrixtransform.hpp>
 
 #include <osg/Geometry>
@@ -36,6 +37,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 #include <typeinfo>
@@ -151,8 +153,19 @@ namespace SceneUtil
         {
             explicit DrawReceipt(std::uint64_t indices):mIndices(indices){}
             void drawImplementation(osg::RenderInfo& info,const osg::Drawable* drawable) const override
-            {++HlodCounters::consumedDraws;HlodCounters::consumedIndices+=mIndices;drawable->drawImplementation(info);}
+            {
+                if(guard && !guard->current(info.getState()))
+                {
+                    ++HlodCounters::materialDrawFallbacks;
+                    GeneratedStaticLod::drawOriginals(info,originals,osg::Matrixd::identity(),drawable->getStateSet(),candidateStates);
+                    return;
+                }
+                ++HlodCounters::consumedDraws;HlodCounters::consumedIndices+=mIndices;drawable->drawImplementation(info);
+            }
             std::uint64_t mIndices;
+            std::shared_ptr<GeneratedStaticLod::MaterialGuard> guard;
+            std::vector<GeneratedStaticLod::OriginalDraw> originals,proofSources;
+            std::vector<osg::ref_ptr<const osg::StateSet>> candidateStates;
         };
 
         bool finite(const osg::Matrix& matrix)
@@ -310,11 +323,40 @@ namespace SceneUtil
             if (const auto* group = node.asGroup())
                 for (unsigned i = 0; i < group->getNumChildren(); ++i) collect(*group->getChild(i), matrix, *effective, leaves);
         }
-        bool shippedProgram(const osg::StateSet& state)
+        bool shippedProgram(const osg::StateSet& state,GeneratedStaticLod::RefusalInfo* info=nullptr,
+            std::map<const osg::Program*,Shader::AssetGeometry::Snapshot>* validated=nullptr)
         {
             const auto* program = dynamic_cast<const osg::Program*>(state.getAttribute(osg::StateAttribute::PROGRAM));
-            if (!program) return false;
-            return Shader::IndirectProjection::matches(*program);
+            if (!program) {if(info) info->detail=GeneratedStaticLod::Detail::ShaderFamily;return false;}
+            std::optional<Shader::AssetGeometry::Snapshot> proof;
+            if(validated) if(const auto found=validated->find(program);found!=validated->end()) proof=found->second;
+            if(!proof)
+            {
+                const auto reason=Shader::AssetGeometry::validate(*program);
+                if(reason!=Shader::AssetGeometry::Refusal::None)
+                {if(info) {info->program=program;info->detail=GeneratedStaticLod::shaderDetail(static_cast<unsigned>(reason));}return false;}
+                proof=Shader::AssetGeometry::capture(*program,{&state});
+            }
+            if(!proof) {if(info) info->detail=GeneratedStaticLod::Detail::ShaderDefines;return false;}
+            // PBR atlases preserve co-registered diffuse/normal/specular roles.
+            // The adjusted/parallax UV and reconstructed normal lanes require
+            // independent atlas recipes and retain the original representation.
+            for(const char* name:{"parallax","diffuseParallax","reconstructNormalZ"})
+                if(const auto value=proof->define(name); !value.empty() && value!="0")
+                {if(info) info->detail=GeneratedStaticLod::Detail::ShaderFeatures;return false;}
+            unsigned roles=0;
+            for(unsigned unit=0;unit<state.getTextureAttributeList().size();++unit)
+                if(const auto* texture=state.getTextureAttribute(unit,osg::StateAttribute::TEXTURE);texture && texture->asTexture())
+                {
+                    const auto& name=getTextureType(state,*texture->asTexture(),unit);
+                    const auto sampler=proof->samplers().find(name);
+                    if(unit>=3 || sampler==proof->samplers().end() || sampler->second!=int(unit)
+                        || proof->define(name)!="1" || proof->define(name+"UV")!=std::to_string(unit))
+                    {if(info) info->detail=GeneratedStaticLod::Detail::ShaderBindings;return false;}
+                    ++roles;
+                }
+            if(roles!=proof->samplers().size()) {if(info) info->detail=GeneratedStaticLod::Detail::ShaderBindings;return false;}
+            if(validated) validated->insert_or_assign(program,*proof);return true;
         }
         std::uint64_t submissions(const osg::Node& node)
         {
@@ -424,18 +466,65 @@ namespace SceneUtil
         }
     }
 
-    bool certifySelectiveHlodTemplate(const osg::Node& original) { return immutable(original); }
-
-    bool qualifySelectiveHlodTemplate(const osg::Node& original,bool requireShippedObjectShader)
+    bool certifySelectiveHlodTemplate(const osg::Node& original,GeneratedStaticLod::RefusalInfo* info)
     {
+        const bool valid=immutable(original);
+        if(info)
+        {
+            *info={};
+            if(!valid)
+            {
+                unsigned nodes=0;
+                const auto detail=[&](const auto& self,const osg::Node& node,unsigned depth)->bool {
+                    if(++nodes>4096 || depth>32) return false;
+                    info->node=&node;
+                    if(node.getDataVariance()==osg::Object::DYNAMIC) {info->detail=GeneratedStaticLod::Detail::Dynamic;return true;}
+                    if(node.getUpdateCallback() || node.getEventCallback() || node.getCullCallback() || node.getComputeBoundingSphereCallback())
+                    {info->detail=GeneratedStaticLod::Detail::GraphCallback;return true;}
+                    if(!node.getNodeMask() && !loaderEmptyMarker(node)) {info->detail=GeneratedStaticLod::Detail::HiddenGraph;return true;}
+                    if(const auto* group=node.asGroup()) for(unsigned i=0;i<group->getNumChildren();++i) if(self(self,*group->getChild(i),depth+1)) return true;
+                    return false;
+                };
+                if(!detail(detail,original,0)) info->detail=GeneratedStaticLod::Detail::GraphType;
+            }
+        }
+        return valid;
+    }
+
+    bool qualifySelectiveHlodTemplate(const osg::Node& original,bool requireShippedObjectShader,GeneratedStaticLod::RefusalInfo* info)
+    {
+        if(info) *info={};
         try
         {
-            if(!immutable(original)) return false;
+            if(!certifySelectiveHlodTemplate(original,info)) return false;
+            if(info) info->node=&original;
+            // Diagnosis only: this sieve never admits a previously refused
+            // material. One subtype is retained for the bounded first example.
+            if(info)
+            {
+                unsigned nodes=0;
+                const auto diagnose=[&](const auto& self,const osg::Node& node,unsigned depth)->bool {
+                    if(++nodes>4096 || depth>32) return false;
+                    if(const auto* state=node.getStateSet())
+                    {
+                        info->node=&node;
+                        if(state->getMode(GL_BLEND)&osg::StateAttribute::ON) {info->detail=GeneratedStaticLod::Detail::Blend;return true;}
+                        if((state->getMode(GL_ALPHA_TEST)&osg::StateAttribute::ON) || state->getRenderingHint()==osg::StateSet::TRANSPARENT_BIN)
+                        {info->detail=GeneratedStaticLod::Detail::Alpha;return true;}
+                        if(const auto* alpha=dynamic_cast<const osg::AlphaFunc*>(state->getAttribute(osg::StateAttribute::ALPHAFUNC));alpha && alpha->getFunction()!=GL_ALWAYS)
+                        {info->detail=GeneratedStaticLod::Detail::Alpha;return true;}
+                    }
+                    if(const auto* group=node.asGroup()) for(unsigned i=0;i<group->getNumChildren();++i) if(self(self,*group->getChild(i),depth+1)) return true;
+                    return false;
+                };
+                if(diagnose(diagnose,original,0)) return false;
+            }
             osg::ref_ptr<osg::StateSet> empty=new osg::StateSet;
             std::vector<Leaf> leaves;collect(original,osg::Matrix::identity(),*empty,leaves);
             if(leaves.empty() || leaves.size()>64) return false;
             std::size_t totalVertices=0;
             std::vector<Role> roles;
+            std::map<const osg::Program*,Shader::AssetGeometry::Snapshot> programs;
             for(auto& leaf:leaves)
             {
                 const auto& g=*leaf.geometry;
@@ -451,7 +540,8 @@ namespace SceneUtil
                 if(!texture || !texture->getImage() || getTextureType(*leaf.state,*texture,0)!="diffuseMap") return false;
                 qualifyRoles(leaf,*uv,roles);
                 Chart domain{texture};extend(domain,*uv);qualifyDomain(domain);
-                if(requireShippedObjectShader && !shippedProgram(*leaf.state)) return false;
+                if(info) info->node=leaf.geometry;
+                if(requireShippedObjectShader && !shippedProgram(*leaf.state,info,&programs)) return false;
             }
             ++HlodCounters::certified;return true;
         }
@@ -479,6 +569,7 @@ namespace SceneUtil
             std::vector<Chart> charts;
             std::vector<Family> families;
             std::vector<Role> roles;
+            std::map<const osg::Program*,Shader::AssetGeometry::Snapshot> programs;
             bool colorSpace=false;
             bool colorsPresent=false;
             float anisotropy=1.f;
@@ -536,7 +627,7 @@ namespace SceneUtil
                 for(auto axis : {osg::Texture::WRAP_S,osg::Texture::WRAP_T})
                     if(leaf.texture->getWrap(axis)!=osg::Texture::REPEAT && leaf.texture->getWrap(axis)!=osg::Texture::CLAMP_TO_EDGE)
                         throw std::runtime_error("border or mirrored sampler requires a separate bake contract");
-                if(options.requireShippedObjectShader && !shippedProgram(*leaf.state))
+                if(options.requireShippedObjectShader && !shippedProgram(*leaf.state,nullptr,&programs))
                     throw std::runtime_error("shader feature closure is not the shipped objects program");
                 osg::ref_ptr<osg::StateSet> nontexture=new osg::StateSet(*leaf.state,osg::CopyOp::SHALLOW_COPY);
                 for(unsigned unit=0;unit<roles.size();++unit)
@@ -694,8 +785,36 @@ namespace SceneUtil
             osg::ref_ptr<osg::Group> bounded = new osg::Group;
             bounded->setInitialBound(optimizedControl.getBound());
             bounded->setDataVariance(osg::Object::STATIC);
+            // A proxy family replays only its matching original control draws.
+            // Whole-cluster replay from every proxy would duplicate geometry.
+            const auto sourcePaths=GeneratedStaticLod::originalDraws(certifiedSource);
+            const auto controlPaths=GeneratedStaticLod::originalDraws(optimizedControl);
+            if(&certifiedSource!=&optimizedControl && !GeneratedStaticLod::installOriginalDrawReceipts(const_cast<osg::Node&>(optimizedControl)))
+                throw std::runtime_error("unqualified original control receipt");
+            std::vector<std::vector<GeneratedStaticLod::OriginalDraw>> familyControls(families.size()),familySources(families.size());
+            for(const auto& draw:sourcePaths)
+            {
+                const auto found=std::find_if(leaves.begin(),leaves.end(),[&](const auto& leaf){return leaf.geometry==draw.geometry;});
+                if(found==leaves.end()) throw std::runtime_error("source replay lineage missing");
+                familySources[found->family].push_back(draw);
+            }
+            for(const auto& draw:controlPaths)
+            {
+                const auto* callback=draw.geometry->getDrawCallback();
+                if(callback && !dynamic_cast<const PersistentOpaquePackets::RetainedOpaqueDrawCallback*>(callback))
+                    throw std::runtime_error("unqualified control replay callback");
+                osg::ref_ptr<osg::StateSet> effective=new osg::StateSet;
+                for(const auto& node:draw.path) if(node->getStateSet()) effective->merge(*node->getStateSet());
+                if(!simpleState(*effective)) throw std::runtime_error("unqualified control replay material");
+                for(unsigned role=0;role<roles.size();++role) effective->removeTextureAttribute(role,osg::StateAttribute::TEXTURE);
+                const bool colors=draw.geometry->getColorArray()!=nullptr;
+                const auto family=std::find_if(families.begin(),families.end(),[&](const auto& value){return value.colors==colors && value.state->compare(*effective,true)==0;});
+                if(family==families.end()) throw std::runtime_error("control replay family differs from atlas source");
+                familyControls[family-families.begin()].push_back(draw);
+            }
             for(unsigned familyIndex=0;familyIndex<families.size();++familyIndex)
             {
+            if(familyControls[familyIndex].empty()) throw std::runtime_error("empty original replay family");
             auto& family=families[familyIndex];
             for(unsigned role=0;role<roles.size();++role) family.state->setTextureAttribute(role,atlasTextures[role],osg::StateAttribute::ON);
             family.state->setDataVariance(osg::Object::STATIC);
@@ -745,7 +864,14 @@ namespace SceneUtil
             // L1 handles triangle reduction separately. Each qualified role has
             // an atlas; each exact scalar/shader family has one real draw across
             // previously incompatible source texture tuples.
-            proxy->setDrawCallback(new DrawReceipt(indices->size()));
+            osg::ref_ptr<DrawReceipt> callback=new DrawReceipt(indices->size());
+            proxy->setDrawCallback(callback);
+            callback->candidateStates.emplace_back(proxy->getStateSet());
+            callback->originals=familyControls[familyIndex];callback->proofSources=familySources[familyIndex];
+            auto proof=callback->originals;proof.insert(proof.end(),callback->proofSources.begin(),callback->proofSources.end());
+            GeneratedStaticLod::OriginalDraw tier{proxy,{proxy.get()},osg::Matrixd::identity()};
+            callback->guard=GeneratedStaticLod::MaterialGuard::captureDraws(proof,tier,options.requireShippedObjectShader);
+            if(!callback->guard) throw std::runtime_error("atlas source/control material replay proof unavailable");
             bounded->addChild(proxy);
             result.proxySubmissions+=proxy->getNumPrimitiveSets();
             }

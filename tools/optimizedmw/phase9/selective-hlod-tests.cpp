@@ -1,4 +1,5 @@
 #include <components/sceneutil/selectivehlod.hpp>
+#include <components/sceneutil/generatedstaticlod.hpp>
 #include <components/sceneutil/texturetype.hpp>
 #include <components/sceneutil/pagingwork.hpp>
 
@@ -23,13 +24,6 @@ namespace
         mutable GLenum error=GL_NO_ERROR;
         void operator()(osg::RenderInfo&) const override
         {glReadPixels(0,0,64,64,GL_RGBA,GL_UNSIGNED_BYTE,data.data());error=glGetError();}
-    };
-    struct Draws final : osg::Drawable::DrawCallback
-    {
-        mutable unsigned count=0;
-        osg::ref_ptr<osg::Drawable::DrawCallback> delegate;
-        void drawImplementation(osg::RenderInfo& info,const osg::Drawable* drawable) const override
-        {++count;if(delegate) delegate->drawImplementation(info,drawable);else drawable->drawImplementation(info);}
     };
     struct Callback final : osg::NodeCallback {};
     struct CustomGroup final:osg::Group {};
@@ -89,7 +83,7 @@ namespace
         texture->setWrap(osg::Texture::WRAP_S,osg::Texture::REPEAT);texture->setWrap(osg::Texture::WRAP_T,osg::Texture::REPEAT);
         osg::ref_ptr<osg::StateSet> state=new osg::StateSet;
         state->setAttribute(p);state->setTextureAttribute(0,texture);state->setTextureAttribute(0,new SceneUtil::TextureType("diffuseMap"));
-        state->addUniform(new osg::Uniform("diffuseMap",0));
+        state->addUniform(new osg::Uniform("diffuseMap",0));state->setDataVariance(osg::Object::STATIC);
         osg::ref_ptr<osg::Geometry> g=new osg::Geometry;
         osg::ref_ptr<osg::Vec3Array> vertices=new osg::Vec3Array;
         vertices->push_back({x,-.8f,0});vertices->push_back({x+.75f,-.8f,0});vertices->push_back({x+.75f,.8f,0});vertices->push_back({x,.8f,0});
@@ -107,7 +101,7 @@ namespace
 int main() try
 {
     const auto p=program();auto a=geometry(-.9f,p,220,15),b=geometry(.1f,p,15,220);
-    osg::ref_ptr<osg::Group> source=new osg::Group;source->addChild(a);source->addChild(b);
+    osg::ref_ptr<osg::Group> source=new osg::Group;source->setDataVariance(osg::Object::STATIC);source->addChild(a);source->addChild(b);
     require(SceneUtil::certifySelectiveHlodTemplate(*source),"positive original ancestry certificate");
     SceneUtil::HlodBuildOptions fixture;fixture.requireShippedObjectShader=false;fixture.reserveGpu=false;
     SceneUtil::HlodBuildOptions strict=fixture;strict.requireShippedObjectShader=true;
@@ -162,6 +156,14 @@ int main() try
     require(!SceneUtil::buildSelectiveHlod(*source,*source,fixture),"different scalar material fallback");b->getStateSet()->removeUniform("materialScalar");
     const auto sourceBound=source->getBound();
     require(result.representation->getBound().radius()+1e-5>=sourceBound.radius(),"original conservative bound");
+    // The negative admission checks above intentionally change owned graph
+    // structure. Qualify a fresh immutable candidate for the GL positive lane;
+    // never refresh the earlier candidate's material guard after mutation.
+    source->getOrCreateStateSet()->setDataVariance(osg::Object::STATIC);
+    osg::ref_ptr<osg::Node> privateControl=osg::clone(source.get(),osg::CopyOp::DEEP_COPY_NODES|osg::CopyOp::DEEP_COPY_DRAWABLES|osg::CopyOp::DEEP_COPY_STATESETS);
+    result=SceneUtil::buildSelectiveHlod(*source,*privateControl,fixture);
+    require(bool(result),"restored source must qualify a fresh GL candidate");
+    proxy=dynamic_cast<osg::Geometry*>(result.representation->asGroup()->getChild(0));
 
     osg::ref_ptr<osg::GraphicsContext::Traits> traits=new osg::GraphicsContext::Traits;
     traits->readDISPLAY();traits->width=64;traits->height=64;traits->pbuffer=true;traits->doubleBuffer=false;traits->windowDecoration=false;
@@ -172,16 +174,19 @@ int main() try
     camera->setProjectionMatrixAsOrtho(-1,1,-1,1,-1,1);camera->setViewMatrix(osg::Matrix::identity());camera->setClearColor({0,0,0,0});
     camera->getOrCreateStateSet()->setMode(GL_BLEND,osg::StateAttribute::OFF);
     osg::ref_ptr<Pixels> pixels=new Pixels;camera->setFinalDrawCallback(pixels);
-    osg::ref_ptr<Draws> originalDraws=new Draws,proxyDraws=new Draws;
-    proxyDraws->delegate=proxy->getDrawCallback();
-    a->setDrawCallback(originalDraws);b->setDrawCallback(originalDraws);proxy->setDrawCallback(proxyDraws);
-    viewer.setSceneData(source);viewer.realize();viewer.frame();viewer.frame();const auto controlPixels=pixels->data;
+    const auto beforeControl=SceneUtil::GeneratedStaticLod::Counters::controlDraws.load();
+    viewer.setSceneData(privateControl);viewer.realize();viewer.frame();viewer.frame();const auto controlPixels=pixels->data;
     unsigned controlRgb=0;
     for(unsigned i=0;i<controlPixels.size();++i) if(i%4!=3 && controlPixels[i]) ++controlRgb;
     std::cout<<"H1_HELPER_CONTROL_RGB nonempty="<<controlRgb<<'\n';
     require(controlRgb>128,"actual textured RGB pixels required");
-    const unsigned originalPerFrame=originalDraws->count/2;
-    viewer.setSceneData(result.representation);viewer.frame();viewer.frame();const unsigned proxyPerFrame=proxyDraws->count/2;
+    const auto originalPerFrame=(SceneUtil::GeneratedStaticLod::Counters::controlDraws-beforeControl)/2;
+    const auto beforeProxy=SceneUtil::HlodCounters::consumedDraws.load();
+    viewer.setSceneData(result.representation);viewer.frame();viewer.frame();
+    const auto proxyPerFrame=(SceneUtil::HlodCounters::consumedDraws-beforeProxy)/2;
+    std::cout<<"H1_HELPER_DRAW_DIAGNOSTIC original_draws="<<originalPerFrame<<" proxy_draws="<<proxyPerFrame
+        <<" cull_fallbacks="<<SceneUtil::GeneratedStaticLod::Counters::materialCullFallbacks.load()
+        <<" draw_fallbacks="<<SceneUtil::HlodCounters::materialDrawFallbacks.load()<<'\n';
     unsigned differences=0,maxDifference=0;
     for(unsigned i=0;i<controlPixels.size();++i)
     {const unsigned delta=std::abs(int(controlPixels[i])-int(pixels->data[i]));maxDifference=std::max(maxDifference,delta);if(delta>8) ++differences;}

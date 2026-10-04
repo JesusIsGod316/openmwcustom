@@ -30,6 +30,7 @@ namespace SceneUtil::AssetPaging
         std::atomic_uint64_t outerCpuDenied{0}, privateCpuDenied{0}, privateGpuDenied{0}, candidateAdmitted{0}, materialConflictInstances{0};
         std::atomic_uint64_t buildAttempts{0}, buildRefused{0}, ready{0};
         std::atomic_uint64_t refusals[static_cast<unsigned>(Gate::Count)]{};
+        std::atomic_uint64_t details[static_cast<unsigned>(GeneratedStaticLod::Detail::Count)]{};
     };
     struct Counters
     {
@@ -131,6 +132,8 @@ namespace SceneUtil::AssetPaging
     std::unique_ptr<Resource::SpeculativeScope::Stage> reservePrivateSources(unsigned eligible, Outcome& outcome);
     bool admitPrivateSource(const Source& source, Outcome& outcome);
     void refuse(unsigned lanes, Gate gate);
+    void refusalDetail(unsigned lanes, GeneratedStaticLod::Detail detail,
+        std::string_view model = {}, const GeneratedStaticLod::RefusalInfo* info = nullptr);
     struct Tiers
     {
         GeneratedStaticLod::Result lod;

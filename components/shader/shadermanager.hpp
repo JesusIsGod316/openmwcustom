@@ -21,6 +21,7 @@ namespace osgViewer
 
 namespace Shader
 {
+    namespace AssetGeometry { struct Epoch; }
     struct HotReloadManager;
     /// @brief Reads shader template files and turns them into a concrete shader, based on a list of define's.
     /// @par Shader templates can get the value of a define with the syntax @define.
@@ -127,6 +128,7 @@ namespace Shader
         int mMaxTextureUnits = 0;
         int mReservedTextureUnits = 0;
         std::unique_ptr<HotReloadManager> mHotReloadManager;
+        std::shared_ptr<AssetGeometry::Epoch> mAssetEpoch;
         struct ReservedTextureUnits
         {
             int index = -1;
