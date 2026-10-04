@@ -20,11 +20,58 @@ function Test-Phase9AssetEngagement {
     $reportText = Join-Path $ProfileDir 'ASSET-ENGAGEMENT.txt'
     $verifier = Join-Path $PSScriptRoot 'verify-asset-engagement.py'
     $pythonExe = $null
-    $pythonPrefix = @()
     $reason = $null
     $verifierOutput = @()
     $verifierCode = $null
     $runToken = [Guid]::NewGuid().ToString('N')
+    $interpreterClock = [Diagnostics.Stopwatch]::StartNew()
+    $invokeInterpreter = {
+        param([string]$Executable, [string[]]$Arguments, [int]$WaitMilliseconds, [string]$Selector)
+        # .NET Framework (PowerShell 5.1) lacks ArgumentList. Quote ordinary
+        # Windows argv, but py.exe parses its version selector before argv and
+        # forwards a quoted "-3" to Python. Only this fixed selector is unquoted.
+        if($Selector -and $Selector -cne '-3') { throw 'Unsupported interpreter selector.' }
+        $quoted = foreach($argument in $Arguments) {
+            $escaped = [regex]::Replace([string]$argument, '(\\*)"', {
+                param($match) $match.Groups[1].Value + $match.Groups[1].Value + '\"'
+            })
+            $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+            '"' + $escaped + '"'
+        }
+        $argumentText = $quoted -join ' '
+        if($Selector) { $argumentText = $Selector + ' ' + $argumentText }
+        $start = New-Object System.Diagnostics.ProcessStartInfo
+        $start.FileName = $Executable
+        $start.Arguments = $argumentText
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $start
+        $code = $null
+        $timedOut = $false
+        $output = @()
+        try {
+            if(-not $process.Start()) { throw 'Interpreter process did not start.' }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if(-not $process.WaitForExit([Math]::Max(1, $WaitMilliseconds))) {
+                $timedOut = $true
+                try {
+                    $treeKill = $process.GetType().GetMethods() | Where-Object {
+                        $_.Name -eq 'Kill' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType -eq [bool]
+                    } | Select-Object -First 1
+                    if($treeKill) { $process.Kill($true) } else { $process.Kill() }
+                } catch { }
+                $null = $process.WaitForExit(1000)
+            } else { $code = $process.ExitCode }
+            # Never block capture completion on inherited/stalled pipe handles.
+            $drained = $stdoutTask.Wait(1000) -and $stderrTask.Wait(1000)
+            if($drained) { $output = @([string]$stdoutTask.Result, [string]$stderrTask.Result) }
+            return [pscustomobject]@{code=$code; timed_out=$timedOut; drained=$drained; output=$output}
+        } finally { $process.Dispose() }
+    }
     try {
         if(-not [IO.Directory]::Exists($ProfileDir)) {
             throw 'Profile directory is absent; raw capture paths were not changed.'
@@ -35,59 +82,59 @@ function Test-Phase9AssetEngagement {
             if([IO.File]::Exists($PythonPath)) { $pythonExe = $PythonPath }
             else { $reason = 'The requested Python executable is unavailable. Raw capture is preserved; qualification is unavailable.' }
         } else {
+            $probeCode = 'import json,sys; print("P9_ASSET_PYTHON="+json.dumps({"major":sys.version_info[0],"executable":sys.executable}))'
+            $seenExecutables = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
             foreach($candidate in @('py','python','python3')) {
                 $command = Get-Command $candidate -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-                if($command -and $command.Source -notmatch '[\\/]Microsoft[\\/]WindowsApps[\\/]') {
-                    $pythonExe = $command.Source
-                    if($candidate -eq 'py') { $pythonPrefix = @('-3') }
-                    break
+                if(-not $command -or $command.Source -match '[\\/]Microsoft[\\/]WindowsApps[\\/]' -or
+                   -not $seenExecutables.Add([string]$command.Source)) { continue }
+                # A query named py may resolve to Python itself. Probe capability
+                # first and use its actual interpreter, never infer flags from
+                # that query name. A launcher defaulting to Python 2 gets one
+                # explicit Python 3 probe before trying the next executable.
+                $selectors = @('')
+                if($candidate -eq 'py') { $selectors += '-3' }
+                foreach($selector in $selectors) {
+                    $remaining = $TimeoutSeconds * 1000 - [int]$interpreterClock.ElapsedMilliseconds
+                    if($remaining -le 0) { break }
+                    try {
+                        $probe = & $invokeInterpreter -Executable $command.Source -Arguments @('-B','-c',$probeCode) `
+                            -WaitMilliseconds ([Math]::Min(3000,$remaining)) -Selector $selector
+                    } catch { continue }
+                    if($probe.code -ne 0 -or $probe.timed_out -or -not $probe.drained) { continue }
+                    $proof = @(([string]$probe.output[0] -split '\r?\n') | Where-Object {$_.StartsWith('P9_ASSET_PYTHON=')})
+                    if($proof.Count -ne 1) { continue }
+                    try { $identity = $proof[0].Substring('P9_ASSET_PYTHON='.Length) | ConvertFrom-Json } catch { continue }
+                    $resolved = [string]$identity.executable
+                    if($identity.major -eq 3 -and [IO.Path]::IsPathRooted($resolved) -and [IO.File]::Exists($resolved) -and
+                       $resolved -notmatch '[\\/]Microsoft[\\/]WindowsApps[\\/]') {
+                        $pythonExe = [IO.Path]::GetFullPath($resolved)
+                        break
+                    }
                 }
+                if($pythonExe) { break }
             }
             if(-not $pythonExe) {
-                $reason = 'Python is unavailable. Raw capture is preserved; run the packaged verifier later to qualify actual engagement.'
+                $reason = 'A working Python 3 interpreter could not be discovered within the timeout. Raw capture is preserved; run the packaged verifier later to qualify actual engagement.'
             }
         }
         if(-not $reason) {
-            $arguments = @($pythonPrefix) + @('-B', $verifier, $ProfileDir, '--output-dir', $ProfileDir, '--run-token', $runToken)
+            $arguments = @('-B', $verifier, $ProfileDir, '--output-dir', $ProfileDir, '--run-token', $runToken)
             if($ExpectedSource) { $arguments += @('--expected-source', $ExpectedSource) }
             if($ExpectedExe) { $arguments += @('--expected-exe', $ExpectedExe) }
-            # .NET Framework (PowerShell 5.1) lacks ArgumentList. This implements
-            # Windows argv quoting, including trailing backslashes and quotes.
-            $quoted = foreach($argument in $arguments) {
-                $escaped = [regex]::Replace([string]$argument, '(\\*)"', {
-                    param($match) $match.Groups[1].Value + $match.Groups[1].Value + '\"'
-                })
-                $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
-                '"' + $escaped + '"'
-            }
-            $start = New-Object System.Diagnostics.ProcessStartInfo
-            $start.FileName = $pythonExe
-            $start.Arguments = $quoted -join ' '
-            $start.UseShellExecute = $false
-            $start.CreateNoWindow = $true
-            $start.RedirectStandardOutput = $true
-            $start.RedirectStandardError = $true
-            $process = New-Object System.Diagnostics.Process
-            $process.StartInfo = $start
-            try {
-                if(-not $process.Start()) { throw 'Interpreter process did not start.' }
-                $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-                $stderrTask = $process.StandardError.ReadToEndAsync()
-                if(-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $remaining = $TimeoutSeconds * 1000 - [int]$interpreterClock.ElapsedMilliseconds
+            if($remaining -le 0) {
+                $reason = 'Asset verifier timed out after ' + $TimeoutSeconds + ' seconds. Raw capture is preserved; qualification is unavailable.'
+            } else {
+                $execution = & $invokeInterpreter -Executable $pythonExe -Arguments $arguments -WaitMilliseconds $remaining
+                $verifierCode = $execution.code
+                $verifierOutput = @($execution.output)
+                if($execution.timed_out) {
                     $reason = 'Asset verifier timed out after ' + $TimeoutSeconds + ' seconds. Raw capture is preserved; qualification is unavailable.'
-                    try {
-                        $treeKill = $process.GetType().GetMethods() | Where-Object {
-                            $_.Name -eq 'Kill' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType -eq [bool]
-                        } | Select-Object -First 1
-                        if($treeKill) { $process.Kill($true) } else { $process.Kill() }
-                    } catch { }
-                    $null = $process.WaitForExit(1000)
-                } else { $verifierCode = $process.ExitCode }
-                # Never block capture completion on inherited/stalled pipe handles.
-                $drained = $stdoutTask.Wait(1000) -and $stderrTask.Wait(1000)
-                if($drained) { $verifierOutput = @([string]$stdoutTask.Result, [string]$stderrTask.Result) }
-                elseif(-not $reason) { $reason = 'Asset verifier output could not be drained within its bound. Raw capture is preserved; qualification is unavailable.' }
-            } finally { $process.Dispose() }
+                } elseif(-not $execution.drained) {
+                    $reason = 'Asset verifier output could not be drained within its bound. Raw capture is preserved; qualification is unavailable.'
+                }
+            }
             if($reason) { $verifierCode = $null }
             if($verifierCode -notin @(0,2,3,4) -or -not [IO.File]::Exists($reportJson) -or -not [IO.File]::Exists($reportText)) {
                 if(-not $reason) { $reason = 'The asset verifier did not produce a complete report. Raw capture is preserved; qualification is unavailable.' }
