@@ -606,7 +606,8 @@ namespace SceneUtil
                     +(tangentsPresent?sizeof(osg::Vec4):0)
                     +(colorsPresent?sizeof(osg::Vec4):0))+result.sourceTriangles*3*sizeof(unsigned);
                 result.gpuReservation=Resource::AssetGpuBudget::reserve(result.atlasBytes+geometryBytes);
-                if(!result.gpuReservation) throw std::runtime_error("shared GPU admission denied or sample stale");
+                if(!result.gpuReservation)
+                { result.retryable=true; throw std::runtime_error("shared GPU admission denied or sample stale"); }
             }
             // This cache stores only the immutable atlas texture dependency,
             // never geometry, transforms or a publication generation. Exact
@@ -754,6 +755,8 @@ namespace SceneUtil
             HlodCounters::proxySubmissions+=result.proxySubmissions;HlodCounters::atlasBytes+=result.atlasBytes;
         }
         catch(const PagingWorkCancelled&) {throw;}
+        catch(const Resource::SpeculativeDeferred& error)
+        {result.retryable=true;result.rejection=error.what();result.representation=nullptr;result.gpuReservation.reset();++HlodCounters::refused;}
         catch(const std::exception& error) {result.rejection=error.what();result.representation=nullptr;result.gpuReservation.reset();++HlodCounters::refused;}
         return result;
     }

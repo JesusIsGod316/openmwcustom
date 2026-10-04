@@ -57,6 +57,7 @@ namespace SceneUtil
         std::uint64_t distinctDiffuseImages = 0;
         std::uint64_t atlasBytes = 0;
         std::string rejection;
+        bool retryable = false;
         std::shared_ptr<Resource::AssetGpuBudget::Reservation> gpuReservation;
         explicit operator bool() const { return representation.valid(); }
     };

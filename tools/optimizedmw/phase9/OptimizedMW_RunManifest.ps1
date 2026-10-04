@@ -84,7 +84,7 @@ function New-Phase9RunManifest {
         }
     }
     $scripts=[Collections.Generic.List[object]]::new()
-    foreach($file in (Get-ChildItem -LiteralPath $GameDir -File | Where-Object {$_.Extension -in @('.ps1','.bat','.wprp')} | Sort-Object Name)){
+    foreach($file in (Get-ChildItem -LiteralPath $GameDir -File | Where-Object {$_.Extension -in @('.ps1','.bat','.wprp','.py')} | Sort-Object Name)){
         $scripts.Add((Get-Phase9FileIdentity $file.FullName $file.Name))
     }
     $build=Get-Phase9FileIdentity (Join-Path $GameDir 'CI-ID.txt')
@@ -132,8 +132,9 @@ function New-Phase9RunManifest {
             coverage='Independent startup switches; resource denial, invalidation and demand fallback remain possible. Selection alone is not execution proof.'};
         architecture_candidates=[ordered]@{revision=1;ram_mask=[int]$Mode.RamMask;renderer_mask=[int]$Mode.ArchitectureMask;
             coverage='Independent requested startup mechanisms; normal engine shutdown counters report execution and fallback. Shared-context preparation remains a separate native fixture. Pipeline bounds command-buffer ownership only.'};
-        asset_pipeline=[ordered]@{revision=1;mask=[int]$Mode.AssetMask;
-            coverage='Requested generated LOD, selective HLOD, native preparation, terrain streaming and demotion. Actual engagement requires build/draw/publication/deletion counters; CPU readiness alone is not GL readiness.'};
+        asset_pipeline=[ordered]@{revision=2;mask=[int]$Mode.AssetMask;
+            qualification_report='ASSET-ENGAGEMENT.json';
+            coverage='Requested generated LOD, selective HLOD, native preparation, terrain streaming and demotion. Versioned loop-end draw counters and refusal reasons independently qualify actual use. Draw threads are stopped for the snapshot; optional workers are not frozen. CPU readiness alone does not establish GL consumption or performance.'};
         hitch_v2_attribution=[ordered]@{requested=($Mode.Trace -eq '1');channel='p9-hitch-spans.csv';
             coverage='Additional nested UI, animation preparation, terrain publication and composite pass/restore spans. Existing threshold and loss qualification apply; child wall times are not additive.'};
         hitch_diagnostics6=[ordered]@{requested=($Mode.Trace -eq '1');revision=2;channel='p9-hitch-spans.csv';

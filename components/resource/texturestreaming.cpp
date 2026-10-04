@@ -10,6 +10,7 @@
 #include <osg/GraphicsContext>
 #include <osg/GLExtensions>
 #include <osg/State>
+#include <osg/StateSet>
 #include <osg/observer_ptr>
 #include <algorithm>
 #include <array>
@@ -22,11 +23,31 @@ namespace Resource::TextureStreaming
 {
     struct Descriptor
     {
-        explicit Descriptor(std::shared_ptr<NativeTextureTicket> t) : ticket(std::move(t)) {}
+        explicit Descriptor(std::shared_ptr<NativeTextureTicket> t,bool stream) : ticket(std::move(t)),streaming(stream) {}
+        const bool streaming;
+        std::atomic_bool nativeRecorded{false};
         const std::shared_ptr<NativeTextureTicket> ticket;
         osg::observer_ptr<Texture> texture;
         osg::observer_ptr<osg::Image> image;
         unsigned modified=0;
+        GLint width=0,height=0,depth=0,internal=0;
+        GLenum pixel=0,type=0;
+        unsigned packing=0;
+        int rowLength=0;
+        const unsigned char* data=nullptr;
+        std::size_t imageBytes=0;
+        osg::Image::MipmapDataType mipmaps;
+        osg::Image::Origin origin=osg::Image::TOP_LEFT;
+        void capture(osg::Image* value)
+        {
+            image=value;
+            if(!value) return;
+            modified=value->getModifiedCount();width=value->s();height=value->t();depth=value->r();
+            internal=value->getInternalTextureFormat();pixel=value->getPixelFormat();type=value->getDataType();
+            mipmaps=value->getMipmapLevels();origin=value->getOrigin();
+            packing=value->getPacking();rowLength=value->getRowLength();data=value->data();
+            imageBytes=value->getTotalSizeInBytesIncludingMipmaps();
+        }
         std::atomic_bool alive{true};
         std::atomic_bool fallbackRecorded{false};
     };
@@ -43,24 +64,24 @@ namespace Resource::TextureStreaming
         thread_local bool sCompileActive=false,sCompileAllowed=false;
         std::mutex sRegistryMutex;
         std::vector<std::weak_ptr<Descriptor>> sRegistry;
-        std::atomic_uint64_t sConstructing{0};
+        std::atomic_uint64_t sConstructing{0},sOwnerLive{0};
 #ifdef OPENMW_NATIVE_TEXTURE_TEST_HOOKS
         std::atomic_bool sFailNextUpload{false};
         std::atomic_bool sHoldTestRetirements{false};
 #endif
-        std::shared_ptr<Descriptor> registerTexture(std::shared_ptr<NativeTextureTicket> ticket)
+        std::shared_ptr<Descriptor> registerTexture(std::shared_ptr<NativeTextureTicket> ticket,bool stream)
         {
-            ++sCounters.requested;
+            if(stream) ++sCounters.requested;
             if(!ticket) return {};
-            if(ticket->purpose!=TexturePurpose::MainDraw)
+            if(stream && ticket->purpose!=TexturePurpose::MainDraw)
             { ++sCounters.skips[static_cast<unsigned>(Skip::Purpose)]; return {}; }
-            if(ticket->role!=TextureRole::Diffuse && ticket->role!=TextureRole::DiffuseSpecular)
+            if(stream && ticket->role!=TextureRole::Diffuse && ticket->role!=TextureRole::DiffuseSpecular)
             { ++sCounters.skips[static_cast<unsigned>(Skip::Role)]; return {}; }
             std::lock_guard lock(sRegistryMutex);
             sRegistry.erase(std::remove_if(sRegistry.begin(),sRegistry.end(),[](const auto& x){return x.expired();}),sRegistry.end());
             if(sRegistry.size()>=4096) { ++sCounters.skips[static_cast<unsigned>(Skip::AllocationLimit)]; return {}; }
-            auto descriptor=std::make_shared<Descriptor>(std::move(ticket));
-            sRegistry.push_back(descriptor); ++sCounters.eligible; return descriptor;
+            auto descriptor=std::make_shared<Descriptor>(std::move(ticket),stream);
+            sRegistry.push_back(descriptor); if(stream) ++sCounters.eligible; return descriptor;
         }
         using Sync=decltype(std::declval<osg::GLExtensions>().glFenceSync(GLenum{},GLbitfield{}));
         struct Allocation
@@ -69,7 +90,7 @@ namespace Resource::TextureStreaming
             Sync fence=nullptr;
             std::uint64_t bytes=0;
             unsigned first=0,level=0,row=0;
-            bool constructing=false, uncertain=false,drawn=false;
+            bool constructing=false, uncertain=false,drawn=false,applied=false,streaming=true,demoted=false;
             std::shared_ptr<AssetGpuBudget::Reservation> gpu;
             SpeculativeBudget::ChargePtr host;
             std::shared_ptr<const unsigned char> identity;
@@ -78,6 +99,7 @@ namespace Resource::TextureStreaming
         {
             std::weak_ptr<Descriptor> descriptor;
             std::shared_ptr<const NativeMipPayload> payload;
+            osg::ref_ptr<osg::Image> nativeImage;
             osg::ref_ptr<Texture> frozenOwner;
             Allocation active,building;
             double publishedAt=0,healthySince=-1;
@@ -130,9 +152,12 @@ namespace Resource::TextureStreaming
                 mUsedUnits|=std::uint32_t(1)<<unit;
                 auto found=mEntries.find(descriptor);
                 if(found==mEntries.end() || !found->second.active.name) return false;
+                const auto exactOwner=found->second.descriptor.lock();
                 osg::ref_ptr<Texture> texture;
-                if(found->second.failed || !descriptor->texture.lock(texture) || !valid(*descriptor,*texture))
+                if(!exactOwner || exactOwner.get()!=descriptor || found->second.failed || !descriptor->texture.lock(texture) || !valid(*descriptor,*texture))
                 { found->second.failed=true;return false; }
+                if(!descriptor->streaming && !found->second.active.applied)
+                { found->second.active.applied=true;++nativeTextureStats().fullApplies; }
                 // Publication cannot change between main/refraction draws.
                 glBindTexture(GL_TEXTURE_2D,found->second.active.name); return true;
             }
@@ -142,16 +167,24 @@ namespace Resource::TextureStreaming
                 auto found=mEntries.find(descriptor.get());
                 if(found==mEntries.end() || !found->second.active.name) return;
                 auto& entry=found->second;
+                const auto exactOwner=entry.descriptor.lock();
                 osg::ref_ptr<Texture> texture;
-                if(entry.failed || !descriptor->texture.lock(texture) || !valid(*descriptor,*texture)) return;
+                if(!exactOwner || exactOwner!=descriptor || entry.failed || !descriptor->texture.lock(texture) || !valid(*descriptor,*texture)) return;
                 const auto* stamp=state.getFrameStamp();
                 const std::uint64_t frame=stamp ? stamp->getFrameNumber() : mFrame;
                 descriptor->ticket->lastDrawFrame=frame;
                 descriptor->ticket->lastDrawTime=mTime;
+                if(AssetPolicy::enabled(AssetPolicy::TexturePreparation) && entry.active.first==0)
+                {
+                    if(descriptor->ticket->purpose==TexturePurpose::MainDraw) ++nativeTextureStats().consumedMainDraws;
+                    else ++nativeTextureStats().consumedCompositeDraws;
+                }
+                if(!descriptor->streaming) return;
                 auto& first=entry.active.first ? descriptor->ticket->firstCoarseDraw : descriptor->ticket->firstFineDraw;
                 auto& counter=entry.active.first ? sCounters.coarseDraws : sCounters.fineDraws;
                 auto& firstCounter=entry.active.first ? sCounters.firstCoarseDraws : sCounters.firstFineDraws;
                 ++counter;
+                if(entry.active.demoted) ++sCounters.demotionDraws;
                 std::uint64_t zero=0;first.compare_exchange_strong(zero,frame+1);
                 if(!entry.active.drawn)
                 {
@@ -221,10 +254,7 @@ namespace Resource::TextureStreaming
                     osg::ref_ptr<Texture> texture;
                     if(!descriptor->texture.lock(texture)) continue;
                     entry.frozenOwner=texture;
-                    const auto* image=texture->getImage();
-                    if(texture->getSubloadCallback() || texture->getReadPBuffer() || texture->getBorderWidth()!=0
-                        || !image || descriptor->image.get()!=image || image->getModifiedCount()!=descriptor->modified
-                        || image->getDataVariance()==osg::Object::DYNAMIC)
+                    if(!valid(*descriptor,*texture) && !descriptor->ticket->ordinaryAllocated.load())
                     {
                         if(retirementSlots()>=unsigned(bool(entry.active.name))+unsigned(bool(entry.building.name)))
                         { retire(entry.active,*ext); retire(entry.building,*ext); }
@@ -234,10 +264,27 @@ namespace Resource::TextureStreaming
                     {
                         if(retirementSlots()>=unsigned(bool(entry.active.name))+unsigned(bool(entry.building.name)))
                         { retire(entry.building,*ext);retire(entry.active,*ext); }
-                        ++sCounters.skips[static_cast<unsigned>(Skip::OrdinaryAllocation)]; continue;
+                        if(!entry.active.name && !entry.building.name)
+                        { entry.nativeImage=nullptr;entry.payload.reset(); }
+                        ++sCounters.skips[static_cast<unsigned>(descriptor->ticket->ordinaryAllocated.load()
+                            ? Skip::OrdinaryAllocation : descriptor->ticket->outcome()==NativeTextureOutcome::TerminalDecline
+                                ? Skip::TerminalPreparation : Skip::Stale)];continue;
                     }
                     if(!entry.payload) entry.payload=descriptor->ticket->payload();
-                    if(!entry.payload) { ++sCounters.skips[static_cast<unsigned>(Skip::NotReady)]; continue; }
+                    if(!entry.payload)
+                    {
+                        const auto outcome=descriptor->ticket->outcome();
+                        ++sCounters.skips[static_cast<unsigned>(outcome==NativeTextureOutcome::TerminalDecline
+                            ? Skip::TerminalPreparation : Skip::NotReady)];
+                        if(outcome==NativeTextureOutcome::TerminalDecline) entry.failed=true;
+                        continue;
+                    }
+                    if(!entry.nativeImage)
+                    {
+                        entry.nativeImage=nativeTextureImage(entry.payload);
+                        if(!descriptor->nativeRecorded.exchange(true))
+                        { ++nativeTextureStats().nativeImages;++nativeTextureStats().handoffs; }
+                    }
                     if(entry.payload->suffixBytes(0)>AssetPolicy::NewTextureLimit)
                     {
                         ++sCounters.skips[static_cast<unsigned>(Skip::AllocationLimit)];entry.failed=true;continue;
@@ -255,9 +302,9 @@ namespace Resource::TextureStreaming
                     if(!retirementSlots())
                     { ++sCounters.skips[static_cast<unsigned>(Skip::RetirementDebt)]; continue; }
                     if(allocations || chunks>=ChunksPerFrame) continue;
-                    unsigned first=entry.payload->coarseLevel(); bool want=false;
+                    unsigned first=descriptor->streaming ? entry.payload->coarseLevel() : 0; bool want=false;
                     if(!entry.active.name) want=true;
-                    else
+                    else if(descriptor->streaming)
                     {
                         const auto last=descriptor->ticket->lastDrawTime.load();
                         const bool held=mTime-entry.publishedAt<QualityHold;
@@ -266,10 +313,10 @@ namespace Resource::TextureStreaming
                         { first=0; want=true; }
                         else if(!held && !entry.active.first && first>0 && AssetPolicy::enabled(AssetPolicy::TextureDemotion)
                             && mTime-last>=QualityHold)
-                        { want=true; entry.demoting=true; }
+                        { ++sCounters.demotionEligible;want=true; entry.demoting=true; }
                         else if(held) ++sCounters.skips[static_cast<unsigned>(Skip::Hold)];
                     }
-                    if(want && allocate(state,entry,first))
+                    if(want && allocate(state,entry,first,descriptor->streaming))
                     { ++allocations; upload(state,entry,chunks); publish(state,entry,descriptor,*ext); }
                 }
             }
@@ -301,6 +348,22 @@ namespace Resource::TextureStreaming
             }
 #ifdef OPENMW_NATIVE_TEXTURE_TEST_HOOKS
             inline static double testTime=-1;
+            std::optional<TestBackings> testBackings(const Descriptor* descriptor) const
+            {
+                const auto found=mEntries.find(descriptor);
+                if(found==mEntries.end() || found->second.descriptor.lock().get()!=descriptor) return {};
+                const auto& entry=found->second;
+                return TestBackings{entry.active.name,entry.building.name,entry.active.first,entry.building.first,
+                    entry.active.bytes,entry.building.bytes};
+            }
+            bool expireTestEntryOwner(const Descriptor* descriptor)
+            {
+                const auto found=mEntries.find(descriptor);
+                if(found==mEntries.end() || !found->second.active.name) return false;
+                // Model an expired old owner at a reused raw key, without an
+                // unsafe fixture allocator or changing production ownership.
+                found->second.descriptor.reset();return true;
+            }
 #endif
         private:
             static bool valid(const Descriptor& descriptor,const Texture& texture)
@@ -309,7 +372,15 @@ namespace Resource::TextureStreaming
                 return descriptor.alive.load() && descriptor.ticket->current()
                     && !descriptor.ticket->ordinaryAllocated.load() && image
                     && descriptor.image.get()==image && image->getModifiedCount()==descriptor.modified
-                    && image->getDataVariance()!=osg::Object::DYNAMIC && !texture.getSubloadCallback()
+                    && image->getDataVariance()!=osg::Object::DYNAMIC && !image->requiresUpdateCall()
+                    && image->s()==descriptor.width && image->t()==descriptor.height && image->r()==descriptor.depth
+                    && image->getInternalTextureFormat()==descriptor.internal && image->getPixelFormat()==descriptor.pixel
+                    && image->getDataType()==descriptor.type && image->getOrigin()==descriptor.origin
+                    && image->getMipmapLevels()==descriptor.mipmaps && image->getPacking()==descriptor.packing
+                    && image->getRowLength()==descriptor.rowLength && image->data()==descriptor.data
+                    && image->getTotalSizeInBytesIncludingMipmaps()==descriptor.imageBytes && !texture.getUpdateCallback() && !texture.getEventCallback()
+                    && texture.getDataVariance()!=osg::Object::DYNAMIC
+                    && !texture.getSubloadCallback()
                     && !texture.getReadPBuffer() && texture.getBorderWidth()==0;
             }
             void invalidate(osg::State& state) const
@@ -325,14 +396,18 @@ namespace Resource::TextureStreaming
             static void discard(Allocation& slot)
             {
                 if(!slot.name) return;
-                finishConstruction(slot); sCounters.liveBytes.fetch_sub(slot.bytes); slot={};
+                finishConstruction(slot);sOwnerLive.fetch_sub(slot.bytes);
+                if(slot.streaming) sCounters.liveBytes.fetch_sub(slot.bytes);
+                else nativeTextureStats().fullLiveBytes.fetch_sub(slot.bytes);
+                slot={};
             }
             static void destroy(Allocation& slot,osg::GLExtensions& ext)
             {
                 if(!slot.name) return;
                 if(slot.fence) ext.glDeleteSync(slot.fence);
                 glDeleteTextures(1,&slot.name);
-                ++sCounters.deletions; sCounters.deletedBytes+=slot.bytes;
+                if(slot.streaming) { ++sCounters.deletions;sCounters.deletedBytes+=slot.bytes; }
+                else ++nativeTextureStats().fullDeletions;
                 Debug::RuntimeDiagnostics::recordEvent("texture_delete","terrain",{},
                     {{"name",slot.name},{"allocation_bytes",slot.bytes}});
                 discard(slot); // reservations release strictly after deletion
@@ -377,24 +452,25 @@ namespace Resource::TextureStreaming
                 retire(entry.active,ext);
                 entry.active=std::move(entry.building); entry.building={};
                 finishConstruction(entry.active); entry.publishedAt=mTime;
-                if(entry.active.first) ++sCounters.coarsePublished; else ++sCounters.finePublished;
-                if(entry.demoting) ++sCounters.demotions;
+                if(!descriptor->streaming) ++nativeTextureStats().fullPublished;
+                else if(entry.active.first) ++sCounters.coarsePublished; else ++sCounters.finePublished;
+                if(entry.demoting) { entry.active.demoted=true;++sCounters.demotions; }
                 entry.demoting=false;
                 invalidate(state);
                 Debug::RuntimeDiagnostics::recordEvent("texture_publish","terrain",descriptor->ticket->path,
                     {{"context",_contextID},{"frame",mFrame},{"name",entry.active.name},
                      {"first_mip",entry.active.first},{"allocation_bytes",entry.active.bytes}});
             }
-            bool allocate(osg::State& state,Entry& entry,unsigned first)
+            bool allocate(osg::State& state,Entry& entry,unsigned first,bool streaming)
             {
                 const auto bytes=entry.payload->suffixBytes(first);
-                if(!bytes || bytes>AssetPolicy::NewTextureLimit || sCounters.liveBytes.load()>AssetPolicy::TextureAllocationLimit-bytes)
+                if(!bytes || bytes>AssetPolicy::NewTextureLimit || sOwnerLive.load()>AssetPolicy::TextureAllocationLimit-bytes)
                 { ++sCounters.skips[static_cast<unsigned>(Skip::AllocationLimit)]; return false; }
                 if(!UploadPool::ledger || !UploadPool::sample)
                 { ++sCounters.skips[static_cast<unsigned>(Skip::Admission)]; return false; }
                 std::uint64_t zero=0;
                 if(!sConstructing.compare_exchange_strong(zero,1)) return false;
-                Allocation slot; slot.constructing=true;
+                Allocation slot; slot.constructing=true;slot.streaming=streaming;
                 try
                 {
                     SpeculativeScope scope(UploadPool::ledger,UploadPool::sample,UploadPool::sampleOwner);
@@ -410,9 +486,11 @@ namespace Resource::TextureStreaming
                 glGenTextures(1,&slot.name);
                 if(!slot.name) { finishConstruction(slot); ++sCounters.skips[static_cast<unsigned>(Skip::GlFailure)]; return false; }
                 slot.bytes=bytes; slot.first=first; slot.level=first;
-                sCounters.liveBytes+=bytes;
-                auto peak=sCounters.peakBytes.load(),live=sCounters.liveBytes.load();
-                while(peak<live && !sCounters.peakBytes.compare_exchange_weak(peak,live)) {}
+                sOwnerLive+=bytes;
+                auto& liveCounter=streaming ? sCounters.liveBytes : nativeTextureStats().fullLiveBytes;
+                auto& peakCounter=streaming ? sCounters.peakBytes : nativeTextureStats().fullPeakBytes;
+                liveCounter+=bytes;auto peak=peakCounter.load(),live=liveCounter.load();
+                while(peak<live && !peakCounter.compare_exchange_weak(peak,live)) {}
                 glBindTexture(GL_TEXTURE_2D,slot.name);
                 const auto& top=entry.payload->mips[first];
                 ext->glTexStorage2D(GL_TEXTURE_2D,static_cast<GLsizei>(entry.payload->mips.size()-first),
@@ -420,7 +498,8 @@ namespace Resource::TextureStreaming
                 glTexParameteri(GL_TEXTURE_2D,TextureBaseLevel,0);
                 glTexParameteri(GL_TEXTURE_2D,TextureMaxLevel,static_cast<GLint>(entry.payload->mips.size()-first-1));
                 entry.building=std::move(slot);
-                ++sCounters.allocations; sCounters.allocationBytes+=bytes;
+                if(streaming) { ++sCounters.allocations;sCounters.allocationBytes+=bytes; }
+                else ++nativeTextureStats().fullAllocations;
                 if(glGetError()!=GL_NO_ERROR) { fail(entry,*ext); return false; }
                 return true;
             }
@@ -451,7 +530,9 @@ namespace Resource::TextureStreaming
                         const unsigned y=slot.row*4,height=(std::min)(rows*4,mip.height-y);
                         ext->glCompressedTexSubImage2D(GL_TEXTURE_2D,slot.level-slot.first,0,y,mip.width,height,
                             entry.payload->format,bytes,entry.payload->bytes.data()+mip.offset+slot.row*rowBytes);
-                        ++sCounters.uploads; sCounters.uploadedBytes+=bytes; submitted+=bytes; packet+=bytes;
+                        if(slot.streaming) { ++sCounters.uploads;sCounters.uploadedBytes+=bytes; }
+                        else nativeTextureStats().fullUploadBytes+=bytes;
+                        submitted+=bytes;packet+=bytes;
                         if(glGetError()!=GL_NO_ERROR) { fail(entry,*ext); break; }
                         slot.row+=rows;
                         if(slot.row==blockRows) { ++slot.level; slot.row=0; }
@@ -473,7 +554,7 @@ namespace Resource::TextureStreaming
     Counters& counters() { return sCounters; }
     CompileScope::CompileScope(bool allowDeferral)
     {
-        if(!AssetPolicy::enabled(AssetPolicy::TextureStreaming)) return;
+        if(!AssetPolicy::enabled(AssetPolicy::TexturePreparation|AssetPolicy::TextureStreaming)) return;
         mChanged=true;mPreviousActive=sCompileActive;mPreviousAllowed=sCompileAllowed;
         sCompileActive=true;sCompileAllowed=allowDeferral;
     }
@@ -482,20 +563,20 @@ namespace Resource::TextureStreaming
     const char* skipName(Skip reason)
     {
         static constexpr const char* names[]={"disabled","purpose","role","not_ready","ordinary_allocation",
-            "context","capability","admission","allocation_limit","retirement_debt","hold","gl_failure","stale","texture_unit"};
+            "context","capability","admission","allocation_limit","retirement_debt","hold","gl_failure","stale","texture_unit","terminal_preparation"};
         const auto i=static_cast<unsigned>(reason); return i<std::size(names) ? names[i] : "unknown";
     }
     Texture::Texture()=default;
-    Texture::Texture(osg::Image* image,std::shared_ptr<NativeTextureTicket> ticket)
-        : osg::Texture2D(image),mDescriptor(registerTexture(std::move(ticket)))
+    Texture::Texture(osg::Image* image,std::shared_ptr<NativeTextureTicket> ticket,bool streaming,bool nativeImageReady)
+        : PreparedTerrainTexture(image),mDescriptor(registerTexture(std::move(ticket),streaming))
     {
         setDataVariance(osg::Object::STATIC); setResizeNonPowerOfTwoHint(false);
         setUseHardwareMipMapGeneration(false); setUnRefImageDataAfterApply(false);
-        if(mDescriptor) { mDescriptor->texture=this; mDescriptor->image=image; mDescriptor->modified=image ? image->getModifiedCount() : 0; }
+        if(mDescriptor) { mDescriptor->texture=this;mDescriptor->capture(image);mDescriptor->nativeRecorded=nativeImageReady; }
     }
     Texture::Texture(const Texture& other,const osg::CopyOp& copy)
-        : osg::Texture2D(other,copy),mDescriptor(registerTexture(other.mDescriptor ? other.mDescriptor->ticket : nullptr))
-    { if(mDescriptor) { mDescriptor->texture=this; mDescriptor->image=getImage(); mDescriptor->modified=getImage() ? getImage()->getModifiedCount() : 0; } }
+        : PreparedTerrainTexture(other,copy),mDescriptor(registerTexture(other.mDescriptor ? other.mDescriptor->ticket : nullptr,other.mDescriptor ? other.mDescriptor->streaming : true))
+    { if(mDescriptor) { mDescriptor->texture=this; mDescriptor->capture(getImage());mDescriptor->nativeRecorded=other.mDescriptor->nativeRecorded.load(); } }
     Texture::~Texture() { if(mDescriptor) mDescriptor->alive=false; }
     int Texture::compare(const osg::StateAttribute& other) const
     {
@@ -525,7 +606,7 @@ namespace Resource::TextureStreaming
         // create a second hidden full allocation alongside the OSG pool object.
         if(mDescriptor && getTextureObject(state.getContextID()))
         {
-            mDescriptor->ticket->ordinaryAllocated=true;
+            mDescriptor->ticket->markOrdinary();
             if(!mDescriptor->fallbackRecorded.exchange(true))
             {
                 if(sCompileActive) ++sCounters.compileFallbacks;else ++sCounters.coldVisibleFallbacks;
@@ -540,7 +621,8 @@ namespace Resource::TextureStreaming
     void Texture::compileGLObjects(osg::State& state) const
     {
         if(mDescriptor && mDescriptor->alive.load() && mDescriptor->ticket->current()
-            && !mDescriptor->ticket->ordinaryAllocated.load() && AssetPolicy::enabled(AssetPolicy::TextureStreaming))
+            && !mDescriptor->ticket->ordinaryAllocated.load()
+            && AssetPolicy::enabled(AssetPolicy::TexturePreparation|AssetPolicy::TextureStreaming))
         {
             // ICO may run before the owner boundary. Its optional compile may
             // not turn a registered producer into an ordinary full allocation.
@@ -559,15 +641,26 @@ namespace Resource::TextureStreaming
     }
     void frameBoundary(osg::State& state)
     {
-        if(!AssetPolicy::enabled(AssetPolicy::TextureStreaming)) return;
+        if(!AssetPolicy::enabled(AssetPolicy::TexturePreparation|AssetPolicy::TextureStreaming)) return;
         state.get<Controller>()->boundary(state);
     }
     void releaseContext(osg::State& state) { state.get<Controller>()->close(state); }
-    void recordDrawUse(osg::State& state)
+    void recordDrawUse(osg::State& state,const osg::StateSet* pass)
     {
-        if(!AssetPolicy::enabled(AssetPolicy::TextureStreaming)) return;
-        if(auto* texture=dynamic_cast<const Texture*>(state.getLastAppliedTextureAttribute(0,osg::StateAttribute::TEXTURE)))
-            state.get<Controller>()->draw(state,texture->descriptor());
+        if(!pass || !AssetPolicy::enabled(AssetPolicy::TexturePreparation|AssetPolicy::TextureStreaming)) return;
+        // Only the production shader's pass-defined sampled roles qualify.
+        // Cached attributes on unsampled units from previous draws are not use.
+        for(const unsigned unit:{0u,2u})
+        {
+            const auto* texture=dynamic_cast<const Texture*>(pass->getTextureAttribute(unit,osg::StateAttribute::TEXTURE));
+            if(!texture || !texture->descriptor()
+                || state.getLastAppliedTextureAttribute(unit,osg::StateAttribute::TEXTURE)!=texture) continue;
+            const auto& ticket=texture->descriptor()->ticket;
+            const bool color=ticket->role==TextureRole::Diffuse || ticket->role==TextureRole::DiffuseSpecular;
+            const bool normal=ticket->role==TextureRole::Normal || ticket->role==TextureRole::NormalHeight;
+            if((unit==0 && color) || (unit==2 && normal && ticket->purpose==TexturePurpose::MainDraw))
+                state.get<Controller>()->draw(state,texture->descriptor());
+        }
     }
     void reportDiagnostics()
     {
@@ -577,7 +670,8 @@ namespace Resource::TextureStreaming
              {"coarse_publish",sCounters.coarsePublished.load()},{"fine_publish",sCounters.finePublished.load()},
              {"coarse_draws",sCounters.coarseDraws.load()},{"fine_draws",sCounters.fineDraws.load()},
              {"first_coarse_draw",sCounters.firstCoarseDraws.load()},{"first_fine_draw",sCounters.firstFineDraws.load()},
-             {"demotions",sCounters.demotions.load()},{"deletions",sCounters.deletions.load()},
+             {"demotions",sCounters.demotions.load()},{"demotion_eligible",sCounters.demotionEligible.load()},
+             {"demotion_draws",sCounters.demotionDraws.load()},{"deletions",sCounters.deletions.load()},
              {"deleted_bytes",sCounters.deletedBytes.load()},{"live_bytes",sCounters.liveBytes.load()},
              {"peak_bytes",sCounters.peakBytes.load()},{"context_discard",sCounters.contextDiscards.load()}});
         Debug::RuntimeDiagnostics::recordEvent("texture_stream_cold","terrain",{},
@@ -588,6 +682,18 @@ namespace Resource::TextureStreaming
                 {{"count",sCounters.skips[i].load()}});
     }
 #ifdef OPENMW_NATIVE_TEXTURE_TEST_HOOKS
+    std::optional<TestBackings> testBackings(osg::State& state,const Texture& texture)
+    {
+        auto* controller=state.get<Controller>();
+        if(!texture.descriptor() || !controller->owner(state)) return {};
+        return controller->testBackings(texture.descriptor().get());
+    }
+    bool expireTestEntryOwner(osg::State& state,const Texture& texture)
+    {
+        auto* controller=state.get<Controller>();
+        return texture.descriptor() && controller->owner(state)
+            && controller->expireTestEntryOwner(texture.descriptor().get());
+    }
     void setTestTime(double seconds) { Controller::testTime=seconds; }
     void failNextUpload() { sFailNextUpload=true; }
     void holdTestRetirements(bool value) { sHoldTestRetirements=value; }

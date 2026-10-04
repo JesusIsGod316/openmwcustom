@@ -1,5 +1,7 @@
 #include "chunkmanager.hpp"
 
+
+#include <algorithm>
 #include <osg/BufferObject>
 #include <osg/Program>
 #include <osg/Texture>
@@ -13,6 +15,8 @@
 
 #include <components/esm/util.hpp>
 #include <components/resource/objectcache.hpp>
+#include <components/resource/assetpolicy.hpp>
+#include <components/resource/texturestreaming.hpp>
 #include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/preparedterraintexture.hpp>
 #include <components/resource/compositecpumips.hpp>
@@ -36,6 +40,20 @@ namespace Terrain
 {
     namespace
     {
+        // The composite renderer invokes drawImplementation directly, so an
+        // ordinary Drawable callback would miss actual source consumption.
+        class NativeCompositeSourceGeometry final : public osg::Geometry
+        {
+        public:
+            explicit NativeCompositeSourceGeometry(const osg::Geometry& source) : osg::Geometry(source) {}
+            void drawImplementation(osg::RenderInfo& info) const override
+            {
+                osg::Geometry::drawImplementation(info);
+                if(info.getState() && std::any_of(getPrimitiveSetList().begin(),getPrimitiveSetList().end(),
+                    [](const auto& primitive) { return primitive && primitive->getNumIndices()>=3; }))
+                    Resource::TextureStreaming::recordDrawUse(*info.getState(),getStateSet());
+            }
+        };
         class TerrainStateAttributeCompileOp final : public osgUtil::IncrementalCompileOperation::CompileOp
         {
         public:
@@ -479,6 +497,8 @@ namespace Terrain
             {
                 osg::ref_ptr<osg::Geometry> geom = osg::createTexturedQuadGeometry(
                     osg::Vec3(left, top, 0), osg::Vec3(width, 0, 0), osg::Vec3(0, height, 0));
+                if(Resource::AssetPolicy::enabled(Resource::AssetPolicy::TexturePreparation))
+                    geom=new NativeCompositeSourceGeometry(*geom);
                 geom->setUseDisplayList(
                     false); // don't bother making a display list for an object that is just rendered once.
                 geom->setUseVertexBufferObjects(false);
@@ -504,10 +524,13 @@ namespace Terrain
         {
             mTextureManager->prepareTexture(info.mDiffuseMap,
                 info.mSpecular ? Resource::TextureRole::DiffuseSpecular : Resource::TextureRole::Diffuse,purpose);
-            if(!forCompositeMap && !info.mNormalMap.empty())
+        }
+        // Main color consumers enter the bounded queue before normal/data
+        // payloads; T2 alone does not materialize a lane it cannot consume.
+        if(!forCompositeMap && Resource::AssetPolicy::enabled(Resource::AssetPolicy::TexturePreparation))
+            for(const LayerInfo& info:result.mLayers) if(!info.mNormalMap.empty())
                 mTextureManager->prepareTexture(info.mNormalMap,
                     info.mParallax ? Resource::TextureRole::NormalHeight : Resource::TextureRole::Normal,purpose);
-        }
         if (mCpuCompositeMips && forCompositeMap && !ESM::isEsm4Ext(mWorldspace))
         {
             Debug::HitchTrace::Scope scope("terrain.composite_cpu_mips", Debug::HitchTrace::CpuTiming::WallEnvelope);
@@ -625,13 +648,19 @@ namespace Terrain
                     lane, [&] { preparedPasses = preparePassData(chunkSize, chunkCenter); }, fillVertices);
                 if (!paired)
                 {
-                    fillVertices();
-                    preparedPasses = preparePassData(chunkSize, chunkCenter);
+                    if(Resource::AssetPolicy::enabled(Resource::AssetPolicy::TexturePreparation|Resource::AssetPolicy::TextureStreaming))
+                    { preparedPasses=preparePassData(chunkSize,chunkCenter);fillVertices(); }
+                    else { fillVertices();preparedPasses=preparePassData(chunkSize,chunkCenter); }
                 }
                 hasPreparedPasses = true;
             }
             else
+            {
+                if(!useCompositeMap && Resource::AssetPolicy::enabled(
+                    Resource::AssetPolicy::TexturePreparation|Resource::AssetPolicy::TextureStreaming))
+                { preparedPasses=preparePassData(chunkSize,chunkCenter);hasPreparedPasses=true; }
                 fillVertices();
+            }
 
             if (Settings::cells().mOptimizedMWTerrainSplitVertexBuffers)
             {

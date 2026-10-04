@@ -105,6 +105,7 @@ namespace MWRender
             }
         }
 
+#ifndef OPENMW_ASSET_PAGING_TEST_HOOKS
         template <typename Record>
         VFS::Path::Normalized getEsm4Model(const Record& record)
         {
@@ -141,6 +142,7 @@ namespace MWRender
                     return {};
             }
         }
+#endif
     }
 
     osg::ref_ptr<osg::Node> ObjectPaging::getChunk(float size, const osg::Vec2f& center, unsigned char /*lod*/,
@@ -188,7 +190,8 @@ namespace MWRender
             const unsigned char lod = static_cast<unsigned char>(lodFlags >> (4 * 4));
             Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::pagingWriter(), "object_chunk_create",
                 activeGrid ? "active_grid" : "distant", 0.25);
-            osg::ref_ptr<osg::Node> node = createChunk(size, center, activeGrid, viewPoint, compile, lod);
+            SceneUtil::AssetPaging::Outcome outcome;
+            osg::ref_ptr<osg::Node> node = createChunkImpl(size, center, activeGrid, viewPoint, compile, lod, outcome);
             mCache->addEntryToObjectCache(id, node.get());
 
             if (v311PrepareMode > 0 && activeGrid && compile && !p2RequiredReadiness)
@@ -214,62 +217,77 @@ namespace MWRender
                 return false;
             if (v313QualityMode >= 2 && need.mPrepareMode > 0 && have.mSpatialMode != need.mSpatialMode)
                 return false;
-            if ((have.mP3OptionalMask & need.mP3OptionalMask) != need.mP3OptionalMask)
+            constexpr unsigned assetBits = SceneUtil::AssetPaging::Mask << 4;
+            const unsigned normalNeed = need.mP3OptionalMask & ~assetBits;
+            if ((have.mP3OptionalMask & normalNeed) != normalNeed)
                 return false;
-            return true;
+            return have.mAssets.satisfies((need.mP3OptionalMask >> 4) & SceneUtil::AssetPaging::Mask,
+                SceneUtil::AssetPaging::milliseconds());
         };
 
-        osg::ref_ptr<osg::Object> cached = mCache->getRefFromObjectCache(id);
-        if (cached && assetQualityRepair)
+        osg::ref_ptr<osg::Object> cached;
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+        // An advisory read lets the fixture hold the historical stale pointer
+        // across publication. The authoritative read below always replaces it.
+        cached = mCache->getRefFromObjectCache(id);
+        if (mFixtureBeforeCache) mFixtureBeforeCache();
+#endif
+        bool v313RepairBuild = false, v313CachedSatisfies = false;
+        SceneUtil::AssetPaging::Quality priorAssets;
         {
+            // Node and quality are one publication. A stale caller must not
+            // pair an old node with new metadata or invalidate a newer epoch.
             std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
-            const auto quality = mV313ChunkQualities.find(id);
-            if (quality == mV313ChunkQualities.end() || quality->second.mAssetVfsGeneration != assetVfsGeneration)
+            if (assetGeneration != mAssetGeneration.load(std::memory_order_acquire)
+                || assetVfsGeneration != mSceneManager->getVFS()->getIndexGeneration())
+                throw SceneUtil::PagingWorkCancelled{};
+            cached = mCache->getRefFromObjectCache(id);
+            auto quality = mV313ChunkQualities.find(id);
+            if (cached && assetQualityRepair && (quality == mV313ChunkQualities.end()
+                || quality->second.mAssetVfsGeneration != assetVfsGeneration))
             {
+                // Serialization prevents a new publication between this exact
+                // node/quality read and removal. Epoch was checked above.
                 mCache->removeFromObjectCache(id); mV313ChunkQualities.erase(id);
-                mV313StrongUpgradeInFlight.erase(id); cached = nullptr;
+                mV313StrongUpgradeInFlight.erase(id); cached = nullptr; quality = mV313ChunkQualities.end();
             }
-        }
-        bool v313RepairBuild = false;
-        if (cached)
-        {
-            bool v313CachedSatisfies = true;
-            if ((v313QualityMode > 0 && v313RequestedPrepareMode > 0) || p3OptionalMask != 0)
+            if (cached)
             {
-                std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
-                const auto it = mV313ChunkQualities.find(id);
-                const V313ChunkQuality have = it != mV313ChunkQualities.end() ? it->second : V313ChunkQuality{};
-                v313CachedSatisfies = v313QualitySatisfies(have, v313RequestedQuality);
+                const V313ChunkQuality have = quality != mV313ChunkQualities.end() ? quality->second : V313ChunkQuality{};
+                priorAssets = have.mAssets;
+                v313CachedSatisfies = !((v313QualityMode > 0 && v313RequestedPrepareMode > 0) || p3OptionalMask != 0)
+                    || v313QualitySatisfies(have,v313RequestedQuality);
+                if (v313CachedSatisfies && (((p3OptionalMask >> 4) & SceneUtil::AssetPaging::Mask) & have.mAssets.transient))
+                    ++SceneUtil::AssetPaging::Counters::retryDeferred;
                 if (!v313CachedSatisfies)
                 {
-                    mV313WeakCacheHitOnStrongPrepare.fetch_add(1, std::memory_order_relaxed);
+                    mV313WeakCacheHitOnStrongPrepare.fetch_add(1,std::memory_order_relaxed);
                     if (!mV313StrongUpgradeInFlight.insert(id).second)
-                    {
-                        mV313UpgradeCoalesced.fetch_add(1, std::memory_order_relaxed);
-                        return static_cast<osg::Node*>(cached.get());
-                    }
+                    { mV313UpgradeCoalesced.fetch_add(1,std::memory_order_relaxed); return static_cast<osg::Node*>(cached.get()); }
                     v313RepairBuild = true;
                 }
             }
-
-            if (v313CachedSatisfies)
+            else
             {
-                if (v311PrepareMode > 0 && activeGrid && !compile)
-                {
-                    std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
-                    if (mV311PreparedActiveChunks.contains(id))
-                        mV311PreparedActiveHits.fetch_add(1, std::memory_order_relaxed);
-                }
-                return static_cast<osg::Node*>(cached.get());
+                // Eviction invalidates graph-bound completion, but never the
+                // finite transient/backoff/exhaustion history of this source.
+                if (quality != mV313ChunkQualities.end() && quality->second.mAssetVfsGeneration == assetVfsGeneration)
+                    priorAssets = quality->second.mAssets;
+                priorAssets = priorAssets.withoutOwner();
+                if (!(priorAssets.transient | priorAssets.exhausted)) mV313ChunkQualities.erase(id);
+                if (assetGeneration == mAssetGeneration.load(std::memory_order_acquire)
+                    && assetVfsGeneration == mSceneManager->getVFS()->getIndexGeneration())
+                    mV313StrongUpgradeInFlight.erase(id);
             }
         }
-        else if (v313QualityMode > 0 || p3OptionalMask != 0 || assetQualityRepair)
+        if (cached && v313CachedSatisfies)
         {
-            // Generic cache expiry/removal does not know about V3.13's side table.
-            // A real cache miss is authoritative and makes any old quality record stale.
-            std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
-            mV313ChunkQualities.erase(id);
-            mV313StrongUpgradeInFlight.erase(id);
+            if (v311PrepareMode > 0 && activeGrid && !compile)
+            {
+                std::lock_guard<std::mutex> lock(mV311PreparedActiveMutex);
+                if (mV311PreparedActiveChunks.contains(id)) mV311PreparedActiveHits.fetch_add(1,std::memory_order_relaxed);
+            }
+            return static_cast<osg::Node*>(cached.get());
         }
 
         if (v311PrepareMode > 0 && activeGrid && !compile)
@@ -284,27 +302,43 @@ namespace MWRender
             v313RepairBuild ? "object_chunk_quality_upgrade" : "object_chunk_create",
             activeGrid ? "active_grid" : "distant", 0.25);
         osg::ref_ptr<osg::Node> node;
+        SceneUtil::AssetPaging::Outcome assetOutcome;
+        assetOutcome.allowed &= ~(priorAssets.exhausted | priorAssets.terminal);
+        const auto now = SceneUtil::AssetPaging::milliseconds();
+        for (unsigned i = 0; i < 2; ++i)
+            if ((priorAssets.transient & (1u << i)) && now < priorAssets.retryAfter[i])
+                assetOutcome.allowed &= ~(1u << i);
         try
         {
-            node = createChunk(size, center, activeGrid, viewPoint, compile, lod);
+            node = createChunkImpl(size, center, activeGrid, viewPoint, compile, lod, assetOutcome);
             SceneUtil::PagingWorkScope::checkpoint();
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+            if (mFixtureBeforePublish) mFixtureBeforePublish();
+#endif
         }
         catch (...)
         {
             if (v313RepairBuild)
             {
                 std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
-                mV313StrongUpgradeInFlight.erase(id);
+                if (assetGeneration == mAssetGeneration.load(std::memory_order_acquire)
+                    && assetVfsGeneration == mSceneManager->getVFS()->getIndexGeneration())
+                    mV313StrongUpgradeInFlight.erase(id);
             }
             throw;
         }
 
+        // This reconstruction has a new graph owner. No completion from an
+        // unattempted lane may be carried onto its ordinary fallback, even if
+        // the previous owner is still alive elsewhere in a view/compile set.
+        priorAssets = priorAssets.withoutOwner();
         const V313ChunkQuality v313BuiltQuality{
             static_cast<unsigned char>(activeGrid && compile && !p2RequiredReadiness && v311PrepareMode > 0
                 ? v311PrepareMode : 0),
             static_cast<unsigned char>(activeGrid && compile && !p2RequiredReadiness
                 && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0),
-            p3OptionalMask, assetVfsGeneration };
+            p3OptionalMask, assetVfsGeneration,
+            assetOutcome.attempted ? priorAssets.after(assetOutcome, SceneUtil::AssetPaging::milliseconds()) : priorAssets };
         if (v313RepairBuild)
             mV313UpgradeBuilt.fetch_add(1, std::memory_order_relaxed);
 
@@ -316,7 +350,8 @@ namespace MWRender
             if (assetGeneration != mAssetGeneration.load(std::memory_order_acquire)
                 || assetVfsGeneration != mSceneManager->getVFS()->getIndexGeneration())
             {
-                mV313StrongUpgradeInFlight.erase(id);
+                // This caller no longer owns the current epoch's coalescing
+                // flag; the fresh publication/invalidation manages that flag.
                 throw SceneUtil::PagingWorkCancelled{};
             }
             const osg::ref_ptr<osg::Object> current = mCache->getRefFromObjectCache(id);
@@ -325,9 +360,15 @@ namespace MWRender
                 = current && currentIt != mV313ChunkQualities.end() ? currentIt->second : V313ChunkQuality{};
 
             const bool currentCoversP3
-                = (currentQuality.mP3OptionalMask & v313BuiltQuality.mP3OptionalMask)
-                == v313BuiltQuality.mP3OptionalMask;
+                = (currentQuality.mP3OptionalMask & v313BuiltQuality.mP3OptionalMask & ~(SceneUtil::AssetPaging::Mask << 4))
+                == (v313BuiltQuality.mP3OptionalMask & ~(SceneUtil::AssetPaging::Mask << 4));
+            // A deferred cache hit may satisfy demand/backoff; it cannot defeat
+            // a completed retry or erase the new finite attempt receipt.
+            const bool currentCoversAssets
+                = (currentQuality.mAssets.settled() & assetOutcome.attempted) == assetOutcome.attempted
+                && (currentQuality.mAssets.completed & assetOutcome.completed) == assetOutcome.completed;
             if (current && v313QualitySatisfies(currentQuality, v313BuiltQuality)
+                && currentCoversAssets
                 && ((v313BuiltQuality.mP3OptionalMask != 0 && currentCoversP3)
                     || currentQuality.mPrepareMode > v313BuiltQuality.mPrepareMode
                     || (currentQuality.mPrepareMode == v313BuiltQuality.mPrepareMode
@@ -773,6 +814,7 @@ namespace MWRender
             };
         }
 
+#ifndef OPENMW_ASSET_PAGING_TEST_HOOKS
         std::map<ESM::RefNum, PagedCellRef> collectESM3References(
             float size, const osg::Vec2i& startCell, const MWWorld::ESMStore& store)
         {
@@ -879,10 +921,18 @@ namespace MWRender
             }
             return refs;
         }
+#endif
     }
 
     osg::ref_ptr<osg::Node> ObjectPaging::createChunk(float size, const osg::Vec2f& center, bool activeGrid,
         const osg::Vec3f& viewPoint, bool compile, unsigned char lod)
+    {
+        SceneUtil::AssetPaging::Outcome outcome;
+        return createChunkImpl(size, center, activeGrid, viewPoint, compile, lod, outcome);
+    }
+
+    osg::ref_ptr<osg::Node> ObjectPaging::createChunkImpl(float size, const osg::Vec2f& center, bool activeGrid,
+        const osg::Vec3f& viewPoint, bool compile, unsigned char lod, SceneUtil::AssetPaging::Outcome& assetOutcome)
     {
         Debug::V3Diagnostics::TraceScope trace(
             "paging", "object_chunk_create", activeGrid ? "active_grid" : "distant", 0.1);
@@ -891,24 +941,66 @@ namespace MWRender
             = v36StructureEnabled ? Debug::V3Diagnostics::Clock::now() : Debug::V3Diagnostics::Clock::time_point{};
         const osg::Vec2i startCell(static_cast<int>(std::floor(center.x() - size / 2.f)),
             static_cast<int>(std::floor(center.y() - size / 2.f)));
-        const MWBase::World& world = *MWBase::Environment::get().getWorld();
-        const MWWorld::ESMStore& store = world.getStore();
-
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+        const bool providedPopulation = !mFixturePopulation.empty();
+        std::map<ESM::RefNum,const FixtureReference*> providedReferences;
+#endif
+#ifndef OPENMW_ASSET_PAGING_TEST_HOOKS
+        const MWBase::World* world = MWBase::Environment::get().getWorld();
+        const MWWorld::ESMStore* store = &world->getStore();
+#else
+        if (!providedPopulation) throw std::logic_error("chain fixture requires a bounded parsed source population");
+#endif
         std::map<ESM::RefNum, PagedCellRef> refs;
 
         {
             Debug::V3Diagnostics::ScopedCsvTimer timer(Debug::V3Diagnostics::renderWriter(),
                 "object_chunk_collect_refs", activeGrid ? "active_grid" : "distant", 0.1);
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+            if (providedPopulation)
+            {
+                unsigned index = 0;
+                for (const auto& source : mFixturePopulation)
+                {
+                    ESM::RefNum id; id.mIndex = ++index; id.mContentFile = 0;
+                    refs.emplace(id,PagedCellRef{ESM::RefId::stringRefId("asset-chain-" + std::to_string(index)),
+                        id,source.position,{},source.scale});
+                    providedReferences.emplace(id,&source);
+                }
+            }
+#else
             if (mWorldspace == ESM::Cell::sDefaultWorldspaceId)
             {
-                refs = collectESM3References(size, startCell, store);
+                refs = collectESM3References(size, startCell, *store);
             }
             else
             {
                 refs = collectESM4References(size, startCell, mWorldspace);
             }
+#endif
         }
 
+        const auto sourceType = [&](ESM::RefNum number, const PagedCellRef& ref) {
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+            return providedReferences.at(number)->type;
+#else
+            return store->findStatic(ref.mRefId);
+#endif
+        };
+        const auto sourceModel = [&](ESM::RefNum number, int type, const PagedCellRef& ref) {
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+            return providedReferences.at(number)->model;
+#else
+            return getModel(type,ref.mRefId,*store);
+#endif
+        };
+        const auto sourceVersion = [&](ESM::RefNum number) {
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+            return static_cast<unsigned>(ESM::VER_130);
+#else
+            return world->getESMVersions()[number.mContentFile];
+#endif
+        };
         if (activeGrid && !refs.empty())
         {
             std::lock_guard<std::mutex> lock(mRefTrackerMutex);
@@ -939,47 +1031,13 @@ namespace MWRender
         };
         typedef std::map<osg::ref_ptr<const osg::Node>, InstanceList> NodeMap;
         NodeMap nodes;
-        const bool assetPreparation = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
-            && Resource::SpeculativeScope::active()
-            && (Resource::AssetPolicy::enabled(Resource::AssetPolicy::VisualLod)
-                || Resource::AssetPolicy::enabled(Resource::AssetPolicy::Hlod));
-        struct AssetSource { std::string identity; std::size_t bytes = 0; bool hlodEligible = false; };
+        const unsigned requestedAssets = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
+            ? Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask & assetOutcome.allowed : 0;
+        const bool assetPreparation = requestedAssets && Resource::SpeculativeScope::active();
+        if (requestedAssets && !assetPreparation) assetOutcome.defer(requestedAssets);
+        using AssetSource = SceneUtil::AssetPaging::Source;
         std::map<const osg::Node*, AssetSource> assetCertifiedSources;
         std::set<const osg::Node*> assetCheckedTemplates;
-        // H1 has its own original-ancestry/layout certificate. Its allowed static
-        // loader transforms and empty collision markers are broader than L1's
-        // graph certificate, so do not derive H1 admission from L1 eligibility.
-        const auto hlodSourceBytes = [](const osg::Node& root) -> std::size_t {
-            std::size_t nodes = 0, geometries = 0, bytes = 0;
-            constexpr std::size_t limit = 32 * Resource::SpeculativeBudget::MiB;
-            const auto count = [&](const auto& self, const osg::Node& node, unsigned depth) -> bool {
-                if (++nodes > 1024 || depth > 32) return false;
-                const auto add = [&](std::size_t amount) {
-                    if (amount > limit - bytes) return false;
-                    bytes += amount; return true;
-                };
-                if (const auto* geometry = dynamic_cast<const osg::Geometry*>(&node))
-                {
-                    if (++geometries > 64 || !geometry->getVertexArray()
-                        || !add(geometry->getVertexArray()->getTotalDataSize())) return false;
-                    for (const auto* array : {geometry->getNormalArray(),geometry->getColorArray(),
-                            geometry->getSecondaryColorArray(),geometry->getFogCoordArray()})
-                        if (array && !add(array->getTotalDataSize())) return false;
-                    for (unsigned i = 0; i < geometry->getNumTexCoordArrays(); ++i)
-                        if (const auto* array = geometry->getTexCoordArray(i); array && !add(array->getTotalDataSize())) return false;
-                    for (unsigned i = 0; i < geometry->getNumVertexAttribArrays(); ++i)
-                        if (const auto* array = geometry->getVertexAttribArray(i); array && !add(array->getTotalDataSize())) return false;
-                    for (unsigned i = 0; i < geometry->getNumPrimitiveSets(); ++i)
-                        if (!add(std::size_t(geometry->getPrimitiveSet(i)->getNumIndices()) * sizeof(unsigned))) return false;
-                    return true;
-                }
-                if (const auto* group = node.asGroup())
-                    for (unsigned i = 0; i < group->getNumChildren(); ++i)
-                        if (!self(self,*group->getChild(i),depth + 1)) return false;
-                return true;
-            };
-            return count(count,root,0) && geometries ? bytes : 0;
-        };
         const osg::ref_ptr<RefnumSet> refnumSet = activeGrid ? new RefnumSet : nullptr;
 
         // Mask_UpdateVisitor is used in such cases in NIF loader:
@@ -1040,8 +1098,8 @@ namespace MWRender
                 if (Misc::ResourceHelpers::isHiddenMarker(ref.mRefId))
                     continue;
 
-                const int type = store.findStatic(ref.mRefId);
-                VFS::Path::Normalized model = getModel(type, ref.mRefId, store);
+                const int type = sourceType(refNum,ref);
+                VFS::Path::Normalized model = sourceModel(refNum,type,ref);
                 if (model.empty())
                     continue;
                 model = Misc::ResourceHelpers::correctMeshPath(model);
@@ -1054,7 +1112,7 @@ namespace MWRender
                     else
                         model = mLODNameCache
                                     .emplace_hint(found, std::move(key),
-                                        Misc::ResourceHelpers::getLODMeshName(world.getESMVersions()[refNum.mContentFile],
+                                        Misc::ResourceHelpers::getLODMeshName(sourceVersion(refNum),
                                             model, *mSceneManager->getVFS(), lod))
                                     ->second;
                 }
@@ -1163,8 +1221,8 @@ namespace MWRender
             if (Misc::ResourceHelpers::isHiddenMarker(ref.mRefId))
                 continue;
 
-            const int type = store.findStatic(ref.mRefId);
-            VFS::Path::Normalized model = getModel(type, ref.mRefId, store);
+            const int type = sourceType(refNum,ref);
+            VFS::Path::Normalized model = sourceModel(refNum,type,ref);
             if (model.empty())
                 continue;
             model = Misc::ResourceHelpers::correctMeshPath(model);
@@ -1194,7 +1252,7 @@ namespace MWRender
                 else
                     model = mLODNameCache
                                 .emplace_hint(found, std::move(key),
-                                    Misc::ResourceHelpers::getLODMeshName(world.getESMVersions()[refNum.mContentFile],
+                                    Misc::ResourceHelpers::getLODMeshName(sourceVersion(refNum),
                                         model, *mSceneManager->getVFS(), lod))
                                 ->second;
             }
@@ -1209,6 +1267,10 @@ namespace MWRender
                     ++p3TemplateReuseHits;
                 }
             }
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+            if (!cnode && providedPopulation && providedReferences.at(refNum)->original)
+                cnode = providedReferences.at(refNum)->original;
+#endif
             if (!cnode)
                 cnode = mSceneManager->getTemplate(model, false);
 
@@ -1219,40 +1281,8 @@ namespace MWRender
                 && assetCertifiedSources.size() < 64 && assetCheckedTemplates.size() < 256
                 && assetCheckedTemplates.insert(cnode.get()).second)
             {
-                const bool visualLodEligible = Resource::AssetPolicy::enabled(Resource::AssetPolicy::VisualLod)
-                    && SceneUtil::GeneratedStaticLod::certify(*cnode) == SceneUtil::GeneratedStaticLod::Refusal::None;
-                const bool hlodEligible = Resource::AssetPolicy::enabled(Resource::AssetPolicy::Hlod)
-                    && SceneUtil::certifySelectiveHlodTemplate(*cnode) && SceneUtil::qualifySelectiveHlodTemplate(*cnode);
-                if (visualLodEligible || hlodEligible)
-                {
-                try
-                {
-                    // Stage is intentionally inert outside a SpeculativeScope. Both gates above
-                    // are required: optionalOptimization alone does not establish host admission.
-                    // Unknown/compressed providers cannot prove their open/decode peak before
-                    // get(), so they retain the ordinary representation without an extra read.
-                    const auto estimate = mSceneManager->getVFS()->getOpenEstimate(model);
-                    constexpr std::size_t sourceLimit = 8 * Resource::SpeculativeBudget::MiB;
-                    if (!estimate || !estimate->sourceBytes || estimate->sourceBytes > sourceLimit
-                        || estimate->openPeakBytes > sourceLimit)
-                        throw std::runtime_error("LOD source provider has no bounded open contract");
-                    Resource::SpeculativeScope::Stage sourceSnapshot(
-                        estimate->sourceBytes + estimate->openPeakBytes, 0);
-                    auto source = mSceneManager->getVFS()->get(model);
-                    Resource::DerivedAssets::Bytes bytes(static_cast<std::size_t>(estimate->sourceBytes));
-                    source->read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-                    SceneUtil::PagingWorkScope::checkpoint();
-                    if (source->gcount() != static_cast<std::streamsize>(bytes.size()) || source->bad()
-                        || source->peek() != std::char_traits<char>::eof())
-                        throw std::runtime_error("LOD source snapshot length differs from provider metadata");
-                    assetCertifiedSources.emplace(cnode.get(), AssetSource{
-                        model.value() + "|" + Resource::DerivedAssets::digest(bytes),
-                        hlodEligible ? hlodSourceBytes(*cnode) : SceneUtil::GeneratedStaticLod::sourceBytes(*cnode), hlodEligible});
-                }
-                catch (const SceneUtil::PagingWorkCancelled&) { throw; }
-                catch (...) { ++SceneUtil::GeneratedStaticLod::Counters::refused[
-                    static_cast<unsigned>(SceneUtil::GeneratedStaticLod::Refusal::Capacity)]; }
-                }
+                if (auto source = SceneUtil::AssetPaging::prepareSource(*cnode,model,*mSceneManager->getVFS(),requestedAssets,assetOutcome))
+                    assetCertifiedSources.emplace(cnode.get(),std::move(*source));
             }
 
             if (activeGrid)
@@ -1323,15 +1353,17 @@ namespace MWRender
             osg::ref_ptr<osg::Group> control = new osg::Group;
             osg::ref_ptr<osg::Group> source = new osg::Group;
             std::string identity;
-            bool hlodEligible = true;
+            unsigned eligible = 0;
             unsigned materialOwner = 0;
+            std::size_t instances = 0;
             std::vector<std::pair<osg::ref_ptr<osg::Node>,osg::Group*>> originalDestinations;
         };
-        std::map<std::tuple<int,int,int,bool>, AssetPartition> assetPartitions;
+        std::map<std::tuple<int,int,int,unsigned>, AssetPartition> assetPartitions;
         std::map<const osg::Group*, AssetPartition*> assetControls;
         std::map<const osg::StateSet*,unsigned> assetMaterialOwners;
         bool assetMaterialOwnershipKnown = true;
         std::size_t assetPrivateBytes = 0, assetInstances = 0;
+        std::uint64_t assetDerivedHostBytes = 0;
         struct PrivateBuffers final : osg::NodeVisitor
         {
             PrivateBuffers() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
@@ -1350,10 +1382,9 @@ namespace MWRender
         std::unique_ptr<Resource::SpeculativeScope::Stage> assetSourceAdmission;
         if (assetPreparation && !assetCertifiedSources.empty())
         {
-            try { assetSourceAdmission = std::make_unique<Resource::SpeculativeScope::Stage>(
-                32 * Resource::SpeculativeBudget::MiB, 32 * Resource::SpeculativeBudget::MiB); }
-            catch (...) { ++SceneUtil::GeneratedStaticLod::Counters::refused[
-                static_cast<unsigned>(SceneUtil::GeneratedStaticLod::Refusal::Capacity)]; }
+            unsigned eligible = 0;
+            for (const auto& [node,source] : assetCertifiedSources) eligible |= source.eligible;
+            assetSourceAdmission = SceneUtil::AssetPaging::reservePrivateSources(eligible,assetOutcome);
         }
         auto assetReadiness = std::make_shared<SceneUtil::GeneratedStaticLod::Readiness>();
         osg::ref_ptr<Resource::TemplateMultiRef> templateRefs = new Resource::TemplateMultiRef;
@@ -1451,25 +1482,28 @@ namespace MWRender
                     * osg::Quat(ref.mRotation.x(), osg::Vec3f(-1, 0, 0));
                 const osg::Vec3f nodeScale(ref.mScale, ref.mScale, ref.mScale);
                 const auto assetSource = assetCertifiedSources.find(cnode);
-                const bool assetHlodEligible = assetSource != assetCertifiedSources.end() && assetSource->second.hlodEligible;
+                const bool assetHlodEligible = assetSource != assetCertifiedSources.end() && (assetSource->second.eligible & SceneUtil::AssetPaging::Hlod);
                 const auto assetKey = std::make_tuple(static_cast<int>(std::floor(nodePos.x() / 2048.f)),
                     static_cast<int>(std::floor(nodePos.y() / 2048.f)),
-                    static_cast<int>(std::floor(nodePos.z() / 2048.f)), assetHlodEligible);
+                    static_cast<int>(std::floor(nodePos.z() / 2048.f)),
+                    assetSource == assetCertifiedSources.end() ? 0u : assetSource->second.eligible);
                 const std::size_t assetCopyBytes = assetSource == assetCertifiedSources.end() ? 0
-                    : assetSource->second.bytes * (assetHlodEligible ? 2 : 1);
-                bool assetCandidate = assetSourceAdmission && ref.mScale > 0.f && assetCopyBytes > 0
+                    : assetSource->second.hostBytes * (assetHlodEligible ? 2 : 1);
+                bool providedOccluderOwner = false;
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+                if (providedPopulation) providedOccluderOwner = providedReferences.at(ref.mRefNum)->occluderOwner;
+#endif
+                bool assetCandidate = !providedOccluderOwner && assetSourceAdmission && ref.mScale > 0.f && assetCopyBytes > 0
                     && assetInstances < 64 && (assetPartitions.contains(assetKey) || assetPartitions.size() < 16)
                     && assetCopyBytes <= 32 * Resource::SpeculativeBudget::MiB - assetPrivateBytes
                     // Retain the original owner and MSOC representation intact.
                     && !(buildOccluders && cnode->getBound().radius() * ref.mScale >= occluderMinRadius);
+                if (assetSource != assetCertifiedSources.end() && assetSourceAdmission && !assetCandidate)
+                    SceneUtil::AssetPaging::refuse(assetSource->second.eligible,
+                        providedOccluderOwner || (buildOccluders && cnode->getBound().radius() * ref.mScale >= occluderMinRadius)
+                            ? SceneUtil::AssetPaging::Gate::Occluder : SceneUtil::AssetPaging::Gate::Population);
                 if (assetCandidate)
-                {
-                    // This lane also privately realizes the original partition's streams.
-                    // Charge them separately from the derived indices/atlas and retain
-                    // pooled OSG debt before admitting the new private GL owner.
-                    auto originalGpu = Resource::AssetGpuBudget::reserve(assetSource->second.bytes);
-                    assetCandidate = originalGpu && Resource::AssetGpuBudget::retainUntilShutdown(originalGpu);
-                }
+                    assetCandidate = SceneUtil::AssetPaging::admitPrivateSource(assetSource->second,assetOutcome);
 
                 osg::ref_ptr<osg::Group> trans;
                 if (merge || assetCandidate)
@@ -1635,9 +1669,10 @@ namespace MWRender
                     if (!partition.materialOwner) partition.materialOwner = 1u << assetPartitions.size();
                     partition.control->addChild(trans);
                     partition.originalDestinations.emplace_back(trans,attachTo);
+                    ++partition.instances;
                     partition.identity += assetSource->second.identity + "|";
                     assetPrivateBytes += assetCopyBytes; ++assetInstances;
-                    partition.hlodEligible = assetHlodEligible;
+                    partition.eligible = assetSource->second.eligible;
                     if (assetHlodEligible)
                         partition.source->addChild(osg::clone(trans.get(), osg::CopyOp::DEEP_COPY_NODES
                             | osg::CopyOp::DEEP_COPY_DRAWABLES | osg::CopyOp::DEEP_COPY_ARRAYS | osg::CopyOp::DEEP_COPY_PRIMITIVES));
@@ -1698,11 +1733,24 @@ namespace MWRender
             {
                 if (partition->second.materialOwner & conflictingAssetOwners)
                 {
+                    SceneUtil::AssetPaging::each(partition->second.eligible,[&](auto& counters) {
+                        counters.materialConflictInstances += partition->second.instances;
+                    });
+                    SceneUtil::AssetPaging::refuse(partition->second.eligible,SceneUtil::AssetPaging::Gate::Material);
                     for (const auto& [instance,destination] : partition->second.originalDestinations)
                         destination->addChild(instance);
                     partition = assetPartitions.erase(partition);
                 }
-                else ++partition;
+                else
+                {
+                    // Restoration is settled before flattening. Retaining a
+                    // replaced transform here keeps its obsolete child-parent
+                    // links alive: the optimizer then rediscovers that orphan
+                    // and reports a removal again without a live parent.
+                    // Keep only population counts for retained host accounting.
+                    partition->second.originalDestinations.clear();
+                    ++partition;
+                }
             }
         }
 
@@ -1876,17 +1924,17 @@ namespace MWRender
             if (const auto asset = assetControls.find(mergeGroup); asset != assetControls.end())
             {
                 auto& partition = *asset->second;
-                if (Resource::AssetPolicy::enabled(Resource::AssetPolicy::VisualLod))
-                {
-                    assetLod = SceneUtil::GeneratedStaticLod::build(*mergeGroup, partition.identity, mAssetMainCamera.get());
-                    if (assetLod.node && !Resource::AssetGpuBudget::retainUntilShutdown(assetLod.gpuReservation)) assetLod.node = nullptr;
-                }
-                if (Resource::AssetPolicy::enabled(Resource::AssetPolicy::Hlod) && partition.hlodEligible)
-                {
-                    assetHlod = SceneUtil::buildSelectiveHlod(*partition.source, *mergeGroup);
-                    if (assetHlod && !Resource::AssetGpuBudget::retainUntilShutdown(assetHlod.gpuReservation)) assetHlod.representation = nullptr;
-                }
+                auto tiers = SceneUtil::AssetPaging::buildTiers(*partition.source,*mergeGroup,partition.identity,
+                    partition.eligible,mAssetMainCamera.get(),assetOutcome);
+                assetLod = std::move(tiers.lod);
+                assetHlod = std::move(tiers.hlod);
+                if (assetLod.node) assetDerivedHostBytes += assetLod.derivedIndices * sizeof(unsigned)
+                    + 8192ull * partition.instances + 8192;
+                if (assetHlod) assetDerivedHostBytes += assetHlod.atlasBytes
+                    + 2ull * (assetHlod.sourceVertices * 64ull + assetHlod.sourceTriangles * 3ull * sizeof(unsigned))
+                    + 8192ull * partition.instances + 8192;
             }
+
             osg::ref_ptr<osg::Group> p3ShadowRoot;
             const bool p3ShadowStaticBatching
                 = static_cast<bool>(Settings::cells().mOptimizedMWShadowStaticBatching)
@@ -1948,6 +1996,9 @@ namespace MWRender
         }
 
         SceneUtil::PagingWorkScope::checkpoint();
+        // Pending compile sets and losing candidates still own these arrays.
+        // Attach their retained host receipt before exposing the graph to ICO.
+        SceneUtil::AssetPaging::retainHostOwner(*group,assetPrivateBytes + assetDerivedHostBytes);
         osgUtil::IncrementalCompileOperation* const ico = mSceneManager->getIncrementalCompileOperation();
         if (!stateToCompile.empty() && ico && !ico->getContextSet().empty())
         {
@@ -1962,9 +2013,16 @@ namespace MWRender
                            : Resource::V321CompileUrgency::Background);
             compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
             if (!assetPartitions.empty())
+            {
+                assetReadiness->assetMask = assetOutcome.completed;
+                assetOutcome.readiness = assetReadiness;
                 compileSet->_compileCompletedCallback = new SceneUtil::GeneratedStaticLod::CompileCompleted(assetReadiness);
+            }
             ico->add(compileSet, false);
         }
+
+        else if (assetOutcome.completed) assetOutcome.defer(assetOutcome.completed);
+        assetOutcome.finish(requestedAssets);
 
         if (Debug::V3Diagnostics::renderWriter().enabled())
         {

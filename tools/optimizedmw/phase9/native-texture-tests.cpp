@@ -144,10 +144,12 @@ namespace
         MemoryFile file;
         MemoryFile second{dds(32,32)},unknown{dds(64,64)};
     };
+    std::mutex hostSampleMutex;
     N::OpenGlPressureSample sample;
-    N::OpenGlPressureSample readSample(void*) { return sample; }
+    N::OpenGlPressureSample readSample(void*) { std::lock_guard lock(hostSampleMutex);return sample; }
     void healthyHost(N::SpeculativeBudget& ledger)
     {
+        std::lock_guard lock(hostSampleMutex);
         ++sample.generation; sample.decision.state=N::OpenGlPressure::Normal;
         sample.growthWatermarkValid=true; sample.accountedGrowth=ledger.watermark()->load();
         sample.decision.admissionsPerSample=4;
@@ -230,6 +232,18 @@ namespace
         vertices->push_back({-1,-1,0});vertices->push_back({1,-1,0});vertices->push_back({0,1,0});
         result->setVertexArray(vertices);result->addPrimitiveSet(new osg::DrawArrays(GL_TRIANGLES,0,3));
         result->setUseDisplayList(false);return result;
+    }
+    void submitTerrain(Terrain::TerrainDrawable* draw,osg::RenderInfo& render)
+    {
+        auto& state=*render.getState();
+        // Direct GL fixture submissions explicitly declare their sampled color
+        // producer, just as ChunkManager's real pass does. Unused cached units
+        // never enter this fixture pass's sampler population.
+        const auto* texture=dynamic_cast<const osg::Texture*>(state.getLastAppliedTextureAttribute(0,osg::StateAttribute::TEXTURE));
+        require(texture,"direct terrain fixture lost explicit sampled color producer");
+        osg::ref_ptr<osg::StateSet> pass=new osg::StateSet;
+        pass->setTextureAttribute(0,const_cast<osg::Texture*>(texture));draw->setPasses({pass});
+        state.pushStateSet(pass);state.apply();state.setActiveTextureUnit(0);draw->drawPass(render,pass);state.popStateSet();state.setActiveTextureUnit(0);
     }
     struct RendererDrawReceipt final : osg::Drawable::DrawCallback
     {
@@ -421,8 +435,30 @@ int main(int argc,char** argv) try
             N::TextureRole::Diffuse,N::TexturePurpose::MainDraw);
         while(N::nativeTextureStats().skips[static_cast<unsigned>(N::NativeTextureSkip::SourceProvider)].load()==refused)
         { require(std::chrono::steady_clock::now()<deadline,"unknown/compressed provider admission was not refused");std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
-        require(!unknown->payload() && provider->unknown.opened==0,"unknown/compressed provider materialized before bounded admission");
+        require(!unknown->payload() && provider->unknown.opened==0
+            && unknown->outcome()==N::NativeTextureOutcome::TerminalDecline
+            && unknown->reason()==N::NativeTextureSkip::SourceProvider,"unknown/compressed provider did not publish terminal admission refusal");
+        const auto terminal=N::nativeTextureStats().terminalDeclines.load();
+        require(producer.request(VFS::Path::Normalized("textures/unknown-compressed.dds"),N::TextureRole::Diffuse,N::TexturePurpose::MainDraw)==unknown
+            && N::nativeTextureStats().terminalDeclines==terminal,"terminal cached ticket repeated producer work");
         producer.clear();require(!ticket->current() && !ticket->payload(),"invalidated epoch retained usable preparation proof");
+    }
+    {
+        // A real temporary host admission refusal remains a stable ticket and
+        // automatically retries on the bounded producer thread after cooldown.
+        N::NativeTexturePreparation producer(&vfs);
+        { std::lock_guard lock(hostSampleMutex);++sample.generation;sample.decision.admissionsPerSample=0; }
+        auto pending=producer.request(VFS::Path::Normalized("textures/native-fixture.dds"),N::TextureRole::Diffuse,N::TexturePurpose::MainDraw);
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(pending->outcome()!=N::NativeTextureOutcome::TransientDecline || pending->reason()!=N::NativeTextureSkip::HostAdmission)
+        { require(std::chrono::steady_clock::now()<deadline,"host refusal was not explicitly transient");std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
+        const auto retries=N::nativeTextureStats().retries.load();healthyHost(ledger);
+        while(!pending->payload())
+        { require(std::chrono::steady_clock::now()<deadline,"bounded producer did not retry transient host admission");std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
+        require(pending->outcome()==N::NativeTextureOutcome::Ready && N::nativeTextureStats().retries>retries,
+            "transient retry did not publish the same ticket's immutable completion");
+        pending->markOrdinary();require(!pending->payload() && pending->outcome()==N::NativeTextureOutcome::TerminalDecline,
+            "ordinary allocation retained an unused native payload/retry path");
     }
     {
         const auto directory=N::DerivedAssets::cache().config().directory/
@@ -480,23 +516,42 @@ int main(int argc,char** argv) try
     }
     require(coarse && T::counters().coarsePublished==1 && !texture->getTextureObject(state.getContextID()),"cold-ready production descriptor did not publish coarse allocation before first draw");
     require(T::counters().firstCoarseDraws==0,"apply/compile was incorrectly counted as real first draw");
-    verifyPixels(*payload,payload->coarseLevel());draw->drawImplementation(render);
+    verifyPixels(*payload,payload->coarseLevel());submitTerrain(draw,render);
     require(T::counters().firstCoarseDraws==1,"actual TerrainDrawable first coarse draw was not recorded");
     state.applyTextureAttribute(3,texture);
     require(binding()==coarse,"producer did not bind its initial coarse backing above unit zero");state.setActiveTextureUnit(0);
-    boundary(2,109);state.applyTextureAttribute(0,texture);draw->drawImplementation(render);
+    {
+        const auto before=T::counters().coarseDraws.load();
+        osg::ref_ptr<osg::StateSet> unused=new osg::StateSet;draw->setPasses({unused});
+        state.pushStateSet(unused);draw->drawPass(render,unused);state.popStateSet();
+        require(T::counters().coarseDraws==before,"cached but unsampled texture units manufactured draw engagement");
+        auto empty=triangle();empty->removePrimitiveSet(0,empty->getNumPrimitiveSets());
+        empty->addPrimitiveSet(new osg::DrawElementsUShort(GL_TRIANGLES));
+        osg::ref_ptr<osg::StateSet> sampled=new osg::StateSet;sampled->setTextureAttribute(0,texture);empty->setPasses({sampled});
+        state.pushStateSet(sampled);state.apply();empty->drawPass(render,sampled);state.popStateSet();state.setActiveTextureUnit(0);
+        require(T::counters().coarseDraws==before,"empty primitive set manufactured actual draw engagement");
+        struct SuppressedDraw final : osg::Drawable::DrawCallback
+        {
+            void drawImplementation(osg::RenderInfo&,const osg::Drawable*) const override {}
+        };
+        draw->setDrawCallback(new SuppressedDraw);
+        submitTerrain(draw,render);
+        draw->setDrawCallback(nullptr);
+        require(T::counters().coarseDraws==before,"suppressed original draw callback manufactured actual draw engagement");
+    }
+    boundary(2,109);state.applyTextureAttribute(0,texture);submitTerrain(draw,render);
     require(binding()==coarse,"quality hold allowed early promotion");
-    boundary(3,110.5);state.applyTextureAttribute(0,texture);draw->drawImplementation(render);
+    boundary(3,110.5);state.applyTextureAttribute(0,texture);submitTerrain(draw,render);
     require(binding()==coarse,"stale draw demand triggered speculative fine promotion");
-    boundary(4,111);state.applyTextureAttribute(0,texture);draw->drawImplementation(render);
+    boundary(4,111);state.applyTextureAttribute(0,texture);submitTerrain(draw,render);
     require(binding()==coarse,"incomplete fine allocation appeared in a draw");
     const auto allocations=T::counters().allocations.load(),bytesAfter=T::counters().uploadedBytes.load();
     T::frameBoundary(state);state.applyTextureAttribute(0,texture);
     require(T::counters().allocations==allocations && T::counters().uploadedBytes==bytesAfter && binding()==coarse,
         "second same-frame/refraction boundary changed frozen allocation epoch");
-    boundary(5,112);state.applyTextureAttribute(0,texture);draw->drawImplementation(render);
+    boundary(5,112);state.applyTextureAttribute(0,texture);submitTerrain(draw,render);
     require(binding()==coarse,"partially uploaded fine chain was published");
-    boundary(6,113);state.applyTextureAttribute(0,texture);const auto fine=binding();draw->drawImplementation(render);
+    boundary(6,113);state.applyTextureAttribute(0,texture);const auto fine=binding();submitTerrain(draw,render);
     require(fine && fine!=coarse && T::counters().finePublished==1 && T::counters().firstFineDraws==1,
         "complete fine promotion and actual fine draw did not engage");
     state.applyTextureAttribute(3,texture);
@@ -509,7 +564,9 @@ int main(int argc,char** argv) try
     require(demoted && demoted!=fine && T::counters().demotions==1,"cold fine texture did not physically demote to a separate small allocation");
     state.applyTextureAttribute(3,texture);
     require(binding()==demoted,"demotion left a cached full raw name on a nonzero texture unit");state.setActiveTextureUnit(0);
-    verifyPixels(*payload,payload->coarseLevel());glFinish();boundary(9,125);
+    verifyPixels(*payload,payload->coarseLevel());submitTerrain(draw,render);
+    require(T::counters().demotionEligible>0 && T::counters().demotionDraws>0,
+        "demotion had no qualified actual coarse reuse receipt");glFinish();boundary(9,125);
     require(!glIsTexture(fine) && T::counters().liveBytes==payload->suffixBytes(payload->coarseLevel()),
         "demotion did not delete full backing and release its exact allocation debt");
     auto compositePayload=prepare(dds(512,512),N::TextureRole::DiffuseSpecular,N::TexturePurpose::CompositeSource);
@@ -526,9 +583,9 @@ int main(int argc,char** argv) try
         require(!prefetchedA->getTextureObject(state.getContextID()) && !prefetchedB->getTextureObject(state.getContextID()),
             "multiple prefetched resources allocated hidden full objects in ICO");
         boundary(11,127);boundary(12,128);
-        state.applyTextureAttribute(0,prefetchedA);verifyPixels(*a,a->coarseLevel());draw->drawImplementation(render);
+        state.applyTextureAttribute(0,prefetchedA);verifyPixels(*a,a->coarseLevel());submitTerrain(draw,render);
         require(!prefetchedA->getTextureObject(state.getContextID()),"first prefetched descriptor failed production owner ingestion");
-        state.applyTextureAttribute(0,prefetchedB);verifyPixels(*b,b->coarseLevel());draw->drawImplementation(render);
+        state.applyTextureAttribute(0,prefetchedB);verifyPixels(*b,b->coarseLevel());submitTerrain(draw,render);
         require(!prefetchedB->getTextureObject(state.getContextID()),"second prefetched descriptor failed bounded next-boundary allocation");
         auto epoch=std::make_shared<N::NativeTextureEpoch>();
         auto notReady=std::make_shared<N::NativeTextureTicket>(epoch,1,1,"textures/not-ready.dds",
@@ -585,24 +642,35 @@ int main(int argc,char** argv) try
         auto ticket=readyTicket(data);
         osg::ref_ptr<T::Texture> superseded=new T::Texture(N::nativeTextureImage(data),ticket);
         superseded->compileGLObjects(state);boundary(20,140);state.applyTextureAttribute(0,superseded);
-        verifyPixels(*data,data->coarseLevel());draw->drawImplementation(render);
-        boundary(21,150.5);state.applyTextureAttribute(0,superseded);draw->drawImplementation(render);
-        const auto live=T::counters().liveBytes.load();boundary(22,151);
-        require(T::counters().liveBytes>=live+data->bytes.size(),"ordinary supersession fixture did not construct private fine backing");
+        verifyPixels(*data,data->coarseLevel());submitTerrain(draw,render);
+        boundary(21,150.5);state.applyTextureAttribute(0,superseded);submitTerrain(draw,render);
+        boundary(22,151);
+        const auto owned=T::testBackings(state,*superseded);
+        require(owned && owned->activeName && owned->buildingName && owned->buildingFirst==0
+            && owned->buildingBytes==data->bytes.size()
+            && owned->activeFirst==data->coarseLevel() && owned->activeBytes==data->suffixBytes(data->coarseLevel()),
+            "ordinary supersession fixture did not construct this producer's exact private fine backing");
         // A shared producer may already have taken ordinary fallback in another
         // context. The current context must retire its private candidate debt
         // and restore full quality rather than remaining coarse indefinitely.
         ticket->ordinaryAllocated=true;const auto retired=T::counters().retirements.load();
         boundary(23,152);state.applyTextureAttribute(0,superseded);
-        require(superseded->getTextureObject(state.getContextID()) && T::counters().retirements>=retired+2,
+        require(superseded->getTextureObject(state.getContextID()) && T::counters().retirements>=retired+2
+            && glIsTexture(owned->activeName) && glIsTexture(owned->buildingName),
             "ordinary fallback failed to retire both active coarse and private fine backing");
         glFinish();const auto deleted=T::counters().deletedBytes.load();
+        // Prove old lifetime deletion before any recovery allocation can reuse
+        // its numeric GL name. glIsTexture(name) after reuse proves neither
+        // survival nor deletion of the earlier allocation.
+        boundary(24,152.5);
+        require(!glIsTexture(owned->activeName) && !glIsTexture(owned->buildingName)
+            && T::counters().deletedBytes.load()>=deleted+owned->buildingBytes+owned->activeBytes,
+            "ordinary supersession skipped targeted active/private deletion debt");
         auto recovery=prepare(dds(512,512));recovery->path="textures/after-ordinary.dds";
         osg::ref_ptr<T::Texture> next=new T::Texture(N::nativeTextureImage(recovery),readyTicket(recovery));
-        next->compileGLObjects(state);boundary(24,153);state.applyTextureAttribute(0,next);
-        require(!next->getTextureObject(state.getContextID())
-            && T::counters().deletedBytes.load()>=deleted+data->bytes.size()+data->suffixBytes(data->coarseLevel()),
-            "ordinary supersession skipped deletion debt or left global construction permanently blocked");
+        next->compileGLObjects(state);boundary(25,153);state.applyTextureAttribute(0,next);
+        require(!next->getTextureObject(state.getContextID()),
+            "ordinary supersession left global construction permanently blocked");
         verifyPixels(*recovery,recovery->coarseLevel());
     }
     for(const auto format:{0x33545844u,0x35545844u})
@@ -644,15 +712,15 @@ int main(int argc,char** argv) try
         // Fill the actual four retirement slots while the test hook emulates
         // outstanding GPU fences. Binding correctness cannot depend on having
         // a spare debt slot, and fallback cannot discharge still-owned storage.
-        glFinish();boundary(25,154);glFinish();boundary(26,155);
+        glFinish();boundary(26,154);glFinish();boundary(27,155);
         const auto baseline=T::counters().liveBytes.load();
         auto data=prepare(dds(512,512));data->path="textures/saturated-retirement.dds";
         const auto coarseBytes=data->suffixBytes(data->coarseLevel());
         osg::ref_ptr<T::Texture> stale=new T::Texture(N::nativeTextureImage(data),readyTicket(data));
-        boundary(27,156);state.applyTextureAttribute(0,stale);const auto staleName=binding();
+        boundary(28,156);state.applyTextureAttribute(0,stale);const auto staleName=binding();
         auto ordinaryTicket=readyTicket(data);
         osg::ref_ptr<T::Texture> ordinaryOwner=new T::Texture(N::nativeTextureImage(data),ordinaryTicket);
-        boundary(28,157);state.applyTextureAttribute(0,ordinaryOwner);const auto ordinaryName=binding();
+        boundary(29,157);state.applyTextureAttribute(0,ordinaryOwner);const auto ordinaryName=binding();
         require(staleName && ordinaryName && staleName!=ordinaryName && !stale->getTextureObject(state.getContextID())
             && !ordinaryOwner->getTextureObject(state.getContextID()),"saturated-debt fixture failed initial raw owners");
         T::holdTestRetirements(true);
@@ -662,10 +730,10 @@ int main(int argc,char** argv) try
         for(unsigned i=0;i<fillers.size();++i)
         {
             fillers[i]=new T::Texture(N::nativeTextureImage(data),readyTicket(data));
-            boundary(29+i*2,158+i*2);state.applyTextureAttribute(0,fillers[i]);names[i]=binding();
+            boundary(30+i*2,158+i*2);state.applyTextureAttribute(0,fillers[i]);names[i]=binding();
             require(names[i] && !fillers[i]->getTextureObject(state.getContextID()),"retirement filler did not receive raw backing");
             fillers[i]->setImage(N::nativeTextureImage(data));
-            boundary(30+i*2,159+i*2);state.applyTextureAttribute(0,fillers[i]);
+            boundary(31+i*2,159+i*2);state.applyTextureAttribute(0,fillers[i]);
             require(fillers[i]->getTextureObject(state.getContextID()) && glIsTexture(names[i]),
                 "stale retirement filler lost ordinary fallback or prematurely released pending debt");
         }
@@ -673,22 +741,61 @@ int main(int argc,char** argv) try
             "saturated fixture did not retain all four debt slots and two active backing charges");
         auto replacement=prepare(dds(32,32));stale->setImage(N::nativeTextureImage(replacement));
         ordinaryTicket->ordinaryAllocated=true;
-        const auto before=T::counters().retirements.load(),live=T::counters().liveBytes.load();boundary(37,166);
+        const auto before=T::counters().retirements.load(),live=T::counters().liveBytes.load();boundary(38,166);
         state.applyTextureAttribute(0,stale);
         require(stale->getTextureObject(state.getContextID()) && binding()!=staleName,"stale descriptor bound obsolete raw backing with saturated retirement debt");
-        verifyPixels(*replacement,0);const auto coarseDraws=T::counters().coarseDraws.load();draw->drawImplementation(render);
+        verifyPixels(*replacement,0);const auto coarseDraws=T::counters().coarseDraws.load();submitTerrain(draw,render);
         require(T::counters().coarseDraws==coarseDraws,"ordinary stale fallback forged a native draw receipt while old debt remained");
         state.applyTextureAttribute(0,ordinaryOwner);
         require(ordinaryOwner->getTextureObject(state.getContextID()) && binding()!=ordinaryName,
             "ordinary-authoritative descriptor rebound obsolete raw backing with saturated retirement debt");
-        verifyPixels(*data,0);draw->drawImplementation(render);
+        verifyPixels(*data,0);submitTerrain(draw,render);
         require(T::counters().coarseDraws==coarseDraws && T::counters().retirements==before
             && T::counters().liveBytes==live && glIsTexture(staleName) && glIsTexture(ordinaryName),
             "saturated fallback dropped unsafe storage debt or counted an obsolete native draw");
-        T::holdTestRetirements(false);glFinish();boundary(38,167);glFinish();boundary(39,168);
+        T::holdTestRetirements(false);glFinish();boundary(39,167);glFinish();boundary(40,168);
         for(const auto name:names) require(!glIsTexture(name),"saturated pending slot did not eventually delete its exact GL object");
         require(!glIsTexture(staleName) && !glIsTexture(ordinaryName) && T::counters().liveBytes==baseline,
             "saturated stale/ordinary owners did not repay debt after safe targeted retirement");
+    }
+    {
+        // In-place layout changes can evade OSG Image's modified count. They
+        // must invalidate native binding even when the image pointer is stable.
+        auto data=prepare(dds(32,32));
+        for(unsigned change=0;change<2;++change)
+        {
+            auto image=N::nativeTextureImage(data);auto ticket=readyTicket(data);
+            osg::ref_ptr<T::Texture> layout=new T::Texture(image,ticket);
+            boundary(41+change*3,170+change*3);state.applyTextureAttribute(0,layout);
+            require(!layout->getTextureObject(state.getContextID()),"layout negative fixture never allocated its actual candidate backing");
+            const auto name=binding();const auto draws=T::counters().fineDraws.load();
+            if(change==0) image->setPacking(8);else image->setRowLength(64);
+            boundary(42+change*3,171+change*3);state.applyTextureAttribute(0,layout);
+            require(layout->getTextureObject(state.getContextID()) && binding()!=name,
+                "same-image packing/rowLength change rebound obsolete native data");
+            submitTerrain(draw,render);require(T::counters().fineDraws==draws,"layout fallback forged candidate consumption");
+            glFinish();boundary(43+change*3,172+change*3);require(!glIsTexture(name),"layout invalidation did not eventually delete exact old backing");
+        }
+        auto ticket=readyTicket(data);osg::ref_ptr<T::Texture> original=new T::Texture(N::nativeTextureImage(data),ticket);
+        boundary(47,176);state.applyTextureAttribute(0,original);const auto name=binding();
+        osg::ref_ptr<T::Texture> clone=new T::Texture(*original);clone->releaseGLObjects(&state);
+        boundary(48,177);state.applyTextureAttribute(0,original);
+        require(binding()==name && !original->getTextureObject(state.getContextID()) && !ticket->ordinaryAllocated,
+            "released clone killed independent original descriptor/backing");
+    }
+    {
+        auto data=prepare(dds(32,32));auto ticket=readyTicket(data);
+        osg::ref_ptr<T::Texture> aliased=new T::Texture(N::nativeTextureImage(data),ticket);
+        boundary(49,178);state.applyTextureAttribute(0,aliased);const auto old=binding();
+        require(!aliased->getTextureObject(state.getContextID()) && T::expireTestEntryOwner(state,*aliased),
+            "expired-owner ABA fixture did not own an actual raw candidate allocation");
+        const auto draws=T::counters().fineDraws.load(),live=T::counters().liveBytes.load();
+        state.haveAppliedTextureAttribute(0,osg::StateAttribute::TEXTURE);state.applyTextureAttribute(0,aliased);
+        require(aliased->getTextureObject(state.getContextID()) && binding()!=old && glIsTexture(old)
+            && T::counters().liveBytes==live,"new raw descriptor key borrowed obsolete backing or dropped old GPU debt");
+        submitTerrain(draw,render);require(T::counters().fineDraws==draws,"expired owner forged actual candidate consumption");
+        glFinish();boundary(50,179);glFinish();boundary(51,180);
+        require(!glIsTexture(old),"expired old descriptor owner failed targeted eventual deletion");
     }
     T::releaseContext(state);
     require(T::counters().liveBytes==0 && N::AssetGpuBudget::liveBytes==0 && !glIsTexture(demoted),"context owner teardown retained candidate allocation debt");

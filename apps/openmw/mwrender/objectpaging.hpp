@@ -4,6 +4,7 @@
 #include <components/esm3/refnum.hpp>
 #include <components/resource/resourcemanager.hpp>
 #include <components/terrain/quadtreeworld.hpp>
+#include <components/sceneutil/assetpaging.hpp>
 
 #include <osg/ref_ptr>
 #include <osg/observer_ptr>
@@ -13,6 +14,9 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <vector>
+#include <utility>
+#include <functional>
 
 namespace Resource
 {
@@ -66,6 +70,23 @@ namespace MWRender
 
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
         void setAssetMainCamera(osg::Camera* camera) { mAssetMainCamera = camera; }
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+        // Isolated fixture substitutes only parsed static reference population.
+        // Compile every TU that sees this class with the same target-wide macro;
+        // never link this definition to the normal openmw-lib definition.
+        struct FixtureReference
+        {
+            osg::ref_ptr<const osg::Node> original;
+            VFS::Path::Normalized model;
+            int type = 0;
+            osg::Vec3f position{};
+            float scale = 1.f;
+            bool occluderOwner = false;
+        };
+        void setFixturePopulation(std::vector<FixtureReference> population) { mFixturePopulation = std::move(population); }
+        void setFixtureBeforeCache(std::function<void()> checkpoint) { mFixtureBeforeCache = std::move(checkpoint); }
+        void setFixtureBeforePublish(std::function<void()> checkpoint) { mFixtureBeforePublish = std::move(checkpoint); }
+#endif
 
         void getPagedRefnums(const osg::Vec4i& activeGrid, std::vector<ESM::RefNum>& out);
 
@@ -110,6 +131,7 @@ namespace MWRender
             unsigned char mSpatialMode = 0;
             unsigned char mP3OptionalMask = 0;
             std::uint64_t mAssetVfsGeneration = 0;
+            SceneUtil::AssetPaging::Quality mAssets;
         };
         mutable std::mutex mV313ChunkQualityMutex;
         std::map<ChunkId, V313ChunkQuality> mV313ChunkQualities;
@@ -120,6 +142,13 @@ namespace MWRender
         std::atomic_uint64_t mV313UpgradeCoalesced{ 0 };
 
         unsigned char p3OptionalDistantMask() const;
+        osg::ref_ptr<osg::Node> createChunkImpl(float size, const osg::Vec2f& center, bool activeGrid,
+            const osg::Vec3f& viewPoint, bool compile, unsigned char lod, SceneUtil::AssetPaging::Outcome& outcome);
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+        std::vector<FixtureReference> mFixturePopulation;
+        std::function<void()> mFixtureBeforeCache;
+        std::function<void()> mFixtureBeforePublish;
+#endif
 
         std::mutex mRefTrackerMutex;
         struct RefTracker

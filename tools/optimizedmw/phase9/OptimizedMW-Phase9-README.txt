@@ -1,4 +1,4 @@
-OPTIMIZEDMW NUMBERED TEST LAUNCHER (2026-10-03)
+OPTIMIZEDMW NUMBERED TEST LAUNCHER (2026-10-04)
 
 Use C:\OptimizedMW_Test\START-OptimizedMW-Test.bat. All menu selections use numbers:
 choose a category, choose an optimization, then choose the run type.
@@ -21,6 +21,14 @@ Categories (these are navigation numbers, not engine bit masks):
 See ASSET-PIPELINE-CANDIDATES.txt for the new candidates and recommended
 control/candidate sequence. Exact shader readiness remains unavailable
 until its prior driver crash is resolved. Other renderer switches stay independent.
+
+Asset repair qualification: run one short Normal smoke before a larger
+comparison matrix. ASSET-ENGAGEMENT.txt and .json are included in the
+verified benchmark ZIP. They require actual derived draws or published
+texture consumption, identify refusal stages and distinguish missing proof
+from no eligible work. Prepared/built counts alone cannot pass. A crash
+cannot qualify the candidate. This check does not accept visual quality,
+stability over a full route, or an FPS gain; those remain separate tests.
 
 See ARCHITECTURE-CANDIDATES.md for exact scopes, bounds and recommended pairs.
 Every RAM and renderer candidate starts off in the retained control. Category

@@ -10,6 +10,7 @@
 #include <string_view>
 
 #include <components/sceneutil/pagingwork.hpp>
+#include <components/sceneutil/assetpaging.hpp>
 #include <components/sceneutil/terraintargetreadiness.hpp>
 
 #include <osg/Stats>
@@ -614,10 +615,7 @@ namespace MWWorld
                             // Bound the weak->strong overlap. Nested resource
                             // stages inherit NearFuture priority; the private
                             // weak view is released after cache replacement.
-                            Resource::SpeculativeScope::Stage upgradeStage(
-                                128 * Resource::SpeculativeBudget::MiB, 0);
-                            SceneUtil::PagingWorkScope scope(
-                                &mAbort, SceneUtil::PagingWorkScope::Phase::OptionalOptimization);
+                            SceneUtil::AssetPaging::OptionalUpgradeScope scope(&mAbort);
                             mOptionalUpgradeRequests.store(mWorld->preloadStrongUpgrade(mTerrainViews.front().get(),
                                 mPreloadPositions.front().mPosition, mPreloadPositions.front().mCellBounds,
                                 mAbort, optimizationReporter), std::memory_order_release);
@@ -932,8 +930,7 @@ namespace MWWorld
                     Resource::SpeculativePriority::NearFuture);
                 try
                 {
-                    Resource::SpeculativeScope::Stage stage(128 * Resource::SpeculativeBudget::MiB, 0);
-                    SceneUtil::PagingWorkScope scope(&mAbort, SceneUtil::PagingWorkScope::Phase::OptionalOptimization);
+                    SceneUtil::AssetPaging::OptionalUpgradeScope scope(&mAbort);
                     for (std::size_t index : mTargetReadiness->completed())
                     {
                         if (mAbort.load(std::memory_order_relaxed)) break;

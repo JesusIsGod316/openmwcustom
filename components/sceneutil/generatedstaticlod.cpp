@@ -1,4 +1,5 @@
 #include "generatedstaticlod.hpp"
+#include "assetpaging.hpp"
 
 #include <components/resource/derivedassetcache.hpp>
 #include <components/resource/speculativebudget.hpp>
@@ -96,6 +97,7 @@ namespace SceneUtil::GeneratedStaticLod
         struct Size
         {
             std::size_t nodes = 0, geometries = 0, vertices = 0, indices = 0, bytes = 0;
+            std::uint64_t scratch = 0, serialized = 0, cacheOverlap = 0, graphBytes = 0;
         };
         bool emptyLoaderMarker(const osg::Node& node, Size& size, unsigned depth)
         {
@@ -128,6 +130,10 @@ namespace SceneUtil::GeneratedStaticLod
             // it; a hidden mesh, controller or custom node is never admitted.
             if (!node.getNodeMask()) return emptyLoaderMarker(node,size,depth) ? Refusal::None : Refusal::Graph;
             if (++size.nodes > 1024 || depth > 32) return Refusal::Capacity;
+            size.graphBytes += 1024 + node.getName().size() * 2ull;
+            for (const auto& description : node.getDescriptions()) size.graphBytes += 32 + description.size() * 2ull;
+            if (const auto* children = node.asGroup()) size.graphBytes += children->getNumChildren() * 16ull;
+            if (size.graphBytes > MaximumCookBytes) return Refusal::Capacity;
             std::string custom;
             if (node.getDataVariance() == osg::Object::DYNAMIC || node.getUpdateCallback() || node.getEventCallback()
                 || node.getCullCallback() || node.getComputeBoundingSphereCallback()
@@ -138,6 +144,8 @@ namespace SceneUtil::GeneratedStaticLod
                 if (typeid(*geometry) != typeid(osg::Geometry) || geometry->getDrawCallback()
                     || geometry->getComputeBoundingBoxCallback()) return Refusal::Graph;
                 if (auto refusal = layout(*geometry); refusal != Refusal::None) return refusal;
+                const auto* positions = static_cast<const osg::Vec3Array*>(geometry->getVertexArray());
+                const auto* primitive = geometry->getPrimitiveSet(0);
                 ++size.geometries;
                 size.vertices += geometry->getVertexArray()->getNumElements();
                 size.indices += geometry->getPrimitiveSet(0)->getNumIndices();
@@ -146,6 +154,27 @@ namespace SceneUtil::GeneratedStaticLod
                     if (a) size.bytes += a->getTotalDataSize();
                 for (unsigned i = 0; i < geometry->getNumTexCoordArrays(); ++i)
                     if (const auto* a = geometry->getTexCoordArray(i)) size.bytes += a->getTotalDataSize();
+                std::uint64_t serialized = positions->getTotalDataSize() + primitive->getNumIndices() * 4ull;
+                unsigned components = 0;
+                const auto attribute = [&](const osg::Array* a) {
+                    if (!a) return;
+                    serialized += 8 + a->getTotalDataSize();
+                    if (a->getBinding() == osg::Array::BIND_PER_VERTEX) components += a->getDataSize();
+                };
+                attribute(geometry->getNormalArray()); attribute(geometry->getColorArray());
+                for (unsigned i = 0; i < geometry->getNumTexCoordArrays(); ++i) attribute(geometry->getTexCoordArray(i));
+                // This includes the pinned simplifier's adjacency/collapse,
+                // packed float attributes and per-attribute quadrics. Keep the
+                // existing 64-MiB per-leaf admission; retained earlier output is
+                // separately counted in the total cloned primitive allowance.
+                const auto scratch = positions->size() * (256ull + components * 24ull)
+                    + primitive->getNumIndices() * 64ull + serialized;
+                if (components <= 32 && scratch <= 64 * Resource::SpeculativeBudget::MiB)
+                {
+                    size.scratch = std::max<std::uint64_t>(size.scratch, scratch);
+                    size.cacheOverlap = std::max<std::uint64_t>(size.cacheOverlap, primitive->getNumIndices() * 12ull + 32);
+                }
+                size.serialized = std::max(size.serialized, serialized);
                 return size.geometries > 64 || size.vertices > MaximumVertices || size.indices > MaximumIndices
                     || size.bytes > MaximumCookBytes ? Refusal::Capacity : Refusal::None;
             }
@@ -193,6 +222,17 @@ namespace SceneUtil::GeneratedStaticLod
                 before += indices.size();
                 geometry.setDrawCallback(new DrawReceipt(indices.size()));
                 Resource::DerivedAssets::Bytes source;
+                // Exact reserve avoids an unaccounted geometric-growth copy of
+                // the hash input while the simplifier/cache allocation is live.
+                std::size_t sourceBytes = positions->getTotalDataSize() + indices.size() * sizeof(unsigned);
+                const auto serializedAttribute = [&](const osg::Array* a) {
+                    if (a) sourceBytes += 8 + a->getTotalDataSize();
+                };
+                serializedAttribute(geometry.getNormalArray()); serializedAttribute(geometry.getColorArray());
+                for (unsigned i = 0; i < geometry.getNumTexCoordArrays(); ++i)
+                    serializedAttribute(geometry.getTexCoordArray(i));
+                if (sourceBytes > MaximumCookBytes) throw std::bad_alloc{};
+                source.reserve(sourceBytes);
                 append(source, positions->getDataPointer(), positions->getTotalDataSize());
                 append(source, indices.data(), indices.size() * sizeof(unsigned));
                 std::vector<const osg::Array*> attributes;
@@ -211,8 +251,8 @@ namespace SceneUtil::GeneratedStaticLod
                 if (components > 32) { after += indices.size(); return; }
                 // Bound the pinned simplifier's adjacency/collapse tables,
                 // float attributes and per-attribute quadric gradients before
-                // allocating them. The 96-MiB stage also covers cloned primitive
-                // storage and earlier immutable tier outputs in this partition.
+                // allocating them. The graph-derived reservation also covers
+                // cloned primitives and earlier immutable tier outputs.
                 const std::uint64_t scratch = positions->size() * (256ull + components * 24ull)
                     + indices.size() * 64ull + source.size();
                 if (scratch > 64 * Resource::SpeculativeBudget::MiB)
@@ -272,6 +312,7 @@ namespace SceneUtil::GeneratedStaticLod
                     Resource::DerivedAssets::cache().write(key, payload);
                 }
                 auto draw = osg::ref_ptr<osg::DrawElementsUInt>(new osg::DrawElementsUInt(GL_TRIANGLES));
+                draw->reserve(reduced.size());
                 draw->assign(reduced.begin(), reduced.end());
                 draw->setElementBufferObject(new osg::ElementBufferObject);
                 geometry.setPrimitiveSet(0, draw);
@@ -308,6 +349,20 @@ namespace SceneUtil::GeneratedStaticLod
     }
     std::size_t sourceBytes(const osg::Node& original)
     { Size size; return inspectNode(original, size, 0) == Refusal::None ? size.bytes : 0; }
+    std::uint64_t cookPeakBytes(const osg::Node& original)
+    {
+        Size size;
+        if (inspectNode(original, size, 0) != Refusal::None || !size.geometries) return 0;
+        // Arrays and StateSets remain shared with the immutable control. Deep
+        // primitive clones and every earlier tier index array can coexist;
+        // account two full uint32 index populations. The per-node allowance
+        // covers graph vectors/OSG objects and the small lineage/draw receipts.
+        // Source serialization, cache checksum/write payloads and metadata
+        // remain charged alongside the largest sequential leaf operation.
+        return Resource::DerivedAssets::MetadataScratchBytes + size.graphBytes
+            + size.geometries * 8192ull + size.indices * 8ull
+            + size.scratch + size.serialized + size.cacheOverlap;
+    }
     unsigned conflictingMaterialOwners(std::span<const MaterialOwner> materials, bool known)
     {
         if (!known || materials.size() > 256) return ~0u;
@@ -360,6 +415,11 @@ namespace SceneUtil::GeneratedStaticLod
                 if (!ready) break;
             }
         mReadiness->ready.store(ready, std::memory_order_release);
+        if (ready)
+        {
+            mReadiness->everReady.store(true, std::memory_order_release);
+            AssetPaging::each(mReadiness->assetMask, [](AssetPaging::LaneCounters& value) { ++value.ready; });
+        }
         return false;
     }
     Group::Group(const Group& copy, const osg::CopyOp& op)
@@ -477,8 +537,14 @@ namespace SceneUtil::GeneratedStaticLod
         if (auto r = inspect(original); r != Refusal::None) { result.refusal = r; return result; }
         try
         {
-            Resource::SpeculativeScope::Stage reservation(96 * Resource::SpeculativeBudget::MiB
-                + Resource::DerivedAssets::MetadataScratchBytes, 0);
+            const auto graphPeak = cookPeakBytes(original);
+            const auto peak = graphPeak + identity.size() * 2ull;
+            if (!graphPeak || peak > 96 * Resource::SpeculativeBudget::MiB || identity.size() > 256 * 1024)
+            { result.refusal = Refusal::Capacity; ++Counters::refused[static_cast<unsigned>(result.refusal)]; return result; }
+            // The preloader holds128MiB and private source admission32MiB.
+            // Actual small/static graphs now fit without raising the256MiB cap;
+            // large graphs whose complete overlap cannot fit retain control.
+            Resource::SpeculativeScope::Stage reservation(peak, 0);
             osg::ref_ptr<osg::Node> derived = osg::clone(&original,
                 osg::CopyOp::DEEP_COPY_NODES | osg::CopyOp::DEEP_COPY_DRAWABLES | osg::CopyOp::DEEP_COPY_PRIMITIVES);
             Cook cook(identity); derived->accept(cook);
@@ -489,7 +555,8 @@ namespace SceneUtil::GeneratedStaticLod
             {
                 result.gpuReservation = Resource::AssetGpuBudget::reserve(cook.after * sizeof(unsigned));
                 if (!result.gpuReservation)
-                { result.refusal = Refusal::Capacity; ++Counters::refused[static_cast<unsigned>(result.refusal)]; return result; }
+                { result.refusal = Refusal::Capacity; result.retryable = true;
+                  ++Counters::refused[static_cast<unsigned>(result.refusal)]; return result; }
             }
             struct Originals final : osg::NodeVisitor
             {
@@ -511,6 +578,8 @@ namespace SceneUtil::GeneratedStaticLod
             ++Counters::built; Counters::originalIndices.fetch_add(cook.before); Counters::derivedIndices.fetch_add(cook.after);
         }
         catch (const PagingWorkCancelled&) { throw; }
+        catch (const Resource::SpeculativeDeferred&)
+        { result.refusal = Refusal::Capacity; result.retryable = true; ++Counters::refused[static_cast<unsigned>(result.refusal)]; }
         catch (...) { result.refusal = Refusal::Capacity; ++Counters::refused[static_cast<unsigned>(result.refusal)]; }
         return result;
     }

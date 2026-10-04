@@ -1,4 +1,5 @@
 #include "occlusionculling.hpp"
+#include <osg/Geometry>
 
 #include "objects.hpp"
 

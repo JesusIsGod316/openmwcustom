@@ -67,10 +67,16 @@ namespace Terrain
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(key);
 
         if (obj != nullptr)
+        {
+            // Retry only producer-owned transient refusals. Cached wrappers
+            // retain the same ticket and owner publication observes readiness.
+            if(mNativePreparation) mNativePreparation->prepare(name,role,purpose);
             return static_cast<osg::Texture2D*>(obj.get());
+        }
 
-        const bool supported=mNativePreparation && SceneUtil::glExtensionsReady()
-            && SceneUtil::getGLExtensions().isTextureCompressionS3TCSupported;
+        // Capabilities are qualified by the actual GL owner. Early terrain
+        // preparation commonly precedes global extension initialization.
+        const bool supported=bool(mNativePreparation);
         const auto selected=mNativePreparation ? mNativePreparation->select(name,role,purpose,supported)
             : NativeTextureProducer::Selection{};
         osg::ref_ptr<osg::Image> image=selected.image;
@@ -122,7 +128,10 @@ namespace Terrain
              {"cache_hits",v.cacheHits.load()},{"cache_misses",v.cacheMisses.load()},
              {"cache_writes",v.cacheWrites.load()},{"fallback",v.fallback.load()},{"retained_bytes",v.retainedBytes.load()}});
         Debug::RuntimeDiagnostics::recordEvent("native_texture_use","terrain",{},
-            {{"native_images",v.nativeImages.load()},{"full_applies",v.fullApplies.load()}});
+            {{"native_images",v.nativeImages.load()},{"full_applies",v.fullApplies.load()},
+             {"handoffs",v.handoffs.load()},{"retries",v.retries.load()},
+             {"terminal_declines",v.terminalDeclines.load()},{"transient_declines",v.transientDeclines.load()},
+             {"consumed_main_draws",v.consumedMainDraws.load()},{"consumed_composite_draws",v.consumedCompositeDraws.load()}});
         for(unsigned i=1;i<static_cast<unsigned>(Resource::NativeTextureSkip::Count);++i)
             Debug::RuntimeDiagnostics::recordEvent("native_texture_skip","terrain",
                 Resource::nativeTextureSkipName(static_cast<Resource::NativeTextureSkip>(i)),{{"count",v.skips[i].load()}});

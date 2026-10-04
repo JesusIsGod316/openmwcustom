@@ -17,8 +17,15 @@ for Deep. Windows recording is optional after choosing Deep.
 streaming also disables demotion. Category 8 can mix these with existing
 RAM, renderer, animation and terrain mechanisms.
 
-Start with a Normal control and one candidate using the same save, view,
-route and frame cap. A -> B -> B -> A is the first comparison. A fresh
+First run one short Normal smoke for the selected mechanism and quit
+normally. ASSET-ENGAGEMENT.txt in its benchmark ZIP must report actual
+consumption before running a comparison matrix. Prepared/built-only,
+missing proof and a crash cannot pass. No eligible work means the route
+did not test that feature; it is not proof of an engine defect or a win.
+Native composite-only use is identified separately from main terrain use.
+The Normal receipt freezes draw threads but does not freeze optional workers.
+Once actual use is verified, use the same save, view, route and frame cap.
+A -> B -> B -> A is the first comparison. A fresh
 process does not establish a cold OS or driver cache. Use the resulting
 ZIPs to verify execution counters and comparable gameplay intervals.
 Measure one mechanism before combined candidates. Deep runs diagnose
@@ -82,8 +89,16 @@ most 32 MiB per owner boundary; two upload packets each <=512 KiB. Aggregate
 new GPU debt <=256 MiB and admission requires a fresh comfortable adapter
 sample with 512 MiB reserve. OSG-pooled private geometry/atlas allocation
 debt remains conservatively held until its context closes.
-Early pressure/capacity denial leaves a paging chunk ordinary until its
-normal expiration or rebuild; this package introduces no repeated cook loop.
+Geometry scratch is conservatively estimated from the actual private graph,
+including simultaneous clone, simplifier and cache ownership. Transient
+denial has at most three attempts per lane/generation with a five-second
+cooldown; terminal refusal and exhaustion retain the ordinary chunk.
+Native tickets preserve Pending, Ready, transient and terminal outcomes
+through terrain cache realization. Producer-triggered retries are bounded
+to three attempts with a 100-ms cooldown. An ordinary allocated backing is
+a permanent cutoff; a late worker cannot replace or retain its unused payload.
+T1 full-quality handoff and T2 streaming use one context owner before all
+sub-cameras, within the same original upload and debt bounds.
 
 Temporal progress: index-only LOD pairs carry an immutable vertex lineage.
 The motion overlay can use the prior transform across tier changes only

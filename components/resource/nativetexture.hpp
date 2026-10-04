@@ -22,10 +22,11 @@ namespace Resource
 {
     enum class TextureRole : std::uint8_t { Diffuse, DiffuseSpecular, Normal, NormalHeight };
     enum class TexturePurpose : std::uint8_t { MainDraw, CompositeSource };
+    enum class NativeTextureOutcome : std::uint8_t { Pending, Ready, TerminalDecline, TransientDecline };
     enum class NativeTextureSkip : std::uint8_t
     {
         None, Disabled, Queue, HostAdmission, SourceSize, SourceRead, Stale, Format,
-        IncompleteMips, Dimensions, Role, Backend, Encode, RetainedLimit, Cache, SourceProvider, Purpose, Count
+        IncompleteMips, Dimensions, Role, Backend, Encode, RetainedLimit, Cache, SourceProvider, Purpose, OrdinaryAllocation, Count
     };
     struct NativeMip
     {
@@ -50,6 +51,9 @@ namespace Resource
     {
         std::atomic_uint64_t requested{0}, eligible{0}, reusedDds{0}, converted{0}, ready{0},
             cacheHits{0}, cacheMisses{0}, cacheWrites{0}, nativeImages{0}, fullApplies{0}, fallback{0}, retainedBytes{0};
+        std::atomic_uint64_t handoffs{0}, retries{0}, terminalDeclines{0}, transientDeclines{0},
+            consumedMainDraws{0}, consumedCompositeDraws{0}, fullPublished{0},
+            fullAllocations{0}, fullUploadBytes{0}, fullDeletions{0}, fullLiveBytes{0}, fullPeakBytes{0};
         std::array<std::atomic_uint64_t, static_cast<std::size_t>(NativeTextureSkip::Count)> skips{};
     };
     NativeTextureStats& nativeTextureStats();
@@ -72,6 +76,12 @@ namespace Resource
         std::shared_ptr<const NativeMipPayload> payload() const;
         void publish(std::shared_ptr<const NativeMipPayload>);
         void decline(NativeTextureSkip);
+        void markOrdinary();
+        NativeTextureOutcome outcome() const noexcept;
+        NativeTextureSkip reason() const noexcept { return mReason.load(); }
+        // Called only by the bounded producer directory; no draw thread waits
+        // for work, and an ordinary allocated backing can never be retried.
+        bool beginAttempt();
         const std::string path;
         const TextureRole role;
         const TexturePurpose purpose;
@@ -84,6 +94,10 @@ namespace Resource
         const std::uint64_t mExpectedEpoch;
         mutable std::mutex mMutex;
         std::shared_ptr<const NativeMipPayload> mPayload;
+        std::atomic<NativeTextureOutcome> mOutcome{NativeTextureOutcome::TransientDecline};
+        std::atomic<NativeTextureSkip> mReason{NativeTextureSkip::None};
+        unsigned mAttempts=0;
+        std::uint64_t mRetryAt=0;
     };
 
     // One bounded producer thread. Requests are shared by immutable role and

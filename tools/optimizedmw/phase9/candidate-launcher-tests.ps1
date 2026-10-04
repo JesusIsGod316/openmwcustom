@@ -154,7 +154,7 @@ try{
     $fixtureLock=[Threading.Mutex]::new($false,'Local\OptimizedMW-Candidate-Fixture-Serial')
     try{$ownsFixtureLock=$fixtureLock.WaitOne(30000)}catch [Threading.AbandonedMutexException]{$ownsFixtureLock=$true}
     if(-not $ownsFixtureLock){throw 'Timed out waiting for independent launcher fixture host'}
-    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_QuickTest.ps1','OptimizedMW_AttackPresets.ps1','OptimizedMW_NumericMenu.ps1','OptimizedMW_ContextReport.ps1','OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW_SystemTraceLink.ps1')){
+    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_QuickTest.ps1','OptimizedMW_AttackPresets.ps1','OptimizedMW_NumericMenu.ps1','OptimizedMW_ContextReport.ps1','OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_AssetEngagement.ps1','verify-asset-engagement.py','OptimizedMW_HitchReport.ps1','OptimizedMW_SystemTraceLink.ps1')){
         Copy-Item -LiteralPath (Join-Path $root $file) -Destination (Join-Path $game $file) -Force
     }
     [IO.File]::WriteAllText((Join-Path $game 'OptimizedMW_Benchmark_Report.ps1'),'# Empty hermetic report fixture; no game, WPR, or UI.')

@@ -122,6 +122,15 @@ add_test(NAME p9-composite-cpu-mips COMMAND p9-composite-cpu-mips)
 add_test(NAME p9-composite-cpu-mips-gl COMMAND p9-composite-cpu-mips --gl ${ROOT}/files/shaders/compatibility)
 set_tests_properties(p9-composite-cpu-mips p9-composite-cpu-mips-gl PROPERTIES TIMEOUT 90)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME p9-asset-engagement COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/asset-engagement-tests.py)
+set_tests_properties(p9-asset-engagement PROPERTIES TIMEOUT 45)
+if(WIN32)
+  add_test(NAME p9-asset-engagement-wrapper COMMAND ${P9_MENU_POWERSHELL}
+    -NoProfile -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/asset-engagement-wrapper-tests.ps1)
+  set_tests_properties(p9-asset-engagement-wrapper PROPERTIES TIMEOUT 45
+    ENVIRONMENT "PSModulePath=$ENV{SystemRoot}/System32/WindowsPowerShell/v1.0/Modules")
+endif()
 add_executable(p9-animation-preparation animation-preparation-tests.cpp
   ${ROOT}/components/vfs/manager.cpp ${ROOT}/components/files/conversion.cpp
   ${ROOT}/components/misc/hostmemory.cpp)

@@ -7,6 +7,7 @@
 #include <components/vfs/manager.hpp>
 #include <algorithm>
 #include <cstring>
+#include <chrono>
 #include <limits>
 #include <optional>
 #ifdef OPENMW_HAVE_DIRECTXTEX
@@ -20,6 +21,12 @@ namespace Resource
         constexpr std::uint64_t MiB = 1024ull * 1024;
         constexpr std::uint64_t SourceLimit = 64 * MiB, RetainedLimit = 64 * MiB;
         NativeTextureStats sStats;
+        unsigned producerPriority(const NativeTextureTicket& ticket)
+        {
+            if(ticket.purpose==TexturePurpose::MainDraw
+                && (ticket.role==TextureRole::Diffuse || ticket.role==TextureRole::DiffuseSpecular)) return 0;
+            return ticket.purpose==TexturePurpose::CompositeSource ? 1 : 2;
+        }
         struct Retained
         {
             std::uint64_t bytes;
@@ -175,7 +182,7 @@ namespace Resource
     {
         static constexpr const char* names[] = {"none","disabled","queue","host_admission","source_size",
             "source_read","stale","format","incomplete_mips","dimensions","role","backend","encode",
-            "retained_limit","cache","source_provider","purpose"};
+            "retained_limit","cache","source_provider","purpose","ordinary_allocation"};
         const auto index=static_cast<unsigned>(reason);
         return index<std::size(names) ? names[index] : "unknown";
     }
@@ -202,6 +209,7 @@ namespace Resource
         const auto digest=DerivedAssets::digest(source);
         if (u32(source,0)==0x20534444u)
         {
+            if(!path.ends_with(".dds")) { skip=NativeTextureSkip::Format;return {}; }
             auto result=parseDds(source,path,role,purpose,skip);
             if (!result) return {};
             result->sourceDigest=digest;
@@ -289,11 +297,42 @@ namespace Resource
     void NativeTextureTicket::publish(std::shared_ptr<const NativeMipPayload> value)
     {
         std::lock_guard lock(mMutex);
-        if(current()) { mPayload=std::move(value); ++sStats.ready; }
-        else ++sStats.skips[static_cast<unsigned>(NativeTextureSkip::Stale)];
+        if(current() && !ordinaryAllocated.load())
+        { mPayload=std::move(value);mReason=NativeTextureSkip::None; mOutcome=NativeTextureOutcome::Ready; ++sStats.ready; }
+        else if(!current()) ++sStats.skips[static_cast<unsigned>(NativeTextureSkip::Stale)];
     }
     void NativeTextureTicket::decline(NativeTextureSkip reason)
-    { ++sStats.skips[static_cast<unsigned>(reason)]; }
+    {
+        std::lock_guard lock(mMutex);
+        ++sStats.skips[static_cast<unsigned>(reason)];mReason=reason;
+        const bool temporary=reason==NativeTextureSkip::Queue || reason==NativeTextureSkip::HostAdmission
+            || reason==NativeTextureSkip::RetainedLimit;
+        const bool retry=temporary && mAttempts<3 && current() && !ordinaryAllocated.load();
+        mOutcome=retry ? NativeTextureOutcome::TransientDecline : NativeTextureOutcome::TerminalDecline;
+        mRetryAt=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count())+100;
+        if(retry) ++sStats.transientDeclines;else ++sStats.terminalDeclines;
+    }
+    void NativeTextureTicket::markOrdinary()
+    {
+        if(ordinaryAllocated.exchange(true)) return;
+        std::lock_guard lock(mMutex);
+        mPayload.reset();mReason=NativeTextureSkip::OrdinaryAllocation;
+        mOutcome=NativeTextureOutcome::TerminalDecline;
+        ++sStats.terminalDeclines;++sStats.skips[static_cast<unsigned>(NativeTextureSkip::OrdinaryAllocation)];
+    }
+    NativeTextureOutcome NativeTextureTicket::outcome() const noexcept
+    { return current() ? mOutcome.load(std::memory_order_acquire) : NativeTextureOutcome::TerminalDecline; }
+    bool NativeTextureTicket::beginAttempt()
+    {
+        std::lock_guard lock(mMutex);
+        const auto now=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+        if(!current() || ordinaryAllocated.load() || mOutcome!=NativeTextureOutcome::TransientDecline
+            || now<mRetryAt || mAttempts>=3) return false;
+        if(mAttempts++) ++sStats.retries;
+        mOutcome=NativeTextureOutcome::Pending;return true;
+    }
     NativeTexturePreparation::NativeTexturePreparation(const VFS::Manager* vfs) : mVfs(vfs),mWorker([this]{run();}) {}
     NativeTexturePreparation::~NativeTexturePreparation()
     {
@@ -310,28 +349,63 @@ namespace Resource
         ++sStats.requested;
         std::lock_guard lock(mMutex);
         const auto key=nativeTextureKey(path.value(),role,purpose);
+        std::shared_ptr<NativeTextureTicket> ticket;
         if(auto found=mTickets.find(key); found!=mTickets.end())
-            if(auto ticket=found->second; ticket && ticket->current()
-                && ticket->vfsGeneration==mVfs->getIndexGeneration()) return ticket;
-        // Keep the most recent completed prefetched descriptors available to
-        // realization. Older descriptors with no texture/queue/worker owner
-        // can release their immutable payload and its retained charge.
-        if(mTickets.size()>64)
-            for(auto it=mTickets.begin();it!=mTickets.end();)
-                if(it->second.use_count()==1) it=mTickets.erase(it); else ++it;
-        if(mStopping || mQueue.size()>=4 || mTickets.size()>=4096)
-        { ++sStats.skips[static_cast<unsigned>(NativeTextureSkip::Queue)]; return {}; }
-        auto ticket=std::make_shared<NativeTextureTicket>(mEpoch,mEpoch->value.load(),mVfs->getIndexGeneration(),
-            std::string(path.value()),role,purpose);
-        mTickets[key]=ticket; mQueue.push_back(ticket); mCondition.notify_one(); return ticket;
+            if(found->second->current() && found->second->vfsGeneration==mVfs->getIndexGeneration()) ticket=found->second;
+        if(!ticket)
+        {
+            // A queue refusal must still leave a stable producer/cache handle.
+            // Strong pending handles also keep their immutable completion alive.
+            if(mTickets.size()>64)
+                for(auto it=mTickets.begin();it!=mTickets.end();)
+                    if(it->second.use_count()==1 && it->second->outcome()!=NativeTextureOutcome::Pending)
+                        it=mTickets.erase(it); else ++it;
+            if(mStopping || mTickets.size()>=4096)
+            { ++sStats.skips[static_cast<unsigned>(NativeTextureSkip::Queue)];return {}; }
+            ticket=std::make_shared<NativeTextureTicket>(mEpoch,mEpoch->value.load(),mVfs->getIndexGeneration(),
+                std::string(path.value()),role,purpose);
+            mTickets[key]=ticket;
+            const bool dds=path.value().ends_with(".dds");
+            if(!dds && purpose!=TexturePurpose::MainDraw) ticket->decline(NativeTextureSkip::Purpose);
+            else if(!dds && role!=TextureRole::Diffuse) ticket->decline(NativeTextureSkip::Role);
+            else if(!dds && !AssetPolicy::enabled(AssetPolicy::TexturePreparation)) ticket->decline(NativeTextureSkip::Disabled);
+            else if(!dds && !path.value().ends_with(".tga") && !path.value().ends_with(".targa"))
+                ticket->decline(NativeTextureSkip::Format);
+            else if(AssetPolicy::enabled(AssetPolicy::TextureStreaming) && !AssetPolicy::enabled(AssetPolicy::TexturePreparation)
+                && (purpose!=TexturePurpose::MainDraw || (role!=TextureRole::Diffuse && role!=TextureRole::DiffuseSpecular)))
+                ticket->decline(purpose!=TexturePurpose::MainDraw ? NativeTextureSkip::Purpose : NativeTextureSkip::Role);
+        }
+        if(mQueue.size()<4 && ticket->beginAttempt())
+        {
+            const auto priority=producerPriority(*ticket);
+            const auto position=std::find_if(mQueue.begin(),mQueue.end(),[priority](const auto& other)
+                { return producerPriority(*other)>priority; });
+            mQueue.insert(position,ticket);mCondition.notify_one();
+        }
+        else if(mQueue.size()>=4 && ticket->outcome()==NativeTextureOutcome::TransientDecline
+            && ticket->reason()==NativeTextureSkip::None) ticket->decline(NativeTextureSkip::Queue);
+        return ticket;
     }
     void NativeTexturePreparation::run()
     {
         for(;;)
         {
             std::shared_ptr<NativeTextureTicket> ticket;
-            { std::unique_lock lock(mMutex); mCondition.wait(lock,[this]{return mStopping || !mQueue.empty();});
-              if(mStopping) return; ticket=std::move(mQueue.front()); mQueue.pop_front(); }
+            {
+                std::unique_lock lock(mMutex);
+                mCondition.wait_for(lock,std::chrono::milliseconds(100),[this]{return mStopping || !mQueue.empty();});
+                if(mStopping) return;
+                // Transient tickets retain a bounded completion route even if
+                // the chunk/texture caches stop calling the producer. One job
+                // is admitted per wake; no GL/source work occurs under this lock.
+                if(mQueue.empty())
+                    for(unsigned priority=0;priority<3 && mQueue.empty();++priority)
+                        for(const auto& [key,candidate]:mTickets)
+                            if(producerPriority(*candidate)==priority && candidate->beginAttempt())
+                            { mQueue.push_back(candidate);break; }
+                if(mQueue.empty()) continue;
+                ticket=std::move(mQueue.front());mQueue.pop_front();
+            }
             Debug::HitchTrace::Scope work("resource.native_texture_prepare",{},ticket->path);
             try
             {

@@ -40,11 +40,18 @@ namespace Terrain
         {
             osg::ref_ptr<osg::Texture2D> texture;
             const auto& ticket=selected.ticket;
-            if(ticket && selected.supported && ticket->purpose==Resource::TexturePurpose::MainDraw
+            const bool stream=ticket && ticket->purpose==Resource::TexturePurpose::MainDraw
                 && (ticket->role==Resource::TextureRole::Diffuse || ticket->role==Resource::TextureRole::DiffuseSpecular)
-                && Resource::AssetPolicy::enabled(Resource::AssetPolicy::TextureStreaming))
-                texture=new Resource::TextureStreaming::Texture(image,ticket);
-            else if(selected.payload && selected.supported) texture=new FullNativeTexture(image);
+                && Resource::AssetPolicy::enabled(Resource::AssetPolicy::TextureStreaming);
+            const bool sourceLane=ticket && (ticket->path.ends_with(".dds")
+                || (ticket->purpose==Resource::TexturePurpose::MainDraw && ticket->role==Resource::TextureRole::Diffuse
+                    && (ticket->path.ends_with(".tga") || ticket->path.ends_with(".targa"))));
+            const bool full=sourceLane && Resource::AssetPolicy::enabled(Resource::AssetPolicy::TexturePreparation);
+            // A pending wrapper keeps the exact worker completion handle in the
+            // cached producer. Workers never replace this image or StateSet.
+            if(ticket && sourceLane && selected.supported && (stream || full)
+                && ticket->outcome()!=Resource::NativeTextureOutcome::TerminalDecline)
+                texture=new Resource::TextureStreaming::Texture(image,ticket,stream,bool(selected.image));
             else texture=canonical ? new Resource::PreparedTerrainTexture(image) : new osg::Texture2D(image);
             if(selected.payload && selected.supported)
             {
@@ -59,37 +66,6 @@ namespace Terrain
             return texture;
         }
     private:
-        class FullNativeTexture final : public Resource::PreparedTerrainTexture
-        {
-        public:
-            FullNativeTexture()=default;
-            explicit FullNativeTexture(osg::Image* image):PreparedTerrainTexture(image) {}
-            FullNativeTexture(const FullNativeTexture& other,const osg::CopyOp& copy=osg::CopyOp::SHALLOW_COPY)
-                : PreparedTerrainTexture(other,copy) {}
-            META_StateAttribute(Terrain,FullNativeTexture,TEXTURE)
-            void apply(osg::State& state) const override
-            {
-                Resource::PreparedTerrainTexture::apply(state);
-                const auto context=state.getContextID();
-                auto* object=getTextureObject(context);
-                if(context<mApplied.size() && object && object->isAllocated() && !mApplied[context])
-                {
-                    mApplied[context]=1;++Resource::nativeTextureStats().fullApplies;
-                    Debug::RuntimeDiagnostics::recordEvent("native_texture_full_apply","terrain",getImage()->getFileName(),
-                        {{"context",context},{"name",object->id()},{"bytes",getImage()->getTotalSizeInBytesIncludingMipmaps()}});
-                }
-            }
-            void resizeGLObjectBuffers(unsigned size) override
-            { Resource::PreparedTerrainTexture::resizeGLObjectBuffers(size);mApplied.resize(size); }
-            void releaseGLObjects(osg::State* state=nullptr) const override
-            {
-                if(state && state->getContextID()<mApplied.size()) mApplied[state->getContextID()]=0;
-                else mApplied.setAllElementsTo(0);
-                Resource::PreparedTerrainTexture::releaseGLObjects(state);
-            }
-        private:
-            mutable osg::buffered_value<unsigned char> mApplied;
-        };
         Resource::NativeTexturePreparation mPreparation;
     };
 }

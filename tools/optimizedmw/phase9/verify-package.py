@@ -12,6 +12,7 @@ files=['openmw.exe','CI-ID.txt','START-OptimizedMW-Test.bat','OptimizedMW_Test.p
        'OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1','OptimizedMW_QuickTest.ps1','OptimizedMW_QuickRecorder.ps1',
        'OptimizedMW_AttackPresets.ps1','OptimizedMW_NumericMenu.ps1',
        'OptimizedMW_ContextReport.ps1',
+       'OptimizedMW_AssetEngagement.ps1','verify-asset-engagement.py',
        'OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW_SpikeReport.ps1','OptimizedMW-Phase9-README.txt',
        'OptimizedMW_SystemTrace.ps1','OptimizedMW_QualifySystemTrace.ps1','OptimizedMW_SystemTraceLink.ps1','OptimizedMW-SystemTrace.wprp','START-OptimizedMW-SystemTrace.bat','HITCH-DIAGNOSTICS.md','HITCH-DIAGNOSTICS6.md','LUA-ALLOCATOR-GC-DIAGNOSTICS.md','RESOURCE-LIFECYCLE-DIAGNOSTICS.md','COMPOSITE-PROGRESS-CANDIDATE.md']
 for name in files:

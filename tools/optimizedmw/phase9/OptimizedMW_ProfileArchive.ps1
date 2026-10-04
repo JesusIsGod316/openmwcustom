@@ -165,6 +165,18 @@ function Complete-Phase9Profile {
         "Offline report failed: $_" | Set-Content -LiteralPath (Join-Path $ProfileDir 'REPORT-ERROR.txt') -Encoding UTF8
         Write-Host 'Report unavailable; the raw benchmark evidence is already zipped.' -ForegroundColor Yellow
     }
+    # Raw evidence is secured first. Feature qualification is independent of
+    # frame statistics and is included in the final verified archive.
+    try{
+        $engagementScript=Join-Path $GameDir 'OptimizedMW_AssetEngagement.ps1'
+        if(-not [IO.File]::Exists($engagementScript)){throw 'Asset engagement checker is missing'}
+        . $engagementScript
+        $null=Test-Phase9AssetEngagement -ProfileDir $ProfileDir
+    }catch{
+        "Asset engagement check unavailable: $_" |
+            Set-Content -LiteralPath (Join-Path $ProfileDir 'ASSET-ENGAGEMENT-ERROR.txt') -Encoding UTF8
+        Write-Host 'Feature use is unverified; keep this ZIP for diagnosis before more candidate tests.' -ForegroundColor Yellow
+    }
     try{
         $zip=New-VerifiedProfileZip -SourceDir $ProfileDir -DestinationPath $zip.Path -ReplaceExisting
     }catch{

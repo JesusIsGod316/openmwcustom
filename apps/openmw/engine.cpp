@@ -59,6 +59,7 @@
 #include <components/resource/texturestreaming.hpp>
 #include <components/sceneutil/textureownerboundary.hpp>
 #include <components/sceneutil/generatedstaticlod.hpp>
+#include <components/sceneutil/assetpaging.hpp>
 #include <components/sceneutil/selectivehlod.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/stats.hpp>
@@ -1785,7 +1786,8 @@ void OMW::Engine::createWindow()
         Log(Debug::Info) << "Phase 9 draw/state trace scene views installed=" + std::to_string(installed)
             + "; installed before realize; runtime leaf coverage must also be checked";
     }
-    if(Resource::AssetPolicy::enabled(Resource::AssetPolicy::TextureStreaming) && !Stereo::getStereo())
+    if(Resource::AssetPolicy::enabled(Resource::AssetPolicy::TexturePreparation
+        | Resource::AssetPolicy::TextureStreaming) && !Stereo::getStereo())
     {
         const unsigned installed=SceneUtil::TextureOwnerBoundary::installBeforeRealize(*mViewer);
         Log(Debug::Info) << "Native texture owner root stages installed=" << installed;
@@ -2566,7 +2568,83 @@ void OMW::Engine::go()
 
     if(Resource::AssetPolicy::mask())
     {
+        // Freeze consumers before the final draw proof. Optional preparation
+        // workers remain live until teardown, so readiness is a loop-end
+        // observation and must not be treated as a complete worker ledger.
+        mViewer->stopThreading();
         const auto& textures=Resource::nativeTextureStats();
+        Log(Debug::Info) << "OptimizedMW asset QC v1: final=1 draw_stopped=1 worker_frozen=0 mask="
+            +std::to_string(Resource::AssetPolicy::mask())
+            +" paging_attempted_mask="+std::to_string(SceneUtil::AssetPaging::Counters::attemptedMask.load())
+            +" paging_completed_mask="+std::to_string(SceneUtil::AssetPaging::Counters::completedMask.load())
+            +" paging_terminal_mask="+std::to_string(SceneUtil::AssetPaging::Counters::terminalMask.load())
+            +" paging_transient_mask="+std::to_string(SceneUtil::AssetPaging::Counters::transientMask.load())
+            +" paging_retry_attempts="+std::to_string(SceneUtil::AssetPaging::Counters::retryAttempts.load())
+            +" paging_retry_deferred="+std::to_string(SceneUtil::AssetPaging::Counters::retryDeferred.load())
+            +" paging_retry_exhausted="+std::to_string(SceneUtil::AssetPaging::Counters::retryExhausted.load());
+        Log(Debug::Info) << "OptimizedMW asset QC L1: requested="
+            +std::to_string(SceneUtil::AssetPaging::Counters::lod.sourceRequested.load())
+            +" eligible="+std::to_string(SceneUtil::AssetPaging::Counters::lod.sourceCertified.load())
+            +" candidate_admitted="+std::to_string(SceneUtil::AssetPaging::Counters::lod.candidateAdmitted.load())
+            +" build_attempts="+std::to_string(SceneUtil::AssetPaging::Counters::lod.buildAttempts.load())
+            +" compile_ready="+std::to_string(SceneUtil::AssetPaging::Counters::lod.ready.load())
+            +" built="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::built.load())
+            +" original_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::originalIndices.load())
+            +" derived_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::derivedIndices.load())
+            +" consumed_draws="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::derivedDraws.load())
+            +" consumed_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::submittedIndices.load());
+        std::string lodRefusals;
+        const char* lodReasons[]={"none","graph","material","transform","layout","capacity","no_reduction"};
+        for(unsigned i=0;i<static_cast<unsigned>(SceneUtil::GeneratedStaticLod::Refusal::Count);++i)
+            lodRefusals+=" "+std::string(lodReasons[i])+"="
+                +std::to_string(SceneUtil::GeneratedStaticLod::Counters::refused[i].load());
+        const auto pagingRefusals=[](const SceneUtil::AssetPaging::LaneCounters& lane){
+            std::string result=" source_rejected="+std::to_string(lane.sourceRejected.load())
+                +" outer_cpu_denied="+std::to_string(lane.outerCpuDenied.load())
+                +" snapshot_denied="+std::to_string(lane.snapshotDenied.load())
+                +" private_cpu_denied="+std::to_string(lane.privateCpuDenied.load())
+                +" private_gpu_denied="+std::to_string(lane.privateGpuDenied.load())
+                +" material_conflict_instances="+std::to_string(lane.materialConflictInstances.load())
+                +" build_refused="+std::to_string(lane.buildRefused.load());
+            const char* reasons[]={"graph","material","transform","layout","capacity","no_reduction","source","occluder","population"};
+            for(unsigned i=0;i<static_cast<unsigned>(SceneUtil::AssetPaging::Gate::Count);++i)
+                result+=" paging_"+std::string(reasons[i])+"="+std::to_string(lane.refusals[i].load());
+            return result;
+        };
+        lodRefusals+=pagingRefusals(SceneUtil::AssetPaging::Counters::lod);
+        Log(Debug::Info) << "OptimizedMW asset QC L1 refusals:"+lodRefusals;
+        Log(Debug::Info) << "OptimizedMW asset QC H1: requested="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.sourceRequested.load())
+            +" eligible="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.sourceCertified.load())
+            +" candidate_admitted="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.candidateAdmitted.load())
+            +" build_attempts="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.buildAttempts.load())
+            +" compile_ready="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.ready.load())
+            +" built="+std::to_string(SceneUtil::HlodCounters::built.load())
+            +" control_submissions="+std::to_string(SceneUtil::HlodCounters::controlSubmissions.load())
+            +" proxy_submissions="+std::to_string(SceneUtil::HlodCounters::proxySubmissions.load())
+            +" consumed_draws="+std::to_string(SceneUtil::HlodCounters::consumedDraws.load())
+            +" consumed_indices="+std::to_string(SceneUtil::HlodCounters::consumedIndices.load());
+        Log(Debug::Info) << "OptimizedMW asset QC H1 refusals: cook_refused="
+            +std::to_string(SceneUtil::HlodCounters::refused.load())
+            +pagingRefusals(SceneUtil::AssetPaging::Counters::hlod);
+        Log(Debug::Info) << "OptimizedMW asset QC T1: requested="+std::to_string(textures.requested.load())
+            +" eligible="+std::to_string(textures.eligible.load())+" ready="+std::to_string(textures.ready.load())
+            +" native_images="+std::to_string(textures.nativeImages.load())
+            +" consumed_main_draws="+std::to_string(textures.consumedMainDraws.load())
+            +" consumed_composite_draws="+std::to_string(textures.consumedCompositeDraws.load())
+            +" full_applies="+std::to_string(textures.fullApplies.load())+" handoffs="+std::to_string(textures.handoffs.load())
+            +" retries="+std::to_string(textures.retries.load())+" terminal_declines="+std::to_string(textures.terminalDeclines.load())
+            +" transient_declines="+std::to_string(textures.transientDeclines.load())
+            +" full_published="+std::to_string(textures.fullPublished.load())
+            +" full_allocations="+std::to_string(textures.fullAllocations.load())
+            +" full_upload_bytes="+std::to_string(textures.fullUploadBytes.load())
+            +" full_deletions="+std::to_string(textures.fullDeletions.load())
+            +" full_live_bytes="+std::to_string(textures.fullLiveBytes.load())
+            +" full_peak_bytes="+std::to_string(textures.fullPeakBytes.load());
+        std::string textureRefusals;
+        for(unsigned i=0;i<static_cast<unsigned>(Resource::NativeTextureSkip::Count);++i)
+            textureRefusals+=" "+std::string(Resource::nativeTextureSkipName(static_cast<Resource::NativeTextureSkip>(i)))
+                +"="+std::to_string(textures.skips[i].load());
+        Log(Debug::Info) << "OptimizedMW asset QC T1 refusals:"+textureRefusals;
         Log(Debug::Info) << "OptimizedMW asset pipeline: mask="+std::to_string(Resource::AssetPolicy::mask())
             +" native_ready="+std::to_string(textures.ready.load())
             +" native_dds="+std::to_string(textures.reusedDds.load())
@@ -2591,6 +2669,20 @@ void OMW::Engine::go()
             +" consumed_draws="+std::to_string(SceneUtil::HlodCounters::consumedDraws.load())
             +" consumed_indices="+std::to_string(SceneUtil::HlodCounters::consumedIndices.load());
         const auto& stream=Resource::TextureStreaming::counters();
+        Log(Debug::Info) << "OptimizedMW asset QC T2: requested="+std::to_string(stream.requested.load())
+            +" eligible="+std::to_string(stream.eligible.load())+" boundaries="+std::to_string(stream.boundaries.load())
+            +" allocations="+std::to_string(stream.allocations.load())+" uploads="+std::to_string(stream.uploads.load())
+            +" upload_bytes="+std::to_string(stream.uploadedBytes.load())
+            +" coarse_published="+std::to_string(stream.coarsePublished.load())+" fine_published="+std::to_string(stream.finePublished.load())
+            +" coarse_draws="+std::to_string(stream.coarseDraws.load())+" fine_draws="+std::to_string(stream.fineDraws.load())
+            +" demotions="+std::to_string(stream.demotions.load())+" demotion_eligible="+std::to_string(stream.demotionEligible.load())
+            +" demotion_draws="+std::to_string(stream.demotionDraws.load())+" deletions="+std::to_string(stream.deletions.load())
+            +" live_bytes="+std::to_string(stream.liveBytes.load())+" peak_bytes="+std::to_string(stream.peakBytes.load());
+        std::string streamRefusals;
+        for(unsigned i=0;i<static_cast<unsigned>(Resource::TextureStreaming::Skip::Count);++i)
+            streamRefusals+=" "+std::string(Resource::TextureStreaming::skipName(static_cast<Resource::TextureStreaming::Skip>(i)))
+                +"="+std::to_string(stream.skips[i].load());
+        Log(Debug::Info) << "OptimizedMW asset QC T2 refusals:"+streamRefusals;
         Log(Debug::Info) << "OptimizedMW texture streaming: coarse_draws="+std::to_string(stream.coarseDraws.load())
             +" fine_draws="+std::to_string(stream.fineDraws.load())+" demotions="+std::to_string(stream.demotions.load())
             +" deleted_bytes="+std::to_string(stream.deletedBytes.load())+" live_bytes="+std::to_string(stream.liveBytes.load());

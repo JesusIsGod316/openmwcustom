@@ -2,22 +2,23 @@
 #define OPENMW_RESOURCE_TEXTURESTREAMING_H
 
 #include "nativetexture.hpp"
+#include "preparedterraintexture.hpp"
 #include <osg/Texture2D>
 #include <atomic>
 #include <memory>
 
-namespace osg { class State; }
+namespace osg { class State; class StateSet; }
 namespace Resource::TextureStreaming
 {
     enum class Skip : unsigned
     {
         Disabled, Purpose, Role, NotReady, OrdinaryAllocation, Context, Capability,
-        Admission, AllocationLimit, RetirementDebt, Hold, GlFailure, Stale, TextureUnit, Count
+        Admission, AllocationLimit, RetirementDebt, Hold, GlFailure, Stale, TextureUnit, TerminalPreparation, Count
     };
     struct Counters
     {
         std::atomic_uint64_t requested{0}, eligible{0}, boundaries{0}, allocations{0}, allocationBytes{0},
-            uploads{0}, uploadedBytes{0}, coarsePublished{0}, finePublished{0}, demotions{0},
+            uploads{0}, uploadedBytes{0}, coarsePublished{0}, finePublished{0}, demotions{0}, demotionEligible{0}, demotionDraws{0},
             coarseDraws{0}, fineDraws{0}, firstCoarseDraws{0}, firstFineDraws{0},
             retirements{0}, deletions{0}, deletedBytes{0}, liveBytes{0}, peakBytes{0}, contextDiscards{0};
         std::atomic_uint64_t compileDeferred{0},compileFallbacks{0},coldVisibleFallbacks{0};
@@ -42,11 +43,11 @@ namespace Resource::TextureStreaming
 
     // Only the terrain producer creates this type. Semantic source images stay
     // full quality; the raw GPU objects and completion proofs are context local.
-    class Texture final : public osg::Texture2D
+    class Texture final : public PreparedTerrainTexture
     {
     public:
         Texture();
-        Texture(osg::Image*,std::shared_ptr<NativeTextureTicket>);
+        Texture(osg::Image*,std::shared_ptr<NativeTextureTicket>,bool streaming=true,bool nativeImageReady=false);
         Texture(const Texture&,const osg::CopyOp& = osg::CopyOp::SHALLOW_COPY);
         ~Texture() override;
         META_StateAttribute(Resource,Texture,TEXTURE)
@@ -67,12 +68,19 @@ namespace Resource::TextureStreaming
     void releaseContext(osg::State&);
     // TerrainDrawable calls after Geometry submitted its primitives; apply or
     // compilation alone cannot claim actual first draw use.
-    void recordDrawUse(osg::State&);
+    void recordDrawUse(osg::State&,const osg::StateSet* qualifiedPass);
     void reportDiagnostics();
 #ifdef OPENMW_NATIVE_TEXTURE_TEST_HOOKS
     void setTestTime(double);
     void failNextUpload();
     void holdTestRetirements(bool);
+    bool expireTestEntryOwner(osg::State&,const Texture&);
+    struct TestBackings
+    {
+        unsigned activeName=0,buildingName=0,activeFirst=0,buildingFirst=0;
+        std::uint64_t activeBytes=0,buildingBytes=0;
+    };
+    std::optional<TestBackings> testBackings(osg::State&,const Texture&);
 #endif
 }
 #endif

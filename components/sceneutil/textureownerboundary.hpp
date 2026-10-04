@@ -31,7 +31,8 @@ namespace SceneUtil::TextureOwnerBoundary
     };
     inline unsigned installBeforeRealize(osgViewer::Viewer& viewer)
     {
-        if(!Resource::AssetPolicy::enabled(Resource::AssetPolicy::TextureStreaming)) return 0;
+        if(!Resource::AssetPolicy::enabled(Resource::AssetPolicy::TexturePreparation
+            | Resource::AssetPolicy::TextureStreaming)) return 0;
         if(viewer.isRealized() || viewer.areThreadsRunning() || std::strcmp(osgGetVersion(),"3.6.5")!=0)
             throw std::runtime_error("native texture owner boundary requires fresh OSG 3.6.5 mono scene views");
         auto* camera=viewer.getCamera();

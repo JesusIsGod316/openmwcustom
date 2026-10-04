@@ -2,6 +2,9 @@
 #define OPENMW_COMPONENTS_TERRAIN_DRAWABLE_H
 
 #include <osg/Geometry>
+#include <osg/observer_ptr>
+
+#include <mutex>
 
 namespace osg
 {
@@ -56,6 +59,9 @@ namespace Terrain
 
         void compileGLObjects(osg::RenderInfo& renderInfo) const override;
         void drawImplementation(osg::RenderInfo& renderInfo) const override;
+        // A rendered leaf carries its exact sampled pass; OSG does not push
+        // that leaf StateSet onto State's stack before drawing.
+        void drawPass(osg::RenderInfo& renderInfo, const osg::StateSet* pass) const;
         // Used by the optional phased ICO path after pass StateAttributes have
         // been compiled as independent operations.
         void compileGeometryGLObjects(osg::RenderInfo& renderInfo) const;
@@ -70,6 +76,10 @@ namespace Terrain
     private:
         osg::BoundingBox mWaterBoundingBox;
         PassVector mPasses;
+        // RenderLeaf owns each adapter, and each adapter retains this original.
+        // Weak caching avoids a cycle and still permits concurrent scene culls.
+        mutable std::mutex mPassDrawableMutex;
+        mutable std::vector<osg::observer_ptr<osg::Geometry>> mPassDrawables;
 
         osg::ref_ptr<osg::ClusterCullingCallback> mClusterCullingCallback;
 

@@ -29,6 +29,9 @@ namespace SceneUtil::GeneratedStaticLod
     // Run on the original SceneManager template, before paging CopyOp erases provenance.
     Refusal certify(const osg::Node& original);
     std::size_t sourceBytes(const osg::Node& original);
+    // Conservative immutable clone, peak leaf simplifier/cache overlap and
+    // metadata estimate; zero means the original graph/layout is unqualified.
+    std::uint64_t cookPeakBytes(const osg::Node& original);
     bool positiveUniformTransform(const osg::Matrixd& matrix);
     bool isDelegatingDrawCallback(const osg::Drawable::DrawCallback* callback);
     struct MaterialOwner { const osg::StateSet* state = nullptr; unsigned owners = 0; };
@@ -36,7 +39,11 @@ namespace SceneUtil::GeneratedStaticLod
     // Unknown ownership refuses all partitions. Content-equivalent states must
     // retain their whole-chunk strong merge opportunity.
     unsigned conflictingMaterialOwners(std::span<const MaterialOwner> materials, bool known = true);
-    struct Readiness { std::atomic_bool ready{false}; };
+    struct Readiness
+    {
+        std::atomic_bool ready{false}, everReady{false};
+        unsigned assetMask = 0;
+    };
     class CompileCompleted final : public osgUtil::IncrementalCompileOperation::CompileCompletedCallback
     {
     public:
@@ -63,6 +70,8 @@ namespace SceneUtil::GeneratedStaticLod
         const osg::Node* derived() const { return getNumChildren() > 1 ? getChild(1) : nullptr; }
         bool wantsDerived(osgUtil::CullVisitor& visitor);
         float error() const noexcept { return mError; }
+        bool compilationReady() const noexcept
+        { return mReadiness && mReadiness->ready.load(std::memory_order_acquire); }
     private:
         float mError = 0.f;
         std::shared_ptr<Readiness> mReadiness;
@@ -78,6 +87,7 @@ namespace SceneUtil::GeneratedStaticLod
         std::shared_ptr<Readiness> readiness;
         std::size_t originalIndices = 0, derivedIndices = 0;
         Refusal refusal = Refusal::None;
+        bool retryable = false;
         std::shared_ptr<Resource::AssetGpuBudget::Reservation> gpuReservation;
     };
     // Worker-only; caller supplies a certified, private, optimized partition.
