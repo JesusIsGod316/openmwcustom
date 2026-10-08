@@ -132,3 +132,39 @@ The prior exact-shader-readiness experiment remains unavailable because its
 driver crash is unresolved. New combined presets do not re-enable it.
 No package, fixture or runtime counter is a claim of higher FPS, fewer
 hitches or accepted visual quality; those need controlled user captures.
+
+Engagement repair (October 2026)
+The L1 preparation path now resolves effective materials at actual geometry
+leaves, including inherited state and OSG override/protected precedence.
+Candidate-only material families can reunite across spatial buckets within
+the same original merge destination. Ordinary material owners still force
+the existing whole-chunk fallback. The control optimizer and H1 spatial
+policy are preserved. Release proof requires a mixed, multi-bucket scene,
+real derived draws/index reduction, and no added control submissions.
+
+Approved shader regeneration acquires a new exact source/program proof.
+Old candidate snapshots stay invalid. Identical global define maps avoid
+source regeneration and relinking. Paging quality includes shader generation
+so a stale cached candidate can be recooked in the new source cohort.
+
+Private graph admission reserves the estimated bytes of each copy before
+allocation instead of reserving the whole 32 MiB private ceiling up front.
+Outer 128 MiB, private 32 MiB and aggregate 256 MiB limits remain unchanged.
+Deferred optional terrain preparation can revisit completed weak views with
+a five-second cooldown and three attempts per identical target/source cohort.
+Demand readiness is already complete and never waits for those retries.
+Pending compilation, cooldown and coalesced observations preserve the retry
+signal without inventing another build attempt. Exhaustion stops scheduling;
+it does not prove an already queued compile will never finish.
+
+Normal receipts distinguish material ownership subtypes and exact overlapping
+CPU admission predicates. They do not sum source, chunk, instance and partition
+counts into one population, or equate released future debt with freed OS RAM.
+
+The separate opaque temporal domain uses exact stock/PBR source provenance
+and rejects shader cutouts, transparency and unproved effects. It retains
+canonical vertex identity through index-only LOD changes and checks current
+draw coverage before motion submission. Standalone dynamic-motion runs request
+source provenance without enabling LOD/HLOD. Full dense motion, cutout/wind/
+first-person coverage, asynchronous image ownership and a real DLSS consumer
+remain separate milestones. The runtime gate and camera jitter remain off.

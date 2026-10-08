@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_SHADERMANAGER_H
 
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -63,6 +64,9 @@ namespace Shader
 
         /// Get (a copy of) the DefineMap used to construct all shaders
         DefineMap getGlobalDefines();
+        // Generation identity for bounded preparation/retry bookkeeping only;
+        // it does not authorize any shader or candidate representation.
+        std::uint64_t assetGeneration() const noexcept;
 
         /// Set the DefineMap used to construct all shaders
         /// @param defines The DefineMap to use
@@ -100,6 +104,7 @@ namespace Shader
         void getLinkedShaders(osg::ref_ptr<osg::Shader> shader, const std::vector<std::string>& linkedShaderNames,
             const DefineMap& defines);
         void addLinkedShaders(osg::ref_ptr<osg::Shader> shader, osg::ref_ptr<osg::Program> program);
+        void attachAssetSource(osg::Shader& shader, const std::string& templateName, const DefineMap& defines);
 
         std::filesystem::path mPath;
 

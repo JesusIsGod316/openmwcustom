@@ -43,6 +43,7 @@
 #include <components/misc/rng.hpp>
 #include <components/nifosg/autotransform.hpp>
 #include <components/resource/scenemanager.hpp>
+#include <components/shader/shadermanager.hpp>
 #include <components/resource/speculativebudget.hpp>
 #include <components/resource/v321classifiedcompileset.hpp>
 #include <components/sceneutil/boundedtwowaywork.hpp>
@@ -156,6 +157,13 @@ namespace MWRender
         const auto assetVfsGeneration = mSceneManager->getVFS()->getIndexGeneration();
         const bool assetQualityRepair = Resource::AssetPolicy::enabled(Resource::AssetPolicy::VisualLod)
             || Resource::AssetPolicy::enabled(Resource::AssetPolicy::Hlod);
+        const auto assetShaderGeneration = assetQualityRepair
+            ? mSceneManager->getShaderManager().assetGeneration() : 0;
+        const auto assetSourcesCurrent = [&] {
+            return assetGeneration == mAssetGeneration.load(std::memory_order_acquire)
+                && assetVfsGeneration == mSceneManager->getVFS()->getIndexGeneration()
+                && (!assetQualityRepair || assetShaderGeneration == mSceneManager->getShaderManager().assetGeneration());
+        };
         const bool p2RequiredReadiness = SceneUtil::PagingWorkScope::requiredReadiness();
         const unsigned char p3OptionalMask
             = compile && SceneUtil::PagingWorkScope::optionalOptimization()
@@ -238,13 +246,13 @@ namespace MWRender
             // Node and quality are one publication. A stale caller must not
             // pair an old node with new metadata or invalidate a newer epoch.
             std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
-            if (assetGeneration != mAssetGeneration.load(std::memory_order_acquire)
-                || assetVfsGeneration != mSceneManager->getVFS()->getIndexGeneration())
+            if (!assetSourcesCurrent())
                 throw SceneUtil::PagingWorkCancelled{};
             cached = mCache->getRefFromObjectCache(id);
             auto quality = mV313ChunkQualities.find(id);
             if (cached && assetQualityRepair && (quality == mV313ChunkQualities.end()
-                || quality->second.mAssetVfsGeneration != assetVfsGeneration))
+                || quality->second.mAssetVfsGeneration != assetVfsGeneration
+                || quality->second.mAssetShaderGeneration != assetShaderGeneration))
             {
                 // Serialization prevents a new publication between this exact
                 // node/quality read and removal. Epoch was checked above.
@@ -257,13 +265,25 @@ namespace MWRender
                 priorAssets = have.mAssets;
                 v313CachedSatisfies = !((v313QualityMode > 0 && v313RequestedPrepareMode > 0) || p3OptionalMask != 0)
                     || v313QualitySatisfies(have,v313RequestedQuality);
-                if (v313CachedSatisfies && (((p3OptionalMask >> 4) & SceneUtil::AssetPaging::Mask) & have.mAssets.transient))
+                const unsigned requestedAssets = (p3OptionalMask >> 4) & SceneUtil::AssetPaging::Mask;
+                const unsigned unsettledAssets = requestedAssets & ~have.mAssets.settled();
+                if (v313CachedSatisfies && (unsettledAssets & (have.mAssets.transient | have.mAssets.completed)))
+                {
                     ++SceneUtil::AssetPaging::Counters::retryDeferred;
+                    // A cooldown or submitted-but-unready cache observation is
+                    // no attempt, but the terrain owner still needs a later
+                    // optional check. Ready/terminal/exhausted quality is settled.
+                    SceneUtil::AssetPaging::noteOptionalTransient(unsettledAssets);
+                }
                 if (!v313CachedSatisfies)
                 {
                     mV313WeakCacheHitOnStrongPrepare.fetch_add(1,std::memory_order_relaxed);
                     if (!mV313StrongUpgradeInFlight.insert(id).second)
-                    { mV313UpgradeCoalesced.fetch_add(1,std::memory_order_relaxed); return static_cast<osg::Node*>(cached.get()); }
+                    {
+                        mV313UpgradeCoalesced.fetch_add(1,std::memory_order_relaxed);
+                        SceneUtil::AssetPaging::noteOptionalTransient(unsettledAssets);
+                        return static_cast<osg::Node*>(cached.get());
+                    }
                     v313RepairBuild = true;
                 }
             }
@@ -271,12 +291,12 @@ namespace MWRender
             {
                 // Eviction invalidates graph-bound completion, but never the
                 // finite transient/backoff/exhaustion history of this source.
-                if (quality != mV313ChunkQualities.end() && quality->second.mAssetVfsGeneration == assetVfsGeneration)
+                if (quality != mV313ChunkQualities.end() && quality->second.mAssetVfsGeneration == assetVfsGeneration
+                    && quality->second.mAssetShaderGeneration == assetShaderGeneration)
                     priorAssets = quality->second.mAssets;
                 priorAssets = priorAssets.withoutOwner();
                 if (!(priorAssets.transient | priorAssets.exhausted)) mV313ChunkQualities.erase(id);
-                if (assetGeneration == mAssetGeneration.load(std::memory_order_acquire)
-                    && assetVfsGeneration == mSceneManager->getVFS()->getIndexGeneration())
+                if (assetSourcesCurrent())
                     mV313StrongUpgradeInFlight.erase(id);
             }
         }
@@ -321,8 +341,7 @@ namespace MWRender
             if (v313RepairBuild)
             {
                 std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
-                if (assetGeneration == mAssetGeneration.load(std::memory_order_acquire)
-                    && assetVfsGeneration == mSceneManager->getVFS()->getIndexGeneration())
+                if (assetSourcesCurrent())
                     mV313StrongUpgradeInFlight.erase(id);
             }
             throw;
@@ -337,7 +356,7 @@ namespace MWRender
                 ? v311PrepareMode : 0),
             static_cast<unsigned char>(activeGrid && compile && !p2RequiredReadiness
                 && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0),
-            p3OptionalMask, assetVfsGeneration,
+            p3OptionalMask, assetVfsGeneration, assetShaderGeneration,
             assetOutcome.attempted ? priorAssets.after(assetOutcome, SceneUtil::AssetPaging::milliseconds()) : priorAssets };
         if (v313RepairBuild)
             mV313UpgradeBuilt.fetch_add(1, std::memory_order_relaxed);
@@ -347,8 +366,7 @@ namespace MWRender
             // Strong-wins installation. A cheap demand miss may have started before a
             // strong worker finished; it must never overwrite the stronger live node.
             std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
-            if (assetGeneration != mAssetGeneration.load(std::memory_order_acquire)
-                || assetVfsGeneration != mSceneManager->getVFS()->getIndexGeneration())
+            if (!assetSourcesCurrent())
             {
                 // This caller no longer owns the current epoch's coalescing
                 // flag; the fresh publication/invalidation manages that flag.
@@ -1360,8 +1378,7 @@ namespace MWRender
         };
         std::map<std::tuple<int,int,int,unsigned>, AssetPartition> assetPartitions;
         std::map<const osg::Group*, AssetPartition*> assetControls;
-        std::map<const osg::StateSet*,unsigned> assetMaterialOwners;
-        bool assetMaterialOwnershipKnown = true;
+        SceneUtil::GeneratedStaticLod::EffectiveMaterialOwners assetMaterialOwners;
         std::size_t assetPrivateBytes = 0, assetInstances = 0;
         std::uint64_t assetDerivedHostBytes = 0;
         struct PrivateBuffers final : osg::NodeVisitor
@@ -1382,6 +1399,11 @@ namespace MWRender
         std::unique_ptr<Resource::SpeculativeScope::Stage> assetSourceAdmission;
         if (assetPreparation && !assetCertifiedSources.empty())
         {
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+            // Exact source snapshots have completed and unwound. The native
+            // fixture can now stress private-copy admission independently.
+            if (mFixtureBeforePrivate) mFixtureBeforePrivate();
+#endif
             unsigned eligible = 0;
             for (const auto& [node,source] : assetCertifiedSources) eligible |= source.eligible;
             assetSourceAdmission = SceneUtil::AssetPaging::reservePrivateSources(eligible,assetOutcome);
@@ -1503,7 +1525,8 @@ namespace MWRender
                         providedOccluderOwner || (buildOccluders && cnode->getBound().radius() * ref.mScale >= occluderMinRadius)
                             ? SceneUtil::AssetPaging::Gate::Occluder : SceneUtil::AssetPaging::Gate::Population);
                 if (assetCandidate)
-                    assetCandidate = SceneUtil::AssetPaging::admitPrivateSource(assetSource->second,assetOutcome);
+                    assetCandidate = SceneUtil::AssetPaging::admitPrivateSource(assetSource->second,assetOutcome,
+                        *assetSourceAdmission,assetCopyBytes);
 
                 osg::ref_ptr<osg::Group> trans;
                 if (merge || assetCandidate)
@@ -1681,12 +1704,10 @@ namespace MWRender
                 if (assetSourceAdmission)
                 {
                     const unsigned owner = assetCandidate ? assetPartitions.at(assetKey).materialOwner : 1u;
-                    if (analyzeResult.mStateSetCounter.empty()) assetMaterialOwnershipKnown = false;
-                    for (const auto& [state,count] : analyzeResult.mStateSetCounter)
-                    {
-                        if (!state || assetMaterialOwners.size() >= 256) { assetMaterialOwnershipKnown = false; break; }
-                        assetMaterialOwners[state] |= owner;
-                    }
+                    // Read the exact copied population, including the leaf's
+                    // own material and branch-local inherited state. The
+                    // historical AnalyzeVisitor remains only a merge heuristic.
+                    assetMaterialOwners.observe(*trans,owner,copyMask);
                 }
                 ++numinstances;
             }
@@ -1716,19 +1737,78 @@ namespace MWRender
             }
         }
 
-        // Preserve existing strong same-material merging. A spatial LOD/HLOD
-        // bucket must not split a material that also appears in another bucket
-        // or ordinary population. This source-state ownership proof is bounded
-        // and deliberately conservative; uncertainty returns instances to their
-        // original destinations BEFORE any packet/strong optimizer runs.
+        // Preserve existing strong same-material merging. L1 may reunite a
+        // complete candidate material family across spatial buckets, but only
+        // inside one exact original merge destination. All cross-destination,
+        // mixed-lane, H1 and ordinary-owner conflicts retain control topology.
+        // This avoids turning repeated rocks into extra control submissions.
         unsigned conflictingAssetOwners = 0;
         if (!assetPartitions.empty())
         {
-            std::array<SceneUtil::GeneratedStaticLod::MaterialOwner,256> materials;
-            unsigned count = 0;
-            for (const auto& [state,owners] : assetMaterialOwners) materials[count++] = {state,owners};
-            conflictingAssetOwners = SceneUtil::GeneratedStaticLod::conflictingMaterialOwners(
-                std::span(materials.data(),count),assetMaterialOwnershipKnown);
+            using OwnershipCounters = SceneUtil::GeneratedStaticLod::Counters;
+            if (!assetMaterialOwners.report().conflicting || assetMaterialOwners.report().shared)
+            {
+                bool changed = true;
+                while (changed)
+                {
+                    changed = false;
+                    for (const auto& material : assetMaterialOwners.materials())
+                    {
+                        if ((material.owners & 1u) || !(material.owners & (material.owners - 1))) continue;
+                        std::vector<decltype(assetPartitions.begin())> family;
+                        osg::Group* destination = nullptr;
+                        bool eligible = true;
+                        for (auto partition = assetPartitions.begin(); partition != assetPartitions.end(); ++partition)
+                            if (partition->second.materialOwner & material.owners)
+                            {
+                                const auto& value = partition->second;
+                                if (value.eligible != SceneUtil::AssetPaging::Lod || value.originalDestinations.empty())
+                                { eligible = false; break; }
+                                for (const auto& original : value.originalDestinations)
+                                {
+                                    if (!destination) destination = original.second;
+                                    if (destination != original.second) eligible = false;
+                                }
+                                family.push_back(partition);
+                            }
+                        if (!eligible || family.size() < 2) continue;
+                        auto& retained = family.front()->second;
+                        for (std::size_t i = 1; i < family.size(); ++i)
+                        {
+                            auto& joined = family[i]->second;
+                            while (joined.control->getNumChildren())
+                            {
+                                osg::ref_ptr<osg::Node> child = joined.control->getChild(0);
+                                joined.control->removeChild(0u,1u); retained.control->addChild(child);
+                            }
+                            retained.originalDestinations.insert(retained.originalDestinations.end(),
+                                joined.originalDestinations.begin(),joined.originalDestinations.end());
+                            retained.instances += joined.instances; retained.identity += joined.identity;
+                            assetMaterialOwners.replaceOwner(joined.materialOwner,retained.materialOwner);
+                            ++OwnershipCounters::materialOwnerCohesions;
+                            OwnershipCounters::materialOwnerCohesiveInstances += joined.instances;
+                            assetPartitions.erase(family[i]);
+                        }
+                        changed = true;
+                        break; // Ownership masks changed; restart bounded graph connectivity.
+                    }
+                }
+            }
+            const auto ownership = assetMaterialOwners.report();
+            conflictingAssetOwners = ownership.conflicting;
+            OwnershipCounters::materialOwnerUnknown += ownership.unknown;
+            OwnershipCounters::materialOwnerNull += ownership.nullMaterial;
+            OwnershipCounters::materialOwnerCapacity += ownership.capacity;
+            OwnershipCounters::materialOwnerShared += ownership.shared;
+            if (conflictingAssetOwners)
+            {
+                static std::atomic_uint samples{0};
+                if (samples.fetch_add(1,std::memory_order_relaxed) < 8)
+                    Log(Debug::Info) << "Asset material ownership refusal unknown=" << ownership.unknown
+                        << " null=" << ownership.nullMaterial << " capacity=" << ownership.capacity
+                        << " shared_family=" << ownership.shared << " first_owners=" << ownership.firstOwners
+                        << " second_owners=" << ownership.secondOwners << " refused_owners=" << ownership.conflicting;
+            }
             for (auto partition = assetPartitions.begin(); partition != assetPartitions.end();)
             {
                 if (partition->second.materialOwner & conflictingAssetOwners)

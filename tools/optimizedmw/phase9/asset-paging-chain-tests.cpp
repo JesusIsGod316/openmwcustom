@@ -37,6 +37,7 @@
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <iomanip>
 #include <iterator>
@@ -59,7 +60,8 @@ namespace
     {
         std::filesystem::path package,resources,shaders,settings;
         std::vector<std::string> models;
-        bool retry=false,sourceProbe=false;
+        std::string ordinaryModel;
+        bool retry=false,sourceProbe=false,mixed=false;
         Inputs(int argc,char** argv) : package(std::filesystem::absolute(std::filesystem::u8path(argv[3])))
         {
             for (int i=5;i<argc;++i)
@@ -67,6 +69,8 @@ namespace
                 const std::string option=argv[i];
                 if (option=="--retry") {retry=true;continue;}
                 if (option=="--source-probe") {sourceProbe=true;continue;}
+                if (option=="--mixed") {mixed=true;continue;}
+                if (option=="--ordinary-model") { require(++i<argc,"missing actual ordinary STAT model"); ordinaryModel=argv[i]; continue; }
                 if (option=="--resources" || option=="--shaders" || option=="--settings")
                 {
                     require(++i<argc,"missing explicit package qualification argument");
@@ -78,6 +82,7 @@ namespace
                 else { require(!option.starts_with("--"),"unknown package qualification option"); models.push_back(option); }
             }
             require(!models.empty() && models.size()<=16,"bounded explicit real model population required");
+            require(!mixed || (!sourceProbe && !ordinaryModel.empty()),"mixed qualification requires an explicit actual ordinary model");
             require(!resources.empty() && !shaders.empty() && !settings.empty(),"package chain requires --resources --shaders --settings");
             require(std::filesystem::equivalent(resources,package/"resources"),"resource tree must belong to the assembled package");
             require(std::filesystem::is_regular_file(package/"defaults.bin") && std::filesystem::is_regular_file(resources/"version")
@@ -183,6 +188,23 @@ namespace
         std::vector<osg::Geometry*> values;
         void apply(osg::Geometry& geometry) override {values.push_back(&geometry);}
     };
+    struct ControlTopology final : osg::NodeVisitor
+    {
+        ControlTopology() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
+        std::uint64_t submissions=0,indices=0,geometries=0;
+        void apply(osg::Node& node) override
+        {
+            if (auto* selector=dynamic_cast<L::Group*>(&node))
+            { if (selector->original()) selector->original()->accept(*this); }
+            else traverse(node);
+        }
+        void apply(osg::Geometry& geometry) override
+        {
+            ++geometries;
+            submissions+=geometry.getNumPrimitiveSets();
+            for (unsigned i=0;i<geometry.getNumPrimitiveSets();++i) indices+=geometry.getPrimitiveSet(i)->getNumIndices();
+        }
+    };
     unsigned indexOnlyStreams(const Selectors& selectors)
     {
         unsigned matched=0;
@@ -260,6 +282,14 @@ namespace
         explicit MainBegin(Pixels* value) : pixels(value) {}
         osg::ref_ptr<Pixels> pixels;
         void operator()(osg::RenderInfo&) const override { pixels->beforeOriginal=controlDraws(); }
+    };
+    struct BeforeDrawOnce final : osg::Camera::DrawCallback
+    {
+        explicit BeforeDrawOnce(std::function<void()> value) : operation(std::move(value)) {}
+        std::function<void()> operation;
+        mutable bool invoked=false;
+        void operator()(osg::RenderInfo&) const override
+        { if(!invoked) {invoked=true;operation();} }
     };
     unsigned rgb(const std::array<unsigned char,128*128*4>& pixels)
     {
@@ -386,13 +416,22 @@ namespace
             && sample.headroomBytes>R::AssetGpuBudget::HeadroomReserve,"actual adapter headroom must qualify; fixture cannot bypass production GPU admission");
     }
     osg::ref_ptr<osg::Node> upgrade(MWRender::ObjectPaging& paging,R::ResourceSystem& resources,
-        std::atomic_bool& abort,std::uint64_t stress=0)
+        std::atomic_bool& abort,std::uint64_t stress=0,bool* needsRetry=nullptr)
     {
         R::SpeculativeScope scope(resources.speculativeBudget(),&R::ResourceSystem::speculativeSample,&resources,R::SpeculativePriority::NearFuture);
         std::unique_ptr<R::SpeculativeScope::Stage> extra;
-        if (stress) extra=std::make_unique<R::SpeculativeScope::Stage>(stress,0);
+        bool privateCheckpoint=false;
+        struct PrivateHookClear
+        { MWRender::ObjectPaging& paging; bool enabled; ~PrivateHookClear() {if(enabled) paging.setFixtureBeforePrivate({});} } clear{paging,stress!=0};
+        if (stress) paging.setFixtureBeforePrivate([&]{
+            require(!privateCheckpoint,"private stress checkpoint must occur once after real source snapshots");
+            privateCheckpoint=true;extra=std::make_unique<R::SpeculativeScope::Stage>(stress,0);
+        });
         A::OptionalUpgradeScope optional(&abort);
-        return paging.getChunk(1,{0,0},0,0,false,{0,0,0},true);
+        auto result=paging.getChunk(1,{0,0},0,0,false,{0,0,0},true);
+        if (needsRetry) *needsRetry=optional.needsRetry();
+        if (stress) require(privateCheckpoint && optional.needsRetry(),"exact private admission denial after completed snapshots must reach the production optional owner retry signal");
+        return result;
     }
     void qualityContracts()
     {
@@ -695,6 +734,28 @@ int main(int argc,char** argv) try
         return 0;
     }
     require(!population.empty() && (mask!=A::Hlod || population.size()>=2),"bounded real static source family required");
+    require(!inputs.mixed || mask==A::Lod,"family-cohesive mixed qualification is L1-only; H1 retains spatial ownership policy");
+    if (inputs.mixed)
+    {
+        const auto ordinaryModel=VFS::Path::toNormalized(std::string_view(inputs.ordinaryModel));
+        require(statics.contains(ordinaryModel),"mixed ordinary population must have a live STAT in the same actual plugin");
+        const auto ordinaryTemplate=scenes->getTemplate(ordinaryModel,false);
+        require(ordinaryTemplate.valid(),"actual ordinary SceneManager template required");
+        const auto sourcePopulation=population;
+        population.clear();
+        for (unsigned bucket=0;bucket<2;++bucket)
+            for (unsigned i=0;i<sourcePopulation.size();++i)
+            {
+                auto reference=sourcePopulation[i];
+                reference.position={bucket ? 1100.f : -1100.f,float(i)*600.f,0.f};
+                population.push_back(reference);
+            }
+        // This explicit owner is part of the substituted reference population,
+        // never a rewritten material/template or a disabled MSOC policy.
+        population.push_back({nullptr,recordModels.at(ordinaryModel),ESM::REC_STAT,{0,0,0},1.f,true});
+        std::cout<<"CHAIN_MIXED_INPUT candidate_instances="<<population.size()-1<<" spatial_buckets=2 ordinary_instances=1"
+            <<" ordinary_model="<<ordinaryModel.value()<<" actual_stat_sources=1 material_substitution=0\n";
+    }
     qualityContracts();
     MWRender::ObjectPaging paging(scenes,ESM::Cell::sDefaultWorldspaceId); paging.setAssetMainCamera(camera); paging.setFixturePopulation(population);
     Registered pagingRegistration(resources,&paging);
@@ -705,16 +766,41 @@ int main(int argc,char** argv) try
     { SceneUtil::PagingWorkScope required(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness); ordinary=paging.getChunk(1,{0,0},0,0,false,{0,0,0},true); }
     phase("required_chunk","done");
     Selectors weak; ordinary->accept(weak); require(weak.values.empty() && built(mask)==beforeBuilt,"required readiness/control must not fabricate optional asset quality");
+    osg::ref_ptr<osg::Node> mixedStrongControl;
+    ControlTopology mixedBaseline;
+    if (inputs.mixed)
+    {
+        auto originalPopulation=population;
+        for (auto& reference:originalPopulation) reference.occluderOwner=true;
+        MWRender::ObjectPaging baseline(scenes,ESM::Cell::sDefaultWorldspaceId);
+        baseline.setAssetMainCamera(camera); baseline.setFixturePopulation(originalPopulation);
+        Registered baselineRegistration(resources,&baseline);
+        sampleGpu(); mixedStrongControl=upgrade(baseline,resources,abort);
+        Selectors baselineSelectors; mixedStrongControl->accept(baselineSelectors);
+        require(baselineSelectors.values.empty() && built(mask)==beforeBuilt,"exact strong optional baseline must keep every original instance");
+        mixedStrongControl->accept(mixedBaseline);
+        require(mixedBaseline.submissions && mixedBaseline.indices,"real strong control topology must contain actual submissions and indices");
+    }
     if (retry)
     {
         phase("stressed_upgrade","begin");
         const auto privateDenied=(mask&A::Lod ? A::Counters::lod.privateCpuDenied.load() : A::Counters::hlod.privateCpuDenied.load());
-        auto deferred=upgrade(paging,resources,abort,100*R::SpeculativeBudget::MiB);
-        require(built(mask)==beforeBuilt,"228 MiB outer overlap must refuse an additional 32 MiB private clone without cooking");
+        const auto sourceCertified=(mask&A::Lod ? A::Counters::lod.sourceCertified.load() : A::Counters::hlod.sourceCertified.load());
+        const auto snapshotDenied=(mask&A::Lod ? A::Counters::lod.snapshotDenied.load() : A::Counters::hlod.snapshotDenied.load());
+        const auto admitted=(mask&A::Lod ? A::Counters::lod.candidateAdmitted.load() : A::Counters::hlod.candidateAdmitted.load());
+        auto deferred=upgrade(paging,resources,abort,128*R::SpeculativeBudget::MiB);
+        require(built(mask)==beforeBuilt,"256 MiB total outer overlap must refuse any additional exact private clone without cooking");
         require((mask&A::Lod ? A::Counters::lod.privateCpuDenied.load() : A::Counters::hlod.privateCpuDenied.load())>privateDenied,"actual production private CPU gate must report refusal");
-        auto backoff=upgrade(paging,resources,abort); require(backoff==deferred && built(mask)==beforeBuilt,"same generation must retain ordinary fallback during retry delay");
+        require((mask&A::Lod ? A::Counters::lod.sourceCertified.load() : A::Counters::hlod.sourceCertified.load())>sourceCertified
+            && (mask&A::Lod ? A::Counters::lod.snapshotDenied.load() : A::Counters::hlod.snapshotDenied.load())==snapshotDenied
+            && (mask&A::Lod ? A::Counters::lod.candidateAdmitted.load() : A::Counters::hlod.candidateAdmitted.load())==admitted,
+            "private denial must follow successful actual source snapshots and precede every private clone admission");
+        bool cachedRetry=false;
+        auto backoff=upgrade(paging,resources,abort,0,&cachedRetry);
+        require(backoff==deferred && built(mask)==beforeBuilt && cachedRetry,
+            "same-generation cooldown observation must retain ordinary fallback and optional retry without recooking");
         std::this_thread::sleep_for(std::chrono::milliseconds(A::RetryDelayMilliseconds+100));
-        std::cout<<"CHAIN_TRANSIENT same_generation=1 private_cpu_denied=1 fallback_during_delay=1\n";
+        std::cout<<"CHAIN_TRANSIENT same_generation=1 private_cpu_denied=1 fallback_during_delay=1 optional_owner_retry_signal=1 actual_snapshot_completed=1 private_clone_admitted=0 fixed_transient_limit_mib=256\n";
         phase("stressed_upgrade","done");
     }
     sampleGpu(); const auto beforeReady=ready(mask), beforeDraw=consumed(mask);
@@ -724,7 +810,22 @@ int main(int argc,char** argv) try
     phase("cook","done");
     pagingDiagnostics(mask,"cook");
     require(candidate!=ordinary && !selected.values.empty() && built(mask)>beforeBuilt,"actual getChunk must replace weak cached quality with built optional tiers");
+    if (inputs.mixed)
+    {
+        ControlTopology retained; candidate->accept(retained);
+        require(retained.indices==mixedBaseline.indices && retained.submissions<=mixedBaseline.submissions,
+            "mixed family-cohesive candidate must preserve exact control index population without extra strong merge submissions");
+        require(L::Counters::materialOwnerCohesions>0,"real same-material candidates across spatial buckets must reunite before the strong optimizer");
+        std::cout<<"CHAIN_MIXED_CONTROL spatial_buckets=2 ordinary_preserved=1 baseline_submissions="<<mixedBaseline.submissions
+            <<" retained_submissions="<<retained.submissions<<" baseline_indices="<<mixedBaseline.indices
+            <<" retained_indices="<<retained.indices<<" extra_control_submissions=0 cohesive_partitions="<<L::Counters::materialOwnerCohesions<<'\n';
+    }
     require(ready(mask)==beforeReady,"CPU candidate cannot claim GL completion");
+    bool pendingRetry=false;
+    const auto pendingBuilt=built(mask);
+    auto pendingCache=upgrade(paging,resources,abort,0,&pendingRetry);
+    require(pendingCache==candidate && built(mask)==pendingBuilt && pendingRetry,
+        "submitted-but-unready ICO cache observation must retain the candidate and optional retry without a new cook");
     require(hostOwners(resources.speculativeBudget()->stats())>ownersBefore,"actual private candidate must retain a host ownership charge after preparation stages unwind");
     // Receipts belong to the production private control and are installed by
     // its builder before immutable MaterialGuard capture. The fixture never
@@ -750,7 +851,39 @@ int main(int argc,char** argv) try
     require(ready(mask)>beforeReady,"real ObjectPaging CompileCompleted must certify the queued GL objects");
     const auto drawStart=consumed(mask); phase("derived_draw","begin"); viewer.frame(); viewer.frame(); phase("derived_draw","done");
     require(consumed(mask)>drawStart,"actual main camera must consume production-generated geometry");
-    Programs programs; candidate->accept(programs); require(!programs.values.empty(),"actual shipped object program required");
+    bool readyRetry=true;
+    auto readyCache=upgrade(paging,resources,abort,0,&readyRetry);
+    require(readyCache==candidate && !readyRetry && built(mask)==pendingBuilt,
+        "ready cached quality must terminate the optional retry signal without rebuilding");
+    std::cout<<"CHAIN_RETRY_OBSERVATIONS cooldown_signalled="<<retry
+        <<" pending_ico_signalled=1 ready_stops_retry=1 cache_observation_recooks=0\n";
+    {
+        MWRender::ObjectPaging coalesced(scenes,ESM::Cell::sDefaultWorldspaceId);
+        coalesced.setAssetMainCamera(camera); coalesced.setFixturePopulation(population);
+        Registered coalescedRegistration(resources,&coalesced);
+        osg::ref_ptr<osg::Node> weakOwner;
+        { SceneUtil::PagingWorkScope required(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
+            weakOwner=coalesced.getChunk(1,{0,0},0,0,false,{0,0,0},true); }
+        Pause inflight; coalesced.setFixtureBeforePublish([&]{inflight();});
+        std::exception_ptr error; osg::ref_ptr<osg::Node> strongOwner;
+        sampleGpu();
+        std::thread worker([&]{try { strongOwner=upgrade(coalesced,resources,abort); } catch (...) {error=std::current_exception();} });
+        Join workerJoin{worker,inflight}; inflight.wait();
+        const auto observedBuilt=built(mask),observedAttempts=mask==A::Lod
+            ? A::Counters::lod.buildAttempts.load() : A::Counters::hlod.buildAttempts.load();
+        bool coalescedRetry=false;
+        auto observed=upgrade(coalesced,resources,abort,0,&coalescedRetry);
+        require(observed==weakOwner && coalescedRetry && built(mask)==observedBuilt
+            && (mask==A::Lod ? A::Counters::lod.buildAttempts.load() : A::Counters::hlod.buildAttempts.load())==observedAttempts,
+            "coalesced inflight observation must return exact weak owner and retry signal without a new attempt");
+        inflight.resume(); worker.join(); coalesced.setFixtureBeforePublish({});
+        if (error) std::rethrow_exception(error);
+        require(strongOwner!=weakOwner,"inflight peer must publish its actual stronger replacement");
+        std::cout<<"CHAIN_RETRY_COALESCED inflight_signalled=1 exact_weak_owner=1 observer_build_attempts=0 peer_published=1\n";
+    }
+    Programs programs;
+    for (auto* selector:selected.values) {selector->original()->accept(programs);selector->derived()->accept(programs);}
+    require(!programs.values.empty(),"actual shipped candidate object program required");
     unsigned pbrPrograms=0;
     for (auto* program:programs.values)
     {
@@ -777,9 +910,23 @@ int main(int argc,char** argv) try
         <<" control_rgb="<<controlRgb<<" tier_rgb="<<tierRgb<<" original_indices="<<L::Counters::originalIndices
         <<" derived_indices="<<L::Counters::derivedIndices<<" control_submissions="<<SceneUtil::HlodCounters::controlSubmissions
         <<" proxy_submissions="<<SceneUtil::HlodCounters::proxySubmissions<<" gpu_peak_debt="<<R::AssetGpuBudget::peakBytes<<'\n';
+    if (inputs.mixed)
+        std::cout<<"CHAIN_MIXED_CONSUMED mixed_ordinary_candidate=1 real_multi_bucket_cook=1 actual_main_draw=1 fewer_indices=1 control_batching_preserved=1 gl_error=0\n";
     // Discover only production-created shadow cameras in actual render stages.
     // Their real PRE_RENDER envelopes then prove no optional tier draw
     // occurs inside the shadow pass; no synthetic ShadowTraversalScope is used.
+    const osg::Matrixd capturedView=camera->getViewMatrix();
+    // A multi-bucket chunk's far proof view is deliberately distant. The
+    // captured renderer limits shadows to4096 units, so that view may contain
+    // no in-range caster. Frame the same real population more closely for the
+    // independent shadow proof while keeping its conservative coarse threshold.
+    const double shadowProofDistance=std::max(double(bound.radius())*2.,
+        double(bound.radius())+error*std::abs(camera->getProjectionMatrix()(1,1))*64./.6);
+    camera->setViewMatrixAsLookAt(osg::Vec3d(bound.center())+osg::Vec3d(0,-shadowProofDistance,0),osg::Vec3d(bound.center()),{0,0,1});
+    viewer.frame();viewer.frame();
+    std::cout<<"CHAIN_SHADOW_FRAMING original_view_distance="<<distance<<" shadow_view_distance="<<shadowProofDistance
+        <<" population_radius="<<bound.radius()<<" maximum_shadow_distance="<<Settings::shadows().mMaximumShadowMapDistance
+        <<" population_unchanged=1 projection_unchanged=1 shader_policy_unchanged=1\n";
     const auto actualShadows=shadowCameras(*camera);
     require(!actualShadows.empty(),"enabled production shadow technique must create actual caster stages");
     std::vector<std::shared_ptr<ShadowReceipt>> shadowReceipts;
@@ -797,10 +944,14 @@ int main(int argc,char** argv) try
         require(!receipt->derived && receipt->error==GL_NO_ERROR,"real shadow pass must preserve original representation and clean GL");
         shadowDerived+=receipt->derived; shadowOriginal+=receipt->original; shadowDepth+=receipt->depthPixels; shadowReads+=receipt->reads; shadowDrawn+=receipt->drawn;
     }
+    std::cout<<"CHAIN_SHADOW_DIAGNOSTIC cameras="<<actualShadows.size()<<" hooked="<<shadowReceipts.size()
+        <<" derived_draws="<<shadowDerived<<" original_draws="<<shadowOriginal<<" depth_pixels="<<shadowDepth
+        <<" pixel_reads="<<shadowReads<<" drawn="<<shadowDrawn<<" main_derived_draws="<<consumed(mask)-beforeShadowMain<<'\n';
     require(shadowOriginal>0 && shadowDepth>0 && shadowReads>0 && shadowDrawn>0 && consumed(mask)>beforeShadowMain,
         "actual original shadow depth and concurrent reduced main-view geometry are both required");
     std::cout<<"CHAIN_SHADOW real_shadow_cull=1 derived_draws="<<shadowDerived<<" original_draws="<<shadowOriginal
         <<" depth_pixels="<<shadowDepth<<" pixel_reads="<<shadowReads<<" drawn="<<shadowDrawn<<" main_derived_draws="<<consumed(mask)-beforeShadowMain<<" gl_error=0\n";
+    camera->setViewMatrix(capturedView);viewer.frame();
     // A real nested secondary draw must preserve the main Viewer/camera and
     // service its registered ICO. Isolate consumption within the secondary's
     // pre/post callbacks while the main draw independently continues afterward.
@@ -844,6 +995,62 @@ int main(int argc,char** argv) try
     auto unchanged=upgrade(owners,resources,abort);
     require(built(mask)==ownerBuilt && (mask&A::Lod ? A::Counters::lod.refusals[unsigned(A::Gate::Occluder)].load() : A::Counters::hlod.refusals[unsigned(A::Gate::Occluder)].load())>ownerBefore,"MSOC owners must keep original production topology");
     std::cout<<"CHAIN_NEGATIVE controller_original=1 occluder_owner=1 secondary_original=1 release_original=1\n";
+    if (retry)
+    {
+        MWRender::ObjectPaging exhausted(scenes,ESM::Cell::sDefaultWorldspaceId);
+        exhausted.setAssetMainCamera(camera); exhausted.setFixturePopulation(population);
+        Registered exhaustedRegistration(resources,&exhausted);
+        osg::ref_ptr<osg::Node> exhaustedControl;
+        { SceneUtil::PagingWorkScope required(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
+            exhaustedControl=exhausted.getChunk(1,{0,0},0,0,false,{0,0,0},true); }
+        const auto attemptsBefore=mask==A::Lod ? A::Counters::lod.buildAttempts.load() : A::Counters::hlod.buildAttempts.load();
+        const auto exhaustedBefore=A::Counters::retryExhausted.load();
+        for (unsigned attempt=0;attempt<A::MaximumAttempts;++attempt)
+        {
+            upgrade(exhausted,resources,abort,128*R::SpeculativeBudget::MiB);
+            if (attempt+1<A::MaximumAttempts)
+                std::this_thread::sleep_for(std::chrono::milliseconds(A::RetryDelayMilliseconds+100));
+        }
+        bool exhaustedRetry=true;
+        auto settledFallback=upgrade(exhausted,resources,abort,0,&exhaustedRetry);
+        Selectors exhaustedSelectors; settledFallback->accept(exhaustedSelectors);
+        require(!exhaustedRetry && exhaustedSelectors.values.empty() && A::Counters::retryExhausted>exhaustedBefore
+            && (mask==A::Lod ? A::Counters::lod.buildAttempts.load() : A::Counters::hlod.buildAttempts.load())==attemptsBefore,
+            "same generation must stop optional owner retry after exactly three admission failures, retaining ordinary control");
+        std::cout<<"CHAIN_RETRY_EXHAUSTED actual_attempts="<<A::MaximumAttempts
+            <<" settled_stops_retry=1 ordinary_preserved=1 builder_calls=0 generation_reset=0\n";
+    }
+    if (inputs.mixed)
+    {
+        auto sharedPopulation=population;
+        sharedPopulation.pop_back(); // Replace only the distinct ordinary reference.
+        auto ordinaryShared=sharedPopulation.front(); ordinaryShared.occluderOwner=true;
+        ordinaryShared.position={0,0,0}; sharedPopulation.push_back(ordinaryShared);
+        MWRender::ObjectPaging shared(scenes,ESM::Cell::sDefaultWorldspaceId);
+        shared.setAssetMainCamera(camera); shared.setFixturePopulation(sharedPopulation);
+        Registered sharedRegistration(resources,&shared);
+        const auto beforeSharedBuilt=built(mask),beforeSharedRefusal=L::Counters::materialOwnerShared.load();
+        const auto beforeSharedAttempts=A::Counters::lod.buildAttempts.load();
+        bool terminalRetry=true;
+        sampleGpu(); auto sharedFallback=upgrade(shared,resources,abort,0,&terminalRetry);
+        Selectors sharedSelectors; sharedFallback->accept(sharedSelectors);
+        require(!terminalRetry && sharedSelectors.values.empty() && built(mask)==beforeSharedBuilt && A::Counters::lod.buildAttempts==beforeSharedAttempts
+            && L::Counters::materialOwnerShared>beforeSharedRefusal,
+            "genuine material family shared with an ordinary owner must still refuse every candidate before cooking");
+        for (auto& reference:sharedPopulation) reference.occluderOwner=true;
+        MWRender::ObjectPaging sharedBaseline(scenes,ESM::Cell::sDefaultWorldspaceId);
+        sharedBaseline.setAssetMainCamera(camera); sharedBaseline.setFixturePopulation(sharedPopulation);
+        Registered sharedBaselineRegistration(resources,&sharedBaseline);
+        auto exactSharedControl=upgrade(sharedBaseline,resources,abort);
+        ControlTopology fallbackTopology,baselineTopology;
+        sharedFallback->accept(fallbackTopology); exactSharedControl->accept(baselineTopology);
+        require(fallbackTopology.submissions==baselineTopology.submissions
+            && fallbackTopology.indices==baselineTopology.indices && fallbackTopology.submissions>0,
+            "ordinary shared-family rejection must preserve the exact strong original control submissions and indices");
+        std::cout<<"CHAIN_MIXED_SHARED_REFUSAL ordinary_conflict_refused=1 build_attempted=0"
+            <<" baseline_submissions="<<baselineTopology.submissions<<" fallback_submissions="<<fallbackTopology.submissions
+            <<" exact_indices=1 control_preserved=1 terminal_stops_retry=1\n";
+    }
     // Clear only the real cache owner, retaining the quality side table exactly
     // as expiry does. Required reconstruction must not inherit completion from
     // the evicted graph; an actual optional upgrade must cook/install again.
@@ -983,6 +1190,146 @@ int main(int argc,char** argv) try
     for (const auto& child:changed) child.owner->setStateSet(child.state);
     const auto recoveryStart=consumed(mask); viewer.frame(); viewer.frame();
     require(consumed(mask)>recoveryStart,"restored exact child material must recover its already-prepared derived representation");
+    if(mask==A::Lod)
+    {
+        // The actual main cull first selects the current prepared tier. Mutate
+        // its source or indices only in the camera's pre-draw callback, after
+        // capture/selection. Both the temporal recipe check and the real LOD
+        // callback must reject that stale tier on this very draw.
+        struct RecipeMutation
+        {
+            osg::ref_ptr<osg::Geometry> source,tier;
+            std::vector<const osg::StateSet*> inherited;
+            unsigned unit=0;
+            osg::ref_ptr<osg::Array> uv;
+            osg::ref_ptr<osg::StateSet> material;
+            osg::ref_ptr<osg::PrimitiveSet> indices;
+        };
+        std::vector<RecipeMutation> recipes;
+        for(auto* selector:mutationSelectors.values)
+        {
+            const auto sources=L::originalDraws(*selector->original()),tiers=L::originalDraws(*selector->derived());
+            require(!sources.empty() && sources.size()==tiers.size(),"exact real L1 source/tier pairing required for draw recipe regression");
+            for(std::size_t i=0;i<sources.size();++i)
+            {
+                RecipeMutation value; value.source=sources[i].geometry; value.tier=tiers[i].geometry;
+                for(const auto& node:tiers[i].path) if(node->getStateSet()) value.inherited.push_back(node->getStateSet());
+                while(value.unit<value.source->getNumTexCoordArrays() && !value.source->getTexCoordArray(value.unit)) ++value.unit;
+                require(value.unit<value.source->getNumTexCoordArrays(),"actual original UV stream required for draw recipe regression");
+                value.uv=value.source->getTexCoordArray(value.unit);value.material=value.source->getStateSet();value.indices=value.tier->getPrimitiveSet(0);
+                require(L::temporalDrawRecipeCurrent(*value.tier,value.inherited),"exact real tier recipe must be current at capture");
+                recipes.push_back(std::move(value));
+            }
+        }
+        constexpr const char* kinds[]{"source_uv","source_material","derived_indices"};
+        for(unsigned kind=0;kind<3;++kind)
+        {
+            osg::ref_ptr<BeforeDrawOnce> mutation=new BeforeDrawOnce([&]{
+                for(auto& value:recipes)
+                {
+                    if(kind==0) value.source->setTexCoordArray(value.unit,osg::clone(value.uv.get(),osg::CopyOp::DEEP_COPY_ALL));
+                    else if(kind==1) value.source->setStateSet(value.material
+                        ? new osg::StateSet(*value.material,osg::CopyOp::SHALLOW_COPY) : new osg::StateSet);
+                    else value.tier->setPrimitiveSet(0,osg::clone(value.indices.get(),osg::CopyOp::DEEP_COPY_ALL));
+                }
+                for(const auto& value:recipes)
+                    require(!L::temporalDrawRecipeCurrent(*value.tier,value.inherited),"changed post-capture recipe must refuse temporal coverage before its draw");
+            });
+            const auto beforeRecipeDraw=consumed(mask),beforeRecipeFallback=L::Counters::materialDrawFallbacks.load(),beforeRecipeReads=pixels->reads;
+            camera->addPreDrawCallback(mutation);viewer.frame();camera->removePreDrawCallback(mutation);
+            require(mutation->invoked && consumed(mask)==beforeRecipeDraw && L::Counters::materialDrawFallbacks>beforeRecipeFallback
+                && pixels->original>0 && pixels->reads>beforeRecipeReads && rgb(pixels->data)>16 && pixels->error==GL_NO_ERROR,
+                "post-cull recipe mutation must replay visible original geometry and submit no stale derived indices");
+            std::cout<<"CHAIN_TEMPORAL_RECIPE_MUTATION kind="<<kinds[kind]<<" captured_current=1 changed_after_cull=1 temporal_recipe_refused=1"
+                <<" derived_draws="<<consumed(mask)-beforeRecipeDraw<<" original_draws="<<pixels->original
+                <<" callback_fallbacks="<<L::Counters::materialDrawFallbacks-beforeRecipeFallback<<" rgb="<<rgb(pixels->data)<<" gl_error=0\n";
+            for(auto& value:recipes)
+            {value.source->setTexCoordArray(value.unit,value.uv);value.source->setStateSet(value.material);value.tier->setPrimitiveSet(0,value.indices);}
+            for(const auto& value:recipes) require(L::temporalDrawRecipeCurrent(*value.tier,value.inherited),"restoring exact recipe must recover its immutable guard");
+            const auto beforeRecipeRestore=consumed(mask);viewer.frame();
+            require(consumed(mask)>beforeRecipeRestore && pixels->error==GL_NO_ERROR,"restored exact recipe must recover actual reduced main draws");
+        }
+    }
+    {
+        // A ShaderManager refresh updates the cached template's exact Program
+        // recipe, while every previously captured derived guard must remain
+        // stale. Paging must bind its own quality to that shader generation.
+        auto& manager=scenes->getShaderManager();
+        auto originalDefines=manager.getGlobalDefines();
+        MWRender::ObjectPaging generations(scenes,ESM::Cell::sDefaultWorldspaceId);
+        generations.setAssetMainCamera(camera); generations.setFixturePopulation(population);
+        Registered generationRegistration(resources,&generations);
+        sampleGpu(); auto initial=upgrade(generations,resources,abort);
+        Selectors initialSelectors; initial->accept(initialSelectors);
+        require(!initialSelectors.values.empty(),"shader generation regression requires actual initially cooked selectors");
+        lighting->removeChild(rebuilt); lighting->addChild(initial);
+        const auto allReady=[](const Selectors& selectors) {
+            return std::all_of(selectors.values.begin(),selectors.values.end(),[](const auto* value){return value->compilationReady();});
+        };
+        for (unsigned frame=0;frame<90 && !allReady(initialSelectors);++frame) viewer.frame();
+        const auto initialDraw=consumed(mask); viewer.frame(); viewer.frame();
+        require(allReady(initialSelectors) && consumed(mask)>initialDraw,"initial cached shader cohort must actually complete ICO and draw");
+        Programs initialPrograms; initialSelectors.values.front()->original()->accept(initialPrograms);
+        require(!initialPrograms.values.empty(),"actual source Program required for shader generation snapshot");
+        auto oldSnapshot=Shader::AssetGeometry::capture(**initialPrograms.values.begin());
+        require(bool(oldSnapshot),"current exact Program recipe must be capturable before globals change");
+        const auto originalGeneration=manager.assetGeneration(),unchangedBuilt=built(mask);
+        manager.setGlobalDefines(originalDefines);
+        bool unchangedRetry=true;
+        auto unchanged=upgrade(generations,resources,abort,0,&unchangedRetry);
+        const auto unchangedDraw=consumed(mask); viewer.frame();
+        require(manager.assetGeneration()==originalGeneration && unchanged==initial && !unchangedRetry
+            && built(mask)==unchangedBuilt && consumed(mask)>unchangedDraw,
+            "identical global defines must preserve epoch, prepared guard and cached owner without recooking");
+        Pause shaderEpoch; generations.setFixtureBeforeCache([&]{shaderEpoch();});
+        std::atomic_bool oldShaderCancelled{false}; std::exception_ptr oldShaderError;
+        std::thread oldShader([&]{try {generations.getChunk(1,{0,0},0,0,false,{0,0,0},false);}
+            catch(const SceneUtil::PagingWorkCancelled&) {oldShaderCancelled=true;}
+            catch(...) {oldShaderError=std::current_exception();} });
+        Join oldShaderJoin{oldShader,shaderEpoch}; shaderEpoch.wait();
+        auto changedDefines=originalDefines;
+        changedDefines["clamp"]=originalDefines.at("clamp")=="1" ? "0" : "1";
+        manager.setGlobalDefines(changedDefines);
+        require(manager.assetGeneration()==originalGeneration+1
+            && Shader::AssetGeometry::current(*oldSnapshot,**initialPrograms.values.begin())==Shader::AssetGeometry::Refusal::Epoch,
+            "reviewed globals must advance exact shader generation and reject the old immutable proof");
+        for (auto* program:initialPrograms.values)
+            require(Shader::AssetGeometry::matches(*program),"the actual cached source Program must acquire a fresh reviewed recipe");
+        osg::ref_ptr<osg::Node> newWeak;
+        { SceneUtil::PagingWorkScope required(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
+            newWeak=generations.getChunk(1,{0,0},0,0,false,{0,0,0},true); }
+        shaderEpoch.resume(); oldShader.join(); generations.setFixtureBeforeCache({});
+        if (oldShaderError) std::rethrow_exception(oldShaderError);
+        require(oldShaderCancelled && generations.getChunk(1,{0,0},0,0,false,{0,0,0},false)==newWeak,
+            "stale shader cohort caller must cancel without removing the newly published weak owner");
+        const auto oldDraw=consumed(mask); viewer.frame();
+        require(consumed(mask)==oldDraw && pixels->original>0 && rgb(pixels->data)>16 && pixels->error==GL_NO_ERROR,
+            "old prepared guard must draw the visible original after approved shader regeneration");
+        const auto freshBuilt=built(mask); sampleGpu(); auto fresh=upgrade(generations,resources,abort);
+        Selectors freshSelectors; fresh->accept(freshSelectors);
+        require(fresh!=initial && fresh!=newWeak && !freshSelectors.values.empty() && built(mask)>freshBuilt,
+            "new shader cohort must cook a fresh exact representation instead of settling the old cached guard");
+        lighting->removeChild(initial); lighting->addChild(fresh);
+        for (unsigned frame=0;frame<90 && !allReady(freshSelectors);++frame) viewer.frame();
+        const auto freshDraw=consumed(mask); viewer.frame(); viewer.frame();
+        require(allReady(freshSelectors) && consumed(mask)>freshDraw && pixels->error==GL_NO_ERROR && rgb(pixels->data)>16,
+            "fresh reviewed shader cohort must complete actual ICO and consume its new reduced representation");
+        manager.setGlobalDefines(originalDefines);
+        sampleGpu(); auto restored=upgrade(generations,resources,abort);
+        Selectors restoredSelectors; restored->accept(restoredSelectors);
+        require(restored!=fresh && !restoredSelectors.values.empty(),"restoring exact globals requires a fresh guard, never blessing an old snapshot");
+        lighting->removeChild(fresh); lighting->addChild(restored);
+        for (unsigned frame=0;frame<90 && !allReady(restoredSelectors);++frame) viewer.frame();
+        const auto restoredDraw=consumed(mask); viewer.frame(); viewer.frame();
+        require(allReady(restoredSelectors) && consumed(mask)>restoredDraw && pixels->error==GL_NO_ERROR,
+            "restored exact shader policy must recover through fresh cooking and readiness");
+        require(Shader::AssetGeometry::current(*oldSnapshot,**initialPrograms.values.begin())==Shader::AssetGeometry::Refusal::Epoch,
+            "restoring reviewed source must not revalidate the pre-change immutable snapshot");
+        rebuilt=restored; // Subsequent dependency mutation tests this ready owner.
+        std::cout<<"CHAIN_SHADER_COHORT unchanged_no_generation=1 unchanged_no_recook=1 old_guard_original=1"
+            <<" stale_caller_cancelled=1 fresh_owner_preserved=1 source_recertified=1 new_cohort_recooked=1"
+            <<" fresh_actual_draw=1 restored_actual_draw=1 old_snapshot_still_epoch=1 gl_error=0\n";
+    }
     Programs mutationPrograms; rebuilt->accept(mutationPrograms);
     std::map<osg::Shader*,std::string> shaderSources;
     for (auto* program:mutationPrograms.values)

@@ -11,6 +11,47 @@
 
 namespace SceneUtil::AssetPaging
 {
+    void noteOptionalTransient(unsigned mask) noexcept
+    { OptionalUpgradeScope::noteTransient(mask); }
+    void cpuRefusal(unsigned mask,CpuStage stage,const Resource::SpeculativeDeferred& error)
+    {
+        const unsigned slot = static_cast<unsigned>(stage);
+        if (slot >= static_cast<unsigned>(CpuStage::Count)) return;
+        for (unsigned bit : {Lod,Hlod}) if (mask & bit)
+        {
+            auto& counters = lane(bit);
+            if (!error.reservation)
+            {
+                if (counters.cpuUnclassified[slot].fetch_add(1) == 0)
+                    Log(Debug::Info) << "OptimizedMW asset CPU first refusal: lane=" << (bit==Lod ? "L1" : "H1")
+                        << " stage=" << slot << " reason=unclassified reservation_receipt=0";
+                continue;
+            }
+            const auto& value = *error.reservation;
+            bool first = false;
+            for (unsigned i=0;i<Resource::SpeculativeBudget::ReservationRefusalCount;++i)
+                if ((value.reasons & (1u<<i)) && counters.cpuReasons[slot][i].fetch_add(1)==0) first=true;
+            if (!first) continue;
+            const auto& sample = value.sample;
+            Log(Debug::Info) << "OptimizedMW asset CPU first refusal: lane=" << (bit==Lod ? "L1" : "H1")
+                << " stage=" << slot << " reason_bits=" << value.reasons << " pressure_reason_bits=" << value.pressureReasons
+                << " requested=" << value.requested << " current_future=" << value.currentFuture
+                << " proposed_future=" << value.proposedFuture << " transient_limit=" << value.transientLimit
+                << " growth=" << value.growth << " unobserved_growth=" << value.unobservedGrowth << " extra=" << value.extra
+                << " known_owners=" << value.knownOwners << " estimated_owners=" << value.estimatedOwners
+                << " pending_owners=" << value.pendingOwners << " jobs=" << value.jobs
+                << " priority=" << static_cast<unsigned>(value.priority) << " sample_generation=" << sample.generation
+                << " sampled_at_ms=" << sample.sampledAtMs << " pressure=" << static_cast<unsigned>(sample.decision.state)
+                << " admissions_per_sample=" << sample.decision.admissionsPerSample
+                << " accounted_growth=" << sample.accountedGrowth << " growth_watermark_valid=" << sample.growthWatermarkValid
+                << " physical_total=" << sample.memory.physicalTotal << " physical_available=" << sample.memory.physicalAvailable
+                << " physical_valid=" << sample.memory.physicalValid << " physical_floor=" << value.physicalFloor
+                << " commit_available=" << sample.memory.commitAvailable << " commit_valid=" << sample.memory.commitValid
+                << " system_commit_available=" << sample.memory.systemCommitAvailable << " system_commit_valid=" << sample.memory.systemCommitValid
+                << " commit_floor=" << value.commitFloor << " low_memory_valid=" << sample.memory.lowMemoryValid
+                << " low_memory=" << sample.memory.lowMemory;
+        }
+    }
     std::uint64_t milliseconds()
     { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
     bool Quality::satisfies(unsigned requested, std::uint64_t now) const
@@ -184,24 +225,40 @@ namespace SceneUtil::AssetPaging
             return Source{std::string(model.value()) + "|" + Resource::DerivedAssets::digest(bytes), streams, hostBytes, eligible};
         }
         catch (const PagingWorkCancelled&) { throw; }
-        catch (const Resource::SpeculativeDeferred&)
-        { outcome.defer(eligible); each(eligible, [](LaneCounters& value) { ++value.snapshotDenied; }); refuse(eligible, Gate::Capacity); }
+        catch (const Resource::SpeculativeDeferred& error)
+        { cpuRefusal(eligible,CpuStage::Snapshot,error); outcome.defer(eligible); each(eligible, [](LaneCounters& value) { ++value.snapshotDenied; }); refuse(eligible, Gate::Capacity); }
         catch (...)
         { each(eligible, [](LaneCounters& value) { ++value.snapshotDenied; }); refuse(eligible, Gate::Source); }
         return {};
     }
     std::unique_ptr<Resource::SpeculativeScope::Stage> reservePrivateSources(unsigned eligible, Outcome& outcome)
     {
-        try { return std::make_unique<Resource::SpeculativeScope::Stage>(32 * Resource::SpeculativeBudget::MiB, 32 * Resource::SpeculativeBudget::MiB); }
-        catch (const Resource::SpeculativeDeferred&)
-        { outcome.defer(eligible); each(eligible, [](LaneCounters& value) { ++value.privateCpuDenied; }); refuse(eligible, Gate::Capacity); }
+        // Reserve each bounded private clone before it is made. The source
+        // estimate includes its retained arrays, primitive data and conservative
+        // node overhead. Unused population capacity is not a simultaneous live
+        // allocation. Every admitted copy stays reserved through the final root
+        // charge, so original/control/private/cook overlap remains additive.
+        try { return std::make_unique<Resource::SpeculativeScope::Stage>(0,0); }
+        catch (const Resource::SpeculativeDeferred& error)
+        { cpuRefusal(eligible,CpuStage::Private,error); outcome.defer(eligible); each(eligible, [](LaneCounters& value) { ++value.privateCpuDenied; }); refuse(eligible, Gate::Capacity); }
         return {};
     }
-    bool admitPrivateSource(const Source& source, Outcome& outcome)
+    bool admitPrivateSource(const Source& source, Outcome& outcome,
+        Resource::SpeculativeScope::Stage& hostAdmission,std::size_t copyBytes)
     {
+        try { hostAdmission.reserveAdditional(copyBytes,32 * Resource::SpeculativeBudget::MiB); }
+        catch (const Resource::SpeculativeDeferred& error)
+        {
+            cpuRefusal(source.eligible,CpuStage::Private,error);
+            outcome.defer(source.eligible); each(source.eligible,[](LaneCounters& value) { ++value.privateCpuDenied; });
+            refuse(source.eligible,Gate::Capacity); return false;
+        }
         auto reservation = Resource::AssetGpuBudget::reserve(source.bytes);
         if (!reservation || !Resource::AssetGpuBudget::retainUntilShutdown(reservation))
         {
+            // No private clone was allocated, so this CPU future can be
+            // released. The GPU accounting retains its existing policy.
+            hostAdmission.releaseUnallocated(copyBytes);
             outcome.defer(source.eligible); each(source.eligible, [](LaneCounters& value) { ++value.privateGpuDenied; });
             refuse(source.eligible, Gate::Capacity); return false;
         }

@@ -2581,7 +2581,12 @@ void OMW::Engine::go()
             +" paging_transient_mask="+std::to_string(SceneUtil::AssetPaging::Counters::transientMask.load())
             +" paging_retry_attempts="+std::to_string(SceneUtil::AssetPaging::Counters::retryAttempts.load())
             +" paging_retry_deferred="+std::to_string(SceneUtil::AssetPaging::Counters::retryDeferred.load())
-            +" paging_retry_exhausted="+std::to_string(SceneUtil::AssetPaging::Counters::retryExhausted.load());
+            +" paging_retry_exhausted="+std::to_string(SceneUtil::AssetPaging::Counters::retryExhausted.load())
+            +" optional_tail_attempts="+std::to_string(SceneUtil::AssetPaging::Counters::tailAttempts.load())
+            +" optional_tail_queued="+std::to_string(SceneUtil::AssetPaging::Counters::tailQueued.load())
+            +" optional_tail_deferred="+std::to_string(SceneUtil::AssetPaging::Counters::tailDeferred.load())
+            +" optional_tail_exhausted="+std::to_string(SceneUtil::AssetPaging::Counters::tailExhausted.load())
+            +" optional_tail_cancelled="+std::to_string(SceneUtil::AssetPaging::Counters::tailCancelled.load());
         Log(Debug::Info) << "OptimizedMW asset QC L1: requested="
             +std::to_string(SceneUtil::AssetPaging::Counters::lod.sourceRequested.load())
             +" eligible="+std::to_string(SceneUtil::AssetPaging::Counters::lod.sourceCertified.load())
@@ -2609,9 +2614,31 @@ void OMW::Engine::go()
             const char* reasons[]={"graph","material","transform","layout","capacity","no_reduction","source","occluder","population"};
             for(unsigned i=0;i<static_cast<unsigned>(SceneUtil::AssetPaging::Gate::Count);++i)
                 result+=" paging_"+std::string(reasons[i])+"="+std::to_string(lane.refusals[i].load());
+            // Independent reservation predicates can overlap on one refusal.
+            // Stage totals and sample-time memory are not a population funnel.
+            const char* stages[]={"outer","snapshot","private"};
+            const char* predicates[]={"pressure_policy","missing_watermark","accounting_saturated",
+                "invalid_request","aggregate_limit","physical_headroom","process_commit_headroom",
+                "system_commit_headroom","regressed_watermark","arithmetic_overflow"};
+            static_assert(std::size(predicates)==Resource::SpeculativeBudget::ReservationRefusalCount);
+            static_assert(std::size(stages)==static_cast<unsigned>(SceneUtil::AssetPaging::CpuStage::Count));
+            for(unsigned stage=0;stage<std::size(stages);++stage)
+            {
+                for(unsigned reason=0;reason<std::size(predicates);++reason)
+                    result+=" cpu_"+std::string(stages[stage])+"_"+predicates[reason]+"="
+                        +std::to_string(lane.cpuReasons[stage][reason].load());
+                result+=" cpu_"+std::string(stages[stage])+"_unclassified="
+                    +std::to_string(lane.cpuUnclassified[stage].load());
+            }
             return result;
         };
         lodRefusals+=pagingRefusals(SceneUtil::AssetPaging::Counters::lod);
+        lodRefusals+=" material_owner_unknown="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerUnknown.load())
+            +" material_owner_null="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerNull.load())
+            +" material_owner_capacity="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerCapacity.load())
+            +" material_owner_shared="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerShared.load())
+            +" material_owner_cohesions="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerCohesions.load())
+            +" material_owner_cohesive_instances="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerCohesiveInstances.load());
         Log(Debug::Info) << "OptimizedMW asset QC L1 refusals:"+lodRefusals;
         Log(Debug::Info) << "OptimizedMW asset QC H1: requested="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.sourceRequested.load())
             +" eligible="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.sourceCertified.load())

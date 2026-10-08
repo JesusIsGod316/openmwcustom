@@ -86,6 +86,7 @@ namespace MWRender
         void setFixturePopulation(std::vector<FixtureReference> population) { mFixturePopulation = std::move(population); }
         void setFixtureBeforeCache(std::function<void()> checkpoint) { mFixtureBeforeCache = std::move(checkpoint); }
         void setFixtureBeforePublish(std::function<void()> checkpoint) { mFixtureBeforePublish = std::move(checkpoint); }
+        void setFixtureBeforePrivate(std::function<void()> checkpoint) { mFixtureBeforePrivate = std::move(checkpoint); }
 #endif
 
         void getPagedRefnums(const osg::Vec4i& activeGrid, std::vector<ESM::RefNum>& out);
@@ -131,6 +132,7 @@ namespace MWRender
             unsigned char mSpatialMode = 0;
             unsigned char mP3OptionalMask = 0;
             std::uint64_t mAssetVfsGeneration = 0;
+            std::uint64_t mAssetShaderGeneration = 0;
             SceneUtil::AssetPaging::Quality mAssets;
         };
         mutable std::mutex mV313ChunkQualityMutex;
@@ -148,6 +150,7 @@ namespace MWRender
         std::vector<FixtureReference> mFixturePopulation;
         std::function<void()> mFixtureBeforeCache;
         std::function<void()> mFixtureBeforePublish;
+        std::function<void()> mFixtureBeforePrivate;
 #endif
 
         std::mutex mRefTrackerMutex;

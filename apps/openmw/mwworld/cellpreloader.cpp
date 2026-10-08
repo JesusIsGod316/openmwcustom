@@ -34,6 +34,7 @@
 #include <components/resource/scenemanager.hpp>
 #include <components/debug/v3gpumemory.hpp>
 #include <components/settings/values.hpp>
+#include <components/shader/shadermanager.hpp>
 #include <components/terrain/view.hpp>
 #include <components/terrain/world.hpp>
 #include <components/vfs/manager.hpp>
@@ -506,12 +507,38 @@ namespace MWWorld
             , mCurrentFirst(mReadinessSplit && currentFirst)
             , mTerrainViews(views)
             , mWorld(world)
-            , mWorldspace(mCurrentFirst ? world->getWorldspace() : ESM::RefId{})
+            , mWorldspace(world->getWorldspace())
             , mResourceSystem(resourceSystem)
             , mPreloadPositions(preloadPositions.begin(), preloadPositions.end())
-            , mTargetReadiness(mCurrentFirst ? std::make_unique<SceneUtil::TerrainTargetReadiness>(preloadPositions.size()) : nullptr)
+            , mTargetReadiness(mCurrentFirst ? std::make_shared<SceneUtil::TerrainTargetReadiness>(preloadPositions.size()) : nullptr)
             , mHitchJob(hitchJob)
         {
+            mOptionalRetry.generation = optionalGeneration();
+            if (Debug::GameplayDiagnostics::enabled() || Debug::RuntimeDiagnostics::enabled())
+                mQueued = Debug::GameplayDiagnostics::Clock::now();
+        }
+
+        // Constructed only after the predecessor worker published Done. The
+        // completed weak views/readiness remain visible; only their optional
+        // strong cache preparation is revisited, with the finite same-cohort
+        // ledger. No required view is reset or replayed on this path.
+        TerrainPreloadItem(const TerrainPreloadItem& previous,std::uint64_t hitchJob)
+            : mAbort(false)
+            , mCancellableOptimization(previous.mCancellableOptimization)
+            , mReadinessSplit(previous.mReadinessSplit)
+            , mCurrentFirst(previous.mCurrentFirst)
+            , mSucceeded(true)
+            , mTerrainViews(previous.mTerrainViews)
+            , mWorld(previous.mWorld)
+            , mWorldspace(previous.mWorldspace)
+            , mResourceSystem(previous.mResourceSystem)
+            , mPreloadPositions(previous.mPreloadPositions)
+            , mTargetReadiness(previous.mTargetReadiness)
+            , mHitchJob(hitchJob)
+            , mOptionalRetry(previous.mOptionalRetry)
+            , mOptionalRetryOnly(true)
+        {
+            mRequiredReporter.complete();
             if (Debug::GameplayDiagnostics::enabled() || Debug::RuntimeDiagnostics::enabled())
                 mQueued = Debug::GameplayDiagnostics::Clock::now();
         }
@@ -542,7 +569,18 @@ namespace MWWorld
                 }
             };
 
-            if (mCurrentFirst)
+            if (mOptionalRetryOnly)
+            {
+                // A queued retry grants no permission to use stale source/world
+                // data. Cancellation keeps already-published weak readiness.
+                if (optionalGeneration() == mOptionalRetry.generation && matchesWorld(mWorld)
+                    && !mAbort.load(std::memory_order_acquire))
+                    prepareOptionalStrong(measure);
+                else
+                { mOptionalRetry.cancel(); ++SceneUtil::AssetPaging::Counters::tailCancelled; }
+                completeLoadingReporter();
+            }
+            else if (mCurrentFirst)
                 prepareCurrentFirst(measure);
             else if (mCancellableOptimization && mReadinessSplit)
             {
@@ -582,84 +620,7 @@ namespace MWWorld
                 }
 
                 if (mSucceeded.load(std::memory_order_acquire) && !mAbort.load(std::memory_order_relaxed))
-                {
-                    Debug::HitchTrace::Scope hitchOptional("terrain.optional_prepare", Debug::HitchTrace::CpuTiming::Scoped);
-                    hitchOptional.setLink(mHitchJob);
-                    Loading::Reporter optimizationReporter;
-                    const auto optionalStart = Debug::GameplayDiagnostics::Clock::now();
-                    Resource::SpeculativeBudget* budget = mResourceSystem->speculativeBudget();
-                    bool admitted = true;
-
-                    // P2's optional tail is already serialized by the single
-                    // TerrainPreloadItem owner, so it does not consume P1B's
-                    // reserved near-future JOB slot. It still uses the
-                    // NearFuture byte/headroom reservation below. The reserved
-                    // job slot remains available to the closest exterior cell.
-                    if (!budget && mResourceSystem->openGlHostMemoryBudgetEnabled())
-                    {
-                        const auto sample = Resource::ResourceSystem::speculativeSample(mResourceSystem);
-                        admitted = sample.generation
-                            && sample.decision.state != Resource::OpenGlPressure::Critical
-                            && sample.decision.state != Resource::OpenGlPressure::Degraded;
-                    }
-                    else if (mResourceSystem->hostMemoryPressure() == Resource::HostMemoryPressure::Critical)
-                        admitted = false;
-
-                    if (admitted)
-                    {
-                        Resource::SpeculativeScope speculativeScope(budget,
-                            &Resource::ResourceSystem::speculativeSample, mResourceSystem,
-                            Resource::SpeculativePriority::NearFuture);
-                        try
-                        {
-                            // Bound the weak->strong overlap. Nested resource
-                            // stages inherit NearFuture priority; the private
-                            // weak view is released after cache replacement.
-                            SceneUtil::AssetPaging::OptionalUpgradeScope scope(&mAbort);
-                            mOptionalUpgradeRequests.store(mWorld->preloadStrongUpgrade(mTerrainViews.front().get(),
-                                mPreloadPositions.front().mPosition, mPreloadPositions.front().mCellBounds,
-                                mAbort, optimizationReporter), std::memory_order_release);
-
-                            // Additional target views are independent future
-                            // grids; upgrade each without replaying preload().
-                            for (std::size_t i = 1; i < mTerrainViews.size()
-                                && i < mPreloadPositions.size() && !mAbort; ++i)
-                            {
-                                mOptionalUpgradeRequests.fetch_add(mWorld->preloadStrongUpgrade(
-                                    mTerrainViews[i].get(), mPreloadPositions[i].mPosition,
-                                    mPreloadPositions[i].mCellBounds, mAbort, optimizationReporter),
-                                    std::memory_order_relaxed);
-                            }
-                            mOptionalCompleted.store(!mAbort.load(), std::memory_order_release);
-                        }
-                        catch (const Resource::SpeculativeDeferred&)
-                        {
-                            mOptionalDeferred.store(true, std::memory_order_release);
-                        }
-                        catch (const SceneUtil::PagingWorkCancelled&)
-                        {
-                            // Correct readiness was already published. Obsolete
-                            // stronger preparation can disappear without a wait.
-                        }
-                        catch (const std::exception& e)
-                        {
-                            Log(Debug::Warning)
-                                << "Optional paging optimization failed after required terrain readiness: " << e.what();
-                        }
-                        catch (...)
-                        {
-                            Log(Debug::Warning)
-                                << "Optional paging optimization failed after required terrain readiness";
-                        }
-                    }
-                    else
-                        mOptionalDeferred.store(true, std::memory_order_release);
-
-                    optimizationReporter.complete();
-                    if (measure)
-                        mOptionalMs = std::chrono::duration<double, std::milli>(
-                            Debug::GameplayDiagnostics::Clock::now() - optionalStart).count();
-                }
+                    prepareOptionalStrong(measure);
             }
             else if (mCancellableOptimization)
             {
@@ -735,6 +696,14 @@ namespace MWWorld
         bool currentFirst() const noexcept { return mCurrentFirst; }
         bool matchesWorld(Terrain::World* world) const
         { return world == mWorld && world && world->getWorldspace() == mWorldspace; }
+        bool optionalSourcesMatch() const noexcept
+        { return optionalGeneration() == mOptionalRetry.generation; }
+        bool optionalRetryDue(std::uint64_t now) const noexcept
+        {
+            return isDone() && mReadinessSplit && succeeded() && !mAbort.load(std::memory_order_acquire)
+                && (mOptionalRetry.generation.mask & SceneUtil::AssetPaging::Mask)
+                && mOptionalRetry.due(optionalGeneration(),now);
+        }
         std::optional<std::size_t> targetIndex(const PositionCellGrid& position) const
         {
             for (std::size_t i = 0; i < mPreloadPositions.size(); ++i)
@@ -838,6 +807,85 @@ namespace MWWorld
         }
 
     private:
+        SceneUtil::AssetPaging::OptionalTailRetry::Generation optionalGeneration() const noexcept
+        {
+            const unsigned mask = Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask;
+            if (!mask) return {mWorld,0,0,0};
+            return {mWorld,mResourceSystem->getVFS()->getIndexGeneration(),
+                mResourceSystem->getSceneManager()->getShaderManager().assetGeneration(),
+                mask};
+        }
+
+        void prepareOptionalStrong(bool measure)
+        {
+            Debug::HitchTrace::Scope optional("terrain.optional_prepare",Debug::HitchTrace::CpuTiming::Scoped);
+            optional.setLink(mHitchJob);
+            optional.setMetric(0,"tail_retry",mOptionalRetryOnly);
+            optional.setMetric(1,"tail_attempt",mOptionalRetry.attempts+1);
+            const auto start = measure ? Debug::GameplayDiagnostics::Clock::now()
+                                       : Debug::GameplayDiagnostics::Clock::time_point{};
+            Loading::Reporter reporter;
+            auto* budget = mResourceSystem->speculativeBudget();
+            bool admitted = true, deferred = false;
+            if (!budget && mResourceSystem->openGlHostMemoryBudgetEnabled())
+            {
+                const auto sample = Resource::ResourceSystem::speculativeSample(mResourceSystem);
+                admitted = sample.generation && sample.decision.state != Resource::OpenGlPressure::Critical
+                    && sample.decision.state != Resource::OpenGlPressure::Degraded;
+            }
+            else if (mResourceSystem->hostMemoryPressure() == Resource::HostMemoryPressure::Critical)
+                admitted = false;
+            if (admitted)
+            {
+                // The optional tail remains serialized by this terrain owner;
+                // NearFuture byte/headroom gates and the outer128MiB reservation
+                // are unchanged. No P1 job slot or demand wait is introduced.
+                Resource::SpeculativeScope speculativeScope(budget,
+                    &Resource::ResourceSystem::speculativeSample,mResourceSystem,
+                    Resource::SpeculativePriority::NearFuture);
+                try
+                {
+                    SceneUtil::AssetPaging::OptionalUpgradeScope scope(&mAbort);
+                    const auto prepare = [&](std::size_t index) {
+                        if (mAbort.load(std::memory_order_relaxed)) return;
+                        SceneUtil::PagingWorkScope::checkpoint();
+                        if (mOptionalRetry.generation.mask && (!optionalSourcesMatch() || !matchesWorld(mWorld)))
+                            throw SceneUtil::PagingWorkCancelled{};
+                        mOptionalUpgradeRequests.fetch_add(mWorld->preloadStrongUpgrade(mTerrainViews[index],
+                            mPreloadPositions[index].mPosition,mPreloadPositions[index].mCellBounds,mAbort,reporter),
+                            std::memory_order_relaxed);
+                    };
+                    if (mCurrentFirst)
+                        for (std::size_t index : mTargetReadiness->completed()) prepare(index);
+                    else
+                        for (std::size_t index=0;index<mTerrainViews.size() && index<mPreloadPositions.size();++index)
+                            prepare(index);
+                    deferred = scope.needsRetry();
+                    mOptionalCompleted.store(!mAbort.load() && !deferred,std::memory_order_release);
+                }
+                catch (const Resource::SpeculativeDeferred&) { deferred = true; }
+                catch (const SceneUtil::PagingWorkCancelled&)
+                { mOptionalRetry.cancel(); ++SceneUtil::AssetPaging::Counters::tailCancelled; }
+                catch (const std::exception& e)
+                { Log(Debug::Warning) << "Optional paging optimization failed after target readiness: " << e.what(); }
+                catch (...)
+                { Log(Debug::Warning) << "Optional paging optimization failed after target readiness"; }
+            }
+            else deferred = true;
+            mOptionalDeferred.store(deferred,std::memory_order_release);
+            if (mOptionalRetry.generation.mask && mReadinessSplit)
+            {
+                ++SceneUtil::AssetPaging::Counters::tailAttempts;
+                mOptionalRetry.finishAttempt(deferred && !mAbort.load(std::memory_order_acquire),
+                    SceneUtil::AssetPaging::milliseconds());
+                if (deferred) ++SceneUtil::AssetPaging::Counters::tailDeferred;
+                if (mOptionalRetry.exhausted) ++SceneUtil::AssetPaging::Counters::tailExhausted;
+            }
+            reporter.complete();
+            if (measure) mOptionalMs = std::chrono::duration<double,std::milli>(
+                Debug::GameplayDiagnostics::Clock::now()-start).count();
+        }
+
         void prepareCurrentFirst(bool measure)
         {
             // Serial private views, per-target publication. Future weak views
@@ -907,48 +955,7 @@ namespace MWWorld
             mTargetReadiness->cancelPending();
             if (mAbort.load(std::memory_order_acquire) || !mSucceeded.load(std::memory_order_acquire)) return;
 
-            // Keep the existing optional strong-upgrade owner/budget. Only
-            // views whose complete weak preparation succeeded are upgraded.
-            Debug::HitchTrace::Scope optional("terrain.optional_prepare", Debug::HitchTrace::CpuTiming::Scoped);
-            optional.setLink(mHitchJob);
-            const auto start = measure ? Debug::GameplayDiagnostics::Clock::now()
-                                       : Debug::GameplayDiagnostics::Clock::time_point{};
-            Loading::Reporter reporter;
-            Resource::SpeculativeBudget* budget = mResourceSystem->speculativeBudget();
-            bool admitted = true;
-            if (!budget && mResourceSystem->openGlHostMemoryBudgetEnabled())
-            {
-                const auto sample = Resource::ResourceSystem::speculativeSample(mResourceSystem);
-                admitted = sample.generation && sample.decision.state != Resource::OpenGlPressure::Critical
-                    && sample.decision.state != Resource::OpenGlPressure::Degraded;
-            }
-            else if (mResourceSystem->hostMemoryPressure() == Resource::HostMemoryPressure::Critical) admitted = false;
-            if (admitted)
-            {
-                Resource::SpeculativeScope speculativeScope(budget,
-                    &Resource::ResourceSystem::speculativeSample, mResourceSystem,
-                    Resource::SpeculativePriority::NearFuture);
-                try
-                {
-                    SceneUtil::AssetPaging::OptionalUpgradeScope scope(&mAbort);
-                    for (std::size_t index : mTargetReadiness->completed())
-                    {
-                        if (mAbort.load(std::memory_order_relaxed)) break;
-                        mOptionalUpgradeRequests.fetch_add(mWorld->preloadStrongUpgrade(mTerrainViews[index],
-                            mPreloadPositions[index].mPosition, mPreloadPositions[index].mCellBounds, mAbort, reporter),
-                            std::memory_order_relaxed);
-                    }
-                    mOptionalCompleted.store(!mAbort.load(), std::memory_order_release);
-                }
-                catch (const Resource::SpeculativeDeferred&) { mOptionalDeferred.store(true, std::memory_order_release); }
-                catch (const SceneUtil::PagingWorkCancelled&) {}
-                catch (const std::exception& e) { Log(Debug::Warning) << "Optional paging optimization failed after target readiness: " << e.what(); }
-                catch (...) { Log(Debug::Warning) << "Optional paging optimization failed after target readiness"; }
-            }
-            else mOptionalDeferred.store(true, std::memory_order_release);
-            reporter.complete();
-            if (measure) mOptionalMs = std::chrono::duration<double, std::milli>(
-                Debug::GameplayDiagnostics::Clock::now() - start).count();
+            prepareOptionalStrong(measure);
         }
 
         void completeLoadingReporter()
@@ -974,7 +981,7 @@ namespace MWWorld
         const ESM::RefId mWorldspace;
         Resource::ResourceSystem* mResourceSystem;
         std::vector<PositionCellGrid> mPreloadPositions;
-        std::unique_ptr<SceneUtil::TerrainTargetReadiness> mTargetReadiness;
+        std::shared_ptr<SceneUtil::TerrainTargetReadiness> mTargetReadiness;
         const std::uint64_t mHitchJob;
         bool mHitchLoadedPublication = false;
         Loading::Reporter mLoadingReporter;
@@ -983,6 +990,8 @@ namespace MWWorld
         std::atomic<double> mQueueMs{0}, mWorkMs{0}, mReadinessMs{0}, mOptionalMs{0};
         std::atomic<std::uint64_t> mOptionalUpgradeRequests{0};
         std::atomic<bool> mOptionalDeferred{false}, mOptionalCompleted{false};
+        SceneUtil::AssetPaging::OptionalTailRetry mOptionalRetry;
+        const bool mOptionalRetryOnly = false;
     };
 
     /// Worker thread item: update the resource system's cache, effectively deleting unused entries.
@@ -1624,13 +1633,33 @@ namespace MWWorld
         else if (contains(mTerrainPreloadPositions, positions, 128.f)
             && (!mCancellablePagingOptimization || !mTerrainPreloadItem || !mTerrainPreloadItem->isDone()
                 || mTerrainPreloadItem->succeeded())
-            && (!mTerrainPreloadItem || !mTerrainPreloadItem->currentFirst() || mTerrainPreloadItem->canServe(positions)))
+            && (!mTerrainPreloadItem || !mTerrainPreloadItem->currentFirst() || mTerrainPreloadItem->canServe(positions))
+            && (!mTerrainPreloadItem || !(Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask)
+                || (mTerrainPreloadItem->optionalSourcesMatch() && mTerrainPreloadItem->matchesWorld(mTerrain))))
+        {
+            // Weak readiness still satisfies this request immediately. A done
+            // optional tail can revisit that exact source/target cohort after
+            // cooldown; scheduling never sleeps or waits on the gameplay path.
+            if (mTerrainPreloadItem
+                && mTerrainPreloadItem->optionalRetryDue(SceneUtil::AssetPaging::milliseconds()))
+            {
+                Debug::HitchTrace::Scope retry("terrain.optional_retry_enqueue");
+                retry.retain(); retry.setLink(mTerrainPreloadItem->hitchJob());
+                mTerrainPreloadItem = new TerrainPreloadItem(*mTerrainPreloadItem,retry.id());
+                ++SceneUtil::AssetPaging::Counters::tailQueued;
+                mWorkQueue->addWorkItem(mTerrainPreloadItem);
+            }
             return;
+        }
 
         if (mTerrainPreloadItem && !mTerrainPreloadItem->isDone())
         {
             if (!v311RollingExactActive || positions.empty())
                 return;
+
+            if ((Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask)
+                && (!mTerrainPreloadItem->optionalSourcesMatch() || !mTerrainPreloadItem->matchesWorld(mTerrain)))
+                mTerrainPreloadItem->abort(); // obsolete optional work; no frame-thread join
 
             const auto firstBoundsEqual = [](std::span<const PositionCellGrid> a,
                                               std::span<const PositionCellGrid> b) {

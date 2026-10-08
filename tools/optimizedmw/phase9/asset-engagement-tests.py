@@ -65,6 +65,18 @@ def members(mask, log=None, exit_code=0):
 
 
 class EngagementTests(unittest.TestCase):
+    def test_overlapping_denial_predicates_preserve_units_without_false_inconsistency(self):
+        log = proof(1).replace("refusals: unsupported=0",
+            "refusals: cpu_private_pressure_policy=7 cpu_private_physical_headroom=7 "
+            "material_owner_unknown=2 material_owner_shared=1 material_conflict_instances=14 "
+            "material_owner_cohesions=3 material_owner_cohesive_instances=8 unsupported=0")
+        result = self.evaluate(members(1, log))
+        self.assertEqual(result["status"], "ENGAGEMENT_QUALIFIED")
+        text = QC.report_text(result)
+        self.assertIn("CPU refusal predicates overlap", text)
+        self.assertIn("These units must not be summed", text)
+        self.assertEqual(result["lanes"]["L1"]["refusals"]["cpu_private_physical_headroom"], 7)
+
     def evaluate(self, data, zip_input=True, **kw):
         with tempfile.TemporaryDirectory(prefix="p9-engagement-") as temporary:
             root = pathlib.Path(temporary)

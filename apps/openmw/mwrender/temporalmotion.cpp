@@ -289,6 +289,10 @@ namespace MWRender
             nextSurfaces.reserve(camera.dynamic->surfaces.size());
             for (const auto& surface : camera.dynamic->surfaces)
             {
+                // The cull snapshot cannot authorize a material/source changed
+                // before its motion draw. Keep camera motion and refuse only
+                // this unsupported overlay; never mark dense completeness.
+                if (!surface.materialCurrent()) { ++dynamicUnsupported; continue; }
                 const auto previous = std::find_if(c.previousSurfaces.begin(), c.previousSurfaces.end(), [&](const auto& value) {
                     return surface.compatibleHistory(value.surface);
                 });

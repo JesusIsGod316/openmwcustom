@@ -4,6 +4,7 @@
 #include "v321classifiedcompileset.hpp"
 
 #include <components/debug/hitchtrace.hpp>
+#include <components/shader/assetgeometrycontract.hpp>
 #include <components/shader/programvariant.hpp>
 
 #include <osg/Camera>
@@ -75,6 +76,10 @@ namespace Resource
             std::shared_ptr<V321ResourceCompileLifetime> lifetime = {})
         try
         {
+            // Capture source, linking schema and effective defines from one
+            // producer recipe while independent terrain/template workers run.
+            // No ShaderManager call is made while this reader lease is held.
+            Shader::AssetGeometry::ProducerReadScope producer;
             if (!Shader::exactProgramVariantsEnabled() || !context || !context->getState()
                 || !dynamic_cast<Shader::VariantProgram*>(program) || program->isFixedFunction())
                 return {};
@@ -135,6 +140,9 @@ namespace Resource
         }
         bool compile(osgUtil::IncrementalCompileOperation::CompileInfo& info) override
         {
+            // Keep the validated producer stable through its actual ICO
+            // compilation, rather than releasing it after the identity check.
+            Shader::AssetGeometry::ProducerReadScope producer;
             auto* state = info.getState();
             if (!state || !mRequest->context.valid() || mRequest->context.get() != state->getGraphicsContext()
                 || mRequest->contextId != state->getContextID() || !state->getGraphicsContext()->isCurrent()
@@ -190,6 +198,9 @@ namespace Resource
 
             void collect()
             {
+                // This define snapshot precedes Request::create; both use the
+                // same nested reader lease and never acquire a manager mutex.
+                Shader::AssetGeometry::ProducerReadScope producer;
                 const auto found = state->getAttributeMap().find({ osg::StateAttribute::PROGRAM, 0 });
                 if (found == state->getAttributeMap().end() || found->second.attributeVec.empty())
                     return;

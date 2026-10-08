@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 
 
 class QualificationError(ValueError):
@@ -59,6 +60,20 @@ def current_inputs(values):
         require(re.fullmatch(r"[a-fA-F0-9]{64}", digest) is not None and sha(path) == digest.lower(), "Changed execution input: " + path)
 
 
+def population(text, marker, identity_key, identities, expected):
+    """Each required production family must execute once in this exact receipt."""
+    rows = re.findall(r"^" + re.escape(marker) + r" (.*)$", text, re.M)
+    require(len(rows) == len(identities), "Missing/extra production family in " + marker)
+    result = {}
+    for row in rows:
+        fields = record(marker + " " + row + "\n", marker, expected)
+        identity = fields.get(identity_key)
+        require(identity in identities and identity not in result, "Unknown/duplicate family in " + marker)
+        result[identity] = fields
+    require(set(result) == set(identities), "Incomplete family population in " + marker)
+    return result
+
+
 def evaluate(folder, commit, source, game, workspace, installed=None):
     base = load(folder / "RELEASE-GATES.json")
     require(base.get("source_commit") == commit and base.get("deployment_prerequisite_pass") is True,
@@ -75,9 +90,13 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
     extra_finish = datetime.fromisoformat(extra["finished_utc"]).timestamp()
     require(start <= extra_start <= extra_finish <= finish, "Asset fixtures outside the exact final execution window")
     fixture_paths = {str((game / (name + ".exe")).resolve()) for name in
-                     ("p9-asset-shader-contract", "p9-asset-material-runtime")}
+                     ("p9-asset-shader-contract", "p9-asset-material-runtime", "p9-asset-admission",
+                      "p9-generated-static-lod", "p9-temporal-asset-producer")}
     require(set(extra.get("input_hashes", {})) == fixture_paths, "Asset fixture executable population is incomplete")
     current_inputs(extra["input_hashes"])
+    configurations = {str((folder / name).resolve()) for name in ("current-openmw.cfg", "current-settings.cfg")}
+    require(set(extra.get("configuration_hashes", {})) == configurations, "Current configuration fixture inputs incomplete")
+    current_inputs(extra["configuration_hashes"])
     current_inputs(main_run["input_hashes"])
     identity = load(folder / "RELEASE-INPUT-IDENTITY.json")
     require(identity.get("commit") == commit, "Retained final binding is stale")
@@ -107,7 +126,10 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
         require(sha(installed / "openmw.exe") == base["gates"]["built_exe_pdb"]["details"]["exe"]["sha256"], "Installed executable differs from the qualified build")
     receipts = extra.get("receipt_sha256", {})
     required = {"ASSET-SHADER-CONTRACT.txt", "ASSET-MATERIAL-RUNTIME.txt", "ASSET-MATERIAL-RUNTIME-REVERSED.txt", "ASSET-SHADER-BASELINE.txt",
-                "GEOMETRY-L1-CHAIN.txt", "GEOMETRY-H1-CHAIN.txt", "PACKAGE-QUALIFIER-TESTS-FINAL.txt", "ASSET-SHADER-GATE-TESTS-FINAL.txt"}
+                "GEOMETRY-L1-CHAIN.txt", "GEOMETRY-H1-CHAIN.txt", "PACKAGE-QUALIFIER-TESTS-FINAL.txt", "ASSET-SHADER-GATE-TESTS-FINAL.txt",
+                "ASSET-ADMISSION.txt", "EFFECTIVE-MATERIAL-OWNERSHIP.txt", "TEMPORAL-ASSET-PRODUCER.txt",
+                "ASSET-SHADER-TEMPORAL-ONLY.txt", "GEOMETRY-L1-CURRENT.txt",
+                "EXACT-VARIANT-READER-TESTS.txt", "EXACT-VARIANT-READER-TESTS.xml"}
     require(set(receipts) == required, "Asset result receipt population incomplete")
     texts = {}
     for name, digest in receipts.items():
@@ -118,12 +140,47 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
     for name in ("PACKAGE-QUALIFIER-TESTS-FINAL.txt", "ASSET-SHADER-GATE-TESTS-FINAL.txt"):
         require(re.findall(r"^Ran (\d+) tests in [\d.]+s\s*$", texts[name], re.M) == ["8"]
                 and re.search(r"\nOK\s*$", texts[name]) and "skipped=" not in texts[name], "Package gate regression suite did not execute eight complete passes: " + name)
+    variant_xml = texts["EXACT-VARIANT-READER-TESTS.xml"]
+    require("<!DOCTYPE" not in variant_xml.upper() and "<!ENTITY" not in variant_xml.upper(), "Unexpected variant XML entity")
+    variant_cases = list(ET.fromstring(variant_xml).iter("testcase"))
+    require(len(variant_cases) == 2 and {case.get("name") for case in variant_cases} ==
+            {"FactorySeparatesActualTemplateBindingsAndSamplers", "ProducerRelinkRestoresActualSamplerUniformsOnTheSamePcp"}
+            and all(case.get("classname") == "ProgramVariant" and case.get("status") == "run"
+                    and case.get("result") == "completed" and not list(case.iter("failure"))
+                    and not list(case.iter("error")) and not list(case.iter("skipped")) for case in variant_cases),
+            "Exact variant reader transaction tests failed or skipped")
     baseline = record(texts["ASSET-SHADER-BASELINE.txt"], "ASSET_SHADER_BASELINE_PASS",
                       {"stock_and_pbr": 1, "pinned_overlay": 1, "installed_authority": 0})
     contract = record(texts["ASSET-SHADER-CONTRACT.txt"], "ASSET_CONTRACT_PASS",
                       {"stock": 1, "pbr": 1, "source_negative": 1, "link_negative": 1,
                        "bindings_negative": 1, "defines_negative": 1, "epoch_negative": 1,
-                       "path_negative": 1, "indirect_unchanged": 1, "metadata_bounded": 1})
+                       "path_negative": 1, "indirect_unchanged": 1, "metadata_bounded": 1,
+                       "cached_refresh": 1, "l1_source": 1, "old_snapshot_rejected": 1,
+                       "no_op": 1, "mutation_refresh_rejected": 1, "refresh_capacity": 1})
+    refresh = population(texts["ASSET-SHADER-CONTRACT.txt"], "ASSET_CONTRACT_REFRESH", "family", {"stock", "pbr"},
+                         {"cached": 1, "old_snapshot_rejected": 1, "current_recipe": 1, "l1_source": 1,
+                          "no_op": 1, "slot_replaced": 1, "bounded": 1})
+    population(texts["ASSET-SHADER-CONTRACT.txt"], "ASSET_CONTRACT_REFRESH_NEGATIVE", "mutation", {str(n) for n in range(8)}, {"rejected": 1})
+    concurrency = record(texts["ASSET-SHADER-CONTRACT.txt"], "ASSET_CONTRACT_CONCURRENCY",
+                         {"readers": 2, "writes": 16, "coherent_snapshots": 1, "no_deadlock": 1, "stale_refused": 1})
+    capacity = record(texts["ASSET-SHADER-CONTRACT.txt"], "ASSET_CONTRACT_REFRESH_CAPACITY", {"cap": 4194304, "fallback": 1})
+    require(all(re.fullmatch(r"[0-9]+", capacity.get(key, "")) for key in ("retained", "metadata"))
+            and int(capacity["retained"]) > 0 and int(capacity["metadata"]) <= 4194304, "Refresh metadata quota was not exercised safely")
+    temporal_only = record(texts["ASSET-SHADER-TEMPORAL-ONLY.txt"], "ASSET_CONTRACT_PASS",
+                           {key: 1 for key in ("stock", "pbr", "source_negative", "link_negative", "bindings_negative",
+                            "defines_negative", "epoch_negative", "path_negative", "indirect_unchanged", "metadata_bounded",
+                            "cached_refresh", "l1_source", "old_snapshot_rejected", "no_op", "mutation_refresh_rejected",
+                            "refresh_capacity", "temporal_only")})
+    record(texts["ASSET-SHADER-TEMPORAL-ONLY.txt"], "ASSET_CONTRACT_CONCURRENCY",
+           {"readers": 2, "writes": 16, "coherent_snapshots": 1, "no_deadlock": 1, "stale_refused": 1})
+    temporal = record(texts["TEMPORAL-ASSET-PRODUCER.txt"], "TEMPORAL_ASSET_PASS",
+                      {key: 1 for key in ("stock", "pbr", "index_lineage", "real_motion_pixels", "opaque_only",
+                       "current_material", "bounded", "no_dense_claim", "no_dlss_claim", "indirect_unchanged", "temporal_only")})
+    population(texts["TEMPORAL-ASSET-PRODUCER.txt"], "TEMPORAL_ASSET_FAMILY", "family", {"stock", "pbr"},
+               {key: 1 for key in ("source", "tier_switch", "tier_return", "motion_pixels", "previous_pose", "effective_program",
+                "blend_override", "alpha_override", "shader_cutout", "source_mutation", "binding_mutation", "material_mutation",
+                "callback", "epoch", "projection", "projection_mutation", "previous_projection",
+                "missing_projection", "stale_lineage", "indirect_unchanged")})
     runtime = record(texts["ASSET-MATERIAL-RUNTIME.txt"], "ASSET_MATERIAL_PASS",
                      {"l1": 1, "h1": 1, "source_mutation": 1, "derived_mutation": 1,
                       "cull_fallback": 1, "draw_fallback": 1, "control_preserved": 1, "gl_error": 0})
@@ -132,17 +189,61 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
                                "cull_fallback": 1, "draw_fallback": 1, "control_preserved": 1, "gl_error": 0})
     record(texts["ASSET-MATERIAL-RUNTIME-REVERSED.txt"], "ASSET_MATERIAL_PROJECTION",
            {"reversed": 1, "arbitrary_projection_refused": 1, "clipcontrol_refused": 1, "gl_error": 0})
+    ownership = record(texts["EFFECTIVE-MATERIAL-OWNERSHIP.txt"], "L1_EFFECTIVE_MATERIAL_OWNERSHIP",
+                       {key: 1 for key in ("leaf_own", "inherited", "sibling_restore", "override_protected",
+                        "shared_ordinary", "family_reunion", "null_refused", "unknown_refused", "capacity_refused")})
+    record(texts["EFFECTIVE-MATERIAL-OWNERSHIP.txt"], "L1_TEMPORAL_DRAW_RECIPE", {key: 1 for key in
+           ("exact_owner", "borrowed_owner_refused", "source_uv_refused", "source_material_refused", "derived_indices_refused", "restored_exact")})
+    admission = record(texts["ASSET-ADMISSION.txt"], "ASSET_ADMISSION_PASS",
+                       {key: 1 for key in ("fixed_cap", "exact_private_progress", "aggregate_denial", "coherent_receipt",
+                        "headroom", "unknown_pressure", "owner_release", "growth_conserved", "overflow", "demand_unblocked",
+                        "retry_cooldown", "finite_tail", "generation_reset", "cancellation", "terminal_fallback")})
     chain = {}
-    for mask, name in ((1, "GEOMETRY-L1-CHAIN.txt"), (2, "GEOMETRY-H1-CHAIN.txt")):
+    for mask, name in ((1, "GEOMETRY-L1-CHAIN.txt"), (2, "GEOMETRY-H1-CHAIN.txt"), (1, "GEOMETRY-L1-CURRENT.txt")):
         chain[name] = record(texts[name], "CHAIN_PACKAGE",
                              {"mask": mask, "packaged_shaders": 1, "captured_settings": 1,
                               "define_substitutions": 0, "stock_certificate_injection": 0})
         record(texts[name], "CHAIN_SHADER_MUTATION", {"published": 1, "fallback_original": 1, "derived_draws": 0, "gl_error": 0})
         record(texts[name], "CHAIN_SHADOW", {"real_shadow_cull": 1, "derived_draws": 0, "gl_error": 0})
         record(texts[name], "CHAIN_POSTPROCESS", {"shader_global_policy_mirrored": 1, "output_canvas_qualified": 0})
+        record(texts[name], "CHAIN_SHADER_COHORT", {key: 1 for key in
+            ("unchanged_no_generation", "unchanged_no_recook", "old_guard_original", "stale_caller_cancelled",
+             "fresh_owner_preserved", "source_recertified", "new_cohort_recooked", "fresh_actual_draw",
+             "restored_actual_draw", "old_snapshot_still_epoch") } | {"gl_error": 0})
+        record(texts[name], "CHAIN_RETRY_OBSERVATIONS", {"cooldown_signalled": 1, "pending_ico_signalled": 1,
+            "ready_stops_retry": 1, "cache_observation_recooks": 0})
+        record(texts[name], "CHAIN_RETRY_COALESCED", {"inflight_signalled": 1, "exact_weak_owner": 1,
+            "observer_build_attempts": 0, "peer_published": 1})
+        record(texts[name], "CHAIN_RETRY_EXHAUSTED", {"actual_attempts": 3, "settled_stops_retry": 1,
+            "ordinary_preserved": 1, "builder_calls": 0, "generation_reset": 0})
+        if mask == 1:
+            mutations = population(texts[name], "CHAIN_TEMPORAL_RECIPE_MUTATION", "kind",
+                                   {"source_uv", "source_material", "derived_indices"},
+                                   {"captured_current": 1, "changed_after_cull": 1, "temporal_recipe_refused": 1,
+                                    "derived_draws": 0, "gl_error": 0})
+            require(all(all(re.fullmatch(r"[0-9]+", row.get(key, "")) and int(row[key]) > minimum
+                            for key, minimum in (("original_draws", 0), ("callback_fallbacks", 0), ("rgb", 16)))
+                        for row in mutations.values()), "Temporal recipe mutation did not prove actual original draw coverage")
         if mask == 2:
             record(texts[name], "CHAIN_SHADER_FEATURES", {"normal_map_coverage": 1, "required_h1_normal_map": 1})
-    return {"baseline": baseline, "contract": contract, "runtime": runtime, "reversed_runtime": reversed_runtime, "package_chains": chain,
+        else:
+            record(texts[name], "CHAIN_MIXED_INPUT", {"candidate_instances": 2, "spatial_buckets": 2,
+                   "ordinary_instances": 1, "actual_stat_sources": 1, "material_substitution": 0})
+            mixed = record(texts[name], "CHAIN_MIXED_CONTROL", {"spatial_buckets": 2, "ordinary_preserved": 1, "extra_control_submissions": 0})
+            require(all(re.fullmatch(r"[0-9]+", mixed.get(key, "")) for key in
+                        ("baseline_submissions", "retained_submissions", "baseline_indices", "retained_indices", "cohesive_partitions"))
+                    and 0 < int(mixed["retained_submissions"]) <= int(mixed["baseline_submissions"])
+                    and 0 < int(mixed["baseline_indices"]) == int(mixed["retained_indices"])
+                    and int(mixed["cohesive_partitions"]) > 0, "Mixed production control batching or family cohesion not proved")
+            record(texts[name], "CHAIN_MIXED_CONSUMED", {"mixed_ordinary_candidate": 1, "real_multi_bucket_cook": 1,
+                   "actual_main_draw": 1, "fewer_indices": 1, "control_batching_preserved": 1, "gl_error": 0})
+            shared = record(texts[name], "CHAIN_MIXED_SHARED_REFUSAL", {"ordinary_conflict_refused": 1, "build_attempted": 0,
+                            "exact_indices": 1, "control_preserved": 1, "terminal_stops_retry": 1})
+            require(shared.get("baseline_submissions") == shared.get("fallback_submissions"), "Shared ordinary material did not preserve exact fallback submissions")
+    return {"baseline": baseline, "contract": contract, "cached_refresh": refresh, "shader_concurrency": concurrency,
+            "ownership": ownership, "admission": admission,
+            "runtime": runtime, "reversed_runtime": reversed_runtime, "package_chains": chain,
+            "temporal_only_provenance": temporal_only, "opaque_motion_producer": temporal,
             "package_input_sha256": extra["package_input_sha256"],
             "fixture_executables": extra["input_hashes"], "source_commit": commit,
             "installed_root": str(installed) if installed else None}

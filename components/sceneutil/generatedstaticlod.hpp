@@ -13,6 +13,7 @@
 #include <vector>
 #include <osg/observer_ptr>
 #include <osg/Camera>
+#include <osg/StateSet>
 namespace osg { class Camera; class Program; }
 namespace osgUtil { class CullVisitor; }
 namespace Resource::AssetGpuBudget { class Reservation; }
@@ -35,6 +36,9 @@ namespace SceneUtil::GeneratedStaticLod
         inline static std::atomic_uint64_t derivedDraws{0}, submittedIndices{0};
         inline static std::atomic_uint64_t materialCullFallbacks{0}, materialDrawFallbacks{0};
         inline static std::atomic_uint64_t controlDraws{0}, controlSubmittedIndices{0};
+        // Ownership diagnostics count chunk proofs, not distinct source models.
+        inline static std::atomic_uint64_t materialOwnerUnknown{0}, materialOwnerNull{0}, materialOwnerCapacity{0};
+        inline static std::atomic_uint64_t materialOwnerShared{0}, materialOwnerCohesions{0}, materialOwnerCohesiveInstances{0};
         inline static std::atomic_uint64_t refused[static_cast<unsigned>(Refusal::Count)]{};
     };
     // Run on the original SceneManager template, before paging CopyOp erases provenance.
@@ -76,11 +80,40 @@ namespace SceneUtil::GeneratedStaticLod
     std::uint64_t cookPeakBytes(const osg::Node& original);
     bool positiveUniformTransform(const osg::Matrixd& matrix);
     bool isDelegatingDrawCallback(const osg::Drawable::DrawCallback* callback);
+    // Temporal coverage must describe the geometry that the exact callback
+    // will submit. A stale derived receipt replays original draws instead.
+    // This only reads the frozen recipe; it never refreshes a failed guard.
+    bool temporalDrawRecipeCurrent(const osg::Geometry& geometry,
+        const std::vector<const osg::StateSet*>& inherited = {}, osg::State* drawState = nullptr);
     struct MaterialOwner { const osg::StateSet* state = nullptr; unsigned owners = 0; };
     // Bit0 is ordinary population; bits1..16 are bounded private partitions.
     // Unknown ownership refuses all partitions. Content-equivalent states must
     // retain their whole-chunk strong merge opportunity.
     unsigned conflictingMaterialOwners(std::span<const MaterialOwner> materials, bool known = true);
+    struct MaterialOwnershipReport
+    {
+        unsigned conflicting = 0, firstOwners = 0, secondOwners = 0;
+        bool unknown = false, nullMaterial = false, capacity = false, shared = false;
+    };
+    // Asset-only proof on the actual CopyOp output. It does not change the
+    // control AnalyzeVisitor's historical merge benefit heuristic. Each leaf
+    // gets its complete effective state including its own StateSet, with exact
+    // OSG OVERRIDE/PROTECTED precedence and branch-local ancestor restoration.
+    // Metadata is bounded to 256 distinct states/4 MiB within the existing
+    // optional chunk Stage; attributes/uniform payloads are borrowed, not copied.
+    class EffectiveMaterialOwners
+    {
+    public:
+        void observe(const osg::Node& root, unsigned owner, unsigned mask = ~0u);
+        void replaceOwner(unsigned from, unsigned to);
+        std::span<const MaterialOwner> materials() const { return mMaterials; }
+        MaterialOwnershipReport report() const;
+    private:
+        std::vector<osg::ref_ptr<osg::StateSet>> mStates;
+        std::vector<MaterialOwner> mMaterials;
+        std::size_t mBytes = 0;
+        bool mUnknown = false, mNull = false, mCapacity = false;
+    };
     struct Readiness
     {
         std::atomic_bool ready{false}, everReady{false};

@@ -24,10 +24,28 @@ namespace Resource
     // still denying them under critical or unknown pressure.
     enum class SpeculativePriority : unsigned char { Background, NearFuture };
 
+    // This is the exact reservation decision, captured under the same mutex as
+    // the budget totals. The sampler observation predates that lock and is
+    // identified explicitly; neither this receipt nor producer totals claim an
+    // atomic process-memory snapshot or that released owners freed OS memory.
+    struct SpeculativeReservationReceipt
+    {
+        std::uint32_t reasons = 0, pressureReasons = 0;
+        std::uint64_t requested = 0, currentFuture = 0, proposedFuture = 0, transientLimit = 0;
+        std::uint64_t growth = 0, unobservedGrowth = 0, extra = 0;
+        std::uint64_t knownOwners = 0, estimatedOwners = 0, pendingOwners = 0, jobs = 0;
+        std::uint64_t physicalFloor = 0, commitFloor = 0;
+        SpeculativePriority priority = SpeculativePriority::Background;
+        OpenGlPressureSample sample;
+    };
+
     // Optional preparation may be deferred, but MUST NOT be turned into a
     // missing-resource/error-marker cache entry by a loader's ordinary catch.
     struct SpeculativeDeferred : std::exception
     {
+        SpeculativeDeferred() = default;
+        explicit SpeculativeDeferred(SpeculativeReservationReceipt value) : reservation(std::move(value)) {}
+        std::optional<SpeculativeReservationReceipt> reservation;
         const char* what() const noexcept override { return "optional resource preparation deferred"; }
     };
 
@@ -59,6 +77,15 @@ namespace Resource
                 return std::less<const void*>{}(identity, other.identity);
             }
         };
+        enum ReservationRefusal : std::uint32_t
+        {
+            PressurePolicy = 1u << 0, MissingGrowthWatermark = 1u << 1,
+            AccountingSaturated = 1u << 2, InvalidRequestedBytes = 1u << 3,
+            AggregateTransientLimit = 1u << 4, PhysicalHeadroom = 1u << 5,
+            ProcessCommitHeadroom = 1u << 6, SystemCommitHeadroom = 1u << 7,
+            RegressedGrowthWatermark = 1u << 8, ArithmeticOverflow = 1u << 9,
+        };
+        static constexpr unsigned ReservationRefusalCount = 10;
     private:
         struct State;
     public:
@@ -122,6 +149,9 @@ namespace Resource
             Stage& operator=(Stage&&) = delete;
             ~Stage();
             std::uint64_t future() const noexcept { return mFuture; }
+            // Only release reservation for an allocation that never occurred.
+            // This does not credit physical or commit headroom or owner growth.
+            void releaseUnallocated(std::uint64_t bytes);
         private:
             friend class SpeculativeBudget;
             Stage(std::shared_ptr<State> state, std::uint64_t bytes) : mState(std::move(state)), mFuture(bytes) {}
@@ -153,6 +183,8 @@ namespace Resource
         Job tryJob(const OpenGlPressureSample& sample,
             SpeculativePriority priority = SpeculativePriority::Background);
         Stage reserve(const OpenGlPressureSample& sample, std::uint64_t bytes,
+            SpeculativePriority priority = SpeculativePriority::Background);
+        void extend(Stage& stage, const OpenGlPressureSample& sample, std::uint64_t bytes,
             SpeculativePriority priority = SpeculativePriority::Background);
         Claim claim(std::string key);
         ChargePtr track(Key key, std::uint64_t bytes, bool known, Stage* stage = nullptr);
@@ -193,6 +225,9 @@ namespace Resource
             std::uint64_t generation = 0, generationJobs = 0, generationNearFutureJobs = 0;
         };
         static bool usable(const OpenGlPressureSample& s, SpeculativePriority priority) noexcept;
+        SpeculativeReservationReceipt reservationReceipt(const OpenGlPressureSample& sample,
+            std::uint64_t bytes, SpeculativePriority priority) const noexcept;
+        void refuseReservation(const SpeculativeReservationReceipt& receipt);
         static std::uint64_t add(std::uint64_t a, std::uint64_t b) noexcept
         { return b > UINT64_MAX - a ? UINT64_MAX : a + b; }
         std::shared_ptr<State> mState;
@@ -287,41 +322,85 @@ namespace Resource
         mNearFuture = false;
     }
 
+    inline SpeculativeReservationReceipt SpeculativeBudget::reservationReceipt(
+        const OpenGlPressureSample& sample, std::uint64_t bytes, SpeculativePriority priority) const noexcept
+    {
+        SpeculativeReservationReceipt receipt;
+        receipt.sample = sample;
+        receipt.priority = priority;
+        receipt.requested = bytes;
+        receipt.currentFuture = mState->stats.futureBytes;
+        receipt.proposedFuture = add(receipt.currentFuture, bytes);
+        receipt.transientLimit = mState->config.transientLimit;
+        receipt.growth = mState->growth.load(std::memory_order_relaxed);
+        receipt.unobservedGrowth = receipt.growth >= sample.accountedGrowth
+            ? receipt.growth - sample.accountedGrowth : UINT64_MAX;
+        receipt.extra = add(receipt.proposedFuture, receipt.unobservedGrowth);
+        receipt.knownOwners = mState->stats.knownOwnerBytes;
+        receipt.estimatedOwners = mState->stats.estimatedOwnerBytes;
+        receipt.pendingOwners = mState->stats.pendingOwnerBytes;
+        receipt.jobs = mState->stats.jobs;
+        receipt.pressureReasons = newOwnerWorkRefusal(sample, priority);
+        const bool nearFuture = priority == SpeculativePriority::NearFuture;
+        const auto fits = [&receipt](std::uint64_t available, std::uint64_t floor) {
+            return available >= floor && receipt.extra <= available - floor;
+        };
+        receipt.physicalFloor = sample.decision.limits.physicalReserve;
+        receipt.commitFloor = sample.decision.limits.commitReserve;
+        if (nearFuture && sample.decision.state == OpenGlPressure::Caution)
+        {
+            receipt.physicalFloor = sample.decision.limits.physicalCritical;
+            receipt.commitFloor = sample.decision.limits.commitCritical;
+        }
+        if (receipt.pressureReasons) receipt.reasons |= PressurePolicy;
+        if (!sample.growthWatermarkValid) receipt.reasons |= MissingGrowthWatermark;
+        if (mState->saturated) receipt.reasons |= AccountingSaturated;
+        if (bytes == UINT64_MAX) receipt.reasons |= InvalidRequestedBytes;
+        if (receipt.proposedFuture > mState->config.transientLimit) receipt.reasons |= AggregateTransientLimit;
+        if (!fits(sample.memory.physicalAvailable, receipt.physicalFloor)) receipt.reasons |= PhysicalHeadroom;
+        if (sample.memory.commitValid && !fits(sample.memory.commitAvailable, receipt.commitFloor))
+            receipt.reasons |= ProcessCommitHeadroom;
+        if (sample.memory.systemCommitValid && !fits(sample.memory.systemCommitAvailable, receipt.commitFloor))
+            receipt.reasons |= SystemCommitHeadroom;
+        if (receipt.growth < sample.accountedGrowth) receipt.reasons |= RegressedGrowthWatermark;
+        if (bytes > UINT64_MAX - receipt.currentFuture
+            || receipt.unobservedGrowth > UINT64_MAX - receipt.proposedFuture)
+            receipt.reasons |= ArithmeticOverflow;
+        return receipt;
+    }
+    inline void SpeculativeBudget::refuseReservation(const SpeculativeReservationReceipt& receipt)
+    {
+        ++mState->stats.denied;
+        if (receipt.priority == SpeculativePriority::NearFuture) ++mState->stats.nearFutureDenied;
+        throw SpeculativeDeferred(receipt);
+    }
     inline SpeculativeBudget::Stage SpeculativeBudget::reserve(
         const OpenGlPressureSample& sample, std::uint64_t bytes, SpeculativePriority priority)
     {
         std::lock_guard lock(mState->mutex);
-        const bool nearFuture = priority == SpeculativePriority::NearFuture;
-        const auto growth = mState->growth.load(std::memory_order_relaxed);
-        const auto future = add(mState->stats.futureBytes, bytes);
-        const auto extra = add(
-            future, growth >= sample.accountedGrowth ? growth - sample.accountedGrowth : UINT64_MAX);
-        const auto fits = [extra](std::uint64_t available, std::uint64_t floor) {
-            return available >= floor && extra <= available - floor;
-        };
-
-        auto physicalFloor = sample.decision.limits.physicalReserve;
-        auto commitFloor = sample.decision.limits.commitReserve;
-        if (nearFuture && sample.decision.state == OpenGlPressure::Caution)
-        {
-            physicalFloor = sample.decision.limits.physicalCritical;
-            commitFloor = sample.decision.limits.commitCritical;
-        }
-
-        if (!usable(sample, priority) || !sample.growthWatermarkValid || mState->saturated
-            || bytes == UINT64_MAX || future > mState->config.transientLimit
-            || !fits(sample.memory.physicalAvailable, physicalFloor)
-            || (sample.memory.commitValid && !fits(sample.memory.commitAvailable, commitFloor))
-            || (sample.memory.systemCommitValid
-                && !fits(sample.memory.systemCommitAvailable, commitFloor)))
-        {
-            ++mState->stats.denied;
-            if (nearFuture)
-                ++mState->stats.nearFutureDenied;
-            throw SpeculativeDeferred{};
-        }
-        mState->stats.futureBytes = future;
+        const auto receipt = reservationReceipt(sample, bytes, priority);
+        if (receipt.reasons) refuseReservation(receipt);
+        mState->stats.futureBytes = receipt.proposedFuture;
         return Stage(mState, bytes);
+    }
+    inline void SpeculativeBudget::extend(Stage& stage, const OpenGlPressureSample& sample,
+        std::uint64_t bytes, SpeculativePriority priority)
+    {
+        std::lock_guard lock(mState->mutex);
+        if (stage.mState != mState || bytes > UINT64_MAX - stage.mFuture)
+            throw std::logic_error("optional reservation extension has no matching owner");
+        const auto receipt = reservationReceipt(sample, bytes, priority);
+        if (receipt.reasons) refuseReservation(receipt);
+        mState->stats.futureBytes = receipt.proposedFuture;
+        stage.mFuture += bytes;
+    }
+    inline void SpeculativeBudget::Stage::releaseUnallocated(std::uint64_t bytes)
+    {
+        if (!mState || bytes > mFuture)
+            throw std::logic_error("optional reservation cannot release allocated ownership");
+        std::lock_guard lock(mState->mutex);
+        mState->stats.futureBytes -= bytes;
+        mFuture -= bytes;
     }
     inline SpeculativeBudget::Stage::~Stage()
     {
@@ -487,16 +566,33 @@ namespace Resource
                 : mScope(sCurrent), mPrevious(mScope ? mScope->mStage : nullptr), mEstimate(outputEstimate)
                 , mLease(mScope ? mScope->mBudget->reserve(
                     mScope->mSample(mScope->mOwner), peak, mScope->mPriority) : SpeculativeBudget::Stage{})
+                , mReserved(peak)
             { if (mScope) mScope->mStage = this; }
             ~Stage() { if (mScope) mScope->mStage = mPrevious; }
             Stage(const Stage&) = delete;
             Stage& operator=(const Stage&) = delete;
+            std::uint64_t reserved() const noexcept { return mReserved; }
+            void reserveAdditional(std::uint64_t bytes, std::uint64_t maximum)
+            {
+                if (!bytes || bytes > maximum || mReserved > maximum - bytes)
+                    throw SpeculativeDeferred{};
+                if (mScope)
+                    mScope->mBudget->extend(mLease, mScope->mSample(mScope->mOwner), bytes, mScope->mPriority);
+                mReserved += bytes;
+            }
+            void releaseUnallocated(std::uint64_t bytes)
+            {
+                if (bytes > mReserved) throw std::logic_error("optional stage release exceeds admission");
+                if (mScope) mLease.releaseUnallocated(bytes);
+                mReserved -= bytes;
+            }
         private:
             friend class SpeculativeScope;
             SpeculativeScope* mScope;
             Stage* mPrevious;
             std::uint64_t mEstimate;
             SpeculativeBudget::Stage mLease;
+            std::uint64_t mReserved;
         };
         static SpeculativeBudget::Claim claim(std::string key)
         { return sCurrent ? sCurrent->mBudget->claim(std::move(key)) : SpeculativeBudget::Claim{}; }

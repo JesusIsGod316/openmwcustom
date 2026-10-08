@@ -4,7 +4,9 @@
 #include "indirectprojectioncontract.hpp"
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <new>
+#include <stdexcept>
 #include <osg/Shader>
 #include <osg/UserDataContainer>
 #include <components/resource/assetpolicy.hpp>
@@ -14,6 +16,8 @@ namespace Shader::AssetGeometry
 {
     namespace
     {
+        std::shared_mutex producerMutex;
+        thread_local unsigned producerReaders = 0, producerWriters = 0;
         constexpr const char* SourceKey = "OptimizedMW.AssetGeometry.Source.v1";
         constexpr const char* ProgramKey = "OptimizedMW.AssetGeometry.Program.v1";
         std::atomic_uint64_t metadata{0};
@@ -32,6 +36,11 @@ namespace Shader::AssetGeometry
         };
         auto reserve(std::size_t bytes) { return std::make_shared<Charge>(bytes + sizeof(Charge) + 64); }
         std::string digest(std::string_view value) { return Resource::DerivedAssets::digest(value); }
+        bool regenerationEpoch(const std::shared_ptr<Epoch>& epoch, std::uint64_t previousVersion)
+        {
+            return epoch && previousVersion && previousVersion != UINT64_MAX
+                && epoch->value.load(std::memory_order_acquire) == previousVersion + 1;
+        }
         bool numericParameters(std::string_view text)
         {
             // The reviewed object producer inputs are numeric literals or the
@@ -99,9 +108,10 @@ namespace Shader::AssetGeometry
             osg::Shader::Type type = osg::Shader::UNDEFINED;
             osg::Shader::ShaderDefinesMode mode{};
             osg::ShaderDefines defines, requirements;
-            Refusal current(const osg::Shader& shader) const
+            Refusal current(const osg::Shader& shader, const std::shared_ptr<Epoch>& owner,
+                std::uint64_t expectedVersion) const
             {
-                if (!epoch || version != epoch->value.load(std::memory_order_acquire)) return Refusal::Epoch;
+                if (!epoch || epoch != owner || version != expectedVersion) return Refusal::Epoch;
                 if (shader.getType() != type || (type != osg::Shader::VERTEX && type != osg::Shader::FRAGMENT)) return Refusal::Stage;
                 if (shader.getShaderBinary() || !shader.getCodeInjectionMap().empty()
                     || shader.getShaderSource().size() > 2u * 1024u * 1024u
@@ -111,6 +121,8 @@ namespace Shader::AssetGeometry
                     || shader.getShaderRequirements() != requirements) return Refusal::Defines;
                 return Refusal::None;
             }
+            Refusal current(const osg::Shader& shader) const
+            { return current(shader, epoch, epoch ? epoch->value.load(std::memory_order_acquire) : 0); }
         };
         class Source final : public osg::Object
         {
@@ -136,10 +148,9 @@ namespace Shader::AssetGeometry
             std::shared_ptr<const SourceData> objectSource;
             GLenum feedbackMode = GL_SEPARATE_ATTRIBS;
             std::array<GLint,3> geometryParameters{};
-            Refusal current(const osg::Program& program) const
+            Refusal linkingCurrent(const osg::Program& program) const
             {
                 if (!ProgramLinkIdentity::boundedCaptureSize(program)) return Refusal::Capacity;
-                if (program.getNumShaders() != producers.size()) return Refusal::Stage;
                 if ((program.getProgramBinary() && program.getProgramBinary()->getSize())
                     || program.getNumTransformFeedBackVaryings()
                     || program.getTransformFeedBackMode() != feedbackMode
@@ -152,11 +163,19 @@ namespace Shader::AssetGeometry
                 if (defines != program.getShaderDefines()) return Refusal::Defines;
                 const auto* samplerProducer = dynamic_cast<const SamplerProducer*>(&program);
                 if (!samplerProducer || !samplerProducer->assetSamplersMatch(samplers)) return Refusal::Bindings;
+                return Refusal::None;
+            }
+            Refusal current(const osg::Program& program, const std::shared_ptr<Epoch>* owner = nullptr,
+                std::uint64_t expectedVersion = 0) const
+            {
+                if (const auto refusal = linkingCurrent(program); refusal != Refusal::None) return refusal;
+                if (program.getNumShaders() != producers.size()) return Refusal::Stage;
                 for (unsigned i = 0; i < producers.size(); ++i)
                 {
                     const auto& producer = producers[i];
                     if (program.getShader(i) != producer.shader.get()) return Refusal::Source;
-                    const auto refusal = producer.source->current(*producer.shader);
+                    const auto refusal = owner ? producer.source->current(*producer.shader, *owner, expectedVersion)
+                                               : producer.source->current(*producer.shader);
                     if (refusal != Refusal::None) return refusal;
                 }
                 return Refusal::None;
@@ -175,6 +194,14 @@ namespace Shader::AssetGeometry
         {
             const auto* data = program.getUserDataContainer();
             return data ? dynamic_cast<const Program*>(data->getUserObject(ProgramKey)) : nullptr;
+        }
+        void publish(osg::Object& owner, const char* key, osg::Object* value)
+        {
+            osg::ref_ptr<osg::Object> owned = value;
+            auto* user = owner.getOrCreateUserDataContainer();
+            const auto index = user->getUserObjectIndex(key);
+            if (index < user->getNumUserObjects()) user->setUserObject(index, owned);
+            else user->addUserObject(owned);
         }
         bool safeImports(const ProgramDefineSnapshot& values)
         {
@@ -206,10 +233,30 @@ namespace Shader::AssetGeometry
             return bytes;
         }
     }
+    ProducerReadScope::ProducerReadScope() : mLock(producerMutex, std::defer_lock)
+    {
+        if (!producerReaders && !producerWriters) mLock.lock();
+        ++producerReaders;
+    }
+    ProducerReadScope::~ProducerReadScope() { --producerReaders; }
+    ProducerMutationScope::ProducerMutationScope() : mLock(producerMutex, std::defer_lock)
+    {
+        if (!producerWriters)
+        {
+            if (producerReaders) throw std::logic_error("producer lease cannot upgrade a reader to a writer");
+            mLock.lock();
+        }
+        ++producerWriters;
+    }
+    ProducerMutationScope::~ProducerMutationScope() { --producerWriters; }
     bool enabled()
     {
+        static const bool temporalProducer = [] {
+            const auto* value = std::getenv("OPENMW_P9_DYNAMIC_MOTION");
+            return value && std::string_view(value) == "1";
+        }();
         return Resource::AssetPolicy::enabled(Resource::AssetPolicy::VisualLod)
-            || Resource::AssetPolicy::enabled(Resource::AssetPolicy::Hlod);
+            || Resource::AssetPolicy::enabled(Resource::AssetPolicy::Hlod) || temporalProducer;
     }
     std::uint64_t liveMetadataBytes() { return metadata.load(std::memory_order_relaxed); }
     const char* refusalName(Refusal value)
@@ -260,6 +307,7 @@ namespace Shader::AssetGeometry
     void attachSource(osg::Shader& shader, std::string_view name, const TemplateProof& proof,
         const Defines& local, const Defines& global, const std::shared_ptr<Epoch>& epoch)
     {
+        ProducerMutationScope producer;
         if (!enabled() || !proof.families || !proof.admission || !epoch || name.size() > 1024
             || shader.getShaderSource().size() > 2u * 1024u * 1024u || shader.getShaderBinary()
             || !shader.getCodeInjectionMap().empty()) return;
@@ -293,19 +341,62 @@ namespace Shader::AssetGeometry
             data->defineDigest = recipe(data->effective);
             data->type = shader.getType(); data->mode = shader.getShaderDefinesMode();
             data->defines = shader.getShaderDefines(); data->requirements = shader.getShaderRequirements();
-            shader.getOrCreateUserDataContainer()->addUserObject(new Source(std::move(data)));
+            publish(shader, SourceKey, new Source(std::move(data)));
         }
         catch (const std::bad_alloc&) {} // Optional proof cannot affect normal shader construction.
     }
     SourceStatus sourceStatus(const osg::Shader& shader)
     {
+        ProducerReadScope producer;
         const auto* user = shader.getUserDataContainer();
         const auto* proof = user ? dynamic_cast<const Source*>(user->getUserObject(SourceKey)) : nullptr;
         if (!proof || !proof->data) return {};
-        return {proof->data->current(shader),proof->data->families,proof->data->name};
+        return {proof->data->current(shader),proof->data->families,proof->data->name,proof->data};
+    }
+    bool canRefreshSource(const osg::Shader& shader, const std::shared_ptr<Epoch>& epoch,
+        std::uint64_t previousVersion)
+    {
+        ProducerReadScope producer;
+        if (!regenerationEpoch(epoch, previousVersion)) return false;
+        const auto* user = shader.getUserDataContainer();
+        const auto* proof = user ? dynamic_cast<const Source*>(user->getUserObject(SourceKey)) : nullptr;
+        return proof && proof->data && proof->data->current(shader, epoch, previousVersion) == Refusal::None;
+    }
+    bool canRefreshProgram(const osg::Program& program, const std::shared_ptr<Epoch>& epoch,
+        std::uint64_t previousVersion)
+    {
+        ProducerReadScope producer;
+        try
+        {
+            if (!regenerationEpoch(epoch, previousVersion)) return false;
+            const auto* proof = certificate(program);
+            return proof && proof->data
+                && proof->data->current(program, &epoch, previousVersion) == Refusal::None;
+        }
+        catch (const std::bad_alloc&) { return false; }
+    }
+    Refusal refreshProgram(osg::Program& program, const std::shared_ptr<Epoch>& epoch,
+        std::uint64_t previousVersion)
+    {
+        ProducerMutationScope producer;
+        try
+        {
+            if (!regenerationEpoch(epoch, previousVersion)) return Refusal::Epoch;
+            const auto* proof = certificate(program);
+            if (!proof || !proof->data) return Refusal::Missing;
+            // Only sources replaced by this manager's immediately preceding
+            // invalidation can authorize refreshing the cached Program slot.
+            for (const auto& producer : proof->data->producers)
+                if (producer.source->epoch != epoch || producer.source->version != previousVersion)
+                    return Refusal::Epoch;
+            if (const auto refusal = proof->data->linkingCurrent(program); refusal != Refusal::None) return refusal;
+            return certify(program, proof->data->samplers);
+        }
+        catch (const std::bad_alloc&) { return Refusal::Capacity; }
     }
     Refusal certify(osg::Program& program, const Samplers& samplers)
     {
+        ProducerMutationScope producerLease;
         if (!enabled() || !ProgramLinkIdentity::boundedCaptureSize(program) || program.getNumShaders() > 16
             || samplers.size() > 16) return Refusal::Capacity;
         const auto* producer = dynamic_cast<const SamplerProducer*>(&program);
@@ -364,13 +455,14 @@ namespace Shader::AssetGeometry
             for (const auto value : data->geometryParameters) {identity += std::to_string(value); identity += '\0';}
             identity += familyName(data->family); data->identity = digest(identity);
             if (const auto refusal = data->current(program); refusal != Refusal::None) return refusal;
-            program.getOrCreateUserDataContainer()->addUserObject(new Program(std::move(data)));
+            publish(program, ProgramKey, new Program(std::move(data)));
             return Refusal::None;
         }
         catch (const std::bad_alloc&) {return Refusal::Capacity;}
     }
     Refusal validate(const osg::Program& program)
     {
+        ProducerReadScope producer;
         try {const auto* proof = certificate(program); return proof && proof->data ? proof->data->current(program) : Refusal::Missing;}
         catch (const std::bad_alloc&) {return Refusal::Capacity;}
     }
@@ -395,6 +487,7 @@ namespace Shader::AssetGeometry
     std::size_t Snapshot::metadataBytes() const {return mData ? mData->bytes : 0;}
     std::optional<Snapshot> capture(const osg::Program& program, const std::vector<const osg::StateSet*>& path)
     {
+        ProducerReadScope producer;
         try
         {
             const auto* proof = certificate(program);
@@ -414,6 +507,7 @@ namespace Shader::AssetGeometry
     }
     Refusal current(const Snapshot& snapshot, const osg::Program& program, osg::State* state)
     {
+        ProducerReadScope producer;
         try
         {
             if (!snapshot.mData) return Refusal::Missing;
@@ -429,6 +523,7 @@ namespace Shader::AssetGeometry
     }
     Refusal current(const Snapshot& snapshot, const osg::Program& program, const std::vector<const osg::StateSet*>& path)
     {
+        ProducerReadScope producer;
         try
         {
             if (!snapshot.mData) return Refusal::Missing;

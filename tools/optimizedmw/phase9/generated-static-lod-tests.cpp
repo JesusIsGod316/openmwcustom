@@ -193,6 +193,7 @@ int main(int argc, char** argv) try
     shaderVisitor.setAutoUseSpecularMaps(true); shaderVisitor.setSpecularMapPattern("_s");
     osg::ref_ptr<osg::Camera> mainCamera = new osg::Camera;
     L1::Result selected; std::string selectedName;
+    osg::ref_ptr<osg::Node> selectedSource;
     for (int argument = firstMesh; argument < argc && argument < firstMesh + 64; ++argument)
     {
         const VFS::Path::Normalized path = VFS::Path::toNormalized(std::string_view(argv[argument]));
@@ -223,15 +224,22 @@ int main(int argc, char** argv) try
             optimizer.setIsOperationPermissibleForObjectCallback(new PagingOptimize);
             optimizer.optimize(control, SceneUtil::Optimizer::FLATTEN_STATIC_TRANSFORMS | SceneUtil::Optimizer::REMOVE_REDUNDANT_NODES
                 | SceneUtil::Optimizer::MERGE_GEOMETRY | SceneUtil::Optimizer::MERGE_GEODES | SceneUtil::Optimizer::SHARE_DUPLICATE_STATE);
+            // The builder decorates its private control with actual draw
+            // receipts. Source-certificate negatives must start from the
+            // certified pre-build graph, never erase those later callbacks.
+            osg::ref_ptr<osg::Node> certificateSource;
+            if(!selected.node) certificateSource=privateClone(*control);
             auto result = L1::build(*control, path.value() + "|" + Resource::DerivedAssets::digest(bytes),mainCamera,false);
             std::cout << "L1_CORPUS_RESULT " << path.value() << " original_indices=" << result.originalIndices
                 << " tier_indices=" << result.derivedIndices << " refusal=" << static_cast<unsigned>(result.refusal)
                 << " error=" << (result.node ? result.node->error() : 0.f) << '\n';
-            if (result.node && !selected.node) { selected = result; selectedName = path.value(); }
+            if (result.node && !selected.node) { selected = result; selectedName = path.value(); selectedSource=certificateSource; }
         }
         catch (const std::exception& error) { std::cout << "L1_CORPUS_REFUSED " << path.value() << " reason=" << error.what() << '\n'; }
     }
     require(selected.node.valid(), "no positive real static NIF LOD reduction; lane remains unproved");
+    require(selectedSource.valid() && L1::certify(*selectedSource)==L1::Refusal::None,
+        "source-certificate fixtures require the exact immutable pre-build control without derived receipts");
     require(selected.derivedIndices < selected.originalIndices && !selected.readiness->ready, "reduced immutable tier starts unprepared");
     const auto builtBeforeDemand = L1::Counters::built.load(), diskBeforeDemand = L1::Counters::diskHits.load();
     require(!L1::build(*selected.node->original(),selectedName,mainCamera).node,
@@ -245,13 +253,13 @@ int main(int argc, char** argv) try
     require(L1::Counters::built == builtBeforeDemand && L1::Counters::diskHits == diskBeforeDemand,
         "unadmitted demand cannot reach derived cache or tier publication");
     osg::ref_ptr<osg::Group> markerRoot = new osg::Group;
-    markerRoot->addChild(privateClone(*selected.node->original()));
+    markerRoot->addChild(privateClone(*selectedSource));
     osg::ref_ptr<osg::Group> emptyMarker = new osg::Group;
     emptyMarker->setNodeMask(0); emptyMarker->setDataVariance(osg::Object::STATIC);
     emptyMarker->setUserValue("recordIndex",1u); markerRoot->addChild(emptyMarker);
     require(L1::certify(*markerRoot) == L1::Refusal::None,
         "static loader empty hidden marker has no replaced rendering population");
-    emptyMarker->addChild(privateClone(*selected.node->original()));
+    emptyMarker->addChild(privateClone(*selectedSource));
     require(L1::certify(*markerRoot) == L1::Refusal::Graph,
         "hidden drawable population cannot use empty-marker qualification");
     emptyMarker->removeChildren(0,emptyMarker->getNumChildren());
@@ -270,8 +278,32 @@ int main(int argc, char** argv) try
         require(SceneUtil::temporalVertexLineage(*original)
             && SceneUtil::temporalVertexLineage(*original) == SceneUtil::temporalVertexLineage(*tier), "same immutable temporal vertex lineage");
         require(L1::isDelegatingDrawCallback(tier->getDrawCallback()), "only exact production delegating receipt accepted");
+        require(L1::temporalDrawRecipeCurrent(*tier), "current exact LOD receipt qualifies its temporal draw recipe");
         for (unsigned unit = 0; unit < original->getNumTexCoordArrays(); ++unit)
             require(original->getTexCoordArray(unit) == tier->getTexCoordArray(unit), "unchanged UV/tangent streams");
+    }
+    {
+        auto* original=originals.values.front(); auto* tier=tiers.values.front();
+        osg::ref_ptr<osg::Geometry> borrowed=new osg::Geometry(*tier,osg::CopyOp::SHALLOW_COPY);
+        require(!L1::temporalDrawRecipeCurrent(*borrowed), "borrowed derived receipt cannot qualify another geometry owner");
+        unsigned unit=0;
+        while(unit<original->getNumTexCoordArrays() && !original->getTexCoordArray(unit)) ++unit;
+        require(unit<original->getNumTexCoordArrays(), "actual source UV stream required for temporal recipe mutation regression");
+        osg::ref_ptr<osg::Array> uv=original->getTexCoordArray(unit);
+        original->setTexCoordArray(unit,osg::clone(uv.get(),osg::CopyOp::DEEP_COPY_ALL));
+        require(!L1::temporalDrawRecipeCurrent(*tier), "changed original UV identity invalidates captured derived temporal recipe");
+        original->setTexCoordArray(unit,uv);
+        require(L1::temporalDrawRecipeCurrent(*tier), "restoring exact source UV recovers the frozen recipe without recertification");
+        osg::ref_ptr<osg::StateSet> state=original->getStateSet();
+        original->setStateSet(state ? new osg::StateSet(*state,osg::CopyOp::SHALLOW_COPY) : new osg::StateSet);
+        require(!L1::temporalDrawRecipeCurrent(*tier), "changed original material identity invalidates captured derived temporal recipe");
+        original->setStateSet(state);
+        osg::ref_ptr<osg::PrimitiveSet> indices=tier->getPrimitiveSet(0);
+        tier->setPrimitiveSet(0,osg::clone(indices.get(),osg::CopyOp::DEEP_COPY_ALL));
+        require(!L1::temporalDrawRecipeCurrent(*tier), "changed derived indices invalidate captured temporal recipe");
+        tier->setPrimitiveSet(0,indices);
+        require(L1::temporalDrawRecipeCurrent(*tier), "exact restored material/index recipe remains current");
+        std::cout<<"L1_TEMPORAL_DRAW_RECIPE exact_owner=1 borrowed_owner_refused=1 source_uv_refused=1 source_material_refused=1 derived_indices_refused=1 restored_exact=1\n";
     }
     // Real geometry regression: the same material in two spatial buckets and
     // ordinary population must return to the whole-chunk strong optimizer.
@@ -287,12 +319,68 @@ int main(int argc, char** argv) try
     require(L1::conflictingMaterialOwners(sharedOwners,false) == ~0u, "unknown material ownership keeps full control topology");
     const std::array<L1::MaterialOwner,1> privateOwner{{{mergeMaterial,2u}}};
     require(!L1::conflictingMaterialOwners(privateOwner), "one privately owned material remains eligible");
+    // The asset proof must read Geometry's own material, restore sibling
+    // ancestry and apply actual State::push* override/protected precedence.
+    osg::ref_ptr<osg::Geometry> leafOnly = new osg::Geometry;
+    leafOnly->setStateSet(mergeMaterial);
+    L1::EffectiveMaterialOwners leafOwners;
+    leafOwners.observe(*leafOnly,2u);
+    require(leafOwners.materials().size()==1 && !leafOwners.report().conflicting,
+        "leaf-only material must not become null ownership");
+    osg::ref_ptr<osg::Group> ancestryRoot = new osg::Group;
+    ancestryRoot->getOrCreateStateSet()->addUniform(new osg::Uniform("ownership_test",1.f));
+    osg::ref_ptr<osg::Group> firstBranch = new osg::Group, secondBranch = new osg::Group;
+    firstBranch->getOrCreateStateSet()->addUniform(new osg::Uniform("ownership_test",2.f));
+    firstBranch->addChild(leafOnly);
+    osg::ref_ptr<osg::Geometry> secondLeaf = new osg::Geometry;
+    secondLeaf->setStateSet(mergeMaterial); secondBranch->addChild(secondLeaf);
+    ancestryRoot->addChild(firstBranch); ancestryRoot->addChild(secondBranch);
+    L1::EffectiveMaterialOwners branchOwners; branchOwners.observe(*ancestryRoot,2u);
+    std::set<float> branchValues;
+    for (const auto& value:branchOwners.materials())
+    { float uniform=0; require(value.state->getUniform("ownership_test") && value.state->getUniform("ownership_test")->get(uniform),"inherited uniform included"); branchValues.insert(uniform); }
+    require(branchOwners.materials().size()==2 && branchValues==std::set<float>{1.f,2.f}
+        && !branchOwners.report().conflicting,"sibling must recover parent state instead of previous branch");
+    ancestryRoot->getOrCreateStateSet()->addUniform(new osg::Uniform("ownership_test",1.f),osg::StateAttribute::ON|osg::StateAttribute::OVERRIDE);
+    L1::EffectiveMaterialOwners overrideOwners; overrideOwners.observe(*ancestryRoot,2u);
+    require(overrideOwners.materials().size()==1,"unprotected child Uniform must obey ancestor OVERRIDE");
+    firstBranch->getOrCreateStateSet()->addUniform(new osg::Uniform("ownership_test",2.f),osg::StateAttribute::ON|osg::StateAttribute::PROTECTED);
+    L1::EffectiveMaterialOwners protectedOwners; protectedOwners.observe(*ancestryRoot,2u);
+    require(protectedOwners.materials().size()==2,"protected child Uniform must replace ancestor OVERRIDE");
+    L1::EffectiveMaterialOwners sharedEffective;
+    sharedEffective.observe(*leafOnly,2u); sharedEffective.observe(*secondLeaf,4u); sharedEffective.observe(*secondLeaf,1u);
+    require(sharedEffective.report().shared && (sharedEffective.report().conflicting&6u)==6u,
+        "actual equal leaf materials across ordinary and spatial owners must refuse both candidates");
+    L1::EffectiveMaterialOwners cohesiveEffective;
+    cohesiveEffective.observe(*leafOnly,2u); cohesiveEffective.observe(*secondLeaf,4u);
+    cohesiveEffective.replaceOwner(4u,2u);
+    require(!cohesiveEffective.report().conflicting && cohesiveEffective.materials().front().owners==2u,
+        "reuniting a fully private material family removes only the partition ownership conflict");
+    osg::ref_ptr<osg::Geometry> nullLeaf = new osg::Geometry;
+    L1::EffectiveMaterialOwners nullOwners; nullOwners.observe(*nullLeaf,2u);
+    require(nullOwners.report().nullMaterial && nullOwners.report().conflicting==~0u,"material-less leaf keeps null refusal subtype");
+    osg::ref_ptr<osg::Node> unknownLeaf = new osg::Node;
+    L1::EffectiveMaterialOwners unknownOwners; unknownOwners.observe(*unknownLeaf,2u);
+    require(unknownOwners.report().unknown && unknownOwners.report().conflicting==~0u,"unknown draw-bearing leaf retains conservative refusal");
+    osg::ref_ptr<osg::Group> capacityRoot = new osg::Group;
+    for (unsigned i=0;i<257;++i)
+    {
+        osg::ref_ptr<osg::Geometry> leaf = new osg::Geometry;
+        leaf->getOrCreateStateSet()->addUniform(new osg::Uniform("ownership_capacity",float(i)));
+        capacityRoot->addChild(leaf);
+    }
+    L1::EffectiveMaterialOwners capacityOwners; capacityOwners.observe(*capacityRoot,2u);
+    require(capacityOwners.report().capacity && capacityOwners.report().conflicting==~0u
+        && capacityOwners.materials().size()==256,"257th distinct material must refuse without unbounded ownership metadata");
+    std::cout<<"L1_EFFECTIVE_MATERIAL_OWNERSHIP leaf_own=1 inherited=1 sibling_restore=1 override_protected=1 shared_ordinary=1 family_reunion=1 null_refused=1 unknown_refused=1 capacity_refused=1\n";
     osg::ref_ptr<osg::Group> wholeControl = new osg::Group;
     osg::ref_ptr<osg::Group> firstBucket = new osg::Group, secondBucket = new osg::Group;
     std::array<osg::ref_ptr<osg::Node>,3> instances;
     for (unsigned i = 0; i < instances.size(); ++i)
     {
-        auto cloned = privateClone(*originals.values.front());
+        Geometries sourceGeometries; selectedSource->accept(sourceGeometries);
+        require(!sourceGeometries.values.empty(), "actual certified pre-build geometry required for control merge fixture");
+        auto cloned = privateClone(*sourceGeometries.values.front());
         cloned->setName(""); cloned->setUserDataContainer(nullptr); cloned->setDataVariance(osg::Object::STATIC);
         cloned->setStateSet(i == 1 ? equivalentMaterial : mergeMaterial);
         osg::ref_ptr<osg::MatrixTransform> instance = new osg::MatrixTransform(osg::Matrix::translate(i * 10.,0.,0.));
@@ -315,13 +403,13 @@ int main(int argc, char** argv) try
     std::cout << "L1_MATERIAL_OWNERSHIP_RETURN before=3 after=1 exact_attachments=1\n";
     const auto originalBound = selected.node->original()->getBound();
     require(selected.node->getBound() == originalBound, "conservative original union bound");
-    osg::ref_ptr<osg::LOD> authored = new osg::LOD; authored->addChild(selected.node->original());
+    osg::ref_ptr<osg::LOD> authored = new osg::LOD; authored->addChild(selectedSource);
     require(L1::certify(*authored) == L1::Refusal::Graph, "authored LOD preferred");
-    osg::ref_ptr<osg::MatrixTransform> mirrored = new osg::MatrixTransform(osg::Matrix::scale(-1,1,1)); mirrored->addChild(selected.node->original());
+    osg::ref_ptr<osg::MatrixTransform> mirrored = new osg::MatrixTransform(osg::Matrix::scale(-1,1,1)); mirrored->addChild(selectedSource);
     require(L1::certify(*mirrored) == L1::Refusal::Transform, "negative transform rejected");
-    auto callbackSource = privateClone(*selected.node->original()); callbackSource->setCullCallback(new Callback);
+    auto callbackSource = privateClone(*selectedSource); callbackSource->setCullCallback(new Callback);
     require(L1::certify(*callbackSource) == L1::Refusal::Graph, "original callback provenance rejected");
-    auto alphaSource = privateClone(*selected.node->original());
+    auto alphaSource = privateClone(*selectedSource);
     osg::ref_ptr<osg::StateSet> alphaState = alphaSource->getStateSet()
         ? new osg::StateSet(*alphaSource->getStateSet(),osg::CopyOp::SHALLOW_COPY) : new osg::StateSet;
     alphaState->setMode(GL_BLEND,osg::StateAttribute::ON); alphaSource->setStateSet(alphaState);
@@ -329,10 +417,10 @@ int main(int argc, char** argv) try
     std::atomic_bool cancel{true};
     bool cancelled = false;
     try { SceneUtil::PagingWorkScope scope(&cancel,SceneUtil::PagingWorkScope::Phase::OptionalOptimization);
-        L1::build(*selected.node->original(),selectedName,mainCamera,false); }
+        L1::build(*selectedSource,selectedName,mainCamera,false); }
     catch (const SceneUtil::PagingWorkCancelled&) { cancelled = true; }
     require(cancelled, "obsolete preparation exits at work checkpoint");
-    auto stale = privateClone(*selected.node->original());
+    auto stale = privateClone(*selectedSource);
     Geometries staleGeometries; stale->accept(staleGeometries);
     require(!SceneUtil::temporalVertexLineage(*staleGeometries.values.front()), "deep-copied arrays cannot inherit lineage");
     // Modified generation invalidates both representations of a private pair.

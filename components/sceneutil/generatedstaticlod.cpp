@@ -129,6 +129,7 @@ namespace SceneUtil::GeneratedStaticLod
         {
             explicit DrawReceipt(std::size_t count) : indices(count) {}
             std::size_t indices;
+            osg::observer_ptr<const osg::Geometry> owner;
             std::shared_ptr<MaterialGuard> guard;
             std::vector<OriginalDraw> originals;
             osg::Matrixd derivedMatrix;
@@ -444,6 +445,25 @@ namespace SceneUtil::GeneratedStaticLod
     }
     bool isDelegatingDrawCallback(const osg::Drawable::DrawCallback* callback)
     { return callback && (dynamic_cast<const DrawReceipt*>(callback) || dynamic_cast<const OriginalReceipt*>(callback)); }
+    bool temporalDrawRecipeCurrent(const osg::Geometry& geometry,
+        const std::vector<const osg::StateSet*>& inherited, osg::State* drawState)
+    {
+        Shader::AssetGeometry::ProducerReadScope producerRead;
+        const auto* callback=geometry.getDrawCallback();
+        if(!callback) return true;
+        if(const auto* receipt=dynamic_cast<const DrawReceipt*>(callback))
+        {
+            osg::ref_ptr<const osg::Geometry> owner;
+            if(!receipt->owner.lock(owner) || owner.get()!=&geometry || !receipt->guard) return false;
+            // Capture ancestry and the actual draw stack are separate proofs.
+            // Passing ancestry must not hide a later overriding draw StateSet.
+            return receipt->guard->current(nullptr,inherited)
+                && (!drawState || receipt->guard->current(drawState));
+        }
+        if(const auto* receipt=dynamic_cast<const OriginalReceipt*>(callback))
+            return !receipt->delegate; // Any delegated packet needs its own exact proof.
+        return false;
+    }
     Detail shaderDetail(unsigned reason)
     {
         switch (static_cast<Shader::AssetGeometry::Refusal>(reason))
@@ -494,6 +514,7 @@ namespace SceneUtil::GeneratedStaticLod
     }
     unsigned conflictingMaterialOwners(std::span<const MaterialOwner> materials, bool known)
     {
+        Shader::AssetGeometry::ProducerReadScope producerRead;
         if (!known || materials.size() > 256) return ~0u;
         for (const auto& material : materials)
             if (!material.state || !material.owners || (material.owners & ~((1u << 17) - 1))) return ~0u;
@@ -507,6 +528,154 @@ namespace SceneUtil::GeneratedStaticLod
             if (owners & (owners - 1)) conflict |= owners & ~1u;
         }
         return conflict;
+    }
+    void EffectiveMaterialOwners::observe(const osg::Node& root, unsigned owner, unsigned mask)
+    {
+        Shader::AssetGeometry::ProducerReadScope producerRead;
+        constexpr std::size_t MaximumMaterials = 256, MaximumMetadata = 4 * 1024 * 1024;
+        if (!owner || (owner & ~((1u << 17) - 1))) { mUnknown = true; return; }
+        if (mUnknown || mNull || mCapacity) return;
+        std::vector<const osg::StateSet*> ancestry;
+        std::vector<const osg::Node*> branch;
+        unsigned nodes = 0;
+        try
+        {
+            const auto stateBytes = [](const osg::StateSet& state)->std::size_t {
+                const auto& attributes = state.getAttributeList();
+                const auto& textureAttributes = state.getTextureAttributeList();
+                const auto& textureModes = state.getTextureModeList();
+                if (state.getUpdateCallback() || state.getEventCallback()) return 0;
+                if (attributes.size() > 64 || textureAttributes.size() > 32 || textureModes.size() > 32
+                    || state.getModeList().size() > 64 || state.getUniformList().size() > 128
+                    || state.getDefineList().size() > 64 || state.getBinName().size() > 256) return 0;
+                std::size_t entries = attributes.size() + state.getModeList().size()
+                    + state.getUniformList().size() + state.getDefineList().size();
+                std::size_t strings = state.getBinName().size();
+                for (const auto& values : textureAttributes) entries += values.size();
+                for (const auto& values : textureModes) entries += values.size();
+                if (entries > 256) return 0;
+                for (const auto& [key, value] : attributes) if (!value.first) return 0;
+                for (const auto& values : textureAttributes)
+                    for (const auto& [key, value] : values) if (!value.first) return 0;
+                for (const auto& [name, value] : state.getUniformList())
+                {
+                    if (!value.first || name.size() > 256 || value.first->getNumElements() > 4096) return 0;
+                    strings += name.size();
+                }
+                for (const auto& [name, value] : state.getDefineList())
+                {
+                    if (name.size() > 256 || value.first.size() > 1024) return 0;
+                    strings += name.size() + value.first.size();
+                }
+                // Map-node/ref-pointer overhead, strings and object/vector
+                // allowance; no cloned texture/image/Uniform payload is owned.
+                return 1024 + entries * 128 + strings * 2;
+            };
+            const auto mergeList = [](auto& destination, const auto& incoming, auto flags) {
+                for (const auto& [key, value] : incoming)
+                {
+                    const auto previous = destination.find(key);
+                    if (previous == destination.end() || !(flags(previous->second) & osg::StateAttribute::OVERRIDE)
+                        || (flags(value) & osg::StateAttribute::PROTECTED)) destination.insert_or_assign(key, value);
+                }
+            };
+            const auto pairFlags = [](const auto& value) { return value.second; };
+            const auto modeFlags = [](const auto& value) { return value; };
+            const auto visit = [&](const auto& self, const osg::Node& node, unsigned depth)->void {
+                if (!(node.getNodeMask() & mask)) return;
+                if (++nodes > 4096 || depth > 32 || std::find(branch.begin(), branch.end(), &node) != branch.end())
+                { mCapacity = true; return; }
+                if (mUnknown || mNull || mCapacity) return;
+                branch.push_back(&node);
+                if (node.getStateSet()) ancestry.push_back(node.getStateSet());
+                if (node.asGeometry())
+                {
+                    if (ancestry.empty()) mNull = true;
+                    else
+                    {
+                        osg::ref_ptr<osg::StateSet> effective = new osg::StateSet;
+                        std::size_t scratch = 1024;
+                        for (const auto* state : ancestry)
+                        {
+                            const auto bytes = stateBytes(*state);
+                            if (!bytes || bytes > 256 * 1024 - std::min(scratch, std::size_t(256 * 1024)))
+                            { mCapacity = true; break; }
+                            scratch += bytes;
+                            mergeList(effective->getModeList(), state->getModeList(), modeFlags);
+                            mergeList(effective->getAttributeList(), state->getAttributeList(), pairFlags);
+                            auto& attributes = effective->getTextureAttributeList();
+                            attributes.resize(std::max(attributes.size(), state->getTextureAttributeList().size()));
+                            for (unsigned unit = 0; unit < state->getTextureAttributeList().size(); ++unit)
+                                mergeList(attributes[unit], state->getTextureAttributeList()[unit], pairFlags);
+                            auto& modes = effective->getTextureModeList();
+                            modes.resize(std::max(modes.size(), state->getTextureModeList().size()));
+                            for (unsigned unit = 0; unit < state->getTextureModeList().size(); ++unit)
+                                mergeList(modes[unit], state->getTextureModeList()[unit], modeFlags);
+                            mergeList(effective->getUniformList(), state->getUniformList(), pairFlags);
+                            mergeList(effective->getDefineList(), state->getDefineList(), pairFlags);
+                            const auto incoming = state->getRenderBinMode();
+                            const auto previous = effective->getRenderBinMode();
+                            if (incoming != osg::StateSet::INHERIT_RENDERBIN_DETAILS
+                                && (!(previous & osg::StateSet::OVERRIDE_RENDERBIN_DETAILS)
+                                    || (incoming & osg::StateSet::PROTECTED_RENDERBIN_DETAILS)))
+                                effective->setRenderBinDetails(state->getBinNumber(), state->getBinName(), incoming);
+                            // A false nest policy changes batching scope. Never
+                            // discard it while constructing an equivalence key.
+                            if (!state->getNestRenderBins()) effective->setNestRenderBins(false);
+                        }
+                        if (!mCapacity)
+                        {
+                            const auto bytes = stateBytes(*effective);
+                            if (!bytes) mCapacity = true;
+                            else
+                            {
+                                const auto existing = std::find_if(mMaterials.begin(), mMaterials.end(), [&](const auto& value) {
+                                    return value.state->compare(*effective, true) == 0;
+                                });
+                                if (existing != mMaterials.end()) existing->owners |= owner;
+                                else if (mMaterials.size() >= MaximumMaterials || bytes > MaximumMetadata - mBytes) mCapacity = true;
+                                else
+                                {
+                                    mStates.push_back(effective);
+                                    mMaterials.push_back({effective, owner});
+                                    mBytes += bytes;
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (node.asDrawable()) mUnknown = true;
+                else if (const auto* group = node.asGroup())
+                    for (unsigned i = 0; i < group->getNumChildren() && !mUnknown && !mNull && !mCapacity; ++i)
+                        self(self, *group->getChild(i), depth + 1);
+                else mUnknown = true;
+                if (node.getStateSet()) ancestry.pop_back();
+                branch.pop_back();
+            };
+            visit(visit, root, 0);
+        }
+        catch (const std::bad_alloc&) { mCapacity = true; }
+    }
+    void EffectiveMaterialOwners::replaceOwner(unsigned from, unsigned to)
+    {
+        if (!from || !to || (to & ~((1u << 17) - 1))) { mUnknown = true; return; }
+        for (auto& value : mMaterials)
+            if (value.owners & from) value.owners = (value.owners & ~from) | to;
+    }
+    MaterialOwnershipReport EffectiveMaterialOwners::report() const
+    {
+        Shader::AssetGeometry::ProducerReadScope producerRead;
+        MaterialOwnershipReport value;
+        value.unknown = mUnknown; value.nullMaterial = mNull; value.capacity = mCapacity;
+        if (mUnknown || mNull || mCapacity) { value.conflicting = ~0u; return value; }
+        for (const auto& material : mMaterials)
+            if (material.owners & (material.owners - 1))
+            {
+                value.conflicting |= material.owners & ~1u;
+                if (!value.shared) { value.firstOwners = material.owners & (~material.owners + 1u); value.secondOwners = material.owners & ~value.firstOwners; }
+                value.shared = true;
+            }
+        return value;
     }
     std::vector<OriginalDraw> originalDraws(const osg::Node& root)
     {
@@ -768,6 +937,10 @@ namespace SceneUtil::GeneratedStaticLod
     };
     std::shared_ptr<MaterialGuard> MaterialGuard::captureDraws(std::span<const OriginalDraw> original,const OriginalDraw& derived,bool requireShader)
     {
+        // Non-certified HLOD recipes also read mutable Program/Shader source
+        // and import lists. Hold the producer's read lease for one coherent
+        // snapshot, including nested AssetGeometry certification calls.
+        Shader::AssetGeometry::ProducerReadScope producerRead;
         if(original.size()>128 || derived.path.size()>32) return {};
         for(const auto& draw:original) if(draw.path.size()>32) return {};
         Resource::SpeculativeScope::Stage preflight(256*1024,0);
@@ -864,6 +1037,7 @@ namespace SceneUtil::GeneratedStaticLod
     }
     bool MaterialGuard::current(osg::State* state,const std::vector<const osg::StateSet*>& inherited) const
     {
+        Shader::AssetGeometry::ProducerReadScope producerRead;
         if(!mImpl) return false;
         try
         {
@@ -1095,6 +1269,7 @@ namespace SceneUtil::GeneratedStaticLod
             {
                 auto* tier=tierPaths[i].geometry.get();
                 osg::ref_ptr<DrawReceipt> callback=new DrawReceipt(tier->getPrimitiveSet(0)->getNumIndices());
+                callback->owner=tier;
                 tier->setDrawCallback(callback); // Freeze this exact callback identity before capture.
                 callback->originals.push_back(sourcePaths[i]);callback->derivedMatrix=tierPaths[i].matrix;
                 for(const auto& node:tierPaths[i].path) if(node->getStateSet()) callback->candidateStates.emplace_back(node->getStateSet());

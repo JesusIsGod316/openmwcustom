@@ -5,7 +5,9 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -15,7 +17,32 @@
 namespace osg { class State; }
 namespace Shader::AssetGeometry
 {
-    // This contract authorizes index LOD / material atlases only. It is not an
+    // Guards mutable Shader/Program producer recipes and their certificate
+    // publication. Readers may nest, including under a same-thread writer.
+    // Never call ShaderManager while holding a read scope: manager mutations
+    // acquire its mutex before this lease. There is no read-to-write upgrade.
+    class ProducerReadScope
+    {
+    public:
+        ProducerReadScope();
+        ~ProducerReadScope();
+        ProducerReadScope(const ProducerReadScope&) = delete;
+        ProducerReadScope& operator=(const ProducerReadScope&) = delete;
+    private:
+        std::shared_lock<std::shared_mutex> mLock;
+    };
+    class ProducerMutationScope
+    {
+    public:
+        ProducerMutationScope();
+        ~ProducerMutationScope();
+        ProducerMutationScope(const ProducerMutationScope&) = delete;
+        ProducerMutationScope& operator=(const ProducerMutationScope&) = delete;
+    private:
+        std::unique_lock<std::shared_mutex> mLock;
+    };
+    // This contract authorizes index LOD / material atlases. A separate temporal
+    // domain may borrow only its exact source provenance; this is never an
     // indirect draw, visibility, deformation or temporal projection contract.
     enum class Family { Stock, Pbr };
     enum class Refusal { None, Missing, Epoch, Source, Stage, Bindings, Defines, Features, Capacity, Count };
@@ -55,10 +82,17 @@ namespace Shader::AssetGeometry
         Refusal refusal = Refusal::Missing;
         unsigned families = 0;
         std::string_view name;
+        std::shared_ptr<const void> owner;
     };
     // Bounded diagnostic view of this Shader's existing proof; no disk access
     // and no source copy. The Shader retains the returned name's owner.
     SourceStatus sourceStatus(const osg::Shader& shader);
+    // ShaderManager alone replaces approved @ substitutions. Before it writes
+    // a cached producer, validate its entire prior immutable recipe against the
+    // exact owner/version that has just been invalidated. This is never a way to
+    // validate an old candidate snapshot against a new generation.
+    bool canRefreshSource(const osg::Shader& shader, const std::shared_ptr<Epoch>& epoch,
+        std::uint64_t previousVersion);
 
     // SamplerProgram's private uniforms are part of its actual linking/apply
     // behavior. A generic Program clone cannot borrow its asset certificate.
@@ -70,6 +104,13 @@ namespace Shader::AssetGeometry
         virtual ~SamplerProducer() = default;
     };
     Refusal certify(osg::Program& program, const Samplers& samplers);
+    bool canRefreshProgram(const osg::Program& program, const std::shared_ptr<Epoch>& epoch,
+        std::uint64_t previousVersion);
+    // Only after canRefreshProgram succeeded before producer regeneration.
+    // Retain the prior private sampler and linking schema, then certify all new
+    // exact producer recipes. Publication replaces a slot, not its old data.
+    Refusal refreshProgram(osg::Program& program, const std::shared_ptr<Epoch>& epoch,
+        std::uint64_t previousVersion);
     Refusal validate(const osg::Program& program);
     bool matches(const osg::Program& program);
 

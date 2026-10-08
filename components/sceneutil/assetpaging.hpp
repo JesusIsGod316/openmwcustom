@@ -8,6 +8,7 @@
 #include <components/resource/assetpolicy.hpp>
 #include <components/vfs/pathutil.hpp>
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -24,6 +25,7 @@ namespace SceneUtil::AssetPaging
     inline constexpr unsigned MaximumAttempts = 3;
     inline constexpr std::uint64_t RetryDelayMilliseconds = 5000;
     enum class Gate { Graph, Material, Transform, Layout, Capacity, NoReduction, Source, Occluder, Population, Count };
+    enum class CpuStage : unsigned { Outer, Snapshot, Private, Count };
     struct LaneCounters
     {
         std::atomic_uint64_t sourceRequested{0}, sourceCertified{0}, sourceRejected{0}, snapshotDenied{0};
@@ -31,7 +33,14 @@ namespace SceneUtil::AssetPaging
         std::atomic_uint64_t buildAttempts{0}, buildRefused{0}, ready{0};
         std::atomic_uint64_t refusals[static_cast<unsigned>(Gate::Count)]{};
         std::atomic_uint64_t details[static_cast<unsigned>(GeneratedStaticLod::Detail::Count)]{};
+        // Refusal observations by stage and independent predicate; a single
+        // attempt can contribute multiple reasons. These are not a population
+        // funnel or a transactional snapshot of other producer counters.
+        std::atomic_uint64_t cpuReasons[static_cast<unsigned>(CpuStage::Count)][Resource::SpeculativeBudget::ReservationRefusalCount]{};
+        std::atomic_uint64_t cpuUnclassified[static_cast<unsigned>(CpuStage::Count)]{};
     };
+    void cpuRefusal(unsigned mask, CpuStage stage, const Resource::SpeculativeDeferred& error);
+    void noteOptionalTransient(unsigned mask) noexcept;
     struct Counters
     {
         inline static LaneCounters lod, hlod;
@@ -39,6 +48,7 @@ namespace SceneUtil::AssetPaging
         // of unique chunks. Workers may still progress at the stopped-draw receipt.
         inline static std::atomic_uint32_t attemptedMask{0}, completedMask{0}, terminalMask{0}, transientMask{0};
         inline static std::atomic_uint64_t retryAttempts{0}, retryDeferred{0}, retryExhausted{0};
+        inline static std::atomic_uint64_t tailAttempts{0}, tailQueued{0}, tailDeferred{0}, tailExhausted{0}, tailCancelled{0};
     };
     inline LaneCounters& lane(unsigned bit) { return bit == Lod ? Counters::lod : Counters::hlod; }
     template<class F> void each(unsigned mask, F&& function)
@@ -76,6 +86,12 @@ namespace SceneUtil::AssetPaging
             terminal = attempted & ~(completed | transient);
             Counters::attemptedMask.fetch_or(attempted); Counters::completedMask.fetch_or(completed);
             Counters::terminalMask.fetch_or(terminal); Counters::transientMask.fetch_or(transient);
+            // Submission is not GL readiness. Revisit pending ICO ownership
+            // once cooldown expires; a ready cached result then terminates the
+            // tail without recooking, while expired readiness keeps its finite
+            // per-chunk ledger. This never delays required weak publication.
+            const unsigned pending = readiness && readiness->ready.load(std::memory_order_acquire) ? 0 : completed;
+            noteOptionalTransient(transient | pending);
         }
     };
     struct Quality
@@ -97,6 +113,36 @@ namespace SceneUtil::AssetPaging
     };
     std::uint64_t milliseconds();
 
+    // A serialized optional terrain-tail owner revisits the same complete weak
+    // view. Cooldown and finite attempts belong to this exact source cohort;
+    // they never make weak readiness wait and never count cache observations as
+    // retries. Main-thread scheduling copies the ledger only after worker Done.
+    struct OptionalTailRetry
+    {
+        struct Generation
+        {
+            const void* world = nullptr;
+            std::uint64_t vfs = 0, shader = 0;
+            unsigned mask = 0;
+            bool operator==(const Generation&) const = default;
+        };
+        Generation generation;
+        unsigned attempts = 0;
+        bool pending = false, exhausted = false;
+        std::uint64_t retryAfter = 0;
+        bool due(const Generation& current, std::uint64_t now) const noexcept
+        { return generation == current && pending && !exhausted && now >= retryAfter; }
+        void finishAttempt(bool deferred,std::uint64_t now) noexcept
+        {
+            attempts = std::min(MaximumAttempts,attempts+1);
+            exhausted = deferred && attempts >= MaximumAttempts;
+            pending = deferred && !exhausted;
+            retryAfter = pending && now <= UINT64_MAX-RetryDelayMilliseconds
+                ? now+RetryDelayMilliseconds : UINT64_MAX;
+        }
+        void cancel() noexcept { pending = false; }
+    };
+
     // Used by both actual terrain-preloader owners and the chain fixture. The
     // caller establishes the existing NearFuture SpeculativeScope first.
     class OptionalUpgradeScope
@@ -104,13 +150,20 @@ namespace SceneUtil::AssetPaging
     public:
         explicit OptionalUpgradeScope(std::atomic<bool>* abort)
             : mOverlap(overlap())
-            , mWork(abort, PagingWorkScope::Phase::OptionalOptimization) {}
+            , mWork(abort, PagingWorkScope::Phase::OptionalOptimization)
+            , mPrevious(sCurrent)
+        { sCurrent = this; }
+        ~OptionalUpgradeScope() { sCurrent = mPrevious; }
+        bool needsRetry() const noexcept { return mNeedsRetry; }
+        static void noteTransient(unsigned mask) noexcept
+        { if (sCurrent && (mask & Mask)) sCurrent->mNeedsRetry = true; }
     private:
         static std::unique_ptr<Resource::SpeculativeScope::Stage> overlap()
         {
             try { return std::make_unique<Resource::SpeculativeScope::Stage>(128 * Resource::SpeculativeBudget::MiB,0); }
-            catch (const Resource::SpeculativeDeferred&)
+            catch (const Resource::SpeculativeDeferred& error)
             {
+                cpuRefusal(Resource::AssetPolicy::mask() & Mask,CpuStage::Outer,error);
                 each(Resource::AssetPolicy::mask() & Mask,[](LaneCounters& value) {
                     ++value.outerCpuDenied; ++value.refusals[static_cast<unsigned>(Gate::Capacity)];
                 });
@@ -119,6 +172,9 @@ namespace SceneUtil::AssetPaging
         }
         std::unique_ptr<Resource::SpeculativeScope::Stage> mOverlap;
         PagingWorkScope mWork;
+        inline static thread_local OptionalUpgradeScope* sCurrent = nullptr;
+        OptionalUpgradeScope* mPrevious = nullptr;
+        bool mNeedsRetry = false;
     };
     struct Source
     {
@@ -130,7 +186,8 @@ namespace SceneUtil::AssetPaging
     std::optional<Source> prepareSource(const osg::Node& original, VFS::Path::NormalizedView model,
         const VFS::Manager& vfs, unsigned requested, Outcome& outcome);
     std::unique_ptr<Resource::SpeculativeScope::Stage> reservePrivateSources(unsigned eligible, Outcome& outcome);
-    bool admitPrivateSource(const Source& source, Outcome& outcome);
+    bool admitPrivateSource(const Source& source, Outcome& outcome,
+        Resource::SpeculativeScope::Stage& hostAdmission, std::size_t copyBytes);
     void refuse(unsigned lanes, Gate gate);
     void refusalDetail(unsigned lanes, GeneratedStaticLod::Detail detail,
         std::string_view model = {}, const GeneratedStaticLod::RefusalInfo* info = nullptr);

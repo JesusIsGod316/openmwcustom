@@ -244,11 +244,22 @@ if (OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     find_package(OpenGL REQUIRED)
     find_package(OpenSceneGraph REQUIRED COMPONENTS osgViewer)
-    foreach(asset_fixture generated-static-lod selective-hlod-corpus asset-shader-contract asset-material-runtime)
+    foreach(asset_fixture generated-static-lod selective-hlod-corpus asset-shader-contract asset-material-runtime asset-admission)
         add_executable(p9-${asset_fixture} ../../tools/optimizedmw/phase9/${asset_fixture}-tests.cpp)
         target_include_directories(p9-${asset_fixture} PRIVATE ${PROJECT_SOURCE_DIR})
         target_link_libraries(p9-${asset_fixture} PRIVATE components ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
     endforeach()
+    add_test(NAME p9-asset-admission COMMAND p9-asset-admission)
+    set_tests_properties(p9-asset-admission PROPERTIES TIMEOUT 45)
+    add_executable(p9-temporal-asset-producer ../../tools/optimizedmw/phase9/temporal-dynamic-tests.cpp
+        mwrender/temporalmotion.cpp)
+    target_include_directories(p9-temporal-asset-producer PRIVATE ${PROJECT_SOURCE_DIR})
+    target_link_libraries(p9-temporal-asset-producer PRIVATE components glm::glm ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
+    target_compile_definitions(p9-temporal-asset-producer PRIVATE P9_ASSET_PRODUCER_FIXTURE=1
+        P9_VERTEX="${PROJECT_SOURCE_DIR}/files/shaders/compatibility/temporal_camera_motion.vert"
+        P9_FRAGMENT="${PROJECT_SOURCE_DIR}/files/shaders/compatibility/temporal_camera_motion.frag"
+        P9_DYNAMIC_VERTEX="${PROJECT_SOURCE_DIR}/files/shaders/compatibility/temporal_dynamic_motion.vert"
+        P9_DYNAMIC_FRAGMENT="${PROJECT_SOURCE_DIR}/files/shaders/compatibility/temporal_dynamic_motion.frag")
     target_compile_definitions(p9-asset-material-runtime PRIVATE P9_SOURCE="${PROJECT_SOURCE_DIR}")
     add_executable(p9-terrain-texture-handoff ../../tools/optimizedmw/phase9/terrain-texture-handoff-tests.cpp)
     target_include_directories(p9-terrain-texture-handoff PRIVATE ${PROJECT_SOURCE_DIR})

@@ -439,6 +439,11 @@ def report_text(result):
             lines.append("  Eligibility evidence: " + lane["eligibility_evidence"])
         if "refusals" in lane:
             lines.append("  Refusals: " + json.dumps(lane["refusals"], sort_keys=True))
+            refusals = lane["refusals"] or {}
+            if any(key.startswith("cpu_") for key in refusals):
+                lines.append("  CPU refusal predicates overlap within an attempt; stage observations and sample-time headroom are not disjoint asset populations or proof of OS memory release.")
+            if any(key.startswith("material_owner_") for key in refusals):
+                lines.append("  Material ownership: unknown/null/capacity/shared counters count chunk proofs; conflict_instances counts affected instances; cohesions counts merged partitions. These units must not be summed.")
         lines.extend("  " + problem for problem in lane["problems"])
     if result["exit_code"]:
         lines.append("Stop candidate performance comparison. Diagnose this capture's missing/refusal/cutoff evidence; do not require a broad benchmark matrix.")

@@ -13,6 +13,11 @@ class AssetReleaseEvidence(unittest.TestCase):
     def test_actual_contract_population(self):
         text = "ASSET_CONTRACT_PASS stock=1 pbr=1 source_negative=1\n"
         self.assertEqual(gate.record(text, "ASSET_CONTRACT_PASS", {"stock": 1, "pbr": 1})["source_negative"], "1")
+        current = "\n".join("ASSET_CONTRACT_REFRESH family=" + family + " cached=1 l1_source=1" for family in ("stock", "pbr"))
+        self.assertEqual(set(gate.population(current, "ASSET_CONTRACT_REFRESH", "family", {"stock", "pbr"}, {"cached": 1, "l1_source": 1})), {"stock", "pbr"})
+        for bad in ("", current.splitlines()[0], current.replace("family=pbr", "family=stock"), current.replace("l1_source=1", "l1_source=0")):
+            with self.subTest(bad=bad), self.assertRaises(gate.QualificationError):
+                gate.population(bad, "ASSET_CONTRACT_REFRESH", "family", {"stock", "pbr"}, {"cached": 1, "l1_source": 1})
 
     def test_zero_engagement_is_not_pass(self):
         with self.assertRaises(gate.QualificationError):
