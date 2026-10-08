@@ -35,8 +35,16 @@ Completed game captures and combined upload ZIPs are saved in the
 Benchmarks folder beside this launcher. Windows recorder archives stay in
 SystemTrace, and TestSessions retains the automatic session receipts.
 
-L1: index-only, attribute-aware meshoptimizer simplification of positively
-certified private static paging partitions. Existing authored LOD,
+L1 alone: index-only, attribute-aware meshoptimizer simplification after the
+ordinary paging optimizer. Complete optimized children must contain only
+positively certified original static contributors. Ordinary batching is
+preserved; any shared unapproved material refuses the complete child.
+This path retains the control vertex streams and VBOs and charges only changed
+index buffers. Unchanged primitive sets retain their exact EBO identity.
+It allocates no private vertex-array copy or private vertex buffer. Display-list
+control and control without proved VBO ownership retain their original path.
+L1 combined with H1 retains the earlier bounded private partition path.
+Existing authored LOD,
 controllers, transparent/cutout materials, unknown draw semantics,
 occluder owners, unsupported transforms and unsafe layouts retain control.
 Main-view projection and hysteresis select the tier only after a real
@@ -46,6 +54,17 @@ GPU/culling projection split; arbitrary projection or clip-control changes
 retain control. Original vertex/material streams are immutable and
 shared with the derived indices. Cache identity includes winning source
 contents, actual geometry streams and a pinned backend/recipe.
+
+L1-only optional control work starts with an 8 MiB bounded metadata allowance
+and reserves a conservative graph/stream/index/optimizer census before each
+actual source instance is allocated. This replaces the unconditional 128 MiB
+request while retaining the 128 MiB request and 256 MiB aggregate limits.
+Held construction estimates transfer to retained graph ownership; they are
+not treated as reclaimed operating-system memory. Pressure, unsupported
+source layouts and finite retry exhaustion keep the exact weak control.
+Normal capture receipts include exact build-failure stages and GPU admission
+predicates with their sampler observation and reservation debt. Overlapping
+refusal predicates count attempts, not distinct assets or resident VRAM.
 
 H1: separate, narrowly eligible static material atlas/proxy preparation.
 Admission requires fewer real submissions than the optimized control.

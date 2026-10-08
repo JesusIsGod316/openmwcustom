@@ -74,6 +74,60 @@ def population(text, marker, identity_key, identities, expected):
     return result
 
 
+def unsigned_field(fields, key, marker):
+    value = fields.get(key, "")
+    require(re.fullmatch(r"[0-9]+", value) is not None and int(value) <= (1 << 64) - 1,
+            marker + " invalid/missing integer: " + key)
+    return int(value)
+
+
+def l1_post_optimizer(text):
+    """Require the current ordinary producer and actual shared-buffer draw."""
+    optimized = record(text, "CHAIN_POST_OPTIMIZER", {
+        "exact_control_indices": 1, "private_array_copies": 0, "private_vertex_buffers": 0,
+        "merged_input_population": 1, "weak_geometry_unchanged": 1,
+        "source_geometry_unchanged": 1, "actual_producer": 1})
+    baseline = unsigned_field(optimized, "baseline_submissions", "CHAIN_POST_OPTIMIZER")
+    retained = unsigned_field(optimized, "retained_submissions", "CHAIN_POST_OPTIMIZER")
+    contributors = unsigned_field(optimized, "contributor_submissions", "CHAIN_POST_OPTIMIZER")
+    debt = unsigned_field(optimized, "gpu_debt_bytes", "CHAIN_POST_OPTIMIZER")
+    indices = unsigned_field(optimized, "new_index_bytes", "CHAIN_POST_OPTIMIZER")
+    require(0 < baseline == retained < contributors,
+            "Post-optimizer fixture did not preserve the actual merged ordinary control")
+    require(0 < debt == indices, "Post-optimizer GPU debt is not exclusively actual new index resources")
+    buffers = record(text, "CHAIN_POST_OPTIMIZER_BUFFERS", {
+        "shared_all_arrays_vbos": 1, "unchanged_primitive_ebo_identity": 1,
+        "established_control_vbos": 1, "actual_main_draw": 1})
+    shared = unsigned_field(buffers, "shared_stream_geometries", "CHAIN_POST_OPTIMIZER_BUFFERS")
+    features = record(text, "CHAIN_SHADER_FEATURES", {"actual_program_linked": 1})
+    require(shared > 0 and shared == unsigned_field(features, "immutable_index_streams", "CHAIN_SHADER_FEATURES"),
+            "Post-optimizer draw did not consume the exact shared ordinary vertex/material buffers")
+    unapproved = record(text, "CHAIN_MIXED_UNAPPROVED_REFUSAL", {
+        "unsupported_record_kind": 1, "same_template_same_material": 1, "whole_merged_draw_refused": 1,
+        "build_attempted": 0, "exact_control_batching": 1, "exact_control_indices": 1,
+        "merged_input_population": 1})
+    require(0 < unsigned_field(unapproved, "baseline_submissions", "CHAIN_MIXED_UNAPPROVED_REFUSAL")
+            < unsigned_field(unapproved, "contributor_submissions", "CHAIN_MIXED_UNAPPROVED_REFUSAL"),
+            "Unapproved contributor did not exercise an actual merged ordinary control")
+    vbo_refusal = record(text, "CHAIN_POST_OPTIMIZER_VBO_REFUSAL", {
+        "display_list_refused": 1, "missing_vbo_refused": 1, "new_gpu_debt": 0, "private_copy_only": 1})
+    borrowed_refusal = record(text, "CHAIN_NONMERGE_SHARED_TEMPLATE", {
+        "actual_borrowed_drawable": 1, "template_unchanged": 1, "weak_unchanged": 1,
+        "no_derived_tier": 1, "new_gpu_debt": 0, "negative_only_merge_override": 1})
+    return {"ordinary_control": optimized, "buffers": buffers, "shader_features": features,
+            "unapproved_contributor": unapproved, "vbo_refusal": vbo_refusal,
+            "borrowed_template_refusal": borrowed_refusal}
+
+
+def l1_mixed_index_resources(text):
+    proof = record(text, "L1_MIXED_INDEX_RESOURCES", {
+        "unchanged_primitive_ebo_identity": 1, "shared_vertices_vbos": 1, "exact_new_index_debt": 1})
+    require(unsigned_field(proof, "unchanged_leaves", "L1_MIXED_INDEX_RESOURCES") > 0
+            and unsigned_field(proof, "new_index_bytes", "L1_MIXED_INDEX_RESOURCES") > 0,
+            "Two-leaf L1 fixture did not prove unchanged resources alongside actual reduced indices")
+    return proof
+
+
 def evaluate(folder, commit, source, game, workspace, installed=None):
     base = load(folder / "RELEASE-GATES.json")
     require(base.get("source_commit") == commit and base.get("deployment_prerequisite_pass") is True,
@@ -92,6 +146,10 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
     fixture_paths = {str((game / (name + ".exe")).resolve()) for name in
                      ("p9-asset-shader-contract", "p9-asset-material-runtime", "p9-asset-admission",
                       "p9-generated-static-lod", "p9-temporal-asset-producer")}
+    gpu_paths = [Path(path).resolve() for path in main_run.get("input_hashes", {})
+                 if Path(path).name == "p9-asset-gpu-budget.exe"]
+    require(len(gpu_paths) == 1, "Exact final GPU admission executable is unbound")
+    fixture_paths.add(str(gpu_paths[0]))
     require(set(extra.get("input_hashes", {})) == fixture_paths, "Asset fixture executable population is incomplete")
     current_inputs(extra["input_hashes"])
     configurations = {str((folder / name).resolve()) for name in ("current-openmw.cfg", "current-settings.cfg")}
@@ -128,7 +186,8 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
     required = {"ASSET-SHADER-CONTRACT.txt", "ASSET-MATERIAL-RUNTIME.txt", "ASSET-MATERIAL-RUNTIME-REVERSED.txt", "ASSET-SHADER-BASELINE.txt",
                 "GEOMETRY-L1-CHAIN.txt", "GEOMETRY-H1-CHAIN.txt", "PACKAGE-QUALIFIER-TESTS-FINAL.txt", "ASSET-SHADER-GATE-TESTS-FINAL.txt",
                 "ASSET-ADMISSION.txt", "EFFECTIVE-MATERIAL-OWNERSHIP.txt", "TEMPORAL-ASSET-PRODUCER.txt",
-                "ASSET-SHADER-TEMPORAL-ONLY.txt", "GEOMETRY-L1-CURRENT.txt",
+                "ASSET-SHADER-TEMPORAL-ONLY.txt", "GEOMETRY-L1-CURRENT.txt", "GEOMETRY-L1-TEXTURE-COMBINATION.txt",
+                "ASSET-GPU-ADMISSION.txt",
                 "EXACT-VARIANT-READER-TESTS.txt", "EXACT-VARIANT-READER-TESTS.xml"}
     require(set(receipts) == required, "Asset result receipt population incomplete")
     texts = {}
@@ -194,12 +253,27 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
                         "shared_ordinary", "family_reunion", "null_refused", "unknown_refused", "capacity_refused")})
     record(texts["EFFECTIVE-MATERIAL-OWNERSHIP.txt"], "L1_TEMPORAL_DRAW_RECIPE", {key: 1 for key in
            ("exact_owner", "borrowed_owner_refused", "source_uv_refused", "source_material_refused", "derived_indices_refused", "restored_exact")})
+    mixed_index_resources = l1_mixed_index_resources(texts["EFFECTIVE-MATERIAL-OWNERSHIP.txt"])
     admission = record(texts["ASSET-ADMISSION.txt"], "ASSET_ADMISSION_PASS",
                        {key: 1 for key in ("fixed_cap", "exact_private_progress", "aggregate_denial", "coherent_receipt",
                         "headroom", "unknown_pressure", "owner_release", "growth_conserved", "overflow", "demand_unblocked",
                         "retry_cooldown", "finite_tail", "generation_reset", "cancellation", "terminal_fallback")})
+    record(texts["ASSET-ADMISSION.txt"], "ASSET_CONTROL_PRESSURE_REPLAY", {key: 1 for key in
+        ("fixed_cap", "exact_captured_floor", "old128_refused", "bounded_metadata", "actual_control_progress",
+         "additive_overlap", "before_allocation", "owner_transfer", "source_immutable", "expanded_primitives",
+         "hidden_deformation_source", "cycle_refused")})
+    gpu_reasons = ("invalid_request", "local_request_limit", "global_request_limit", "invalid_sample",
+                  "pressure_policy", "regressed_sample_clock", "stale_sample", "headroom_reserve",
+                  "request_headroom", "global_debt_limit", "debt_headroom", "arithmetic_overflow",
+                  "reservation_allocation_failed", "retain_allocation_failed")
+    record(texts["ASSET-GPU-ADMISSION.txt"], "ASSET_GPU_ADMISSION_PASS", {key: 1 for key in
+        ("schema", *("reason_" + reason for reason in gpu_reasons), "overlapping_predicates", "freshness_boundary",
+         "clock_regression", "captured_debt_tiny_admission", "reservation_allocation_rollback",
+         "retention_allocation_rollback", "pooled_lifetime", "cas_final_debt", "concurrent_counters")})
     chain = {}
-    for mask, name in ((1, "GEOMETRY-L1-CHAIN.txt"), (2, "GEOMETRY-H1-CHAIN.txt"), (1, "GEOMETRY-L1-CURRENT.txt")):
+    post_optimizer = {}
+    for mask, name in ((1, "GEOMETRY-L1-CHAIN.txt"), (2, "GEOMETRY-H1-CHAIN.txt"), (1, "GEOMETRY-L1-CURRENT.txt"),
+                       (1, "GEOMETRY-L1-TEXTURE-COMBINATION.txt")):
         chain[name] = record(texts[name], "CHAIN_PACKAGE",
                              {"mask": mask, "packaged_shaders": 1, "captured_settings": 1,
                               "define_substitutions": 0, "stock_certificate_injection": 0})
@@ -217,6 +291,10 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
         record(texts[name], "CHAIN_RETRY_EXHAUSTED", {"actual_attempts": 3, "settled_stops_retry": 1,
             "ordinary_preserved": 1, "builder_calls": 0, "generation_reset": 0})
         if mask == 1:
+            if name == "GEOMETRY-L1-TEXTURE-COMBINATION.txt":
+                record(texts[name], "CHAIN_L1_TEXTURE_COMBINATION", {"process_mask": 5,
+                    "incremental_control_admission": 1, "post_optimizer": 1, "private_array_copies": 0})
+            post_optimizer[name] = l1_post_optimizer(texts[name])
             mutations = population(texts[name], "CHAIN_TEMPORAL_RECIPE_MUTATION", "kind",
                                    {"source_uv", "source_material", "derived_indices"},
                                    {"captured_current": 1, "changed_after_cull": 1, "temporal_recipe_refused": 1,
@@ -229,12 +307,14 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
         else:
             record(texts[name], "CHAIN_MIXED_INPUT", {"candidate_instances": 2, "spatial_buckets": 2,
                    "ordinary_instances": 1, "actual_stat_sources": 1, "material_substitution": 0})
-            mixed = record(texts[name], "CHAIN_MIXED_CONTROL", {"spatial_buckets": 2, "ordinary_preserved": 1, "extra_control_submissions": 0})
+            mixed = record(texts[name], "CHAIN_MIXED_CONTROL", {"spatial_buckets": 2, "ordinary_preserved": 1,
+                "extra_control_submissions": 0, "post_optimizer": 1})
             require(all(re.fullmatch(r"[0-9]+", mixed.get(key, "")) for key in
-                        ("baseline_submissions", "retained_submissions", "baseline_indices", "retained_indices", "cohesive_partitions"))
-                    and 0 < int(mixed["retained_submissions"]) <= int(mixed["baseline_submissions"])
+                        ("baseline_submissions", "retained_submissions", "baseline_indices", "retained_indices"))
+                    and 0 < int(mixed["retained_submissions"]) == int(mixed["baseline_submissions"])
                     and 0 < int(mixed["baseline_indices"]) == int(mixed["retained_indices"])
-                    and int(mixed["cohesive_partitions"]) > 0, "Mixed production control batching or family cohesion not proved")
+                    and mixed["baseline_submissions"] == post_optimizer[name]["ordinary_control"]["baseline_submissions"],
+                    "Mixed production control did not preserve the exact post-optimizer ordinary population")
             record(texts[name], "CHAIN_MIXED_CONSUMED", {"mixed_ordinary_candidate": 1, "real_multi_bucket_cook": 1,
                    "actual_main_draw": 1, "fewer_indices": 1, "control_batching_preserved": 1, "gl_error": 0})
             shared = record(texts[name], "CHAIN_MIXED_SHARED_REFUSAL", {"ordinary_conflict_refused": 1, "build_attempted": 0,
@@ -243,6 +323,8 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
     return {"baseline": baseline, "contract": contract, "cached_refresh": refresh, "shader_concurrency": concurrency,
             "ownership": ownership, "admission": admission,
             "runtime": runtime, "reversed_runtime": reversed_runtime, "package_chains": chain,
+            "l1_post_optimizer": post_optimizer,
+            "l1_mixed_index_resources": mixed_index_resources,
             "temporal_only_provenance": temporal_only, "opaque_motion_producer": temporal,
             "package_input_sha256": extra["package_input_sha256"],
             "fixture_executables": extra["input_hashes"], "source_commit": commit,

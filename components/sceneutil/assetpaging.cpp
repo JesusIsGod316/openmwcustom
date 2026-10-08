@@ -1,4 +1,6 @@
 #include "assetpaging.hpp"
+#include "riggeometry.hpp"
+#include "morphgeometry.hpp"
 #include <components/resource/assetgpubudget.hpp>
 #include <components/resource/derivedassetcache.hpp>
 #include <components/vfs/manager.hpp>
@@ -8,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <stdexcept>
+#include <sstream>
 
 namespace SceneUtil::AssetPaging
 {
@@ -33,7 +36,8 @@ namespace SceneUtil::AssetPaging
                 if ((value.reasons & (1u<<i)) && counters.cpuReasons[slot][i].fetch_add(1)==0) first=true;
             if (!first) continue;
             const auto& sample = value.sample;
-            Log(Debug::Info) << "OptimizedMW asset CPU first refusal: lane=" << (bit==Lod ? "L1" : "H1")
+            std::ostringstream receipt;
+            receipt << "OptimizedMW asset CPU first refusal: lane=" << (bit==Lod ? "L1" : "H1")
                 << " stage=" << slot << " reason_bits=" << value.reasons << " pressure_reason_bits=" << value.pressureReasons
                 << " requested=" << value.requested << " current_future=" << value.currentFuture
                 << " proposed_future=" << value.proposedFuture << " transient_limit=" << value.transientLimit
@@ -50,6 +54,130 @@ namespace SceneUtil::AssetPaging
                 << " system_commit_available=" << sample.memory.systemCommitAvailable << " system_commit_valid=" << sample.memory.systemCommitValid
                 << " commit_floor=" << value.commitFloor << " low_memory_valid=" << sample.memory.lowMemoryValid
                 << " low_memory=" << sample.memory.lowMemory;
+            Log(Debug::Info) << receipt.str();
+        }
+    }
+    void OptionalUpgradeScope::reserveReference()
+    {
+        if (!incrementalControl()) return;
+        try { sCurrent->mOverlap->reserveAdditional(512,128 * Resource::SpeculativeBudget::MiB); }
+        catch (const Resource::SpeculativeDeferred& error)
+        {
+            cpuRefusal(Lod,CpuStage::Outer,error);
+            ++Counters::lod.outerCpuDenied; refuse(Lod,Gate::Capacity);
+            noteOptionalTransient(Lod); throw;
+        }
+    }
+    ControlEstimate controlEstimate(const osg::Node& original)
+    {
+        struct Census
+        {
+            std::uint64_t graph = 0, streams = 0, indices = 0, triangleIndices = 0, vertices = 0;
+            unsigned nodes = 0;
+            bool valid = true;
+            void add(std::uint64_t& target,std::uint64_t bytes)
+            { if (bytes > UINT64_MAX-target) valid=false; else target+=bytes; }
+            void visit(const osg::Node& node,unsigned depth)
+            {
+                if (!valid || depth>64 || ++nodes>16384 || node.getName().size()>4096
+                    || node.getDescriptions().size()>1024)
+                { valid=false; return; }
+                add(graph,2048+node.getName().size()*2ull);
+                for (const auto& description:node.getDescriptions())
+                { if(description.size()>4096) {valid=false;return;} add(graph,64+description.size()*2ull); }
+                // Paging CopyOp unwraps these ordinary (ineligible for L1)
+                // drawables. Their source streams are not child nodes, so the
+                // allocation census must follow the same hidden ownership.
+                if(const auto* rig=dynamic_cast<const RigGeometry*>(&node))
+                { if(const auto source=rig->getSourceGeometry()) visit(*source,depth+1); else valid=false; return; }
+                if(const auto* morph=dynamic_cast<const MorphGeometry*>(&node))
+                { if(const auto source=morph->getSourceGeometry()) visit(*source,depth+1); else valid=false; return; }
+                if (const auto* geometry=dynamic_cast<const osg::Geometry*>(&node))
+                {
+                    if(geometry->getNumTexCoordArrays()>32 || geometry->getNumVertexAttribArrays()>32
+                        || geometry->getNumPrimitiveSets()>1024) {valid=false;return;}
+                    const auto array=[&](const osg::Array* value) {
+                        if(value) {add(streams,value->getTotalDataSize());add(graph,256);}
+                    };
+                    array(geometry->getVertexArray()); array(geometry->getNormalArray()); array(geometry->getColorArray());
+                    array(geometry->getSecondaryColorArray()); array(geometry->getFogCoordArray());
+                    if(geometry->getVertexArray()) add(vertices,geometry->getVertexArray()->getNumElements());
+                    for(unsigned i=0;i<geometry->getNumTexCoordArrays();++i) array(geometry->getTexCoordArray(i));
+                    for(unsigned i=0;i<geometry->getNumVertexAttribArrays();++i) array(geometry->getVertexAttribArray(i));
+                    for(unsigned i=0;i<geometry->getNumPrimitiveSets();++i)
+                    {
+                        const auto* primitive=geometry->getPrimitiveSet(i);
+                        if(!primitive) { valid=false;return; }
+                        const std::uint64_t count=primitive->getNumIndices();
+                        add(indices,count); add(graph,256);
+                        switch(primitive->getMode())
+                        {
+                            case GL_TRIANGLES: add(triangleIndices,count); break;
+                            case GL_TRIANGLE_STRIP: case GL_TRIANGLE_FAN: case GL_POLYGON:
+                            case GL_QUADS: case GL_QUAD_STRIP:
+                                // TriangleIndexFunctor expands these modes;
+                                // repeated/degenerate strips still allocate the
+                                // expanded input and pinned adjacency scratch.
+                                if(count>UINT64_MAX/3) valid=false;
+                                else add(triangleIndices,count*3);
+                                break;
+                            case GL_POINTS: case GL_LINES: case GL_LINE_STRIP: case GL_LINE_LOOP: break;
+                            default: valid=false; break;
+                        }
+                    }
+                }
+                if(const auto* children=node.asGroup())
+                {
+                    if(children->getNumChildren()>16384) {valid=false;return;}
+                    add(graph,children->getNumChildren()*32ull);
+                    for(unsigned i=0;i<children->getNumChildren() && valid;++i) visit(*children->getChild(i),depth+1);
+                }
+            }
+        } census;
+        census.visit(original,0);
+        constexpr auto maximum=128 * Resource::SpeculativeBudget::MiB;
+        // Existing source arrays remain owned. New flattened/merged output,
+        // clone coexistence, index conversions, merge working vectors and the
+        // pinned post-transform triangle/vertex adjacency all fit this bound.
+        if(!census.valid || census.graph>maximum || census.streams>maximum/4
+            || census.indices>maximum/8 || census.triangleIndices>maximum/80 || census.vertices>maximum/192) return {};
+        const auto retained=census.graph+census.streams*2+census.indices*4+census.triangleIndices*4;
+        const auto peak=census.graph*2+census.streams*4+census.indices*8+census.triangleIndices*80+census.vertices*192;
+        if(peak>maximum || retained>peak) return {};
+        return {peak,retained,true};
+    }
+    std::unique_ptr<Resource::SpeculativeScope::Stage> reserveControlSources(unsigned lanes,Outcome& outcome)
+    {
+        try { return std::make_unique<Resource::SpeculativeScope::Stage>(0,0); }
+        catch (const Resource::SpeculativeDeferred& error)
+        {
+            cpuRefusal(lanes,CpuStage::Outer,error); outcome.defer(lanes);
+            each(lanes,[](LaneCounters& value) {++value.outerCpuDenied;}); refuse(lanes,Gate::Capacity);
+            return {};
+        }
+    }
+    bool admitControlSource(const ControlEstimate& estimate,unsigned lanes,Outcome& outcome,
+        Resource::SpeculativeScope::Stage& admission)
+    {
+        try
+        {
+            if(!estimate.valid || !estimate.peakBytes || estimate.retainedBytes>estimate.peakBytes)
+            {
+                each(lanes,[](LaneCounters& value) {++value.controlCensusRefused;});
+                throw Resource::SpeculativeDeferred{};
+            }
+            admission.reserveAdditional(estimate.peakBytes,128 * Resource::SpeculativeBudget::MiB);
+            each(lanes,[&](LaneCounters& value) {
+                ++value.controlSourcesAdmitted; value.controlReservationBytes+=estimate.peakBytes;
+                value.controlRetainedBytes+=estimate.retainedBytes;
+            });
+            return true;
+        }
+        catch (const Resource::SpeculativeDeferred& error)
+        {
+            cpuRefusal(lanes,CpuStage::Outer,error); outcome.defer(lanes);
+            each(lanes,[](LaneCounters& value) {++value.outerCpuDenied;}); refuse(lanes,Gate::Capacity);
+            return false;
         }
     }
     std::uint64_t milliseconds()
@@ -274,7 +402,14 @@ namespace SceneUtil::AssetPaging
         {
             tiers.lod = GeneratedStaticLod::build(control, identity, camera);
             if (tiers.lod.node && !Resource::AssetGpuBudget::retainUntilShutdown(tiers.lod.gpuReservation))
-            { tiers.lod.node = nullptr; tiers.lod.retryable = true; }
+            {
+                tiers.lod.node = nullptr;
+                tiers.lod.retryable = true;
+                tiers.lod.refusal = GeneratedStaticLod::Refusal::Capacity;
+                tiers.lod.gpuRefusalReasons = Resource::AssetGpuBudget::RetainAllocationFailed;
+                tiers.lod.allocationFailure = true;
+                GeneratedStaticLod::recordBuildFailure(GeneratedStaticLod::BuildStep::GpuRetention, tiers.lod, identity);
+            }
             if (tiers.lod.node) outcome.completed |= Lod;
             else { ++Counters::lod.buildRefused; refuse(Lod, lodGate(tiers.lod.refusal)); if (tiers.lod.retryable) outcome.defer(Lod); }
         }

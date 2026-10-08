@@ -17,10 +17,14 @@
 namespace osg { class Camera; class Program; }
 namespace osgUtil { class CullVisitor; }
 namespace Resource::AssetGpuBudget { class Reservation; }
+namespace Resource { struct SpeculativeReservationReceipt; }
 
 namespace SceneUtil::GeneratedStaticLod
 {
     enum class Refusal { None, Graph, Material, Transform, Layout, Capacity, NoReduction, Count };
+    enum class BuildStep { None, Scope, Inspection, VertexOwnership, Peak, HostAdmission, Cook, Reduction,
+        GpuAdmission, GpuRetention, Lineage, Replay, Guard, Publication, Count };
+    const char* buildStepName(BuildStep value);
     enum class Detail { None, ShaderFamily, ShaderEpoch, ShaderSource, ShaderStage, ShaderBindings, ShaderDefines,
         ShaderFeatures, ShaderCapacity, Alpha, Blend, Dynamic, GraphCallback, GraphType, HiddenGraph, Layout, Other, Count };
     struct RefusalInfo
@@ -39,6 +43,10 @@ namespace SceneUtil::GeneratedStaticLod
         // Ownership diagnostics count chunk proofs, not distinct source models.
         inline static std::atomic_uint64_t materialOwnerUnknown{0}, materialOwnerNull{0}, materialOwnerCapacity{0};
         inline static std::atomic_uint64_t materialOwnerShared{0}, materialOwnerCohesions{0}, materialOwnerCohesiveInstances{0};
+        inline static std::atomic_uint64_t postOptimizedCandidates{0}, privateArrayCopies{0}, privateVertexBuffers{0};
+        inline static std::atomic_uint64_t newIndexGpuBytes{0};
+        inline static std::atomic_uint64_t buildFailures[static_cast<unsigned>(BuildStep::Count)]{};
+        inline static std::atomic_bool firstBuildFailure[static_cast<unsigned>(BuildStep::Count)]{};
         inline static std::atomic_uint64_t refused[static_cast<unsigned>(Refusal::Count)]{};
     };
     // Run on the original SceneManager template, before paging CopyOp erases provenance.
@@ -106,6 +114,10 @@ namespace SceneUtil::GeneratedStaticLod
     public:
         void observe(const osg::Node& root, unsigned owner, unsigned mask = ~0u);
         void replaceOwner(unsigned from, unsigned to);
+        // The complete optimized child must consist of effective materials
+        // proved on approved original contributors before CopyOp. A material
+        // also used by an ordinary/unapproved contributor refuses the child.
+        bool exclusivelyOwns(const osg::Node& root, unsigned owner, unsigned mask = ~0u) const;
         std::span<const MaterialOwner> materials() const { return mMaterials; }
         MaterialOwnershipReport report() const;
     private:
@@ -147,6 +159,8 @@ namespace SceneUtil::GeneratedStaticLod
         float error() const noexcept { return mError; }
         bool compilationReady() const noexcept
         { return mReadiness && mReadiness->ready.load(std::memory_order_acquire); }
+        bool materialGuardCurrent() const
+        { return mMaterialGuard && mMaterialGuard->current(); }
     private:
         float mError = 0.f;
         std::shared_ptr<Readiness> mReadiness;
@@ -162,11 +176,21 @@ namespace SceneUtil::GeneratedStaticLod
         osg::ref_ptr<Group> node;
         std::shared_ptr<Readiness> readiness;
         std::size_t originalIndices = 0, derivedIndices = 0;
+        std::uint64_t newIndexBytes = 0;
         Refusal refusal = Refusal::None;
         bool retryable = false;
+        BuildStep failureStep = BuildStep::None;
+        std::uint32_t gpuRefusalReasons = 0;
+        bool allocationFailure = false;
         std::shared_ptr<Resource::AssetGpuBudget::Reservation> gpuReservation;
     };
-    // Worker-only; caller supplies a certified, private, optimized partition.
+    // One bounded first receipt per failed stage; subsequent failures retain
+    // fixed counters. GPU retirement outside the cooker uses the same gate.
+    void recordBuildFailure(BuildStep step, Result& result, std::string_view sourceIdentity,
+        std::uint64_t peakBytes = 0, const Resource::SpeculativeReservationReceipt* cpuReceipt = nullptr) noexcept;
+    // Worker-only; caller supplies a certified, chunk-private optimized control
+    // graph. Its immutable arrays/buffers may be shared with ordinary templates;
+    // no shared template drawable/callback/user-data owner may be decorated.
     // Every stream remains owned by original; only primitive indices are replaced.
     // reserveGpu=false is for unsubmitted CPU/GL fixtures, never production paging.
     Result build(osg::Node& original, std::string_view sourceIdentity, osg::Camera* mainCamera, bool reserveGpu = true);

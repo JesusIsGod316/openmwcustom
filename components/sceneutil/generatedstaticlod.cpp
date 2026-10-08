@@ -5,6 +5,8 @@
 #include <components/resource/derivedassetcache.hpp>
 #include <components/resource/speculativebudget.hpp>
 #include <components/resource/assetgpubudget.hpp>
+#include <components/debug/debuglog.hpp>
+#include <sstream>
 #include <components/nifosg/matrixtransform.hpp>
 #include <components/shader/assetgeometrycontract.hpp>
 #include <components/shader/programvariant.hpp>
@@ -307,8 +309,10 @@ namespace SceneUtil::GeneratedStaticLod
             explicit Cook(std::string_view source) : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN), identity(source) {}
             std::string identity;
             std::size_t before = 0, after = 0, changed = 0;
+            std::uint64_t newIndexBytes = 0;
             float error = 0.f, transformScale = 1.f;
             std::vector<osg::Geometry*> geometries;
+            std::vector<bool> reducedGeometry;
             void apply(osg::Transform& transform) override
             {
                 const auto* matrix = dynamic_cast<const osg::MatrixTransform*>(&transform);
@@ -321,6 +325,7 @@ namespace SceneUtil::GeneratedStaticLod
             {
                 PagingWorkScope::checkpoint();
                 geometries.push_back(&geometry);
+                reducedGeometry.push_back(false);
                 const auto* positions = dynamic_cast<const osg::Vec3Array*>(geometry.getVertexArray());
                 const auto* primitive = geometry.getPrimitiveSet(0);
                 std::vector<unsigned> indices(primitive->getNumIndices());
@@ -421,6 +426,8 @@ namespace SceneUtil::GeneratedStaticLod
                 draw->reserve(reduced.size());
                 draw->assign(reduced.begin(), reduced.end());
                 draw->setElementBufferObject(new osg::ElementBufferObject);
+                newIndexBytes += reduced.size() * sizeof(unsigned);
+                reducedGeometry.back() = true;
                 geometry.setPrimitiveSet(0, draw);
                 geometry.setUseDisplayList(false); geometry.setUseVertexBufferObjects(true);
                 geometry.setDrawCallback(new DrawReceipt(reduced.size()));
@@ -484,6 +491,44 @@ namespace SceneUtil::GeneratedStaticLod
             "shader_bindings","shader_defines","shader_features","shader_capacity","alpha","blend","dynamic",
             "graph_callback","graph_type","hidden_graph","layout","other"};
         return static_cast<unsigned>(value) < static_cast<unsigned>(Detail::Count) ? names[static_cast<unsigned>(value)] : "unknown";
+    }
+    const char* buildStepName(BuildStep value)
+    {
+        constexpr const char* names[]{"none","scope","inspection","vertex_ownership","peak","host_admission","cook",
+            "reduction","gpu_admission","gpu_retention","lineage","replay","guard","publication"};
+        return static_cast<unsigned>(value) < static_cast<unsigned>(BuildStep::Count) ? names[static_cast<unsigned>(value)] : "unknown";
+    }
+    void recordBuildFailure(BuildStep step, Result& result, std::string_view identity,
+        std::uint64_t peak, const Resource::SpeculativeReservationReceipt* cpu) noexcept
+    {
+        result.failureStep = step;
+        const unsigned slot = static_cast<unsigned>(step);
+        if (!slot || slot >= static_cast<unsigned>(BuildStep::Count)) return;
+        ++Counters::buildFailures[slot];
+        if (Counters::firstBuildFailure[slot].exchange(true)) return;
+        try
+        {
+            std::array<char,193> prefix{};
+            const auto length=std::min<std::size_t>(192,identity.size());
+            for (std::size_t i=0;i<length;++i)
+                prefix[i]=static_cast<unsigned char>(identity[i])<32 || identity[i]=='"' ? '?' : identity[i];
+            // Fixed FNV identity joins one receipt to the exact bounded cooker
+            // key without allocating a full source string during refusal.
+            std::uint64_t hash=14695981039346656037ull;
+            for (unsigned char c:identity) {hash^=c;hash*=1099511628211ull;}
+            std::ostringstream message;
+            message << "OptimizedMW L1 build first refusal: step=" << buildStepName(step)
+                << " identity_hash=" << hash << " identity_prefix=\"" << prefix.data() << '"'
+                << " peak_bytes=" << peak << " new_index_bytes=" << result.newIndexBytes
+                << " gpu_reason_bits=" << result.gpuRefusalReasons << " retryable=" << result.retryable
+                << " allocation_failure=" << result.allocationFailure
+                << " cpu_reservation_receipt=" << (cpu!=nullptr)
+                << " cpu_reason_bits=" << (cpu ? cpu->reasons : 0)
+                << " cpu_requested=" << (cpu ? cpu->requested : 0)
+                << " cpu_extra=" << (cpu ? cpu->extra : 0);
+            Log(Debug::Info) << message.str();
+        }
+        catch (...) {} // Diagnostics may never turn an ordinary fallback into an exception.
     }
     Refusal certify(const osg::Node& original, RefusalInfo* info)
     {
@@ -661,6 +706,25 @@ namespace SceneUtil::GeneratedStaticLod
         if (!from || !to || (to & ~((1u << 17) - 1))) { mUnknown = true; return; }
         for (auto& value : mMaterials)
             if (value.owners & from) value.owners = (value.owners & ~from) | to;
+    }
+    bool EffectiveMaterialOwners::exclusivelyOwns(const osg::Node& root, unsigned owner, unsigned mask) const
+    {
+        Shader::AssetGeometry::ProducerReadScope producerRead;
+        if (mUnknown || mNull || mCapacity || !owner || (owner & (owner - 1))) return false;
+        EffectiveMaterialOwners actual;
+        actual.observe(root,owner,mask);
+        const auto proof = actual.report();
+        if (proof.unknown || proof.nullMaterial || proof.capacity || actual.materials().empty()) return false;
+        for (const auto& material : actual.materials())
+        {
+            unsigned owners = 0;
+            for (const auto& original : mMaterials)
+                if (material.state && original.state
+                    && (material.state == original.state || material.state->compare(*original.state,true) == 0))
+                    owners |= original.owners;
+            if (owners != owner) return false;
+        }
+        return true;
     }
     MaterialOwnershipReport EffectiveMaterialOwners::report() const
     {
@@ -1219,34 +1283,20 @@ namespace SceneUtil::GeneratedStaticLod
     Result build(osg::Node& original, std::string_view identity, osg::Camera* mainCamera, bool reserveGpu)
     {
         Result result;
-        // Production never cooks on a visible demand path or without host admission.
-        // Standalone corpus fixtures explicitly opt out of GPU publication admission.
-        if (reserveGpu && (!PagingWorkScope::optionalOptimization() || !Resource::SpeculativeScope::active()))
-        { result.refusal = Refusal::Capacity; ++Counters::refused[static_cast<unsigned>(result.refusal)]; return result; }
-        if (auto r = inspect(original); r != Refusal::None) { result.refusal = r; return result; }
+        BuildStep step=BuildStep::Scope;
+        std::uint64_t peak=0;
+        const auto fail=[&](Refusal reason,bool retryable=false,const Resource::SpeculativeReservationReceipt* cpu=nullptr) {
+            result.refusal=reason; result.retryable=retryable; result.node=nullptr; result.readiness.reset();
+            result.gpuReservation.reset(); // No ICO/publication occurred on a refused result.
+            ++Counters::refused[static_cast<unsigned>(reason)];
+            recordBuildFailure(step,result,identity,peak,cpu);
+        };
         try
         {
-            const auto graphPeak = cookPeakBytes(original);
-            const auto peak = graphPeak + identity.size() * 2ull;
-            if (!graphPeak || peak > 96 * Resource::SpeculativeBudget::MiB || identity.size() > 256 * 1024)
-            { result.refusal = Refusal::Capacity; ++Counters::refused[static_cast<unsigned>(result.refusal)]; return result; }
-            // The preloader holds128MiB and private source admission32MiB.
-            // Actual small/static graphs now fit without raising the256MiB cap;
-            // large graphs whose complete overlap cannot fit retain control.
-            Resource::SpeculativeScope::Stage reservation(peak, 0);
-            osg::ref_ptr<osg::Node> derived = osg::clone(&original,
-                osg::CopyOp::DEEP_COPY_NODES | osg::CopyOp::DEEP_COPY_DRAWABLES | osg::CopyOp::DEEP_COPY_PRIMITIVES);
-            Cook cook(identity); derived->accept(cook);
-            result.originalIndices = cook.before; result.derivedIndices = cook.after;
-            if (!std::isfinite(cook.error)) throw std::runtime_error("LOD error scale invalid");
-            if (!cook.changed) { result.refusal = Refusal::NoReduction; ++Counters::refused[static_cast<unsigned>(result.refusal)]; return result; }
-            if (reserveGpu)
-            {
-                result.gpuReservation = Resource::AssetGpuBudget::reserve(cook.after * sizeof(unsigned));
-                if (!result.gpuReservation)
-                { result.refusal = Refusal::Capacity; result.retryable = true;
-                  ++Counters::refused[static_cast<unsigned>(result.refusal)]; return result; }
-            }
+            if (reserveGpu && (!PagingWorkScope::optionalOptimization() || !Resource::SpeculativeScope::active()))
+            { fail(Refusal::Capacity); return result; }
+            step=BuildStep::Inspection;
+            if (auto r=inspect(original);r!=Refusal::None) {fail(r);return result;}
             struct Originals final : osg::NodeVisitor
             {
                 Originals() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
@@ -1254,36 +1304,114 @@ namespace SceneUtil::GeneratedStaticLod
                 void apply(osg::Geometry& geometry) override { geometries.push_back(&geometry); }
             } originals;
             original.accept(originals);
-            if (originals.geometries.size() != cook.geometries.size()) throw std::runtime_error("LOD lineage mismatch");
-            for (std::size_t i = 0; i < originals.geometries.size(); ++i)
+            step=BuildStep::VertexOwnership;
+            if (reserveGpu)
+                for (const auto* geometry:originals.geometries)
+                {
+                    // Switching a display-list/client-array control to VBOs
+                    // would make the tier's first vertex upload additional work.
+                    // Admit index-only debt only when its exact ordinary control
+                    // already owns this immutable VBO representation.
+                    const auto hasVbo=[](const osg::Array* array) {return !array || array->getVertexBufferObject()!=nullptr;};
+                    bool buffers=geometry->getUseVertexBufferObjects() && !geometry->getUseDisplayList();
+                    for (const auto* array:{geometry->getVertexArray(),geometry->getNormalArray(),geometry->getColorArray()})
+                        buffers=buffers && hasVbo(array);
+                    for (unsigned unit=0;unit<geometry->getNumTexCoordArrays();++unit)
+                        buffers=buffers && hasVbo(geometry->getTexCoordArray(unit));
+                    if (!buffers) {fail(Refusal::Graph);return result;}
+                }
+            step=BuildStep::Peak;
+            const auto graphPeak=cookPeakBytes(original);
+            peak=graphPeak+identity.size()*2ull;
+            if (!graphPeak || peak>96*Resource::SpeculativeBudget::MiB || identity.size()>256*1024)
+            {fail(Refusal::Capacity);return result;}
+            // This is the complete actual graph/primitive/leaf cook overlap;
+            // it remains additive to the caller's admitted ordinary control.
+            step=BuildStep::HostAdmission;
+            Resource::SpeculativeScope::Stage reservation(peak,0);
+            step=BuildStep::Cook;
+            osg::ref_ptr<osg::Node> derived=osg::clone(&original,
+                osg::CopyOp::DEEP_COPY_NODES|osg::CopyOp::DEEP_COPY_DRAWABLES|osg::CopyOp::DEEP_COPY_PRIMITIVES);
+            Cook cook(identity); derived->accept(cook);
+            result.originalIndices=cook.before;result.derivedIndices=cook.after;result.newIndexBytes=cook.newIndexBytes;
+            if (!std::isfinite(cook.error)) throw std::runtime_error("LOD error scale invalid");
+            step=BuildStep::Reduction;
+            if (!cook.changed) {fail(Refusal::NoReduction);return result;}
+            step=BuildStep::GpuAdmission;
+            if (reserveGpu)
             {
-                auto* source = originals.geometries[i]; auto* tier = cook.geometries[i];
-                if (source->getVertexArray() != tier->getVertexArray()) throw std::runtime_error("LOD vertex lineage changed");
-                osg::ref_ptr<TemporalVertexLineage> lineage = new TemporalVertexLineage(source->getVertexArray());
-                installTemporalVertexLineage(*source, lineage); installTemporalVertexLineage(*tier, lineage);
+                Resource::AssetGpuBudget::ReservationReceipt gpu;
+                result.gpuReservation=Resource::AssetGpuBudget::reserve(cook.newIndexBytes,
+                    Resource::AssetPolicy::TextureAllocationLimit,&gpu);
+                result.gpuRefusalReasons=gpu.reasons;
+                if (!result.gpuReservation) {fail(Refusal::Capacity,true);return result;}
             }
+            step=BuildStep::Lineage;
+            if (originals.geometries.size()!=cook.geometries.size()) throw std::runtime_error("LOD lineage mismatch");
+            struct Rollback
+            {
+                struct Saved
+                {
+                    osg::Geometry* geometry;
+                    osg::ref_ptr<osg::Drawable::DrawCallback> callback;
+                    osg::ref_ptr<osg::UserDataContainer> data;
+                };
+                std::vector<Saved> values;
+                bool committed=false;
+                ~Rollback()
+                {if (!committed) for (auto& saved:values) {saved.geometry->setDrawCallback(saved.callback);saved.geometry->setUserDataContainer(saved.data);}}
+            } rollback;
+            rollback.values.reserve(originals.geometries.size());
+            for (std::size_t i=0;i<originals.geometries.size();++i)
+            {
+                auto* source=originals.geometries[i];auto* tier=cook.geometries[i];
+                const auto same=[](const osg::Array* a,const osg::Array* b) {
+                    return a==b && (!a || a->getVertexBufferObject()==b->getVertexBufferObject());
+                };
+                if (!same(source->getVertexArray(),tier->getVertexArray())
+                    || !same(source->getNormalArray(),tier->getNormalArray())
+                    || !same(source->getColorArray(),tier->getColorArray())
+                    || source->getNumTexCoordArrays()!=tier->getNumTexCoordArrays())
+                    throw std::runtime_error("LOD immutable vertex buffer lineage changed");
+                for (unsigned unit=0;unit<source->getNumTexCoordArrays();++unit)
+                    if (!same(source->getTexCoordArray(unit),tier->getTexCoordArray(unit)))
+                        throw std::runtime_error("LOD immutable UV/tangent buffer lineage changed");
+                // A cloned unchanged primitive is still another BufferData
+                // entry. Reuse the actual immutable original primitive/EBO.
+                if (!cook.reducedGeometry[i]) tier->setPrimitiveSet(0,source->getPrimitiveSet(0));
+                rollback.values.push_back({source,source->getDrawCallback(),source->getUserDataContainer()});
+                osg::ref_ptr<TemporalVertexLineage> lineage=new TemporalVertexLineage(source->getVertexArray());
+                installTemporalVertexLineage(*source,lineage);installTemporalVertexLineage(*tier,lineage);
+            }
+            step=BuildStep::Replay;
             const auto sourcePaths=originalDraws(original),tierPaths=originalDraws(*derived);
-            if(sourcePaths.size()!=tierPaths.size()) throw std::runtime_error("LOD material replay lineage mismatch");
-            if(!installOriginalDrawReceipts(original)) throw std::runtime_error("LOD original callback replay unavailable");
-            for(std::size_t i=0;i<tierPaths.size();++i)
+            if (sourcePaths.size()!=tierPaths.size()) throw std::runtime_error("LOD material replay lineage mismatch");
+            if (!installOriginalDrawReceipts(original)) throw std::runtime_error("LOD original callback replay unavailable");
+            step=BuildStep::Guard;
+            for (std::size_t i=0;i<tierPaths.size();++i)
             {
                 auto* tier=tierPaths[i].geometry.get();
                 osg::ref_ptr<DrawReceipt> callback=new DrawReceipt(tier->getPrimitiveSet(0)->getNumIndices());
-                callback->owner=tier;
-                tier->setDrawCallback(callback); // Freeze this exact callback identity before capture.
+                callback->owner=tier;tier->setDrawCallback(callback);
                 callback->originals.push_back(sourcePaths[i]);callback->derivedMatrix=tierPaths[i].matrix;
-                for(const auto& node:tierPaths[i].path) if(node->getStateSet()) callback->candidateStates.emplace_back(node->getStateSet());
+                for (const auto& node:tierPaths[i].path) if (node->getStateSet()) callback->candidateStates.emplace_back(node->getStateSet());
                 callback->guard=MaterialGuard::captureDraws({&sourcePaths[i],1},tierPaths[i]);
-                if(!callback->guard) throw std::runtime_error("LOD material replay proof unavailable");
+                if (!callback->guard) throw std::runtime_error("LOD material replay proof unavailable");
             }
-            result.readiness = std::make_shared<Readiness>();
-            result.node = new Group(original, *derived, cook.error, result.readiness, mainCamera);
-            ++Counters::built; Counters::originalIndices.fetch_add(cook.before); Counters::derivedIndices.fetch_add(cook.after);
+            step=BuildStep::Publication;
+            result.readiness=std::make_shared<Readiness>();
+            result.node=new Group(original,*derived,cook.error,result.readiness,mainCamera);
+            if (!result.node->materialGuardCurrent()) throw std::runtime_error("LOD publication guard unavailable or stale");
+            rollback.committed=true;
+            ++Counters::built;Counters::originalIndices.fetch_add(cook.before);Counters::derivedIndices.fetch_add(cook.after);
+            Counters::newIndexGpuBytes.fetch_add(cook.newIndexBytes);
         }
-        catch (const PagingWorkCancelled&) { throw; }
-        catch (const Resource::SpeculativeDeferred&)
-        { result.refusal = Refusal::Capacity; result.retryable = true; ++Counters::refused[static_cast<unsigned>(result.refusal)]; }
-        catch (...) { result.refusal = Refusal::Capacity; ++Counters::refused[static_cast<unsigned>(result.refusal)]; }
+        catch (const PagingWorkCancelled&) {throw;}
+        catch (const Resource::SpeculativeDeferred& error)
+        {fail(Refusal::Capacity,true,error.reservation ? &*error.reservation : nullptr);}
+        catch (const std::bad_alloc&)
+        {result.allocationFailure=true;fail(Refusal::Capacity);}
+        catch (...) {fail(Refusal::Capacity);}
         return result;
     }
 }

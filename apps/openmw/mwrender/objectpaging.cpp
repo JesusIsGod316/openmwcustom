@@ -267,6 +267,15 @@ namespace MWRender
                     || v313QualitySatisfies(have,v313RequestedQuality);
                 const unsigned requestedAssets = (p3OptionalMask >> 4) & SceneUtil::AssetPaging::Mask;
                 const unsigned unsettledAssets = requestedAssets & ~have.mAssets.settled();
+                // A refused whole L1 control copy preserves a weak cache owner,
+                // whose ordinary strong-quality bits are deliberately not set.
+                // Respect that exact owner's finite asset cooldown/exhaustion
+                // before retrying the whole optional copy, without claiming
+                // that its unexecuted ordinary optimizer work was completed.
+                if (!activeGrid && requestedAssets == SceneUtil::AssetPaging::Lod
+                    && (have.mAssets.transient | have.mAssets.exhausted) & SceneUtil::AssetPaging::Lod
+                    && have.mAssets.satisfies(SceneUtil::AssetPaging::Lod,SceneUtil::AssetPaging::milliseconds()))
+                    v313CachedSatisfies = true;
                 if (v313CachedSatisfies && (unsettledAssets & (have.mAssets.transient | have.mAssets.completed)))
                 {
                     ++SceneUtil::AssetPaging::Counters::retryDeferred;
@@ -335,6 +344,28 @@ namespace MWRender
 #ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
             if (mFixtureBeforePublish) mFixtureBeforePublish();
 #endif
+        }
+        catch (const Resource::SpeculativeDeferred&)
+        {
+            // A whole optional control clone may fail before any candidate
+            // exists. Spend one finite attempt on this exact still-owned weak
+            // cohort, preserving all ordinary quality bits and its cache node.
+            const unsigned refusedAssets = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
+                ? Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask & assetOutcome.allowed : 0;
+            std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
+            if (!assetSourcesCurrent()) throw SceneUtil::PagingWorkCancelled{};
+            if (v313RepairBuild) mV313StrongUpgradeInFlight.erase(id);
+            const auto current = mCache->getRefFromObjectCache(id);
+            const auto quality = mV313ChunkQualities.find(id);
+            if (refusedAssets && cached && current == cached && quality != mV313ChunkQualities.end()
+                && quality->second.mAssetVfsGeneration == assetVfsGeneration
+                && quality->second.mAssetShaderGeneration == assetShaderGeneration)
+            {
+                assetOutcome.defer(refusedAssets); assetOutcome.finish(refusedAssets);
+                quality->second.mAssets = quality->second.mAssets.after(assetOutcome,SceneUtil::AssetPaging::milliseconds());
+                return static_cast<osg::Node*>(cached.get());
+            }
+            throw;
         }
         catch (...)
         {
@@ -874,9 +905,12 @@ namespace MWRender
                                     refs.erase(ref.mRefNum);
                                     continue;
                                 }
+                                if (!refs.contains(ref.mRefNum)) SceneUtil::AssetPaging::OptionalUpgradeScope::reserveReference();
                                 refs.insert_or_assign(ref.mRefNum, makePagedCellRef(ref));
                             }
                         }
+                        catch (const Resource::SpeculativeDeferred&) { throw; }
+                        catch (const SceneUtil::PagingWorkCancelled&) { throw; }
                         catch (const std::exception& e)
                         {
                             Log(Debug::Warning) << "Failed to collect references from cell \"" << cell->getDescription()
@@ -894,6 +928,7 @@ namespace MWRender
                         int type = store.findStatic(ref.mRefID);
                         if (!typeFilter(type, size >= 2))
                             continue;
+                        if (!refs.contains(ref.mRefNum)) SceneUtil::AssetPaging::OptionalUpgradeScope::reserveReference();
                         refs.insert_or_assign(ref.mRefNum, makePagedCellRef(ref));
                     }
                 }
@@ -933,6 +968,7 @@ namespace MWRender
                                     continue;
                             }
                         }
+                        if (!refs.contains(ref4->mId)) SceneUtil::AssetPaging::OptionalUpgradeScope::reserveReference();
                         refs.insert_or_assign(ref4->mId, makePagedCellRef(*ref4));
                     }
                 }
@@ -981,6 +1017,7 @@ namespace MWRender
                 for (const auto& source : mFixturePopulation)
                 {
                     ESM::RefNum id; id.mIndex = ++index; id.mContentFile = 0;
+                    SceneUtil::AssetPaging::OptionalUpgradeScope::reserveReference();
                     refs.emplace(id,PagedCellRef{ESM::RefId::stringRefId("asset-chain-" + std::to_string(index)),
                         id,source.position,{},source.scale});
                     providedReferences.emplace(id,&source);
@@ -1052,10 +1089,19 @@ namespace MWRender
         const unsigned requestedAssets = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
             ? Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask & assetOutcome.allowed : 0;
         const bool assetPreparation = requestedAssets && Resource::SpeculativeScope::active();
+        // L1 can use the ordinary strong optimizer's immutable result directly.
+        // H1/combined preparation retains its private atlas population and the
+        // historical material/partition ownership policy below.
+        const bool postOptimizedLodOnly = assetPreparation && requestedAssets == SceneUtil::AssetPaging::Lod;
+        const bool l1ControlAccounting = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
+            && (Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask) == SceneUtil::AssetPaging::Lod
+            && Resource::SpeculativeScope::active();
         if (requestedAssets && !assetPreparation) assetOutcome.defer(requestedAssets);
         using AssetSource = SceneUtil::AssetPaging::Source;
         std::map<const osg::Node*, AssetSource> assetCertifiedSources;
         std::set<const osg::Node*> assetCheckedTemplates;
+        std::string postLodIdentity;
+        bool postLodIdentityBounded = true;
         const osg::ref_ptr<RefnumSet> refnumSet = activeGrid ? new RefnumSet : nullptr;
 
         // Mask_UpdateVisitor is used in such cases in NIF loader:
@@ -1300,7 +1346,14 @@ namespace MWRender
                 && assetCheckedTemplates.insert(cnode.get()).second)
             {
                 if (auto source = SceneUtil::AssetPaging::prepareSource(*cnode,model,*mSceneManager->getVFS(),requestedAssets,assetOutcome))
+                {
+                    if (postOptimizedLodOnly)
+                    {
+                        if (source->identity.size() + 1 > 256 * 1024 - postLodIdentity.size()) postLodIdentityBounded = false;
+                        else { postLodIdentity += source->identity; postLodIdentity += '|'; }
+                    }
                     assetCertifiedSources.emplace(cnode.get(),std::move(*source));
+                }
             }
 
             if (activeGrid)
@@ -1379,13 +1432,33 @@ namespace MWRender
         std::map<std::tuple<int,int,int,unsigned>, AssetPartition> assetPartitions;
         std::map<const osg::Group*, AssetPartition*> assetControls;
         SceneUtil::GeneratedStaticLod::EffectiveMaterialOwners assetMaterialOwners;
+        SceneUtil::GeneratedStaticLod::EffectiveMaterialOwners postLodMaterialOwners;
         std::size_t assetPrivateBytes = 0, assetInstances = 0;
-        std::uint64_t assetDerivedHostBytes = 0;
+        std::uint64_t assetDerivedHostBytes = 0, controlRetainedBytes = 0;
+        std::set<const osg::Geometry*> sourceTemplateDrawables;
+        bool sourceTemplateDrawablesBounded = true;
+        if (postOptimizedLodOnly)
+        {
+            struct TemplateDrawables final : osg::NodeVisitor
+            {
+                std::set<const osg::Geometry*>& values;
+                bool& bounded;
+                unsigned nodes = 0;
+                TemplateDrawables(std::set<const osg::Geometry*>& target,bool& valid)
+                    : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN),values(target),bounded(valid) {}
+                void apply(osg::Node& node) override
+                { if (++nodes > 65536) { bounded=false; return; } if (bounded) traverse(node); }
+                void apply(osg::Geometry& geometry) override
+                { if (values.size() >= 4096) bounded=false; else values.insert(&geometry); }
+            } originals(sourceTemplateDrawables,sourceTemplateDrawablesBounded);
+            for (const auto& [node,instances] : nodes) const_cast<osg::Node*>(node.get())->accept(originals);
+        }
         struct PrivateBuffers final : osg::NodeVisitor
         {
             PrivateBuffers() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
             void apply(osg::Geometry& geometry) override
             {
+                ++SceneUtil::GeneratedStaticLod::Counters::privateVertexBuffers;
                 osg::ref_ptr<osg::VertexBufferObject> vertex = new osg::VertexBufferObject;
                 for (auto* array : {geometry.getVertexArray(), geometry.getNormalArray(), geometry.getColorArray()})
                     if (array) array->setVertexBufferObject(vertex);
@@ -1406,7 +1479,14 @@ namespace MWRender
 #endif
             unsigned eligible = 0;
             for (const auto& [node,source] : assetCertifiedSources) eligible |= source.eligible;
-            assetSourceAdmission = SceneUtil::AssetPaging::reservePrivateSources(eligible,assetOutcome);
+            if (!postOptimizedLodOnly)
+                assetSourceAdmission = SceneUtil::AssetPaging::reservePrivateSources(eligible,assetOutcome);
+        }
+        std::unique_ptr<Resource::SpeculativeScope::Stage> controlSourceAdmission;
+        if (l1ControlAccounting)
+        {
+            controlSourceAdmission = SceneUtil::AssetPaging::reserveControlSources(SceneUtil::AssetPaging::Lod,assetOutcome);
+            if (!controlSourceAdmission) throw Resource::SpeculativeDeferred{};
         }
         auto assetReadiness = std::make_shared<SceneUtil::GeneratedStaticLod::Readiness>();
         osg::ref_ptr<Resource::TemplateMultiRef> templateRefs = new Resource::TemplateMultiRef;
@@ -1515,6 +1595,16 @@ namespace MWRender
 #ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
                 if (providedPopulation) providedOccluderOwner = providedReferences.at(ref.mRefNum)->occluderOwner;
 #endif
+                const auto instanceRecordType = postOptimizedLodOnly ? sourceType(ref.mRefNum,ref) : 0;
+                const bool postLodContributor = postOptimizedLodOnly && postLodIdentityBounded
+                    && sourceTemplateDrawablesBounded && assetSource != assetCertifiedSources.end()
+                    && assetSource->second.eligible == SceneUtil::AssetPaging::Lod && merge && ref.mScale > 0.f
+                    && (instanceRecordType == ESM::REC_STAT || instanceRecordType == ESM::REC_STAT4)
+                    && !providedOccluderOwner
+                    && !(buildOccluders && cnode->getBound().radius() * ref.mScale >= occluderMinRadius);
+                if (postOptimizedLodOnly && assetSource != assetCertifiedSources.end()
+                    && (providedOccluderOwner || (buildOccluders && cnode->getBound().radius() * ref.mScale >= occluderMinRadius)))
+                    SceneUtil::AssetPaging::refuse(SceneUtil::AssetPaging::Lod,SceneUtil::AssetPaging::Gate::Occluder);
                 bool assetCandidate = !providedOccluderOwner && assetSourceAdmission && ref.mScale > 0.f && assetCopyBytes > 0
                     && assetInstances < 64 && (assetPartitions.contains(assetKey) || assetPartitions.size() < 16)
                     && assetCopyBytes <= 32 * Resource::SpeculativeBudget::MiB - assetPrivateBytes
@@ -1527,6 +1617,14 @@ namespace MWRender
                 if (assetCandidate)
                     assetCandidate = SceneUtil::AssetPaging::admitPrivateSource(assetSource->second,assetOutcome,
                         *assetSourceAdmission,assetCopyBytes);
+
+                if (controlSourceAdmission)
+                {
+                    const auto estimate = SceneUtil::AssetPaging::controlEstimate(*cnode);
+                    if (!SceneUtil::AssetPaging::admitControlSource(estimate,SceneUtil::AssetPaging::Lod,assetOutcome,*controlSourceAdmission))
+                        throw Resource::SpeculativeDeferred{};
+                    controlRetainedBytes += estimate.retainedBytes;
+                }
 
                 osg::ref_ptr<osg::Group> trans;
                 if (merge || assetCandidate)
@@ -1558,8 +1656,11 @@ namespace MWRender
                 copyop.setCopyFlags(merge ? osg::CopyOp::DEEP_COPY_NODES | osg::CopyOp::DEEP_COPY_DRAWABLES
                                           : osg::CopyOp::DEEP_COPY_NODES);
                 if (assetCandidate)
+                {
+                    ++SceneUtil::GeneratedStaticLod::Counters::privateArrayCopies;
                     copyop.setCopyFlags(osg::CopyOp::DEEP_COPY_NODES | osg::CopyOp::DEEP_COPY_DRAWABLES
                         | osg::CopyOp::DEEP_COPY_ARRAYS | osg::CopyOp::DEEP_COPY_PRIMITIVES);
+                }
                 copyop.mDistances = lodDistances / ref.mScale;
                 copyop.copy(cnode, trans);
                 if (assetCandidate) trans->accept(privateBuffers);
@@ -1709,6 +1810,8 @@ namespace MWRender
                     // historical AnalyzeVisitor remains only a merge heuristic.
                     assetMaterialOwners.observe(*trans,owner,copyMask);
                 }
+                if (postOptimizedLodOnly)
+                    postLodMaterialOwners.observe(*trans,postLodContributor ? 2u : 1u,copyMask);
                 ++numinstances;
             }
             if (numinstances > 0)
@@ -1735,6 +1838,16 @@ namespace MWRender
                 }
                 }
             }
+        }
+
+        if (postOptimizedLodOnly)
+        {
+            const auto ownership = postLodMaterialOwners.report();
+            using OwnershipCounters = SceneUtil::GeneratedStaticLod::Counters;
+            OwnershipCounters::materialOwnerUnknown += ownership.unknown;
+            OwnershipCounters::materialOwnerNull += ownership.nullMaterial;
+            OwnershipCounters::materialOwnerCapacity += ownership.capacity;
+            OwnershipCounters::materialOwnerShared += ownership.shared;
         }
 
         // Preserve existing strong same-material merging. L1 may reunite a
@@ -1997,7 +2110,7 @@ namespace MWRender
                 for (unsigned i = 0; i < mergeGroup->getNumChildren(); ++i)
                     if (auto* geometry = dynamic_cast<osg::Geometry*>(mergeGroup->getChild(i)))
                         SceneUtil::GpuIndirectPackets::install(*geometry);
-            osg::ref_ptr<osg::Node> wrappedMergeNode = assetControls.contains(mergeGroup)
+            osg::ref_ptr<osg::Node> wrappedMergeNode = assetControls.contains(mergeGroup) || postOptimizedLodOnly
                 ? osg::ref_ptr<osg::Node>(mergeGroup) : SceneUtil::PersistentOpaquePackets::build(*mergeGroup);
             SceneUtil::GeneratedStaticLod::Result assetLod;
             SceneUtil::HlodBuildResult assetHlod;
@@ -2054,6 +2167,63 @@ namespace MWRender
                         *derived, mergeGroup->getBound().radius() * .02f, assetReadiness, mAssetMainCamera.get(), true);
                 }
             }
+            bool postCookedForMerge = false;
+            if (postOptimizedLodOnly && postLodIdentityBounded && sourceTemplateDrawablesBounded
+                && !mergeGroup->getStateSet())
+            {
+                // Each child is an existing complete ordinary optimized draw
+                // population. Do not split/reparent its input before flattening
+                // or merging, and do not cook a controller-stripped contributor
+                // merely because its output now looks static.
+                for (unsigned i = 0; i < mergeGroup->getNumChildren(); ++i)
+                {
+                    osg::ref_ptr<osg::Node> controlChild = mergeGroup->getChild(i);
+                    if (!postLodMaterialOwners.exclusivelyOwns(*controlChild,2u,copyMask)) continue;
+                    struct PrivateControlDrawables final : osg::NodeVisitor
+                    {
+                        const std::set<const osg::Geometry*>& templates;
+                        unsigned nodes = 0, geometries = 0;
+                        bool privateOwner = true;
+                        explicit PrivateControlDrawables(const std::set<const osg::Geometry*>& sources)
+                            : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN),templates(sources) {}
+                        void apply(osg::Node& node) override
+                        {
+                            if (++nodes > 2048 || node.getNumParents() != 1) { privateOwner=false; return; }
+                            if (privateOwner) traverse(node);
+                        }
+                        void apply(osg::Geometry& geometry) override
+                        {
+                            if (++geometries > 64 || templates.contains(&geometry) || geometry.getNumParents() != 1)
+                                privateOwner=false;
+                        }
+                    } owners(sourceTemplateDrawables);
+                    controlChild->accept(owners);
+                    if (!owners.privateOwner || !owners.geometries) continue;
+                    SceneUtil::GeneratedStaticLod::RefusalInfo info;
+                    if (SceneUtil::GeneratedStaticLod::certify(*controlChild,&info) != SceneUtil::GeneratedStaticLod::Refusal::None)
+                        continue;
+                    // A null-state wrapper preserves this child's actual
+                    // material/transform ancestry, with the same original draw
+                    // calls. Arrays and VBOs are the ordinary optimizer's own.
+                    osg::ref_ptr<osg::Group> control = new osg::Group;
+                    control->setDataVariance(osg::Object::STATIC); control->addChild(controlChild);
+                    ++SceneUtil::AssetPaging::Counters::lod.candidateAdmitted;
+                    ++SceneUtil::GeneratedStaticLod::Counters::postOptimizedCandidates;
+                    auto tiers = SceneUtil::AssetPaging::buildTiers(*control,*control,postLodIdentity,
+                        SceneUtil::AssetPaging::Lod,mAssetMainCamera.get(),assetOutcome);
+                    if (!tiers.lod.node) continue;
+                    auto* derived = tiers.lod.node->derived();
+                    osg::ref_ptr<SceneUtil::GeneratedStaticLod::Group> selector = new SceneUtil::GeneratedStaticLod::Group(
+                        *control,*derived,tiers.lod.node->error(),assetReadiness,mAssetMainCamera.get());
+                    mergeGroup->setChild(i,selector);
+                    assetDerivedHostBytes += tiers.lod.newIndexBytes + 8192ull * owners.geometries + 8192;
+                    postCookedForMerge = true;
+                }
+                // Build the optional packet root after selector publication so
+                // it never retains pre-replacement full-detail child rows.
+            }
+            if (postOptimizedLodOnly)
+                wrappedMergeNode = SceneUtil::PersistentOpaquePackets::build(*mergeGroup);
             if (p3ShadowRoot) wrappedMergeNode = new SceneUtil::ShadowProxyGroup(wrappedMergeNode, p3ShadowRoot);
 
             group->addChild(wrappedMergeNode);
@@ -2066,7 +2236,7 @@ namespace MWRender
             if (compile)
             {
                 stateToCompile._mode = osgUtil::GLObjectsVisitor::COMPILE_DISPLAY_LISTS;
-                if (assetControls.contains(mergeGroup))
+                if (assetControls.contains(mergeGroup) || postCookedForMerge)
                     stateToCompile._mode |= osgUtil::GLObjectsVisitor::COMPILE_STATE_ATTRIBUTES;
                 wrappedMergeNode->accept(stateToCompile);
                 if (p3ShadowRoot)
@@ -2078,7 +2248,7 @@ namespace MWRender
         SceneUtil::PagingWorkScope::checkpoint();
         // Pending compile sets and losing candidates still own these arrays.
         // Attach their retained host receipt before exposing the graph to ICO.
-        SceneUtil::AssetPaging::retainHostOwner(*group,assetPrivateBytes + assetDerivedHostBytes);
+        SceneUtil::AssetPaging::retainHostOwner(*group,controlRetainedBytes + assetPrivateBytes + assetDerivedHostBytes);
         osgUtil::IncrementalCompileOperation* const ico = mSceneManager->getIncrementalCompileOperation();
         if (!stateToCompile.empty() && ico && !ico->getContextSet().empty())
         {
@@ -2092,7 +2262,7 @@ namespace MWRender
                 activeGrid ? Resource::V321CompileUrgency::NearFuture
                            : Resource::V321CompileUrgency::Background);
             compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
-            if (!assetPartitions.empty())
+            if (assetOutcome.completed)
             {
                 assetReadiness->assetMask = assetOutcome.completed;
                 assetOutcome.readiness = assetReadiness;

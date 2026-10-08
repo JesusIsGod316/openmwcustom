@@ -32,6 +32,8 @@ include_directories(${ROOT})
 include_directories(SYSTEM ${OPENSCENEGRAPH_INCLUDE_DIRS})
 add_library(p9-hitch-platform STATIC "${ROOT}/components/debug/hitchtrace.cpp"
   "${ROOT}/components/debug/diagnosticobserver.cpp"
+  "${ROOT}/components/debug/debuglog.cpp"
+  "${ROOT}/components/files/conversion.cpp"
   "${ROOT}/components/shader/programvariant.cpp"
   "${ROOT}/components/shader/assetgeometrycontract.cpp")
 target_link_libraries(p9-hitch-platform PUBLIC ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)

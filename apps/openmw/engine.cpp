@@ -2574,7 +2574,7 @@ void OMW::Engine::go()
         mViewer->stopThreading();
         const auto& textures=Resource::nativeTextureStats();
         Log(Debug::Info) << "OptimizedMW asset QC v1: final=1 draw_stopped=1 worker_frozen=0 mask="
-            +std::to_string(Resource::AssetPolicy::mask())
+            +std::to_string(Resource::AssetPolicy::mask())+" gpu_receipt_schema=1"
             +" paging_attempted_mask="+std::to_string(SceneUtil::AssetPaging::Counters::attemptedMask.load())
             +" paging_completed_mask="+std::to_string(SceneUtil::AssetPaging::Counters::completedMask.load())
             +" paging_terminal_mask="+std::to_string(SceneUtil::AssetPaging::Counters::terminalMask.load())
@@ -2596,6 +2596,10 @@ void OMW::Engine::go()
             +" built="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::built.load())
             +" original_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::originalIndices.load())
             +" derived_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::derivedIndices.load())
+            +" post_optimized_candidates="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::postOptimizedCandidates.load())
+            +" private_array_copies="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::privateArrayCopies.load())
+            +" private_vertex_buffers="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::privateVertexBuffers.load())
+            +" new_index_gpu_bytes="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::newIndexGpuBytes.load())
             +" consumed_draws="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::derivedDraws.load())
             +" consumed_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::submittedIndices.load());
         std::string lodRefusals;
@@ -2609,6 +2613,10 @@ void OMW::Engine::go()
                 +" snapshot_denied="+std::to_string(lane.snapshotDenied.load())
                 +" private_cpu_denied="+std::to_string(lane.privateCpuDenied.load())
                 +" private_gpu_denied="+std::to_string(lane.privateGpuDenied.load())
+                +" control_sources_admitted="+std::to_string(lane.controlSourcesAdmitted.load())
+                +" control_reservation_bytes="+std::to_string(lane.controlReservationBytes.load())
+                +" control_retained_estimate_bytes="+std::to_string(lane.controlRetainedBytes.load())
+                +" control_census_refused="+std::to_string(lane.controlCensusRefused.load())
                 +" material_conflict_instances="+std::to_string(lane.materialConflictInstances.load())
                 +" build_refused="+std::to_string(lane.buildRefused.load());
             const char* reasons[]={"graph","material","transform","layout","capacity","no_reduction","source","occluder","population"};
@@ -2633,6 +2641,10 @@ void OMW::Engine::go()
             return result;
         };
         lodRefusals+=pagingRefusals(SceneUtil::AssetPaging::Counters::lod);
+        for(unsigned i=1;i<static_cast<unsigned>(SceneUtil::GeneratedStaticLod::BuildStep::Count);++i)
+            lodRefusals+=" build_step_"+std::string(SceneUtil::GeneratedStaticLod::buildStepName(
+                static_cast<SceneUtil::GeneratedStaticLod::BuildStep>(i)))+"="
+                +std::to_string(SceneUtil::GeneratedStaticLod::Counters::buildFailures[i].load());
         lodRefusals+=" material_owner_unknown="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerUnknown.load())
             +" material_owner_null="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerNull.load())
             +" material_owner_capacity="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerCapacity.load())
@@ -2653,6 +2665,39 @@ void OMW::Engine::go()
         Log(Debug::Info) << "OptimizedMW asset QC H1 refusals: cook_refused="
             +std::to_string(SceneUtil::HlodCounters::refused.load())
             +pagingRefusals(SceneUtil::AssetPaging::Counters::hlod);
+        const auto gpuAdmission=Resource::AssetGpuBudget::stats();
+        std::string gpuTotals=" reservation_attempts="+std::to_string(gpuAdmission.reservationAttempts)
+            +" reservation_admitted="+std::to_string(gpuAdmission.reservationAdmitted)
+            +" reservation_denied="+std::to_string(gpuAdmission.reservationDenied)
+            +" retention_attempts="+std::to_string(gpuAdmission.retentionAttempts)
+            +" retention_succeeded="+std::to_string(gpuAdmission.retentionSucceeded)
+            +" retention_failed="+std::to_string(gpuAdmission.retentionFailed)
+            +" current_debt="+std::to_string(gpuAdmission.currentDebt)
+            +" peak_debt="+std::to_string(gpuAdmission.peakDebt)
+            +" sequence="+std::to_string(gpuAdmission.sequence);
+        for(unsigned i=0;i<Resource::AssetGpuBudget::RefusalCount;++i)
+            gpuTotals+=" "+std::string(Resource::AssetGpuBudget::RefusalNames[i])+"="+std::to_string(gpuAdmission.refusalCounts[i]);
+        Log(Debug::Info) << "OptimizedMW asset GPU v1:"+gpuTotals;
+        for(unsigned i=0;i<Resource::AssetGpuBudget::RefusalCount;++i) if(gpuAdmission.hasFirstRefusal[i])
+        {
+            const auto& receipt=gpuAdmission.firstRefusal[i];
+            // Fixed bounded receipts: a sampler observation and the exact debt
+            // used by this reservation decision; not an instantaneous driver
+            // snapshot or a proof that pooled allocations were freed.
+            Log(Debug::Info) << "OptimizedMW asset GPU first "+std::string(Resource::AssetGpuBudget::RefusalNames[i])+":"
+                +" schema="+std::to_string(receipt.schema)+" sequence="+std::to_string(receipt.sequence)
+                +" operation="+std::to_string(static_cast<unsigned>(receipt.operation))
+                +" reasons="+std::to_string(receipt.reasons)+" requested="+std::to_string(receipt.requestedBytes)
+                +" local_limit="+std::to_string(receipt.localLimit)+" global_limit="+std::to_string(receipt.globalLimit)
+                +" current_debt="+std::to_string(receipt.currentDebt)+" proposed_debt="+std::to_string(receipt.proposedDebt)
+                +" headroom_reserve="+std::to_string(receipt.headroomReserve)
+                +" sample_valid="+std::to_string(receipt.sample.valid)
+                +" pressure_code="+std::to_string(static_cast<int>(receipt.sample.pressure)+1)
+                +" headroom="+std::to_string(receipt.sample.headroomBytes)
+                +" sampled_at_ms="+std::to_string(receipt.sample.sampledAtMs)
+                +" now_ms="+std::to_string(receipt.nowMs)+" sample_age_ms="+std::to_string(receipt.sampleAgeMs)
+                +" admitted="+std::to_string(receipt.admitted)+" retained="+std::to_string(receipt.retained);
+        }
         Log(Debug::Info) << "OptimizedMW asset QC T1: requested="+std::to_string(textures.requested.load())
             +" eligible="+std::to_string(textures.eligible.load())+" ready="+std::to_string(textures.ready.load())
             +" native_images="+std::to_string(textures.nativeImages.load())

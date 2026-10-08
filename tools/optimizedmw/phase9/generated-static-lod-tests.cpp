@@ -241,6 +241,45 @@ int main(int argc, char** argv) try
     require(selectedSource.valid() && L1::certify(*selectedSource)==L1::Refusal::None,
         "source-certificate fixtures require the exact immutable pre-build control without derived receipts");
     require(selected.derivedIndices < selected.originalIndices && !selected.readiness->ready, "reduced immutable tier starts unprepared");
+    {
+        // One real reducible optimized leaf plus an irreducible triangle must
+        // share every ordinary stream and retain the unchanged leaf's exact
+        // PrimitiveSet/EBO, while charging only the reduced leaf's new indices.
+        Geometries sourceLeaves; selectedSource->accept(sourceLeaves);
+        require(!sourceLeaves.values.empty(),"real immutable post-optimizer source leaf required");
+        osg::ref_ptr<osg::Node> reducible=privateClone(*selectedSource);
+        osg::ref_ptr<osg::Geometry> triangle=new osg::Geometry(*sourceLeaves.values.front(),osg::CopyOp::SHALLOW_COPY);
+        triangle->setDrawCallback(nullptr);triangle->setUserDataContainer(nullptr);
+        auto originalPrimitive=triangle->getPrimitiveSet(0);
+        require(originalPrimitive->getNumIndices()>=3,"real source triangle required");
+        osg::ref_ptr<osg::DrawElementsUInt> only=new osg::DrawElementsUInt(GL_TRIANGLES);
+        for (unsigned i=0;i<3;++i) only->push_back(originalPrimitive->index(i));
+        only->setElementBufferObject(new osg::ElementBufferObject);triangle->setPrimitiveSet(0,only);
+        // Preserve the actual effective ancestry of this copied leaf.
+        EffectiveMaterial effective(sourceLeaves.values.front());selectedSource->accept(effective);
+        require(effective.paths==1 && effective.result,"one exact source material ancestry required");
+        triangle->setStateSet(effective.result);
+        osg::ref_ptr<osg::Group> cohort=new osg::Group;cohort->setDataVariance(osg::Object::STATIC);
+        cohort->addChild(reducible);cohort->addChild(triangle);
+        const auto result=L1::build(*cohort,selectedName+"|mixed-reduced-irreducible",mainCamera,false);
+        require(result.node && result.newIndexBytes>0,"mixed actual geometry cohort must reduce at least one leaf");
+        Geometries control,tier;result.node->original()->accept(control);result.node->derived()->accept(tier);
+        require(control.values.size()==tier.values.size(),"mixed leaf population must remain exact");
+        std::uint64_t actualNewIndices=0;unsigned unchanged=0;
+        for (unsigned i=0;i<control.values.size();++i)
+        {
+            const auto* original=control.values[i];const auto* derived=tier.values[i];
+            require(original->getVertexArray()==derived->getVertexArray()
+                && original->getVertexArray()->getVertexBufferObject()==derived->getVertexArray()->getVertexBufferObject(),
+                "mixed leaves must share ordinary vertex array and VBO identity");
+            if (original->getPrimitiveSet(0)==derived->getPrimitiveSet(0)) ++unchanged;
+            else actualNewIndices+=derived->getPrimitiveSet(0)->getNumIndices()*sizeof(unsigned);
+        }
+        require(unchanged>0 && result.newIndexBytes==actualNewIndices,
+            "unchanged primitive must retain its exact EBO and incur no new index debt");
+        std::cout<<"L1_MIXED_INDEX_RESOURCES unchanged_primitive_ebo_identity=1 shared_vertices_vbos=1 unchanged_leaves="<<unchanged
+            <<" new_index_bytes="<<result.newIndexBytes<<" exact_new_index_debt=1\n";
+    }
     const auto builtBeforeDemand = L1::Counters::built.load(), diskBeforeDemand = L1::Counters::diskHits.load();
     require(!L1::build(*selected.node->original(),selectedName,mainCamera).node,
         "visible demand without optional worker must not cook a production tier");

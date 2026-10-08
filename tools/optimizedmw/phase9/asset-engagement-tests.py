@@ -65,6 +65,52 @@ def members(mask, log=None, exit_code=0):
 
 
 class EngagementTests(unittest.TestCase):
+    def gpu_log(self, reason=None, overlap=False):
+        summary = {name: 0 for name in QC.GPU_REASONS}
+        summary.update(reservation_attempts=int(bool(reason)), reservation_admitted=0,
+                       reservation_denied=int(bool(reason)), retention_attempts=0, retention_succeeded=0,
+                       retention_failed=0, current_debt=935960, peak_debt=935960, sequence=int(bool(reason)))
+        lines = []
+        if reason:
+            summary[reason] = 1
+            receipt = dict(schema=1, sequence=1, operation=0, reasons=1 << QC.GPU_REASONS.index(reason),
+                           requested=4096, local_limit=128*1024**2, global_limit=256*1024**2,
+                           current_debt=935960, proposed_debt=940056, headroom_reserve=512*1024**2,
+                           sample_valid=1, pressure_code=1, headroom=4096*1024**2,
+                           sampled_at_ms=1000, now_ms=3001, sample_age_ms=2001, admitted=0, retained=0)
+            if overlap:
+                summary["pressure_policy"] = 1
+                receipt["reasons"] |= 1 << QC.GPU_REASONS.index("pressure_policy")
+                receipt["pressure_code"] = 2
+                lines.append("OptimizedMW asset GPU first pressure_policy: " + format_values(receipt))
+            lines.append("OptimizedMW asset GPU first " + reason + ": " + format_values(receipt))
+        return "OptimizedMW asset GPU v1: " + format_values(summary) + "\n" + "\n".join(lines) + "\n"
+
+    def test_new_release_requires_exact_gpu_refusal_receipts(self):
+        base = proof(1).replace("final=1", "final=1 gpu_receipt_schema=1")
+        self.assertEqual(self.evaluate(members(1, base))["exit_code"], 3)
+        result = self.evaluate(members(1, base + self.gpu_log("stale_sample", overlap=True)))
+        self.assertEqual(result["exit_code"], 0)
+        self.assertTrue(result["gpu_admission"]["available"])
+        self.assertEqual(result["gpu_admission"]["summary"]["reservation_denied"], 1)
+        self.assertEqual(len(result["gpu_admission"]["first_refusals"]), 2)
+        self.assertEqual(result["gpu_admission"]["first_refusals"]["stale_sample"]["sample_age_ms"], 2001)
+        self.assertEqual(self.evaluate(members(1, base.replace("gpu_receipt_schema=1", "gpu_receipt_schema=2")
+                                              + self.gpu_log()))["exit_code"], 3)
+
+    def test_gpu_count_cannot_replace_missing_conflicting_or_corrupt_receipt(self):
+        base = proof(1).replace("final=1", "final=1 gpu_receipt_schema=1")
+        valid = self.gpu_log("stale_sample")
+        cases = [valid.split("OptimizedMW asset GPU first")[0],
+                 valid + valid, valid.replace("reasons=64", "reasons=0"),
+                 valid.replace("schema=1", "schema=2"), valid.replace("sample_valid=1", "sample_valid=2"),
+                 valid.replace("admitted=0", "admitted=1"), valid.replace("retained=0", "retained=1"),
+                 valid.replace("operation=0", "operation=1")]
+        for log in cases:
+            with self.subTest(log=log):
+                self.assertEqual(self.evaluate(members(1, base + log))["exit_code"], 3)
+        self.assertEqual(self.evaluate(members(1, base + self.gpu_log()))["exit_code"], 0)
+
     def test_overlapping_denial_predicates_preserve_units_without_false_inconsistency(self):
         log = proof(1).replace("refusals: unsupported=0",
             "refusals: cpu_private_pressure_policy=7 cpu_private_physical_headroom=7 "

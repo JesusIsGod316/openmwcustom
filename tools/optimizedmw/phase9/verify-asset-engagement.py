@@ -40,6 +40,69 @@ KEY = re.compile(r"[a-z][a-z0-9_]*")
 SHA = re.compile(r"[0-9a-fA-F]{64}")
 COMMIT = re.compile(r"[0-9a-fA-F]{40}")
 MAX_MEMBER = 64 * 1024 * 1024
+GPU_REASONS = ("invalid_request", "local_request_limit", "global_request_limit", "invalid_sample",
+               "pressure_policy", "regressed_sample_clock", "stale_sample", "headroom_reserve",
+               "request_headroom", "global_debt_limit", "debt_headroom", "arithmetic_overflow",
+               "reservation_allocation_failed", "retain_allocation_failed")
+
+
+def parse_gpu_admission(log, required=False):
+    result = {"schema": 1, "available": False, "summary": None, "first_refusals": {}, "errors": [],
+              "semantics": "Overlapping refusal predicates; captured sampler observation plus decision debt. "
+                           "Cumulative reservation/retention attempts are not unique assets or physical GPU allocations."}
+    try:
+        for number, line in enumerate(log.splitlines(), 1):
+            if "OptimizedMW asset GPU " not in line:
+                continue
+            match = re.search(r"OptimizedMW asset GPU (v1|first [a-z_]+):\s*(.*?)\s*$", line)
+            if not match:
+                raise EvidenceError(f"openmw.log:{number}: malformed GPU admission receipt")
+            name, values = match.groups()
+            data = key_values(values)
+            if name == "v1":
+                if result["summary"] is not None:
+                    raise EvidenceError("duplicate GPU admission summary")
+                result["summary"] = data
+            else:
+                reason = name.split()[1]
+                if reason not in GPU_REASONS or reason in result["first_refusals"]:
+                    raise EvidenceError("unknown/duplicate GPU admission reason: " + reason)
+                result["first_refusals"][reason] = data
+        summary = result["summary"]
+        if summary is None:
+            if required or result["first_refusals"]:
+                raise EvidenceError("required GPU admission summary absent")
+            return result
+        for key in ("reservation_attempts", "reservation_admitted", "reservation_denied", "retention_attempts",
+                    "retention_succeeded", "retention_failed", "current_debt", "peak_debt", "sequence", *GPU_REASONS):
+            if key not in summary:
+                raise EvidenceError("GPU admission summary missing " + key)
+        for prefix, positive, negative in (("reservation", "admitted", "denied"), ("retention", "succeeded", "failed")):
+            if summary[prefix + "_attempts"] != summary[prefix + "_" + positive] + summary[prefix + "_" + negative]:
+                raise EvidenceError("GPU admission attempt totals disagree: " + prefix)
+        for index, reason in enumerate(GPU_REASONS):
+            receipt = result["first_refusals"].get(reason)
+            if bool(summary[reason]) != bool(receipt):
+                raise EvidenceError("GPU refusal count/first receipt disagree: " + reason)
+            if not receipt:
+                continue
+            for key in ("schema", "sequence", "operation", "reasons", "requested", "local_limit", "global_limit",
+                        "current_debt", "proposed_debt", "headroom_reserve", "sample_valid", "pressure_code",
+                        "headroom", "sampled_at_ms", "now_ms", "sample_age_ms", "admitted", "retained"):
+                if key not in receipt:
+                    raise EvidenceError("GPU first receipt missing " + key)
+            if (receipt["schema"] != 1 or not 0 < receipt["sequence"] <= summary["sequence"]
+                    or receipt["operation"] > 1 or receipt["sample_valid"] > 1 or receipt["pressure_code"] > 3
+                    or receipt["admitted"] > 1 or receipt["retained"] > 1
+                    or not receipt["reasons"] & (1 << index) or receipt["reasons"] >= 1 << len(GPU_REASONS)):
+                raise EvidenceError("GPU first receipt has inconsistent identity/decision: " + reason)
+            if (receipt["retained"] != 0 or receipt["admitted"] != receipt["operation"]
+                    or bool(receipt["reasons"] & (1 << 13)) != bool(receipt["operation"])):
+                raise EvidenceError("GPU refusal has contradictory reservation/retention flags: " + reason)
+        result["available"] = True
+    except EvidenceError as error:
+        result["errors"].append(str(error))
+    return result
 
 
 class EvidenceError(ValueError):
@@ -357,6 +420,12 @@ def verify_capture(path, expected_source=None, expected_exe=None):
         proof = parse_normal_proof(log)
         result["normal_proof"] = proof
         result["problems"].extend(proof["errors"])
+        gpu_schema = (proof.get("header") or {}).get("gpu_receipt_schema")
+        if gpu_schema is not None and gpu_schema != 1:
+            raise EvidenceError("unsupported GPU admission receipt schema")
+        gpu = parse_gpu_admission(log, gpu_schema is not None)
+        result["gpu_admission"] = gpu
+        result["problems"].extend(gpu["errors"])
         if proof["header"] is None:
             if mask == 0 and not proof["errors"]:
                 result.update(status="CONTROL_REFERENCE", exit_code=0)
@@ -426,6 +495,11 @@ def report_text(result):
             lines.append(f"{key}: {result[key]}")
     if "gameplay_exposure" in result:
         lines.append("State-qualified observed-active frames: " + str(result["gameplay_exposure"]["observed_active_frames"]))
+    gpu = result.get("gpu_admission") or {}
+    if gpu.get("available"):
+        lines.append("GPU admission: " + json.dumps(gpu["summary"], sort_keys=True))
+        lines.append("GPU first refusal receipts: " + json.dumps(gpu["first_refusals"], sort_keys=True))
+        lines.append(gpu["semantics"])
     for problem in result["problems"]:
         lines.append("Evidence: " + problem)
     for lane in result["lanes"].values():

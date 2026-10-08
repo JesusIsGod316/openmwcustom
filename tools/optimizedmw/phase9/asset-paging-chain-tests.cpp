@@ -41,6 +41,7 @@
 #include <iostream>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <thread>
@@ -61,7 +62,7 @@ namespace
         std::filesystem::path package,resources,shaders,settings;
         std::vector<std::string> models;
         std::string ordinaryModel;
-        bool retry=false,sourceProbe=false,mixed=false;
+        bool retry=false,sourceProbe=false,mixed=false,textureCombination=false;
         Inputs(int argc,char** argv) : package(std::filesystem::absolute(std::filesystem::u8path(argv[3])))
         {
             for (int i=5;i<argc;++i)
@@ -70,6 +71,7 @@ namespace
                 if (option=="--retry") {retry=true;continue;}
                 if (option=="--source-probe") {sourceProbe=true;continue;}
                 if (option=="--mixed") {mixed=true;continue;}
+                if (option=="--texture-combination") {textureCombination=true;continue;}
                 if (option=="--ordinary-model") { require(++i<argc,"missing actual ordinary STAT model"); ordinaryModel=argv[i]; continue; }
                 if (option=="--resources" || option=="--shaders" || option=="--settings")
                 {
@@ -214,17 +216,72 @@ namespace
             for (auto* tier:derived.values)
             {
                 auto base=std::find_if(original.values.begin(),original.values.end(),[&](const auto* value){return value->getVertexArray()==tier->getVertexArray();});
-                require(base!=original.values.end(),"index-only tier must retain its exact private original vertex array");
+                require(base!=original.values.end(),"index-only tier must retain its exact optimized ordinary control vertex array");
+                require((*base)->getUseVertexBufferObjects() && !(*base)->getUseDisplayList()
+                    && tier->getUseVertexBufferObjects() && !tier->getUseDisplayList(),"index-only production control and tier must already use VBOs");
+                const auto sameBuffer=[](const osg::Array* left,const osg::Array* right) {
+                    return left==right && (!left || (left->getVertexBufferObject()
+                        && left->getVertexBufferObject()==right->getVertexBufferObject()));
+                };
+                require(sameBuffer((*base)->getVertexArray(),tier->getVertexArray())
+                    && sameBuffer((*base)->getNormalArray(),tier->getNormalArray())
+                    && sameBuffer((*base)->getColorArray(),tier->getColorArray()),"index-only tier must share actual established position/normal/color VBOs");
                 require((*base)->getNormalArray()==tier->getNormalArray() && (*base)->getColorArray()==tier->getColorArray()
                     && (*base)->getNumTexCoordArrays()==tier->getNumTexCoordArrays(),"index-only tier must retain normal/color/UV layout");
                 for (unsigned unit=0;unit<tier->getNumTexCoordArrays();++unit)
-                    require((*base)->getTexCoordArray(unit)==tier->getTexCoordArray(unit),"index-only tier must retain every UV and tangent7 array identity");
+                    require(sameBuffer((*base)->getTexCoordArray(unit),tier->getTexCoordArray(unit)),"index-only tier must share every actual UV and tangent7 VBO");
+                if ((*base)->getPrimitiveSet(0)->getNumIndices()==tier->getPrimitiveSet(0)->getNumIndices())
+                    require((*base)->getPrimitiveSet(0)==tier->getPrimitiveSet(0),"unchanged leaf must share actual PrimitiveSet/EBO identity");
                 require((*base)->getStateSet()==tier->getStateSet(),"index-only tier must retain immutable material/normal/specular state identity");
                 ++matched;
             }
         }
         return matched;
     }
+    struct GeometrySnapshot
+    {
+        struct State
+        {
+            osg::Geometry* geometry;
+            osg::Drawable::DrawCallback* callback;
+            osg::UserDataContainer* data;
+            bool useVbo,displayList;
+            std::vector<std::pair<osg::Array*,unsigned>> arrays;
+            std::vector<osg::VertexBufferObject*> vbos;
+            std::vector<std::pair<osg::PrimitiveSet*,unsigned>> primitives;
+            std::uint64_t indexHash=1469598103934665603ull;
+        };
+        std::vector<State> values;
+        explicit GeometrySnapshot(osg::Node& root)
+        {
+            Geometries geometries; root.accept(geometries);
+            for (auto* geometry:geometries.values)
+            {
+                State state{geometry,geometry->getDrawCallback(),geometry->getUserDataContainer(),
+                    geometry->getUseVertexBufferObjects(),geometry->getUseDisplayList()};
+                const auto remember=[&](osg::Array* array) {state.arrays.push_back({array,array ? array->getModifiedCount() : 0});state.vbos.push_back(array ? array->getVertexBufferObject() : nullptr);};
+                remember(geometry->getVertexArray());remember(geometry->getNormalArray());remember(geometry->getColorArray());
+                for (unsigned unit=0;unit<geometry->getNumTexCoordArrays();++unit) remember(geometry->getTexCoordArray(unit));
+                for (unsigned i=0;i<geometry->getNumPrimitiveSets();++i)
+                {
+                    auto* primitive=geometry->getPrimitiveSet(i);state.primitives.push_back({primitive,primitive->getModifiedCount()});
+                    for (unsigned n=0;n<primitive->getNumIndices();++n) state.indexHash=(state.indexHash^primitive->index(n))*1099511628211ull;
+                }
+                values.push_back(std::move(state));
+            }
+        }
+        void unchanged(osg::Node& root,const char* message) const
+        {
+            const GeometrySnapshot current(root);require(values.size()==current.values.size(),message);
+            for (unsigned i=0;i<values.size();++i)
+            {
+                const auto& a=values[i];const auto& b=current.values[i];
+                require(a.geometry==b.geometry && a.callback==b.callback && a.data==b.data
+                    && a.useVbo==b.useVbo && a.displayList==b.displayList && a.arrays==b.arrays
+                    && a.vbos==b.vbos && a.primitives==b.primitives && a.indexHash==b.indexHash,message);
+            }
+        }
+    };
     struct ProgramState final : osg::NodeVisitor
     {
         ProgramState() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
@@ -425,12 +482,20 @@ namespace
         { MWRender::ObjectPaging& paging; bool enabled; ~PrivateHookClear() {if(enabled) paging.setFixtureBeforePrivate({});} } clear{paging,stress!=0};
         if (stress) paging.setFixtureBeforePrivate([&]{
             require(!privateCheckpoint,"private stress checkpoint must occur once after real source snapshots");
-            privateCheckpoint=true;extra=std::make_unique<R::SpeculativeScope::Stage>(stress,0);
+            privateCheckpoint=true;
+            if ((R::AssetPolicy::mask()&A::Mask)==A::Lod)
+            {
+                const auto future=resources.speculativeBudget()->stats().futureBytes;
+                constexpr auto ceiling=256*R::SpeculativeBudget::MiB;
+                require(future+64*1024<ceiling,"bounded L1 stress must start below the actual configured ceiling");
+                extra=std::make_unique<R::SpeculativeScope::Stage>(ceiling-future-64*1024,0);
+            }
+            else extra=std::make_unique<R::SpeculativeScope::Stage>(stress,0);
         });
         A::OptionalUpgradeScope optional(&abort);
         auto result=paging.getChunk(1,{0,0},0,0,false,{0,0,0},true);
         if (needsRetry) *needsRetry=optional.needsRetry();
-        if (stress) require(privateCheckpoint && optional.needsRetry(),"exact private admission denial after completed snapshots must reach the production optional owner retry signal");
+        if (stress) require(privateCheckpoint && optional.needsRetry(),"exact control/private admission denial after completed snapshots must reach the production optional owner retry signal");
         return result;
     }
     void qualityContracts()
@@ -468,12 +533,14 @@ int main(int argc,char** argv) try
     require(argc>=6,"usage: p9-asset-paging-chain mask captured-openmw.cfg packageRoot activePlugin mesh1 [mesh2 ...] --resources package/resources --shaders private-package-shaders --settings captured-settings.cfg [--retry] [--source-probe]");
     const unsigned mask=static_cast<unsigned>(std::stoul(argv[1]));
     require(mask==A::Lod || mask==A::Hlod,"chain consumption fixture isolates L1 or H1; combined runtime acceptance requires user captures");
-#ifdef _WIN32
-    _putenv_s("OPENMW_P9_ASSET_MASK",std::to_string(mask).c_str());
-#else
-    setenv("OPENMW_P9_ASSET_MASK",std::to_string(mask).c_str(),1);
-#endif
     const Inputs inputs(argc,argv);
+    require(!inputs.textureCombination || mask==A::Lod,"incremental combination qualification is L1 plus texture preparation only");
+    const auto processMask=mask | (inputs.textureCombination ? R::AssetPolicy::TexturePreparation : 0u);
+#ifdef _WIN32
+    _putenv_s("OPENMW_P9_ASSET_MASK",std::to_string(processMask).c_str());
+#else
+    setenv("OPENMW_P9_ASSET_MASK",std::to_string(processMask).c_str(),1);
+#endif
     const bool retry=inputs.retry;
     Settings::SettingsFileParser settings;
     settings.loadSettingsFile(inputs.package/"defaults.bin",Settings::Manager::mDefaultSettings,true,false);
@@ -768,7 +835,7 @@ int main(int argc,char** argv) try
     Selectors weak; ordinary->accept(weak); require(weak.values.empty() && built(mask)==beforeBuilt,"required readiness/control must not fabricate optional asset quality");
     osg::ref_ptr<osg::Node> mixedStrongControl;
     ControlTopology mixedBaseline;
-    if (inputs.mixed)
+    if (inputs.mixed || mask==A::Lod)
     {
         auto originalPopulation=population;
         for (auto& reference:originalPopulation) reference.occluderOwner=true;
@@ -781,44 +848,77 @@ int main(int argc,char** argv) try
         mixedStrongControl->accept(mixedBaseline);
         require(mixedBaseline.submissions && mixedBaseline.indices,"real strong control topology must contain actual submissions and indices");
     }
+    const GeometrySnapshot weakSnapshot(*ordinary);
+    std::vector<std::pair<osg::ref_ptr<const osg::Node>,GeometrySnapshot>> sourceSnapshots;
+    std::uint64_t contributorSubmissions=0;
+    if (mask==A::Lod)
+        for (const auto& reference:population)
+        {
+            auto source=scenes->getTemplate(VFS::Path::Normalized("meshes/"+reference.model.value()),false);
+            sourceSnapshots.emplace_back(source,GeometrySnapshot(*const_cast<osg::Node*>(source.get())));
+            ControlTopology input; const_cast<osg::Node*>(source.get())->accept(input); contributorSubmissions+=input.submissions;
+        }
     if (retry)
     {
         phase("stressed_upgrade","begin");
         const auto privateDenied=(mask&A::Lod ? A::Counters::lod.privateCpuDenied.load() : A::Counters::hlod.privateCpuDenied.load());
+        const auto outerDenied=A::Counters::lod.outerCpuDenied.load();
         const auto sourceCertified=(mask&A::Lod ? A::Counters::lod.sourceCertified.load() : A::Counters::hlod.sourceCertified.load());
         const auto snapshotDenied=(mask&A::Lod ? A::Counters::lod.snapshotDenied.load() : A::Counters::hlod.snapshotDenied.load());
         const auto admitted=(mask&A::Lod ? A::Counters::lod.candidateAdmitted.load() : A::Counters::hlod.candidateAdmitted.load());
         auto deferred=upgrade(paging,resources,abort,128*R::SpeculativeBudget::MiB);
-        require(built(mask)==beforeBuilt,"256 MiB total outer overlap must refuse any additional exact private clone without cooking");
-        require((mask&A::Lod ? A::Counters::lod.privateCpuDenied.load() : A::Counters::hlod.privateCpuDenied.load())>privateDenied,"actual production private CPU gate must report refusal");
+        require(built(mask)==beforeBuilt,"bounded CPU overlap must refuse additional control/private work before cooking");
+        require(mask==A::Lod ? A::Counters::lod.outerCpuDenied.load()>outerDenied
+            : A::Counters::hlod.privateCpuDenied.load()>privateDenied,"actual production control/private CPU gate must report refusal");
         require((mask&A::Lod ? A::Counters::lod.sourceCertified.load() : A::Counters::hlod.sourceCertified.load())>sourceCertified
             && (mask&A::Lod ? A::Counters::lod.snapshotDenied.load() : A::Counters::hlod.snapshotDenied.load())==snapshotDenied
             && (mask&A::Lod ? A::Counters::lod.candidateAdmitted.load() : A::Counters::hlod.candidateAdmitted.load())==admitted,
-            "private denial must follow successful actual source snapshots and precede every private clone admission");
+            "control/private denial must follow successful actual source snapshots and precede every candidate admission");
         bool cachedRetry=false;
         auto backoff=upgrade(paging,resources,abort,0,&cachedRetry);
         require(backoff==deferred && built(mask)==beforeBuilt && cachedRetry,
             "same-generation cooldown observation must retain ordinary fallback and optional retry without recooking");
         std::this_thread::sleep_for(std::chrono::milliseconds(A::RetryDelayMilliseconds+100));
-        std::cout<<"CHAIN_TRANSIENT same_generation=1 private_cpu_denied=1 fallback_during_delay=1 optional_owner_retry_signal=1 actual_snapshot_completed=1 private_clone_admitted=0 fixed_transient_limit_mib=256\n";
+        std::cout<<"CHAIN_TRANSIENT same_generation=1 private_cpu_denied="<<(mask==A::Hlod)
+            <<" control_cpu_denied="<<(mask==A::Lod)<<" fallback_during_delay=1 optional_owner_retry_signal=1 actual_snapshot_completed=1 private_clone_admitted=0 fixed_transient_limit_mib=256\n";
         phase("stressed_upgrade","done");
     }
     sampleGpu(); const auto beforeReady=ready(mask), beforeDraw=consumed(mask);
     const auto ownersBefore=hostOwners(resources.speculativeBudget()->stats());
+    const auto beforePrivateCopies=L::Counters::privateArrayCopies.load(),beforePrivateVbos=L::Counters::privateVertexBuffers.load();
+    const auto beforePostCandidates=L::Counters::postOptimizedCandidates.load(),beforeNewIndices=L::Counters::newIndexGpuBytes.load();
+    const auto beforeGpuDebt=R::AssetGpuBudget::liveBytes.load();
     phase("cook","begin");
     auto candidate=upgrade(paging,resources,abort); Selectors selected; candidate->accept(selected);
     phase("cook","done");
     pagingDiagnostics(mask,"cook");
     require(candidate!=ordinary && !selected.values.empty() && built(mask)>beforeBuilt,"actual getChunk must replace weak cached quality with built optional tiers");
-    if (inputs.mixed)
+    if (inputs.mixed || mask==A::Lod)
     {
         ControlTopology retained; candidate->accept(retained);
-        require(retained.indices==mixedBaseline.indices && retained.submissions<=mixedBaseline.submissions,
-            "mixed family-cohesive candidate must preserve exact control index population without extra strong merge submissions");
-        require(L::Counters::materialOwnerCohesions>0,"real same-material candidates across spatial buckets must reunite before the strong optimizer");
-        std::cout<<"CHAIN_MIXED_CONTROL spatial_buckets=2 ordinary_preserved=1 baseline_submissions="<<mixedBaseline.submissions
+        require(retained.indices==mixedBaseline.indices && retained.submissions==mixedBaseline.submissions,
+            "post-optimizer candidate must preserve exact ordinary control index population and original strong merge submissions");
+        require(L::Counters::postOptimizedCandidates>beforePostCandidates
+            && L::Counters::privateArrayCopies==beforePrivateCopies && L::Counters::privateVertexBuffers==beforePrivateVbos,
+            "L1-only actual producer must qualify post-optimizer controls without private array or vertex buffer copies");
+        const auto newIndexBytes=L::Counters::newIndexGpuBytes.load()-beforeNewIndices;
+        require(newIndexBytes>0 && R::AssetGpuBudget::liveBytes.load()-beforeGpuDebt==newIndexBytes,
+            "L1-only actual GPU debt must equal exclusively new index resources");
+        weakSnapshot.unchanged(*ordinary,"L1 producer must not decorate/mutate its still-owned weak ordinary geometry");
+        for (const auto& [source,snapshot]:sourceSnapshots)
+            snapshot.unchanged(*const_cast<osg::Node*>(source.get()),"L1 producer must not mutate shared source template callbacks, user data, arrays, indices or VBOs");
+        if (inputs.mixed) require(contributorSubmissions>mixedBaseline.submissions,
+            "actual repeated approved same-material cohort must exercise ordinary draw merging before L1 cooking");
+        std::cout<<"CHAIN_POST_OPTIMIZER baseline_submissions="<<mixedBaseline.submissions
+            <<" retained_submissions="<<retained.submissions<<" exact_control_indices=1 private_array_copies=0 private_vertex_buffers=0"
+            <<" gpu_debt_bytes="<<newIndexBytes<<" new_index_bytes="<<newIndexBytes
+            <<" contributor_submissions="<<contributorSubmissions<<" merged_input_population="<<inputs.mixed
+            <<" weak_geometry_unchanged=1 source_geometry_unchanged=1 actual_producer=1\n";
+        if (inputs.textureCombination) std::cout<<"CHAIN_L1_TEXTURE_COMBINATION process_mask="<<R::AssetPolicy::mask()
+            <<" incremental_control_admission=1 post_optimizer=1 private_array_copies=0\n";
+        if (inputs.mixed) std::cout<<"CHAIN_MIXED_CONTROL spatial_buckets=2 ordinary_preserved=1 baseline_submissions="<<mixedBaseline.submissions
             <<" retained_submissions="<<retained.submissions<<" baseline_indices="<<mixedBaseline.indices
-            <<" retained_indices="<<retained.indices<<" extra_control_submissions=0 cohesive_partitions="<<L::Counters::materialOwnerCohesions<<'\n';
+            <<" retained_indices="<<retained.indices<<" extra_control_submissions=0 post_optimizer=1\n";
     }
     require(ready(mask)==beforeReady,"CPU candidate cannot claim GL completion");
     bool pendingRetry=false;
@@ -895,6 +995,41 @@ int main(int argc,char** argv) try
     require(pbrPrograms>0 && sourcePbr>0,"assembled promoted PBR object family must actually qualify and link");
     const unsigned sharedStreams=mask==A::Lod ? indexOnlyStreams(selected) : 0;
     require(mask!=A::Lod || sharedStreams>0,"actual L1 tiers must conserve immutable vertex/material streams");
+    if (mask==A::Lod) std::cout<<"CHAIN_POST_OPTIMIZER_BUFFERS shared_stream_geometries="<<sharedStreams
+        <<" shared_all_arrays_vbos=1 unchanged_primitive_ebo_identity=1 established_control_vbos=1 actual_main_draw=1\n";
+    if (mask==A::Lod)
+    {
+        auto source=selected.values.front()->original();
+        osg::ref_ptr<osg::Node> copy=osg::clone(source,osg::CopyOp::DEEP_COPY_NODES|osg::CopyOp::DEEP_COPY_DRAWABLES);
+        Geometries leaves;copy->accept(leaves);require(!leaves.values.empty(),"actual private control clone required for VBO negative");
+        for (auto* geometry:leaves.values)
+        {
+            require(L::isDelegatingDrawCallback(geometry->getDrawCallback()),"VBO negative strips only the known receipt from its own private copy");
+            geometry->setDrawCallback(nullptr);geometry->setUserDataContainer(nullptr);
+            geometry->setUseVertexBufferObjects(false);geometry->setUseDisplayList(true);
+        }
+        const auto debt=R::AssetGpuBudget::liveBytes.load();
+        R::SpeculativeScope scope(resources.speculativeBudget(),&R::ResourceSystem::speculativeSample,&resources,R::SpeculativePriority::NearFuture);
+        SceneUtil::PagingWorkScope optional(&abort,SceneUtil::PagingWorkScope::Phase::OptionalOptimization);
+        const auto displayList=L::build(*copy,"actual-post-control|display-list-negative",camera,true);
+        require(!displayList.node && displayList.failureStep==L::BuildStep::VertexOwnership && R::AssetGpuBudget::liveBytes==debt,
+            "display-list control must refuse index-only GPU accounting before new GPU debt");
+        for (auto* geometry:leaves.values) {geometry->setUseVertexBufferObjects(true);geometry->setUseDisplayList(false);}
+        auto vertices=osg::clone(leaves.values.front()->getVertexArray(),osg::CopyOp::DEEP_COPY_ALL);
+        // Geometry::setVertexArray installs a VBO when its VBO mode is on.
+        // Remove it only after attachment, on this privately cloned array.
+        leaves.values.front()->setVertexArray(vertices);vertices->setVertexBufferObject(nullptr);
+        require(leaves.values.front()->getUseVertexBufferObjects() && !leaves.values.front()->getUseDisplayList()
+            && leaves.values.front()->getVertexArray()==vertices && !vertices->getVertexBufferObject(),
+            "missing-VBO negative must actually remove the privately copied control array's VBO before calling the production gate");
+        const auto missing=L::build(*copy,"actual-post-control|missing-vbo-negative",camera,true);
+        std::cout<<"CHAIN_VBO_NEGATIVE_OBSERVED step="<<L::buildStepName(missing.failureStep)
+            <<" built="<<bool(missing.node)<<" source_vbo_missing="<<!vertices->getVertexBufferObject()
+            <<" new_gpu_debt="<<R::AssetGpuBudget::liveBytes.load()-debt<<'\n';
+        require(!missing.node && missing.failureStep==L::BuildStep::VertexOwnership && R::AssetGpuBudget::liveBytes==debt,
+            "missing ordinary VBO must refuse index-only debt without mutating source arrays");
+        std::cout<<"CHAIN_POST_OPTIMIZER_VBO_REFUSAL display_list_refused=1 missing_vbo_refused=1 new_gpu_debt=0 private_copy_only=1\n";
+    }
     require(!sourceNormal || sourceTangent7>0,"actual normal-map family must contain its tangent7 stream");
     require(mask!=A::Hlod || (sourceNormal>0 && sourceTangent7>0),"H1 package qualification requires actual winning normal-map and tangent7 coverage");
     std::cout<<"CHAIN_SHADER_FEATURES pbr_programs="<<pbrPrograms<<" pbr_geometries="<<sourcePbr
@@ -1050,6 +1185,70 @@ int main(int argc,char** argv) try
         std::cout<<"CHAIN_MIXED_SHARED_REFUSAL ordinary_conflict_refused=1 build_attempted=0"
             <<" baseline_submissions="<<baselineTopology.submissions<<" fallback_submissions="<<fallbackTopology.submissions
             <<" exact_indices=1 control_preserved=1 terminal_stops_retry=1\n";
+        auto unsupportedPopulation=population;unsupportedPopulation.pop_back();
+        auto unsupported=unsupportedPopulation.front();unsupported.type=ESM::REC_MISC;
+        unsupported.position={0,0,0};unsupportedPopulation.push_back(unsupported);
+        MWRender::ObjectPaging unsupportedPaging(scenes,ESM::Cell::sDefaultWorldspaceId);
+        unsupportedPaging.setAssetMainCamera(camera);unsupportedPaging.setFixturePopulation(unsupportedPopulation);
+        Registered unsupportedRegistration(resources,&unsupportedPaging);
+        const auto beforeUnsupported=built(mask),beforeUnsupportedAttempts=A::Counters::lod.buildAttempts.load();
+        bool unsupportedRetry=true;
+        auto unsupportedControl=upgrade(unsupportedPaging,resources,abort,0,&unsupportedRetry);
+        Selectors unsupportedSelectors;unsupportedControl->accept(unsupportedSelectors);
+        require(unsupportedSelectors.values.empty() && !unsupportedRetry && built(mask)==beforeUnsupported
+            && A::Counters::lod.buildAttempts==beforeUnsupportedAttempts,
+            "unsupported contributor using the same cached template/material must refuse the entire optimized family before cooking");
+        std::uint64_t inputsBeforeMerge=0;
+        for (auto& reference:unsupportedPopulation)
+        {
+            ControlTopology input;auto source=scenes->getTemplate(VFS::Path::Normalized("meshes/"+reference.model.value()),false);
+            const_cast<osg::Node*>(source.get())->accept(input);inputsBeforeMerge+=input.submissions;reference.occluderOwner=true;
+        }
+        MWRender::ObjectPaging unsupportedBaseline(scenes,ESM::Cell::sDefaultWorldspaceId);
+        unsupportedBaseline.setAssetMainCamera(camera);unsupportedBaseline.setFixturePopulation(unsupportedPopulation);
+        Registered unsupportedBaselineRegistration(resources,&unsupportedBaseline);
+        auto baselineOwner=upgrade(unsupportedBaseline,resources,abort);
+        ControlTopology unsupportedTopology,unsupportedBaselineTopology;
+        unsupportedControl->accept(unsupportedTopology);baselineOwner->accept(unsupportedBaselineTopology);
+        require(inputsBeforeMerge>unsupportedTopology.submissions && unsupportedTopology.submissions==unsupportedBaselineTopology.submissions
+            && unsupportedTopology.indices==unsupportedBaselineTopology.indices,
+            "unsupported same-material actual merged control must preserve exact ordinary batching and indices");
+        std::cout<<"CHAIN_MIXED_UNAPPROVED_REFUSAL unsupported_record_kind=1 same_template_same_material=1 whole_merged_draw_refused=1"
+            <<" build_attempted=0 exact_control_batching=1 exact_control_indices=1 contributor_submissions="<<inputsBeforeMerge
+            <<" baseline_submissions="<<unsupportedBaselineTopology.submissions<<" merged_input_population=1\n";
+    }
+    if (mask==A::Lod)
+    {
+        // Exercise the real nonmerge CopyOp branch that returns the template
+        // Drawable. Only this negative test overrides the in-memory merge
+        // policy; restore it before any subsequent qualification/cohort test.
+        struct RestoreMerge
+        {
+            int batching=Settings::cells().mV38WorldBatchingMode;
+            float factor=Settings::terrain().mObjectPagingMergeFactor;
+            ~RestoreMerge() {Settings::cells().mV38WorldBatchingMode.set(batching);Settings::terrain().mObjectPagingMergeFactor.set(factor);}
+        } restore;
+        Settings::cells().mV38WorldBatchingMode.set(0);Settings::terrain().mObjectPagingMergeFactor.set(std::numeric_limits<float>::min());
+        const auto source=scenes->getTemplate(VFS::Path::Normalized("meshes/"+population.front().model.value()),false);
+        const GeometrySnapshot sourceBefore(*const_cast<osg::Node*>(source.get()));
+        MWRender::ObjectPaging borrowed(scenes,ESM::Cell::sDefaultWorldspaceId);borrowed.setAssetMainCamera(camera);
+        auto one=population.front();one.position={0,0,0};borrowed.setFixturePopulation({one});
+        Registered borrowedRegistration(resources,&borrowed);
+        osg::ref_ptr<osg::Node> weakOwner;
+        {SceneUtil::PagingWorkScope required(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);weakOwner=borrowed.getChunk(1,{0,0},0,0,false,{0,0,0},true);}
+        const GeometrySnapshot weakBefore(*weakOwner);
+        const auto beforeBorrowedBuilt=built(mask),beforeBorrowedDebt=R::AssetGpuBudget::liveBytes.load();
+        auto borrowedControl=upgrade(borrowed,resources,abort);
+        Geometries borrowedLeaves;borrowedControl->accept(borrowedLeaves);
+        require(std::any_of(borrowedLeaves.values.begin(),borrowedLeaves.values.end(),[&](const auto* geometry) {
+            return std::any_of(sourceBefore.values.begin(),sourceBefore.values.end(),[&](const auto& state) {return geometry==state.geometry;});}),
+            "nonmerge negative must exercise the actual borrowed template Drawable");
+        Selectors borrowedSelectors;borrowedControl->accept(borrowedSelectors);
+        require(borrowedSelectors.values.empty() && built(mask)==beforeBorrowedBuilt && R::AssetGpuBudget::liveBytes==beforeBorrowedDebt,
+            "borrowed template Drawable must keep ordinary fallback with no tier/new GPU debt");
+        sourceBefore.unchanged(*const_cast<osg::Node*>(source.get()),"nonmerge path must preserve template callback/userdata/indices/VBO identity");
+        weakBefore.unchanged(*weakOwner,"nonmerge path must preserve still-owned weak callback/userdata/indices/VBO identity");
+        std::cout<<"CHAIN_NONMERGE_SHARED_TEMPLATE actual_borrowed_drawable=1 template_unchanged=1 weak_unchanged=1 no_derived_tier=1 new_gpu_debt=0 negative_only_merge_override=1\n";
     }
     // Clear only the real cache owner, retaining the quality side table exactly
     // as expiry does. Required reconstruction must not inherit completion from

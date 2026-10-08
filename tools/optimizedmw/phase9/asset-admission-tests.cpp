@@ -4,6 +4,10 @@
 #include <atomic>
 #include <iostream>
 #include <stdexcept>
+#include <osg/Geometry>
+#include <components/sceneutil/morphgeometry.hpp>
+#include <components/sceneutil/riggeometry.hpp>
+#include <cstdlib>
 
 namespace
 {
@@ -40,7 +44,89 @@ namespace
 
 int main() try
 {
+#ifdef _WIN32
+    require(_putenv_s("OPENMW_P9_ASSET_MASK","1")==0,"isolated L1 fixture environment");
+#else
+    require(setenv("OPENMW_P9_ASSET_MASK","1",1)==0,"isolated L1 fixture environment");
+#endif
     const auto original=healthy();
+    {
+        // Exact runtime refusal cohort. The old full128MiB allowance cannot
+        // fit; bounded metadata + a census of this actual control population
+        // can, without changing either the floor or the256MiB hard cap.
+        auto captured=original;
+        captured.decision.state=R::OpenGlPressure::Caution;
+        captured.memory.physicalTotal=0x7d3c5d000ull;
+        captured.memory.physicalAvailable=0x82e57000ull;
+        captured.decision.limits.physicalCritical=0x7d3c5d00ull;
+        captured.memory.commitAvailable=0x77d11000ull;
+        captured.memory.systemCommitAvailable=0x77d11000ull;
+        captured.decision.limits.commitCritical=256*MiB;
+        R::SpeculativeBudget budget({256*MiB,4,1});
+        const auto old=refused([&]{auto eager=budget.reserve(captured,128*MiB,R::SpeculativePriority::NearFuture);});
+        require(old.reasons==R::SpeculativeBudget::PhysicalHeadroom && old.requested==128*MiB
+            && old.physicalFloor==0x7d3c5d00ull,"replay the recorded physical-headroom refusal exactly");
+        osg::ref_ptr<osg::Geometry> geometry=new osg::Geometry;
+        osg::ref_ptr<osg::Vec3Array> vertices=new osg::Vec3Array(256);
+        geometry->setVertexArray(vertices);
+        osg::ref_ptr<osg::DrawElementsUInt> indices=new osg::DrawElementsUInt(GL_TRIANGLES);
+        for(unsigned i=0;i<1536;++i) indices->push_back(i%256);
+        geometry->addPrimitiveSet(indices);
+        osg::ref_ptr<osg::Group> graph=new osg::Group;graph->addChild(geometry);
+        const auto census=A::controlEstimate(*graph);
+        require(census.valid && census.peakBytes>census.retainedBytes && census.peakBytes<MiB,
+            "actual source streams and pinned optimizer scratch produce a bounded small work estimate");
+        std::atomic<bool> abort{false};
+        R::SpeculativeScope scope(&budget,&sample,&captured,R::SpeculativePriority::NearFuture);
+        A::OptionalUpgradeScope optional(&abort);
+        require(A::OptionalUpgradeScope::incrementalControl() && budget.stats().futureBytes==8*MiB,
+            "L1 uses the explicit bounded proof metadata rather than128MiB speculative work");
+        A::OptionalUpgradeScope::reserveReference();
+        require(budget.stats().futureBytes==8*MiB+512,"reference tables are charged before insertion");
+        A::Outcome outcome;
+        auto control=A::reserveControlSources(A::Lod,outcome);
+        require(control && A::admitControlSource(census,A::Lod,outcome,*control),
+            "recorded low headroom admits the actual small control construction");
+        const auto future=budget.stats().futureBytes;
+        require(future==8*MiB+512+census.peakBytes,"complete metadata/control overlap remains additive");
+        auto larger=census;larger.peakBytes=128*MiB;larger.retainedBytes=MiB;
+        require(!A::admitControlSource(larger,A::Lod,outcome,*control) && budget.stats().futureBytes==future
+            && (outcome.transient&A::Lod),"oversized construction is refused before allocation without releasing live work");
+        A::retainHostOwner(*graph,census.retainedBytes);
+        require(budget.stats().estimatedOwnerBytes==census.retainedBytes
+            && budget.stats().futureBytes==future-census.retainedBytes,
+            "publication transfers retained control ownership from its own actual work stage");
+        require(geometry->getVertexArray()==vertices && geometry->getPrimitiveSet(0)==indices,
+            "preflight reads existing source streams without mutating them");
+        osg::ref_ptr<osg::DrawElementsUInt> strip=new osg::DrawElementsUInt(GL_TRIANGLE_STRIP);
+        for(unsigned i=0;i<1536;++i) strip->push_back(i%3);
+        geometry->setPrimitiveSet(0,strip);
+        const auto expanded=A::controlEstimate(*graph);
+        require(expanded.valid && expanded.peakBytes>=census.peakBytes+2*1536*80
+            && expanded.retainedBytes>census.retainedBytes,
+            "ordinary strip/fan expansion is included even with repeated indices and no larger vertex array");
+        geometry->setPrimitiveSet(0,indices);
+        osg::ref_ptr<SceneUtil::MorphGeometry> morph=new SceneUtil::MorphGeometry;
+        morph->setSourceGeometry(geometry);
+        osg::ref_ptr<SceneUtil::RigGeometry> rig=new SceneUtil::RigGeometry;
+        rig->setSourceGeometry(geometry);
+        const auto visibleSource=A::controlEstimate(*geometry);
+        const auto hiddenMorph=A::controlEstimate(*morph),hiddenRig=A::controlEstimate(*rig);
+        require(hiddenMorph.valid && hiddenRig.valid && visibleSource.valid
+            && hiddenMorph.peakBytes>=visibleSource.peakBytes+4096
+            && hiddenRig.peakBytes>=visibleSource.peakBytes+4096
+            && hiddenMorph.retainedBytes>=visibleSource.retainedBytes+2048
+            && hiddenRig.retainedBytes>=visibleSource.retainedBytes+2048,
+            "ordinary CopyOp hidden rig/morph source arrays are included before allocation");
+        osg::ref_ptr<SceneUtil::MorphGeometry> missing=new SceneUtil::MorphGeometry;
+        require(!A::controlEstimate(*missing).valid,"missing hidden source cannot become an undercharged control");
+        osg::ref_ptr<osg::Group> cyclic=new osg::Group;cyclic->addChild(cyclic);
+        require(!A::controlEstimate(*cyclic).valid,"bounded source census refuses cycles without unbounded recursion");
+        cyclic->removeChildren(0,1);
+        std::cout<<"ASSET_CONTROL_PRESSURE_REPLAY fixed_cap=1 exact_captured_floor=1 old128_refused=1"
+            <<" bounded_metadata=1 actual_control_progress=1 additive_overlap=1 before_allocation=1"
+            <<" owner_transfer=1 source_immutable=1 expanded_primitives=1 hidden_deformation_source=1 cycle_refused=1\n";
+    }
     {
         R::SpeculativeBudget budget({256*MiB,4,1});
         auto outer=budget.reserve(original,128*MiB,R::SpeculativePriority::NearFuture);

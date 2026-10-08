@@ -31,6 +31,7 @@ namespace SceneUtil::AssetPaging
         std::atomic_uint64_t sourceRequested{0}, sourceCertified{0}, sourceRejected{0}, snapshotDenied{0};
         std::atomic_uint64_t outerCpuDenied{0}, privateCpuDenied{0}, privateGpuDenied{0}, candidateAdmitted{0}, materialConflictInstances{0};
         std::atomic_uint64_t buildAttempts{0}, buildRefused{0}, ready{0};
+        std::atomic_uint64_t controlSourcesAdmitted{0}, controlReservationBytes{0}, controlRetainedBytes{0}, controlCensusRefused{0};
         std::atomic_uint64_t refusals[static_cast<unsigned>(Gate::Count)]{};
         std::atomic_uint64_t details[static_cast<unsigned>(GeneratedStaticLod::Detail::Count)]{};
         // Refusal observations by stage and independent predicate; a single
@@ -157,10 +158,21 @@ namespace SceneUtil::AssetPaging
         bool needsRetry() const noexcept { return mNeedsRetry; }
         static void noteTransient(unsigned mask) noexcept
         { if (sCurrent && (mask & Mask)) sCurrent->mNeedsRetry = true; }
+        // The L1-only lane keeps bounded proof metadata, then admits actual
+        // reference/control/cook work before allocation. Other lanes preserve
+        // their existing overlap policy and independently switchable control.
+        static bool incrementalControl() noexcept
+        { return sCurrent && sCurrent->mIncremental; }
+        static void reserveReference();
     private:
         static std::unique_ptr<Resource::SpeculativeScope::Stage> overlap()
         {
-            try { return std::make_unique<Resource::SpeculativeScope::Stage>(128 * Resource::SpeculativeBudget::MiB,0); }
+            // 4 MiB effective-state proof + bounded source identity and owner
+            // tables/support. This is a conservative metadata ceiling, not a
+            // full clone/optimizer allowance or an OS-free-memory claim.
+            const auto bytes = (Resource::AssetPolicy::mask() & Mask) == Lod
+                ? 8 * Resource::SpeculativeBudget::MiB : 128 * Resource::SpeculativeBudget::MiB;
+            try { return std::make_unique<Resource::SpeculativeScope::Stage>(bytes,0); }
             catch (const Resource::SpeculativeDeferred& error)
             {
                 cpuRefusal(Resource::AssetPolicy::mask() & Mask,CpuStage::Outer,error);
@@ -175,7 +187,20 @@ namespace SceneUtil::AssetPaging
         inline static thread_local OptionalUpgradeScope* sCurrent = nullptr;
         OptionalUpgradeScope* mPrevious = nullptr;
         bool mNeedsRetry = false;
+        bool mIncremental = (Resource::AssetPolicy::mask() & Mask) == Lod;
     };
+    struct ControlEstimate
+    {
+        std::uint64_t peakBytes = 0, retainedBytes = 0;
+        bool valid = false;
+    };
+    // Worker-only bounded source census; includes conservative clone/flatten/
+    // merge and post-transform scratch. Borrowed source/control ownership is
+    // already live and remains additive to these new allocations.
+    ControlEstimate controlEstimate(const osg::Node& original);
+    std::unique_ptr<Resource::SpeculativeScope::Stage> reserveControlSources(unsigned lanes, Outcome& outcome);
+    bool admitControlSource(const ControlEstimate& estimate, unsigned lanes, Outcome& outcome,
+        Resource::SpeculativeScope::Stage& admission);
     struct Source
     {
         std::string identity;
