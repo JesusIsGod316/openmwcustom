@@ -136,6 +136,12 @@ int main(int argc,char** argv) try
         require(snapshot->define("normalMap") == "1" && snapshot->define("specularMap") == "1"
             && snapshot->define("lightingMethodClustered") == "1" && snapshot->define("shadows_enabled") == "1","normal/specular/shadow/light effective substitutions captured");
         require(A::current(*snapshot,*value) == A::Refusal::None,"immutable prepared source must validate");
+        for (unsigned i = 0; i < value->getNumShaders(); ++i)
+        {
+            const auto status = A::sourceStatus(*value->getShader(i));
+            require(status.refusal == A::Refusal::None && status.version == manager.assetGeneration()
+                && status.currentVersion == status.version,"source diagnostic epoch must describe the exact current proof");
+        }
         require(Shader::IndirectProjection::matches(*value) == (!temporalOnly && family == A::Family::Stock),
             "indirect authorization must stay stock-only and cannot follow the temporal-only source flag");
         std::cout << "ASSET_CONTRACT_FAMILY family=" << A::familyName(family) << " producers=" << value->getNumShaders()
@@ -318,9 +324,35 @@ int main(int argc,char** argv) try
             "cached global substitution injection preserves original shader objects but refuses fresh proof");
     }
     {
+        // Production can retain many ordinary variants without holding any
+        // candidate snapshot. Prove that initial cap failure is distinguished
+        // from the separate overlap failure during a regenerated cohort.
+        Shader::ShaderManager manager; manager.setShaderPath(pbr);
+        auto globals = defines(pbr); manager.setGlobalDefines(globals);
+        const auto diagnosticsBefore = A::producerDiagnostics();
+        bool exhausted = false;
+        unsigned variants = 0;
+        for (; variants < 128; ++variants)
+        {
+            auto value = manager.getProgram("compatibility/objects",{{"unused_asset_proof_variant",std::to_string(variants)}},nullptr,samplers);
+            require(value.valid(),"metadata pressure preserves every ordinary cached program");
+            if (!A::capture(*value)) {exhausted = true; break;}
+        }
+        const auto diagnostics = A::producerDiagnostics();
+        const auto capacity = static_cast<unsigned>(A::Refusal::Capacity);
+        require(exhausted && diagnostics.initialSource[capacity] > diagnosticsBefore.initialSource[capacity]
+            && diagnostics.liveMetadataBytes <= A::MaximumMetadataBytes
+            && diagnostics.peakMetadataBytes <= A::MaximumMetadataBytes,
+            "initial source admission diagnostics must expose the unchanged bounded cap");
+        std::cout << "ASSET_CONTRACT_INITIAL_CAPACITY variants=" << variants
+            << " source_capacity_refusals=" << diagnostics.initialSource[capacity] - diagnosticsBefore.initialSource[capacity]
+            << " cap=" << A::MaximumMetadataBytes << " ordinary_program_preserved=1\n";
+    }
+    {
         Shader::ShaderManager manager; auto value = program(manager,pbr);
         std::vector<A::Snapshot> retained;
         auto globals = manager.getGlobalDefines(); bool exhausted = false;
+        const auto diagnosticsBefore = A::producerDiagnostics();
         for (unsigned generation = 0; generation < 64; ++generation)
         {
             auto snapshot = A::capture(*value);
@@ -333,8 +365,18 @@ int main(int argc,char** argv) try
         }
         require(exhausted && !retained.empty() && !A::capture(*value),
             "bounded metadata pressure refuses fresh optional proof without replacing normal program");
+        const auto diagnostics = A::producerDiagnostics();
+        const auto capacity = static_cast<unsigned>(A::Refusal::Capacity), epoch = static_cast<unsigned>(A::Refusal::Epoch);
+        require(diagnostics.regeneratedSource[capacity] > diagnosticsBefore.regeneratedSource[capacity]
+            || diagnostics.refreshedProgram[capacity] > diagnosticsBefore.refreshedProgram[capacity]
+            || diagnostics.refreshedProgram[epoch] > diagnosticsBefore.refreshedProgram[epoch],
+            "regeneration diagnostics must distinguish its failed fresh attachment/publication");
         std::cout << "ASSET_CONTRACT_REFRESH_CAPACITY retained=" << retained.size()
-            << " metadata=" << A::liveMetadataBytes() << " cap=" << A::MaximumMetadataBytes << " fallback=1\n";
+            << " metadata=" << A::liveMetadataBytes() << " cap=" << A::MaximumMetadataBytes
+            << " regenerated_source_capacity_refusals=" << diagnostics.regeneratedSource[capacity] - diagnosticsBefore.regeneratedSource[capacity]
+            << " program_capacity_refusals=" << diagnostics.refreshedProgram[capacity] - diagnosticsBefore.refreshedProgram[capacity]
+            << " program_epoch_refusals=" << diagnostics.refreshedProgram[epoch] - diagnosticsBefore.refreshedProgram[epoch]
+            << " fallback=1\n";
     }
     {
         Shader::ShaderManager manager; manager.setShaderPath(pbr); auto globals = defines(pbr);

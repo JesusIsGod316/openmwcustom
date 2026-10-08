@@ -1,6 +1,7 @@
 #ifndef OPENMW_SHADER_ASSETGEOMETRYCONTRACT_H
 #define OPENMW_SHADER_ASSETGEOMETRYCONTRACT_H
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <map>
@@ -75,14 +76,34 @@ namespace Shader::AssetGeometry
         std::shared_ptr<const void> admission;
     };
     TemplateProof finish(const RawProof& raw, std::string_view expanded);
-    void attachSource(osg::Shader& shader, std::string_view name, const TemplateProof& proof,
-        const Defines& local, const Defines& global, const std::shared_ptr<Epoch>& epoch);
+    enum class SourceAttachStep { None, RawProof, SourceShape, ParameterRecipe, RecordLimit, MetadataAdmission, Allocation, Publication };
+    struct SourceAttachReceipt
+    {
+        SourceAttachStep step = SourceAttachStep::None;
+        std::uint64_t requestedMetadataBytes = 0;
+    };
+    const char* sourceAttachStepName(SourceAttachStep value);
+    struct ProducerDiagnostics
+    {
+        std::array<std::uint64_t, static_cast<unsigned>(Refusal::Count)> initialSource{}, regeneratedSource{}, refreshedProgram{};
+        std::uint64_t liveMetadataBytes = 0, peakMetadataBytes = 0;
+    };
+    ProducerDiagnostics producerDiagnostics();
+    void recordSourceAttachment(bool regeneration, Refusal refusal) noexcept;
+    void recordProgramRefresh(Refusal refusal) noexcept;
+    // A failed optional attachment preserves the existing slot and normal
+    // shader. The receipt distinguishes cap admission from allocation/recipe
+    // failure without copying source text or changing producer authorization.
+    Refusal attachSource(osg::Shader& shader, std::string_view name, const TemplateProof& proof,
+        const Defines& local, const Defines& global, const std::shared_ptr<Epoch>& epoch,
+        SourceAttachReceipt* receipt = nullptr);
     struct SourceStatus
     {
         Refusal refusal = Refusal::Missing;
         unsigned families = 0;
         std::string_view name;
         std::shared_ptr<const void> owner;
+        std::uint64_t version = 0, currentVersion = 0;
     };
     // Bounded diagnostic view of this Shader's existing proof; no disk access
     // and no source copy. The Shader retains the returned name's owner.

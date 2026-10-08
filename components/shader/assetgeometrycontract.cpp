@@ -21,6 +21,10 @@ namespace Shader::AssetGeometry
         constexpr const char* SourceKey = "OptimizedMW.AssetGeometry.Source.v1";
         constexpr const char* ProgramKey = "OptimizedMW.AssetGeometry.Program.v1";
         std::atomic_uint64_t metadata{0};
+        std::atomic_uint64_t metadataPeak{0};
+        constexpr unsigned RefusalCount = static_cast<unsigned>(Refusal::Count);
+        std::array<std::atomic_uint64_t, RefusalCount> initialSource{}, regeneratedSource{}, refreshedProgram{};
+        class MetadataAdmissionFailed final : public std::bad_alloc {};
         struct Charge
         {
             std::uint64_t bytes;
@@ -29,8 +33,11 @@ namespace Shader::AssetGeometry
                 auto used = metadata.load(std::memory_order_relaxed);
                 do
                 {
-                    if (value > MaximumMetadataBytes || used > MaximumMetadataBytes - value) throw std::bad_alloc{};
+                    if (value > MaximumMetadataBytes || used > MaximumMetadataBytes - value) throw MetadataAdmissionFailed{};
                 } while (!metadata.compare_exchange_weak(used, used + value, std::memory_order_relaxed));
+                const auto total = used + value;
+                auto peak = metadataPeak.load(std::memory_order_relaxed);
+                while (total > peak && !metadataPeak.compare_exchange_weak(peak, total, std::memory_order_relaxed)) {}
             }
             ~Charge() { metadata.fetch_sub(bytes, std::memory_order_relaxed); }
         };
@@ -75,16 +82,17 @@ namespace Shader::AssetGeometry
                 if (text[position++] != ',') return false;
             }
         }
-        bool bounded(const Defines& values, std::size_t& bytes)
+        Refusal bounded(const Defines& values, std::size_t& bytes)
         {
-            if (values.size() > 256) return false;
+            if (values.size() > 256) return Refusal::Capacity;
             for (const auto& [name,value] : values)
             {
-                if (name.size() > 1024 || value.size() > 4096 || !numericParameters(value)) return false;
+                if (name.size() > 1024 || value.size() > 4096) return Refusal::Capacity;
+                if (!numericParameters(value)) return Refusal::Defines;
                 bytes += name.size() + value.size() + 128;
-                if (bytes > MaximumRecordBytes) return false;
+                if (bytes > MaximumRecordBytes) return Refusal::Capacity;
             }
-            return true;
+            return Refusal::None;
         }
         std::string recipe(const Defines& values)
         {
@@ -304,28 +312,69 @@ namespace Shader::AssetGeometry
         try { return {raw.families,digest(raw.recipe),digest(expanded),reserve(512)}; }
         catch (const std::bad_alloc&) { return {}; }
     }
-    void attachSource(osg::Shader& shader, std::string_view name, const TemplateProof& proof,
-        const Defines& local, const Defines& global, const std::shared_ptr<Epoch>& epoch)
+    const char* sourceAttachStepName(SourceAttachStep value)
+    {
+        constexpr const char* names[]{"none","raw_proof","source_shape","parameter_recipe","record_limit",
+            "metadata_admission","allocation","publication"};
+        return static_cast<unsigned>(value) < std::size(names) ? names[static_cast<unsigned>(value)] : "unknown";
+    }
+    ProducerDiagnostics producerDiagnostics()
+    {
+        ProducerDiagnostics result;
+        for (unsigned i = 0; i < RefusalCount; ++i)
+        {
+            result.initialSource[i] = initialSource[i].load(std::memory_order_relaxed);
+            result.regeneratedSource[i] = regeneratedSource[i].load(std::memory_order_relaxed);
+            result.refreshedProgram[i] = refreshedProgram[i].load(std::memory_order_relaxed);
+        }
+        result.liveMetadataBytes = metadata.load(std::memory_order_relaxed);
+        result.peakMetadataBytes = metadataPeak.load(std::memory_order_relaxed);
+        return result;
+    }
+    void recordSourceAttachment(bool regeneration, Refusal refusal) noexcept
+    {
+        const auto slot = static_cast<unsigned>(refusal);
+        if (slot < RefusalCount) ++(regeneration ? regeneratedSource : initialSource)[slot];
+    }
+    void recordProgramRefresh(Refusal refusal) noexcept
+    {
+        const auto slot = static_cast<unsigned>(refusal);
+        if (slot < RefusalCount) ++refreshedProgram[slot];
+    }
+    Refusal attachSource(osg::Shader& shader, std::string_view name, const TemplateProof& proof,
+        const Defines& local, const Defines& global, const std::shared_ptr<Epoch>& epoch,
+        SourceAttachReceipt* receipt)
     {
         ProducerMutationScope producer;
-        if (!enabled() || !proof.families || !proof.admission || !epoch || name.size() > 1024
-            || shader.getShaderSource().size() > 2u * 1024u * 1024u || shader.getShaderBinary()
-            || !shader.getCodeInjectionMap().empty()) return;
+        SourceAttachReceipt localReceipt;
+        if (!receipt) receipt = &localReceipt;
+        *receipt = {};
+        receipt->step = SourceAttachStep::RawProof;
+        if (!enabled() || !proof.families || !proof.admission || !epoch) return Refusal::Missing;
+        receipt->step = SourceAttachStep::SourceShape;
+        if (name.size() > 1024 || shader.getShaderSource().size() > 2u * 1024u * 1024u) return Refusal::Capacity;
+        if (shader.getShaderBinary() || !shader.getCodeInjectionMap().empty()) return Refusal::Source;
         std::size_t bytes = sizeof(SourceData) + name.size() + 1024;
-        if (!bounded(local,bytes) || !bounded(global,bytes)) return;
+        receipt->step = SourceAttachStep::ParameterRecipe;
+        for (const auto* values : {&local,&global})
+            if (const auto refusal = bounded(*values,bytes); refusal != Refusal::None) return refusal;
+        receipt->step = SourceAttachStep::RecordLimit;
         for (const auto* values : {&shader.getShaderDefines(),&shader.getShaderRequirements()})
         {
-            if (values->size() > 256) return;
+            if (values->size() > 256) return Refusal::Capacity;
             for (const auto& value : *values)
-            {if (value.size() > 1024) return; bytes += value.size() + 128;}
+            {if (value.size() > 1024) return Refusal::Capacity; bytes += value.size() + 128;}
         }
-        if (bytes > MaximumRecordBytes) return;
+        if (bytes > MaximumRecordBytes) return Refusal::Capacity;
         try
         {
             // Include logical ownership even when immutable stock storage is
             // borrowed from the separately capped projection Source. PBR owns
             // one copy, charged before allocation. Existing 4 MiB cap remains.
+            receipt->step = SourceAttachStep::MetadataAdmission;
+            receipt->requestedMetadataBytes = bytes + shader.getShaderSource().capacity() + 64 + sizeof(Charge) + 64;
             auto charge = reserve(bytes + shader.getShaderSource().capacity() + 64);
+            receipt->step = SourceAttachStep::Allocation;
             auto data = std::make_shared<SourceData>(); data->charge = std::move(charge);
             data->epoch = epoch; data->version = epoch->value.load(std::memory_order_acquire);
             data->name = name; data->families = proof.families;
@@ -341,9 +390,19 @@ namespace Shader::AssetGeometry
             data->defineDigest = recipe(data->effective);
             data->type = shader.getType(); data->mode = shader.getShaderDefinesMode();
             data->defines = shader.getShaderDefines(); data->requirements = shader.getShaderRequirements();
+            receipt->step = SourceAttachStep::Publication;
             publish(shader, SourceKey, new Source(std::move(data)));
+            receipt->step = SourceAttachStep::None;
+            return Refusal::None;
         }
-        catch (const std::bad_alloc&) {} // Optional proof cannot affect normal shader construction.
+        catch (const MetadataAdmissionFailed&) {return Refusal::Capacity;}
+        catch (const std::bad_alloc&)
+        {
+            // Failure allocating the Charge itself is not evidence that its
+            // logical cap rejected admission; preserve that distinction.
+            if (receipt->step == SourceAttachStep::MetadataAdmission) receipt->step = SourceAttachStep::Allocation;
+            return Refusal::Capacity;
+        } // Optional proof cannot affect normal shader construction.
     }
     SourceStatus sourceStatus(const osg::Shader& shader)
     {
@@ -351,7 +410,8 @@ namespace Shader::AssetGeometry
         const auto* user = shader.getUserDataContainer();
         const auto* proof = user ? dynamic_cast<const Source*>(user->getUserObject(SourceKey)) : nullptr;
         if (!proof || !proof->data) return {};
-        return {proof->data->current(shader),proof->data->families,proof->data->name,proof->data};
+        return {proof->data->current(shader),proof->data->families,proof->data->name,proof->data,
+            proof->data->version,proof->data->epoch ? proof->data->epoch->value.load(std::memory_order_acquire) : 0};
     }
     bool canRefreshSource(const osg::Shader& shader, const std::shared_ptr<Epoch>& epoch,
         std::uint64_t previousVersion)

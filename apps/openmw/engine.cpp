@@ -26,6 +26,7 @@
 #include <osgDB/ImagePager>
 #include <osgDB/ReaderWriter>
 #include <osgDB/Registry>
+#include <osg/OperationThread>
 #include <osgUtil/IncrementalCompileOperation>
 #include <osgUtil/Statistics>
 
@@ -40,6 +41,7 @@
 #include <components/debug/gldebug.hpp>
 #include <components/debug/v3diagnostics.hpp>
 #include <components/debug/v36gpuprofiler.hpp>
+#include <components/debug/v3gpumemory.hpp>
 
 #include <components/misc/rng.hpp>
 #include <components/misc/strings/format.hpp>
@@ -76,6 +78,7 @@
 #include <components/sceneutil/frozenrigdeformation.hpp>
 #include <components/sceneutil/pagingwork.hpp>
 #include <components/shader/programvariant.hpp>
+#include <components/shader/assetgeometrycontract.hpp>
 #include <components/sceneutil/workqueue.hpp>
 
 #include <components/files/configurationmanager.hpp>
@@ -144,6 +147,42 @@
 
 namespace
 {
+    void sampleConfiguredAssetGpuAdmission()
+    {
+        Debug::V3GpuMemory::sampleIfDue(static_cast<bool>(Settings::cells().mV32GpuMemoryTelemetry),
+            static_cast<bool>(Settings::cells().mV32GpuMemoryManagement)
+                || static_cast<int>(Settings::cells().mV38GpuResidencyMode) > 0,
+            static_cast<int>(Settings::cells().mV32GpuSoftBudgetMb),
+            static_cast<int>(Settings::cells().mV32GpuHardBudgetMb));
+    }
+
+    class AssetGpuAdmissionOperation final : public osg::Operation
+    {
+    public:
+        AssetGpuAdmissionOperation() : osg::Operation("AssetGpuAdmissionSample", true) {}
+        void operator()(osg::Object*) override
+        {
+            // LoadingScreen runs viewer update/render traversals before the
+            // engine's first World::update. Its precompiles need the same fresh
+            // admission snapshot as gameplay. The existing sampler remains
+            // throttled to once per second and does not enable GPU profiling.
+            sampleConfiguredAssetGpuAdmission();
+        }
+    };
+
+    void reportAssetGpuAdmissionSample(const char* phase)
+    {
+        const auto sample = Debug::V3GpuMemory::admissionSample();
+        const auto now = Resource::AssetGpuBudget::milliseconds();
+        Log(Debug::Info) << "OptimizedMW asset GPU sampler: phase=" << phase
+            << " mask=" << Resource::AssetPolicy::mask()
+            << " sampled_at_ms=" << sample.sampledAtMs << " valid=" << sample.valid
+            << " headroom_bytes=" << sample.headroomBytes
+            << " pressure_code=" << static_cast<int>(sample.pressure) + 1
+            << " now_ms=" << now << " clock_valid=" << (now >= sample.sampledAtMs)
+            << " sample_age_ms=" << (now >= sample.sampledAtMs ? now - sample.sampledAtMs : 0);
+    }
+
     unsigned benchmarkStateFlags(MWBase::World& world, MWBase::StateManager& state, MWBase::WindowManager& windows)
     {
         using namespace Debug::BenchmarkContext;
@@ -2407,6 +2446,13 @@ void OMW::Engine::go()
 
     mEnvironment.setFrameRateLimit(Settings::video().mFramerateLimit);
 
+    if (!mUseVulkanRenderer && Resource::AssetPolicy::mask())
+    {
+        mViewer->addUpdateOperation(new AssetGpuAdmissionOperation);
+        sampleConfiguredAssetGpuAdmission();
+        reportAssetGpuAdmissionSample("startup");
+    }
+
     prepareEngine();
 
 #ifdef _WIN32
@@ -2710,6 +2756,19 @@ void OMW::Engine::go()
         Log(Debug::Info) << "OptimizedMW asset QC H1 refusals: cook_refused="
             +std::to_string(SceneUtil::HlodCounters::refused.load())
             +pagingRefusals(SceneUtil::AssetPaging::Counters::hlod);
+        const auto shaderProducers = Shader::AssetGeometry::producerDiagnostics();
+        Log(Debug::Info) << "OptimizedMW asset shader producers: live_metadata_bytes="
+            << shaderProducers.liveMetadataBytes << " peak_metadata_bytes=" << shaderProducers.peakMetadataBytes
+            << " metadata_limit_bytes=" << Shader::AssetGeometry::MaximumMetadataBytes;
+        for (unsigned i = 0; i < static_cast<unsigned>(Shader::AssetGeometry::Refusal::Count); ++i)
+        {
+            Log(Debug::Info) << "OptimizedMW asset shader producer reason="
+                << Shader::AssetGeometry::refusalName(static_cast<Shader::AssetGeometry::Refusal>(i))
+                << " initial_source=" << shaderProducers.initialSource[i]
+                << " regenerated_source=" << shaderProducers.regeneratedSource[i]
+                << " refreshed_program=" << shaderProducers.refreshedProgram[i];
+        }
+        reportAssetGpuAdmissionSample("final");
         const auto gpuAdmission=Resource::AssetGpuBudget::stats();
         std::string gpuTotals=" reservation_attempts="+std::to_string(gpuAdmission.reservationAttempts)
             +" reservation_admitted="+std::to_string(gpuAdmission.reservationAdmitted)

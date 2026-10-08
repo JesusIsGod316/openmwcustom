@@ -482,9 +482,9 @@ namespace
     }
     void sampleGpu()
     {
-        Debug::V3GpuMemory::sampleIfDue(false,true,7000,7800);
+        Debug::V3GpuMemory::sampleIfDue(false,false,7000,7800);
         const auto sample=Debug::V3GpuMemory::admissionSample();
-        require(sample.valid && sample.pressure==Debug::V3GpuMemory::PressureState::Comfortable
+        require(sample.sampledAtMs > 0 && sample.valid && sample.pressure==Debug::V3GpuMemory::PressureState::Comfortable
             && sample.headroomBytes>R::AssetGpuBudget::HeadroomReserve,"actual adapter headroom must qualify; fixture cannot bypass production GPU admission");
     }
     osg::ref_ptr<osg::Node> upgrade(MWRender::ObjectPaging& paging,R::ResourceSystem& resources,

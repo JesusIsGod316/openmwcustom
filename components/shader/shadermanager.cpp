@@ -6,6 +6,8 @@
 #include <components/resource/derivedassetcache.hpp>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <filesystem>
@@ -34,6 +36,33 @@
 
 namespace
 {
+    void reportAssetProducerRefusal(bool programRefresh, bool regeneration, Shader::AssetGeometry::Refusal refusal,
+        std::string_view name, const Shader::AssetGeometry::SourceStatus& source, std::uint64_t managerVersion,
+        const Shader::AssetGeometry::SourceAttachReceipt& receipt = {}) noexcept
+    {
+        namespace A = Shader::AssetGeometry;
+        constexpr auto Count = static_cast<unsigned>(A::Refusal::Count);
+        static std::array<std::atomic_bool, Count * 3> reported{};
+        const auto reason = static_cast<unsigned>(refusal);
+        const auto stage = programRefresh ? 2 : regeneration ? 1 : 0;
+        if (!reason || reason >= Count || reported[stage * Count + reason].exchange(true)) return;
+        try
+        {
+            const auto diagnostics = A::producerDiagnostics();
+            Log(Debug::Info) << "OptimizedMW asset producer first refusal: stage="
+                << (programRefresh ? "program_refresh" : regeneration ? "source_regeneration" : "source_initial")
+                << " reason=" << A::refusalName(refusal) << " step=" << A::sourceAttachStepName(receipt.step)
+                << " name=\"" << name.substr(0,192) << '"'
+                << " source_refusal=" << A::refusalName(source.refusal)
+                << " source_epoch=" << source.version << " source_current_epoch=" << source.currentVersion
+                << " manager_epoch=" << managerVersion << " metadata_live_bytes=" << diagnostics.liveMetadataBytes
+                << " metadata_peak_bytes=" << diagnostics.peakMetadataBytes
+                << " metadata_cap_bytes=" << A::MaximumMetadataBytes
+                << " requested_metadata_bytes=" << receipt.requestedMetadataBytes;
+        }
+        catch (...) {} // A bounded optional receipt must never change normal shader construction.
+    }
+
     osg::Shader::Type getShaderType(const std::string& templateName)
     {
         std::string_view ext = Misc::getFileExtension(templateName);
@@ -642,9 +671,12 @@ namespace Shader
         return shaderIt->second;
     }
 
-    void ShaderManager::attachAssetSource(osg::Shader& shader, const std::string& templateName, const DefineMap& defines)
+    void ShaderManager::attachAssetSource(osg::Shader& shader, const std::string& templateName, const DefineMap& defines,
+        bool regeneration)
     {
         if (!AssetGeometry::enabled()) return;
+        auto refusal = AssetGeometry::Refusal::Missing;
+        AssetGeometry::SourceAttachReceipt receipt{AssetGeometry::SourceAttachStep::RawProof};
         try
         {
             const auto source = mShaderTemplates.find(templateName);
@@ -652,11 +684,23 @@ namespace Shader
             // This proof was made from the exact consumed root and includes before
             // @ substitution. A reload clears it; filenames or regenerated output
             // alone cannot authorize a refreshed source.
-            if (source != mShaderTemplates.end() && proof != mHotReloadManager->assetExpandedTemplates.end()
-                && proof->second.expandedDigest == Resource::DerivedAssets::digest(source->second))
-                AssetGeometry::attachSource(shader, templateName, proof->second, defines, mGlobalDefines, mAssetEpoch);
+            if (source != mShaderTemplates.end() && proof != mHotReloadManager->assetExpandedTemplates.end())
+            {
+                refusal = AssetGeometry::Refusal::Source;
+                if (proof->second.expandedDigest == Resource::DerivedAssets::digest(source->second))
+                    refusal = AssetGeometry::attachSource(shader, templateName, proof->second, defines, mGlobalDefines,
+                        mAssetEpoch, &receipt);
+            }
         }
-        catch (const std::bad_alloc&) {} // Optional hash/proof work cannot abort normal shader regeneration.
+        catch (const std::bad_alloc&)
+        {
+            refusal = AssetGeometry::Refusal::Capacity;
+            receipt.step = AssetGeometry::SourceAttachStep::Allocation;
+        } // Optional hash/proof work cannot abort normal shader regeneration.
+        AssetGeometry::recordSourceAttachment(regeneration, refusal);
+        if (refusal != AssetGeometry::Refusal::None)
+            reportAssetProducerRefusal(false, regeneration, refusal, templateName, AssetGeometry::sourceStatus(shader),
+                mAssetEpoch->value.load(std::memory_order_acquire), receipt);
     }
 
     class SamplerProgram : public VariantProgram, public AssetGeometry::SamplerProducer
@@ -752,7 +796,16 @@ namespace Shader
         const std::shared_ptr<AssetGeometry::Epoch>& epoch, std::uint64_t previousVersion)
     {
         if (mAssetRefreshVersion == previousVersion)
-            AssetGeometry::refreshProgram(*this, epoch, previousVersion);
+        {
+            const auto refusal = AssetGeometry::refreshProgram(*this, epoch, previousVersion);
+            AssetGeometry::recordProgramRefresh(refusal);
+            if (refusal != AssetGeometry::Refusal::None)
+            {
+                const auto source = getNumShaders() ? AssetGeometry::sourceStatus(*getShader(0)) : AssetGeometry::SourceStatus{};
+                reportAssetProducerRefusal(true, true, refusal, getName(), source,
+                    epoch ? epoch->value.load(std::memory_order_acquire) : 0);
+            }
+        }
         mAssetRefreshVersion = 0;
     }
 
@@ -954,7 +1007,7 @@ namespace Shader
                 // put a working one in later.
                 continue;
             shader->setShaderSource(shaderSource);
-            if (refreshAsset) attachAssetSource(*shader, templateId, defines);
+            if (refreshAsset) attachAssetSource(*shader, templateId, defines, true);
 
             getLinkedShaders(shader, linkedShaderNames, defines);
         }
