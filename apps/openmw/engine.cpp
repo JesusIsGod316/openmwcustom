@@ -41,7 +41,6 @@
 #include <components/debug/gldebug.hpp>
 #include <components/debug/v3diagnostics.hpp>
 #include <components/debug/v36gpuprofiler.hpp>
-#include <components/debug/v3gpumemory.hpp>
 
 #include <components/misc/rng.hpp>
 #include <components/misc/strings/format.hpp>
