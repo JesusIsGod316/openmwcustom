@@ -29,6 +29,28 @@ namespace SceneUtil::AssetPaging
     }
     void noteOptionalTransient(unsigned mask) noexcept
     { OptionalUpgradeScope::noteTransient(mask); }
+    void noteOptionalAttempt(unsigned mask) noexcept
+    { OptionalUpgradeScope::noteAttempt(mask); }
+    void noteOptionalAdmissionWait(unsigned mask) noexcept
+    { OptionalUpgradeScope::noteAdmissionWait(mask); }
+    bool admissionWaiting(const Resource::SpeculativeDeferred& error) noexcept
+    {
+        if (!error.reservation || !error.reservation->reasons) return false;
+        const auto& receipt = *error.reservation;
+        using Budget = Resource::SpeculativeBudget;
+        constexpr auto permanent = Budget::AccountingSaturated | Budget::InvalidRequestedBytes
+            | Budget::RegressedGrowthWatermark | Budget::ArithmeticOverflow | Budget::ExperimentReservationMismatch;
+        if (receipt.reasons & permanent) return false;
+        // A request that cannot fit by itself cannot be fixed by waiting for
+        // another owner. Preserve bounded failure/exhaustion for that case.
+        if ((receipt.reasons & Budget::AggregateTransientLimit) && receipt.requested > receipt.transientLimit)
+            return false;
+        if ((receipt.reasons & Budget::ExperimentTotalLimit) && receipt.requested > receipt.experimentLimit)
+            return false;
+        if ((receipt.reasons & Budget::ExperimentScratchLimit) && receipt.requested > receipt.experimentScratchLimit)
+            return false;
+        return true;
+    }
     void cpuRefusal(unsigned mask,CpuStage stage,const Resource::SpeculativeDeferred& error)
     {
         const unsigned slot = static_cast<unsigned>(stage);
@@ -57,6 +79,10 @@ namespace SceneUtil::AssetPaging
                 << " growth=" << value.growth << " unobserved_growth=" << value.unobservedGrowth << " extra=" << value.extra
                 << " known_owners=" << value.knownOwners << " estimated_owners=" << value.estimatedOwners
                 << " pending_owners=" << value.pendingOwners << " jobs=" << value.jobs
+                << " job_permit=" << value.jobPermit << " experimental=" << value.experimental
+                << " experiment_jobs=" << value.experimentJobs << " experiment_job_limit=" << value.experimentJobLimit
+                << " experiment_future=" << value.experimentFuture << " experiment_retained=" << value.experimentRetained
+                << " experiment_limit=" << value.experimentLimit << " experiment_scratch_limit=" << value.experimentScratchLimit
                 << " priority=" << static_cast<unsigned>(value.priority) << " sample_generation=" << sample.generation
                 << " sampled_at_ms=" << sample.sampledAtMs << " pressure=" << static_cast<unsigned>(sample.decision.state)
                 << " admissions_per_sample=" << sample.decision.admissionsPerSample
@@ -164,7 +190,7 @@ namespace SceneUtil::AssetPaging
         try { return std::make_unique<Resource::SpeculativeScope::Stage>(0,0); }
         catch (const Resource::SpeculativeDeferred& error)
         {
-            cpuRefusal(lanes,CpuStage::Outer,error); outcome.defer(lanes);
+            cpuRefusal(lanes,CpuStage::Outer,error); outcome.defer(lanes,admissionWaiting(error));
             each(lanes,[](LaneCounters& value) {++value.outerCpuDenied;}); refuse(lanes,Gate::Capacity);
             return {};
         }
@@ -184,11 +210,13 @@ namespace SceneUtil::AssetPaging
                 ++value.controlSourcesAdmitted; value.controlReservationBytes+=estimate.peakBytes;
                 value.controlRetainedBytes+=estimate.retainedBytes;
             });
+            outcome.constructionStarted |= lanes;
+            outcome.admissionWait &= ~lanes;
             return true;
         }
         catch (const Resource::SpeculativeDeferred& error)
         {
-            cpuRefusal(lanes,CpuStage::Outer,error); outcome.defer(lanes);
+            cpuRefusal(lanes,CpuStage::Outer,error); outcome.defer(lanes,admissionWaiting(error));
             each(lanes,[](LaneCounters& value) {++value.outerCpuDenied;}); refuse(lanes,Gate::Capacity);
             return false;
         }
@@ -212,17 +240,23 @@ namespace SceneUtil::AssetPaging
         result.completed = (result.completed & ~outcome.attempted) | outcome.completed;
         result.terminal = (result.terminal & ~outcome.attempted) | outcome.terminal;
         result.transient = (result.transient & ~outcome.attempted) | outcome.transient;
+        result.admissionWait = (result.admissionWait & ~outcome.attempted) | outcome.admissionWait;
         if (outcome.completed) result.readiness = outcome.readiness;
         for (unsigned i = 0; i < 2; ++i)
         {
             const unsigned bit = 1u << i;
             if (!(outcome.attempted & bit)) continue;
+            if (outcome.admissionWait & bit)
+            {
+                result.retryAfter[i] = now <= UINT64_MAX-RetryDelayMilliseconds ? now+RetryDelayMilliseconds : UINT64_MAX;
+                continue;
+            }
             if ((transient | completed) & bit) ++Counters::retryAttempts;
             result.attempts[i] = static_cast<unsigned char>(std::min<unsigned>(MaximumAttempts, result.attempts[i] + 1));
             if (!((outcome.transient | outcome.completed) & bit)) continue;
             if (result.attempts[i] >= MaximumAttempts)
             { result.exhausted |= bit; ++Counters::retryExhausted; }
-            else result.retryAfter[i] = now + RetryDelayMilliseconds;
+            else result.retryAfter[i] = now <= UINT64_MAX-RetryDelayMilliseconds ? now+RetryDelayMilliseconds : UINT64_MAX;
         }
         return result;
     }
@@ -367,7 +401,7 @@ namespace SceneUtil::AssetPaging
         }
         catch (const PagingWorkCancelled&) { throw; }
         catch (const Resource::SpeculativeDeferred& error)
-        { cpuRefusal(eligible,CpuStage::Snapshot,error); outcome.defer(eligible); each(eligible, [](LaneCounters& value) { ++value.snapshotDenied; }); refuse(eligible, Gate::Capacity); }
+        { cpuRefusal(eligible,CpuStage::Snapshot,error); outcome.defer(eligible,admissionWaiting(error)); each(eligible, [](LaneCounters& value) { ++value.snapshotDenied; }); refuse(eligible, Gate::Capacity); }
         catch (...)
         { each(eligible, [](LaneCounters& value) { ++value.snapshotDenied; }); refuse(eligible, Gate::Source); }
         return {};
@@ -381,7 +415,7 @@ namespace SceneUtil::AssetPaging
         // charge, so original/control/private/cook overlap remains additive.
         try { return std::make_unique<Resource::SpeculativeScope::Stage>(0,0,true); }
         catch (const Resource::SpeculativeDeferred& error)
-        { cpuRefusal(eligible,CpuStage::Private,error); outcome.defer(eligible); each(eligible, [](LaneCounters& value) { ++value.privateCpuDenied; }); refuse(eligible, Gate::Capacity); }
+        { cpuRefusal(eligible,CpuStage::Private,error); outcome.defer(eligible,admissionWaiting(error)); each(eligible, [](LaneCounters& value) { ++value.privateCpuDenied; }); refuse(eligible, Gate::Capacity); }
         return {};
     }
     bool admitPrivateSource(const Source& source, Outcome& outcome,
@@ -391,7 +425,7 @@ namespace SceneUtil::AssetPaging
         catch (const Resource::SpeculativeDeferred& error)
         {
             cpuRefusal(source.eligible,CpuStage::Private,error);
-            outcome.defer(source.eligible); each(source.eligible,[](LaneCounters& value) { ++value.privateCpuDenied; });
+            outcome.defer(source.eligible,admissionWaiting(error)); each(source.eligible,[](LaneCounters& value) { ++value.privateCpuDenied; });
             refuse(source.eligible,Gate::Capacity); return false;
         }
         auto reservation = Resource::AssetGpuBudget::reserve(source.bytes);
@@ -404,6 +438,8 @@ namespace SceneUtil::AssetPaging
             refuse(source.eligible, Gate::Capacity); return false;
         }
         each(source.eligible, [](LaneCounters& value) { ++value.candidateAdmitted; });
+        outcome.constructionStarted |= source.eligible;
+        outcome.admissionWait &= ~source.eligible;
         return true;
     }
     Tiers buildTiers(osg::Node& source, osg::Group& control, std::string_view identity,
@@ -414,11 +450,13 @@ namespace SceneUtil::AssetPaging
         try {experimental=std::make_unique<Resource::ExperimentalSpeculativeScope>();}
         catch(const Resource::SpeculativeDeferred& error)
         {
-            cpuRefusal(eligible,CpuStage::Private,error);outcome.defer(eligible);
+            cpuRefusal(eligible,CpuStage::Private,error);outcome.defer(eligible,admissionWaiting(error));
             each(eligible,[](LaneCounters& value) {++value.privateCpuDenied;});refuse(eligible,Gate::Capacity);
             return tiers;
         }
         each(eligible, [](LaneCounters& value) { ++value.buildAttempts; });
+        outcome.constructionStarted |= eligible;
+        outcome.admissionWait &= ~eligible;
         if (eligible & Lod)
         {
             tiers.lod = GeneratedStaticLod::build(control, identity, camera);

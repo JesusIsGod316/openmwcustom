@@ -283,6 +283,7 @@ namespace MWRender
                     // no attempt, but the terrain owner still needs a later
                     // optional check. Ready/terminal/exhausted quality is settled.
                     SceneUtil::AssetPaging::noteOptionalTransient(unsettledAssets);
+                    SceneUtil::AssetPaging::noteOptionalAdmissionWait(unsettledAssets & have.mAssets.admissionWait);
                 }
                 if (!v313CachedSatisfies)
                 {
@@ -291,6 +292,7 @@ namespace MWRender
                     {
                         mV313UpgradeCoalesced.fetch_add(1,std::memory_order_relaxed);
                         SceneUtil::AssetPaging::noteOptionalTransient(unsettledAssets);
+                        SceneUtil::AssetPaging::noteOptionalAdmissionWait(unsettledAssets);
                         return static_cast<osg::Node*>(cached.get());
                     }
                     v313RepairBuild = true;
@@ -339,17 +341,39 @@ namespace MWRender
                 assetOutcome.allowed &= ~(1u << i);
         try
         {
+            // Advisory zero-byte/job admission precedes source snapshots and
+            // ordinary control cloning. The real cook rechecks atomically; this
+            // does not grant a reservation or relax Background headroom floors.
+            const auto context = Resource::SpeculativeScope::capture();
+            const unsigned waitingAssets = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
+                ? Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask & assetOutcome.allowed : 0;
+            if (waitingAssets && context.budget && context.budget->experimentEnabled())
+            {
+                const auto permit = context.budget->experimentJobReceipt(context.sample
+                    ? context.sample(context.owner) : Resource::OpenGlPressureSample{});
+                if (permit.reasons)
+                {
+                    SceneUtil::AssetPaging::cpuRefusal(waitingAssets,SceneUtil::AssetPaging::CpuStage::Outer,
+                        Resource::SpeculativeDeferred(permit));
+                    SceneUtil::AssetPaging::each(waitingAssets,[](SceneUtil::AssetPaging::LaneCounters& value) {
+                        ++value.outerCpuDenied;
+                    });
+                    SceneUtil::AssetPaging::refuse(waitingAssets,SceneUtil::AssetPaging::Gate::Capacity);
+                    throw Resource::SpeculativeDeferred(permit);
+                }
+            }
             node = createChunkImpl(size, center, activeGrid, viewPoint, compile, lod, assetOutcome);
             SceneUtil::PagingWorkScope::checkpoint();
 #ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
             if (mFixtureBeforePublish) mFixtureBeforePublish();
 #endif
         }
-        catch (const Resource::SpeculativeDeferred&)
+        catch (const Resource::SpeculativeDeferred& error)
         {
             // A whole optional control clone may fail before any candidate
-            // exists. Spend one finite attempt on this exact still-owned weak
-            // cohort, preserving all ordinary quality bits and its cache node.
+            // exists. Waiting admission keeps this exact weak owner eligible;
+            // a failed admitted construction spends its finite attempt. Both
+            // preserve ordinary quality bits and the existing cache node.
             const unsigned refusedAssets = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
                 ? Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask & assetOutcome.allowed : 0;
             std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
@@ -361,7 +385,8 @@ namespace MWRender
                 && quality->second.mAssetVfsGeneration == assetVfsGeneration
                 && quality->second.mAssetShaderGeneration == assetShaderGeneration)
             {
-                assetOutcome.defer(refusedAssets); assetOutcome.finish(refusedAssets);
+                assetOutcome.defer(refusedAssets,SceneUtil::AssetPaging::admissionWaiting(error));
+                assetOutcome.finish(refusedAssets);
                 quality->second.mAssets = quality->second.mAssets.after(assetOutcome,SceneUtil::AssetPaging::milliseconds());
                 return static_cast<osg::Node*>(cached.get());
             }

@@ -288,8 +288,9 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
             "ready_stops_retry": 1, "cache_observation_recooks": 0})
         record(texts[name], "CHAIN_RETRY_COALESCED", {"inflight_signalled": 1, "exact_weak_owner": 1,
             "observer_build_attempts": 0, "peer_published": 1})
-        record(texts[name], "CHAIN_RETRY_EXHAUSTED", {"actual_attempts": 3, "settled_stops_retry": 1,
-            "ordinary_preserved": 1, "builder_calls": 0, "generation_reset": 0})
+        record(texts[name], "CHAIN_RETRY_ADMISSION_WAIT", {"observations": 3,
+            "construction_attempts_before_resume": 0, "ordinary_preserved": 1,
+            "renewed_actual_cook": 1, "generation_reset": 0})
         if mask == 1:
             if name == "GEOMETRY-L1-TEXTURE-COMBINATION.txt":
                 record(texts[name], "CHAIN_L1_TEXTURE_COMBINATION", {"process_mask": 5,

@@ -1226,28 +1226,35 @@ int main(int argc,char** argv) try
     std::cout<<"CHAIN_NEGATIVE controller_original=1 occluder_owner=1 secondary_original=1 release_original=1\n";
     if (retry)
     {
-        MWRender::ObjectPaging exhausted(scenes,ESM::Cell::sDefaultWorldspaceId);
-        exhausted.setAssetMainCamera(camera); exhausted.setFixturePopulation(population);
-        Registered exhaustedRegistration(resources,&exhausted);
-        osg::ref_ptr<osg::Node> exhaustedControl;
+        MWRender::ObjectPaging waiting(scenes,ESM::Cell::sDefaultWorldspaceId);
+        waiting.setAssetMainCamera(camera); waiting.setFixturePopulation(population);
+        Registered waitingRegistration(resources,&waiting);
+        osg::ref_ptr<osg::Node> waitingControl;
         { SceneUtil::PagingWorkScope required(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
-            exhaustedControl=exhausted.getChunk(1,{0,0},0,0,false,{0,0,0},true); }
+            waitingControl=waiting.getChunk(1,{0,0},0,0,false,{0,0,0},true); }
         const auto attemptsBefore=mask==A::Lod ? A::Counters::lod.buildAttempts.load() : A::Counters::hlod.buildAttempts.load();
         const auto exhaustedBefore=A::Counters::retryExhausted.load();
         for (unsigned attempt=0;attempt<A::MaximumAttempts;++attempt)
         {
-            upgrade(exhausted,resources,abort,128*R::SpeculativeBudget::MiB);
+            upgrade(waiting,resources,abort,128*R::SpeculativeBudget::MiB);
             if (attempt+1<A::MaximumAttempts)
                 std::this_thread::sleep_for(std::chrono::milliseconds(A::RetryDelayMilliseconds+100));
         }
-        bool exhaustedRetry=true;
-        auto settledFallback=upgrade(exhausted,resources,abort,0,&exhaustedRetry);
-        Selectors exhaustedSelectors; settledFallback->accept(exhaustedSelectors);
-        require(!exhaustedRetry && exhaustedSelectors.values.empty() && A::Counters::retryExhausted>exhaustedBefore
+        bool waitingRetry=false;
+        auto waitingFallback=upgrade(waiting,resources,abort,0,&waitingRetry);
+        Selectors waitingSelectors; waitingFallback->accept(waitingSelectors);
+        require(waitingRetry && waitingFallback==waitingControl && waitingSelectors.values.empty()
+            && A::Counters::retryExhausted==exhaustedBefore
             && (mask==A::Lod ? A::Counters::lod.buildAttempts.load() : A::Counters::hlod.buildAttempts.load())==attemptsBefore,
-            "same generation must stop optional owner retry after exactly three admission failures, retaining ordinary control");
-        std::cout<<"CHAIN_RETRY_EXHAUSTED actual_attempts="<<A::MaximumAttempts
-            <<" settled_stops_retry=1 ordinary_preserved=1 builder_calls=0 generation_reset=0\n";
+            "three unadmitted construction waits keep exact ordinary fallback and renewed same-generation eligibility");
+        std::this_thread::sleep_for(std::chrono::milliseconds(A::RetryDelayMilliseconds+100));
+        sampleGpu(); auto renewed=upgrade(waiting,resources,abort);
+        Selectors renewedSelectors;renewed->accept(renewedSelectors);
+        require(renewed!=waitingControl && !renewedSelectors.values.empty()
+            && (mask==A::Lod ? A::Counters::lod.buildAttempts.load() : A::Counters::hlod.buildAttempts.load())>attemptsBefore,
+            "actual same-generation production owner must cook after capacity returns without a VFS/shader reset");
+        std::cout<<"CHAIN_RETRY_ADMISSION_WAIT observations="<<A::MaximumAttempts
+            <<" construction_attempts_before_resume=0 ordinary_preserved=1 renewed_actual_cook=1 generation_reset=0\n";
     }
     if (inputs.mixed)
     {

@@ -2671,7 +2671,8 @@ void OMW::Engine::go()
             const char* predicates[]={"pressure_policy","missing_watermark","accounting_saturated",
                 "invalid_request","aggregate_limit","physical_headroom","process_commit_headroom",
                 "system_commit_headroom","regressed_watermark","arithmetic_overflow",
-                "experiment_total_limit","experiment_scratch_limit","experiment_reservation_mismatch"};
+                "experiment_total_limit","experiment_scratch_limit","experiment_reservation_mismatch",
+                "experiment_job_limit"};
             static_assert(std::size(predicates)==Resource::SpeculativeBudget::ReservationRefusalCount);
             static_assert(std::size(stages)==static_cast<unsigned>(SceneUtil::AssetPaging::CpuStage::Count));
             for(unsigned stage=0;stage<std::size(stages);++stage)

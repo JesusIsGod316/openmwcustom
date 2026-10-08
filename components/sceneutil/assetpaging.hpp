@@ -42,6 +42,11 @@ namespace SceneUtil::AssetPaging
     };
     void cpuRefusal(unsigned mask, CpuStage stage, const Resource::SpeculativeDeferred& error);
     void noteOptionalTransient(unsigned mask) noexcept;
+    void noteOptionalAttempt(unsigned mask) noexcept;
+    void noteOptionalAdmissionWait(unsigned mask) noexcept;
+    // A current allocation/job gate can reopen. An oversized single request or
+    // an unclassified construction failure still spends the finite cook ledger.
+    bool admissionWaiting(const Resource::SpeculativeDeferred& error) noexcept;
     struct Counters
     {
         inline static LaneCounters lod, hlod;
@@ -98,11 +103,18 @@ namespace SceneUtil::AssetPaging
     {
         unsigned allowed = Mask;
         unsigned attempted = 0, completed = 0, terminal = 0, transient = 0;
+        unsigned admissionWait = 0;
+        unsigned constructionStarted = 0;
         std::shared_ptr<GeneratedStaticLod::Readiness> readiness;
-        void defer(unsigned mask) { transient |= mask & Mask; }
+        void defer(unsigned mask, bool waiting = false)
+        {
+            transient |= mask & Mask;
+            if (waiting) admissionWait |= mask & Mask & ~constructionStarted;
+        }
         void finish(unsigned requested)
         {
             attempted |= requested & Mask;
+            admissionWait &= transient & ~completed;
             terminal = attempted & ~(completed | transient);
             Counters::attemptedMask.fetch_or(attempted); Counters::completedMask.fetch_or(completed);
             Counters::terminalMask.fetch_or(terminal); Counters::transientMask.fetch_or(transient);
@@ -112,11 +124,14 @@ namespace SceneUtil::AssetPaging
             // per-chunk ledger. This never delays required weak publication.
             const unsigned pending = readiness && readiness->ready.load(std::memory_order_acquire) ? 0 : completed;
             noteOptionalTransient(transient | pending);
+            noteOptionalAttempt(attempted & ~admissionWait);
+            noteOptionalAdmissionWait(admissionWait);
         }
     };
     struct Quality
     {
         unsigned attempted = 0, completed = 0, terminal = 0, transient = 0, exhausted = 0;
+        unsigned admissionWait = 0;
         std::array<unsigned char, 2> attempts{};
         std::array<std::uint64_t, 2> retryAfter{};
         // Retain the small compile receipt, never its graph. It records whether
@@ -152,9 +167,9 @@ namespace SceneUtil::AssetPaging
         std::uint64_t retryAfter = 0;
         bool due(const Generation& current, std::uint64_t now) const noexcept
         { return generation == current && pending && !exhausted && now >= retryAfter; }
-        void finishAttempt(bool deferred,std::uint64_t now) noexcept
+        void finishAttempt(bool deferred,std::uint64_t now, bool spentAttempt = true) noexcept
         {
-            attempts = std::min(MaximumAttempts,attempts+1);
+            if (spentAttempt) attempts = std::min(MaximumAttempts,attempts+1);
             exhausted = deferred && attempts >= MaximumAttempts;
             pending = deferred && !exhausted;
             retryAfter = pending && now <= UINT64_MAX-RetryDelayMilliseconds
@@ -175,8 +190,14 @@ namespace SceneUtil::AssetPaging
         { sCurrent = this; }
         ~OptionalUpgradeScope() { sCurrent = mPrevious; }
         bool needsRetry() const noexcept { return mNeedsRetry; }
+        bool spentAttempt() const noexcept { return mSpentAttempt; }
+        bool waitingForAdmission() const noexcept { return mWaitingForAdmission; }
         static void noteTransient(unsigned mask) noexcept
         { if (sCurrent && (mask & Mask)) sCurrent->mNeedsRetry = true; }
+        static void noteAttempt(unsigned mask) noexcept
+        { if (sCurrent && (mask & Mask)) sCurrent->mSpentAttempt = true; }
+        static void noteAdmissionWait(unsigned mask) noexcept
+        { if (sCurrent && (mask & Mask)) sCurrent->mWaitingForAdmission = true; }
         // The L1-only lane keeps bounded proof metadata, then admits actual
         // reference/control/cook work before allocation. Other lanes preserve
         // their existing overlap policy and independently switchable control.
@@ -206,6 +227,8 @@ namespace SceneUtil::AssetPaging
         inline static thread_local OptionalUpgradeScope* sCurrent = nullptr;
         OptionalUpgradeScope* mPrevious = nullptr;
         bool mNeedsRetry = false;
+        bool mSpentAttempt = false;
+        bool mWaitingForAdmission = false;
         bool mIncremental = (Resource::AssetPolicy::mask() & Mask) == Lod;
     };
     struct ControlEstimate

@@ -36,6 +36,10 @@ namespace Resource
         std::uint64_t knownOwners = 0, estimatedOwners = 0, pendingOwners = 0, jobs = 0;
         std::uint64_t physicalFloor = 0, commitFloor = 0;
         bool experimental = false;
+        // A cook permit precedes any output allocation. Preserve its exact
+        // refusal so callers can wait without spending a finite cook attempt.
+        bool jobPermit = false;
+        std::uint64_t experimentJobs = 0, experimentJobLimit = 0;
         std::uint64_t experimentFuture = 0, experimentRetained = 0;
         std::uint64_t experimentLimit = 0, experimentScratchLimit = 0;
         SpeculativePriority priority = SpeculativePriority::Background;
@@ -98,8 +102,9 @@ namespace Resource
             RegressedGrowthWatermark = 1u << 8, ArithmeticOverflow = 1u << 9,
             ExperimentTotalLimit = 1u << 10, ExperimentScratchLimit = 1u << 11,
             ExperimentReservationMismatch = 1u << 12,
+            ExperimentJobLimit = 1u << 13,
         };
-        static constexpr unsigned ReservationRefusalCount = 13;
+        static constexpr unsigned ReservationRefusalCount = 14;
     private:
         struct State;
     public:
@@ -234,6 +239,9 @@ namespace Resource
         // that watermark remains charged even if its owners have been released.
         const std::atomic<std::uint64_t>* watermark() const noexcept;
         bool experimentEnabled() const noexcept { return mState->config.experimentLimit != 0; }
+        // Advisory only: no worker, bytes or counters are acquired. A producer
+        // must recheck through tryExperimentJob before constructing output.
+        SpeculativeReservationReceipt experimentJobReceipt(const OpenGlPressureSample& sample) const;
         ExperimentJob tryExperimentJob(const OpenGlPressureSample& sample);
         SourcePinPtr pinSource(Key key,std::uint64_t estimatedBytes);
         Job tryJob(const OpenGlPressureSample& sample,
@@ -284,6 +292,7 @@ namespace Resource
         static bool usable(const OpenGlPressureSample& s, SpeculativePriority priority) noexcept;
         SpeculativeReservationReceipt reservationReceipt(const OpenGlPressureSample& sample,
             std::uint64_t bytes, SpeculativePriority priority,bool experimental=false) const noexcept;
+        SpeculativeReservationReceipt experimentJobReceiptLocked(const OpenGlPressureSample& sample) const noexcept;
         void refuseReservation(const SpeculativeReservationReceipt& receipt);
         void experimentPeak() noexcept
         {
@@ -299,15 +308,37 @@ namespace Resource
 
     inline SpeculativeBudget::SpeculativeBudget(Config config) : mState(std::make_shared<State>(config)) {}
     inline const std::atomic<std::uint64_t>* SpeculativeBudget::watermark() const noexcept { return &mState->growth; }
+    inline SpeculativeReservationReceipt SpeculativeBudget::experimentJobReceiptLocked(
+        const OpenGlPressureSample& sample) const noexcept
+    {
+        // The same common/child debt and physical/commit floors apply before
+        // a cook starts. Zero bytes means this receipt acquires no reservation;
+        // every actual construction stage still admits its full peak later.
+        auto receipt = reservationReceipt(sample, 0, SpeculativePriority::Background, true);
+        receipt.jobPermit = true;
+        receipt.experimentJobs = mState->stats.experimentJobs;
+        receipt.experimentJobLimit = mState->config.experimentMaximumJobs;
+        if (!experimentEnabled())
+            receipt.reasons = receipt.pressureReasons = 0;
+        else if (receipt.experimentJobs >= receipt.experimentJobLimit)
+            receipt.reasons |= ExperimentJobLimit;
+        return receipt;
+    }
+    inline SpeculativeReservationReceipt SpeculativeBudget::experimentJobReceipt(
+        const OpenGlPressureSample& sample) const
+    {
+        std::lock_guard lock(mState->mutex);
+        return experimentJobReceiptLocked(sample);
+    }
     inline SpeculativeBudget::ExperimentJob SpeculativeBudget::tryExperimentJob(const OpenGlPressureSample& sample)
     {
         if(!experimentEnabled()) return {};
         std::lock_guard lock(mState->mutex);
         // Distant optional construction never spends the near-future protection
         // lane in caution/recovery, and it never starts a second worker.
-        if(!usable(sample,SpeculativePriority::Background)
-            || mState->stats.experimentJobs >= mState->config.experimentMaximumJobs)
-        { ++mState->stats.experimentDenied; throw SpeculativeDeferred{}; }
+        const auto receipt = experimentJobReceiptLocked(sample);
+        if (receipt.reasons)
+        { ++mState->stats.experimentDenied; throw SpeculativeDeferred(receipt); }
         ++mState->stats.experimentJobs;
         return ExperimentJob(mState);
     }
@@ -807,7 +838,8 @@ namespace Resource
         {
             auto context=SpeculativeScope::capture();
             if(!context.budget || !context.budget->experimentEnabled() || context.experimental) return;
-            if(!context.sample) throw SpeculativeDeferred{};
+            if(!context.sample)
+                throw SpeculativeDeferred(context.budget->experimentJobReceipt({}));
             mJob=context.budget->tryExperimentJob(context.sample(context.owner));
             context.experimental=true;context.priority=SpeculativePriority::Background;
             mScope=std::make_unique<SpeculativeScope>(context);

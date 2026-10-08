@@ -31,12 +31,36 @@ namespace
         return s;
     }
     Resource::OpenGlPressureSample sample(void* owner) {return healthy(*static_cast<B*>(owner));}
+    struct ControlledSample
+    {
+        B& budget;
+        Resource::OpenGlPressureSample value;
+        static Resource::OpenGlPressureSample read(void* owner)
+        {
+            auto& control = *static_cast<ControlledSample*>(owner);
+            auto result = control.value;
+            result.accountedGrowth = *control.budget.watermark();
+            return result;
+        }
+    };
     template<class Function>
     std::uint32_t refusal(Function&& function)
     {
         try {function();}
         catch(const Resource::SpeculativeDeferred& e) {return e.reservation ? e.reservation->reasons : 0;}
         throw std::runtime_error("operation incorrectly admitted");
+    }
+    template<class Function>
+    Resource::SpeculativeReservationReceipt permitRefusal(Function&& function)
+    {
+        try { function(); }
+        catch (const Resource::SpeculativeDeferred& error)
+        {
+            require(error.reservation.has_value(), "cook permit lost its exact refusal receipt");
+            require(error.reservation->jobPermit, "cook permit refusal was mislabeled as allocated work");
+            return *error.reservation;
+        }
+        throw std::runtime_error("cook permit incorrectly admitted");
     }
     B::ChargePtr retain(B& budget,const void* key,std::uint64_t bytes)
     {
@@ -133,14 +157,169 @@ namespace
         require(budget.stats().futureBytes==8*M && budget.stats().experimentFutureBytes==0,
             "scope destruction leaked child reservation or altered parent");
         auto permit=budget.tryExperimentJob(healthy(budget));
-        refusal([&]{auto second=budget.tryExperimentJob(healthy(budget));});
+        require(permitRefusal([&]{auto second=budget.tryExperimentJob(healthy(budget));}).reasons==B::ExperimentJobLimit,
+            "occupied cook permit was confused with byte or pressure refusal");
         auto caution=healthy(budget);caution.decision.state=Resource::OpenGlPressure::Caution;
         permit.finish();
-        refusal([&]{auto denied=budget.tryExperimentJob(caution);});
+        require(permitRefusal([&]{auto denied=budget.tryExperimentJob(caution);}).reasons&B::PressurePolicy,
+            "cook permit pressure denial did not preserve policy refusal");
         require(budget.stats().experimentJobs==0,"pressure refusal leaked a cooking permit");
         auto degraded=healthy(budget);degraded.decision.state=Resource::OpenGlPressure::Degraded;
         require(refusal([&]{auto denied=budget.reserve(degraded,M,P::Background,true);})&B::PressurePolicy,
             "invalid/degraded pressure granted child capacity");
+    }
+    void permitRecoveryAndRecheck()
+    {
+        B budget(config());
+        Resource::OpenGlPressurePolicy policy;
+        auto current = healthy(budget);
+        current.memory.physicalAvailable = 3ull * 1024 * M;
+        current.decision = policy.update(current.memory, 1000);
+        require(current.decision.state == Resource::OpenGlPressure::Caution,
+            "fixture did not enter actual caution pressure");
+        const auto before = budget.stats();
+        const auto waiting = budget.experimentJobReceipt(current);
+        require(waiting.jobPermit && waiting.experimental && waiting.requested == 0
+            && waiting.priority == P::Background && waiting.experimentJobs == 0 && waiting.experimentJobLimit == 1,
+            "advisory permit lost its domain, priority or exact job bound");
+        require((waiting.reasons & (B::PressurePolicy | B::PhysicalHeadroom))
+                == (B::PressurePolicy | B::PhysicalHeadroom)
+            && (waiting.pressureReasons & (B::BackgroundState | B::BackgroundAdmissionsZero))
+                == (B::BackgroundState | B::BackgroundAdmissionsZero),
+            "caution refusal did not retain independent pressure and headroom predicates");
+        require(waiting.physicalFloor == current.decision.limits.physicalReserve
+            && waiting.commitFloor == current.decision.limits.commitReserve,
+            "optional cook borrowed the near-future caution floors");
+        require(budget.stats().experimentJobs == before.experimentJobs
+            && budget.stats().experimentDenied == before.experimentDenied
+            && budget.stats().futureBytes == before.futureBytes,
+            "advisory permit observation spent an attempt or allocation");
+        // The foundation's protected NearFuture lane remains independently
+        // usable; optional cooking cannot change that caller's admission.
+        { auto protectedStage = budget.reserve(current, M, P::NearFuture); }
+        const auto deferred = permitRefusal([&]{ auto job = budget.tryExperimentJob(current); });
+        require(deferred.sample.generation == current.generation
+            && deferred.sample.memory.physicalAvailable == current.memory.physicalAvailable,
+            "cook permit refusal lost the deciding sample");
+        current.memory.physicalAvailable = 6ull * 1024 * M;
+        current.accountedGrowth = *budget.watermark();
+        current.generation = 2;
+        current.sampledAtMs = 2000;
+        current.decision = policy.update(current.memory, 2000);
+        require(current.decision.state == Resource::OpenGlPressure::Recovering,
+            "fixture skipped recovery hysteresis");
+        require(permitRefusal([&]{ auto job = budget.tryExperimentJob(current); }).reasons == B::PressurePolicy,
+            "valid recovery headroom bypassed the Background policy");
+        for (std::uint64_t now : {3000, 4000, 5000, 6000})
+        {
+            ++current.generation;
+            current.sampledAtMs = now;
+            current.decision = policy.update(current.memory, now);
+        }
+        ++current.generation;
+        current.sampledAtMs = 6999;
+        current.decision = policy.update(current.memory, 6999);
+        require(budget.experimentJobReceipt(current).reasons & B::PressurePolicy,
+            "cook admitted before the real recovery interval elapsed");
+        ++current.generation;
+        current.sampledAtMs = 7000;
+        current.decision = policy.update(current.memory, 7000);
+        require(current.decision.state == Resource::OpenGlPressure::Normal,
+            "fixture did not restore actual Normal admission");
+        require(budget.experimentJobReceipt(current).reasons == 0,
+            "renewed valid headroom was permanently refused after transient pressure");
+        auto job = budget.tryExperimentJob(current);
+        require(budget.stats().experimentJobs == 1,
+            "renewed eligible cook did not acquire its bounded permit");
+        // A previously eligible advisory receipt cannot promise later admission.
+        const auto busy = permitRefusal([&]{ auto raced = budget.tryExperimentJob(current); });
+        require(busy.reasons == B::ExperimentJobLimit && busy.experimentJobs == 1 && busy.experimentJobLimit == 1,
+            "racing permit acquisition exceeded or concealed the concurrency cap");
+        require(budget.stats().experimentJobs == 1 && budget.stats().futureBytes == 0,
+            "racing refusal leaked a job or invented allocation debt");
+        job.finish();
+        require(budget.experimentJobReceipt(current).reasons == 0 && budget.stats().experimentJobs == 0,
+            "released permit could not be retried without a source reset");
+    }
+    void permitValidityAndAllocationFloors()
+    {
+        B budget(config());
+        auto current = healthy(budget);
+        current.growthWatermarkValid = false;
+        const auto noWatermark = permitRefusal([&]{ auto job = budget.tryExperimentJob(current); });
+        require(noWatermark.reasons == B::MissingGrowthWatermark && noWatermark.pressureReasons == 0,
+            "missing growth watermark was confused with valid pressure state");
+        current = healthy(budget);
+        current.memory.physicalValid = false;
+        const auto invalidPhysical = permitRefusal([&]{ auto job = budget.tryExperimentJob(current); });
+        require((invalidPhysical.reasons & B::PressurePolicy)
+            && (invalidPhysical.pressureReasons & B::PhysicalInvalid),
+            "invalid physical sample was not independently retained");
+        const auto missingSample = permitRefusal([&]{ auto job = budget.tryExperimentJob({}); });
+        require((missingSample.reasons & (B::PressurePolicy | B::MissingGrowthWatermark))
+                == (B::PressurePolicy | B::MissingGrowthWatermark)
+            && (missingSample.pressureReasons & B::MissingGeneration),
+            "empty/stale sampler observation became a valid permit");
+        current = healthy(budget);
+        current.memory.physicalAvailable = current.decision.limits.physicalReserve;
+        require(budget.experimentJobReceipt(current).reasons == 0,
+            "zero-byte advisory permit consumed hypothetical future bytes");
+        auto job = budget.tryExperimentJob(current);
+        require(refusal([&]{ auto work = budget.reserve(current, M, P::Background, true); }) & B::PhysicalHeadroom,
+            "advisory permit bypassed the subsequent actual allocation floor");
+        job.finish();
+        --current.memory.physicalAvailable;
+        require(permitRefusal([&]{ auto next = budget.tryExperimentJob(current); }).reasons == B::PhysicalHeadroom,
+            "zero-byte preflight ignored already insufficient physical headroom");
+        current = healthy(budget);
+        current.memory.commitAvailable = current.decision.limits.commitReserve - 1;
+        require(permitRefusal([&]{ auto next = budget.tryExperimentJob(current); }).reasons == B::ProcessCommitHeadroom,
+            "cook preflight ignored the process commit floor");
+        current = healthy(budget);
+        current.memory.systemCommitAvailable = current.decision.limits.commitReserve - 1;
+        require(permitRefusal([&]{ auto next = budget.tryExperimentJob(current); }).reasons == B::SystemCommitHeadroom,
+            "cook preflight ignored the independent system commit floor");
+        require(budget.stats().experimentJobs == 0 && budget.stats().futureBytes == 0
+            && budget.stats().experimentFutureBytes == 0,
+            "refused permit or allocation leaked the common/child ledger");
+        B legacy;
+        require(legacy.experimentJobReceipt({}).reasons == 0,
+            "disabled experimental policy acquired a new sampler requirement");
+        auto inactive = legacy.tryExperimentJob({});
+        require(legacy.stats().experimentJobs == 0 && legacy.stats().experimentDenied == 0,
+            "legacy no-op permit changed historical accounting");
+    }
+    void failedScopeKeepsProtectedCaller()
+    {
+        B budget(config());
+        auto recovering = healthy(budget);
+        recovering.decision.state = Resource::OpenGlPressure::Recovering;
+        recovering.decision.admissionsPerSample = 0;
+        ControlledSample samples{budget, recovering};
+        Resource::SpeculativeScope foundation(&budget, &ControlledSample::read, &samples, P::NearFuture);
+        Resource::SpeculativeScope::Stage ordinary(8*M, 0);
+        const auto failed = permitRefusal([]{ Resource::ExperimentalSpeculativeScope optional; });
+        require(failed.reasons == B::PressurePolicy && failed.priority == P::Background,
+            "failed optional scope took the protected caller's priority");
+        const auto caller = Resource::SpeculativeScope::capture();
+        require(caller.budget == &budget && caller.owner == &samples && caller.priority == P::NearFuture
+            && !caller.experimental && budget.stats().experimentJobs == 0,
+            "failed optional scope did not restore the exact protected caller");
+        int key = 0;
+        auto protectedOwner = Resource::SpeculativeScope::track(&budget, {&key, 7}, M, true);
+        require(protectedOwner && budget.stats().knownOwnerBytes == M && budget.stats().futureBytes == 7*M
+            && budget.stats().experimentFutureBytes == 0 && budget.stats().experimentRetainedBytes == 0,
+            "failed cook reclassified or detached the protected stage's owner");
+        {
+            Resource::SpeculativeScope missingSampler(&budget, nullptr, nullptr, P::NearFuture);
+            const auto missing = permitRefusal([]{ Resource::ExperimentalSpeculativeScope optional; });
+            require(missing.jobPermit && (missing.pressureReasons & B::MissingGeneration),
+                "missing scope sampler returned an unclassified cook denial");
+            require(!Resource::SpeculativeScope::capture().experimental && budget.stats().experimentJobs == 0,
+                "missing sampler denial leaked an experimental scope or permit");
+        }
+        require(Resource::SpeculativeScope::capture().owner == &samples,
+            "failed nested caller did not restore the outer sampler");
     }
     void concurrencyAndLegacy()
     {
@@ -168,7 +347,8 @@ namespace
 }
 int main()
 {
-    try {intersections();canonicalAndPending();unknownAndPins();scopesAndPressure();concurrencyAndLegacy();
-        std::cout<<"Experimental cache budget: parent/child intersections, canonical ownership, pending debt, source pins, scopes, pressure, concurrency and legacy PASS\n";return 0;}
+    try {intersections();canonicalAndPending();unknownAndPins();scopesAndPressure();
+        permitRecoveryAndRecheck();permitValidityAndAllocationFloors();failedScopeKeepsProtectedCaller();concurrencyAndLegacy();
+        std::cout<<"Experimental cache budget: parent/child intersections, canonical ownership, pending debt, source pins, scopes, exact permit receipts, recovery/retry, allocation floors, protected caller, concurrency and legacy PASS\n";return 0;}
     catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }

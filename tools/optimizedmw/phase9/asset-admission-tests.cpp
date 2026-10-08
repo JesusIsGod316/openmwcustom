@@ -4,6 +4,8 @@
 #include <atomic>
 #include <iostream>
 #include <stdexcept>
+#include <optional>
+#include <vector>
 #include <osg/Geometry>
 #include <components/sceneutil/morphgeometry.hpp>
 #include <components/sceneutil/riggeometry.hpp>
@@ -40,10 +42,81 @@ namespace
     }
     R::OpenGlPressureSample sample(void* value)
     { return *static_cast<R::OpenGlPressureSample*>(value); }
+    void requiredFreshEpochRetryTests()
+    {
+        using Epoch = std::pair<std::uint64_t, std::uint64_t>;
+        std::atomic<bool> abort{false};
+        std::optional<Epoch> epoch{Epoch{7, 11}};
+        const auto readEpoch = [&] { return epoch; };
+        unsigned attempts = 0, retries = 0;
+        std::vector<unsigned> privateViews;
+        const bool ready = SceneUtil::prepareFreshRequiredPaging(abort, readEpoch, [&] {
+            SceneUtil::PagingWorkScope required(&abort, SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
+            require(SceneUtil::PagingWorkScope::requiredReadiness(), "retry lost the demanded preparation phase");
+            ++attempts;
+            privateViews.clear();
+            privateViews.push_back(0);
+            if (attempts == 1)
+            {
+                ++epoch->second; // source recipe changed while loading listener rendered
+                throw SceneUtil::PagingWorkCancelled{};
+            }
+            privateViews.push_back(1);
+            privateViews.push_back(2);
+        }, [&](const Epoch& before, const Epoch& after, unsigned retry) {
+            require(before.first == after.first && before.second + 1 == after.second && retry == 1,
+                "required retry lost the exact shader-epoch transition receipt");
+            ++retries;
+        });
+        require(ready && attempts == 2 && retries == 1 && privateViews == std::vector<unsigned>{0, 1, 2}
+            && !SceneUtil::PagingWorkScope::active(),
+            "fresh required retry must rebuild the complete private view rather than publish its partial predecessor");
+        attempts = retries = 0;
+        const auto retried = [&](const Epoch&, const Epoch&, unsigned) { ++retries; };
+        require(!SceneUtil::prepareFreshRequiredPaging(abort, readEpoch, [&] {
+            ++attempts; throw SceneUtil::PagingWorkCancelled{};
+        }, retried) && attempts == 1 && retries == 0,
+            "unclassified cancellation without a source change cannot authorize a retry");
+        attempts = retries = 0;
+        require(!SceneUtil::prepareFreshRequiredPaging(abort, readEpoch, [&] {
+            ++attempts; ++epoch->first; abort.store(true); throw SceneUtil::PagingWorkCancelled{};
+        }, retried) && attempts == 1 && retries == 0,
+            "actual abort must dominate a simultaneous source invalidation");
+        abort.store(false); attempts = retries = 0;
+        require(!SceneUtil::prepareFreshRequiredPaging(abort, readEpoch, [&] {
+            ++attempts; ++epoch->second; throw SceneUtil::PagingWorkCancelled{};
+        }, retried) && attempts == SceneUtil::RequiredPagingMaximumAttempts
+            && retries + 1 == SceneUtil::RequiredPagingMaximumAttempts,
+            "repeated source mutations must stop at the strict required retry bound");
+        attempts = retries = 0;
+        bool originalError = false;
+        try
+        {
+            SceneUtil::prepareFreshRequiredPaging(abort, readEpoch, [&] {
+                ++attempts; ++epoch->second; throw std::runtime_error("original loader failure");
+            }, retried);
+        }
+        catch (const std::runtime_error& error)
+        { originalError = std::string_view(error.what()) == "original loader failure"; }
+        require(originalError && attempts == 1 && retries == 0,
+            "an ordinary loader failure must retain its exact exception without retry or suppression");
+        attempts = retries = 0;
+        require(!SceneUtil::prepareFreshRequiredPaging(abort, readEpoch, [&] {
+            ++attempts; epoch.reset(); throw SceneUtil::PagingWorkCancelled{};
+        }, retried) && attempts == 1 && retries == 0,
+            "world invalidation cannot reuse a cancelled private view in a different world");
+        epoch = Epoch{7, 12}; abort.store(true); attempts = 0;
+        require(!SceneUtil::prepareFreshRequiredPaging(abort, readEpoch, [&] { ++attempts; }, retried)
+            && attempts == 0, "an already aborted job cannot start required construction");
+        std::cout << "REQUIRED_FRESH_EPOCH_RETRY shader_changed=1 complete_private_rebuild=1"
+            << " no_partial_publication=1 true_abort_preserved=1 unchanged_epoch_refused=1"
+            << " maximum_attempts=3 original_exception_preserved=1 world_invalidated_refused=1\n";
+    }
 }
 
 int main() try
 {
+    requiredFreshEpochRetryTests();
 #ifdef _WIN32
     require(_putenv_s("OPENMW_P9_ASSET_MASK","1")==0,"isolated L1 fixture environment");
 #else
@@ -240,6 +313,23 @@ int main() try
         require(privateCopies.reserved()==0 && budget.stats().futureBytes==0,"failed GPU admission can return only its unallocated clone future");
     }
     {
+        R::SpeculativeReservationReceipt permit;
+        permit.jobPermit=true; permit.reasons=R::SpeculativeBudget::PressurePolicy;
+        require(A::admissionWaiting(R::SpeculativeDeferred(permit)),
+            "denied Background permit must wait before any finite construction attempt");
+        permit.jobPermit=false; permit.reasons=R::SpeculativeBudget::AggregateTransientLimit;
+        permit.requested=MiB; permit.transientLimit=2*MiB;
+        require(A::admissionWaiting(R::SpeculativeDeferred(permit)),
+            "temporary common future occupancy is an admission wait before allocation");
+        permit.requested=3*MiB;
+        require(!A::admissionWaiting(R::SpeculativeDeferred(permit)),
+            "an individually oversized construction preserves finite failure semantics");
+        permit.reasons=R::SpeculativeBudget::ArithmeticOverflow;
+        require(!A::admissionWaiting(R::SpeculativeDeferred(permit))
+            && !A::admissionWaiting(R::SpeculativeDeferred{}),
+            "accounting errors and unclassified construction failures cannot wait indefinitely");
+    }
+    {
         int world=0,otherWorld=0;
         A::OptionalTailRetry retry; retry.generation={&world,7,12,A::Lod};
         const auto generation=retry.generation;
@@ -265,12 +355,36 @@ int main() try
         require(!fresh.due(changed,999999),"inflight cancellation cannot reschedule obsolete optional work");
         A::OptionalTailRetry terminal; terminal.generation=generation; terminal.finishAttempt(false,1);
         require(!terminal.pending && !terminal.due(generation,999999),"successful or terminal fallback does not spawn retries");
+        A::OptionalTailRetry waiting; waiting.generation=generation;
+        A::Quality quality;
+        for (unsigned i=0;i<10;++i)
+        {
+            const auto now=100+std::uint64_t(i)*10000;
+            waiting.finishAttempt(true,now,false);
+            A::Outcome outcome; outcome.defer(A::Lod,true); outcome.finish(A::Lod);
+            quality=quality.after(outcome,now).withoutOwner();
+            require(!waiting.attempts && !waiting.exhausted && waiting.pending
+                && !waiting.due(generation,now+A::RetryDelayMilliseconds-1)
+                && waiting.due(generation,now+A::RetryDelayMilliseconds),
+                "unadmitted tail remains bounded by cooldown without spending construction attempts");
+            require(!quality.attempts[0] && !quality.exhausted && (quality.admissionWait&A::Lod)
+                && quality.satisfies(A::Lod,now+1) && !quality.satisfies(A::Lod,now+A::RetryDelayMilliseconds),
+                "evicted waiting chunk keeps renewed eligibility without inventing a completed owner");
+        }
+        A::Outcome started; started.constructionStarted=A::Lod; started.defer(A::Lod,true); started.finish(A::Lod);
+        quality=quality.after(started,200000);
+        require(quality.attempts[0]==1 && !quality.admissionWait,
+            "a later failure after actual control allocation still spends the finite chunk ledger");
+        waiting.finishAttempt(false,200000,true);
+        require(waiting.attempts==1 && !waiting.pending && !waiting.exhausted,
+            "renewed admission can finish the same waiting cohort normally");
         A::OptionalTailRetry overflow; overflow.generation=generation; overflow.finishAttempt(true,UINT64_MAX-10);
         require(overflow.retryAfter==UINT64_MAX && !overflow.due(generation,UINT64_MAX-1),"cooldown cannot wrap to a busy loop");
     }
     std::cout << "ASSET_ADMISSION_PASS fixed_cap=1 exact_private_progress=1 aggregate_denial=1 coherent_receipt=1"
         << " headroom=1 unknown_pressure=1 owner_release=1 growth_conserved=1 overflow=1 demand_unblocked=1"
-        << " retry_cooldown=1 finite_tail=1 generation_reset=1 cancellation=1 terminal_fallback=1\n";
+        << " retry_cooldown=1 finite_tail=1 generation_reset=1 cancellation=1 terminal_fallback=1"
+        << " preallocation_wait=1 eviction_wait_conserved=1 postallocation_failure_bounded=1 same_cohort_resume=1\n";
     return 0;
 }
 catch (const std::exception& error)

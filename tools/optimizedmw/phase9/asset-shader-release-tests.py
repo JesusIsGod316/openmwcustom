@@ -51,6 +51,18 @@ class AssetReleaseEvidence(unittest.TestCase):
             with self.subTest(after=after), self.assertRaises(gate.QualificationError):
                 gate.l1_post_optimizer(valid.replace(before, after))
 
+    def test_admission_wait_requires_renewed_actual_cook(self):
+        expected = {"observations": 3, "construction_attempts_before_resume": 0,
+                    "ordinary_preserved": 1, "renewed_actual_cook": 1, "generation_reset": 0}
+        valid = "CHAIN_RETRY_ADMISSION_WAIT " + " ".join(f"{key}={value}" for key, value in expected.items()) + "\n"
+        gate.record(valid, "CHAIN_RETRY_ADMISSION_WAIT", expected)
+        for bad in ("CHAIN_RETRY_EXHAUSTED actual_attempts=3 ordinary_preserved=1\n",
+                    valid.replace("renewed_actual_cook=1", "renewed_actual_cook=0"),
+                    valid.replace("generation_reset=0", "generation_reset=1"),
+                    valid.replace("construction_attempts_before_resume=0", "construction_attempts_before_resume=3")):
+            with self.subTest(receipt=bad), self.assertRaises(gate.QualificationError):
+                gate.record(bad, "CHAIN_RETRY_ADMISSION_WAIT", expected)
+
     def test_missing_actual_draw_proof(self):
         with self.assertRaises(gate.QualificationError):
             gate.record("ASSET_MATERIAL_PASS l1=1\n", "ASSET_MATERIAL_PASS", {"l1": 1, "draw_fallback": 1})

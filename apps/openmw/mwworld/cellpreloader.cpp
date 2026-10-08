@@ -568,6 +568,34 @@ namespace MWWorld
                         mAbort, reporter);
                 }
             };
+            const auto prepareRequired = [&](Loading::Reporter& reporter, SceneUtil::PagingWorkScope::Phase phase) {
+                using Epoch = std::pair<std::uint64_t, std::uint64_t>;
+                const auto readEpoch = [&]() -> std::optional<Epoch> {
+                    if (mWorld->getWorldspace() != mWorldspace) return std::nullopt;
+                    return Epoch{mResourceSystem->getVFS()->getIndexGeneration(),
+                        mResourceSystem->getSceneManager()->getShaderManager().assetGeneration()};
+                };
+                try
+                {
+                    const bool ready = SceneUtil::prepareFreshRequiredPaging(mAbort, readEpoch, [&] {
+                        SceneUtil::PagingWorkScope scope(&mAbort, phase);
+                        prepare(reporter);
+                    }, [&](const Epoch& before, const Epoch& after, unsigned retry) {
+                        Log(Debug::Info) << "Required terrain source epoch changed during private preparation; retry="
+                            << retry << " maximum_attempts=" << SceneUtil::RequiredPagingMaximumAttempts
+                            << " vfs_before=" << before.first << " vfs_after=" << after.first
+                            << " shader_before=" << before.second << " shader_after=" << after.second
+                            << "; rebuilding complete private views before required publication";
+                    });
+                    mSucceeded.store(ready, std::memory_order_release);
+                }
+                catch (...)
+                {
+                    // Only source-epoch cancellation is retried. Actual loader
+                    // errors retain their original exception for the main thread.
+                    mRequiredFailure = std::current_exception();
+                }
+            };
 
             if (mOptionalRetryOnly)
             {
@@ -585,22 +613,10 @@ namespace MWWorld
             else if (mCancellableOptimization && mReadinessSplit)
             {
                 const auto readyStart = Debug::GameplayDiagnostics::Clock::now();
-                try
                 {
                     Debug::HitchTrace::Scope hitchRequired("terrain.required_prepare", Debug::HitchTrace::CpuTiming::Scoped);
                     hitchRequired.setLink(mHitchJob);
-                    SceneUtil::PagingWorkScope scope(
-                        &mAbort, SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
-                    prepare(mRequiredReporter);
-                    mSucceeded.store(!mAbort.load(), std::memory_order_release);
-                }
-                catch (const SceneUtil::PagingWorkCancelled&)
-                {
-                    // Required private views were cancelled before publication.
-                }
-                catch (...)
-                {
-                    mRequiredFailure = std::current_exception();
+                    prepareRequired(mRequiredReporter, SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
                 }
                 if (measure)
                     mReadinessMs = std::chrono::duration<double, std::milli>(
@@ -626,22 +642,7 @@ namespace MWWorld
             {
                 Debug::HitchTrace::Scope hitchRequired("terrain.required_prepare", Debug::HitchTrace::CpuTiming::Scoped);
                 hitchRequired.setLink(mHitchJob);
-                SceneUtil::PagingWorkScope scope(&mAbort);
-                try
-                {
-                    prepare(mLoadingReporter);
-                    mSucceeded.store(!mAbort.load(), std::memory_order_release);
-                }
-                catch (const SceneUtil::PagingWorkCancelled&)
-                {
-                    // A cancelled private view is never advertised as ready.
-                }
-                catch (...)
-                {
-                    // WorkQueue does not catch exceptions. Preserve failure for
-                    // the waiting main thread instead of terminating a worker.
-                    mRequiredFailure = std::current_exception();
-                }
+                prepareRequired(mLoadingReporter, SceneUtil::PagingWorkScope::Phase::Full);
                 completeLoadingReporter();
             }
             else
@@ -700,9 +701,23 @@ namespace MWWorld
         { return optionalGeneration() == mOptionalRetry.generation; }
         bool optionalRetryDue(std::uint64_t now) const noexcept
         {
-            return isDone() && mReadinessSplit && succeeded() && !mAbort.load(std::memory_order_acquire)
+            const bool due = isDone() && mReadinessSplit && succeeded() && !mAbort.load(std::memory_order_acquire)
                 && (mOptionalRetry.generation.mask & SceneUtil::AssetPaging::Mask)
                 && mOptionalRetry.due(optionalGeneration(),now);
+            if (!due || now < mOptionalAdmissionPollAfter) return false;
+            auto* budget = mResourceSystem->speculativeBudget();
+            if (budget && budget->experimentEnabled()
+                && budget->experimentJobReceipt(Resource::ResourceSystem::speculativeSample(mResourceSystem)).reasons)
+            {
+                // A denied permit queues no worker and copies no views/graph.
+                // Poll at the existing bounded cooldown; do not exhaust the
+                // finite construction ledger before a construction is admitted.
+                mOptionalAdmissionPollAfter = now <= UINT64_MAX-SceneUtil::AssetPaging::RetryDelayMilliseconds
+                    ? now+SceneUtil::AssetPaging::RetryDelayMilliseconds : UINT64_MAX;
+                return false;
+            }
+            mOptionalAdmissionPollAfter = 0;
+            return true;
         }
         std::optional<std::size_t> targetIndex(const PositionCellGrid& position) const
         {
@@ -826,7 +841,7 @@ namespace MWWorld
                                        : Debug::GameplayDiagnostics::Clock::time_point{};
             Loading::Reporter reporter;
             auto* budget = mResourceSystem->speculativeBudget();
-            bool admitted = true, deferred = false;
+            bool admitted = true, deferred = false, spentAttempt = false;
             if (!budget && mResourceSystem->openGlHostMemoryBudgetEnabled())
             {
                 const auto sample = Resource::ResourceSystem::speculativeSample(mResourceSystem);
@@ -835,6 +850,21 @@ namespace MWWorld
             }
             else if (mResourceSystem->hostMemoryPressure() == Resource::HostMemoryPressure::Critical)
                 admitted = false;
+            if (admitted && (mOptionalRetry.generation.mask & SceneUtil::AssetPaging::Mask)
+                && budget && budget->experimentEnabled())
+            {
+                const auto permit = budget->experimentJobReceipt(Resource::ResourceSystem::speculativeSample(mResourceSystem));
+                if (permit.reasons)
+                {
+                    admitted = false;
+                    SceneUtil::AssetPaging::cpuRefusal(mOptionalRetry.generation.mask,
+                        SceneUtil::AssetPaging::CpuStage::Outer,Resource::SpeculativeDeferred(permit));
+                    SceneUtil::AssetPaging::each(mOptionalRetry.generation.mask,[](SceneUtil::AssetPaging::LaneCounters& value) {
+                        ++value.outerCpuDenied;
+                    });
+                    SceneUtil::AssetPaging::refuse(mOptionalRetry.generation.mask,SceneUtil::AssetPaging::Gate::Capacity);
+                }
+            }
             if (admitted)
             {
                 // The optional tail remains serialized by this terrain owner;
@@ -843,9 +873,10 @@ namespace MWWorld
                 Resource::SpeculativeScope speculativeScope(budget,
                     &Resource::ResourceSystem::speculativeSample,mResourceSystem,
                     Resource::SpeculativePriority::NearFuture);
+                std::unique_ptr<SceneUtil::AssetPaging::OptionalUpgradeScope> scope;
                 try
                 {
-                    SceneUtil::AssetPaging::OptionalUpgradeScope scope(&mAbort);
+                    scope = std::make_unique<SceneUtil::AssetPaging::OptionalUpgradeScope>(&mAbort);
                     const auto prepare = [&](std::size_t index) {
                         if (mAbort.load(std::memory_order_relaxed)) return;
                         SceneUtil::PagingWorkScope::checkpoint();
@@ -860,10 +891,16 @@ namespace MWWorld
                     else
                         for (std::size_t index=0;index<mTerrainViews.size() && index<mPreloadPositions.size();++index)
                             prepare(index);
-                    deferred = scope.needsRetry();
+                    deferred = scope->needsRetry();
+                    spentAttempt = scope->spentAttempt() && !scope->waitingForAdmission();
                     mOptionalCompleted.store(!mAbort.load() && !deferred,std::memory_order_release);
                 }
-                catch (const Resource::SpeculativeDeferred&) { deferred = true; }
+                catch (const Resource::SpeculativeDeferred& error)
+                {
+                    deferred = true;
+                    spentAttempt = (scope && scope->spentAttempt() && !scope->waitingForAdmission())
+                        || !SceneUtil::AssetPaging::admissionWaiting(error);
+                }
                 catch (const SceneUtil::PagingWorkCancelled&)
                 { mOptionalRetry.cancel(); ++SceneUtil::AssetPaging::Counters::tailCancelled; }
                 catch (const std::exception& e)
@@ -877,7 +914,7 @@ namespace MWWorld
             {
                 ++SceneUtil::AssetPaging::Counters::tailAttempts;
                 mOptionalRetry.finishAttempt(deferred && !mAbort.load(std::memory_order_acquire),
-                    SceneUtil::AssetPaging::milliseconds());
+                    SceneUtil::AssetPaging::milliseconds(),spentAttempt);
                 if (deferred) ++SceneUtil::AssetPaging::Counters::tailDeferred;
                 if (mOptionalRetry.exhausted) ++SceneUtil::AssetPaging::Counters::tailExhausted;
             }
@@ -991,6 +1028,7 @@ namespace MWWorld
         std::atomic<std::uint64_t> mOptionalUpgradeRequests{0};
         std::atomic<bool> mOptionalDeferred{false}, mOptionalCompleted{false};
         SceneUtil::AssetPaging::OptionalTailRetry mOptionalRetry;
+        mutable std::uint64_t mOptionalAdmissionPollAfter = 0; // main-thread checks only after Done
         const bool mOptionalRetryOnly = false;
     };
 
@@ -1611,6 +1649,9 @@ namespace MWWorld
             jobJoin.setLink(mTerrainPreloadItem->hitchJob());
             mTerrainPreloadItem->waitTillDone();
         }
+        // An explicitly retired required job is not the owner of the next
+        // demanded view. Do not retain its cancelled reporter across reset.
+        mTerrainPreloadItem = nullptr;
         setTerrainPreloadPositions({});
     }
 
