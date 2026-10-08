@@ -107,6 +107,8 @@ function New-Phase9RunManifest {
         composite_progress=($env:OPENMW_HITCH_COMPOSITE_PROGRESS -eq '1');
         composite_cpu_mips=($env:OPENMW_HITCH_COMPOSITE_CPU_MIPS -eq '1');
         ram_mask=[int]$Mode.RamMask;renderer_mask=[int]$Mode.ArchitectureMask;
+        memory_policy=$Mode.MemoryPolicy;
+        configuration_mode=$Mode.ConfigurationMode;optimization_configuration=$Mode.OptimizationConfiguration;
         asset_mask=[int]$Mode.AssetMask;
         hitch_mechanisms=$HitchCombination}
     $families=[ordered]@{
@@ -131,6 +133,7 @@ function New-Phase9RunManifest {
         hitch_mechanisms=[ordered]@{requested=$HitchCombination;
             coverage='Independent startup switches; resource denial, invalidation and demand fallback remain possible. Selection alone is not execution proof.'};
         architecture_candidates=[ordered]@{revision=1;ram_mask=[int]$Mode.RamMask;renderer_mask=[int]$Mode.ArchitectureMask;
+            memory_policy=$Mode.MemoryPolicy;
             coverage='Independent requested startup mechanisms; normal engine shutdown counters report execution and fallback. Shared-context preparation remains a separate native fixture. Pipeline bounds command-buffer ownership only.'};
         asset_pipeline=[ordered]@{revision=2;mask=[int]$Mode.AssetMask;
             qualification_report='ASSET-ENGAGEMENT.json';

@@ -87,6 +87,9 @@ namespace MWRender
         void setFixtureBeforeCache(std::function<void()> checkpoint) { mFixtureBeforeCache = std::move(checkpoint); }
         void setFixtureBeforePublish(std::function<void()> checkpoint) { mFixtureBeforePublish = std::move(checkpoint); }
         void setFixtureBeforePrivate(std::function<void()> checkpoint) { mFixtureBeforePrivate = std::move(checkpoint); }
+        // Runs on the unpublished exact post-optimizer control, outside cache
+        // and shader-producer locks. Fixture-only ordinary GL warming seam.
+        void setFixtureBeforeLodCook(std::function<void(osg::Node&)> checkpoint) { mFixtureBeforeLodCook = std::move(checkpoint); }
 #endif
 
         void getPagedRefnums(const osg::Vec4i& activeGrid, std::vector<ESM::RefNum>& out);
@@ -151,6 +154,7 @@ namespace MWRender
         std::function<void()> mFixtureBeforeCache;
         std::function<void()> mFixtureBeforePublish;
         std::function<void()> mFixtureBeforePrivate;
+        std::function<void(osg::Node&)> mFixtureBeforeLodCook;
 #endif
 
         std::mutex mRefTrackerMutex;

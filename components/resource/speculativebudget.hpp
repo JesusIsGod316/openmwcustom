@@ -35,6 +35,9 @@ namespace Resource
         std::uint64_t growth = 0, unobservedGrowth = 0, extra = 0;
         std::uint64_t knownOwners = 0, estimatedOwners = 0, pendingOwners = 0, jobs = 0;
         std::uint64_t physicalFloor = 0, commitFloor = 0;
+        bool experimental = false;
+        std::uint64_t experimentFuture = 0, experimentRetained = 0;
+        std::uint64_t experimentLimit = 0, experimentScratchLimit = 0;
         SpeculativePriority priority = SpeculativePriority::Background;
         OpenGlPressureSample sample;
     };
@@ -58,6 +61,10 @@ namespace Resource
             std::uint64_t transientLimit = 1024 * MiB;
             unsigned maximumJobs = 4;
             unsigned reservedNearFutureJobs = 0;
+            // Zero preserves the legacy common ledger. Child reservations are
+            // an intersection with it, never another independently spending pool.
+            std::uint64_t experimentLimit = 0, experimentScratchLimit = 0;
+            unsigned experimentMaximumJobs = 1;
         };
         struct Stats
         {
@@ -66,6 +73,11 @@ namespace Resource
             std::uint64_t admitted = 0, denied = 0, nearFutureAdmitted = 0, nearFutureDenied = 0;
             std::uint64_t duplicateRequests = 0, sharedClaims = 0;
             std::uint64_t demandHits = 0, prefetchHits = 0, observedGrowth = 0;
+            std::uint64_t experimentFutureBytes = 0, experimentRetainedBytes = 0;
+            std::uint64_t experimentPendingBytes = 0, experimentJobs = 0;
+            std::uint64_t experimentAdmitted = 0, experimentDenied = 0;
+            std::uint64_t experimentSourcePins = 0, experimentSourcePinEstimateBytes = 0;
+            std::uint64_t experimentPeakTotalBytes = 0, experimentPeakFutureBytes = 0;
         };
         struct Key
         {
@@ -84,8 +96,10 @@ namespace Resource
             AggregateTransientLimit = 1u << 4, PhysicalHeadroom = 1u << 5,
             ProcessCommitHeadroom = 1u << 6, SystemCommitHeadroom = 1u << 7,
             RegressedGrowthWatermark = 1u << 8, ArithmeticOverflow = 1u << 9,
+            ExperimentTotalLimit = 1u << 10, ExperimentScratchLimit = 1u << 11,
+            ExperimentReservationMismatch = 1u << 12,
         };
-        static constexpr unsigned ReservationRefusalCount = 10;
+        static constexpr unsigned ReservationRefusalCount = 13;
     private:
         struct State;
     public:
@@ -108,9 +122,45 @@ namespace Resource
             // Only an explicitly admitted zero-to-estimate promotion may change
             // this value. Positive immutable-owner estimates never grow later.
             std::atomic<std::uint64_t> mBytes;
-            bool mKnown, mPending = false, mRegistered = false;
+            bool mKnown, mPending = false, mRegistered = false, mExperimental = false;
         };
         using ChargePtr = std::shared_ptr<Charge>;
+        class ExperimentJob
+        {
+        public:
+            ExperimentJob() = default;
+            ExperimentJob(const ExperimentJob&) = delete;
+            ExperimentJob& operator=(const ExperimentJob&) = delete;
+            ExperimentJob(ExperimentJob&& other) noexcept : mState(std::move(other.mState)) {}
+            ExperimentJob& operator=(ExperimentJob&& other) noexcept
+            { if(this != &other) { finish(); mState=std::move(other.mState); } return *this; }
+            ~ExperimentJob() { finish(); }
+            void finish();
+        private:
+            friend class SpeculativeBudget;
+            explicit ExperimentJob(std::shared_ptr<State> state) : mState(std::move(state)) {}
+            std::shared_ptr<State> mState;
+        };
+        // Metadata only: this never holds/mutates an OSG source or adds its
+        // borrowed arrays to incremental allocation bytes. The selector owns
+        // the real source lifetime. Unique canonical source estimates can
+        // overlap other sources; they are not a physical-RAM census.
+        class SourcePin
+        {
+        public:
+            SourcePin(const SourcePin&) = delete;
+            SourcePin& operator=(const SourcePin&) = delete;
+            ~SourcePin();
+        private:
+            friend class SpeculativeBudget;
+            SourcePin(std::shared_ptr<State> state, Key key, std::uint64_t bytes)
+                : mState(std::move(state)),mKey(key),mBytes(bytes) {}
+            std::shared_ptr<State> mState;
+            Key mKey;
+            std::uint64_t mBytes=0;
+            bool mRegistered=false;
+        };
+        using SourcePinPtr=std::shared_ptr<SourcePin>;
         class Job
         {
         public:
@@ -145,18 +195,21 @@ namespace Resource
             Stage() = default;
             Stage(const Stage&) = delete;
             Stage& operator=(const Stage&) = delete;
-            Stage(Stage&& other) noexcept : mState(std::move(other.mState)), mFuture(std::exchange(other.mFuture, 0)) {}
+            Stage(Stage&& other) noexcept : mState(std::move(other.mState)), mFuture(std::exchange(other.mFuture, 0)),mExperimental(other.mExperimental) {}
             Stage& operator=(Stage&&) = delete;
             ~Stage();
             std::uint64_t future() const noexcept { return mFuture; }
+            bool experimental() const noexcept { return mExperimental; }
             // Only release reservation for an allocation that never occurred.
             // This does not credit physical or commit headroom or owner growth.
             void releaseUnallocated(std::uint64_t bytes);
         private:
             friend class SpeculativeBudget;
-            Stage(std::shared_ptr<State> state, std::uint64_t bytes) : mState(std::move(state)), mFuture(bytes) {}
+            Stage(std::shared_ptr<State> state, std::uint64_t bytes, bool experimental=false)
+                : mState(std::move(state)), mFuture(bytes),mExperimental(experimental) {}
             std::shared_ptr<State> mState;
             std::uint64_t mFuture = 0;
+            bool mExperimental=false;
         };
         class Claim
         {
@@ -180,14 +233,17 @@ namespace Resource
         // Sample watermark is read BEFORE the OS query starts. Growth after
         // that watermark remains charged even if its owners have been released.
         const std::atomic<std::uint64_t>* watermark() const noexcept;
+        bool experimentEnabled() const noexcept { return mState->config.experimentLimit != 0; }
+        ExperimentJob tryExperimentJob(const OpenGlPressureSample& sample);
+        SourcePinPtr pinSource(Key key,std::uint64_t estimatedBytes);
         Job tryJob(const OpenGlPressureSample& sample,
             SpeculativePriority priority = SpeculativePriority::Background);
         Stage reserve(const OpenGlPressureSample& sample, std::uint64_t bytes,
-            SpeculativePriority priority = SpeculativePriority::Background);
+            SpeculativePriority priority = SpeculativePriority::Background, bool experimental=false);
         void extend(Stage& stage, const OpenGlPressureSample& sample, std::uint64_t bytes,
             SpeculativePriority priority = SpeculativePriority::Background);
         Claim claim(std::string key);
-        ChargePtr track(Key key, std::uint64_t bytes, bool known, Stage* stage = nullptr);
+        ChargePtr track(Key key, std::uint64_t bytes, bool known, Stage* stage = nullptr, bool experimental=false);
         bool promoteUnknown(const ChargePtr& charge, std::uint64_t bytes, Stage& reservation);
         // Shared read-only policy for optional producer seams. This is not an
         // admission/reservation: callers still keep their own bounded debts.
@@ -219,6 +275,7 @@ namespace Resource
             std::mutex mutex;
             Stats stats;
             std::map<Key, std::weak_ptr<Charge>> payloads;
+            std::map<Key, std::weak_ptr<SourcePin>> sourcePins;
             std::set<std::string> requests;
             std::atomic<std::uint64_t> growth{0}, demandHits{0}, prefetchHits{0};
             bool saturated = false;
@@ -226,8 +283,15 @@ namespace Resource
         };
         static bool usable(const OpenGlPressureSample& s, SpeculativePriority priority) noexcept;
         SpeculativeReservationReceipt reservationReceipt(const OpenGlPressureSample& sample,
-            std::uint64_t bytes, SpeculativePriority priority) const noexcept;
+            std::uint64_t bytes, SpeculativePriority priority,bool experimental=false) const noexcept;
         void refuseReservation(const SpeculativeReservationReceipt& receipt);
+        void experimentPeak() noexcept
+        {
+            mState->stats.experimentPeakTotalBytes=(std::max)(mState->stats.experimentPeakTotalBytes,
+                add(mState->stats.experimentFutureBytes,mState->stats.experimentRetainedBytes));
+            mState->stats.experimentPeakFutureBytes=(std::max)(mState->stats.experimentPeakFutureBytes,
+                mState->stats.experimentFutureBytes);
+        }
         static std::uint64_t add(std::uint64_t a, std::uint64_t b) noexcept
         { return b > UINT64_MAX - a ? UINT64_MAX : a + b; }
         std::shared_ptr<State> mState;
@@ -235,6 +299,51 @@ namespace Resource
 
     inline SpeculativeBudget::SpeculativeBudget(Config config) : mState(std::make_shared<State>(config)) {}
     inline const std::atomic<std::uint64_t>* SpeculativeBudget::watermark() const noexcept { return &mState->growth; }
+    inline SpeculativeBudget::ExperimentJob SpeculativeBudget::tryExperimentJob(const OpenGlPressureSample& sample)
+    {
+        if(!experimentEnabled()) return {};
+        std::lock_guard lock(mState->mutex);
+        // Distant optional construction never spends the near-future protection
+        // lane in caution/recovery, and it never starts a second worker.
+        if(!usable(sample,SpeculativePriority::Background)
+            || mState->stats.experimentJobs >= mState->config.experimentMaximumJobs)
+        { ++mState->stats.experimentDenied; throw SpeculativeDeferred{}; }
+        ++mState->stats.experimentJobs;
+        return ExperimentJob(mState);
+    }
+    inline void SpeculativeBudget::ExperimentJob::finish()
+    {
+        if(!mState) return;
+        auto state=std::move(mState);
+        std::lock_guard lock(state->mutex); --state->stats.experimentJobs;
+    }
+    inline SpeculativeBudget::SourcePinPtr SpeculativeBudget::pinSource(Key key,std::uint64_t bytes)
+    {
+        if(!experimentEnabled() || !key.identity) return {};
+        auto result=SourcePinPtr(new SourcePin(mState,key,bytes));
+        std::lock_guard lock(mState->mutex);
+        if(auto found=mState->sourcePins.find(key);found!=mState->sourcePins.end())
+            if(auto existing=found->second.lock()) return existing;
+        // At most one bounded receipt per held source. SourcePin destruction
+        // does not credit the common growth watermark or OS memory.
+        if(mState->sourcePins.size() >= 4096
+            || bytes > UINT64_MAX-mState->stats.experimentSourcePinEstimateBytes)
+            throw SpeculativeDeferred{};
+        mState->sourcePins.insert_or_assign(key,result);
+        result->mRegistered=true;
+        ++mState->stats.experimentSourcePins;
+        mState->stats.experimentSourcePinEstimateBytes+=bytes;
+        return result;
+    }
+    inline SpeculativeBudget::SourcePin::~SourcePin()
+    {
+        if(!mRegistered) return;
+        std::lock_guard lock(mState->mutex);
+        --mState->stats.experimentSourcePins;
+        mState->stats.experimentSourcePinEstimateBytes-=mBytes;
+        auto found=mState->sourcePins.find(mKey);
+        if(found!=mState->sourcePins.end() && found->second.expired()) mState->sourcePins.erase(found);
+    }
     inline bool SpeculativeBudget::usable(
         const OpenGlPressureSample& s, SpeculativePriority priority) noexcept
     {
@@ -323,10 +432,15 @@ namespace Resource
     }
 
     inline SpeculativeReservationReceipt SpeculativeBudget::reservationReceipt(
-        const OpenGlPressureSample& sample, std::uint64_t bytes, SpeculativePriority priority) const noexcept
+        const OpenGlPressureSample& sample, std::uint64_t bytes, SpeculativePriority priority,bool experimental) const noexcept
     {
         SpeculativeReservationReceipt receipt;
         receipt.sample = sample;
+        receipt.experimental=experimental && experimentEnabled();
+        receipt.experimentFuture=mState->stats.experimentFutureBytes;
+        receipt.experimentRetained=mState->stats.experimentRetainedBytes;
+        receipt.experimentLimit=mState->config.experimentLimit;
+        receipt.experimentScratchLimit=mState->config.experimentScratchLimit;
         receipt.priority = priority;
         receipt.requested = bytes;
         receipt.currentFuture = mState->stats.futureBytes;
@@ -366,22 +480,32 @@ namespace Resource
         if (bytes > UINT64_MAX - receipt.currentFuture
             || receipt.unobservedGrowth > UINT64_MAX - receipt.proposedFuture)
             receipt.reasons |= ArithmeticOverflow;
+        if(receipt.experimental)
+        {
+            const auto future=add(receipt.experimentFuture,bytes);
+            if(future > receipt.experimentScratchLimit) receipt.reasons|=ExperimentScratchLimit;
+            if(receipt.experimentRetained > receipt.experimentLimit
+                || future > receipt.experimentLimit-receipt.experimentRetained)
+                receipt.reasons|=ExperimentTotalLimit;
+        }
         return receipt;
     }
     inline void SpeculativeBudget::refuseReservation(const SpeculativeReservationReceipt& receipt)
     {
         ++mState->stats.denied;
+        if(receipt.experimental) ++mState->stats.experimentDenied;
         if (receipt.priority == SpeculativePriority::NearFuture) ++mState->stats.nearFutureDenied;
         throw SpeculativeDeferred(receipt);
     }
     inline SpeculativeBudget::Stage SpeculativeBudget::reserve(
-        const OpenGlPressureSample& sample, std::uint64_t bytes, SpeculativePriority priority)
+        const OpenGlPressureSample& sample, std::uint64_t bytes, SpeculativePriority priority,bool experimental)
     {
         std::lock_guard lock(mState->mutex);
-        const auto receipt = reservationReceipt(sample, bytes, priority);
+        const auto receipt = reservationReceipt(sample, bytes, priority,experimental);
         if (receipt.reasons) refuseReservation(receipt);
         mState->stats.futureBytes = receipt.proposedFuture;
-        return Stage(mState, bytes);
+        if(receipt.experimental) {mState->stats.experimentFutureBytes+=bytes;++mState->stats.experimentAdmitted;experimentPeak();}
+        return Stage(mState, bytes,receipt.experimental);
     }
     inline void SpeculativeBudget::extend(Stage& stage, const OpenGlPressureSample& sample,
         std::uint64_t bytes, SpeculativePriority priority)
@@ -389,9 +513,10 @@ namespace Resource
         std::lock_guard lock(mState->mutex);
         if (stage.mState != mState || bytes > UINT64_MAX - stage.mFuture)
             throw std::logic_error("optional reservation extension has no matching owner");
-        const auto receipt = reservationReceipt(sample, bytes, priority);
+        const auto receipt = reservationReceipt(sample, bytes, priority,stage.mExperimental);
         if (receipt.reasons) refuseReservation(receipt);
         mState->stats.futureBytes = receipt.proposedFuture;
+        if(stage.mExperimental) {mState->stats.experimentFutureBytes+=bytes;++mState->stats.experimentAdmitted;experimentPeak();}
         stage.mFuture += bytes;
     }
     inline void SpeculativeBudget::Stage::releaseUnallocated(std::uint64_t bytes)
@@ -400,6 +525,7 @@ namespace Resource
             throw std::logic_error("optional reservation cannot release allocated ownership");
         std::lock_guard lock(mState->mutex);
         mState->stats.futureBytes -= bytes;
+        if(mExperimental) mState->stats.experimentFutureBytes-=bytes;
         mFuture -= bytes;
     }
     inline SpeculativeBudget::Stage::~Stage()
@@ -407,6 +533,7 @@ namespace Resource
         if (!mState) return;
         std::lock_guard lock(mState->mutex);
         mState->stats.futureBytes -= mFuture;
+        if(mExperimental) mState->stats.experimentFutureBytes-=mFuture;
     }
     inline SpeculativeBudget::Claim SpeculativeBudget::claim(std::string key)
     {
@@ -422,7 +549,7 @@ namespace Resource
         std::lock_guard lock(mState->mutex);
         mState->requests.erase(mKey);
     }
-    inline SpeculativeBudget::ChargePtr SpeculativeBudget::track(Key key, std::uint64_t bytes, bool known, Stage* stage)
+    inline SpeculativeBudget::ChargePtr SpeculativeBudget::track(Key key, std::uint64_t bytes, bool known, Stage* stage,bool experimental)
     {
         if (!key.identity) return {};
         auto result = ChargePtr(new Charge(mState, key, bytes, known));
@@ -431,6 +558,21 @@ namespace Resource
         (void)inserted;
         if (auto existing = it->second.lock())
         { ++mState->stats.sharedClaims; return existing; }
+        const bool child=experimentEnabled() && (experimental || (stage && stage->mExperimental));
+        // An experimental owner must adopt its already-reserved output before
+        // construction unwinds. Unreserved output cannot escape the child cap.
+        if(child && (!bytes || !stage || stage->mState!=mState || !stage->mExperimental
+            || bytes>stage->mFuture || bytes>UINT64_MAX-mState->stats.experimentRetainedBytes))
+        {
+            if(inserted) mState->payloads.erase(it);
+            SpeculativeReservationReceipt receipt;
+            receipt.reasons=ExperimentReservationMismatch;receipt.experimental=true;
+            receipt.requested=bytes;receipt.experimentFuture=mState->stats.experimentFutureBytes;
+            receipt.experimentRetained=mState->stats.experimentRetainedBytes;
+            receipt.experimentLimit=mState->config.experimentLimit;
+            receipt.experimentScratchLimit=mState->config.experimentScratchLimit;
+            refuseReservation(receipt);
+        }
         // Allocate before changing totals for exception safety. Deleter may
         // reenter the budget: do not run it while holding this mutex.
         auto& checkedTotal = known ? mState->stats.knownOwnerBytes : mState->stats.estimatedOwnerBytes;
@@ -438,6 +580,8 @@ namespace Resource
         { if (inserted) mState->payloads.erase(it); throw std::overflow_error("speculative owner accounting overflow"); }
         it->second = result;
         result->mRegistered = true;
+        result->mExperimental=child;
+        if(child) mState->stats.experimentRetainedBytes+=bytes;
         auto& total = known ? mState->stats.knownOwnerBytes : mState->stats.estimatedOwnerBytes;
         total = add(total, bytes);
         if (!bytes) ++mState->stats.unknownOwners;
@@ -450,7 +594,9 @@ namespace Resource
             const auto transfer = (std::min)(bytes, stage->mFuture);
             stage->mFuture -= transfer;
             mState->stats.futureBytes -= transfer;
+            if(stage->mExperimental) mState->stats.experimentFutureBytes-=transfer;
         }
+        if(child) experimentPeak();
         return result;
     }
     inline SpeculativeBudget::Charge::~Charge()
@@ -461,6 +607,11 @@ namespace Resource
         (mKnown ? mState->stats.knownOwnerBytes : mState->stats.estimatedOwnerBytes) -= bytes;
         if (!bytes) --mState->stats.unknownOwners;
         if (mPending) mState->stats.pendingOwnerBytes -= bytes;
+        if(mExperimental)
+        {
+            mState->stats.experimentRetainedBytes-=bytes;
+            if(mPending) mState->stats.experimentPendingBytes-=bytes;
+        }
         // An older charge can finish concurrently with a new same-key owner.
         auto it = mState->payloads.find(mKey);
         if (it != mState->payloads.end() && it->second.expired()) mState->payloads.erase(it);
@@ -469,7 +620,11 @@ namespace Resource
     inline void SpeculativeBudget::Charge::pending()
     {
         std::lock_guard lock(mState->mutex);
-        if (!mPending) { mPending = true; mState->stats.pendingOwnerBytes = add(mState->stats.pendingOwnerBytes, bytes()); }
+        if (!mPending)
+        {
+            mPending = true; mState->stats.pendingOwnerBytes = add(mState->stats.pendingOwnerBytes, bytes());
+            if(mExperimental) mState->stats.experimentPendingBytes+=bytes();
+        }
     }
     inline bool SpeculativeBudget::promoteUnknown(
         const ChargePtr& charge, std::uint64_t bytes, Stage& reservation)
@@ -490,10 +645,17 @@ namespace Resource
         if (reservation.mFuture < bytes || bytes > UINT64_MAX - mState->stats.estimatedOwnerBytes
             || bytes >= UINT64_MAX - mState->growth.load(std::memory_order_relaxed))
             return false;
+        if(charge->mExperimental!=reservation.mExperimental
+            || (charge->mExperimental && bytes>UINT64_MAX-mState->stats.experimentRetainedBytes)) return false;
         mState->stats.estimatedOwnerBytes += bytes;
         --mState->stats.unknownOwners;
         reservation.mFuture -= bytes;
         mState->stats.futureBytes -= bytes;
+        if(charge->mExperimental)
+        {
+            mState->stats.experimentFutureBytes-=bytes;
+            mState->stats.experimentRetainedBytes+=bytes;
+        }
         mState->growth.fetch_add(bytes, std::memory_order_release);
         charge->mBytes.store(bytes, std::memory_order_release);
         return true;
@@ -524,6 +686,7 @@ namespace Resource
             Sample sample = nullptr;
             void* owner = nullptr;
             SpeculativePriority priority = SpeculativePriority::Background;
+            bool experimental=false;
         };
 
         SpeculativeScope(SpeculativeBudget* budget, Sample sample, void* owner,
@@ -537,6 +700,7 @@ namespace Resource
             , mSample(context.sample)
             , mOwner(context.owner)
             , mPriority(context.priority)
+            , mExperimental(context.experimental)
         {
             if (mBudget)
                 sCurrent = this;
@@ -548,7 +712,7 @@ namespace Resource
         static Context capture() noexcept
         {
             return sCurrent
-                ? Context{ sCurrent->mBudget, sCurrent->mSample, sCurrent->mOwner, sCurrent->mPriority }
+                ? Context{ sCurrent->mBudget, sCurrent->mSample, sCurrent->mOwner, sCurrent->mPriority,sCurrent->mExperimental }
                 : Context{};
         }
         static void creditRetainedEstimate(std::uint64_t bytes) noexcept
@@ -562,22 +726,27 @@ namespace Resource
         class Stage
         {
         public:
-            Stage(std::uint64_t peak, std::uint64_t outputEstimate)
+            Stage(std::uint64_t peak, std::uint64_t outputEstimate,bool experimental=false)
                 : mScope(sCurrent), mPrevious(mScope ? mScope->mStage : nullptr), mEstimate(outputEstimate)
                 , mLease(mScope ? mScope->mBudget->reserve(
-                    mScope->mSample(mScope->mOwner), peak, mScope->mPriority) : SpeculativeBudget::Stage{})
+                    mScope->mSample(mScope->mOwner), peak,
+                    experimental && mScope->mBudget->experimentEnabled() ? SpeculativePriority::Background : mScope->mPriority,
+                    mScope->mExperimental || experimental) : SpeculativeBudget::Stage{})
                 , mReserved(peak)
             { if (mScope) mScope->mStage = this; }
             ~Stage() { if (mScope) mScope->mStage = mPrevious; }
             Stage(const Stage&) = delete;
             Stage& operator=(const Stage&) = delete;
             std::uint64_t reserved() const noexcept { return mReserved; }
+            SpeculativeBudget::ChargePtr track(SpeculativeBudget::Key key,std::uint64_t bytes,bool known=false)
+            { return mScope ? mScope->mBudget->track(key,bytes,known,&mLease) : SpeculativeBudget::ChargePtr{}; }
             void reserveAdditional(std::uint64_t bytes, std::uint64_t maximum)
             {
                 if (!bytes || bytes > maximum || mReserved > maximum - bytes)
                     throw SpeculativeDeferred{};
                 if (mScope)
-                    mScope->mBudget->extend(mLease, mScope->mSample(mScope->mOwner), bytes, mScope->mPriority);
+                    mScope->mBudget->extend(mLease, mScope->mSample(mScope->mOwner), bytes,
+                        mLease.experimental() ? SpeculativePriority::Background : mScope->mPriority);
                 mReserved += bytes;
             }
             void releaseUnallocated(std::uint64_t bytes)
@@ -602,7 +771,7 @@ namespace Resource
             // pass the current pressure sample and the original P1 limits.
             if (!budget || !sCurrent || sCurrent->mBudget != budget || !sCurrent->mSample)
                 throw SpeculativeDeferred{};
-            return budget->reserve(sCurrent->mSample(sCurrent->mOwner), bytes, sCurrent->mPriority);
+            return budget->reserve(sCurrent->mSample(sCurrent->mOwner), bytes, sCurrent->mPriority,sCurrent->mExperimental);
         }
         static SpeculativeBudget::ChargePtr track(SpeculativeBudget* budget, SpeculativeBudget::Key key,
             std::uint64_t bytes, bool known)
@@ -610,7 +779,8 @@ namespace Resource
             if (!budget) return {};
             auto* stage = sCurrent && sCurrent->mBudget == budget ? sCurrent->mStage : nullptr;
             if (!known && !bytes && stage) bytes = stage->mEstimate;
-            auto result = budget->track(key, bytes, known, stage ? &stage->mLease : nullptr);
+            auto result = budget->track(key, bytes, known, stage ? &stage->mLease : nullptr,
+                sCurrent && sCurrent->mBudget==budget && sCurrent->mExperimental);
             if (result && sCurrent && sCurrent->mBudget == budget)
                 sCurrent->mRetainedEstimate = result->bytes() > UINT64_MAX - sCurrent->mRetainedEstimate
                     ? UINT64_MAX : sCurrent->mRetainedEstimate + result->bytes();
@@ -623,8 +793,30 @@ namespace Resource
         Sample mSample;
         void* mOwner;
         SpeculativePriority mPriority = SpeculativePriority::Background;
+        bool mExperimental=false;
         Stage* mStage = nullptr;
         std::uint64_t mRetainedEstimate = 0;
+    };
+    // One optional construction in the EXISTING worker. Legacy scopes stay
+    // exact; enabled scopes intersect every nested reservation/owner with the
+    // common ledger and restore the caller's foundation stage on destruction.
+    class ExperimentalSpeculativeScope
+    {
+    public:
+        ExperimentalSpeculativeScope()
+        {
+            auto context=SpeculativeScope::capture();
+            if(!context.budget || !context.budget->experimentEnabled() || context.experimental) return;
+            if(!context.sample) throw SpeculativeDeferred{};
+            mJob=context.budget->tryExperimentJob(context.sample(context.owner));
+            context.experimental=true;context.priority=SpeculativePriority::Background;
+            mScope=std::make_unique<SpeculativeScope>(context);
+        }
+        ExperimentalSpeculativeScope(const ExperimentalSpeculativeScope&)=delete;
+        ExperimentalSpeculativeScope& operator=(const ExperimentalSpeculativeScope&)=delete;
+    private:
+        SpeculativeBudget::ExperimentJob mJob;
+        std::unique_ptr<SpeculativeScope> mScope;
     };
 }
 #endif

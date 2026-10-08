@@ -25,7 +25,10 @@ namespace Resource
     {
         mNifFileManager = std::make_unique<NifFileManager>(vfs, encoder);
         if (const char* flag=std::getenv("OPENMW_RAM_C2_PARSED_NIF"); flag && std::strcmp(flag,"1")==0)
-            mNifFileManager->setColdRetentionSeconds(30.0);
+        {
+            const char* v2=std::getenv("OPENMW_RAM_BUDGET_V2");
+            mNifFileManager->setColdRetentionSeconds(30.0,v2 && std::strcmp(v2,"1")==0);
+        }
         if (mRetainNifFiles)
             mNifFileManager->setExpiryDelay(expiryDelay);
         mBgsmFileManager = std::make_unique<BgsmFileManager>(vfs, expiryDelay);

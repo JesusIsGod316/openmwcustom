@@ -16,7 +16,7 @@ function Read-Host {
 }
 function Assert-Selection {
     param([object]$Actual,[object]$Expected,[string]$Depth)
-    foreach($property in @('selection_id','mask','attack_mask','focused_preset','candidate','composite_progress','composite_cpu_mips','legacy_mode','ram_mask','architecture_mask','asset_mask')){
+    foreach($property in @('selection_id','mask','attack_mask','focused_preset','candidate','composite_progress','composite_cpu_mips','legacy_mode','ram_mask','architecture_mask','asset_mask','memory_profile','configuration_mode')){
         if($Actual.$property -cne $Expected.$property){throw ('Menu changed '+$property+' for '+$Expected.selection_id)}
     }
     if($Actual.trace_level -ne $Depth -or $Actual.system_trace -or $Actual.gpu_query_defer -ne ($Depth -eq 'Deep')){throw 'Trace depth changed a mechanism or recorder default'}
@@ -28,7 +28,7 @@ $fixture=Join-Path $temporaryRoot ('p9-numeric-'+[Guid]::NewGuid().ToString('N')
 New-Item -ItemType Directory -Path $fixture | Out-Null
 try{
     $count=0
-    foreach($category in 1..12){
+    foreach($category in 1..13){
         $candidates=@(Get-OptimizedMWNumericCandidates $category)
         foreach($index in 0..($candidates.Count-1)){
             if($category -eq 8 -and $index -eq 0){continue}
@@ -40,7 +40,7 @@ try{
                 Set-FixtureAnswers $replies
                 $actual=Read-OptimizedMWNumericTest
                 Assert-Selection $actual $candidates[$index] $depth
-                $hashes+=Get-Phase9IdentityHash ($actual | Select-Object mask,attack_mask,candidate,composite_progress,composite_cpu_mips,legacy_mode,ram_mask,architecture_mask,asset_mask)
+                $hashes+=Get-Phase9IdentityHash ($actual | Select-Object mask,attack_mask,candidate,composite_progress,composite_cpu_mips,legacy_mode,ram_mask,architecture_mask,asset_mask,memory_profile)
                 $count++
             }
             if($hashes[0] -cne $hashes[1]){throw 'Normal/Deep gameplay vectors differ'}

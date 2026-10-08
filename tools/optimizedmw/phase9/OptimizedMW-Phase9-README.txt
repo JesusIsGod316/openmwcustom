@@ -1,4 +1,4 @@
-OPTIMIZEDMW NUMBERED TEST LAUNCHER (2026-10-04)
+OPTIMIZEDMW NUMBERED TEST LAUNCHER (2026-10-08)
 
 Use C:\OptimizedMW_Test\START-OptimizedMW-Test.bat. All menu selections use numbers:
 choose a category, choose an optimization, then choose the run type.
@@ -17,6 +17,26 @@ Categories (these are navigation numbers, not engine bit masks):
  10 = RAM retention and compression      cold owners, NIF, collision, headroom, LZ4
  11 = Renderer architecture experiments  shaders, paging, packets, uploads, GPU
  12 = LOD, HLOD and texture pipeline      independent asset mechanisms and combinations
+ 13 = Editable settings                  individual settings, Normal or Deep
+
+Edit Configuration\Optimizations.cfg to set individual controls. Category 13,
+option 1 applies that file for a test run, then restores your original settings.
+The launcher creates the editable copy once; later runs preserve your edits.
+Descriptive controls live under Cells, Shadows, Camera, Lua, Groundcover and
+Optimizations. See OPTIMIZATION-SETTINGS-REFERENCE.txt for old-to-new names.
+Old keys remain compatible. A descriptive key wins over its old alias in the
+same file, regardless of line order; user settings still override defaults.
+The legacy performance profile is disabled in the editable template so it
+cannot silently replace individual choices with historical preset floors.
+Normal and Deep apply the same configured gameplay values; Deep explicitly
+enables the asynchronous GPU diagnostic observer. Captures include the exact
+configuration file and its hash. Keep that hash fixed for an A/B comparison.
+
+Benchmark menus now default to the lower Headroom memory residence profile.
+This changes the comparison cohort. See MEMORY-PROFILES.txt for its limits,
+the historical fallback and a matched Overdrive comparison. These settings
+reduce cold residence and bound charged experimental work; they are not a
+whole-process RAM ceiling. Custom settings use your configured values.
 
 See ASSET-PIPELINE-CANDIDATES.txt for the new candidates and recommended
 control/candidate sequence. Exact shader readiness remains unavailable

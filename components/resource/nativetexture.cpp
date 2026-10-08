@@ -422,6 +422,7 @@ namespace Resource
                 auto job=UploadPool::ledger->tryJob(UploadPool::sample(UploadPool::sampleOwner));
                 if(!job) { ticket->decline(NativeTextureSkip::HostAdmission); continue; }
                 SpeculativeScope scope(UploadPool::ledger,UploadPool::sample,UploadPool::sampleOwner);
+                ExperimentalSpeculativeScope experimental;
                 SpeculativeScope::Stage sourceOpen(estimate->openPeakBytes,0);
                 auto stream=mVfs->get(VFS::Path::Normalized(ticket->path));
                 stream->seekg(0,std::ios::end); const auto end=stream->tellg(); stream->seekg(0);

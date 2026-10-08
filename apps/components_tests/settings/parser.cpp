@@ -1,4 +1,5 @@
 #include <components/settings/parser.hpp>
+#include <components/settings/optimizationaliases.hpp>
 #include <components/testing/util.hpp>
 
 #include <fstream>
@@ -30,6 +31,47 @@ namespace
             f(path);
         }
     };
+
+    TEST_F(SettingsFileParserTest, descriptive_optimization_wins_in_either_order)
+    {
+        for (const auto& content : {
+            std::string("[V3]\nv3.6 performance profile = true\n[Optimizations]\nlegacy performance profile = false\n"),
+            std::string("[Optimizations]\nlegacy performance profile = false\n[V3]\nv3.6 performance profile = true\n") })
+            withSettingsFile(content, [this](const auto& path) {
+                CategorySettingValueMap map;
+                mLoader.loadSettingsFile(path, map);
+                EXPECT_EQ(map, CategorySettingValueMap({
+                    { CategorySetting("Optimizations", "legacy performance profile"), "false" } }));
+            });
+    }
+
+    TEST_F(SettingsFileParserTest, old_user_layer_overrides_descriptive_default)
+    {
+        withSettingsFile("[Cells]\nv3 streaming scheduler = adaptive\n", [this](const auto& path) {
+            CategorySettingValueMap map{ { CategorySetting("Cells", "streaming scheduler"), "off" } };
+            mLoader.loadSettingsFile(path, map, false, true);
+            EXPECT_EQ(map.at({ "Cells", "streaming scheduler" }), "adaptive");
+        });
+    }
+
+    TEST_F(SettingsFileParserTest, optimization_roundtrip_keeps_unknown_and_comments)
+    {
+        withSettingsFile("# Keep this comment\n[V3]\nv3.6 performance profile = false\n"
+            "[Mod]\nunknown = unchanged\n", [this](const auto& path) {
+            CategorySettingValueMap map;
+            mLoader.loadSettingsFile(path, map);
+            mSaver.saveSettingsFile(path, map);
+            CategorySettingValueMap restored;
+            mLoader.loadSettingsFile(path, restored);
+            EXPECT_EQ(restored, map);
+            EXPECT_EQ(restored.at({ "Mod", "unknown" }), "unchanged");
+            std::ifstream stream(path);
+            const std::string saved(std::istreambuf_iterator<char>(stream), {});
+            EXPECT_NE(saved.find("# Keep this comment"), std::string::npos);
+            EXPECT_EQ(saved.find("v3.6 performance profile ="), std::string::npos);
+            EXPECT_NE(saved.find("legacy performance profile = false"), std::string::npos);
+        });
+    }
 
     TEST_F(SettingsFileParserTest, load_empty_file)
     {

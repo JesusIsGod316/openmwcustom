@@ -30,23 +30,23 @@ namespace Settings
         // 0 = exact stock shader path, 1 = same-quality arithmetic/branch fast path,
         // 2 = mode 1 + reduced-harmonic wind ceiling probe.
         SettingValue<int> mOptimizedMWGpuPath{
-            mIndex, "Groundcover", "optimizedmw gpu path",
+            mIndex, "Groundcover", "shader optimization mode",
             makeClampSanitizerInt(0, 2) };
         // P8G3 startup-only, independently switchable. All derived topology is off by default.
-        SettingValue<bool> mOptimizedMWHierarchy{ mIndex, "Groundcover", "optimizedmw hierarchy" };
-        SettingValue<bool> mOptimizedMWCullInputs{ mIndex, "Groundcover", "optimizedmw cull input reuse" };
-        SettingValue<bool> mOptimizedMWLod2{ mIndex, "Groundcover", "optimizedmw lod2" };
-        SettingValue<bool> mOptimizedMWDensityLod{ mIndex, "Groundcover", "optimizedmw density lod" };
-        SettingValue<bool> mOptimizedMWFrontToBack{ mIndex, "Groundcover", "optimizedmw front to back" };
-        SettingValue<bool> mOptimizedMWParallelPrep{ mIndex, "Groundcover", "optimizedmw parallel preparation" };
+        SettingValue<bool> mOptimizedMWHierarchy{ mIndex, "Groundcover", "spatial hierarchy" };
+        SettingValue<bool> mOptimizedMWCullInputs{ mIndex, "Groundcover", "cull input reuse" };
+        SettingValue<bool> mOptimizedMWLod2{ mIndex, "Groundcover", "geometry lod" };
+        SettingValue<bool> mOptimizedMWDensityLod{ mIndex, "Groundcover", "density lod" };
+        SettingValue<bool> mOptimizedMWFrontToBack{ mIndex, "Groundcover", "front to back ordering" };
+        SettingValue<bool> mOptimizedMWParallelPrep{ mIndex, "Groundcover", "parallel preparation" };
         // -1 preserves the P8G2 mode-2 wind behavior; 0=full, 1=reduced independent of arithmetic path.
-        SettingValue<int> mOptimizedMWFastWind{ mIndex, "Groundcover", "optimizedmw fast wind", makeClampSanitizerInt(-1, 1) };
-        SettingValue<int> mOptimizedMWMinBatch{ mIndex, "Groundcover", "optimizedmw minimum batch", makeClampSanitizerInt(32, 1024) };
-        SettingValue<float> mOptimizedMWLodNear{ mIndex, "Groundcover", "optimizedmw lod near", makeClampSanitizerFloat(1000, 50000) };
-        SettingValue<float> mOptimizedMWLodFar{ mIndex, "Groundcover", "optimizedmw lod far", makeClampSanitizerFloat(2000, 100000) };
+        SettingValue<int> mOptimizedMWFastWind{ mIndex, "Groundcover", "reduced wind", makeClampSanitizerInt(-1, 1) };
+        SettingValue<int> mOptimizedMWMinBatch{ mIndex, "Groundcover", "minimum batch", makeClampSanitizerInt(32, 1024) };
+        SettingValue<float> mOptimizedMWLodNear{ mIndex, "Groundcover", "lod near distance", makeClampSanitizerFloat(1000, 50000) };
+        SettingValue<float> mOptimizedMWLodFar{ mIndex, "Groundcover", "lod far distance", makeClampSanitizerFloat(2000, 100000) };
         // Quality-risk ceiling probe. True preserves current shadow receiving.
         SettingValue<bool> mOptimizedMWShadowReceive{
-            mIndex, "Groundcover", "optimizedmw shadow receive" };
+            mIndex, "Groundcover", "receive shadows" };
     };
 }
 

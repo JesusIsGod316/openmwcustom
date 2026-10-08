@@ -1,5 +1,6 @@
 #include <components/files/configurationmanager.hpp>
 #include <components/resource/resourcesystem.hpp>
+#include <components/resource/niffilemanager.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/sceneutil/shadow.hpp>
 #include <components/toutf8/toutf8.hpp>
@@ -13,6 +14,33 @@
 namespace
 {
     using namespace testing;
+
+    TEST(ResourceNifFileManager, legacyColdRetentionPreservesZeroExpiryAndShortensRetainedProfile)
+    {
+        const VFS::Manager vfs;
+        const ToUTF8::Utf8Encoder encoder(ToUTF8::WINDOWS_1252);
+        Resource::NifFileManager manager(&vfs, &encoder.getStatelessEncoder());
+        EXPECT_DOUBLE_EQ(manager.effectiveExpiryDelay(), 0.0);
+        manager.setColdRetentionSeconds(30.0);
+        EXPECT_DOUBLE_EQ(manager.effectiveExpiryDelay(), 0.0);
+        manager.setExpiryDelay(1800.0);
+        EXPECT_DOUBLE_EQ(manager.effectiveExpiryDelay(), 30.0);
+        manager.setExpiryDelay(5.0);
+        EXPECT_DOUBLE_EQ(manager.effectiveExpiryDelay(), 5.0);
+    }
+
+    TEST(ResourceNifFileManager, independentColdTierHasExplicitThirtySecondResidence)
+    {
+        const VFS::Manager vfs;
+        const ToUTF8::Utf8Encoder encoder(ToUTF8::WINDOWS_1252);
+        Resource::NifFileManager manager(&vfs, &encoder.getStatelessEncoder());
+        manager.setColdRetentionSeconds(30.0, true);
+        EXPECT_DOUBLE_EQ(manager.effectiveExpiryDelay(), 30.0);
+        manager.setExpiryDelay(1800.0);
+        EXPECT_DOUBLE_EQ(manager.effectiveExpiryDelay(), 30.0);
+        manager.setColdRetentionSeconds(0.0, true);
+        EXPECT_DOUBLE_EQ(manager.effectiveExpiryDelay(), 1800.0);
+    }
 
     TEST(ResourceResourceSystem, scenemanager_getinstance_should_be_thread_safe)
     {

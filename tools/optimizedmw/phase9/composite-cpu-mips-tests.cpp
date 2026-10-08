@@ -15,8 +15,11 @@
 #include <vector>
 
 namespace Mips = Resource::CompositeCpuMips;
+namespace Pool = Resource::UploadPool;
 namespace
 {
+    Resource::OpenGlPressureSample poolSample;
+    Resource::OpenGlPressureSample readPoolSample(void*) { return poolSample; }
     void require(bool value, const char* message)
     {
         if (!value)
@@ -284,6 +287,27 @@ namespace
     }
     void glTests(const std::filesystem::path& shaders)
     {
+        // The same fixture runs once with the independent staging switch off
+        // and once on. The real producer wrappers retain OSG's default true
+        // generation hint in both runs; an exact supplied chain is the proof.
+        const bool pooled = Pool::requested();
+        Resource::SpeculativeBudget poolLedger;
+        if (pooled)
+        {
+            poolSample.generation = 1;
+            poolSample.decision.state = Resource::OpenGlPressure::Normal;
+            poolSample.decision.admissionsPerSample = 1;
+            poolSample.growthWatermarkValid = true;
+            poolSample.memory.physicalValid = true;
+            poolSample.memory.physicalTotal = 32ull * 1024 * 1024 * 1024;
+            poolSample.memory.physicalAvailable = 16ull * 1024 * 1024 * 1024;
+            poolSample.memory.commitValid = true;
+            poolSample.memory.commitAvailable = 16ull * 1024 * 1024 * 1024;
+            poolSample.decision.limits.physicalReserve = 4ull * 1024 * 1024 * 1024;
+            poolSample.decision.limits.commitReserve = 1024ull * 1024 * 1024;
+            Pool::sample = &readPoolSample;
+            Pool::ledger = &poolLedger;
+        }
         osgViewer::Viewer anchor;
         auto gc = context();
         auto& state = *gc->getState();
@@ -298,10 +322,16 @@ namespace
         auto prepared = Mips::prepare(source, caps, true, true);
         osg::ref_ptr<Mips::Texture> texture = new Mips::Texture(prepared);
         configure(*texture);
+        require(texture->getUseHardwareMipMapGeneration() && texture->controlTexture()->getUseHardwareMipMapGeneration(),
+            "producer/default control hardware generation hint was changed to qualify staging");
+        require(Pool::eligible(*prepared.mipmapped), "actual producer chain missed exact upload eligibility");
+        const auto beforePoolUploads = Pool::uploads.load();
         const auto beforeApply = Mips::stats();
         state.setActiveTextureUnit(1);
         state.applyTextureAttribute(1, texture);
         require(generationCalls == 0, "eligible supplied chain invoked generation");
+        require(Pool::uploads.load() == beforePoolUploads + (pooled ? 1 : 0),
+            "default-true producer chain failed real staging selection or staging was enabled in control");
         verifyLevels(*prepared.mipmapped);
         require(texture->preparationAdmissionEligible(state), "eligible supplied image declined optional admission");
         require(Mips::stats().suppliedApplies == beforeApply.suppliedApplies + 1
@@ -317,6 +347,57 @@ namespace
         state.applyTextureAttribute(1, texture);
         verifyLevels(*prepared.mipmapped);
         require(generationCalls == 0, "reused supplied upload invoked generation");
+
+        // An input without a complete chain stays on OSG's original hardware
+        // generation path. It cannot enter the pool merely because its default
+        // generation hint is true and it has a matching alpha base image.
+        osg::ref_ptr<Resource::PreparedTerrainTexture> incomplete
+            = new Resource::PreparedTerrainTexture(image(34, 34, 91));
+        configure(*incomplete);
+        require(!Pool::eligible(*incomplete->getImage()) && incomplete->getUseHardwareMipMapGeneration(),
+            "incomplete-chain control lost its original generation semantics");
+        const auto beforeIncompletePool = Pool::uploads.load();
+        const auto beforeIncompleteGeneration = generationCalls;
+        state.haveAppliedTextureAttribute(1, osg::StateAttribute::TEXTURE);
+        state.applyTextureAttribute(1, incomplete);
+        require(Pool::uploads.load() == beforeIncompletePool && generationCalls > beforeIncompleteGeneration,
+            "incomplete alpha input was staged as complete or bypassed ordinary mip generation");
+
+        // Pool admission can refuse without changing supplied data or forcing
+        // hardware regeneration. Keep the existing owner and exact chain.
+        osg::ref_ptr<Mips::Texture> poolDeclined;
+        if (pooled)
+        {
+            auto other = context();
+            auto& otherState = *other->getState();
+            Mips::publishCapabilities(*other);
+            const auto otherCaps = Mips::startupCapabilities();
+            auto* otherExtensions = otherState.get<osg::GLExtensions>();
+            const auto otherGenerate = otherExtensions->glGenerateMipmap;
+            require(otherGenerate, "refused-staging native generation counter unavailable");
+            otherExtensions->glGenerateMipmap = &countedGenerate;
+            poolSample.decision.state = Resource::OpenGlPressure::Critical;
+            const auto declinedPrepared = Mips::prepare(image(130, 130, 73), otherCaps, true, true);
+            poolDeclined = new Mips::Texture(declinedPrepared);
+            configure(*poolDeclined);
+            require(poolDeclined->preparationAdmissionEligible(otherState),
+                "refused-staging fixture did not qualify the exact supplied native context");
+            const auto refusedUploads = Pool::uploads.load();
+            const auto refusedGeneration = generationCalls;
+            const auto refusedAdmissions = Pool::admissionFallbacks.load();
+            poolDeclined->apply(otherState);
+            require(Pool::uploads.load() == refusedUploads && generationCalls == refusedGeneration
+                    && Pool::admissionFallbacks.load() > refusedAdmissions,
+                "pressure-refused staging regenerated or staged instead of ordinary complete-chain upload");
+            verifyLevels(*declinedPrepared.mipmapped);
+            poolDeclined->releaseGLObjects(&otherState);
+            otherExtensions->glGenerateMipmap = otherGenerate;
+            other->releaseContext();
+            other->close(true);
+            gc->makeCurrent();
+            Mips::publishCapabilities(*gc);
+            poolSample.decision.state = Resource::OpenGlPressure::Normal;
+        }
 
         // Quality bounds were fixed before execution: max8/255, RGB RMS2/255.
         // They are an offscreen guard, not universal GPU bit identity or in-game acceptance.
@@ -342,7 +423,10 @@ namespace
             const auto a = render(state, shaders, control, size);
             require(a == render(state, shaders, control, size),
                 "control composite oracle varied with cache/lifetime reuse");
+            const auto beforeCandidateGeneration = generationCalls;
             const auto b = render(state, shaders, candidate, size);
+            require(generationCalls == beforeCandidateGeneration,
+                "actual supplied producer draw unexpectedly generated hardware mips");
             unsigned maximum = 0;
             double sum = 0;
             std::size_t count = 0;
@@ -381,6 +465,8 @@ namespace
         state.applyTextureAttribute(1, texture);
         require(generationCalls > beforeRelease && !texture->preparationUnchanged(state),
             "context retirement did not use original-image control");
+        require(texture->controlTexture()->getUseHardwareMipMapGeneration(),
+            "supplied-chain staging changed retired original-image generation hint");
         require(state.getLastAppliedTextureAttribute(1, osg::StateAttribute::TEXTURE) == texture->controlTexture(),
             "fallback left misleading cached texture owner");
         GLint bound = 0;
@@ -403,11 +489,14 @@ namespace
         osg::ref_ptr<Mips::Texture> generationRequest = new Mips::Texture(prepared);
         configure(*generationRequest);
         generationRequest->allocateMipmapLevels();
+        const auto beforeGenerationPool = Pool::uploads.load();
         const auto beforeRequest = generationCalls;
         require(generationRequest->preparationAdmissionEligible(state)
                 && !generationRequest->preparationDispatchEligible(state) && generationCalls == beforeRequest,
             "late mip generation request did not decline draw dispatch before control GL");
         generationRequest->apply(state);
+        require(Pool::uploads.load() == beforeGenerationPool,
+            "explicit generation-dirty fallback attempted complete-chain staging");
         require(generationCalls > beforeRequest && !generationRequest->preparationUnchanged(state),
             "explicit generation dirtiness bypassed original control");
         require(!generationRequest->preparationAdmissionEligible(state),
@@ -494,16 +583,26 @@ namespace
         generationRequest->releaseGLObjects(&state);
         changed->releaseGLObjects(&state);
         originalChanged->releaseGLObjects(&state);
+        incomplete->releaseGLObjects(&state);
+        if (poolDeclined) poolDeclined->releaseGLObjects(&state);
         for (auto& object : control)
             object->releaseGLObjects(&state);
         for (auto& object : candidate)
             object->releaseGLObjects(&state);
         require(glGetError() == GL_NO_ERROR, "GL error in retirement/replacement/dirtied fallbacks");
         extensions->glGenerateMipmap = originalGenerate;
+        if (pooled) Pool::release(state);
         gc->releaseContext();
         gc->close(true);
+        if (pooled)
+        {
+            require(Pool::liveBytes.load() == 0 && poolLedger.stats().knownOwnerBytes == 0,
+                "complete-chain staging lost accounting at actual context teardown");
+            Pool::sample = nullptr;
+            Pool::ledger = nullptr;
+        }
         std::cout << "PASS GL: complete installed uploads, generation suppression, real shader quality, charged "
-                     "originals, exact fallback cache/binding and retired/replaced contexts\n";
+                     "originals, exact fallback cache/binding and retired/replaced contexts; staging=" << pooled << '\n';
     }
 }
 int main(int argc, char** argv)

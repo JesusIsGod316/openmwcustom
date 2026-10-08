@@ -81,15 +81,17 @@ namespace Resource
         {
             const auto stats = mCache->getStats();
             Log(Debug::Info) << "RAM C2 parsed NIF retention: configured_ttl_s=" << mColdRetentionSeconds
-                << " effective_ttl_s=" << (std::min)(mExpiryDelay, mColdRetentionSeconds)
+                << " effective_ttl_s=" << effectiveExpiryDelay()
+                << " independent=" << mIndependentColdRetention
                 << " get=" << stats.mGet << " hit=" << stats.mHit
                 << " expired_all_policies=" << stats.mExpired << " size=" << stats.mSize;
         }
     }
 
-    void NifFileManager::setColdRetentionSeconds(double seconds)
+    void NifFileManager::setColdRetentionSeconds(double seconds,bool independent)
     {
         mColdRetentionSeconds = std::isfinite(seconds) && seconds > 0 ? seconds : 0;
+        mIndependentColdRetention=independent && mColdRetentionSeconds>0;
         mCache->setExternalOwnerTest(mColdRetentionSeconds > 0
             ? +[](const osg::Object* object) noexcept {
                 const auto* holder = dynamic_cast<const NifFileHolder*>(object);
@@ -99,8 +101,7 @@ namespace Resource
 
     void NifFileManager::updateCache(double referenceTime)
     {
-        mCache->update(referenceTime, mColdRetentionSeconds > 0
-            ? (std::min)(mExpiryDelay, mColdRetentionSeconds) : mExpiryDelay);
+        mCache->update(referenceTime,effectiveExpiryDelay());
     }
 
     Nif::NIFFilePtr NifFileManager::get(VFS::Path::NormalizedView name)
@@ -150,7 +151,7 @@ namespace Resource
     {
         if (mDiagnosticSampler.due())
             mCache->reportRuntimeDiagnostics("parsed_nif", referenceTime,
-                mColdRetentionSeconds > 0 ? (std::min)(mExpiryDelay, mColdRetentionSeconds) : mExpiryDelay);
+                effectiveExpiryDelay());
     }
 
     void NifFileManager::reportStats(unsigned int frameNumber, osg::Stats* stats) const

@@ -10,8 +10,8 @@ root=Path(sys.argv[1]); source=Path(__file__).resolve().parents[3]
 public=source/'tools/optimizedmw/phase9'
 files=['openmw.exe','CI-ID.txt','START-OptimizedMW-Test.bat','OptimizedMW_Test.ps1',
        'OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1','OptimizedMW_QuickTest.ps1','OptimizedMW_QuickRecorder.ps1',
-       'OptimizedMW_AttackPresets.ps1','OptimizedMW_NumericMenu.ps1',
-       'OptimizedMW_ContextReport.ps1',
+       'OptimizedMW_AttackPresets.ps1','OptimizedMW_NumericMenu.ps1','OptimizedMW_MemoryProfile.ps1','OptimizedMW_SettingNames.ps1','OptimizedMW_Optimizations.cfg',
+       'OptimizedMW_ContextReport.ps1','MEMORY-PROFILES.txt','OPTIMIZATION-SETTINGS-REFERENCE.txt',
        'OptimizedMW_AssetEngagement.ps1','verify-asset-engagement.py',
        'OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW_SpikeReport.ps1','OptimizedMW-Phase9-README.txt',
        'OptimizedMW_SystemTrace.ps1','OptimizedMW_QualifySystemTrace.ps1','OptimizedMW_SystemTraceLink.ps1','OptimizedMW-SystemTrace.wprp','START-OptimizedMW-SystemTrace.bat','HITCH-DIAGNOSTICS.md','HITCH-DIAGNOSTICS6.md','LUA-ALLOCATOR-GC-DIAGNOSTICS.md','RESOURCE-LIFECYCLE-DIAGNOSTICS.md','COMPOSITE-PROGRESS-CANDIDATE.md']
@@ -24,6 +24,8 @@ assert (root/'openmw.exe').read_bytes()[:2]==b'MZ', 'not a Windows PE executable
 assert sorted(p.name.lower() for p in root.glob('*.bat'))==['start-optimizedmw-systemtrace.bat','start-optimizedmw-test.bat']
 assert os.environ['EXPECTED_COMMIT'] in (root/'CI-ID.txt').read_text()
 assert (root/'resources/version').read_text().splitlines()[1] == os.environ['EXPECTED_COMMIT'], 'resource version does not match engine source'
+assert (root/'optimization-settings-aliases.json').read_bytes()==(source/'files/optimization-settings-aliases.json').read_bytes(), 'setting alias map mismatch'
+aliases=json.loads((source/'files/optimization-settings-aliases.json').read_text())['aliases']
 manifest=json.loads((root/'resources/shaders/shader-package.json').read_text())
 expected=json.loads((source/'files/shaders/v3overlay/p8g3/manifest.json').read_text())
 assert expected['id']=='optimizedmw-p8g4-pbr-groundcover'
@@ -37,7 +39,8 @@ for relative in ('licenses/meshoptimizer-LICENSE.txt', 'licenses/DirectXTex-LICE
 settings=base64.b64decode((root/'defaults.bin').read_bytes(),validate=True).decode('utf-8')
 for key in ('optimizedmw canonical terrain textures','optimizedmw composite slicing',
             'optimizedmw object userdata cache','warm sounds','optimizedmw setting consistency'):
-    assert key+' = false' in settings,key
+    canonical=next((a['new_key'] for a in aliases if a['old_key']==key),key)
+    assert canonical+' = false' in settings,canonical
 for name in ('groundcover.vert','groundcover.frag','groundcover_lod.glsl','temporal_camera_motion.vert',
              'temporal_camera_motion.frag','temporal_motion_view.vert','temporal_motion_view.frag','temporal_dynamic_motion.vert','temporal_dynamic_motion.frag'):
     relative='compatibility/'+name; deployed=root/'resources/shaders'/relative
@@ -46,6 +49,7 @@ for name in ('groundcover.vert','groundcover.frag','groundcover_lod.glsl','tempo
         assert deployed.read_bytes()==(source/'files/shaders'/relative).read_bytes(),relative
     files.append('resources/shaders/'+relative)
 lines=[hashlib.sha256((root/n).read_bytes()).hexdigest()+'  '+n for n in files]
+lines.append(hashlib.sha256((root/'optimization-settings-aliases.json').read_bytes()).hexdigest()+'  optimization-settings-aliases.json')
 for relative in ('builtin.omwscripts', 'scripts/omw/camera/camera.lua',
                  'scripts/omw/camera/settings.lua', 'scripts/omw/settings/common.lua'):
     deployed=root/'resources/vfs'/relative

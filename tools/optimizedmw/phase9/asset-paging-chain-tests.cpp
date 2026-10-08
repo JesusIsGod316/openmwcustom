@@ -62,7 +62,7 @@ namespace
         std::filesystem::path package,resources,shaders,settings;
         std::vector<std::string> models;
         std::string ordinaryModel;
-        bool retry=false,sourceProbe=false,mixed=false,textureCombination=false;
+        bool retry=false,sourceProbe=false,mixed=false,textureCombination=false,warmControl=false,experimentBudget=false;
         Inputs(int argc,char** argv) : package(std::filesystem::absolute(std::filesystem::u8path(argv[3])))
         {
             for (int i=5;i<argc;++i)
@@ -72,6 +72,8 @@ namespace
                 if (option=="--source-probe") {sourceProbe=true;continue;}
                 if (option=="--mixed") {mixed=true;continue;}
                 if (option=="--texture-combination") {textureCombination=true;continue;}
+                if (option=="--warm-control") {warmControl=true;continue;}
+                if (option=="--experiment-budget") {experimentBudget=true;continue;}
                 if (option=="--ordinary-model") { require(++i<argc,"missing actual ordinary STAT model"); ordinaryModel=argv[i]; continue; }
                 if (option=="--resources" || option=="--shaders" || option=="--settings")
                 {
@@ -340,6 +342,19 @@ namespace
         osg::ref_ptr<Pixels> pixels;
         void operator()(osg::RenderInfo&) const override { pixels->beforeOriginal=controlDraws(); }
     };
+    struct WarmOrdinaryDraw final : osg::Drawable::DrawCallback
+    {
+        osg::ref_ptr<osg::Drawable::DrawCallback> delegate;
+        osg::Camera* mainCamera=nullptr;
+        std::uint64_t* draws=nullptr;
+        WarmOrdinaryDraw(osg::Drawable::DrawCallback* original,osg::Camera* camera,std::uint64_t& count)
+            : delegate(original),mainCamera(camera),draws(&count) {}
+        void drawImplementation(osg::RenderInfo& info,const osg::Drawable* drawable) const override
+        {
+            if(info.getCurrentCamera()==mainCamera) ++*draws;
+            if(delegate) delegate->drawImplementation(info,drawable); else drawable->drawImplementation(info);
+        }
+    };
     struct BeforeDrawOnce final : osg::Camera::DrawCallback
     {
         explicit BeforeDrawOnce(std::function<void()> value) : operation(std::move(value)) {}
@@ -534,6 +549,7 @@ int main(int argc,char** argv) try
     const unsigned mask=static_cast<unsigned>(std::stoul(argv[1]));
     require(mask==A::Lod || mask==A::Hlod,"chain consumption fixture isolates L1 or H1; combined runtime acceptance requires user captures");
     const Inputs inputs(argc,argv);
+    require(!inputs.warmControl || mask==A::Lod,"warmed exact ordinary-control fixture is L1-only");
     require(!inputs.textureCombination || mask==A::Lod,"incremental combination qualification is L1 plus texture preparation only");
     const auto processMask=mask | (inputs.textureCombination ? R::AssetPolicy::TexturePreparation : 0u);
 #ifdef _WIN32
@@ -589,6 +605,12 @@ int main(int argc,char** argv) try
     R::ResourceSystem resources(&vfs,100,nullptr);
     R::SpeculativeBudget::Config limits; limits.transientLimit=R::AssetPolicy::CpuTransientLimit;
     limits.maximumJobs=4; limits.reservedNearFutureJobs=1;
+    if(inputs.experimentBudget)
+    {
+        limits.experimentLimit=256*R::SpeculativeBudget::MiB;
+        limits.experimentScratchLimit=128*R::SpeculativeBudget::MiB;
+        limits.experimentMaximumJobs=1;
+    }
     resources.enableOpenGlSpeculativeBudget({},limits);
     for (unsigned attempt=0;attempt<30 && !R::SpeculativeBudget::newOwnerWorkUsable(R::ResourceSystem::speculativeSample(&resources),R::SpeculativePriority::NearFuture);++attempt)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -888,11 +910,61 @@ int main(int argc,char** argv) try
     const auto beforePrivateCopies=L::Counters::privateArrayCopies.load(),beforePrivateVbos=L::Counters::privateVertexBuffers.load();
     const auto beforePostCandidates=L::Counters::postOptimizedCandidates.load(),beforeNewIndices=L::Counters::newIndexGpuBytes.load();
     const auto beforeGpuDebt=R::AssetGpuBudget::liveBytes.load();
+    std::uint64_t warmControls=0,warmOrdinaryDraws=0;
+    if(inputs.warmControl)
+        paging.setFixtureBeforeLodCook([&](osg::Node& control) {
+            phase("ordinary_warm_before_cook","begin");
+            const auto beforeCook=built(mask),beforeConsumed=consumed(mask),beforeReads=pixels->reads;
+            Selectors noTiers;control.accept(noTiers);require(noTiers.values.empty(),"ordinary warm must precede tier publication");
+            Geometries geometry;control.accept(geometry);require(!geometry.values.empty(),"exact post-optimizer ordinary control geometry required");
+            const auto view=camera->getViewMatrix();
+            struct Restore
+            {
+                osg::Camera* camera; osg::Group* lighting; osg::Node* control; osg::Matrixd view;
+                std::vector<std::pair<osg::ref_ptr<osg::Geometry>,osg::ref_ptr<osg::Drawable::DrawCallback>>> callbacks;
+                ~Restore() {for(auto& [geometry,callback]:callbacks) geometry->setDrawCallback(callback);lighting->removeChild(control);camera->setViewMatrix(view);}
+            } restore{camera,lighting,&control,view,{}};
+            for(auto* leaf:geometry.values)
+            {
+                restore.callbacks.emplace_back(leaf,leaf->getDrawCallback());
+                leaf->setDrawCallback(new WarmOrdinaryDraw(leaf->getDrawCallback(),camera,warmOrdinaryDraws));
+            }
+            const auto bound=control.getBound();
+            // A merged same-material cohort can span separated instances, so
+            // its bounding sphere contains substantial empty space. Use the
+            // existing close shadow-proof framing for this ordinary warm
+            // proof; keep the captured projection and visible RGB threshold.
+            const double distance=std::max(2.*double(bound.radius()),double(bound.radius())+1.);
+            camera->setViewMatrixAsLookAt(osg::Vec3d(bound.center())+osg::Vec3d(0,-distance,0),osg::Vec3d(bound.center()),{0,0,1});
+            lighting->addChild(&control);
+            const auto beforeWarmDraws=warmOrdinaryDraws;
+            for(unsigned frame=0;frame<3;++frame) viewer.frame();
+            std::cout<<"CHAIN_WARM_RENDER ordinary_draws="<<warmOrdinaryDraws-beforeWarmDraws
+                <<" pixel_reads="<<pixels->reads-beforeReads<<" rgb="<<rgb(pixels->data)<<" gl_error="<<pixels->error
+                <<" bound_radius="<<bound.radius()<<" view_distance="<<distance<<" control_mask="<<control.getNodeMask()
+                <<" geometries="<<geometry.values.size()<<" viewer_done="<<viewer.done()<<'\n';
+            require(warmOrdinaryDraws>beforeWarmDraws && pixels->reads>beforeReads && rgb(pixels->data)>16 && pixels->error==GL_NO_ERROR,
+                "exact ordinary cohort must draw visible RGB with clean GL before optional cooking");
+            Programs programs;control.accept(programs);require(!programs.values.empty(),"warmed exact effective ordinary object programs required");
+            for(auto* program:programs.values)
+            {
+                const auto* linked=program->getPCP(*context->getState());
+                require(linked && linked->isLinked() && !linked->needsLink(),"ordinary material must finish linking before same-cohort cook");
+            }
+            require(built(mask)==beforeCook && consumed(mask)==beforeConsumed,"ordinary warming cannot count derived readiness or draws");
+            ++warmControls;
+            std::cout<<"CHAIN_WARM_CONTROL exact_post_optimizer_owner=1 ordinary_draws="<<warmOrdinaryDraws-beforeWarmDraws
+                <<" linked_programs="<<programs.values.size()<<" rgb="<<rgb(pixels->data)
+                <<" material_substitution=0 derived_before_cook=0 gl_error=0\n";
+            phase("ordinary_warm_before_cook","done");
+        });
     phase("cook","begin");
     auto candidate=upgrade(paging,resources,abort); Selectors selected; candidate->accept(selected);
+    paging.setFixtureBeforeLodCook({});
     phase("cook","done");
     pagingDiagnostics(mask,"cook");
     require(candidate!=ordinary && !selected.values.empty() && built(mask)>beforeBuilt,"actual getChunk must replace weak cached quality with built optional tiers");
+    require(!inputs.warmControl || (warmControls>0 && warmOrdinaryDraws>0),"requested warmed ordinary cohort must actually reach the same production cook");
     if (inputs.mixed || mask==A::Lod)
     {
         ControlTopology retained; candidate->accept(retained);
@@ -927,6 +999,20 @@ int main(int argc,char** argv) try
     require(pendingCache==candidate && built(mask)==pendingBuilt && pendingRetry,
         "submitted-but-unready ICO cache observation must retain the candidate and optional retry without a new cook");
     require(hostOwners(resources.speculativeBudget()->stats())>ownersBefore,"actual private candidate must retain a host ownership charge after preparation stages unwind");
+    if(inputs.experimentBudget)
+    {
+        const auto stats=resources.speculativeBudget()->stats();
+        require(stats.experimentRetainedBytes>0 && stats.experimentSourcePins>0 && stats.experimentSourcePinEstimateBytes>0,
+            "actual derived output must retain its experimental charge and borrowed-source metadata pin");
+        require(!stats.experimentFutureBytes && !stats.experimentJobs && stats.experimentPeakTotalBytes<=limits.experimentLimit
+            && stats.experimentPeakFutureBytes<=limits.experimentScratchLimit && stats.futureBytes<=limits.transientLimit,
+            "published derived ownership must remain within intersecting child and common ceilings after scratch release");
+        std::cout<<"CHAIN_EXPERIMENT_BUDGET retained="<<stats.experimentRetainedBytes<<" future="<<stats.experimentFutureBytes
+            <<" source_pins="<<stats.experimentSourcePins<<" borrowed_estimate="<<stats.experimentSourcePinEstimateBytes
+            <<" peak_total="<<stats.experimentPeakTotalBytes<<" peak_scratch="<<stats.experimentPeakFutureBytes
+            <<" child_limit="<<limits.experimentLimit<<" scratch_limit="<<limits.experimentScratchLimit
+            <<" common_limit="<<limits.transientLimit<<" double_root_charge=0 live_owner_held=1\n";
+    }
     // Receipts belong to the production private control and are installed by
     // its builder before immutable MaterialGuard capture. The fixture never
     // changes a geometry callback after cooking.
@@ -951,6 +1037,8 @@ int main(int argc,char** argv) try
     require(ready(mask)>beforeReady,"real ObjectPaging CompileCompleted must certify the queued GL objects");
     const auto drawStart=consumed(mask); phase("derived_draw","begin"); viewer.frame(); viewer.frame(); phase("derived_draw","done");
     require(consumed(mask)>drawStart,"actual main camera must consume production-generated geometry");
+    if(inputs.warmControl) std::cout<<"CHAIN_WARM_CONSUMPTION controls="<<warmControls<<" ordinary_draws_before_cook="<<warmOrdinaryDraws
+        <<" compile_ready=1 actual_derived_draw=1 exact_same_cohort=1\n";
     bool readyRetry=true;
     auto readyCache=upgrade(paging,resources,abort,0,&readyRetry);
     require(readyCache==candidate && !readyRetry && built(mask)==pendingBuilt,
@@ -1114,9 +1202,15 @@ int main(int argc,char** argv) try
         "context release must draw visible original geometry without optional consumption");
     // Immutable original-source controller rejection must survive paging CopyOp.
     auto negativePopulation=population;
-    auto templateNode=scenes->getTemplate(VFS::Path::Normalized("meshes/"+population.front().model.value()),false);
-    auto callbackSource=osg::clone(templateNode.get(),osg::CopyOp::DEEP_COPY_NODES|osg::CopyOp::DEEP_COPY_DRAWABLES);
-    callbackSource->setCullCallback(new Callback); negativePopulation.front().original=callbackSource;
+    // This is an all-controller negative. With multiple requested material
+    // families, changing only the first reference must not forbid an unrelated
+    // still-eligible family from cooking.
+    for(auto& reference:negativePopulation) if(!reference.occluderOwner)
+    {
+        auto templateNode=scenes->getTemplate(VFS::Path::Normalized("meshes/"+reference.model.value()),false);
+        auto callbackSource=osg::clone(templateNode.get(),osg::CopyOp::DEEP_COPY_NODES|osg::CopyOp::DEEP_COPY_DRAWABLES);
+        callbackSource->setCullCallback(new Callback);reference.original=callbackSource;
+    }
     MWRender::ObjectPaging negative(scenes,ESM::Cell::sDefaultWorldspaceId); negative.setAssetMainCamera(camera); negative.setFixturePopulation(negativePopulation);
     Registered negativeRegistration(resources,&negative);
     const auto rejectionBefore=(mask&A::Lod ? A::Counters::lod.sourceRejected.load() : A::Counters::hlod.sourceRejected.load());
@@ -1159,8 +1253,13 @@ int main(int argc,char** argv) try
     {
         auto sharedPopulation=population;
         sharedPopulation.pop_back(); // Replace only the distinct ordinary reference.
-        auto ordinaryShared=sharedPopulation.front(); ordinaryShared.occluderOwner=true;
-        ordinaryShared.position={0,0,0}; sharedPopulation.push_back(ordinaryShared);
+        const auto sharedCandidates=sharedPopulation;
+        std::set<VFS::Path::Normalized> sharedModels;
+        for(const auto& candidate:sharedCandidates) if(sharedModels.insert(candidate.model).second)
+        {
+            auto ordinaryShared=candidate;ordinaryShared.occluderOwner=true;
+            ordinaryShared.position={0,float(sharedModels.size()-1)*600.f,0};sharedPopulation.push_back(ordinaryShared);
+        }
         MWRender::ObjectPaging shared(scenes,ESM::Cell::sDefaultWorldspaceId);
         shared.setAssetMainCamera(camera); shared.setFixturePopulation(sharedPopulation);
         Registered sharedRegistration(resources,&shared);
@@ -1186,8 +1285,13 @@ int main(int argc,char** argv) try
             <<" baseline_submissions="<<baselineTopology.submissions<<" fallback_submissions="<<fallbackTopology.submissions
             <<" exact_indices=1 control_preserved=1 terminal_stops_retry=1\n";
         auto unsupportedPopulation=population;unsupportedPopulation.pop_back();
-        auto unsupported=unsupportedPopulation.front();unsupported.type=ESM::REC_MISC;
-        unsupported.position={0,0,0};unsupportedPopulation.push_back(unsupported);
+        const auto supportedCandidates=unsupportedPopulation;
+        std::set<VFS::Path::Normalized> unsupportedModels;
+        for(const auto& candidate:supportedCandidates) if(unsupportedModels.insert(candidate.model).second)
+        {
+            auto unsupported=candidate;unsupported.type=ESM::REC_MISC;
+            unsupported.position={0,float(unsupportedModels.size()-1)*600.f,0};unsupportedPopulation.push_back(unsupported);
+        }
         MWRender::ObjectPaging unsupportedPaging(scenes,ESM::Cell::sDefaultWorldspaceId);
         unsupportedPaging.setAssetMainCamera(camera);unsupportedPaging.setFixturePopulation(unsupportedPopulation);
         Registered unsupportedRegistration(resources,&unsupportedPaging);
@@ -1559,6 +1663,16 @@ int main(int argc,char** argv) try
     viewer.setSceneData(nullptr); viewer.setIncrementalCompileOperation(nullptr); scenes->setIncrementalCompileOperation(nullptr);
     viewer.stopThreading(); resources.releaseGLObjects(context->getState()); context->close(); R::AssetGpuBudget::discardAfterContextsClosed();
     require(resources.speculativeBudget()->stats().futureBytes==0,"production preparation stages must release bounded CPU overlap");
+    if(inputs.experimentBudget)
+    {
+        const auto stats=resources.speculativeBudget()->stats();
+        require(!stats.experimentFutureBytes && !stats.experimentJobs
+            && stats.experimentPeakTotalBytes<=limits.experimentLimit && stats.experimentPeakFutureBytes<=limits.experimentScratchLimit,
+            "full actual replay/invalidation fixture must not leak experimental scratch or exceed either child ceiling");
+        std::cout<<"CHAIN_EXPERIMENT_SETTLED retained="<<stats.experimentRetainedBytes<<" future="<<stats.experimentFutureBytes
+            <<" jobs="<<stats.experimentJobs<<" source_pins="<<stats.experimentSourcePins
+            <<" retained_owners_still_referenced=1 scratch_released=1\n";
+    }
     std::cout<<"CHAIN_PASS source_population_substituted=1 source_loader_substituted=0 cook_substituted=0 readiness_substituted=0 cpu_limit="<<R::AssetPolicy::CpuTransientLimit<<'\n';
     return 0;
 }

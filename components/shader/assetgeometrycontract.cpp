@@ -485,25 +485,30 @@ namespace Shader::AssetGeometry
     }
     const Samplers& Snapshot::samplers() const {static const Samplers empty; return mData ? mData->proof->samplers : empty;}
     std::size_t Snapshot::metadataBytes() const {return mData ? mData->bytes : 0;}
-    std::optional<Snapshot> capture(const osg::Program& program, const std::vector<const osg::StateSet*>& path)
+    std::optional<Snapshot> capture(const osg::Program& program, const std::vector<const osg::StateSet*>& path,
+        Refusal* refusal)
     {
         ProducerReadScope producer;
+        if (refusal) *refusal = Refusal::None;
+        const auto fail = [refusal](Refusal reason)->std::optional<Snapshot>
+        { if (refusal) *refusal = reason; return {}; };
         try
         {
             const auto* proof = certificate(program);
-            if (!proof || !proof->data || proof->data->current(program) != Refusal::None) return {};
-            const auto size = pathScratch(program,path); if (!size) return {};
+            if (!proof || !proof->data) return fail(Refusal::Missing);
+            if (const auto reason = proof->data->current(program); reason != Refusal::None) return fail(reason);
+            const auto size = pathScratch(program,path); if (!size) return fail(Refusal::Capacity);
             const auto scratch = reserve(*size);
             auto imported = ProgramDefineSnapshot::fromStateSets(program,path);
-            if (!safeImports(imported)) return {};
+            if (!safeImports(imported)) return fail(Refusal::Defines);
             const auto bytes = importedBytes(imported) + sizeof(SnapshotData);
-            if (bytes > MaximumRecordBytes) return {};
+            if (bytes > MaximumRecordBytes) return fail(Refusal::Capacity);
             auto charge = reserve(bytes);
             auto data = std::make_shared<SnapshotData>(); data->bytes = bytes;
             data->charge = std::move(charge); data->proof = proof->data; data->imported = std::move(imported);
             return Snapshot(std::move(data));
         }
-        catch (const std::bad_alloc&) {return {};}
+        catch (const std::bad_alloc&) {return fail(Refusal::Capacity);}
     }
     Refusal current(const Snapshot& snapshot, const osg::Program& program, osg::State* state)
     {

@@ -58,11 +58,13 @@ namespace SceneUtil::AssetPaging
     {
     public:
         HostOwner() = default;
-        explicit HostOwner(Resource::SpeculativeBudget::ChargePtr charge) : mCharge(std::move(charge)) {}
-        HostOwner(const HostOwner& copy, const osg::CopyOp& op) : osg::Object(copy,op), mCharge(copy.mCharge) {}
+        explicit HostOwner(Resource::SpeculativeBudget::ChargePtr charge,Resource::SpeculativeBudget::SourcePinPtr pin={})
+            : mCharge(std::move(charge)),mPin(std::move(pin)) {}
+        HostOwner(const HostOwner& copy, const osg::CopyOp& op) : osg::Object(copy,op), mCharge(copy.mCharge),mPin(copy.mPin) {}
         META_Object(SceneUtil, HostOwner)
     private:
         Resource::SpeculativeBudget::ChargePtr mCharge;
+        Resource::SpeculativeBudget::SourcePinPtr mPin;
     };
     // Every allocation was admitted by private/cook stages. Transfer its
     // conservative retained estimate before the stages unwind or ICO sees it.
@@ -75,6 +77,23 @@ namespace SceneUtil::AssetPaging
         auto charge = Resource::SpeculativeScope::track(context.budget,{&node,2u},estimate,false);
         node.getOrCreateUserDataContainer()->addUserObject(new HostOwner(std::move(charge)));
     }
+    inline bool retainExperimentalOwner(osg::Node& derived,std::uint64_t incrementalBytes,const osg::Node* borrowedSource,
+        Resource::SpeculativeScope::Stage* admission=nullptr,unsigned kind=2u,std::uint64_t borrowedEstimate=0)
+    {
+        const auto context=Resource::SpeculativeScope::capture();
+        if(!context.budget || !context.budget->experimentEnabled()) return false;
+        if(!admission && !context.experimental) throw Resource::SpeculativeDeferred{};
+        auto pin=borrowedSource ? context.budget->pinSource({borrowedSource,2u},
+            borrowedEstimate ? borrowedEstimate : GeneratedStaticLod::sourceBytes(*borrowedSource))
+            : Resource::SpeculativeBudget::SourcePinPtr{};
+        auto charge=admission ? admission->track({&derived,kind},incrementalBytes,false)
+            : Resource::SpeculativeScope::track(context.budget,{&derived,kind},incrementalBytes,false);
+        if(!charge) throw Resource::SpeculativeDeferred{};
+        derived.getOrCreateUserDataContainer()->addUserObject(new HostOwner(std::move(charge),std::move(pin)));
+        return true;
+    }
+    void retainPagingOwners(osg::Node& root,std::uint64_t controlBytes,std::uint64_t privateBytes,
+        std::uint64_t derivedBytes,Resource::SpeculativeScope::Stage* privateAdmission);
     struct Outcome
     {
         unsigned allowed = Mask;

@@ -14,6 +14,7 @@
 #include "persistentopaquepackets.hpp"
 #include "pagingwork.hpp"
 #include "generatedstaticlod.hpp"
+#include "assetpaging.hpp"
 #include <components/resource/assetgpubudget.hpp>
 #include <components/resource/derivedassetcache.hpp>
 #include <components/resource/speculativebudget.hpp>
@@ -876,6 +877,11 @@ namespace SceneUtil
             result.proxySubmissions+=proxy->getNumPrimitiveSets();
             }
             if(result.proxySubmissions>=result.controlSubmissions) throw std::runtime_error("no actual submission reduction");
+            // Adopt the incremental atlas/vertex/index representation while its
+            // original cooking reservation still exists. Guard snapshots own
+            // separate canonical charges; control and source arrays stay shared.
+            AssetPaging::retainExperimentalOwner(*bounded,result.atlasBytes+outputBytes
+                +result.proxySubmissions*8192ull+65536,&optimizedControl);
             result.representation=bounded;
             ++HlodCounters::built;HlodCounters::controlSubmissions+=result.controlSubmissions;
             HlodCounters::proxySubmissions+=result.proxySubmissions;HlodCounters::atlasBytes+=result.atlasBytes;

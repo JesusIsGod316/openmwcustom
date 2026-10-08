@@ -69,6 +69,21 @@ namespace Settings
             EXPECT_EQ(value.get(), 42);
         }
 
+        TEST_F(SettingsValuesTest, legacyAndCanonicalManagerReadsUseDescriptivePrecedence)
+        {
+            Manager::mDefaultSettings[{ "Optimizations", "legacy performance profile" }] = "true";
+            Manager::mUserSettings[{ "V3", "v3.6 performance profile" }] = "false";
+            EXPECT_FALSE(Manager::getBool("legacy performance profile", "Optimizations"));
+            EXPECT_FALSE(Manager::getOrDefault<bool>("v3.6 performance profile", "V3", true));
+            Manager::mUserSettings[{ "Optimizations", "legacy performance profile" }] = "true";
+            EXPECT_TRUE(Manager::getBool("v3.6 performance profile", "V3"));
+            Manager::setBool("v3.6 performance profile", "V3", true);
+            EXPECT_FALSE(Manager::mUserSettings.contains({ "V3", "v3.6 performance profile" }));
+            Manager::setBool("v3.6 performance profile", "V3", false);
+            EXPECT_FALSE(Manager::mUserSettings.contains({ "V3", "v3.6 performance profile" }));
+            EXPECT_EQ(Manager::mUserSettings.at({ "Optimizations", "legacy performance profile" }), "false");
+        }
+
         TEST_F(SettingsValuesTest, constructorWithDefaultShouldSanitize)
         {
             Manager::mUserSettings[std::make_pair("category", "value")] = "2";

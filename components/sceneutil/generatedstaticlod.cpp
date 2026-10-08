@@ -111,6 +111,13 @@ namespace SceneUtil::GeneratedStaticLod
                 || type==typeid(osg::AlphaFunc) || type==typeid(osg::BlendFunc) || type==typeid(osg::TexEnv)
                 || type==typeid(SceneUtil::TextureType);
         }
+        template<std::size_t N>
+        void guardText(std::array<char,N>& out, std::string_view text) noexcept
+        {
+            out.fill(0);
+            for(std::size_t i=0;i<std::min(text.size(),N-1);++i)
+                out[i]=static_cast<unsigned char>(text[i])<32 || text[i]=='"' ? '?' : text[i];
+        }
         struct OriginalReceipt final : PersistentOpaquePackets::RetainedOpaqueDrawCallback
         {
             osg::ref_ptr<osg::Drawable::DrawCallback> delegate;
@@ -498,6 +505,20 @@ namespace SceneUtil::GeneratedStaticLod
             "reduction","gpu_admission","gpu_retention","lineage","replay","guard","publication"};
         return static_cast<unsigned>(value) < static_cast<unsigned>(BuildStep::Count) ? names[static_cast<unsigned>(value)] : "unknown";
     }
+    const char* guardRefusalName(GuardRefusal value)
+    {
+        constexpr const char* names[]{"none","path_capacity","null_node","child_capacity","stream_capacity",
+            "state_capacity","uniform_recipe","define_capacity","attribute_recipe","texture_capacity",
+            "texture_class","texture_image","texture_mips","texture_format","texture_dynamic",
+            "metadata_capacity","transform_recipe","shader_missing","shader_imports","shader_certificate",
+            "snapshot_allocation","snapshot_exception","stale"};
+        return static_cast<unsigned>(value)<static_cast<unsigned>(GuardRefusal::Count) ? names[static_cast<unsigned>(value)] : "unknown";
+    }
+    const char* guardPhaseName(GuardPhase value)
+    {
+        constexpr const char* names[]{"none","preflight","snapshot","publication"};
+        return static_cast<unsigned>(value)<std::size(names) ? names[static_cast<unsigned>(value)] : "unknown";
+    }
     void recordBuildFailure(BuildStep step, Result& result, std::string_view identity,
         std::uint64_t peak, const Resource::SpeculativeReservationReceipt* cpu) noexcept
     {
@@ -505,7 +526,15 @@ namespace SceneUtil::GeneratedStaticLod
         const unsigned slot = static_cast<unsigned>(step);
         if (!slot || slot >= static_cast<unsigned>(BuildStep::Count)) return;
         ++Counters::buildFailures[slot];
-        if (Counters::firstBuildFailure[slot].exchange(true)) return;
+        const bool firstStage=!Counters::firstBuildFailure[slot].exchange(true);
+        bool firstGuard=false;
+        if(result.guardRefusal.reason!=GuardRefusal::None)
+        {
+            const auto reason=static_cast<unsigned>(result.guardRefusal.reason);
+            ++Counters::guardRefused[reason];
+            firstGuard=!Counters::firstGuardFailure[reason].exchange(true);
+        }
+        if(!firstStage && !firstGuard) return;
         try
         {
             std::array<char,193> prefix{};
@@ -517,7 +546,7 @@ namespace SceneUtil::GeneratedStaticLod
             std::uint64_t hash=14695981039346656037ull;
             for (unsigned char c:identity) {hash^=c;hash*=1099511628211ull;}
             std::ostringstream message;
-            message << "OptimizedMW L1 build first refusal: step=" << buildStepName(step)
+            message << (firstStage ? "OptimizedMW L1 build first refusal: step=" : "OptimizedMW L1 guard first refusal: step=") << buildStepName(step)
                 << " identity_hash=" << hash << " identity_prefix=\"" << prefix.data() << '"'
                 << " peak_bytes=" << peak << " new_index_bytes=" << result.newIndexBytes
                 << " gpu_reason_bits=" << result.gpuRefusalReasons << " retryable=" << result.retryable
@@ -525,7 +554,17 @@ namespace SceneUtil::GeneratedStaticLod
                 << " cpu_reservation_receipt=" << (cpu!=nullptr)
                 << " cpu_reason_bits=" << (cpu ? cpu->reasons : 0)
                 << " cpu_requested=" << (cpu ? cpu->requested : 0)
-                << " cpu_extra=" << (cpu ? cpu->extra : 0);
+                << " cpu_extra=" << (cpu ? cpu->extra : 0)
+                << " guard_schema=1 guard_phase=" << guardPhaseName(result.guardPhase)
+                << " guard_reason=" << guardRefusalName(result.guardRefusal.reason)
+                << " guard_node_class=\"" << result.guardRefusal.nodeClass.data() << '"'
+                << " guard_node_name=\"" << result.guardRefusal.nodeName.data() << '"'
+                << " guard_attribute_class=\"" << result.guardRefusal.attributeClass.data() << '"'
+                << " guard_program_name=\"" << result.guardRefusal.programName.data() << '"'
+                << " guard_texture_unit=" << result.guardRefusal.textureUnit
+                << " guard_attribute_type=" << result.guardRefusal.attributeType
+                << " guard_shader_refusal=" << result.guardRefusal.shaderRefusal
+                << " guard_observed=" << result.guardRefusal.observed << " guard_limit=" << result.guardRefusal.limit;
             Log(Debug::Info) << message.str();
         }
         catch (...) {} // Diagnostics may never turn an ordinary fallback into an exception.
@@ -999,77 +1038,112 @@ namespace SceneUtil::GeneratedStaticLod
         std::vector<Node> nodes;
         std::vector<Program> programs;
     };
-    std::shared_ptr<MaterialGuard> MaterialGuard::captureDraws(std::span<const OriginalDraw> original,const OriginalDraw& derived,bool requireShader)
+    std::shared_ptr<MaterialGuard> MaterialGuard::captureDraws(std::span<const OriginalDraw> original,
+        const OriginalDraw& derived,bool requireShader,GuardRefusalInfo* refusal)
     {
         // Non-certified HLOD recipes also read mutable Program/Shader source
         // and import lists. Hold the producer's read lease for one coherent
         // snapshot, including nested AssetGeometry certification calls.
         Shader::AssetGeometry::ProducerReadScope producerRead;
-        if(original.size()>128 || derived.path.size()>32) return {};
-        for(const auto& draw:original) if(draw.path.size()>32) return {};
+        GuardRefusalInfo local;
+        auto& info=refusal ? *refusal : local;
+        info={};
+        const auto fail=[&](GuardRefusal reason,std::uint64_t observed=0,std::uint64_t limit=0)->std::shared_ptr<MaterialGuard>
+        {info.reason=reason;info.observed=observed;info.limit=limit;return {};};
+        const auto nodeContext=[&](const osg::Node* node) {
+            guardText(info.nodeClass,node ? node->className() : "");
+            guardText(info.nodeName,node ? std::string_view(node->getName()) : std::string_view{});
+            info.attributeClass.fill(0);info.programName.fill(0);
+            info.textureUnit=info.attributeType=~0u;info.shaderRefusal=0;
+        };
+        const auto attributeContext=[&](const osg::StateAttribute* attribute,unsigned type,unsigned unit=~0u) {
+            guardText(info.attributeClass,attribute ? attribute->className() : "");
+            info.attributeType=type;info.textureUnit=unit;
+        };
+        try
+        {
+        if(original.size()>128)
+            return fail(GuardRefusal::PathCapacity,original.size(),128);
+        if(derived.path.size()>32)
+            return fail(GuardRefusal::PathCapacity,derived.path.size(),32);
+        for(const auto& draw:original) if(draw.path.size()>32)
+            return fail(GuardRefusal::PathCapacity,draw.path.size(),32);
         Resource::SpeculativeScope::Stage preflight(256*1024,0);
         std::vector<OriginalDraw> paths(original.begin(),original.end());paths.push_back(derived);
         std::set<const osg::Node*> unique;
         std::uint64_t estimate=4096;
         for(const auto& draw:paths)
         {
-            if(draw.path.size()>32 || paths.size()>129) return {};
+            if(draw.path.size()>32 || paths.size()>129) return fail(GuardRefusal::PathCapacity,draw.path.size(),32);
             for(const auto& node:draw.path) if(unique.insert(node.get()).second)
             {
-                if(!node) return {};
+                nodeContext(node.get());
+                if(!node) return fail(GuardRefusal::NullNode);
                 estimate+=4096;
                 if(const auto* group=node->asGroup())
-                {if(group->getNumChildren()>1024) return {};estimate+=group->getNumChildren()*32ull;}
+                {if(group->getNumChildren()>1024) return fail(GuardRefusal::ChildCapacity,group->getNumChildren(),1024);estimate+=group->getNumChildren()*32ull;}
+                if(const auto* transform=node->asTransform())
+                {osg::Matrixd matrix;if(!transform->computeLocalToWorldMatrix(matrix,nullptr)) return fail(GuardRefusal::TransformRecipe);}
                 if(const auto* geometry=dynamic_cast<const osg::Geometry*>(node.get()))
                 {
                     const auto streams=5ull+geometry->getNumTexCoordArrays()+geometry->getNumVertexAttribArrays()+geometry->getNumPrimitiveSets();
-                    if(streams>64) return {};estimate+=streams*512;
+                    if(streams>64) return fail(GuardRefusal::StreamCapacity,streams,64);estimate+=streams*512;
                 }
                 if(const auto* ss=node->getStateSet())
                 {
-                    if(ss->getName().size()>4096 || ss->getUniformList().size()>128 || ss->getAttributeList().size()>64 || ss->getTextureAttributeList().size()>32 || ss->getDefineList().size()>128) return {};
+                    if(ss->getName().size()>4096 || ss->getUniformList().size()>128 || ss->getAttributeList().size()>64 || ss->getTextureAttributeList().size()>32 || ss->getDefineList().size()>128)
+                        return fail(GuardRefusal::StateCapacity);
                     for(const auto& [name,pair]:ss->getUniformList())
-                    {if(typeid(*pair.first)!=typeid(osg::Uniform) || pair.first->getUpdateCallback() || pair.first->getEventCallback()
-                        || pair.first->getNumElements()>4096 || name.size()>1024) return {};estimate+=1024+pair.first->getNumElements()*256ull;}
+                    {if(!pair.first || typeid(*pair.first)!=typeid(osg::Uniform) || pair.first->getUpdateCallback() || pair.first->getEventCallback()
+                        || pair.first->getNumElements()>4096 || name.size()>1024) return fail(GuardRefusal::UniformRecipe);estimate+=1024+pair.first->getNumElements()*256ull;}
                     for(const auto& [name,pair]:ss->getDefineList())
-                    {if(name.size()>1024 || pair.first.size()>4096) return {};estimate+=name.size()+pair.first.size()+64;}
+                    {if(name.size()>1024 || pair.first.size()>4096) return fail(GuardRefusal::DefineCapacity);estimate+=name.size()+pair.first.size()+64;}
                     for(const auto& [key,pair]:ss->getAttributeList())
                     {
-                        if(pair.first->getName().size()>4096 || (key.first!=osg::StateAttribute::PROGRAM && !boundedAttribute(*pair.first))) return {};
+                        attributeContext(pair.first.get(),key.first);
+                        if(!pair.first || pair.first->getName().size()>4096 || (key.first!=osg::StateAttribute::PROGRAM && !boundedAttribute(*pair.first)))
+                            return fail(GuardRefusal::AttributeRecipe);
                         estimate+=1024+pair.first->getName().size()*2ull;
                         if(!requireShader && key.first==osg::StateAttribute::PROGRAM)
                         {
-                            const auto* program=dynamic_cast<const osg::Program*>(pair.first.get());if(!program || program->getNumShaders()>32) return {};
+                            const auto* program=dynamic_cast<const osg::Program*>(pair.first.get());if(!program || program->getNumShaders()>32) return fail(GuardRefusal::ShaderMissing);
                             for(unsigned i=0;i<program->getNumShaders();++i)
-                            {const auto size=program->getShader(i)->getShaderSource().size();if(size>64*1024) return {};estimate+=size*2ull;}
+                            {const auto size=program->getShader(i)->getShaderSource().size();if(size>64*1024) return fail(GuardRefusal::MetadataCapacity,size,64*1024);estimate+=size*2ull;}
                         }
                     }
                     unsigned textureAttributes=0;
+                    unsigned unitIndex=0;
                     for(const auto& unit:ss->getTextureAttributeList())
                     {
-                        if(unit.size()>16) return {};
+                        if(unit.size()>16) return fail(GuardRefusal::TextureCapacity,unit.size(),16);
                         for(const auto& [key,pair]:unit)
                         {
-                            if(++textureAttributes>128 || pair.first->getName().size()>4096) return {};estimate+=1024+pair.first->getName().size()*2ull;
+                            attributeContext(pair.first.get(),key.first,unitIndex);
+                            if(!pair.first) return fail(GuardRefusal::AttributeRecipe);
+                            if(++textureAttributes>128 || pair.first->getName().size()>4096) return fail(GuardRefusal::TextureCapacity,textureAttributes,128);estimate+=1024+pair.first->getName().size()*2ull;
                             if(key.first==osg::StateAttribute::TEXTURE)
                             {
                                 const auto* texture=dynamic_cast<const osg::Texture2D*>(pair.first.get());
-                                if(!texture || texture->getNumImages()!=1 || !texture->getImage()
-                                    || texture->getImage()->getMipmapLevels().size()>32
-                                    || (texture->getInternalFormatMode()!=osg::Texture::USE_IMAGE_DATA_FORMAT && texture->getInternalFormatMode()!=osg::Texture::USE_USER_DEFINED_FORMAT)) return {};
+                                if(!texture || texture->getNumImages()!=1) return fail(GuardRefusal::TextureClass);
+                                if(!texture->getImage()) return fail(GuardRefusal::TextureImage);
+                                if(texture->getImage()->getMipmapLevels().size()>32) return fail(GuardRefusal::TextureMips,texture->getImage()->getMipmapLevels().size(),32);
+                                if(texture->getInternalFormatMode()!=osg::Texture::USE_IMAGE_DATA_FORMAT && texture->getInternalFormatMode()!=osg::Texture::USE_USER_DEFINED_FORMAT)
+                                    return fail(GuardRefusal::TextureFormat,texture->getInternalFormatMode());
+                                if(texture->getSubloadCallback() || texture->getImage()->requiresUpdateCall()) return fail(GuardRefusal::TextureDynamic);
                                 estimate+=texture->getImage()->getMipmapLevels().size()*16ull;
                             }
-                            else if(!boundedAttribute(*pair.first)) return {};
+                            else if(!boundedAttribute(*pair.first)) return fail(GuardRefusal::AttributeRecipe);
                         }
+                        ++unitIndex;
                     }
                 }
-                if(unique.size()>2048 || estimate>4*Resource::SpeculativeBudget::MiB) return {};
+                if(unique.size()>2048 || estimate>4*Resource::SpeculativeBudget::MiB) return fail(GuardRefusal::MetadataCapacity,estimate,4*Resource::SpeculativeBudget::MiB);
             }
         }
-        if(unique.size()>2048 || estimate>4*Resource::SpeculativeBudget::MiB) return {};
+        if(unique.size()>2048 || estimate>4*Resource::SpeculativeBudget::MiB) return fail(GuardRefusal::MetadataCapacity,estimate,4*Resource::SpeculativeBudget::MiB);
         Resource::SpeculativeScope::Stage admission(estimate,0);
         auto data=std::make_shared<Impl>();data->nodes.reserve(unique.size());
-        for(const auto* node:unique) data->nodes.emplace_back(*node);
+        for(const auto* node:unique) {nodeContext(node);data->nodes.emplace_back(*node);}
         for(const auto& draw:paths)
         {
             std::vector<const osg::StateSet*> states;
@@ -1077,27 +1151,46 @@ namespace SceneUtil::GeneratedStaticLod
             // Resolve OVERRIDE/PROTECTED exactly as OSG does, rather than
             // trusting a root Program while an authored child supplies another.
             const auto* program=effectiveProgram(states);
-            if(!program) {if(requireShader) return {};continue;}
+            nodeContext(draw.geometry.get());
+            if(!program) {if(requireShader) return fail(GuardRefusal::ShaderMissing);continue;}
+            guardText(info.programName,program->getName());
             const auto imports=Shader::ProgramDefineSnapshot::fromStateSets(*program,states);
-            if(!imports.bounded) return {};
+            if(!imports.bounded) return fail(GuardRefusal::ShaderImports);
             if(std::any_of(data->programs.begin(),data->programs.end(),[&](const auto& p){return p.owner==program && p.imports==imports.string;})) continue;
             Impl::Program entry;entry.owner=program;entry.imports=imports.string;
             for(const auto& node:draw.path) entry.path.emplace_back(node.get());
             if(requireShader)
-            {auto snapshot=Shader::AssetGeometry::capture(*program,states);if(!snapshot) return {};entry.snapshot=*snapshot;}
+            {Shader::AssetGeometry::Refusal reason=Shader::AssetGeometry::Refusal::None;
+                auto snapshot=Shader::AssetGeometry::capture(*program,states,&reason);
+                if(!snapshot) {info.shaderRefusal=static_cast<unsigned>(reason);return fail(GuardRefusal::ShaderCertificate);}entry.snapshot=*snapshot;}
             else for(unsigned i=0;i<program->getNumShaders();++i) entry.sources.push_back(program->getShader(i)->getShaderSource());
             data->programs.push_back(std::move(entry));
         }
         const auto context=Resource::SpeculativeScope::capture();
         if(context.budget) data->hostCharge=Resource::SpeculativeScope::track(context.budget,{data.get(),3u},estimate,false);
+        info={};
         return std::shared_ptr<MaterialGuard>(new MaterialGuard(std::move(data)));
+        }
+        catch(const Resource::SpeculativeDeferred&) {throw;}
+        catch(const std::bad_alloc&) {info.reason=GuardRefusal::SnapshotAllocation;throw;}
+        catch(const std::exception&) {return fail(GuardRefusal::SnapshotException);}
     }
-    std::shared_ptr<MaterialGuard> MaterialGuard::capture(const osg::Node& original,const osg::Node& derived,bool requireShader)
+    std::shared_ptr<MaterialGuard> MaterialGuard::capture(const osg::Node& original,const osg::Node& derived,
+        bool requireShader,GuardRefusalInfo* refusal)
     {
+        if(refusal) *refusal={};
         auto paths=originalDraws(original);auto tiers=originalDraws(derived);
-        if(paths.empty() || tiers.empty() || paths.size()+tiers.size()>128) return {};
+        if(paths.empty() || tiers.empty() || paths.size()+tiers.size()>128)
+        {if(refusal) {refusal->reason=GuardRefusal::PathCapacity;refusal->observed=paths.size()+tiers.size();refusal->limit=128;}return {};}
         const auto last=tiers.back();tiers.pop_back();paths.insert(paths.end(),tiers.begin(),tiers.end());
-        return captureDraws(paths,last,requireShader);
+        return captureDraws(paths,last,requireShader,refusal);
+    }
+    bool MaterialGuard::preflight(const osg::Node& original,GuardRefusalInfo* refusal)
+    {
+        // Original-to-original invokes the exact final recipe contract before
+        // any simplification/clone allocation. This temporary snapshot is not
+        // retained and never substitutes for the final derived snapshot.
+        return bool(capture(original,original,true,refusal));
     }
     bool MaterialGuard::current(osg::State* state,const std::vector<const osg::StateSet*>& inherited) const
     {
@@ -1172,14 +1265,15 @@ namespace SceneUtil::GeneratedStaticLod
         : osg::Group(copy, op), mError(copy.mError), mReadiness(std::make_shared<Readiness>()), mMainCamera(copy.mMainCamera)
         , mPreserveControlPopulation(copy.mPreserveControlPopulation) {}
     Group::Group(osg::Node& originalNode, osg::Node& derivedNode, float absoluteError,
-        std::shared_ptr<Readiness> readiness, osg::Camera* mainCamera, bool preserveControlPopulation)
+        std::shared_ptr<Readiness> readiness, osg::Camera* mainCamera, bool preserveControlPopulation,
+        GuardRefusalInfo* refusal)
         : mError(absoluteError), mReadiness(std::move(readiness)), mMainCamera(mainCamera)
         , mPreserveControlPopulation(preserveControlPopulation)
     {
         setNodeMask(originalNode.getNodeMask()); setDataVariance(osg::Object::DYNAMIC);
         addChild(&originalNode); addChild(&derivedNode);
         setName("OptimizedMW-generated-static-LOD");
-        mMaterialGuard=MaterialGuard::capture(originalNode,derivedNode);
+        mMaterialGuard=MaterialGuard::capture(originalNode,derivedNode,true,refusal);
     }
     osg::BoundingSphere Group::computeBound() const
     {
@@ -1296,7 +1390,8 @@ namespace SceneUtil::GeneratedStaticLod
             if (reserveGpu && (!PagingWorkScope::optionalOptimization() || !Resource::SpeculativeScope::active()))
             { fail(Refusal::Capacity); return result; }
             step=BuildStep::Inspection;
-            if (auto r=inspect(original);r!=Refusal::None) {fail(r);return result;}
+            Size inspected;
+            if (auto r=inspectNode(original,inspected,0);r!=Refusal::None) {fail(r);return result;}
             struct Originals final : osg::NodeVisitor
             {
                 Originals() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
@@ -1320,6 +1415,10 @@ namespace SceneUtil::GeneratedStaticLod
                         buffers=buffers && hasVbo(geometry->getTexCoordArray(unit));
                     if (!buffers) {fail(Refusal::Graph);return result;}
                 }
+            step=BuildStep::Guard;result.guardPhase=GuardPhase::Preflight;
+            if(!MaterialGuard::preflight(original,&result.guardRefusal))
+            {fail(Refusal::Material);return result;}
+            result.guardPhase=GuardPhase::None;
             step=BuildStep::Peak;
             const auto graphPeak=cookPeakBytes(original);
             peak=graphPeak+identity.size()*2ull;
@@ -1387,7 +1486,7 @@ namespace SceneUtil::GeneratedStaticLod
             const auto sourcePaths=originalDraws(original),tierPaths=originalDraws(*derived);
             if (sourcePaths.size()!=tierPaths.size()) throw std::runtime_error("LOD material replay lineage mismatch");
             if (!installOriginalDrawReceipts(original)) throw std::runtime_error("LOD original callback replay unavailable");
-            step=BuildStep::Guard;
+            step=BuildStep::Guard;result.guardPhase=GuardPhase::Snapshot;
             for (std::size_t i=0;i<tierPaths.size();++i)
             {
                 auto* tier=tierPaths[i].geometry.get();
@@ -1395,13 +1494,24 @@ namespace SceneUtil::GeneratedStaticLod
                 callback->owner=tier;tier->setDrawCallback(callback);
                 callback->originals.push_back(sourcePaths[i]);callback->derivedMatrix=tierPaths[i].matrix;
                 for (const auto& node:tierPaths[i].path) if (node->getStateSet()) callback->candidateStates.emplace_back(node->getStateSet());
-                callback->guard=MaterialGuard::captureDraws({&sourcePaths[i],1},tierPaths[i]);
-                if (!callback->guard) throw std::runtime_error("LOD material replay proof unavailable");
+                callback->guard=MaterialGuard::captureDraws({&sourcePaths[i],1},tierPaths[i],true,&result.guardRefusal);
+                if (!callback->guard) {fail(Refusal::Material);return result;}
             }
-            step=BuildStep::Publication;
+            step=BuildStep::Publication;result.guardPhase=GuardPhase::Publication;
+            // Only new cloned node/primitive/container metadata and reduced
+            // EBO payloads are incremental. Shared arrays/materials remain on
+            // the ordinary owner; guard Impls have their own child charges.
+            const auto retained=cook.newIndexBytes+inspected.graphBytes+inspected.geometries*8192ull+8192;
+            if(retained>peak) {fail(Refusal::Capacity);return result;}
+            AssetPaging::retainExperimentalOwner(*derived,retained,&original,nullptr,2u,inspected.bytes);
             result.readiness=std::make_shared<Readiness>();
-            result.node=new Group(original,*derived,cook.error,result.readiness,mainCamera);
-            if (!result.node->materialGuardCurrent()) throw std::runtime_error("LOD publication guard unavailable or stale");
+            result.node=new Group(original,*derived,cook.error,result.readiness,mainCamera,false,&result.guardRefusal);
+            if (!result.node->materialGuardCurrent())
+            {
+                if(result.guardRefusal.reason==GuardRefusal::None) result.guardRefusal.reason=GuardRefusal::Stale;
+                result.node=nullptr;result.readiness.reset();fail(Refusal::Material);return result;
+            }
+            result.guardPhase=GuardPhase::None;
             rollback.committed=true;
             ++Counters::built;Counters::originalIndices.fetch_add(cook.before);Counters::derivedIndices.fetch_add(cook.after);
             Counters::newIndexGpuBytes.fetch_add(cook.newIndexBytes);
@@ -1411,7 +1521,12 @@ namespace SceneUtil::GeneratedStaticLod
         {fail(Refusal::Capacity,true,error.reservation ? &*error.reservation : nullptr);}
         catch (const std::bad_alloc&)
         {result.allocationFailure=true;fail(Refusal::Capacity);}
-        catch (...) {fail(Refusal::Capacity);}
+        catch (...)
+        {
+            if(result.guardPhase!=GuardPhase::None && result.guardRefusal.reason==GuardRefusal::None)
+                result.guardRefusal.reason=GuardRefusal::SnapshotException;
+            fail(Refusal::Capacity);
+        }
         return result;
     }
 }

@@ -21,6 +21,9 @@
 #include <osg/LOD>
 #include <osg/MatrixTransform>
 #include <osg/NodeCallback>
+#include <osg/TexMat>
+#include <osg/Texture2D>
+#include <osg/Uniform>
 #include <osgViewer/Viewer>
 #include <algorithm>
 #include <array>
@@ -241,6 +244,36 @@ int main(int argc, char** argv) try
     require(selectedSource.valid() && L1::certify(*selectedSource)==L1::Refusal::None,
         "source-certificate fixtures require the exact immutable pre-build control without derived receipts");
     require(selected.derivedIndices < selected.originalIndices && !selected.readiness->ready, "reduced immutable tier starts unprepared");
+    {
+        // These recipes passed the historical opaque/shader certificate, then
+        // failed only after simplification. The exact shared preflight must
+        // now reject before touching disk products or reduced index resources.
+        for(unsigned recipe=0;recipe<3;++recipe)
+        {
+            osg::ref_ptr<osg::Node> control=privateClone(*selectedSource);
+            Geometries leaves;control->accept(leaves);require(!leaves.values.empty(),"guard refusal fixture needs real optimized geometry");
+            auto* leaf=leaves.values.front();
+            osg::ref_ptr<osg::StateSet> state=leaf->getStateSet()
+                ? new osg::StateSet(*leaf->getStateSet(),osg::CopyOp::SHALLOW_COPY) : new osg::StateSet;
+            leaf->setStateSet(state);
+            const auto expected=recipe==0 ? L1::GuardRefusal::AttributeRecipe
+                : recipe==1 ? L1::GuardRefusal::TextureImage : L1::GuardRefusal::UniformRecipe;
+            if(recipe==0) state->setTextureAttribute(9,new osg::TexMat);
+            else if(recipe==1) state->setTextureAttribute(9,new osg::Texture2D);
+            else state->addUniform(new osg::Uniform(osg::Uniform::FLOAT,"unused_guard_fixture",4097));
+            require(L1::certify(*control)==L1::Refusal::None,"negative guard recipe must reach the historically weaker original certificate");
+            const auto beforeDisk=L1::Counters::diskHits.load(),beforeIndices=L1::Counters::newIndexGpuBytes.load();
+            const auto result=L1::build(*control,selectedName+"|guard-preflight-"+std::to_string(recipe),mainCamera,false);
+            require(!result.node && result.failureStep==L1::BuildStep::Guard && result.guardPhase==L1::GuardPhase::Preflight
+                && result.guardRefusal.reason==expected && result.newIndexBytes==0
+                && L1::Counters::diskHits==beforeDisk && L1::Counters::newIndexGpuBytes==beforeIndices,
+                "exact material recipe must refuse before simplification/cache work with bounded inner reason");
+            require(recipe==2 || result.guardRefusal.textureUnit==9,"texture rejection must name exact unsupported unit");
+            require(leaf->getDrawCallback()==nullptr,"refused preflight must preserve ordinary callback ownership");
+            std::cout<<"L1_GUARD_PREFLIGHT reason="<<L1::guardRefusalName(expected)
+                <<" phase=preflight before_simplification=1 ordinary_untouched=1 texture_unit="<<result.guardRefusal.textureUnit<<'\n';
+        }
+    }
     {
         // One real reducible optimized leaf plus an irreducible triangle must
         // share every ordinary stream and retain the unchanged leaf's exact

@@ -14,6 +14,19 @@
 
 namespace SceneUtil::AssetPaging
 {
+    void retainPagingOwners(osg::Node& root,std::uint64_t controlBytes,std::uint64_t privateBytes,
+        std::uint64_t derivedBytes,Resource::SpeculativeScope::Stage* privateAdmission)
+    {
+        const auto context=Resource::SpeculativeScope::capture();
+        if(!context.budget || !context.budget->experimentEnabled())
+        {retainHostOwner(root,controlBytes+privateBytes+derivedBytes);return;}
+        // Derived owner receipts already live on their exact graphs. Private
+        // copies are a distinct incremental part of this root, adopted from
+        // their original private reservation. Never recharge borrowed arrays.
+        retainHostOwner(root,controlBytes);
+        if(privateBytes)
+            retainExperimentalOwner(root,privateBytes,nullptr,privateAdmission,0x50395052u);
+    }
     void noteOptionalTransient(unsigned mask) noexcept
     { OptionalUpgradeScope::noteTransient(mask); }
     void cpuRefusal(unsigned mask,CpuStage stage,const Resource::SpeculativeDeferred& error)
@@ -366,7 +379,7 @@ namespace SceneUtil::AssetPaging
         // node overhead. Unused population capacity is not a simultaneous live
         // allocation. Every admitted copy stays reserved through the final root
         // charge, so original/control/private/cook overlap remains additive.
-        try { return std::make_unique<Resource::SpeculativeScope::Stage>(0,0); }
+        try { return std::make_unique<Resource::SpeculativeScope::Stage>(0,0,true); }
         catch (const Resource::SpeculativeDeferred& error)
         { cpuRefusal(eligible,CpuStage::Private,error); outcome.defer(eligible); each(eligible, [](LaneCounters& value) { ++value.privateCpuDenied; }); refuse(eligible, Gate::Capacity); }
         return {};
@@ -397,6 +410,14 @@ namespace SceneUtil::AssetPaging
         unsigned eligible, osg::Camera* camera, Outcome& outcome)
     {
         Tiers tiers;
+        std::unique_ptr<Resource::ExperimentalSpeculativeScope> experimental;
+        try {experimental=std::make_unique<Resource::ExperimentalSpeculativeScope>();}
+        catch(const Resource::SpeculativeDeferred& error)
+        {
+            cpuRefusal(eligible,CpuStage::Private,error);outcome.defer(eligible);
+            each(eligible,[](LaneCounters& value) {++value.privateCpuDenied;});refuse(eligible,Gate::Capacity);
+            return tiers;
+        }
         each(eligible, [](LaneCounters& value) { ++value.buildAttempts; });
         if (eligible & Lod)
         {

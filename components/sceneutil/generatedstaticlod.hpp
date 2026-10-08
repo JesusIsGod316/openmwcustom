@@ -27,6 +27,23 @@ namespace SceneUtil::GeneratedStaticLod
     const char* buildStepName(BuildStep value);
     enum class Detail { None, ShaderFamily, ShaderEpoch, ShaderSource, ShaderStage, ShaderBindings, ShaderDefines,
         ShaderFeatures, ShaderCapacity, Alpha, Blend, Dynamic, GraphCallback, GraphType, HiddenGraph, Layout, Other, Count };
+    enum class GuardPhase { None, Preflight, Snapshot, Publication };
+    enum class GuardRefusal { None, PathCapacity, NullNode, ChildCapacity, StreamCapacity, StateCapacity,
+        UniformRecipe, DefineCapacity, AttributeRecipe, TextureCapacity, TextureClass, TextureImage,
+        TextureMips, TextureFormat, TextureDynamic, MetadataCapacity, TransformRecipe, ShaderMissing,
+        ShaderImports, ShaderCertificate, SnapshotAllocation, SnapshotException, Stale, Count };
+    const char* guardRefusalName(GuardRefusal value);
+    const char* guardPhaseName(GuardPhase value);
+    // Fixed copied context survives rollback/destruction. Never retain a failed
+    // graph or an unbounded source/material string just to diagnose refusal.
+    struct GuardRefusalInfo
+    {
+        GuardRefusal reason = GuardRefusal::None;
+        std::array<char, 64> nodeClass{}, attributeClass{};
+        std::array<char, 128> nodeName{}, programName{};
+        unsigned textureUnit = ~0u, attributeType = ~0u, shaderRefusal = 0;
+        std::uint64_t observed = 0, limit = 0;
+    };
     struct RefusalInfo
     {
         Detail detail = Detail::None;
@@ -45,6 +62,8 @@ namespace SceneUtil::GeneratedStaticLod
         inline static std::atomic_uint64_t materialOwnerShared{0}, materialOwnerCohesions{0}, materialOwnerCohesiveInstances{0};
         inline static std::atomic_uint64_t postOptimizedCandidates{0}, privateArrayCopies{0}, privateVertexBuffers{0};
         inline static std::atomic_uint64_t newIndexGpuBytes{0};
+        inline static std::atomic_uint64_t guardRefused[static_cast<unsigned>(GuardRefusal::Count)]{};
+        inline static std::atomic_bool firstGuardFailure[static_cast<unsigned>(GuardRefusal::Count)]{};
         inline static std::atomic_uint64_t buildFailures[static_cast<unsigned>(BuildStep::Count)]{};
         inline static std::atomic_bool firstBuildFailure[static_cast<unsigned>(BuildStep::Count)]{};
         inline static std::atomic_uint64_t refused[static_cast<unsigned>(Refusal::Count)]{};
@@ -72,9 +91,13 @@ namespace SceneUtil::GeneratedStaticLod
     {
     public:
         static std::shared_ptr<MaterialGuard> capture(const osg::Node& original, const osg::Node& derived,
-            bool requireShader = true);
+            bool requireShader = true, GuardRefusalInfo* refusal = nullptr);
         static std::shared_ptr<MaterialGuard> captureDraws(std::span<const OriginalDraw> original,
-            const OriginalDraw& derived, bool requireShader = true);
+            const OriginalDraw& derived, bool requireShader = true, GuardRefusalInfo* refusal = nullptr);
+        // Same bounded recipe contract as final capture, on the exact ordinary
+        // post-optimizer control. Final capture is repeated after copying and
+        // installing lineage/callbacks; this does not authorize a tier.
+        static bool preflight(const osg::Node& original, GuardRefusalInfo* refusal = nullptr);
         bool current(osg::State* state = nullptr,
             const std::vector<const osg::StateSet*>& inherited = {}) const;
     private:
@@ -147,7 +170,8 @@ namespace SceneUtil::GeneratedStaticLod
         Group(const Group& copy, const osg::CopyOp& op);
         META_Node(SceneUtil, Group)
         Group(osg::Node& original, osg::Node& derived, float absoluteError,
-            std::shared_ptr<Readiness> readiness, osg::Camera* mainCamera, bool preserveControlPopulation = false);
+            std::shared_ptr<Readiness> readiness, osg::Camera* mainCamera, bool preserveControlPopulation = false,
+            GuardRefusalInfo* refusal = nullptr);
         void traverse(osg::NodeVisitor& visitor) override;
         osg::BoundingSphere computeBound() const override;
         void releaseGLObjects(osg::State* state = nullptr) const override;
@@ -182,10 +206,12 @@ namespace SceneUtil::GeneratedStaticLod
         BuildStep failureStep = BuildStep::None;
         std::uint32_t gpuRefusalReasons = 0;
         bool allocationFailure = false;
+        GuardPhase guardPhase = GuardPhase::None;
+        GuardRefusalInfo guardRefusal;
         std::shared_ptr<Resource::AssetGpuBudget::Reservation> gpuReservation;
     };
-    // One bounded first receipt per failed stage; subsequent failures retain
-    // fixed counters. GPU retirement outside the cooker uses the same gate.
+    // One bounded first receipt per failed stage and inner guard reason;
+    // subsequent failures retain fixed counters. GPU retirement uses this gate.
     void recordBuildFailure(BuildStep step, Result& result, std::string_view sourceIdentity,
         std::uint64_t peakBytes = 0, const Resource::SpeculativeReservationReceipt* cpuReceipt = nullptr) noexcept;
     // Worker-only; caller supplies a certified, chunk-private optimized control

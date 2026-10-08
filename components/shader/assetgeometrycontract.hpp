@@ -128,12 +128,12 @@ namespace Shader::AssetGeometry
     private:
         explicit Snapshot(std::shared_ptr<const SnapshotData> data) : mData(std::move(data)) {}
         std::shared_ptr<const SnapshotData> mData;
-        friend std::optional<Snapshot> capture(const osg::Program&, const std::vector<const osg::StateSet*>&);
+        friend std::optional<Snapshot> capture(const osg::Program&, const std::vector<const osg::StateSet*>&, Refusal*);
         friend Refusal current(const Snapshot&, const osg::Program&, osg::State*);
         friend Refusal current(const Snapshot&, const osg::Program&, const std::vector<const osg::StateSet*>&);
     };
     std::optional<Snapshot> capture(const osg::Program& program,
-        const std::vector<const osg::StateSet*>& path = {});
+        const std::vector<const osg::StateSet*>& path = {}, Refusal* refusal = nullptr);
     Refusal current(const Snapshot& snapshot, const osg::Program& program, osg::State* state = nullptr);
     Refusal current(const Snapshot& snapshot, const osg::Program& program,
         const std::vector<const osg::StateSet*>& path);

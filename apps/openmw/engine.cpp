@@ -51,6 +51,7 @@
 #include <components/sdlutil/sdlgraphicswindow.hpp>
 
 #include <components/resource/resourcesystem.hpp>
+#include <components/resource/niffilemanager.hpp>
 #include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/preparedterraintexture.hpp>
 #include <components/resource/compositecpumips.hpp>
@@ -1852,7 +1853,7 @@ void OMW::Engine::prepareEngine()
             {"preload_min", static_cast<std::uint64_t>(Settings::RamCache::preloadCellCacheMin())},
             {"preload_max", static_cast<std::uint64_t>(Settings::RamCache::preloadCellCacheMax())},
             {"preload_expiry_seconds", static_cast<std::uint64_t>(Settings::RamCache::preloadCellExpiryDelay())},
-            {"parsed_nif_retention", Settings::RamCache::retainNifFiles()},
+            {"profile_parsed_nif_retention", Settings::RamCache::retainNifFiles()},
             {"shape_pool_limit", Settings::RamCache::shapeInstancePoolSize()},
             {"prepared_instances", static_cast<bool>(Settings::cells().mV3PreparedInstanceCache)},
             {"prepared_instance_limit", static_cast<std::uint64_t>(static_cast<int>(Settings::cells().mV3PreparedInstanceCacheMax))},
@@ -1888,6 +1889,15 @@ void OMW::Engine::prepareEngine()
                      << static_cast<int>(Settings::cells().mV32GpuHardBudgetMb) << " MiB";
     mResourceSystem = std::make_unique<Resource::ResourceSystem>(mVFS.get(), effectiveResourceCacheExpiry,
         &mEncoder.get()->getStatelessEncoder(), Settings::RamCache::retainNifFiles());
+    const auto effectiveParsedNifExpiry = mResourceSystem->getNifFileManager()->effectiveExpiryDelay();
+    Log(Debug::Info) << "OptimizedMW parsed NIF cache policy: profile_retention="
+        << Settings::RamCache::retainNifFiles() << " effective_ttl_s=" << effectiveParsedNifExpiry
+        << "; TTL is residence time, not a RAM byte limit";
+    if (Debug::RuntimeDiagnostics::enabled())
+        Debug::RuntimeDiagnostics::recordEvent("configuration", "effective_parsed_nif_policy", {}, {
+            {"profile_retention", Settings::RamCache::retainNifFiles()},
+            {"retention_enabled", effectiveParsedNifExpiry > 0},
+            {"effective_ttl_seconds", static_cast<std::uint64_t>(effectiveParsedNifExpiry)} });
     // Retain the useful V3 policy with a pressure escape hatch on the Vulkan
     // route. Same-executable control restores the pre-repair retention policy.
     const bool hostMemoryBudget = mUseVulkanRenderer
@@ -1914,8 +1924,18 @@ void OMW::Engine::prepareEngine()
             Resource::SpeculativeBudget::Config config;
             config.transientLimit = static_cast<std::uint64_t>(
                 static_cast<int>(Settings::cells().mOpimizedMWTransientBudgetMb)) * Resource::SpeculativeBudget::MiB;
-            if(Resource::AssetPolicy::mask())
+            const char* budgetV2 = std::getenv("OPENMW_RAM_BUDGET_V2");
+            const bool experimentalOwnership = budgetV2 && std::string_view(budgetV2) == "1";
+            if(Resource::AssetPolicy::mask() && !experimentalOwnership)
                 config.transientLimit=std::min(config.transientLimit,Resource::AssetPolicy::CpuTransientLimit);
+            if (experimentalOwnership)
+            {
+                config.experimentLimit = static_cast<std::uint64_t>(
+                    static_cast<int>(Settings::cells().mExperimentalCacheBudgetMb)) * Resource::SpeculativeBudget::MiB;
+                config.experimentScratchLimit = std::min(config.experimentLimit, static_cast<std::uint64_t>(
+                    static_cast<int>(Settings::cells().mExperimentalScratchBudgetMb)) * Resource::SpeculativeBudget::MiB);
+                config.experimentMaximumJobs = static_cast<int>(Settings::cells().mExperimentalConcurrentBuilds);
+            }
             // Preserve the original four-job ceiling while reserving one
             // slot for the closest exterior preload. P2's optional strong
             // upgrade is intrinsically single-instance and uses the same
@@ -1923,6 +1943,12 @@ void OMW::Engine::prepareEngine()
             config.reservedNearFutureJobs = 1;
             mResourceSystem->enableOpenGlSpeculativeBudget(pressureConfig, config);
             Log(Debug::Info) << "OpimizedMW GL-P1B byte admission and bounded maintenance: on";
+            Log(Debug::Info) << "OptimizedMW memory policy v2=" << experimentalOwnership
+                << " common_future_bytes=" << config.transientLimit
+                << " experiment_total_bytes=" << config.experimentLimit
+                << " experiment_scratch_bytes=" << config.experimentScratchLimit
+                << " experiment_jobs=" << config.experimentMaximumJobs
+                << "; live/protected and uncharged payloads are outside cache targets";
         }
         else mResourceSystem->enableOpenGlHostMemoryBudget(pressureConfig);
         Log(Debug::Info) << "OpimizedMW GL-P1A pressure protection: on; healthy retention unchanged; "
@@ -2566,6 +2592,23 @@ void OMW::Engine::go()
         + " (precompile calls, not GPU-completion or uploaded-byte counters)";
     mLuaWorker->join();
 
+    if (mResourceSystem && mResourceSystem->speculativeBudget())
+    {
+        const auto* budget = mResourceSystem->speculativeBudget();
+        const auto memory = budget->stats();
+        Log(Debug::Info) << "OptimizedMW experimental CPU ownership v2: worker_frozen=0 enabled="
+            << budget->experimentEnabled() << " future_bytes=" << memory.experimentFutureBytes
+            << " retained_estimate_bytes=" << memory.experimentRetainedBytes
+            << " pending_estimate_bytes=" << memory.experimentPendingBytes
+            << " peak_total_estimate_bytes=" << memory.experimentPeakTotalBytes
+            << " peak_future_bytes=" << memory.experimentPeakFutureBytes
+            << " concurrent_cooks=" << memory.experimentJobs
+            << " admitted=" << memory.experimentAdmitted << " denied=" << memory.experimentDenied
+            << " source_pins=" << memory.experimentSourcePins
+            << " source_pin_estimate_bytes=" << memory.experimentSourcePinEstimateBytes
+            << "; incremental charged CPU ownership only; pins may overlap; no physical free credit";
+    }
+
     if(Resource::AssetPolicy::mask())
     {
         // Freeze consumers before the final draw proof. Optional preparation
@@ -2627,7 +2670,8 @@ void OMW::Engine::go()
             const char* stages[]={"outer","snapshot","private"};
             const char* predicates[]={"pressure_policy","missing_watermark","accounting_saturated",
                 "invalid_request","aggregate_limit","physical_headroom","process_commit_headroom",
-                "system_commit_headroom","regressed_watermark","arithmetic_overflow"};
+                "system_commit_headroom","regressed_watermark","arithmetic_overflow",
+                "experiment_total_limit","experiment_scratch_limit","experiment_reservation_mismatch"};
             static_assert(std::size(predicates)==Resource::SpeculativeBudget::ReservationRefusalCount);
             static_assert(std::size(stages)==static_cast<unsigned>(SceneUtil::AssetPaging::CpuStage::Count));
             for(unsigned stage=0;stage<std::size(stages);++stage)

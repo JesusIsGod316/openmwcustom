@@ -10,6 +10,7 @@ foreach($name in @('OptimizedMW_Test.ps1','OptimizedMW_RunManifest.ps1','candida
 . (Join-Path $root 'OptimizedMW_RunManifest.ps1')
 . (Join-Path $root 'OptimizedMW_ProfileArchive.ps1')
 . (Join-Path $root 'OptimizedMW_AttackPresets.ps1')
+. (Join-Path $root 'OptimizedMW_SettingNames.ps1')
 if((Get-Phase9IdentityHash -Value @()) -notmatch '^[a-f0-9]{64}$'){throw 'Empty file inventory identity unsupported'}
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'OptimizedMW_Test.ps1'),[ref]$tokens,[ref]$errors)
@@ -154,9 +155,10 @@ try{
     $fixtureLock=[Threading.Mutex]::new($false,'Local\OptimizedMW-Candidate-Fixture-Serial')
     try{$ownsFixtureLock=$fixtureLock.WaitOne(30000)}catch [Threading.AbandonedMutexException]{$ownsFixtureLock=$true}
     if(-not $ownsFixtureLock){throw 'Timed out waiting for independent launcher fixture host'}
-    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_QuickTest.ps1','OptimizedMW_AttackPresets.ps1','OptimizedMW_NumericMenu.ps1','OptimizedMW_ContextReport.ps1','OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_AssetEngagement.ps1','verify-asset-engagement.py','OptimizedMW_HitchReport.ps1','OptimizedMW_SystemTraceLink.ps1')){
+    foreach($file in @('OptimizedMW_Test.ps1','OptimizedMW_QuickTest.ps1','OptimizedMW_AttackPresets.ps1','OptimizedMW_NumericMenu.ps1','OptimizedMW_MemoryProfile.ps1','OptimizedMW_SettingNames.ps1','OptimizedMW_Optimizations.cfg','OptimizedMW_ContextReport.ps1','OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_AssetEngagement.ps1','verify-asset-engagement.py','OptimizedMW_HitchReport.ps1','OptimizedMW_SystemTraceLink.ps1')){
         Copy-Item -LiteralPath (Join-Path $root $file) -Destination (Join-Path $game $file) -Force
     }
+    Copy-Item -LiteralPath (Join-Path $root '../../../files/optimization-settings-aliases.json') -Destination (Join-Path $game 'optimization-settings-aliases.json')
     [IO.File]::WriteAllText((Join-Path $game 'OptimizedMW_Benchmark_Report.ps1'),'# Empty hermetic report fixture; no game, WPR, or UI.')
     $fakeUser=Join-Path $fixture 'user';$userConfig=Join-Path $fakeUser 'Documents/My Games/OpenMW'
     New-Item -ItemType Directory -Path $userConfig -Force | Out-Null
@@ -178,6 +180,8 @@ try{
     $trials+=,@('1','CONTROL','4','Normal','3,3,1,1','129')
     $trials+=,@('1','CONTROL','4','Normal','8,5,1,1','449')
     $trials+=,@('1','CONTROL','4','Normal','12,2,1,1','1')
+    $trials+=,@('1','CONTROL','0','Normal','13,1,1,1','0')
+    $trials+=,@('3','CONTROL','0','Deep','13,1,2,1,1','0')
     $trials+=,@('3','CONTROL','4','Deep','12,9,2,1,1','1')
     $trials+=,@('1','CONTROL','0','Normal','', '4')
     $trials+=,@('3','CONTROL','0','Deep','', '16')
@@ -288,7 +292,23 @@ try{
             $actual=$record.launcher_applied_openmw_environment.PSObject.Properties['OPENMW_HITCH_'+$keys[$bit]].Value
             if($actual -cne [string][int][bool]($expectedMask -band (1 -shl $bit))){throw 'Full launcher applied an incorrect feature combination'}
         }
-        if($trial.Count -ge 5 -and $trial[4] -and ($record.launcher_selection.menu_revision -ne 3 -or $record.launcher_selection.selection_id -notmatch '^(?:[1-9]|1[0-2])\.(?:[1-9]|10)$')){throw 'Numeric path identity missing from actual run manifest'}
+        if($trial.Count -ge 5 -and $trial[4] -and ($record.launcher_selection.menu_revision -ne 4 -or $record.launcher_selection.selection_id -notmatch '^(?:[1-9]|1[0-3])\.(?:[1-9]|10|11)$')){throw 'Numeric path identity missing from actual run manifest'}
+        $custom=$trial.Count -ge 5 -and $trial[4] -in @('13,1,1,1','13,1,2,1,1')
+        if($record.gameplay_features.memory_policy.name -ne $(if($custom){'Configured'}else{'Headroom'}) -or
+            $record.gameplay_features.ram_mask -ne $(if($custom){0}else{4}) -or
+            $record.launcher_applied_openmw_environment.OPENMW_RAM_BUDGET_V2 -ne '1' -or
+            $record.profile_name -notmatch $(if($custom){'MEM2-CONFIGURED-'}else{'MEM2-HEADROOM-'})){throw 'Actual launcher lost the effective matched memory cohort'}
+        if($custom){
+            $sourceHash=(Get-FileHash -LiteralPath (Join-Path $game 'OptimizedMW_Optimizations.cfg')).Hash.ToLowerInvariant()
+            if($record.gameplay_features.configuration_mode -ne 'Custom' -or
+                $record.gameplay_features.optimization_configuration.sha256 -ne $sourceHash -or
+                -not (Test-Path -LiteralPath (Join-Path $run.FullName 'optimization-configuration.cfg'))){throw 'Custom launcher lost its exact editable configuration receipt'}
+            $effective=[IO.File]::ReadAllText((Join-Path $run.FullName 'settings-effective-test.cfg'))
+            if($effective -notmatch 'legacy performance profile = false' -or $effective -match 'v3.6 performance profile'){throw 'Custom direct controls retained a hidden compatibility override'}
+            if($effective -notmatch ('async gpu profiler = '+$(if($trial[3] -eq 'Deep'){'true'}else{'false'}))){throw 'Custom run depth did not set the observer explicitly'}
+            $modeText=[IO.File]::ReadAllText((Join-Path $run.FullName 'TEST_MODE.txt'))
+            if($modeText -match '(?m)^p4_compile_scheduler_mode=' -or $modeText -notmatch 'individual_settings_authority='){throw 'Custom run falsely claimed frozen benchmark settings'}
+        }
         $expectedAsset=if($trial.Count -ge 5 -and $trial[4] -eq '12,2,1,1'){1}elseif($trial.Count -ge 5 -and $trial[4] -eq '12,9,2,1,1'){31}else{0}
         if($record.gameplay_features.asset_mask -ne $expectedAsset -or
             $record.families.asset_pipeline.mask -ne $expectedAsset -or

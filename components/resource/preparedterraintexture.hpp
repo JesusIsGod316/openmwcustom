@@ -51,8 +51,14 @@ namespace Resource
             if (UploadPool::requested() && _image && !getTextureObject(state.getContextID())
                 && !_image->getPixelBufferObject() && !getUnRefImageDataAfterApply() && !getReadPBuffer()
                 && getBorderWidth()==0 && !getResizeNonPowerOfTwoHint()
-                && !getUseHardwareMipMapGeneration() && UploadPool::eligible(*_image))
+                && !_texMipmapGenerationDirtyList[state.getContextID()] && UploadPool::eligible(*_image))
             {
+                // OSG's hardware-generation hint defaults to true, but it does
+                // not generate mips for a supplied complete Image chain. The
+                // pool's exact chain predicate proves every level is present;
+                // rejecting the hint excluded producer-owned CPU blendmaps.
+                // Preserve that hint for original-image fallback and honor a
+                // separate explicit allocateMipmapLevels request via OSG.
                 GLsizei width=0,height=0,levels=0;
                 computeInternalFormat();
                 computeRequiredTextureDimensions(state,*_image,width,height,levels);

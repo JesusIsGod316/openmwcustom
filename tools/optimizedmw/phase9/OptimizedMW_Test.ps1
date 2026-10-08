@@ -9,6 +9,9 @@ param(
     [switch]$ObserverLocal,
     [switch]$GpuQueryDefer,
     [ValidateRange(0,31)][int]$RamMask=0,
+    [ValidateSet('Headroom','MatchedOverdrive','LegacyOverdrive','Configured')][string]$MemoryProfile='Headroom',
+    [ValidateSet('Benchmark','Custom')][string]$ConfigurationMode='Benchmark',
+    [string]$OptimizationConfig='',
     [ValidateRange(0,127)][int]$ArchitectureMask=0,
     [ValidateRange(0,31)][int]$AssetMask=0,
     [ValidateSet('','Normal','Deep')][string]$TraceLevel='',
@@ -35,6 +38,8 @@ $OpenmwCfgPath = Join-Path $UserOpenMW 'openmw.cfg'
 . (Join-Path $GameDir 'OptimizedMW_QuickTest.ps1')
 . (Join-Path $GameDir 'OptimizedMW_AttackPresets.ps1')
 . (Join-Path $GameDir 'OptimizedMW_NumericMenu.ps1')
+. (Join-Path $GameDir 'OptimizedMW_MemoryProfile.ps1')
+. (Join-Path $GameDir 'OptimizedMW_SettingNames.ps1')
 $ProfilesRoot = Join-Path $UserOpenMW 'OptimizedMW-Phase9-Profiles'
 
 if (-not (Test-Path -LiteralPath $Exe)) { Write-Host 'ERROR: Put this launcher beside openmw.exe.' -ForegroundColor Red; if(-not $NoPrompt){Read-Host 'Press Enter to close'}; exit 1 }
@@ -42,12 +47,23 @@ if (-not (Test-Path -LiteralPath $SettingsPath)) { Write-Host "ERROR: settings.c
 
 function Set-IniValue {
     param([string]$Path,[string]$Section,[string]$Key,[string]$Value)
+    if($ConfigurationMode -eq 'Custom' -and -not $script:ApplyingCustomConfiguration){return}
+    $canonical=Resolve-OptimizedMWSettingName $Section $Key
+    $Section=$canonical.Section;$Key=$canonical.Key
     $lines=[System.Collections.Generic.List[string]]::new()
-    foreach($line in [System.IO.File]::ReadAllLines($Path)){[void]$lines.Add($line)}
-    $sectionPattern='^\s*\['+[regex]::Escape($Section)+'\]\s*$'
+    $currentSection=''
+    foreach($line in [System.IO.File]::ReadAllLines($Path)){
+        if($line -match '^\s*\[([^\]]+)\]\s*$'){$currentSection=$matches[1].Trim()}
+        if($line -match '^\s*([^#;=]+?)\s*='){
+            $existing=Resolve-OptimizedMWSettingName $currentSection $matches[1].Trim()
+            if($existing.Section -ceq $Section -and $existing.Key -ceq $Key){continue}
+        }
+        [void]$lines.Add($line)
+    }
+    $sectionPattern='^\s*\[\s*'+[regex]::Escape($Section)+'\s*\]\s*$'
     $keyPattern='^\s*'+[regex]::Escape($Key)+'\s*='
     $sectionIndex=-1
-    for($i=0;$i -lt $lines.Count;++$i){if($lines[$i]-match $sectionPattern){$sectionIndex=$i;break}}
+    for($i=0;$i -lt $lines.Count;++$i){if($lines[$i]-cmatch $sectionPattern){$sectionIndex=$i;break}}
     if($sectionIndex -lt 0){
         if($lines.Count -gt 0 -and $lines[$lines.Count-1] -ne ''){[void]$lines.Add('')}
         [void]$lines.Add("[$Section]")
@@ -98,6 +114,8 @@ if(-not $FocusedPreset -and -not $ModeChoice -and $HitchMask -lt 0 -and $AttackM
     $GpuQueryDefer=[bool]$numericSelection.gpu_query_defer
     $RamMask=$numericSelection.ram_mask;$ArchitectureMask=$numericSelection.architecture_mask
     $AssetMask=$numericSelection.asset_mask
+    $MemoryProfile=$numericSelection.memory_profile
+    $ConfigurationMode=$numericSelection.configuration_mode
     if($numericSelection.legacy_mode){$ModeChoice=$numericSelection.legacy_mode}
     elseif($numericSelection.focused_preset){
         $FocusedPreset=$numericSelection.focused_preset;$TraceLevel=$numericSelection.trace_level
@@ -118,7 +136,7 @@ if($FocusedPreset){
     $GpuQueryDefer=[bool]$quickSelection.gpu_query_defer
     if($numericSelection){
         # Keep the exact numeric path even when the underlying legacy preset is rebuilt.
-        $quickSelection | Add-Member -NotePropertyName menu_revision -NotePropertyValue 3
+        $quickSelection | Add-Member -NotePropertyName menu_revision -NotePropertyValue 4
         $quickSelection | Add-Member -NotePropertyName selection_id -NotePropertyValue $numericSelection.selection_id
     }
 }
@@ -130,6 +148,14 @@ if(-not $NoPrompt -and ($numericSelection -or $FocusedPreset)){
     $SavePath=$declaration.save_path;$RouteLabel=$declaration.route_label;$FrameCapLabel=$declaration.frame_cap_label
 }
 if($SavePath -and -not [IO.File]::Exists([IO.Path]::GetFullPath($SavePath))){throw 'Declared save file is missing; correct -SavePath before running'}
+if($ConfigurationMode -eq 'Custom'){$MemoryProfile='Configured'}
+$memoryPolicy=Get-OptimizedMWMemoryProfile -Name $MemoryProfile -RamMask $RamMask
+$RamMask=$memoryPolicy.ram_mask
+if($ConfigurationMode -eq 'Custom'){
+    Write-Host 'Memory policy: individual configuration values; effective limits are recorded in the engine startup log.' -ForegroundColor Cyan
+}else{
+    Write-Host ('Memory profile: '+$MemoryProfile+'; configured common future allowance '+$memoryPolicy.common_future_mb+' MiB') -ForegroundColor Cyan
+}
 if($HitchMask -ge 0 -or $AttackMask -ge 0 -or $TraceLevel){
     if($HitchMask -lt 0){$HitchMask=0}
     if(-not $TraceLevel){$TraceLevel='Normal'}
@@ -143,7 +169,7 @@ $choice=$ModeChoice
 $mode=Get-P9Mode $choice
 if($numericSelection -and $numericSelection.legacy_mode){$mode.Trace=[string][int]($numericSelection.trace_level -eq 'Deep')}
 if($numericSelection){
-    $mode.NumericMenuRevision=3;$mode.NumericSelectionId=$numericSelection.selection_id
+    $mode.NumericMenuRevision=4;$mode.NumericSelectionId=$numericSelection.selection_id
 }
 if($ObserverLocal -and $mode.Trace -ne '1'){throw 'Local observer accounting requires Deep diagnostics'}
 if($GpuQueryDefer -and $mode.Trace -ne '1'){throw 'Deferred GPU query collection requires Deep diagnostics'}
@@ -169,6 +195,8 @@ if($RamMask -or $ArchitectureMask){
 }
 $mode.RamMask=$RamMask;$mode.ArchitectureMask=$ArchitectureMask
 $mode.AssetMask=$AssetMask
+$mode.MemoryPolicy=$memoryPolicy
+$mode.ConfigurationMode=$ConfigurationMode
 if($AssetMask){
     $assetBase=if($RamMask -or $ArchitectureMask){$mode.Name}else{$baseExperiment}
     $mode.Name='ASSET1-M'+$AssetMask+'-'+$assetBase
@@ -216,6 +244,8 @@ $FrontToBack='false'
 $FastWind='0'
 $Experiment=$mode.Name+'-HITCHV1-'+$candidateProfile.name
 if($hitchSelection){$Experiment=$hitchSelection.experiment}
+$Experiment='MEM2-'+$MemoryProfile.ToUpperInvariant()+'-'+$Experiment
+if($quickSelection){$quickSelection.name=$Experiment}
 $GpuDiagnostics=if($mode.Trace -eq '1' -or $mode.Temporal -eq '1'){'true'}else{'false'}
 $ResourceRepair='true'
 $LuaCache='true'
@@ -261,6 +291,7 @@ try{
     Set-OptimizedMWHitchCombinationEnvironment $hitchCombination
     Set-OptimizedMWAttackEnvironment $attackCombination -ObserverLocal:$ObserverLocal -CompositeProgress:$CompositeProgress -CompositeCpuMips:$CompositeCpuMips
     Set-OptimizedMWArchitectureEnvironment -RamMask $RamMask -ArchitectureMask $ArchitectureMask -AssetMask $AssetMask -DerivedCacheDirectory (Join-Path $GameDir 'DerivedAssets')
+    Set-OptimizedMWMemoryProfileEnvironment $memoryPolicy
     $env:OPENMW_P9_GPU_QUERY_DEFER=[string][int][bool]$GpuQueryDefer
 
     # Same head-cache budget across every mode, not a hidden per-mode tuning change.
@@ -272,16 +303,15 @@ try{
     Set-IniValue $SettingsPath 'Shadows' 'optimizedmw setting consistency' $ShadowConsistency
 
     # Accepted P1/P2 foundation.
-    Set-IniValue $SettingsPath 'Cells' 'object paging' 'true'
-    Set-IniValue $SettingsPath 'Cells' 'object paging active grid' 'true'
-    Set-IniValue $SettingsPath 'Cells' 'ram cache mode' 'overdrive'
+    Set-IniValue $SettingsPath 'Terrain' 'object paging' 'true'
+    Set-IniValue $SettingsPath 'Terrain' 'object paging active grid' 'true'
     Set-IniValue $SettingsPath 'Cells' 'opimizedmw host pressure' 'true'
     Set-IniValue $SettingsPath 'Cells' 'opimizedmw speculative budget' 'true'
-    Set-IniValue $SettingsPath 'Cells' 'opimizedmw transient budget mb' '1024'
     Set-IniValue $SettingsPath 'Cells' 'opimizedmw host reserve mb' '0'
     Set-IniValue $SettingsPath 'Cells' 'opimizedmw commit reserve mb' '1024'
     Set-IniValue $SettingsPath 'Cells' 'opimizedmw paging optimizer' 'true'
     Set-IniValue $SettingsPath 'Cells' 'opimizedmw paging readiness split' 'true'
+    foreach($entry in $memoryPolicy.settings){Set-IniValue $SettingsPath $entry[0] $entry[1] $entry[2]}
 
     # Freeze P3 around the proven B1 foundation. A/E/F remain parked/off.
     Set-IniValue $SettingsPath 'Cells' 'optimizedmw submission compaction' 'false'
@@ -368,6 +398,25 @@ try{
     Set-IniValue $SettingsPath 'V3' 'v3.6 far caster minimum pixels' '5.0'
 
     if($mode.Trace -eq '1'){Set-IniValue $SettingsPath 'Cells' 'v3.2 renderer insertion profiling' 'true'}
+    if($ConfigurationMode -eq 'Custom'){
+        if(-not $OptimizationConfig){$OptimizationConfig=Join-Path $GameDir 'Configuration\Optimizations.cfg'}
+        if(-not [IO.File]::Exists($OptimizationConfig)){
+            New-Item -ItemType Directory -Path (Split-Path -Parent $OptimizationConfig) -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $GameDir 'OptimizedMW_Optimizations.cfg') -Destination $OptimizationConfig
+        }
+        $mode.OptimizationConfiguration=Get-Phase9FileIdentity $OptimizationConfig
+        $configurationSnapshot=Join-Path $ProfileDir 'optimization-configuration.cfg'
+        Copy-Item -LiteralPath $OptimizationConfig -Destination $configurationSnapshot
+        $snapshotIdentity=Get-Phase9FileIdentity $configurationSnapshot
+        if($snapshotIdentity.sha256 -cne $mode.OptimizationConfiguration.sha256){throw 'Optimization configuration changed during capture'}
+        $entries=Read-OptimizedMWConfigurationSettings $configurationSnapshot
+        $script:ApplyingCustomConfiguration=$true
+        try{
+            foreach($entry in $entries){Set-IniValue $SettingsPath $entry.Section $entry.Key $entry.Value}
+            # This observer is selected by run depth, independently of gameplay controls.
+            Set-IniValue $SettingsPath 'Optimizations' 'async gpu profiler' $GpuDiagnostics
+        }finally{$script:ApplyingCustomConfiguration=$false}
+    }
     Copy-Item -LiteralPath $SettingsPath -Destination (Join-Path $ProfileDir 'settings-effective-test.cfg') -Force
     if(Test-Path -LiteralPath $OpenmwCfgPath){Copy-Item -LiteralPath $OpenmwCfgPath -Destination (Join-Path $ProfileDir 'openmw.cfg') -Force}
     if(Test-Path -LiteralPath (Join-Path $GameDir 'CI-ID.txt')){Copy-Item -LiteralPath (Join-Path $GameDir 'CI-ID.txt') -Destination (Join-Path $ProfileDir 'CI-ID.txt') -Force}
@@ -376,8 +425,10 @@ try{
     $settingsHash=(Get-FileHash -LiteralPath $SettingsPath -Algorithm SHA256).Hash
     $cfgHash=if(Test-Path -LiteralPath $OpenmwCfgPath){(Get-FileHash -LiteralPath $OpenmwCfgPath -Algorithm SHA256).Hash}else{'MISSING'}
 
-    @(
+    $testModeLines=@(
         "experiment=$Experiment",
+        "configuration_mode=$ConfigurationMode",
+        "memory_profile=$MemoryProfile",
         "hitch_trial_revision=$(if($AttackMask -ge 0){3}elseif($hitchSelection){2}else{1})",
         "hitch_attack_mask=$($attackCombination.mask)",
         "hitch_attack=$($attackCombination.name)",
@@ -508,7 +559,14 @@ try{
         "openmw_exe_sha256=$exeHash",
         "settings_effective_sha256=$settingsHash",
         "openmw_cfg_sha256=$cfgHash"
-    ) | Set-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
+    )
+    if($ConfigurationMode -eq 'Custom'){
+        $testModeLines=@($testModeLines | Where-Object {$_ -notmatch '^(p[3-8]|preload_num_threads=|completion_governor=|v38_compile|v315_adaptive|phase9_reference=|phase9_culling=)'})
+        $testModeLines+='individual_settings_authority=settings-effective-test.cfg;optimization-configuration.cfg;startup_receipts'
+        $testModeLines+='custom_observer_override=async gpu profiler selected by Normal/Deep run depth'
+        $testModeLines+='optimization_configuration_sha256='+$mode.OptimizationConfiguration.sha256
+    }
+    $testModeLines | Set-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
 
     Remove-Item 'Env:OPENMW_V325_ACTOR_SOURCE_BATCH' -ErrorAction SilentlyContinue
     Remove-Item 'Env:OPENMW_V325_PARALLEL_ACTOR_BINDING' -ErrorAction SilentlyContinue

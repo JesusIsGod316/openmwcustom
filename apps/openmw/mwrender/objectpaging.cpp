@@ -2209,6 +2209,9 @@ namespace MWRender
                     control->setDataVariance(osg::Object::STATIC); control->addChild(controlChild);
                     ++SceneUtil::AssetPaging::Counters::lod.candidateAdmitted;
                     ++SceneUtil::GeneratedStaticLod::Counters::postOptimizedCandidates;
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+                    if(mFixtureBeforeLodCook) mFixtureBeforeLodCook(*control);
+#endif
                     auto tiers = SceneUtil::AssetPaging::buildTiers(*control,*control,postLodIdentity,
                         SceneUtil::AssetPaging::Lod,mAssetMainCamera.get(),assetOutcome);
                     if (!tiers.lod.node) continue;
@@ -2248,7 +2251,8 @@ namespace MWRender
         SceneUtil::PagingWorkScope::checkpoint();
         // Pending compile sets and losing candidates still own these arrays.
         // Attach their retained host receipt before exposing the graph to ICO.
-        SceneUtil::AssetPaging::retainHostOwner(*group,controlRetainedBytes + assetPrivateBytes + assetDerivedHostBytes);
+        SceneUtil::AssetPaging::retainPagingOwners(*group,controlRetainedBytes,assetPrivateBytes,assetDerivedHostBytes,
+            assetSourceAdmission.get());
         osgUtil::IncrementalCompileOperation* const ico = mSceneManager->getIncrementalCompileOperation();
         if (!stateToCompile.empty() && ico && !ico->getContextSet().empty())
         {

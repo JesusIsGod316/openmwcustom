@@ -14,10 +14,14 @@ function Read-OptimizedMWNumber {
 function New-OptimizedMWNumericSelection {
     param([string]$Id,[string]$Label,[int]$Mask=4,[int]$Attack=1,[string]$Preset='',
         [string]$Candidate='CONTROL',[bool]$Progress=$false,[bool]$Mips=$false,[string]$Mode='',
-        [int]$Ram=0,[int]$Architecture=0,[int]$Assets=0)
-    return [pscustomobject][ordered]@{menu_revision=3;selection_id=$Id;label=$Label;
+        [int]$Ram=0,[int]$Architecture=0,[int]$Assets=0,
+        [ValidateSet('Headroom','MatchedOverdrive','LegacyOverdrive')][string]$MemoryProfile='Headroom',
+        [ValidateSet('Benchmark','Custom')][string]$ConfigurationMode='Benchmark')
+    return [pscustomobject][ordered]@{menu_revision=4;selection_id=$Id;label=$Label;
         mask=$Mask;attack_mask=$Attack;focused_preset=$Preset;candidate=$Candidate;
         ram_mask=$Ram;architecture_mask=$Architecture;asset_mask=$Assets;
+        memory_profile=$MemoryProfile;
+        configuration_mode=$ConfigurationMode;
         composite_progress=$Progress;composite_cpu_mips=$Mips;legacy_mode=$Mode;
         trace_level='Normal';system_trace=$false;gpu_query_defer=$false;name=$Label}
 }
@@ -25,13 +29,13 @@ function New-OptimizedMWNumericSelection {
 function Get-OptimizedMWNumericCategories {
     return @('Controls','Terrain and rendering','Animation','Resource cleanup',
         'User interface','Lua','File I/O','Combined tests','Advanced and earlier experiments',
-        'RAM retention and compression','Renderer architecture experiments','LOD, HLOD and texture pipeline')
+        'RAM retention and compression','Renderer architecture experiments','LOD, HLOD and texture pipeline','Custom configuration')
 }
 
 function Get-OptimizedMWNumericCandidates {
-    param([ValidateRange(1,12)][int]$Category)
+    param([ValidateRange(1,13)][int]$Category)
     switch($Category){
-        1 {return @((New-OptimizedMWNumericSelection '1.1' 'Retained control (current comparison)' -Preset CONTROL),
+        1 {return @((New-OptimizedMWNumericSelection '1.1' 'Headroom control (new matched comparison)' -Preset CONTROL),
             (New-OptimizedMWNumericSelection '1.2' 'Original feature control (all candidates off)' -Mask 0 -Attack 0))}
         2 {return @((New-OptimizedMWNumericSelection '2.1' 'Retained control' -Preset CONTROL),
             (New-OptimizedMWNumericSelection '2.2' 'Original incremental terrain preparation' -Attack 257 -Preset STEP),
@@ -69,14 +73,17 @@ function Get-OptimizedMWNumericCandidates {
             (New-OptimizedMWNumericSelection '9.5' 'Temporal ownership + earlier terrain' -Mask 0 -Attack 0 -Mode 10),
             (New-OptimizedMWNumericSelection '9.6' 'Experimental dynamic motion' -Mask 0 -Attack 0 -Mode 11),
             (New-OptimizedMWNumericSelection '9.7' 'Earlier refresh experiment' -Mask 0 -Attack 0 -Mode 6))}
-        10 {return @((New-OptimizedMWNumericSelection '10.1' 'Retained RAM control'),
+        10 {return @((New-OptimizedMWNumericSelection '10.1' 'Headroom RAM control'),
             (New-OptimizedMWNumericSelection '10.2' 'Selective cold preload owner retirement' -Ram 1),
-            (New-OptimizedMWNumericSelection '10.3' 'Shorter cold parsed NIF retention' -Ram 2),
+            (New-OptimizedMWNumericSelection '10.3' 'Short parsed NIF return tier' -Ram 2),
             (New-OptimizedMWNumericSelection '10.4' 'Bounded idle collision shapes' -Ram 4),
             (New-OptimizedMWNumericSelection '10.5' 'Earlier headroom reclamation' -Ram 8),
             (New-OptimizedMWNumericSelection '10.6' 'Compressed cold image cache' -Ram 16),
             (New-OptimizedMWNumericSelection '10.7' 'All retention changes, compression off' -Ram 15),
-            (New-OptimizedMWNumericSelection '10.8' 'All RAM candidates including compression' -Ram 31))}
+            (New-OptimizedMWNumericSelection '10.8' 'All RAM candidates including compression' -Ram 31),
+            (New-OptimizedMWNumericSelection '10.9' 'Historical Overdrive control (original allowance)' -MemoryProfile LegacyOverdrive),
+            (New-OptimizedMWNumericSelection '10.10' 'Overdrive control with matched new allowance' -MemoryProfile MatchedOverdrive),
+            (New-OptimizedMWNumericSelection '10.11' 'Headroom cache profile control' -MemoryProfile Headroom))}
         11 {return @((New-OptimizedMWNumericSelection '11.1' 'Retained renderer control'),
             (New-OptimizedMWNumericSelection '11.2' 'Exact shader variants (unavailable: prior driver crash)'),
             (New-OptimizedMWNumericSelection '11.3' 'Exact paging optimizer work reduction' -Architecture 2),
@@ -86,6 +93,7 @@ function Get-OptimizedMWNumericCandidates {
             (New-OptimizedMWNumericSelection '11.7' 'Conservative GPU visibility + indirect pipeline' -Architecture 52),
             (New-OptimizedMWNumericSelection '11.8' 'Frozen parallel actor deformation' -Architecture 64),
             (New-OptimizedMWNumericSelection '11.9' 'Renderer candidates combined (shader experiment excluded)' -Architecture 126 -Mips $true))}
+        13 {return @((New-OptimizedMWNumericSelection '13.1' 'Run editable Configuration/Optimizations.cfg' -Mask 0 -Attack 0 -ConfigurationMode Custom))}
         12 {return @((New-OptimizedMWNumericSelection '12.1' 'Asset pipeline control'),
             (New-OptimizedMWNumericSelection '12.2' 'Generated static visual LOD' -Assets 1),
             (New-OptimizedMWNumericSelection '12.3' 'Selective HLOD atlas and merged proxy' -Assets 2),
@@ -217,9 +225,15 @@ function Set-OptimizedMWArchitectureToggle {
 function Read-OptimizedMWArchitectureCombination {
     param([object]$Selection)
     while($true){
-        Write-Host ' 1 = RAM candidates | 2 = Renderer candidates | 3 = Asset candidates | 0 = Back'
-        $category=Read-OptimizedMWNumber 'Combined category' @('0','1','2','3')
+        Write-Host ' 1 = RAM candidates | 2 = Renderer candidates | 3 = Asset candidates | 4 = Memory profile | 0 = Back'
+        $category=Read-OptimizedMWNumber 'Combined category' @('0','1','2','3','4')
         if($category -eq '0'){return}
+        if($category -eq '4'){
+            Write-Host ' 1 = Headroom | 2 = Matched Overdrive | 3 = Historical Overdrive'
+            $memory=Read-OptimizedMWNumber 'Memory profile (Enter = 1)' @('1','2','3') '1'
+            $Selection.memory_profile=@('Headroom','MatchedOverdrive','LegacyOverdrive')[[int]$memory-1]
+            continue
+        }
         if($category -eq '3'){Read-OptimizedMWAssetCombination $Selection;continue}
         $ram=$category -eq '1';$labels=Get-OptimizedMWArchitectureLabels $ram
         while($true){
@@ -253,6 +267,8 @@ function Set-OptimizedMWArchitectureEnvironment {
 function Write-OptimizedMWNumericSummary {
     param([object]$Selection)
     Write-Host ('Selected: '+$Selection.label+' ['+$Selection.selection_id+']') -ForegroundColor Green
+    Write-Host ('Memory profile: '+$Selection.memory_profile+' (shared by control and candidate)')
+    if($Selection.configuration_mode -eq 'Custom'){Write-Host 'Individual config values will be used. Edit Configuration/Optimizations.cfg to customize them.';return}
     if($Selection.legacy_mode){Write-Host ('Earlier experiment mode: '+$Selection.legacy_mode);return}
     $enabled=[Collections.Generic.List[string]]::new()
     $labels=Get-OptimizedMWCombinedToggles
@@ -269,7 +285,7 @@ function Read-OptimizedMWNumericTest {
         Write-Host 'OptimizedMW - select an optimization category' -ForegroundColor Cyan
         foreach($index in 0..($categories.Count-1)){Write-Host (' {0} = {1}' -f ($index+1),$categories[$index])}
         Write-Host ' 0 = Exit'
-        $category=Read-OptimizedMWNumber 'Category (0-12; Enter = 1)' @('0','1','2','3','4','5','6','7','8','9','10','11','12') '1'
+        $category=Read-OptimizedMWNumber 'Category (0-13; Enter = 1)' @('0','1','2','3','4','5','6','7','8','9','10','11','12','13') '1'
         if($category -eq '0'){return $null}
         $candidates=@(Get-OptimizedMWNumericCandidates ([int]$category))
         while($true){
