@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 from pathlib import Path
 import math
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from settings_contract import SettingsContract
 
 root = Path(__file__).resolve().parents[3]
+settings = SettingsContract(root)
 settings_h = (root / "components/settings/categories/groundcover.hpp").read_text()
 defaults = (root / "files/settings-default.cfg").read_text()
 groundcover = (root / "apps/openmw/mwrender/groundcover.cpp").read_text()
@@ -30,8 +34,8 @@ checks = {
     "settings_default_off": "mOptimizedMWGpuPath" in settings_h
         and "makeClampSanitizerInt(0, 2)" in settings_h
         and "mOptimizedMWShadowReceive" in settings_h
-        and "optimizedmw gpu path = 0" in defaults
-        and "optimizedmw shadow receive = true" in defaults,
+        and settings.default("Groundcover", "optimizedmw gpu path", "0")
+        and settings.default("Groundcover", "optimizedmw shadow receive", "true"),
     "defines": "optimizedmwGroundcoverGpuPath" in rendering
         and "optimizedmwGroundcoverShadowReceive" in rendering,
     "legacy_attributes_preserved": 'addBindAttribLocation("aOffset", 6)' in groundcover

@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from settings_contract import SettingsContract
 
 root = Path(__file__).resolve().parents[3]
+settings = SettingsContract(root)
 cells = (root / "components/settings/categories/cells.hpp").read_text()
 defaults = (root / "files/settings-default.cfg").read_text()
 npc = (root / "apps/openmw/mwrender/npcanimation.cpp").read_text()
@@ -16,8 +20,8 @@ cmake = (root / "CMakeLists.txt").read_text()
 checks = {
     "p6r_build_repair": "#include <osgUtil/Statistics>" in engine
         and "#include <osgUtil/StatsVisitor>" not in engine,
-    "default_off": "optimizedmw parallel actor binding = false" in defaults
-        and "optimizedmw parallel terrain cpu prep = false" in defaults,
+    "default_off": settings.default("Cells", "optimizedmw parallel actor binding", "false")
+        and settings.default("Cells", "optimizedmw parallel terrain cpu prep", "false"),
     "settings_declared": "mOptimizedMWParallelActorBinding" in cells
         and "mOptimizedMWParallelTerrainCpuPrep" in cells,
     "accepted_actor_batch_reactivated": "mOptimizedMWParallelActorBinding" in npc

@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from settings_contract import SettingsContract
 
 root = Path(__file__).resolve().parents[3]
+settings = SettingsContract(root)
 optimizer_h = (root / "components/sceneutil/optimizer.hpp").read_text()
 optimizer_cpp = (root / "components/sceneutil/optimizer.cpp").read_text()
 objectpaging_h = (root / "apps/openmw/mwrender/objectpaging.hpp").read_text()
@@ -22,8 +26,8 @@ launcher = (root / "tools/optimizedmw/gl-p3/OptimizedMW_GL-P3_Test.ps1").read_te
 cmake_root = (root / "CMakeLists.txt").read_text()
 
 checks = {
-    "p3a_retained_but_parked": "optimizedmw submission compaction" in cells
-        and "optimizedmw submission compaction = false" in defaults
+    "p3a_retained_but_parked": settings.declared(cells, "Cells", "optimizedmw submission compaction")
+        and settings.default("Cells", "optimizedmw submission compaction", "false")
         and "optimizedmw submission compaction' $P3A" in launcher
         and "$P3A='false'" in launcher,
     "focused_launcher": all(token in launcher for token in (
@@ -63,10 +67,10 @@ checks = {
     "p3f_diagnostics": all(token in objectpaging for token in (
         "p3_shadow_candidates=", "p3_shadow_eligible=", "p3_shadow_rejected_state=",
         "p3_shadow_rejected_geometry=", "p3_shadow_batches=", "p3_shadow_indices=")),
-    "thread_switch": "optimizedmw parallel template prefetch" in cells
-        and "optimizedmw parallel template prefetch = false" in defaults
-        and "optimizedmw parallel template prefetch workers" in cells
-        and "optimizedmw parallel template prefetch workers = 2" in defaults,
+    "thread_switch": settings.declared(cells, "Cells", "optimizedmw parallel template prefetch")
+        and settings.default("Cells", "optimizedmw parallel template prefetch", "false")
+        and settings.declared(cells, "Cells", "optimizedmw parallel template prefetch workers")
+        and settings.default("Cells", "optimizedmw parallel template prefetch workers", "2"),
     "bounded_helpers": "class BoundedTwoWayWork" in two_way
         and "std::try_to_lock" in two_way
         and "runWorkers" in two_way
@@ -84,8 +88,8 @@ checks = {
     "p3b_mechanical_counters": all(token in objectpaging for token in (
         "p3_prefetch_parallel=", "p3_prefetch_helpers=", "p3_prefetch_reuse_hits=",
         "p3PrefetchedTemplates.find(model)")),
-    "render_handoff_diagnostic": "optimizedmw render handoff attribution" in cells
-        and "optimizedmw render handoff attribution = false" in defaults,
+    "render_handoff_diagnostic": settings.declared(cells, "Cells", "optimizedmw render handoff attribution")
+        and settings.default("Cells", "optimizedmw render handoff attribution", "false"),
 }
 failed = [name for name, ok in checks.items() if not ok]
 if failed:

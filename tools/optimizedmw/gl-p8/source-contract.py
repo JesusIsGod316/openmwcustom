@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from settings_contract import SettingsContract
 
 root = Path(__file__).resolve().parents[3]
+settings = SettingsContract(root)
 diag = (root / "components/debug/v3diagnostics.hpp").read_text()
 p8 = (root / "components/debug/p8dynamicdrawtelemetry.hpp").read_text()
 engine = (root / "apps/openmw/engine.cpp").read_text()
@@ -40,7 +44,7 @@ checks = {
         "diagnostic_dynamic_draw=true")),
     "hl1_threading_setting": "mOptimizedMWOsgThreadingMode" in cells
         and "makeClampSanitizerInt(0, 3)" in cells
-        and "optimizedmw osg threading mode = 0" in defaults,
+        and settings.default("Cells", "optimizedmw osg threading mode", "0"),
     "hl1_threading_engine": all(token in engine for token in (
         "mOptimizedMWOsgThreadingMode",
         "DrawThreadPerContext",

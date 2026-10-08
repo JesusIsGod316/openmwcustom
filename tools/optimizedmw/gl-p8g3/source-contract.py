@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 from pathlib import Path
 import re
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from settings_contract import SettingsContract
 root=Path(__file__).resolve().parents[3]
+settings=SettingsContract(root)
 def read(path): return (root/path).read_text()
 def require(ok, name):
     if not ok: raise SystemExit('P8G3 source contract failed: '+name)
@@ -14,8 +18,8 @@ r=read('apps/openmw/mwrender/renderingmanager.cpp')
 s=read('files/settings-default.cfg')
 l=read('tools/optimizedmw/gl-p8g3/OptimizedMW_GL-P8G3_Test.ps1')
 for key in ['hierarchy','density lod','front to back']:
-    require('optimizedmw '+key+' = false' in s, 'default-off '+key)
-require('optimizedmw fast wind = -1' in s, 'P8G2 wind compatibility')
+    require(settings.default('Groundcover','optimizedmw '+key,'false'), 'default-off '+key)
+require(settings.default('Groundcover','optimizedmw fast wind','-1'), 'P8G2 wind compatibility')
 for x in ['optimizedmwGroundcoverFastWind','optimizedmwGroundcoverLod']:
     require(x in r and x in v, 'live shader define '+x)
 require('if (derived &&' in g and 'InstancingVisitor visitor(entries, worldCenter)' in g, 'stock fallback preserved')

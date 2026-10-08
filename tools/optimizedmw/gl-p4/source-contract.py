@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import re
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from settings_contract import SettingsContract
 
 root = Path(__file__).resolve().parents[3]
+settings = SettingsContract(root)
 cells = (root / "components/settings/categories/cells.hpp").read_text()
 defaults = (root / "files/settings-default.cfg").read_text()
 compile_h = (root / "components/resource/openmwcompileoperation.hpp").read_text()
@@ -20,7 +25,7 @@ root_cmake = (root / "CMakeLists.txt").read_text()
 launcher = (root / "tools/optimizedmw/gl-p4/OptimizedMW_GL-P4_Test.ps1").read_text()
 
 checks = {
-    "mode_default_off": "optimizedmw compile scheduler mode = 0" in defaults
+    "mode_default_off": settings.default("Cells", "optimizedmw compile scheduler mode", "0")
         and "mOptimizedMWCompileSchedulerMode" in cells,
     "scheduler_limits": all(token in cells for token in (
         "mOptimizedMWCompileSchedulerMaxBudgetMs",
@@ -60,8 +65,13 @@ checks = {
         and "refresh only the selected set" in compile_cpp,
     "cheap_drain_repair": "age never converts a cheap fitting operation" in compile_cpp
         and "if (fits)" in compile_cpp
-        and "if (forced || remainingBudgetMs <= 0.0)" in compile_cpp
-        and "mMaxObjectsPerFrame = 12" in compile_h,
+        # The no-GL completion lane has a separate bounded admission/charge.
+        # It must not consume the GL-budget escape hatch; forced GL work does.
+        and re.search(r"if\s*\(forced\s*\|\|\s*\(!noGlService\s*&&\s*remainingBudgetMs\s*<=\s*0\.0\)\)\s*stopAfterThisOperation\s*=\s*true;", compile_cpp)
+        and "takeNoGlAttempt(maxObjects, 0.25)" in compile_cpp
+        and "chargeNoGlAttempt(actualMs)" in compile_cpp
+        and compile_cpp.count("chargeNoGlAttempt(bookkeepingMs)") == 2
+        and re.search(r"\bmMaxObjectsPerFrame\s*=\s*12\s*;", compile_h),
     "heavy_lane": "heavy_smooth_headroom" in compile_cpp
         and "mHeavyMinSmoothFrames" in compile_h
         and "mTerrainDrawablePriorMs" in compile_h

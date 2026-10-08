@@ -219,7 +219,7 @@ def main() -> None:
         # the exact source-content check without confusing checkout EOLs with
         # a visibility-policy edit.
         need(hashlib.sha256((root/path).read_bytes().replace(b'\r\n', b'\n')).hexdigest() == digest,
-             'this root-cause checkpoint must preserve audited culling: '+path)
+             'current tested culling and paging source seal changed; re-audit required: '+path)
     print(json.dumps({'source_contract': 'PASS', 'deployed_temporal_shaders':
                       'PASS' if args.staged_shaders else 'NOT_CHECKED',
                       'dlss_runtime': 'NOT_IMPLEMENTED', 'performance': 'NOT_MEASURED'}))
