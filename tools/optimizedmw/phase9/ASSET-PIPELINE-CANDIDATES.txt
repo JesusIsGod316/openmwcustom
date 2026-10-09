@@ -70,14 +70,16 @@ It keeps the actual drawable/index and texture operations and prepares the
 canonical shader variants with their certified imported defines. Ordinary
 chunk compilation and cache pruning keep their existing policy. Asset readiness
 requires actual resource completion, the exact context and current material
-guards; ordinary callback observations cannot grant it. Root retirement cancels
-pending work. Queued leaves retain the source templates and their existing
+guards; ordinary callback observations cannot grant it.
+Ordinary completion diagnostics read queue state only and never create shader
+objects. Root retirement cancels pending work. Queued leaves retain the source
+templates and their existing
 host charges until the resources retire. Metadata has an additional global
 4 MiB and 512-recipe bound within the experimental/common accounting; this is
 not another independent payload allowance. With the child cache disabled,
 preparation still reserves and retains its actual common-ledger charge.
-Multiple/unqualified contexts and
-unsafe relinks keep the original geometry. Preparing these resources does not
+Multiple/unqualified contexts and unsafe relinks keep the original geometry.
+Preparing these resources does not
 guarantee that subsequent driver calls cannot stall.
 
 H1 has not produced a proxy draw in the actual current Seyda Neen captures.

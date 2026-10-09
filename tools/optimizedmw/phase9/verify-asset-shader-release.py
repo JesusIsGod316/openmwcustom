@@ -192,7 +192,8 @@ def l1_asset_compile_closure(text, active_draws):
         "pending_resource_set_survived", "pending_host_accounted", "exact_cached_owner",
         "stock_imports_nonempty", "distortion_zero", "ambient_variant_different",
         "unrelated_unlinked_original", "renderer_startup_empty_scene", "renderer_startup_compile_consumed",
-        "renderer_compile_stayed_clear", "unrelated_unlinked_after_original", "state_input_substitution")}
+        "renderer_compile_stayed_clear", "unrelated_unlinked_after_original", "pcp_inspection_context_rebound",
+        "ambient_program_handle_valid", "unrelated_program_handle_valid", "state_input_substitution")}
         | {"ico_mode": 0, "global_exact_variants": 0, "source_loader_substituted": 0,
            "cook_substituted": 0, "callback_substituted": 0, "gl_error": 0})
     require(0 < unsigned_field(exact, "exact_linked_variants", "CHAIN_ASSET_EXACT_CLOSURE") <= 512
@@ -202,12 +203,16 @@ def l1_asset_compile_closure(text, active_draws):
             "Exact asset closure did not prove linked actual imports and the same active draw cohort after pending original use")
     cold = record(text, "CHAIN_ASSET_COLD_VARIANT", {key: 1 for key in (
         "cold_owned_variant", "initially_unlinked", "uninstalled_before_ready", "real_openmw_ico",
-        "distortion_zero", "force_opaque_zero", "state_input_substitution")}
+        "distortion_zero", "force_opaque_zero", "pcp_inspection_context_rebound",
+        "cold_program_handle_valid", "ordinary_compile_completed", "ordinary_callback_delivered", "observer_probe_cpu_only",
+        "observer_probe_after_compile_maps", "state_input_substitution")}
         | {"original_draw_before_compile": 0, "global_exact_variants": 0,
+           "observer_pcp_before": 0, "observer_pcp_after": 0,
            "source_loader_substituted": 0, "cook_substituted": 0, "callback_substituted": 0, "gl_error": 0})
     cold_draws = unsigned_field(cold, "main_draws", "CHAIN_ASSET_COLD_VARIANT")
     require(0 < unsigned_field(cold, "exact_linked_variants", "CHAIN_ASSET_COLD_VARIANT") <= 512
             and cold_draws > 0 and unsigned_field(cold, "active_tagged_draws", "CHAIN_ASSET_COLD_VARIANT") == cold_draws
+            and unsigned_field(cold, "ordinary_queue_observations", "CHAIN_ASSET_COLD_VARIANT") > 0
             and unsigned_field(cold, "rgb", "CHAIN_ASSET_COLD_VARIANT") > 16,
             "Cold asset variant was not prepared before first candidate use and consumed by an actual visible active draw")
     retired = record(text, "CHAIN_ASSET_COMPILE_RETIRE", {key: 1 for key in (

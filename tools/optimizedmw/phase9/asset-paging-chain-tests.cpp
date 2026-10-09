@@ -377,6 +377,30 @@ namespace
         Shader::ProgramDefineSnapshot imports;
         osg::ref_ptr<osg::Program::PerContextProgram> ambient;
     };
+    osg::Program::PerContextProgram* fixtureProgramStatus(const osg::Program& program,osg::State& state)
+    {
+        // getPCP may construct and cache a GL program even during inspection.
+        // Viewer frames can release this binding, so reacquire the actual
+        // context before every fixture lookup rather than caching handle zero.
+        auto* context=state.getGraphicsContext();
+        require(context && context->getState()==&state && context->makeCurrent() && context->isCurrent(),
+            "fixture program inspection must reacquire its actual context and exact registered state");
+        auto* pcp=program.getPCP(state);
+        require(pcp && pcp->getHandle(),"actual fixture program inspection must retain a valid nonzero GL handle");
+        return pcp;
+    }
+    class OrdinaryProgramProbe final : public osg::Program
+    {
+    public:
+        std::size_t existingProgramCount(unsigned contextId) const
+        {
+            // Inspect existing CPU bookkeeping only. Never use getPCP here:
+            // creating a variant would invalidate the observer regression.
+            if(contextId>=_pcpList.size()) return 0;
+            const auto& programs=_pcpList[contextId];
+            return programs ? programs->_perContextPrograms.size() : 0;
+        }
+    };
     std::vector<ImportedAssetRecipe> importedAssetRecipes(const Selectors& selectors,osg::State& state)
     {
         Shader::AssetGeometry::ProducerReadScope producer;
@@ -407,7 +431,7 @@ namespace
                 require(ambient.bounded && ambient.string!=imports.string,
                     "actual ambient imported variant must differ from the candidate's certified recipe");
                 Shader::ProgramDefineScope ambientScope(state,ambient);
-                result.push_back({program,std::move(imports),program->getPCP(state)});
+                result.push_back({program,std::move(imports),fixtureProgramStatus(*program,state)});
             }
         require(!result.empty() && result.size()<=512,"bounded actual nonempty imported program cohort required");
         return result;
@@ -419,7 +443,7 @@ namespace
         for(const auto& recipe:recipes)
         {
             Shader::ProgramDefineScope imported(state,recipe.imports);
-            auto* pcp=recipe.program->getPCP(state);
+            auto* pcp=fixtureProgramStatus(*recipe.program,state);
             require(pcp && pcp!=recipe.ambient.get() && pcp->getProgram()==recipe.program.get()
                 && pcp->getDefineString()==recipe.imports.string && pcp->getHandle()
                 && pcp->isLinked() && !pcp->needsLink(),
@@ -1305,7 +1329,7 @@ int main(int argc,char** argv) try
         unrelatedSibling->addChild(unrelatedNode,false);
         require(activeCandidate->asGroup()!=nullptr,"actual paging root must retain ordinary group ownership");
         activeCandidate->asGroup()->addChild(unrelatedSibling);
-        auto* unrelatedPcp=unrelatedProgram->getPCP(*context->getState());
+        auto* unrelatedPcp=fixtureProgramStatus(*unrelatedProgram,*context->getState());
         require(unrelatedPcp && !unrelatedPcp->isLinked(),"unrelated ordinary sibling must actually remain unlinked");
         const auto activeOwnerIdentity=activeCandidate.get();
         osg::observer_ptr<osg::Node> activeCachedOwner=activeCandidate;
@@ -1377,6 +1401,7 @@ int main(int argc,char** argv) try
         require(!activeRenderer->getCompileOnNextDraw() && !unrelatedPcp->isLinked(),
             "actual asset readiness must not compile or require the unrelated unlinked ordinary sibling");
         std::cout<<"CHAIN_ASSET_EXACT_CLOSURE real_openmw_ico=1 ico_mode=0 registered_context_held=1"
+            <<" pcp_inspection_context_rebound=1 ambient_program_handle_valid=1 unrelated_program_handle_valid=1"
             <<" renderer_startup_empty_scene=1 renderer_startup_compile_consumed=1 renderer_compile_stayed_clear=1 unrelated_unlinked_after_original=1"
             <<" ordinary_cache_only_pruned=1 pending_resource_set_survived=1 pending_host_accounted=1 exact_cached_owner=1"
             <<" stock_imports_nonempty=1 distortion_zero=1 ambient_variant_different=1 exact_linked_variants="<<exactLinked
@@ -1531,16 +1556,58 @@ int main(int argc,char** argv) try
                     && recipe.imports.map.currentDefines.at("FORCE_OPAQUE").first=="0",
                     "cold fixture must retain its certified nonempty stock FORCE_OPAQUE=0 recipe");
                 Shader::ProgramDefineScope imports(*context->getState(),recipe.imports);
-                auto* pcp=recipe.program->getPCP(*context->getState());
+                auto* pcp=fixtureProgramStatus(*recipe.program,*context->getState());
                 require(pcp && !pcp->isLinked(),"exact cold imported PCP must actually be unlinked before preparation");
             }
+            std::vector<osg::ref_ptr<osgUtil::IncrementalCompileOperation::CompileSet>> ordinarySets;
+            {
+                std::lock_guard<OpenThreads::Mutex> lock(*ico->getToCompiledMutex());
+                for(const auto& set:ico->getToCompile())
+                    if(set && set->_subgraphToCompile==node)
+                    {
+                        require(dynamic_cast<L::CompileCompleted*>(set->_compileCompletedCallback.get())!=nullptr,
+                            "cold ordinary queue must use its real ObjectPaging completion callback");
+                        ordinarySets.emplace_back(set);
+                    }
+            }
+            require(!ordinarySets.empty() && !activeRenderer->getCompileOnNextDraw(),
+                "actual cold ordinary compile map and consumed renderer startup required before observer probe injection");
+            osg::ref_ptr<OrdinaryProgramProbe> observerProbe=new OrdinaryProgramProbe;
+            observerProbe->setName("unrelated cold ordinary observer probe");
+            observerProbe->addShader(new osg::Shader(osg::Shader::VERTEX,"#version 120\nvoid main(){gl_Position=gl_Vertex;}\n"));
+            observerProbe->addShader(new osg::Shader(osg::Shader::FRAGMENT,"#version 120\nvoid main(){gl_FragColor=vec4(1.0);}\n"));
+            osg::ref_ptr<osg::Switch> observerSibling=new osg::Switch;
+            auto* observerNode=new osg::Node;
+            observerNode->getOrCreateStateSet()->setAttributeAndModes(observerProbe,osg::StateAttribute::ON);
+            observerSibling->addChild(observerNode,false);
+            require(node->asGroup()!=nullptr,"actual cold paging root must retain ordinary group ownership");
+            node->asGroup()->addChild(observerSibling);
+            const auto observerProgramsBefore=observerProbe->existingProgramCount(context->getState()->getContextID());
+            const auto observationsBefore=L::Counters::compileObservationOnly.load();
+            require(observerProgramsBefore==0,"fresh disabled observer probe must have no actual cached PCPs");
             require(node->getNumParents()==0,"cold candidate cannot enter canonical rendering before actual queue completion");
             const auto prepared=[&] {return std::all_of(selected.values.begin(),selected.values.end(),
                 [](const auto* selector){return selector->compilationReady();});};
+            // The root is held and no cache maintenance runs in this interval.
+            // A compiled set drained from both real queues passed its actual
+            // mode-0 completion/merge callback rather than being pruned away.
+            const auto ordinaryDelivered=[&] {
+                const auto pending=queuedIdentities(*ico);
+                std::lock_guard<OpenThreads::Mutex> lock(*ico->getCompiledMutex());
+                return std::all_of(ordinarySets.begin(),ordinarySets.end(),[&](const auto& set) {
+                    return set->compiled() && !pending.contains(set.get())
+                        && std::none_of(ico->getCompiled().begin(),ico->getCompiled().end(),
+                            [&](const auto& completed){return completed.get()==set.get();});
+                });
+            };
             paused.resume();
-            for(unsigned frame=0;frame<90 && !prepared();++frame) viewer.frame();
-            require(prepared() && node->getNumParents()==0,
+            for(unsigned frame=0;frame<90 && (!prepared() || !ordinaryDelivered());++frame) viewer.frame();
+            require(prepared() && ordinaryDelivered() && node->getNumParents()==0,
                 "actual resource-only OpenMWICO must prepare the cold variant before its candidate enters any view");
+            const auto ordinaryObservations=L::Counters::compileObservationOnly.load()-observationsBefore;
+            const auto observerProgramsAfter=observerProbe->existingProgramCount(context->getState()->getContextID());
+            require(ordinaryObservations>0 && observerProgramsAfter==0 && !activeRenderer->getCompileOnNextDraw(),
+                "actual ordinary completion must observe its queue without creating an unrelated PCP or requiring whole-root shader readiness");
             const auto exact=linkedImportedAssets(recipes,*context->getState());
             lighting->removeChild(activeCandidate);lighting->addChild(node);
             struct RestoreColdView
@@ -1552,6 +1619,10 @@ int main(int argc,char** argv) try
                 && rgb(pixels->data)>16 && pixels->error==GL_NO_ERROR,
                 "actual main camera must consume the cold prepared imported variant as reduced geometry");
             std::cout<<"CHAIN_ASSET_COLD_VARIANT cold_owned_variant=1 original_draw_before_compile=0 initially_unlinked=1"
+                <<" pcp_inspection_context_rebound=1 cold_program_handle_valid=1"
+                <<" ordinary_compile_completed=1 ordinary_callback_delivered=1 observer_probe_cpu_only=1 observer_probe_after_compile_maps=1"
+                <<" ordinary_queue_observations="<<ordinaryObservations
+                <<" observer_pcp_before="<<observerProgramsBefore<<" observer_pcp_after="<<observerProgramsAfter
                 <<" uninstalled_before_ready=1 real_openmw_ico=1 exact_linked_variants="<<exact
                 <<" distortion_zero=1 force_opaque_zero=1 global_exact_variants=0"
                 <<" main_draws="<<consumed(mask)-draws<<" active_tagged_draws="<<L::Counters::activeDerivedDraws.load()-tagged
@@ -1657,6 +1728,8 @@ int main(int argc,char** argv) try
                     if(auto* program=dynamic_cast<osgUtil::IncrementalCompileOperation::CompileProgramOp*>(op.get()))
                     {programOp=program;break;}
             require(programOp.valid(),"actual owned program compile leaf required for context refusal");
+            require(context->getState()->getGraphicsContext()==context && context->makeCurrent() && context->isCurrent(),
+                "context refusal must begin with the actual registered context bound before its explicit release");
             require(context->releaseContext(),"actual fixture context must release its current binding");
             osgUtil::IncrementalCompileOperation::CompileInfo info(context,ico);
             const bool retired=programOp->compile(info);
@@ -1688,7 +1761,7 @@ int main(int argc,char** argv) try
             require(consumed(mask)==beforeDraw && pixels->original>0 && rgb(pixels->data)>16 && pixels->error==GL_NO_ERROR,
                 "unsafe relink fixture must first apply visible original material through its canonical sampler producer");
             const auto& recipe=recipes.front();Shader::ProgramDefineScope imports(*context->getState(),recipe.imports);
-            auto* pcp=recipe.program->getPCP(*context->getState());
+            auto* pcp=fixtureProgramStatus(*recipe.program,*context->getState());
             const auto* sampler=dynamic_cast<const Shader::AssetGeometry::SamplerProducer*>(recipe.program.get());
             require(pcp && pcp->isLinked() && sampler,"actual applied imported sampler PCP required before relink refusal");
             pcp->requestLink();
@@ -1823,7 +1896,7 @@ int main(int argc,char** argv) try
             Programs programs;control.accept(programs);require(!programs.values.empty(),"warmed exact effective ordinary object programs required");
             for(auto* program:programs.values)
             {
-                const auto* linked=program->getPCP(*context->getState());
+                const auto* linked=fixtureProgramStatus(*program,*context->getState());
                 require(linked && linked->isLinked() && !linked->needsLink(),"ordinary material must finish linking before same-cohort cook");
             }
             require(built(mask)==beforeCook && consumed(mask)==beforeConsumed,"ordinary warming cannot count derived readiness or draws");
@@ -1973,7 +2046,7 @@ int main(int argc,char** argv) try
         require(Shader::AssetGeometry::matches(*program),"actual assembled asset shader certificate required");
         auto proof=Shader::AssetGeometry::capture(*program); require(bool(proof),"actual compiled asset program recipe required");
         pbrPrograms+=proof->family()==Shader::AssetGeometry::Family::Pbr;
-        const auto* linked=program->getPCP(*context->getState()); require(linked && linked->isLinked(),"actual production object shader must link");
+        const auto* linked=fixtureProgramStatus(*program,*context->getState()); require(linked && linked->isLinked(),"actual production object shader must link");
     }
     require(pbrPrograms>0 && sourcePbr>0,"assembled promoted PBR object family must actually qualify and link");
     const unsigned sharedStreams=mask==A::Lod ? indexOnlyStreams(selected) : 0;
@@ -2376,7 +2449,7 @@ int main(int argc,char** argv) try
     for (const auto& operation:context->getOperationsQueue()) icoOperations+=operation.get()==ico.get();
     Programs rebuiltPrograms; rebuilt->accept(rebuiltPrograms); unsigned linkedPrograms=0,needsLinkPrograms=0;
     for (auto* program:rebuiltPrograms.values)
-    { const auto* status=program->getPCP(*context->getState()); linkedPrograms+=status && status->isLinked(); needsLinkPrograms+=!status || status->needsLink(); }
+    { const auto* status=fixtureProgramStatus(*program,*context->getState()); linkedPrograms+=status && status->isLinked(); needsLinkPrograms+=!status || status->needsLink(); }
     std::cout<<"CHAIN_CONTEXT_DIAGNOSTIC ico_operations="<<icoOperations<<" context_realized="<<context->isRealized()
         <<" context_cameras="<<context->getCameras().size()<<" main_camera="<<(viewer.getCamera()==camera)
         <<" camera_context="<<(camera->getGraphicsContext()==context)<<" scene_root="<<(viewer.getSceneData()==sceneRoot)

@@ -1846,6 +1846,7 @@ namespace SceneUtil::GeneratedStaticLod
         std::ostringstream out;
         out << " callbacks=" << Counters::compileCallbacks.load()
             << " callback_ready=" << Counters::compileCallbacksReady.load()
+            << " ordinary_queue_observations=" << Counters::compileObservationOnly.load()
             << " cache_only_pruned=" << Counters::compilePruned.load()
             << " ready_at_prune=" << Counters::compilePrunedReady.load()
             << " pruned_unready_main_owners=" << Counters::compilePrunedMainOwners.load()
@@ -1899,12 +1900,38 @@ namespace SceneUtil::GeneratedStaticLod
     }
     bool CompileCompleted::compileCompleted(osgUtil::IncrementalCompileOperation::CompileSet* compiled)
     {
-        // ICO completion means every compile operation ran; it does not mean a
-        // Program linked successfully. Inspect only CPU status published by that
-        // completion, never issue GL commands from the update/merge callback.
+        ++Counters::compileCallbacks;
+        if(!mGrantReadiness)
+        {
+            // Ordinary production completion is observation only. getPCP can
+            // create a GL program, so neither it nor a whole-root traversal is
+            // safe or needed from this update/merge callback. The separately
+            // owned closure supplies the exact context-checked readiness proof.
+            const auto observation=Counters::compileObservationOnly.fetch_add(1,std::memory_order_relaxed);
+            if(observation<3)
+            {
+                try
+                {
+                    Log(Debug::Info) << std::dec << "OptimizedMW asset compile callback receipt: readiness_id=" << mReadiness->diagnosticId
+                        << " set_id=" << reinterpret_cast<std::uintptr_t>(compiled)
+                        << " asset_mask=" << mReadiness->assetMask << " active_grid=" << mReadiness->activeGridOrigin.load()
+                        << " reason=ordinary_observation readiness_status=unknown"
+                        << " observation_only=1 readiness_granted=0 pcp_status_observed=0"
+                        << " compile_closed=" << bool(compiled && compiled->compiled())
+                        << " remaining=" << (compiled ? static_cast<unsigned>(compiled->_numberCompileListsToCompile) : 0)
+                        << " contexts=" << (compiled ? compiled->_compileMap.size() : 0)
+                        << " root_references=" << (compiled && compiled->_subgraphToCompile ? compiled->_subgraphToCompile->referenceCount() : 0)
+                        << " diagnostic_only=1";
+                }
+                catch(...) {} // Observing queue completion cannot change ordinary merging.
+            }
+            return false;
+        }
+        // Preserve the legacy readiness callback used by direct fixtures.
+        // Production paging uses only the queue observation above and the
+        // separate asset-owned exact recipe completion callback.
         bool ready = compiled && compiled->compiled() && compiled->_subgraphToCompile
             && !compiled->_compileMap.empty();
-        ++Counters::compileCallbacks;
         CompileBlock block=CompileBlock::None;
         if(!compiled) block=CompileBlock::MissingSet;
         else if(!compiled->compiled()) block=CompileBlock::Incomplete;

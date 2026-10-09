@@ -83,6 +83,7 @@ namespace SceneUtil::GeneratedStaticLod
         // Observations of the existing callback/prune policy. These never
         // grant readiness, retain a graph, or suppress ordinary cancellation.
         inline static std::atomic_uint64_t nextReadiness{0}, compileCallbacks{0}, compileCallbacksReady{0};
+        inline static std::atomic_uint64_t compileObservationOnly{0};
         inline static std::atomic_uint64_t compileBlocked[static_cast<unsigned>(CompileBlock::Count)]{};
         inline static std::atomic_uint64_t compilePruned{0}, compilePrunedReady{0}, compilePrunedMainOwners{0};
         inline static std::atomic_uint64_t compilePrunedMainSamples{0}, compilePrunedMainCurrentGuardSamples{0};

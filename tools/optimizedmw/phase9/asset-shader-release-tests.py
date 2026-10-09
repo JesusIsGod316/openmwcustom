@@ -35,12 +35,16 @@ class AssetReleaseEvidence(unittest.TestCase):
     @staticmethod
     def asset_compile_receipt():
         return ("CHAIN_ASSET_EXACT_CLOSURE real_openmw_ico=1 ico_mode=0 registered_context_held=1 "
+                "pcp_inspection_context_rebound=1 ambient_program_handle_valid=1 unrelated_program_handle_valid=1 "
                 "renderer_startup_empty_scene=1 renderer_startup_compile_consumed=1 renderer_compile_stayed_clear=1 unrelated_unlinked_after_original=1 "
                 "ordinary_cache_only_pruned=1 pending_resource_set_survived=1 pending_host_accounted=1 exact_cached_owner=1 "
                 "stock_imports_nonempty=1 distortion_zero=1 ambient_variant_different=1 exact_linked_variants=2 "
                 "unrelated_unlinked_original=1 original_before_ico=2 global_exact_variants=0 main_draws=4 active_tagged_draws=4 "
                 "state_input_substitution=1 source_loader_substituted=0 cook_substituted=0 callback_substituted=0 gl_error=0\n"
                 "CHAIN_ASSET_COLD_VARIANT cold_owned_variant=1 original_draw_before_compile=0 initially_unlinked=1 "
+                "pcp_inspection_context_rebound=1 cold_program_handle_valid=1 "
+                "ordinary_compile_completed=1 ordinary_callback_delivered=1 observer_probe_cpu_only=1 observer_probe_after_compile_maps=1 "
+                "ordinary_queue_observations=2 observer_pcp_before=0 observer_pcp_after=0 "
                 "uninstalled_before_ready=1 real_openmw_ico=1 exact_linked_variants=2 distortion_zero=1 force_opaque_zero=1 "
                 "global_exact_variants=0 main_draws=6 active_tagged_draws=6 rgb=99 state_input_substitution=1 "
                 "source_loader_substituted=0 cook_substituted=0 callback_substituted=0 gl_error=0\n"
@@ -299,6 +303,7 @@ class AssetReleaseEvidence(unittest.TestCase):
                 ("CHAIN_ASSET_EXACT_CLOSURE", "active_tagged_draws=4", "active_tagged_draws=3"),
                 ("CHAIN_ASSET_EXACT_CLOSURE", "original_before_ico=2", "original_before_ico=0"),
                 ("CHAIN_ASSET_COLD_VARIANT", "main_draws=6", "main_draws=0"),
+                ("CHAIN_ASSET_COLD_VARIANT", "ordinary_queue_observations=2", "ordinary_queue_observations=0"),
                 ("CHAIN_ASSET_COLD_VARIANT", "active_tagged_draws=6", "active_tagged_draws=5"),
                 ("CHAIN_ASSET_COLD_VARIANT", "rgb=99", "rgb=16"),
                 ("CHAIN_ASSET_COMPILE_RETIRE", "host_after_prune=600", "host_after_prune=1000"),
