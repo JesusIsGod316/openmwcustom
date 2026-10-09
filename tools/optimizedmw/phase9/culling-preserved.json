@@ -9,6 +9,10 @@
     "base": "673b1dda1dde7df5743dd4042e78fe57b0751489",
     "scope": "Independently reviewed default-off active-grid L1 extension. Ordinary strong preparation remains outside experimental admission on every bounded retry; exact existing prepare/spatial/P3 ownership is required before asset cooking. Certified STAT/STAT4 non-occluder, private graph/material ownership, source epochs, actual ICO readiness, main-camera pixel error, shadow/secondary/update/intersection original paths and memory/VRAM guards remain intact. Canonical active RefnumSet is attached before retained host receipts. Explicit active-origin cook/draw counters do not change selection. Focused real paging tests and natural full-mod outdoor consumption are separate required validation layers; this seal alone does not qualify runtime or performance."
   },
+  "prepared_active_tail_checkpoint": {
+    "base": "b3ff9fa8676f666283a67eba6f5653c308345c98",
+    "scope": "Independently reviewed partial active L1 handoff. The small optional asset scope may only cook an exact current-source owner with existing normal prepare/spatial/P3 quality; missing or stale quality returns no current owner, and a current weak control is retained unchanged. This guard precedes stale cache removal and upgrade claims. The ordinary 128 MiB preparation path and exact candidate/control/host/GPU admission remain unchanged. Required/demand, distant, MSOC, shader epochs, original shadows/picking and readiness guards remain intact. Focused mixed-owner chain proof and natural full-mod runtime consumption remain mandatory; this source seal makes no performance claim."
+  },
   "historical_checkpoint": {
     "base": "bb4876a6ea287745c8f535f5525c5381a631a24c",
     "scope": "This checkpoint preserves the audited visibility policies byte-for-byte. Not a new culling implementation.",
@@ -27,7 +31,7 @@
   "sha256": {
     "apps/openmw/mwrender/occlusionculling.cpp": "e92c9023598376e4cd864af07ad1888c0c4502a38405f0c908a174e2a5e24ad8",
     "apps/openmw/mwrender/occlusionculling.hpp": "3e4039257ed9585677afd4d8db527b1d015246bdb8dcd63e08054debf554f624",
-    "apps/openmw/mwrender/objectpaging.cpp": "14a9f0fc398fc96afcf6a51332cb52005bc77a6890a49c146bfbe7b06eabb13e",
+    "apps/openmw/mwrender/objectpaging.cpp": "b720436b1265542804b1bad1788591593539700350d3071123382387ad101184",
     "apps/openmw/mwrender/groundcover.cpp": "10e1f1de1a38fcd34288ac98df09d20eb6e596ce9f42b8abb9d5bd6f2982bddd",
     "apps/openmw/mwrender/objects.cpp": "9bf5045f1c8c4323b2cc286c2912b5fef73ff813f5e472929ec4be79829f7935",
     "components/sceneutil/occlusionculling.cpp": "1aa1ebea417b9b4eff232d78fbf29b78cae92b68e23e0f8ba8b5ac1b46f6c19f",

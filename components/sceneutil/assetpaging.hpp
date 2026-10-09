@@ -183,11 +183,12 @@ namespace SceneUtil::AssetPaging
     class OptionalUpgradeScope
     {
     public:
-        explicit OptionalUpgradeScope(std::atomic<bool>* abort, bool prepareAssets = true)
+        explicit OptionalUpgradeScope(std::atomic<bool>* abort, bool prepareAssets = true, bool preparedActiveLodOnly = false)
             : mOverlap(overlap(prepareAssets))
             , mWork(abort, PagingWorkScope::Phase::OptionalOptimization)
             , mPrevious(sCurrent)
             , mAssetsAllowed(prepareAssets)
+            , mPreparedActiveLodOnly(prepareAssets && preparedActiveLodOnly)
             , mIncremental(prepareAssets && (Resource::AssetPolicy::mask() & Mask) == Lod)
         { sCurrent = this; }
         ~OptionalUpgradeScope() { sCurrent = mPrevious; }
@@ -197,6 +198,11 @@ namespace SceneUtil::AssetPaging
         // An explicit ordinary pass never prepares assets merely because their
         // process-wide switches are enabled. Nested scopes restore their owner.
         static bool assetsAllowed() noexcept { return !sCurrent || sCurrent->mAssetsAllowed; }
+        // A partial ordinary pass may leave other active owners unprepared.
+        // The small asset tail can visit them, but must never rebuild their
+        // ordinary control under its metadata-only overlap reservation.
+        static bool preparedActiveLodOnly() noexcept
+        { return sCurrent && sCurrent->mPreparedActiveLodOnly; }
         static void noteTransient(unsigned mask) noexcept
         { if (sCurrent && (mask & Mask)) sCurrent->mNeedsRetry = true; }
         static void noteAttempt(unsigned mask) noexcept
@@ -236,6 +242,7 @@ namespace SceneUtil::AssetPaging
         bool mSpentAttempt = false;
         bool mWaitingForAdmission = false;
         bool mAssetsAllowed = true;
+        bool mPreparedActiveLodOnly = false;
         bool mIncremental = false;
     };
     struct ControlEstimate

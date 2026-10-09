@@ -854,7 +854,7 @@ namespace MWWorld
                                        : Debug::GameplayDiagnostics::Clock::time_point{};
             Loading::Reporter reporter;
             auto* budget = mResourceSystem->speculativeBudget();
-            bool admitted = true, deferred = false, spentAttempt = false, cancelled = false;
+            bool admitted = true, deferred = false, spentAttempt = false, cancelled = false, ordinaryDeferred = false;
             std::size_t currentTarget = mPreloadPositions.size(), completedTargets = 0;
             const auto requestsBefore = mOptionalUpgradeRequests.load(std::memory_order_relaxed);
             const auto ordinaryFailure = [&](unsigned stage,const Resource::SpeculativeDeferred* error) {
@@ -943,10 +943,14 @@ namespace MWWorld
                     if (!optionalSourcesMatch() || !matchesWorld(mWorld))
                         throw SceneUtil::PagingWorkCancelled{};
                     if (ordinary.needsRetry()) ordinaryFailure(2,nullptr);
-                    if (mAbort.load(std::memory_order_acquire) || ordinary.needsRetry()) admitted = false;
+                    ordinaryDeferred = ordinary.needsRetry();
+                    if (mAbort.load(std::memory_order_acquire)) admitted = false;
                 }
                 catch (const Resource::SpeculativeDeferred& error)
-                { ordinaryFailure(currentTarget == mPreloadPositions.size() ? 0 : 1,&error); admitted = false; }
+                {
+                    ordinaryFailure(currentTarget == mPreloadPositions.size() ? 0 : 1,&error);
+                    ordinaryDeferred = true;
+                }
                 catch (const SceneUtil::PagingWorkCancelled&)
                 { mOptionalRetry.cancel(); ++SceneUtil::AssetPaging::Counters::tailCancelled; admitted = false; cancelled = true; }
                 catch (const std::exception& e)
@@ -959,6 +963,15 @@ namespace MWWorld
                     Log(Debug::Warning) << "Ordinary paging preparation failed before active LOD";
                     mOptionalRetry.cancel(); admitted = false; cancelled = true;
                 }
+            }
+            // One unprepared target must not suppress the asset tail of
+            // already-qualified owners. The strict tail below cannot build
+            // an ordinary active control under its smaller reservation.
+            if (ordinaryDeferred)
+            {
+                if (mAbort.load(std::memory_order_acquire)) admitted = false;
+                if (!cancelled && (!optionalSourcesMatch() || !matchesWorld(mWorld)))
+                { mOptionalRetry.cancel(); ++SceneUtil::AssetPaging::Counters::tailCancelled; admitted = false; cancelled = true; }
             }
             if (admitted && (mOptionalRetry.generation.mask & SceneUtil::AssetPaging::Mask)
                 && budget && budget->experimentEnabled())
@@ -978,7 +991,7 @@ namespace MWWorld
             if (admitted)
             {
                 // The optional tail remains serialized by this terrain owner;
-                // NearFuture byte/headroom gates and the outer128MiB reservation
+                // ordinary128MiB and asset metadata/control byte/headroom gates
                 // are unchanged. No P1 job slot or demand wait is introduced.
                 Resource::SpeculativeScope speculativeScope(budget,
                     &Resource::ResourceSystem::speculativeSample,mResourceSystem,
@@ -986,9 +999,9 @@ namespace MWWorld
                 std::unique_ptr<SceneUtil::AssetPaging::OptionalUpgradeScope> scope;
                 try
                 {
-                    scope = std::make_unique<SceneUtil::AssetPaging::OptionalUpgradeScope>(&mAbort);
+                    scope = std::make_unique<SceneUtil::AssetPaging::OptionalUpgradeScope>(&mAbort,true,independentActiveLod());
                     prepareTargets();
-                    deferred = scope->needsRetry();
+                    deferred = ordinaryDeferred || scope->needsRetry();
                     spentAttempt = scope->spentAttempt() && !scope->waitingForAdmission();
                     mOptionalCompleted.store(!mAbort.load() && !deferred,std::memory_order_release);
                 }
@@ -999,13 +1012,22 @@ namespace MWWorld
                         || !SceneUtil::AssetPaging::admissionWaiting(error);
                 }
                 catch (const SceneUtil::PagingWorkCancelled&)
-                { mOptionalRetry.cancel(); ++SceneUtil::AssetPaging::Counters::tailCancelled; }
+                { mOptionalRetry.cancel(); ++SceneUtil::AssetPaging::Counters::tailCancelled; cancelled = true; deferred = false; }
                 catch (const std::exception& e)
-                { Log(Debug::Warning) << "Optional paging optimization failed after target readiness: " << e.what(); }
+                {
+                    Log(Debug::Warning) << "Optional paging optimization failed after target readiness: " << e.what();
+                    if (ordinaryDeferred)
+                    { mOptionalRetry.cancel(); ++SceneUtil::AssetPaging::Counters::tailCancelled; cancelled = true; deferred = false; }
+                }
                 catch (...)
-                { Log(Debug::Warning) << "Optional paging optimization failed after target readiness"; }
+                {
+                    Log(Debug::Warning) << "Optional paging optimization failed after target readiness";
+                    if (ordinaryDeferred)
+                    { mOptionalRetry.cancel(); ++SceneUtil::AssetPaging::Counters::tailCancelled; cancelled = true; deferred = false; }
+                }
             }
             else deferred = !cancelled;
+            if (!cancelled && ordinaryDeferred) deferred = true;
             mOptionalDeferred.store(deferred,std::memory_order_release);
             if (mOptionalRetry.generation.mask && mReadinessSplit)
             {

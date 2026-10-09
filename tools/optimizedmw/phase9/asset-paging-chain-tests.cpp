@@ -26,6 +26,7 @@
 #include <components/vfs/registerarchives.hpp>
 #include <osg/NodeCallback>
 #include <osg/Program>
+#include <osg/Stats>
 #include <osg/ClipControl>
 #include <osgViewer/Viewer>
 #include <osgViewer/Renderer>
@@ -941,16 +942,27 @@ int main(int argc,char** argv) try
         } restoreActive;
         Settings::terrain().mObjectPagingActiveGrid.set(true);
         Settings::cells().mV311ActiveGridPrepareMode.set(1);
-        const auto activeChunk=[&](MWRender::ObjectPaging& owner,bool prepareAssets,bool* needsRetry=nullptr) {
+        const auto activeChunk=[&](MWRender::ObjectPaging& owner,bool prepareAssets,bool* needsRetry=nullptr,
+            bool preparedOnly=false,bool* admissionWait=nullptr) {
             R::SpeculativeScope scope(resources.speculativeBudget(),&R::ResourceSystem::speculativeSample,
                 &resources,R::SpeculativePriority::NearFuture);
-            A::OptionalUpgradeScope optional(&abort,prepareAssets);
+            A::OptionalUpgradeScope optional(&abort,prepareAssets,preparedOnly);
             auto value=owner.getChunk(1,{0,0},0,0,true,{0,0,0},true);
             if(needsRetry) *needsRetry=optional.needsRetry();
+            if(admissionWait) *admissionWait=optional.waitingForAdmission();
             return value;
         };
         const auto activeRefs=[](MWRender::ObjectPaging& owner) {
             std::vector<ESM::RefNum> result;owner.getPagedRefnums({-1,-1,1,1},result);return result;
+        };
+        const auto activeOrdinaryBuilt=[](MWRender::ObjectPaging& owner) {
+            osg::ref_ptr<osg::Stats> stats=new osg::Stats("prepared-only ordinary owner");
+            owner.reportStats(0,stats);
+            double prepared=0,upgrades=0;
+            require(stats->getAttribute(0,"V3.11 Prepared Active Built",prepared)
+                && stats->getAttribute(0,"V3.13 Upgrade Built",upgrades),
+                "actual ordinary preparation counters required for strict-tail proof");
+            return std::make_pair(prepared,upgrades);
         };
         struct RefnumPartitions final : osg::NodeVisitor
         {
@@ -997,6 +1009,33 @@ int main(int argc,char** argv) try
         {SceneUtil::PagingWorkScope demand(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
             stagedRequired=staged.getChunk(1,{0,0},0,0,true,{0,0,0},true);}
         require(stagedRequired.valid(),"active first-stage required control required");
+        const GeometrySnapshot stagedRequiredSnapshot(*stagedRequired);
+        MWRender::ObjectPaging missing(scenes,ESM::Cell::sDefaultWorldspaceId);
+        missing.setAssetMainCamera(camera);missing.setFixturePopulation(activePopulation);
+        Registered missingRegistration(resources,&missing);
+        const auto strictSourceRequests=A::Counters::lod.sourceRequested.load();
+        const auto strictBuildAttempts=L::Counters::activeBuildAttempts.load();
+        const auto stagedOrdinaryBefore=activeOrdinaryBuilt(staged),missingOrdinaryBefore=activeOrdinaryBuilt(missing);
+        bool missingRetry=false,missingWait=false,weakRetry=false,weakWait=false;
+        require(!activeChunk(missing,true,&missingRetry,true,&missingWait)
+            && missingRetry && missingWait && activeRefs(missing).empty(),
+            "small prepared-only active tail must defer a missing owner without constructing or publishing its ordinary control");
+        require(activeChunk(staged,true,&weakRetry,true,&weakWait)==stagedRequired
+            && weakRetry && weakWait && built(mask)==beforeActiveBuilt,
+            "small prepared-only active tail must return the exact current required weak control without upgrading it");
+        stagedRequiredSnapshot.unchanged(*stagedRequired,"prepared-only weak observation must preserve its held control graph");
+        require(activeOrdinaryBuilt(staged)==stagedOrdinaryBefore && activeOrdinaryBuilt(missing)==missingOrdinaryBefore
+            && A::Counters::lod.sourceRequested.load()==strictSourceRequests
+            && L::Counters::activeBuildAttempts.load()==strictBuildAttempts,
+            "strict weak and missing observations must not prepare ordinary controls or start asset source/cook work");
+        MWRender::ObjectPaging pending(scenes,ESM::Cell::sDefaultWorldspaceId);
+        pending.setAssetMainCamera(camera);pending.setFixturePopulation(activePopulation);
+        Registered pendingRegistration(resources,&pending);
+        osg::ref_ptr<osg::Node> pendingRequired;
+        {SceneUtil::PagingWorkScope demand(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
+            pendingRequired=pending.getChunk(1,{0,0},0,0,true,{0,0,0},true);}
+        require(pendingRequired.valid(),"independent unfinished ordinary target requires a real weak control");
+        const GeometrySnapshot pendingSnapshot(*pendingRequired);
         MWRender::ObjectPaging active(scenes,ESM::Cell::sDefaultWorldspaceId);
         active.setAssetMainCamera(camera);active.setFixturePopulation(activePopulation);
         Registered activeRegistration(resources,&active);
@@ -1029,7 +1068,7 @@ int main(int argc,char** argv) try
             const auto occupiedReceipt=resources.speculativeBudget()->experimentJobReceipt(R::ResourceSystem::speculativeSample(&resources));
             require((occupiedReceipt.reasons & R::SpeculativeBudget::ExperimentJobLimit) != 0
                 && occupiedReceipt.experimentJobs==1,"actual advisory child receipt must observe the occupied permit");
-            auto denied=activeChunk(active,true,&deniedRetry);
+            auto denied=activeChunk(active,true,&deniedRetry,true);
             require(denied==strong && deniedRetry && built(mask)==beforeActiveBuilt
                 && A::Counters::lod.outerCpuDenied.load()>deniedOuterBefore
                 && activeRefs(active)==requiredRefs,"denied active L1 tail must retain the exact published strong node, RefNums and retry");
@@ -1040,6 +1079,28 @@ int main(int argc,char** argv) try
         }
         requiredSnapshot.unchanged(*required,"ordinary active promotion must preserve the held required graph");
         require(resources.speculativeBudget()->stats().experimentJobs==0,"busy test permit must release before the actual tail cook");
+        {
+            struct RestoreRequestedQuality
+            {
+                int prepare=Settings::cells().mV311ActiveGridPrepareMode;
+                int spatial=Settings::cells().mV312SpatialBatchMode;
+                ~RestoreRequestedQuality()
+                {Settings::cells().mV311ActiveGridPrepareMode.set(prepare);Settings::cells().mV312SpatialBatchMode.set(spatial);}
+            } restoreQuality;
+            const GeometrySnapshot qualitySnapshot(*strong);
+            const auto ordinaryBefore=activeOrdinaryBuilt(active);
+            const auto assetAttemptsBefore=L::Counters::activeBuildAttempts.load();
+            bool qualityRetry=false,qualityWait=false;
+            Settings::cells().mV311ActiveGridPrepareMode.set(restoreQuality.prepare+1);
+            require(activeChunk(active,true,&qualityRetry,true,&qualityWait)==strong && qualityRetry && qualityWait,
+                "prepared-only active tail must retain a current control whose normal preparation does not cover the new request");
+            Settings::cells().mV311ActiveGridPrepareMode.set(restoreQuality.prepare);
+            Settings::cells().mV312SpatialBatchMode.set(restoreQuality.spatial ? 0 : 1);
+            require(activeChunk(active,true,&qualityRetry,true,&qualityWait)==strong && qualityRetry && qualityWait
+                && activeOrdinaryBuilt(active)==ordinaryBefore && L::Counters::activeBuildAttempts.load()==assetAttemptsBefore,
+                "prepared-only active tail must not reconstruct or cook a current control with mismatched spatial quality");
+            qualitySnapshot.unchanged(*strong,"strict normal/spatial quality deferral must preserve its actual strong control");
+        }
         ControlTopology strongTopology;strong->accept(strongTopology);
         RefnumPartitions strongPartitions;strong->accept(strongPartitions);strongPartitions.finish();
         std::set<ESM::RefNum> strongMarkedRefs;
@@ -1052,7 +1113,21 @@ int main(int argc,char** argv) try
             "bounded active population must exercise real merged geometry and retained ordinary whole-reference picking");
         const GeometrySnapshot strongSnapshot(*strong);
         std::this_thread::sleep_for(std::chrono::milliseconds(A::RetryDelayMilliseconds+100));
-        sampleGpu();auto activeCandidate=activeChunk(active,true);
+        sampleGpu();osg::ref_ptr<osg::Node> activeCandidate;
+        {
+            // One actual tail scope visits incomplete owners before the strong
+            // owner. Their admission wait must not suppress the later cook.
+            R::SpeculativeScope scope(resources.speculativeBudget(),&R::ResourceSystem::speculativeSample,
+                &resources,R::SpeculativePriority::NearFuture);
+            A::OptionalUpgradeScope optional(&abort,true,true);
+            require(pending.getChunk(1,{0,0},0,0,true,{0,0,0},true)==pendingRequired
+                && !missing.getChunk(1,{0,0},0,0,true,{0,0,0},true),
+                "partial asset tail must skip exact weak and missing owners before visiting a prepared owner");
+            activeCandidate=active.getChunk(1,{0,0},0,0,true,{0,0,0},true);
+            require(optional.needsRetry() && optional.waitingForAdmission(),
+                "successful prepared-owner cook must retain the incomplete ordinary targets' admission wait");
+        }
+        pendingSnapshot.unchanged(*pendingRequired,"later prepared-owner cook must not mutate a skipped weak control");
         Selectors activeSelectors;activeCandidate->accept(activeSelectors);
         require(activeCandidate!=strong && !activeSelectors.values.empty() && built(mask)>beforeActiveBuilt,
             "available active L1 tail must cook an independently published control replacement");
@@ -1156,6 +1231,10 @@ int main(int argc,char** argv) try
             require(resolved,"every real selected original hit must resolve its actual production picking owner");
         }
         require(pickedMarkers>0,"real picked original must expose its actual reference vertex partition");
+        std::cout<<"CHAIN_ACTIVE_PARTIAL_TAIL missing_skipped=1 missing_unpublished=1 weak_exact=1 weak_unchanged=1 skipped_no_ordinary_build=1 skipped_no_asset_attempt=1"
+            <<" insufficient_normal_exact=1 wrong_spatial_exact=1 busy_exact=1 available_cooked=1 incomplete_retry_retained=1 exact_owner_ready=1 source_loader_substituted=0"
+            <<" main_draws="<<consumed(mask)-activeDrawStart
+            <<" active_tagged_draws="<<L::Counters::activeDerivedDraws.load()-activeTaggedDrawStart<<" gl_error=0\n";
         std::cout<<"CHAIN_ACTIVE_GRID disabled_control=1 required_original=1 asset_enabled_first_stage_ordinary=1 busy_child_ordinary_published=1 denied_tail_exact_strong=1"
             <<" available_tail_cooked=1 exact_owner_ready=1 actual_main_draw=1 immutable_streams="<<activeStreams
             <<" refnums="<<requiredRefs.size()<<" selected_refnums="<<selectedRefnums.size()<<" mixed_occluder_original=1 picking_partitions="<<candidatePartitions.values.size()<<" actual_pick_hits="<<intersector->getIntersections().size()
@@ -1172,6 +1251,12 @@ int main(int argc,char** argv) try
             && std::none_of(activeSelectors.values.begin(),activeSelectors.values.end(),
                 [](const auto* selector){return selector->materialGuardCurrent();}),
             "real source epoch change must invalidate every held active tier guard");
+        bool staleRetry=false,staleWait=false;
+        const auto activeBeforeStrictEpochBuilt=built(mask);
+        require(!activeChunk(active,true,&staleRetry,true,&staleWait)
+            && staleRetry && staleWait && built(mask)==activeBeforeStrictEpochBuilt,
+            "prepared-only active tail must defer stale source quality without rebuilding or returning it as current readiness");
+        strongSnapshot.unchanged(*strong,"stale prepared-only observation must preserve the earlier held ordinary owner");
         const auto activeBeforeEpochDraw=consumed(mask),activeBeforeEpochReads=pixels->reads;viewer.frame();
         require(consumed(mask)==activeBeforeEpochDraw && pixels->original>0 && pixels->reads>activeBeforeEpochReads
             && rgb(pixels->data)>16 && pixels->error==GL_NO_ERROR,"stale active shader epoch must draw visible original controls immediately");
@@ -1185,7 +1270,7 @@ int main(int argc,char** argv) try
         activeShaderManager.setGlobalDefines(activeDefines);
         require(std::none_of(activeSelectors.values.begin(),activeSelectors.values.end(),
             [](const auto* selector){return selector->materialGuardCurrent();}),"restoring active source policy must never revive its stale immutable guard");
-        std::cout<<"CHAIN_ACTIVE_EPOCH source_changed=1 old_guard_original=1 required_original_rebuilt=1 refnums_preserved=1 old_guard_not_revived=1"
+        std::cout<<"CHAIN_ACTIVE_EPOCH source_changed=1 prepared_stale_deferred=1 old_guard_original=1 required_original_rebuilt=1 refnums_preserved=1 old_guard_not_revived=1"
             <<" original_draws="<<pixels->original<<" rgb="<<rgb(pixels->data)<<" gl_error=0\n";
         phase("active_grid","done");
     }

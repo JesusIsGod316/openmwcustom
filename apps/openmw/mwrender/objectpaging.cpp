@@ -257,6 +257,28 @@ namespace MWRender
                 throw SceneUtil::PagingWorkCancelled{};
             cached = mCache->getRefFromObjectCache(id);
             auto quality = mV313ChunkQualities.find(id);
+            if (activeLodFoundationRequested && SceneUtil::AssetPaging::OptionalUpgradeScope::preparedActiveLodOnly())
+            {
+                // The asset tail has only a small metadata envelope. A partial
+                // ordinary pass is not proof that every visited owner is strong.
+                // Check the exact current-source cache publication before any
+                // stale removal, upgrade claim or ordinary reconstruction.
+                const bool currentOwner = cached && quality != mV313ChunkQualities.end()
+                    && quality->second.mAssetVfsGeneration == assetVfsGeneration
+                    && quality->second.mAssetShaderGeneration == assetShaderGeneration;
+                const bool preparedOwner = currentOwner && v313RequestedPrepareMode > 0
+                    && quality->second.mPrepareMode >= v313RequestedPrepareMode
+                    && quality->second.mSpatialMode == v313RequestedSpatialMode
+                    && v313QualitySatisfies(quality->second,v313RequestedQuality);
+                if (!preparedOwner)
+                {
+                    SceneUtil::AssetPaging::noteOptionalTransient(SceneUtil::AssetPaging::Lod);
+                    SceneUtil::AssetPaging::noteOptionalAdmissionWait(SceneUtil::AssetPaging::Lod);
+                    // A stale graph remains held for the normal repair path,
+                    // never as a current-source readiness or cook receipt.
+                    return currentOwner ? static_cast<osg::Node*>(cached.get()) : nullptr;
+                }
+            }
             if (cached && assetQualityRepair && (quality == mV313ChunkQualities.end()
                 || quality->second.mAssetVfsGeneration != assetVfsGeneration
                 || quality->second.mAssetShaderGeneration != assetShaderGeneration))

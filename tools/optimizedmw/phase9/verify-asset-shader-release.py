@@ -158,8 +158,19 @@ def l1_active_grid(text):
             "Active-grid main draws are not exactly attributed to active owners")
     require(unsigned_field(active, "rgb", "CHAIN_ACTIVE_GRID") > 16,
             "Active-grid fixture did not draw visible output")
+    partial = record(text, "CHAIN_ACTIVE_PARTIAL_TAIL", {key: 1 for key in (
+        "missing_skipped", "missing_unpublished", "weak_exact", "weak_unchanged",
+        "skipped_no_ordinary_build", "skipped_no_asset_attempt", "insufficient_normal_exact",
+        "wrong_spatial_exact", "busy_exact",
+        "available_cooked", "incomplete_retry_retained", "exact_owner_ready")}
+        | {"source_loader_substituted": 0, "gl_error": 0})
+    partial_draws = unsigned_field(partial, "main_draws", "CHAIN_ACTIVE_PARTIAL_TAIL")
+    require(partial_draws > 0
+            and unsigned_field(partial, "active_tagged_draws", "CHAIN_ACTIVE_PARTIAL_TAIL") == partial_draws
+            and unsigned_field(active, "main_draws", "CHAIN_ACTIVE_GRID") == partial_draws,
+            "Partial active tail lacks exactly attributed actual draws from the active-grid cohort")
     epoch = record(text, "CHAIN_ACTIVE_EPOCH", {key: 1 for key in (
-        "source_changed", "old_guard_original", "required_original_rebuilt",
+        "source_changed", "prepared_stale_deferred", "old_guard_original", "required_original_rebuilt",
         "refnums_preserved", "old_guard_not_revived")} | {"gl_error": 0})
     require(unsigned_field(epoch, "original_draws", "CHAIN_ACTIVE_EPOCH") > 0
             and unsigned_field(epoch, "rgb", "CHAIN_ACTIVE_EPOCH") > 16,
@@ -167,7 +178,8 @@ def l1_active_grid(text):
     complete = record(text, "CHAIN_PASS", {"source_population_substituted": 1,
         "source_loader_substituted": 0, "cook_substituted": 0, "readiness_substituted": 0,
         "cpu_limit": 268435456})
-    return {"declared_population": declared_population, "actual_active_owner": active, "source_epoch_original_fallback": epoch,
+    return {"declared_population": declared_population, "actual_active_owner": active,
+            "strict_partial_tail": partial, "source_epoch_original_fallback": epoch,
             "actual_chain_completion": complete}
 
 
