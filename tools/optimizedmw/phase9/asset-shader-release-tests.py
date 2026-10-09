@@ -35,6 +35,7 @@ class AssetReleaseEvidence(unittest.TestCase):
     @staticmethod
     def asset_compile_receipt():
         return ("CHAIN_ASSET_EXACT_CLOSURE real_openmw_ico=1 ico_mode=0 registered_context_held=1 "
+                "renderer_startup_empty_scene=1 renderer_startup_compile_consumed=1 renderer_compile_stayed_clear=1 unrelated_unlinked_after_original=1 "
                 "ordinary_cache_only_pruned=1 pending_resource_set_survived=1 pending_host_accounted=1 exact_cached_owner=1 "
                 "stock_imports_nonempty=1 distortion_zero=1 ambient_variant_different=1 exact_linked_variants=2 "
                 "unrelated_unlinked_original=1 original_before_ico=2 global_exact_variants=0 main_draws=4 active_tagged_draws=4 "
@@ -96,6 +97,31 @@ class AssetReleaseEvidence(unittest.TestCase):
                               ("baseline_submissions=2", "baseline_submissions=18446744073709551616")):
             with self.subTest(after=after), self.assertRaises(gate.QualificationError):
                 gate.l1_post_optimizer(valid.replace(before, after))
+        for mask in (1, 2):
+            terminal = ("CHAIN_PASS source_population_substituted=1 source_loader_substituted=0 "
+                        "cook_substituted=0 readiness_substituted=0 cpu_limit=268435456 "
+                        f"common_budget_only=1 asset_mask={mask} child_budget_enabled=0 "
+                        "common_retained_growth=8192 owned_callbacks=2 owned_ready=1 actual_derived_draws=4 "
+                        "experiment_retained=0 experiment_future=0 experiment_jobs=0\n")
+            gate.chain_common_owned_compile(terminal, mask)
+            for field in terminal.split()[1:]:
+                key, value = field.split("=", 1)
+                replacements = ("", f"{key}=invalid", f"{field} {field}")
+                if value in ("0", "1"):
+                    replacements += (f"{key}={1-int(value)}",)
+                for replacement in replacements:
+                    with self.subTest(mask=mask, field=key, replacement=replacement), self.assertRaises(gate.QualificationError):
+                        gate.chain_common_owned_compile(terminal.replace(" " + field, " " + replacement, 1), mask)
+            for before, after in (("common_retained_growth=8192", "common_retained_growth=0"),
+                                  ("owned_callbacks=2", "owned_callbacks=0"),
+                                  ("owned_ready=1", "owned_ready=3"),
+                                  ("actual_derived_draws=4", "actual_derived_draws=0"),
+                                  (f"asset_mask={mask}", f"asset_mask={3-mask}")):
+                with self.subTest(mask=mask, replacement=after), self.assertRaises(gate.QualificationError):
+                    gate.chain_common_owned_compile(terminal.replace(before, after), mask)
+            for bad in ("", terminal + terminal):
+                with self.subTest(mask=mask, terminal=bad), self.assertRaises(gate.QualificationError):
+                    gate.chain_common_owned_compile(bad, mask)
 
     def test_admission_wait_requires_renewed_actual_cook(self):
         expected = {"observations": 3, "construction_attempts_before_resume": 0,

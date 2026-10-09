@@ -74,7 +74,9 @@ guards; ordinary callback observations cannot grant it. Root retirement cancels
 pending work. Queued leaves retain the source templates and their existing
 host charges until the resources retire. Metadata has an additional global
 4 MiB and 512-recipe bound within the experimental/common accounting; this is
-not another independent payload allowance. Multiple/unqualified contexts and
+not another independent payload allowance. With the child cache disabled,
+preparation still reserves and retains its actual common-ledger charge.
+Multiple/unqualified contexts and
 unsafe relinks keep the original geometry. Preparing these resources does not
 guarantee that subsequent driver calls cannot stall.
 

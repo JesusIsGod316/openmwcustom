@@ -191,7 +191,8 @@ def l1_asset_compile_closure(text, active_draws):
         "real_openmw_ico", "registered_context_held", "ordinary_cache_only_pruned",
         "pending_resource_set_survived", "pending_host_accounted", "exact_cached_owner",
         "stock_imports_nonempty", "distortion_zero", "ambient_variant_different",
-        "unrelated_unlinked_original", "state_input_substitution")}
+        "unrelated_unlinked_original", "renderer_startup_empty_scene", "renderer_startup_compile_consumed",
+        "renderer_compile_stayed_clear", "unrelated_unlinked_after_original", "state_input_substitution")}
         | {"ico_mode": 0, "global_exact_variants": 0, "source_loader_substituted": 0,
            "cook_substituted": 0, "callback_substituted": 0, "gl_error": 0})
     require(0 < unsigned_field(exact, "exact_linked_variants", "CHAIN_ASSET_EXACT_CLOSURE") <= 512
@@ -244,6 +245,22 @@ def chain_retry_admission_wait(text):
         "ordinary_preserved": 1, "exact_cached_denied_owner": 1,
         "weak_graph_unchanged": 1, "denied_topology_unchanged": 1,
         "renewed_actual_cook": 1, "generation_reset": 0})
+
+
+def chain_common_owned_compile(text, mask):
+    """The historical candidate plus compile leases use the common ledger only."""
+    proof = record(text, "CHAIN_PASS", {
+        "source_population_substituted": 1, "source_loader_substituted": 0,
+        "cook_substituted": 0, "readiness_substituted": 0, "cpu_limit": 268435456,
+        "common_budget_only": 1, "asset_mask": mask, "child_budget_enabled": 0,
+        "experiment_retained": 0, "experiment_future": 0, "experiment_jobs": 0})
+    callbacks = unsigned_field(proof, "owned_callbacks", "CHAIN_PASS")
+    ready = unsigned_field(proof, "owned_ready", "CHAIN_PASS")
+    require(unsigned_field(proof, "common_retained_growth", "CHAIN_PASS") > 0
+            and 0 < ready <= callbacks
+            and unsigned_field(proof, "actual_derived_draws", "CHAIN_PASS") > 0,
+            "Common-only historical candidate did not retain host ownership, complete its owned closure and draw")
+    return proof
 
 
 def evaluate(folder, commit, source, game, workspace, installed=None):
@@ -409,6 +426,8 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
         record(texts[name], "CHAIN_RETRY_COALESCED", {"inflight_signalled": 1, "exact_weak_owner": 1,
             "observer_build_attempts": 0, "peer_published": 1})
         chain_retry_admission_wait(texts[name])
+        if name != "GEOMETRY-L1-ACTIVE-GRID.txt":
+            chain_common_owned_compile(texts[name], mask)
         if mask == 1:
             if name == "GEOMETRY-L1-TEXTURE-COMBINATION.txt":
                 record(texts[name], "CHAIN_L1_TEXTURE_COMBINATION", {"process_mask": 5,

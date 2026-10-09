@@ -1043,6 +1043,20 @@ int main(int argc,char** argv) try
         require(!Shader::exactProgramVariantsEnabled(),
             "asset owned compile qualification requires the captured G1-off canonical sampler path");
         phase("active_grid","begin");
+        // Renderer startup has its own whole-scene GLObjectsVisitor producer,
+        // independent of the paused ICO. Consume that actual one-time compile
+        // before any optional graph enters the empty fixture view; a disabled
+        // ordinary sibling must then remain an independent unlinked witness.
+        auto* activeRenderer=dynamic_cast<osgViewer::Renderer*>(camera->getRenderer());
+        require(activeRenderer && activeRenderer->getCompileOnNextDraw()
+            && lighting->getNumChildren()==0,
+            "real renderer startup must be pending on an empty object scene before optional active work");
+        const auto startupDerived=consumed(mask),startupOriginal=controlDraws();
+        viewer.frame();
+        require(!activeRenderer->getCompileOnNextDraw() && lighting->getNumChildren()==0
+            && consumed(mask)==startupDerived && controlDraws()==startupOriginal
+            && pixels->error==GL_NO_ERROR && ico->getContextSet().contains(context.get()),
+            "actual empty-scene startup frame must consume renderer compilation without candidate use or context substitution");
         // Active mode 2 does not force repeated sources to merge. Supply enough
         // real references for the unchanged captured cost/benefit rule, without
         // changing the historical distant population or any engine threshold.
@@ -1348,6 +1362,8 @@ int main(int argc,char** argv) try
         require(!activePrepared() && consumed(mask)==pendingDerived && pixels->original>0
             && pixels->error==GL_NO_ERROR && rgb(pixels->data)>16,
             "pending exact asset closure must draw its visible ordinary original before any actual ICO work");
+        require(!activeRenderer->getCompileOnNextDraw() && !unrelatedPcp->isLinked(),
+            "paused ordinary draw must keep renderer startup consumed and the unrelated sibling actually unlinked");
         const auto pendingOriginalDraws=pixels->original;
         activeQueuePause.resume();
         for(unsigned frame=0;frame<90 && !activePrepared();++frame) viewer.frame();
@@ -1358,9 +1374,10 @@ int main(int argc,char** argv) try
             && L::Counters::activeDerivedDraws.load()-activeTaggedDrawStart==consumed(mask)-activeDrawStart,
             "actual active cook and every reduced draw must retain their explicit active-grid origin tag");
         const auto exactLinked=linkedImportedAssets(importedRecipes,*context->getState());
-        require(!unrelatedPcp->isLinked(),
+        require(!activeRenderer->getCompileOnNextDraw() && !unrelatedPcp->isLinked(),
             "actual asset readiness must not compile or require the unrelated unlinked ordinary sibling");
         std::cout<<"CHAIN_ASSET_EXACT_CLOSURE real_openmw_ico=1 ico_mode=0 registered_context_held=1"
+            <<" renderer_startup_empty_scene=1 renderer_startup_compile_consumed=1 renderer_compile_stayed_clear=1 unrelated_unlinked_after_original=1"
             <<" ordinary_cache_only_pruned=1 pending_resource_set_survived=1 pending_host_accounted=1 exact_cached_owner=1"
             <<" stock_imports_nonempty=1 distortion_zero=1 ambient_variant_different=1 exact_linked_variants="<<exactLinked
             <<" unrelated_unlinked_original=1 original_before_ico="<<pendingOriginalDraws
@@ -1762,6 +1779,9 @@ int main(int argc,char** argv) try
     }
     sampleGpu(); const auto beforeReady=ready(mask), beforeDraw=consumed(mask);
     const auto ownersBefore=hostOwners(resources.speculativeBudget()->stats());
+    const auto ownedCallbacksBefore=L::Counters::ownedCompileCallbacks.load(),ownedReadyBefore=L::Counters::ownedCompileReady.load();
+    const bool commonBudgetOnly=!inputs.experimentBudget && !inputs.activeGridCheck;
+    std::uint64_t commonRetainedGrowth=0,commonOwnedCallbacks=0,commonOwnedReady=0,commonDerivedDraws=0;
     const auto beforePrivateCopies=L::Counters::privateArrayCopies.load(),beforePrivateVbos=L::Counters::privateVertexBuffers.load();
     const auto beforePostCandidates=L::Counters::postOptimizedCandidates.load(),beforeNewIndices=L::Counters::newIndexGpuBytes.load();
     const auto beforeGpuDebt=R::AssetGpuBudget::liveBytes.load();
@@ -1854,6 +1874,14 @@ int main(int argc,char** argv) try
     require(pendingCache==candidate && built(mask)==pendingBuilt && pendingRetry,
         "submitted-but-unready ICO cache observation must retain the candidate and optional retry without a new cook");
     require(hostOwners(resources.speculativeBudget()->stats())>ownersBefore,"actual private candidate must retain a host ownership charge after preparation stages unwind");
+    if(commonBudgetOnly)
+    {
+        const auto stats=resources.speculativeBudget()->stats();
+        require(!resources.speculativeBudget()->experimentEnabled() && !stats.experimentRetainedBytes
+            && !stats.experimentFutureBytes && !stats.experimentJobs,
+            "historical common-only candidate must not borrow a child budget or create child debt");
+        commonRetainedGrowth=hostOwners(stats)-ownersBefore;
+    }
     if(inputs.experimentBudget)
     {
         const auto stats=resources.speculativeBudget()->stats();
@@ -1892,6 +1920,18 @@ int main(int argc,char** argv) try
     require(ready(mask)>beforeReady,"real ObjectPaging CompileCompleted must certify the queued GL objects");
     const auto drawStart=consumed(mask); phase("derived_draw","begin"); viewer.frame(); viewer.frame(); phase("derived_draw","done");
     require(consumed(mask)>drawStart,"actual main camera must consume production-generated geometry");
+    if(commonBudgetOnly)
+    {
+        commonOwnedCallbacks=L::Counters::ownedCompileCallbacks.load()-ownedCallbacksBefore;
+        commonOwnedReady=L::Counters::ownedCompileReady.load()-ownedReadyBefore;
+        commonDerivedDraws=consumed(mask)-drawStart;
+        const auto stats=resources.speculativeBudget()->stats();
+        require(commonRetainedGrowth && commonOwnedCallbacks && commonOwnedReady
+            && commonOwnedReady<=commonOwnedCallbacks && commonDerivedDraws
+            && !resources.speculativeBudget()->experimentEnabled() && !stats.experimentRetainedBytes
+            && !stats.experimentFutureBytes && !stats.experimentJobs,
+            "actual child-disabled candidate must complete its owned closure and draw while its leases use only common host accounting");
+    }
     if(inputs.warmControl) std::cout<<"CHAIN_WARM_CONSUMPTION controls="<<warmControls<<" ordinary_draws_before_cook="<<warmOrdinaryDraws
         <<" compile_ready=1 actual_derived_draw=1 exact_same_cohort=1\n";
     bool readyRetry=true;
@@ -2622,7 +2662,20 @@ int main(int argc,char** argv) try
             <<" jobs="<<stats.experimentJobs<<" source_pins="<<stats.experimentSourcePins
             <<" retained_owners_still_referenced=1 scratch_released=1\n";
     }
-    std::cout<<"CHAIN_PASS source_population_substituted=1 source_loader_substituted=0 cook_substituted=0 readiness_substituted=0 cpu_limit="<<R::AssetPolicy::CpuTransientLimit<<'\n';
+    std::cout<<"CHAIN_PASS source_population_substituted=1 source_loader_substituted=0 cook_substituted=0 readiness_substituted=0 cpu_limit="<<R::AssetPolicy::CpuTransientLimit;
+    if(commonBudgetOnly)
+    {
+        const auto stats=resources.speculativeBudget()->stats();
+        require(!resources.speculativeBudget()->experimentEnabled() && !stats.experimentRetainedBytes
+            && !stats.experimentFutureBytes && !stats.experimentJobs,
+            "full historical replay must preserve actual child-disabled accounting");
+        std::cout<<" common_budget_only=1 asset_mask="<<mask<<" child_budget_enabled=0"
+            <<" common_retained_growth="<<commonRetainedGrowth<<" owned_callbacks="<<commonOwnedCallbacks
+            <<" owned_ready="<<commonOwnedReady<<" actual_derived_draws="<<commonDerivedDraws
+            <<" experiment_retained="<<stats.experimentRetainedBytes<<" experiment_future="<<stats.experimentFutureBytes
+            <<" experiment_jobs="<<stats.experimentJobs;
+    }
+    std::cout<<'\n';
     return 0;
 }
 catch (const std::exception& error) { std::cerr<<"CHAIN_FAILURE "<<error.what()<<'\n'; return 1; }

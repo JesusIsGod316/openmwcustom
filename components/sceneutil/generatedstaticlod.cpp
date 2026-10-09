@@ -1690,8 +1690,7 @@ namespace SceneUtil::GeneratedStaticLod
             || !ico || ico->getContextSet().size()!=1 || originalTemplateUpperBound>4096
             || !dynamic_cast<const Resource::TemplateMultiRef*>(&originalTemplates)) return false;
         const auto scope=Resource::SpeculativeScope::capture();
-        if(!scope.budget || !scope.budget->experimentEnabled()
-            || !SceneUtil::PagingWorkScope::optionalOptimization()) return false;
+        if(!scope.budget || !SceneUtil::PagingWorkScope::optionalOptimization()) return false;
         auto* context=*ico->getContextSet().begin();
         if(!context || !context->getState()) return false;
         try
