@@ -179,6 +179,7 @@ def l1_active_grid(text):
     adoption = live_owner_adoption(text)
     prefix_settled = record(text, "CHAIN_ACTIVE_PREFIX_SETTLED", {
         "after_scope": 1, "real_cache_maintenance": 1, "maintenance_passes": 2,
+        "real_compiled_merge": 1, "compiled_after": 0,
         "asset_sets": 0, "pending_asset_sets": 0, "ordinary_roots": 0, "future": 0, "renderer_frames": 0})
     complete = record(text, "CHAIN_PASS", {"source_population_substituted": 1,
         "source_loader_substituted": 0, "cook_substituted": 0, "readiness_substituted": 0,

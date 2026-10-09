@@ -30,6 +30,7 @@ class AssetReleaseEvidence(unittest.TestCase):
                 "refnums_preserved=1 old_guard_not_revived=1 original_draws=2 rgb=98 gl_error=0\n"
                 + AssetReleaseEvidence.asset_compile_receipt() + AssetReleaseEvidence.live_owner_adoption_receipt() +
                 "CHAIN_ACTIVE_PREFIX_SETTLED after_scope=1 real_cache_maintenance=1 maintenance_passes=2 "
+                "real_compiled_merge=1 compiled_after=0 "
                 "asset_sets=0 pending_asset_sets=0 ordinary_roots=0 future=0 renderer_frames=0\n"
                 "CHAIN_PASS source_population_substituted=1 source_loader_substituted=0 cook_substituted=0 "
                 "readiness_substituted=0 cpu_limit=268435456\n")
