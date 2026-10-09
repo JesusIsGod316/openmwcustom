@@ -533,6 +533,13 @@ namespace MWRender
             mCache->addEntryToObjectCache(id, node.get());
             mV313ChunkQualities[id] = v313BuiltQuality;
             mV313StrongUpgradeInFlight.erase(id);
+            if (assetOutcome.completed && assetOutcome.readiness)
+            {
+                // Only an actual winning immutable asset owner requests live
+                // adoption. Source epochs, ordinary builds and refused/no-op
+                // upgrades deliberately do not advance this serial.
+                mRenderingRevision.fetch_add(1, std::memory_order_release);
+            }
             if (v313RepairBuild)
                 mV313UpgradeInstalled.fetch_add(1, std::memory_order_relaxed);
         }
@@ -896,6 +903,72 @@ namespace MWRender
         , mMinSizeCostMultiplier(Settings::terrain().mObjectPagingMinSizeCostMultiplier)
         , mRefTrackerLocked(false)
     {
+    }
+
+    osg::ref_ptr<osg::Node> ObjectPaging::refreshPreparedChunk(osg::Node& current, float size,
+        const osg::Vec2f& center, bool activeGrid, bool& pending) const
+    {
+        pending = false;
+        const unsigned assets = (Resource::AssetPolicy::enabled(Resource::AssetPolicy::VisualLod)
+                ? SceneUtil::AssetPaging::Lod : 0)
+            | (Resource::AssetPolicy::enabled(Resource::AssetPolicy::Hlod) ? SceneUtil::AssetPaging::Hlod : 0);
+        if (!assets || (activeGrid && (!mActiveGrid || !Settings::cells().mGeneratedStaticLodActiveGrid)))
+            return nullptr;
+
+        const auto generation = mAssetGeneration.load(std::memory_order_acquire);
+        const auto vfsGeneration = mSceneManager->getVFS()->getIndexGeneration();
+        const auto shaderGeneration = mSceneManager->getShaderManager().assetGeneration();
+        const ChunkId id = std::make_tuple(center, size, activeGrid);
+        std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
+        if (generation != mAssetGeneration.load(std::memory_order_acquire)
+            || vfsGeneration != mSceneManager->getVFS()->getIndexGeneration()
+            || shaderGeneration != mSceneManager->getShaderManager().assetGeneration())
+            return nullptr;
+        const auto cached = mCache->getRefFromObjectCache(id);
+        const auto quality = mV313ChunkQualities.find(id);
+        if (!cached || cached.get() == &current || quality == mV313ChunkQualities.end())
+            return nullptr;
+        const auto& have = quality->second;
+        const unsigned normalMask = p3OptionalDistantMask() & 0xfu;
+        const unsigned normalNeed = activeGrid
+            ? (Settings::cells().mOptimizedMWActiveShadowBatching ? normalMask & (1u << 3u) : 0) : normalMask;
+        if (have.mAssetVfsGeneration != vfsGeneration || have.mAssetShaderGeneration != shaderGeneration
+            || (have.mP3OptionalMask & normalNeed) != normalNeed
+            || !(have.mAssets.completed & ~have.mAssets.transient & assets) || !have.mAssets.readiness)
+            return nullptr;
+
+        if (activeGrid)
+        {
+            const int prepareMode = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode);
+            const unsigned char spatialMode = static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0 ? 1 : 0;
+            if (prepareMode <= 0 || have.mPrepareMode < prepareMode || have.mSpatialMode != spatialMode
+                || !(have.mAssets.completed & SceneUtil::AssetPaging::Lod))
+                return nullptr;
+            // Scene's omitted canonical population and picking partitions were
+            // selected from the old owner. A live handoff cannot change it.
+            const auto refnums = [](const osg::Object& node) -> const RefnumSet* {
+                const auto* data = node.getUserDataContainer();
+                return data && data->getNumUserObjects()
+                    ? dynamic_cast<const RefnumSet*>(data->getUserObject(0)) : nullptr;
+            };
+            const auto* before = refnums(current);
+            const auto* after = refnums(*cached);
+            if (!before || !after || before->mRefnums != after->mRefnums)
+                return nullptr;
+        }
+
+        if (generation != mAssetGeneration.load(std::memory_order_acquire)
+            || vfsGeneration != mSceneManager->getVFS()->getIndexGeneration()
+            || shaderGeneration != mSceneManager->getShaderManager().assetGeneration())
+            return nullptr;
+        if (!have.mAssets.readiness->ready.load(std::memory_order_acquire))
+        {
+            pending = !have.mAssets.readiness->preparation.expired();
+            return nullptr;
+        }
+        // Cache-only: no construction, removal, GL call, preparation scope or
+        // admission change is permitted on the live traversal thread.
+        return static_cast<osg::Node*>(cached.get());
     }
 
     unsigned char ObjectPaging::p3OptionalDistantMask() const

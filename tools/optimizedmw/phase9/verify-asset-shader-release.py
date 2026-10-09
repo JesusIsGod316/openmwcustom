@@ -176,6 +176,7 @@ def l1_active_grid(text):
             and unsigned_field(epoch, "rgb", "CHAIN_ACTIVE_EPOCH") > 16,
             "Active-grid source epoch did not prove visible actual original fallback")
     asset_compile = l1_asset_compile_closure(text, partial_draws)
+    adoption = live_owner_adoption(text)
     prefix_settled = record(text, "CHAIN_ACTIVE_PREFIX_SETTLED", {
         "after_scope": 1, "real_cache_maintenance": 1, "maintenance_passes": 2,
         "asset_sets": 0, "pending_asset_sets": 0, "ordinary_roots": 0, "future": 0, "renderer_frames": 0})
@@ -185,7 +186,31 @@ def l1_active_grid(text):
     return {"declared_population": declared_population, "actual_active_owner": active,
             "strict_partial_tail": partial, "source_epoch_original_fallback": epoch,
             "asset_compile_closure": asset_compile, "retired_prefix_settled": prefix_settled,
+            "live_owner_adoption": adoption,
             "actual_chain_completion": complete}
+
+
+def live_owner_adoption(text):
+    """A rendered unchanged World must adopt a privately prepared exact owner."""
+    proof = record(text, "CHAIN_LIVE_OWNER_ADOPTION", {key: 1 for key in (
+        "real_world", "rendered_weak_before_publication", "fixed_camera_grid",
+        "publication_pending", "pending_same_revision", "ready_same_revision", "exact_ready_owner",
+        "cache_only_no_demand", "cache_only_no_ordinary_build", "cache_only_no_source_or_cook",
+        "missing_unchanged", "control_unchanged", "disabled_unchanged", "different_refnums_refused",
+        "stale_refused", "immutable_old_pat", "terrain_identity_order", "transform_preserved",
+        "stable_adopted_pat", "unrelated_publication_unchanged", "actual_world_picking_original",
+        "terrain_population_substituted", "source_population_substituted")}
+        | {"source_loader_substituted": 0, "cook_substituted": 0,
+           "callback_substituted": 0, "gl_error": 0})
+    draws = unsigned_field(proof, "main_draws", "CHAIN_LIVE_OWNER_ADOPTION")
+    hits = unsigned_field(proof, "pick_hits", "CHAIN_LIVE_OWNER_ADOPTION")
+    require(draws > 0 and unsigned_field(proof, "active_tagged_draws", "CHAIN_LIVE_OWNER_ADOPTION") == draws,
+            "Live World adoption lacks exactly attributed actual active draws")
+    require(hits > 0 and unsigned_field(proof, "canonical_pick_hits", "CHAIN_LIVE_OWNER_ADOPTION") == hits,
+            "Live World adoption did not resolve every original pick to the preserved canonical population")
+    require(unsigned_field(proof, "rgb", "CHAIN_LIVE_OWNER_ADOPTION") > 16,
+            "Live World adoption did not produce visible output")
+    return proof
 
 
 def l1_asset_compile_closure(text, active_draws):

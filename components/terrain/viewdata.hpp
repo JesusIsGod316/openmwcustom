@@ -2,9 +2,11 @@
 #define OPENMW_COMPONENTS_TERRAIN_VIEWDATA_H
 
 #include <deque>
+#include <cstdint>
 #include <vector>
 
 #include <osg/Node>
+#include <osg/observer_ptr>
 
 #include "view.hpp"
 
@@ -23,6 +25,14 @@ namespace Terrain
 
         unsigned int mLodFlags;
         osg::ref_ptr<osg::Node> mRenderingNode;
+        struct RenderingManagerOwner
+        {
+            // The PAT already owns this child. Bookkeeping must not pin an
+            // evicted owner or change ordinary cache-only lifetime accounting.
+            osg::observer_ptr<osg::Node> mNode;
+            std::uint64_t mRevision = 0;
+        };
+        std::vector<RenderingManagerOwner> mRenderingManagerOwners;
     };
 
     class ViewData : public View
@@ -78,6 +88,10 @@ namespace Terrain
 
         void removeNodeFromIndex(const QuadTreeNode* node);
 
+        std::vector<std::uint64_t>& renderingRevisions() { return mRenderingRevisions; }
+        bool hasPendingRenderingOwner() const { return mRenderingOwnerPending; }
+        void setPendingRenderingOwner(bool pending) { mRenderingOwnerPending = pending; }
+
     private:
         std::vector<ViewDataEntry> mEntries;
         std::vector<const QuadTreeNode*> mNodes;
@@ -88,6 +102,8 @@ namespace Terrain
         bool mHasViewPoint;
         osg::Vec4i mActiveGrid;
         unsigned int mWorldUpdateRevision;
+        std::vector<std::uint64_t> mRenderingRevisions;
+        bool mRenderingOwnerPending = false;
     };
 
     class ViewDataMap : public osg::Referenced

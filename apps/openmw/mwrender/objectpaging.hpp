@@ -54,6 +54,12 @@ namespace MWRender
         unsigned int getNodeMask() override;
         bool supportsStrongPagingUpgrade() const override { return true; }
         bool supportsDistantStrongPagingUpgrade() const override;
+        std::uint64_t getRenderingRevision() const override
+        {
+            return mRenderingRevision.load(std::memory_order_acquire);
+        }
+        osg::ref_ptr<osg::Node> refreshPreparedChunk(osg::Node& current, float size,
+            const osg::Vec2f& center, bool activeGrid, bool& pending) const override;
 
         /// @return true if view needs rebuild
         bool enableObject(int type, ESM::RefNum refnum, const osg::Vec3f& pos, const osg::Vec2i& cell, bool enabled);
@@ -120,6 +126,8 @@ namespace MWRender
         float mMinSizeCostMultiplier;
         osg::observer_ptr<osg::Camera> mAssetMainCamera;
         std::atomic_uint64_t mAssetGeneration{ 1 };
+        // This is an immutable graph-publication receipt, not a source epoch.
+        std::atomic_uint64_t mRenderingRevision{ 0 };
 
         std::atomic_bool mV310InitialFrontloadActive{ false };
 

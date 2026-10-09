@@ -16,6 +16,7 @@
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
 #include <components/sceneutil/optimizer.hpp>
+#include <components/sceneutil/positionattitudetransform.hpp>
 #include <components/sceneutil/glextensions.hpp>
 #include <components/sceneutil/depth.hpp>
 #include <components/sceneutil/shadow.hpp>
@@ -23,6 +24,8 @@
 #include <components/misc/constants.hpp>
 #include <components/settings/parser.hpp>
 #include <components/settings/values.hpp>
+#include <components/terrain/storage.hpp>
+#include <components/terrain/terraindrawable.hpp>
 #include <components/shader/assetgeometrycontract.hpp>
 #include <components/shader/programvariant.hpp>
 #include <components/shader/shadermanager.hpp>
@@ -36,6 +39,7 @@
 #include <osgViewer/Viewer>
 #include <osgViewer/Renderer>
 #include <osgUtil/RenderStage>
+#include <osgUtil/CullVisitor>
 #include <osgUtil/SceneView>
 #include <osgUtil/IntersectionVisitor>
 #include <osgUtil/LineSegmentIntersector>
@@ -138,6 +142,49 @@ namespace
     std::uint64_t consumed(unsigned mask);
     std::uint64_t controlDraws() { return L::Counters::controlDraws.load(); }
     struct Callback final : osg::NodeCallback {};
+    // Only the land population is substituted. QuadTreeWorld's node selection,
+    // ViewData cache, actual Terrain::ChunkManager and rendering PAT are real.
+    class AdoptionLand final : public Terrain::Storage
+    {
+    public:
+        void getBounds(float& minX,float& maxX,float& minY,float& maxY,ESM::RefId) override
+        {minX=minY=-.5f;maxX=maxY=.5f;}
+        bool getMinMaxHeights(float,const osg::Vec2f&,ESM::RefId,float& min,float& max) override
+        {min=max=-20000.f;return true;}
+        void fillVertexBuffers(int lod,float size,const osg::Vec2f&,ESM::RefId,
+            osg::Vec3Array& positions,osg::Vec3Array& normals,osg::Vec4ubArray& colors) override
+        {
+            const auto side=static_cast<unsigned>(8*size/(1<<lod)+1);
+            require(side>=2,"bounded adoption land must retain actual terrain triangles");
+            for(unsigned y=0;y<side;++y) for(unsigned x=0;x<side;++x)
+            {
+                positions.push_back({(float(x)/(side-1)-.5f)*size*8192,
+                    (float(y)/(side-1)-.5f)*size*8192,-20000});
+                normals.push_back({0,0,1});colors.push_back({255,255,255,255});
+            }
+        }
+        void getBlendmaps(float,const osg::Vec2f&,ImageVector&,std::vector<Terrain::LayerInfo>&,ESM::RefId) override {}
+        float getHeightAt(const osg::Vec3f&,ESM::RefId) override {return -20000.f;}
+        float getCellWorldSize(ESM::RefId) override {return 8192;}
+        int getCellVertices(ESM::RefId) override {return 9;}
+        int getTextureTileCount(float,ESM::RefId) override {return 1;}
+    };
+    struct LivePatWitness final : osg::NodeCallback
+    {
+        osg::Camera* main=nullptr;
+        osg::observer_ptr<SceneUtil::PositionAttitudeTransform> last;
+        unsigned visits=0;
+        void operator()(osg::Node* node,osg::NodeVisitor* visitor) override
+        {
+            if(auto* cull=dynamic_cast<osgUtil::CullVisitor*>(visitor);cull && cull->getCurrentCamera()==main)
+            {
+                for(auto i=visitor->getNodePath().rbegin();i!=visitor->getNodePath().rend();++i)
+                    if(auto* pat=dynamic_cast<SceneUtil::PositionAttitudeTransform*>(*i))
+                    {last=pat;++visits;break;}
+            }
+            traverse(node,visitor);
+        }
+    };
     struct Registered
     {
         R::ResourceSystem& resources;
@@ -1789,6 +1836,194 @@ int main(int argc,char** argv) try
                 <<" unsafe_relink_refused=1 producer_cancelled=1 readiness_false=1 original_apply_repairs=1"
                 <<" state_cache_invalidated=1 dispatch_input_substituted=1 callback_substituted=0 gl_error=0\n";
             matching=nullptr;relinking.clearCache();sets.clear();maintainAssetQueue(*scenes,5.);
+        }
+        {
+            phase("live_owner_adoption","begin");
+            lighting->removeChild(activeCandidate);
+            struct RestoreAdoptionView
+            {osg::Group* lighting;osg::Node* previous;~RestoreAdoptionView(){lighting->addChild(previous);}}
+                restoreAdoption{lighting,activeCandidate};
+            MWRender::ObjectPaging live(scenes,ESM::Cell::sDefaultWorldspaceId);
+            live.setAssetMainCamera(camera);live.setFixturePopulation(activePopulation);
+            Registered liveRegistration(resources,&live);
+            unsigned demandCalls=0;live.setFixtureBeforeCache([&]{++demandCalls;});
+            osg::ref_ptr<osg::Node> weak;
+            {SceneUtil::PagingWorkScope required(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
+                weak=live.getChunk(1,{0,0},3,0,true,{0,0,0},true);}
+            require(weak && live.getRenderingRevision()==0,"required control must not advertise an optional publication");
+            osg::ref_ptr<LivePatWitness> weakWitness=new LivePatWitness;weakWitness->main=camera;
+            weak->addCullCallback(weakWitness);
+            std::uint64_t weakMainDraws=0;
+            Geometries weakGeometry;weak->accept(weakGeometry);
+            for(auto* geometry:weakGeometry.values)
+                geometry->setDrawCallback(new WarmOrdinaryDraw(geometry->getDrawCallback(),camera,weakMainDraws));
+            const GeometrySnapshot weakSnapshot(*weak);
+            osg::ref_ptr<osg::Group> compileRoot=new osg::Group;
+            Terrain::QuadTreeWorld world(lighting,compileRoot,&resources,new AdoptionLand,
+                MWRender::Mask_Terrain,MWRender::Mask_PreCompile,0,64,16,.01f,0,1,false,
+                ESM::Cell::sDefaultWorldspaceId,100);
+            world.setActiveGrid({-1,-1,1,1});world.setViewDistance(static_cast<float>(farDistance));
+            live.setViewDistance(static_cast<float>(farDistance));world.addChunkManager(&live);world.enable(true);
+            const auto fixedView=camera->getViewMatrix();viewer.frame();viewer.frame();
+            require(weakWitness->visits>0 && weakWitness->last.valid() && weakMainDraws>0
+                && pixels->error==GL_NO_ERROR && rgb(pixels->data)>16,
+                "real unchanged World view must render the required weak owner before private publication");
+            osg::ref_ptr<SceneUtil::PositionAttitudeTransform> oldPat=weakWitness->last.get();
+            require(oldPat->getNumChildren()==2 && oldPat->getChild(1)==weak
+                && dynamic_cast<Terrain::TerrainDrawable*>(oldPat->getChild(0)),
+                "real World wrapper must retain terrain then the exact required ObjectPaging owner");
+            osg::ref_ptr<osg::Node> terrainChild=oldPat->getChild(0);
+            const GeometrySnapshot terrainSnapshot(*terrainChild);
+            const auto position=oldPat->getPosition(),scale=oldPat->getScale();const auto attitude=oldPat->getAttitude();
+            AssetQueuePause paused(*context,*ico);
+            auto preparedControl=activeChunk(live,false);
+            require(preparedControl && preparedControl!=weak && live.getRenderingRevision()==0,
+                "private ordinary strong publication must not masquerade as an asset revision");
+            sampleGpu();auto published=activeChunk(live,true,nullptr,true);
+            require(published.valid(),"actual privately published live replacement required");
+            Selectors publishedSelectors;published->accept(publishedSelectors);
+            const auto publication=live.getRenderingRevision();
+            require(published && published!=preparedControl && publication>0 && !publishedSelectors.values.empty()
+                && std::none_of(publishedSelectors.values.begin(),publishedSelectors.values.end(),
+                    [](const auto* selector){return selector->compilationReady();}),
+                "private exact active owner must publish a real pending asset graph after the live weak view");
+            osg::ref_ptr<LivePatWitness> publishedWitness=new LivePatWitness;publishedWitness->main=camera;
+            published->addCullCallback(publishedWitness);
+            const auto noRefreshWork=[&] {
+                return std::make_tuple(demandCalls,activeOrdinaryBuilt(live),A::Counters::lod.sourceRequested.load(),
+                    L::Counters::activeBuildAttempts.load());
+            };
+            const auto beforePending=noRefreshWork();const auto weakBeforePending=weakMainDraws;
+            const auto drawsBeforePending=consumed(mask);viewer.frame();paused.stillPaused();
+            require(camera->getViewMatrix()==fixedView && weakWitness->last==oldPat && !publishedWitness->visits
+                && weakMainDraws>weakBeforePending && consumed(mask)==drawsBeforePending
+                && live.getRenderingRevision()==publication && noRefreshWork()==beforePending,
+                "same-revision unready publication must preserve the exact live weak PAT without demand or cook work");
+            bool pending=false;
+            require(!live.refreshPreparedChunk(*weak,1,{0,0},true,pending) && pending,
+                "actual cache-only seam must report pending instead of consuming an unfinished publication");
+            pending=true;
+            require(!live.refreshPreparedChunk(*weak,1,{2,2},true,pending) && !pending,
+                "missing cached key must preserve the old live owner without reconstructing it");
+            pending=true;
+            require(!live.refreshPreparedChunk(*weak,1,{0,0},false,pending) && !pending,
+                "ordinary/distant control must not enter active owner adoption");
+            Settings::cells().mGeneratedStaticLodActiveGrid.set(false);pending=true;
+            require(!live.refreshPreparedChunk(*weak,1,{0,0},true,pending) && !pending,
+                "disabled independent active setting must leave the cached live control untouched");
+            Settings::cells().mGeneratedStaticLodActiveGrid.set(true);
+            MWRender::ObjectPaging differentRefs(scenes,ESM::Cell::sDefaultWorldspaceId);
+            auto shorterPopulation=activePopulation;shorterPopulation.pop_back();
+            differentRefs.setAssetMainCamera(camera);differentRefs.setFixturePopulation(shorterPopulation);
+            Registered differentRegistration(resources,&differentRefs);
+            osg::ref_ptr<osg::Node> differentWeak;
+            {SceneUtil::PagingWorkScope required(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
+                differentWeak=differentRefs.getChunk(1,{0,0},3,0,true,{0,0,0},true);}
+            pending=true;
+            require(differentWeak && !live.refreshPreparedChunk(*differentWeak,1,{0,0},true,pending) && !pending,
+                "actual unequal canonical RefnumSets must refuse a cache-only owner replacement");
+            require(noRefreshWork()==beforePending,"negative cache-only observations must not demand, prepare or cook");
+            weakSnapshot.unchanged(*weak,"pending and refused adoption must preserve the held weak control graph");
+            paused.resume();
+            const auto prepared=[&]{return std::all_of(publishedSelectors.values.begin(),publishedSelectors.values.end(),
+                [](const auto* selector){return selector->compilationReady();});};
+            // Each frame keeps the same camera/grid. Readiness changes without
+            // another cache publication, so consuming its serial too early fails.
+            for(unsigned frame=0;frame<90 && (!prepared() || !publishedWitness->visits);++frame) viewer.frame();
+            const auto activeStart=L::Counters::activeDerivedDraws.load(),mainStart=consumed(mask);viewer.frame();viewer.frame();
+            require(prepared() && publishedWitness->last.valid() && publishedWitness->last!=oldPat
+                && camera->getViewMatrix()==fixedView && live.getRenderingRevision()==publication
+                && consumed(mask)>mainStart && L::Counters::activeDerivedDraws.load()-activeStart==consumed(mask)-mainStart
+                && pixels->error==GL_NO_ERROR && rgb(pixels->data)>16 && noRefreshWork()==beforePending,
+                "unchanged actual World cull must adopt and draw the exact owner after same-revision readiness without demand builds");
+            osg::ref_ptr<SceneUtil::PositionAttitudeTransform> adoptedPat=publishedWitness->last.get();
+            require(adoptedPat->getNumChildren()==2 && adoptedPat->getChild(0)==terrainChild
+                && adoptedPat->getChild(1)==published && adoptedPat->getPosition()==position
+                && adoptedPat->getScale()==scale && adoptedPat->getAttitude()==attitude
+                && oldPat->getNumChildren()==2 && oldPat->getChild(0)==terrainChild && oldPat->getChild(1)==weak,
+                "adoption must replace an immutable wrapper while preserving terrain order, transform and held old children");
+            terrainSnapshot.unchanged(*terrainChild,"live owner adoption must not reconstruct or mutate ordinary terrain");
+            weakSnapshot.unchanged(*weak,"live owner adoption must not mutate the formerly displayed weak graph");
+            // Picking traverses the actual World (including its real ViewData
+            // path), rather than the privately prepared candidate directly.
+            osg::ref_ptr<osgUtil::LineSegmentIntersector> ray;
+            std::set<const osg::Drawable*> originals,derived;
+            for(const auto& draw:L::originalDraws(*published)) originals.insert(draw.geometry);
+            for(auto* selector:publishedSelectors.values)
+            {Geometries geometry;selector->derived()->accept(geometry);derived.insert(geometry.values.begin(),geometry.values.end());}
+            for(const auto& draw:L::originalDraws(*publishedSelectors.values.front()->original()))
+            {
+                const auto* vertices=dynamic_cast<const osg::Vec3Array*>(draw.geometry->getVertexArray());
+                if(!vertices || !draw.geometry->getNumPrimitiveSets()) continue;
+                const auto* primitive=draw.geometry->getPrimitiveSet(0);
+                for(unsigned i=0;i+2<primitive->getNumIndices();i+=3)
+                {
+                    const auto a=osg::Vec3d((*vertices)[primitive->index(i)])*draw.matrix;
+                    const auto b=osg::Vec3d((*vertices)[primitive->index(i+1)])*draw.matrix;
+                    const auto c=osg::Vec3d((*vertices)[primitive->index(i+2)])*draw.matrix;
+                    auto normal=(b-a)^(c-a);if(normal.normalize()<1e-8) continue;
+                    const auto center=(a+b+c)/3.;ray=new osgUtil::LineSegmentIntersector(center+normal*10.,center-normal*10.);break;
+                }
+                if(ray) break;
+            }
+            require(ray.valid(),"actual original triangle required for unchanged World picking");
+            osgUtil::IntersectionVisitor intersection(ray);world.accept(intersection);
+            require(ray->containsIntersections(),"adopted actual World must retain original picking intersections");
+            unsigned canonicalPickHits=0;const auto canonicalRefs=activeRefs(live);
+            for(const auto& hit:ray->getIntersections())
+            {
+                require(originals.contains(hit.drawable) && !derived.contains(hit.drawable),
+                    "actual World picking must use original geometry and exclude derived index tiers");
+                bool canonical=false;unsigned offset=0;
+                const auto index=hit.indexList.empty() ? 0 : hit.indexList.front();
+                for(auto* pathNode:hit.nodePath) if(auto* data=pathNode->getUserDataContainer())
+                    for(unsigned i=0;i<data->getNumUserObjects();++i)
+                        if(auto* marker=dynamic_cast<MWRender::RefnumMarker*>(data->getUserObject(i)))
+                        {
+                            if(!marker->mNumVertices || (index>=offset && index<offset+marker->mNumVertices))
+                                canonical|=std::find(canonicalRefs.begin(),canonicalRefs.end(),marker->mRefnum)!=canonicalRefs.end();
+                            offset+=marker->mNumVertices;
+                        }
+                require(canonical,"adopted World picking must resolve the exact preserved canonical RefnumSet");
+                ++canonicalPickHits;
+            }
+            const auto beforeStable=noRefreshWork();viewer.frame();
+            require(publishedWitness->last==adoptedPat && noRefreshWork()==beforeStable,
+                "unchanged ready publication must leave the exact adopted wrapper stable");
+            const auto prepareOther=[&](bool assets) {
+                R::SpeculativeScope scope(resources.speculativeBudget(),&R::ResourceSystem::speculativeSample,
+                    &resources,R::SpeculativePriority::NearFuture);
+                A::OptionalUpgradeScope optional(&abort,assets,assets);
+                return live.getChunk(1,{2,2},3,0,true,{0,0,0},true);
+            };
+            auto otherControl=prepareOther(false);sampleGpu();auto otherPublication=prepareOther(true);
+            require(otherPublication.valid(),"actual unrelated publication required before its selector census");
+            Selectors otherSelectors;otherPublication->accept(otherSelectors);
+            require(otherControl && otherPublication!=otherControl && !otherSelectors.values.empty()
+                && live.getRenderingRevision()>publication,
+                "unrelated revision test must be driven by another actual private asset publication");
+            const auto beforeUnrelated=noRefreshWork();viewer.frame();
+            require(publishedWitness->last==adoptedPat && noRefreshWork()==beforeUnrelated
+                && oldPat->getChild(1)==weak,
+                "unrelated actual manager publication must not replace or demand-build this unchanged ready entry");
+            auto savedDefines=scenes->getShaderManager().getGlobalDefines();auto changedDefines=savedDefines;
+            changedDefines["clamp"]=savedDefines.at("clamp")=="1" ? "0" : "1";
+            scenes->getShaderManager().setGlobalDefines(changedDefines);pending=true;
+            require(!live.refreshPreparedChunk(*weak,1,{0,0},true,pending) && !pending
+                && noRefreshWork()==beforeUnrelated,
+                "stale source epoch must refuse cached replacement without demand reconstruction");
+            scenes->getShaderManager().setGlobalDefines(savedDefines);
+            std::cout<<"CHAIN_LIVE_OWNER_ADOPTION real_world=1 rendered_weak_before_publication=1 fixed_camera_grid=1"
+                <<" publication_pending=1 pending_same_revision=1 ready_same_revision=1 exact_ready_owner=1"
+                <<" cache_only_no_demand=1 cache_only_no_ordinary_build=1 cache_only_no_source_or_cook=1"
+                <<" missing_unchanged=1 control_unchanged=1 disabled_unchanged=1 different_refnums_refused=1 stale_refused=1"
+                <<" immutable_old_pat=1 terrain_identity_order=1 transform_preserved=1 stable_adopted_pat=1 unrelated_publication_unchanged=1"
+                <<" actual_world_picking_original=1 canonical_pick_hits="<<canonicalPickHits<<" pick_hits="<<ray->getIntersections().size()
+                <<" main_draws="<<consumed(mask)-mainStart<<" active_tagged_draws="<<L::Counters::activeDerivedDraws.load()-activeStart
+                <<" rgb="<<rgb(pixels->data)<<" terrain_population_substituted=1 source_population_substituted=1"
+                <<" source_loader_substituted=0 cook_substituted=0 callback_substituted=0 gl_error=0\n";
+            live.setFixtureBeforeCache({});world.enable(false);
+            phase("live_owner_adoption","done");
         }
         phase("active_grid","done");
     }

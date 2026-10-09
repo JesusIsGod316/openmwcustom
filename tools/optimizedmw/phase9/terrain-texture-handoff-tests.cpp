@@ -307,6 +307,10 @@ int main(int argc,char** argv) try
     require(N::nativeTextureStats().fullLiveBytes==0 && T::counters().liveBytes==0 && N::AssetGpuBudget::liveBytes==0,"owner teardown retained GPU backing debt");
     viewer.setDone(true);viewer.setSceneData(nullptr);context->releaseContext();context->close(true);
     std::cout<<"PASS: real ChunkManager preparePassData->realizePasses/TextureManager cached delayed ticket, owner-native handoff, real ICO and frozen main/refraction terrain draws; mask="<<mask<<" cold_visible="<<negative<<" threaded="<<threaded<<" composite_source="<<compositeSource<<" cancelled="<<cancelled<<'\n';
+    // Completion is a checked pipe write, not merely buffered output that is
+    // left to CRT shutdown. All GL/resource assertions above still precede it.
+    std::cout.flush();
+    require(std::cout.good(),"terrain handoff completion receipt could not be written");
     return 0;
 }
 catch(const std::exception& error) { std::cerr<<error.what()<<'\n';return 1; }

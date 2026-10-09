@@ -5,6 +5,7 @@
 #include <osgUtil/CullVisitor>
 
 #include <limits>
+#include <new>
 
 #include <components/esm/util.hpp>
 #include <components/loadinglistener/reporter.hpp>
@@ -395,15 +396,87 @@ namespace Terrain
             bool activeGrid = (center.x() > gridbounds.x() && center.y() > gridbounds.y() && center.x() < gridbounds.z()
                 && center.y() < gridbounds.w());
 
+            std::vector<ViewDataEntry::RenderingManagerOwner> owners;
+            owners.reserve(mChunkManagers.size());
             for (QuadTreeWorld::ChunkManager* m : mChunkManagers)
             {
+                // Sample before the cache read so a concurrently published
+                // replacement cannot be acknowledged without being inspected.
+                const auto revision = m->getRenderingRevision();
                 osg::ref_ptr<osg::Node> n = m->getChunk(entry.mNode->getSize(), entry.mNode->getCenter(),
                     static_cast<unsigned char>(DefaultLodCallback::getNativeLodLevel(entry.mNode, mMinSize)),
                     entry.mLodFlags, activeGrid, vd->getViewPoint(), compile);
                 if (n)
                     pat->addChild(n);
+                owners.push_back({ n.get(), revision });
             }
             entry.mRenderingNode = pat;
+            entry.mRenderingManagerOwners = std::move(owners);
+        }
+    }
+
+    void QuadTreeWorld::refreshRenderingNode(ViewDataEntry& entry, const osg::Vec4i& gridbounds,
+        const std::vector<std::uint64_t>& revisions, bool& pending)
+    {
+        if (!entry.mRenderingNode || entry.mRenderingManagerOwners.size() != mChunkManagers.size())
+            return;
+        const osg::Vec2f& center = entry.mNode->getCenter();
+        const bool activeGrid = center.x() > gridbounds.x() && center.y() > gridbounds.y()
+            && center.x() < gridbounds.z() && center.y() < gridbounds.w();
+
+        for (std::size_t i = 0; i < mChunkManagers.size(); ++i)
+        {
+            auto& owner = entry.mRenderingManagerOwners[i];
+            if (owner.mRevision == revisions[i])
+                continue;
+            osg::Node* current = owner.mNode.get();
+            if (!current)
+            {
+                owner.mRevision = revisions[i];
+                continue;
+            }
+            bool ownerPending = false;
+            osg::ref_ptr<osg::Node> replacement = mChunkManagers[i]->refreshPreparedChunk(
+                *current, entry.mNode->getSize(), center, activeGrid, ownerPending);
+            if (ownerPending)
+            {
+                // Publication precedes GL completion. Retrying only this exact
+                // pending owner permits readiness at the same revision to be
+                // adopted, without repeatedly looking up unrelated misses.
+                pending = true;
+                continue;
+            }
+            if (replacement && replacement.get() != current)
+            {
+                auto* pat = dynamic_cast<SceneUtil::PositionAttitudeTransform*>(entry.mRenderingNode.get());
+                if (!pat)
+                    continue;
+                const auto index = pat->getChildIndex(current);
+                if (index >= pat->getNumChildren())
+                    continue;
+                try
+                {
+                    // ObserverSet creation may allocate. Stage it before any
+                    // publication so allocation failure cannot pair a new PAT
+                    // with the old manager-owner identity.
+                    osg::observer_ptr<osg::Node> nextObserver(replacement.get());
+                    // Another camera/preload view may still share this PAT.
+                    // Publish a private shallow wrapper; never mutate its
+                    // terrain, groundcover, transforms, state or old children.
+                    osg::ref_ptr<SceneUtil::PositionAttitudeTransform> next
+                        = new SceneUtil::PositionAttitudeTransform(*pat, osg::CopyOp::SHALLOW_COPY);
+                    if (!next->setChild(index, replacement.get()))
+                        continue;
+                    owner.mNode = nextObserver;
+                    entry.mRenderingNode = next;
+                }
+                catch (const std::bad_alloc&)
+                {
+                    pending = true;
+                    continue; // The unchanged live control remains published.
+                }
+            }
+            owner.mRevision = revisions[i];
         }
     }
 
@@ -492,12 +565,33 @@ namespace Terrain
 
         const float cellWorldSize = static_cast<float>(ESM::getCellSize(mWorldspace));
 
+        // Each live view consumes immutable manager publications independently.
+        // Workers only publish cache owners and atomic revisions; this existing
+        // traversal owner is the sole writer of its view/PAT bookkeeping.
+        auto& revisions = vd->renderingRevisions();
+        bool refreshOwners = vd->hasPendingRenderingOwner();
+        if (revisions.size() != mChunkManagers.size())
+            revisions.resize(mChunkManagers.size(), 0);
+        for (std::size_t i = 0; i < mChunkManagers.size(); ++i)
+        {
+            const auto revision = mChunkManagers[i]->getRenderingRevision();
+            if (revision != revisions[i])
+            {
+                revisions[i] = revision;
+                refreshOwners = true;
+            }
+        }
+        bool ownerPending = false;
+
         for (unsigned int i = 0; i < vd->getNumEntries(); ++i)
         {
             ViewDataEntry& entry = vd->getEntry(i);
+            if (refreshOwners)
+                refreshRenderingNode(entry, mActiveGrid, revisions, ownerPending);
             loadRenderingNode(entry, vd, cellWorldSize, mActiveGrid, false);
             entry.mRenderingNode->accept(nv);
         }
+        vd->setPendingRenderingOwner(ownerPending);
 
         if (mHeightCullCallback && isCullVisitor)
             updateWaterCullingView(mHeightCullCallback, vd, static_cast<osgUtil::CullVisitor*>(&nv),

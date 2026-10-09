@@ -28,11 +28,22 @@ class AssetReleaseEvidence(unittest.TestCase):
                 "source_loader_substituted=0 gl_error=0\n"
                 "CHAIN_ACTIVE_EPOCH source_changed=1 prepared_stale_deferred=1 old_guard_original=1 required_original_rebuilt=1 "
                 "refnums_preserved=1 old_guard_not_revived=1 original_draws=2 rgb=98 gl_error=0\n"
-                + AssetReleaseEvidence.asset_compile_receipt() +
+                + AssetReleaseEvidence.asset_compile_receipt() + AssetReleaseEvidence.live_owner_adoption_receipt() +
                 "CHAIN_ACTIVE_PREFIX_SETTLED after_scope=1 real_cache_maintenance=1 maintenance_passes=2 "
                 "asset_sets=0 pending_asset_sets=0 ordinary_roots=0 future=0 renderer_frames=0\n"
                 "CHAIN_PASS source_population_substituted=1 source_loader_substituted=0 cook_substituted=0 "
                 "readiness_substituted=0 cpu_limit=268435456\n")
+
+    @staticmethod
+    def live_owner_adoption_receipt():
+        return ("CHAIN_LIVE_OWNER_ADOPTION real_world=1 rendered_weak_before_publication=1 fixed_camera_grid=1 "
+                "publication_pending=1 pending_same_revision=1 ready_same_revision=1 exact_ready_owner=1 "
+                "cache_only_no_demand=1 cache_only_no_ordinary_build=1 cache_only_no_source_or_cook=1 "
+                "missing_unchanged=1 control_unchanged=1 disabled_unchanged=1 different_refnums_refused=1 stale_refused=1 "
+                "immutable_old_pat=1 terrain_identity_order=1 transform_preserved=1 stable_adopted_pat=1 "
+                "unrelated_publication_unchanged=1 actual_world_picking_original=1 canonical_pick_hits=2 pick_hits=2 "
+                "main_draws=8 active_tagged_draws=8 rgb=98 terrain_population_substituted=1 source_population_substituted=1 "
+                "source_loader_substituted=0 cook_substituted=0 callback_substituted=0 gl_error=0\n")
 
     @staticmethod
     def asset_compile_receipt():
@@ -231,6 +242,8 @@ class AssetReleaseEvidence(unittest.TestCase):
         self.assertEqual(len(proof["asset_compile_closure"]), 6)
         self.assertEqual(proof["asset_compile_closure"]["cold_variant"]["original_draw_before_compile"], "0")
         self.assertEqual(proof["retired_prefix_settled"]["pending_asset_sets"], "0")
+        self.assertEqual(proof["live_owner_adoption"]["main_draws"], "8")
+        self.assertEqual(proof["live_owner_adoption"]["canonical_pick_hits"], "2")
         for before, after in (("disabled_control=1", "disabled_control=0"),
                               ("required_original=1", "required_original=0"),
                               ("asset_enabled_first_stage_ordinary=1", "asset_enabled_first_stage_ordinary=0"),
@@ -286,10 +299,10 @@ class AssetReleaseEvidence(unittest.TestCase):
                               ("gl_error=0", "gl_error=1")):
             with self.subTest(partial_field=before, replacement=after), self.assertRaises(gate.QualificationError):
                 gate.l1_active_grid(valid.replace(partial_line, partial_line.replace(before, after)))
-        # Every field in all six actual compile receipts is mandatory and
+        # Every field in the actual compile and late-adoption receipts is mandatory and
         # independently validated. A neighboring correct record cannot hide a
         # missing, malformed, duplicated or reversed proof flag.
-        for line in self.asset_compile_receipt().splitlines():
+        for line in (self.asset_compile_receipt() + self.live_owner_adoption_receipt()).splitlines():
             marker, *fields = line.split()
             for field in fields:
                 key, value = field.split("=", 1)
@@ -322,6 +335,20 @@ class AssetReleaseEvidence(unittest.TestCase):
             line = next(row for row in valid.splitlines() if row.startswith(marker + " "))
             with self.subTest(marker=marker, change=after), self.assertRaises(gate.QualificationError):
                 gate.l1_active_grid(valid.replace(line, line.replace(before, after)))
+        adoption_line = self.live_owner_adoption_receipt().strip()
+        for before, after in (("main_draws=8", "main_draws=0"),
+                              ("active_tagged_draws=8", "active_tagged_draws=7"),
+                              ("pick_hits=2", "pick_hits=0"),
+                              ("canonical_pick_hits=2", "canonical_pick_hits=1"),
+                              ("rgb=98", "rgb=16")):
+            with self.subTest(adoption_change=after), self.assertRaises(gate.QualificationError):
+                gate.l1_active_grid(valid.replace(adoption_line, adoption_line.replace(" " + before, " " + after, 1)))
+        for key in ("main_draws", "active_tagged_draws", "pick_hits", "canonical_pick_hits", "rgb"):
+            value = gate.live_owner_adoption(valid)[key]
+            for invalid in ("-1", "18446744073709551616"):
+                bad_line = adoption_line.replace(f" {key}={value}", f" {key}={invalid}", 1)
+                with self.subTest(adoption_field=key, invalid=invalid), self.assertRaises(gate.QualificationError):
+                    gate.l1_active_grid(valid.replace(adoption_line, bad_line))
         for marker in ("CHAIN_ASSET_EXACT_CLOSURE", "CHAIN_ASSET_COLD_VARIANT"):
             line = next(row for row in valid.splitlines() if row.startswith(marker + " "))
             for value in ("0", "513", "-1", "18446744073709551616"):
@@ -330,7 +357,7 @@ class AssetReleaseEvidence(unittest.TestCase):
 
     def test_active_grid_missing_ambiguous_and_invalid_receipts_fail_closed(self):
         valid = self.active_grid_receipt()
-        for marker in ("CHAIN_ACTIVE_POPULATION", "CHAIN_ACTIVE_GRID", "CHAIN_ACTIVE_PARTIAL_TAIL", "CHAIN_ACTIVE_EPOCH", "CHAIN_ACTIVE_PREFIX_SETTLED", "CHAIN_PASS",
+        for marker in ("CHAIN_ACTIVE_POPULATION", "CHAIN_ACTIVE_GRID", "CHAIN_ACTIVE_PARTIAL_TAIL", "CHAIN_ACTIVE_EPOCH", "CHAIN_ACTIVE_PREFIX_SETTLED", "CHAIN_LIVE_OWNER_ADOPTION", "CHAIN_PASS",
                        "CHAIN_ASSET_EXACT_CLOSURE", "CHAIN_ASSET_COLD_VARIANT", "CHAIN_ASSET_COMPILE_RETIRE",
                        "CHAIN_ASSET_MISSING_CONTEXT", "CHAIN_ASSET_CONTEXT_REFUSAL", "CHAIN_ASSET_RELINK_REFUSAL"):
             missing = "\n".join(line for line in valid.splitlines() if not line.startswith(marker + " ")) + "\n"
