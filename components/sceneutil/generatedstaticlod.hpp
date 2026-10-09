@@ -61,6 +61,9 @@ namespace SceneUtil::GeneratedStaticLod
         std::uint64_t observed = 0, std::uint64_t limit = 0, std::string_view reason = {}) noexcept;
     void notePostOptimizerCertification(Refusal refusal, const RefusalInfo& info) noexcept;
     std::string postOptimizerSummary();
+    enum class CompileBlock { None, MissingSet, Incomplete, MissingRoot, EmptyContexts, GraphCapacity,
+        NoPrograms, MissingContext, MissingStatus, Unlinked, NeedsLink, Count };
+    std::string compileLifecycleSummary();
     struct Counters
     {
         inline static std::atomic_uint64_t requests{0}, certified{0}, built{0}, diskHits{0};
@@ -74,6 +77,12 @@ namespace SceneUtil::GeneratedStaticLod
         inline static std::atomic_uint64_t activeBuildAttempts{0}, activeBuilt{0};
         inline static std::atomic_uint64_t activeCoarseViews{0}, activeOriginalViews{0};
         inline static std::atomic_uint64_t activeDerivedDraws{0}, activeSubmittedIndices{0};
+        // Observations of the existing callback/prune policy. These never
+        // grant readiness, retain a graph, or suppress ordinary cancellation.
+        inline static std::atomic_uint64_t nextReadiness{0}, compileCallbacks{0}, compileCallbacksReady{0};
+        inline static std::atomic_uint64_t compileBlocked[static_cast<unsigned>(CompileBlock::Count)]{};
+        inline static std::atomic_uint64_t compilePruned{0}, compilePrunedReady{0}, compilePrunedMainOwners{0};
+        inline static std::atomic_uint64_t compilePrunedMainSamples{0}, compilePrunedMainCurrentGuardSamples{0};
         // Ownership diagnostics count chunk proofs, not distinct source models.
         inline static std::atomic_uint64_t materialOwnerUnknown{0}, materialOwnerNull{0}, materialOwnerCapacity{0};
         inline static std::atomic_uint64_t materialOwnerShared{0}, materialOwnerCohesions{0}, materialOwnerCohesiveInstances{0};
@@ -187,12 +196,21 @@ namespace SceneUtil::GeneratedStaticLod
     {
         std::atomic_bool ready{false}, everReady{false};
         unsigned assetMask = 0;
+        const std::uint64_t diagnosticId=1+Counters::nextReadiness.fetch_add(1,std::memory_order_relaxed);
+        std::atomic_bool activeGridOrigin{false}, cacheOnlyPruned{false}, prunedMainSeen{false};
+        std::atomic_int prunedReferences{0};
+        std::atomic_uint prunedContexts{0}, prunedRemaining{0};
+        std::atomic_bool readyAtPrune{false}, compiledAtPrune{false};
     };
     class CompileCompleted final : public osgUtil::IncrementalCompileOperation::CompileCompletedCallback
     {
     public:
         explicit CompileCompleted(std::shared_ptr<Readiness> readiness) : mReadiness(std::move(readiness)) {}
         bool compileCompleted(osgUtil::IncrementalCompileOperation::CompileSet*) override;
+        // Mark only after ordinary maintenance has actually selected this set
+        // for removal. The fixed receipt is emitted outside the queue lock.
+        void noteCacheOnlyPruned(int references,const osgUtil::IncrementalCompileOperation::CompileSet&);
+        void reportCacheOnlyPruned(const osgUtil::IncrementalCompileOperation::CompileSet&) const;
     private:
         std::shared_ptr<Readiness> mReadiness;
     };

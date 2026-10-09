@@ -7,6 +7,7 @@
 #include <components/resource/assetgpubudget.hpp>
 #include <components/debug/debuglog.hpp>
 #include <sstream>
+#include <iomanip>
 #include <components/nifosg/matrixtransform.hpp>
 #include <components/shader/assetgeometrycontract.hpp>
 #include <components/shader/programvariant.hpp>
@@ -1334,6 +1335,61 @@ namespace SceneUtil::GeneratedStaticLod
         }
         catch(const std::bad_alloc&) {return false;}
     }
+    namespace
+    {
+        const char* compileBlockName(CompileBlock value)
+        {
+            constexpr std::array names{"none","missing_set","incomplete","missing_root","empty_contexts",
+                "graph_capacity","no_programs","missing_context","missing_status","unlinked","needs_link"};
+            return names.at(static_cast<unsigned>(value));
+        }
+        std::atomic_uint64_t sCompilePruneReports{0};
+    }
+    std::string compileLifecycleSummary()
+    {
+        std::ostringstream out;
+        out << " callbacks=" << Counters::compileCallbacks.load()
+            << " callback_ready=" << Counters::compileCallbacksReady.load()
+            << " cache_only_pruned=" << Counters::compilePruned.load()
+            << " ready_at_prune=" << Counters::compilePrunedReady.load()
+            << " pruned_unready_main_owners=" << Counters::compilePrunedMainOwners.load()
+            << " pruned_main_guard_samples=" << Counters::compilePrunedMainSamples.load()
+            << " pruned_main_current_guard_samples=" << Counters::compilePrunedMainCurrentGuardSamples.load();
+        for(unsigned i=1;i<static_cast<unsigned>(CompileBlock::Count);++i)
+            out << " callback_" << compileBlockName(static_cast<CompileBlock>(i)) << '=' << Counters::compileBlocked[i].load();
+        out << " diagnostic_only=1";
+        return out.str();
+    }
+    void CompileCompleted::noteCacheOnlyPruned(int references,const osgUtil::IncrementalCompileOperation::CompileSet& set)
+    {
+        const bool wasReady=mReadiness->ready.load(std::memory_order_acquire);
+        mReadiness->prunedReferences.store(references,std::memory_order_relaxed);
+        mReadiness->prunedContexts.store(static_cast<unsigned>(set._compileMap.size()),std::memory_order_relaxed);
+        mReadiness->prunedRemaining.store(static_cast<unsigned>(set._numberCompileListsToCompile),std::memory_order_relaxed);
+        mReadiness->readyAtPrune.store(wasReady,std::memory_order_relaxed);
+        mReadiness->compiledAtPrune.store(set.compiled(),std::memory_order_relaxed);
+        ++Counters::compilePruned;
+        if(wasReady) ++Counters::compilePrunedReady;
+        mReadiness->cacheOnlyPruned.store(true,std::memory_order_release);
+    }
+    void CompileCompleted::reportCacheOnlyPruned(const osgUtil::IncrementalCompileOperation::CompileSet& set) const
+    {
+        if(!mReadiness->cacheOnlyPruned.load(std::memory_order_acquire)) return;
+        if(sCompilePruneReports.fetch_add(1,std::memory_order_relaxed)>=3) return;
+        try
+        {
+            Log(Debug::Info) << std::dec << "OptimizedMW asset compile prune receipt: readiness_id=" << mReadiness->diagnosticId
+                << " set_id=" << reinterpret_cast<std::uintptr_t>(&set)
+                << " asset_mask=" << mReadiness->assetMask << " active_grid=" << mReadiness->activeGridOrigin.load()
+                << " references_at_prune=" << mReadiness->prunedReferences.load()
+                << " contexts_at_prune=" << mReadiness->prunedContexts.load()
+                << " remaining_at_prune=" << mReadiness->prunedRemaining.load()
+                << " compiled_at_prune=" << mReadiness->compiledAtPrune.load()
+                << " ready_at_prune=" << mReadiness->readyAtPrune.load()
+                << " cache_only_policy=1 actual_removed=1 queue_lock_held=0 diagnostic_only=1";
+        }
+        catch(...) {} // Diagnostic allocation/logging must not change retirement.
+    }
     bool CompileCompleted::compileCompleted(osgUtil::IncrementalCompileOperation::CompileSet* compiled)
     {
         // ICO completion means every compile operation ran; it does not mean a
@@ -1341,6 +1397,15 @@ namespace SceneUtil::GeneratedStaticLod
         // completion, never issue GL commands from the update/merge callback.
         bool ready = compiled && compiled->compiled() && compiled->_subgraphToCompile
             && !compiled->_compileMap.empty();
+        ++Counters::compileCallbacks;
+        CompileBlock block=CompileBlock::None;
+        if(!compiled) block=CompileBlock::MissingSet;
+        else if(!compiled->compiled()) block=CompileBlock::Incomplete;
+        else if(!compiled->_subgraphToCompile) block=CompileBlock::MissingRoot;
+        else if(compiled->_compileMap.empty()) block=CompileBlock::EmptyContexts;
+        const osg::Program* blockedProgram=nullptr;
+        unsigned blockedContext=~0u;
+        bool blockedLinked=false,blockedNeedsLink=false,blockedStatusObserved=false,blockedNeedsLinkObserved=false;
         struct Programs final : osg::NodeVisitor
         {
             Programs() : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
@@ -1357,15 +1422,27 @@ namespace SceneUtil::GeneratedStaticLod
             }
         } programs;
         if (ready) compiled->_subgraphToCompile->accept(programs);
+        if(ready && !programs.valid) block=CompileBlock::GraphCapacity;
+        else if(ready && programs.values.empty()) block=CompileBlock::NoPrograms;
         ready = ready && programs.valid && !programs.values.empty();
         if (ready)
             for (const auto& [context,list] : compiled->_compileMap)
             {
-                if (!context || !context->getState()) { ready = false; break; }
+                if (!context || !context->getState()) { ready = false; block=CompileBlock::MissingContext; break; }
                 for (const auto& program : programs.values)
                 {
                     const auto* status = program->getPCP(*context->getState());
-                    if (!status || !status->isLinked() || status->needsLink()) { ready = false; break; }
+                    const bool linked=status && status->isLinked();
+                    const bool needsLink=linked && status->needsLink();
+                    if (!status || !linked || needsLink)
+                    {
+                        ready = false;
+                        block=!status ? CompileBlock::MissingStatus : !linked ? CompileBlock::Unlinked : CompileBlock::NeedsLink;
+                        blockedProgram=program.get();blockedContext=context->getState()->getContextID();
+                        blockedLinked=linked;blockedNeedsLink=needsLink;
+                        blockedStatusObserved=status!=nullptr;blockedNeedsLinkObserved=linked;
+                        break;
+                    }
                 }
                 if (!ready) break;
             }
@@ -1375,11 +1452,36 @@ namespace SceneUtil::GeneratedStaticLod
             mReadiness->everReady.store(true, std::memory_order_release);
             AssetPaging::each(mReadiness->assetMask, [](AssetPaging::LaneCounters& value) { ++value.ready; });
         }
+        const auto observation=ready ? Counters::compileCallbacksReady.fetch_add(1,std::memory_order_relaxed)
+            : Counters::compileBlocked[static_cast<unsigned>(block)].fetch_add(1,std::memory_order_relaxed);
+        if(observation<3)
+        {
+            try
+            {
+                Log(Debug::Info) << std::dec << "OptimizedMW asset compile callback receipt: readiness_id=" << mReadiness->diagnosticId
+                    << " set_id=" << reinterpret_cast<std::uintptr_t>(compiled)
+                    << " asset_mask=" << mReadiness->assetMask << " active_grid=" << mReadiness->activeGridOrigin.load()
+                    << " ready=" << ready << " reason=" << compileBlockName(block)
+                    << " compile_closed=" << bool(compiled && compiled->compiled())
+                    << " remaining=" << (compiled ? static_cast<unsigned>(compiled->_numberCompileListsToCompile) : 0)
+                    << " contexts=" << (compiled ? compiled->_compileMap.size() : 0)
+                    << " nodes=" << programs.nodes << " programs=" << programs.values.size()
+                    << " root_references=" << (compiled && compiled->_subgraphToCompile ? compiled->_subgraphToCompile->referenceCount() : 0)
+                    << " blocked_context=" << blockedContext
+                    << " blocked_program_id=" << reinterpret_cast<std::uintptr_t>(blockedProgram)
+                    << " blocked_program_name=" << std::quoted(blockedProgram ? blockedProgram->getName().substr(0,128) : std::string())
+                    << " blocked_status_observed=" << blockedStatusObserved << " blocked_linked=" << blockedLinked
+                    << " blocked_needs_link_observed=" << blockedNeedsLinkObserved << " blocked_needs_link=" << blockedNeedsLink
+                    << " pruned=" << mReadiness->cacheOnlyPruned.load() << " diagnostic_only=1";
+            }
+            catch(...) {} // Preserve the existing readiness/completion result.
+        }
         return false;
     }
     Group::Group(const Group& copy, const osg::CopyOp& op)
         : osg::Group(copy, op), mError(copy.mError), mReadiness(std::make_shared<Readiness>()), mMainCamera(copy.mMainCamera)
-        , mPreserveControlPopulation(copy.mPreserveControlPopulation),mActiveGridOrigin(copy.mActiveGridOrigin) {}
+        , mPreserveControlPopulation(copy.mPreserveControlPopulation),mActiveGridOrigin(copy.mActiveGridOrigin)
+    {mReadiness->activeGridOrigin.store(mActiveGridOrigin,std::memory_order_relaxed);}
     Group::Group(osg::Node& originalNode, osg::Node& derivedNode, float absoluteError,
         std::shared_ptr<Readiness> readiness, osg::Camera* mainCamera, bool preserveControlPopulation,
         GuardRefusalInfo* refusal, bool activeGridOrigin)
@@ -1387,6 +1489,7 @@ namespace SceneUtil::GeneratedStaticLod
         , mPreserveControlPopulation(preserveControlPopulation)
         , mActiveGridOrigin(activeGridOrigin)
     {
+        if(mReadiness && activeGridOrigin) mReadiness->activeGridOrigin.store(true,std::memory_order_relaxed);
         setNodeMask(originalNode.getNodeMask()); setDataVariance(osg::Object::DYNAMIC);
         addChild(&originalNode); addChild(&derivedNode);
         setName("OptimizedMW-generated-static-LOD");
@@ -1484,6 +1587,35 @@ namespace SceneUtil::GeneratedStaticLod
         if (auto* cull = visitor.asCullVisitor())
         {
             const bool coarse = wantsDerived(*cull);
+            // A cache-only removal is ordinarily harmless. Observe whether
+            // its same owner is later visited by the actual main camera while
+            // unready; this witness never retains or reactivates that owner.
+            if(mReadiness && mReadiness->cacheOnlyPruned.load(std::memory_order_acquire)
+                && !mReadiness->ready.load(std::memory_order_acquire)
+                && cull->getCurrentCamera()==mMainCamera.get() && mMainCamera.valid()
+                && !ShadowTraversalScope::active()
+                && !mReadiness->prunedMainSeen.exchange(true,std::memory_order_relaxed))
+            {
+                const auto observation=Counters::compilePrunedMainOwners.fetch_add(1,std::memory_order_relaxed);
+                if(observation<3)
+                {
+                    ++Counters::compilePrunedMainSamples;
+                    try
+                    {
+                        const bool current=mMaterialGuard && mMaterialGuard->current();
+                        if(current) ++Counters::compilePrunedMainCurrentGuardSamples;
+                        Log(Debug::Info) << std::dec << "OptimizedMW asset compile pruned main-view receipt: readiness_id="
+                            << mReadiness->diagnosticId << " asset_mask=" << mReadiness->assetMask
+                            << " active_grid=" << mReadiness->activeGridOrigin.load()
+                            << " references_at_prune=" << mReadiness->prunedReferences.load()
+                            << " ready_at_prune=" << mReadiness->readyAtPrune.load()
+                            << " ready_at_observation=0 main_camera=1 shadow_scope=0 material_guard_current=" << current
+                            << " guard_scope=selector_local_recipe"
+                            << " actual_coarse_selection=" << coarse << " diagnostic_only=1";
+                    }
+                    catch(...) {} // Diagnostic work must not change traversal.
+                }
+            }
             if (coarse) ++Counters::coarseViews; else ++Counters::originalViews;
             if (mActiveGridOrigin)
             { if (coarse) ++Counters::activeCoarseViews; else ++Counters::activeOriginalViews; }

@@ -2696,6 +2696,7 @@ void OMW::Engine::go()
             +" active_original_views="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeOriginalViews.load())
             +" active_consumed_draws="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeDerivedDraws.load())
             +" active_consumed_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeSubmittedIndices.load());
+        Log(Debug::Info) << "OptimizedMW asset compile lifecycle:" << SceneUtil::GeneratedStaticLod::compileLifecycleSummary();
         std::string lodRefusals;
         const char* lodReasons[]={"none","graph","material","transform","layout","capacity","no_reduction"};
         for(unsigned i=0;i<static_cast<unsigned>(SceneUtil::GeneratedStaticLod::Refusal::Count);++i)

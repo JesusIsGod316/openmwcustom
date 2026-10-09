@@ -50,6 +50,7 @@
 #include <components/sceneutil/clone.hpp>
 #include <components/sceneutil/controller.hpp>
 #include <components/sceneutil/depth.hpp>
+#include <components/sceneutil/generatedstaticlod.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/optimizer.hpp>
 #include <components/sceneutil/riggeometryosgaextension.hpp>
@@ -1400,38 +1401,55 @@ namespace Resource
         if (mIncrementalCompileOperation)
         {
             osgUtil::IncrementalCompileOperation::CompileSets releasedCompiles;
-            std::lock_guard<OpenThreads::Mutex> lock(*mIncrementalCompileOperation->getToCompiledMutex());
-            osgUtil::IncrementalCompileOperation::CompileSets& sets = mIncrementalCompileOperation->getToCompile();
-            for (osgUtil::IncrementalCompileOperation::CompileSets::iterator it = sets.begin(); it != sets.end();)
             {
-                if (auto* budget = CacheMaintenanceScope::current(); budget && !budget->scan()) break;
-                bool unused = !*it;
-                if (*it)
+                std::lock_guard<OpenThreads::Mutex> lock(*mIncrementalCompileOperation->getToCompiledMutex());
+                osgUtil::IncrementalCompileOperation::CompileSets& sets = mIncrementalCompileOperation->getToCompile();
+                for (osgUtil::IncrementalCompileOperation::CompileSets::iterator it = sets.begin(); it != sets.end();)
                 {
-                    const auto* classified = dynamic_cast<const V321ClassifiedCompileSet*>(it->get());
-                    if (classified && classified->resourceOnly())
-                        unused = !classified->resourceCompilePending();
-                    else if (const auto* subgraph = (*it)->_subgraphToCompile.get())
+                    if (auto* budget = CacheMaintenanceScope::current(); budget && !budget->scan()) break;
+                    bool unused = !*it;
+                    bool cacheOnlyPolicy = false;
+                    int cacheOnlyReferences = 0;
+                    if (*it)
                     {
-                        int refcount = subgraph->referenceCount();
-                        if (subgraph->asDrawable())
-                            refcount -= 1; // ref by CompileList.
-                        unused = refcount <= 2; // cache + compile
+                        const auto* classified = dynamic_cast<const V321ClassifiedCompileSet*>(it->get());
+                        if (classified && classified->resourceOnly())
+                            unused = !classified->resourceCompilePending();
+                        else if (const auto* subgraph = (*it)->_subgraphToCompile.get())
+                        {
+                            int refcount = subgraph->referenceCount();
+                            if (subgraph->asDrawable())
+                                refcount -= 1; // ref by CompileList.
+                            unused = refcount <= 2; // cache + compile
+                            cacheOnlyPolicy = unused;
+                            cacheOnlyReferences = refcount;
+                        }
+                        // Unknown resource-only sets keep their ordinary ICO
+                        // completion owner. A missing scene node proves neither
+                        // cancellation nor permission to discard their resources.
                     }
-                    // Unknown resource-only sets keep their ordinary ICO
-                    // completion owner. A missing scene node proves neither
-                    // cancellation nor permission to discard their resources.
+                    if (unused && (!CacheMaintenanceScope::current() || CacheMaintenanceScope::current()->release()))
+                    {
+                        if (cacheOnlyPolicy)
+                            if (auto* callback = dynamic_cast<SceneUtil::GeneratedStaticLod::CompileCompleted*>(
+                                    (*it)->_compileCompletedCallback.get()))
+                                callback->noteCacheOnlyPruned(cacheOnlyReferences, **it);
+                        // Producer retired, or scene no longer externally owned.
+                        // Destruction stays outside the shared compile-queue lock.
+                        auto released = it++;
+                        releasedCompiles.splice(releasedCompiles.end(), sets, released);
+                    }
+                    else
+                        ++it;
                 }
-                if (unused && (!CacheMaintenanceScope::current() || CacheMaintenanceScope::current()->release()))
-                {
-                    // Producer retired, or scene no longer externally owned.
-                    // Destruction stays outside the shared compile-queue lock.
-                    auto released = it++;
-                    releasedCompiles.splice(releasedCompiles.end(), sets, released);
-                }
-                else
-                    ++it;
             }
+            // Observe actual removals only; no graph census, GL lookup or log
+            // allocation is performed while holding the shared queue lock.
+            for (const auto& retired : releasedCompiles)
+                if (retired)
+                    if (const auto* callback = dynamic_cast<const SceneUtil::GeneratedStaticLod::CompileCompleted*>(
+                            retired->_compileCompletedCallback.get()))
+                        callback->reportCacheOnlyPruned(*retired);
         }
     }
 
