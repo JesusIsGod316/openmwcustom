@@ -12,6 +12,8 @@ param(
     [ValidateSet('Headroom','MatchedOverdrive','LegacyOverdrive','Configured')][string]$MemoryProfile='Headroom',
     [ValidateSet('Benchmark','Custom')][string]$ConfigurationMode='Benchmark',
     [string]$OptimizationConfig='',
+    [string]$FrozenConfigDirectory='',
+    [switch]$VerifyFrozenAssetHashes,
     [ValidateRange(0,127)][int]$ArchitectureMask=0,
     [ValidateRange(0,31)][int]$AssetMask=0,
     [ValidateSet('','Normal','Deep')][string]$TraceLevel='',
@@ -41,6 +43,19 @@ $OpenmwCfgPath = Join-Path $UserOpenMW 'openmw.cfg'
 . (Join-Path $GameDir 'OptimizedMW_MemoryProfile.ps1')
 . (Join-Path $GameDir 'OptimizedMW_SettingNames.ps1')
 $ProfilesRoot = Join-Path $UserOpenMW 'OptimizedMW-Phase9-Profiles'
+$frozenRuntime=$null
+$comparisonDirectory=$GameDir
+if($FrozenConfigDirectory){
+    . (Join-Path $GameDir 'OptimizedMW_FrozenConfig.ps1')
+    if($SavePath -or $OptimizationConfig){throw 'Frozen tests use their locked copied save and optimization configuration; omit external -SavePath/-OptimizationConfig.'}
+    $frozenRuntime=New-OptimizedMWFrozenRuntime -Directory $FrozenConfigDirectory -GameDir $GameDir -VerifyAssetHashes:$VerifyFrozenAssetHashes
+    $UserOpenMW=$frozenRuntime.directory
+    $SettingsPath=$frozenRuntime.settings_path;$OpenmwCfgPath=$frozenRuntime.config_path
+    $ProfilesRoot=$frozenRuntime.profiles_root;$OptimizationConfig=$frozenRuntime.optimization_path
+    $SavePath=$frozenRuntime.save_path;$comparisonDirectory=$frozenRuntime.directory
+    Write-Host 'Frozen SaintJs test configuration verified. Gameplay config/settings are not read or changed.' -ForegroundColor Cyan
+    Write-Host ('Use Load Game to select the private copied Wake up save. Profile: '+$frozenRuntime.directory)
+}elseif($VerifyFrozenAssetHashes){throw '-VerifyFrozenAssetHashes requires -FrozenConfigDirectory'}
 
 if (-not (Test-Path -LiteralPath $Exe)) { Write-Host 'ERROR: Put this launcher beside openmw.exe.' -ForegroundColor Red; if(-not $NoPrompt){Read-Host 'Press Enter to close'}; exit 1 }
 if (-not (Test-Path -LiteralPath $SettingsPath)) { Write-Host "ERROR: settings.cfg not found at $SettingsPath" -ForegroundColor Red; if(-not $NoPrompt){Read-Host 'Press Enter to close'}; exit 1 }
@@ -143,11 +158,12 @@ if($FocusedPreset){
 if(-not $NoPrompt -and ($numericSelection -or $FocusedPreset)){
     Write-Host 'Load the SAME outdoor save; use the same first-person view, route and frame cap.' -ForegroundColor Yellow
     Write-Host 'Hold the identical heavy view for 45 seconds, then repeat the timed route. Quit normally.'
-    $declaration=Read-OptimizedMWComparisonDeclaration -GameDirectory $GameDir -SavePath $SavePath -RouteLabel $RouteLabel -FrameCapLabel $FrameCapLabel
+    $declaration=Read-OptimizedMWComparisonDeclaration -GameDirectory $comparisonDirectory -SavePath $SavePath -RouteLabel $RouteLabel -FrameCapLabel $FrameCapLabel
     if($null -eq $declaration){exit 0}
     $SavePath=$declaration.save_path;$RouteLabel=$declaration.route_label;$FrameCapLabel=$declaration.frame_cap_label
 }
 if($SavePath -and -not [IO.File]::Exists([IO.Path]::GetFullPath($SavePath))){throw 'Declared save file is missing; correct -SavePath before running'}
+if($frozenRuntime -and [IO.Path]::GetFullPath($SavePath) -cne $frozenRuntime.save_path){throw 'Frozen tests must retain their private copied-save declaration'}
 if($ConfigurationMode -eq 'Custom'){$MemoryProfile='Configured'}
 $memoryPolicy=Get-OptimizedMWMemoryProfile -Name $MemoryProfile -RamMask $RamMask
 $RamMask=$memoryPolicy.ram_mask
@@ -290,7 +306,8 @@ try{
     Set-Phase9CandidateEnvironment -Candidate $candidateProfile -Mode $mode
     Set-OptimizedMWHitchCombinationEnvironment $hitchCombination
     Set-OptimizedMWAttackEnvironment $attackCombination -ObserverLocal:$ObserverLocal -CompositeProgress:$CompositeProgress -CompositeCpuMips:$CompositeCpuMips
-    Set-OptimizedMWArchitectureEnvironment -RamMask $RamMask -ArchitectureMask $ArchitectureMask -AssetMask $AssetMask -DerivedCacheDirectory (Join-Path $GameDir 'DerivedAssets')
+    $derivedCacheDirectory=if($frozenRuntime){Join-Path $frozenRuntime.directory 'DerivedAssets'}else{Join-Path $GameDir 'DerivedAssets'}
+    Set-OptimizedMWArchitectureEnvironment -RamMask $RamMask -ArchitectureMask $ArchitectureMask -AssetMask $AssetMask -DerivedCacheDirectory $derivedCacheDirectory
     Set-OptimizedMWMemoryProfileEnvironment $memoryPolicy
     $env:OPENMW_P9_GPU_QUERY_DEFER=[string][int][bool]$GpuQueryDefer
 
@@ -633,6 +650,7 @@ try{
     }
     $runManifest=New-Phase9RunManifest -GameDir $GameDir -ProfileDir $ProfileDir -Mode $mode -Candidate $candidateProfile `
         -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -FrameCapLabel $FrameCapLabel -Cohort $Cohort -HitchCombination $hitchCombination
+    if($frozenRuntime){$runManifest=Add-OptimizedMWFrozenManifest $runManifest $frozenRuntime}
     Save-Phase9RunManifest $runManifest $ProfileDir
 
     Write-Host ''
@@ -651,7 +669,11 @@ try{
     if($SystemTrace -and (-not $systemTraceLink -or $systemTraceLink.capture_id -ne $quickSession.trace_state.capture_id)){
         throw 'The automatic Windows recorder did not link to this exact test. The game was not started.'
     }
-    $process=Start-Process -FilePath $Exe -WorkingDirectory $GameDir -PassThru
+    if($frozenRuntime){
+        $frozenArguments=Get-OptimizedMWFrozenArguments $frozenRuntime
+        # The game is interactive and explicitly requested by the user.
+        $process=Start-Process -FilePath $Exe -WorkingDirectory $GameDir -ArgumentList $frozenArguments -PassThru
+    }else{$process=Start-Process -FilePath $Exe -WorkingDirectory $GameDir -PassThru}
     $gameProcessId=$process.Id
     $gameCreationUtc=$process.StartTime.ToUniversalTime().ToString('o')
     $runManifest.process.pid=$gameProcessId
@@ -693,6 +715,7 @@ catch{
         try{
             $runManifest=New-Phase9RunManifest -GameDir $GameDir -ProfileDir $ProfileDir -Mode $mode -Candidate $candidateProfile `
                 -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -FrameCapLabel $FrameCapLabel -Cohort $Cohort -HitchCombination $hitchCombination
+            if($frozenRuntime){$runManifest=Add-OptimizedMWFrozenManifest $runManifest $frozenRuntime}
         }catch{"Run manifest preparation failed: $_" | Set-Content -LiteralPath (Join-Path $ProfileDir 'MANIFEST-ERROR.txt') -Encoding UTF8}
     }
 }
@@ -754,7 +777,10 @@ try{
         if($quickResult.upload_path){$uploadPath=$quickResult.upload_path}
     }
     Write-Host ''
-    if($restoreVerified){Write-Host 'Your normal settings have been restored.' -ForegroundColor Green}
+    if($restoreVerified){
+        if($frozenRuntime){Write-Host 'Private test settings restored. Gameplay configuration was not changed.' -ForegroundColor Green}
+        else{Write-Host 'Your normal settings have been restored.' -ForegroundColor Green}
+    }
     Write-Host "Upload this ZIP: $uploadPath" -ForegroundColor Cyan
     if($zip.Missing.Count){Write-Host ('Partial capture; missing: '+($zip.Missing -join ', ')) -ForegroundColor Yellow}
     if(-not $NoPrompt){try{Start-Process explorer.exe -ArgumentList "/select,`"$uploadPath`""}catch{}}
