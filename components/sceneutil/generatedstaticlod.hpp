@@ -9,6 +9,7 @@
 #include <mutex>
 #include <array>
 #include <string_view>
+#include <string>
 #include <span>
 #include <vector>
 #include <osg/observer_ptr>
@@ -50,6 +51,16 @@ namespace SceneUtil::GeneratedStaticLod
         const osg::Node* node = nullptr;
         const osg::Program* program = nullptr;
     };
+    enum class PostOptimizerStep { Chunks, Contributor, ContributorMissingSource, ContributorNonmerge,
+        ContributorOccluder, ContributorOther, CandidateMaterial, OrdinaryMaterial, MixedMaterial,
+        IdentityCapacity, TemplateCensusCapacity, MergeRootState, Children, MaterialOwnership,
+        PrivateNodeCapacity, PrivateNodeParents, PrivateGeometryCapacity, PrivateTemplateGeometry,
+        PrivateGeometryParents, PrivateEmpty, Certification, Candidate, Count };
+    const char* postOptimizerStepName(PostOptimizerStep step);
+    void notePostOptimizer(PostOptimizerStep step, const osg::Node* node = nullptr,
+        std::uint64_t observed = 0, std::uint64_t limit = 0, std::string_view reason = {}) noexcept;
+    void notePostOptimizerCertification(Refusal refusal, const RefusalInfo& info) noexcept;
+    std::string postOptimizerSummary();
     struct Counters
     {
         inline static std::atomic_uint64_t requests{0}, certified{0}, built{0}, diskHits{0};
@@ -67,6 +78,11 @@ namespace SceneUtil::GeneratedStaticLod
         inline static std::atomic_uint64_t buildFailures[static_cast<unsigned>(BuildStep::Count)]{};
         inline static std::atomic_bool firstBuildFailure[static_cast<unsigned>(BuildStep::Count)]{};
         inline static std::atomic_uint64_t refused[static_cast<unsigned>(Refusal::Count)]{};
+        inline static std::atomic_uint64_t postOptimizer[static_cast<unsigned>(PostOptimizerStep::Count)]{};
+        inline static std::atomic_bool firstPostOptimizer[static_cast<unsigned>(PostOptimizerStep::Count)]{};
+        inline static std::atomic_uint64_t postCertification[static_cast<unsigned>(Refusal::Count)]{};
+        inline static std::atomic_uint64_t postCertificationDetail[static_cast<unsigned>(Detail::Count)]{};
+        inline static std::atomic_bool firstPostCertificationDetail[static_cast<unsigned>(Detail::Count)]{};
     };
     // Run on the original SceneManager template, before paging CopyOp erases provenance.
     Refusal certify(const osg::Node& original, RefusalInfo* info = nullptr);
@@ -126,6 +142,17 @@ namespace SceneUtil::GeneratedStaticLod
         unsigned conflicting = 0, firstOwners = 0, secondOwners = 0;
         bool unknown = false, nullMaterial = false, capacity = false, shared = false;
     };
+    enum class MaterialOwnershipRefusal { None, GlobalUnknown, GlobalNull, GlobalCapacity, InvalidOwner,
+        ChildUnknown, ChildNull, ChildCapacity, ChildEmpty, MaterialNotFound, OrdinaryOwner, MixedOwner,
+        DifferentOwner, Count };
+    const char* materialOwnershipRefusalName(MaterialOwnershipRefusal reason);
+    struct MaterialOwnershipInfo
+    {
+        MaterialOwnershipRefusal reason = MaterialOwnershipRefusal::None;
+        unsigned requestedOwner = 0, observedOwners = 0;
+        std::size_t originalMaterials = 0, childMaterials = 0;
+    };
+    void notePostOptimizerOwnership(const osg::Node& node, const MaterialOwnershipInfo& refusal) noexcept;
     // Asset-only proof on the actual CopyOp output. It does not change the
     // control AnalyzeVisitor's historical merge benefit heuristic. Each leaf
     // gets its complete effective state including its own StateSet, with exact
@@ -140,7 +167,8 @@ namespace SceneUtil::GeneratedStaticLod
         // The complete optimized child must consist of effective materials
         // proved on approved original contributors before CopyOp. A material
         // also used by an ordinary/unapproved contributor refuses the child.
-        bool exclusivelyOwns(const osg::Node& root, unsigned owner, unsigned mask = ~0u) const;
+        bool exclusivelyOwns(const osg::Node& root, unsigned owner, unsigned mask = ~0u,
+            MaterialOwnershipInfo* refusal = nullptr) const;
         std::span<const MaterialOwner> materials() const { return mMaterials; }
         MaterialOwnershipReport report() const;
     private:

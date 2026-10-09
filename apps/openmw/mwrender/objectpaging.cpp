@@ -1118,6 +1118,8 @@ namespace MWRender
         // H1/combined preparation retains its private atlas population and the
         // historical material/partition ownership policy below.
         const bool postOptimizedLodOnly = assetPreparation && requestedAssets == SceneUtil::AssetPaging::Lod;
+        using PostStep = SceneUtil::GeneratedStaticLod::PostOptimizerStep;
+        if (postOptimizedLodOnly) SceneUtil::GeneratedStaticLod::notePostOptimizer(PostStep::Chunks);
         const bool l1ControlAccounting = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
             && (Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask) == SceneUtil::AssetPaging::Lod
             && Resource::SpeculativeScope::active();
@@ -1627,6 +1629,17 @@ namespace MWRender
                     && (instanceRecordType == ESM::REC_STAT || instanceRecordType == ESM::REC_STAT4)
                     && !providedOccluderOwner
                     && !(buildOccluders && cnode->getBound().radius() * ref.mScale >= occluderMinRadius);
+                if (postOptimizedLodOnly)
+                {
+                    // Census only: the authoritative conjunction above remains
+                    // unchanged. Every copied instance has one classification.
+                    const auto step = postLodContributor ? PostStep::Contributor
+                        : assetSource == assetCertifiedSources.end() ? PostStep::ContributorMissingSource
+                        : providedOccluderOwner || (buildOccluders && cnode->getBound().radius() * ref.mScale >= occluderMinRadius)
+                            ? PostStep::ContributorOccluder
+                        : !merge ? PostStep::ContributorNonmerge : PostStep::ContributorOther;
+                    SceneUtil::GeneratedStaticLod::notePostOptimizer(step,cnode,merge,1,pair.second.mModel.value());
+                }
                 if (postOptimizedLodOnly && assetSource != assetCertifiedSources.end()
                     && (providedOccluderOwner || (buildOccluders && cnode->getBound().radius() * ref.mScale >= occluderMinRadius)))
                     SceneUtil::AssetPaging::refuse(SceneUtil::AssetPaging::Lod,SceneUtil::AssetPaging::Gate::Occluder);
@@ -1873,6 +1886,10 @@ namespace MWRender
             OwnershipCounters::materialOwnerNull += ownership.nullMaterial;
             OwnershipCounters::materialOwnerCapacity += ownership.capacity;
             OwnershipCounters::materialOwnerShared += ownership.shared;
+            for (const auto& material:postLodMaterialOwners.materials())
+                SceneUtil::GeneratedStaticLod::notePostOptimizer(material.owners==2u ? PostStep::CandidateMaterial
+                    : material.owners==1u ? PostStep::OrdinaryMaterial : PostStep::MixedMaterial,
+                    nullptr,material.owners,2);
         }
 
         // Preserve existing strong same-material merging. L1 may reunite a
@@ -2193,6 +2210,15 @@ namespace MWRender
                 }
             }
             bool postCookedForMerge = false;
+            if (postOptimizedLodOnly)
+            {
+                if (!postLodIdentityBounded)
+                    SceneUtil::GeneratedStaticLod::notePostOptimizer(PostStep::IdentityCapacity,mergeGroup,postLodIdentity.size(),256*1024);
+                if (!sourceTemplateDrawablesBounded)
+                    SceneUtil::GeneratedStaticLod::notePostOptimizer(PostStep::TemplateCensusCapacity,mergeGroup,sourceTemplateDrawables.size(),4096);
+                if (mergeGroup->getStateSet())
+                    SceneUtil::GeneratedStaticLod::notePostOptimizer(PostStep::MergeRootState,mergeGroup,1,0);
+            }
             if (postOptimizedLodOnly && postLodIdentityBounded && sourceTemplateDrawablesBounded
                 && !mergeGroup->getStateSet())
             {
@@ -2203,30 +2229,57 @@ namespace MWRender
                 for (unsigned i = 0; i < mergeGroup->getNumChildren(); ++i)
                 {
                     osg::ref_ptr<osg::Node> controlChild = mergeGroup->getChild(i);
-                    if (!postLodMaterialOwners.exclusivelyOwns(*controlChild,2u,copyMask)) continue;
+                    SceneUtil::GeneratedStaticLod::notePostOptimizer(PostStep::Children,controlChild);
+                    SceneUtil::GeneratedStaticLod::MaterialOwnershipInfo materialRefusal;
+                    if (!postLodMaterialOwners.exclusivelyOwns(*controlChild,2u,copyMask,&materialRefusal))
+                    {
+                        SceneUtil::GeneratedStaticLod::notePostOptimizer(PostStep::MaterialOwnership,controlChild,
+                            materialRefusal.observedOwners,2,SceneUtil::GeneratedStaticLod::materialOwnershipRefusalName(materialRefusal.reason));
+                        SceneUtil::GeneratedStaticLod::notePostOptimizerOwnership(*controlChild,materialRefusal);
+                        continue;
+                    }
                     struct PrivateControlDrawables final : osg::NodeVisitor
                     {
                         const std::set<const osg::Geometry*>& templates;
                         unsigned nodes = 0, geometries = 0;
                         bool privateOwner = true;
+                        PostStep refusal = PostStep::PrivateEmpty;
+                        const osg::Node* refusedNode = nullptr;
+                        std::uint64_t observed = 0, limit = 0;
+                        void fail(PostStep step,const osg::Node& node,std::uint64_t value,std::uint64_t maximum)
+                        { if(privateOwner) {privateOwner=false;refusal=step;refusedNode=&node;observed=value;limit=maximum;} }
                         explicit PrivateControlDrawables(const std::set<const osg::Geometry*>& sources)
                             : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN),templates(sources) {}
                         void apply(osg::Node& node) override
                         {
-                            if (++nodes > 2048 || node.getNumParents() != 1) { privateOwner=false; return; }
+                            if (++nodes > 2048) {fail(PostStep::PrivateNodeCapacity,node,nodes,2048);return;}
+                            if (node.getNumParents() != 1) {fail(PostStep::PrivateNodeParents,node,node.getNumParents(),1);return;}
                             if (privateOwner) traverse(node);
                         }
                         void apply(osg::Geometry& geometry) override
                         {
-                            if (++geometries > 64 || templates.contains(&geometry) || geometry.getNumParents() != 1)
-                                privateOwner=false;
+                            if (++geometries > 64) fail(PostStep::PrivateGeometryCapacity,geometry,geometries,64);
+                            else if (templates.contains(&geometry)) fail(PostStep::PrivateTemplateGeometry,geometry,1,0);
+                            else if (geometry.getNumParents() != 1) fail(PostStep::PrivateGeometryParents,geometry,geometry.getNumParents(),1);
                         }
                     } owners(sourceTemplateDrawables);
                     controlChild->accept(owners);
-                    if (!owners.privateOwner || !owners.geometries) continue;
-                    SceneUtil::GeneratedStaticLod::RefusalInfo info;
-                    if (SceneUtil::GeneratedStaticLod::certify(*controlChild,&info) != SceneUtil::GeneratedStaticLod::Refusal::None)
+                    if (!owners.privateOwner || !owners.geometries)
+                    {
+                        SceneUtil::GeneratedStaticLod::notePostOptimizer(owners.privateOwner ? PostStep::PrivateEmpty : owners.refusal,
+                            owners.refusedNode ? owners.refusedNode : controlChild.get(),owners.observed,owners.limit);
                         continue;
+                    }
+                    SceneUtil::GeneratedStaticLod::RefusalInfo info;
+                    if (const auto refusal=SceneUtil::GeneratedStaticLod::certify(*controlChild,&info);
+                        refusal != SceneUtil::GeneratedStaticLod::Refusal::None)
+                    {
+                        SceneUtil::GeneratedStaticLod::notePostOptimizer(PostStep::Certification,
+                            info.node ? info.node : controlChild.get(),static_cast<unsigned>(refusal),0,
+                            SceneUtil::GeneratedStaticLod::detailName(info.detail));
+                        SceneUtil::GeneratedStaticLod::notePostOptimizerCertification(refusal,info);
+                        continue;
+                    }
                     // A null-state wrapper preserves this child's actual
                     // material/transform ancestry, with the same original draw
                     // calls. Arrays and VBOs are the ordinary optimizer's own.
@@ -2234,6 +2287,7 @@ namespace MWRender
                     control->setDataVariance(osg::Object::STATIC); control->addChild(controlChild);
                     ++SceneUtil::AssetPaging::Counters::lod.candidateAdmitted;
                     ++SceneUtil::GeneratedStaticLod::Counters::postOptimizedCandidates;
+                    SceneUtil::GeneratedStaticLod::notePostOptimizer(PostStep::Candidate,controlChild);
 #ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
                     if(mFixtureBeforeLodCook) mFixtureBeforeLodCook(*control);
 #endif

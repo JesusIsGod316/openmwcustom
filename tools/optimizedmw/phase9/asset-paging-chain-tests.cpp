@@ -12,6 +12,7 @@
 #include <components/sceneutil/assetpaging.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
+#include <components/sceneutil/optimizer.hpp>
 #include <components/sceneutil/glextensions.hpp>
 #include <components/sceneutil/depth.hpp>
 #include <components/sceneutil/shadow.hpp>
@@ -299,6 +300,59 @@ namespace
             traverse(node);
         }
     };
+    void parentStateOwnership(Resource::SceneManager& scenes,const osg::Node& original)
+    {
+        // Real SceneManager/ShaderVisitor output is the geometry/material input.
+        // This fixture adds one immutable inherited uniform to make losing the
+        // parent ancestry observable; it does not claim natural-game engagement.
+        osg::ref_ptr<osg::Node> copy=osg::clone(&original,osg::CopyOp::DEEP_COPY_NODES|osg::CopyOp::DEEP_COPY_DRAWABLES);
+        ProgramState shader;copy->accept(shader);
+        require(shader.program && Shader::AssetGeometry::validate(*shader.program)==Shader::AssetGeometry::Refusal::None,
+            "parent ancestry proof requires an exact real ShaderVisitor producer");
+        osg::ref_ptr<osg::Group> parent=new osg::Group;
+        parent->setDataVariance(osg::Object::STATIC);
+        auto inherited=new osg::StateSet(*shader.state,osg::CopyOp::SHALLOW_COPY);
+        inherited->addUniform(new osg::Uniform("p9InheritedOwnerProof",1.f));
+        parent->setStateSet(inherited);parent->addChild(copy);
+        L::EffectiveMaterialOwners owners;
+        owners.observe(*parent,2);
+        require(!owners.report().unknown && !owners.report().nullMaterial && !owners.report().capacity,
+            "bounded complete real source ancestry must be known before optimization");
+        ControlTopology before;parent->accept(before);
+        scenes.shareState(parent);
+        SceneUtil::Optimizer optimizer;
+        optimizer.optimize(parent,SceneUtil::Optimizer::FLATTEN_STATIC_TRANSFORMS
+            |SceneUtil::Optimizer::REMOVE_REDUNDANT_NODES|SceneUtil::Optimizer::MERGE_GEOMETRY);
+        scenes.shareState(parent);
+        ControlTopology after;parent->accept(after);
+        require(before.indices==after.indices && after.indices && parent->getStateSet() && parent->getNumChildren(),
+            "ordinary optimization must retain the parent's effective state and exact original index population");
+        L::MaterialOwnershipInfo info;
+        require(owners.exclusivelyOwns(*parent,2,~0u,&info) && info.reason==L::MaterialOwnershipRefusal::None,
+            "complete optimized root with actual inherited shader/material ancestry must retain owner2 proof");
+        require(!owners.exclusivelyOwns(*parent->getChild(0),2,~0u,&info)
+            && info.reason==L::MaterialOwnershipRefusal::MaterialNotFound,
+            "omitting parent state must fail exact material ownership rather than weakening the ancestry proof");
+        L::EffectiveMaterialOwners ordinary;ordinary.observe(*parent,1);
+        require(!ordinary.exclusivelyOwns(*parent,2,~0u,&info)
+            && info.reason==L::MaterialOwnershipRefusal::OrdinaryOwner && info.observedOwners==1,
+            "ordinary-only population must not become a certified L1 contributor");
+        osg::ref_ptr<osg::Group> unknown=osg::clone(parent.get(),osg::CopyOp::DEEP_COPY_NODES|osg::CopyOp::DEEP_COPY_DRAWABLES);
+        unknown->addChild(new osg::Node);
+        require(!owners.exclusivelyOwns(*unknown,2,~0u,&info)
+            && info.reason==L::MaterialOwnershipRefusal::ChildUnknown,
+            "unknown non-geometry ownership must fail closed without recertifying the immutable known parent");
+        require(owners.exclusivelyOwns(*parent,2),"unknown child rejection cannot poison the original approved ownership ledger");
+        owners.observe(*parent,1);
+        require(!owners.exclusivelyOwns(*parent,2,~0u,&info)
+            && info.reason==L::MaterialOwnershipRefusal::MixedOwner && info.observedOwners==3,
+            "shared ordinary/occluder material ownership must remain refused after optimization");
+        std::cout<<"CHAIN_PARENT_OWNERSHIP actual_shader_visitor=1 ordinary_optimizer=1 inherited_state_retained=1"
+            <<" complete_ancestry_owner2=1 omitted_ancestor_refused=1 ordinary_owner_refused=1 mixed_owner_refused=1"
+            <<" unknown_owner_refused=1"
+            <<" original_indices="<<after.indices<<" control_submissions="<<after.submissions
+            <<" runtime_population_substituted=1\n";
+    }
     struct FileMutation
     {
         std::filesystem::path path;
@@ -823,6 +877,7 @@ int main(int argc,char** argv) try
         return 0;
     }
     require(!population.empty() && (mask!=A::Hlod || population.size()>=2),"bounded real static source family required");
+    if(mask==A::Lod) parentStateOwnership(*scenes,*scenes->getTemplate(VFS::Path::toNormalized(std::string_view(inputs.models.front())),false));
     require(!inputs.mixed || mask==A::Lod,"family-cohesive mixed qualification is L1-only; H1 retains spatial ownership policy");
     if (inputs.mixed)
     {

@@ -2741,6 +2741,8 @@ void OMW::Engine::go()
             +" material_owner_shared="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerShared.load())
             +" material_owner_cohesions="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerCohesions.load())
             +" material_owner_cohesive_instances="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerCohesiveInstances.load());
+        if (Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Lod)
+            lodRefusals+=SceneUtil::GeneratedStaticLod::postOptimizerSummary();
         Log(Debug::Info) << "OptimizedMW asset QC L1 refusals:"+lodRefusals;
         Log(Debug::Info) << "OptimizedMW asset QC H1: requested="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.sourceRequested.load())
             +" eligible="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.sourceCertified.load())

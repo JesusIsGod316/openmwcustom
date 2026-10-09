@@ -52,6 +52,103 @@ namespace SceneUtil::GeneratedStaticLod
 {
     namespace
     {
+        std::atomic_uint64_t postOwnerRefused[static_cast<unsigned>(MaterialOwnershipRefusal::Count)]{};
+        std::atomic_bool firstPostOwner[static_cast<unsigned>(MaterialOwnershipRefusal::Count)]{};
+        std::string boundedReceiptText(std::string_view value, std::size_t maximum)
+        {
+            std::string text(value.substr(0,maximum));
+            for (char& c:text) if (static_cast<unsigned char>(c)<32 || c=='"') c='?';
+            return text;
+        }
+    }
+    const char* postOptimizerStepName(PostOptimizerStep step)
+    {
+        constexpr const char* names[]={"chunks","contributor","contributor_missing_source","contributor_nonmerge",
+            "contributor_occluder","contributor_other","candidate_material","ordinary_material","mixed_material",
+            "identity_capacity","template_census_capacity","merge_root_state","children","material_ownership",
+            "private_node_capacity","private_node_parents","private_geometry_capacity","private_template_geometry",
+            "private_geometry_parents","private_empty","certification","candidate"};
+        return static_cast<unsigned>(step)<static_cast<unsigned>(PostOptimizerStep::Count)
+            ? names[static_cast<unsigned>(step)] : "invalid";
+    }
+    void notePostOptimizer(PostOptimizerStep step,const osg::Node* node,std::uint64_t observed,
+        std::uint64_t limit,std::string_view reason) noexcept
+    {
+        const auto index=static_cast<unsigned>(step);
+        if (index>=static_cast<unsigned>(PostOptimizerStep::Count)) return;
+        ++Counters::postOptimizer[index];
+        if (Counters::firstPostOptimizer[index].exchange(true)) return;
+        try
+        {
+            std::ostringstream receipt;
+            receipt<<std::dec<<"OptimizedMW L1 post-optimizer first receipt: step="<<postOptimizerStepName(step)
+                <<" node_class=\""<<boundedReceiptText(node ? node->className() : "",64)<<'"'
+                <<" node=\""<<boundedReceiptText(node ? node->getName() : "",128)<<'"'
+                <<" observed="<<observed<<" limit="<<limit<<" reason=\""<<boundedReceiptText(reason,96)<<'"';
+            Log(Debug::Info)<<receipt.str();
+        }
+        catch (...) {} // Refusal diagnostics never change ordinary fallback.
+    }
+    const char* materialOwnershipRefusalName(MaterialOwnershipRefusal reason)
+    {
+        constexpr const char* names[]={"none","global_unknown","global_null","global_capacity","invalid_owner",
+            "child_unknown","child_null","child_capacity","child_empty","material_not_found","ordinary_owner",
+            "mixed_owner","different_owner"};
+        return static_cast<unsigned>(reason)<static_cast<unsigned>(MaterialOwnershipRefusal::Count)
+            ? names[static_cast<unsigned>(reason)] : "invalid";
+    }
+    void notePostOptimizerCertification(Refusal refusal,const RefusalInfo& info) noexcept
+    {
+        const auto index=static_cast<unsigned>(refusal),detail=static_cast<unsigned>(info.detail);
+        if(index>=static_cast<unsigned>(Refusal::Count) || detail>=static_cast<unsigned>(Detail::Count)) return;
+        ++Counters::postCertification[index];++Counters::postCertificationDetail[detail];
+        if(Counters::firstPostCertificationDetail[detail].exchange(true)) return;
+        try
+        {
+            std::ostringstream receipt;
+            receipt<<std::dec<<"OptimizedMW L1 post-optimizer certification first refusal: refusal="<<index
+                <<" detail="<<detailName(info.detail)<<" node_class=\""<<boundedReceiptText(info.node ? info.node->className() : "",64)
+                <<"\" node=\""<<boundedReceiptText(info.node ? info.node->getName() : "",128)
+                <<"\" program=\""<<boundedReceiptText(info.program ? info.program->getName() : "",128)<<'"';
+            Log(Debug::Info)<<receipt.str();
+        }
+        catch(...) {}
+    }
+    void notePostOptimizerOwnership(const osg::Node& node,const MaterialOwnershipInfo& refusal) noexcept
+    {
+        const auto index=static_cast<unsigned>(refusal.reason);
+        if (index>=static_cast<unsigned>(MaterialOwnershipRefusal::Count)) return;
+        ++postOwnerRefused[index];
+        if (firstPostOwner[index].exchange(true)) return;
+        try
+        {
+            std::ostringstream receipt;
+            receipt<<std::dec<<"OptimizedMW L1 post-optimizer ownership first refusal: reason="
+                <<materialOwnershipRefusalName(refusal.reason)<<" node_class=\""<<boundedReceiptText(node.className(),64)
+                <<"\" node=\""<<boundedReceiptText(node.getName(),128)<<"\" requested_owner="<<refusal.requestedOwner
+                <<" observed_owners="<<refusal.observedOwners<<" original_materials="<<refusal.originalMaterials
+                <<" child_materials="<<refusal.childMaterials;
+            Log(Debug::Info)<<receipt.str();
+        }
+        catch (...) {}
+    }
+    std::string postOptimizerSummary()
+    {
+        std::ostringstream receipt;
+        receipt<<std::dec;
+        for (unsigned i=0;i<static_cast<unsigned>(PostOptimizerStep::Count);++i)
+            receipt<<' '<<postOptimizerStepName(static_cast<PostOptimizerStep>(i))<<'='<<Counters::postOptimizer[i].load();
+        for (unsigned i=1;i<static_cast<unsigned>(MaterialOwnershipRefusal::Count);++i)
+            receipt<<" owner_"<<materialOwnershipRefusalName(static_cast<MaterialOwnershipRefusal>(i))<<'='<<postOwnerRefused[i].load();
+        constexpr const char* refusalNames[]={"none","graph","material","transform","layout","capacity","no_reduction"};
+        for (unsigned i=1;i<static_cast<unsigned>(Refusal::Count);++i)
+            receipt<<" certify_"<<refusalNames[i]<<'='<<Counters::postCertification[i].load();
+        for (unsigned i=0;i<static_cast<unsigned>(Detail::Count);++i)
+            receipt<<" certify_detail_"<<detailName(static_cast<Detail>(i))<<'='<<Counters::postCertificationDetail[i].load();
+        return receipt.str();
+    }
+    namespace
+    {
         constexpr std::size_t MaximumVertices = 250000, MaximumIndices = 1500000;
         constexpr std::size_t MaximumCookBytes = 64 * 1024 * 1024;
         constexpr float RelativeError = .02f, MaximumPixels = 1.f;
@@ -746,14 +843,27 @@ namespace SceneUtil::GeneratedStaticLod
         for (auto& value : mMaterials)
             if (value.owners & from) value.owners = (value.owners & ~from) | to;
     }
-    bool EffectiveMaterialOwners::exclusivelyOwns(const osg::Node& root, unsigned owner, unsigned mask) const
+    bool EffectiveMaterialOwners::exclusivelyOwns(const osg::Node& root, unsigned owner, unsigned mask,
+        MaterialOwnershipInfo* refusal) const
     {
         Shader::AssetGeometry::ProducerReadScope producerRead;
-        if (mUnknown || mNull || mCapacity || !owner || (owner & (owner - 1))) return false;
+        if (refusal) { *refusal={}; refusal->requestedOwner=owner; refusal->originalMaterials=mMaterials.size(); }
+        const auto fail=[&](MaterialOwnershipRefusal reason,unsigned owners=0) {
+            if (refusal) {refusal->reason=reason;refusal->observedOwners=owners;}
+            return false;
+        };
+        if (mUnknown) return fail(MaterialOwnershipRefusal::GlobalUnknown);
+        if (mNull) return fail(MaterialOwnershipRefusal::GlobalNull);
+        if (mCapacity) return fail(MaterialOwnershipRefusal::GlobalCapacity);
+        if (!owner || (owner & (owner - 1))) return fail(MaterialOwnershipRefusal::InvalidOwner);
         EffectiveMaterialOwners actual;
         actual.observe(root,owner,mask);
         const auto proof = actual.report();
-        if (proof.unknown || proof.nullMaterial || proof.capacity || actual.materials().empty()) return false;
+        if (refusal) refusal->childMaterials=actual.materials().size();
+        if (proof.unknown) return fail(MaterialOwnershipRefusal::ChildUnknown);
+        if (proof.nullMaterial) return fail(MaterialOwnershipRefusal::ChildNull);
+        if (proof.capacity) return fail(MaterialOwnershipRefusal::ChildCapacity);
+        if (actual.materials().empty()) return fail(MaterialOwnershipRefusal::ChildEmpty);
         for (const auto& material : actual.materials())
         {
             unsigned owners = 0;
@@ -761,7 +871,9 @@ namespace SceneUtil::GeneratedStaticLod
                 if (material.state && original.state
                     && (material.state == original.state || material.state->compare(*original.state,true) == 0))
                     owners |= original.owners;
-            if (owners != owner) return false;
+            if (owners != owner) return fail(!owners ? MaterialOwnershipRefusal::MaterialNotFound
+                : owners==1 ? MaterialOwnershipRefusal::OrdinaryOwner
+                : (owners & (owners-1)) ? MaterialOwnershipRefusal::MixedOwner : MaterialOwnershipRefusal::DifferentOwner,owners);
         }
         return true;
     }

@@ -1,6 +1,10 @@
 {
   "base": "199d844b492cbceb7b8a8f44bd981abc18986108",
   "scope": "Exact source seal of the audited current culling and paging paths. Admission retry changes preserve control visibility, shadow and secondary original fallback; optional LOD/ownership changes are covered by real paging-chain tests. This is not gameplay visual or performance acceptance.",
+  "diagnostic_checkpoint": {
+    "base": "f41483382291fa16f2afacbe7a7b9cfb7ae6252c",
+    "scope": "Bounded L1 post-optimizer cutoff receipts only. Independent source review preserves contributor acceptance, root state, material ownership, private drawable and certification guards. No culling, visibility, shadow or ordinary control behavior changed. Real optimizer ancestry fixtures remain separate from actual runtime engagement."
+  },
   "historical_checkpoint": {
     "base": "bb4876a6ea287745c8f535f5525c5381a631a24c",
     "scope": "This checkpoint preserves the audited visibility policies byte-for-byte. Not a new culling implementation.",
@@ -19,7 +23,7 @@
   "sha256": {
     "apps/openmw/mwrender/occlusionculling.cpp": "e92c9023598376e4cd864af07ad1888c0c4502a38405f0c908a174e2a5e24ad8",
     "apps/openmw/mwrender/occlusionculling.hpp": "3e4039257ed9585677afd4d8db527b1d015246bdb8dcd63e08054debf554f624",
-    "apps/openmw/mwrender/objectpaging.cpp": "78a7b01bb7f253dee4af0f6aa87a5f6485635805ea39b119249ed37e1b394b22",
+    "apps/openmw/mwrender/objectpaging.cpp": "9052294bc2ce9c995821cd9bae05b60eefb00aada1f1de4bfdf77fd8b4051d24",
     "apps/openmw/mwrender/groundcover.cpp": "10e1f1de1a38fcd34288ac98df09d20eb6e596ce9f42b8abb9d5bd6f2982bddd",
     "apps/openmw/mwrender/objects.cpp": "9bf5045f1c8c4323b2cc286c2912b5fef73ff813f5e472929ec4be79829f7935",
     "components/sceneutil/occlusionculling.cpp": "1aa1ebea417b9b4eff232d78fbf29b78cae92b68e23e0f8ba8b5ac1b46f6c19f",
