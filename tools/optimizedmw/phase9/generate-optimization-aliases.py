@@ -37,6 +37,18 @@ def outputs():
         "does this explicitly and retains the promoted Lua, occlusion and shadow\n"
         "foundation using their direct controls. RAM retention uses the lower Headroom\n"
         "profile. Benchmark selections use frozen settings rather than this template.\n\n"
+        "NEW INDEPENDENT CONTROL\n"
+        "[Cells] generated static lod active grid = false\n"
+        "Set true to allow the selected L1 asset mechanism on certified static members\n"
+        "of the active grid. L1 benchmark selections set it true; the asset control and\n"
+        "H1-only selections set it false. Custom configuration preserves your value.\n"
+        "The L1 asset switch, object paging active grid, paging optimizer, paging\n"
+        "readiness split, active grid prepare mode 1/2 and prepared chunk quality\n"
+        "mode 1/2 are also required. The current benchmark foundation already supplies\n"
+        "these controls. Disabling this setting retains the distant-only L1 path.\n"
+        "Ordinary strong preparation precedes optional L1 cooking; resource denial\n"
+        "keeps that strong control. Collision, picking, shadows and secondary views\n"
+        "retain original geometry. Selection alone does not establish runtime use.\n\n"
         "LEGACY LOCATION -> DESCRIPTIVE LOCATION\n"
     )
     reference += "\n".join(
@@ -102,6 +114,7 @@ def outputs():
         ("Cells", "adaptive compile governor"): "1",
         ("Cells", "world batching mode"): "2",
         ("Cells", "active grid prepare mode"): "2",
+        ("Cells", "generated static lod active grid"): "false",
         ("Cells", "prepared chunk quality mode"): "1",
         ("Shadows", "far caster minimum pixels"): "5.0",
         ("Shadows", "legacy far caster pruning mode"): "3",
@@ -147,6 +160,10 @@ def outputs():
         template += "\n[" + category + "]\n"
         for (section, key), value in chosen.items():
             if section == category:
+                if (section, key) == ("Cells", "generated static lod active grid"):
+                    template += (
+                        "# Independent active-grid L1 switch; the selected asset mask must also include L1.\n"
+                        "# false retains distant-only L1. Keep paging readiness split and prepare mode on.\n")
                 template += key + " = " + value + "\n"
     return {
         ROOT / "components/settings/optimizationaliases.inc": table,

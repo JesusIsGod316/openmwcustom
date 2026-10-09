@@ -987,7 +987,6 @@ int main(int argc,char** argv) try
         const GeometrySnapshot requiredSnapshot(*required);
         osg::ref_ptr<osg::Node> strong;
         bool deniedRetry=false;
-        const auto deniedBefore=resources.speculativeBudget()->stats().experimentDenied;
         {
             // A real occupied child permit denies experimental admission while
             // leaving the ordinary NearFuture scope outside that child lane.
@@ -1002,10 +1001,17 @@ int main(int argc,char** argv) try
             require(strong!=required && strongSelectors.values.empty() && built(mask)==beforeActiveBuilt
                 && activeRefs(active)==requiredRefs,"ordinary strong active foundation must publish despite busy experimental admission");
             const GeometrySnapshot busyStrongSnapshot(*strong);
+            const auto deniedOuterBefore=A::Counters::lod.outerCpuDenied.load();
+            const auto occupiedReceipt=resources.speculativeBudget()->experimentJobReceipt(R::ResourceSystem::speculativeSample(&resources));
+            require((occupiedReceipt.reasons & R::SpeculativeBudget::ExperimentJobLimit) != 0
+                && occupiedReceipt.experimentJobs==1,"actual advisory child receipt must observe the occupied permit");
             auto denied=activeChunk(active,true,&deniedRetry);
             require(denied==strong && deniedRetry && built(mask)==beforeActiveBuilt
-                && resources.speculativeBudget()->stats().experimentDenied>deniedBefore
+                && A::Counters::lod.outerCpuDenied.load()>deniedOuterBefore
                 && activeRefs(active)==requiredRefs,"denied active L1 tail must retain the exact published strong node, RefNums and retry");
+            // The production preflight observes the gate without attempting a
+            // second reservation. Its explicit outer denial is the receipt;
+            // experimentDenied counts failed tryExperimentJob calls only.
             busyStrongSnapshot.unchanged(*strong,"denied active tail must not decorate the already-published ordinary strong owner");
         }
         requiredSnapshot.unchanged(*required,"ordinary active promotion must preserve the held required graph");
