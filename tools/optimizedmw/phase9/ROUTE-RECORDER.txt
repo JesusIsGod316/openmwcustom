@@ -1,0 +1,94 @@
+OptimizedMW route recorder - guided setup only
+
+Start START-OptimizedMW-RecordRoute.bat. Choose 1 for the existing route,
+2 for Balmora, or 0 to exit. Only this launcher adds the recorder scripts.
+Each launch copies the locked SaintJs profile and Wake up save into its own
+private writable TestSessions/FrozenConfig_<id> directory. Regular gameplay
+configurations, saves, persistent Lua state, and input bindings stay separate.
+
+The existing route starts from that copied save. Balmora loads the same save
+then uses the engine's startup console script to resolve COC Balmora. This is
+setup, not a measured route segment. Wait for the loaded scene to settle and
+choose your exact starting view before beginning.
+
+The historical copied Wake up save may display an initial compatibility warning
+for two old OMW_lanterns content entries. This is a warning about that copied
+save's earlier content list; acknowledge it once to load the private test world.
+The recorder-generated Start.omwsave captures the current private content list.
+No warning suppression or original-save modification is performed.
+
+The recorder uses F6, F9, F10 and F11 alone. Do not hold Ctrl or Shift: those
+remain the normal sneak/run modifiers and are not required by the recorder.
+
+F6 - Begin acquisition. Stand still, release movement keys, close menus and
+choose the exact starting view, then press F6 once. The recorder briefly holds
+movement/camera only during setup while creating a NEW PRIVATE world save of
+your chosen position, view, actors and world state. Wait for the Recording
+message before moving. Start.omwsave is hash-checked against that new private
+save and kept beside the route; the original Wake up save is not overwritten.
+Once Recording appears, hold the usual fixed view for 45 seconds.
+
+F9 - Add a numbered stage marker. Press F9 when beginning your walk after the
+fixed view, then use further markers for route sections if useful. F9 does not
+quicksave, pause, load, restart the recording or reset its clock. Walk the route
+and use doors normally. The recorder does not force the 45-second hold or
+manufacture missing route steps.
+
+F10 - Finish normally. This closes the acquisition interval, drains pending
+observer/policy acknowledgments, exports the buffered records, then quits the
+private game naturally. Leave the game open until export completes. Successful
+export still requires replay validation before performance comparisons.
+
+F11 - Abort. This closes the recording as INCOMPLETE, exports available evidence,
+and quits naturally. It is never counted as an accepted route. Missing or
+failed observation, unexpected combat or an abnormal exit also remain invalid.
+
+Movement, look, activation and combat controls are observed during acquisition,
+not replaced by automatic playback. Apart from the brief starting-save setup
+hold, the recorder does not drive movement or the camera. The four recording
+keys are reserved only in this private profile; regular gameplay keeps its
+original key bindings and Lua state.
+
+Before Ready, the private recorder disables automatic idle Vanity orbit and
+checks that control switch. The fixed-view hold therefore keeps ordinary
+movement/look/view controls without the automatic idle orbit. This private
+setup change is recorded; it does not change regular gameplay. Exact view
+replay still needs separate validation before performance comparisons.
+Menus, cell changes, input state and door activations are recorded. Console
+movement or teleportation during the route must not be used for a comparison.
+The copied native F6/F9/F10/F11 bindings are parked on unused F21-F24 keys in
+the private profile to prevent accidental quickload, debug or HUD changes.
+Keeping explicit parked bindings prevents the native loader restoring defaults.
+Original bindings are preserved. Preparation refuses occupied parking keys.
+F8 remains unchanged because a mod uses Shift+F8 for music.
+
+The private combat policy disables discovered hostile creatures with a high
+current modified AI Fight setting (90 or above), leaving ordinary townspeople
+and their AI present. It records the exact suppressed references. Fight is a bounded
+heuristic, not a complete classification of all scripted/modded enemies or
+hostile NPCs; identified references can be added later. Unexpected combat
+invalidates the route. Mercy Combat AI stays installed. Gameplay profiles are
+unaffected by these private calibration changes. This does not create a combat
+performance benchmark or freeze every town actor's later AI movement.
+
+The recorder is bounded to ten minutes and 60,000 records / 16 MiB. Buffer
+overflow, missing samples or finish marker, unexpected combat, invalid clocks,
+or abnormal game exit leave an INCOMPLETE report. A recording that exports
+successfully is RECORDED_NOT_REPLAY_VALIDATED. Automatic replay, testing
+matrices, route fidelity, and performance acceptance are separate later work.
+
+Outputs are Benchmarks/Routes/<existing|balmora>_<id>/SESSION.json,
+route.jsonl, SUMMARY.json and game stdout/stderr. The summary hashes the route
+and records exact copied save/configuration/recorder/executable identities.
+These route-setup measurements are not benchmark frame-time measurements.
+
+The frozen installed SaintJs assets are referenced, not duplicated. Keep their
+asset folders installed. Default checks cover path and length, not same-size
+edits or added files. The fixed Windows renderer cache remains shared.
+
+Developer checks: -PrepareOnly creates and validates the private profile but
+does not launch a game. -Smoke -Route existing|balmora records a short bounded
+startup check and quits naturally. A smoke is not a recorded user route. The
+host never force-kills OpenMW; a timeout preserves the private game/session.
+-ValidationWindow uses windowed 1280x720 for startup inspection only, explicitly
+recorded in the manifest. It is not a performance-comparison configuration.

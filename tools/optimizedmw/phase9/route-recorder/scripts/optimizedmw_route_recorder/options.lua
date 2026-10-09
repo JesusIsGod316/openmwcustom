@@ -1,0 +1,20 @@
+-- The host replaces this file in each private profile. Never enable in ordinary gameplay.
+return {
+    schema = 1,
+    session = '00000000000000000000000000000000',
+    route_name = 'unconfigured',
+    enabled = false,
+    sample_hz = 20,
+    max_seconds = 600,
+    max_records = 60000,
+    max_bytes = 16777216,
+    key_start = 'F6',
+    key_checkpoint = 'F9',
+    key_finish = 'F10',
+    key_abort = 'F11',
+    require_ctrl_shift = false,
+    quit_on_finish = true,
+    smoke_autostart = false,
+    smoke_duration_seconds = 20,
+    smoke_quit = false,
+}
