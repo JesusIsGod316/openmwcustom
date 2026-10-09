@@ -111,6 +111,46 @@ class EngagementTests(unittest.TestCase):
                 self.assertEqual(self.evaluate(members(1, base + log))["exit_code"], 3)
         self.assertEqual(self.evaluate(members(1, base + self.gpu_log()))["exit_code"], 0)
 
+    def sampler_log(self, phase="startup"):
+        return ("OptimizedMW asset GPU sampler: phase=" + phase + " mask=1 sampled_at_ms=1000 "
+                "valid=1 headroom_bytes=7488929792 pressure_code=1 now_ms=1021 "
+                "clock_valid=1 sample_age_ms=21\n")
+
+    def test_exact_sampler_observation_does_not_collide_with_admission_receipts(self):
+        base = proof(1).replace("final=1", "final=1 gpu_receipt_schema=1")
+        log = self.sampler_log() + base + self.gpu_log("stale_sample") + self.sampler_log("final")
+        result = self.evaluate(members(1, log))
+        self.assertEqual(result["exit_code"], 0, result)
+        gpu = result["gpu_admission"]
+        self.assertEqual(set(gpu["sampler_observations"]), {"startup", "final"})
+        self.assertEqual(gpu["sampler_observation_errors"], [])
+        self.assertEqual(gpu["first_refusals"]["stale_sample"]["sample_age_ms"], 2001)
+        self.assertEqual(self.evaluate(members(1, base + self.sampler_log()))["exit_code"], 3)
+
+    def test_sampler_cannot_hide_malformed_or_unknown_admission_records(self):
+        base = proof(1).replace("final=1", "final=1 gpu_receipt_schema=1")
+        valid = self.gpu_log("stale_sample")
+        for log in (valid.replace("requested=4096", "requested=bad"), valid + valid,
+                    valid + "OptimizedMW asset GPU v2: sequence=0\n",
+                    valid + "OptimizedMW asset GPU sampler_other: sequence=0\n"):
+            with self.subTest(log=log):
+                self.assertEqual(self.evaluate(members(1, base + log + self.sampler_log()))["exit_code"], 3)
+
+    def test_bad_sampler_is_retained_as_observer_error_never_as_admission_proof(self):
+        base = proof(1).replace("final=1", "final=1 gpu_receipt_schema=1")
+        for observer in (self.sampler_log().replace("sampled_at_ms=1000", "sampled_at_ms=79fac632"),
+                         self.sampler_log().replace("sample_age_ms=21", "sample_age_ms=22"),
+                         self.sampler_log().replace("phase=startup", "phase=unknown"),
+                         self.sampler_log() + self.sampler_log(),
+                         self.sampler_log().replace("valid=1", "valid=1 extra=0")):
+            with self.subTest(observer=observer):
+                result = self.evaluate(members(1, base + self.gpu_log() + observer))
+                self.assertEqual(result["exit_code"], 0, result)
+                self.assertTrue(result["gpu_admission"]["sampler_observation_errors"])
+                self.assertTrue(result["gpu_admission"]["sampler_observation_lines"])
+                self.assertIn("observer evidence invalid", QC.report_text(result))
+                self.assertEqual(self.evaluate(members(1, base + observer))["exit_code"], 3)
+
     def test_overlapping_denial_predicates_preserve_units_without_false_inconsistency(self):
         log = proof(1).replace("refusals: unsupported=0",
             "refusals: cpu_private_pressure_policy=7 cpu_private_physical_headroom=7 "

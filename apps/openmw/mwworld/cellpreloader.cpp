@@ -1097,9 +1097,10 @@ namespace MWWorld
     CellPreloader::~CellPreloader()
     {
         if (mColdRetention)
-            Log(Debug::Info) << "OptimizedMW cold preload owners: retired=" << mColdRetired
+            Log(Debug::Info) << std::dec << "OptimizedMW cold preload owners: retired=" << mColdRetired
                 << " indexed=" << mColdRetention->size() << " index_available=" << mColdRetention->available()
-                << " base_retention=" << mColdBaseRetention << " early_headroom=" << mCoordinateColdHeadroom;
+                << " base_retention=" << mColdBaseRetention << " early_headroom=" << mCoordinateColdHeadroom
+                << " recovering_retired=" << mColdRecoveryRetired;
         clearAllTasks();
     }
 
@@ -1343,20 +1344,24 @@ namespace MWWorld
             const auto headroom = mColdHeadroom.update(retentionSample);
             // No pressure is invented from missing data. Caution/Critical keep
             // the existing authoritative broad retirement and cancellation.
-            if (headroom.valid && retentionSample.decision.state == Resource::OpenGlPressure::Normal
-                && (mColdBaseRetention || (mCoordinateColdHeadroom && headroom.contract)))
+            if (const auto ttl = Resource::coldOwnerRetentionTtl(retentionSample, headroom,
+                mColdBaseRetention, mCoordinateColdHeadroom))
             {
-                const double ttl = mCoordinateColdHeadroom && headroom.contract ? 5.0 : 30.0;
-                mColdRetired += mColdRetention->retire(timestamp, ttl, [&](const CellStore* cell) {
+                const auto retired = mColdRetention->retire(timestamp, *ttl, [&](const CellStore* cell) {
                     auto found = mPreloadCells.find(cell);
                     if (found == mPreloadCells.end() || found->second.mRetired || !found->second.mWorkItem
                         || !found->second.mWorkItem->isDone()) return false;
+                    if (retentionSample.decision.state == Resource::OpenGlPressure::Recovering
+                        && found->second.mWorkItem->referenceCount() != 1) return false;
                     // Completed only: no job wait, no new abort, no main-thread
                     // final release. This policy yields the old 96-owner floor.
                     found->second.mRetired = true;
                     return true;
                 }, mAnimationTarget ? std::optional<const CellStore*>(mAnimationTarget) : std::nullopt,
                     mAnimationTicketCell ? std::optional<const CellStore*>(mAnimationTicketCell) : std::nullopt);
+                mColdRetired += retired;
+                if (retentionSample.decision.state == Resource::OpenGlPressure::Recovering)
+                    mColdRecoveryRetired += retired;
             }
         }
         if (lifetime && mAnimationTicket)

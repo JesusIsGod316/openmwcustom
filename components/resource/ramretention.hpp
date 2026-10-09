@@ -80,6 +80,19 @@ namespace Resource
         std::uint64_t mLastGeneration = 0, mHealthySince = 0;
     };
 
+    inline std::optional<double> coldOwnerRetentionTtl(const OpenGlPressureSample& sample,
+        const RamHeadroomPolicy::Decision& headroom, bool baseRetention, bool coordinateHeadroom) noexcept
+    {
+        if (!headroom.valid || !sample.generation || headroom.generation != sample.generation)
+            return {};
+        const bool normal = sample.decision.state == OpenGlPressure::Normal;
+        if (coordinateHeadroom && headroom.contract
+            && (normal || sample.decision.state == OpenGlPressure::Recovering))
+            return 5.0;
+        if (baseRetention && normal) return 30.0;
+        return {};
+    }
+
     // Main-thread owner policy, indexed by actual accepted request time. The
     // bounded protected sets contain identities only, never resource graphs.
     template<class Key>

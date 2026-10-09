@@ -2,6 +2,8 @@
 #include "assetpolicy.hpp"
 #include "assetgpubudget.hpp"
 #include "uploadpool.hpp"
+#include "textureupgradeadmission.hpp"
+#include <components/debug/debuglog.hpp>
 #include <components/debug/hitchtrace.hpp>
 #include <components/debug/runtimediagnostics.hpp>
 #include <components/sceneutil/glcalltrace.hpp>
@@ -61,6 +63,13 @@ namespace Resource::TextureStreaming
         constexpr GLenum TextureBaseLevel=0x813c,TextureMaxLevel=0x813d;
         constexpr double QualityHold=10.0, HealthyHold=5.0;
         Counters sCounters;
+        std::mutex sHostAdmissionMutex;
+        HostAdmissionStats sHostAdmission;
+        template<class Action> void hostAdmission(AllocationPhase phase,Action&& action)
+        {
+            std::lock_guard lock(sHostAdmissionMutex);
+            action(sHostAdmission[static_cast<unsigned>(phase)]);
+        }
         thread_local bool sCompileActive=false,sCompileAllowed=false;
         std::mutex sRegistryMutex;
         std::vector<std::weak_ptr<Descriptor>> sRegistry;
@@ -91,7 +100,10 @@ namespace Resource::TextureStreaming
             std::uint64_t bytes=0;
             unsigned first=0,level=0,row=0;
             bool constructing=false, uncertain=false,drawn=false,applied=false,streaming=true,demoted=false;
+            double lastDrawTime=-1;
+            std::uint64_t lastDrawFrame=0;
             std::shared_ptr<AssetGpuBudget::Reservation> gpu;
+            SpeculativeBudget::Job priorityJob;
             SpeculativeBudget::ChargePtr host;
             std::shared_ptr<const unsigned char> identity;
         };
@@ -174,6 +186,8 @@ namespace Resource::TextureStreaming
                 const std::uint64_t frame=stamp ? stamp->getFrameNumber() : mFrame;
                 descriptor->ticket->lastDrawFrame=frame;
                 descriptor->ticket->lastDrawTime=mTime;
+                entry.active.lastDrawFrame=frame;
+                entry.active.lastDrawTime=mTime;
                 if(AssetPolicy::enabled(AssetPolicy::TexturePreparation) && entry.active.first==0)
                 {
                     if(descriptor->ticket->purpose==TexturePurpose::MainDraw) ++nativeTextureStats().consumedMainDraws;
@@ -392,7 +406,12 @@ namespace Resource::TextureStreaming
             unsigned retirementSlots() const
             { return static_cast<unsigned>(std::count_if(mRetired.begin(),mRetired.end(),[](const auto& x){return !x.name;})); }
             static void finishConstruction(Allocation& slot)
-            { if(slot.constructing) { sConstructing.fetch_sub(1); slot.constructing=false; } }
+            {
+                if(slot.constructing) { sConstructing.fetch_sub(1); slot.constructing=false; }
+                // The worker permit bounds private construction, not the
+                // visible backing's lifetime. Its host/GPU reservations remain.
+                slot.priorityJob.finish();
+            }
             static void discard(Allocation& slot)
             {
                 if(!slot.name) return;
@@ -466,21 +485,93 @@ namespace Resource::TextureStreaming
                 const auto bytes=entry.payload->suffixBytes(first);
                 if(!bytes || bytes>AssetPolicy::NewTextureLimit || sOwnerLive.load()>AssetPolicy::TextureAllocationLimit-bytes)
                 { ++sCounters.skips[static_cast<unsigned>(Skip::AllocationLimit)]; return false; }
+                const auto phase = !entry.active.name ? AllocationPhase::Initial
+                    : first==0 ? AllocationPhase::FineUpgrade : AllocationPhase::Demotion;
+                hostAdmission(phase,[](auto& lane) { ++lane.attempts; });
                 if(!UploadPool::ledger || !UploadPool::sample)
-                { ++sCounters.skips[static_cast<unsigned>(Skip::Admission)]; return false; }
+                {
+                    hostAdmission(phase,[](auto& lane) { ++lane.missingProvider; });
+                    ++sCounters.skips[static_cast<unsigned>(Skip::Admission)]; return false;
+                }
                 std::uint64_t zero=0;
-                if(!sConstructing.compare_exchange_strong(zero,1)) return false;
+                if(!sConstructing.compare_exchange_strong(zero,1))
+                {
+                    hostAdmission(phase,[](auto& lane) { ++lane.constructingBusy; });
+                    return false;
+                }
                 Allocation slot; slot.constructing=true;slot.streaming=streaming;
                 try
                 {
-                    SpeculativeScope scope(UploadPool::ledger,UploadPool::sample,UploadPool::sampleOwner);
+                    const auto selected = UploadPool::sample(UploadPool::sampleOwner);
+                    const auto descriptor=entry.descriptor.lock();
+                    const TextureUpgradeAdmission::VisibleCoarseUse use{
+                        streaming,
+                        descriptor && entry.frozenOwner && owner(state)
+                            && valid(*descriptor,*entry.frozenOwner) && !descriptor->ticket->ordinaryAllocated.load(),
+                        descriptor && descriptor->ticket->purpose==TexturePurpose::MainDraw,
+                        entry.active.name!=0 && entry.active.first!=0,
+                        entry.active.drawn,
+                        entry.demoting || first!=0 || entry.active.demoted,
+                        mTime,entry.active.lastDrawTime,mFrame,entry.active.lastDrawFrame };
+                    const bool recovery = phase==AllocationPhase::FineUpgrade
+                        && TextureUpgradeAdmission::recoveryPromotion(use,selected);
+                    hostAdmission(phase,[&](auto& lane) { recovery ? ++lane.recoveryAttempts : ++lane.backgroundAttempts; });
+                    TextureUpgradeAdmission::FrozenRecoverySample frozen{selected,UploadPool::sample,UploadPool::sampleOwner};
+                    if(recovery)
+                    {
+                        slot.priorityJob=UploadPool::ledger->tryJob(selected,SpeculativePriority::NearFuture);
+                        if(!slot.priorityJob)
+                        {
+                            hostAdmission(phase,[&](auto& lane) {
+                                ++lane.permitDenied;
+                                if(!lane.firstPermitRefusal) lane.firstPermitRefusal=selected;
+                            });
+                            finishConstruction(slot);++sCounters.skips[static_cast<unsigned>(Skip::Admission)];return false;
+                        }
+                    }
+                    SpeculativeScope scope(UploadPool::ledger,
+                        recovery ? &TextureUpgradeAdmission::FrozenRecoverySample::read : UploadPool::sample,
+                        recovery ? static_cast<void*>(&frozen) : UploadPool::sampleOwner,
+                        recovery ? SpeculativePriority::NearFuture : SpeculativePriority::Background);
                     SpeculativeScope::Stage stage(bytes,bytes);
                     slot.gpu=AssetGpuBudget::reserve(bytes);
-                    if(!slot.gpu) throw SpeculativeDeferred{};
+                    if(!slot.gpu)
+                    {
+                        hostAdmission(phase,[](auto& lane) { ++lane.gpuDenied; });
+                        finishConstruction(slot);++sCounters.skips[static_cast<unsigned>(Skip::Admission)];return false;
+                    }
                     slot.identity=std::make_shared<const unsigned char>(0);
                     slot.host=SpeculativeScope::track(UploadPool::ledger,{slot.identity.get(),0x54324750u},bytes,true);
+                    hostAdmission(phase,[](auto& lane) { ++lane.admitted; });
                 }
-                catch(...) { finishConstruction(slot); ++sCounters.skips[static_cast<unsigned>(Skip::Admission)]; return false; }
+                catch(const TextureUpgradeAdmission::SampleChanged& changed)
+                {
+                    hostAdmission(phase,[&](auto& lane) {
+                        ++lane.sampleDrift;
+                        if(!lane.firstDriftObserved) { lane.firstDriftExpected=changed.expected;lane.firstDriftObserved=changed.observed; }
+                    });
+                    finishConstruction(slot);++sCounters.skips[static_cast<unsigned>(Skip::Admission)];return false;
+                }
+                catch(const SpeculativeDeferred& failure)
+                {
+                    hostAdmission(phase,[&](auto& lane) {
+                        ++lane.stageDenied;
+                        if(failure.reservation)
+                        {
+                            const auto& receipt=*failure.reservation;
+                            if(!lane.firstStageRefusal) lane.firstStageRefusal=receipt;
+                            for(unsigned i=0;i<lane.reservationReasons.size();++i)
+                                if(receipt.reasons & (1u<<i)) ++lane.reservationReasons[i];
+                        }
+                        else ++lane.unknownFailure;
+                    });
+                    finishConstruction(slot);++sCounters.skips[static_cast<unsigned>(Skip::Admission)];return false;
+                }
+                catch(...)
+                {
+                    hostAdmission(phase,[](auto& lane) { ++lane.unknownFailure; });
+                    finishConstruction(slot); ++sCounters.skips[static_cast<unsigned>(Skip::Admission)]; return false;
+                }
                 auto* ext=state.get<osg::GLExtensions>();
                 UnpackScope restore(state);
                 glGenTextures(1,&slot.name);
@@ -643,6 +734,57 @@ namespace Resource::TextureStreaming
     {
         if(!AssetPolicy::enabled(AssetPolicy::TexturePreparation|AssetPolicy::TextureStreaming)) return;
         state.get<Controller>()->boundary(state);
+    }
+    HostAdmissionStats hostAdmissionStats()
+    { std::lock_guard lock(sHostAdmissionMutex); return sHostAdmission; }
+    const char* allocationPhaseName(AllocationPhase phase)
+    {
+        static constexpr const char* names[]={"initial","fine_upgrade","demotion"};
+        const auto index=static_cast<unsigned>(phase);
+        return index<static_cast<unsigned>(AllocationPhase::Count) ? names[index] : "unknown";
+    }
+    void reportAdmissionProof()
+    {
+        const auto lanes=hostAdmissionStats();
+        for(unsigned i=0;i<lanes.size();++i)
+        {
+            const auto& lane=lanes[i];
+            if(!lane.attempts) continue;
+            const auto* phase=allocationPhaseName(static_cast<AllocationPhase>(i));
+            Log(Debug::Info) << std::dec << "OptimizedMW texture host admission: phase=" << phase
+                << " attempts=" << lane.attempts << " background=" << lane.backgroundAttempts
+                << " recovering_visible=" << lane.recoveryAttempts << " admitted=" << lane.admitted
+                << " missing_provider=" << lane.missingProvider << " construction_busy=" << lane.constructingBusy
+                << " permit_denied=" << lane.permitDenied << " sample_drift=" << lane.sampleDrift
+                << " stage_denied=" << lane.stageDenied << " gpu_denied=" << lane.gpuDenied
+                << " unknown_failure=" << lane.unknownFailure;
+            if(lane.firstStageRefusal)
+            {
+                const auto& r=*lane.firstStageRefusal;
+                Log(Debug::Info) << std::dec << "OptimizedMW texture host first stage refusal: phase=" << phase
+                    << " priority=" << static_cast<unsigned>(r.priority) << " reasons=" << r.reasons
+                    << " pressure_reasons=" << r.pressureReasons << " state=" << static_cast<unsigned>(r.sample.decision.state)
+                    << " generation=" << r.sample.generation << " sampled_at_ms=" << r.sample.sampledAtMs
+                    << " requested=" << r.requested << " future=" << r.currentFuture << " extra=" << r.extra
+                    << " physical_available=" << r.sample.memory.physicalAvailable << " physical_floor=" << r.physicalFloor
+                    << " commit_available=" << r.sample.memory.commitAvailable << " commit_floor=" << r.commitFloor;
+            }
+            if(lane.firstPermitRefusal)
+            {
+                const auto& s=*lane.firstPermitRefusal;
+                Log(Debug::Info) << std::dec << "OptimizedMW texture host first permit refusal: phase=" << phase
+                    << " state=" << static_cast<unsigned>(s.decision.state) << " generation=" << s.generation
+                    << " sampled_at_ms=" << s.sampledAtMs;
+            }
+            if(lane.firstDriftObserved)
+            {
+                const auto& a=*lane.firstDriftExpected;const auto& b=*lane.firstDriftObserved;
+                Log(Debug::Info) << std::dec << "OptimizedMW texture host first sample drift: phase=" << phase
+                    << " expected_state=" << static_cast<unsigned>(a.decision.state) << " observed_state=" << static_cast<unsigned>(b.decision.state)
+                    << " expected_generation=" << a.generation << " observed_generation=" << b.generation
+                    << " expected_sampled_at_ms=" << a.sampledAtMs << " observed_sampled_at_ms=" << b.sampledAtMs;
+            }
+        }
     }
     void releaseContext(osg::State& state) { state.get<Controller>()->close(state); }
     void recordDrawUse(osg::State& state,const osg::StateSet* pass)

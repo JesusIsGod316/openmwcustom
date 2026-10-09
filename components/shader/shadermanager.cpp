@@ -49,7 +49,7 @@ namespace
         try
         {
             const auto diagnostics = A::producerDiagnostics();
-            Log(Debug::Info) << "OptimizedMW asset producer first refusal: stage="
+            Log(Debug::Info) << std::dec << "OptimizedMW asset producer first refusal: stage="
                 << (programRefresh ? "program_refresh" : regeneration ? "source_regeneration" : "source_initial")
                 << " reason=" << A::refusalName(refusal) << " step=" << A::sourceAttachStepName(receipt.step)
                 << " name=\"" << name.substr(0,192) << '"'

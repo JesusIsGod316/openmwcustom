@@ -153,6 +153,24 @@ int main(int argc,char** argv) try
         changed[0] = changed[0] == '#' ? ' ' : '#'; shader->setShaderSource(changed);
         require(changed.size() == original.size() && A::current(*snapshot,*value) == A::Refusal::Source,"same-length source mutation must invalidate");
         shader->setShaderSource(original); require(A::current(*snapshot,*value) == A::Refusal::None,"exact source restoration is distinguishable");
+        if (original.size() > A::SourceChunkBytes + 2)
+        {
+            const auto newline = original.rfind('\n',A::SourceChunkBytes - 1);
+            const auto boundary = newline == std::string::npos ? A::SourceChunkBytes : newline + 1;
+            changed = original;
+            for (const auto position : {boundary - 1,boundary}) changed[position] = changed[position] == '#' ? ' ' : '#';
+            shader->setShaderSource(changed);
+            require(A::current(*snapshot,*value) == A::Refusal::Source,"same-length mutation across a chunk boundary must invalidate");
+            shader->setShaderSource(original.substr(1));
+            require(A::current(*snapshot,*value) == A::Refusal::Source,"prefix truncation cannot match an immutable chunk stream");
+            shader->setShaderSource(original.substr(0,original.size()-1));
+            require(A::current(*snapshot,*value) == A::Refusal::Source,"suffix truncation cannot accept a matching prefix");
+            changed = original.substr(boundary) + original.substr(0,boundary);
+            shader->setShaderSource(changed);
+            require(A::current(*snapshot,*value) == A::Refusal::Source,"same-length reordered chunk stream must invalidate");
+            shader->setShaderSource(original);
+            require(A::current(*snapshot,*value) == A::Refusal::None,"exact ordered source restoration remains distinguishable");
+        }
         shader->addCodeInjection(-1,"unreviewed"); require(A::current(*snapshot,*value) == A::Refusal::Source,"code injection invalidates"); shader->getCodeInjectionMap().clear();
         shader->setShaderRequirements({"unreviewed"}); require(A::current(*snapshot,*value) == A::Refusal::Defines,"shader requirements mutation invalidates"); shader->setShaderRequirements({});
         auto imported = value->getShaderDefines(); value->setShaderDefines({"unreviewed"}); require(A::current(*snapshot,*value) == A::Refusal::Defines,"program imported defines mutation invalidates"); value->setShaderDefines(imported);
@@ -324,6 +342,114 @@ int main(int argc,char** argv) try
             "cached global substitution injection preserves original shader objects but refuses fresh proof");
     }
     {
+        Shader::ShaderManager manager; manager.setShaderPath(pbr);
+        auto globals = defines(pbr);
+        globals["distorionRTRatio"] = "0." + std::string(4094,'1');
+        manager.setGlobalDefines(globals);
+        auto value = manager.getProgram("compatibility/objects",{},nullptr,samplers);
+        require(A::matches(*value),"bounded numeric substitution with a long line must preserve exact source proof");
+        const auto* fragment = value->getShader(1);
+        require(fragment && fragment->getShaderSource().find(globals["distorionRTRatio"]) != std::string::npos,
+            "actual reviewed fragment contains the long producer line");
+        std::cout << "ASSET_CONTRACT_LONG_LINE substituted_bytes=" << globals["distorionRTRatio"].size()
+            << " exact=1 bounded_chunks=1\n";
+    }
+    {
+        // This direct storage fixture cannot create a Program certificate. It
+        // isolates the fixed body registry bound from the aggregate byte cap.
+        A::RawProof raw; const auto root = read(pbr/"compatibility/objects.frag");
+        raw.observe("compatibility/objects.frag",root);
+        const auto proof = A::finish(raw,root);
+        require(proof.families,"registry fixture uses an actual reviewed raw producer");
+        auto epoch = std::make_shared<A::Epoch>();
+        std::vector<osg::ref_ptr<osg::Shader>> retained;
+        bool refused = false;
+        for (unsigned i = 0; i <= A::SourceTextSlots; ++i)
+        {
+            osg::ref_ptr<osg::Shader> shader = new osg::Shader(osg::Shader::FRAGMENT,
+                "void main() {}\n// bounded storage fixture " + std::to_string(i));
+            A::SourceAttachReceipt receipt;
+            const auto refusal = A::attachSource(*shader,"compatibility/objects.frag",proof,{}, {},epoch,&receipt);
+            if (refusal != A::Refusal::None)
+            {
+                require(i == A::SourceTextSlots && refusal == A::Refusal::Capacity
+                    && receipt.step == A::SourceAttachStep::RegistryCapacity,
+                    "fixed weak registry exhaustion is distinct from byte admission");
+                refused = true; break;
+            }
+            require(A::sourceStatus(*shader).refusal == A::Refusal::None,"exact body storage stays current without a Program authorization");
+            retained.push_back(std::move(shader));
+        }
+        require(refused && A::liveMetadataBytes() <= A::MaximumMetadataBytes,
+            "registry bound fails closed inside unchanged global quota");
+        std::cout << "ASSET_CONTRACT_REGISTRY_CAPACITY body_slots=" << A::SourceTextSlots
+            << " held=" << retained.size() << " baseline_bytes=" << A::RegistryMetadataBytes
+            << " weak_only=1 distinct_receipt=1\n";
+    }
+    require(A::liveMetadataBytes() == before,"expired weak storage entries must not retain optional payload quota debt");
+    {
+        Shader::ShaderManager manager; manager.setShaderPath(pbr);
+        auto globals = defines(pbr); manager.setGlobalDefines(globals);
+        std::vector<osg::ref_ptr<osg::Program>> cohort;
+        constexpr unsigned Variants = 64;
+        for (unsigned variant = 0; variant < Variants; ++variant)
+        {
+            // Actual opaque ShaderVisitor texture/UV substitutions, not an
+            // unused key that would make every generated body identical.
+            Shader::ShaderManager::DefineMap local{
+                {"normalMap",std::to_string((variant >> 0) & 1)},
+                {"specularMap",std::to_string((variant >> 1) & 1)},
+                {"glossMap",std::to_string((variant >> 2) & 1)},
+                {"emissiveMap",std::to_string((variant >> 3) & 1)},
+                {"diffuseMapUV",std::to_string((variant >> 4) & 3)}};
+            auto value = manager.getProgram("compatibility/objects",local,nullptr,samplers);
+            if (!A::capture(*value))
+                std::cout << "ASSET_CONTRACT_COHORT_FAILURE variant=" << variant
+                    << " metadata=" << A::liveMetadataBytes() << " refusal=" << A::refusalName(A::validate(*value)) << '\n';
+            require(bool(A::capture(*value)),"production-sized opaque variant cohort needs fresh producer proofs");
+            cohort.push_back(std::move(value));
+        }
+        const auto preparedBytes = A::liveMetadataBytes();
+        for (unsigned round = 0; round < 3; ++round)
+        {
+            globals["disableNormals"] = round % 2 ? "0" : "1";
+            globals["distorionRTRatio"] = std::to_string(0.25 + round * 0.125);
+            manager.setGlobalDefines(globals);
+            for (const auto& value : cohort)
+            {
+                auto graph = source(*value);
+                require(A::matches(*value) && SceneUtil::GeneratedStaticLod::certify(*graph)
+                    == SceneUtil::GeneratedStaticLod::Refusal::None,
+                    "ordinary variant cohort must recover exact fresh L1 source qualification after PostFX regeneration");
+            }
+        }
+        // Three real retained candidate inputs match the observed runtime
+        // cohort; all ordinary producer variants remain alive during refresh.
+        std::array<std::optional<A::Snapshot>,3> retainedCandidateInputs;
+        for (unsigned i = 0; i < retainedCandidateInputs.size(); ++i)
+        {
+            retainedCandidateInputs[i] = A::capture(*cohort[i]);
+            require(bool(retainedCandidateInputs[i]),"retained candidate overlap setup");
+        }
+        globals["disableNormals"] = globals["disableNormals"] == "0" ? "1" : "0";
+        globals["distorionRTRatio"] = "0.625";
+        manager.setGlobalDefines(globals);
+        for (unsigned i = 0; i < retainedCandidateInputs.size(); ++i)
+            require(A::current(*retainedCandidateInputs[i],*cohort[i]) == A::Refusal::Epoch,
+                "sharing exact chunks never revives a retained old candidate epoch");
+        for (const auto& value : cohort)
+        {
+            auto graph = source(*value);
+            require(A::matches(*value) && SceneUtil::GeneratedStaticLod::certify(*graph)
+                == SceneUtil::GeneratedStaticLod::Refusal::None,"fresh cohort stays qualified while old candidate owners remain charged");
+        }
+        require(A::liveMetadataBytes() <= A::MaximumMetadataBytes,"cohort preserves unchanged proof quota");
+        std::cout << "ASSET_CONTRACT_PRODUCTION_COHORT variants=" << Variants << " global_updates=4 prepared_metadata="
+            << preparedBytes << " final_metadata=" << A::liveMetadataBytes() << " cap=" << A::MaximumMetadataBytes
+            << " fresh_l1_qualification=1 retained_old_candidates=" << retainedCandidateInputs.size()
+            << " old_epochs_refused=1\n";
+    }
+    {
         // Production can retain many ordinary variants without holding any
         // candidate snapshot. Prove that initial cap failure is distinguished
         // from the separate overlap failure during a regenerated cohort.
@@ -332,11 +458,16 @@ int main(int argc,char** argv) try
         const auto diagnosticsBefore = A::producerDiagnostics();
         bool exhausted = false;
         unsigned variants = 0;
-        for (; variants < 128; ++variants)
+        for (; variants < 512; ++variants)
         {
             auto value = manager.getProgram("compatibility/objects",{{"unused_asset_proof_variant",std::to_string(variants)}},nullptr,samplers);
             require(value.valid(),"metadata pressure preserves every ordinary cached program");
-            if (!A::capture(*value)) {exhausted = true; break;}
+            if (!A::capture(*value))
+            {
+                exhausted = true;
+                if (A::producerDiagnostics().initialSource[static_cast<unsigned>(A::Refusal::Capacity)]
+                    > diagnosticsBefore.initialSource[static_cast<unsigned>(A::Refusal::Capacity)]) break;
+            }
         }
         const auto diagnostics = A::producerDiagnostics();
         const auto capacity = static_cast<unsigned>(A::Refusal::Capacity);
@@ -353,12 +484,15 @@ int main(int argc,char** argv) try
         std::vector<A::Snapshot> retained;
         auto globals = manager.getGlobalDefines(); bool exhausted = false;
         const auto diagnosticsBefore = A::producerDiagnostics();
-        for (unsigned generation = 0; generation < 64; ++generation)
+        A::Refusal snapshotRefusal = A::Refusal::None;
+        for (unsigned generation = 0; generation < 256; ++generation)
         {
-            auto snapshot = A::capture(*value);
+            auto snapshot = A::capture(*value,{},&snapshotRefusal);
             if (!snapshot) {exhausted = true; break;}
             retained.push_back(*snapshot);
-            globals["forcePPL"] = generation % 2 ? "1" : "0"; manager.setGlobalDefines(globals);
+            globals["forcePPL"] = generation % 2 ? "1" : "0";
+            globals["distorionRTRatio"] = std::to_string(0.25 + generation * 0.001);
+            manager.setGlobalDefines(globals);
             require(value.valid() && A::liveMetadataBytes() <= A::MaximumMetadataBytes
                 && A::current(retained.front(),*value) != A::Refusal::None,
                 "held old generations stay invalid and charged under the unchanged global cap");
@@ -369,13 +503,15 @@ int main(int argc,char** argv) try
         const auto capacity = static_cast<unsigned>(A::Refusal::Capacity), epoch = static_cast<unsigned>(A::Refusal::Epoch);
         require(diagnostics.regeneratedSource[capacity] > diagnosticsBefore.regeneratedSource[capacity]
             || diagnostics.refreshedProgram[capacity] > diagnosticsBefore.refreshedProgram[capacity]
-            || diagnostics.refreshedProgram[epoch] > diagnosticsBefore.refreshedProgram[epoch],
+            || diagnostics.refreshedProgram[epoch] > diagnosticsBefore.refreshedProgram[epoch]
+            || snapshotRefusal == A::Refusal::Capacity,
             "regeneration diagnostics must distinguish its failed fresh attachment/publication");
         std::cout << "ASSET_CONTRACT_REFRESH_CAPACITY retained=" << retained.size()
             << " metadata=" << A::liveMetadataBytes() << " cap=" << A::MaximumMetadataBytes
             << " regenerated_source_capacity_refusals=" << diagnostics.regeneratedSource[capacity] - diagnosticsBefore.regeneratedSource[capacity]
             << " program_capacity_refusals=" << diagnostics.refreshedProgram[capacity] - diagnosticsBefore.refreshedProgram[capacity]
             << " program_epoch_refusals=" << diagnostics.refreshedProgram[epoch] - diagnosticsBefore.refreshedProgram[epoch]
+            << " snapshot_refusal=" << A::refusalName(snapshotRefusal)
             << " fallback=1\n";
     }
     {

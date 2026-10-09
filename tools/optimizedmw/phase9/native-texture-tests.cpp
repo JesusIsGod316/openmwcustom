@@ -146,11 +146,20 @@ namespace
     };
     std::mutex hostSampleMutex;
     N::OpenGlPressureSample sample;
-    N::OpenGlPressureSample readSample(void*) { std::lock_guard lock(hostSampleMutex);return sample; }
+    bool driftNextRecoveryStage=false;
+    N::OpenGlPressureSample readSample(void*)
+    {
+        std::lock_guard lock(hostSampleMutex);auto observed=sample;
+        if(driftNextRecoveryStage && observed.decision.state==N::OpenGlPressure::Recovering
+            && N::SpeculativeScope::capture().priority==N::SpeculativePriority::NearFuture)
+        { driftNextRecoveryStage=false;observed.decision.state=N::OpenGlPressure::Caution; }
+        return observed;
+    }
     void healthyHost(N::SpeculativeBudget& ledger)
     {
         std::lock_guard lock(hostSampleMutex);
         ++sample.generation; sample.decision.state=N::OpenGlPressure::Normal;
+        sample.sampledAtMs=N::AssetGpuBudget::milliseconds();
         sample.growthWatermarkValid=true; sample.accountedGrowth=ledger.watermark()->load();
         sample.decision.admissionsPerSample=4;
         sample.memory.physicalValid=true;sample.memory.physicalTotal=32ull*1024*1024*1024;
@@ -158,6 +167,12 @@ namespace
         sample.memory.commitValid=true;sample.memory.commitAvailable=16ull*1024*1024*1024;
         sample.decision.limits.physicalReserve=4ull*1024*1024*1024;
         sample.decision.limits.commitReserve=1024ull*1024*1024;
+    }
+    void recoveringHost(N::SpeculativeBudget& ledger,bool scarce=false)
+    {
+        healthyHost(ledger);std::lock_guard lock(hostSampleMutex);
+        sample.decision.state=N::OpenGlPressure::Recovering;sample.decision.admissionsPerSample=0;
+        if(scarce) sample.memory.physicalAvailable=sample.decision.limits.physicalReserve-1;
     }
     void healthyGpu()
     {
@@ -274,6 +289,88 @@ namespace
             ++draws;drawable->drawImplementation(render);
         }
     };
+    void verifyRecoveryPriority()
+    {
+        N::SpeculativeBudget::Config config;config.transientLimit=N::AssetPolicy::CpuTransientLimit;
+        config.reservedNearFutureJobs=1;N::SpeculativeBudget ledger(config);
+        N::UploadPool::ledger=&ledger;N::UploadPool::sample=&readSample;
+        auto payload=prepare(dds(2048,2048));auto ticket=readyTicket(payload);
+        osg::ref_ptr<T::Texture> visible=new T::Texture(N::nativeTextureImage(payload),ticket);
+        osg::ref_ptr<T::Texture> hidden=new T::Texture(*visible);
+        osg::ref_ptr<osg::GraphicsContext::Traits> traits=new osg::GraphicsContext::Traits;
+        traits->readDISPLAY();traits->setUndefinedScreenDetailsToDefaultScreen();
+        traits->width=32;traits->height=32;traits->doubleBuffer=false;traits->windowDecoration=false;
+        osg::ref_ptr<osg::GraphicsContext> context=osg::GraphicsContext::createGraphicsContext(traits);
+        require(context && context->realize() && context->makeCurrent(),"recovery controller context unavailable");
+        auto& state=*context->getState();state.setActiveTextureUnit(0);
+        osg::ref_ptr<osg::FrameStamp> stamp=new osg::FrameStamp;state.setFrameStamp(stamp);
+        auto draw=triangle();osg::RenderInfo render(&state,nullptr);
+        const auto boundary=[&](unsigned frame,double time,bool recovery,bool scarce=false,bool reuseSample=false)
+        {
+            if(!reuseSample) { if(recovery) recoveringHost(ledger,scarce);else healthyHost(ledger); }
+            healthyGpu();stamp->setFrameNumber(frame);T::setTestTime(time);
+            const auto uploaded=T::counters().uploadedBytes.load(),allocated=T::counters().allocations.load();
+            T::frameBoundary(state);
+            require(T::counters().uploadedBytes.load()-uploaded<=1024*1024
+                && T::counters().allocations.load()-allocated<=1,"recovery priority bypassed upload/allocation bounds");
+        };
+        boundary(1,500,false);boundary(2,500.1,false);
+        auto a=T::testBackings(state,*visible),b=T::testBackings(state,*hidden);
+        require(a && b && a->activeName && b->activeName && a->activeFirst && b->activeFirst,
+            "shared-ticket recovery fixture did not establish two coarse owners");
+        boundary(3,510.2,false);state.applyTextureAttribute(0,visible);submitTerrain(draw,render);
+        const auto gpuAttempts=N::AssetGpuBudget::admitted.load()+N::AssetGpuBudget::denied.load();
+        const auto before=T::hostAdmissionStats()[static_cast<unsigned>(T::AllocationPhase::FineUpgrade)];
+        { std::lock_guard lock(hostSampleMutex);driftNextRecoveryStage=true; }
+        boundary(4,510.3,true);
+        const auto drift=T::hostAdmissionStats()[static_cast<unsigned>(T::AllocationPhase::FineUpgrade)];
+        require(drift.sampleDrift==before.sampleDrift+1 && drift.firstDriftObserved
+            && drift.firstDriftObserved->decision.state==N::OpenGlPressure::Caution
+            && N::AssetGpuBudget::admitted.load()+N::AssetGpuBudget::denied.load()==gpuAttempts
+            && ledger.stats().jobs==0 && ledger.stats().futureBytes==0,
+            "Recovering-to-Caution Stage race allocated GPU work, rewrote observation, or leaked permit");
+        state.applyTextureAttribute(0,visible);submitTerrain(draw,render);
+        boundary(5,510.4,true,true);
+        require(N::AssetGpuBudget::admitted.load()+N::AssetGpuBudget::denied.load()==gpuAttempts
+            && ledger.stats().jobs==0 && ledger.stats().futureBytes==0,
+            "Recovering full-floor shortage reached GPU work or leaked its permit");
+        state.applyTextureAttribute(0,visible);submitTerrain(draw,render);
+        boundary(6,510.5,true);
+        a=T::testBackings(state,*visible);b=T::testBackings(state,*hidden);
+        require(a && a->buildingName && a->buildingFirst==0 && a->activeFirst
+            && b && b->activeFirst && !b->buildingName && ledger.stats().jobs==1 && ledger.stats().priorityJobs==1,
+            "visible recovery did not build fine privately, or shared ticket promoted hidden descriptor");
+        // Keep the generation whose permit started this private construction;
+        // publication must release the live job without resetting its spend.
+        boundary(7,510.6,true,false,true);boundary(8,510.7,true,false,true);
+        a=T::testBackings(state,*visible);b=T::testBackings(state,*hidden);
+        const auto stats=ledger.stats();
+        require(a && a->activeName && a->activeFirst==0 && !a->buildingName
+            && b && b->activeFirst && !b->buildingName && stats.jobs==0 && stats.priorityJobs==0
+            && stats.futureBytes==0 && stats.knownOwnerBytes>=a->activeBytes
+            && N::AssetGpuBudget::liveBytes.load()>=a->activeBytes,
+            "fine publication leaked job permit or discarded live owner charges");
+        state.applyTextureAttribute(0,visible);verifyPixels(*payload,0);submitTerrain(draw,render);
+        state.applyTextureAttribute(0,hidden);verifyPixels(*payload,payload->coarseLevel());submitTerrain(draw,render);
+        const auto permits=T::hostAdmissionStats()[static_cast<unsigned>(T::AllocationPhase::FineUpgrade)].permitDenied;
+        boundary(9,510.8,true,false,true);
+        b=T::testBackings(state,*hidden);
+        require(b && b->activeFirst && !b->buildingName && ledger.stats().jobs==0
+            && T::hostAdmissionStats()[static_cast<unsigned>(T::AllocationPhase::FineUpgrade)].permitDenied>permits,
+            "second visible fine upgrade spent the same Recovering sample after publication");
+        state.applyTextureAttribute(0,hidden);submitTerrain(draw,render);
+        boundary(10,510.9,true);boundary(11,511.0,true);boundary(12,511.1,true);
+        b=T::testBackings(state,*hidden);
+        require(b && b->activeName && b->activeFirst==0 && !b->buildingName
+            && ledger.stats().jobs==0 && ledger.stats().priorityJobs==0,
+            "new Recovering generation did not permit the now-visible owner and release publication permit");
+        state.applyTextureAttribute(0,hidden);verifyPixels(*payload,0);submitTerrain(draw,render);
+        T::releaseContext(state);
+        require(ledger.stats().jobs==0 && ledger.stats().futureBytes==0 && ledger.stats().knownOwnerBytes==0,
+            "recovery context teardown retained private jobs or allocation charges");
+        context->releaseContext();context->close(true);
+        N::UploadPool::ledger=nullptr;N::UploadPool::sample=nullptr;
+    }
     template<class InstallOwnerHook>
     void verifyRendererOrder(N::SpeculativeBudget& ledger,InstallOwnerHook installOwnerHook)
     {
@@ -805,8 +902,9 @@ int main(int argc,char** argv) try
     N::UploadPool::ledger=&ledger;N::UploadPool::sample=&readSample;
     verifyRendererOrder(ledger,[](osgViewer::Viewer& viewer)
     { require(SceneUtil::TextureOwnerBoundary::installBeforeRealize(viewer)==2,"production root-stage owner hook installation failed"); });
+    verifyRecoveryPriority();
     N::UploadPool::ledger=nullptr;N::UploadPool::sample=nullptr;
-    std::cout<<"native texture production: source/role/cache/BC1-3 qualified; cold coarse->private fine->real demotion/deletion engaged; upload and old/new caps passed; real pending producer and Renderer main/refraction owner order passed\n";
+    std::cout<<"native texture production: source/role/cache/BC1-3 qualified; cold coarse->private fine->real demotion/deletion engaged; upload and old/new caps passed; real pending producer and Renderer main/refraction owner order passed; visible Recovering priority, exact descriptor proof, full-floor/sample-drift deferral and publication permit release passed\n";
     return 0;
 }
 catch(const std::exception& e) { std::cerr<<e.what()<<'\n';return 1; }

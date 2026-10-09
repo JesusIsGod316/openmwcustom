@@ -55,6 +55,13 @@ namespace Shader::AssetGeometry
     inline constexpr unsigned Stock = 1, Pbr = 2, AllFamilies = Stock | Pbr;
     inline constexpr std::size_t MaximumMetadataBytes = 4u * 1024u * 1024u;
     inline constexpr std::size_t MaximumRecordBytes = 64u * 1024u;
+    inline constexpr std::size_t SourceTextSlots = 512, EffectiveRecipeSlots = 256, SourceChunkSlots = 4096;
+    inline constexpr std::size_t SourceChunkBytes = 2048, MaximumSourceChunks = 2048;
+    // Fixed weak registries and their maximum surviving weak control blocks
+    // are quota ownership too. This baseline is retained even with no proofs;
+    // payloads themselves are never strongly retained by either registry.
+    inline constexpr std::size_t RegistryMetadataBytes = (SourceTextSlots + EffectiveRecipeSlots + SourceChunkSlots)
+        * (sizeof(std::weak_ptr<const void>) + 64);
     std::uint64_t liveMetadataBytes();
 
     struct Epoch { std::atomic_uint64_t value{1}; };
@@ -76,7 +83,7 @@ namespace Shader::AssetGeometry
         std::shared_ptr<const void> admission;
     };
     TemplateProof finish(const RawProof& raw, std::string_view expanded);
-    enum class SourceAttachStep { None, RawProof, SourceShape, ParameterRecipe, RecordLimit, MetadataAdmission, Allocation, Publication };
+    enum class SourceAttachStep { None, RawProof, SourceShape, ParameterRecipe, RecordLimit, MetadataAdmission, Allocation, Publication, RegistryCapacity };
     struct SourceAttachReceipt
     {
         SourceAttachStep step = SourceAttachStep::None;

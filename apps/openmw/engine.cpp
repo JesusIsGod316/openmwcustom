@@ -173,7 +173,7 @@ namespace
     {
         const auto sample = Debug::V3GpuMemory::admissionSample();
         const auto now = Resource::AssetGpuBudget::milliseconds();
-        Log(Debug::Info) << "OptimizedMW asset GPU sampler: phase=" << phase
+        Log(Debug::Info) << std::dec << "OptimizedMW asset GPU sampler: phase=" << phase
             << " mask=" << Resource::AssetPolicy::mask()
             << " sampled_at_ms=" << sample.sampledAtMs << " valid=" << sample.valid
             << " headroom_bytes=" << sample.headroomBytes
@@ -2756,12 +2756,12 @@ void OMW::Engine::go()
             +std::to_string(SceneUtil::HlodCounters::refused.load())
             +pagingRefusals(SceneUtil::AssetPaging::Counters::hlod);
         const auto shaderProducers = Shader::AssetGeometry::producerDiagnostics();
-        Log(Debug::Info) << "OptimizedMW asset shader producers: live_metadata_bytes="
+        Log(Debug::Info) << std::dec << "OptimizedMW asset shader producers: live_metadata_bytes="
             << shaderProducers.liveMetadataBytes << " peak_metadata_bytes=" << shaderProducers.peakMetadataBytes
             << " metadata_limit_bytes=" << Shader::AssetGeometry::MaximumMetadataBytes;
         for (unsigned i = 0; i < static_cast<unsigned>(Shader::AssetGeometry::Refusal::Count); ++i)
         {
-            Log(Debug::Info) << "OptimizedMW asset shader producer reason="
+            Log(Debug::Info) << std::dec << "OptimizedMW asset shader producer reason="
                 << Shader::AssetGeometry::refusalName(static_cast<Shader::AssetGeometry::Refusal>(i))
                 << " initial_source=" << shaderProducers.initialSource[i]
                 << " regenerated_source=" << shaderProducers.regeneratedSource[i]
@@ -2861,6 +2861,7 @@ void OMW::Engine::go()
         Log(Debug::Info) << "OptimizedMW texture streaming: coarse_draws="+std::to_string(stream.coarseDraws.load())
             +" fine_draws="+std::to_string(stream.fineDraws.load())+" demotions="+std::to_string(stream.demotions.load())
             +" deleted_bytes="+std::to_string(stream.deletedBytes.load())+" live_bytes="+std::to_string(stream.liveBytes.load());
+        Resource::TextureStreaming::reportAdmissionProof();
         Resource::TextureStreaming::reportDiagnostics();
     }
 

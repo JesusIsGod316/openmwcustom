@@ -167,7 +167,7 @@ namespace MWWorld
         Resource::RamHeadroomPolicy mColdHeadroom;
         bool mCoordinateColdHeadroom = false;
         bool mColdBaseRetention = false;
-        std::size_t mColdRetired = 0;
+        std::size_t mColdRetired = 0, mColdRecoveryRetired = 0;
 
         std::size_t mV311TerrainTargetCompleted = 0;
         std::size_t mV311TerrainTargetReplaced = 0;

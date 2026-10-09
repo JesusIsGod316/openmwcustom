@@ -48,11 +48,41 @@ GPU_REASONS = ("invalid_request", "local_request_limit", "global_request_limit",
 
 def parse_gpu_admission(log, required=False):
     result = {"schema": 1, "available": False, "summary": None, "first_refusals": {}, "errors": [],
+              "sampler_observations": {}, "sampler_observation_errors": [], "sampler_observation_lines": [],
               "semantics": "Overlapping refusal predicates; captured sampler observation plus decision debt. "
                            "Cumulative reservation/retention attempts are not unique assets or physical GPU allocations."}
     try:
         for number, line in enumerate(log.splitlines(), 1):
             if "OptimizedMW asset GPU " not in line:
+                continue
+            sampler = re.search(r"OptimizedMW asset GPU sampler:\s*(.*?)\s*$", line)
+            if sampler:
+                # This exact observer label reports no reservation decision.
+                # Retain malformed observer rows separately; they cannot replace
+                # or invalidate the independently required admission receipts.
+                result["sampler_observation_lines"].append({"line": number, "text": line})
+                try:
+                    phase = re.fullmatch(r"phase=(startup|final)\s+(.*)", sampler[1])
+                    if not phase:
+                        raise EvidenceError("unsupported sampler observation phase/shape")
+                    name, values = phase.groups()
+                    if name in result["sampler_observations"]:
+                        raise EvidenceError("duplicate sampler observation phase: " + name)
+                    data = key_values(values)
+                    fields = {"mask", "sampled_at_ms", "valid", "headroom_bytes", "pressure_code",
+                              "now_ms", "clock_valid", "sample_age_ms"}
+                    if set(data) != fields:
+                        raise EvidenceError("sampler observation fields differ from the exact observer shape")
+                    if (data["mask"] > 31 or data["mask"] & 16 and not data["mask"] & 8
+                            or data["valid"] > 1 or data["pressure_code"] > 3 or data["clock_valid"] > 1):
+                        raise EvidenceError("sampler observation has an invalid mask/state")
+                    clock_valid = data["now_ms"] >= data["sampled_at_ms"]
+                    age = data["now_ms"] - data["sampled_at_ms"] if clock_valid else 0
+                    if bool(data["clock_valid"]) != clock_valid or data["sample_age_ms"] != age:
+                        raise EvidenceError("sampler observation clock/age disagree")
+                    result["sampler_observations"][name] = data
+                except EvidenceError as error:
+                    result["sampler_observation_errors"].append(f"openmw.log:{number}: {error}")
                 continue
             match = re.search(r"OptimizedMW asset GPU (v1|first [a-z_]+):\s*(.*?)\s*$", line)
             if not match:
@@ -500,6 +530,11 @@ def report_text(result):
         lines.append("GPU admission: " + json.dumps(gpu["summary"], sort_keys=True))
         lines.append("GPU first refusal receipts: " + json.dumps(gpu["first_refusals"], sort_keys=True))
         lines.append(gpu["semantics"])
+    if gpu.get("sampler_observations"):
+        lines.append("GPU sampler observations (not admission decisions): "
+                     + json.dumps(gpu["sampler_observations"], sort_keys=True))
+    for problem in gpu.get("sampler_observation_errors", []):
+        lines.append("GPU sampler observer evidence invalid; no observation claim: " + problem)
     for problem in result["problems"]:
         lines.append("Evidence: " + problem)
     for lane in result["lanes"].values():

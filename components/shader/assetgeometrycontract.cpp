@@ -20,11 +20,12 @@ namespace Shader::AssetGeometry
         thread_local unsigned producerReaders = 0, producerWriters = 0;
         constexpr const char* SourceKey = "OptimizedMW.AssetGeometry.Source.v1";
         constexpr const char* ProgramKey = "OptimizedMW.AssetGeometry.Program.v1";
-        std::atomic_uint64_t metadata{0};
-        std::atomic_uint64_t metadataPeak{0};
+        std::atomic_uint64_t metadata{RegistryMetadataBytes};
+        std::atomic_uint64_t metadataPeak{RegistryMetadataBytes};
         constexpr unsigned RefusalCount = static_cast<unsigned>(Refusal::Count);
         std::array<std::atomic_uint64_t, RefusalCount> initialSource{}, regeneratedSource{}, refreshedProgram{};
         class MetadataAdmissionFailed final : public std::bad_alloc {};
+        class RegistryCapacityFailed final : public std::bad_alloc {};
         struct Charge
         {
             std::uint64_t bytes;
@@ -100,6 +101,175 @@ namespace Shader::AssetGeometry
             for (const auto& [name,value] : values) { result += name; result += '\0'; result += value; result += '\0'; }
             return digest(result);
         }
+        struct SourceChunk
+        {
+            std::shared_ptr<Charge> charge;
+            std::string digest, bytes;
+        };
+        struct SourceText
+        {
+            std::shared_ptr<Charge> charge;
+            std::string digest;
+            std::vector<std::shared_ptr<const SourceChunk>> chunks;
+            std::size_t bytes = 0;
+            bool matches(const osg::Shader& shader) const
+            {
+                // Exact comparison stays on the existing validation path.
+                // Hashes only select an interning candidate during attachment.
+                const auto& value = shader.getShaderSource();
+                if (bytes != value.size()) return false;
+                std::size_t offset = 0;
+                for (const auto& chunk : chunks)
+                {
+                    if (!chunk || chunk->bytes.empty() || chunk->bytes.size() > value.size() - offset
+                        || value.compare(offset,chunk->bytes.size(),chunk->bytes) != 0) return false;
+                    offset += chunk->bytes.size();
+                }
+                return offset == value.size(); // Never accept a matching prefix.
+            }
+        };
+        struct EffectiveRecipe
+        {
+            std::shared_ptr<Charge> charge;
+            std::string digest;
+            Defines values;
+        };
+        std::array<std::weak_ptr<const SourceText>, SourceTextSlots> sourceTexts;
+        std::array<std::weak_ptr<const EffectiveRecipe>, EffectiveRecipeSlots> effectiveRecipes;
+        std::array<std::weak_ptr<const SourceChunk>, SourceChunkSlots> sourceChunks;
+        std::shared_ptr<Charge> admitMetadata(std::size_t bytes, SourceAttachReceipt& receipt)
+        {
+            receipt.step = SourceAttachStep::MetadataAdmission;
+            receipt.requestedMetadataBytes = bytes + sizeof(Charge) + 64;
+            auto result = reserve(bytes);
+            receipt.step = SourceAttachStep::Allocation;
+            return result;
+        }
+        std::size_t sourceChunkEnd(std::string_view source, std::size_t offset)
+        {
+            const auto end = offset + std::min(SourceChunkBytes, source.size() - offset);
+            if (end == source.size()) return end;
+            const auto newline = source.substr(offset,end - offset).rfind('\n');
+            // Preserve CRLF and every byte exactly. A line longer than the
+            // bounded target is cut deterministically without normalization.
+            return newline != std::string_view::npos ? offset + newline + 1 : end;
+        }
+        std::shared_ptr<const SourceChunk> internSourceChunk(std::string_view bytes, SourceAttachReceipt& receipt)
+        {
+            const auto hash = digest(bytes);
+            auto slot = sourceChunks.end();
+            for (auto it = sourceChunks.begin(); it != sourceChunks.end(); ++it)
+            {
+                if (auto existing = it->lock())
+                {
+                    if (existing->digest == hash && existing->bytes == bytes) return existing;
+                }
+                else
+                {
+                    it->reset();
+                    if (slot == sourceChunks.end()) slot = it;
+                }
+            }
+            if (slot == sourceChunks.end())
+            {
+                receipt.step = SourceAttachStep::RegistryCapacity;
+                receipt.requestedMetadataBytes = 0;
+                throw RegistryCapacityFailed{};
+            }
+            auto charge = admitMetadata(sizeof(SourceChunk) + bytes.size() + 256, receipt);
+            // Keep object and shared control block separate: a surviving weak
+            // registry reference may retain only its charged fixed overhead.
+            auto result = std::shared_ptr<SourceChunk>(new SourceChunk);
+            result->charge = std::move(charge); result->digest = hash; result->bytes = bytes;
+            *slot = result;
+            return result;
+        }
+        std::shared_ptr<const SourceText> internSourceText(const osg::Shader& shader, const std::string& hash,
+            SourceAttachReceipt& receipt)
+        {
+            // All mutation of these fixed weak registries happens under the
+            // producer writer lease. Neither a digest nor a filename proves
+            // body equality; an exact full comparison is mandatory on reuse.
+            auto slot = sourceTexts.end();
+            for (auto it = sourceTexts.begin(); it != sourceTexts.end(); ++it)
+            {
+                if (auto existing = it->lock())
+                {
+                    if (existing->digest == hash && existing->matches(shader)) return existing;
+                }
+                else
+                {
+                    it->reset(); // release a dead weak control block before replacement
+                    if (slot == sourceTexts.end()) slot = it;
+                }
+            }
+            if (slot == sourceTexts.end())
+            {
+                receipt.step = SourceAttachStep::RegistryCapacity;
+                receipt.requestedMetadataBytes = 0;
+                throw RegistryCapacityFailed{};
+            }
+            const std::string_view source = shader.getShaderSource();
+            std::size_t count = 0;
+            for (std::size_t offset = 0; offset < source.size(); offset = sourceChunkEnd(source,offset))
+                if (++count > MaximumSourceChunks)
+                {
+                    receipt.step = SourceAttachStep::SourceShape;
+                    receipt.requestedMetadataBytes = 0;
+                    throw RegistryCapacityFailed{};
+                }
+            // A body owns only its bounded ordered references. Its chunks own
+            // immutable exact bytes, shared even when numeric substitutions
+            // make complete stock/PBR bodies differ. No projection family or
+            // filename authorizes either storage object.
+            auto charge = admitMetadata(sizeof(SourceText) + count * sizeof(std::shared_ptr<const SourceChunk>) + 512, receipt);
+            auto result = std::shared_ptr<SourceText>(new SourceText);
+            result->charge = std::move(charge); result->digest = hash; result->bytes = source.size();
+            result->chunks.reserve(count);
+            for (std::size_t offset = 0; offset < source.size();)
+            {
+                const auto end = sourceChunkEnd(source,offset);
+                result->chunks.push_back(internSourceChunk(source.substr(offset,end - offset),receipt));
+                offset = end;
+            }
+            *slot = result;
+            return result;
+        }
+        std::shared_ptr<const EffectiveRecipe> internEffectiveRecipe(const Defines& local, const Defines& global,
+            std::size_t parameterBytes, SourceAttachReceipt& receipt)
+        {
+            // Charge both the temporary map and its serialized digest input
+            // before copying. New retained ownership is admitted separately;
+            // a reused recipe releases all of this scratch before returning.
+            auto scratch = admitMetadata(parameterBytes * 2 + 512, receipt);
+            Defines values = global;
+            for (const auto& [key,value] : local) values[key] = value;
+            auto hash = recipe(values);
+            auto slot = effectiveRecipes.end();
+            for (auto it = effectiveRecipes.begin(); it != effectiveRecipes.end(); ++it)
+            {
+                if (auto existing = it->lock())
+                {
+                    if (existing->digest == hash && existing->values == values) return existing;
+                }
+                else
+                {
+                    it->reset();
+                    if (slot == effectiveRecipes.end()) slot = it;
+                }
+            }
+            if (slot == effectiveRecipes.end())
+            {
+                receipt.step = SourceAttachStep::RegistryCapacity;
+                receipt.requestedMetadataBytes = 0;
+                throw RegistryCapacityFailed{};
+            }
+            auto charge = admitMetadata(sizeof(EffectiveRecipe) + parameterBytes + 256, receipt);
+            auto result = std::shared_ptr<EffectiveRecipe>(new EffectiveRecipe);
+            result->charge = std::move(charge); result->digest = std::move(hash); result->values = std::move(values);
+            *slot = result;
+            return result;
+        }
         struct SourceData
         {
             std::shared_ptr<Charge> charge;
@@ -107,12 +277,11 @@ namespace Shader::AssetGeometry
             std::uint64_t version = 0;
             unsigned families = 0;
             std::string name, sourceDigest, rawDigest, expandedDigest, defineDigest;
-            // Shared once per Shader, never copied into a leaf snapshot. The
-            // stock projection Source is immutable storage only: asset family
-            // authorization still comes exclusively from our raw recipe.
-            osg::ref_ptr<const IndirectProjection::Source> borrowedSource;
-            std::string source;
-            Defines effective;
+            // Epoch/provenance remain unique immutable producer records.
+            // Only exact source bytes and effective numeric input recipes are
+            // shared; neither storage object confers a family certificate.
+            std::shared_ptr<const SourceText> text;
+            std::shared_ptr<const EffectiveRecipe> effective;
             osg::Shader::Type type = osg::Shader::UNDEFINED;
             osg::Shader::ShaderDefinesMode mode{};
             osg::ShaderDefines defines, requirements;
@@ -123,8 +292,7 @@ namespace Shader::AssetGeometry
                 if (shader.getType() != type || (type != osg::Shader::VERTEX && type != osg::Shader::FRAGMENT)) return Refusal::Stage;
                 if (shader.getShaderBinary() || !shader.getCodeInjectionMap().empty()
                     || shader.getShaderSource().size() > 2u * 1024u * 1024u
-                    || (borrowedSource ? !borrowedSource->matches(shader)
-                                       : shader.getShaderSource() != source)) return Refusal::Source;
+                    || !text || !text->matches(shader)) return Refusal::Source;
                 if (shader.getShaderDefinesMode() != mode || shader.getShaderDefines() != defines
                     || shader.getShaderRequirements() != requirements) return Refusal::Defines;
                 return Refusal::None;
@@ -315,7 +483,7 @@ namespace Shader::AssetGeometry
     const char* sourceAttachStepName(SourceAttachStep value)
     {
         constexpr const char* names[]{"none","raw_proof","source_shape","parameter_recipe","record_limit",
-            "metadata_admission","allocation","publication"};
+            "metadata_admission","allocation","publication","registry_capacity"};
         return static_cast<unsigned>(value) < std::size(names) ? names[static_cast<unsigned>(value)] : "unknown";
     }
     ProducerDiagnostics producerDiagnostics()
@@ -355,9 +523,11 @@ namespace Shader::AssetGeometry
         if (name.size() > 1024 || shader.getShaderSource().size() > 2u * 1024u * 1024u) return Refusal::Capacity;
         if (shader.getShaderBinary() || !shader.getCodeInjectionMap().empty()) return Refusal::Source;
         std::size_t bytes = sizeof(SourceData) + name.size() + 1024;
+        const auto recordBaseBytes = bytes;
         receipt->step = SourceAttachStep::ParameterRecipe;
         for (const auto* values : {&local,&global})
             if (const auto refusal = bounded(*values,bytes); refusal != Refusal::None) return refusal;
+        const auto parameterBytes = bytes - recordBaseBytes;
         receipt->step = SourceAttachStep::RecordLimit;
         for (const auto* values : {&shader.getShaderDefines(),&shader.getShaderRequirements()})
         {
@@ -368,26 +538,17 @@ namespace Shader::AssetGeometry
         if (bytes > MaximumRecordBytes) return Refusal::Capacity;
         try
         {
-            // Include logical ownership even when immutable stock storage is
-            // borrowed from the separately capped projection Source. PBR owns
-            // one copy, charged before allocation. Existing 4 MiB cap remains.
-            receipt->step = SourceAttachStep::MetadataAdmission;
-            receipt->requestedMetadataBytes = bytes + shader.getShaderSource().capacity() + 64 + sizeof(Charge) + 64;
-            auto charge = reserve(bytes + shader.getShaderSource().capacity() + 64);
-            receipt->step = SourceAttachStep::Allocation;
+            // The record owns its provenance and stage/link fields. Shared
+            // exact body/recipe ownership has separate quota admissions below.
+            auto charge = admitMetadata(bytes - parameterBytes + 64, *receipt);
             auto data = std::make_shared<SourceData>(); data->charge = std::move(charge);
             data->epoch = epoch; data->version = epoch->value.load(std::memory_order_acquire);
             data->name = name; data->families = proof.families;
             data->sourceDigest = digest(shader.getShaderSource()); data->rawDigest = proof.rawDigest;
             data->expandedDigest = proof.expandedDigest;
-            const auto* user = shader.getUserDataContainer();
-            const auto* borrowed = user ? dynamic_cast<const IndirectProjection::Source*>(
-                user->getUserObject(IndirectProjection::SourceKey)) : nullptr;
-            if (borrowed && borrowed->matches(shader)) data->borrowedSource = borrowed;
-            else data->source = shader.getShaderSource();
-            data->effective = global;
-            for (const auto& [key,value] : local) data->effective[key] = value;
-            data->defineDigest = recipe(data->effective);
+            data->text = internSourceText(shader, data->sourceDigest, *receipt);
+            data->effective = internEffectiveRecipe(local, global, parameterBytes, *receipt);
+            data->defineDigest = data->effective->digest;
             data->type = shader.getType(); data->mode = shader.getShaderDefinesMode();
             data->defines = shader.getShaderDefines(); data->requirements = shader.getShaderRequirements();
             receipt->step = SourceAttachStep::Publication;
@@ -396,6 +557,7 @@ namespace Shader::AssetGeometry
             return Refusal::None;
         }
         catch (const MetadataAdmissionFailed&) {return Refusal::Capacity;}
+        catch (const RegistryCapacityFailed&) {return Refusal::Capacity;}
         catch (const std::bad_alloc&)
         {
             // Failure allocating the Charge itself is not evidence that its
@@ -488,7 +650,8 @@ namespace Shader::AssetGeometry
                 objectFragment |= record.type == osg::Shader::FRAGMENT && record.name == "compatibility/objects.frag";
                 coreVertex |= record.type == osg::Shader::VERTEX && record.name == "lib/core/vertex.glsl";
                 if (record.name == "compatibility/objects.vert") data->objectSource = source->data;
-                if (data->objectSource && (data->objectSource->effective != record.effective
+                if (data->objectSource && (!record.effective || !data->objectSource->effective
+                    || data->objectSource->effective->values != record.effective->values
                     || data->objectSource->epoch != record.epoch || data->objectSource->version != record.version)) return Refusal::Defines;
                 identity += record.name; identity += '\0'; identity += record.rawDigest; identity += record.expandedDigest;
                 identity += record.sourceDigest; identity += record.defineDigest;
@@ -539,7 +702,7 @@ namespace Shader::AssetGeometry
     std::string_view Snapshot::define(std::string_view name) const
     {
         if (!mData) return {};
-        const auto& features = mData->proof->objectSource->effective;
+        const auto& features = mData->proof->objectSource->effective->values;
         const auto found = features.find(std::string(name));
         return found == features.end() ? std::string_view{} : std::string_view(found->second);
     }

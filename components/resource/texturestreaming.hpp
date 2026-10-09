@@ -3,6 +3,7 @@
 
 #include "nativetexture.hpp"
 #include "preparedterraintexture.hpp"
+#include "speculativebudget.hpp"
 #include <osg/Texture2D>
 #include <atomic>
 #include <memory>
@@ -26,6 +27,21 @@ namespace Resource::TextureStreaming
     };
     Counters& counters();
     const char* skipName(Skip);
+    enum class AllocationPhase : unsigned { Initial, FineUpgrade, Demotion, Count };
+    struct HostAdmissionLane
+    {
+        std::uint64_t attempts=0, backgroundAttempts=0, recoveryAttempts=0, admitted=0;
+        std::uint64_t missingProvider=0, constructingBusy=0, permitDenied=0, sampleDrift=0, stageDenied=0, gpuDenied=0, unknownFailure=0;
+        std::array<std::uint64_t,SpeculativeBudget::ReservationRefusalCount> reservationReasons{};
+        std::optional<SpeculativeReservationReceipt> firstStageRefusal;
+        std::optional<OpenGlPressureSample> firstPermitRefusal, firstDriftExpected, firstDriftObserved;
+    };
+    using HostAdmissionStats = std::array<HostAdmissionLane,static_cast<unsigned>(AllocationPhase::Count)>;
+    HostAdmissionStats hostAdmissionStats();
+    const char* allocationPhaseName(AllocationPhase);
+    // Fixed loop-end records; no CSV/profiler requirement and no claims about
+    // physical memory release or an atomic process-memory observation.
+    void reportAdmissionProof();
     struct Descriptor;
 
     // OSG CompileTextureOp calls apply() directly. Only the production ICO

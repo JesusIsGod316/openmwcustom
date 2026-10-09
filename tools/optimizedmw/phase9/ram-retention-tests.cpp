@@ -1,6 +1,7 @@
 #include <components/resource/ramretention.hpp>
 #include <components/resource/objectcache.hpp>
 #include <components/resource/multiobjectcache.hpp>
+#include <components/resource/textureupgradeadmission.hpp>
 
 #include <osg/Group>
 
@@ -60,6 +61,106 @@ int main() try
         "Critical enabled allocations");
     auto degraded = sample(7, 11000); degraded.decision.state = OpenGlPressure::Degraded;
     require(!pressure.update(degraded).valid, "degraded state invented destructive pressure");
+
+    // C4 uses the same validated contract through Recovering. It retires only
+    // completed cold owners at the consumer; C1 alone retains its Normal TTL.
+    auto recovering=sample(8,12000);recovering.decision.state=OpenGlPressure::Recovering;
+    const auto recoveringContract=pressure.update(recovering);
+    require(coldOwnerRetentionTtl(recovering,recoveringContract,false,true)==5.0,
+        "C4 lost cold-owner contraction during Recovering");
+    require(!coldOwnerRetentionTtl(recovering,recoveringContract,true,false),
+        "C1 alone gained destructive Recovering behavior");
+    auto normal=sample(9,13000);RamHeadroomPolicy fresh;
+    const auto normalContract=fresh.update(normal);
+    require(coldOwnerRetentionTtl(normal,normalContract,true,false)==30.0,
+        "Normal C1 retention control changed");
+    require(!coldOwnerRetentionTtl(normal,normalContract,false,false),
+        "disabled C1/C4 enabled retirement");
+    auto wrongGeneration=recoveringContract;++wrongGeneration.generation;
+    require(!coldOwnerRetentionTtl(recovering,wrongGeneration,false,true)
+        && !coldOwnerRetentionTtl(recovering,{},false,true), "invalid C4 contract authorized retirement");
+    for(const auto state:{OpenGlPressure::Caution,OpenGlPressure::Critical,OpenGlPressure::Degraded})
+    {
+        auto unsafe=recovering;unsafe.decision.state=state;
+        require(!coldOwnerRetentionTtl(unsafe,recoveringContract,true,true),
+            "C4 widened retirement into another pressure state");
+    }
+
+    // Exercise the production priority selector and scoped admission callback,
+    // including the state race before Stage rather than a model of the policy.
+    namespace U=TextureUpgradeAdmission;
+    U::VisibleCoarseUse visible{true,true,true,true,true,false,20,19.5,200,199};
+    recovering.decision.admissionsPerSample=0;
+    recovering.growthWatermarkValid=true;
+    require(U::recoveryPromotion(visible,recovering),"current visible coarse use refused recovery lane");
+    for(const auto state:{OpenGlPressure::Normal,OpenGlPressure::Caution,OpenGlPressure::Critical,OpenGlPressure::Degraded})
+    {
+        auto other=recovering;other.decision.state=state;
+        require(!U::recoveryPromotion(visible,other),"recovery lane changed another state control");
+    }
+    for(unsigned guard=0;guard<6;++guard)
+    {
+        auto use=visible;
+        switch(guard) { case 0:use.streaming=false;break;case 1:use.current=false;break;
+            case 2:use.mainDraw=false;break;case 3:use.coarse=false;break;
+            case 4:use.drawn=false;break;default:use.demoting=true;break; }
+        require(!U::recoveryPromotion(use,recovering),"ineligible owner entered visible recovery lane");
+    }
+    auto old=visible;old.lastDrawFrame=198;
+    require(!U::recoveryPromotion(old,recovering),"historical draw substituted for previous exact owner frame");
+    old=visible;old.lastDrawTime=19;
+    require(!U::recoveryPromotion(old,recovering),"one-second-old draw entered recovery lane");
+    old=visible;old.lastDrawTime=21;
+    require(!U::recoveryPromotion(old,recovering),"regressed clock supplied visible draw proof");
+    auto unstamped=recovering;unstamped.sampledAtMs=0;
+    require(!U::recoveryPromotion(visible,unstamped),"unstamped sample enabled priority allocation");
+    SpeculativeBudget::Config quota;quota.transientLimit=16*SpeculativeBudget::MiB;quota.reservedNearFutureJobs=1;
+    SpeculativeBudget ledger(quota);
+    const auto read=+[](void* owner) { return *static_cast<OpenGlPressureSample*>(owner); };
+    for(unsigned drift=0;drift<4;++drift)
+    {
+        auto selected=recovering;selected.generation=20+drift;selected.accountedGrowth=ledger.watermark()->load();
+        auto changed=selected;
+        if(drift==0) changed.decision.state=OpenGlPressure::Caution;
+        if(drift==1) changed.decision.state=OpenGlPressure::Critical;
+        if(drift==2) ++changed.generation;
+        if(drift==3) ++changed.sampledAtMs;
+        U::FrozenRecoverySample frozen{selected,read,&changed};bool reachedGpu=false,caught=false;
+        {
+            auto job=ledger.tryJob(selected,SpeculativePriority::NearFuture);
+            require(bool(job),"recovery fixture permit unexpectedly refused");
+            try { SpeculativeScope scope(&ledger,&U::FrozenRecoverySample::read,&frozen,SpeculativePriority::NearFuture);
+                SpeculativeScope::Stage stage(1024,1024);reachedGpu=true; }
+            catch(const U::SampleChanged& e)
+            { caught=true;require(e.observed.decision.state==changed.decision.state
+                    && e.observed.generation==changed.generation && e.observed.sampledAtMs==changed.sampledAtMs,
+                    "sample drift receipt rewrote actual observation"); }
+        }
+        require(caught && !reachedGpu && ledger.stats().futureBytes==0 && ledger.stats().jobs==0,
+            "sample drift reached GPU work or leaked its stage/permit");
+    }
+    for(unsigned shortage=0;shortage<2;++shortage)
+    {
+        auto scarce=recovering;scarce.generation=30+shortage;scarce.accountedGrowth=ledger.watermark()->load();
+        if(shortage==0) scarce.memory.physicalAvailable=scarce.decision.limits.physicalReserve-1;
+        else scarce.memory.commitAvailable=scarce.decision.limits.commitReserve-1;
+        U::FrozenRecoverySample frozen{scarce,read,&scarce};bool refused=false;
+        auto job=ledger.tryJob(scarce,SpeculativePriority::NearFuture);require(bool(job),"scarce fixture permit missing");
+        try { SpeculativeScope scope(&ledger,&U::FrozenRecoverySample::read,&frozen,SpeculativePriority::NearFuture);
+            SpeculativeScope::Stage stage(1024,1024); }
+        catch(const SpeculativeDeferred& e)
+        { refused=true;require(e.reservation && e.reservation->physicalFloor==scarce.decision.limits.physicalReserve
+                && e.reservation->commitFloor==scarce.decision.limits.commitReserve
+                && (e.reservation->reasons & (shortage==0 ? SpeculativeBudget::PhysicalHeadroom
+                    : SpeculativeBudget::ProcessCommitHeadroom)),
+                "Recovering priority weakened the full reserve floor"); }
+        job.finish();
+        require(refused && ledger.stats().futureBytes==0 && ledger.stats().jobs==0,
+            "full-floor refusal leaked future bytes or a permit");
+    }
+    auto once=recovering;once.generation=40;once.accountedGrowth=ledger.watermark()->load();
+    { auto job=ledger.tryJob(once,SpeculativePriority::NearFuture);require(bool(job),"first recovery permit missing"); }
+    require(!ledger.tryJob(once,SpeculativePriority::NearFuture),"second job spent the same Recovering sample");
 
     ColdOwnerRetention<int> owners;
     for (int key = 0; key < 100; ++key) owners.request(key, 1, false);
