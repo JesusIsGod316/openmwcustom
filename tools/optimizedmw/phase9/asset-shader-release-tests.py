@@ -29,6 +29,8 @@ class AssetReleaseEvidence(unittest.TestCase):
                 "CHAIN_ACTIVE_EPOCH source_changed=1 prepared_stale_deferred=1 old_guard_original=1 required_original_rebuilt=1 "
                 "refnums_preserved=1 old_guard_not_revived=1 original_draws=2 rgb=98 gl_error=0\n"
                 + AssetReleaseEvidence.asset_compile_receipt() +
+                "CHAIN_ACTIVE_PREFIX_SETTLED after_scope=1 real_cache_maintenance=1 maintenance_passes=2 "
+                "asset_sets=0 pending_asset_sets=0 ordinary_roots=0 future=0 renderer_frames=0\n"
                 "CHAIN_PASS source_population_substituted=1 source_loader_substituted=0 cook_substituted=0 "
                 "readiness_substituted=0 cpu_limit=268435456\n")
 
@@ -228,6 +230,7 @@ class AssetReleaseEvidence(unittest.TestCase):
         self.assertEqual(proof["strict_partial_tail"]["main_draws"], "4")
         self.assertEqual(len(proof["asset_compile_closure"]), 6)
         self.assertEqual(proof["asset_compile_closure"]["cold_variant"]["original_draw_before_compile"], "0")
+        self.assertEqual(proof["retired_prefix_settled"]["pending_asset_sets"], "0")
         for before, after in (("disabled_control=1", "disabled_control=0"),
                               ("required_original=1", "required_original=0"),
                               ("asset_enabled_first_stage_ordinary=1", "asset_enabled_first_stage_ordinary=0"),
@@ -298,6 +301,13 @@ class AssetReleaseEvidence(unittest.TestCase):
                     bad_line = line.replace(" " + field, " " + replacement, 1)
                     with self.subTest(marker=marker, field=key, invalid=kind), self.assertRaises(gate.QualificationError):
                         gate.l1_active_grid(valid.replace(line, bad_line))
+        prefix_line = next(line for line in valid.splitlines() if line.startswith("CHAIN_ACTIVE_PREFIX_SETTLED "))
+        for field in prefix_line.split()[1:]:
+            key, value = field.split("=", 1)
+            for replacement in ("", f"{key}=invalid", f"{field} {field}", f"{key}={1-int(value)}"):
+                bad_line = prefix_line.replace(" " + field, " " + replacement, 1)
+                with self.subTest(prefix_field=key, replacement=replacement), self.assertRaises(gate.QualificationError):
+                    gate.l1_active_grid(valid.replace(prefix_line, bad_line))
         for marker, before, after in (
                 ("CHAIN_ASSET_EXACT_CLOSURE", "main_draws=4", "main_draws=3"),
                 ("CHAIN_ASSET_EXACT_CLOSURE", "active_tagged_draws=4", "active_tagged_draws=3"),
@@ -320,7 +330,7 @@ class AssetReleaseEvidence(unittest.TestCase):
 
     def test_active_grid_missing_ambiguous_and_invalid_receipts_fail_closed(self):
         valid = self.active_grid_receipt()
-        for marker in ("CHAIN_ACTIVE_POPULATION", "CHAIN_ACTIVE_GRID", "CHAIN_ACTIVE_PARTIAL_TAIL", "CHAIN_ACTIVE_EPOCH", "CHAIN_PASS",
+        for marker in ("CHAIN_ACTIVE_POPULATION", "CHAIN_ACTIVE_GRID", "CHAIN_ACTIVE_PARTIAL_TAIL", "CHAIN_ACTIVE_EPOCH", "CHAIN_ACTIVE_PREFIX_SETTLED", "CHAIN_PASS",
                        "CHAIN_ASSET_EXACT_CLOSURE", "CHAIN_ASSET_COLD_VARIANT", "CHAIN_ASSET_COMPILE_RETIRE",
                        "CHAIN_ASSET_MISSING_CONTEXT", "CHAIN_ASSET_CONTEXT_REFUSAL", "CHAIN_ASSET_RELINK_REFUSAL"):
             missing = "\n".join(line for line in valid.splitlines() if not line.startswith(marker + " ")) + "\n"

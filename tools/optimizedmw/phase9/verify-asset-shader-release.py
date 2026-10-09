@@ -176,12 +176,15 @@ def l1_active_grid(text):
             and unsigned_field(epoch, "rgb", "CHAIN_ACTIVE_EPOCH") > 16,
             "Active-grid source epoch did not prove visible actual original fallback")
     asset_compile = l1_asset_compile_closure(text, partial_draws)
+    prefix_settled = record(text, "CHAIN_ACTIVE_PREFIX_SETTLED", {
+        "after_scope": 1, "real_cache_maintenance": 1, "maintenance_passes": 2,
+        "asset_sets": 0, "pending_asset_sets": 0, "ordinary_roots": 0, "future": 0, "renderer_frames": 0})
     complete = record(text, "CHAIN_PASS", {"source_population_substituted": 1,
         "source_loader_substituted": 0, "cook_substituted": 0, "readiness_substituted": 0,
         "cpu_limit": 268435456})
     return {"declared_population": declared_population, "actual_active_owner": active,
             "strict_partial_tail": partial, "source_epoch_original_fallback": epoch,
-            "asset_compile_closure": asset_compile,
+            "asset_compile_closure": asset_compile, "retired_prefix_settled": prefix_settled,
             "actual_chain_completion": complete}
 
 

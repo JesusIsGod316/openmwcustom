@@ -1792,6 +1792,31 @@ int main(int argc,char** argv) try
         }
         phase("active_grid","done");
     }
+    if(inputs.activeGridCheck)
+    {
+        // Every active owner and its temporary view has now left scope. Retire
+        // ordinary queue roots first, then resource sets whose real lifetime
+        // was cancelled by those root destructions, before the next baseline.
+        maintainAssetQueue(*scenes,6.);maintainAssetQueue(*scenes,7.);
+        unsigned prefixAssets=0,prefixPendingAssets=0,prefixOrdinaryRoots=0;
+        {
+            std::lock_guard<OpenThreads::Mutex> lock(*ico->getToCompiledMutex());
+            for(const auto& set:ico->getToCompile())
+                if(const auto* classified=dynamic_cast<const R::V321ClassifiedCompileSet*>(set.get());
+                    classified && classified->compileClass()==R::V321CompileClass::ObjectPaging)
+                {
+                    if(classified->resourceOnly())
+                    {++prefixAssets;prefixPendingAssets+=classified->resourceCompilePending();}
+                    else if(set->_subgraphToCompile) ++prefixOrdinaryRoots;
+                }
+        }
+        const auto prefixFuture=resources.speculativeBudget()->stats().futureBytes;
+        require(!prefixAssets && !prefixPendingAssets && !prefixOrdinaryRoots && !prefixFuture,
+            "retired active prefix must leave no queued asset demand, ordinary paging root or scratch before the historical ownership baseline");
+        std::cout<<"CHAIN_ACTIVE_PREFIX_SETTLED after_scope=1 real_cache_maintenance=1 maintenance_passes=2"
+            <<" asset_sets="<<prefixAssets<<" pending_asset_sets="<<prefixPendingAssets
+            <<" ordinary_roots="<<prefixOrdinaryRoots<<" future="<<prefixFuture<<" renderer_frames=0\n";
+    }
     MWRender::ObjectPaging paging(scenes,ESM::Cell::sDefaultWorldspaceId); paging.setAssetMainCamera(camera); paging.setFixturePopulation(population);
     Registered pagingRegistration(resources,&paging);
     const auto beforeBuilt=built(mask);
