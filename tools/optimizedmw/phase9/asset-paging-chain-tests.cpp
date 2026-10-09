@@ -49,6 +49,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -418,6 +419,9 @@ namespace
     {
         R::CacheMaintenanceBudget budget(4096,128,std::chrono::seconds(1));
         R::CacheMaintenanceScope scope(budget);scenes.updateCache(time);
+        if(time==6. || time==7.)
+            std::cout<<"CHAIN_PREFIX_MAINTENANCE time="<<time<<" scanned="<<budget.scanned
+                <<" released="<<budget.released<<" released_bytes="<<budget.releasedBytes<<'\n';
     }
     struct ImportedAssetRecipe
     {
@@ -1107,6 +1111,8 @@ int main(int argc,char** argv) try
     }
     qualityContracts();
     std::atomic_bool abort{false};
+    osg::observer_ptr<osg::Node> activePrefixUnrelatedOwner;
+    std::uint64_t activePrefixObservationBaseline=0;
     if (inputs.activeGridCheck)
     {
         require(mask==A::Lod && inputs.mixed,"active-grid check requires the independently tested mixed L1 source population");
@@ -1997,12 +2003,14 @@ int main(int argc,char** argv) try
                 A::OptionalUpgradeScope optional(&abort,assets,assets);
                 return live.getChunk(1,{2,2},3,0,true,{0,0,0},true);
             };
+            activePrefixObservationBaseline=L::Counters::compileObservationOnly.load();
             auto otherControl=prepareOther(false);sampleGpu();auto otherPublication=prepareOther(true);
             require(otherPublication.valid(),"actual unrelated publication required before its selector census");
             Selectors otherSelectors;otherPublication->accept(otherSelectors);
             require(otherControl && otherPublication!=otherControl && !otherSelectors.values.empty()
                 && live.getRenderingRevision()>publication,
                 "unrelated revision test must be driven by another actual private asset publication");
+            activePrefixUnrelatedOwner=otherPublication;
             const auto beforeUnrelated=noRefreshWork();viewer.frame();
             require(publishedWitness->last.get()==adoptedPat.get() && noRefreshWork()==beforeUnrelated
                 && oldPat->getChild(1)==weak,
@@ -2030,26 +2038,98 @@ int main(int argc,char** argv) try
     }
     if(inputs.activeGridCheck)
     {
-        // Every active owner and its temporary view has now left scope. Retire
-        // ordinary queue roots first, then resource sets whose real lifetime
-        // was cancelled by those root destructions, before the next baseline.
+        // The final frame can complete an ordinary root after its update-time
+        // merge, leaving that real owner in the compiled-to-merge queue. Deliver
+        // the normal update-thread merge before testing prefix retirement; it
+        // invokes neither GL preparation nor a substituted readiness callback.
+        unsigned prefixCompiledBefore=0,prefixCompiledOrdinary=0;
+        bool prefixUnrelatedCompiled=false;
+        std::array<std::pair<std::uintptr_t,unsigned>,16> compiledRootReceipts{};
+        unsigned compiledRootReceiptCount=0;
+        {
+            std::lock_guard<OpenThreads::Mutex> lock(*ico->getCompiledMutex());
+            prefixCompiledBefore=static_cast<unsigned>(ico->getCompiled().size());
+            for(const auto& set:ico->getCompiled())
+            {
+                require(set && set->compiled(),"normal merge queue must contain actual completed work only");
+                if(const auto* classified=dynamic_cast<const R::V321ClassifiedCompileSet*>(set.get());
+                    classified && classified->compileClass()==R::V321CompileClass::ObjectPaging
+                    && set->_subgraphToCompile)
+                {
+                    ++prefixCompiledOrdinary;
+                    const auto* root=set->_subgraphToCompile.get();
+                    if(compiledRootReceiptCount<compiledRootReceipts.size())
+                        compiledRootReceipts[compiledRootReceiptCount++]={reinterpret_cast<std::uintptr_t>(root),
+                            static_cast<unsigned>(root->referenceCount())};
+                    if(root==activePrefixUnrelatedOwner.get())
+                    {
+                        require(dynamic_cast<const L::CompileCompleted*>(set->_compileCompletedCallback.get())
+                            && L::Counters::compileObservationOnly.load()>activePrefixObservationBaseline,
+                            "completed unrelated asset root must have passed its actual ordinary observer callback");
+                        prefixUnrelatedCompiled=true;
+                    }
+                }
+            }
+        }
+        for(unsigned i=0;i<compiledRootReceiptCount;++i)
+            std::cout<<"CHAIN_PREFIX_COMPILED_ROOT root="<<compiledRootReceipts[i].first
+                <<" references="<<compiledRootReceipts[i].second<<" queue_lock_held=0\n";
+        ico->mergeCompiledSubgraphs(viewer.getFrameStamp());
+        unsigned prefixCompiledAfter=0;
+        {std::lock_guard<OpenThreads::Mutex> lock(*ico->getCompiledMutex());
+            prefixCompiledAfter=static_cast<unsigned>(ico->getCompiled().size());}
+        require(!prefixCompiledAfter && (!prefixUnrelatedCompiled || !activePrefixUnrelatedOwner.valid()),
+            "actual normal merge must retire completed prefix roots without preserving the unrelated producer");
+        std::cout<<"CHAIN_PREFIX_COMPILED_DELIVERY real_ico_merge=1 compiled_before="<<prefixCompiledBefore
+            <<" ordinary_roots_before="<<prefixCompiledOrdinary<<" unrelated_completed_root="<<prefixUnrelatedCompiled
+            <<" compiled_after="<<prefixCompiledAfter<<" renderer_frames=0 callback_substituted=0\n";
+        // Every active owner and temporary view has left scope. Retire pending
+        // ordinary roots, then resource sets cancelled by actual destruction.
         maintainAssetQueue(*scenes,6.);maintainAssetQueue(*scenes,7.);
         unsigned prefixAssets=0,prefixPendingAssets=0,prefixOrdinaryRoots=0;
+        struct PrefixQueueReceipt
+        {
+            std::uintptr_t set=0,root=0;
+            unsigned references=0,parents=0,contexts=0;
+            bool resourceOnly=false,pending=false,compiled=false;
+        };
+        std::array<PrefixQueueReceipt,16> prefixReceipts{};
+        unsigned prefixReceiptCount=0,prefixQueueCount=0;
         {
             std::lock_guard<OpenThreads::Mutex> lock(*ico->getToCompiledMutex());
             for(const auto& set:ico->getToCompile())
                 if(const auto* classified=dynamic_cast<const R::V321ClassifiedCompileSet*>(set.get());
                     classified && classified->compileClass()==R::V321CompileClass::ObjectPaging)
                 {
+                    ++prefixQueueCount;
+                    if(prefixReceiptCount<prefixReceipts.size())
+                    {
+                        const auto* root=set->_subgraphToCompile.get();
+                        prefixReceipts[prefixReceiptCount++]={reinterpret_cast<std::uintptr_t>(set.get()),
+                            reinterpret_cast<std::uintptr_t>(root),root ? static_cast<unsigned>(root->referenceCount()) : 0u,
+                            root ? root->getNumParents() : 0u,static_cast<unsigned>(set->_compileMap.size()),
+                            classified->resourceOnly(),classified->resourceCompilePending(),set->compiled()};
+                    }
                     if(classified->resourceOnly())
                     {++prefixAssets;prefixPendingAssets+=classified->resourceCompilePending();}
                     else if(set->_subgraphToCompile) ++prefixOrdinaryRoots;
                 }
         }
         const auto prefixFuture=resources.speculativeBudget()->stats().futureBytes;
+        for(unsigned i=0;i<prefixReceiptCount;++i)
+        {
+            const auto& value=prefixReceipts[i];
+            std::cout<<"CHAIN_PREFIX_QUEUE set="<<value.set<<" root="<<value.root<<" references="<<value.references
+                <<" parents="<<value.parents<<" contexts="<<value.contexts<<" resource_only="<<value.resourceOnly
+                <<" pending="<<value.pending<<" compiled="<<value.compiled<<" queue_lock_held=0\n";
+        }
+        std::cout<<"CHAIN_PREFIX_CENSUS queue_sets="<<prefixQueueCount<<" recorded="<<prefixReceiptCount
+            <<" asset_sets="<<prefixAssets<<" pending_asset_sets="<<prefixPendingAssets
+            <<" ordinary_roots="<<prefixOrdinaryRoots<<" future="<<prefixFuture<<'\n';
         require(!prefixAssets && !prefixPendingAssets && !prefixOrdinaryRoots && !prefixFuture,
             "retired active prefix must leave no queued asset demand, ordinary paging root or scratch before the historical ownership baseline");
         std::cout<<"CHAIN_ACTIVE_PREFIX_SETTLED after_scope=1 real_cache_maintenance=1 maintenance_passes=2"
+            <<" real_compiled_merge=1 compiled_after="<<prefixCompiledAfter
             <<" asset_sets="<<prefixAssets<<" pending_asset_sets="<<prefixPendingAssets
             <<" ordinary_roots="<<prefixOrdinaryRoots<<" future="<<prefixFuture<<" renderer_frames=0\n";
     }
