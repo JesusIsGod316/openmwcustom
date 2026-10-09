@@ -180,7 +180,9 @@ def main():
         if args.check:
             if not path.exists() or path.read_text(encoding="utf-8") != content:
                 failed.append(str(path))
-        else:
+        elif not path.exists() or path.read_text(encoding="utf-8") != content:
+            # A documentation-only regeneration must not touch the unchanged
+            # alias include and rebuild every settings-dependent source file.
             path.write_text(content, encoding="utf-8", newline="\n")
     if failed:
         print("Generated optimization alias files differ: " + ", ".join(failed), file=sys.stderr)
