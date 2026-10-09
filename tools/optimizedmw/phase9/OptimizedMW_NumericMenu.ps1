@@ -102,7 +102,7 @@ function Get-OptimizedMWNumericCandidates {
             (New-OptimizedMWNumericSelection '12.6' 'Coarse-to-fine terrain texture streaming' -Assets 8),
             (New-OptimizedMWNumericSelection '12.7' 'Texture streaming + idle demotion' -Assets 24),
             (New-OptimizedMWNumericSelection '12.8' 'Texture preparation + streaming' -Assets 12),
-            (New-OptimizedMWNumericSelection '12.9' 'All five asset mechanisms' -Assets 31),
+            (New-OptimizedMWNumericSelection '12.9' 'All five asset mechanisms (HLOD runtime unqualified)' -Assets 31),
             (New-OptimizedMWNumericSelection '12.10' 'Build a custom asset combination'))}
     }
 }
@@ -190,7 +190,7 @@ function Set-OptimizedMWAssetToggle {
 }
 function Read-OptimizedMWAssetCombination {
     param([object]$Selection)
-    $labels=@('Generated static visual LOD','Selective HLOD','Native texture preparation','Texture streaming','Idle texture demotion')
+    $labels=@('Generated static visual LOD','Selective HLOD (runtime unqualified)','Native texture preparation','Texture streaming','Idle texture demotion')
     while($true){
         foreach($index in 0..4){Write-Host (' {0} = {1} [{2}]' -f ($index+1),$labels[$index],$(if($Selection.asset_mask -band (1 -shl $index)){'ON'}else{'off'}))}
         Write-Host ' 6 = All asset mechanisms | 7 = Asset control | 0 = Done'

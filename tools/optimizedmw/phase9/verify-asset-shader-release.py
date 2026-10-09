@@ -175,12 +175,66 @@ def l1_active_grid(text):
     require(unsigned_field(epoch, "original_draws", "CHAIN_ACTIVE_EPOCH") > 0
             and unsigned_field(epoch, "rgb", "CHAIN_ACTIVE_EPOCH") > 16,
             "Active-grid source epoch did not prove visible actual original fallback")
+    asset_compile = l1_asset_compile_closure(text, partial_draws)
     complete = record(text, "CHAIN_PASS", {"source_population_substituted": 1,
         "source_loader_substituted": 0, "cook_substituted": 0, "readiness_substituted": 0,
         "cpu_limit": 268435456})
     return {"declared_population": declared_population, "actual_active_owner": active,
             "strict_partial_tail": partial, "source_epoch_original_fallback": epoch,
+            "asset_compile_closure": asset_compile,
             "actual_chain_completion": complete}
+
+
+def l1_asset_compile_closure(text, active_draws):
+    """Require exact cold producer work, pending-cache demand and safe retirement."""
+    exact = record(text, "CHAIN_ASSET_EXACT_CLOSURE", {key: 1 for key in (
+        "real_openmw_ico", "registered_context_held", "ordinary_cache_only_pruned",
+        "pending_resource_set_survived", "pending_host_accounted", "exact_cached_owner",
+        "stock_imports_nonempty", "distortion_zero", "ambient_variant_different",
+        "unrelated_unlinked_original", "state_input_substitution")}
+        | {"ico_mode": 0, "global_exact_variants": 0, "source_loader_substituted": 0,
+           "cook_substituted": 0, "callback_substituted": 0, "gl_error": 0})
+    require(0 < unsigned_field(exact, "exact_linked_variants", "CHAIN_ASSET_EXACT_CLOSURE") <= 512
+            and unsigned_field(exact, "original_before_ico", "CHAIN_ASSET_EXACT_CLOSURE") > 0
+            and unsigned_field(exact, "main_draws", "CHAIN_ASSET_EXACT_CLOSURE") == active_draws
+            and unsigned_field(exact, "active_tagged_draws", "CHAIN_ASSET_EXACT_CLOSURE") == active_draws,
+            "Exact asset closure did not prove linked actual imports and the same active draw cohort after pending original use")
+    cold = record(text, "CHAIN_ASSET_COLD_VARIANT", {key: 1 for key in (
+        "cold_owned_variant", "initially_unlinked", "uninstalled_before_ready", "real_openmw_ico",
+        "distortion_zero", "force_opaque_zero", "state_input_substitution")}
+        | {"original_draw_before_compile": 0, "global_exact_variants": 0,
+           "source_loader_substituted": 0, "cook_substituted": 0, "callback_substituted": 0, "gl_error": 0})
+    cold_draws = unsigned_field(cold, "main_draws", "CHAIN_ASSET_COLD_VARIANT")
+    require(0 < unsigned_field(cold, "exact_linked_variants", "CHAIN_ASSET_COLD_VARIANT") <= 512
+            and cold_draws > 0 and unsigned_field(cold, "active_tagged_draws", "CHAIN_ASSET_COLD_VARIANT") == cold_draws
+            and unsigned_field(cold, "rgb", "CHAIN_ASSET_COLD_VARIANT") > 16,
+            "Cold asset variant was not prepared before first candidate use and consumed by an actual visible active draw")
+    retired = record(text, "CHAIN_ASSET_COMPILE_RETIRE", {key: 1 for key in (
+        "root_retired", "retained_inner_cancelled", "retained_quality_small", "producer_expired",
+        "queued_leaves_charged", "cancelled_sets_pruned")}
+        | {"worker_future": 0, "source_loader_substituted": 0, "cook_substituted": 0, "callback_substituted": 0})
+    require(unsigned_field(retired, "host_before_prune", "CHAIN_ASSET_COMPILE_RETIRE")
+            > unsigned_field(retired, "host_after_prune", "CHAIN_ASSET_COMPILE_RETIRE")
+            and unsigned_field(retired, "experiment_queued", "CHAIN_ASSET_COMPILE_RETIRE")
+            > unsigned_field(retired, "experiment_before", "CHAIN_ASSET_COMPILE_RETIRE")
+            and unsigned_field(retired, "experiment_after_prune", "CHAIN_ASSET_COMPILE_RETIRE")
+            < unsigned_field(retired, "experiment_queued", "CHAIN_ASSET_COMPILE_RETIRE"),
+            "Root-retired queued asset leaves did not retain and then release actual common/child host debt")
+    missing = record(text, "CHAIN_ASSET_MISSING_CONTEXT", {key: 1 for key in (
+        "actual_empty_ico", "actual_cook_attempt", "original_topology_preserved", "canonical_refnums_preserved",
+        "retry_retained", "readiness_false", "no_context_invented", "ico_input_substituted")}
+        | {"source_loader_substituted": 0, "cook_substituted": 0, "callback_substituted": 0})
+    context = record(text, "CHAIN_ASSET_CONTEXT_REFUSAL", {key: 1 for key in (
+        "registered_context", "current_context_missing", "actual_program_leaf", "producer_cancelled",
+        "readiness_false", "dispatch_input_substituted")}
+        | {"callback_substituted": 0, "gl_error": 0})
+    relink = record(text, "CHAIN_ASSET_RELINK_REFUSAL", {key: 1 for key in (
+        "original_applied_first", "imported_applied_pcp", "actual_program_leaf", "unsafe_relink_refused",
+        "producer_cancelled", "readiness_false", "original_apply_repairs", "state_cache_invalidated",
+        "dispatch_input_substituted")}
+        | {"callback_substituted": 0, "gl_error": 0})
+    return {"exact_pending_owner": exact, "cold_variant": cold, "retirement": retired,
+            "missing_context": missing, "current_context_refusal": context, "unsafe_relink_refusal": relink}
 
 
 def chain_retry_admission_wait(text):

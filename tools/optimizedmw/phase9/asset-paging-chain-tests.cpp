@@ -7,8 +7,11 @@
 #include <components/files/collections.hpp>
 #include <components/fx/technique.hpp>
 #include <components/resource/assetgpubudget.hpp>
+#include <components/resource/cachemaintenance.hpp>
+#include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/scenemanager.hpp>
+#include <components/resource/v321classifiedcompileset.hpp>
 #include <components/sceneutil/assetpaging.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
@@ -21,11 +24,13 @@
 #include <components/settings/parser.hpp>
 #include <components/settings/values.hpp>
 #include <components/shader/assetgeometrycontract.hpp>
+#include <components/shader/programvariant.hpp>
 #include <components/shader/shadermanager.hpp>
 #include <components/vfs/manager.hpp>
 #include <components/vfs/registerarchives.hpp>
 #include <osg/NodeCallback>
 #include <osg/Program>
+#include <osg/Switch>
 #include <osg/Stats>
 #include <osg/ClipControl>
 #include <osgViewer/Viewer>
@@ -304,6 +309,125 @@ namespace
             traverse(node);
         }
     };
+    // Hold actual registered ICO work, without replacing a CompileOp or
+    // readiness callback. The production context stays registered throughout.
+    class AssetQueuePause
+    {
+    public:
+        AssetQueuePause(osg::GraphicsContext& context,osgUtil::IncrementalCompileOperation& ico)
+            : mContext(context),mIco(ico)
+        {
+            {
+                std::lock_guard<OpenThreads::Mutex> lock(*mContext.getOperationsMutex());
+                require(std::any_of(mContext.getOperationsQueue().begin(),mContext.getOperationsQueue().end(),
+                    [&](const auto& operation){return operation.get()==&mIco;}),
+                    "registered actual ICO operation required before holding its execution");
+            }
+            mContext.remove(&mIco);
+        }
+        ~AssetQueuePause() {resume();}
+        void resume() {if(mPaused) {mContext.add(&mIco);mPaused=false;}}
+        void stillPaused() const
+        {
+            std::lock_guard<OpenThreads::Mutex> lock(*mContext.getOperationsMutex());
+            require(mPaused && std::none_of(mContext.getOperationsQueue().begin(),mContext.getOperationsQueue().end(),
+                [&](const auto& operation){return operation.get()==&mIco;}),
+                "first original draw must precede actual registered ICO execution");
+        }
+    private:
+        osg::GraphicsContext& mContext;
+        osgUtil::IncrementalCompileOperation& mIco;
+        bool mPaused=true;
+    };
+    std::set<const osgUtil::IncrementalCompileOperation::CompileSet*> queuedIdentities(
+        osgUtil::IncrementalCompileOperation& ico)
+    {
+        std::lock_guard<OpenThreads::Mutex> lock(*ico.getToCompiledMutex());
+        std::set<const osgUtil::IncrementalCompileOperation::CompileSet*> result;
+        for(const auto& set:ico.getToCompile()) if(set) result.insert(set.get());
+        return result;
+    }
+    std::vector<osg::ref_ptr<R::V321ClassifiedCompileSet>> newAssetSets(
+        osgUtil::IncrementalCompileOperation& ico,
+        const std::set<const osgUtil::IncrementalCompileOperation::CompileSet*>& before)
+    {
+        std::lock_guard<OpenThreads::Mutex> lock(*ico.getToCompiledMutex());
+        std::vector<osg::ref_ptr<R::V321ClassifiedCompileSet>> result;
+        for(const auto& set:ico.getToCompile())
+            if(set && !before.contains(set.get()))
+                if(auto* classified=dynamic_cast<R::V321ClassifiedCompileSet*>(set.get());
+                    classified && classified->resourceOnly() && classified->compileClass()==R::V321CompileClass::ObjectPaging)
+                {
+                    require(!set->_subgraphToCompile && classified->resourceCompilePending()
+                        && set->_compileMap.size()==1 && !set->compiled(),
+                        "actual new asset set must be pending resource-only work in exactly one context");
+                    result.emplace_back(classified);
+                }
+        require(!result.empty(),"real ObjectPaging must enqueue its actual resource-only asset closure");
+        return result;
+    }
+    void maintainAssetQueue(R::SceneManager& scenes,double time)
+    {
+        R::CacheMaintenanceBudget budget(4096,128,std::chrono::seconds(1));
+        R::CacheMaintenanceScope scope(budget);scenes.updateCache(time);
+    }
+    struct ImportedAssetRecipe
+    {
+        osg::ref_ptr<osg::Program> program;
+        Shader::ProgramDefineSnapshot imports;
+        osg::ref_ptr<osg::Program::PerContextProgram> ambient;
+    };
+    std::vector<ImportedAssetRecipe> importedAssetRecipes(const Selectors& selectors,osg::State& state)
+    {
+        Shader::AssetGeometry::ProducerReadScope producer;
+        std::vector<ImportedAssetRecipe> result;
+        for(const auto* selector:selectors.values)
+            for(const auto& draw:L::originalDraws(*selector->original()))
+            {
+                std::vector<const osg::StateSet*> path;
+                const osg::StateAttribute* selected=nullptr;unsigned flags=0;
+                for(const auto& node:draw.path) if(const auto* ss=node->getStateSet())
+                {
+                    path.push_back(ss);
+                    if(const auto* pair=ss->getAttributePair(osg::StateAttribute::PROGRAM))
+                        if(!selected || !(flags&osg::StateAttribute::OVERRIDE) || (pair->second&osg::StateAttribute::PROTECTED))
+                        {selected=pair->first.get();flags=pair->second;}
+                }
+                auto* program=const_cast<osg::Program*>(dynamic_cast<const osg::Program*>(selected));
+                require(program && Shader::AssetGeometry::validate(*program)==Shader::AssetGeometry::Refusal::None,
+                    "import test requires the unchanged actual certified ShaderVisitor program");
+                auto imports=Shader::ProgramDefineSnapshot::fromStateSets(*program,path);
+                require(imports.bounded && !imports.string.empty()
+                    && imports.map.currentDefines.contains("DISTORTION")
+                    && imports.map.currentDefines.at("DISTORTION").first=="0"
+                    && Shader::AssetGeometry::capture(*program,path).has_value(),
+                    "private DISTORTION=0 ancestor must produce a certified nonempty actual stock import recipe");
+                if(std::any_of(result.begin(),result.end(),[&](const auto& old){return old.program==program && old.imports.string==imports.string;})) continue;
+                const auto ambient=Shader::ProgramDefineSnapshot::fromStateSets(*program,{});
+                require(ambient.bounded && ambient.string!=imports.string,
+                    "actual ambient imported variant must differ from the candidate's certified recipe");
+                Shader::ProgramDefineScope ambientScope(state,ambient);
+                result.push_back({program,std::move(imports),program->getPCP(state)});
+            }
+        require(!result.empty() && result.size()<=512,"bounded actual nonempty imported program cohort required");
+        return result;
+    }
+    unsigned linkedImportedAssets(const std::vector<ImportedAssetRecipe>& recipes,osg::State& state)
+    {
+        Shader::AssetGeometry::ProducerReadScope producer;
+        unsigned linked=0;
+        for(const auto& recipe:recipes)
+        {
+            Shader::ProgramDefineScope imported(state,recipe.imports);
+            auto* pcp=recipe.program->getPCP(state);
+            require(pcp && pcp!=recipe.ambient.get() && pcp->getProgram()==recipe.program.get()
+                && pcp->getDefineString()==recipe.imports.string && pcp->getHandle()
+                && pcp->isLinked() && !pcp->needsLink(),
+                "actual readiness must retain the exact linked imported PCP, independently of the ambient PCP");
+            ++linked;
+        }
+        return linked;
+    }
     void parentStateOwnership(Resource::SceneManager& scenes,const osg::Node& original)
     {
         // Real SceneManager/ShaderVisitor output is the geometry/material input.
@@ -698,7 +822,12 @@ int main(int argc,char** argv) try
     else { camera->setSmallFeatureCullingPixelSize(Settings::camera().mSmallFeatureCullingPixelSize); cullingMode|=osg::CullStack::SMALL_FEATURE_CULLING; }
     camera->setCullingMode(cullingMode);
     osg::ref_ptr<osg::Group> sceneRoot=new osg::Group;
-    osg::ref_ptr<osgUtil::IncrementalCompileOperation> ico=new osgUtil::IncrementalCompileOperation;
+    // The active closure regression exercises the production ICO subclass,
+    // with its mode-0 ordinary OSG scheduling path. Historical cohorts keep
+    // their original scheduler and exact renderer policy.
+    osg::ref_ptr<osgUtil::IncrementalCompileOperation> ico=inputs.activeGridCheck
+        ? static_cast<osgUtil::IncrementalCompileOperation*>(new R::OpenMWIncrementalCompileOperation({}))
+        : new osgUtil::IncrementalCompileOperation;
     viewer.setIncrementalCompileOperation(ico); scenes->setIncrementalCompileOperation(ico);
     viewer.setSceneData(sceneRoot); phase("context","begin"); viewer.realize();
     require(context->makeCurrent(),"real GL initialization must make its actual context current");
@@ -911,6 +1040,8 @@ int main(int argc,char** argv) try
         require(mask==A::Lod && inputs.mixed,"active-grid check requires the independently tested mixed L1 source population");
         require(inputs.models.size()==1 && population.size()==3,
             "active-grid check requires one actual certified source and one ordinary occluder owner");
+        require(!Shader::exactProgramVariantsEnabled(),
+            "asset owned compile qualification requires the captured G1-off canonical sampler path");
         phase("active_grid","begin");
         // Active mode 2 does not force repeated sources to merge. Supply enough
         // real references for the unchanged captured cost/benefit rule, without
@@ -1113,6 +1244,13 @@ int main(int argc,char** argv) try
             "bounded active population must exercise real merged geometry and retained ordinary whole-reference picking");
         const GeometrySnapshot strongSnapshot(*strong);
         std::this_thread::sleep_for(std::chrono::milliseconds(A::RetryDelayMilliseconds+100));
+        AssetQueuePause activeQueuePause(*context,*ico);
+        const auto activeQueueBefore=queuedIdentities(*ico);
+        active.setFixtureBeforeLodCook([](osg::Node& privateControl) {
+            // A real stock imported define on the new private ancestry, before
+            // final capture. No source, template, sampler or certificate rewrite.
+            privateControl.getOrCreateStateSet()->setDefine("DISTORTION","0",osg::StateAttribute::ON);
+        });
         sampleGpu();osg::ref_ptr<osg::Node> activeCandidate;
         {
             // One actual tail scope visits incomplete owners before the strong
@@ -1127,10 +1265,63 @@ int main(int argc,char** argv) try
             require(optional.needsRetry() && optional.waitingForAdmission(),
                 "successful prepared-owner cook must retain the incomplete ordinary targets' admission wait");
         }
+        active.setFixtureBeforeLodCook({});
         pendingSnapshot.unchanged(*pendingRequired,"later prepared-owner cook must not mutate a skipped weak control");
         Selectors activeSelectors;activeCandidate->accept(activeSelectors);
         require(activeCandidate!=strong && !activeSelectors.values.empty() && built(mask)>beforeActiveBuilt,
             "available active L1 tail must cook an independently published control replacement");
+        auto activeResourceSets=newAssetSets(*ico,activeQueueBefore);
+        for(const auto& set:activeResourceSets)
+            require(set->urgency()==R::V321CompileUrgency::NearFuture && set->_compileMap.contains(context.get()),
+                "active exact compile closure must retain its actual production urgency and context");
+        const auto importedRecipes=importedAssetRecipes(activeSelectors,*context->getState());
+        const auto activeSmallReadiness=activeSelectors.values.front()->readinessForFixture();
+        require(activeSmallReadiness && !activeSmallReadiness->ready.load()
+            && !activeSmallReadiness->preparation.expired(),"small readiness must observe its actual pending producer");
+        // This non-culling sibling has no geometry, RefNum, source or asset
+        // certificate. It makes whole-root linked-program proof observably
+        // different from the selected actual material closure.
+        osg::ref_ptr<osg::Program> unrelatedProgram=new osg::Program;
+        unrelatedProgram->setName("unrelated ordinary disabled sibling");
+        unrelatedProgram->addShader(new osg::Shader(osg::Shader::VERTEX,"#version 120\nvoid main(){gl_Position=gl_Vertex;}\n"));
+        unrelatedProgram->addShader(new osg::Shader(osg::Shader::FRAGMENT,"#version 120\nvoid main(){gl_FragColor=vec4(1.0);}\n"));
+        osg::ref_ptr<osg::Switch> unrelatedSibling=new osg::Switch;
+        auto* unrelatedNode=new osg::Node;
+        unrelatedNode->getOrCreateStateSet()->setAttributeAndModes(unrelatedProgram,osg::StateAttribute::ON);
+        unrelatedSibling->addChild(unrelatedNode,false);
+        require(activeCandidate->asGroup()!=nullptr,"actual paging root must retain ordinary group ownership");
+        activeCandidate->asGroup()->addChild(unrelatedSibling);
+        auto* unrelatedPcp=unrelatedProgram->getPCP(*context->getState());
+        require(unrelatedPcp && !unrelatedPcp->isLinked(),"unrelated ordinary sibling must actually remain unlinked");
+        const auto activeOwnerIdentity=activeCandidate.get();
+        osg::observer_ptr<osg::Node> activeCachedOwner=activeCandidate;
+        std::vector<const osgUtil::IncrementalCompileOperation::CompileSet*> activeOrdinarySets;
+        {
+            std::lock_guard<OpenThreads::Mutex> lock(*ico->getToCompiledMutex());
+            for(const auto& set:ico->getToCompile())
+                if(set && set->_subgraphToCompile==activeCandidate) activeOrdinarySets.push_back(set.get());
+        }
+        require(!activeOrdinarySets.empty(),"production whole-chunk compile queue must exist before the pruning regression");
+        activeCandidate=nullptr;
+        // Exactly the ordinary cache and whole-chunk set own this actual root.
+        // Neither fixture raw selector observations nor small Quality readiness
+        // may accidentally keep the root demanded during maintenance.
+        require(activeOwnerIdentity->referenceCount()==2,"cache-only pruning proof requires exact cache-plus-compile root references");
+        const auto pendingHost=hostOwners(resources.speculativeBudget()->stats());
+        maintainAssetQueue(*scenes,1.);
+        const auto afterMaintenance=queuedIdentities(*ico);
+        require(std::none_of(activeOrdinarySets.begin(),activeOrdinarySets.end(),
+            [&](const auto* set){return afterMaintenance.contains(set);}),
+            "real SceneManager maintenance must prune the actual ordinary cache-only chunk set");
+        for(const auto& set:activeResourceSets)
+            require(afterMaintenance.contains(set.get()) && set->resourceCompilePending() && !set->compiled(),
+                "real cache-only maintenance must preserve the pending resource-only asset producer");
+        require(activeCachedOwner.valid() && !activeSmallReadiness->ready.load()
+            && !activeSmallReadiness->preparation.expired() && hostOwners(resources.speculativeBudget()->stats())>=pendingHost,
+            "cache-owned private resources must remain accounted and pending after ordinary queue pruning");
+        activeCandidate=activeChunk(active,true,nullptr,true);
+        require(activeCandidate.get()==activeOwnerIdentity,
+            "real cached active owner must survive its ordinary compile-set pruning without a replacement cook");
         require(L::Counters::postOptimizer[static_cast<unsigned>(L::PostOptimizerStep::Contributor)].load()>beforeActiveContributors,
             "actual active L1 must consume a contributor selected by the unchanged ordinary merge rule");
         ControlTopology candidateTopology;activeCandidate->accept(candidateTopology);
@@ -1153,6 +1344,12 @@ int main(int argc,char** argv) try
         camera->setViewMatrixAsLookAt(osg::Vec3d(activeBound.center())+osg::Vec3d(0,-activeDistance,0),osg::Vec3d(activeBound.center()),{0,0,1});
         const auto activePrepared=[&] {return std::all_of(activeSelectors.values.begin(),activeSelectors.values.end(),
             [](const auto* selector){return selector->compilationReady();});};
+        const auto pendingDerived=consumed(mask);viewer.frame();activeQueuePause.stillPaused();
+        require(!activePrepared() && consumed(mask)==pendingDerived && pixels->original>0
+            && pixels->error==GL_NO_ERROR && rgb(pixels->data)>16,
+            "pending exact asset closure must draw its visible ordinary original before any actual ICO work");
+        const auto pendingOriginalDraws=pixels->original;
+        activeQueuePause.resume();
         for(unsigned frame=0;frame<90 && !activePrepared();++frame) viewer.frame();
         const auto activeDrawStart=consumed(mask),activeTaggedDrawStart=L::Counters::activeDerivedDraws.load();viewer.frame();viewer.frame();
         require(activePrepared() && consumed(mask)>activeDrawStart && pixels->error==GL_NO_ERROR && rgb(pixels->data)>16,
@@ -1160,6 +1357,17 @@ int main(int argc,char** argv) try
         require(L::Counters::activeBuilt.load()>beforeTaggedActiveBuilt
             && L::Counters::activeDerivedDraws.load()-activeTaggedDrawStart==consumed(mask)-activeDrawStart,
             "actual active cook and every reduced draw must retain their explicit active-grid origin tag");
+        const auto exactLinked=linkedImportedAssets(importedRecipes,*context->getState());
+        require(!unrelatedPcp->isLinked(),
+            "actual asset readiness must not compile or require the unrelated unlinked ordinary sibling");
+        std::cout<<"CHAIN_ASSET_EXACT_CLOSURE real_openmw_ico=1 ico_mode=0 registered_context_held=1"
+            <<" ordinary_cache_only_pruned=1 pending_resource_set_survived=1 pending_host_accounted=1 exact_cached_owner=1"
+            <<" stock_imports_nonempty=1 distortion_zero=1 ambient_variant_different=1 exact_linked_variants="<<exactLinked
+            <<" unrelated_unlinked_original=1 original_before_ico="<<pendingOriginalDraws
+            <<" global_exact_variants=0"
+            <<" main_draws="<<consumed(mask)-activeDrawStart
+            <<" active_tagged_draws="<<L::Counters::activeDerivedDraws.load()-activeTaggedDrawStart
+            <<" state_input_substitution=1 source_loader_substituted=0 cook_substituted=0 callback_substituted=0 gl_error=0\n";
         const auto activeStreams=indexOnlyStreams(activeSelectors);
         require(activeStreams>0,"active tier must share exact ordinary immutable vertex, normal, UV and material streams");
         std::set<ESM::RefNum> selectedRefnums;
@@ -1272,6 +1480,226 @@ int main(int argc,char** argv) try
             [](const auto* selector){return selector->materialGuardCurrent();}),"restoring active source policy must never revive its stale immutable guard");
         std::cout<<"CHAIN_ACTIVE_EPOCH source_changed=1 prepared_stale_deferred=1 old_guard_original=1 required_original_rebuilt=1 refnums_preserved=1 old_guard_not_revived=1"
             <<" original_draws="<<pixels->original<<" rgb="<<rgb(pixels->data)<<" gl_error=0\n";
+        const auto privateImport=[](osg::Node& control) {
+            control.getOrCreateStateSet()->setDefine("DISTORTION","0",osg::StateAttribute::ON);
+        };
+        const auto pendingOwner=[&](MWRender::ObjectPaging& owner,bool forceOpaqueZero=false) {
+            owner.setAssetMainCamera(camera);owner.setFixturePopulation(activePopulation);
+            auto base=activeChunk(owner,false);require(base.valid(),"actual independent ordinary control required");
+            Selectors ordinary; base->accept(ordinary);
+            require(ordinary.values.empty(),"independent ordinary control cannot borrow asset completion");
+            owner.setFixtureBeforeLodCook([&](osg::Node& control) {
+                privateImport(control);
+                if(forceOpaqueZero) control.getOrCreateStateSet()->setDefine("FORCE_OPAQUE","0",osg::StateAttribute::ON);
+            });sampleGpu();
+            auto candidate=activeChunk(owner,true,nullptr,true);owner.setFixtureBeforeLodCook({});
+            Selectors selected;candidate->accept(selected);
+            require(candidate!=base && !selected.values.empty()
+                && std::none_of(selected.values.begin(),selected.values.end(),
+                    [](const auto* selector){return selector->compilationReady();}),
+                "independent real asset owner must cook while its actual queue remains held");
+            return candidate;
+        };
+        {
+            phase("asset_cold_variant","begin");
+            AssetQueuePause paused(*context,*ico);
+            MWRender::ObjectPaging cold(scenes,ESM::Cell::sDefaultWorldspaceId);
+            Registered coldRegistration(resources,&cold);
+            const auto before=queuedIdentities(*ico);auto node=pendingOwner(cold,true);
+            auto sets=newAssetSets(*ico,before);Selectors selected;node->accept(selected);
+            const auto recipes=importedAssetRecipes(selected,*context->getState());
+            for(const auto& recipe:recipes)
+            {
+                require(recipe.imports.map.currentDefines.contains("FORCE_OPAQUE")
+                    && recipe.imports.map.currentDefines.at("FORCE_OPAQUE").first=="0",
+                    "cold fixture must retain its certified nonempty stock FORCE_OPAQUE=0 recipe");
+                Shader::ProgramDefineScope imports(*context->getState(),recipe.imports);
+                auto* pcp=recipe.program->getPCP(*context->getState());
+                require(pcp && !pcp->isLinked(),"exact cold imported PCP must actually be unlinked before preparation");
+            }
+            require(node->getNumParents()==0,"cold candidate cannot enter canonical rendering before actual queue completion");
+            const auto prepared=[&] {return std::all_of(selected.values.begin(),selected.values.end(),
+                [](const auto* selector){return selector->compilationReady();});};
+            paused.resume();
+            for(unsigned frame=0;frame<90 && !prepared();++frame) viewer.frame();
+            require(prepared() && node->getNumParents()==0,
+                "actual resource-only OpenMWICO must prepare the cold variant before its candidate enters any view");
+            const auto exact=linkedImportedAssets(recipes,*context->getState());
+            lighting->removeChild(activeCandidate);lighting->addChild(node);
+            struct RestoreColdView
+            {osg::Group* lighting;osg::Node* test;osg::Node* previous;
+                ~RestoreColdView(){lighting->removeChild(test);lighting->addChild(previous);}}
+                restore{lighting,node,activeCandidate};
+            const auto draws=consumed(mask),tagged=L::Counters::activeDerivedDraws.load();viewer.frame();viewer.frame();
+            require(consumed(mask)>draws && L::Counters::activeDerivedDraws.load()-tagged==consumed(mask)-draws
+                && rgb(pixels->data)>16 && pixels->error==GL_NO_ERROR,
+                "actual main camera must consume the cold prepared imported variant as reduced geometry");
+            std::cout<<"CHAIN_ASSET_COLD_VARIANT cold_owned_variant=1 original_draw_before_compile=0 initially_unlinked=1"
+                <<" uninstalled_before_ready=1 real_openmw_ico=1 exact_linked_variants="<<exact
+                <<" distortion_zero=1 force_opaque_zero=1 global_exact_variants=0"
+                <<" main_draws="<<consumed(mask)-draws<<" active_tagged_draws="<<L::Counters::activeDerivedDraws.load()-tagged
+                <<" rgb="<<rgb(pixels->data)<<" state_input_substitution=1 source_loader_substituted=0 cook_substituted=0 callback_substituted=0 gl_error=0\n";
+            cold.clearCache();
+            phase("asset_cold_variant","done");
+        }
+        {
+            MWRender::ObjectPaging noContexts(scenes,ESM::Cell::sDefaultWorldspaceId);
+            Registered noContextRegistration(resources,&noContexts);
+            noContexts.setAssetMainCamera(camera);noContexts.setFixturePopulation(activePopulation);
+            auto original=activeChunk(noContexts,false);require(original.valid(),"missing-context test needs the actual prepared control");
+            const GeometrySnapshot originalSnapshot(*original);
+            ControlTopology before;original->accept(before);
+            osg::ref_ptr<R::OpenMWIncrementalCompileOperation> unavailable=new R::OpenMWIncrementalCompileOperation({});
+            require(unavailable->getContextSet().empty(),"independent real ICO must actually lack context registrations");
+            struct RestoreSceneIco
+            {R::SceneManager* scenes;osgUtil::IncrementalCompileOperation* ico;
+                ~RestoreSceneIco(){scenes->setIncrementalCompileOperation(ico);}} restore{scenes,ico};
+            scenes->setIncrementalCompileOperation(unavailable);
+            noContexts.setFixtureBeforeLodCook(privateImport);sampleGpu();
+            const auto attempted=L::Counters::activeBuildAttempts.load();bool retry=false;
+            auto refused=activeChunk(noContexts,true,&retry,true);noContexts.setFixtureBeforeLodCook({});
+            require(refused.valid() && retry && L::Counters::activeBuildAttempts.load()>attempted
+                && unavailable->getToCompile().empty(),
+                "actual missing-context asset preparation must retain its control and defer without enqueueing a made-up context");
+            Selectors noContextSelectors;refused->accept(noContextSelectors);
+            require(std::none_of(noContextSelectors.values.begin(),noContextSelectors.values.end(),
+                [](const auto* selector){return selector->compilationReady();}),
+                "actual missing ICO context must never publish asset readiness");
+            ControlTopology after;refused->accept(after);
+            require(before.indices==after.indices && before.submissions==after.submissions && activeRefs(noContexts)==requiredRefs,
+                "missing-context refusal must preserve actual original topology and canonical references");
+            originalSnapshot.unchanged(*original,"missing-context preparation must preserve its independently published control");
+            std::cout<<"CHAIN_ASSET_MISSING_CONTEXT actual_empty_ico=1 actual_cook_attempt=1 original_topology_preserved=1"
+                <<" canonical_refnums_preserved=1 retry_retained=1 readiness_false=1 no_context_invented=1"
+                <<" ico_input_substituted=1 source_loader_substituted=0 cook_substituted=0 callback_substituted=0\n";
+            noContexts.clearCache();
+        }
+        // A retained inner selector models an actual replay path. Root death,
+        // rather than that inner producer's refcount, must cancel preparation;
+        // holding small Quality readiness must never keep producer resources.
+        {
+            phase("asset_compile_retire","begin");
+            AssetQueuePause paused(*context,*ico);
+            MWRender::ObjectPaging retiring(scenes,ESM::Cell::sDefaultWorldspaceId);
+            Registered retiringRegistration(resources,&retiring);
+            const auto before=queuedIdentities(*ico);
+            const auto experimentBefore=resources.speculativeBudget()->stats().experimentRetainedBytes;
+            auto retireCandidate=pendingOwner(retiring);
+            auto resourceSets=newAssetSets(*ico,before);
+            Selectors retireSelectors;retireCandidate->accept(retireSelectors);
+            const auto quality=retireSelectors.values.front()->readinessForFixture();
+            osg::ref_ptr<L::Group> replaySelector=retireSelectors.values.front();
+            const auto* rootIdentity=retireCandidate.get();
+            osg::observer_ptr<osg::Node> retiredRoot=retireCandidate;
+            retireCandidate=nullptr;
+            require(rootIdentity->referenceCount()==2,"retirement case requires an actual cache-only pending root");
+            maintainAssetQueue(*scenes,2.);
+            for(const auto& set:resourceSets) require(set->resourceCompilePending(),"cached root must retain live producer demand");
+            retiring.clearCache();
+            require(!retiredRoot.valid() && quality && !quality->ready.load()
+                && !quality->preparation.expired() && !replaySelector->compilationReady(),
+                "actual root retirement must cancel even when small readiness and an inner replay selector are retained");
+            for(const auto& set:resourceSets)
+                require(!set->resourceCompilePending(),"actual root destruction must cancel every queued asset resource lifetime");
+            replaySelector=nullptr;
+            require(quality->preparation.expired(),"small retained Quality readiness must not retain the private producer");
+            const auto leafCharged=hostOwners(resources.speculativeBudget()->stats());
+            const auto leafExperimental=resources.speculativeBudget()->stats().experimentRetainedBytes;
+            require(leafExperimental>experimentBefore && resources.speculativeBudget()->stats().futureBytes==0,
+                "actual queued leaves must retain host debt after root and producer retirement, with no worker reservation");
+            std::vector<const osgUtil::IncrementalCompileOperation::CompileSet*> cancelledIdentities;
+            for(const auto& set:resourceSets) cancelledIdentities.push_back(set.get());
+            resourceSets.clear();
+            maintainAssetQueue(*scenes,3.);
+            const auto after=queuedIdentities(*ico);
+            require(std::none_of(cancelledIdentities.begin(),cancelledIdentities.end(),
+                [&](const auto* set){return after.contains(set);})
+                && hostOwners(resources.speculativeBudget()->stats())<leafCharged
+                && resources.speculativeBudget()->stats().experimentRetainedBytes<leafExperimental,
+                "actual cancelled queue removal must release its queued leaf debt independently of retained small readiness");
+            std::cout<<"CHAIN_ASSET_COMPILE_RETIRE root_retired=1 retained_inner_cancelled=1 retained_quality_small=1 producer_expired=1"
+                <<" queued_leaves_charged=1 cancelled_sets_pruned=1 host_before_prune="<<leafCharged
+                <<" host_after_prune="<<hostOwners(resources.speculativeBudget()->stats())
+                <<" experiment_before="<<experimentBefore<<" experiment_queued="<<leafExperimental
+                <<" experiment_after_prune="<<resources.speculativeBudget()->stats().experimentRetainedBytes
+                <<" worker_future=0 source_loader_substituted=0 cook_substituted=0 callback_substituted=0\n";
+            phase("asset_compile_retire","done");
+        }
+        // Exercise the actual production leaf operation with an unavailable
+        // current context. No stand-in compiler or success callback is used.
+        {
+            AssetQueuePause paused(*context,*ico);
+            MWRender::ObjectPaging wrongContext(scenes,ESM::Cell::sDefaultWorldspaceId);
+            Registered wrongRegistration(resources,&wrongContext);
+            const auto before=queuedIdentities(*ico);auto node=pendingOwner(wrongContext);
+            auto sets=newAssetSets(*ico,before);Selectors selected;node->accept(selected);
+            const auto quality=selected.values.front()->readinessForFixture();
+            osg::ref_ptr<osgUtil::IncrementalCompileOperation::CompileProgramOp> programOp;
+            for(const auto& set:sets)
+                for(const auto& op:set->_compileMap.at(context.get())._compileOps)
+                    if(auto* program=dynamic_cast<osgUtil::IncrementalCompileOperation::CompileProgramOp*>(op.get()))
+                    {programOp=program;break;}
+            require(programOp.valid(),"actual owned program compile leaf required for context refusal");
+            require(context->releaseContext(),"actual fixture context must release its current binding");
+            osgUtil::IncrementalCompileOperation::CompileInfo info(context,ico);
+            const bool retired=programOp->compile(info);
+            require(context->makeCurrent(),"actual context must be restored after the refused dispatch");
+            require(retired && !quality->ready.load()
+                && std::none_of(sets.begin(),sets.end(),[](const auto& set){return set->resourceCompilePending();}),
+                "actual owned program leaf must cancel before GL work when its registered context is not current");
+            require(glGetError()==GL_NO_ERROR,"context refusal must not make an invalid GL call");
+            std::cout<<"CHAIN_ASSET_CONTEXT_REFUSAL registered_context=1 current_context_missing=1 actual_program_leaf=1"
+                <<" producer_cancelled=1 readiness_false=1 dispatch_input_substituted=1 callback_substituted=0 gl_error=0\n";
+            programOp=nullptr;wrongContext.clearCache();node=nullptr;sets.clear();maintainAssetQueue(*scenes,4.);
+        }
+        {
+            AssetQueuePause paused(*context,*ico);
+            MWRender::ObjectPaging relinking(scenes,ESM::Cell::sDefaultWorldspaceId);
+            Registered relinkRegistration(resources,&relinking);
+            const auto before=queuedIdentities(*ico);auto node=pendingOwner(relinking);
+            auto sets=newAssetSets(*ico,before);Selectors selected;node->accept(selected);
+            const auto quality=selected.values.front()->readinessForFixture();
+            const auto recipes=importedAssetRecipes(selected,*context->getState());
+            // First normal apply establishes the canonical sampler's private
+            // applied-PCP identity. A preparer may not relink it behind apply.
+            lighting->removeChild(activeCandidate);lighting->addChild(node);
+            struct RestoreRelinkView
+            {osg::Group* lighting;osg::Node* test;osg::Node* previous;
+                ~RestoreRelinkView(){lighting->removeChild(test);lighting->addChild(previous);}}
+                restore{lighting,node,activeCandidate};
+            const auto beforeDraw=consumed(mask);viewer.frame();paused.stillPaused();
+            require(consumed(mask)==beforeDraw && pixels->original>0 && rgb(pixels->data)>16 && pixels->error==GL_NO_ERROR,
+                "unsafe relink fixture must first apply visible original material through its canonical sampler producer");
+            const auto& recipe=recipes.front();Shader::ProgramDefineScope imports(*context->getState(),recipe.imports);
+            auto* pcp=recipe.program->getPCP(*context->getState());
+            const auto* sampler=dynamic_cast<const Shader::AssetGeometry::SamplerProducer*>(recipe.program.get());
+            require(pcp && pcp->isLinked() && sampler,"actual applied imported sampler PCP required before relink refusal");
+            pcp->requestLink();
+            require(pcp->needsLink() && !sampler->assetCanPrepareVariant(*context->getState(),*pcp),
+                "canonical sampler producer must identify the unsafe currently applied PCP relink");
+            osg::ref_ptr<osgUtil::IncrementalCompileOperation::CompileProgramOp> matching;
+            for(const auto& set:sets)
+                for(const auto& op:set->_compileMap.at(context.get())._compileOps)
+                    if(auto* program=dynamic_cast<osgUtil::IncrementalCompileOperation::CompileProgramOp*>(op.get());
+                        program && program->_program==recipe.program) {matching=program;break;}
+            require(matching.valid(),"actual imported production program leaf required for unsafe relink refusal");
+            osgUtil::IncrementalCompileOperation::CompileInfo info(context,ico);
+            require(matching->compile(info) && pcp->needsLink() && !quality->ready.load()
+                && std::none_of(sets.begin(),sets.end(),[](const auto& set){return set->resourceCompilePending();}),
+                "owned preparer must cancel instead of secretly relinking the canonical sampler's applied PCP");
+            // The normal canonical apply is still allowed to repair its own PCP.
+            // The fixture's requestLink was explicit; force State to reach that
+            // ordinary apply rather than relying on a different material draw.
+            context->getState()->dirtyAllAttributes();
+            viewer.frame();
+            require(!pcp->needsLink() && pcp->isLinked() && !quality->ready.load()
+                && consumed(mask)==beforeDraw && pixels->original>0 && pixels->error==GL_NO_ERROR,
+                "normal original apply must preserve sampler relink behavior without reviving refused asset readiness");
+            std::cout<<"CHAIN_ASSET_RELINK_REFUSAL original_applied_first=1 imported_applied_pcp=1 actual_program_leaf=1"
+                <<" unsafe_relink_refused=1 producer_cancelled=1 readiness_false=1 original_apply_repairs=1"
+                <<" state_cache_invalidated=1 dispatch_input_substituted=1 callback_substituted=0 gl_error=0\n";
+            matching=nullptr;relinking.clearCache();sets.clear();maintainAssetQueue(*scenes,5.);
+        }
         phase("active_grid","done");
     }
     MWRender::ObjectPaging paging(scenes,ESM::Cell::sDefaultWorldspaceId); paging.setAssetMainCamera(camera); paging.setFixturePopulation(population);

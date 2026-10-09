@@ -19,9 +19,12 @@ namespace osg { class Camera; class Program; }
 namespace osgUtil { class CullVisitor; }
 namespace Resource::AssetGpuBudget { class Reservation; }
 namespace Resource { struct SpeculativeReservationReceipt; }
+namespace Resource { enum class V321CompileUrgency : unsigned char; }
 
 namespace SceneUtil::GeneratedStaticLod
 {
+    struct AssetCompilePreparation;
+    class Group;
     enum class Refusal { None, Graph, Material, Transform, Layout, Capacity, NoReduction, Count };
     enum class BuildStep { None, Scope, Inspection, VertexOwnership, Peak, HostAdmission, Cook, Reduction,
         GpuAdmission, GpuRetention, Lineage, Replay, Guard, Publication, Count };
@@ -83,6 +86,8 @@ namespace SceneUtil::GeneratedStaticLod
         inline static std::atomic_uint64_t compileBlocked[static_cast<unsigned>(CompileBlock::Count)]{};
         inline static std::atomic_uint64_t compilePruned{0}, compilePrunedReady{0}, compilePrunedMainOwners{0};
         inline static std::atomic_uint64_t compilePrunedMainSamples{0}, compilePrunedMainCurrentGuardSamples{0};
+        inline static std::atomic_uint64_t ownedCompileQueued{0},ownedCompileCallbacks{0},ownedCompileReady{0},ownedCompileFailed{0};
+        inline static std::atomic_uint64_t ownedCompilePruned{0},ownedCompilePrunedCancelled{0},ownedCompilePrunedExpired{0};
         // Ownership diagnostics count chunk proofs, not distinct source models.
         inline static std::atomic_uint64_t materialOwnerUnknown{0}, materialOwnerNull{0}, materialOwnerCapacity{0};
         inline static std::atomic_uint64_t materialOwnerShared{0}, materialOwnerCohesions{0}, materialOwnerCohesiveInstances{0};
@@ -131,6 +136,7 @@ namespace SceneUtil::GeneratedStaticLod
         static bool preflight(const osg::Node& original, GuardRefusalInfo* refusal = nullptr);
         bool current(osg::State* state = nullptr,
             const std::vector<const osg::StateSet*>& inherited = {}) const;
+        bool appendCompileRecipes(AssetCompilePreparation&) const;
     private:
         struct Impl;
         explicit MaterialGuard(std::shared_ptr<Impl> impl) : mImpl(std::move(impl)) {}
@@ -201,11 +207,16 @@ namespace SceneUtil::GeneratedStaticLod
         std::atomic_int prunedReferences{0};
         std::atomic_uint prunedContexts{0}, prunedRemaining{0};
         std::atomic_bool readyAtPrune{false}, compiledAtPrune{false};
+        // Quality may retain this small receipt after its graph is evicted.
+        // The actual selector graph, never this receipt or a queued callback,
+        // owns optional resource preparation.
+        std::weak_ptr<AssetCompilePreparation> preparation;
     };
     class CompileCompleted final : public osgUtil::IncrementalCompileOperation::CompileCompletedCallback
     {
     public:
-        explicit CompileCompleted(std::shared_ptr<Readiness> readiness) : mReadiness(std::move(readiness)) {}
+        explicit CompileCompleted(std::shared_ptr<Readiness> readiness,bool grantReadiness=true)
+            : mReadiness(std::move(readiness)),mGrantReadiness(grantReadiness) {}
         bool compileCompleted(osgUtil::IncrementalCompileOperation::CompileSet*) override;
         // Mark only after ordinary maintenance has actually selected this set
         // for removal. The fixed receipt is emitted outside the queue lock.
@@ -213,7 +224,14 @@ namespace SceneUtil::GeneratedStaticLod
         void reportCacheOnlyPruned(const osgUtil::IncrementalCompileOperation::CompileSet&) const;
     private:
         std::shared_ptr<Readiness> mReadiness;
+        bool mGrantReadiness=true;
     };
+    void noteAssetResourceCompilePruned(const osgUtil::IncrementalCompileOperation::CompileSet&) noexcept;
+    void reportAssetResourceCompilePruned(const osgUtil::IncrementalCompileOperation::CompileSet&);
+    bool prepareAssetCompileClosure(const std::shared_ptr<Readiness>& readiness,
+        std::span<const osg::ref_ptr<Group>> finalSelectors, osg::Node& ordinaryOwner,
+        const osg::Object& originalTemplates, std::size_t originalTemplateUpperBound,
+        osgUtil::IncrementalCompileOperation* ico, Resource::V321CompileUrgency urgency);
     // Shared main-view selector also supports a separately certified HLOD representation.
     class Group final : public osg::Group
     {
@@ -237,9 +255,17 @@ namespace SceneUtil::GeneratedStaticLod
         { return mReadiness && mReadiness->ready.load(std::memory_order_acquire); }
         bool materialGuardCurrent() const
         { return mMaterialGuard && mMaterialGuard->current(); }
+#ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
+        std::shared_ptr<Readiness> readinessForFixture() const { return mReadiness; }
+#endif
     private:
+        friend bool prepareAssetCompileClosure(const std::shared_ptr<Readiness>&,
+            std::span<const osg::ref_ptr<Group>>, osg::Node&,
+            const osg::Object&, std::size_t,
+            osgUtil::IncrementalCompileOperation*, Resource::V321CompileUrgency);
         float mError = 0.f;
         std::shared_ptr<Readiness> mReadiness;
+        std::shared_ptr<AssetCompilePreparation> mPreparation;
         std::shared_ptr<MaterialGuard> mMaterialGuard;
         osg::observer_ptr<osg::Camera> mMainCamera;
         bool mPreserveControlPopulation = false;

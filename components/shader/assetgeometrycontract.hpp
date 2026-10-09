@@ -16,6 +16,7 @@
 #include <osg/StateSet>
 
 namespace osg { class State; }
+namespace Shader { struct ProgramDefineSnapshot; }
 namespace Shader::AssetGeometry
 {
     // Guards mutable Shader/Program producer recipes and their certificate
@@ -128,6 +129,11 @@ namespace Shader::AssetGeometry
     {
     public:
         virtual bool assetSamplersMatch(const Samplers& values) const = 0;
+        // Called only by an owned asset compile operation in its current GL
+        // context. Relinking the currently applied PCP requires sampler
+        // initialization that the ordinary G1-off consumer cannot infer.
+        virtual bool assetCanPrepareVariant(const osg::State&,
+            const osg::Program::PerContextProgram&) const { return false; }
     protected:
         virtual ~SamplerProducer() = default;
     };
@@ -153,6 +159,7 @@ namespace Shader::AssetGeometry
         std::string_view define(std::string_view name) const;
         const Samplers& samplers() const;
         std::size_t metadataBytes() const;
+        const Shader::ProgramDefineSnapshot* importedDefines() const noexcept;
     private:
         explicit Snapshot(std::shared_ptr<const SnapshotData> data) : mData(std::move(data)) {}
         std::shared_ptr<const SnapshotData> mData;

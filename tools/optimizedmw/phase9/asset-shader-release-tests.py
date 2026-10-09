@@ -28,8 +28,33 @@ class AssetReleaseEvidence(unittest.TestCase):
                 "source_loader_substituted=0 gl_error=0\n"
                 "CHAIN_ACTIVE_EPOCH source_changed=1 prepared_stale_deferred=1 old_guard_original=1 required_original_rebuilt=1 "
                 "refnums_preserved=1 old_guard_not_revived=1 original_draws=2 rgb=98 gl_error=0\n"
+                + AssetReleaseEvidence.asset_compile_receipt() +
                 "CHAIN_PASS source_population_substituted=1 source_loader_substituted=0 cook_substituted=0 "
                 "readiness_substituted=0 cpu_limit=268435456\n")
+
+    @staticmethod
+    def asset_compile_receipt():
+        return ("CHAIN_ASSET_EXACT_CLOSURE real_openmw_ico=1 ico_mode=0 registered_context_held=1 "
+                "ordinary_cache_only_pruned=1 pending_resource_set_survived=1 pending_host_accounted=1 exact_cached_owner=1 "
+                "stock_imports_nonempty=1 distortion_zero=1 ambient_variant_different=1 exact_linked_variants=2 "
+                "unrelated_unlinked_original=1 original_before_ico=2 global_exact_variants=0 main_draws=4 active_tagged_draws=4 "
+                "state_input_substitution=1 source_loader_substituted=0 cook_substituted=0 callback_substituted=0 gl_error=0\n"
+                "CHAIN_ASSET_COLD_VARIANT cold_owned_variant=1 original_draw_before_compile=0 initially_unlinked=1 "
+                "uninstalled_before_ready=1 real_openmw_ico=1 exact_linked_variants=2 distortion_zero=1 force_opaque_zero=1 "
+                "global_exact_variants=0 main_draws=6 active_tagged_draws=6 rgb=99 state_input_substitution=1 "
+                "source_loader_substituted=0 cook_substituted=0 callback_substituted=0 gl_error=0\n"
+                "CHAIN_ASSET_COMPILE_RETIRE root_retired=1 retained_inner_cancelled=1 retained_quality_small=1 producer_expired=1 "
+                "queued_leaves_charged=1 cancelled_sets_pruned=1 host_before_prune=1000 host_after_prune=600 "
+                "experiment_before=100 experiment_queued=500 experiment_after_prune=100 worker_future=0 "
+                "source_loader_substituted=0 cook_substituted=0 callback_substituted=0\n"
+                "CHAIN_ASSET_MISSING_CONTEXT actual_empty_ico=1 actual_cook_attempt=1 original_topology_preserved=1 "
+                "canonical_refnums_preserved=1 retry_retained=1 readiness_false=1 no_context_invented=1 ico_input_substituted=1 "
+                "source_loader_substituted=0 cook_substituted=0 callback_substituted=0\n"
+                "CHAIN_ASSET_CONTEXT_REFUSAL registered_context=1 current_context_missing=1 actual_program_leaf=1 "
+                "producer_cancelled=1 readiness_false=1 dispatch_input_substituted=1 callback_substituted=0 gl_error=0\n"
+                "CHAIN_ASSET_RELINK_REFUSAL original_applied_first=1 imported_applied_pcp=1 actual_program_leaf=1 "
+                "unsafe_relink_refused=1 producer_cancelled=1 readiness_false=1 original_apply_repairs=1 "
+                "state_cache_invalidated=1 dispatch_input_substituted=1 callback_substituted=0 gl_error=0\n")
 
     @staticmethod
     def post_optimizer_receipt():
@@ -171,6 +196,8 @@ class AssetReleaseEvidence(unittest.TestCase):
         proof = gate.l1_active_grid(valid)
         self.assertEqual(proof["actual_active_owner"]["active_tagged_draws"], "4")
         self.assertEqual(proof["strict_partial_tail"]["main_draws"], "4")
+        self.assertEqual(len(proof["asset_compile_closure"]), 6)
+        self.assertEqual(proof["asset_compile_closure"]["cold_variant"]["original_draw_before_compile"], "0")
         for before, after in (("disabled_control=1", "disabled_control=0"),
                               ("required_original=1", "required_original=0"),
                               ("asset_enabled_first_stage_ordinary=1", "asset_enabled_first_stage_ordinary=0"),
@@ -226,10 +253,45 @@ class AssetReleaseEvidence(unittest.TestCase):
                               ("gl_error=0", "gl_error=1")):
             with self.subTest(partial_field=before, replacement=after), self.assertRaises(gate.QualificationError):
                 gate.l1_active_grid(valid.replace(partial_line, partial_line.replace(before, after)))
+        # Every field in all six actual compile receipts is mandatory and
+        # independently validated. A neighboring correct record cannot hide a
+        # missing, malformed, duplicated or reversed proof flag.
+        for line in self.asset_compile_receipt().splitlines():
+            marker, *fields = line.split()
+            for field in fields:
+                key, value = field.split("=", 1)
+                changes = [("missing", ""), ("invalid", f"{key}=invalid"),
+                           ("duplicate", f"{field} {field}")]
+                if value in ("0", "1"):
+                    changes.append(("reversed", f"{key}={1-int(value)}"))
+                for kind, replacement in changes:
+                    bad_line = line.replace(" " + field, " " + replacement, 1)
+                    with self.subTest(marker=marker, field=key, invalid=kind), self.assertRaises(gate.QualificationError):
+                        gate.l1_active_grid(valid.replace(line, bad_line))
+        for marker, before, after in (
+                ("CHAIN_ASSET_EXACT_CLOSURE", "main_draws=4", "main_draws=3"),
+                ("CHAIN_ASSET_EXACT_CLOSURE", "active_tagged_draws=4", "active_tagged_draws=3"),
+                ("CHAIN_ASSET_EXACT_CLOSURE", "original_before_ico=2", "original_before_ico=0"),
+                ("CHAIN_ASSET_COLD_VARIANT", "main_draws=6", "main_draws=0"),
+                ("CHAIN_ASSET_COLD_VARIANT", "active_tagged_draws=6", "active_tagged_draws=5"),
+                ("CHAIN_ASSET_COLD_VARIANT", "rgb=99", "rgb=16"),
+                ("CHAIN_ASSET_COMPILE_RETIRE", "host_after_prune=600", "host_after_prune=1000"),
+                ("CHAIN_ASSET_COMPILE_RETIRE", "experiment_queued=500", "experiment_queued=100"),
+                ("CHAIN_ASSET_COMPILE_RETIRE", "experiment_after_prune=100", "experiment_after_prune=500")):
+            line = next(row for row in valid.splitlines() if row.startswith(marker + " "))
+            with self.subTest(marker=marker, change=after), self.assertRaises(gate.QualificationError):
+                gate.l1_active_grid(valid.replace(line, line.replace(before, after)))
+        for marker in ("CHAIN_ASSET_EXACT_CLOSURE", "CHAIN_ASSET_COLD_VARIANT"):
+            line = next(row for row in valid.splitlines() if row.startswith(marker + " "))
+            for value in ("0", "513", "-1", "18446744073709551616"):
+                with self.subTest(marker=marker, variants=value), self.assertRaises(gate.QualificationError):
+                    gate.l1_active_grid(valid.replace(line, line.replace("exact_linked_variants=2", "exact_linked_variants=" + value)))
 
     def test_active_grid_missing_ambiguous_and_invalid_receipts_fail_closed(self):
         valid = self.active_grid_receipt()
-        for marker in ("CHAIN_ACTIVE_POPULATION", "CHAIN_ACTIVE_GRID", "CHAIN_ACTIVE_PARTIAL_TAIL", "CHAIN_ACTIVE_EPOCH", "CHAIN_PASS"):
+        for marker in ("CHAIN_ACTIVE_POPULATION", "CHAIN_ACTIVE_GRID", "CHAIN_ACTIVE_PARTIAL_TAIL", "CHAIN_ACTIVE_EPOCH", "CHAIN_PASS",
+                       "CHAIN_ASSET_EXACT_CLOSURE", "CHAIN_ASSET_COLD_VARIANT", "CHAIN_ASSET_COMPILE_RETIRE",
+                       "CHAIN_ASSET_MISSING_CONTEXT", "CHAIN_ASSET_CONTEXT_REFUSAL", "CHAIN_ASSET_RELINK_REFUSAL"):
             missing = "\n".join(line for line in valid.splitlines() if not line.startswith(marker + " ")) + "\n"
             duplicate = valid + next(line for line in valid.splitlines() if line.startswith(marker + " ")) + "\n"
             for bad in (missing, duplicate):

@@ -716,6 +716,12 @@ namespace Shader
 
         bool hasSamplers(const ShaderManager::SamplerBindingMap& samplers) const;
         bool assetSamplersMatch(const AssetGeometry::Samplers& samplers) const override { return hasSamplers(samplers); }
+        bool assetCanPrepareVariant(const osg::State& state,
+            const osg::Program::PerContextProgram& program) const override
+        {
+            const auto context = state.getContextID();
+            return context < mApplied.size() && mApplied[context] != &program;
+        }
         bool hasProgramTemplate(const osg::Program* program) const;
         void prepareAssetRegeneration(const std::shared_ptr<AssetGeometry::Epoch>& epoch, std::uint64_t previousVersion);
         void finishAssetRegeneration(const std::shared_ptr<AssetGeometry::Epoch>& epoch, std::uint64_t previousVersion);

@@ -12,7 +12,7 @@ for Deep. Windows recording is optional after choosing Deep.
 12 / 6: T2 coarse-to-fine terrain diffuse texture streaming.
 12 / 7: T2 plus idle texture demotion.
 12 / 8: T1 plus T2.
-12 / 9: all five asset switches.
+12 / 9: all five asset switches; H1 remains runtime unqualified.
 12 / 10: individual asset toggles. Demotion enables streaming; disabling
 streaming also disables demotion. Category 8 can mix these with existing
 RAM, renderer, animation and terrain mechanisms.
@@ -59,6 +59,25 @@ picking metadata, collision and the MSOC owner path remain authoritative.
 Tagged active build/actual draw counters distinguish this path from distant
 LOD consumption. Real active draws are still required before benchmarking;
 native chain success alone does not qualify the user's outdoor scene.
+The prepared active L1 tail can use the existing NearFuture admission policy
+only after its exact current strong ordinary owner is proved. Nested cooking
+shares the same experimental permit, child quota and common future debt.
+Missing, weak, stale and distant owners retain their original admission paths.
+Physical/commit safety floors and the one-job limit remain in force.
+
+Optional geometry preparation owns a separate resource-only compile lifetime.
+It keeps the actual drawable/index and texture operations and prepares the
+canonical shader variants with their certified imported defines. Ordinary
+chunk compilation and cache pruning keep their existing policy. Asset readiness
+requires actual resource completion, the exact context and current material
+guards; ordinary callback observations cannot grant it. Root retirement cancels
+pending work. Queued leaves retain the source templates and their existing
+host charges until the resources retire. Metadata has an additional global
+4 MiB and 512-recipe bound within the experimental/common accounting; this is
+not another independent payload allowance. Multiple/unqualified contexts and
+unsafe relinks keep the original geometry. Preparing these resources does not
+guarantee that subsequent driver calls cannot stall.
+
 H1 has not produced a proxy draw in the actual current Seyda Neen captures.
 Its separate switch remains diagnostic; no H1 performance result is claimed.
 Existing authored LOD,

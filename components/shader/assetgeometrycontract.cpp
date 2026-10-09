@@ -708,6 +708,8 @@ namespace Shader::AssetGeometry
     }
     const Samplers& Snapshot::samplers() const {static const Samplers empty; return mData ? mData->proof->samplers : empty;}
     std::size_t Snapshot::metadataBytes() const {return mData ? mData->bytes : 0;}
+    const Shader::ProgramDefineSnapshot* Snapshot::importedDefines() const noexcept
+    {return mData ? &mData->imported : nullptr;}
     std::optional<Snapshot> capture(const osg::Program& program, const std::vector<const osg::StateSet*>& path,
         Refusal* refusal)
     {

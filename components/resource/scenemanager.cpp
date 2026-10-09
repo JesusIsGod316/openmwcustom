@@ -1409,12 +1409,16 @@ namespace Resource
                     if (auto* budget = CacheMaintenanceScope::current(); budget && !budget->scan()) break;
                     bool unused = !*it;
                     bool cacheOnlyPolicy = false;
+                    bool resourceOnlyPolicy = false;
                     int cacheOnlyReferences = 0;
                     if (*it)
                     {
                         const auto* classified = dynamic_cast<const V321ClassifiedCompileSet*>(it->get());
                         if (classified && classified->resourceOnly())
+                        {
                             unused = !classified->resourceCompilePending();
+                            resourceOnlyPolicy = unused;
+                        }
                         else if (const auto* subgraph = (*it)->_subgraphToCompile.get())
                         {
                             int refcount = subgraph->referenceCount();
@@ -1430,6 +1434,8 @@ namespace Resource
                     }
                     if (unused && (!CacheMaintenanceScope::current() || CacheMaintenanceScope::current()->release()))
                     {
+                        if(resourceOnlyPolicy)
+                            SceneUtil::GeneratedStaticLod::noteAssetResourceCompilePruned(**it);
                         if (cacheOnlyPolicy)
                             if (auto* callback = dynamic_cast<SceneUtil::GeneratedStaticLod::CompileCompleted*>(
                                     (*it)->_compileCompletedCallback.get()))
@@ -1447,9 +1453,12 @@ namespace Resource
             // allocation is performed while holding the shared queue lock.
             for (const auto& retired : releasedCompiles)
                 if (retired)
+                {
+                    SceneUtil::GeneratedStaticLod::reportAssetResourceCompilePruned(*retired);
                     if (const auto* callback = dynamic_cast<const SceneUtil::GeneratedStaticLod::CompileCompleted*>(
                             retired->_compileCompletedCallback.get()))
                         callback->reportCacheOnlyPruned(*retired);
+                }
         }
     }
 

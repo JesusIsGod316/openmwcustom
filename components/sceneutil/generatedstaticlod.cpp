@@ -5,6 +5,8 @@
 #include <components/resource/derivedassetcache.hpp>
 #include <components/resource/speculativebudget.hpp>
 #include <components/resource/assetgpubudget.hpp>
+#include <components/resource/v321classifiedcompileset.hpp>
+#include <components/resource/scenemanager.hpp>
 #include <components/debug/debuglog.hpp>
 #include <sstream>
 #include <iomanip>
@@ -48,6 +50,7 @@
 #include <vector>
 #include <set>
 #include <limits>
+#include <functional>
 
 namespace SceneUtil::GeneratedStaticLod
 {
@@ -1337,6 +1340,500 @@ namespace SceneUtil::GeneratedStaticLod
     }
     namespace
     {
+        using Ico=osgUtil::IncrementalCompileOperation;
+        // A queued leaf can retain an original replay path, including an inner
+        // selector in a combined representation. Root retirement therefore has
+        // its own small cancellation token; it never strongly owns the graph
+        // or the preparation whose resource-only queue it retires.
+        class AssetCompileRootOwner final : public osg::Object
+        {
+        public:
+            AssetCompileRootOwner()=default;
+            AssetCompileRootOwner(std::shared_ptr<Resource::V321ResourceCompileLifetime> lifetime,
+                std::weak_ptr<Readiness> readiness)
+                : mLifetime(std::move(lifetime)),mReadiness(std::move(readiness)) {}
+            AssetCompileRootOwner(const AssetCompileRootOwner& copy,const osg::CopyOp& op)
+                : osg::Object(copy,op) {} // A copied root never inherits demand.
+            META_Object(SceneUtil,AssetCompileRootOwner)
+        protected:
+            ~AssetCompileRootOwner() override
+            {
+                if(mLifetime) mLifetime->cancel();
+                if(const auto receipt=mReadiness.lock()) receipt->ready.store(false,std::memory_order_release);
+            }
+        private:
+            std::shared_ptr<Resource::V321ResourceCompileLifetime> mLifetime;
+            std::weak_ptr<Readiness> mReadiness;
+        };
+        struct AssetCompileLease
+        {
+            inline static std::atomic_size_t liveRecipes{0},liveMetadata{0};
+            static constexpr std::size_t RecipeCap=512,MetadataCap=4*Resource::SpeculativeBudget::MiB;
+            std::size_t recipes=0,metadata=0;
+            Resource::SpeculativeBudget::ChargePtr charge;
+            std::vector<osg::ref_ptr<const AssetPaging::HostOwner>> resourceOwners;
+            std::vector<osg::ref_ptr<const osg::Object>> templateOwners;
+            ~AssetCompileLease()
+            {
+                // Destroy both payloads and vector capacities before releasing
+                // their retained metadata charge/global quota reservation.
+                decltype(templateOwners)().swap(templateOwners);
+                decltype(resourceOwners)().swap(resourceOwners);
+                charge.reset();
+                if(recipes) liveRecipes.fetch_sub(recipes,std::memory_order_acq_rel);
+                if(metadata) liveMetadata.fetch_sub(metadata,std::memory_order_acq_rel);
+            }
+            static bool reserve(std::atomic_size_t& counter,std::size_t amount,std::size_t maximum)
+            {
+                auto used=counter.load(std::memory_order_acquire);
+                do {if(amount>maximum-(std::min)(used,maximum)) return false;}
+                while(!counter.compare_exchange_weak(used,used+amount,std::memory_order_acq_rel));
+                return true;
+            }
+            bool admit(std::size_t count,std::size_t bytes)
+            {
+                if(!reserve(liveRecipes,count,RecipeCap)) return false;
+                recipes=count;
+                if(!reserve(liveMetadata,bytes,MetadataCap)) return false;
+                metadata=bytes;return true;
+            }
+        };
+        struct AssetCompileRecipe
+        {
+            osg::ref_ptr<const osg::Program> program;
+            Shader::AssetGeometry::Snapshot snapshot;
+        };
+        struct AssetCompileVariant
+        {
+            AssetCompileRecipe recipe;
+            osg::observer_ptr<osg::GraphicsContext> context;
+            unsigned contextId=0;
+            // Written only by the owned GL operation, published by done. The
+            // callback reads this exact retained PCP, never ambient getPCP().
+            osg::ref_ptr<const osg::Program::PerContextProgram> pcp;
+            GLuint handle=0;
+            std::atomic_bool done{false};
+            std::shared_ptr<AssetCompileLease> lease;
+            ~AssetCompileVariant()
+            {
+                // Queued status can be the last owner after graph retirement.
+                // Release actual GL/recipe resources while their lease lives.
+                pcp=nullptr;recipe.program=nullptr;recipe.snapshot={};
+                lease.reset();
+            }
+        };
+    }
+    struct AssetCompilePreparation
+    {
+        std::shared_ptr<Resource::V321ResourceCompileLifetime> lifetime
+            =std::make_shared<Resource::V321ResourceCompileLifetime>();
+        std::weak_ptr<Readiness> readiness;
+        std::shared_ptr<AssetCompileLease> lease=std::make_shared<AssetCompileLease>();
+        std::vector<std::shared_ptr<MaterialGuard>> guards;
+        std::vector<AssetCompileRecipe> recipes;
+        std::vector<std::shared_ptr<AssetCompileVariant>> variants;
+        osg::observer_ptr<osg::GraphicsContext> context;
+        unsigned contextId=0;
+        ~AssetCompilePreparation()
+        {
+            lifetime->cancel();
+            if(const auto receipt=readiness.lock()) receipt->ready.store(false,std::memory_order_release);
+        }
+        bool current() const
+        {return std::all_of(guards.begin(),guards.end(),[](const auto& guard){return guard && guard->current();});}
+    };
+    bool MaterialGuard::appendCompileRecipes(AssetCompilePreparation& preparation) const
+    {
+        if(!mImpl || !current()) return false;
+        for(const auto& entry:mImpl->programs)
+        {
+            const auto* imports=entry.snapshot.importedDefines();
+            if(!entry.snapshot || !entry.owner || !imports || !imports->bounded
+                || imports->string!=entry.imports) return false;
+            if(std::any_of(preparation.recipes.begin(),preparation.recipes.end(),[&](const auto& recipe) {
+                const auto* previous=recipe.snapshot.importedDefines();
+                return recipe.program==entry.owner && previous && previous->string==imports->string;
+            })) continue;
+            if(preparation.recipes.size()==AssetCompileLease::RecipeCap) return false;
+            // Snapshot shares its existing immutable certificate/import owner;
+            // no source text, arbitrary StateSet or live cull path is copied.
+            preparation.recipes.push_back({entry.owner,entry.snapshot});
+        }
+        return true;
+    }
+    namespace
+    {
+        bool ownedCompileContext(const AssetCompilePreparation& owner,osg::State* state)
+        {
+            osg::ref_ptr<osg::GraphicsContext> context;
+            return state && owner.context.lock(context) && context.get()==state->getGraphicsContext()
+                && state->getContextID()==owner.contextId && context->isCurrent();
+        }
+        bool ownedCompileContext(const AssetCompileVariant& variant,osg::State* state)
+        {
+            osg::ref_ptr<osg::GraphicsContext> context;
+            return state && variant.context.lock(context) && context.get()==state->getGraphicsContext()
+                && state->getContextID()==variant.contextId && context->isCurrent();
+        }
+        class AssetExactProgramOp final : public Ico::CompileProgramOp
+        {
+        public:
+            AssetExactProgramOp(std::weak_ptr<AssetCompilePreparation> owner,
+                std::shared_ptr<AssetCompileVariant> variant)
+                : CompileProgramOp(const_cast<osg::Program*>(variant->recipe.program.get()))
+                , mOwner(std::move(owner)),mVariant(std::move(variant)) {}
+            ~AssetExactProgramOp() override {_program=nullptr;}
+            bool compile(Ico::CompileInfo& info) override
+            {
+                const auto owner=mOwner.lock();
+                auto* state=info.getState();
+                if(!owner || !owner->lifetime->pending()) return true;
+                const auto fail=[&]{owner->lifetime->cancel();return true;};
+                try
+                {
+                if(!ownedCompileContext(*mVariant,state)) return fail();
+                Shader::AssetGeometry::ProducerReadScope producer;
+                const auto* imports=mVariant->recipe.snapshot.importedDefines();
+                if(!imports || Shader::AssetGeometry::current(mVariant->recipe.snapshot,*_program)
+                    !=Shader::AssetGeometry::Refusal::None) return fail();
+                Shader::ProgramDefineScope defines(*state,*imports);
+                if(state->getDefineString(_program->getShaderDefines())!=imports->string) return fail();
+                auto* pcp=_program->getPCP(*state);
+                if(!pcp || pcp->getProgram()!=_program.get() || pcp->getDefineString()!=imports->string) return fail();
+                const bool reusable=pcp->isLinked() && !pcp->needsLink();
+                if(!reusable)
+                {
+                    // Stock G1-off SamplerProgram cannot observe a preparer
+                    // relink of its currently applied PCP. Refuse that case;
+                    // never clear sampler state, substitute Program or enable
+                    // the unrelated global exact-variant experiment.
+                    const auto* samplers=dynamic_cast<const Shader::AssetGeometry::SamplerProducer*>(_program.get());
+                    if(!samplers || !samplers->assetCanPrepareVariant(*state,*pcp)) return fail();
+                    _program->compileGLObjects(*state);
+                }
+                if(!pcp->isLinked() || pcp->needsLink() || !pcp->getHandle()
+                    || Shader::AssetGeometry::current(mVariant->recipe.snapshot,*_program)
+                        !=Shader::AssetGeometry::Refusal::None) return fail();
+                mVariant->pcp=pcp;mVariant->handle=pcp->getHandle();
+                mVariant->done.store(true,std::memory_order_release);
+                return true;
+                }
+                catch(...) {return fail();} // Optional preparation stays fail-closed.
+            }
+        private:
+            std::weak_ptr<AssetCompilePreparation> mOwner;
+            std::shared_ptr<AssetCompileVariant> mVariant;
+        };
+        class AssetDrawableOp final : public Ico::CompileDrawableOp
+        {
+        public:
+            AssetDrawableOp(osg::Drawable* drawable,std::weak_ptr<AssetCompilePreparation> owner,
+                std::shared_ptr<AssetCompileLease> lease)
+                : CompileDrawableOp(drawable),mOwner(std::move(owner)),mLease(std::move(lease)) {}
+            ~AssetDrawableOp() override {_drawable=nullptr;}
+            bool compile(Ico::CompileInfo& info) override
+            {
+                const auto owner=mOwner.lock();
+                if(!owner || !owner->lifetime->pending()) return true;
+                auto* state=info.getState();
+                if(!ownedCompileContext(*owner,state))
+                {owner->lifetime->cancel();return true;}
+                try {return Ico::CompileDrawableOp::compile(info);}
+                catch(...) {owner->lifetime->cancel();return true;}
+            }
+        private:
+            std::weak_ptr<AssetCompilePreparation> mOwner;
+            std::shared_ptr<AssetCompileLease> mLease;
+        };
+        class AssetTextureOp final : public Ico::CompileTextureOp
+        {
+        public:
+            AssetTextureOp(osg::Texture* texture,std::weak_ptr<AssetCompilePreparation> owner,
+                std::shared_ptr<AssetCompileLease> lease)
+                : CompileTextureOp(texture),mOwner(std::move(owner)),mLease(std::move(lease)) {}
+            ~AssetTextureOp() override {_texture=nullptr;}
+            bool compile(Ico::CompileInfo& info) override
+            {
+                const auto owner=mOwner.lock();
+                if(!owner || !owner->lifetime->pending()) return true;
+                auto* state=info.getState();
+                if(!ownedCompileContext(*owner,state))
+                {owner->lifetime->cancel();return true;}
+                try {return Ico::CompileTextureOp::compile(info);}
+                catch(...) {owner->lifetime->cancel();return true;}
+            }
+        private:
+            std::weak_ptr<AssetCompilePreparation> mOwner;
+            std::shared_ptr<AssetCompileLease> mLease;
+        };
+        class AssetCompileCompleted final : public Ico::CompileCompletedCallback
+        {
+        public:
+            AssetCompileCompleted(std::weak_ptr<AssetCompilePreparation> owner,std::shared_ptr<Readiness> receipt,
+                std::weak_ptr<Resource::V321ResourceCompileLifetime> lifetime)
+                : mOwner(std::move(owner)),mReceipt(std::move(receipt)),mLifetime(std::move(lifetime)) {}
+            void notePruned(const Ico::CompileSet& set) noexcept
+            {
+                if(mPruned.exchange(true,std::memory_order_acq_rel)) return;
+                // Only a small atomic lifetime is locked under the queue mutex.
+                // Never lock/destroy graph-owned Preparation at this seam.
+                const auto lifetime=mLifetime.lock();
+                mExpired.store(!lifetime,std::memory_order_relaxed);
+                mCancelled.store(lifetime && lifetime->cancelled(),std::memory_order_relaxed);
+                mPending.store(lifetime && lifetime->pending(),std::memory_order_relaxed);
+                mReady.store(mReceipt->ready.load(std::memory_order_acquire),std::memory_order_relaxed);
+                mContexts.store(static_cast<unsigned>(set._compileMap.size()),std::memory_order_relaxed);
+                mRemaining.store(static_cast<unsigned>(set._numberCompileListsToCompile),std::memory_order_release);
+                ++Counters::ownedCompilePruned;
+                if(!lifetime) ++Counters::ownedCompilePrunedExpired;
+                else if(lifetime->cancelled()) ++Counters::ownedCompilePrunedCancelled;
+            }
+            void reportPruned(const Ico::CompileSet& set) const
+            {
+                if(!mPruned.load(std::memory_order_acquire)) return;
+                static std::atomic_uint64_t reports{0};
+                if(reports.fetch_add(1,std::memory_order_relaxed)>=3) return;
+                try
+                {
+                    Log(Debug::Info) << std::dec << "OptimizedMW asset resource compile prune receipt: readiness_id=" << mReceipt->diagnosticId
+                        << " set_id=" << reinterpret_cast<std::uintptr_t>(&set) << " asset_mask=" << mReceipt->assetMask
+                        << " contexts_at_prune=" << mContexts.load() << " remaining_at_prune=" << mRemaining.load()
+                        << " ready_at_prune=" << mReady.load() << " owner_expired=" << mExpired.load()
+                        << " cancelled=" << mCancelled.load() << " pending=" << mPending.load()
+                        << " actual_removed=1 resource_only=1 queue_lock_held=0 observation_only=1";
+                }
+                catch(...) {}
+            }
+            bool compileCompleted(Ico::CompileSet* set) override
+            {
+                ++Counters::ownedCompileCallbacks;
+                const auto owner=mOwner.lock();
+                if(!owner) {++Counters::ownedCompileFailed;return true;}
+                const auto readiness=owner->readiness.lock();
+                if(!readiness) {owner->lifetime->cancel();++Counters::ownedCompileFailed;return true;}
+                Shader::AssetGeometry::ProducerReadScope producer;
+                bool ready=owner->lifetime->pending() && set && set->compiled()
+                    && !set->_subgraphToCompile && set->_compileMap.size()==1
+                    && !owner->variants.empty() && owner->current();
+                for(const auto& variant:owner->variants)
+                {
+                    if(!ready) break;
+                    const auto* defines=variant->recipe.snapshot.importedDefines();
+                    osg::ref_ptr<osg::GraphicsContext> context;
+                    ready=variant->done.load(std::memory_order_acquire) && variant->context.lock(context)
+                        && context->getState() && context->getState()->getContextID()==variant->contextId
+                        && set->_compileMap.contains(context.get()) && defines && variant->pcp
+                        && variant->pcp->getProgram()==variant->recipe.program.get()
+                        && variant->pcp->getDefineString()==defines->string
+                        && variant->pcp->getHandle()==variant->handle && variant->handle
+                        && variant->pcp->isLinked() && !variant->pcp->needsLink()
+                        && Shader::AssetGeometry::current(variant->recipe.snapshot,*variant->recipe.program)
+                            ==Shader::AssetGeometry::Refusal::None;
+                }
+                if(ready) owner->lifetime->complete();else owner->lifetime->cancel();
+                ready=ready && !owner->lifetime->cancelled();
+                readiness->ready.store(ready,std::memory_order_release);
+                // Root retirement can race this weak callback. Cancellation
+                // writes ready=false too; the post-publication check covers a
+                // cancellation that preceded this publication.
+                if(owner->lifetime->cancelled())
+                {ready=false;readiness->ready.store(false,std::memory_order_release);}
+                if(ready)
+                {
+                    ++Counters::ownedCompileReady;
+                    readiness->everReady.store(true,std::memory_order_release);
+                    AssetPaging::each(readiness->assetMask,[](AssetPaging::LaneCounters& counters){++counters.ready;});
+                }
+                else ++Counters::ownedCompileFailed;
+                static std::atomic_uint64_t readyReports{0},failedReports{0};
+                if((ready ? readyReports : failedReports).fetch_add(1,std::memory_order_relaxed)<3)
+                try
+                {
+                    const auto imported=std::count_if(owner->variants.begin(),owner->variants.end(),[](const auto& variant){
+                        const auto* defines=variant->recipe.snapshot.importedDefines();return defines && !defines->string.empty();});
+                    Log(Debug::Info) << std::dec << "OptimizedMW asset owned compile receipt: readiness_id=" << readiness->diagnosticId
+                        << " asset_mask=" << readiness->assetMask << " active_grid=" << readiness->activeGridOrigin.load()
+                        << " ready=" << ready << " recipes=" << owner->variants.size() << " imported_recipes=" << imported
+                        << " context=" << owner->contextId << " compiled=" << bool(set && set->compiled())
+                        << " cancelled=" << owner->lifetime->cancelled() << " resource_only=1 closure_scope=certified_asset_recipes ambient_lookup=0"
+                        << " global_exact_variants=" << Shader::exactProgramVariantsEnabled();
+                }
+                catch(...) {} // Bounded observation cannot alter completion.
+                return true; // Resource-only set has no subgraph to merge.
+            }
+        private:
+            std::weak_ptr<AssetCompilePreparation> mOwner;
+            std::shared_ptr<Readiness> mReceipt; // Small receipt, no graph/lifetime ownership.
+            std::weak_ptr<Resource::V321ResourceCompileLifetime> mLifetime;
+            std::atomic_bool mPruned{false},mExpired{false},mCancelled{false},mPending{false},mReady{false};
+            std::atomic_uint mContexts{0},mRemaining{0};
+        };
+    }
+    void noteAssetResourceCompilePruned(const Ico::CompileSet& set) noexcept
+    {
+        if(auto* callback=dynamic_cast<AssetCompileCompleted*>(set._compileCompletedCallback.get()))
+            callback->notePruned(set);
+    }
+    void reportAssetResourceCompilePruned(const Ico::CompileSet& set)
+    {
+        if(const auto* callback=dynamic_cast<const AssetCompileCompleted*>(set._compileCompletedCallback.get()))
+            callback->reportPruned(set);
+    }
+    bool prepareAssetCompileClosure(const std::shared_ptr<Readiness>& readiness,
+        std::span<const osg::ref_ptr<Group>> finalSelectors,osg::Node& ordinaryOwner,
+        const osg::Object& originalTemplates,std::size_t originalTemplateUpperBound,
+        Ico* ico,Resource::V321CompileUrgency urgency)
+    {
+        // This narrow path admits one actual ICO graphics context. It never
+        // guesses a preview/reflection context or changes ordinary compilation.
+        if(!readiness || finalSelectors.empty() || finalSelectors.size()>512
+            || !ico || ico->getContextSet().size()!=1 || originalTemplateUpperBound>4096
+            || !dynamic_cast<const Resource::TemplateMultiRef*>(&originalTemplates)) return false;
+        const auto scope=Resource::SpeculativeScope::capture();
+        if(!scope.budget || !scope.budget->experimentEnabled()
+            || !SceneUtil::PagingWorkScope::optionalOptimization()) return false;
+        auto* context=*ico->getContextSet().begin();
+        if(!context || !context->getState()) return false;
+        try
+        {
+            Shader::AssetGeometry::ProducerReadScope producer;
+            Resource::SpeculativeScope::Stage admission(AssetCompileLease::MetadataCap,0,true);
+            auto preparation=std::make_shared<AssetCompilePreparation>();
+            preparation->readiness=readiness;
+            preparation->context=context;preparation->contextId=context->getState()->getContextID();
+            // ObjectPaging has not yet attached TemplateMultiRef to its root
+            // UDC at this point. Retain its real completed source owner directly;
+            // the caller's nodes-map cardinality bounds its addRef cohort.
+            preparation->lease->templateOwners.emplace_back(&originalTemplates);
+            const auto owners=[&](const osg::Node& node) {
+                const auto* data=node.getUserDataContainer();if(!data) return true;
+                if(data->getNumUserObjects()>64) return false;
+                for(unsigned i=0;i<data->getNumUserObjects();++i)
+                {
+                    if(const auto* host=dynamic_cast<const AssetPaging::HostOwner*>(data->getUserObject(i)))
+                    {
+                        auto& retained=preparation->lease->resourceOwners;
+                        if(std::none_of(retained.begin(),retained.end(),[&](const auto& previous){return previous.get()==host;}))
+                        {if(retained.size()==4096) return false;retained.emplace_back(host);}
+                    }
+                    else if(const auto* ref=dynamic_cast<const Resource::TemplateRef*>(data->getUserObject(i)))
+                    {
+                        auto& retained=preparation->lease->templateOwners;
+                        if(std::none_of(retained.begin(),retained.end(),[&](const auto& previous){return previous.get()==ref;}))
+                        {if(retained.size()==4096) return false;retained.emplace_back(ref);}
+                    }
+                    else if(const auto* multi=dynamic_cast<const Resource::TemplateMultiRef*>(data->getUserObject(i));
+                        multi && multi!=&originalTemplates)
+                        return false; // Only the explicitly bounded actual root cohort is authorized.
+                }
+                return true;
+            };
+            if(!owners(ordinaryOwner)) return false;
+            struct Census final : osg::NodeVisitor
+            {
+                std::function<bool(const osg::Node&)> retain;
+                std::set<const osg::Node*> seen;
+                std::set<const osg::Drawable*> drawables;
+                std::set<const osg::Texture*> textures;
+                std::set<const osg::Program*> programs;
+                bool bounded=true;
+                explicit Census(std::function<bool(const osg::Node&)> value)
+                    : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN),retain(std::move(value)) {setNodeMaskOverride(~0u);}
+                void apply(osg::Node& node) override
+                {
+                    if(!bounded || seen.contains(&node)) return;
+                    if(seen.size()==4096 || !retain(node)) {bounded=false;return;}
+                    seen.insert(&node);
+                    if(const auto* state=node.getStateSet())
+                    {
+                        for(const auto& [key,pair]:state->getAttributeList())
+                            if(key.first==osg::StateAttribute::PROGRAM)
+                            {
+                                const auto* program=dynamic_cast<const osg::Program*>(pair.first.get());
+                                if(!program || (!programs.contains(program) && programs.size()==512))
+                                {bounded=false;return;}
+                                programs.insert(program);
+                            }
+                        for(const auto& unit:state->getTextureAttributeList())
+                            for(const auto& [key,pair]:unit)
+                                if(key.first==osg::StateAttribute::TEXTURE)
+                                {
+                                    const auto* texture=dynamic_cast<const osg::Texture*>(pair.first.get());
+                                    if(!texture || (!textures.contains(texture) && textures.size()==4096))
+                                    {bounded=false;return;}
+                                    textures.insert(texture);
+                                }
+                    }
+                    traverse(node);
+                }
+                void apply(osg::Drawable& node) override
+                {
+                    if(!bounded) return;
+                    if(!drawables.contains(&node) && drawables.size()==4096) {bounded=false;return;}
+                    drawables.insert(&node);apply(static_cast<osg::Node&>(node));
+                }
+            } census(owners);
+            for(const auto& selector:finalSelectors)
+            {
+                if(!selector || selector->mReadiness!=readiness || !selector->mMaterialGuard
+                    || !selector->mMaterialGuard->appendCompileRecipes(*preparation)) return false;
+                if(std::find(preparation->guards.begin(),preparation->guards.end(),selector->mMaterialGuard)==preparation->guards.end())
+                    preparation->guards.push_back(selector->mMaterialGuard);
+                selector->accept(census);
+                if(!census.bounded) return false;
+            }
+            if(preparation->recipes.empty()) return false;
+            osgUtil::StateToCompile resources(osgUtil::GLObjectsVisitor::COMPILE_DISPLAY_LISTS
+                |osgUtil::GLObjectsVisitor::COMPILE_STATE_ATTRIBUTES,nullptr);
+            resources.setNodeMaskOverride(~0u);
+            for(const auto& selector:finalSelectors) selector->accept(resources);
+            if(resources._drawables.size()>4096 || resources._textures.size()>4096
+                || resources._programs.size()>512) return false;
+            // Program census is deliberately replaced by the exact effective
+            // original+derived recipes already authorized by final selectors.
+            // All actual drawable/index and texture operations survive.
+            const auto metadata=16384ull+census.seen.size()*128ull
+                +(resources._drawables.size()+resources._textures.size())*256ull
+                +preparation->recipes.size()*1024ull+preparation->lease->resourceOwners.size()*64ull
+                +preparation->lease->templateOwners.size()*64ull+originalTemplateUpperBound*32ull;
+            if(metadata>AssetCompileLease::MetadataCap
+                || !preparation->lease->admit(preparation->recipes.size(),metadata)) return false;
+            preparation->lease->charge=admission.track({preparation->lease.get(),6u},metadata,false);
+            if(!preparation->lease->charge) return false;
+            osg::ref_ptr<Resource::V321ClassifiedCompileSet> set=new Resource::V321ClassifiedCompileSet(
+                preparation->lifetime,Resource::V321CompileClass::ObjectPaging,urgency);
+            resources._programs.clear();
+            set->buildCompileMap(ico->getContextSet(),resources);
+            auto& list=set->_compileMap[context];
+            // Keep OSG operation subclasses so the existing scheduling kind,
+            // cost estimation and fairness policy continue to see leaf work.
+            for(auto& op:list._compileOps)
+                if(auto* draw=dynamic_cast<Ico::CompileDrawableOp*>(op.get()))
+                    op=new AssetDrawableOp(draw->_drawable,preparation,preparation->lease);
+                else if(auto* texture=dynamic_cast<Ico::CompileTextureOp*>(op.get()))
+                    op=new AssetTextureOp(texture->_texture,preparation,preparation->lease);
+                else return false; // Never silently omit an unknown GL op.
+            for(const auto& recipe:preparation->recipes)
+            {
+                auto variant=std::make_shared<AssetCompileVariant>();
+                variant->recipe=recipe;variant->context=context;variant->contextId=context->getState()->getContextID();
+                variant->lease=preparation->lease;preparation->variants.push_back(variant);
+                list.add(new AssetExactProgramOp(preparation,std::move(variant)));
+            }
+            set->_numberCompileListsToCompile.exchange(1);
+            set->_compileCompletedCallback=new AssetCompileCompleted(preparation,readiness,preparation->lifetime);
+            for(const auto& selector:finalSelectors) selector->mPreparation=preparation;
+            readiness->preparation=preparation;
+            ordinaryOwner.getOrCreateUserDataContainer()->addUserObject(new AssetCompileRootOwner(preparation->lifetime,readiness));
+            ico->add(set,false);
+            ++Counters::ownedCompileQueued;
+            return true;
+        }
+        catch(const Resource::SpeculativeDeferred&) {throw;}
+        catch(const std::bad_alloc&) {return false;}
+    }
+    namespace
+    {
         const char* compileBlockName(CompileBlock value)
         {
             constexpr std::array names{"none","missing_set","incomplete","missing_root","empty_contexts",
@@ -1355,6 +1852,15 @@ namespace SceneUtil::GeneratedStaticLod
             << " pruned_unready_main_owners=" << Counters::compilePrunedMainOwners.load()
             << " pruned_main_guard_samples=" << Counters::compilePrunedMainSamples.load()
             << " pruned_main_current_guard_samples=" << Counters::compilePrunedMainCurrentGuardSamples.load();
+        out << " asset_owned_queued=" << Counters::ownedCompileQueued.load()
+            << " asset_owned_callbacks=" << Counters::ownedCompileCallbacks.load()
+            << " asset_owned_ready=" << Counters::ownedCompileReady.load()
+            << " asset_owned_failed=" << Counters::ownedCompileFailed.load()
+            << " asset_owned_pruned=" << Counters::ownedCompilePruned.load()
+            << " asset_owned_pruned_cancelled=" << Counters::ownedCompilePrunedCancelled.load()
+            << " asset_owned_pruned_expired=" << Counters::ownedCompilePrunedExpired.load()
+            << " asset_owned_live_recipes=" << AssetCompileLease::liveRecipes.load()
+            << " asset_owned_live_metadata=" << AssetCompileLease::liveMetadata.load();
         for(unsigned i=1;i<static_cast<unsigned>(CompileBlock::Count);++i)
             out << " callback_" << compileBlockName(static_cast<CompileBlock>(i)) << '=' << Counters::compileBlocked[i].load();
         out << " diagnostic_only=1";
@@ -1386,6 +1892,8 @@ namespace SceneUtil::GeneratedStaticLod
                 << " remaining_at_prune=" << mReadiness->prunedRemaining.load()
                 << " compiled_at_prune=" << mReadiness->compiledAtPrune.load()
                 << " ready_at_prune=" << mReadiness->readyAtPrune.load()
+                << " queue_scope=ordinary_chunk observation_only=" << !mGrantReadiness
+                << " readiness_granted=0"
                 << " cache_only_policy=1 actual_removed=1 queue_lock_held=0 diagnostic_only=1";
         }
         catch(...) {} // Diagnostic allocation/logging must not change retirement.
@@ -1446,8 +1954,8 @@ namespace SceneUtil::GeneratedStaticLod
                 }
                 if (!ready) break;
             }
-        mReadiness->ready.store(ready, std::memory_order_release);
-        if (ready)
+        if(mGrantReadiness) mReadiness->ready.store(ready, std::memory_order_release);
+        if (ready && mGrantReadiness)
         {
             mReadiness->everReady.store(true, std::memory_order_release);
             AssetPaging::each(mReadiness->assetMask, [](AssetPaging::LaneCounters& value) { ++value.ready; });
@@ -1462,6 +1970,7 @@ namespace SceneUtil::GeneratedStaticLod
                     << " set_id=" << reinterpret_cast<std::uintptr_t>(compiled)
                     << " asset_mask=" << mReadiness->assetMask << " active_grid=" << mReadiness->activeGridOrigin.load()
                     << " ready=" << ready << " reason=" << compileBlockName(block)
+                    << " observation_only=" << !mGrantReadiness << " readiness_granted=" << (ready && mGrantReadiness)
                     << " compile_closed=" << bool(compiled && compiled->compiled())
                     << " remaining=" << (compiled ? static_cast<unsigned>(compiled->_numberCompileListsToCompile) : 0)
                     << " contexts=" << (compiled ? compiled->_compileMap.size() : 0)
@@ -1504,6 +2013,7 @@ namespace SceneUtil::GeneratedStaticLod
     void Group::releaseGLObjects(osg::State* state) const
     {
         if (mReadiness) mReadiness->ready.store(false, std::memory_order_release);
+        if (mPreparation) mPreparation->lifetime->cancel();
         osg::Group::releaseGLObjects(state);
     }
     bool Group::wantsDerived(osgUtil::CullVisitor& visitor)
@@ -1513,6 +2023,7 @@ namespace SceneUtil::GeneratedStaticLod
         if (!camera || camera != mMainCamera.get() || ShadowTraversalScope::active()
             || !viewport || viewport->height() <= 0 || !mReadiness || !mReadiness->ready.load(std::memory_order_acquire)
             || !visitor.getModelViewMatrix() || !visitor.getProjectionMatrix()) return false;
+        if(mPreparation && mPreparation->lifetime->cancelled()) return false;
         const auto& projection = *visitor.getProjectionMatrix();
         if (std::abs(projection(2,3) + 1) > 1e-5 || std::abs(projection(3,3)) > 1e-5
             || projection(0,1) != 0 || projection(1,0) != 0) return false;
@@ -1611,6 +2122,9 @@ namespace SceneUtil::GeneratedStaticLod
                             << " ready_at_prune=" << mReadiness->readyAtPrune.load()
                             << " ready_at_observation=0 main_camera=1 shadow_scope=0 material_guard_current=" << current
                             << " guard_scope=selector_local_recipe"
+                            << " prune_scope=ordinary_chunk asset_owned_closure=" << bool(mPreparation)
+                            << " asset_owned_pending=" << bool(mPreparation && mPreparation->lifetime->pending())
+                            << " asset_owned_cancelled=" << bool(mPreparation && mPreparation->lifetime->cancelled())
                             << " actual_coarse_selection=" << coarse << " diagnostic_only=1";
                     }
                     catch(...) {} // Diagnostic work must not change traversal.

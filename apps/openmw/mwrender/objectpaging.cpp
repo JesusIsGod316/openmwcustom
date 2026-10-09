@@ -1597,6 +1597,12 @@ namespace MWRender
             if (!controlSourceAdmission) throw Resource::SpeculativeDeferred{};
         }
         auto assetReadiness = std::make_shared<SceneUtil::GeneratedStaticLod::Readiness>();
+        std::vector<osg::ref_ptr<SceneUtil::GeneratedStaticLod::Group>> assetCompileSelectors;
+        bool assetCompileSelectorsBounded=true;
+        const auto retainFinalSelector=[&](SceneUtil::GeneratedStaticLod::Group* selector) {
+            if(assetCompileSelectors.size()==512) {assetCompileSelectorsBounded=false;return;}
+            assetCompileSelectors.emplace_back(selector);
+        };
         osg::ref_ptr<Resource::TemplateMultiRef> templateRefs = new Resource::TemplateMultiRef;
         osgUtil::StateToCompile stateToCompile(0, nullptr);
         CopyOp copyop(activeGrid, copyMask);
@@ -2282,12 +2288,14 @@ namespace MWRender
                     auto derived = SceneUtil::PersistentOpaquePackets::buildCertifiedSubtrees(*assetLod.node->derived());
                     wrappedMergeNode = new SceneUtil::GeneratedStaticLod::Group(*wrappedMergeNode,
                         *derived, assetLod.node->error(), assetReadiness, mAssetMainCamera.get());
+                    retainFinalSelector(static_cast<SceneUtil::GeneratedStaticLod::Group*>(wrappedMergeNode.get()));
                 }
                 if (assetHlod)
                 {
                     auto derived = SceneUtil::PersistentOpaquePackets::buildCertifiedSubtrees(*assetHlod.representation);
                     wrappedMergeNode = new SceneUtil::GeneratedStaticLod::Group(*wrappedMergeNode,
                         *derived, mergeGroup->getBound().radius() * .02f, assetReadiness, mAssetMainCamera.get(), true);
+                    retainFinalSelector(static_cast<SceneUtil::GeneratedStaticLod::Group*>(wrappedMergeNode.get()));
                 }
             }
             bool postCookedForMerge = false;
@@ -2379,6 +2387,7 @@ namespace MWRender
                     osg::ref_ptr<SceneUtil::GeneratedStaticLod::Group> selector = new SceneUtil::GeneratedStaticLod::Group(
                         *control,*derived,tiers.lod.node->error(),assetReadiness,mAssetMainCamera.get(),false,nullptr,activeGrid);
                     mergeGroup->setChild(i,selector);
+                    retainFinalSelector(selector);
                     assetDerivedHostBytes += tiers.lod.newIndexBytes + 8192ull * owners.geometries + 8192;
                     postCookedForMerge = true;
                 }
@@ -2436,16 +2445,27 @@ namespace MWRender
                 activeGrid ? Resource::V321CompileUrgency::NearFuture
                            : Resource::V321CompileUrgency::Background);
             compileSet->buildCompileMap(ico->getContextSet(), stateToCompile);
-            if (assetOutcome.completed)
+            if(assetOutcome.completed)
             {
-                assetReadiness->assetMask = assetOutcome.completed;
-                assetOutcome.readiness = assetReadiness;
-                compileSet->_compileCompletedCallback = new SceneUtil::GeneratedStaticLod::CompileCompleted(assetReadiness);
+                assetReadiness->assetMask=assetOutcome.completed;
+                // Keep the existing ordinary callback/prune witnesses. It
+                // observes its own closure but cannot grant asset readiness.
+                compileSet->_compileCompletedCallback=new SceneUtil::GeneratedStaticLod::CompileCompleted(assetReadiness,false);
             }
             ico->add(compileSet, false);
         }
-
-        else if (assetOutcome.completed) assetOutcome.defer(assetOutcome.completed);
+        if(assetOutcome.completed)
+        {
+            // Preserve the ordinary whole-chunk queue and its maintenance
+            // policy. Optional selectors have a separate resource-only closure
+            // containing their actual leaf resources and certified variants.
+            assetReadiness->assetMask=assetOutcome.completed;
+            if(assetCompileSelectorsBounded && SceneUtil::GeneratedStaticLod::prepareAssetCompileClosure(
+                assetReadiness,assetCompileSelectors,*group,*templateRefs,nodes.size(),ico,
+                activeGrid ? Resource::V321CompileUrgency::NearFuture : Resource::V321CompileUrgency::Background))
+                assetOutcome.readiness=assetReadiness;
+            else assetOutcome.defer(assetOutcome.completed);
+        }
         assetOutcome.finish(requestedAssets);
 
         if (Debug::V3Diagnostics::renderWriter().enabled())
