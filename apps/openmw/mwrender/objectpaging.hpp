@@ -148,7 +148,8 @@ namespace MWRender
 
         unsigned char p3OptionalDistantMask() const;
         osg::ref_ptr<osg::Node> createChunkImpl(float size, const osg::Vec2f& center, bool activeGrid,
-            const osg::Vec3f& viewPoint, bool compile, unsigned char lod, SceneUtil::AssetPaging::Outcome& outcome);
+            const osg::Vec3f& viewPoint, bool compile, unsigned char lod, SceneUtil::AssetPaging::Outcome& outcome,
+            bool prepareActiveLod = false);
 #ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
         std::vector<FixtureReference> mFixturePopulation;
         std::function<void()> mFixtureBeforeCache;

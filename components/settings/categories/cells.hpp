@@ -246,6 +246,11 @@ namespace Settings
         SettingValue<int> mV311ActiveGridPrepareMode{ mIndex, "Cells", "active grid prepare mode",
             makeClampSanitizerInt(0, 2) };
 
+        // Index-only tiers for independently published strong active-grid
+        // controls. Required readiness and ordinary interaction retain control.
+        SettingValue<bool> mGeneratedStaticLodActiveGrid{
+            mIndex, "Cells", "generated static lod active grid" };
+
         SettingValue<int> mV312PredictorMode{ mIndex, "Cells", "boundary predictor mode",
             makeClampSanitizerInt(0, 2) };
         SettingValue<float> mV312PredictorLeadSeconds{ mIndex, "Cells", "boundary predictor lead seconds",

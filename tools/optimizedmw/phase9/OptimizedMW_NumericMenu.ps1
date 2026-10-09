@@ -95,9 +95,9 @@ function Get-OptimizedMWNumericCandidates {
             (New-OptimizedMWNumericSelection '11.9' 'Renderer candidates combined (shader experiment excluded)' -Architecture 126 -Mips $true))}
         13 {return @((New-OptimizedMWNumericSelection '13.1' 'Run editable Configuration/Optimizations.cfg' -Mask 0 -Attack 0 -ConfigurationMode Custom))}
         12 {return @((New-OptimizedMWNumericSelection '12.1' 'Asset pipeline control'),
-            (New-OptimizedMWNumericSelection '12.2' 'Generated static visual LOD' -Assets 1),
-            (New-OptimizedMWNumericSelection '12.3' 'Selective HLOD atlas and merged proxy' -Assets 2),
-            (New-OptimizedMWNumericSelection '12.4' 'LOD + HLOD' -Assets 3),
+            (New-OptimizedMWNumericSelection '12.2' 'Generated static visual LOD (active grid + distant)' -Assets 1),
+            (New-OptimizedMWNumericSelection '12.3' 'Selective HLOD atlas/proxy (runtime unqualified)' -Assets 2),
+            (New-OptimizedMWNumericSelection '12.4' 'LOD + HLOD (HLOD runtime unqualified)' -Assets 3),
             (New-OptimizedMWNumericSelection '12.5' 'Native mip preparation and static color conversion' -Assets 4),
             (New-OptimizedMWNumericSelection '12.6' 'Coarse-to-fine terrain texture streaming' -Assets 8),
             (New-OptimizedMWNumericSelection '12.7' 'Texture streaming + idle demotion' -Assets 24),

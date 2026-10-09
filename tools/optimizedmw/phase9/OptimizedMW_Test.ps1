@@ -370,6 +370,7 @@ try{
     Set-IniValue $SettingsPath 'V3' 'v3.11 active grid prepare mode' '2'
     Set-IniValue $SettingsPath 'V3' 'v3.12 spatial batch mode' '0'
     Set-IniValue $SettingsPath 'V3' 'v3.13 chunk quality mode' '1'
+    Set-OptimizedMWAssetSettings -Path $SettingsPath -AssetMask $AssetMask
     Set-IniValue $SettingsPath 'V3' 'v3.15 premerge state canonicalization' 'false'
     Set-IniValue $SettingsPath 'V3' 'v3.15 packetized premerge mode' '0'
     Set-IniValue $SettingsPath 'Camera' 'v3.21 full body first person' 'true'

@@ -128,6 +128,38 @@ def l1_mixed_index_resources(text):
     return proof
 
 
+def l1_active_grid(text):
+    """Require actual active-owner cooking/draw and retained ordinary interactions."""
+    active = record(text, "CHAIN_ACTIVE_GRID", {key: 1 for key in (
+        "disabled_control", "required_original", "asset_enabled_first_stage_ordinary",
+        "busy_child_ordinary_published", "denied_tail_exact_strong", "available_tail_cooked",
+        "exact_owner_ready", "actual_main_draw", "mixed_occluder_original",
+        "source_population_substituted")} | {"source_loader_substituted": 0, "gl_error": 0})
+    for key in ("immutable_streams", "refnums", "selected_refnums", "picking_partitions",
+                "actual_pick_hits", "picked_markers", "main_draws", "active_tagged_draws"):
+        require(unsigned_field(active, key, "CHAIN_ACTIVE_GRID") > 0,
+                "Active-grid fixture lacks actual engagement/interaction proof: " + key)
+    require(unsigned_field(active, "selected_refnums", "CHAIN_ACTIVE_GRID")
+            < unsigned_field(active, "refnums", "CHAIN_ACTIVE_GRID"),
+            "Active-grid fixture did not retain a mixed ordinary occluder population")
+    require(unsigned_field(active, "active_tagged_draws", "CHAIN_ACTIVE_GRID")
+            == unsigned_field(active, "main_draws", "CHAIN_ACTIVE_GRID"),
+            "Active-grid main draws are not exactly attributed to active owners")
+    require(unsigned_field(active, "rgb", "CHAIN_ACTIVE_GRID") > 16,
+            "Active-grid fixture did not draw visible output")
+    epoch = record(text, "CHAIN_ACTIVE_EPOCH", {key: 1 for key in (
+        "source_changed", "old_guard_original", "required_original_rebuilt",
+        "refnums_preserved", "old_guard_not_revived")} | {"gl_error": 0})
+    require(unsigned_field(epoch, "original_draws", "CHAIN_ACTIVE_EPOCH") > 0
+            and unsigned_field(epoch, "rgb", "CHAIN_ACTIVE_EPOCH") > 16,
+            "Active-grid source epoch did not prove visible actual original fallback")
+    complete = record(text, "CHAIN_PASS", {"source_population_substituted": 1,
+        "source_loader_substituted": 0, "cook_substituted": 0, "readiness_substituted": 0,
+        "cpu_limit": 268435456})
+    return {"actual_active_owner": active, "source_epoch_original_fallback": epoch,
+            "actual_chain_completion": complete}
+
+
 def evaluate(folder, commit, source, game, workspace, installed=None):
     base = load(folder / "RELEASE-GATES.json")
     require(base.get("source_commit") == commit and base.get("deployment_prerequisite_pass") is True,
@@ -187,6 +219,7 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
                 "GEOMETRY-L1-CHAIN.txt", "GEOMETRY-H1-CHAIN.txt", "PACKAGE-QUALIFIER-TESTS-FINAL.txt", "ASSET-SHADER-GATE-TESTS-FINAL.txt",
                 "ASSET-ADMISSION.txt", "EFFECTIVE-MATERIAL-OWNERSHIP.txt", "TEMPORAL-ASSET-PRODUCER.txt",
                 "ASSET-SHADER-TEMPORAL-ONLY.txt", "GEOMETRY-L1-CURRENT.txt", "GEOMETRY-L1-TEXTURE-COMBINATION.txt",
+                "GEOMETRY-L1-ACTIVE-GRID.txt",
                 "ASSET-GPU-ADMISSION.txt",
                 "EXACT-VARIANT-READER-TESTS.txt", "EXACT-VARIANT-READER-TESTS.xml"}
     require(set(receipts) == required, "Asset result receipt population incomplete")
@@ -196,9 +229,10 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
         require(sha(path) == digest, "Asset fixture result changed: " + name)
         require(start - 1 <= path.stat().st_mtime <= finish + 1, "Asset fixture result is stale: " + name)
         texts[name] = path.read_text(encoding="utf-8-sig")
-    for name in ("PACKAGE-QUALIFIER-TESTS-FINAL.txt", "ASSET-SHADER-GATE-TESTS-FINAL.txt"):
-        require(re.findall(r"^Ran (\d+) tests in [\d.]+s\s*$", texts[name], re.M) == ["8"]
-                and re.search(r"\nOK\s*$", texts[name]) and "skipped=" not in texts[name], "Package gate regression suite did not execute eight complete passes: " + name)
+    for name, count in (("PACKAGE-QUALIFIER-TESTS-FINAL.txt", "8"), ("ASSET-SHADER-GATE-TESTS-FINAL.txt", "11")):
+        require(re.findall(r"^Ran (\d+) tests in [\d.]+s\s*$", texts[name], re.M) == [count]
+                and re.search(r"\nOK\s*$", texts[name]) and "skipped=" not in texts[name],
+                "Package gate regression suite did not execute " + count + " complete passes: " + name)
     variant_xml = texts["EXACT-VARIANT-READER-TESTS.xml"]
     require("<!DOCTYPE" not in variant_xml.upper() and "<!ENTITY" not in variant_xml.upper(), "Unexpected variant XML entity")
     variant_cases = list(ET.fromstring(variant_xml).iter("testcase"))
@@ -273,7 +307,7 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
     chain = {}
     post_optimizer = {}
     for mask, name in ((1, "GEOMETRY-L1-CHAIN.txt"), (2, "GEOMETRY-H1-CHAIN.txt"), (1, "GEOMETRY-L1-CURRENT.txt"),
-                       (1, "GEOMETRY-L1-TEXTURE-COMBINATION.txt")):
+                       (1, "GEOMETRY-L1-TEXTURE-COMBINATION.txt"), (1, "GEOMETRY-L1-ACTIVE-GRID.txt")):
         chain[name] = record(texts[name], "CHAIN_PACKAGE",
                              {"mask": mask, "packaged_shaders": 1, "captured_settings": 1,
                               "define_substitutions": 0, "stock_certificate_injection": 0})
@@ -321,11 +355,13 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
             shared = record(texts[name], "CHAIN_MIXED_SHARED_REFUSAL", {"ordinary_conflict_refused": 1, "build_attempted": 0,
                             "exact_indices": 1, "control_preserved": 1, "terminal_stops_retry": 1})
             require(shared.get("baseline_submissions") == shared.get("fallback_submissions"), "Shared ordinary material did not preserve exact fallback submissions")
+    active_grid = l1_active_grid(texts["GEOMETRY-L1-ACTIVE-GRID.txt"])
     return {"baseline": baseline, "contract": contract, "cached_refresh": refresh, "shader_concurrency": concurrency,
             "ownership": ownership, "admission": admission,
             "runtime": runtime, "reversed_runtime": reversed_runtime, "package_chains": chain,
             "l1_post_optimizer": post_optimizer,
             "l1_mixed_index_resources": mixed_index_resources,
+            "l1_active_grid": active_grid,
             "temporal_only_provenance": temporal_only, "opaque_motion_producer": temporal,
             "package_input_sha256": extra["package_input_sha256"],
             "fixture_executables": extra["input_hashes"], "source_commit": commit,

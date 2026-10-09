@@ -5,9 +5,9 @@ the new mechanisms. Pick a numbered optimization, then 1 for Normal or 2
 for Deep. Windows recording is optional after choosing Deep.
 
 12 / 1: retained foundation, all new asset mechanisms off.
-12 / 2: L1 generated static visual LOD.
-12 / 3: H1 selective HLOD atlas and merged proxy.
-12 / 4: L1 plus H1.
+12 / 2: L1 generated static visual LOD, active grid plus distant.
+12 / 3: H1 selective HLOD atlas and merged proxy, runtime unqualified.
+12 / 4: L1 plus H1; the H1 component remains runtime unqualified.
 12 / 5: T1 native mip preparation and covered static color conversion.
 12 / 6: T2 coarse-to-fine terrain diffuse texture streaming.
 12 / 7: T2 plus idle texture demotion.
@@ -44,6 +44,23 @@ index buffers. Unchanged primitive sets retain their exact EBO identity.
 It allocates no private vertex-array copy or private vertex buffer. Display-list
 control and control without proved VBO ownership retain their original path.
 L1 combined with H1 retains the earlier bounded private partition path.
+The active-grid extension prepares only L1, including combined asset masks;
+it does not authorize H1 proxies in the active grid. Its independent canonical
+control is [Cells] generated static lod active grid. L1 benchmark selections
+set it true; control and H1-only selections set it false. Custom settings retain
+the value entered in Configuration/Optimizations.cfg. The current foundation
+already enables object paging active grid, paging optimizer/readiness split,
+active grid prepare mode and prepared chunk quality; those prerequisites stay
+independent. A disabled prerequisite can prevent the extension from engaging.
+An ordinary strong owner must publish before an optional active L1 tail.
+Pressure or experimental capacity refusal retains that exact strong control;
+future retries first refresh its ordinary preparation. Original reference and
+picking metadata, collision and the MSOC owner path remain authoritative.
+Tagged active build/actual draw counters distinguish this path from distant
+LOD consumption. Real active draws are still required before benchmarking;
+native chain success alone does not qualify the user's outdoor scene.
+H1 has not produced a proxy draw in the actual current Seyda Neen captures.
+Its separate switch remains diagnostic; no H1 performance result is claimed.
 Existing authored LOD,
 controllers, transparent/cutout materials, unknown draw semantics,
 occluder owners, unsupported transforms and unsafe layouts retain control.

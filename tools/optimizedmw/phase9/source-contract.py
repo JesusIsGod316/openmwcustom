@@ -4,6 +4,7 @@ from pathlib import Path
 import argparse
 import hashlib
 import json
+import re
 
 
 def main() -> None:
@@ -156,6 +157,31 @@ def main() -> None:
         need(token in trace, 'draw identity/camera/resource telemetry missing: ' + token)
 
     launcher = read('tools/optimizedmw/phase9/OptimizedMW_Test.ps1')
+    canonical_active_lod = 'generated static lod active grid'
+    cells = read('components/settings/categories/cells.hpp')
+    need('SettingValue<bool> mGeneratedStaticLodActiveGrid' in cells
+         and 'mIndex, "Cells", "' + canonical_active_lod + '"' in cells,
+         'active-grid L1 must have its own canonical Cells switch')
+    for path in ('files/settings-default.cfg', 'tools/optimizedmw/phase9/OptimizedMW_Optimizations.cfg'):
+        section = ''
+        values = []
+        for line in read(path).splitlines():
+            heading = re.fullmatch(r'\s*\[([^]]+)\]\s*', line)
+            if heading:
+                section = heading[1]
+            value = re.fullmatch(r'\s*' + re.escape(canonical_active_lod) + r'\s*=\s*(\S+)\s*', line)
+            if section == 'Cells' and value:
+                values.append(value[1])
+        need(values == ['false'], 'active-grid L1 must remain independently default-off: ' + path)
+    setting_writer = read('tools/optimizedmw/phase9/OptimizedMW_SettingNames.ps1')
+    need("$activeLod=if($AssetMask -band 1){'true'}else{'false'}" in setting_writer
+         and "Set-IniValue $Path 'Cells' '" + canonical_active_lod + "' $activeLod" in setting_writer,
+         'asset writer must select active L1 only for its bit and clear the control')
+    active_call = 'Set-OptimizedMWAssetSettings -Path $SettingsPath -AssetMask $AssetMask'
+    need(launcher.count(active_call) == 1
+         and launcher.index("Set-IniValue $SettingsPath 'V3' 'v3.13 chunk quality mode' '1'")
+             < launcher.index(active_call),
+         'actual benchmark launcher must set independent active L1 after its readiness foundation')
     for token in ('Get-P9Mode', 'OPENMW_P9_DYNAMIC_STREAM=$mode.Stream',
                   'OPENMW_P9_TEMPORAL_INPUTS=$mode.Temporal', 'OPENMW_P9_MOTION_VIEW=$mode.View',
                   'OPENMW_P9_LEAF_TRACE_FILE', 'OPENMW_P9_DYNAMIC_TRACE_FILE',

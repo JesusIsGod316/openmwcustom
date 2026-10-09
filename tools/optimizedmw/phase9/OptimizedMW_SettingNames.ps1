@@ -41,3 +41,11 @@ function Read-OptimizedMWConfigurationSettings {
     }
     return @($result | Sort-Object Section,Key)
 }
+function Set-OptimizedMWAssetSettings {
+    param([Parameter(Mandatory=$true)][string]$Path,[ValidateRange(0,31)][int]$AssetMask=0)
+    # The existing benchmark foundation owns readiness/prepare/quality. This
+    # independently selects active-grid L1 and clears an inherited flag on its
+    # control. Set-IniValue preserves explicit Custom configuration precedence.
+    $activeLod=if($AssetMask -band 1){'true'}else{'false'}
+    Set-IniValue $Path 'Cells' 'generated static lod active grid' $activeLod
+}

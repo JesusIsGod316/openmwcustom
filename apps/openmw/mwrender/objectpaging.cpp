@@ -165,12 +165,19 @@ namespace MWRender
                 && (!assetQualityRepair || assetShaderGeneration == mSceneManager->getShaderManager().assetGeneration());
         };
         const bool p2RequiredReadiness = SceneUtil::PagingWorkScope::requiredReadiness();
-        const unsigned char p3OptionalMask
+        const int v311PrepareMode = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode);
+        const bool activeLodFoundationRequested = activeGrid && compile && v311PrepareMode > 0
+            && SceneUtil::PagingWorkScope::optionalOptimization()
+            && Settings::cells().mGeneratedStaticLodActiveGrid
+            && Resource::AssetPolicy::enabled(Resource::AssetPolicy::VisualLod);
+        const bool activeLodRequested = activeLodFoundationRequested
+            && SceneUtil::AssetPaging::OptionalUpgradeScope::assetsAllowed();
+        bool prepareActiveLod = false;
+        unsigned char p3OptionalMask
             = compile && SceneUtil::PagingWorkScope::optionalOptimization()
             ? (!activeGrid ? p3OptionalDistantMask()
                 : (Settings::cells().mOptimizedMWActiveShadowBatching
                     ? static_cast<unsigned char>(p3OptionalDistantMask() & (1u << 3u)) : 0)) : 0;
-        const int v311PrepareMode = static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode);
         const int v313QualityMode = static_cast<int>(Settings::cells().mV313ChunkQualityMode);
 
         // Mode0 remains the inherited V3.12/V3.11 first-writer path unless a
@@ -217,7 +224,7 @@ namespace MWRender
         const unsigned char v313RequestedSpatialMode
             = activeGrid && compile && !p2RequiredReadiness
                 && static_cast<int>(Settings::cells().mV312SpatialBatchMode) > 0 ? 1 : 0;
-        const V313ChunkQuality v313RequestedQuality{
+        V313ChunkQuality v313RequestedQuality{
             v313RequestedPrepareMode, v313RequestedSpatialMode, p3OptionalMask };
 
         const auto v313QualitySatisfies = [&](const V313ChunkQuality& have, const V313ChunkQuality& need) {
@@ -263,8 +270,22 @@ namespace MWRender
             {
                 const V313ChunkQuality have = quality != mV313ChunkQualities.end() ? quality->second : V313ChunkQuality{};
                 priorAssets = have.mAssets;
-                v313CachedSatisfies = !((v313QualityMode > 0 && v313RequestedPrepareMode > 0) || p3OptionalMask != 0)
+                // Experimental active tiers require an independently published
+                // ordinary strong owner. A missing/weak owner first receives
+                // the unchanged normal optimizer, with no asset admission.
+                if (activeLodRequested && have.mPrepareMode >= v313RequestedPrepareMode
+                    && v313RequestedPrepareMode > 0 && have.mSpatialMode == v313RequestedSpatialMode
+                    && v313QualitySatisfies(have,v313RequestedQuality))
+                {
+                    prepareActiveLod = true;
+                    p3OptionalMask |= SceneUtil::AssetPaging::Lod << 4;
+                    v313RequestedQuality.mP3OptionalMask = p3OptionalMask;
+                }
+                v313CachedSatisfies = !((v313QualityMode > 0 && v313RequestedPrepareMode > 0)
+                    || p3OptionalMask != 0 || activeLodFoundationRequested)
                     || v313QualitySatisfies(have,v313RequestedQuality);
+                if (activeLodFoundationRequested && have.mSpatialMode != v313RequestedSpatialMode)
+                    v313CachedSatisfies = false;
                 const unsigned requestedAssets = (p3OptionalMask >> 4) & SceneUtil::AssetPaging::Mask;
                 const unsigned unsettledAssets = requestedAssets & ~have.mAssets.settled();
                 // A refused whole L1 control copy preserves a weak cache owner,
@@ -293,6 +314,8 @@ namespace MWRender
                         mV313UpgradeCoalesced.fetch_add(1,std::memory_order_relaxed);
                         SceneUtil::AssetPaging::noteOptionalTransient(unsettledAssets);
                         SceneUtil::AssetPaging::noteOptionalAdmissionWait(unsettledAssets);
+                        if (activeLodFoundationRequested && !prepareActiveLod)
+                            SceneUtil::AssetPaging::noteOptionalTransient(SceneUtil::AssetPaging::Lod);
                         return static_cast<osg::Node*>(cached.get());
                     }
                     v313RepairBuild = true;
@@ -345,8 +368,7 @@ namespace MWRender
             // ordinary control cloning. The real cook rechecks atomically; this
             // does not grant a reservation or relax Background headroom floors.
             const auto context = Resource::SpeculativeScope::capture();
-            const unsigned waitingAssets = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
-                ? Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask & assetOutcome.allowed : 0;
+            const unsigned waitingAssets = (p3OptionalMask >> 4) & SceneUtil::AssetPaging::Mask & assetOutcome.allowed;
             if (waitingAssets && context.budget && context.budget->experimentEnabled())
             {
                 const auto permit = context.budget->experimentJobReceipt(context.sample
@@ -362,7 +384,7 @@ namespace MWRender
                     throw Resource::SpeculativeDeferred(permit);
                 }
             }
-            node = createChunkImpl(size, center, activeGrid, viewPoint, compile, lod, assetOutcome);
+            node = createChunkImpl(size, center, activeGrid, viewPoint, compile, lod, assetOutcome,prepareActiveLod);
             SceneUtil::PagingWorkScope::checkpoint();
 #ifdef OPENMW_ASSET_PAGING_TEST_HOOKS
             if (mFixtureBeforePublish) mFixtureBeforePublish();
@@ -374,8 +396,7 @@ namespace MWRender
             // exists. Waiting admission keeps this exact weak owner eligible;
             // a failed admitted construction spends its finite attempt. Both
             // preserve ordinary quality bits and the existing cache node.
-            const unsigned refusedAssets = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
-                ? Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask & assetOutcome.allowed : 0;
+            const unsigned refusedAssets = (p3OptionalMask >> 4) & SceneUtil::AssetPaging::Mask & assetOutcome.allowed;
             std::lock_guard<std::mutex> lock(mV313ChunkQualityMutex);
             if (!assetSourcesCurrent()) throw SceneUtil::PagingWorkCancelled{};
             if (v313RepairBuild) mV313StrongUpgradeInFlight.erase(id);
@@ -442,6 +463,7 @@ namespace MWRender
                 = (currentQuality.mAssets.settled() & assetOutcome.attempted) == assetOutcome.attempted
                 && (currentQuality.mAssets.completed & assetOutcome.completed) == assetOutcome.completed;
             if (current && v313QualitySatisfies(currentQuality, v313BuiltQuality)
+                && (!activeLodFoundationRequested || currentQuality.mSpatialMode == v313BuiltQuality.mSpatialMode)
                 && currentCoversAssets
                 && ((v313BuiltQuality.mP3OptionalMask != 0 && currentCoversP3)
                     || currentQuality.mPrepareMode > v313BuiltQuality.mPrepareMode
@@ -456,6 +478,9 @@ namespace MWRender
                     mV311PreparedActiveChunks.insert(id);
                 }
                 mV313StrongUpgradeInFlight.erase(id);
+                if (activeLodRequested && !prepareActiveLod
+                    && !(currentQuality.mAssets.settled() & SceneUtil::AssetPaging::Lod))
+                    SceneUtil::AssetPaging::noteOptionalTransient(SceneUtil::AssetPaging::Lod);
                 return static_cast<osg::Node*>(current.get());
             }
 
@@ -474,6 +499,8 @@ namespace MWRender
             mV311PreparedActiveChunks.insert(id);
             mV311PreparedActiveBuilt.fetch_add(1, std::memory_order_relaxed);
         }
+        if (activeLodRequested && !prepareActiveLod)
+            SceneUtil::AssetPaging::noteOptionalTransient(SceneUtil::AssetPaging::Lod);
         return node;
     }
 
@@ -836,8 +863,11 @@ namespace MWRender
             mask |= 1u << 2u;
         if (static_cast<bool>(Settings::cells().mOptimizedMWShadowStaticBatching))
             mask |= 1u << 3u;
-        if (Resource::AssetPolicy::enabled(Resource::AssetPolicy::VisualLod)) mask |= 1u << 4u;
-        if (Resource::AssetPolicy::enabled(Resource::AssetPolicy::Hlod)) mask |= 1u << 5u;
+        if (SceneUtil::AssetPaging::OptionalUpgradeScope::assetsAllowed())
+        {
+            if (Resource::AssetPolicy::enabled(Resource::AssetPolicy::VisualLod)) mask |= 1u << 4u;
+            if (Resource::AssetPolicy::enabled(Resource::AssetPolicy::Hlod)) mask |= 1u << 5u;
+        }
         return mask;
     }
 
@@ -1011,7 +1041,8 @@ namespace MWRender
     }
 
     osg::ref_ptr<osg::Node> ObjectPaging::createChunkImpl(float size, const osg::Vec2f& center, bool activeGrid,
-        const osg::Vec3f& viewPoint, bool compile, unsigned char lod, SceneUtil::AssetPaging::Outcome& assetOutcome)
+        const osg::Vec3f& viewPoint, bool compile, unsigned char lod, SceneUtil::AssetPaging::Outcome& assetOutcome,
+        bool prepareActiveLod)
     {
         Debug::V3Diagnostics::TraceScope trace(
             "paging", "object_chunk_create", activeGrid ? "active_grid" : "distant", 0.1);
@@ -1111,8 +1142,10 @@ namespace MWRender
         };
         typedef std::map<osg::ref_ptr<const osg::Node>, InstanceList> NodeMap;
         NodeMap nodes;
-        const unsigned requestedAssets = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
-            ? Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask & assetOutcome.allowed : 0;
+        const unsigned requestedAssets = compile && SceneUtil::PagingWorkScope::optionalOptimization()
+            && SceneUtil::AssetPaging::OptionalUpgradeScope::assetsAllowed()
+            ? (activeGrid ? (prepareActiveLod ? SceneUtil::AssetPaging::Lod : 0)
+                : Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask) & assetOutcome.allowed : 0;
         const bool assetPreparation = requestedAssets && Resource::SpeculativeScope::active();
         // L1 can use the ordinary strong optimizer's immutable result directly.
         // H1/combined preparation retains its private atlas population and the
@@ -1120,8 +1153,10 @@ namespace MWRender
         const bool postOptimizedLodOnly = assetPreparation && requestedAssets == SceneUtil::AssetPaging::Lod;
         using PostStep = SceneUtil::GeneratedStaticLod::PostOptimizerStep;
         if (postOptimizedLodOnly) SceneUtil::GeneratedStaticLod::notePostOptimizer(PostStep::Chunks);
-        const bool l1ControlAccounting = !activeGrid && compile && SceneUtil::PagingWorkScope::optionalOptimization()
-            && (Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask) == SceneUtil::AssetPaging::Lod
+        const bool l1ControlAccounting = compile && SceneUtil::PagingWorkScope::optionalOptimization()
+            && SceneUtil::AssetPaging::OptionalUpgradeScope::assetsAllowed()
+            && (activeGrid ? prepareActiveLod
+                : (Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Mask) == SceneUtil::AssetPaging::Lod)
             && Resource::SpeculativeScope::active();
         if (requestedAssets && !assetPreparation) assetOutcome.defer(requestedAssets);
         using AssetSource = SceneUtil::AssetPaging::Source;
@@ -2292,11 +2327,11 @@ namespace MWRender
                     if(mFixtureBeforeLodCook) mFixtureBeforeLodCook(*control);
 #endif
                     auto tiers = SceneUtil::AssetPaging::buildTiers(*control,*control,postLodIdentity,
-                        SceneUtil::AssetPaging::Lod,mAssetMainCamera.get(),assetOutcome);
+                        SceneUtil::AssetPaging::Lod,mAssetMainCamera.get(),assetOutcome,activeGrid);
                     if (!tiers.lod.node) continue;
                     auto* derived = tiers.lod.node->derived();
                     osg::ref_ptr<SceneUtil::GeneratedStaticLod::Group> selector = new SceneUtil::GeneratedStaticLod::Group(
-                        *control,*derived,tiers.lod.node->error(),assetReadiness,mAssetMainCamera.get());
+                        *control,*derived,tiers.lod.node->error(),assetReadiness,mAssetMainCamera.get(),false,nullptr,activeGrid);
                     mergeGroup->setChild(i,selector);
                     assetDerivedHostBytes += tiers.lod.newIndexBytes + 8192ull * owners.geometries + 8192;
                     postCookedForMerge = true;
@@ -2328,6 +2363,16 @@ namespace MWRender
         }
 
         SceneUtil::PagingWorkScope::checkpoint();
+        if (activeGrid)
+        {
+            // This canonical root slot is consumed by getPagedRefnums() when
+            // omitting separately loaded objects. Retained host receipts must
+            // never displace the RefnumSet from user object zero.
+            std::sort(refnumSet->mRefnums.begin(), refnumSet->mRefnums.end());
+            refnumSet->mRefnums.erase(
+                std::unique(refnumSet->mRefnums.begin(), refnumSet->mRefnums.end()), refnumSet->mRefnums.end());
+            group->getOrCreateUserDataContainer()->addUserObject(refnumSet);
+        }
         // Pending compile sets and losing candidates still own these arrays.
         // Attach their retained host receipt before exposing the graph to ICO.
         SceneUtil::AssetPaging::retainPagingOwners(*group,controlRetainedBytes,assetPrivateBytes,assetDerivedHostBytes,
@@ -2404,10 +2449,6 @@ namespace MWRender
         osg::UserDataContainer* udc = group->getOrCreateUserDataContainer();
         if (activeGrid)
         {
-            std::sort(refnumSet->mRefnums.begin(), refnumSet->mRefnums.end());
-            refnumSet->mRefnums.erase(
-                std::unique(refnumSet->mRefnums.begin(), refnumSet->mRefnums.end()), refnumSet->mRefnums.end());
-            udc->addUserObject(refnumSet);
             group->addCullCallback(new SceneUtil::LightListCallback);
         }
         udc->addUserObject(templateRefs);
@@ -2640,6 +2681,9 @@ namespace MWRender
             report("L1 Original Indices", C::originalIndices); report("L1 Tier Indices", C::derivedIndices);
             report("Asset Main Derived Views", C::coarseViews); report("Asset Original Views", C::originalViews);
             report("L1 Consumed Draws", C::derivedDraws); report("L1 Consumed Indices", C::submittedIndices);
+            report("L1 Active Build Attempts", C::activeBuildAttempts); report("L1 Active Built Bundles", C::activeBuilt);
+            report("L1 Active Derived Views", C::activeCoarseViews); report("L1 Active Original Views", C::activeOriginalViews);
+            report("L1 Active Consumed Draws", C::activeDerivedDraws); report("L1 Active Consumed Indices", C::activeSubmittedIndices);
             for (unsigned i = 1; i < static_cast<unsigned>(SceneUtil::GeneratedStaticLod::Refusal::Count); ++i)
                 report("L1 Refusal " + std::to_string(i), C::refused[i]);
             using H = SceneUtil::HlodCounters;

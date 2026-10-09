@@ -706,7 +706,7 @@ namespace MWWorld
                 && mOptionalRetry.due(optionalGeneration(),now);
             if (!due || now < mOptionalAdmissionPollAfter) return false;
             auto* budget = mResourceSystem->speculativeBudget();
-            if (budget && budget->experimentEnabled()
+            if (!independentActiveLod() && budget && budget->experimentEnabled()
                 && budget->experimentJobReceipt(Resource::ResourceSystem::speculativeSample(mResourceSystem)).reasons)
             {
                 // A denied permit queues no worker and copies no views/graph.
@@ -831,6 +831,13 @@ namespace MWWorld
                 mask};
         }
 
+        bool independentActiveLod() const
+        {
+            return Settings::cells().mGeneratedStaticLodActiveGrid
+                && static_cast<int>(Settings::cells().mV311ActiveGridPrepareMode) > 0
+                && Resource::AssetPolicy::enabled(Resource::AssetPolicy::VisualLod);
+        }
+
         void prepareOptionalStrong(bool measure)
         {
             Debug::HitchTrace::Scope optional("terrain.optional_prepare",Debug::HitchTrace::CpuTiming::Scoped);
@@ -841,7 +848,26 @@ namespace MWWorld
                                        : Debug::GameplayDiagnostics::Clock::time_point{};
             Loading::Reporter reporter;
             auto* budget = mResourceSystem->speculativeBudget();
-            bool admitted = true, deferred = false, spentAttempt = false;
+            bool admitted = true, deferred = false, spentAttempt = false, cancelled = false;
+            const auto prepareTargets = [&] {
+                const auto prepare = [&](std::size_t index) {
+                    if (mAbort.load(std::memory_order_relaxed)) return;
+                    SceneUtil::PagingWorkScope::checkpoint();
+                    if (mOptionalRetry.generation.mask && (!optionalSourcesMatch() || !matchesWorld(mWorld)))
+                        throw SceneUtil::PagingWorkCancelled{};
+                    mOptionalUpgradeRequests.fetch_add(mWorld->preloadStrongUpgrade(mTerrainViews[index],
+                        mPreloadPositions[index].mPosition,mPreloadPositions[index].mCellBounds,mAbort,reporter),
+                        std::memory_order_relaxed);
+                    SceneUtil::PagingWorkScope::checkpoint();
+                    if (mOptionalRetry.generation.mask && (!optionalSourcesMatch() || !matchesWorld(mWorld)))
+                        throw SceneUtil::PagingWorkCancelled{};
+                };
+                if (mCurrentFirst)
+                    for (std::size_t index : mTargetReadiness->completed()) prepare(index);
+                else
+                    for (std::size_t index=0;index<mTerrainViews.size() && index<mPreloadPositions.size();++index)
+                        prepare(index);
+            };
             if (!budget && mResourceSystem->openGlHostMemoryBudgetEnabled())
             {
                 const auto sample = Resource::ResourceSystem::speculativeSample(mResourceSystem);
@@ -850,6 +876,41 @@ namespace MWWorld
             }
             else if (mResourceSystem->hostMemoryPressure() == Resource::HostMemoryPressure::Critical)
                 admitted = false;
+            if (admitted && independentActiveLod())
+            {
+                // Publish the promoted ordinary active controls first, through
+                // the inherited NearFuture byte/headroom reservation. No asset
+                // Background permit, source proof, clone or cook is a dependency
+                // of this pass. Its incomplete/coalesced work remains retryable.
+                // Repeat this bounded cache pass on each optional retry: TTL
+                // eviction must not put ordinary strong recovery behind an
+                // experimental permit. Existing strong owners return unchanged.
+                Resource::SpeculativeScope ordinaryScope(budget,
+                    &Resource::ResourceSystem::speculativeSample,mResourceSystem,
+                    Resource::SpeculativePriority::NearFuture);
+                try
+                {
+                    SceneUtil::AssetPaging::OptionalUpgradeScope ordinary(&mAbort,false);
+                    prepareTargets();
+                    SceneUtil::PagingWorkScope::checkpoint();
+                    if (!optionalSourcesMatch() || !matchesWorld(mWorld))
+                        throw SceneUtil::PagingWorkCancelled{};
+                    if (mAbort.load(std::memory_order_acquire) || ordinary.needsRetry()) admitted = false;
+                }
+                catch (const Resource::SpeculativeDeferred&) { admitted = false; }
+                catch (const SceneUtil::PagingWorkCancelled&)
+                { mOptionalRetry.cancel(); ++SceneUtil::AssetPaging::Counters::tailCancelled; admitted = false; cancelled = true; }
+                catch (const std::exception& e)
+                {
+                    Log(Debug::Warning) << "Ordinary paging preparation failed before active LOD: " << e.what();
+                    mOptionalRetry.cancel(); admitted = false; cancelled = true;
+                }
+                catch (...)
+                {
+                    Log(Debug::Warning) << "Ordinary paging preparation failed before active LOD";
+                    mOptionalRetry.cancel(); admitted = false; cancelled = true;
+                }
+            }
             if (admitted && (mOptionalRetry.generation.mask & SceneUtil::AssetPaging::Mask)
                 && budget && budget->experimentEnabled())
             {
@@ -877,20 +938,7 @@ namespace MWWorld
                 try
                 {
                     scope = std::make_unique<SceneUtil::AssetPaging::OptionalUpgradeScope>(&mAbort);
-                    const auto prepare = [&](std::size_t index) {
-                        if (mAbort.load(std::memory_order_relaxed)) return;
-                        SceneUtil::PagingWorkScope::checkpoint();
-                        if (mOptionalRetry.generation.mask && (!optionalSourcesMatch() || !matchesWorld(mWorld)))
-                            throw SceneUtil::PagingWorkCancelled{};
-                        mOptionalUpgradeRequests.fetch_add(mWorld->preloadStrongUpgrade(mTerrainViews[index],
-                            mPreloadPositions[index].mPosition,mPreloadPositions[index].mCellBounds,mAbort,reporter),
-                            std::memory_order_relaxed);
-                    };
-                    if (mCurrentFirst)
-                        for (std::size_t index : mTargetReadiness->completed()) prepare(index);
-                    else
-                        for (std::size_t index=0;index<mTerrainViews.size() && index<mPreloadPositions.size();++index)
-                            prepare(index);
+                    prepareTargets();
                     deferred = scope->needsRetry();
                     spentAttempt = scope->spentAttempt() && !scope->waitingForAdmission();
                     mOptionalCompleted.store(!mAbort.load() && !deferred,std::memory_order_release);
@@ -908,7 +956,7 @@ namespace MWWorld
                 catch (...)
                 { Log(Debug::Warning) << "Optional paging optimization failed after target readiness"; }
             }
-            else deferred = true;
+            else deferred = !cancelled;
             mOptionalDeferred.store(deferred,std::memory_order_release);
             if (mOptionalRetry.generation.mask && mReadinessSplit)
             {

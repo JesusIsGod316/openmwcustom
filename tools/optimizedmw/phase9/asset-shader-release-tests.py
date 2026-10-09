@@ -11,6 +11,19 @@ SPEC.loader.exec_module(gate)
 
 class AssetReleaseEvidence(unittest.TestCase):
     @staticmethod
+    def active_grid_receipt():
+        return ("CHAIN_ACTIVE_GRID disabled_control=1 required_original=1 asset_enabled_first_stage_ordinary=1 "
+                "busy_child_ordinary_published=1 denied_tail_exact_strong=1 available_tail_cooked=1 "
+                "exact_owner_ready=1 actual_main_draw=1 immutable_streams=2 refnums=3 selected_refnums=2 "
+                "mixed_occluder_original=1 picking_partitions=3 actual_pick_hits=1 picked_markers=1 "
+                "main_draws=4 active_tagged_draws=4 rgb=98 source_population_substituted=1 "
+                "source_loader_substituted=0 gl_error=0\n"
+                "CHAIN_ACTIVE_EPOCH source_changed=1 old_guard_original=1 required_original_rebuilt=1 "
+                "refnums_preserved=1 old_guard_not_revived=1 original_draws=2 rgb=98 gl_error=0\n"
+                "CHAIN_PASS source_population_substituted=1 source_loader_substituted=0 cook_substituted=0 "
+                "readiness_substituted=0 cpu_limit=268435456\n")
+
+    @staticmethod
     def post_optimizer_receipt():
         return ("CHAIN_POST_OPTIMIZER baseline_submissions=2 retained_submissions=2 contributor_submissions=4 "
                 "exact_control_indices=1 private_array_copies=0 private_vertex_buffers=0 "
@@ -138,6 +151,54 @@ class AssetReleaseEvidence(unittest.TestCase):
             path.write_bytes(b"changed fixture after validation")
             with self.assertRaises(gate.QualificationError):
                 gate.current_inputs({str(path): digest})
+
+    def test_active_grid_requires_actual_origin_and_ordinary_interactions(self):
+        valid = self.active_grid_receipt()
+        proof = gate.l1_active_grid(valid)
+        self.assertEqual(proof["actual_active_owner"]["active_tagged_draws"], "4")
+        for before, after in (("disabled_control=1", "disabled_control=0"),
+                              ("required_original=1", "required_original=0"),
+                              ("asset_enabled_first_stage_ordinary=1", "asset_enabled_first_stage_ordinary=0"),
+                              ("busy_child_ordinary_published=1", "busy_child_ordinary_published=0"),
+                              ("denied_tail_exact_strong=1", "denied_tail_exact_strong=0"),
+                              ("available_tail_cooked=1", "available_tail_cooked=0"),
+                              ("exact_owner_ready=1", "exact_owner_ready=0"),
+                              ("immutable_streams=2", "immutable_streams=0"),
+                              ("refnums=3", "refnums=0"),
+                              ("selected_refnums=2", "selected_refnums=3"),
+                              ("picking_partitions=3", "picking_partitions=0"),
+                              ("actual_pick_hits=1", "actual_pick_hits=0"),
+                              ("picked_markers=1", "picked_markers=0"),
+                              ("main_draws=4", "main_draws=0"),
+                              ("active_tagged_draws=4", "active_tagged_draws=0"),
+                              ("active_tagged_draws=4", "active_tagged_draws=3"),
+                              ("rgb=98", "rgb=16"),
+                              ("refnums_preserved=1", "refnums_preserved=0"),
+                              ("old_guard_not_revived=1", "old_guard_not_revived=0"),
+                              ("original_draws=2", "original_draws=0"),
+                              ("readiness_substituted=0", "readiness_substituted=1"),
+                              ("source_loader_substituted=0", "source_loader_substituted=1")):
+            with self.subTest(after=after), self.assertRaises(gate.QualificationError):
+                gate.l1_active_grid(valid.replace(before, after))
+
+    def test_active_grid_missing_ambiguous_and_invalid_receipts_fail_closed(self):
+        valid = self.active_grid_receipt()
+        for marker in ("CHAIN_ACTIVE_GRID", "CHAIN_ACTIVE_EPOCH", "CHAIN_PASS"):
+            missing = "\n".join(line for line in valid.splitlines() if not line.startswith(marker + " ")) + "\n"
+            duplicate = valid + next(line for line in valid.splitlines() if line.startswith(marker + " ")) + "\n"
+            for bad in (missing, duplicate):
+                with self.subTest(marker=marker, bad=bad), self.assertRaises(gate.QualificationError):
+                    gate.l1_active_grid(bad)
+        for bad in ("SKIP: no actual GL context\n" + valid,
+                    valid.replace("main_draws=4", "main_draws=4 main_draws=4"),
+                    valid.replace("main_draws=4", "main_draws=-4"),
+                    valid.replace("active_tagged_draws=4", "active_tagged_draws=18446744073709551616"),
+                    valid.replace("immutable_streams=2", "immutable_streams=unknown"),
+                    valid.replace(" picked_markers=1", ""),
+                    valid.replace("cpu_limit=268435456", "cpu_limit=134217728"),
+                    "CHAIN_FAILURE active_missing\n" + valid):
+            with self.subTest(bad=bad), self.assertRaises(gate.QualificationError):
+                gate.l1_active_grid(bad)
 
 
 if __name__ == "__main__":

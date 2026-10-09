@@ -68,6 +68,12 @@ namespace SceneUtil::GeneratedStaticLod
         inline static std::atomic_uint64_t derivedDraws{0}, submittedIndices{0};
         inline static std::atomic_uint64_t materialCullFallbacks{0}, materialDrawFallbacks{0};
         inline static std::atomic_uint64_t controlDraws{0}, controlSubmittedIndices{0};
+        // These count exact active-grid construction origins, rather than
+        // recomputing the player's current grid during draw. Fallback/replay
+        // never counts as a consumed active tier.
+        inline static std::atomic_uint64_t activeBuildAttempts{0}, activeBuilt{0};
+        inline static std::atomic_uint64_t activeCoarseViews{0}, activeOriginalViews{0};
+        inline static std::atomic_uint64_t activeDerivedDraws{0}, activeSubmittedIndices{0};
         // Ownership diagnostics count chunk proofs, not distinct source models.
         inline static std::atomic_uint64_t materialOwnerUnknown{0}, materialOwnerNull{0}, materialOwnerCapacity{0};
         inline static std::atomic_uint64_t materialOwnerShared{0}, materialOwnerCohesions{0}, materialOwnerCohesiveInstances{0};
@@ -199,7 +205,7 @@ namespace SceneUtil::GeneratedStaticLod
         META_Node(SceneUtil, Group)
         Group(osg::Node& original, osg::Node& derived, float absoluteError,
             std::shared_ptr<Readiness> readiness, osg::Camera* mainCamera, bool preserveControlPopulation = false,
-            GuardRefusalInfo* refusal = nullptr);
+            GuardRefusalInfo* refusal = nullptr, bool activeGridOrigin = false);
         void traverse(osg::NodeVisitor& visitor) override;
         osg::BoundingSphere computeBound() const override;
         void releaseGLObjects(osg::State* state = nullptr) const override;
@@ -219,6 +225,7 @@ namespace SceneUtil::GeneratedStaticLod
         std::shared_ptr<MaterialGuard> mMaterialGuard;
         osg::observer_ptr<osg::Camera> mMainCamera;
         bool mPreserveControlPopulation = false;
+        bool mActiveGridOrigin = false;
         struct View { const osgUtil::CullVisitor* owner = nullptr; bool coarse = false; };
         std::array<View, 8> mViews{};
         std::mutex mViewMutex;
@@ -247,6 +254,7 @@ namespace SceneUtil::GeneratedStaticLod
     // no shared template drawable/callback/user-data owner may be decorated.
     // Every stream remains owned by original; only primitive indices are replaced.
     // reserveGpu=false is for unsubmitted CPU/GL fixtures, never production paging.
-    Result build(osg::Node& original, std::string_view sourceIdentity, osg::Camera* mainCamera, bool reserveGpu = true);
+    Result build(osg::Node& original, std::string_view sourceIdentity, osg::Camera* mainCamera,
+        bool reserveGpu = true, bool activeGridOrigin = false);
 }
 #endif

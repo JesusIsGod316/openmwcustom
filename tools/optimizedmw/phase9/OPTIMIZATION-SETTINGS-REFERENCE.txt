@@ -11,6 +11,19 @@ does this explicitly and retains the promoted Lua, occlusion and shadow
 foundation using their direct controls. RAM retention uses the lower Headroom
 profile. Benchmark selections use frozen settings rather than this template.
 
+NEW INDEPENDENT CONTROL
+[Cells] generated static lod active grid = false
+Set true to allow the selected L1 asset mechanism on certified static members
+of the active grid. L1 benchmark selections set it true; the asset control and
+H1-only selections set it false. Custom configuration preserves your value.
+The L1 asset switch, object paging active grid, paging optimizer, paging
+readiness split, active grid prepare mode 1/2 and prepared chunk quality
+mode 1/2 are also required. The current benchmark foundation already supplies
+these controls. Disabling this setting retains the distant-only L1 path.
+Ordinary strong preparation precedes optional L1 cooking; resource denial
+keeps that strong control. Collision, picking, shadows and secondary views
+retain original geometry. Selection alone does not establish runtime use.
+
 LEGACY LOCATION -> DESCRIPTIVE LOCATION
 [Camera] v3.21 full body first person -> [Camera] full body first person
 [Camera] v3.21 full body first person shadow compatibility -> [Camera] full body first person shadow compatibility

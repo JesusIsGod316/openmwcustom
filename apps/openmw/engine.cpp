@@ -2689,7 +2689,13 @@ void OMW::Engine::go()
             +" private_vertex_buffers="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::privateVertexBuffers.load())
             +" new_index_gpu_bytes="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::newIndexGpuBytes.load())
             +" consumed_draws="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::derivedDraws.load())
-            +" consumed_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::submittedIndices.load());
+            +" consumed_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::submittedIndices.load())
+            +" active_build_attempts="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeBuildAttempts.load())
+            +" active_built="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeBuilt.load())
+            +" active_coarse_views="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeCoarseViews.load())
+            +" active_original_views="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeOriginalViews.load())
+            +" active_consumed_draws="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeDerivedDraws.load())
+            +" active_consumed_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeSubmittedIndices.load());
         std::string lodRefusals;
         const char* lodReasons[]={"none","graph","material","transform","layout","capacity","no_reduction"};
         for(unsigned i=0;i<static_cast<unsigned>(SceneUtil::GeneratedStaticLod::Refusal::Count);++i)

@@ -183,15 +183,20 @@ namespace SceneUtil::AssetPaging
     class OptionalUpgradeScope
     {
     public:
-        explicit OptionalUpgradeScope(std::atomic<bool>* abort)
-            : mOverlap(overlap())
+        explicit OptionalUpgradeScope(std::atomic<bool>* abort, bool prepareAssets = true)
+            : mOverlap(overlap(prepareAssets))
             , mWork(abort, PagingWorkScope::Phase::OptionalOptimization)
             , mPrevious(sCurrent)
+            , mAssetsAllowed(prepareAssets)
+            , mIncremental(prepareAssets && (Resource::AssetPolicy::mask() & Mask) == Lod)
         { sCurrent = this; }
         ~OptionalUpgradeScope() { sCurrent = mPrevious; }
         bool needsRetry() const noexcept { return mNeedsRetry; }
         bool spentAttempt() const noexcept { return mSpentAttempt; }
         bool waitingForAdmission() const noexcept { return mWaitingForAdmission; }
+        // An explicit ordinary pass never prepares assets merely because their
+        // process-wide switches are enabled. Nested scopes restore their owner.
+        static bool assetsAllowed() noexcept { return !sCurrent || sCurrent->mAssetsAllowed; }
         static void noteTransient(unsigned mask) noexcept
         { if (sCurrent && (mask & Mask)) sCurrent->mNeedsRetry = true; }
         static void noteAttempt(unsigned mask) noexcept
@@ -205,18 +210,19 @@ namespace SceneUtil::AssetPaging
         { return sCurrent && sCurrent->mIncremental; }
         static void reserveReference();
     private:
-        static std::unique_ptr<Resource::SpeculativeScope::Stage> overlap()
+        static std::unique_ptr<Resource::SpeculativeScope::Stage> overlap(bool prepareAssets)
         {
             // 4 MiB effective-state proof + bounded source identity and owner
             // tables/support. This is a conservative metadata ceiling, not a
             // full clone/optimizer allowance or an OS-free-memory claim.
-            const auto bytes = (Resource::AssetPolicy::mask() & Mask) == Lod
+            const auto bytes = prepareAssets && (Resource::AssetPolicy::mask() & Mask) == Lod
                 ? 8 * Resource::SpeculativeBudget::MiB : 128 * Resource::SpeculativeBudget::MiB;
             try { return std::make_unique<Resource::SpeculativeScope::Stage>(bytes,0); }
             catch (const Resource::SpeculativeDeferred& error)
             {
-                cpuRefusal(Resource::AssetPolicy::mask() & Mask,CpuStage::Outer,error);
-                each(Resource::AssetPolicy::mask() & Mask,[](LaneCounters& value) {
+                const auto assetMask = prepareAssets ? Resource::AssetPolicy::mask() & Mask : 0;
+                cpuRefusal(assetMask,CpuStage::Outer,error);
+                each(assetMask,[](LaneCounters& value) {
                     ++value.outerCpuDenied; ++value.refusals[static_cast<unsigned>(Gate::Capacity)];
                 });
                 throw;
@@ -229,7 +235,8 @@ namespace SceneUtil::AssetPaging
         bool mNeedsRetry = false;
         bool mSpentAttempt = false;
         bool mWaitingForAdmission = false;
-        bool mIncremental = (Resource::AssetPolicy::mask() & Mask) == Lod;
+        bool mAssetsAllowed = true;
+        bool mIncremental = false;
     };
     struct ControlEstimate
     {
@@ -264,6 +271,6 @@ namespace SceneUtil::AssetPaging
         HlodBuildResult hlod;
     };
     Tiers buildTiers(osg::Node& originalSource, osg::Group& optimizedControl, std::string_view identity,
-        unsigned eligible, osg::Camera* mainCamera, Outcome& outcome);
+        unsigned eligible, osg::Camera* mainCamera, Outcome& outcome, bool activeGridLod = false);
 }
 #endif

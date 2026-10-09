@@ -233,8 +233,10 @@ namespace SceneUtil::GeneratedStaticLod
         };
         struct DrawReceipt final : PersistentOpaquePackets::RetainedOpaqueDrawCallback
         {
-            explicit DrawReceipt(std::size_t count) : indices(count) {}
+            explicit DrawReceipt(std::size_t count, bool activeGrid = false)
+                : indices(count),activeGridOrigin(activeGrid) {}
             std::size_t indices;
+            const bool activeGridOrigin;
             osg::observer_ptr<const osg::Geometry> owner;
             std::shared_ptr<MaterialGuard> guard;
             std::vector<OriginalDraw> originals;
@@ -249,6 +251,8 @@ namespace SceneUtil::GeneratedStaticLod
                     return;
                 }
                 ++Counters::derivedDraws; Counters::submittedIndices.fetch_add(indices);
+                if (activeGridOrigin)
+                { ++Counters::activeDerivedDraws; Counters::activeSubmittedIndices.fetch_add(indices); }
                 drawable->drawImplementation(info);
             }
         };
@@ -1375,12 +1379,13 @@ namespace SceneUtil::GeneratedStaticLod
     }
     Group::Group(const Group& copy, const osg::CopyOp& op)
         : osg::Group(copy, op), mError(copy.mError), mReadiness(std::make_shared<Readiness>()), mMainCamera(copy.mMainCamera)
-        , mPreserveControlPopulation(copy.mPreserveControlPopulation) {}
+        , mPreserveControlPopulation(copy.mPreserveControlPopulation),mActiveGridOrigin(copy.mActiveGridOrigin) {}
     Group::Group(osg::Node& originalNode, osg::Node& derivedNode, float absoluteError,
         std::shared_ptr<Readiness> readiness, osg::Camera* mainCamera, bool preserveControlPopulation,
-        GuardRefusalInfo* refusal)
+        GuardRefusalInfo* refusal, bool activeGridOrigin)
         : mError(absoluteError), mReadiness(std::move(readiness)), mMainCamera(mainCamera)
         , mPreserveControlPopulation(preserveControlPopulation)
+        , mActiveGridOrigin(activeGridOrigin)
     {
         setNodeMask(originalNode.getNodeMask()); setDataVariance(osg::Object::DYNAMIC);
         addChild(&originalNode); addChild(&derivedNode);
@@ -1480,13 +1485,16 @@ namespace SceneUtil::GeneratedStaticLod
         {
             const bool coarse = wantsDerived(*cull);
             if (coarse) ++Counters::coarseViews; else ++Counters::originalViews;
+            if (mActiveGridOrigin)
+            { if (coarse) ++Counters::activeCoarseViews; else ++Counters::activeOriginalViews; }
             if (auto* child = coarse ? derived() : original(); child && visitor.validNodeMask(*child)) child->accept(visitor);
         }
         else if (visitor.getVisitorType() == osg::NodeVisitor::UPDATE_VISITOR || visitor.getVisitorType() == osg::NodeVisitor::INTERSECTION_VISITOR)
         { if (original()) original()->accept(visitor); }
         else osg::Group::traverse(visitor); // compile both immutable representations before activation
     }
-    Result build(osg::Node& original, std::string_view identity, osg::Camera* mainCamera, bool reserveGpu)
+    Result build(osg::Node& original, std::string_view identity, osg::Camera* mainCamera,
+        bool reserveGpu, bool activeGridOrigin)
     {
         Result result;
         BuildStep step=BuildStep::Scope;
@@ -1602,7 +1610,7 @@ namespace SceneUtil::GeneratedStaticLod
             for (std::size_t i=0;i<tierPaths.size();++i)
             {
                 auto* tier=tierPaths[i].geometry.get();
-                osg::ref_ptr<DrawReceipt> callback=new DrawReceipt(tier->getPrimitiveSet(0)->getNumIndices());
+                osg::ref_ptr<DrawReceipt> callback=new DrawReceipt(tier->getPrimitiveSet(0)->getNumIndices(),activeGridOrigin);
                 callback->owner=tier;tier->setDrawCallback(callback);
                 callback->originals.push_back(sourcePaths[i]);callback->derivedMatrix=tierPaths[i].matrix;
                 for (const auto& node:tierPaths[i].path) if (node->getStateSet()) callback->candidateStates.emplace_back(node->getStateSet());
@@ -1617,7 +1625,7 @@ namespace SceneUtil::GeneratedStaticLod
             if(retained>peak) {fail(Refusal::Capacity);return result;}
             AssetPaging::retainExperimentalOwner(*derived,retained,&original,nullptr,2u,inspected.bytes);
             result.readiness=std::make_shared<Readiness>();
-            result.node=new Group(original,*derived,cook.error,result.readiness,mainCamera,false,&result.guardRefusal);
+            result.node=new Group(original,*derived,cook.error,result.readiness,mainCamera,false,&result.guardRefusal,activeGridOrigin);
             if (!result.node->materialGuardCurrent())
             {
                 if(result.guardRefusal.reason==GuardRefusal::None) result.guardRefusal.reason=GuardRefusal::Stale;

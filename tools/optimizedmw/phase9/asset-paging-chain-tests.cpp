@@ -31,6 +31,8 @@
 #include <osgViewer/Renderer>
 #include <osgUtil/RenderStage>
 #include <osgUtil/SceneView>
+#include <osgUtil/IntersectionVisitor>
+#include <osgUtil/LineSegmentIntersector>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -63,7 +65,7 @@ namespace
         std::filesystem::path package,resources,shaders,settings;
         std::vector<std::string> models;
         std::string ordinaryModel;
-        bool retry=false,sourceProbe=false,mixed=false,textureCombination=false,warmControl=false,experimentBudget=false;
+        bool retry=false,sourceProbe=false,mixed=false,textureCombination=false,warmControl=false,experimentBudget=false,activeGridCheck=false;
         Inputs(int argc,char** argv) : package(std::filesystem::absolute(std::filesystem::u8path(argv[3])))
         {
             for (int i=5;i<argc;++i)
@@ -75,6 +77,7 @@ namespace
                 if (option=="--texture-combination") {textureCombination=true;continue;}
                 if (option=="--warm-control") {warmControl=true;continue;}
                 if (option=="--experiment-budget") {experimentBudget=true;continue;}
+                if (option=="--active-grid-check") {activeGridCheck=true;continue;}
                 if (option=="--ordinary-model") { require(++i<argc,"missing actual ordinary STAT model"); ordinaryModel=argv[i]; continue; }
                 if (option=="--resources" || option=="--shaders" || option=="--settings")
                 {
@@ -659,7 +662,7 @@ int main(int argc,char** argv) try
     R::ResourceSystem resources(&vfs,100,nullptr);
     R::SpeculativeBudget::Config limits; limits.transientLimit=R::AssetPolicy::CpuTransientLimit;
     limits.maximumJobs=4; limits.reservedNearFutureJobs=1;
-    if(inputs.experimentBudget)
+    if(inputs.experimentBudget || inputs.activeGridCheck)
     {
         limits.experimentLimit=256*R::SpeculativeBudget::MiB;
         limits.experimentScratchLimit=128*R::SpeculativeBudget::MiB;
@@ -901,9 +904,233 @@ int main(int argc,char** argv) try
             <<" ordinary_model="<<ordinaryModel.value()<<" actual_stat_sources=1 material_substitution=0\n";
     }
     qualityContracts();
+    std::atomic_bool abort{false};
+    if (inputs.activeGridCheck)
+    {
+        require(mask==A::Lod && inputs.mixed,"active-grid check requires the independently tested mixed L1 source population");
+        phase("active_grid","begin");
+        struct RestoreActiveSettings
+        {
+            bool enabled=Settings::cells().mGeneratedStaticLodActiveGrid;
+            bool active=Settings::terrain().mObjectPagingActiveGrid;
+            int prepare=Settings::cells().mV311ActiveGridPrepareMode;
+            ~RestoreActiveSettings()
+            {
+                Settings::cells().mGeneratedStaticLodActiveGrid.set(enabled);
+                Settings::terrain().mObjectPagingActiveGrid.set(active);
+                Settings::cells().mV311ActiveGridPrepareMode.set(prepare);
+            }
+        } restoreActive;
+        Settings::terrain().mObjectPagingActiveGrid.set(true);
+        Settings::cells().mV311ActiveGridPrepareMode.set(1);
+        const auto activeChunk=[&](MWRender::ObjectPaging& owner,bool prepareAssets,bool* needsRetry=nullptr) {
+            R::SpeculativeScope scope(resources.speculativeBudget(),&R::ResourceSystem::speculativeSample,
+                &resources,R::SpeculativePriority::NearFuture);
+            A::OptionalUpgradeScope optional(&abort,prepareAssets);
+            auto value=owner.getChunk(1,{0,0},0,0,true,{0,0,0},true);
+            if(needsRetry) *needsRetry=optional.needsRetry();
+            return value;
+        };
+        const auto activeRefs=[](MWRender::ObjectPaging& owner) {
+            std::vector<ESM::RefNum> result;owner.getPagedRefnums({-1,-1,1,1},result);return result;
+        };
+        struct RefnumPartitions final : osg::NodeVisitor
+        {
+            RefnumPartitions():osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
+            std::vector<std::pair<ESM::RefNum,unsigned>> values;
+            void apply(osg::Node& node) override
+            {
+                if(auto* selector=dynamic_cast<L::Group*>(&node))
+                {if(selector->original()) selector->original()->accept(*this);}
+                else traverse(node);
+            }
+            void apply(osg::Geometry& geometry) override
+            {
+                if(auto* container=geometry.getUserDataContainer())
+                    for(unsigned i=0;i<container->getNumUserObjects();++i)
+                        if(auto* marker=dynamic_cast<MWRender::RefnumMarker*>(container->getUserObject(i)))
+                            values.emplace_back(marker->mRefnum,marker->mNumVertices);
+            }
+            void finish() {std::sort(values.begin(),values.end());}
+        };
+        const auto beforeActiveBuilt=built(mask),beforeTaggedActiveBuilt=L::Counters::activeBuilt.load();
+        // Disabled means the inherited active-grid strong control even when
+        // the process-wide L1 switch is on. No source/material substitution.
+        Settings::cells().mGeneratedStaticLodActiveGrid.set(false);
+        MWRender::ObjectPaging disabled(scenes,ESM::Cell::sDefaultWorldspaceId);
+        disabled.setAssetMainCamera(camera);disabled.setFixturePopulation(population);
+        Registered disabledRegistration(resources,&disabled);
+        auto disabledControl=activeChunk(disabled,true);
+        require(disabledControl.valid(),"disabled active-grid control required");
+        Selectors disabledSelectors;disabledControl->accept(disabledSelectors);
+        require(disabledSelectors.values.empty() && built(mask)==beforeActiveBuilt,
+            "disabled active-grid setting must retain ordinary strong topology under the enabled L1 process switch");
+        Settings::cells().mGeneratedStaticLodActiveGrid.set(true);
+        MWRender::ObjectPaging staged(scenes,ESM::Cell::sDefaultWorldspaceId);
+        staged.setAssetMainCamera(camera);staged.setFixturePopulation(population);
+        Registered stagedRegistration(resources,&staged);
+        osg::ref_ptr<osg::Node> stagedRequired;
+        {SceneUtil::PagingWorkScope demand(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
+            stagedRequired=staged.getChunk(1,{0,0},0,0,true,{0,0,0},true);}
+        require(stagedRequired.valid(),"active first-stage required control required");
+        MWRender::ObjectPaging active(scenes,ESM::Cell::sDefaultWorldspaceId);
+        active.setAssetMainCamera(camera);active.setFixturePopulation(population);
+        Registered activeRegistration(resources,&active);
+        osg::ref_ptr<osg::Node> required;
+        {SceneUtil::PagingWorkScope demand(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
+            required=active.getChunk(1,{0,0},0,0,true,{0,0,0},true);}
+        require(required.valid(),"actual active-grid required control required");
+        const auto requiredRefs=activeRefs(active);
+        require(requiredRefs.size()==population.size(),"required active root must expose all actual provider RefNums through the production reader");
+        Selectors requiredSelectors;required->accept(requiredSelectors);
+        require(requiredSelectors.values.empty() && built(mask)==beforeActiveBuilt,"required active readiness must never cook L1");
+        const GeometrySnapshot requiredSnapshot(*required);
+        osg::ref_ptr<osg::Node> strong;
+        bool deniedRetry=false;
+        const auto deniedBefore=resources.speculativeBudget()->stats().experimentDenied;
+        {
+            // A real occupied child permit denies experimental admission while
+            // leaving the ordinary NearFuture scope outside that child lane.
+            auto occupied=resources.speculativeBudget()->tryExperimentJob(R::ResourceSystem::speculativeSample(&resources));
+            require(resources.speculativeBudget()->stats().experimentJobs==1,"actual child experimental permit must be occupied");
+            bool stagedRetry=false;auto stagedStrong=activeChunk(staged,true,&stagedRetry);
+            Selectors stagedSelectors;stagedStrong->accept(stagedSelectors);
+            require(stagedStrong!=stagedRequired && stagedSelectors.values.empty() && stagedRetry && built(mask)==beforeActiveBuilt
+                && activeRefs(staged)==requiredRefs,"first asset-enabled active upgrade must independently publish ordinary strong quality before its busy child tail");
+            strong=activeChunk(active,false);
+            Selectors strongSelectors;strong->accept(strongSelectors);
+            require(strong!=required && strongSelectors.values.empty() && built(mask)==beforeActiveBuilt
+                && activeRefs(active)==requiredRefs,"ordinary strong active foundation must publish despite busy experimental admission");
+            const GeometrySnapshot busyStrongSnapshot(*strong);
+            auto denied=activeChunk(active,true,&deniedRetry);
+            require(denied==strong && deniedRetry && built(mask)==beforeActiveBuilt
+                && resources.speculativeBudget()->stats().experimentDenied>deniedBefore
+                && activeRefs(active)==requiredRefs,"denied active L1 tail must retain the exact published strong node, RefNums and retry");
+            busyStrongSnapshot.unchanged(*strong,"denied active tail must not decorate the already-published ordinary strong owner");
+        }
+        requiredSnapshot.unchanged(*required,"ordinary active promotion must preserve the held required graph");
+        require(resources.speculativeBudget()->stats().experimentJobs==0,"busy test permit must release before the actual tail cook");
+        ControlTopology strongTopology;strong->accept(strongTopology);
+        RefnumPartitions strongPartitions;strong->accept(strongPartitions);strongPartitions.finish();
+        require(!strongPartitions.values.empty(),"actual optimized active control must retain picking vertex partitions");
+        const GeometrySnapshot strongSnapshot(*strong);
+        std::this_thread::sleep_for(std::chrono::milliseconds(A::RetryDelayMilliseconds+100));
+        sampleGpu();auto activeCandidate=activeChunk(active,true);
+        Selectors activeSelectors;activeCandidate->accept(activeSelectors);
+        require(activeCandidate!=strong && !activeSelectors.values.empty() && built(mask)>beforeActiveBuilt,
+            "available active L1 tail must cook an independently published control replacement");
+        ControlTopology candidateTopology;activeCandidate->accept(candidateTopology);
+        RefnumPartitions candidatePartitions;activeCandidate->accept(candidatePartitions);candidatePartitions.finish();
+        require(activeRefs(active)==requiredRefs && candidatePartitions.values==strongPartitions.values
+            && candidateTopology.indices==strongTopology.indices && candidateTopology.submissions==strongTopology.submissions,
+            "active tier must preserve exact canonical RefNums, original picking partitions, control indices and ordinary batching");
+        strongSnapshot.unchanged(*strong,"active tier must not mutate its held published strong predecessor");
+        const auto activeView=camera->getViewMatrix();
+        struct RemoveActiveView
+        {
+            osg::Camera* camera;osg::Group* lighting;osg::Node* owner;osg::Matrixd view;
+            ~RemoveActiveView() {lighting->removeChild(owner);camera->setViewMatrix(view);}
+        } removeActive{camera,lighting,activeCandidate,activeView};
+        lighting->addChild(activeCandidate);
+        const auto activeBound=activeCandidate->getBound();double activeError=0;
+        for(auto* selector:activeSelectors.values) activeError=std::max(activeError,double(selector->error()));
+        const auto activeDistance=std::max(double(activeBound.radius())*4.,double(activeBound.radius())
+            +activeError*std::abs(camera->getProjectionMatrix()(1,1))*64./.6);
+        camera->setViewMatrixAsLookAt(osg::Vec3d(activeBound.center())+osg::Vec3d(0,-activeDistance,0),osg::Vec3d(activeBound.center()),{0,0,1});
+        const auto activePrepared=[&] {return std::all_of(activeSelectors.values.begin(),activeSelectors.values.end(),
+            [](const auto* selector){return selector->compilationReady();});};
+        for(unsigned frame=0;frame<90 && !activePrepared();++frame) viewer.frame();
+        const auto activeDrawStart=consumed(mask),activeTaggedDrawStart=L::Counters::activeDerivedDraws.load();viewer.frame();viewer.frame();
+        require(activePrepared() && consumed(mask)>activeDrawStart && pixels->error==GL_NO_ERROR && rgb(pixels->data)>16,
+            "active L1 must complete exact real ICO and submit visible reduced geometry in the actual main camera");
+        require(L::Counters::activeBuilt.load()>beforeTaggedActiveBuilt
+            && L::Counters::activeDerivedDraws.load()-activeTaggedDrawStart==consumed(mask)-activeDrawStart,
+            "actual active cook and every reduced draw must retain their explicit active-grid origin tag");
+        const auto activeStreams=indexOnlyStreams(activeSelectors);
+        require(activeStreams>0,"active tier must share exact ordinary immutable vertex, normal, UV and material streams");
+        std::set<ESM::RefNum> selectedRefnums;
+        for(auto* selector:activeSelectors.values)
+        {
+            RefnumPartitions members;selector->original()->accept(members);
+            for(const auto& [refnum,vertices]:members.values) selectedRefnums.insert(refnum);
+        }
+        ESM::RefNum ordinaryRefnum;ordinaryRefnum.mIndex=static_cast<unsigned>(population.size());ordinaryRefnum.mContentFile=0;
+        require(!selectedRefnums.empty() && !selectedRefnums.contains(ordinaryRefnum)
+            && selectedRefnums.size()<requiredRefs.size(),"mixed ordinary occluder owner must remain outside every active L1 selector");
+        std::set<const osg::Drawable*> activeOriginals,activeDerived;
+        for(const auto& draw:L::originalDraws(*activeCandidate)) activeOriginals.insert(draw.geometry);
+        for(auto* selector:activeSelectors.values)
+        {
+            Geometries derived;selector->derived()->accept(derived);
+            activeDerived.insert(derived.values.begin(),derived.values.end());
+        }
+        // Use a real triangle from the retained original, with its actual local
+        // transform, to construct a picking ray. The intersection visitor must
+        // hit the original drawable/RefnumMarker while main rendering uses L1.
+        osg::ref_ptr<osgUtil::LineSegmentIntersector> intersector;
+        for(const auto& draw:L::originalDraws(*activeSelectors.values.front()->original()))
+        {
+            const auto* vertices=dynamic_cast<const osg::Vec3Array*>(draw.geometry->getVertexArray());
+            if(!vertices || !draw.geometry->getNumPrimitiveSets()) continue;
+            const auto* primitive=draw.geometry->getPrimitiveSet(0);
+            for(unsigned i=0;i+2<primitive->getNumIndices();i+=3)
+            {
+                const osg::Vec3d a=osg::Vec3d((*vertices)[primitive->index(i)])*draw.matrix;
+                const osg::Vec3d b=osg::Vec3d((*vertices)[primitive->index(i+1)])*draw.matrix;
+                const osg::Vec3d c=osg::Vec3d((*vertices)[primitive->index(i+2)])*draw.matrix;
+                auto normal=(b-a)^(c-a);if(normal.normalize()<1e-8) continue;
+                const auto center=(a+b+c)/3.;intersector=new osgUtil::LineSegmentIntersector(center+normal*10.,center-normal*10.);break;
+            }
+            if(intersector) break;
+        }
+        require(intersector.valid(),"actual retained original triangle required for active picking proof");
+        osgUtil::IntersectionVisitor intersections(intersector);activeCandidate->accept(intersections);
+        require(intersector->containsIntersections(),"real active original triangle must be pickable while L1 is visible");
+        unsigned pickedMarkers=0;
+        for(const auto& hit:intersector->getIntersections())
+        {
+            require(activeOriginals.contains(hit.drawable) && !activeDerived.contains(hit.drawable),
+                "active picking must traverse retained original drawables and exclude derived index tiers");
+            if(auto* container=hit.drawable->getUserDataContainer())
+                for(unsigned i=0;i<container->getNumUserObjects();++i)
+                    if(auto* marker=dynamic_cast<MWRender::RefnumMarker*>(container->getUserObject(i)))
+                    {require(std::find(requiredRefs.begin(),requiredRefs.end(),marker->mRefnum)!=requiredRefs.end(),
+                        "picked active original must retain a canonical RefNum");++pickedMarkers;}
+        }
+        require(pickedMarkers>0,"real picked original must expose its actual reference vertex partition");
+        std::cout<<"CHAIN_ACTIVE_GRID disabled_control=1 required_original=1 asset_enabled_first_stage_ordinary=1 busy_child_ordinary_published=1 denied_tail_exact_strong=1"
+            <<" available_tail_cooked=1 exact_owner_ready=1 actual_main_draw=1 immutable_streams="<<activeStreams
+            <<" refnums="<<requiredRefs.size()<<" selected_refnums="<<selectedRefnums.size()<<" mixed_occluder_original=1 picking_partitions="<<candidatePartitions.values.size()<<" actual_pick_hits="<<intersector->getIntersections().size()
+            <<" picked_markers="<<pickedMarkers<<" main_draws="<<consumed(mask)-activeDrawStart
+            <<" active_tagged_draws="<<L::Counters::activeDerivedDraws.load()-activeTaggedDrawStart
+            <<" rgb="<<rgb(pixels->data)<<" source_population_substituted=1 source_loader_substituted=0 gl_error=0\n";
+        auto& activeShaderManager=scenes->getShaderManager();const auto activeDefines=activeShaderManager.getGlobalDefines();
+        auto changedActiveDefines=activeDefines;changedActiveDefines["clamp"]=activeDefines.at("clamp")=="1" ? "0" : "1";
+        const auto activeShaderGeneration=activeShaderManager.assetGeneration();
+        activeShaderManager.setGlobalDefines(changedActiveDefines);
+        require(activeShaderManager.assetGeneration()==activeShaderGeneration+1
+            && std::none_of(activeSelectors.values.begin(),activeSelectors.values.end(),
+                [](const auto* selector){return selector->materialGuardCurrent();}),
+            "real source epoch change must invalidate every held active tier guard");
+        const auto activeBeforeEpochDraw=consumed(mask),activeBeforeEpochReads=pixels->reads;viewer.frame();
+        require(consumed(mask)==activeBeforeEpochDraw && pixels->original>0 && pixels->reads>activeBeforeEpochReads
+            && rgb(pixels->data)>16 && pixels->error==GL_NO_ERROR,"stale active shader epoch must draw visible original controls immediately");
+        osg::ref_ptr<osg::Node> newActiveRequired;
+        {SceneUtil::PagingWorkScope demand(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
+            newActiveRequired=active.getChunk(1,{0,0},0,0,true,{0,0,0},true);}
+        require(newActiveRequired.valid(),"fresh source-epoch active required graph required");
+        Selectors newActiveRequiredSelectors;newActiveRequired->accept(newActiveRequiredSelectors);
+        require(newActiveRequired!=activeCandidate && newActiveRequiredSelectors.values.empty() && activeRefs(active)==requiredRefs,
+            "active source epoch must rebuild ordinary required metadata without carrying prior tier completion");
+        activeShaderManager.setGlobalDefines(activeDefines);
+        require(std::none_of(activeSelectors.values.begin(),activeSelectors.values.end(),
+            [](const auto* selector){return selector->materialGuardCurrent();}),"restoring active source policy must never revive its stale immutable guard");
+        std::cout<<"CHAIN_ACTIVE_EPOCH source_changed=1 old_guard_original=1 required_original_rebuilt=1 refnums_preserved=1 old_guard_not_revived=1"
+            <<" original_draws="<<pixels->original<<" rgb="<<rgb(pixels->data)<<" gl_error=0\n";
+        phase("active_grid","done");
+    }
     MWRender::ObjectPaging paging(scenes,ESM::Cell::sDefaultWorldspaceId); paging.setAssetMainCamera(camera); paging.setFixturePopulation(population);
     Registered pagingRegistration(resources,&paging);
-    std::atomic_bool abort{false};
     const auto beforeBuilt=built(mask);
     osg::ref_ptr<osg::Node> ordinary;
     phase("required_chunk","begin");
@@ -1436,14 +1663,54 @@ int main(int argc,char** argv) try
     phase("publication_ready","begin");
     lighting->removeChild(candidate); lighting->addChild(rebuilt);
     const auto rebuiltReady=ready(mask),rebuiltDraw=consumed(mask);
-    for (unsigned frame=0;frame<90 && ready(mask)==rebuiltReady;++frame) viewer.frame();
-    viewer.frame();
+    const auto rebuiltCullFallback=L::Counters::materialCullFallbacks.load(),rebuiltDrawFallback=L::Counters::materialDrawFallbacks.load();
+    const auto rebuiltCoarseViews=L::Counters::coarseViews.load(),rebuiltOriginalViews=L::Counters::originalViews.load();
+    const auto rebuiltPixelReads=pixels->reads;
     Selectors rebuiltSelectors; rebuilt->accept(rebuiltSelectors);
-    unsigned preparedSelectors=0;
-    for (auto* selector:rebuiltSelectors.values) preparedSelectors+=selector->compilationReady();
+    unsigned diagnosticSelector=0;
+    for (auto* selector:rebuiltSelectors.values)
+    {
+        const auto paths=selector->getParentalNodePaths();
+        for(const auto& path:paths) if(std::find(path.begin(),path.end(),lighting.get())!=path.end())
+        {
+            const auto matrix=osg::computeLocalToWorld(path)*camera->getViewMatrix();
+            const auto localBound=selector->getBound();
+            const auto center=osg::Vec3d(localBound.center())*matrix;
+            const auto scale=osg::Vec3d(matrix(0,0),matrix(0,1),matrix(0,2)).length();
+            const auto distance=-center.z()-localBound.radius()*scale;
+            const auto projected=selector->error()*scale*std::abs(camera->getProjectionMatrix()(1,1))*camera->getViewport()->height()*.5/distance;
+            std::cout<<"CHAIN_SELECTOR_DIAGNOSTIC phase=rebuilt_setup index="<<diagnosticSelector
+                <<" error="<<selector->error()<<" radius="<<localBound.radius()<<" distance="<<distance<<" pixels="<<projected
+                <<" prepared="<<selector->compilationReady()<<" guard="<<selector->materialGuardCurrent()<<" node_mask="<<selector->getNodeMask()
+                <<" main_path=1 paths="<<paths.size()<<'\n';
+        }
+        ++diagnosticSelector;
+    }
+    unsigned initialGuards=0;
+    for (auto* selector:rebuiltSelectors.values) initialGuards+=selector->materialGuardCurrent();
+    require(!rebuiltSelectors.values.empty(),"rebuilt publication setup requires its exact production selectors");
+    // Earlier coalescing and admission-retry subcases leave independent real
+    // compile sets queued. Their lane-wide completion counter can advance
+    // while this owner's own selectors are still unready. Wait on the exact
+    // rebuilt owner, then give its prepared representation an actual cull/draw.
+    const auto rebuiltPrepared=[&] {
+        return std::all_of(rebuiltSelectors.values.begin(),rebuiltSelectors.values.end(),
+            [](const auto* selector){return selector->compilationReady();});
+    };
+    for (unsigned frame=0;frame<90 && !rebuiltPrepared();++frame) viewer.frame();
+    viewer.frame();
+    unsigned preparedSelectors=0,currentGuards=0;
+    for (auto* selector:rebuiltSelectors.values)
+    { preparedSelectors+=selector->compilationReady();currentGuards+=selector->materialGuardCurrent(); }
     std::cout<<"CHAIN_SETUP_DIAGNOSTIC ready_before="<<rebuiltReady<<" ready_now="<<ready(mask)
         <<" draw_before="<<rebuiltDraw<<" draw_now="<<consumed(mask)<<" selectors="<<rebuiltSelectors.values.size()
-        <<" prepared_selectors="<<preparedSelectors<<" ico_contexts="<<ico->getContextSet().size()
+        <<" prepared_selectors="<<preparedSelectors<<" exact_owner_wait=1 initial_material_guards="<<initialGuards<<" current_material_guards="<<currentGuards
+        <<" material_cull_fallbacks="<<L::Counters::materialCullFallbacks.load()-rebuiltCullFallback
+        <<" material_draw_fallbacks="<<L::Counters::materialDrawFallbacks.load()-rebuiltDrawFallback
+        <<" coarse_views="<<L::Counters::coarseViews.load()-rebuiltCoarseViews
+        <<" original_views="<<L::Counters::originalViews.load()-rebuiltOriginalViews
+        <<" pixel_reads="<<pixels->reads-rebuiltPixelReads<<" rgb="<<rgb(pixels->data)<<" gl_error="<<pixels->error
+        <<" ico_contexts="<<ico->getContextSet().size()
         <<" ico_pending="<<ico->getToCompile().size()<<" ico_completed="<<ico->getCompiled().size()<<'\n';
     unsigned icoOperations=0;
     for (const auto& operation:context->getOperationsQueue()) icoOperations+=operation.get()==ico.get();

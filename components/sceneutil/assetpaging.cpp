@@ -443,7 +443,7 @@ namespace SceneUtil::AssetPaging
         return true;
     }
     Tiers buildTiers(osg::Node& source, osg::Group& control, std::string_view identity,
-        unsigned eligible, osg::Camera* camera, Outcome& outcome)
+        unsigned eligible, osg::Camera* camera, Outcome& outcome, bool activeGridLod)
     {
         Tiers tiers;
         std::unique_ptr<Resource::ExperimentalSpeculativeScope> experimental;
@@ -459,7 +459,8 @@ namespace SceneUtil::AssetPaging
         outcome.admissionWait &= ~eligible;
         if (eligible & Lod)
         {
-            tiers.lod = GeneratedStaticLod::build(control, identity, camera);
+            if (activeGridLod) ++GeneratedStaticLod::Counters::activeBuildAttempts;
+            tiers.lod = GeneratedStaticLod::build(control, identity, camera,true,activeGridLod);
             if (tiers.lod.node && !Resource::AssetGpuBudget::retainUntilShutdown(tiers.lod.gpuReservation))
             {
                 tiers.lod.node = nullptr;
@@ -469,7 +470,11 @@ namespace SceneUtil::AssetPaging
                 tiers.lod.allocationFailure = true;
                 GeneratedStaticLod::recordBuildFailure(GeneratedStaticLod::BuildStep::GpuRetention, tiers.lod, identity);
             }
-            if (tiers.lod.node) outcome.completed |= Lod;
+            if (tiers.lod.node)
+            {
+                outcome.completed |= Lod;
+                if (activeGridLod) ++GeneratedStaticLod::Counters::activeBuilt;
+            }
             else { ++Counters::lod.buildRefused; refuse(Lod, lodGate(tiers.lod.refusal)); if (tiers.lod.retryable) outcome.defer(Lod); }
         }
         if (eligible & Hlod)
