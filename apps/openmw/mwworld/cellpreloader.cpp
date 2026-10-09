@@ -1,6 +1,7 @@
 #include "cellpreloader.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdlib>
 #include <limits>
@@ -51,6 +52,11 @@ namespace MWWorld
 {
     namespace
     {
+        // Worker failure observations only. Preserve the exact reservation
+        // rather than inferring a refusal from a missing asset cook counter.
+        std::array<std::atomic_uint64_t,3> sOrdinaryPagingFailures{};
+        std::atomic_uint64_t sOrdinaryPagingPasses{0};
+
         bool contains(std::span<const PositionCellGrid> positions, const PositionCellGrid& contained, float tolerance)
         {
             const float squaredTolerance = tolerance * tolerance;
@@ -849,9 +855,48 @@ namespace MWWorld
             Loading::Reporter reporter;
             auto* budget = mResourceSystem->speculativeBudget();
             bool admitted = true, deferred = false, spentAttempt = false, cancelled = false;
+            std::size_t currentTarget = mPreloadPositions.size(), completedTargets = 0;
+            const auto requestsBefore = mOptionalUpgradeRequests.load(std::memory_order_relaxed);
+            const auto ordinaryFailure = [&](unsigned stage,const Resource::SpeculativeDeferred* error) {
+                if (stage >= sOrdinaryPagingFailures.size()
+                    || sOrdinaryPagingFailures[stage].fetch_add(1,std::memory_order_relaxed) != 0) return;
+                const auto* receipt = error && error->reservation ? &*error->reservation : nullptr;
+                const auto sample = receipt ? receipt->sample : Resource::ResourceSystem::speculativeSample(mResourceSystem);
+                const auto currentGeneration = optionalGeneration();
+                constexpr std::array<std::string_view,3> stages{"overlap", "target", "needs_retry"};
+                Log(Debug::Info) << std::dec << "OptimizedMW ordinary paging first failure: stage=" << stages[stage]
+                    << " reservation_receipt=" << bool(receipt) << " asset_mask=" << Resource::AssetPolicy::mask()
+                    << " cohort_mask=" << mOptionalRetry.generation.mask << " target_index=" << currentTarget
+                    << " views=" << mTerrainViews.size() << " targets=" << mPreloadPositions.size()
+                    << " completed_targets=" << completedTargets
+                    << " completed_target_requests=" << mOptionalUpgradeRequests.load(std::memory_order_relaxed)-requestsBefore
+                    << " current_first=" << mCurrentFirst << " tail_retry=" << mOptionalRetryOnly
+                    << " cohort_vfs=" << mOptionalRetry.generation.vfs << " current_vfs=" << currentGeneration.vfs
+                    << " cohort_shader=" << mOptionalRetry.generation.shader << " current_shader=" << currentGeneration.shader
+                    << " world_matches=" << matchesWorld(mWorld) << " aborted=" << mAbort.load(std::memory_order_acquire)
+                    << " current_host_pressure=" << static_cast<unsigned>(mResourceSystem->hostMemoryPressure())
+                    << " reason_bits=" << (receipt ? receipt->reasons : 0)
+                    << " pressure_reason_bits=" << (receipt ? receipt->pressureReasons : 0)
+                    << " requested=" << (receipt ? receipt->requested : 0)
+                    << " current_future=" << (receipt ? receipt->currentFuture : 0)
+                    << " proposed_future=" << (receipt ? receipt->proposedFuture : 0)
+                    << " transient_limit=" << (receipt ? receipt->transientLimit : 0)
+                    << " growth=" << (receipt ? receipt->growth : 0)
+                    << " unobserved_growth=" << (receipt ? receipt->unobservedGrowth : 0)
+                    << " extra=" << (receipt ? receipt->extra : 0)
+                    << " physical_floor=" << (receipt ? receipt->physicalFloor : 0)
+                    << " physical_available=" << sample.memory.physicalAvailable
+                    << " commit_floor=" << (receipt ? receipt->commitFloor : 0)
+                    << " commit_available=" << sample.memory.commitAvailable
+                    << " system_commit_available=" << sample.memory.systemCommitAvailable
+                    << " sample_generation=" << sample.generation << " sampled_at_ms=" << sample.sampledAtMs
+                    << " sample_pressure=" << static_cast<unsigned>(sample.decision.state)
+                    << " priority=" << static_cast<unsigned>(receipt ? receipt->priority : Resource::SpeculativePriority::NearFuture);
+            };
             const auto prepareTargets = [&] {
                 const auto prepare = [&](std::size_t index) {
                     if (mAbort.load(std::memory_order_relaxed)) return;
+                    currentTarget = index;
                     SceneUtil::PagingWorkScope::checkpoint();
                     if (mOptionalRetry.generation.mask && (!optionalSourcesMatch() || !matchesWorld(mWorld)))
                         throw SceneUtil::PagingWorkCancelled{};
@@ -861,6 +906,7 @@ namespace MWWorld
                     SceneUtil::PagingWorkScope::checkpoint();
                     if (mOptionalRetry.generation.mask && (!optionalSourcesMatch() || !matchesWorld(mWorld)))
                         throw SceneUtil::PagingWorkCancelled{};
+                    ++completedTargets;
                 };
                 if (mCurrentFirst)
                     for (std::size_t index : mTargetReadiness->completed()) prepare(index);
@@ -878,6 +924,7 @@ namespace MWWorld
                 admitted = false;
             if (admitted && independentActiveLod())
             {
+                sOrdinaryPagingPasses.fetch_add(1,std::memory_order_relaxed);
                 // Publish the promoted ordinary active controls first, through
                 // the inherited NearFuture byte/headroom reservation. No asset
                 // Background permit, source proof, clone or cook is a dependency
@@ -895,9 +942,11 @@ namespace MWWorld
                     SceneUtil::PagingWorkScope::checkpoint();
                     if (!optionalSourcesMatch() || !matchesWorld(mWorld))
                         throw SceneUtil::PagingWorkCancelled{};
+                    if (ordinary.needsRetry()) ordinaryFailure(2,nullptr);
                     if (mAbort.load(std::memory_order_acquire) || ordinary.needsRetry()) admitted = false;
                 }
-                catch (const Resource::SpeculativeDeferred&) { admitted = false; }
+                catch (const Resource::SpeculativeDeferred& error)
+                { ordinaryFailure(currentTarget == mPreloadPositions.size() ? 0 : 1,&error); admitted = false; }
                 catch (const SceneUtil::PagingWorkCancelled&)
                 { mOptionalRetry.cancel(); ++SceneUtil::AssetPaging::Counters::tailCancelled; admitted = false; cancelled = true; }
                 catch (const std::exception& e)
@@ -1150,6 +1199,13 @@ namespace MWWorld
                 << " base_retention=" << mColdBaseRetention << " early_headroom=" << mCoordinateColdHeadroom
                 << " recovering_retired=" << mColdRecoveryRetired;
         clearAllTasks();
+        if (sOrdinaryPagingPasses.load(std::memory_order_relaxed))
+            Log(Debug::Info) << std::dec << "OptimizedMW ordinary paging failures: passes="
+                << sOrdinaryPagingPasses.load(std::memory_order_relaxed)
+                << " overlap=" << sOrdinaryPagingFailures[0].load(std::memory_order_relaxed)
+                << " target=" << sOrdinaryPagingFailures[1].load(std::memory_order_relaxed)
+                << " needs_retry=" << sOrdinaryPagingFailures[2].load(std::memory_order_relaxed)
+                << " workers_joined=1";
     }
 
     void CellPreloader::preload(CellStore& cell, double timestamp, bool nearFuture)
