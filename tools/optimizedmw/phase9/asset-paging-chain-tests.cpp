@@ -24,6 +24,7 @@
 #include <components/misc/constants.hpp>
 #include <components/settings/parser.hpp>
 #include <components/settings/values.hpp>
+#include <components/terrain/compositemaprenderer.hpp>
 #include <components/terrain/storage.hpp>
 #include <components/terrain/terraindrawable.hpp>
 #include <components/shader/assetgeometrycontract.hpp>
