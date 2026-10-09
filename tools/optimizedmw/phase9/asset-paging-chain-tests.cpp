@@ -1104,7 +1104,7 @@ int main(int argc,char** argv) try
             <<" picked_markers="<<pickedMarkers<<" main_draws="<<consumed(mask)-activeDrawStart
             <<" active_tagged_draws="<<L::Counters::activeDerivedDraws.load()-activeTaggedDrawStart
             <<" rgb="<<rgb(pixels->data)<<" source_population_substituted=1 source_loader_substituted=0 gl_error=0\n";
-        auto& activeShaderManager=scenes->getShaderManager();const auto activeDefines=activeShaderManager.getGlobalDefines();
+        auto& activeShaderManager=scenes->getShaderManager();auto activeDefines=activeShaderManager.getGlobalDefines();
         auto changedActiveDefines=activeDefines;changedActiveDefines["clamp"]=activeDefines.at("clamp")=="1" ? "0" : "1";
         const auto activeShaderGeneration=activeShaderManager.assetGeneration();
         activeShaderManager.setGlobalDefines(changedActiveDefines);
