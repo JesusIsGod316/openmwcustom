@@ -1895,7 +1895,7 @@ int main(int argc,char** argv) try
             };
             const auto beforePending=noRefreshWork();const auto weakBeforePending=weakMainDraws;
             const auto drawsBeforePending=consumed(mask);viewer.frame();paused.stillPaused();
-            require(camera->getViewMatrix()==fixedView && weakWitness->last==oldPat && !publishedWitness->visits
+            require(camera->getViewMatrix()==fixedView && weakWitness->last.get()==oldPat.get() && !publishedWitness->visits
                 && weakMainDraws>weakBeforePending && consumed(mask)==drawsBeforePending
                 && live.getRenderingRevision()==publication && noRefreshWork()==beforePending,
                 "same-revision unready publication must preserve the exact live weak PAT without demand or cook work");
@@ -1931,7 +1931,7 @@ int main(int argc,char** argv) try
             // another cache publication, so consuming its serial too early fails.
             for(unsigned frame=0;frame<90 && (!prepared() || !publishedWitness->visits);++frame) viewer.frame();
             const auto activeStart=L::Counters::activeDerivedDraws.load(),mainStart=consumed(mask);viewer.frame();viewer.frame();
-            require(prepared() && publishedWitness->last.valid() && publishedWitness->last!=oldPat
+            require(prepared() && publishedWitness->last.valid() && publishedWitness->last.get()!=oldPat.get()
                 && camera->getViewMatrix()==fixedView && live.getRenderingRevision()==publication
                 && consumed(mask)>mainStart && L::Counters::activeDerivedDraws.load()-activeStart==consumed(mask)-mainStart
                 && pixels->error==GL_NO_ERROR && rgb(pixels->data)>16 && noRefreshWork()==beforePending,
@@ -1988,7 +1988,7 @@ int main(int argc,char** argv) try
                 ++canonicalPickHits;
             }
             const auto beforeStable=noRefreshWork();viewer.frame();
-            require(publishedWitness->last==adoptedPat && noRefreshWork()==beforeStable,
+            require(publishedWitness->last.get()==adoptedPat.get() && noRefreshWork()==beforeStable,
                 "unchanged ready publication must leave the exact adopted wrapper stable");
             const auto prepareOther=[&](bool assets) {
                 R::SpeculativeScope scope(resources.speculativeBudget(),&R::ResourceSystem::speculativeSample,
@@ -2003,7 +2003,7 @@ int main(int argc,char** argv) try
                 && live.getRenderingRevision()>publication,
                 "unrelated revision test must be driven by another actual private asset publication");
             const auto beforeUnrelated=noRefreshWork();viewer.frame();
-            require(publishedWitness->last==adoptedPat && noRefreshWork()==beforeUnrelated
+            require(publishedWitness->last.get()==adoptedPat.get() && noRefreshWork()==beforeUnrelated
                 && oldPat->getChild(1)==weak,
                 "unrelated actual manager publication must not replace or demand-build this unchanged ready entry");
             auto savedDefines=scenes->getShaderManager().getGlobalDefines();auto changedDefines=savedDefines;
