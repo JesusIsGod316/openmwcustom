@@ -130,15 +130,26 @@ def l1_mixed_index_resources(text):
 
 def l1_active_grid(text):
     """Require actual active-owner cooking/draw and retained ordinary interactions."""
+    declared_population = record(text, "CHAIN_ACTIVE_POPULATION", {
+        "candidate_instances": 16, "ordinary_instances": 1, "total_instances": 17,
+        "spatial_buckets": 2, "captured_merge_settings": 1,
+        "source_population_substituted": 1, "source_loader_substituted": 0})
     active = record(text, "CHAIN_ACTIVE_GRID", {key: 1 for key in (
         "disabled_control", "required_original", "asset_enabled_first_stage_ordinary",
         "busy_child_ordinary_published", "denied_tail_exact_strong", "available_tail_cooked",
         "exact_owner_ready", "actual_main_draw", "mixed_occluder_original",
-        "source_population_substituted")} | {"source_loader_substituted": 0, "gl_error": 0})
+        "source_population_substituted", "actual_merged_contributor")}
+        | {"source_loader_substituted": 0, "gl_error": 0})
     for key in ("immutable_streams", "refnums", "selected_refnums", "picking_partitions",
-                "actual_pick_hits", "picked_markers", "main_draws", "active_tagged_draws"):
+                "actual_pick_hits", "picked_markers", "main_draws", "active_tagged_draws",
+                "vertex_partitions", "whole_reference_markers"):
         require(unsigned_field(active, key, "CHAIN_ACTIVE_GRID") > 0,
                 "Active-grid fixture lacks actual engagement/interaction proof: " + key)
+    require(unsigned_field(active, "refnums", "CHAIN_ACTIVE_GRID")
+            == unsigned_field(declared_population, "total_instances", "CHAIN_ACTIVE_POPULATION")
+            and unsigned_field(active, "selected_refnums", "CHAIN_ACTIVE_GRID")
+            == unsigned_field(declared_population, "candidate_instances", "CHAIN_ACTIVE_POPULATION"),
+            "Active-grid fixture did not preserve its exact declared reference population")
     require(unsigned_field(active, "selected_refnums", "CHAIN_ACTIVE_GRID")
             < unsigned_field(active, "refnums", "CHAIN_ACTIVE_GRID"),
             "Active-grid fixture did not retain a mixed ordinary occluder population")
@@ -156,8 +167,17 @@ def l1_active_grid(text):
     complete = record(text, "CHAIN_PASS", {"source_population_substituted": 1,
         "source_loader_substituted": 0, "cook_substituted": 0, "readiness_substituted": 0,
         "cpu_limit": 268435456})
-    return {"actual_active_owner": active, "source_epoch_original_fallback": epoch,
+    return {"declared_population": declared_population, "actual_active_owner": active, "source_epoch_original_fallback": epoch,
             "actual_chain_completion": complete}
+
+
+def chain_retry_admission_wait(text):
+    """Each denial must preserve the exact owner and original primitive topology."""
+    return record(text, "CHAIN_RETRY_ADMISSION_WAIT", {
+        "observations": 3, "construction_attempts_before_resume": 0,
+        "ordinary_preserved": 1, "exact_cached_denied_owner": 1,
+        "weak_graph_unchanged": 1, "denied_topology_unchanged": 1,
+        "renewed_actual_cook": 1, "generation_reset": 0})
 
 
 def evaluate(folder, commit, source, game, workspace, installed=None):
@@ -229,7 +249,7 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
         require(sha(path) == digest, "Asset fixture result changed: " + name)
         require(start - 1 <= path.stat().st_mtime <= finish + 1, "Asset fixture result is stale: " + name)
         texts[name] = path.read_text(encoding="utf-8-sig")
-    for name, count in (("PACKAGE-QUALIFIER-TESTS-FINAL.txt", "8"), ("ASSET-SHADER-GATE-TESTS-FINAL.txt", "11")):
+    for name, count in (("PACKAGE-QUALIFIER-TESTS-FINAL.txt", "8"), ("ASSET-SHADER-GATE-TESTS-FINAL.txt", "12")):
         require(re.findall(r"^Ran (\d+) tests in [\d.]+s\s*$", texts[name], re.M) == [count]
                 and re.search(r"\nOK\s*$", texts[name]) and "skipped=" not in texts[name],
                 "Package gate regression suite did not execute " + count + " complete passes: " + name)
@@ -322,9 +342,7 @@ def evaluate(folder, commit, source, game, workspace, installed=None):
             "ready_stops_retry": 1, "cache_observation_recooks": 0})
         record(texts[name], "CHAIN_RETRY_COALESCED", {"inflight_signalled": 1, "exact_weak_owner": 1,
             "observer_build_attempts": 0, "peer_published": 1})
-        record(texts[name], "CHAIN_RETRY_ADMISSION_WAIT", {"observations": 3,
-            "construction_attempts_before_resume": 0, "ordinary_preserved": 1,
-            "renewed_actual_cook": 1, "generation_reset": 0})
+        chain_retry_admission_wait(texts[name])
         if mask == 1:
             if name == "GEOMETRY-L1-TEXTURE-COMBINATION.txt":
                 record(texts[name], "CHAIN_L1_TEXTURE_COMBINATION", {"process_mask": 5,

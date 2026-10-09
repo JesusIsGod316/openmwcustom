@@ -12,10 +12,13 @@ SPEC.loader.exec_module(gate)
 class AssetReleaseEvidence(unittest.TestCase):
     @staticmethod
     def active_grid_receipt():
-        return ("CHAIN_ACTIVE_GRID disabled_control=1 required_original=1 asset_enabled_first_stage_ordinary=1 "
+        return ("CHAIN_ACTIVE_POPULATION candidate_instances=16 ordinary_instances=1 total_instances=17 "
+                "spatial_buckets=2 captured_merge_settings=1 source_population_substituted=1 source_loader_substituted=0\n"
+                "CHAIN_ACTIVE_GRID disabled_control=1 required_original=1 asset_enabled_first_stage_ordinary=1 "
                 "busy_child_ordinary_published=1 denied_tail_exact_strong=1 available_tail_cooked=1 "
-                "exact_owner_ready=1 actual_main_draw=1 immutable_streams=2 refnums=3 selected_refnums=2 "
+                "exact_owner_ready=1 actual_main_draw=1 immutable_streams=2 refnums=17 selected_refnums=16 "
                 "mixed_occluder_original=1 picking_partitions=3 actual_pick_hits=1 picked_markers=1 "
+                "vertex_partitions=2 whole_reference_markers=1 actual_merged_contributor=1 "
                 "main_draws=4 active_tagged_draws=4 rgb=98 source_population_substituted=1 "
                 "source_loader_substituted=0 gl_error=0\n"
                 "CHAIN_ACTIVE_EPOCH source_changed=1 old_guard_original=1 required_original_rebuilt=1 "
@@ -66,15 +69,21 @@ class AssetReleaseEvidence(unittest.TestCase):
 
     def test_admission_wait_requires_renewed_actual_cook(self):
         expected = {"observations": 3, "construction_attempts_before_resume": 0,
-                    "ordinary_preserved": 1, "renewed_actual_cook": 1, "generation_reset": 0}
+                    "ordinary_preserved": 1, "exact_cached_denied_owner": 1,
+                    "weak_graph_unchanged": 1, "denied_topology_unchanged": 1,
+                    "renewed_actual_cook": 1, "generation_reset": 0}
         valid = "CHAIN_RETRY_ADMISSION_WAIT " + " ".join(f"{key}={value}" for key, value in expected.items()) + "\n"
-        gate.record(valid, "CHAIN_RETRY_ADMISSION_WAIT", expected)
+        gate.chain_retry_admission_wait(valid)
         for bad in ("CHAIN_RETRY_EXHAUSTED actual_attempts=3 ordinary_preserved=1\n",
                     valid.replace("renewed_actual_cook=1", "renewed_actual_cook=0"),
                     valid.replace("generation_reset=0", "generation_reset=1"),
                     valid.replace("construction_attempts_before_resume=0", "construction_attempts_before_resume=3")):
             with self.subTest(receipt=bad), self.assertRaises(gate.QualificationError):
-                gate.record(bad, "CHAIN_RETRY_ADMISSION_WAIT", expected)
+                gate.chain_retry_admission_wait(bad)
+        for key in ("exact_cached_denied_owner", "weak_graph_unchanged", "denied_topology_unchanged"):
+            for bad in (valid.replace(key + "=1", key + "=0"), valid.replace(" " + key + "=1", "")):
+                with self.subTest(key=key, receipt=bad), self.assertRaises(gate.QualificationError):
+                    gate.chain_retry_admission_wait(bad)
 
     def test_missing_actual_draw_proof(self):
         with self.assertRaises(gate.QualificationError):
@@ -164,8 +173,17 @@ class AssetReleaseEvidence(unittest.TestCase):
                               ("available_tail_cooked=1", "available_tail_cooked=0"),
                               ("exact_owner_ready=1", "exact_owner_ready=0"),
                               ("immutable_streams=2", "immutable_streams=0"),
-                              ("refnums=3", "refnums=0"),
-                              ("selected_refnums=2", "selected_refnums=3"),
+                              ("refnums=17", "refnums=0"),
+                              ("refnums=17", "refnums=3"),
+                              ("selected_refnums=16", "selected_refnums=17"),
+                              ("selected_refnums=16", "selected_refnums=2"),
+                              ("candidate_instances=16", "candidate_instances=2"),
+                              ("ordinary_instances=1", "ordinary_instances=0"),
+                              ("total_instances=17", "total_instances=3"),
+                              ("captured_merge_settings=1", "captured_merge_settings=0"),
+                              ("vertex_partitions=2", "vertex_partitions=0"),
+                              ("whole_reference_markers=1", "whole_reference_markers=0"),
+                              ("actual_merged_contributor=1", "actual_merged_contributor=0"),
                               ("picking_partitions=3", "picking_partitions=0"),
                               ("actual_pick_hits=1", "actual_pick_hits=0"),
                               ("picked_markers=1", "picked_markers=0"),
@@ -183,7 +201,7 @@ class AssetReleaseEvidence(unittest.TestCase):
 
     def test_active_grid_missing_ambiguous_and_invalid_receipts_fail_closed(self):
         valid = self.active_grid_receipt()
-        for marker in ("CHAIN_ACTIVE_GRID", "CHAIN_ACTIVE_EPOCH", "CHAIN_PASS"):
+        for marker in ("CHAIN_ACTIVE_POPULATION", "CHAIN_ACTIVE_GRID", "CHAIN_ACTIVE_EPOCH", "CHAIN_PASS"):
             missing = "\n".join(line for line in valid.splitlines() if not line.startswith(marker + " ")) + "\n"
             duplicate = valid + next(line for line in valid.splitlines() if line.startswith(marker + " ")) + "\n"
             for bad in (missing, duplicate):
@@ -195,10 +213,23 @@ class AssetReleaseEvidence(unittest.TestCase):
                     valid.replace("active_tagged_draws=4", "active_tagged_draws=18446744073709551616"),
                     valid.replace("immutable_streams=2", "immutable_streams=unknown"),
                     valid.replace(" picked_markers=1", ""),
+                    valid.replace(" actual_merged_contributor=1", ""),
                     valid.replace("cpu_limit=268435456", "cpu_limit=134217728"),
                     "CHAIN_FAILURE active_missing\n" + valid):
             with self.subTest(bad=bad), self.assertRaises(gate.QualificationError):
                 gate.l1_active_grid(bad)
+
+    def test_historical_distant_population_is_independent_of_active_population(self):
+        distant = ("CHAIN_MIXED_INPUT candidate_instances=2 spatial_buckets=2 ordinary_instances=1 "
+                   "actual_stat_sources=1 material_substitution=0\n")
+        expected = {"candidate_instances": 2, "spatial_buckets": 2, "ordinary_instances": 1,
+                    "actual_stat_sources": 1, "material_substitution": 0}
+        gate.record(distant, "CHAIN_MIXED_INPUT", expected)
+        active = self.active_grid_receipt()
+        gate.l1_active_grid(distant + active)
+        with self.assertRaises(gate.QualificationError):
+            gate.record(distant.replace("candidate_instances=2", "candidate_instances=16"),
+                        "CHAIN_MIXED_INPUT", expected)
 
 
 if __name__ == "__main__":

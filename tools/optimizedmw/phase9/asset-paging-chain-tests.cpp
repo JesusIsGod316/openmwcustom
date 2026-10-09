@@ -908,7 +908,25 @@ int main(int argc,char** argv) try
     if (inputs.activeGridCheck)
     {
         require(mask==A::Lod && inputs.mixed,"active-grid check requires the independently tested mixed L1 source population");
+        require(inputs.models.size()==1 && population.size()==3,
+            "active-grid check requires one actual certified source and one ordinary occluder owner");
         phase("active_grid","begin");
+        // Active mode 2 does not force repeated sources to merge. Supply enough
+        // real references for the unchanged captured cost/benefit rule, without
+        // changing the historical distant population or any engine threshold.
+        std::vector<MWRender::ObjectPaging::FixtureReference> activePopulation;
+        constexpr unsigned activeSourcesPerBucket=8,activeBuckets=2;
+        for(unsigned bucket=0;bucket<activeBuckets;++bucket)
+            for(unsigned instance=0;instance<activeSourcesPerBucket;++instance)
+            {
+                auto reference=population.front();
+                reference.position={bucket ? 1100.f : -1100.f,(float(instance)-3.5f)*700.f,0.f};
+                activePopulation.push_back(reference);
+            }
+        activePopulation.push_back(population.back());
+        std::cout<<"CHAIN_ACTIVE_POPULATION candidate_instances="<<activeSourcesPerBucket*activeBuckets
+            <<" ordinary_instances=1 total_instances="<<activePopulation.size()<<" spatial_buckets="<<activeBuckets
+            <<" captured_merge_settings=1 source_population_substituted=1 source_loader_substituted=0\n";
         struct RestoreActiveSettings
         {
             bool enabled=Settings::cells().mGeneratedStaticLodActiveGrid;
@@ -938,27 +956,33 @@ int main(int argc,char** argv) try
         {
             RefnumPartitions():osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
             std::vector<std::pair<ESM::RefNum,unsigned>> values;
+            void collect(osg::Node& node)
+            {
+                if(auto* container=node.getUserDataContainer())
+                    for(unsigned i=0;i<container->getNumUserObjects();++i)
+                        if(auto* marker=dynamic_cast<MWRender::RefnumMarker*>(container->getUserObject(i)))
+                            values.emplace_back(marker->mRefnum,marker->mNumVertices);
+            }
             void apply(osg::Node& node) override
             {
+                collect(node);
                 if(auto* selector=dynamic_cast<L::Group*>(&node))
                 {if(selector->original()) selector->original()->accept(*this);}
                 else traverse(node);
             }
             void apply(osg::Geometry& geometry) override
             {
-                if(auto* container=geometry.getUserDataContainer())
-                    for(unsigned i=0;i<container->getNumUserObjects();++i)
-                        if(auto* marker=dynamic_cast<MWRender::RefnumMarker*>(container->getUserObject(i)))
-                            values.emplace_back(marker->mRefnum,marker->mNumVertices);
+                collect(geometry);
             }
             void finish() {std::sort(values.begin(),values.end());}
         };
         const auto beforeActiveBuilt=built(mask),beforeTaggedActiveBuilt=L::Counters::activeBuilt.load();
+        const auto beforeActiveContributors=L::Counters::postOptimizer[static_cast<unsigned>(L::PostOptimizerStep::Contributor)].load();
         // Disabled means the inherited active-grid strong control even when
         // the process-wide L1 switch is on. No source/material substitution.
         Settings::cells().mGeneratedStaticLodActiveGrid.set(false);
         MWRender::ObjectPaging disabled(scenes,ESM::Cell::sDefaultWorldspaceId);
-        disabled.setAssetMainCamera(camera);disabled.setFixturePopulation(population);
+        disabled.setAssetMainCamera(camera);disabled.setFixturePopulation(activePopulation);
         Registered disabledRegistration(resources,&disabled);
         auto disabledControl=activeChunk(disabled,true);
         require(disabledControl.valid(),"disabled active-grid control required");
@@ -967,21 +991,21 @@ int main(int argc,char** argv) try
             "disabled active-grid setting must retain ordinary strong topology under the enabled L1 process switch");
         Settings::cells().mGeneratedStaticLodActiveGrid.set(true);
         MWRender::ObjectPaging staged(scenes,ESM::Cell::sDefaultWorldspaceId);
-        staged.setAssetMainCamera(camera);staged.setFixturePopulation(population);
+        staged.setAssetMainCamera(camera);staged.setFixturePopulation(activePopulation);
         Registered stagedRegistration(resources,&staged);
         osg::ref_ptr<osg::Node> stagedRequired;
         {SceneUtil::PagingWorkScope demand(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
             stagedRequired=staged.getChunk(1,{0,0},0,0,true,{0,0,0},true);}
         require(stagedRequired.valid(),"active first-stage required control required");
         MWRender::ObjectPaging active(scenes,ESM::Cell::sDefaultWorldspaceId);
-        active.setAssetMainCamera(camera);active.setFixturePopulation(population);
+        active.setAssetMainCamera(camera);active.setFixturePopulation(activePopulation);
         Registered activeRegistration(resources,&active);
         osg::ref_ptr<osg::Node> required;
         {SceneUtil::PagingWorkScope demand(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
             required=active.getChunk(1,{0,0},0,0,true,{0,0,0},true);}
         require(required.valid(),"actual active-grid required control required");
         const auto requiredRefs=activeRefs(active);
-        require(requiredRefs.size()==population.size(),"required active root must expose all actual provider RefNums through the production reader");
+        require(requiredRefs.size()==activePopulation.size(),"required active root must expose all actual provider RefNums through the production reader");
         Selectors requiredSelectors;required->accept(requiredSelectors);
         require(requiredSelectors.values.empty() && built(mask)==beforeActiveBuilt,"required active readiness must never cook L1");
         const GeometrySnapshot requiredSnapshot(*required);
@@ -1018,13 +1042,22 @@ int main(int argc,char** argv) try
         require(resources.speculativeBudget()->stats().experimentJobs==0,"busy test permit must release before the actual tail cook");
         ControlTopology strongTopology;strong->accept(strongTopology);
         RefnumPartitions strongPartitions;strong->accept(strongPartitions);strongPartitions.finish();
-        require(!strongPartitions.values.empty(),"actual optimized active control must retain picking vertex partitions");
+        std::set<ESM::RefNum> strongMarkedRefs;
+        unsigned strongVertexPartitions=0,strongWholeMarkers=0;
+        for(const auto& [refnum,vertices]:strongPartitions.values)
+        {strongMarkedRefs.insert(refnum);if(vertices) ++strongVertexPartitions;else ++strongWholeMarkers;}
+        require(std::vector<ESM::RefNum>(strongMarkedRefs.begin(),strongMarkedRefs.end())==requiredRefs,
+            "actual active control must retain every whole-reference or merged vertex picking owner");
+        require(strongVertexPartitions>0 && strongWholeMarkers>0,
+            "bounded active population must exercise real merged geometry and retained ordinary whole-reference picking");
         const GeometrySnapshot strongSnapshot(*strong);
         std::this_thread::sleep_for(std::chrono::milliseconds(A::RetryDelayMilliseconds+100));
         sampleGpu();auto activeCandidate=activeChunk(active,true);
         Selectors activeSelectors;activeCandidate->accept(activeSelectors);
         require(activeCandidate!=strong && !activeSelectors.values.empty() && built(mask)>beforeActiveBuilt,
             "available active L1 tail must cook an independently published control replacement");
+        require(L::Counters::postOptimizer[static_cast<unsigned>(L::PostOptimizerStep::Contributor)].load()>beforeActiveContributors,
+            "actual active L1 must consume a contributor selected by the unchanged ordinary merge rule");
         ControlTopology candidateTopology;activeCandidate->accept(candidateTopology);
         RefnumPartitions candidatePartitions;activeCandidate->accept(candidatePartitions);candidatePartitions.finish();
         require(activeRefs(active)==requiredRefs && candidatePartitions.values==strongPartitions.values
@@ -1060,7 +1093,7 @@ int main(int argc,char** argv) try
             RefnumPartitions members;selector->original()->accept(members);
             for(const auto& [refnum,vertices]:members.values) selectedRefnums.insert(refnum);
         }
-        ESM::RefNum ordinaryRefnum;ordinaryRefnum.mIndex=static_cast<unsigned>(population.size());ordinaryRefnum.mContentFile=0;
+        ESM::RefNum ordinaryRefnum;ordinaryRefnum.mIndex=static_cast<unsigned>(activePopulation.size());ordinaryRefnum.mContentFile=0;
         require(!selectedRefnums.empty() && !selectedRefnums.contains(ordinaryRefnum)
             && selectedRefnums.size()<requiredRefs.size(),"mixed ordinary occluder owner must remain outside every active L1 selector");
         std::set<const osg::Drawable*> activeOriginals,activeDerived;
@@ -1097,16 +1130,37 @@ int main(int argc,char** argv) try
         {
             require(activeOriginals.contains(hit.drawable) && !activeDerived.contains(hit.drawable),
                 "active picking must traverse retained original drawables and exclude derived index tiers");
-            if(auto* container=hit.drawable->getUserDataContainer())
-                for(unsigned i=0;i<container->getNumUserObjects();++i)
-                    if(auto* marker=dynamic_cast<MWRender::RefnumMarker*>(container->getUserObject(i)))
-                    {require(std::find(requiredRefs.begin(),requiredRefs.end(),marker->mRefnum)!=requiredRefs.end(),
-                        "picked active original must retain a canonical RefNum");++pickedMarkers;}
+            // Match RenderingManager's production node-path order and vertex
+            // interval resolution, including zero-vertex whole-reference owners.
+            std::vector<MWRender::RefnumMarker*> markers;
+            for(auto* node:hit.nodePath)
+                if(auto* container=node->getUserDataContainer())
+                    for(unsigned i=0;i<container->getNumUserObjects();++i)
+                        if(auto* marker=dynamic_cast<MWRender::RefnumMarker*>(container->getUserObject(i)))
+                            markers.push_back(marker);
+            const unsigned intersectionIndex=hit.indexList.empty() ? 0 : hit.indexList.front();
+            unsigned vertexCounter=0;
+            bool resolved=false;
+            for(auto* marker:markers)
+            {
+                if(!marker->mNumVertices || (intersectionIndex>=vertexCounter
+                    && intersectionIndex<vertexCounter+marker->mNumVertices))
+                {
+                    require(std::find(requiredRefs.begin(),requiredRefs.end(),marker->mRefnum)!=requiredRefs.end()
+                        && selectedRefnums.contains(marker->mRefnum),
+                        "actual picking interval must resolve a canonical reference in the retained selected original");
+                    ++pickedMarkers;resolved=true;break;
+                }
+                vertexCounter+=marker->mNumVertices;
+            }
+            require(resolved,"every real selected original hit must resolve its actual production picking owner");
         }
         require(pickedMarkers>0,"real picked original must expose its actual reference vertex partition");
         std::cout<<"CHAIN_ACTIVE_GRID disabled_control=1 required_original=1 asset_enabled_first_stage_ordinary=1 busy_child_ordinary_published=1 denied_tail_exact_strong=1"
             <<" available_tail_cooked=1 exact_owner_ready=1 actual_main_draw=1 immutable_streams="<<activeStreams
             <<" refnums="<<requiredRefs.size()<<" selected_refnums="<<selectedRefnums.size()<<" mixed_occluder_original=1 picking_partitions="<<candidatePartitions.values.size()<<" actual_pick_hits="<<intersector->getIntersections().size()
+            <<" vertex_partitions="<<strongVertexPartitions<<" whole_reference_markers="<<strongWholeMarkers
+            <<" actual_merged_contributor=1"
             <<" picked_markers="<<pickedMarkers<<" main_draws="<<consumed(mask)-activeDrawStart
             <<" active_tagged_draws="<<L::Counters::activeDerivedDraws.load()-activeTaggedDrawStart
             <<" rgb="<<rgb(pixels->data)<<" source_population_substituted=1 source_loader_substituted=0 gl_error=0\n";
@@ -1520,29 +1574,76 @@ int main(int argc,char** argv) try
         osg::ref_ptr<osg::Node> waitingControl;
         { SceneUtil::PagingWorkScope required(&abort,SceneUtil::PagingWorkScope::Phase::RequiredReadiness);
             waitingControl=waiting.getChunk(1,{0,0},0,0,false,{0,0,0},true); }
+        require(waitingControl.valid(),"admission wait requires the actual required weak control");
+        const GeometrySnapshot waitingWeakSnapshot(*waitingControl);
+        ControlTopology waitingWeakTopology;waitingControl->accept(waitingWeakTopology);
+        using PrimitiveTopology=std::vector<std::vector<std::pair<unsigned,std::vector<unsigned>>>>;
+        const auto primitiveTopology=[](osg::Node& root) {
+            PrimitiveTopology topology;Geometries geometry;root.accept(geometry);
+            for(const auto* leaf:geometry.values)
+            {
+                auto& primitives=topology.emplace_back();
+                for(unsigned i=0;i<leaf->getNumPrimitiveSets();++i)
+                {
+                    const auto* primitive=leaf->getPrimitiveSet(i);
+                    require(primitive!=nullptr,"denied ordinary control must retain every actual primitive");
+                    auto& indices=primitives.emplace_back(primitive->getMode(),std::vector<unsigned>{}).second;
+                    indices.reserve(primitive->getNumIndices());
+                    for(unsigned n=0;n<primitive->getNumIndices();++n) indices.push_back(primitive->index(n));
+                }
+            }
+            return topology;
+        };
+        osg::ref_ptr<osg::Node> lastDeniedControl;
+        ControlTopology firstDeniedTopology;PrimitiveTopology firstDeniedPrimitives;
         const auto attemptsBefore=mask==A::Lod ? A::Counters::lod.buildAttempts.load() : A::Counters::hlod.buildAttempts.load();
         const auto exhaustedBefore=A::Counters::retryExhausted.load();
         for (unsigned attempt=0;attempt<A::MaximumAttempts;++attempt)
         {
-            upgrade(waiting,resources,abort,128*R::SpeculativeBudget::MiB);
+            lastDeniedControl=upgrade(waiting,resources,abort,128*R::SpeculativeBudget::MiB);
+            require(lastDeniedControl.valid(),"private admission denial must publish an actual ordinary fallback");
+            Selectors deniedSelectors;lastDeniedControl->accept(deniedSelectors);
+            ControlTopology deniedTopology;lastDeniedControl->accept(deniedTopology);
+            const auto deniedPrimitives=primitiveTopology(*lastDeniedControl);
+            require(deniedSelectors.values.empty() && deniedTopology.geometries>0 && deniedTopology.submissions>0
+                && deniedTopology.indices>0 && deniedTopology.indices==waitingWeakTopology.indices,
+                "each denied construction must retain the complete original index population without derived selectors");
+            if(attempt==0)
+            {
+                lastDeniedControl->accept(firstDeniedTopology);
+                firstDeniedPrimitives=deniedPrimitives;
+            }
+            else require(deniedTopology.geometries==firstDeniedTopology.geometries
+                && deniedTopology.submissions==firstDeniedTopology.submissions
+                && deniedTopology.indices==firstDeniedTopology.indices && deniedPrimitives==firstDeniedPrimitives,
+                "every denied control must preserve the first ordinary fallback topology and exact primitive indices");
+            if(mask==A::Lod) require(lastDeniedControl==waitingControl,
+                "whole L1 control admission denial must retain the exact required weak owner");
+            waitingWeakSnapshot.unchanged(*waitingControl,"denied retries must not mutate the held required weak graph");
             if (attempt+1<A::MaximumAttempts)
                 std::this_thread::sleep_for(std::chrono::milliseconds(A::RetryDelayMilliseconds+100));
         }
         bool waitingRetry=false;
         auto waitingFallback=upgrade(waiting,resources,abort,0,&waitingRetry);
         Selectors waitingSelectors; waitingFallback->accept(waitingSelectors);
-        require(waitingRetry && waitingFallback==waitingControl && waitingSelectors.values.empty()
+        // H1 publishes a normally optimized control when private admission is
+        // denied. Its cooldown must retain that exact published fallback; the
+        // held required weak graph above remains independently unchanged.
+        require(waitingRetry && waitingFallback==lastDeniedControl && waitingSelectors.values.empty()
             && A::Counters::retryExhausted==exhaustedBefore
             && (mask==A::Lod ? A::Counters::lod.buildAttempts.load() : A::Counters::hlod.buildAttempts.load())==attemptsBefore,
             "three unadmitted construction waits keep exact ordinary fallback and renewed same-generation eligibility");
+        waitingWeakSnapshot.unchanged(*waitingControl,"cooldown must preserve the held required weak graph");
         std::this_thread::sleep_for(std::chrono::milliseconds(A::RetryDelayMilliseconds+100));
         sampleGpu(); auto renewed=upgrade(waiting,resources,abort);
         Selectors renewedSelectors;renewed->accept(renewedSelectors);
-        require(renewed!=waitingControl && !renewedSelectors.values.empty()
+        require(renewed!=lastDeniedControl && !renewedSelectors.values.empty()
             && (mask==A::Lod ? A::Counters::lod.buildAttempts.load() : A::Counters::hlod.buildAttempts.load())>attemptsBefore,
             "actual same-generation production owner must cook after capacity returns without a VFS/shader reset");
         std::cout<<"CHAIN_RETRY_ADMISSION_WAIT observations="<<A::MaximumAttempts
-            <<" construction_attempts_before_resume=0 ordinary_preserved=1 renewed_actual_cook=1 generation_reset=0\n";
+            <<" construction_attempts_before_resume=0 ordinary_preserved=1 renewed_actual_cook=1 generation_reset=0"
+            <<" exact_cached_denied_owner=1 weak_graph_unchanged=1 denied_topology_unchanged=1"
+            <<" denied_control_submissions="<<firstDeniedTopology.submissions<<" denied_control_indices="<<firstDeniedTopology.indices<<'\n';
     }
     if (inputs.mixed)
     {
