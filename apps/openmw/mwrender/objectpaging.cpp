@@ -386,25 +386,49 @@ namespace MWRender
                 assetOutcome.allowed &= ~(1u << i);
         try
         {
-            // Advisory zero-byte/job admission precedes source snapshots and
-            // ordinary control cloning. The real cook rechecks atomically; this
-            // does not grant a reservation or relax Background headroom floors.
+            // Only the strict active tail of an exact current cached ordinary
+            // strong owner may carry its caller's NearFuture priority into the
+            // experiment. Missing/weak controls and distant/default callers
+            // retain Background admission and every common/child byte floor.
             const auto context = Resource::SpeculativeScope::capture();
             const unsigned waitingAssets = (p3OptionalMask >> 4) & SceneUtil::AssetPaging::Mask & assetOutcome.allowed;
+            const bool activeNearFuture = prepareActiveLod
+                && SceneUtil::AssetPaging::OptionalUpgradeScope::preparedActiveLodOnly()
+                && waitingAssets == SceneUtil::AssetPaging::Lod
+                && context.priority == Resource::SpeculativePriority::NearFuture;
+            const auto experimentPriority = activeNearFuture
+                ? Resource::SpeculativePriority::NearFuture : Resource::SpeculativePriority::Background;
+            std::unique_ptr<Resource::ExperimentalSpeculativeScope> activeExperiment;
             if (waitingAssets && context.budget && context.budget->experimentEnabled())
             {
+                if (activeNearFuture && !assetSourcesCurrent())
+                    throw SceneUtil::PagingWorkCancelled{};
                 const auto permit = context.budget->experimentJobReceipt(context.sample
-                    ? context.sample(context.owner) : Resource::OpenGlPressureSample{});
-                if (permit.reasons)
-                {
+                    ? context.sample(context.owner) : Resource::OpenGlPressureSample{},experimentPriority);
+                const auto recordPermitRefusal = [&](const Resource::SpeculativeDeferred& error) {
                     SceneUtil::AssetPaging::cpuRefusal(waitingAssets,SceneUtil::AssetPaging::CpuStage::Outer,
-                        Resource::SpeculativeDeferred(permit));
+                        error);
                     SceneUtil::AssetPaging::each(waitingAssets,[](SceneUtil::AssetPaging::LaneCounters& value) {
                         ++value.outerCpuDenied;
                     });
                     SceneUtil::AssetPaging::refuse(waitingAssets,SceneUtil::AssetPaging::Gate::Capacity);
+                };
+                if (permit.reasons)
+                {
+                    recordPermitRefusal(Resource::SpeculativeDeferred(permit));
                     throw Resource::SpeculativeDeferred(permit);
                 }
+                if (activeNearFuture)
+                    try
+                    {
+                        // Acquire the actual bounded permit before any control
+                        // copy. Nested cooks reuse this scope and retain its
+                        // explicit priority; an advisory receipt alone grants
+                        // no construction or allocation.
+                        activeExperiment=std::make_unique<Resource::ExperimentalSpeculativeScope>(experimentPriority);
+                    }
+                    catch(const Resource::SpeculativeDeferred& error)
+                    { recordPermitRefusal(error); throw; }
             }
             node = createChunkImpl(size, center, activeGrid, viewPoint, compile, lod, assetOutcome,prepareActiveLod);
             SceneUtil::PagingWorkScope::checkpoint();

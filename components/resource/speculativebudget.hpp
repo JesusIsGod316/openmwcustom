@@ -241,8 +241,10 @@ namespace Resource
         bool experimentEnabled() const noexcept { return mState->config.experimentLimit != 0; }
         // Advisory only: no worker, bytes or counters are acquired. A producer
         // must recheck through tryExperimentJob before constructing output.
-        SpeculativeReservationReceipt experimentJobReceipt(const OpenGlPressureSample& sample) const;
-        ExperimentJob tryExperimentJob(const OpenGlPressureSample& sample);
+        SpeculativeReservationReceipt experimentJobReceipt(const OpenGlPressureSample& sample,
+            SpeculativePriority priority = SpeculativePriority::Background) const;
+        ExperimentJob tryExperimentJob(const OpenGlPressureSample& sample,
+            SpeculativePriority priority = SpeculativePriority::Background);
         SourcePinPtr pinSource(Key key,std::uint64_t estimatedBytes);
         Job tryJob(const OpenGlPressureSample& sample,
             SpeculativePriority priority = SpeculativePriority::Background);
@@ -292,7 +294,8 @@ namespace Resource
         static bool usable(const OpenGlPressureSample& s, SpeculativePriority priority) noexcept;
         SpeculativeReservationReceipt reservationReceipt(const OpenGlPressureSample& sample,
             std::uint64_t bytes, SpeculativePriority priority,bool experimental=false) const noexcept;
-        SpeculativeReservationReceipt experimentJobReceiptLocked(const OpenGlPressureSample& sample) const noexcept;
+        SpeculativeReservationReceipt experimentJobReceiptLocked(
+            const OpenGlPressureSample& sample, SpeculativePriority priority) const noexcept;
         void refuseReservation(const SpeculativeReservationReceipt& receipt);
         void experimentPeak() noexcept
         {
@@ -309,12 +312,12 @@ namespace Resource
     inline SpeculativeBudget::SpeculativeBudget(Config config) : mState(std::make_shared<State>(config)) {}
     inline const std::atomic<std::uint64_t>* SpeculativeBudget::watermark() const noexcept { return &mState->growth; }
     inline SpeculativeReservationReceipt SpeculativeBudget::experimentJobReceiptLocked(
-        const OpenGlPressureSample& sample) const noexcept
+        const OpenGlPressureSample& sample, SpeculativePriority priority) const noexcept
     {
         // The same common/child debt and physical/commit floors apply before
         // a cook starts. Zero bytes means this receipt acquires no reservation;
         // every actual construction stage still admits its full peak later.
-        auto receipt = reservationReceipt(sample, 0, SpeculativePriority::Background, true);
+        auto receipt = reservationReceipt(sample, 0, priority, true);
         receipt.jobPermit = true;
         receipt.experimentJobs = mState->stats.experimentJobs;
         receipt.experimentJobLimit = mState->config.experimentMaximumJobs;
@@ -325,18 +328,20 @@ namespace Resource
         return receipt;
     }
     inline SpeculativeReservationReceipt SpeculativeBudget::experimentJobReceipt(
-        const OpenGlPressureSample& sample) const
+        const OpenGlPressureSample& sample, SpeculativePriority priority) const
     {
         std::lock_guard lock(mState->mutex);
-        return experimentJobReceiptLocked(sample);
+        return experimentJobReceiptLocked(sample, priority);
     }
-    inline SpeculativeBudget::ExperimentJob SpeculativeBudget::tryExperimentJob(const OpenGlPressureSample& sample)
+    inline SpeculativeBudget::ExperimentJob SpeculativeBudget::tryExperimentJob(
+        const OpenGlPressureSample& sample, SpeculativePriority priority)
     {
         if(!experimentEnabled()) return {};
         std::lock_guard lock(mState->mutex);
-        // Distant optional construction never spends the near-future protection
-        // lane in caution/recovery, and it never starts a second worker.
-        const auto receipt = experimentJobReceiptLocked(sample);
+        // Background remains the default. An explicitly qualified active owner
+        // may use NearFuture pressure policy, but shares the same child permit
+        // and common/child debts; this never starts another worker or P1 job.
+        const auto receipt = experimentJobReceiptLocked(sample, priority);
         if (receipt.reasons)
         { ++mState->stats.experimentDenied; throw SpeculativeDeferred(receipt); }
         ++mState->stats.experimentJobs;
@@ -761,7 +766,8 @@ namespace Resource
                 : mScope(sCurrent), mPrevious(mScope ? mScope->mStage : nullptr), mEstimate(outputEstimate)
                 , mLease(mScope ? mScope->mBudget->reserve(
                     mScope->mSample(mScope->mOwner), peak,
-                    experimental && mScope->mBudget->experimentEnabled() ? SpeculativePriority::Background : mScope->mPriority,
+                    experimental && mScope->mBudget->experimentEnabled() && !mScope->mExperimental
+                        ? SpeculativePriority::Background : mScope->mPriority,
                     mScope->mExperimental || experimental) : SpeculativeBudget::Stage{})
                 , mReserved(peak)
             { if (mScope) mScope->mStage = this; }
@@ -777,7 +783,8 @@ namespace Resource
                     throw SpeculativeDeferred{};
                 if (mScope)
                     mScope->mBudget->extend(mLease, mScope->mSample(mScope->mOwner), bytes,
-                        mLease.experimental() ? SpeculativePriority::Background : mScope->mPriority);
+                        mLease.experimental() && !mScope->mExperimental
+                            ? SpeculativePriority::Background : mScope->mPriority);
                 mReserved += bytes;
             }
             void releaseUnallocated(std::uint64_t bytes)
@@ -834,14 +841,14 @@ namespace Resource
     class ExperimentalSpeculativeScope
     {
     public:
-        ExperimentalSpeculativeScope()
+        explicit ExperimentalSpeculativeScope(SpeculativePriority priority = SpeculativePriority::Background)
         {
             auto context=SpeculativeScope::capture();
             if(!context.budget || !context.budget->experimentEnabled() || context.experimental) return;
             if(!context.sample)
-                throw SpeculativeDeferred(context.budget->experimentJobReceipt({}));
-            mJob=context.budget->tryExperimentJob(context.sample(context.owner));
-            context.experimental=true;context.priority=SpeculativePriority::Background;
+                throw SpeculativeDeferred(context.budget->experimentJobReceipt({},priority));
+            mJob=context.budget->tryExperimentJob(context.sample(context.owner),priority);
+            context.experimental=true;context.priority=priority;
             mScope=std::make_unique<SpeculativeScope>(context);
         }
         ExperimentalSpeculativeScope(const ExperimentalSpeculativeScope&)=delete;

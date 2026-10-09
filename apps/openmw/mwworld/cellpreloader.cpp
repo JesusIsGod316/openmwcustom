@@ -973,7 +973,10 @@ namespace MWWorld
                 if (!cancelled && (!optionalSourcesMatch() || !matchesWorld(mWorld)))
                 { mOptionalRetry.cancel(); ++SceneUtil::AssetPaging::Counters::tailCancelled; admitted = false; cancelled = true; }
             }
-            if (admitted && (mOptionalRetry.generation.mask & SceneUtil::AssetPaging::Mask)
+            // Independent active L1 visits only prepared owners. Its traversal
+            // is not an aggregate Background construction permit: getChunk
+            // proves each exact strong owner before admitting its child work.
+            if (admitted && !independentActiveLod() && (mOptionalRetry.generation.mask & SceneUtil::AssetPaging::Mask)
                 && budget && budget->experimentEnabled())
             {
                 const auto permit = budget->experimentJobReceipt(Resource::ResourceSystem::speculativeSample(mResourceSystem));

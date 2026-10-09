@@ -28,10 +28,14 @@
       "components/sceneutil/mwshadowtechnique.cpp": "4e7808cb4669f6e405ff3c70c3ff64f6eee5f40bf8cbb264b00e8e2cd59eec69"
     }
   },
+  "active_owner_priority_checkpoint": {
+    "base": "e650d8ab24524fbf55dc9ab294d320c6addf9e7f",
+    "scope": "Independent source review authorizes existing NearFuture admission only for the strict L1-only active tail after an exact current cached ordinary strong owner is proved. Aggregate preflight permits traversal only; advisory and actual per-chunk child permits precede construction. Nested stages and extensions share the same child permit, common debt, retained and scratch limits, growth accounting, concurrency, and unchanged NearFuture physical and commit floors. Caution intentionally retains the existing NearFuture critical floors; Recovering retains its existing reserve floors. Critical and Degraded remain denied. Missing, weak, stale, distant and default experiment paths retain their controls and Background policy. No MSOC, culling, selection, interaction, shadow or pixel-error gate changes. Source seal and controlled/native tests do not prove natural engagement or performance."
+  },
   "sha256": {
     "apps/openmw/mwrender/occlusionculling.cpp": "e92c9023598376e4cd864af07ad1888c0c4502a38405f0c908a174e2a5e24ad8",
     "apps/openmw/mwrender/occlusionculling.hpp": "3e4039257ed9585677afd4d8db527b1d015246bdb8dcd63e08054debf554f624",
-    "apps/openmw/mwrender/objectpaging.cpp": "b720436b1265542804b1bad1788591593539700350d3071123382387ad101184",
+    "apps/openmw/mwrender/objectpaging.cpp": "0d4090a85044c58144f60d9ea96cde7d557444631b6e5272d493e87f5ad31d9a",
     "apps/openmw/mwrender/groundcover.cpp": "10e1f1de1a38fcd34288ac98df09d20eb6e596ce9f42b8abb9d5bd6f2982bddd",
     "apps/openmw/mwrender/objects.cpp": "9bf5045f1c8c4323b2cc286c2912b5fef73ff813f5e472929ec4be79829f7935",
     "components/sceneutil/occlusionculling.cpp": "1aa1ebea417b9b4eff232d78fbf29b78cae92b68e23e0f8ba8b5ac1b46f6c19f",

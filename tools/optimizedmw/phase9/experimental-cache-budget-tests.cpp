@@ -51,6 +51,18 @@ namespace
         throw std::runtime_error("operation incorrectly admitted");
     }
     template<class Function>
+    Resource::SpeculativeReservationReceipt allocationRefusal(Function&& function)
+    {
+        try { function(); }
+        catch (const Resource::SpeculativeDeferred& error)
+        {
+            require(error.reservation.has_value() && !error.reservation->jobPermit,
+                "allocation refusal lost its exact byte decision");
+            return *error.reservation;
+        }
+        throw std::runtime_error("allocation incorrectly admitted");
+    }
+    template<class Function>
     Resource::SpeculativeReservationReceipt permitRefusal(Function&& function)
     {
         try { function(); }
@@ -344,11 +356,132 @@ namespace
             && legacy.stats().knownOwnerBytes==150*M && legacy.stats().futureBytes==50*M,
             "disabled child quota changed historical accounting");
     }
+    void explicitActiveOwnerPriority()
+    {
+        B budget(config());
+        auto recovering=healthy(budget);
+        recovering.decision.state=Resource::OpenGlPressure::Recovering;
+        recovering.decision.admissionsPerSample=0;
+        ControlledSample samples{budget,recovering};
+        Resource::SpeculativeScope foundation(&budget,&ControlledSample::read,&samples,P::NearFuture);
+        Resource::SpeculativeScope::Stage ordinary(8*M,0);
+        const auto current=ControlledSample::read(&samples);
+        const auto unqualified=allocationRefusal([]{Resource::SpeculativeScope::Stage copy(M,0,true);});
+        require(unqualified.reasons==B::PressurePolicy && unqualified.priority==P::Background
+            && budget.stats().futureBytes==8*M && budget.stats().experimentFutureBytes==0,
+            "explicit experimental stage inherited unqualified ordinary NearFuture priority");
+        require(budget.experimentJobReceipt(current).reasons==B::PressurePolicy,
+            "default experiment borrowed active-owner recovery priority");
+        const auto permitted=budget.experimentJobReceipt(current,P::NearFuture);
+        require(permitted.reasons==0 && permitted.priority==P::NearFuture && permitted.jobPermit
+            && permitted.physicalFloor==current.decision.limits.physicalReserve
+            && permitted.commitFloor==current.decision.limits.commitReserve,
+            "explicit active recovery permit changed its physical/commit floors");
+        {
+            Resource::ExperimentalSpeculativeScope active(P::NearFuture);
+            Resource::ExperimentalSpeculativeScope nested;
+            require(Resource::SpeculativeScope::capture().experimental
+                && Resource::SpeculativeScope::capture().priority==P::NearFuture
+                && budget.stats().experimentJobs==1 && budget.stats().jobs==0,
+                "nested default scope demoted active priority or acquired another worker/job");
+            const auto occupied=permitRefusal([&]{
+                auto second=budget.tryExperimentJob(ControlledSample::read(&samples),P::NearFuture);
+            });
+            require(occupied.reasons==B::ExperimentJobLimit && occupied.priority==P::NearFuture,
+                "active owner escaped the same child concurrency limit");
+            Resource::SpeculativeScope::Stage privateCopy(0,0,true);
+            privateCopy.reserveAdditional(24*M,200*M);
+            require(budget.stats().futureBytes==32*M && budget.stats().experimentFutureBytes==24*M,
+                "explicit experimental extension lost priority or parent/child intersection");
+            {
+                auto ownerEstimate=Resource::SpeculativeScope::reserveOwnerEstimate(&budget,M);
+                require(ownerEstimate.experimental() && budget.stats().futureBytes==33*M
+                    && budget.stats().experimentFutureBytes==25*M,
+                    "active owner estimate escaped its experimental domain");
+            }
+            require(allocationRefusal([&]{privateCopy.reserveAdditional(105*M,200*M);}).reasons
+                == B::ExperimentScratchLimit,"active owner extension bypassed the child scratch cap");
+        }
+        require(!Resource::SpeculativeScope::capture().experimental
+            && Resource::SpeculativeScope::capture().priority==P::NearFuture
+            && budget.stats().experimentJobs==0 && budget.stats().futureBytes==8*M
+            && budget.stats().experimentFutureBytes==0,
+            "active scope did not restore the ordinary caller and all child debt");
+
+        samples.value.memory.physicalAvailable=samples.value.decision.limits.physicalReserve+8*M;
+        {
+            Resource::ExperimentalSpeculativeScope active(P::NearFuture);
+            const auto floor=allocationRefusal([]{Resource::SpeculativeScope::Stage copy(M,0,true);});
+            require(floor.reasons==B::PhysicalHeadroom && floor.priority==P::NearFuture
+                && floor.physicalFloor==samples.value.decision.limits.physicalReserve,
+                "active zero-byte permit bypassed the actual recovery allocation floor");
+        }
+        samples.value=recovering;
+        {
+            auto held=budget.reserve(ControlledSample::read(&samples),200*M,P::NearFuture);
+            Resource::ExperimentalSpeculativeScope active(P::NearFuture);
+            const auto cap=allocationRefusal([]{Resource::SpeculativeScope::Stage copy(64*M,0,true);});
+            require(cap.reasons==B::AggregateTransientLimit && budget.stats().futureBytes==208*M
+                && budget.stats().experimentFutureBytes==0,
+                "active owner created an independent common spending pool");
+        }
+        {
+            int a=0,b=0;
+            auto first=retain(budget,&a,100*M);
+            auto second=retain(budget,&b,100*M);
+            Resource::ExperimentalSpeculativeScope active(P::NearFuture);
+            const auto cap=allocationRefusal([]{Resource::SpeculativeScope::Stage copy(57*M,0,true);});
+            require(cap.reasons==B::ExperimentTotalLimit && budget.stats().experimentRetainedBytes==200*M
+                && budget.stats().futureBytes==8*M,
+                "active owner escaped retained-output and construction overlap");
+        }
+        for(auto state:{Resource::OpenGlPressure::Critical,Resource::OpenGlPressure::Degraded})
+        {
+            samples.value=recovering;
+            samples.value.decision.state=state;
+            const auto blocked=permitRefusal([]{Resource::ExperimentalSpeculativeScope active(P::NearFuture);});
+            require(blocked.reasons==B::PressurePolicy && (blocked.pressureReasons&B::NearFutureState)
+                && budget.stats().experimentJobs==0 && !Resource::SpeculativeScope::capture().experimental,
+                "explicit active owner bypassed critical/degraded pressure");
+        }
+        samples.value=recovering;
+        samples.value.generation=0;
+        require(permitRefusal([]{Resource::ExperimentalSpeculativeScope active(P::NearFuture);})
+            .pressureReasons&B::MissingGeneration,"explicit active owner bypassed missing sample generation");
+        samples.value=recovering;
+        samples.value.growthWatermarkValid=false;
+        require(permitRefusal([]{Resource::ExperimentalSpeculativeScope active(P::NearFuture);})
+            .reasons==B::MissingGrowthWatermark,"explicit active owner bypassed the growth watermark");
+        samples.value=healthy(budget);
+        {
+            Resource::ExperimentalSpeculativeScope background;
+            Resource::ExperimentalSpeculativeScope nested(P::NearFuture);
+            require(Resource::SpeculativeScope::capture().priority==P::Background
+                && budget.stats().experimentJobs==1,
+                "nested explicit scope changed an existing Background authorization");
+            samples.value=recovering;
+            require(allocationRefusal([]{Resource::SpeculativeScope::Stage copy(M,0,true);}).reasons
+                == B::PressurePolicy,"nested explicit scope escaped Background recovery policy");
+        }
+        samples.value=recovering;
+        samples.value.decision.state=Resource::OpenGlPressure::Caution;
+        samples.value.memory.physicalAvailable=3ull*1024*M;
+        const auto caution=budget.experimentJobReceipt(ControlledSample::read(&samples),P::NearFuture);
+        require(caution.reasons==0 && caution.physicalFloor==samples.value.decision.limits.physicalCritical
+            && caution.commitFloor==samples.value.decision.limits.commitCritical,
+            "active caution priority changed the existing NearFuture floors");
+        {Resource::ExperimentalSpeculativeScope active(P::NearFuture);
+         Resource::SpeculativeScope::Stage copy(M,0,true);}
+        require(budget.stats().experimentJobs==0 && budget.stats().futureBytes==8*M
+            && budget.stats().experimentFutureBytes==0 && budget.stats().experimentRetainedBytes==0,
+            "priority refusal or nested scope leaked accounting");
+    }
 }
 int main()
 {
     try {intersections();canonicalAndPending();unknownAndPins();scopesAndPressure();
         permitRecoveryAndRecheck();permitValidityAndAllocationFloors();failedScopeKeepsProtectedCaller();concurrencyAndLegacy();
-        std::cout<<"Experimental cache budget: parent/child intersections, canonical ownership, pending debt, source pins, scopes, exact permit receipts, recovery/retry, allocation floors, protected caller, concurrency and legacy PASS\n";return 0;}
+        explicitActiveOwnerPriority();
+        std::cout<<"Experimental cache budget: parent/child intersections, canonical ownership, pending debt, source pins, scopes, exact permit receipts, recovery/retry, allocation floors, protected caller, explicit active priority, concurrency and legacy PASS\n";return 0;}
     catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }

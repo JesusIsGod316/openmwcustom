@@ -157,6 +157,27 @@ def main() -> None:
         need(token in trace, 'draw identity/camera/resource telemetry missing: ' + token)
 
     launcher = read('tools/optimizedmw/phase9/OptimizedMW_Test.ps1')
+    paging = read('apps/openmw/mwrender/objectpaging.cpp')
+    need('const bool activeNearFuture =' in paging,
+         'explicit active-owner experiment authorization is missing')
+    priority_gate = paging.split('const bool activeNearFuture =', 1)[1].split(';', 1)[0]
+    need(all(token in priority_gate for token in (
+             'prepareActiveLod', 'OptionalUpgradeScope::preparedActiveLodOnly()',
+             'waitingAssets == SceneUtil::AssetPaging::Lod',
+             'context.priority == Resource::SpeculativePriority::NearFuture'))
+         and 'if (activeNearFuture && !assetSourcesCurrent())' in paging
+         and paging.index('if (activeNearFuture && !assetSourcesCurrent())')
+             < paging.index('std::make_unique<Resource::ExperimentalSpeculativeScope>(experimentPriority)')
+             < paging.index('node = createChunkImpl(size, center, activeGrid, viewPoint, compile, lod, assetOutcome,prepareActiveLod)'),
+         'explicit experimental NearFuture must require the exact prepared active owner before construction')
+    budget = read('components/resource/speculativebudget.hpp')
+    for method in ('experimentJobReceipt', 'tryExperimentJob'):
+        need(re.search(method + r'\(const OpenGlPressureSample& sample,\s*'
+                       r'SpeculativePriority priority = SpeculativePriority::Background\)', budget),
+             'ordinary/distant experimental permits must retain Background defaults: ' + method)
+    need('if (admitted && !independentActiveLod() && (mOptionalRetry.generation.mask' in
+         read('apps/openmw/mwworld/cellpreloader.cpp'),
+         'aggregate Background permit must not suppress strict active-owner traversal')
     canonical_active_lod = 'generated static lod active grid'
     cells = read('components/settings/categories/cells.hpp')
     need('SettingValue<bool> mGeneratedStaticLodActiveGrid' in cells
