@@ -82,7 +82,7 @@ function Protect-OptimizedMWRouteNativeBindings {
 }
 
 function New-OptimizedMWRouteSession {
-    param([string]$GameDirectory,[string]$FrozenDirectory,[string]$PackageDirectory,[string]$RouteName,[switch]$SmokeRun,[int]$SmokeDuration=20,[switch]$SmallValidationWindow)
+    param([string]$GameDirectory,[string]$FrozenDirectory,[string]$PackageDirectory,[string]$RouteName,[switch]$SmokeRun,[int]$SmokeDuration=20,[switch]$SmallValidationWindow,[ValidateSet('Routes','Playback')][string]$OutputCategory='Routes')
     if($RouteName -notin @('existing','balmora')){throw 'Choose existing or balmora'}
     if($SmokeDuration -lt 5 -or $SmokeDuration -gt 30){throw 'Smoke duration must be 5-30 seconds'}
     $game=Assert-OptimizedMWPlainPath $GameDirectory
@@ -152,7 +152,7 @@ function New-OptimizedMWRouteSession {
     $runtime=New-OptimizedMWFrozenRuntime -Directory $FrozenDirectory -GameDir $game
     $validatedFrozen=Add-OptimizedMWFrozenManifest -Manifest ([pscustomobject]@{scope='verified_frozen_inputs_before_recorder_derivation'}) -Runtime $runtime
     $id=[Guid]::NewGuid().ToString('N')
-    $routes=Assert-OptimizedMWPlainPath (Join-Path $game 'Benchmarks\Routes')
+    $routes=Assert-OptimizedMWPlainPath (Join-Path $game ('Benchmarks\'+$OutputCategory))
     $output=Join-Path $routes ($RouteName+'_'+$id)
     [void][IO.Directory]::CreateDirectory($output)
     $data=Join-Path $runtime.user_data_directory 'data'

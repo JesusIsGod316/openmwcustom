@@ -1,0 +1,31 @@
+BALMORA PLAYBACK PREVIEW
+
+Launch START-OptimizedMW-Playback.bat. It selects the newest complete Balmora
+recording and verifies its route, session, summary and captured starting save.
+The initial preview is a visible 1280x720 window. It starts automatically after
+loading and encounter-policy readiness; no start or checkpoint keys are needed.
+Let it run. Bare F11 aborts and exits. It exits automatically at the route end.
+
+Private settings, saves and Lua inputs are created under TestSessions. Results
+are in Benchmarks\Playback\balmora_<session>. The original recording, starting
+save, frozen baseline and normal gameplay configuration are preserved.
+The engine's fixed Windows renderer cache is still shared.
+
+The captured route is replayed with movement/run/sneak inputs and interpolated
+first-person camera direction, scheduled in simulation time. Normal physics
+and collisions move the character; there are no position teleports or corrections.
+The character holds the recorded view first, then walks the recorded route.
+Position, cell and camera errors are logged at 5 Hz using OMWPLAY JSON records.
+Unexpected pause, combat, policy failure, starting mismatch or large drift aborts.
+
+This is an input playback preview, not a performance benchmark. Reaching the end
+does not prove an identical path or repeatable actor workload. Review SUMMARY.json
+and playback.jsonl before qualifying a future automatic benchmark. Current support
+is limited to the complete exterior Balmora recording, with no jump, attack,
+activation, door, menu or interior replay. The older incomplete Seyda Neen recording
+remains incomplete and is not admitted by this launcher.
+
+Developer use:
+powershell -NoProfile -File OptimizedMW_RoutePlayback.ps1 -GameDir C:\OptimizedMW_Test -PrepareOnly
+Optional -CaptureDirectory selects a specific complete recording.
+Python 3 is required for the bounded route compiler; -PythonExecutable can select it.
