@@ -16,12 +16,18 @@ does not replace the frozen baseline. The ordinary START-OptimizedMW-Test.bat
 continues using the normal gameplay profile unless passed -FrozenConfigDirectory.
 
 The supplied baseline preserves the captured ordered mod configuration and
-Normal Headroom settings: 227 content entries, 311 explicit mod data paths,
+Normal Headroom settings: 227 content entries, 310 explicit mod data paths,
 8 groundcover entries, and 3 fallback archives. Runtime configuration also
 retains the package's ordinary resources/vfs-mw data and original local mod
 data with their priorities. Lua storage, key bindings and shaders.yaml were
 snapshotted from current gameplay state at freeze time; earlier captures did
 not preserve those files, so their historical byte identity is unproven.
+
+On 2026-10-09 the user authorized removing the unused Wearable Lanterns data
+directory requirement. Its plugin/scripts were already absent from the captured
+content list. The revised LOCK.json records the prior lock/config identities and
+this one-directory removal as a new configuration cohort. SaintJs, Hip Lanterns,
+Belt Lanterns, copied saves and all remaining requirements are preserved.
 
 SaintJs means the 16 visual/PBR replacer directories. Their 1,027 referenced
 files have a saved SHA256/length manifest. Keep the installed asset directories:
