@@ -115,6 +115,93 @@ do
 end
 
 do
+    -- The known Seyda encounter was a rat, but its original Fight decision was
+    -- not captured. An explicit record match must not rely on that heuristic.
+    local f = fixture({ enabled = true, hostile_record_ids = { 'rat' },
+        discover_high_fight_creatures = true, creature_fight_threshold = 90 })
+    local citizen = f.actor('seyda-citizen', 'NPC', 100, 'town_citizen')
+    local harmless = f.actor('other-low-fight-creature', 'Creature', 0, 'fixture_creature')
+    f.world.activeActors = { f.player, citizen, harmless }
+    f.script.engineHandlers.onPlayerAdded(f.player)
+    f.advance()
+    f.advance()
+    check(f.last().qualified, 'initial ordinary actors settle without suppression')
+    f.script.eventHandlers.OptimizedMWRouteRecording({ session = f.options.session, active = true, t_wall = 0.04 })
+    local rat = f.actor('new-cell-rat', 'Creature', 0, 'RaT')
+    f.script.engineHandlers.onActorActive(rat)
+    check(rat.enabled and f.last().pending_disable == 1, 'new-cell explicit rat removal is requested but still queued')
+    check(f.last().attempted_count == 1 and f.last().suppressed_count == 0,
+        'rat admission request is not counted as confirmed removal')
+    check(not f.last().qualified and not f.last().ready,
+        'a pending new-cell disable temporarily prevents policy qualification')
+    local request
+    for _, event in ipairs(f.events) do
+        if event.data.event == 'actor_suppression_requested' then request = event.data end
+    end
+    check(request and request.reference_id == 'new-cell-rat' and request.record_id == 'RaT'
+        and request.reason == 'explicit_record', 'case insensitive low-Fight rat match retains explicit reason and identity')
+    f.advance(0.02, false)
+    check(rat.enabled and f.last().suppressed_count == 0, 'another update cannot fabricate confirmation before engine action')
+    f.advance()
+    check(not rat.enabled and f.last().pending_disable == 0 and f.last().suppressed_count == 1,
+        'rat removal confirms only after delayed engine action applies')
+    check(f.last().qualified and f.last().combat_during_recording == 0,
+        'explicit rat admission can settle without observed combat')
+    check(citizen.enabled and harmless.enabled and f.player.enabled,
+        'targeted rat policy preserves townspeople, unrelated low-Fight creatures and player')
+    local receipt
+    for _, event in ipairs(f.events) do
+        if event.data.event == 'actor_suppressed' then receipt = event.data end
+    end
+    check(receipt and receipt.during_recording and receipt.confirmed_disabled
+        and receipt.t_wall > request.t_wall, 'receipt separates in-record confirmation from prior request time')
+    f.script.engineHandlers.onActorActive(rat)
+    f.advance()
+    check(f.last().attempted_count == 1, 'confirmed rat reactivation does not duplicate suppression receipts')
+end
+
+do
+    local f = fixture({ enabled = true, hostile_record_ids = { 'rat' },
+        discover_high_fight_creatures = false })
+    f.script.engineHandlers.onPlayerAdded(f.player)
+    f.advance()
+    f.advance()
+    f.script.eventHandlers.OptimizedMWRouteRecording({ session = f.options.session, active = true, t_wall = 0.04 })
+    local rat = f.actor('rat-combat-before-confirmation', 'Creature', 0, 'rat')
+    f.script.engineHandlers.onActorActive(rat)
+    f.advance(0.02, false)
+    f.script.eventHandlers.OptimizedMWRouteCombatDetected({ session = f.options.session, actor = rat,
+        kind = 'Combat', observed_t_wall = 0.05, first_target_reference_id = 'player', target_count = 1 })
+    check(rat.enabled and f.last().combat_during_recording == 1 and f.last().pending_disable == 1,
+        'combat between explicit rat request and confirmation remains visible and disqualifying')
+    check(f.last().attempted_count == 1, 'reactive combat receipt does not duplicate existing rat disable request')
+    f.advance()
+    check(not rat.enabled and f.last().suppressed_count == 1 and f.last().pending_disable == 0,
+        'combat-contaminated rat removal still drains and confirms')
+    check(not f.last().qualified and f.last().combat_during_recording == 1,
+        'later confirmed rat removal cannot erase combat contamination')
+    check(f.last().preemption_guaranteed == false, 'explicit rat policy does not claim guaranteed combat preemption')
+end
+
+do
+    local f = fixture({ enabled = false, hostile_record_ids = { 'rat' },
+        discover_high_fight_creatures = true, creature_fight_threshold = 90 })
+    local initialRat = f.actor('initial-control-rat', 'Creature', 100, 'rat')
+    f.world.activeActors = { initialRat }
+    f.script.engineHandlers.onPlayerAdded(f.player)
+    f.advance()
+    f.advance()
+    f.script.eventHandlers.OptimizedMWRouteRecording({ session = f.options.session, active = true, t_wall = 0.04 })
+    local newRat = f.actor('new-cell-control-rat', 'Creature', 0, 'rat')
+    f.script.engineHandlers.onActorActive(newRat)
+    f.advance()
+    check(initialRat.enabled and newRat.enabled, 'disabled policy leaves both initial and new-cell rats intact')
+    check(f.last().attempted_count == 0 and f.last().suppressed_count == 0 and f.last().pending_disable == 0,
+        'disabled explicit rat control performs no queued actor mutations')
+    check(not f.last().qualified, 'unsuppressed control cannot falsely claim no-enemy qualification')
+end
+
+do
     local f = fixture()
     local citizen = f.actor('citizen-entering-combat', 'NPC', 0)
     f.script.engineHandlers.onPlayerAdded(f.player)

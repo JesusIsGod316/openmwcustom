@@ -120,7 +120,10 @@ function New-OptimizedMWRouteSession {
     [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($optionsPath))
     $boolean=$(if($SmokeRun){'true'}else{'false'})
     $expectedCell=$(if($RouteName -eq 'balmora'){'Balmora'}else{'Seyda Neen'})
-    $options="return { enabled=true, schema=1, session='$id', route_name='$RouteName', checkpoint_save_required=true, no_enemy_policy={enabled=true, discover_high_fight_creatures=true, creature_fight_threshold=90, hostile_reference_ids={}, hostile_record_ids={}}, smoke_autostart=$boolean, smoke_duration_seconds=$SmokeDuration, smoke_quit=$boolean, smoke_expected_cell='$expectedCell', quit_on_finish=true, require_ctrl_shift=false, key_start='F6', key_checkpoint='F9', key_finish='F10', key_abort='F11', max_seconds=600, max_records=60000, max_bytes=16777216, sample_hz=20 }"
+    # The recorded Seyda route encountered record 'rat' outside Fight discovery.
+    # Admit that known encounter explicitly in the private calibration world.
+    # Lua still confirms the queued disable and rejects any observed combat.
+    $options="return { enabled=true, schema=1, session='$id', route_name='$RouteName', checkpoint_save_required=true, no_enemy_policy={enabled=true, discover_high_fight_creatures=true, creature_fight_threshold=90, hostile_reference_ids={}, hostile_record_ids={'rat'}}, smoke_autostart=$boolean, smoke_duration_seconds=$SmokeDuration, smoke_quit=$boolean, smoke_expected_cell='$expectedCell', quit_on_finish=true, require_ctrl_shift=false, key_start='F6', key_checkpoint='F9', key_finish='F10', key_abort='F11', max_seconds=600, max_records=60000, max_bytes=16777216, sample_hz=20 }"
     [IO.File]::WriteAllText($optionsPath,$options,[Text.UTF8Encoding]::new($false))
     [IO.File]::AppendAllText($runtime.config_path,"`ncontent=$content`n",[Text.UTF8Encoding]::new($false))
     # Recording is route setup, not a performance capture. Preserve gameplay
@@ -288,7 +291,14 @@ function Export-OptimizedMWRouteLog {
         else{
             foreach($requiredPolicy in @('qualified','ready','enabled')){if($finish.policy.$requiredPolicy -isnot [bool] -or -not $finish.policy.$requiredPolicy){$errors.Add('Actor policy metadata not qualified')}}
             if($finish.policy.failed -isnot [bool] -or $finish.policy.failed){$errors.Add('Actor policy reports a failure')}
-            foreach($zeroCounter in @('combat_during_recording','pending_disable')){if(-not (Test-OptimizedMWRouteNumber $finish.policy.$zeroCounter 0 0)){$errors.Add('Actor policy has unclosed combat/suppression work')}}
+            foreach($zeroCounter in @('combat_during_recording','pending_disable')){
+                $value=$finish.policy.$zeroCounter
+                if(-not (Test-OptimizedMWRouteNumber $value 0 100000000) -or [Math]::Floor([double]$value) -ne [double]$value){$errors.Add('Actor policy counter missing or invalid: '+$zeroCounter)}
+                elseif($value -gt 0){
+                    if($zeroCounter -eq 'combat_during_recording'){$errors.Add('Combat/Pursue was observed during recording (events='+$value+')')}
+                    else{$errors.Add('Actor suppressions still pending at export (actors='+$value+')')}
+                }
+            }
         }
         if(-not $finish.PSObject.Properties['private_camera_setup'] -or [string]$finish.private_camera_setup.source -cne 'private_setup_vanity_control_switch' -or $finish.private_camera_setup.verified -isnot [bool] -or -not $finish.private_camera_setup.verified -or $finish.private_camera_setup.vanity_disabled -isnot [bool] -or -not $finish.private_camera_setup.vanity_disabled){$errors.Add('Private idle-camera setup missing or unverified')}
         if($finish.PSObject.Properties['reason'] -and [string]$finish.reason -notin @('user_finished','smoke_finished')){$errors.Add('Recorder finish reason is incomplete')}

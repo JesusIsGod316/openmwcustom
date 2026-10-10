@@ -96,6 +96,11 @@ Hostile policy
 The separate policy scripts retain ordinary NPCs/Mercy and remove explicit hostile
 references/records plus opt-in high-fight creatures. The latter is a discovery
 heuristic, not a complete hostile classifier. Each queued disable needs confirmation.
+The host currently adds the known creature record 'rat' to both private route
+profiles after its observed combat in user Seyda capture b9a378d8bd244b6fb0afc735f847de34.
+This bypasses Fight discovery for that record; its original Fight value was not
+recorded and is not inferred. Actor activation still queues the disable, so the
+change needs runtime verification. Old captures are never requalified by it.
 Combat/Pursue targets are watched per local update; any combat observed during the
 recorded interval invalidates the route's combat qualification. Queued removal does
 not guarantee that no mod callback ran before the actor was removed.

@@ -62,14 +62,21 @@ Keeping explicit parked bindings prevents the native loader restoring defaults.
 Original bindings are preserved. Preparation refuses occupied parking keys.
 F8 remains unchanged because a mod uses Shift+F8 for music.
 
-The private combat policy disables discovered hostile creatures with a high
-current modified AI Fight setting (90 or above), leaving ordinary townspeople
-and their AI present. It records the exact suppressed references. Fight is a bounded
+The private combat policy explicitly disables creature record 'rat', which
+entered combat on the recorded Seyda Neen route. This known encounter bypasses
+the Fight heuristic in both route profiles. It also disables discovered hostile
+creatures with a high current modified AI Fight setting (90 or above), leaving
+ordinary townspeople and their AI present. It records the exact suppressed
+references. Fight is a bounded
 heuristic, not a complete classification of all scripted/modded enemies or
 hostile NPCs; identified references can be added later. Unexpected combat
 invalidates the route. Mercy Combat AI stays installed. Gameplay profiles are
 unaffected by these private calibration changes. This does not create a combat
 performance benchmark or freeze every town actor's later AI movement.
+Disabling is queued and must be confirmed in a later update; the explicit rat
+rule does not prove that every mod callback or combat start was preempted.
+Observed combat and suppressions still pending at export are reported separately.
+Earlier INCOMPLETE captures keep their original qualification and evidence.
 
 The recorder is bounded to ten minutes and 60,000 records / 16 MiB. Buffer
 overflow, missing samples or finish marker, unexpected combat, invalid clocks,

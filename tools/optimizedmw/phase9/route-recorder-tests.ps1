@@ -45,6 +45,7 @@ try{
     Check-Route ([IO.File]::ReadAllText($existing.runtime.settings_path) -match 'render handoff attribution = false' -and [IO.File]::ReadAllText($existing.runtime.settings_path) -match 'async gpu profiler = false') 'Route observers remain enabled'
     Check-Route ($existing.manifest.validation_window -eq $false -and [IO.File]::ReadAllText($existing.runtime.settings_path) -match 'resolution x = 1920') 'Default route recording display changed'
     Check-Route ([IO.File]::ReadAllText($existing.manifest.options.path) -match 'require_ctrl_shift=false') 'Recorder requires native sneak/run modifier keys'
+    Check-Route ([IO.File]::ReadAllText($existing.manifest.options.path) -match "hostile_record_ids=\{'rat'\}") 'Known Seyda rat encounter is not admitted independently of Fight'
     Assert-OptimizedMWRouteSessionInputs $existing;Check-Route $true 'Unchanged recorder inputs failed prelaunch qualification'
     [IO.File]::AppendAllText($existing.runtime.config_path,'# mutation')
     Reject-Route {Assert-OptimizedMWRouteSessionInputs $existing} 'Changed private recorder configuration accepted'
@@ -52,6 +53,7 @@ try{
     Check-Route ($balmora.arguments -contains '--script-run' -and [IO.File]::ReadAllText($balmora.manifest.setup_script.path) -ceq ('coc "Balmora"'+"`n")) 'Balmora setup is not a quoted named-cell COC'
     Check-Route ($balmora.runtime.directory -cne $existing.runtime.directory) 'Route profiles are not isolated'
     Check-Route ([IO.File]::ReadAllText($balmora.manifest.options.path) -match "smoke_autostart=true" -and [IO.File]::ReadAllText($balmora.manifest.options.path) -match "route_name='balmora'") 'Smoke options are not bounded and explicit'
+    Check-Route ([IO.File]::ReadAllText($balmora.manifest.options.path) -match "hostile_record_ids=\{'rat'\}") 'Balmora private policy does not retain the known rat admission rule'
     Check-Route ($balmora.manifest.validation_window -and [IO.File]::ReadAllText($balmora.runtime.settings_path) -match 'resolution x = 1280' -and [IO.File]::ReadAllText($balmora.runtime.settings_path) -match 'resolution y = 720') 'Validation display is not marked separately'
     $seydaSmoke=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing -SmokeRun
     Check-Route ([IO.File]::ReadAllText($seydaSmoke.manifest.setup_script.path) -ceq ('coc "Seyda Neen"'+"`n")) 'Multiword smoke cell name is not quoted as one console argument'
@@ -75,6 +77,15 @@ try{
     Write-RouteFixture $records;$summary=Export-OptimizedMWRouteLog $log $out $sessionId 0
     Check-Route $summary.complete 'Valid route fixture rejected'
     Check-Route ($summary.record_count -eq 7 -and $summary.events.sample -eq 2 -and $summary.route_file.sha256 -match '^[a-f0-9]{64}$') 'Route count or checksum absent'
+    $records[6].policy.combat_during_recording=1;Write-RouteFixture $records;$combatSummary=Export-OptimizedMWRouteLog $log $out $sessionId 0
+    Check-Route (-not $combatSummary.complete -and $combatSummary.errors -contains 'Combat/Pursue was observed during recording (events=1)' -and -not ($combatSummary.errors -match 'pending|unclosed')) 'Observed combat is accepted or misreported as pending suppression'
+    $records[6].policy.combat_during_recording=0;$records[6].policy.pending_disable=1;Write-RouteFixture $records;$pendingSummary=Export-OptimizedMWRouteLog $log $out $sessionId 0
+    Check-Route (-not $pendingSummary.complete -and $pendingSummary.errors -contains 'Actor suppressions still pending at export (actors=1)' -and -not ($pendingSummary.errors -match 'was observed')) 'Pending disable is accepted or misreported as observed combat'
+    foreach($invalidCounter in @($null,-1,0.5,'0')){
+        $records[6].policy.pending_disable=$invalidCounter;Write-RouteFixture $records;$invalidSummary=Export-OptimizedMWRouteLog $log $out $sessionId 0
+        Check-Route (-not $invalidSummary.complete -and $invalidSummary.errors -contains 'Actor policy counter missing or invalid: pending_disable') 'Missing or invalid pending-disable counter accepted'
+    }
+    $records[6].policy.pending_disable=0
     Write-RouteFixture $records[0..5];Check-Route (-not (Export-OptimizedMWRouteLog $log $out $sessionId 0).complete) 'Missing finish accepted'
     Write-RouteFixture $records;Check-Route (-not (Export-OptimizedMWRouteLog $log $out $sessionId 1).complete) 'Game crash accepted'
     $records[3].position.x='NaN';Write-RouteFixture $records;Check-Route (-not (Export-OptimizedMWRouteLog $log $out $sessionId 0).complete) 'Nonfinite sample accepted';$records[3].position.x=1
