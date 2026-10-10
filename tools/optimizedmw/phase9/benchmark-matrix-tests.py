@@ -79,6 +79,16 @@ class Benchmarks(unittest.TestCase):
             result=matrix.cell_crossings(path,1)
             self.assertEqual(result['qualification'],'BOUNDED_EXTERIOR_BOUNDARY_SKEW')
             self.assertEqual(result['mismatch_checks'],1)
+            # Position interpolates across a boundary before the reference's
+            # earlier sampled cell label changes. It must remain explicitly
+            # reported and confined to the recorded sample's travel distance.
+            rows[1]['sample_interval']=.05
+            rows[1]['guidance_command']={'speed':300}
+            rows[1]['expected_position']['y']=-16383; save()
+            self.assertEqual(matrix.cell_crossings(path,1)['reference_interpolation_skew_checks'],1)
+            rows[1]['expected_position']['y']=-16350; save()
+            with self.assertRaises(ValueError):matrix.cell_crossings(path,1)
+            rows[1]['expected_position']['y']=-16389
             rows[-1]['t_wall']=2.; save()
             with self.assertRaises(ValueError):matrix.cell_crossings(path,1)
             rows[-1]['t_wall']=1.4
@@ -97,6 +107,8 @@ class Benchmarks(unittest.TestCase):
             self.assertFalse(result['all_requested_positive'])
             (path/'openmw.log').write_text('active_consumed_draws=10 cache_fast_hits=5\n')
             self.assertTrue(matrix.engagement(path,{'lod cache hit admission':'true'},1)['all_requested_positive'])
+            (path/'openmw.log').write_text('OptimizedMW persistent opaque packets: submitted=1d169f ordinary_branches=1693\n')
+            self.assertFalse(matrix.engagement(path,{'ordinary opaque packets':'true'})['all_requested_positive'])
 
 
     def test_atomic_receipt_survives_a_real_windows_reader_lock(self):

@@ -581,6 +581,13 @@ int main(int argc, char** argv) try
     require(selected.readiness->ready, "actual ICO preparation must complete");
     const auto derivedDraws = L1::Counters::derivedDraws.load(), derivedIndices = L1::Counters::submittedIndices.load();
     viewer.frame(); viewer.frame();
+    std::cout << "L1_DRAW_SELECTION_PROOF compilation_ready=" << selected.node->compilationReady()
+        << " local_material_guard=" << selected.node->materialGuardCurrent()
+        << " coarse_views=" << L1::Counters::coarseViews.load()
+        << " original_views=" << L1::Counters::originalViews.load()
+        << " material_cull_fallbacks=" << L1::Counters::materialCullFallbacks.load()
+        << " material_draw_fallbacks=" << L1::Counters::materialDrawFallbacks.load()
+        << " derived_draws=" << L1::Counters::derivedDraws.load() << '\n';
     require(L1::Counters::derivedDraws > derivedDraws && L1::Counters::submittedIndices > derivedIndices, "main camera actually consumes reduced index tier");
     const auto farPixels = pixels->data;
     const auto occupied = [](const auto& image, int x, int y) {

@@ -138,17 +138,17 @@ def engagement(profile, requested, asset_mask=0):
     if asset_mask & 1:
         # A successful cook/cache lookup is not proof that visible LOD draws
         # consumed the reduced product in the real active-grid renderer.
-        matches = re.findall(r'active_consumed_draws=(\d+)',text)
+        matches = re.findall(r'active_consumed_draws=(\d+)(?=\s|$)',text)
         positive['active_grid_lod_draws'] = bool(matches and int(matches[-1])>0)
     if requested.get('prepare material images') == 'true':
-        matches = re.findall(r'OptimizedMW material image preparation:.*?decoded=(\d+)',text)
+        matches = re.findall(r'OptimizedMW material image preparation:.*?decoded=(\d+)(?=\s|$)',text)
         positive['material_images'] = bool(matches and int(matches[-1])>0)
     if requested.get('lod cache hit admission') == 'true':
-        matches = re.findall(r'cache_fast_hits=(\d+)',text)
+        matches = re.findall(r'cache_fast_hits=(\d+)(?=\s|$)',text)
         positive['lod_cache_hit'] = bool(matches and int(matches[-1])>0)
     if requested.get('ordinary opaque packets') == 'true':
-        matches = re.findall(r'ordinary_branches=(\d+)',text)
-        submitted = re.findall(r'OptimizedMW persistent opaque packets:.*?submitted=(\d+)',text)
+        matches = re.findall(r'ordinary_branches=(\d+)(?=\s|$)',text)
+        submitted = re.findall(r'OptimizedMW persistent opaque packets:.*?submitted=(\d+)(?=\s|$)',text)
         positive['ordinary_packets'] = bool(matches and int(matches[-1])>0 and submitted and int(submitted[-1])>0)
     return {'positive_work': positive, 'all_requested_positive': all(positive.values()),
             'limit': 'Preparation/dispatch engagement; visible resource adoption and performance require separate evidence'}
@@ -180,14 +180,12 @@ def cell_crossings(profile, expected_count):
         return cells
     if itinerary('actual_cell')!=itinerary('expected_cell'):
         raise ValueError('Playback changed the ordered exterior cell itinerary')
-    def exterior(value,position):
+    def exterior(value):
         match=re.fullmatch(r'Esm3ExteriorCell:(-?\d+):(-?\d+)',value)
         if not match: raise ValueError('Interior or unknown cell mismatch')
-        grid=tuple(map(int,match.groups()))
-        if grid!=tuple(math.floor(position[axis]/8192) for axis in ('x','y')):
-            raise ValueError('Cell mismatch is not explained by actual exterior coordinates')
-        return grid
+        return tuple(map(int,match.groups()))
     windows=[]
+    reference_interpolation_skew=0
     start=0
     while start<len(mismatches):
         end=start
@@ -200,9 +198,24 @@ def cell_crossings(profile, expected_count):
             raise ValueError('Cell mismatch exceeds the half-second sampled boundary window')
         for i in mismatches[start:end+1]:
             row=checks[i]; a=row['actual_position']; b=row['expected_position']
-            actual=exterior(row['actual_cell'],a); expected=exterior(row['expected_cell'],b)
+            actual=exterior(row['actual_cell']); expected=exterior(row['expected_cell'])
             if sum(abs(x-y) for x,y in zip(actual,expected))!=1:
                 raise ValueError('Cell mismatch is not one adjacent exterior boundary')
+            coordinates=lambda p:tuple(math.floor(p[axis]/8192) for axis in ('x','y'))
+            if coordinates(a)!=actual:
+                raise ValueError('Actual cell mismatch is not explained by its exterior coordinates')
+            if coordinates(b)!=expected:
+                # The replay interpolates reference POSITION between acquired
+                # samples but takes CELL ID from the earlier sample. Retain this
+                # protocol skew only at that same boundary and within one source
+                # sample's travel; the actual physical cell remains exact.
+                axis=next(i for i in range(2) if actual[i]!=expected[i])
+                name=('x','y')[axis]; boundary=max(actual[axis],expected[axis])*8192
+                interval=row.get('sample_interval',0); speed=(row.get('guidance_command') or {}).get('speed',0)
+                allowance=min(64,interval*speed+1)
+                if coordinates(b)!=actual or not 0<interval<=.1 or not 0<speed<=1000 or abs(b[name]-boundary)>allowance:
+                    raise ValueError('Reference cell mismatch exceeds recorded interpolation travel')
+                reference_interpolation_skew+=1
             if math.hypot(a['x']-b['x'],a['y']-b['y'])>64 or abs(a['z']-b['z'])>32:
                 raise ValueError('Boundary mismatch exceeds the narrow physical path allowance')
         windows.append({'first_seq':checks[first]['seq'],'last_seq':checks[last]['seq'],
@@ -210,6 +223,7 @@ def cell_crossings(profile, expected_count):
         start=end+1
     return {'qualification':'BOUNDED_EXTERIOR_BOUNDARY_SKEW','mismatch_checks':expected_count,
             'same_ordered_cell_itinerary':True,'windows':windows,
+            'reference_interpolation_skew_checks':reference_interpolation_skew,
             'limit':'Sampled physical crossings, not frame-exact cell-transition timing'}
 
 

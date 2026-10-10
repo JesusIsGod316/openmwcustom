@@ -61,6 +61,10 @@ and matching samples enclosing the mismatch within half a second. Interior,
 skipped-cell, wider-path and sustained mismatches fail. This is sampled guided
 crossing evidence, not frame-exact transition timing. Active-grid LOD candidates
 also require actual reduced draws; successful cooking/cache hits alone fail.
+Reference positions interpolate between acquired samples while their cell label
+comes from the earlier sample. This separate skew is counted and allowed only
+at the same adjacent boundary within one acquired sample's travel (at most 64
+units/0.1 seconds). The actual replay cell must match its actual coordinates.
 
 Analysis includes median/tail times, MAD/IQR/standard deviation, adjacent-frame
 changes and rolling-median relative spikes below fixed hitch thresholds. Route

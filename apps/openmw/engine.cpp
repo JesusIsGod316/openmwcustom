@@ -2933,7 +2933,7 @@ void OMW::Engine::go()
     if (SceneUtil::PersistentOpaquePackets::enabled())
     {
         using C=SceneUtil::PersistentOpaquePackets::Counters;
-        Log(Debug::Info) << "OptimizedMW persistent opaque packets: built=" << C::built.load()
+        Log(Debug::Info) << std::dec << "OptimizedMW persistent opaque packets: built=" << C::built.load()
             << " rows=" << C::rows.load() << " submitted=" << C::submitted.load()
             << " culled=" << C::culled.load() << " fallbacks=" << C::fallbacks.load()
             << " state_pushes_avoided=" << C::statePushesAvoided.load()
