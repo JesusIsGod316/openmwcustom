@@ -79,6 +79,17 @@ class Benchmarks(unittest.TestCase):
             result=matrix.cell_crossings(path,1)
             self.assertEqual(result['qualification'],'BOUNDED_EXTERIOR_BOUNDARY_SKEW')
             self.assertEqual(result['mismatch_checks'],1)
+            # The actual 0.2-second acquisition cadence and an ordinary frame
+            # overshoot can put two MATCHING endpoints more than half a second
+            # apart. Preserve that uncertainty without calling it a sustained
+            # mismatch or permitting an undersampled crossing.
+            rows[-1]['t_wall']=1.535; save()
+            result=matrix.cell_crossings(path,1)
+            window=result['windows'][0]
+            self.assertAlmostEqual(window['observed_mismatch_seconds'],0)
+            self.assertAlmostEqual(window['surrounding_sample_seconds'],.535)
+            self.assertAlmostEqual(window['after_sample_gap_seconds'],.335)
+            rows[-1]['t_wall']=1.4; save()
             # Position interpolates across a boundary before the reference's
             # earlier sampled cell label changes. It must remain explicitly
             # reported and confined to the recorded sample's travel distance.
@@ -97,6 +108,22 @@ class Benchmarks(unittest.TestCase):
             rows[1]['actual_position']['x']+=100
             rows[1]['actual_cell']='Esm3ExteriorCell:-4:-2';save()
             with self.assertRaises(ValueError):matrix.cell_crossings(path,1)
+
+    def test_observed_sustained_cell_mismatch_still_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)
+            rows=[]
+            for seq,when,mismatch in ((1,1.,False),(2,1.2,True),
+                    (3,1.4,True),(4,1.6,True),(5,1.8,True),(6,2.,False)):
+                actual='Esm3ExteriorCell:-3:-3' if seq==1 else 'Esm3ExteriorCell:-3:-2'
+                expected='Esm3ExteriorCell:-3:-2' if seq==6 else 'Esm3ExteriorCell:-3:-3'
+                rows.append({'event':'check','seq':seq,'t_wall':when,'cell_matches':not mismatch,
+                    'actual_cell':actual,'expected_cell':expected,
+                    'actual_position':{'x':-20030,'y':-16410 if seq==1 else -16375,'z':289},
+                    'expected_position':{'x':-20005,'y':-16389 if seq!=6 else -16280,'z':289}})
+            (path/'playback.jsonl').write_text('\n'.join(map(json.dumps,rows)))
+            with self.assertRaisesRegex(ValueError,'mismatch span'):
+                matrix.cell_crossings(path,4)
 
     def test_cache_engagement_does_not_prove_visible_lod(self):
         with tempfile.TemporaryDirectory() as temporary:

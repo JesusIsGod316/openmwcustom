@@ -159,7 +159,10 @@ def cell_crossings(profile, expected_count):
 
     A physical follower can cross an exterior boundary a fraction of a second
     before/after its reference. Preserve the mismatch, require the same ordered
-    cell itinerary, and bound BOTH positions and the surrounding sample window.
+    cell itinerary, and bound BOTH positions and the observed mismatch span.
+    Bound each unobserved bracketing gap separately; two matching endpoints
+    are sampling uncertainty, not observations of a wrong cell. Preserve the
+    complete surrounding window rather than claiming exact transition timing.
     Interior transitions, skipped cells, sustained mismatches and wider path
     departures remain failures. This never claims frame-exact cell ownership.
     """
@@ -193,9 +196,12 @@ def cell_crossings(profile, expected_count):
         first,last=mismatches[start],mismatches[end]
         if first==0 or last==len(checks)-1:
             raise ValueError('Unclosed cell-boundary mismatch')
+        span=checks[last]['t_wall']-checks[first]['t_wall']
+        before_gap=checks[first]['t_wall']-checks[first-1]['t_wall']
+        after_gap=checks[last+1]['t_wall']-checks[last]['t_wall']
         duration=checks[last+1]['t_wall']-checks[first-1]['t_wall']
-        if not 0<duration<=.5:
-            raise ValueError('Cell mismatch exceeds the half-second sampled boundary window')
+        if not 0<=span<=.5 or not 0<before_gap<=.5 or not 0<after_gap<=.5:
+            raise ValueError('Cell mismatch span or bracketing sample gap exceeds half a second')
         for i in mismatches[start:end+1]:
             row=checks[i]; a=row['actual_position']; b=row['expected_position']
             actual=exterior(row['actual_cell']); expected=exterior(row['expected_cell'])
@@ -219,12 +225,15 @@ def cell_crossings(profile, expected_count):
             if math.hypot(a['x']-b['x'],a['y']-b['y'])>64 or abs(a['z']-b['z'])>32:
                 raise ValueError('Boundary mismatch exceeds the narrow physical path allowance')
         windows.append({'first_seq':checks[first]['seq'],'last_seq':checks[last]['seq'],
+                        'observed_mismatch_seconds':span,
+                        'before_sample_gap_seconds':before_gap,
+                        'after_sample_gap_seconds':after_gap,
                         'surrounding_sample_seconds':duration})
         start=end+1
     return {'qualification':'BOUNDED_EXTERIOR_BOUNDARY_SKEW','mismatch_checks':expected_count,
             'same_ordered_cell_itinerary':True,'windows':windows,
             'reference_interpolation_skew_checks':reference_interpolation_skew,
-            'limit':'Sampled physical crossings, not frame-exact cell-transition timing'}
+            'limit':'Mismatch span and each bracketing gap are bounded separately; the complete surrounding window is sampling uncertainty, not frame-exact transition timing'}
 
 
 def route_quality(receipt, profile=None):
